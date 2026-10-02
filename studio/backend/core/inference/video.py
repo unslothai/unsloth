@@ -6076,8 +6076,9 @@ class VideoBackend:
                 "(quantized transformer must be compiled; eager is ~30x slower)"
             )
             effective_speed = SPEED_DEFAULT
-        # Wan on fp16 GPUs (T4): fused norm / modulation / gated-residual kernels, bit-identical to stock (self-checked
-        # on first use). Before the step cache and apply_memory_plan: their hooks capture the block forward when they attach.
+        # Wan on fp16 GPUs (T4): fused norm / modulation / gated-residual / rotary kernels, bit-identical to stock
+        # (self-checked on first use). Before the step cache and apply_memory_plan: their hooks capture the block forward
+        # when they attach.
         from . import video_wan_fused
         wan_fused_engaged = False
         if effective_speed != SPEED_OFF:
@@ -6298,18 +6299,6 @@ class VideoBackend:
                     logger.warning("video.vae_tiling_failed: %s", exc)
             # Wan's decode also grows within a single tile, which tiling alone cannot bound.
             install_decoder_sync(pipe, target, logger = logger)
-            # Wan on fp16 GPUs: CFG's two batch-1 denoiser calls as one batch-2 call. After apply_memory_plan, so the
-            # wrapper sits outside the offload hooks and they still see every real forward.
-            if effective_speed != SPEED_OFF:
-                from .video_wan_cfg_batch import install_for_pipe as install_wan_cfg_batch
-                if install_wan_cfg_batch(
-                    pipe,
-                    dtype,
-                    getattr(target, "device", "cuda"),
-                    cache_engaged = bool(cache_engaged) or bool(cache_may_toggle),
-                    logger = logger,
-                ):
-                    speed_optims += ("wan_cfg_batch",)
 
             resolved = build_resolved_record(
                 {
