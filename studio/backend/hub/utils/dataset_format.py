@@ -328,12 +328,10 @@ def _is_image_value(value) -> bool:
 
 
 def _is_image_list_item(value) -> bool:
-    if isinstance(value, dict) and "bytes" in value and "path" in value:
-        path = value.get("path")
-        data = value.get("bytes")
-        return _is_image_value(path) or (
-            isinstance(data, (bytes, bytearray)) and _has_image_header(data)
-        )
+    if isinstance(value, (dict, bytes, bytearray)):
+        return False
+    if isinstance(value, str) and value.strip().lower().startswith(("http://", "https://")):
+        return False
     return _is_image_value(value)
 
 

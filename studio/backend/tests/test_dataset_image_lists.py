@@ -125,9 +125,14 @@ def test_text_only_datasets_stay_text(row):
 
 
 @pytest.mark.parametrize("detector", [dataset_format, format_detection])
-def test_undecoded_media_lists_are_typed_as_images_only_for_image_data(detector):
-    image_dataset = Dataset.from_list([_encoded_image_row()])
+def test_image_list_detection_requires_values_the_converter_can_open(detector):
+    encoded_image_row = _encoded_image_row()
+    image_dataset = Dataset.from_list([encoded_image_row])
+    image_bytes_dataset = Dataset.from_list([{"media": [encoded_image_row["media"][0]["bytes"]]}])
     audio_dataset = Dataset.from_list([_encoded_audio_row()])
+    remote_image_dataset = Dataset.from_list([{"media": ["https://example.com/image.png"]}])
 
-    assert detector.detect_multimodal_dataset(image_dataset)["is_image"] is True
+    assert detector.detect_multimodal_dataset(image_dataset)["is_image"] is False
+    assert detector.detect_multimodal_dataset(image_bytes_dataset)["is_image"] is False
     assert detector.detect_multimodal_dataset(audio_dataset)["is_image"] is False
+    assert detector.detect_multimodal_dataset(remote_image_dataset)["is_image"] is False
