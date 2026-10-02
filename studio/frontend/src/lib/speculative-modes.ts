@@ -21,7 +21,8 @@ export const SPECULATIVE_TYPES = [
   "off",
 ] as const;
 
-/** Modes only an MLX load reads (studio/backend/core/inference/mlx_speculative.py MLX_SPEC_MODES). */
+/** Values only an MLX load reads (studio/backend/core/inference/mlx_speculative.py): eagle3, and the
+ *  `<kind>+ngram` spellings it reads as their kind. */
 export const MLX_ONLY_SPEC_TYPES = [
   "eagle3",
   "dspark+ngram",
@@ -37,12 +38,13 @@ export const MLX_SPECULATIVE_TYPES = [
   "dspark",
   "eagle3",
   "ngram",
-  "mtp+ngram",
-  "dflash+ngram",
-  "dspark+ngram",
-  "eagle3+ngram",
   "off",
 ] as const;
+
+/** The mode an MLX load runs: every drafter kind also copies repeated text, so `<kind>+ngram` is its kind. */
+export function mlxSpeculativeMode(mode: string): string {
+  return mode.endsWith("+ngram") ? mode.slice(0, -"+ngram".length) : mode;
+}
 
 /**
  * The modes that consume spec_draft_n_max, i.e. the ones that launch a drafter

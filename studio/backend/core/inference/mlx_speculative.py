@@ -19,10 +19,9 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 MLX_DRAFTER_KINDS = ("mtp", "dflash", "dspark", "eagle3")
-MLX_SPEC_MODES = frozenset(
-    {"auto", "off", "ngram", *MLX_DRAFTER_KINDS, *(f"{kind}+ngram" for kind in MLX_DRAFTER_KINDS)}
-)
+MLX_SPEC_MODES = frozenset({"auto", "off", "ngram", *MLX_DRAFTER_KINDS})
 _LEGACY_MODES = {
+    **{f"{kind}+ngram": kind for kind in MLX_DRAFTER_KINDS},
     "default": "auto",
     "draft-mtp": "mtp",
     "draft-dspark": "dspark",
@@ -65,7 +64,7 @@ class DrafterSource:
 class SpecResolution:
     mode: str
     sources: tuple = ()  # DrafterSource candidates, tried in order at load
-    copies: bool = False  # n-gram copies alongside a drafter, or alone when no source loads
+    copies: bool = False  # n-gram copies alongside a drafter, or alone when an explicit kind's drafter does not attach
     reason: Optional[str] = None
 
     @property
@@ -203,7 +202,7 @@ def resolve_speculation(
     if mode == "ngram":
         return SpecResolution(mode, copies = True)
     auto = mode == "auto"
-    kind, copies = ("mtp", True) if auto else (mode.split("+")[0], mode.endswith("+ngram"))
+    kind = "mtp" if auto else mode
     sources, reason = [], None
     if spec_draft_model:
         named = _named_companion(spec_draft_model)
@@ -227,7 +226,7 @@ def resolve_speculation(
         return SpecResolution(mode, reason = reason)
     if not sources and reason is None:
         reason = DRAFTER_NOT_FOUND
-    return SpecResolution(mode, tuple(sources), copies = copies, reason = reason)
+    return SpecResolution(mode, tuple(sources), copies = True, reason = reason)
 
 
 def speculates_on_route(mode: str, vision: bool) -> bool:

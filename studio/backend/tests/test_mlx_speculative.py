@@ -55,7 +55,7 @@ def test_an_explicit_kind_tries_the_named_drafter_then_the_head_then_cached_comp
         builtin = True,
     )
     assert [s.path.split("/")[-1] for s in _resolve("dflash").sources] == ["a--Qwen3.5-4B-DFlash"]
-    assert _resolve("dflash").copies is False
+    assert _resolve("dflash").copies and spec.mlx_spec_mode("eagle3+ngram") == "eagle3"
     assert [s.path.split("/")[-1] for s in _resolve("eagle3").sources] == ["b--Qwen3.5-4B-Eagle3"]
     named = _resolve("eagle3+ngram", "b/Qwen3.5-4B-Eagle3")
     assert [s.kind for s in named.sources] == ["eagle3"] and named.copies and named.speculative
@@ -65,7 +65,7 @@ def test_an_explicit_kind_tries_the_named_drafter_then_the_head_then_cached_comp
     # A named drafter of another kind is refused with a reason, never substituted silently.
     assert _resolve("dflash", "b/Qwen3.5-4B-Eagle3").reason == spec.DRAFTER_INCOMPATIBLE
     assert _resolve("dspark").reason == spec.DRAFTER_NOT_FOUND
-    assert _resolve("dspark+ngram").speculative
+    assert _resolve("dspark").speculative
 
 
 def test_auto_takes_every_cached_kind_in_preference_order(cache):
@@ -114,7 +114,7 @@ def test_a_drafter_passed_over_keeps_its_reason_on_the_one_that_attaches(monkeyp
     for d, n, e in ((object(), 3, True), (object(), 4, False), (draft.drafter, 15, True)):
         assert spec._draft(d, False, n).controller.fixed_depth is e
     draft, kind, reason, _ = spec.build_draft(
-        None, spec.SpecResolution("dflash+ngram", sources[:1], copies = True), fits = fits
+        None, spec.SpecResolution("dflash", sources[:1], copies = True), fits = fits
     )
     assert (draft.drafter, kind, reason) == (None, "ngram", spec.DRAFTER_NO_MEMORY)
     assert (draft.controller.max_depth, draft.controller.max_copy) == (0, 16)
@@ -134,6 +134,6 @@ def test_a_drafter_passed_over_keeps_its_reason_on_the_one_that_attaches(monkeyp
 
     for target in (encoder_decoder, SimpleNamespace(language_model = cross_attending)):
         refused = spec.build_draft(
-            target, spec.SpecResolution("dflash+ngram", sources[2:], copies = True), fits = fits
+            target, spec.SpecResolution("dflash", sources[2:], copies = True), fits = fits
         )
         assert refused == (None, None, spec.RUNTIME_ERROR, None)

@@ -70,6 +70,7 @@ import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import {
   DRAFTER_MODEL_SPEC_TYPES,
   MLX_SPECULATIVE_TYPES,
+  mlxSpeculativeMode,
   resolveSpeculativeType,
 } from "@/lib/speculative-modes";
 import { toast } from "@/lib/toast";
@@ -272,10 +273,6 @@ const MLX_SPECULATIVE_TYPE_LABELS: Record<
   dspark: "DSpark",
   eagle3: "EAGLE-3",
   ngram: "Ngram",
-  "mtp+ngram": "MTP+Ngram",
-  "dflash+ngram": "DFlash+Ngram",
-  "dspark+ngram": "DSpark+Ngram",
-  "eagle3+ngram": "EAGLE-3+Ngram",
   off: "Off",
 };
 
@@ -1215,19 +1212,21 @@ function MlxSpeculativeRows({
   update: (patch: Partial<PerModelConfig>) => void;
   speculativeFallback: string;
 }) {
-  const mode =
+  const mode = mlxSpeculativeMode(
     config.speculativeType ??
-    resolveSpeculativeType(null, speculativeFallback, true);
+      resolveSpeculativeType(null, speculativeFallback, true),
+  );
   return (
     <>
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS_WRAP}>Speculative Decoding</span>
           <InfoHint>
-            Faster generation. Auto uses the model's built-in MTP head or a
-            cached MTP assistant, tunes the draft length to this machine and
-            drafts only while that is faster. Choose a mode to force it; +Ngram
-            also copies repeated text. Drafters are read from the local Hugging
+            Faster generation. Auto uses the first cached drafter (DFlash2,
+            DSpark, DFlash, EAGLE-3, then an MTP head or assistant), tunes the
+            draft length to this machine and drafts only while that is faster.
+            Choose a kind to force it. Every drafter also copies repeated text;
+            Ngram copies without one. Drafters are read from the local Hugging
             Face cache, never downloaded.
           </InfoHint>
         </div>
@@ -1269,8 +1268,8 @@ function MlxSpeculativeRows({
             <InfoHint>
               Tokens per draft: up to the drafter's depth (3 for MTP heads),
               every step drafts exactly this many, even when plain decoding would
-              be faster (with n-gram on, a copy replaces a draft when it should
-              yield more). Above that depth, or for n-gram copies alone, it is a
+              be faster (a copy of repeated text replaces a draft when it should
+              yield more). Above that depth, or for Ngram, it is a
               ceiling and Unsloth decodes plainly when drafting would be slower.
               Leave blank to let Unsloth tune it for this machine.
             </InfoHint>

@@ -732,6 +732,10 @@ test("an MLX resident is judged on its speculative settings, a standing ngram re
   const deep = { ...BLANK, speculativeType: "mtp", specDraftNMax: 6 };
   assert.equal(matches({ ...mlx, speculative_type: "mtp", spec_draft_n_max: 6 }, deep), true);
   assert.equal(matches({ ...mlx, speculative_type: "mtp", spec_draft_n_max: 4 }, deep), false);
+  // An MLX load reads "+ngram" as its kind, which already copies; GGUF keeps the two apart.
+  const copying = { ...BLANK, speculativeType: "mtp+ngram" };
+  assert.equal(matches({ ...mlx, speculative_type: "mtp" }, copying), true);
+  assert.equal(matches({ ...DEFAULTS, speculative_type: "mtp" }, copying), false);
   // llama.cpp's retry arms: an identical MLX load dedupes.
   const notFound = { ...mlx, spec_fallback_reason: "drafter_not_found" };
   assert.equal(residentSpeculativeNeedsRepair(notFound, "auto"), false);

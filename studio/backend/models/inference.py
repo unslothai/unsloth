@@ -215,10 +215,11 @@ class LoadRequest(BaseModel):
             "Legacy values 'default' (-> auto), 'draft-mtp' (-> mtp), "
             "'draft-dspark' (-> dspark), 'draft-dflash' (-> dflash), "
             "'ngram-mod' (-> ngram), and 'ngram-simple' (kept as-is) are "
-            "still accepted. MLX models read the explicit modes too, plus 'eagle3' and "
-            "'<kind>+ngram'. On MLX, 'auto' attaches a built-in MTP head or a cached "
-            "assistant drafter when it costs no context, on loads served through "
-            "mlx-vlm. Ignored for other non-GGUF models."
+            "still accepted. MLX models read 'auto', 'mtp', 'dflash', 'dspark', 'eagle3', "
+            "'ngram' and 'off'; every drafter kind also copies repeated text (n-gram), "
+            "and '<kind>+ngram' reads as its kind. On MLX, 'auto' attaches the first "
+            "cached drafter (DFlash2, DSpark, DFlash, EAGLE-3, then an MTP head or assistant) that "
+            "costs no context, on loads served through mlx-vlm. Ignored for other non-GGUF models."
         ),
     )
     spec_draft_n_max: Optional[int] = Field(

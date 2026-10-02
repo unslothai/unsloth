@@ -11,7 +11,10 @@ import {
 } from "./llama-extra-args-normalize";
 import { reconcileTensorSplit } from "@/hooks/gpu-tensor-split";
 import type { GpuIndexKind } from "@/hooks/gpu-selection";
-import { resolveSpeculativeType } from "@/lib/speculative-modes";
+import {
+  mlxSpeculativeMode,
+  resolveSpeculativeType,
+} from "@/lib/speculative-modes";
 
 import type { InferenceStatusResponse } from "../types/api";
 
@@ -295,10 +298,11 @@ const SETTING_CHECKS: SettingCheck[] = [
         standing.speculativeType ?? "auto",
         s.is_mlx === true,
       );
-      return (
-        (standing.normalizeSpeculative(c.speculativeType) ?? unset) ===
-        (standing.normalizeSpeculative(s.speculative_type) ?? unset)
-      );
+      const mode = (value: string | null | undefined) => {
+        const resolved = standing.normalizeSpeculative(value) ?? unset;
+        return s.is_mlx === true ? mlxSpeculativeMode(resolved) : resolved;
+      };
+      return mode(c.speculativeType) === mode(s.speculative_type);
     },
   },
   {
