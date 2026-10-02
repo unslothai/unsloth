@@ -289,3 +289,18 @@ def test_teardown_and_rollback_restore_the_stock_forward():
     for name in ("_teardown_state_locked", "_rollback_precommit_globals"):
         body = ast.unparse(ast.parse(inspect.getsource(getattr(cls, name)).lstrip()))
         assert "video_wan_fused.uninstall()" in body, name
+
+
+@needs_cuda
+def test_fp16_cast_table_and_norm2_stay_bit_identical():
+    """A pipeline moved with ``.to(float16)`` casts the float32-kept table and norm2 too; both upcast exactly."""
+    D = 128
+    blk = _block(dim = D, ffn = 256, heads = 2, device = "cuda", dtype = torch.float16)
+    blk.scale_shift_table.data = blk.scale_shift_table.data.half()
+    blk.norm2.half()
+    x, enc, temb, rot = _inputs(blk, 1, 64, D, "cuda", torch.float16)
+    with torch.no_grad():
+        want = WanTransformerBlock.forward(blk, x, enc, temb, rot)
+        assert wf.install(torch.float16, "cuda") is True
+        got = blk(x, enc, temb, rot)
+    assert torch.equal(want, got) and wf.counts()["fused"] == 1

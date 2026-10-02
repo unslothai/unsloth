@@ -288,8 +288,8 @@ def _affine_fp32_norm(norm: Any, dim: int) -> bool:
         and len(tuple(getattr(norm, "normalized_shape", ()))) == 1
         and torch.is_tensor(w)
         and torch.is_tensor(b)
-        and w.dtype is torch.float32
-        and b.dtype is torch.float32
+        and w.dtype in (torch.float32, torch.float16)
+        and b.dtype in (torch.float32, torch.float16)
         and tuple(w.shape) == (dim,)
         and tuple(b.shape) == (dim,)
         and w.is_contiguous()
@@ -310,7 +310,8 @@ def _eligible(block: Any, x: Any, enc: Any, temb: Any) -> bool:
     if D % 4 or not x.is_contiguous() or x.numel() == 0:
         return False
     table = getattr(block, "scale_shift_table", None)
-    if not torch.is_tensor(table) or table.dtype is not torch.float32 or tuple(table.shape) != (1, 6, D):
+    # float32 as diffusers keeps it (_keep_in_fp32_modules); an fp16 table upcasts exactly in both paths
+    if not torch.is_tensor(table) or table.dtype not in (torch.float32, torch.float16) or tuple(table.shape) != (1, 6, D):
         return False
     if table.device != x.device or table.stride(-1) != 1:
         return False

@@ -52,7 +52,7 @@ def _pipeline_supported(cls: Any) -> bool:
     if cls in _SUPPORTED:
         return _SUPPORTED[cls]
     try:
-        src = inspect.getsource(cls.__call__)
+        src = inspect.getsource(inspect.unwrap(cls.__call__))
         ok = all(tok in src for tok in _PIPELINE_TOKENS)
     except (OSError, TypeError):
         ok = False
