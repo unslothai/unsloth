@@ -372,6 +372,12 @@ def test_probe_table_round_trips_and_misses_on_any_stack_change(probe_home, monk
     assert probe_cache.load("cuda:0") is None
 
 
+def test_an_all_negative_table_is_not_persisted(probe_home):
+    # A busy / unavailable device at probe time fails every scheme; that must not outlive the process.
+    assert probe_cache.store("cuda:0", {"int8": False, "fp8": False, "mxfp8": None}) is False
+    assert probe_cache.load("cuda:0") is None
+
+
 def test_probe_table_kill_switch_and_torn_file(probe_home, monkeypatch):
     probe_cache.store("cuda:0", {"int8": True})
     path = probe_cache._cache_file()
