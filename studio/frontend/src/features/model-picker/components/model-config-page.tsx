@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { InferenceEnginePicker } from "./inference-engines";
 import { CustomLlamaConfigEditor } from "./custom-llama-config-editor";
 import {
   MANAGED_LLAMA_CPP_CONFIG,
@@ -3097,6 +3098,7 @@ export function ModelConfigPage({
       ? "Reload model"
       : "Load model";
 
+  const [engineReady, setEngineReady] = useState(true);
   const commitDraft = () => {
     // Same-click Load/Reload: a numeric draft the user just typed is flushed only by that input's
     // blur handler, which runs after this click closure captured the stale value, so commit
@@ -3386,6 +3388,9 @@ export function ModelConfigPage({
         inert={customActive ? true : undefined}
         className={`min-w-0 space-y-5 ${customActive ? "opacity-50" : ""}`}
       >
+        {!target.isGguf && !targetIsMlx && !classifiedIsDiffusion && !target.meta.isLora && !target.meta.audioType && (
+          <InferenceEnginePicker parallelism={config.engineParallelism ?? "tensor"} onParallelismChange={engineParallelism => update({ engineParallelism })} precision={config.enginePrecision ?? "auto"} onPrecisionChange={enginePrecision => update({ enginePrecision })} value={config.engine ?? "auto"} onChange={engine => update({ engine })} onReadyChange={setEngineReady} onUse={handleRun} gpuIds={config.selectedGpuIds} onGpuChange={ids => update({ selectedGpuIds: ids, selectedGpuIndexKind: "physical" })} />
+        )}
         {memoryEstimateRequest != null && (
           <MemoryEstimateRow
             estimate={memoryEstimate.estimate}
@@ -3597,6 +3602,7 @@ export function ModelConfigPage({
             className={FOOTER_BUTTON_CLASS}
             disabled={
               sharedVariantUnresolved ||
+              ((config.engine ?? "auto") !== "auto" && !engineReady) ||
               stagedMetadataPending ||
               budgetSettling ||
               (customActive && !customConfigLoadable) ||

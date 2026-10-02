@@ -57,7 +57,12 @@ def _evict_chat() -> None:
     for pending in list(getattr(orchestrator, "loading_models", ()) or ()):
         orchestrator.cancel_load(pending)
     # Kill the subprocess too: its base CUDA context holds VRAM diffusion needs.
-    orchestrator._shutdown_subprocess(timeout = 5.0)
+    managed = getattr(orchestrator, "_managed_engine", None) is not None
+    stopped = orchestrator._shutdown_subprocess(timeout = 5.0)
+    if managed and stopped is False:
+        raise RuntimeError(
+            "The inference engine did not stop; GPU ownership cannot be transferred."
+        )
     # The driver reclaims the killed VRAM asynchronously, so wait for it to settle before diffusion allocates, else a
     # warm handoff can transiently OOM.
     llama._wait_for_vram_settle(since_kill = time.monotonic())
