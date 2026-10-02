@@ -6002,3 +6002,17 @@ def test_annotated_and_copied_parsed_mappings_and_annotated_parsers(tmp_path):
         == 2
     )
     assert "importlib.import_module" in _sinks(findings)
+
+
+def test_session_and_generic_request_bodies_are_sources(tmp_path):
+    """`requests.request(...)` and `session.get(...)` on a `requests.Session()`."""
+    findings = _scan(
+        tmp_path,
+        "import importlib, requests\n"
+        "def a(url):\n"
+        "    return importlib.import_module(requests.request('GET', url).text)\n"
+        "def b(url):\n"
+        "    with requests.Session() as session:\n"
+        "        return importlib.import_module(session.get(url).text)\n",
+    )
+    assert sum(f["sink"] == "importlib.import_module" for f in findings if f["tier"] == "A") == 2

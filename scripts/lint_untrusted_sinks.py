@@ -154,6 +154,7 @@ UNTRUSTED_CALLS = frozenset(
         # Network bodies.
         "requests.get",
         "requests.post",
+        "requests.request",
         "urlopen",
         "urlretrieve",
         # Hub metadata and datasets.
@@ -2109,6 +2110,16 @@ class _TaintPass(ast.NodeVisitor):
                 source = self.state.attr_source_aliases.get(key)
                 if source:
                     break
+        # `session.get(url)` on a `requests.Session()` or `httpx.Client()` is the same
+        # network body as `requests.get(url)`.
+        if (
+            source is None
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in ("get", "post", "put", "patch", "request", "send")
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id in self._http_sessions()
+        ):
+            source = f"session.{node.func.attr}"
         if source:
             # The file and line are part of the reason so that two downloads stay
             # distinguishable: the unpinned-fetch rule has to know WHICH download reached
@@ -3421,6 +3432,40 @@ class _TaintPass(ast.NodeVisitor):
         reason = self.tainted(stream)
         if reason:
             self._record(node, f"{unsafe}(unsafe loader)", reason, _short(stream))
+
+    _HTTP_SESSIONS = frozenset(
+        {"requests.Session", "requests.session", "httpx.Client", "httpx.AsyncClient"}
+    )
+
+    def _http_sessions(self) -> frozenset:
+        """Names this scope binds to an HTTP session, by assignment or `with ... as`."""
+        cache = self.facts.__dict__.setdefault("_http_session_cache", {})
+        cached = cache.get(self.qualname)
+        if cached is not None:
+            return cached
+        own = self.facts.functions.get(self.qualname)
+        body = own if own is not None else self.facts.tree
+        found = set()
+        for statement in ast.walk(body):
+            pairs = []
+            if isinstance(statement, (ast.Assign, ast.AnnAssign)) and statement.value is not None:
+                targets = (
+                    statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+                )
+                pairs = [(target, statement.value) for target in targets]
+            elif isinstance(statement, (ast.With, ast.AsyncWith)):
+                pairs = [(item.optional_vars, item.context_expr) for item in statement.items]
+            for target, value in pairs:
+                if (
+                    isinstance(target, ast.Name)
+                    and isinstance(value, ast.Call)
+                    and _matches_any(
+                        self.facts.canonicals(_call_name(value.func)), self._HTTP_SESSIONS
+                    )
+                ):
+                    found.add(target.id)
+        cache[self.qualname] = frozenset(found)
+        return cache[self.qualname]
 
     _CONFIG_PARSERS = frozenset({"configparser.ConfigParser", "configparser.RawConfigParser"})
 
