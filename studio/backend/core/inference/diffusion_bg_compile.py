@@ -311,6 +311,11 @@ class BackgroundCompile:
         try:
             import torch
 
+            from . import diffusion_compile_config
+
+            # A fresh thread sees torch 2.12+'s default dynamo / inductor config (a ContextVar): without the recorded
+            # knobs a whole-module U-Net would compile without emulate_precision_casts, unlike on the render thread.
+            diffusion_compile_config.apply()
             _flatten, _rebuild, graph_key = _cuda_graph_helpers()
             for spec, clones, inference, grad, device in list(self.samples):
                 if self._closed.is_set():

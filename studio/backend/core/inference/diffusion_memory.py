@@ -2706,6 +2706,7 @@ class _RegisteredHostBuffer:
         self._anchor = ctypes.c_char.from_buffer(self._map)
         self.ptr = ctypes.addressof(self._anchor)
         self._registered = False
+        self._device: Optional[int] = None
         self.__array_interface__ = {
             "shape": (int(nbytes),),
             "typestr": "|u1",
@@ -2717,6 +2718,10 @@ class _RegisteredHostBuffer:
         err = self._cudart.cudaHostRegister(self.ptr, self._size, 0)
         if int(err) != 0:
             raise RuntimeError(f"cudaHostRegister failed ({err})")
+        import torch
+
+        # The card the uploads from these pages go to: a bare synchronize() on another thread waits on device 0.
+        self._device = torch.cuda.current_device()
         self._registered = True
 
     def __del__(self) -> None:
@@ -2725,7 +2730,7 @@ class _RegisteredHostBuffer:
                 import torch
 
                 # An async upload may still read these pages; never unmap under it.
-                torch.cuda.synchronize()
+                torch.cuda.synchronize(self._device)
                 self._cudart.cudaHostUnregister(self.ptr)
                 self._registered = False
         except Exception:  # noqa: BLE001 - interpreter teardown
@@ -2854,8 +2859,12 @@ class _GroupPinner:
                 from concurrent.futures import ThreadPoolExecutor
 
                 # Queued in group order, so the first group is ready first; still swapped in group order below.
+                # Workers start on device 0: give them the pinner's card, which their buffers record.
                 pool = ThreadPoolExecutor(
-                    max_workers = _FAST_PIN_THREADS, thread_name_prefix = "unsloth-fast-pin"
+                    max_workers = _FAST_PIN_THREADS,
+                    thread_name_prefix = "unsloth-fast-pin",
+                    initializer = torch.cuda.set_device,
+                    initargs = (torch.cuda.current_device(),),
                 )
                 for group in self.groups:
                     copies[id(group)] = [

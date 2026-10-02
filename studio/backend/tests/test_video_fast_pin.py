@@ -137,3 +137,52 @@ def test_a_fast_deferred_pin_renders_identically_and_ends_with_every_group_regis
     assert groups and all(t.is_pinned() for g in groups for t in g.cpu_param_dict.values())
     for p in net.parameters():
         assert torch.equal(p.detach(), before[id(p)])
+
+
+_OTHER_THREAD_RELEASE = r"""
+import ctypes, gc, threading
+import torch
+import core.inference.diffusion_memory as mem
+
+cuda = ctypes.CDLL("libcuda.so.1")
+
+
+def primary_active(dev):
+    flags, active = ctypes.c_uint(), ctypes.c_int()
+    cuda.cuDevicePrimaryCtxGetState(dev, ctypes.byref(flags), ctypes.byref(active))
+    return active.value
+
+
+torch.cuda.set_device(1)
+torch.zeros(1, device = "cuda:1")
+held = {"t": mem.registered_host_copy(torch.randn(1 << 16))}
+threading.Thread(target = lambda: (held.pop("t"), gc.collect())).start()
+for t in threading.enumerate():
+    if t is not threading.current_thread():
+        t.join()
+print("DEV0_CONTEXT", primary_active(0))
+"""
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.device_count() < 2 or torch.version.hip,
+    reason = "needs two CUDA devices",
+)
+def test_releasing_a_buffer_on_another_thread_syncs_its_own_card():
+    # A buffer registered for cuda:1 and freed on a thread still on device 0 must wait on cuda:1, never open a
+    # context on cuda:0 (a bare synchronize() did both wrong).
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    backend = Path(__file__).resolve().parents[1]
+    r = subprocess.run(
+        [sys.executable, "-c", _OTHER_THREAD_RELEASE],
+        cwd = str(backend),
+        env = dict(os.environ, PYTHONPATH = str(backend)),
+        capture_output = True,
+        text = True,
+        timeout = 300,
+    )
+    assert "DEV0_CONTEXT 0" in r.stdout, r.stdout[-2000:] + r.stderr[-2000:]
