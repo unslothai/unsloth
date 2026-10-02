@@ -6436,10 +6436,11 @@ class VideoBackend:
                 },
                 logger = logger,
             )
-            # A dense default-tier denoiser compiles between renders instead of inside the first one.
+            # Opt-in (UNSLOTH_DIFFUSION_BG_COMPILE=1): a dense default-tier denoiser compiles between renders instead of
+            # inside the first one; off by default so the same seed twice repeats.
             from . import diffusion_bg_compile as bg_compile
 
-            bg_module = bg_compile.select_module(
+            bg_module = None if not bg_compile.load_time_enabled() else bg_compile.select_module(
                 pipe,
                 speed_optims = speed_optims,
                 default_tier = effective_speed == SPEED_DEFAULT,

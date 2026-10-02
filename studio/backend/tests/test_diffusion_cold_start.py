@@ -154,6 +154,21 @@ def test_kill_switch_disables_arming(monkeypatch):
     assert bg.arm(_whole_compiled(_Counter())) is None
 
 
+@pytest.mark.parametrize(
+    "raw, deferred, at_load",
+    [(None, True, False), ("", True, False), ("1", True, True), ("on", True, True), ("0", False, False)],
+)
+def test_load_time_background_compile_is_opt_in(monkeypatch, raw, deferred, at_load):
+    # Render 1 eager + render 2 compiled would break "same seed twice repeats", so only the deferred profile (which
+    # already switched eager -> compiled at generation 3) compiles in the background unless =1 opts the load in.
+    if raw is None:
+        monkeypatch.delenv("UNSLOTH_DIFFUSION_BG_COMPILE", raising = False)
+    else:
+        monkeypatch.setenv("UNSLOTH_DIFFUSION_BG_COMPILE", raw)
+    assert bg.enabled() is deferred
+    assert bg.load_time_enabled() is at_load
+
+
 def test_a_render_waits_for_an_in_flight_compile_and_cancel_releases_it():
     gate = threading.Event()
 

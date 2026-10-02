@@ -33,7 +33,10 @@ the rest of the load).
 Only for dense, non-offloaded denoisers: torchao-quantised ones are ~30x slower eager (they must compile before the
 first step) and an offload hook moves weights per block, which two concurrent forwards would fight over.
 
-UNSLOTH_DIFFUSION_BG_COMPILE=0 disables it (the compile lands on the render, as before).
+By default only the deferred profile (generation 3) compiles in the background: it already switched eager ->
+compiled, so the same seed repeats exactly as before. UNSLOTH_DIFFUSION_BG_COMPILE=1 also moves a load's first-render
+compile off the render (image and video), at the cost of render 1 (eager) differing from render 2 (compiled) for one
+seed. UNSLOTH_DIFFUSION_BG_COMPILE=0 disables it (the compile lands on the render, as before).
 """
 
 from __future__ import annotations
@@ -63,6 +66,16 @@ _NO_CAPTURE: contextvars.ContextVar[bool] = contextvars.ContextVar(
 def enabled() -> bool:
     raw = (os.environ.get(_ENV) or "").strip().lower()
     return raw not in ("0", "false", "no", "off")
+
+
+def load_time_enabled() -> bool:
+    """Whether a load may arm the background compile for its first render (opt-in: ``=1``).
+
+    Off by default: a load that used to compile inside render 1 would render 1 eager and 2 compiled, so the same seed
+    twice in a row no longer repeats. The deferred profile (generation 3) already switched eager -> compiled, so it
+    keeps the background compile by default."""
+    raw = (os.environ.get(_ENV) or "").strip().lower()
+    return raw in ("1", "true", "yes", "on", "all")
 
 
 def eager_forced() -> bool:

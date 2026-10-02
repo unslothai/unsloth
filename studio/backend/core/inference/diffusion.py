@@ -7051,9 +7051,9 @@ class DiffusionBackend:
                         # Beside ``source``, never in it: the frontend branches on "auto"/"explicit".
                         resolved["transformer_quant"]["artifact"] = transformer_quant_artifact
 
-                    # A dense default-tier load compiles its denoiser in the background while the first renders run
-                    # eager, instead of inside the first render.
-                    bg_module = _bg_compile_module(
+                    # Opt-in (UNSLOTH_DIFFUSION_BG_COMPILE=1): a dense default-tier load compiles its denoiser in the
+                    # background while the first renders run eager; off by default so the same seed twice repeats.
+                    bg_module = None if not bg_compile.load_time_enabled() else _bg_compile_module(
                         pipe,
                         speed_optims = tuple(k for k, v in speed_applied.items() if v),
                         speed_mode = effective_speed,
