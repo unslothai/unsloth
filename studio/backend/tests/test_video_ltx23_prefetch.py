@@ -5,7 +5,6 @@
 
 import json
 import threading
-import time
 
 import pytest
 
@@ -13,10 +12,9 @@ from core.inference import video_ltx2
 
 
 def _wait_for_prefetch_threads(timeout = 10.0):
-    deadline = time.time() + timeout
-    while any(t.name.startswith("unsloth-prefetch") for t in threading.enumerate()):
-        assert time.time() < deadline, "prefetch threads never finished"
-        time.sleep(0.01)
+    for t in [t for t in threading.enumerate() if t.name.startswith("unsloth-prefetch")]:
+        t.join(timeout)
+        assert not t.is_alive(), "prefetch threads never finished"
 
 
 def _fake_cache(
