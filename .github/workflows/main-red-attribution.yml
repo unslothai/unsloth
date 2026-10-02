@@ -103,10 +103,13 @@ jobs:
           [ "$CONCLUSION" = "failure" ] || { echo "Conclusion $CONCLUSION, not attributable."; exit 0; }
 
           # The last green Backend CI run on main that started before this one.
-          # Per-page 50 reaches ~2 days back at the current push rate; a red
-          # window longer than that has long since been noticed by humans.
+          # `created=<` bounds the query server-side, so the answer is the same
+          # whether this step runs a minute after the red or is replayed weeks
+          # later (a delayed workflow_run, a re-run): without it the newest 50
+          # greens are all younger than the red by then, and the lookup goes
+          # empty. The jq filter stays as a belt for a same-second tie.
           last_green="$(gh api \
-            "repos/$REPO/actions/workflows/$WORKFLOW_ID/runs?branch=main&status=success&per_page=50" \
+            "repos/$REPO/actions/workflows/$WORKFLOW_ID/runs?branch=main&status=success&per_page=50&created=%3C$RUN_CREATED" \
             --jq "[.workflow_runs[] | select(.created_at < \"$RUN_CREATED\")] | .[0].head_sha // empty")"
 
           if [ -n "$last_green" ]; then
@@ -131,6 +134,11 @@ jobs:
           "
           # The heredoc-ish indent above travels into the body; strip it.
           body="$(printf '%s\n' "$body" | sed 's/^          //')"
+          if [ -n "$last_green" ]; then
+            title="Backend CI is red on main (broke between ${last_green:0:9} and $short)"
+          else
+            title="Backend CI is red on main at $short (last green unknown)"
+          fi
 
           existing="$(open_issue)"
           if [ "$ENABLED" = "true" ]; then
@@ -140,7 +148,7 @@ jobs:
               gh issue comment "$existing" --repo "$REPO" --body "Still red at \`$short\`. $body"
             else
               gh issue create --repo "$REPO" --label "$GUARD_LABEL" \
-                --title "Backend CI is red on main (broke between ${last_green:0:9} and $short)" \
+                --title "$title" \
                 --body "$body"
             fi
           else
@@ -149,7 +157,7 @@ jobs:
               if [ -n "$existing" ]; then
                 echo "Would comment on #$existing:"
               else
-                echo "Would open an issue titled: Backend CI is red on main (broke between ${last_green:0:9} and $short)"
+                echo "Would open an issue titled: $title"
               fi
               echo ""
               echo "$body"
