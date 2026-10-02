@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/chart";
 import type { ChartConfig } from "@/components/ui/chart";
 import type { RlMetricPoint } from "@/features/training";
+import { rlChartKeys } from "@/features/training/lib/rl-chart-keys";
 import { type TranslationKey, useT } from "@/i18n";
 import { type ReactElement, useMemo } from "react";
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
@@ -257,15 +258,10 @@ export function RlChartsGrid({
     () => history.map((point) => ({ step: point.step, ...point.values })),
     [history],
   );
-  const cards = useMemo(() => {
-    const keys = new Set<string>();
-    for (const point of history) {
-      for (const key of Object.keys(point.values)) {
-        keys.add(key);
-      }
-    }
-    return buildCards(keys, t);
-  }, [history, t]);
+  const cards = useMemo(
+    () => buildCards(rlChartKeys(history), t),
+    [history, t],
+  );
 
   if (cards.length === 0) {
     return null;
