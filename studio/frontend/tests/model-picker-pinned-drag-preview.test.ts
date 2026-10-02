@@ -59,3 +59,15 @@ test("every way a drag ends takes the copy down, and a drop settles into place",
   );
   assert.match(HOOK, /if \(from !== null && !prefersReducedMotion\(\)\) \{\n\s*settleRow\(optionsRef\.current\.scope, key, from\);/);
 });
+
+test("the copy sits on its own pill for every Pinned row kind", () => {
+  // A Connected row's ml-4 is not part of the pill the copy is sized to, so it must not carry over.
+  assert.match(CSS, /\.model-picker-row-ghost > \* \{\n[^}]*margin: 0;/);
+  // A fine-tuned row nests its pill in a keyed wrapper; the drag lifts the marked pill instead.
+  assert.match(HOOK, /const ROW_FACE_ATTR = "data-pinned-row-face";/);
+  assert.match(HOOK, /const faceOf = \(row: Element\): HTMLElement =>\n\s*row\.querySelector<HTMLElement>\(`\[\$\{ROW_FACE_ATTR\}\]`\) \?\?/);
+  assert.match(
+    PICKERS,
+    /<div key=\{adapter\.id\}>\n\s*<div\n\s*className=\{downloadedRowShellClassName\(value === adapter\.id\)\}\n[^\n]*\n\s*data-pinned-row-face=""/,
+  );
+});

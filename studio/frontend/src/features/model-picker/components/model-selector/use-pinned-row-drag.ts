@@ -81,9 +81,14 @@ function viewOf(row: HTMLElement): Element {
   return row.parentElement ?? document.documentElement;
 }
 
+/** Marks a row's pill when it is not the wrapper's first child (a fine-tuned row nests it). */
+const ROW_FACE_ATTR = "data-pinned-row-face";
+
 /** The row itself, inside the wrapper that holds the drop marks. */
 const faceOf = (row: Element): HTMLElement =>
-  (row.firstElementChild as HTMLElement | null) ?? (row as HTMLElement);
+  row.querySelector<HTMLElement>(`[${ROW_FACE_ATTR}]`) ??
+  (row.firstElementChild as HTMLElement | null) ??
+  (row as HTMLElement);
 
 /** Slides a dropped row from where it was let go into its slot. */
 function settleRow(scope: string, key: string, from: number) {

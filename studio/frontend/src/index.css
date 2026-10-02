@@ -4767,10 +4767,12 @@ html[data-chat-font] .aui-root {
 	pointer-events: none;
 }
 
-/* The row fills the pill, which paints the tint. */
+/* The row fills the pill, which paints the tint. Its margin stays behind: the pill was sized
+   without it, so a Connected row's ml-4 would push the copy off its own pill. */
 .model-picker-row-ghost > * {
 	width: 100%;
 	height: 100%;
+	margin: 0;
 	background: transparent;
 }
 
