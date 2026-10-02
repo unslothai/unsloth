@@ -117,7 +117,7 @@ def gguf_offload_swap_reason(
     )
     token = gguf_quant_token(gguf_filename) or "GGUF"
     return (
-        f"the {token} GGUF pick was replaced by {what}: the plan offloads the denoiser "
+        f"the {token} GGUF pick was replaced by {what}: the memory plan offloads "
         f"('{getattr(placement, 'offload_policy', 'offload')}'), where the {scheme} checkpoint runs faster than "
         "dequantising the GGUF every step. Set Precision to Off to run the GGUF itself"
     )

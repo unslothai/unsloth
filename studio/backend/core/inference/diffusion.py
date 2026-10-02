@@ -5439,6 +5439,7 @@ class DiffusionBackend:
                 # A GGUF pick whose plan offloads may still load the pre-quantised checkpoint under that offload (see
                 # diffusion_gguf_route); set when it does, so placement, seeding and status follow.
                 gguf_offload_placement: Optional[Any] = None
+                gguf_offload_scheme: Optional[str] = None
                 gguf_offload_swap = False
                 # A GGUF pick with the scheme left to us: the hosted pre-quant is free only while already cached,
                 # since fetching it means a SECOND multi-GB denoiser and the GGUF never runs. An explicit scheme, a
@@ -5645,6 +5646,8 @@ class DiffusionBackend:
                                         prequant_path = transformer_prequant_path,
                                     )
                                 )
+                                # The retry below may rebind ``candidate``; the placement is this one's.
+                                gguf_offload_scheme = getattr(candidate, "scheme", None)
                                 if gguf_offload_reason is not None:
                                     transformer_quant_decline = gguf_offload_reason
                             if plan_keeps_transformer_resident(replanned):
@@ -5704,7 +5707,7 @@ class DiffusionBackend:
                                 "diffusion.transformer_quant: the GGUF pick offloads ('%s'); loading the "
                                 "pre-quantised %s checkpoint under the same placement instead",
                                 gguf_offload_placement.offload_policy,
-                                normalize_transformer_quant(transformer_quant),
+                                gguf_offload_scheme,
                             )
                             quant_plan = gguf_offload_placement
                             gguf_offload_swap = True
