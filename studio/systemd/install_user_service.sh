@@ -72,6 +72,14 @@ if [ -z "$_HOST" ]; then
     echo "ERROR: --host must not be empty." >&2
     exit 2
 fi
+for _v in "$_HOST" "$_STUDIO_HOME" "$_UNSLOTH_EXE"; do
+    case "$_v" in
+        *[[:cntrl:]]*) echo "ERROR: control characters are not allowed in unit values: $_v" >&2; exit 2 ;;
+    esac
+done
+case "$_UNSLOTH_EXE" in
+    *[\"\'\\]*) echo "ERROR: systemd cannot run an executable whose path contains quotes or backslashes: $_UNSLOTH_EXE" >&2; exit 2 ;;
+esac
 if [ ! -f "$TEMPLATE" ]; then
     echo "ERROR: service template missing: $TEMPLATE" >&2
     exit 1
@@ -101,10 +109,19 @@ _exec_start="$(_unit_quote "$_UNSLOTH_EXE") studio -H $(_unit_quote "$_HOST") -p
 _env_line=""
 [ -n "$_STUDIO_HOME" ] && _env_line="Environment=$(_unit_quote "UNSLOTH_STUDIO_HOME=$_STUDIO_HOME")"
 
-_unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+case "${XDG_CONFIG_HOME:-}" in
+    /*) _unit_dir="$XDG_CONFIG_HOME/systemd/user" ;;
+    *) _unit_dir="$HOME/.config/systemd/user" ;;
+esac
 mkdir -p "$_unit_dir"
 _unit_path="$_unit_dir/$UNIT_NAME"
+# Never replace a unit the user wrote themselves.
+if [ -e "$_unit_path" ] && [ "$(head -n 1 "$_unit_path" 2>/dev/null)" != "# unsloth-studio-managed-systemd" ]; then
+    echo "ERROR: $_unit_path exists and was not written by Unsloth; leaving it alone." >&2
+    exit 1
+fi
 _tmp="$(mktemp "$_unit_dir/.$UNIT_NAME.XXXXXX")"
+trap 'rm -f "$_tmp"' EXIT
 while IFS= read -r _line || [ -n "$_line" ]; do
     case "$_line" in
         @@ENVIRONMENT_LINES@@) [ -z "$_env_line" ] || printf '%s\n' "$_env_line" ;;

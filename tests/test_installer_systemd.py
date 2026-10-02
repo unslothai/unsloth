@@ -122,15 +122,23 @@ def _harness() -> str:
     return "\n".join(parts)
 
 
-def _run_installer_tail(tmp_path: Path, **vars: str) -> str:
+def _run_installer_tail(
+    tmp_path: Path,
+    cwd: Path | None = None,
+    real_python: bool = False,
+    **vars: str,
+) -> str:
     script = tmp_path / "helper.sh"
     log = tmp_path / "helper.log"
     script.write_text(f'echo "$*" > "{log}"\n')
     venv = tmp_path / "venv"
     (venv / "bin").mkdir(parents = True, exist_ok = True)
     py = venv / "bin" / "python"
-    py.write_text(f'#!/bin/sh\necho "{script}"\n')
-    py.chmod(0o755)
+    if real_python:
+        py.symlink_to(sys.executable)
+    else:
+        py.write_text(f'#!/bin/sh\necho "{script}"\n')
+        py.chmod(0o755)
     preset = {
         "OS": "linux",
         "_INSTALL_SYSTEMD": "false",
@@ -153,6 +161,7 @@ def _run_installer_tail(tmp_path: Path, **vars: str) -> str:
         text = True,
         env = env,
         stdin = subprocess.DEVNULL,
+        cwd = cwd,
     ).stdout
     return out + (log.read_text() if log.exists() else "")
 
@@ -190,6 +199,123 @@ def test_piped_install_never_runs_a_helper_planted_in_cwd(tmp_path):
     planted.write_text(f'touch "{tmp_path / "planted_ran"}"\n')
     assert "STARTED=true" in _run_installer_tail(tmp_path, _INSTALL_SYSTEMD = "true")
     assert not (tmp_path / "planted_ran").exists()
+
+
+def test_package_lookup_ignores_a_studio_package_planted_in_cwd(tmp_path):
+    # Real interpreter: `python -c` puts the cwd first on sys.path; the lookup must not.
+    cwd = tmp_path / "cwd"
+    (cwd / "studio" / "systemd").mkdir(parents = True)
+    (cwd / "studio" / "__init__.py").write_text(f"open({str(tmp_path / 'imported')!r}, 'w')\n")
+    (cwd / "studio" / "systemd" / "install_user_service.sh").write_text(
+        f'touch "{tmp_path / "planted_ran"}"\n'
+    )
+    _run_installer_tail(tmp_path, cwd = cwd, real_python = True, _INSTALL_SYSTEMD = "true")
+    assert not (tmp_path / "imported").exists()
+    assert not (tmp_path / "planted_ran").exists()
+
+
+@pytest.mark.parametrize("bad", ["home\nExecStartPre=/bin/true", 'a"b'])
+def test_helper_rejects_values_that_break_the_unit(tmp_path, bad):
+    exe_dir = tmp_path / bad if '"' in bad else tmp_path
+    exe_dir.mkdir(exist_ok = True)
+    exe = exe_dir / "unsloth"
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    args = ["--unsloth-exe", str(exe)]
+    if "\n" in bad:
+        args += ["--studio-home", str(tmp_path / bad)]
+    r = subprocess.run(
+        ["bash", str(SYSTEMD_INSTALL_SH), *args],
+        capture_output = True,
+        text = True,
+        env = {**os.environ, "XDG_CONFIG_HOME": str(tmp_path / "config")},
+    )
+    assert r.returncode == 2, r.stderr
+    assert not (tmp_path / "config" / "systemd" / "user" / "unsloth-studio.service").exists()
+
+
+def test_helper_never_replaces_a_unit_the_user_wrote(tmp_path):
+    unit = tmp_path / "config" / "systemd" / "user" / "unsloth-studio.service"
+    unit.parent.mkdir(parents = True)
+    unit.write_text("[Service]\nExecStart=/opt/mine\n")
+    with pytest.raises(subprocess.CalledProcessError):
+        _write_unit(tmp_path)
+    assert unit.read_text() == "[Service]\nExecStart=/opt/mine\n"
+    assert list(unit.parent.iterdir()) == [unit]
+
+
+def test_helper_ignores_relative_xdg_config_home(tmp_path):
+    exe = _fake_bin(tmp_path, "unsloth", "exit 0")
+    out = subprocess.run(
+        ["bash", str(SYSTEMD_INSTALL_SH), "--unsloth-exe", str(exe)],
+        check = True,
+        capture_output = True,
+        text = True,
+        cwd = tmp_path,
+        env = {**os.environ, "XDG_CONFIG_HOME": "rel", "HOME": str(tmp_path / "home")},
+    ).stdout.strip()
+    assert out == str(tmp_path / "home" / ".config" / "systemd" / "user" / "unsloth-studio.service")
+
+
+def _run_uninstall_removal(tmp_path: Path, unit_text: str | None, systemctl: str) -> str:
+    source = UNINSTALL_SH.read_text(encoding = "utf-8")
+    parts = []
+    for name in ("_set_marker", "_remove_path", "_xdg_dir"):
+        m = re.search(rf"^{name}\(\) \{{.*?^\}}", source, flags = re.DOTALL | re.MULTILINE)
+        parts.append(m.group(0))
+    m = re.search(
+        r"^    _remove_systemd_user_service\(\) \{.*?^    \}",
+        source,
+        flags = re.DOTALL | re.MULTILINE,
+    )
+    parts.append(m.group(0) + "\n_remove_systemd_user_service\n")
+    d = tmp_path / "home" / ".config" / "systemd" / "user"
+    (d / "default.target.wants").mkdir(parents = True)
+    if unit_text is not None:
+        (d / "unsloth-studio.service").write_text(unit_text)
+        (d / "default.target.wants" / "unsloth-studio.service").symlink_to(
+            d / "unsloth-studio.service"
+        )
+    log = tmp_path / "systemctl.log"
+    _fake_bin(tmp_path, "systemctl", f'echo "$*" >> "{log}"\n{systemctl}')
+    env = {
+        **os.environ,
+        "HOME": str(tmp_path / "home"),
+        "PATH": f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}",
+    }
+    env.pop("XDG_CONFIG_HOME", None)
+    r = subprocess.run(
+        ["sh", "-c", "\n".join(parts)], capture_output = True, text = True, env = env, check = True
+    )
+    return r.stdout + r.stderr + (log.read_text() if log.exists() else "")
+
+
+def test_uninstall_leaves_units_it_did_not_write(tmp_path):
+    text = "[Service]\n# mentions unsloth-studio-managed-systemd in passing\nExecStart=/opt/mine\n"
+    assert _run_uninstall_removal(tmp_path, text, "exit 0") == ""
+    assert (tmp_path / "home" / ".config" / "systemd" / "user" / "unsloth-studio.service").exists()
+
+
+def test_uninstall_without_user_bus_still_drops_the_enable_link(tmp_path):
+    out = _run_uninstall_removal(
+        tmp_path, "# unsloth-studio-managed-systemd\n[Service]\n", "exit 1"
+    )
+    d = tmp_path / "home" / ".config" / "systemd" / "user"
+    assert not (d / "unsloth-studio.service").exists()
+    assert not os.path.lexists(d / "default.target.wants" / "unsloth-studio.service")
+    assert "could not reach the systemd user manager" in out
+    assert "disable" not in out
+
+
+def test_uninstall_with_user_bus_disables_then_removes(tmp_path):
+    out = _run_uninstall_removal(
+        tmp_path, "# unsloth-studio-managed-systemd\n[Service]\n", "exit 0"
+    )
+    assert "--user disable --now unsloth-studio.service" in out
+    assert "could not reach" not in out
+    assert not (
+        tmp_path / "home" / ".config" / "systemd" / "user" / "unsloth-studio.service"
+    ).exists()
 
 
 def test_installer_asks_no_systemd_question():

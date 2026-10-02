@@ -1461,14 +1461,15 @@ _can_read_tty() {
     ( : </dev/tty ) >/dev/null 2>&1
 }
 
-# Checkout copy only for a trusted --local run: a piped install's _REPO_ROOT is the caller's cwd.
+# Checkout copy only for a trusted --local run: a piped install's _REPO_ROOT is the caller's cwd,
+# and -I keeps that cwd off sys.path for the installed-package lookup.
 _resolve_systemd_install_script() {
     if [ "$_REPO_IS_CHECKOUT" = "1" ] && [ -f "$_REPO_ROOT/studio/systemd/install_user_service.sh" ]; then
         printf '%s\n' "$_REPO_ROOT/studio/systemd/install_user_service.sh"
         return 0
     fi
     [ -x "$VENV_DIR/bin/python" ] || return 0
-    "$VENV_DIR/bin/python" -c \
+    "$VENV_DIR/bin/python" -I -c \
         "import importlib.resources as r; print(r.files('studio') / 'systemd' / 'install_user_service.sh')" \
         2>/dev/null || true
 }

@@ -723,15 +723,19 @@ _unsloth_uninstall_main() {
 
     # Before the kill sweep, or Restart=on-failure brings the server back mid-removal.
     _remove_systemd_user_service() {
-        _sd_unit="$(_xdg_dir "${XDG_CONFIG_HOME:-}" "$HOME/.config")/systemd/user/unsloth-studio.service"
+        _sd_dir="$(_xdg_dir "${XDG_CONFIG_HOME:-}" "$HOME/.config")/systemd/user"
+        _sd_unit="$_sd_dir/unsloth-studio.service"
         [ -f "$_sd_unit" ] || return 0
-        grep -q 'unsloth-studio-managed-systemd' "$_sd_unit" 2>/dev/null || return 0
-        _sd_live=0
-        command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1 && _sd_live=1
-        [ "$_sd_live" = 1 ] && { systemctl --user disable --now unsloth-studio.service 2>/dev/null || true; }
+        [ "$(head -n 1 "$_sd_unit" 2>/dev/null)" = "# unsloth-studio-managed-systemd" ] || return 0
+        _sd_stopped=0
+        if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+            systemctl --user disable --now unsloth-studio.service 2>/dev/null && _sd_stopped=1
+        fi
+        _remove_path "$_sd_dir/default.target.wants/unsloth-studio.service"
         _remove_path "$_sd_unit"
-        [ "$_sd_live" = 1 ] && { systemctl --user daemon-reload 2>/dev/null || true; }
+        [ "$_sd_stopped" = 1 ] && { systemctl --user daemon-reload 2>/dev/null || true; }
         echo "Removed systemd user service (unsloth-studio.service)."
+        [ "$_sd_stopped" = 1 ] || echo "  could not reach the systemd user manager to stop it; it will not start again after the next login or reboot" >&2
     }
     _remove_systemd_user_service
 
