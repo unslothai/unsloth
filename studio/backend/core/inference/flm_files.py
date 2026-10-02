@@ -231,7 +231,7 @@ def _download_file(client: httpx.Client, file: FlmFile, partial: Path) -> Iterat
                     raise httpx.HTTPStatusError(
                         f"HTTP {status}", request = response.request, response = response
                     )
-                with open(partial, "ab" if offset else "wb") as handle:
+                with open(partial, "ab") if offset else open(partial, "wb") as handle:
                     for chunk in response.iter_bytes():
                         handle.write(chunk)
                         digest.update(chunk)
