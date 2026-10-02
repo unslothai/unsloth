@@ -69,6 +69,7 @@ import {
   savePromptList,
 } from "../api/prompts-api";
 import {
+  getStoredChatThread,
   listStoredChatMessages,
   listStoredChatThreads,
   saveStoredChatThread,
@@ -97,6 +98,7 @@ import { orderByParentChain } from "../utils/message-order";
 import { liveThreadBranch } from "../utils/live-thread-head";
 import { unwrapPastedTextContent } from "../utils/pasted-text.ts";
 import {
+  CONVERSATION_MARKDOWN_MIME_TYPE,
   buildConversationMarkdown,
   contentBlocksToMarkdownBlocks,
   renderConversationBlocks,
@@ -555,13 +557,19 @@ export async function buildChatItemMarkdown(item: {
   );
 }
 
-export type ConvExportFormat = "jsonl-raw" | "jsonl-messages" | "csv" | "sharegpt";
+export type ConvExportFormat =
+  | "jsonl-raw"
+  | "jsonl-messages"
+  | "csv"
+  | "sharegpt"
+  | "markdown";
 
 const EXPORT_FORMAT_LABELS: Record<ConvExportFormat, string> = {
   "jsonl-raw": "Training JSONL",
   "jsonl-messages": "Message JSONL",
   csv: "CSV",
   sharegpt: "ShareGPT JSONL",
+  markdown: "Markdown",
 };
 
 export const EXPORT_FORMATS_LIST = (
@@ -601,6 +609,10 @@ async function buildThreadContent(
     return JSON.stringify({ conversations });
   }
 
+  if (format === "markdown") {
+    return await buildConversationMarkdownForThread(threadId);
+  }
+
   const rows: string[] = [];
   for (const msg of messages) {
     const content = messageToText(msg);
@@ -615,11 +627,15 @@ function csvHeader(format: ConvExportFormat): string {
 }
 
 function exportExt(format: ConvExportFormat): string {
-  return format === "csv" ? "csv" : "jsonl";
+  if (format === "csv") return "csv";
+  if (format === "markdown") return "md";
+  return "jsonl";
 }
 
 function exportMime(format: ConvExportFormat): string {
-  return format === "csv" ? CSV_MIME : "application/x-ndjson";
+  if (format === "csv") return CSV_MIME;
+  if (format === "markdown") return CONVERSATION_MARKDOWN_MIME_TYPE;
+  return "application/x-ndjson";
 }
 
 export async function exportBulkConversationsMerged(
@@ -630,6 +646,25 @@ export async function exportBulkConversationsMerged(
   if (threadIds.length === 0) { toast.info("No conversations to export."); return; }
   if (!canMergeConversationExport(format) && threadIds.length > 1) {
     toast.info("Message JSONL is available per chat.");
+    return;
+  }
+
+  if (format === "markdown" && threadIds.length > 1) {
+    const conversations: Array<{ id: string; title: string }> = [];
+    for (const id of threadIds) {
+      const thread = await getStoredChatThread(id);
+      conversations.push({ id, title: thread?.title?.trim() || id });
+    }
+    const body = await buildNamedConversationsMarkdown(
+      conversations,
+      buildConversationMarkdownForThread,
+    );
+    if (!body) { toast.info("No exportable content."); return; }
+    await downloadBlob(
+      body,
+      `${basename}.md`,
+      CONVERSATION_MARKDOWN_MIME_TYPE,
+    );
     return;
   }
 
@@ -645,7 +680,9 @@ export async function exportBulkConversationsMerged(
 
   const body = header
     ? csvDocument([header, ...parts])
-    : ndjsonBody(parts);
+    : format === "markdown"
+      ? parts[0] ?? ""
+      : ndjsonBody(parts);
 
   await downloadBlob(
     body,
