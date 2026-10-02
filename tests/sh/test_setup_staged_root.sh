@@ -82,6 +82,13 @@ check "setup.sh forwards the staged helper root to whisper.cpp source builds" \
     "$(has "$SETUP_SH" 'env UNSLOTH_HOME="$UNSLOTH_HOME" sh "$_WHISPER_BUILD"')"
 check "whisper.cpp source builds honor the managed helper root" \
     "$(has "$SCRIPT_DIR/../../scripts/build_whisper_cpp.sh" '${UNSLOTH_HOME:-}')"
+# audio.cpp installs under the same helper root, so a staged run writes it into the stage.
+check "setup.sh stages audio.cpp with llama.cpp and whisper.cpp" \
+    "$(has "$SETUP_SH" 'AUDIO_CPP_DIR="$UNSLOTH_HOME/audio.cpp"')"
+check "setup.sh hands the audio.cpp installer that directory" \
+    "$(has "$SETUP_SH" 'install_audio_cpp_prebuilt.py" --install-dir "$AUDIO_CPP_DIR"')"
+check "setup.ps1 stages audio.cpp beside the staged llama.cpp" \
+    "$(grep -qF '$UnslothHome = Split-Path -Parent $LlamaCppDir' "$SETUP_PS1" && grep -qF '$AudioCppDir = Join-Path $UnslothHome "audio.cpp"' "$SETUP_PS1" && grep -qF '@($AudioCppInstaller, "--install-dir", $AudioCppDir)' "$SETUP_PS1" && echo 0 || echo 1)"
 check "setup.sh does not install global uv while staging" \
     "$(has "$SETUP_SH" 'step "uv" "using pip inside the staged environment"')"
 check "setup.ps1 stages the managed Node runtime" \

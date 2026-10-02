@@ -867,6 +867,38 @@
       "evidence_hash": "e584ecfdb097d9482bb19cd3992813bc1a119cfd4c40af14748bafe22900d91e"
     },
     {
+      "package": "trl",
+      "file": "trl/_lazy_module.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L71:             return importlib.import_module(\".\" + module_name, self.__name__)",
+      "evidence_hash": "e584ecfdb097d9482bb19cd3992813bc1a119cfd4c40af14748bafe22900d91e"
+    },
+    {
+      "package": "trl",
+      "file": "trl/experimental/async_distillation/vllm_client.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L48:         while True: sha256:925f5318e1a94b98c1d4e73ac0f2a10cd48b9e3d7fb78e789d4b9ac9d01ceea6",
+      "evidence_hash": "5de7b25a3eafdadc8b50ae22fd4f599e09f12912c05ae595797292fcb68992fa"
+    },
+    {
+      "package": "trl",
+      "file": "trl/experimental/async_grpo/vllm_client.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L48:         while True: sha256:c3c21557aa82ba4593ff95c6934504bcb987ded9f67836ec1e2f371aa3166f52",
+      "evidence_hash": "2d5cf3effabb28b1410203deed71a621301cce15e09dc1485b3b538b183184f8"
+    },
+    {
+      "package": "trl",
+      "file": "trl/generation/vllm_client.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L179:         while True: sha256:618a8410e4ed18d0486f68db559bc9f842d00f7e6926096c3e13602d7b8329ae",
+      "evidence_hash": "6990d68d4bf3b5ffdcec612b4de9de6d2383ef9b1f0e80bc6a9ffc971b11c1b0"
+    },
+    {
       "package": "unsloth-zoo",
       "file": "scripts/scan_packages.py",
       "check": "Accesses cloud metadata/IMDS AND makes network calls",
@@ -2212,6 +2244,14 @@
       "evidence": "Obfusc: L332:             exec(compile(cached_bytes, cache_file, \"exec\"), module.__dict__)\nExec: L332:             exec(compile(cached_bytes, cache_file, \"exec\"), module.__dict__)",
       "evidence_hash": "ef22a4fe0d8ec7e2b0e4afc6e6a3d997cd94c981bf59790562217d4f9dd70732",
       "file_sha256": "1d8b60e48ec8f0faf6156f6eac7368e99c2b6d34690957ef7c5e8e505cacc7db"
+    },
+    {
+      "package": "datasets",
+      "file": "datasets/utils/file_utils.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L443:     while True: sha256:483d0708b413e70fec1791cb689364b426ea949b795d717d1ba437d08c0b9d21",
+      "evidence_hash": "fdde4e280accf7805c189b49c656234f6495462314df0b1cb0d8dba3444e84a1"
     },
     {
       "package": "transformers",

@@ -23,7 +23,7 @@ test("STT download polling uses the available engine fallback", () => {
 test("Audio mirrors an STT transfer into Downloads without resetting an adopted job", () => {
   assert.match(
     source,
-    /await startSttDownload\(sidecarKey,[\s\S]*engine\);[\s\S]*if \(!isTrackingSttDownload\(sidecarKey, engine\)\) \{[\s\S]*trackSttDownload\(sidecarKey, \{[\s\S]*warmSelectedVoiceModelOnComplete: false,[\s\S]*engine,[\s\S]*repoId,[\s\S]*\}\);[\s\S]*\}[\s\S]*for \(;;\)/,
+    /await startSttDownload\(\s*sidecarKey,[\s\S]*engine,\s*ggufVariant,\s*\);[\s\S]*if \(!isTrackingSttDownload\(sidecarKey, engine\)\) \{[\s\S]*trackSttDownload\(sidecarKey, \{[\s\S]*warmSelectedVoiceModelOnComplete: false,[\s\S]*engine,[\s\S]*repoId,[\s\S]*\}\);[\s\S]*\}[\s\S]*for \(;;\)/,
   );
   assert.doesNotMatch(source, /`Downloading \$\{sidecarKey\}:/);
 });
@@ -31,7 +31,7 @@ test("Audio mirrors an STT transfer into Downloads without resetting an adopted 
 test("cancelling the shared STT download never loads a partial checkpoint", () => {
   assert.match(
     source,
-    /if \(download\?\.cancelled\) return;[\s\S]*if \(download\?\.error\)[\s\S]*if \(!download\?\.downloading\) break;[\s\S]*await loadSttModel\(sidecarKey, engine, controller\.signal\)/,
+    /if \(download\?\.cancelled\) return;[\s\S]*if \(download\?\.error\)[\s\S]*if \(!download\?\.downloading\) break;[\s\S]*await loadSttModel\(\s*sidecarKey,\s*engine,\s*controller\.signal,/,
   );
 });
 

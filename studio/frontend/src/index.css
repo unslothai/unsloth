@@ -1655,6 +1655,8 @@
 	--border: var(--border-base);
 	--input: var(--input-base);
 	--sidebar-border: var(--sidebar-border-base);
+	--sidebar-edge: color-mix(in srgb, var(--foreground-base) calc(12% * var(--contrast-seam-gain, 1)), var(--sidebar));
+	--panel-edge: color-mix(in srgb, var(--foreground-base) calc(12% * clamp(0.85, var(--contrast-edge-gain, 1), 1.1)), var(--background));
 	/* Slider fill and thumb, the one panel control that takes neither. */
 	--panel-slider-fg: var(--panel-slider-fg-base);
 	/* Ink: body copy, headings, menu and sidebar labels. */
@@ -1981,6 +1983,8 @@ html[data-chat-font] .aui-root {
 	--color-verified: var(--verified);
 	--color-sidebar-ring: var(--ring-soft);
 	--color-sidebar-border: var(--sidebar-border);
+	--color-sidebar-edge: var(--sidebar-edge);
+	--color-panel-edge: var(--panel-edge);
 	--color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
 	--color-sidebar-accent: var(--sidebar-accent);
 	--color-tabs-line-indicator: var(--tabs-line-indicator);
@@ -2336,6 +2340,24 @@ html[data-chat-font] .aui-root {
 	.sidebar-row-action-glyph {
 		@apply inline-flex size-6 items-center justify-center rounded-full text-sidebar-foreground/55;
 	}
+	/* The hover circle is painted on the icon, padded out to the glyph box. On the glyph it kept
+	   subpixel precision while the icon snapped to whole pixels, so the icon sat up to half a
+	   pixel off centre. !important: outranks the icon's own size-* utility. */
+	.sidebar-row-action-glyph > svg {
+		--glyph-icon: var(--icon-size);
+		box-sizing: border-box;
+		width: 100% !important;
+		height: 100% !important;
+		padding: calc((100% - var(--glyph-icon)) / 2);
+		border-radius: 9999px;
+		overflow: visible;
+	}
+	.sidebar-row-action-glyph > svg.size-4 {
+		--glyph-icon: calc(var(--spacing) * 4);
+	}
+	.sidebar-row-action-glyph > svg.size-3\.5 {
+		--glyph-icon: calc(var(--spacing) * 3.5);
+	}
 	/* A disclosure stays put while its list is open, unlike the hover-only row actions. */
 	.sidebar-row-action.is-disclosure-open {
 		@apply opacity-100 pointer-events-auto;
@@ -2374,6 +2396,9 @@ html[data-chat-font] .aui-root {
 	.sidebar-row-action:hover .sidebar-row-action-glyph,
 	.sidebar-row-action[data-state="open"] .sidebar-row-action-glyph {
 		@apply text-nav-fg;
+	}
+	.sidebar-row-action:hover .sidebar-row-action-glyph > svg,
+	.sidebar-row-action[data-state="open"] .sidebar-row-action-glyph > svg {
 		/* A step darker than the row hover so the circle reads on top of it. */
 		background-color: color-mix(in srgb, var(--foreground) calc(11% * var(--contrast-wash-gain, 1)), transparent);
 	}

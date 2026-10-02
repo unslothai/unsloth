@@ -20,11 +20,16 @@ on:
       - 'studio/install_python_stack.py'
       - 'studio/install_llama_prebuilt.py'
       - 'studio/install_whisper_prebuilt.py'
+      - 'studio/install_audio_cpp_prebuilt.py'
+      # install_audio_cpp_prebuilt.py imports its archive helpers from here.
+      - 'studio/install_sd_cpp_prebuilt.py'
       - 'studio/install_node_prebuilt.py'
       - 'studio/install_manifest.py'
       - 'studio/prebuilt_core.py'
       # install_node_prebuilt.py reads the default version and archive digests from here.
       - 'studio/node_prebuilt_pins.json'
+      # install_audio_cpp_prebuilt.py checks every runtime archive against these digests.
+      - 'studio/audio_cpp_prebuilt_pins.json'
       - 'studio/setup.ps1'
       - 'install.ps1'
       - 'studio/backend/requirements/**'
@@ -88,11 +93,16 @@ on:
       - 'studio/install_python_stack.py'
       - 'studio/install_llama_prebuilt.py'
       - 'studio/install_whisper_prebuilt.py'
+      - 'studio/install_audio_cpp_prebuilt.py'
+      # install_audio_cpp_prebuilt.py imports its archive helpers from here.
+      - 'studio/install_sd_cpp_prebuilt.py'
       - 'studio/install_node_prebuilt.py'
       - 'studio/install_manifest.py'
       - 'studio/prebuilt_core.py'
       # install_node_prebuilt.py reads the default version and archive digests from here.
       - 'studio/node_prebuilt_pins.json'
+      # install_audio_cpp_prebuilt.py checks every runtime archive against these digests.
+      - 'studio/audio_cpp_prebuilt_pins.json'
       - 'studio/setup.ps1'
       - 'install.ps1'
       - 'studio/backend/requirements/**'
@@ -376,9 +386,11 @@ jobs:
           for p in \
             "$HOME/.unsloth/studio" \
             "$HOME/.unsloth/whisper.cpp" \
+            "$HOME/.unsloth/audio.cpp" \
             "$HOME/.unsloth/.llama.cpp.install.lock" \
             "$HOME/.unsloth/.node.install.lock" \
             "$HOME/.unsloth/.whisper.cpp.install.lock" \
+            "$HOME/.unsloth/.audio.cpp.install.lock" \
             "$HOME/.local/share/unsloth" \
             "$HOME/Desktop/Unsloth Studio.desktop" \
             "$HOME/.local/bin/unsloth"; do
