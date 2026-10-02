@@ -163,6 +163,7 @@ from .diffusion_speed import (
     fp16_compile_explicit_only,
     fp16_unet_offloaded,
     fresh_compile_count,
+    int8_gemm_live,
     normalize_speed_mode,
     resolve_speed_mode,
     restore_backend_flags,
@@ -9512,6 +9513,7 @@ class DiffusionBackend:
         resolved, speed_optims = cuda_graph.live_status(
             state.resolved, state.speed_optims, getattr(state, "cuda_graphs", ())
         )
+        speed_optims = int8_gemm_live(state.pipe, speed_optims)
         return {
             "loaded": True,
             "repo_id": state.repo_id,
