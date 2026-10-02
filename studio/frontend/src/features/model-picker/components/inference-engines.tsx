@@ -22,6 +22,7 @@ import {
   type InferenceEngine,
   changeEngine,
   convertsToInteger,
+  precisionAfterEngineSwitch,
   isEngineReady,
 } from "../api/engines";
 import { useEngines } from "../hooks/use-engines";
@@ -32,7 +33,11 @@ function EngineInstall({
   engine,
   management = false,
   onUse,
-}: { engine: EngineStatus; management?: boolean; onUse?: () => void }) {
+}: {
+  engine: EngineStatus;
+  management?: boolean;
+  onUse?: () => void;
+}) {
   const t = useT();
   const isOwner = useIsAccountOwner();
   const useAfterInstall = useRef(false);
@@ -217,10 +222,7 @@ export function InferenceEnginesSection() {
     >
       {error && <p role="alert">{error}</p>}
       {engines.map((engine) => (
-        <SettingsRow
-          key={engine.engine}
-          label={names[engine.engine]}
-        >
+        <SettingsRow key={engine.engine} label={names[engine.engine]}>
           <EngineInstall engine={engine} management={true} />
         </SettingsRow>
       ))}
@@ -280,7 +282,14 @@ export function InferenceEnginePicker({
         <span>{t("managedEngines.picker")}</span>
         <Select
           value={value}
-          onValueChange={(next) => onChange(next as InferenceEngine)}
+          onValueChange={(next) => {
+            const kept = precisionAfterEngineSwitch(
+              precision,
+              engines.find((engine) => engine.engine === next),
+            );
+            if (kept !== precision) onPrecisionChange(kept);
+            onChange(next as InferenceEngine);
+          }}
         >
           <SelectTrigger
             className="w-44"
@@ -357,20 +366,36 @@ export function InferenceEnginePicker({
                 <div className="space-y-2">
                   <div className="flex items-center justify-between gap-3 text-ui-13">
                     <span>{t("managedEngines.parallelism")}</span>
-                    <Select value={parallelism} onValueChange={value => onParallelismChange(value as typeof parallelism)}>
-                      <SelectTrigger className="w-52" aria-label={t("managedEngines.parallelism")}>
+                    <Select
+                      value={parallelism}
+                      onValueChange={(value) =>
+                        onParallelismChange(value as typeof parallelism)
+                      }
+                    >
+                      <SelectTrigger
+                        className="w-52"
+                        aria-label={t("managedEngines.parallelism")}
+                      >
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="tensor">{t("managedEngines.tensor")}</SelectItem>
-                        <SelectItem value="pipeline">{t("managedEngines.pipeline")}</SelectItem>
-                        <SelectItem value="data">{t("managedEngines.data")}</SelectItem>
+                        <SelectItem value="tensor">
+                          {t("managedEngines.tensor")}
+                        </SelectItem>
+                        <SelectItem value="pipeline">
+                          {t("managedEngines.pipeline")}
+                        </SelectItem>
+                        <SelectItem value="data">
+                          {t("managedEngines.data")}
+                        </SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
                   <p className="text-ui-12 text-muted-foreground">
                     {parallelism === "tensor"
-                      ? t("managedEngines.tensorParallel", { count: selectedGpuIds.length })
+                      ? t("managedEngines.tensorParallel", {
+                          count: selectedGpuIds.length,
+                        })
                       : parallelism === "pipeline"
                         ? t("managedEngines.pipelineHelp")
                         : t("managedEngines.dataHelp")}
@@ -400,10 +425,16 @@ export function InferenceEnginePicker({
                   </SelectItem>
                   <SelectItem value="bf16">BF16 (16-bit)</SelectItem>
                   <SelectItem value="fp16">FP16 (16-bit)</SelectItem>
-                  <SelectItem value="int4" disabled={!convertsToInteger(selected)}>
+                  <SelectItem
+                    value="int4"
+                    disabled={!convertsToInteger(selected)}
+                  >
                     4-bit
                   </SelectItem>
-                  <SelectItem value="int8" disabled={!convertsToInteger(selected)}>
+                  <SelectItem
+                    value="int8"
+                    disabled={!convertsToInteger(selected)}
+                  >
                     INT8 (8-bit)
                   </SelectItem>
                   <SelectItem value="fp8">FP8 (8-bit)</SelectItem>

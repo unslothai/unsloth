@@ -1472,6 +1472,27 @@ def test_multi_gpu_preflight_checks_every_device(engine, monkeypatch):
         managed_engine.validate_load(engine, request)
 
 
+@pytest.mark.parametrize(("version", "refused"), [("0.5.20", True), ("0.5.17", False)])
+def test_sglang_integer_precision_is_refused_before_unloading(monkeypatch, version, refused):
+    # Checked in validate_load, which runs before the resident model is torn down.
+    from core.inference import managed_engine
+    from models.inference import LoadRequest
+
+    info = {"path": "/env", "version": version, "profile_digest": install.profile_digest("sglang")}
+    monkeypatch.setattr(managed_engine, "installed", lambda _: info)
+    monkeypatch.setattr(managed_engine, "support_reason", lambda *a: None)
+    monkeypatch.setattr(managed_engine, "resolve_requested_gpu_ids", lambda ids: [0])
+    for precision in ("int8", "int4"):
+        request = LoadRequest(model_path = "m", engine = "sglang", engine_precision = precision)
+        if refused:
+            with pytest.raises(ValueError, match = "Choose FP8"):
+                managed_engine.validate_load("sglang", request)
+        else:
+            managed_engine.validate_load("sglang", request)
+    request = LoadRequest(model_path = "m", engine = "sglang", engine_precision = "fp8")
+    managed_engine.validate_load("sglang", request)
+
+
 def test_engine_gpus_stay_inside_studios_visible_gpus(monkeypatch):
     from core.inference import managed_engine
     from models.inference import LoadRequest
