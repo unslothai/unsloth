@@ -141,7 +141,8 @@ class TestGgufTrimmedDimsAreRestored:
         qtype = gguf.GGMLQuantizationType.BF16
         block_size, type_size = gguf.GGML_QUANT_SIZES[qtype]
         n = 4 * block_size
-        raw = torch.randint(0, 255, (n // block_size * type_size,), dtype = torch.uint8)
+        finite = torch.linspace(-1.0, 1.0, n, dtype = torch.bfloat16)
+        raw = finite.view(torch.uint8).reshape(-1).clone()
         packed = GGUFParameter(raw, quant_type = qtype)
         expected = dequantize_gguf_tensor(GGUFParameter(raw.clone(), quant_type = qtype))
 
