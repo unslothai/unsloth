@@ -508,6 +508,8 @@ def test_active_model_config_round_trips_gpu_fields():
         "nCpuMoe",
         "selectedGpuIds",
         "selectedGpuIndexKind",
+        "llamaExtraArgs",
+        "loadedLlamaExtraArgs",
     ):
         assert field in src, field
     # Only GGUF carries the offload knobs; an optional engine keeps just its GPU pick.
@@ -517,6 +519,8 @@ def test_active_model_config_round_trips_gpu_fields():
         'engine === "vllm" || engine === "sglang" ? { ...base, selectedGpuIds, selectedGpuIndexKind }'
         in flat
     )
+    assert "loadedLlamaExtraArgs != null" in src
+    assert "llamaExtraArgs: [...loadedLlamaExtraArgs]" in src
     assert "useActiveModelConfig(" in _read("features/chat/chat-page.tsx")
     # Live config sync is in the shared draft store; instance keys still remount on signature.
     shared = _read("features/model-picker/model-config/config-signature.ts")
@@ -1232,7 +1236,7 @@ def test_context_commit_rechecks_persistence_only_shortcut():
     """Committed context changes must bypass persistence-only saves."""
     src = _read("features/model-picker/components/model-config-page.tsx")
     assert "const effectiveConfig =" in src
-    assert "perModelConfigsEqual(effectiveConfig, baseline)" in src
+    assert "perModelConfigsEqual(effectiveConfig, baseline, {" in src
     assert "const effectivePersistenceOnly =" in src
     assert "if (effectivePersistenceOnly)" in src
 

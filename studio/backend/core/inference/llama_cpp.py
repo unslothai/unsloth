@@ -35905,6 +35905,7 @@ class LlamaCppBackend:
         on_conversation_grew: Optional[Callable[[list], None]] = None,
         on_decode_slot: Optional[Callable[[str, int], None]] = None,
         thinking_budget_tokens: Optional[int] = None,
+        mcp_image = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -35931,6 +35932,7 @@ class LlamaCppBackend:
             has_text_only_provisional_card,
             is_always_safe_tool,
             is_high_risk_tool_call,
+            mcp_image_share,
             never_needs_approval,
         )
 
@@ -38190,6 +38192,9 @@ class LlamaCppBackend:
                         needs_confirm = is_high_risk_tool_call(
                             decision.tool_name, decision.arguments
                         )
+                    # Sending the user's image always asks, whatever the permission mode.
+                    image_share = mcp_image_share(decision.tool_name, decision.arguments, mcp_image)
+                    needs_confirm = needs_confirm or image_share is not None
                     approval_id = new_approval_id() if needs_confirm else ""
                     decision_slot = (
                         begin_tool_decision(session_id, approval_id) if needs_confirm else None
@@ -38197,6 +38202,8 @@ class LlamaCppBackend:
                     start_event = decision.tool_start_event()
                     start_event["approval_id"] = approval_id
                     start_event["awaiting_confirmation"] = needs_confirm
+                    if image_share is not None:
+                        start_event["image_disclosure"] = image_share["disclosure"]
 
                     try:
                         # Gated calls are not running yet; a "Running ..." badge
@@ -38829,6 +38836,8 @@ class LlamaCppBackend:
                             if accepts_output_callback(execute_tool):
                                 kwargs["output_callback"] = _output_callback
                             kwargs.update(search_images_kwargs(execute_tool, _decision.tool_name))
+                            if image_share is not None:
+                                kwargs["mcp_image"] = image_share["image"]
                             return execute_tool(
                                 _decision.tool_name,
                                 _decision.arguments,
