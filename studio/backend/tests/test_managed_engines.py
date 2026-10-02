@@ -1131,14 +1131,17 @@ def test_memory_reserve_grows_with_the_card(monkeypatch):
     monkeypatch.setattr(
         engine_adapters.subprocess, "run", lambda *a, **kw: SimpleNamespace(stdout = "23034, 22700")
     )
-    assert engine_adapters.gpu_memory_fraction([0], 3072, share) == engine_adapters.gpu_memory_fraction([0], 3072)
+    assert engine_adapters.gpu_memory_fraction(
+        [0], 3072, share
+    ) == engine_adapters.gpu_memory_fraction([0], 3072)
 
 
 def test_engine_start_reserves_a_share_of_the_card():
     import inspect
     from core.inference import managed_engine
-
-    assert "memory_reserve_mib(self.engine, options), RESERVE_SHARE" in inspect.getsource(managed_engine)
+    assert "memory_reserve_mib(self.engine, options), RESERVE_SHARE" in inspect.getsource(
+        managed_engine
+    )
 
 
 @pytest.mark.parametrize("gpu_ids", [[1], [1, 0]])
