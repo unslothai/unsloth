@@ -103,13 +103,11 @@ def _encoder_forward(
     ):
         return original_forward(hidden_states, attention_mask = attention_mask, **kwargs)
 
-    # One host sync: per-row lengths plus "mask is binary".
     keep = mask == 1
     lengths = keep.sum(dim = 1, dtype = torch.int32)
     summary = torch.cat((lengths, ((mask == 0) | keep).all().to(torch.int32).view(1))).tolist()
     row_lengths, binary = summary[:-1], summary[-1]
     batch, width, channels = hidden_states.shape
-    # All-padding rows, fractional masks and unpadded batches stay on the stock path.
     if not binary or min(row_lengths) == 0 or sum(row_lengths) == batch * width:
         return original_forward(hidden_states, attention_mask = attention_mask, **kwargs)
 
