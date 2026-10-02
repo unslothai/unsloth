@@ -1426,8 +1426,7 @@ def _pipe_denoisers_hold_torchao(pipe: Any) -> bool:
 
 
 def _pipe_denoisers_hold_packed(pipe: Any) -> bool:
-    """GGUF or int8 (small-host route) weights dequantize a whole Linear per forward, a transient the dense eager
-    table never measured."""
+    """GGUF / int8 weights dequantize a whole Linear per forward: unmeasured by the dense eager table."""
     try:
         import torch
         for name in ("transformer", "transformer_2", "unconditional_transformer", "unet"):

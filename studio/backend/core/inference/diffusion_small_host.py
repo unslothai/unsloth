@@ -52,7 +52,6 @@ _ST_DTYPES = {"BF16": "bfloat16", "F16": "float16", "F32": "float32"}
 
 
 def _safetensors_bytes_by_dtype(path: Path, keep: tuple[str, ...] = ()) -> dict[str, int]:
-    """Stored bytes per dtype; tensors matching ``keep`` are also summed under ``"kept"``."""
     out: dict[str, int] = {}
     try:
         with open(path, "rb") as fh:
@@ -220,7 +219,7 @@ def decide_small_host(
         sum(c.mib * _itemsize(compute) / _itemsize(c.dtype) for c in converted.values())
         * _CONVERT_MARGIN
     )
-    # encoders stay memory-mapped except their fp32-kept layers; a DiT may land on the host as int8 (half its bf16 bytes)
+    # encoders stay memory-mapped except fp32-kept layers; a DiT lands as int8
     route = sum(
         c.mib // 2
         if n in INT8_DENOISER_NAMES
