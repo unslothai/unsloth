@@ -353,8 +353,25 @@ def _relative(path: Path) -> str:
         return path.as_posix()
 
 
+# node -> its dotted text. Keyed by the node OBJECT, not by id(), so a tree freed
+# between scans cannot have its id reused by a later one. Cleared at the start of every
+# scan. This is the hottest lookup in the whole run by a wide margin: the fixpoint
+# re-walks each body until its state settles, so the same nodes are read millions of
+# times and the answer never changes.
+_CALL_NAMES: dict = {}
+
+
 def _call_name(node: ast.AST) -> str:
     """The dotted text of a call target, or "" when it is not a plain dotted name."""
+    cached = _CALL_NAMES.get(node)
+    if cached is not None:
+        return cached
+    name = _call_name_uncached(node)
+    _CALL_NAMES[node] = name
+    return name
+
+
+def _call_name_uncached(node: ast.AST) -> str:
     parts: list[str] = []
     while isinstance(node, ast.Attribute):
         parts.append(node.attr)
@@ -377,12 +394,35 @@ def _matches_any(names, table) -> str | None:
     return None
 
 
+# (name, the table's identity) -> the entry it matched. Only the long-lived tables
+# registered below are cached: several call sites pass a set literal built on the spot,
+# and once such a set is freed another can land on the same address, so caching by id
+# would hand back the previous table's answer. That is exactly what happened on the
+# first attempt, and the self-test caught it by missing a download-derived sys.path
+# entry while the tier A count fell from 77 to 60.
+_MATCHES: dict = {}
+_CACHEABLE_TABLES: set = set()
+
+
 def _matches(name: str, table) -> str | None:
     """Match a dotted callee against a table on its trailing segments.
 
     `json.load`, `js.load` and a bare `load` all have to hit the same entry, because
     which spelling appears is an import style and not a security property.
     """
+    if not name:
+        return None
+    if id(table) not in _CACHEABLE_TABLES:
+        return _matches_uncached(name, table)
+    key = (name, id(table))
+    if key in _MATCHES:
+        return _MATCHES[key]
+    answer = _matches_uncached(name, table)
+    _MATCHES[key] = answer
+    return answer
+
+
+def _matches_uncached(name: str, table) -> str | None:
     if not name:
         return None
     segments = name.split(".")
@@ -555,6 +595,14 @@ class _FileFacts:
         self.module_source_aliases: dict = {}
         # Module-scope `ENABLED = True`, forwarded as `trust_remote_code = ENABLED`.
         self.module_true_names: set = set()
+        # Pure lookups over tables that are fixed once collection finishes. Memoised
+        # because the fixpoint reads them millions of times per run and the answers
+        # cannot change: the gate has to be fast enough to sit in CI.
+        self._target_cache: dict = {}
+        self._canonical_cache: dict = {}
+        self._construction_cache: dict = {}
+        self._methods_cache: dict = {}
+        self._ancestor_cache: dict = {}
         # Aliases bound by a plain `import x` / `import x as y`, which are modules by
         # construction. `getattr(namespace, parsed)` on one is unsafe reflection, and the
         # name heuristic alone missed every module this tree imports under a name it does
@@ -801,8 +849,16 @@ class _FileFacts:
         self.imports.setdefault(alias, set()).add(target)
 
     def _targets(self, alias: str) -> list[str]:
-        """Every module one alias can mean in this file, in a deterministic order."""
-        return sorted(self.imports.get(alias, ()))
+        """Every module one alias can mean in this file, in a deterministic order.
+
+        Memoised: the import table is complete before any analysis starts and never
+        changes after that, and this is read tens of millions of times per run.
+        """
+        cached = self._target_cache.get(alias)
+        if cached is None:
+            cached = sorted(self.imports.get(alias, ()))
+            self._target_cache[alias] = cached
+        return cached
 
     def _absolute(self, node: ast.ImportFrom) -> str:
         """Resolve a relative import against this file's containing package.
@@ -841,11 +897,17 @@ class _FileFacts:
         """
         if not name:
             return [name]
+        cached = self._canonical_cache.get(name)
+        if cached is not None:
+            return cached
         head, separator, tail = name.partition(".")
         targets = self._targets(head)
         if not targets:
-            return [name]
-        return [f"{dotted}.{tail}" if separator else dotted for dotted in targets]
+            answer = [name]
+        else:
+            answer = [f"{dotted}.{tail}" if separator else dotted for dotted in targets]
+        self._canonical_cache[name] = answer
+        return answer
 
     def canonical(self, name: str) -> str:
         """One spelling, for a message. Matching goes through `canonicals`."""
@@ -882,6 +944,14 @@ class _FileFacts:
         """
         if not constructed:
             return None
+        key = (constructed, scope)
+        if key in self._construction_cache:
+            return self._construction_cache[key]
+        answer = self._resolve_construction(constructed, scope)
+        self._construction_cache[key] = answer
+        return answer
+
+    def _resolve_construction(self, constructed: str, scope: str) -> str | None:
         # Innermost scope first, so a class declared inside a function resolves to the
         # qualified `load.Runner` its methods are indexed under. The bare spelling
         # matched `Runner`, which is also in the table, and the method lookup then
@@ -916,7 +986,12 @@ class _FileFacts:
         sink in `Root.execute`. A `seen` set because a declaration cycle must not spin.
         """
         if seen is None:
-            seen = set()
+            cached = self._methods_cache.get((constructed, tail))
+            if cached is not None:
+                return cached
+            answer = self._methods_on(constructed, tail, set())
+            self._methods_cache[(constructed, tail)] = answer
+            return answer
         key = (str(self.path), constructed)
         if key in seen:
             return []
@@ -2533,6 +2608,20 @@ def _unpinned_code_fetches(facts: _FileFacts, reached: frozenset) -> list[dict]:
     return findings
 
 
+# Registered here rather than beside each table so the list is in one place and a new
+# table is cached only once someone has thought about its lifetime.
+_CACHEABLE_TABLES.update(
+    id(table)
+    for table in (
+        SINKS,
+        SINKS_GATED_ELSEWHERE,
+        UNTRUSTED_CALLS,
+        UNTRUSTED_METHODS,
+        UNTRUSTED_PARAM_NAMES,
+        MODULE_ISH_NAMES,
+    )
+)
+
 _LOCAL_BOUND = 64
 # The interprocedural fixpoint's own valve. Deeper than any call chain in these trees,
 # and exceeding it fails the run rather than truncating the analysis quietly.
@@ -2633,6 +2722,7 @@ def _module_level_taint(facts: _FileFacts, state: _State) -> None:
 
 def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
     """Every finding, sorted, for a deterministic report."""
+    _CALL_NAMES.clear()
     files = _python_files(targets)
     if roots is None:
         roots = [REPO_ROOT]

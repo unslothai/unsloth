@@ -50,6 +50,13 @@ def test_the_self_test_passes():
     assert L._self_test() == 0
 
 
+# This one scans the whole repository in a subprocess, which takes minutes. The backend
+# suite runs under `--timeout=330`, and that cap is what failed this test rather than
+# anything about the result, so the marker raises it for this test alone. The
+# authoritative run of the same command is the `lint-ci.yml` step, which has no pytest
+# cap; this test exists so that someone running pytest locally still sees a baseline
+# that has drifted.
+@pytest.mark.timeout(1800)
 def test_the_checker_runs_clean_against_its_baseline():
     """The committed baseline has to match the tree, or the gate is noise on every PR."""
     result = subprocess.run(
