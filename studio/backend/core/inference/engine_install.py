@@ -223,9 +223,9 @@ def _torch_runtime() -> set[str]:
     return names
 
 
-# nvcc compiles against its own crt, nvvm and cccl headers, so a Studio copy of another release
-# breaks FlashInfer's JIT (Colab: crt 13.4.59 with nvcc 13.0.88, "'__cudaLaunch' was not declared").
-# Only torch's process loads the rest of the runtime; these are shared only at the locked version.
+# nvcc reads the crt, nvvm and cccl headers beside its own binary, so mixing releases breaks
+# FlashInfer's JIT (Colab: crt 13.4.59 with nvcc 13.0.88, "'__cudaLaunch' was not declared").
+# Shared only when Studio holds every one at the locked version, else the engine brings all of them.
 _TOOLCHAIN = frozenset({"nvidia-cuda-nvcc", "nvidia-cuda-crt", "nvidia-nvvm", "nvidia-cuda-cccl"})
 
 
@@ -366,6 +366,8 @@ def install_plan(engine: str) -> dict:
         if shared
         and (_same_build(studio.get(name), version, cuda) or (name in runtime and fits(name)))
     }
+    if not all(name in provided for name in _TOOLCHAIN & lock.keys()):
+        provided = {name: version for name, version in provided.items() if name not in _TOOLCHAIN}
     if shared:
         provided |= _reusable(engine, lock, studio, provided)
     return {
