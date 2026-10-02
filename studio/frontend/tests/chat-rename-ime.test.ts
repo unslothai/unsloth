@@ -8,7 +8,11 @@ import { readSrc } from "./helpers/kit.ts";
 
 // Execute the shipped callbacks, following composer-submit-path.test.ts. This
 // catches guards placed after preventDefault or after the rename side effects.
-function handler(file: string, inline: boolean, deps: Record<string, unknown>) {
+function handler(
+  file: string,
+  inline: boolean | "escape",
+  deps: Record<string, unknown>,
+) {
   const source = ts.createSourceFile(
     file,
     readSrc(file),
@@ -18,7 +22,19 @@ function handler(file: string, inline: boolean, deps: Record<string, unknown>) {
   );
   const matches: ts.Node[] = [];
   function visit(node: ts.Node) {
-    if (inline) {
+    if (inline === "escape") {
+      // The rename dialog's DialogContent, which wraps the commitRename input.
+      if (
+        ts.isJsxAttribute(node) &&
+        node.name.getText(source) === "onEscapeKeyDown" &&
+        node.initializer &&
+        ts.isJsxExpression(node.initializer) &&
+        node.initializer.expression &&
+        ts.isArrowFunction(node.initializer.expression) &&
+        node.parent.parent.parent.getText(source).includes("commitRename()")
+      )
+        matches.push(node.initializer.expression);
+    } else if (inline) {
       if (
         ts.isFunctionDeclaration(node) &&
         node.name?.text === "handleInlineRenameKeyDown"
@@ -37,7 +53,11 @@ function handler(file: string, inline: boolean, deps: Record<string, unknown>) {
     ts.forEachChild(node, visit);
   }
   visit(source);
-  assert.equal(matches.length, 1, `${file}: unique rename handler`);
+  assert.equal(
+    matches.length,
+    1,
+    `${file}: unique ${inline === "escape" ? "dialog Escape" : "rename"} handler`,
+  );
   const code = ts.transpileModule(`return (${matches[0].getText(source)});`, {
     compilerOptions: {
       target: ts.ScriptTarget.ES2022,
@@ -116,3 +136,27 @@ test("sidebar inline: an unchanged IME Enter does not close the input", () => {
   f.key("Enter");
   assert.deepEqual(f.effects, ["prevent", "close"]);
 });
+
+for (const [name, file] of [
+  ["sidebar dialog", "components/app-sidebar.tsx"],
+  ["thread sidebar dialog", "features/chat/thread-sidebar.tsx"],
+] as const) {
+  test(`${name}: candidate Escape does not close the dialog`, () => {
+    // Radix calls this from a document capture listener, before the input's
+    // onKeyDown, so the input guard alone cannot keep the dialog open.
+    const onEscape = handler(file, "escape", {});
+    const press = (isComposing: boolean, keyCode: number) => {
+      let prevented = false;
+      onEscape({
+        key: "Escape",
+        isComposing,
+        keyCode,
+        preventDefault: () => (prevented = true),
+      });
+      return prevented;
+    };
+    assert.equal(press(true, 27), true);
+    assert.equal(press(false, 229), true);
+    assert.equal(press(false, 27), false);
+  });
+}
