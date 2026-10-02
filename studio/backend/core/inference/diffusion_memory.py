@@ -2162,10 +2162,19 @@ def _keep_groups_resident(
         def _noop(*args: Any, **kwargs: Any) -> None:
             return None
 
+        # Groups of this module still on the copy stream; with none, nothing can be in flight to wait for.
+        state = getattr(module, "_unsloth_stream_state", None)
+        if not isinstance(state, dict):
+            state = {"streamed": 1}
+            try:
+                module._unsloth_stream_state = state
+            except AttributeError:
+                pass
+
         def _resident_onload(stream: Any) -> Callable[[], None]:
             # a prefetching predecessor skips its own copy-stream wait and relies on this onload_ to do it
             def onload_(*args: Any, **kwargs: Any) -> None:
-                if stream is not None:
+                if stream is not None and state["streamed"]:
                     stream.synchronize()
 
             return disable(onload_) if callable(disable) else onload_
@@ -2208,6 +2217,7 @@ def _keep_groups_resident(
             group._unsloth_resident_bytes = need
             left -= need
             kept += need
+        state["streamed"] = _streamed_group_count(ordered)
         if kept and onload.type == "cuda":
             torch.cuda.synchronize(onload)
         if logger is not None and kept:
@@ -2223,6 +2233,14 @@ def _keep_groups_resident(
         if logger is not None:
             logger.warning("diffusion.memory: partial residency skipped (%s)", exc)
         return 0
+
+
+def _streamed_group_count(groups: list) -> int:
+    return sum(
+        1
+        for g in groups
+        if getattr(g, "stream", None) is not None and not getattr(g, "_unsloth_resident", False)
+    )
 
 
 def _release_group(group: Any) -> None:
@@ -2269,6 +2287,10 @@ def release_resident_groups(
                     released.append(module)
         if not released:
             return None
+        for module in released:
+            state = getattr(module, "_unsloth_stream_state", None)
+            if isinstance(state, dict):
+                state["streamed"] = _streamed_group_count(_offload_groups(module))
         device = getattr(released[0], "_unsloth_resident_device", None)
         if device is not None and torch.device(device).type == "cuda":
             torch.cuda.synchronize(device)
@@ -2863,6 +2885,43 @@ def _defer_pinning(pipe: Any, module: Any, device: Any, logger: Any) -> bool:
     return True
 
 
+# Kill switch for install_group_offload_hooks_eager: "0" lets dynamo trace the group-offload hooks again.
+EAGER_OFFLOAD_HOOKS_ENV = "UNSLOTH_DIFFUSION_EAGER_OFFLOAD_HOOKS"
+
+
+def install_group_offload_hooks_eager() -> bool:
+    """Run diffusers' group-offload hook bodies outside dynamo. A regionally compiled block whose forward is hooked
+    traced pre_forward into every block's frame; the first-forward layer tracker guards on its block name, so the first
+    render recompiled the hook once per block (44 recompiles on Qwen-Image-2.1 at a 16 GB cap, 5 without). The block compute stays compiled. Hooks
+    bind these methods at registration, so this runs before apply_group_offloading. Idempotent."""
+    if _env_off(EAGER_OFFLOAD_HOOKS_ENV):
+        return False
+    try:
+        import torch
+        from diffusers.hooks import group_offloading as go
+    except Exception:  # noqa: BLE001 - no group offload in this diffusers
+        return False
+    disable = getattr(getattr(torch, "compiler", None), "disable", None)
+    if not callable(disable):
+        return False
+    patched = False
+    for cls_name, methods in (
+        ("GroupOffloadingHook", ("pre_forward", "post_forward")),
+        ("LayerExecutionTrackerHook", ("pre_forward",)),
+        ("LazyPrefetchGroupOffloadingHook", ("post_forward",)),
+    ):
+        cls = getattr(go, cls_name, None)
+        for name in methods:
+            fn = getattr(cls, "__dict__", {}).get(name) if cls is not None else None
+            if fn is None or getattr(fn, "_unsloth_eager", False):
+                continue
+            eager = disable(fn)
+            eager._unsloth_eager = True
+            setattr(cls, name, eager)
+            patched = True
+    return patched
+
+
 def install_group_offload_buffer_restore() -> bool:
     """diffusers stream group offload restores only parameters, leaving buffers (native int8 weights) on the GPU."""
     try:
@@ -3042,6 +3101,7 @@ def _apply_group_offload(
         from diffusers.hooks import apply_group_offloading
 
         install_group_offload_buffer_restore()
+        install_group_offload_hooks_eager()
 
         # A dual-DiT pipeline (Ideogram 4) carries a second denoiser as large as the first, so stream every DiT and keep
         # only smaller companions resident.
@@ -3695,6 +3755,7 @@ def _apply_streaming_offload(
         from diffusers.hooks import apply_group_offloading
 
         install_group_offload_buffer_restore()
+        install_group_offload_hooks_eager()
 
         components = getattr(pipe, "components", {})
         if not isinstance(components, dict):
