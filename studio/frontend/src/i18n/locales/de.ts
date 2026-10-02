@@ -3611,6 +3611,8 @@ export const de = {
       epsilonHighHint: "Obere Clip-Grenze (DAPO Clip-Higher, z. B. 0.28). Leer nutzt den normalen Clip von 0.2.",
       maskTruncated: "Abgeschnittene Antworten ausblenden",
       maskTruncatedHint: "Antworten, die das Längenlimit erreichen, aus dem Loss herausnehmen.",
+      thinking: "Denken",
+      thinkingHint: "Für Modelle, deren Chat-Template einen Denk-Schalter hat, etwa Qwen3. Aus hält Antworten im Antwortbudget, statt es in einem versteckten Denkblock zu verbrauchen.",
       systemPrompt: "Systemprompt",
       systemPromptHint: "Wird jedem Prompt ohne eigene Systemnachricht vorangestellt. Der Standard verlangt das <reasoning>/<answer>-Format, das die mitgelieferten Belohnungen bewerten, wie in den Unsloth-GRPO-Notebooks.",
       systemPromptReset: "Auf Notebook-Format zurücksetzen",

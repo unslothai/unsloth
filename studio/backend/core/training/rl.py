@@ -180,6 +180,25 @@ def format_rl_dataset(
     return dataset.map(convert, **kwargs), roles
 
 
+def render_prompts_without_thinking(dataset, tokenizer, enable_thinking: bool, num_proc: Optional[int] = None):
+    """TRL's GRPOTrainer applies the chat template with no kwargs, so a Qwen3-style template always
+    opens a thinking block and short completion budgets run out inside it. Render the prompts to
+    text here with ``enable_thinking`` set; TRL then passes the strings through untouched."""
+    template = getattr(tokenizer, "chat_template", None) or ""
+    if "enable_thinking" not in template:
+        return dataset, False
+
+    def render(row: dict) -> dict:
+        return {
+            "prompt": tokenizer.apply_chat_template(
+                row["prompt"], tokenize = False, add_generation_prompt = True, enable_thinking = enable_thinking
+            )
+        }
+
+    kwargs = {"num_proc": num_proc} if num_proc and num_proc > 1 else {}
+    return dataset.map(render, **kwargs), True
+
+
 def _config_kwargs(config_cls, config_args: dict) -> dict:
     allowed = {f.name for f in dataclasses.fields(config_cls)}
     return {k: v for k, v in config_args.items() if k in allowed}
@@ -251,6 +270,14 @@ def build_rl_trainer(
 
         if not reward_specs:
             raise ValueError("GRPO needs at least one reward selected.")
+        if settings.get("enable_thinking") is not None:
+            train_dataset, _ = render_prompts_without_thinking(
+                train_dataset, tokenizer, bool(settings["enable_thinking"])
+            )
+            if eval_dataset is not None:
+                eval_dataset, _ = render_prompts_without_thinking(
+                    eval_dataset, tokenizer, bool(settings["enable_thinking"])
+                )
         loss_type, sampling_level = GRPO_VARIANTS.get(settings.get("variant") or "dapo", GRPO_VARIANTS["dapo"])
         variant_args = _config_kwargs(
             trl.GRPOConfig,

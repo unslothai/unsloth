@@ -3490,6 +3490,8 @@ export const ja = {
       epsilonHighHint: "クリップの上限です（DAPO の clip-higher、例: 0.28）。空欄なら通常のクリップ 0.2 を使います。",
       maskTruncated: "途中で切れた回答を除外",
       maskTruncatedHint: "長さ上限に達した回答を損失の計算から外します。",
+      thinking: "思考",
+      thinkingHint: "Qwen3 のようにチャットテンプレートに思考の切り替えがあるモデル向けです。オフにすると、隠れた思考ブロックで上限を使い切らず、回答が上限内に収まります。",
       systemPrompt: "システムプロンプト",
       systemPromptHint: "システムメッセージのないプロンプトすべてに追加されます。デフォルトでは、Unsloth の GRPO ノートブックと同じく、同梱の報酬が採点する <reasoning>/<answer> 形式を求めます。",
       systemPromptReset: "ノートブックの形式に戻す",

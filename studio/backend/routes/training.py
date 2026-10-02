@@ -1817,6 +1817,7 @@ async def start_training(
                 "max_completion_length": request.grpo_max_completion_length,
                 "temperature": request.grpo_temperature,
                 "variant": request.grpo_variant,
+                "enable_thinking": request.grpo_enable_thinking,
                 "system_prompt": (request.rl_system_prompt or "").strip() or None,
                 "mask_truncated_completions": request.grpo_mask_truncated_completions,
                 "epsilon_high": request.grpo_epsilon_high,

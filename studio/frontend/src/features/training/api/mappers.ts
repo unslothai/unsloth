@@ -172,6 +172,7 @@ export function buildTrainingStartPayload(
     grpo_temperature: config.grpoTemperature,
     rl_system_prompt:
       objective === "grpo" ? config.grpoSystemPrompt.trim() || null : null,
+    grpo_enable_thinking: config.grpoEnableThinking,
     grpo_variant: config.grpoVariant,
     grpo_mask_truncated_completions:
       objective === "grpo" && config.grpoMaskTruncatedCompletions,

@@ -9,7 +9,7 @@ import pytest
 from datasets import Dataset
 from pydantic import ValidationError
 
-from core.training.rl import build_rl_trainer, install_fsdp_import_stub, format_rl_dataset, resolve_role_columns, rl_lengths, rl_log_metrics
+from core.training.rl import build_rl_trainer, install_fsdp_import_stub, render_prompts_without_thinking, format_rl_dataset, resolve_role_columns, rl_lengths, rl_log_metrics
 from models.training import TrainingStartRequest
 
 BASE = {"model_name": "unsloth/Qwen3-4B-Base", "training_type": "LoRA/QLoRA", "format_type": "auto"}
@@ -166,3 +166,24 @@ def test_system_prompt_fills_rows_without_one_and_keeps_their_own():
     assert out[1]["prompt"][0] == {"role": "system", "content": "Be terse."}
     plain, _ = format_rl_dataset(Dataset.from_list([{"question": "q", "answer": "a"}]), "grpo")
     assert [m["role"] for m in plain[0]["prompt"]] == ["user"]
+
+
+class _ThinkingTokenizer:
+    chat_template = "{% if enable_thinking is defined and enable_thinking is false %}...{% endif %}"
+
+    def apply_chat_template(self, messages, tokenize, add_generation_prompt, enable_thinking):
+        body = "".join(f"<{m['role']}>{m['content']}" for m in messages)
+        return body + ("<assistant><think>" if enable_thinking else "<assistant><think></think>")
+
+
+def test_thinking_switch_renders_prompts_only_for_templates_that_have_one():
+    ds = Dataset.from_list([{"prompt": [{"role": "user", "content": "2+2?"}], "answer": "4"}])
+    out, rendered = render_prompts_without_thinking(ds, _ThinkingTokenizer(), False)
+    assert rendered and out[0]["prompt"] == "<user>2+2?<assistant><think></think>"
+    assert out[0]["answer"] == "4"
+
+    class Plain:
+        chat_template = "{{ messages }}"
+
+    same, rendered = render_prompts_without_thinking(ds, Plain(), False)
+    assert not rendered and same[0]["prompt"] == [{"role": "user", "content": "2+2?"}]

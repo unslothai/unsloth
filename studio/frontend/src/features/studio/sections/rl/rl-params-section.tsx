@@ -85,6 +85,7 @@ export function RlParamsSection({
       grpoMaxCompletionLength: state.grpoMaxCompletionLength,
       grpoTemperature: state.grpoTemperature,
       grpoSystemPrompt: state.grpoSystemPrompt,
+      grpoEnableThinking: state.grpoEnableThinking,
       grpoVariant: state.grpoVariant,
       grpoMaskTruncatedCompletions: state.grpoMaskTruncatedCompletions,
       grpoEpsilonHigh: state.grpoEpsilonHigh,
@@ -94,6 +95,7 @@ export function RlParamsSection({
       setGrpoMaxCompletionLength: state.setGrpoMaxCompletionLength,
       setGrpoTemperature: state.setGrpoTemperature,
       setGrpoSystemPrompt: state.setGrpoSystemPrompt,
+      setGrpoEnableThinking: state.setGrpoEnableThinking,
       setGrpoVariant: state.setGrpoVariant,
       setGrpoMaskTruncatedCompletions: state.setGrpoMaskTruncatedCompletions,
       setGrpoEpsilonHigh: state.setGrpoEpsilonHigh,
@@ -187,6 +189,15 @@ export function RlParamsSection({
                   v === null ? null : Math.min(1, Math.max(0.01, v)),
                 )
               }
+            />
+          </ParamsRow>
+          <ParamsRow
+            label={t("rl.params.thinking")}
+            tooltip={t("rl.params.thinkingHint")}
+          >
+            <Switch
+              checked={s.grpoEnableThinking}
+              onCheckedChange={s.setGrpoEnableThinking}
             />
           </ParamsRow>
           <ParamsRow

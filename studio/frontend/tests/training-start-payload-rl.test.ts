@@ -60,6 +60,7 @@ test("GRPO sends RL roles instead of chat roles, plus its rewards", () => {
   assert.equal(payload.rl_beta, 0.04);
   assert.equal(payload.train_on_completions, false);
   assert.equal(payload.grpo_variant, "dapo");
+  assert.equal(payload.grpo_enable_thinking, false);
   assert.match(payload.rl_system_prompt ?? "", /<reasoning>/);
 });
 

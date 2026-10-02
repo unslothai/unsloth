@@ -3609,6 +3609,8 @@ export const it = {
       epsilonHighHint: "Limite superiore del clip (clip-higher di DAPO, es. 0.28). Vuoto usa il clip normale di 0.2.",
       maskTruncated: "Maschera risposte troncate",
       maskTruncatedHint: "Escludi dalla loss le risposte che raggiungono il limite di lunghezza.",
+      thinking: "Ragionamento",
+      thinkingHint: "Per i modelli il cui template di chat ha un interruttore di ragionamento, come Qwen3. Disattivato tiene le risposte nel budget invece di spenderlo in un blocco di ragionamento nascosto.",
       systemPrompt: "Prompt di sistema",
       systemPromptHint: "Aggiunto a ogni prompt senza messaggio di sistema. Il predefinito chiede il formato <reasoning>/<answer> valutato dalle ricompense incluse, come nei notebook GRPO di Unsloth.",
       systemPromptReset: "Ripristina il formato del notebook",

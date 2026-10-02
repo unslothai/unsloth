@@ -3545,6 +3545,8 @@ export const en = {
       epsilonHighHint: "Upper clip bound (DAPO clip-higher, e.g. 0.28). Empty uses the regular clip of 0.2.",
       maskTruncated: "Mask cut-off answers",
       maskTruncatedHint: "Leave answers that hit the completion length limit out of the loss.",
+      thinking: "Thinking",
+      thinkingHint: "For models whose chat template has a thinking switch, like Qwen3. Off keeps answers inside the completion budget instead of spending it on a hidden thinking block.",
       systemPrompt: "System prompt",
       systemPromptHint: "Added to every prompt that has no system message. The default asks for the <reasoning>/<answer> format the bundled rewards grade, as in the Unsloth GRPO notebooks.",
       systemPromptReset: "Reset to notebook format",

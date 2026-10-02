@@ -3450,6 +3450,8 @@ export const zhCN = {
       epsilonHighHint: "裁剪上限（DAPO 的 clip-higher，例如 0.28）。留空则使用常规裁剪 0.2。",
       maskTruncated: "屏蔽被截断的回答",
       maskTruncatedHint: "将达到长度上限的回答排除在损失之外。",
+      thinking: "思考",
+      thinkingHint: "适用于聊天模板带有思考开关的模型，例如 Qwen3。关闭后，回答会留在长度上限内，而不是把额度耗在隐藏的思考块里。",
       systemPrompt: "系统提示词",
       systemPromptHint: "添加到每个没有系统消息的提示中。默认值要求使用内置奖励评分的 <reasoning>/<answer> 格式，与 Unsloth GRPO 笔记本一致。",
       systemPromptReset: "恢复为笔记本格式",

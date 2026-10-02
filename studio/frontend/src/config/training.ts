@@ -154,6 +154,7 @@ export const DEFAULT_RL_SETTINGS = {
   grpoMaxCompletionLength: null as number | null,
   grpoTemperature: 1.0,
   grpoSystemPrompt: GRPO_DEFAULT_SYSTEM_PROMPT,
+  grpoEnableThinking: false,
   grpoVariant: "dapo" as import("@/types/training").GrpoVariant,
   grpoMaskTruncatedCompletions: false,
   grpoEpsilonHigh: null as number | null,

@@ -3622,6 +3622,8 @@ export const fr = {
       epsilonHighHint: "Borne haute du clip (clip-higher de DAPO, ex. 0.28). Vide utilise le clip normal de 0.2.",
       maskTruncated: "Masquer les réponses tronquées",
       maskTruncatedHint: "Exclure de la perte les réponses qui atteignent la limite de longueur.",
+      thinking: "Réflexion",
+      thinkingHint: "Pour les modèles dont le modèle de chat a un interrupteur de réflexion, comme Qwen3. Désactivé garde les réponses dans le budget au lieu de le consommer dans un bloc de réflexion caché.",
       systemPrompt: "Prompt système",
       systemPromptHint: "Ajouté à chaque prompt sans message système. Par défaut, il demande le format <reasoning>/<answer> que notent les récompenses fournies, comme dans les notebooks GRPO d'Unsloth.",
       systemPromptReset: "Revenir au format du notebook",

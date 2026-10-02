@@ -610,6 +610,9 @@ class TrainingStartRequest(BaseModel):
     rl_system_prompt: Optional[str] = Field(
         None, max_length = 8000, description = "System prompt for rows without one (GRPO notebooks set the answer format here)"
     )
+    grpo_enable_thinking: Optional[bool] = Field(
+        False, description = "For chat templates with a thinking switch (Qwen3): open a thinking block or not. Null keeps the template default."
+    )
     grpo_mask_truncated_completions: bool = Field(
         False, description = "Leave completions cut off at the length limit out of the loss"
     )

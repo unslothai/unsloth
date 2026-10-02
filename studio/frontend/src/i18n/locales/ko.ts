@@ -3536,6 +3536,8 @@ export const ko = {
       epsilonHighHint: "클립 상한입니다(DAPO clip-higher, 예: 0.28). 비워 두면 일반 클립 0.2를 씁니다.",
       maskTruncated: "잘린 답변 제외",
       maskTruncatedHint: "길이 제한에 걸린 답변을 손실 계산에서 뺍니다.",
+      thinking: "사고",
+      thinkingHint: "Qwen3처럼 채팅 템플릿에 사고 스위치가 있는 모델용입니다. 끄면 숨겨진 사고 블록에 예산을 쓰지 않고 답변이 예산 안에 들어갑니다.",
       systemPrompt: "시스템 프롬프트",
       systemPromptHint: "시스템 메시지가 없는 모든 프롬프트에 추가됩니다. 기본값은 Unsloth GRPO 노트북처럼 기본 제공 보상이 채점하는 <reasoning>/<answer> 형식을 요청합니다.",
       systemPromptReset: "노트북 형식으로 되돌리기",

@@ -77,6 +77,7 @@ export interface TrainingStartRequest {
   grpo_max_completion_length: number | null;
   grpo_temperature: number;
   rl_system_prompt: string | null;
+  grpo_enable_thinking: boolean;
   grpo_variant: GrpoVariant;
   grpo_mask_truncated_completions: boolean;
   grpo_epsilon_high: number | null;

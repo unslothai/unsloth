@@ -151,6 +151,7 @@ export interface TrainingConfigState {
   grpoMaxCompletionLength: number | null;
   grpoTemperature: number;
   grpoSystemPrompt: string;
+  grpoEnableThinking: boolean;
   grpoVariant: GrpoVariant;
   grpoMaskTruncatedCompletions: boolean;
   grpoEpsilonHigh: number | null;
@@ -279,6 +280,7 @@ export interface TrainingConfigActions {
   setGrpoMaxCompletionLength: (value: number | null) => void;
   setGrpoTemperature: (value: number) => void;
   setGrpoSystemPrompt: (value: string) => void;
+  setGrpoEnableThinking: (value: boolean) => void;
   setGrpoVariant: (value: GrpoVariant) => void;
   setGrpoMaskTruncatedCompletions: (value: boolean) => void;
   setGrpoEpsilonHigh: (value: number | null) => void;

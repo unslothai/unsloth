@@ -3608,6 +3608,8 @@ export const es = {
       epsilonHighHint: "Límite superior del recorte (clip-higher de DAPO, p. ej. 0.28). Vacío usa el recorte normal de 0.2.",
       maskTruncated: "Enmascarar respuestas cortadas",
       maskTruncatedHint: "Excluir de la pérdida las respuestas que llegan al límite de longitud.",
+      thinking: "Razonamiento",
+      thinkingHint: "Para modelos cuya plantilla de chat tiene un interruptor de razonamiento, como Qwen3. Desactivado mantiene las respuestas dentro del presupuesto en lugar de gastarlo en un bloque de razonamiento oculto.",
       systemPrompt: "Prompt de sistema",
       systemPromptHint: "Se añade a cada prompt que no tiene mensaje de sistema. El valor por defecto pide el formato <reasoning>/<answer> que puntúan las recompensas incluidas, como en los notebooks de GRPO de Unsloth.",
       systemPromptReset: "Restablecer formato del notebook",

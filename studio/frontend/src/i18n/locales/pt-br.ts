@@ -3570,6 +3570,8 @@ export const ptBR = {
       epsilonHighHint: "Limite superior do clip (clip-higher do DAPO, ex. 0.28). Vazio usa o clip normal de 0.2.",
       maskTruncated: "Mascarar respostas cortadas",
       maskTruncatedHint: "Deixar fora da perda as respostas que atingem o limite de comprimento.",
+      thinking: "Raciocínio",
+      thinkingHint: "Para modelos cujo template de chat tem um seletor de raciocínio, como o Qwen3. Desligado mantém as respostas dentro do orçamento em vez de gastá-lo num bloco de raciocínio oculto.",
       systemPrompt: "Prompt de sistema",
       systemPromptHint: "Adicionado a cada prompt sem mensagem de sistema. O padrão pede o formato <reasoning>/<answer> que as recompensas incluídas avaliam, como nos notebooks de GRPO do Unsloth.",
       systemPromptReset: "Restaurar formato do notebook",
