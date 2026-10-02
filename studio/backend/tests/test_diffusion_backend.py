@@ -6796,6 +6796,7 @@ def test_diffusion_status_response_carries_resolved():
             "status": "applied",
             "reason": "blackwell",
             "artifact": None,
+            "replaced": None,
         }
     }
     # Absent by default (nothing resolved / native engine).
@@ -6818,7 +6819,7 @@ def test_diffusion_status_response_carries_requested_precision():
     }
     resp = DiffusionStatusResponse(loaded = True, resolved = rec)
     assert resp.model_dump()["resolved"] == {
-        "transformer_quant": {**rec["transformer_quant"], "artifact": None}
+        "transformer_quant": {**rec["transformer_quant"], "artifact": None, "replaced": None}
     }
 
 
@@ -14194,3 +14195,228 @@ def test_candidate_overrides_price_the_encoder_the_load_opens(monkeypatch):
         ]
         == 0
     )
+
+
+_Q4 = "m-Q4_K_M.gguf"
+
+
+def _gguf_offload_swap_setup(
+    monkeypatch,
+    tmp_path,
+    *,
+    scheme = "int8",
+    policy = "model",
+):
+    """A CUDA GGUF pick whose plan and every quantised re-plan offload, with a cached hosted checkpoint."""
+    import dataclasses
+
+    from core.inference import diffusion as dmod
+
+    (tmp_path / _Q4).write_bytes(b"x")
+    (tmp_path / "m-Q8_0.gguf").write_bytes(b"x")
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_GGUF_OFFLOAD_PREQUANT", raising = False)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None, **_kw: scheme
+    )
+    monkeypatch.setattr(dmod, "_uncached_prequant_repo", lambda *a, **k: None)
+    monkeypatch.setattr(
+        DiffusionBackend, "_auto_prequant_retry_scheme", staticmethod(lambda *a, **k: None)
+    )
+    monkeypatch.setattr(
+        dmod,
+        "resolve_dense_quant_candidate",
+        lambda **kw: types.SimpleNamespace(
+            scheme = scheme, transient_transformer_mib = 7_000, companions_mib = 8_000, prequant = True
+        ),
+    )
+    source = types.SimpleNamespace(
+        kind = "repo", location = "unsloth/Z-FP8", filename = "Z-INT8.safetensors"
+    )
+    monkeypatch.setattr(dmod, "resolve_prequant_source", lambda *a, **k: source)
+    monkeypatch.setattr(dmod, "torchao_offload_plan", lambda plan, s, **k: plan)
+    orig_plan = DiffusionBackend._plan_memory
+
+    def spy_plan(self, *a, **k):
+        return dataclasses.replace(orig_plan(self, *a, **k), offload_policy = policy)
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", spy_plan)
+    calls: list = []
+
+    def fake_dense_load(self, *a, **k):
+        calls.append(k)
+        pipe = _FakePipe()
+        pipe.transformer = types.SimpleNamespace(_unsloth_prequant_path = "/hub/Z-INT8.safetensors")
+        return pipe, scheme
+
+    monkeypatch.setattr(DiffusionBackend, "_load_dense_quant_pipeline", fake_dense_load)
+    return backend, calls
+
+
+def _load_gguf(
+    backend,
+    tmp_path,
+    name = _Q4,
+    **kwargs,
+):
+    return backend.load_pipeline(
+        str(tmp_path), gguf_filename = name, family_override = "z-image", **kwargs
+    )
+
+
+def test_offloading_gguf_pick_loads_the_cached_int8_checkpoint(fake_runtime, tmp_path, monkeypatch):
+    backend, calls = _gguf_offload_swap_setup(monkeypatch, tmp_path)
+    status = _load_gguf(backend, tmp_path)
+    assert len(calls) == 1
+    assert calls[0]["allow_dense_fallback"] is False
+    assert calls[0]["seed_plan"].offload_policy == "model"
+    assert status["transformer_quant"] == "int8"
+    assert status["offload_policy"] == "model"
+    tq = status["resolved"]["transformer_quant"]
+    assert tq["value"] == "int8" and tq["source"] == "auto"
+    assert tq["artifact"] == "prequant:unsloth/Z-FP8/Z-INT8.safetensors"
+    assert tq["replaced"] == f"gguf:{_Q4}"
+    assert "Q4_K_M GGUF pick was replaced by unsloth/Z-FP8/Z-INT8.safetensors" in tq["reason"]
+
+
+def test_gguf_offload_swap_kill_switch_keeps_the_gguf(fake_runtime, tmp_path, monkeypatch):
+    backend, calls = _gguf_offload_swap_setup(monkeypatch, tmp_path)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_GGUF_OFFLOAD_PREQUANT", "0")
+    status = _load_gguf(backend, tmp_path)
+    assert calls == []
+    assert status["transformer_quant"] is None
+    assert _FakeTransformer.last["path"].endswith(_Q4)
+    assert "replaced" not in status["resolved"]["transformer_quant"]
+
+
+def test_gguf_offload_swap_keeps_a_q8_pick_on_auto(fake_runtime, tmp_path, monkeypatch):
+    backend, calls = _gguf_offload_swap_setup(monkeypatch, tmp_path)
+    status = _load_gguf(backend, tmp_path, name = "m-Q8_0.gguf")
+    assert calls == []
+    assert status["transformer_quant"] is None
+    reason = status["resolved"]["transformer_quant"]["reason"]
+    assert "Q8_0" in reason and "at least as accurate" in reason
+
+
+@pytest.mark.parametrize("request_", ["off", "none"])
+def test_gguf_offload_swap_never_overrides_precision_off(
+    fake_runtime, tmp_path, monkeypatch, request_
+):
+    backend, calls = _gguf_offload_swap_setup(monkeypatch, tmp_path)
+    status = _load_gguf(backend, tmp_path, transformer_quant = request_)
+    assert calls == []
+    assert status["transformer_quant"] is None
+    assert _FakeTransformer.last["path"].endswith(_Q4)
+
+
+def test_gguf_offload_swap_falls_back_to_the_gguf_when_the_build_fails(
+    fake_runtime, tmp_path, monkeypatch
+):
+    backend, _calls = _gguf_offload_swap_setup(monkeypatch, tmp_path)
+
+    def boom(self, *a, **k):
+        raise RuntimeError("checkpoint unreadable")
+
+    monkeypatch.setattr(DiffusionBackend, "_load_dense_quant_pipeline", boom)
+    status = _load_gguf(backend, tmp_path)
+    assert status["transformer_quant"] is None
+    assert _FakeTransformer.last["path"].endswith(_Q4)
+    assert "replaced" not in status["resolved"]["transformer_quant"]
+
+
+def test_gguf_offload_swap_on_mps_keeps_the_gguf(fake_runtime, tmp_path, monkeypatch):
+    from core.inference import diffusion as dmod
+
+    backend, calls = _gguf_offload_swap_setup(monkeypatch, tmp_path)
+    torch = sys.modules["torch"]
+    monkeypatch.setattr(
+        backend, "_target_for_ordinal", lambda fam, ordinal = None: _mps_target(torch)
+    )
+    # The real device gate, not the test's CUDA override.
+    from core.inference.diffusion_transformer_quant import dense_transformer_supported
+
+    monkeypatch.setattr(dmod, "dense_transformer_supported", dense_transformer_supported)
+    status = _load_gguf(backend, tmp_path)
+    assert calls == []
+    assert status["transformer_quant"] is None
+
+
+@pytest.mark.parametrize(
+    "policy, stream, env, placed_on_host",
+    [
+        ("streaming", True, None, True),
+        ("group", True, None, True),
+        ("model", True, None, True),
+        ("none", True, None, False),
+        ("group", False, None, False),  # denoiser stays resident: seed where it runs
+        ("streaming", True, "0", False),  # UNSLOTH_DIFFUSION_PREQUANT_SEED_ON_HOST=0
+    ],
+)
+def test_gguf_route_prequant_seed_lands_on_the_host_when_the_plan_offloads(
+    fake_runtime, monkeypatch, policy, stream, env, placed_on_host
+):
+    from core.inference import diffusion as dmod
+
+    if env is None:
+        monkeypatch.delenv("UNSLOTH_DIFFUSION_PREQUANT_SEED_ON_HOST", raising = False)
+    else:
+        monkeypatch.setenv("UNSLOTH_DIFFUSION_PREQUANT_SEED_ON_HOST", env)
+    monkeypatch.setattr(dmod, "_planned_quant_scheme", lambda *a, **k: "int8")
+    monkeypatch.setattr(
+        dmod,
+        "resolve_prequant_source",
+        lambda *a, **k: types.SimpleNamespace(kind = "repo", location = "o/r", filename = "f"),
+    )
+    loaded: dict = {}
+
+    def fake_load(*a, **k):
+        loaded.update(k)
+        return object()
+
+    monkeypatch.setattr(dmod, "load_prequantized_transformer", fake_load)
+    assembled: list = []
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_assemble_pipe",
+        staticmethod(
+            lambda pcls, base, tr, dtype, tok, device, *a, **k: assembled.append(device)
+            or _FakePipe()
+        ),
+    )
+    _pipe, scheme = DiffusionBackend()._load_dense_quant_pipeline(
+        object,
+        object,
+        "base/repo",
+        "cuda:0",
+        "bf16",
+        None,
+        types.SimpleNamespace(device = "cuda", dtype = "bf16"),
+        "int8",
+        fam = types.SimpleNamespace(name = "qwen-image-2.1"),
+        seed_plan = types.SimpleNamespace(offload_policy = policy, stream_transformer = stream),
+    )
+    assert scheme == "int8"
+    assert loaded["placement_device"] == ("cpu" if placed_on_host else None)
+    assert assembled == ["cpu" if placed_on_host else "cuda:0"]
+
+
+def test_diffusion_status_response_keeps_the_gguf_a_swap_replaced():
+    # Pydantic drops undeclared keys.
+    from models.inference import DiffusionStatusResponse
+
+    rec = {
+        "transformer_quant": {
+            "value": "int8",
+            "source": "auto",
+            "reason": "the Q4_K_M GGUF pick was replaced",
+            "artifact": "prequant:o/r/f.safetensors",
+            "replaced": "gguf:m-Q4_K_M.gguf",
+        }
+    }
+    dumped = DiffusionStatusResponse(loaded = True, resolved = rec).model_dump()["resolved"][
+        "transformer_quant"
+    ]
+    assert dumped["replaced"] == "gguf:m-Q4_K_M.gguf"
+    assert dumped["artifact"] == "prequant:o/r/f.safetensors"
