@@ -4766,14 +4766,29 @@ html[data-chat-font] .aui-root {
 	will-change: transform;
 }
 
-/* A carried row: a translucent shade off its list. */
-:is(.sidebar-row-ghost, .model-picker-row-ghost) {
-	background: color-mix(in oklab, color-mix(in oklab, var(--row-ghost-surface), var(--foreground) 5%) 85%, transparent);
-	-webkit-backdrop-filter: blur(8px);
-	backdrop-filter: blur(8px);
+.sidebar-section-ghost {
+	--row-ghost-surface: var(--sidebar);
+	display: flex;
+	align-items: center;
+	border-radius: 10px;
+	will-change: transform;
+}
+
+/* A carried row or header: faintly frosted, a shade darker than its list, on a hairline. */
+:is(.sidebar-row-ghost, .sidebar-section-ghost, .model-picker-row-ghost) {
+	background: color-mix(in oklab, color-mix(in oklab, var(--row-ghost-surface), black 4%) 62%, transparent);
+	-webkit-backdrop-filter: blur(0.5px) saturate(1.05);
+	backdrop-filter: blur(0.5px) saturate(1.05);
 	box-shadow:
-		0 0 0 1px color-mix(in oklab, var(--foreground) 7%, transparent),
-		0 4px 14px -6px rgb(0 0 0 / 0.16);
+		0 0 0 1px rgb(0 0 0 / 0.06),
+		0 4px 12px -4px rgb(0 0 0 / 0.12);
+}
+
+.dark :is(.sidebar-row-ghost, .sidebar-section-ghost, .model-picker-row-ghost) {
+	background: color-mix(in oklab, color-mix(in oklab, var(--row-ghost-surface), black 22%) 62%, transparent);
+	box-shadow:
+		0 0 0 1px rgb(255 255 255 / 0.045),
+		0 6px 16px -6px rgb(0 0 0 / 0.5);
 }
 
 .sidebar-section-ghost > *,
