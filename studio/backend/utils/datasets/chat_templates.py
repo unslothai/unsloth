@@ -269,17 +269,16 @@ def get_dataset_info_summary(dataset_info):
     }
 
 
-def _with_system_column(examples, chat_column):
-    convos = examples[chat_column]
-    systems = examples.get("system")
-    if systems is None:
-        return convos
-    return [
-        [{"role": "system", "content": system}, *convo]
-        if isinstance(system, str) and system.strip() and convo and convo[0].get("role") != "system"
-        else convo
-        for system, convo in zip(systems, convos)
-    ]
+def _with_system_turn(convo, system):
+    if (
+        isinstance(system, str)
+        and system.strip()
+        and convo
+        and isinstance(convo[0], dict)
+        and convo[0].get("role") != "system"
+    ):
+        return [{"role": "system", "content": system}, *convo]
+    return convo
 
 
 def apply_chat_template_to_dataset(
@@ -499,18 +498,29 @@ def apply_chat_template_to_dataset(
         while error_column in existing_columns:
             error_column += "_"
 
+        def _render(convo):
+            return tokenizer.apply_chat_template(
+                convo,
+                tokenize = False,
+                add_generation_prompt = False
+            )
+
         def _format_chatml(examples):
-            convos = _with_system_column(examples, chat_column)
+            convos = examples[chat_column]
+            systems = examples.get("system") or [None] * len(convos)
             texts = []
             row_errors = []
 
-            for convo in convos:
+            for convo, system in zip(convos, systems):
                 try:
-                    text = tokenizer.apply_chat_template(
-                        convo,
-                        tokenize = False,
-                        add_generation_prompt = False
-                    )
+                    with_system = _with_system_turn(convo, system)
+                    try:
+                        text = _render(with_system)
+                    except Exception:
+                        # A template without a system role still trains the conversation.
+                        if with_system is convo:
+                            raise
+                        text = _render(convo)
 
                     if remove_bos_prefix:
                         text = text.removeprefix('<bos>')
