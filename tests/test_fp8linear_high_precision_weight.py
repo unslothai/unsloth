@@ -28,9 +28,7 @@ def test_bf16_weight_in_fp8linear_runs_plain_linear(bias):
         torch.randn(128, 256, device = dev, dtype = torch.bfloat16) * 0.05, requires_grad = False
     )
     layer.bias = (
-        torch.nn.Parameter(torch.randn(128, device = dev, dtype = bias))
-        if bias is not None
-        else None
+        torch.nn.Parameter(torch.randn(128, device = dev, dtype = bias)) if bias is not None else None
     )
     x = torch.randn(4, 7, 256, device = dev, dtype = torch.bfloat16)
     out = layer(x)

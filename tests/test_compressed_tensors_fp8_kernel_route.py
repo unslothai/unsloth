@@ -189,9 +189,7 @@ def test_non_fp8_or_unsupported_modules_are_left_alone(monkeypatch):
     model.lin.weight = torch.nn.Parameter(model.lin.weight.to(torch.bfloat16), requires_grad = False)
     assert _route_compressed_tensors_fp8_to_unsloth(model) == 0
     model, _ = _ct_model(256, 256, "channel")
-    model.lin.weight_scale = torch.nn.Parameter(
-        torch.ones(3, 1, device = dev), requires_grad = False
-    )
+    model.lin.weight_scale = torch.nn.Parameter(torch.ones(3, 1, device = dev), requires_grad = False)
     assert _route_compressed_tensors_fp8_to_unsloth(model) == 0
     model, _ = _ct_model(256, 256, "channel")
     monkeypatch.setenv("UNSLOTH_COMPRESSED_TENSORS_FP8_KERNELS", "0")
