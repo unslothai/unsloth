@@ -4910,9 +4910,10 @@ html.force-reduced-motion .sidebar-section-drop-line {
 }
 
 /* Firefox has no track to inset, so clip the box back to its radius. 1px out keeps a ring-1;
-   an outer shadow would be clipped, so surfaces with one scroll an inner viewport instead. */
+   an outer shadow would be clipped, so surfaces with one scroll an inner viewport instead.
+   overflow-hidden has no scrollbar to clip: chat search and every CommandDialog keep their shadow. */
 @supports (-moz-appearance: none) {
-	:is(.scroll-rounded, .hub-readme-prose pre) {
+	:is(.scroll-rounded:not(.overflow-hidden), .hub-readme-prose pre) {
 		clip-path: inset(-1px round calc(var(--scroll-radius, 0px) + 1px));
 	}
 }
