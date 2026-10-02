@@ -56,6 +56,9 @@ _SDPA_MASK_CACHE: dict = {}
 # Cache per device for build_xformers_block_causal_mask to avoid repeated D2H sync across layers
 _XFORMERS_BLOCK_MASK_CACHE: dict = {}
 
+# Cache per device for cover_padded_cu_seqlens to avoid repeated D2H sync across layers
+_PADDED_CU_SEQLENS_CACHE: dict = {}
+
 
 def _window_cache_key(sliding_window: Optional[int]) -> int:
     if sliding_window is None or sliding_window <= 0:
@@ -266,18 +269,22 @@ def enable_padding_free_metadata(model, trainer):
 
     def torch_call_with_padding_free_metadata(examples: Sequence[dict]):
         seq_lengths: list[int] = []
+        collated = examples
         if examples and isinstance(examples[0], dict):
-            for example in examples:
+            for index, example in enumerate(examples):
                 lengths = example.get("seq_lengths")
                 if lengths is None:
                     ids = example.get("input_ids")
                     if ids is None:
                         continue
                     lengths = [len(ids)]
-                    example["seq_lengths"] = lengths
+                    # TRL's collator keys seq_lengths off examples[0] and reads every row: pass a copy, not the caller's row.
+                    if collated is examples:
+                        collated = list(examples)
+                    collated[index] = {**example, "seq_lengths": lengths}
                 seq_lengths.extend(lengths)
 
-        batch = original_torch_call(examples)
+        batch = original_torch_call(collated)
         if seq_lengths:
             # Labels left alone for the same reason as enable_sample_packing: num_items_in_batch is counted off
             # this batch and the zoo's discount of the boundary targets is idempotent.
@@ -603,11 +610,46 @@ def get_packed_info_from_kwargs(
     return result
 
 
+def _with_padding_segment(lengths: Tuple[int, ...], total_tokens: Optional[int]) -> Tuple[int, ...]:
+    # TRL pads the flattened padding-free row to pad_to_multiple_of after the lengths are
+    # taken; the tail gets its own block, since a row outside every block softmaxes to NaN.
+    if total_tokens is None:
+        return lengths
+    padding = total_tokens - sum(lengths)
+    if padding <= 0:
+        return lengths
+    return lengths + (padding,)
+
+
+def cover_padded_cu_seqlens(
+    seq_info: Tuple[torch.Tensor, torch.Tensor, int], total_tokens: int
+) -> Tuple[torch.Tensor, int]:
+    """Flash varlen leaves rows past cu_seqlens[-1] unwritten, so the pad tail gets a segment."""
+    _, cu_seqlens, max_seqlen = seq_info
+    device = cu_seqlens.device
+    entry = _PADDED_CU_SEQLENS_CACHE.get(device)
+    if entry is not None and entry["cu_seqlens"] is cu_seqlens and entry["total"] == total_tokens:
+        return entry["result"]
+
+    padding = total_tokens - int(cu_seqlens[-1].item())
+    result = (cu_seqlens, max_seqlen)
+    if padding > 0:
+        tail = torch.tensor([total_tokens], dtype = cu_seqlens.dtype, device = device)
+        result = (torch.cat([cu_seqlens, tail]), max(max_seqlen, padding))
+    _PADDED_CU_SEQLENS_CACHE[device] = {
+        "cu_seqlens": cu_seqlens,
+        "total": total_tokens,
+        "result": result,
+    }
+    return result
+
+
 def build_xformers_block_causal_mask(
     seq_info: Optional[Tuple[torch.Tensor, torch.Tensor, int]],
     *,
     sliding_window: Optional[int] = None,
     base_mask: Optional[Any] = None,
+    total_tokens: Optional[int] = None,
     is_causal: bool = True,
 ):
     mask_class = _XFormersBlockMask if is_causal else _XFormersBidirectionalMask
@@ -617,7 +659,7 @@ def build_xformers_block_causal_mask(
         seq_lengths, _, _ = seq_info
         # Cache the mask to avoid repeated D2H sync across layers
         device = seq_lengths.device
-        params = (sliding_window, is_causal)
+        params = (sliding_window, total_tokens, is_causal)
         entry = _XFORMERS_BLOCK_MASK_CACHE.get(device)
         if entry is not None and entry["seq_lengths"] is seq_lengths and entry["params"] == params:
             return entry["mask"]
@@ -626,6 +668,7 @@ def build_xformers_block_causal_mask(
         if lengths_tensor.numel() == 0:
             return None
         lengths = tuple(int(x) for x in lengths_tensor.tolist())
+        lengths = _with_padding_segment(lengths, total_tokens)
         mask = _get_cached_block_mask(lengths, sliding_window, device, is_causal = is_causal)
 
         _XFORMERS_BLOCK_MASK_CACHE[device] = {
@@ -652,16 +695,21 @@ def build_sdpa_packed_attention_mask(
     dtype: torch.dtype,
     device: torch.device,
     sliding_window: Optional[int] = None,
+    total_tokens: Optional[int] = None,
     is_causal: bool = True,
 ) -> torch.Tensor:
     seq_lengths, _, _ = seq_info
 
-    params = (dtype, sliding_window, is_causal)
+    params = (dtype, sliding_window, total_tokens, is_causal)
     entry = _SDPA_MASK_CACHE.get(device)
     if entry is not None and entry["seq_lengths"] is seq_lengths and entry["params"] == params:
         return entry["mask"]
 
-    total_tokens = int(seq_lengths.sum().item())
+    lengths = _with_padding_segment(
+        tuple(int(length) for length in seq_lengths.tolist()),
+        total_tokens,
+    )
+    total_tokens = sum(lengths)
     mask = torch.full(
         (total_tokens, total_tokens),
         float("-inf"),
@@ -669,8 +717,7 @@ def build_sdpa_packed_attention_mask(
         device = device,
     )
     offset = 0
-    for length in seq_lengths.tolist():
-        length = int(length)
+    for length in lengths:
         if length <= 0:
             continue
         block = torch.zeros((length, length), dtype = dtype, device = device)
@@ -779,6 +826,7 @@ def clear_packed_caches():
     _PACKED_INFO_CACHE.clear()
     _SDPA_MASK_CACHE.clear()
     _XFORMERS_BLOCK_MASK_CACHE.clear()
+    _PADDED_CU_SEQLENS_CACHE.clear()
 
 
 __all__ = [
@@ -791,6 +839,7 @@ __all__ = [
     "get_packed_info_from_kwargs",
     "build_xformers_block_causal_mask",
     "build_sdpa_packed_attention_mask",
+    "cover_padded_cu_seqlens",
     "mask_packed_sequence_boundaries",
     "mask_packed_boundary_labels",
     "clear_packed_caches",

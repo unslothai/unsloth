@@ -46,6 +46,11 @@ def _load_image_file_to_base64(path_value: str, *, base_path: str | None = None)
         for candidate in candidates:
             if not candidate.exists() or not candidate.is_file():
                 continue
+            # The cwd fallback is a different file from the one checked above.
+            try:
+                account_path(candidate)
+            except HTTPException:
+                continue
             with candidate.open("rb") as f:
                 return _encode_bytes_to_base64(f.read())
     except (OSError, TypeError, ValueError):

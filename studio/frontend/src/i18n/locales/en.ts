@@ -1336,20 +1336,13 @@ export const en = {
           wide: "Wide",
           full: "Full width",
         },
-        composerAttachments: {
-          label: "Attachments in the composer",
-          description:
-            "Large cards that grow the message box, or a compact row of tiles.",
-          cards: "Large cards",
-          compact: "Compact tiles",
-        },
         sentAttachments: {
           label: "Attachments in sent messages",
           description:
-            "A list with each file's type, or small chips. Auto switches to chips past six files.",
+            "Standard shows each file with its type, compact fits more on each line. Auto switches to compact past six files.",
           auto: "Auto",
-          list: "List",
-          chips: "Chips",
+          list: "Standard",
+          chips: "Compact",
         },
         reset: "Reset",
         resetAll: "Reset customization",
@@ -1803,9 +1796,6 @@ export const en = {
       pastedTextShortDescription:
         "Pastes of {count} characters or more become .txt attachments.",
       pastedTextOffDescription: "Pasted text always stays in the message box.",
-      projectsSection: "Projects section",
-      projectsSectionDescription:
-        "Group project chats under Projects. When off, show them in Recents.",
       title: "Chat",
       description: "Customize how chat behaves on this device.",
       modelSelection: {
@@ -1841,6 +1831,11 @@ export const en = {
       autoScrollManual: "Manual",
       autoScrollKeywords:
         "scroll autoscroll auto-scroll follow stick bottom jump streaming generating viewport lock hold auto manual",
+      scrollToBottomButton: "Scroll to bottom button",
+      scrollToBottomButtonDescription:
+        "Show a button to jump back to the latest message after you scroll up.",
+      scrollToBottomButtonKeywords:
+        "scroll bottom jump latest newest arrow down button floating hide show",
       showResponseModel: "Response model",
       showResponseModelDescription:
         "Show model details in assistant responses.",
@@ -2211,11 +2206,13 @@ export const en = {
       revoking: "Revoking...",
       decisionApi: {
         title: "Decision API",
-        description: "Answer yes/no, multiple choice and score questions about text with a local Laya model. Works with the TypeSafe SDK.",
+        description: "Answer yes/no, multiple choice and score questions about text with a model on this machine or a decision model from Connections. Works with the TypeSafe SDK.",
         enable: "Serve requests",
         enableDescription: "Serves /v1/systemone. Turning it on downloads the model.",
+        enableRemoteDescription: "Serves /v1/systemone.",
         lockedByEnv: "Set by {name}.",
         model: "Model",
+        thisMachine: "This machine",
         modelMultilingual: "Multilingual",
         modelEnglish: "English",
         modelTypedDecisions: "Typed decisions",
@@ -2240,6 +2237,10 @@ export const en = {
         downloadFailed: "Couldn't start the download.",
         saveFailed: "Couldn't save the Decision API setting.",
         loadError: "Couldn't load Decision API settings.",
+        sendsTo: "Requests are sent to {provider}.",
+        connectionMissing: "This connection is gone or has no decision models. Pick another model.",
+        addConnection: "To use a hosted decision model, add TypeSafe, Liquid AI or OpenRouter in Connections.",
+        openConnections: "Open Connections",
       },
     },
     about: {
