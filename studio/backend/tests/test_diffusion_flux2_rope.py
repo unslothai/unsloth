@@ -18,7 +18,9 @@ fmod = pytest.importorskip("diffusers.models.transformers.transformer_flux2")
 from diffusers.models.embeddings import apply_rotary_emb as stock_rope  # noqa: E402
 
 needs_cuda = pytest.mark.skipif(
-    not torch.cuda.is_available() or bool(getattr(torch.version, "hip", None)) or fr._kernel() is None,
+    not torch.cuda.is_available()
+    or bool(getattr(torch.version, "hip", None))
+    or fr._kernel() is None,
     reason = "needs CUDA (not ROCm) and Triton",
 )
 
@@ -119,16 +121,24 @@ def test_cpu_tensors_fall_through_to_stock(fake_kernel):
     x = torch.randn(1, 6, 2, 8, dtype = torch.float32)
     pos = torch.randn(6, 4, dtype = torch.float64)
     freqs = (pos.cos().repeat_interleave(2, -1).float(), pos.sin().repeat_interleave(2, -1).float())
-    assert torch.equal(fmod.apply_rotary_emb(x, freqs, sequence_dim = 1), stock_rope(x, freqs, sequence_dim = 1))
+    assert torch.equal(
+        fmod.apply_rotary_emb(x, freqs, sequence_dim = 1), stock_rope(x, freqs, sequence_dim = 1)
+    )
 
 
 def test_teardown_and_load_wiring():
     # The load installs per pipe (so a non-fp16 / non-FLUX.2 load restores stock) and the shared teardown uninstalls.
     src = (Path(__file__).resolve().parents[1] / "core" / "inference" / "diffusion.py").read_text()
     tree = ast.parse(src)
-    teardown = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_uninstall_fused_dit_patches")
+    teardown = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_uninstall_fused_dit_patches"
+    )
     assert "uninstall_flux2_rope()" in ast.unparse(teardown)
-    load = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "load_pipeline")
+    load = next(
+        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "load_pipeline"
+    )
     assert "install_flux2_rope(pipe, dtype, device, logger)" in ast.unparse(load)
 
 
@@ -136,21 +146,32 @@ def _case(shape, layout, freq_dtype):
     B, S, H, D = shape
     g = torch.Generator("cuda").manual_seed(0)
     if layout == "qkv_chunk":
-        x = (torch.randn(B, S, 3 * H * D, device = "cuda", dtype = torch.float16, generator = g) * 4).chunk(3, -1)[1]
+        x = (
+            torch.randn(B, S, 3 * H * D, device = "cuda", dtype = torch.float16, generator = g) * 4
+        ).chunk(3, -1)[1]
         x = x.unflatten(-1, (H, D))
     elif layout == "permuted":
-        x = (torch.randn(B, H, S, D, device = "cuda", dtype = torch.float16, generator = g) * 4).transpose(1, 2)
+        x = (
+            torch.randn(B, H, S, D, device = "cuda", dtype = torch.float16, generator = g) * 4
+        ).transpose(1, 2)
     else:
         x = torch.randn(B, S, H, D, device = "cuda", dtype = torch.float16, generator = g) * 4
     pos = torch.randn(S, D // 2, device = "cuda", dtype = torch.float64, generator = g) * 50
-    return x, (pos.cos().repeat_interleave(2, -1).to(freq_dtype), pos.sin().repeat_interleave(2, -1).to(freq_dtype))
+    return x, (
+        pos.cos().repeat_interleave(2, -1).to(freq_dtype),
+        pos.sin().repeat_interleave(2, -1).to(freq_dtype),
+    )
 
 
 @needs_cuda
 @pytest.mark.parametrize(
     "shape,layout,freq_dtype",
     [
-        ((1, 4608, 24, 128), "contiguous", "float32"),  # klein-4B 1024px: 512 text + 4096 image tokens
+        (
+            (1, 4608, 24, 128),
+            "contiguous",
+            "float32",
+        ),  # klein-4B 1024px: 512 text + 4096 image tokens
         ((2, 1000, 24, 128), "qkv_chunk", "float32"),
         ((1, 333, 5, 64), "qkv_chunk", "float16"),
         ((1, 777, 24, 128), "permuted", "float32"),
@@ -173,4 +194,6 @@ def test_grad_and_bf16_calls_use_stock():
     fmod.apply_rotary_emb(xg, freqs, sequence_dim = 1).float().sum().backward()
     assert xg.grad is not None
     xb = x.bfloat16()
-    assert torch.equal(fmod.apply_rotary_emb(xb, freqs, sequence_dim = 1), stock_rope(xb, freqs, sequence_dim = 1))
+    assert torch.equal(
+        fmod.apply_rotary_emb(xb, freqs, sequence_dim = 1), stock_rope(xb, freqs, sequence_dim = 1)
+    )

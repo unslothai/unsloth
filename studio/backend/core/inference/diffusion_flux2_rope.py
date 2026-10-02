@@ -139,7 +139,9 @@ def _kernel() -> Optional[Callable]:
     return launch
 
 
-def _eligible(x: Any, freqs_cis: Any, use_real: bool, use_real_unbind_dim: int, sequence_dim: int) -> bool:
+def _eligible(
+    x: Any, freqs_cis: Any, use_real: bool, use_real_unbind_dim: int, sequence_dim: int
+) -> bool:
     import torch
 
     if not use_real or use_real_unbind_dim != -1 or sequence_dim != 1:
@@ -190,7 +192,11 @@ def _fused_apply_rotary_emb(
     )
 
 
-def install(dtype: Any, device: Any = "cuda", logger: Any = None) -> bool:
+def install(
+    dtype: Any,
+    device: Any = "cuda",
+    logger: Any = None,
+) -> bool:
     """Point ``transformer_flux2.apply_rotary_emb`` at the fused kernel for an fp16 load. Idempotent; False (and
     nothing patched) when not wanted, disabled, or the diffusers module is not the shape this was built for."""
     if not wanted(dtype, device):
@@ -218,7 +224,12 @@ def install(dtype: Any, device: Any = "cuda", logger: Any = None) -> bool:
     return True
 
 
-def install_for_pipe(pipe: Any, dtype: Any, device: Any = "cuda", logger: Any = None) -> bool:
+def install_for_pipe(
+    pipe: Any,
+    dtype: Any,
+    device: Any = "cuda",
+    logger: Any = None,
+) -> bool:
     """Per-load entry: install for an fp16 FLUX.2 denoiser, otherwise make sure the stock function is back."""
     transformer = getattr(pipe, "transformer", None)
     if transformer is None or type(transformer).__module__ != _MODULE:
@@ -230,7 +241,6 @@ def install_for_pipe(pipe: Any, dtype: Any, device: Any = "cuda", logger: Any = 
 def uninstall() -> None:
     """Restore the stock function (idempotent)."""
     import sys
-
     with _LOCK:
         stock = _STOCK.pop(_ATTR, None)
         if stock is None:
