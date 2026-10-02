@@ -179,6 +179,23 @@ def test_streams_reuse_ssl_setup_without_sharing_connections(monkeypatch):
         assert first.is_closed
 
 
+def test_route_upstream_clients_reuse_ssl_setup(monkeypatch):
+    import asyncio
+
+    from routes.inference import _cancelable_nonstreaming_client
+
+    llama_cpp._local_ssl_context()
+
+    def repeated_ssl_setup(*_args, **_kwargs):
+        pytest.fail("A passthrough request must not reload CA certificates")
+
+    monkeypatch.setattr(llama_cpp.ssl, "create_default_context", repeated_ssl_setup)
+    first, second = _cancelable_nonstreaming_client(), _cancelable_nonstreaming_client()
+    assert first is not second
+    asyncio.run(first.aclose())
+    asyncio.run(second.aclose())
+
+
 def test_cancel_interrupts_a_read_blocked_on_a_mid_stream_stall(monkeypatch):
     # Mid-stream stall: the reader is parked in recv() on a long bound read timeout,
     # so response.close() alone can't wake it; the watcher must shut the socket down.

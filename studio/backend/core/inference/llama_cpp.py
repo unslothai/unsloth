@@ -40492,6 +40492,7 @@ class LlamaCppBackend:
             timeout = httpx.Timeout(read_timeout, connect = 10),
             headers = self._auth_headers,
             trust_env = False,
+            verify = _local_ssl_context(),
         ) as client:
             finished = threading.Event()
             watcher: Optional[threading.Thread] = None
