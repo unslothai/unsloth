@@ -347,6 +347,40 @@ def _load_prequant_checkpoint(path: str, **kwargs: Any) -> Any:
     return _torch_load_prequant(path, **kwargs)
 
 
+# 0 reads a pickle checkpoint headed for an accelerator into host memory instead of mapping it.
+_PREQUANT_MMAP_ENV = "UNSLOTH_DIFFUSION_PREQUANT_MMAP"
+
+
+def prequant_mmap_enabled(destination: Any) -> bool:
+    """Map only for a non-CPU destination: a host-placed module would keep the file open (Windows then cannot delete it)."""
+    import os
+
+    raw = (os.environ.get(_PREQUANT_MMAP_ENV) or "").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return False
+    dest = str(destination or "").strip().lower()
+    return bool(dest) and not dest.startswith("cpu") and dest != "meta"
+
+
+def _read_prequant_for(
+    path: str,
+    destination: Any,
+    logger: Any = None,
+) -> Any:
+    """``_load_prequant_checkpoint`` mapped when enabled; anything the mapping cannot open is re-read in full."""
+    if prequant_mmap_enabled(destination):
+        try:
+            return _load_prequant_checkpoint(path, map_location = "cpu", mmap = True)
+        except Exception as exc:  # noqa: BLE001 - retried unmapped; the real error resurfaces there
+            if logger is not None:
+                logger.info(
+                    "diffusion.prequant: mapped read failed (%s: %s); reading the checkpoint into memory",
+                    type(exc).__name__,
+                    str(exc).splitlines()[0][:200] if str(exc) else "",
+                )
+    return _load_prequant_checkpoint(path, map_location = "cpu")
+
+
 _PREQUANT_TOGGLE_TOKENS = {"1", "true", "yes", "on", "0", "false", "no", "off"}
 
 
@@ -1157,7 +1191,7 @@ def load_prequantized_transformer(
         # mutable, fetched over the network, and reached by loads that never asked for one (auto resolves an unset
         # precision to a hosted checkpoint), so a mutated file must fail to load rather than run. Both containers
         # hand back the same dict, so every check below applies to them equally.
-        ckpt = _load_prequant_checkpoint(path, map_location = "cpu")
+        ckpt = _read_prequant_for(path, placement_device or device, logger)
         if not _validate_checkpoint(
             ckpt,
             scheme,
@@ -2017,6 +2051,7 @@ def stream_prequantized_module(
         _remove_group_offload_hooks,
         _streamed_pin_plan,
         install_group_offload_buffer_restore,
+        install_group_offload_hooks_eager,
     )
 
     onload = torch.device(device)
@@ -2027,6 +2062,7 @@ def stream_prequantized_module(
         # each weight's AccumulateGrad, and swap_tensors on onload hits Int8Tensor's missing aten.view.
         module.requires_grad_(False)
         install_group_offload_buffer_restore()
+        install_group_offload_hooks_eager()
         use_stream = onload.type == "cuda" and _weights_pinnable(module)
         if onload.type == "cuda" and not use_stream:
             # Sync copies measured 16.4 s/step vs 0.8 s resident (B200): rebuild v1 int8 as pinnable Int8Tensor.
