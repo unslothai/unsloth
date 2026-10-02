@@ -705,7 +705,9 @@ def test_the_admission_marker_matches_the_route_that_emits_it():
     assert inference_route._OPENAI_ADMISSION_SSE_WAIT.startswith(runs_mod._ADMISSION_WAIT_MARKER)
     assert inference_route._OPENAI_ADMISSION_SSE_DONE.startswith(runs_mod._ADMISSION_DONE_MARKER)
     assert inference_route._OPENAI_TOOL_HEARTBEAT_SSE.startswith(runs_mod._TOOL_HEARTBEAT_MARKER)
-    assert inference_route._OPENAI_PREFILL_PROGRESS_SSE.startswith(runs_mod._PREFILL_PROGRESS_MARKER)
+    assert inference_route._OPENAI_PREFILL_PROGRESS_SSE.startswith(
+        runs_mod._PREFILL_PROGRESS_MARKER
+    )
     # And none may match the stall keep-alive, which is the opposite signal.
     for marker in (
         runs_mod._ADMISSION_WAIT_MARKER,
