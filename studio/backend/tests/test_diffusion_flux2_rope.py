@@ -197,3 +197,25 @@ def test_grad_and_bf16_calls_use_stock():
     assert torch.equal(
         fmod.apply_rotary_emb(xb, freqs, sequence_dim = 1), stock_rope(xb, freqs, sequence_dim = 1)
     )
+
+
+@needs_cuda
+def test_compiled_block_has_no_graph_break():
+    """Studio compiles FLUX.2 blocks on fp16 explicit tiers: the patch must trace as stock, never split the block."""
+    assert fr.install(torch.float16, "cuda")
+    x, freqs = _case((1, 64, 4, 32), "contiguous", torch.float32)
+    torch._dynamo.reset()
+    compiled = torch.compile(
+        lambda t: fmod.apply_rotary_emb(t, freqs, sequence_dim = 1), fullgraph = True
+    )
+    ref = torch.compile(lambda t: stock_rope(t, freqs, sequence_dim = 1), fullgraph = True)
+    assert torch.equal(compiled(x), ref(x))
+
+
+def test_call_after_uninstall_reaches_stock(fake_kernel):
+    assert fr.install_for_pipe(_Flux2Like(), torch.float16, "cuda")
+    patched = fmod.apply_rotary_emb
+    fr.uninstall()
+    x = torch.randn(1, 4, 2, 8)
+    freqs = (torch.ones(4, 8), torch.zeros(4, 8))
+    assert torch.equal(patched(x, freqs, sequence_dim = 1), x)

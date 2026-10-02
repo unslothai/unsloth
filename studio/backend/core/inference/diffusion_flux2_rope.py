@@ -28,6 +28,8 @@ _MODULE = "diffusers.models.transformers.transformer_flux2"
 _ATTR = "apply_rotary_emb"
 _LOCK = threading.Lock()
 _STOCK: dict = {}
+# Survives uninstall so a forward that looked up the patch just before teardown still reaches stock.
+_ORIGINAL: list = [None]
 
 
 def disabled() -> bool:
@@ -114,26 +116,27 @@ def _kernel() -> Optional[Callable]:
             out = torch.empty((B, S, H, D), dtype = x.dtype, device = x.device)
         half = D // 2
         block = triton.next_power_of_2(H * half)
-        _rope_fwd[(B * S,)](
-            x,
-            cos,
-            sin,
-            out,
-            S,
-            H,
-            x.stride(0),
-            x.stride(1),
-            x.stride(2),
-            cos.stride(0),
-            sin.stride(0),
-            out.stride(0),
-            out.stride(1),
-            out.stride(2),
-            HALF = half,
-            BLOCK = block,
-            num_warps = 4 if block <= 2048 else 8,
-            enable_fp_fusion = False,
-        )
+        with torch.cuda.device(x.device):
+            _rope_fwd[(B * S,)](
+                x,
+                cos,
+                sin,
+                out,
+                S,
+                H,
+                x.stride(0),
+                x.stride(1),
+                x.stride(2),
+                cos.stride(0),
+                sin.stride(0),
+                out.stride(0),
+                out.stride(1),
+                out.stride(2),
+                HALF = half,
+                BLOCK = block,
+                num_warps = 4 if block <= 2048 else 8,
+                enable_fp_fusion = False,
+            )
         return out
 
     return launch
@@ -152,10 +155,11 @@ def _eligible(
         return False
     if x.requires_grad and torch.is_grad_enabled():
         return False
-    if torch.compiler.is_compiling():
-        return False
     B, S, H, D = x.shape
     if D % 2 or x.stride(3) != 1 or x.numel() == 0:
+        return False
+    # Kernel offsets are int32.
+    if x.storage_offset() + sum((n - 1) * st for n, st in zip(x.shape, x.stride())) >= 2**31 - 1:
         return False
     cos, sin = freqs_cis
     for f in (cos, sin):
@@ -176,7 +180,18 @@ def _fused_apply_rotary_emb(
     use_real_unbind_dim: int = -1,
     sequence_dim: int = 2,
 ):
-    stock = _STOCK.get(_ATTR)
+    import torch
+
+    stock = _STOCK.get(_ATTR) or _ORIGINAL[0]
+    # Checked before _kernel(): Dynamo graph-breaks on Triton's import path, so a compiled block stays whole on stock.
+    if torch.compiler.is_compiling():
+        return stock(
+            x,
+            freqs_cis,
+            use_real = use_real,
+            use_real_unbind_dim = use_real_unbind_dim,
+            sequence_dim = sequence_dim,
+        )
     launch = _kernel()
     if launch is not None and _eligible(x, freqs_cis, use_real, use_real_unbind_dim, sequence_dim):
         try:
@@ -215,6 +230,7 @@ def install(
         if stock is None or getattr(stock, "__name__", "") != "apply_rotary_emb":
             return False
         _STOCK[_ATTR] = stock
+        _ORIGINAL[0] = stock
         setattr(mod, _ATTR, _fused_apply_rotary_emb)
     if logger is not None:
         try:
