@@ -35,6 +35,7 @@
     "studio/backend/core/inference/video.py::VideoBackend.load_pipeline::getattr(module, ...)::86844acbbf55b72b::d292431b0449f96d": 1,
     "studio/backend/core/inference/video.py::VideoBackend.load_pipeline::getattr(module, ...)::c41824474196ee55::d292431b0449f96d": 1,
     "studio/backend/core/inference/worker.py::_handle_load::trust_remote_code = True (assignment)::a751fa788de6b6e6::97e22adeee1dae84": 1,
+    "studio/backend/core/inference/worker.py::_handle_load::trust_remote_code = True (dict)::88495d6dcf04e9c8::97e22adeee1dae84": 1,
     "studio/backend/core/rag/embed_llama_server.py::LlamaServerBackend._spawn_once::subprocess.Popen::8c2adea0e9a7f0af::b7a76ea54dc4ad7e": 1,
     "studio/backend/core/training/worker.py::_attempt_package_install::subprocess.run::9f6c841d3a57e348::8f2b8798857ec79a": 1,
     "studio/backend/core/training/worker.py::run_training_process::trust_remote_code = True (dict item)::64be60c61f04074b::830a81a832bdb19c": 1,

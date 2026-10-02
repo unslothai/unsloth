@@ -4213,3 +4213,201 @@ def test_a_real_caller_of_that_helper_is_still_reported(tmp_path):
     )
     assert "subprocess.run" in _sinks(passed)
     assert "subprocess.run" in _sinks(closed_over)
+
+
+def test_a_true_name_inside_splatted_kwargs_enables_remote_code(tmp_path):
+    """`enabled = True` then `{"trust_remote_code": enabled}` splatted into a loader.
+
+    The dict, `dict(...)` and subscript spellings accepted only a literal True, so the
+    same name that is already caught when passed as a keyword went through unreported
+    once it was put in a mapping first.
+    """
+    shapes = {
+        "dict": "    kwargs = {'trust_remote_code': enabled}\n",
+        "dict_call": "    kwargs = dict(trust_remote_code = enabled)\n",
+        "subscript": "    kwargs = {}\n    kwargs['trust_remote_code'] = enabled\n",
+    }
+    for label, middle in shapes.items():
+        findings = _scan(
+            tmp_path,
+            "from transformers import AutoModel\n"
+            "def load(name):\n"
+            "    enabled = True\n"
+            + middle
+            + "    return AutoModel.from_pretrained(name, **kwargs)\n",
+            name = "sample_%s.py" % label,
+        )
+        assert any(f["sink"].startswith("trust_remote_code = True") for f in findings), label
+
+
+def test_a_false_or_forwarded_name_inside_kwargs_stays_quiet(tmp_path):
+    """The guards: the value still decides, and a forwarded parameter is the caller's."""
+    for label, head in (
+        ("false", "def load(name):\n    enabled = False\n"),
+        ("forwarded", "def load(name, enabled):\n"),
+    ):
+        findings = _scan(
+            tmp_path,
+            "from transformers import AutoModel\n"
+            + head
+            + "    kwargs = {'trust_remote_code': enabled}\n"
+            "    return AutoModel.from_pretrained(name, **kwargs)\n",
+            name = "sample_%s.py" % label,
+        )
+        assert not any(f["sink"].startswith("trust_remote_code = True") for f in findings), label
+
+
+def test_a_sink_declared_in_a_class_body_is_followed(tmp_path):
+    """`class Hooks: loader = importlib.import_module` then `Hooks.loader(parsed)`.
+
+    Only taint reasons and types left a class body, so the sink stored on the class
+    attribute could not be recovered at the call.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, importlib\n"
+        "class Hooks:\n"
+        "    loader = importlib.import_module\n"
+        "def load(blob):\n"
+        "    return Hooks.loader(json.loads(blob)['module'])\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_module_and_class_findings_carry_a_context_digest(tmp_path):
+    """A module-scope finding has a non-empty digest that moves with its guard.
+
+    Only indexed functions had one, so a finding at module or class scope was baselined
+    with an empty digest, and weakening the validation around a reviewed sink kept the
+    allowance while the call text was unchanged.
+    """
+    head = (
+        "import json, importlib\n"
+        "from huggingface_hub import hf_hub_download\n"
+        "MOD = json.load(open(hf_hub_download('r', 'c.json')))['m']\n"
+    )
+    bare = _scan(tmp_path, head + "importlib.import_module(MOD)\n", name = "bare.py")
+    guarded = _scan(
+        tmp_path,
+        head + "assert MOD in {'torch'}\nimportlib.import_module(MOD)\n",
+        name = "guarded.py",
+    )
+    first = [f["context"] for f in bare if f["tier"] == "A"]
+    second = [f["context"] for f in guarded if f["tier"] == "A"]
+    assert first and second and all(first) and all(second)
+    assert first != second
+
+
+def test_a_mapped_callback_gets_one_slot_per_iterable(tmp_path):
+    """`map(execute, fixed, parsed["commands"])` with `execute(label, command)`.
+
+    The tainted iterable was always put in slot 0, which tainted `label` and left
+    `command`, the parameter that reaches the sink, clean.
+    """
+    (tmp_path / "producer.py").write_text(
+        "import subprocess\n"
+        "def execute(label, command):\n"
+        "    return subprocess.run(command)\n",
+        encoding = "utf-8",
+    )
+    consumer = tmp_path / "consumer.py"
+    consumer.write_text(
+        "import json\nfrom producer import execute\n"
+        "def load(blob):\n"
+        "    return list(map(execute, ['a'], json.loads(blob)['commands']))\n",
+        encoding = "utf-8",
+    )
+    findings = L.scan([tmp_path / "producer.py", consumer], roots = [tmp_path])
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_mapped_callback_with_the_taint_in_the_other_slot_is_quiet(tmp_path):
+    """The guard: the slot that never reaches the sink stays clean."""
+    (tmp_path / "producer.py").write_text(
+        "import subprocess\n"
+        "def execute(label, command):\n"
+        "    return subprocess.run(command)\n",
+        encoding = "utf-8",
+    )
+    consumer = tmp_path / "consumer.py"
+    consumer.write_text(
+        "import json\nfrom producer import execute\n"
+        "def load(blob):\n"
+        "    return list(map(execute, json.loads(blob)['labels'], ['ls']))\n",
+        encoding = "utf-8",
+    )
+    findings = L.scan([tmp_path / "producer.py", consumer], roots = [tmp_path])
+    assert _sinks(findings) == set()
+
+
+def test_a_wildcard_import_binds_names_the_exporter_imported(tmp_path):
+    """`producer.py` doing `from impl import execute`, then `from producer import *`.
+
+    `import *` binds public imported names exactly like local definitions when there is
+    no `__all__`, and leaving them out meant the re-exported helper never resolved.
+    """
+    (tmp_path / "producer.py").write_text("from impl import execute\n", encoding = "utf-8")
+    (tmp_path / "impl.py").write_text(
+        "import subprocess\ndef execute(command):\n    return subprocess.run(command)\n",
+        encoding = "utf-8",
+    )
+    consumer = tmp_path / "consumer.py"
+    consumer.write_text(
+        "import json\nfrom producer import *\n"
+        "def load(blob):\n"
+        "    return execute(json.loads(blob)['command'])\n",
+        encoding = "utf-8",
+    )
+    findings = L.scan([tmp_path / "producer.py", tmp_path / "impl.py", consumer], roots = [tmp_path])
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_an_alias_of_torch_load_is_still_checked(tmp_path):
+    """`loader = torch.load` then `loader(downloaded, weights_only = False)`.
+
+    The conditional check recognised only the canonical spelling of the callee, so the
+    same unsafe unpickling through a local or module-scope name reported nothing.
+    """
+    tail = "    return loader(hf_hub_download(repo, 'w.bin'), weights_only = False)\n"
+    local = _scan(
+        tmp_path,
+        "import torch\nfrom huggingface_hub import hf_hub_download\n"
+        "def load(repo):\n    loader = torch.load\n" + tail,
+        name = "local.py",
+    )
+    at_module = _scan(
+        tmp_path,
+        "import torch\nfrom huggingface_hub import hf_hub_download\n"
+        "loader = torch.load\ndef load(repo):\n" + tail,
+        name = "at_module.py",
+    )
+    assert "torch.load(weights_only = False)" in _sinks(local)
+    assert "torch.load(weights_only = False)" in _sinks(at_module)
+
+
+def test_an_alias_of_torch_load_left_at_the_default_is_quiet(tmp_path):
+    """The guard: the alias follows the same rule as the direct call."""
+    findings = _scan(
+        tmp_path,
+        "import torch\nfrom huggingface_hub import hf_hub_download\n"
+        "def load(repo):\n"
+        "    loader = torch.load\n"
+        "    return loader(hf_hub_download(repo, 'w.bin'))\n",
+    )
+    assert _sinks(findings) == set()
+
+
+def test_a_partial_of_a_reflection_alias_does_not_crash(tmp_path):
+    """`g = getattr; partial(g, transformers)` used to index the sink table with a marker.
+
+    `getattr` is checked separately rather than through the table, so a partial wrapping
+    an alias of it must not be treated as a table sink.
+    """
+    _scan(
+        tmp_path,
+        "import json, functools, transformers\n"
+        "def load(blob):\n"
+        "    g = getattr\n"
+        "    resolve = functools.partial(g, transformers)\n"
+        "    return resolve(json.loads(blob)['cls'])\n",
+    )

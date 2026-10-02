@@ -311,6 +311,10 @@ SINKS: dict[str, tuple[tuple[int, ...], frozenset[str]]] = {
 # value of `weights_only` rather than an argument position.
 TORCH_LOAD_NAMES = frozenset({"torch.load", "load"})
 TORCH_LOAD_SINK = "torch.load(weights_only = False)"
+# How an alias of `torch.load` is recorded in the sink-alias tables. Like "getattr" it is
+# not a SINKS key, so the table check skips it and the conditional check reads it.
+TORCH_LOAD_ALIAS = "torch.load"
+_NOT_TABLE_SINKS = frozenset({"getattr", TORCH_LOAD_ALIAS})
 
 # Sinks already gated by lint_exec_literals.py / lint_dynamic_exec.py. Reported here for
 # a single view of the surface, never the reason this script exits non-zero.
@@ -452,6 +456,11 @@ def _norm_hash(node: ast.AST) -> str:
     except Exception:
         text = ast.dump(node)
     return hashlib.sha256(" ".join(text.split()).encode("utf-8")).hexdigest()[:16]
+
+
+def _norm_body_hash(statements: list) -> str:
+    """`_norm_hash` over a list of statements, for module and class bodies."""
+    return _norm_hash(ast.Module(body = list(statements), type_ignores = []))
 
 
 def _short(node: ast.AST, limit: int = 160) -> str:
@@ -937,6 +946,8 @@ class _FileFacts:
             sink = _matches_any(self.canonicals(referenced), SINKS)
             if sink is None and _matches_any(self.canonicals(referenced), {"getattr"}):
                 sink = "getattr"
+            if sink is None and _matches_any(self.canonicals(referenced), {"torch.load"}):
+                sink = TORCH_LOAD_ALIAS
             if sink is not None:
                 for name in names:
                     self.module_sink_aliases[name] = _with(self.module_sink_aliases.get(name), sink)
@@ -1001,9 +1012,12 @@ class _FileFacts:
         """What `import *` from this file binds: `__all__` if declared, else the publics."""
         if self.exported is not None:
             return self.exported
+        # Imported public names too: `from impl import execute` in the exporting file is
+        # bound by a consumer's `import *` exactly like a local definition, and leaving
+        # it out meant the re-exported helper never resolved.
         return {
             name
-            for name in list(self.functions) + list(self.classes)
+            for name in list(self.functions) + list(self.classes) + list(self.imports)
             if "." not in name and not name.startswith("_")
         }
 
@@ -2088,8 +2102,16 @@ class _TaintPass(ast.NodeVisitor):
             # subprocess.run` then `action = sys.path.insert`, keeping only the first
             # meant the partial was checked against a sink whose watched position the
             # offset had already removed, and the one it really calls was never checked.
+            # Only real table entries: a partial of a `getattr` or `torch.load` alias
+            # would otherwise index SINKS with a marker that is not a key.
             candidates_held = (
-                [direct] if direct is not None else list(self.sink_aliases.get(inner) or ())
+                [direct]
+                if direct is not None
+                else [
+                    candidate
+                    for candidate in self.sink_aliases.get(inner) or ()
+                    if candidate in SINKS
+                ]
             )
             held = candidates_held[0] if candidates_held else None
             if held is None:
@@ -2162,6 +2184,11 @@ class _TaintPass(ast.NodeVisitor):
             sink = _matches_any(self.facts.canonicals(referenced), {"getattr"})
             if sink is not None:
                 sink = "getattr"
+        if sink is None and (
+            _matches_any(self.facts.canonicals(referenced), {"torch.load"}) is not None
+        ):
+            # `loader = torch.load` then `loader(downloaded, weights_only = False)`.
+            sink = TORCH_LOAD_ALIAS
         if sink is None:
             return
         for target in node.targets:
@@ -2780,7 +2807,7 @@ class _TaintPass(ast.NodeVisitor):
                 # nothing about it.
                 for key in self._attr_keys(node.func):
                     held = held + tuple(self.state.attr_sink_aliases.get(key) or ())
-            candidates = [aliased for aliased in held if aliased != "getattr"]
+            candidates = [aliased for aliased in held if aliased not in _NOT_TABLE_SINKS]
         if not candidates:
             self._check_getattr(node)
             return
@@ -2891,13 +2918,14 @@ class _TaintPass(ast.NodeVisitor):
             or len(node.args) < 2
         ):
             return
-        for iterable in node.args[1:]:
-            if not self.tainted(iterable):
-                continue
-            invoked = ast.Call(func = node.args[0], args = [iterable], keywords = [])
-            ast.copy_location(invoked, node)
-            self._propagate_into_callee(invoked)
+        # One positional slot per iterable, in order, which is how `map` calls the
+        # callback: putting a tainted second iterable in slot 0 tainted the wrong
+        # parameter and left the one that reaches the sink clean.
+        if not any(self.tainted(iterable) for iterable in node.args[1:]):
             return
+        invoked = ast.Call(func = node.args[0], args = list(node.args[1:]), keywords = [])
+        ast.copy_location(invoked, node)
+        self._propagate_into_callee(invoked)
 
     def _check_torch_load(self, node: ast.Call) -> None:
         """`torch.load(downloaded, weights_only = False)` unpickles attacker bytes.
@@ -2908,7 +2936,10 @@ class _TaintPass(ast.NodeVisitor):
         What is unsafe is turning it off, or handing it a value that cannot be read as
         True here, and that is what this reports.
         """
-        if _matches_any(self.facts.canonicals(_call_name(node.func)), TORCH_LOAD_NAMES) is None:
+        called = _call_name(node.func)
+        if _matches_any(
+            self.facts.canonicals(called), TORCH_LOAD_NAMES
+        ) is None and TORCH_LOAD_ALIAS not in self._held_sinks(called, node):
             return
         weights_only = next(
             (keyword for keyword in node.keywords if keyword.arg == "weights_only"), None
@@ -3070,6 +3101,42 @@ def _remote_code_defaults(facts: _FileFacts) -> list[dict]:
         for child in ast.walk(owner_node):
             owners[id(child)] = owner_qualname
 
+    # Names known to hold True, per owner scope, chained to a fixpoint so `enabled =
+    # True; remote = enabled` counts. Only a literal True was accepted in the spellings
+    # below, so `kwargs = {"trust_remote_code": enabled}` splatted into a loader enabled
+    # repository code with nothing reported, while the same name passed as a keyword
+    # was already caught. Flow-insensitive, like the keyword check it mirrors.
+    true_by_owner: dict[str, set] = {}
+    assignments: dict[str, list] = {}
+    for node in ast.walk(facts.tree):
+        if isinstance(node, ast.Assign) and isinstance(node.value, (ast.Constant, ast.Name)):
+            owner = owners.get(id(node), "<module>")
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    assignments.setdefault(owner, []).append((target.id, node.value))
+    for owner, pairs in assignments.items():
+        known = set(facts.module_true_names)
+        changed = True
+        while changed:
+            changed = False
+            for name, value in pairs:
+                if name in known:
+                    continue
+                if (isinstance(value, ast.Constant) and value.value is True) or (
+                    isinstance(value, ast.Name) and value.id in known
+                ):
+                    known.add(name)
+                    changed = True
+        true_by_owner[owner] = known
+
+    def is_true(value: ast.AST, node: ast.AST) -> bool:
+        if isinstance(value, ast.Constant):
+            return value.value is True
+        if isinstance(value, ast.Name):
+            owner = owners.get(id(node), "<module>")
+            return value.id in true_by_owner.get(owner, facts.module_true_names)
+        return False
+
     def record(
         node: ast.AST,
         shape: str,
@@ -3122,8 +3189,7 @@ def _remote_code_defaults(facts: _FileFacts) -> list[dict]:
                 if (
                     isinstance(key, ast.Constant)
                     and key.value == "trust_remote_code"
-                    and isinstance(value, ast.Constant)
-                    and value.value is True
+                    and is_true(value, node)
                 ):
                     record(node, "dict", _short(node))
         elif isinstance(node, ast.Call) and _call_name(node.func).rpartition(".")[2] == "dict":
@@ -3131,17 +3197,20 @@ def _remote_code_defaults(facts: _FileFacts) -> list[dict]:
             # and splats into a loader the same way, but it is a Call rather than a Dict,
             # so neither this scan nor the call-site keyword check saw it.
             for keyword in node.keywords:
-                if (
-                    keyword.arg == "trust_remote_code"
-                    and isinstance(keyword.value, ast.Constant)
-                    and keyword.value.value is True
-                ):
+                if keyword.arg == "trust_remote_code" and is_true(keyword.value, node):
                     record(node, "dict call", _short(node))
         elif isinstance(node, ast.Assign):
-            if not (isinstance(node.value, ast.Constant) and node.value.value is True):
+            if not is_true(node.value, node):
                 continue
             for target in node.targets:
-                if isinstance(target, ast.Name) and target.id == "trust_remote_code":
+                # The bare-name spelling stays literal-only: `trust_remote_code = enabled`
+                # is how a parameter gets forwarded, and the keyword check already reads
+                # the name at the call site where it is actually used.
+                if (
+                    isinstance(target, ast.Name)
+                    and target.id == "trust_remote_code"
+                    and isinstance(node.value, ast.Constant)
+                ):
                     record(node, "assignment", _short(node))
                 # `kwargs["trust_remote_code"] = True` then `from_pretrained(**kwargs)`.
                 # The keyword never appears at the call, and the call checker cannot see
@@ -3223,6 +3292,15 @@ def _publish_class_attributes(facts: _FileFacts, qualname: str, visitor, state) 
         key = f"{facts.relative}::{owner}.{name}"
         for candidate in constructed:
             state.attr_instances[key] = _with(state.attr_instances.get(key), candidate)
+    # And the sinks: `class Hooks: loader = importlib.import_module` is a sink stored on
+    # a class attribute, and `Hooks.loader(parsed)` could not recover it because only
+    # the taint reasons left the body.
+    for name, sinks in visitor.sink_aliases.items():
+        if name in facts.module_sink_aliases and sinks == facts.module_sink_aliases[name]:
+            continue
+        key = f"{facts.relative}::{owner}.{name}"
+        for candidate in sinks:
+            state.attr_sink_aliases[key] = _with(state.attr_sink_aliases.get(key), candidate)
 
 
 # Statement kinds that can bind a class attribute. A body of nothing but a docstring,
@@ -3591,6 +3669,14 @@ def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
                 # `_class_bodies`, which the fixpoint reads from as well.
                 continue
             body.append(child)
+        # A context digest for the module body and each class body too. Only indexed
+        # functions had one, so a finding at module or class scope was baselined with an
+        # empty digest, and weakening the validation or consent guard around a reviewed
+        # sink kept its allowance as long as the call text itself did not change, which
+        # is the one thing the digest exists to stop.
+        facts.contexts.setdefault("<module>", _norm_body_hash(body))
+        for qualname, statements in class_bodies:
+            facts.contexts.setdefault(qualname, _norm_body_hash(statements))
         for qualname, statements in class_bodies:
             class_visitor, class_converged = _settle(facts, qualname, statements, state)
             if not class_converged:
