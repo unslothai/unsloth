@@ -9488,10 +9488,21 @@ def test_h3_speed_optims_get_the_denoisers_own_placement():
     assert "denoiser_offloaded" in kw
     expr = ast.unparse(kw["denoiser_offloaded"])
     names = {n.id for n in ast.walk(kw["denoiser_offloaded"]) if isinstance(n, ast.Name)}
-    assert {"denoiser_pinned", "denoiser_streamed"} <= names <= {"denoiser_pinned", "denoiser_streamed", "bool"}, expr
-    for pinned, streamed, offloaded in ((True, None, False), (True, "group", True), (False, None, True)):
-        got = eval(compile(ast.Expression(kw["denoiser_offloaded"]), "<h3>", "eval"),
-                   {"bool": bool}, {"denoiser_pinned": pinned, "denoiser_streamed": streamed})
+    assert (
+        {"denoiser_pinned", "denoiser_streamed"}
+        <= names
+        <= {"denoiser_pinned", "denoiser_streamed", "bool"}
+    ), expr
+    for pinned, streamed, offloaded in (
+        (True, None, False),
+        (True, "group", True),
+        (False, None, True),
+    ):
+        got = eval(
+            compile(ast.Expression(kw["denoiser_offloaded"]), "<h3>", "eval"),
+            {"bool": bool},
+            {"denoiser_pinned": pinned, "denoiser_streamed": streamed},
+        )
         assert bool(got) is offloaded, (expr, pinned, streamed)
     # A block-streamed denoiser installs the fused GEMM against the onload device itself.
     installs = [
