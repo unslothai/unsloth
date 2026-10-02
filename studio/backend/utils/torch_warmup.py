@@ -246,9 +246,7 @@ def _prime_nvlink_topology() -> Optional[threading.Thread]:
 _dynamo_lock = threading.Lock()
 _dynamo_done = False
 
-# Kill switch for the request-side gates (download helpers, load threads) that wait for the
-# warm's torch._dynamo import before reaching their own torch-stack import. The gates in front of
-# `import diffusers` predate it and stay on.
+# Kill switch for the request-side gates only; the gates in front of `import diffusers` stay on.
 DYNAMO_GATE_DISABLE_ENV_VAR = "UNSLOTH_STUDIO_DISABLE_DYNAMO_IMPORT_GATE"
 DYNAMO_GATE_TIMEOUT_ENV_VAR = "UNSLOTH_STUDIO_DYNAMO_IMPORT_GATE_TIMEOUT"
 _DEFAULT_DYNAMO_GATE_TIMEOUT_S = 600.0
@@ -263,15 +261,11 @@ def _dynamo_gate_timeout() -> float:
 
 
 def gate_torch_stack_import(reason: str, log = None) -> bool:
-    """Finish ``import torch._dynamo`` before ``reason`` imports anything that reaches it.
+    """Finish ``import torch._dynamo`` before ``reason`` imports anything that reaches it. True iff imported.
 
-    ``unsloth_zoo``, ``torchao`` and ``diffusers`` each enter the torch._dynamo /
-    torch._inductor import cycle, but at ``torch._inductor`` rather than at ``torch._dynamo``.
-    Started on a request thread while the warm is inside ``import torch._dynamo``, the two threads
-    take the two package locks in opposite order; CPython's deadlock detector then hands one of
-    them the half-built module, and the leftovers in sys.modules keep every later import broken
-    until a restart. Waiting on the same lock as the warm makes the request side enter the cycle
-    only once it is complete. A no-op once dynamo is imported. True iff it is."""
+    ``unsloth_zoo``, ``torchao`` and ``diffusers`` enter the dynamo / inductor import cycle at
+    ``torch._inductor``; racing the warm inside ``import torch._dynamo`` takes the two package locks
+    in opposite order, and CPython's deadlock detector leaves a half-built module in sys.modules."""
     if _dynamo_done:
         return True
     if os.environ.get(DYNAMO_GATE_DISABLE_ENV_VAR) == "1":
@@ -292,9 +286,7 @@ def ensure_dynamo_imported(
     loads open that window, not torch.compile: ``diffusers.hooks`` evaluates
     ``@torch.compiler.disable()`` at class-body time. Wins only by getting there first.
 
-    ``log``/``reason`` name the caller in the line logged when it has to wait for another
-    importer; ``timeout`` (seconds, None = forever) bounds that wait, after which it returns False
-    without importing."""
+    ``timeout`` (seconds, None = forever) bounds a wait on another importer; False on expiry."""
     global _dynamo_done
     if _dynamo_done:
         return True

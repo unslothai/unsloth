@@ -75,11 +75,7 @@ def _gpu_present() -> bool:
 
 
 def _gate_torch_stack(reason: str) -> None:
-    """Let the torch warm finish ``import torch._dynamo`` before an ``unsloth_zoo`` import.
-
-    ``unsloth_zoo`` enters the torch._dynamo / torch._inductor import cycle from the inductor side,
-    so a download started while the warm is inside that import can leave torch._dynamo
-    half-initialised for the life of the process. Never fatal: a missing helper means no gate."""
+    """Let the torch warm finish ``import torch._dynamo`` before an ``unsloth_zoo`` import (never fatal)."""
     try:
         from utils.torch_warmup import gate_torch_stack_import
         gate_torch_stack_import(reason)

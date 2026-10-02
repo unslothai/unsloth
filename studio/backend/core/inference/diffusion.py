@@ -2987,9 +2987,7 @@ class DiffusionBackend:
         # load_pipeline and nothing before it, so the prefetch that moves the bytes ran unrestricted. READ, not
         # popped: load_pipeline takes it too.
         local_files_only = bool(kwargs.get("local_files_only"))
-        # Before anything below can import unsloth_zoo, torchao or diffusers: each enters the
-        # torch._dynamo import cycle from the inductor side, so racing the background torch warm
-        # there leaves dynamo half-initialised until a restart. A no-op once the warm is done.
+        # Before any download: unsloth_zoo enters the dynamo cycle from the inductor side, racing the warm.
         try:
             from utils.torch_warmup import gate_torch_stack_import
             gate_torch_stack_import("image load", logger)
@@ -5125,9 +5123,8 @@ class DiffusionBackend:
         apply_diffusion_device_ordinal(target)
         device, dtype = target.device, target.dtype
 
-        # Before the first `import diffusers` below, which is the earliest dynamo consumer in
-        # load_pipeline (the download steps before it are covered by the gate at the top of
-        # _run_load and in hf_xet_fallback). Importing
+        # Before the first `import diffusers` below, the earliest dynamo consumer in load_pipeline
+        # (_run_load's downloads are gated earlier). Importing
         # diffusers alone pulls in torch._dynamo (every module in diffusers.hooks evaluates
         # @torch.compiler.disable() at class-body time), and so do the hook-based paths that
         # follow: the FP8 text-encoder cast (diffusion_precision), the step cache
