@@ -921,3 +921,37 @@ def test_host_reserve_is_a_share_of_the_cgroup_limit(monkeypatch):
     # Without a limit the physical total stands.
     monkeypatch.setattr(dm, "_cgroup_memory_limit_mib", lambda: None)
     assert "host RAM" in video._h3_native_server_pressure("cuda", None)
+
+
+def test_the_tree_stays_held_until_the_server_has_exited(monkeypatch):
+    monkeypatch.setattr("core.inference.sd_cpp_engine.is_managed_binary", lambda b: True)
+    seen = []
+
+    class _ExitingSrv:
+        def __init__(self, binary):
+            self.alive = False
+
+        def start(
+            self,
+            files,
+            *,
+            offload = None,
+            env = None,
+            extra_args = None,
+        ):
+            self.alive = True
+
+        def is_alive(self):
+            return self.alive
+
+        def stop(self):
+            # SIGTERM sent, process not reaped yet: an install must still stand down.
+            seen.append(sd_cpp_backend._external_tree_holder_alive())
+            self.alive = False
+
+    monkeypatch.setattr(srv, "SdCppServer", _ExitingSrv)
+    slot = h3.H3NativeServerSlot("/x/sd-server", _FILES)
+    slot.get(RESIDENT, {})
+    slot.release("chat load")
+    assert seen == [True]
+    assert sd_cpp_backend._external_tree_holder_alive() is False

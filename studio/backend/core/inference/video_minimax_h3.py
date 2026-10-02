@@ -1281,6 +1281,7 @@ class H3NativeServerSlot:
         self.disabled_reason: Optional[str] = None
         self.last_release_reason: Optional[str] = None
         self._server: Any = None
+        self._stopping: Any = None
         self._signature: Optional[tuple] = None
         self._lock = threading.RLock()
         self._busy = 0
@@ -1291,8 +1292,8 @@ class H3NativeServerSlot:
         _LIVE_SLOTS.add(self)
 
     def is_alive(self) -> bool:
-        server = self._server
-        return server is not None and server.is_alive()
+        # A server mid-stop still runs out of the managed tree: installs must keep waiting for it.
+        return any(s is not None and s.is_alive() for s in (self._server, self._stopping))
 
     @property
     def signature(self) -> Optional[tuple]:
@@ -1370,9 +1371,11 @@ class H3NativeServerSlot:
                 started.set()
                 self._server = None
                 self._signature = None
+                self._stopping = server
                 try:
                     server.stop()
                 finally:
+                    self._stopping = None
                     unregister_tree_holder(self)
                 raise
             started.set()
@@ -1448,6 +1451,7 @@ class H3NativeServerSlot:
         self._release_pending = None
         if server is None:
             return
+        self._stopping = server
         self.last_release_reason = reason
         try:
             import logging
@@ -1457,6 +1461,7 @@ class H3NativeServerSlot:
         try:
             server.stop()
         finally:
+            self._stopping = None
             unregister_tree_holder(self)
 
     def _cancel_timer_locked(self) -> None:
