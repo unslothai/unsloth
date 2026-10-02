@@ -1117,6 +1117,15 @@ class _FileFacts:
                 for name in names:
                     self.module_source_aliases.setdefault(name, source)
                 continue
+            # `runner = Runner()` then `invoke = runner.execute` at module scope: the
+            # method of a module-level instance, kept as the dotted spelling the
+            # instance-aware resolution reads.
+            if "." in referenced and self.module_instances.get(referenced.rpartition(".")[0]):
+                for name in names:
+                    self.module_callable_aliases[name] = _with(
+                        self.module_callable_aliases.get(name), referenced
+                    )
+                continue
             alias = self.callable_alias(referenced)
             if alias:
                 for name in names:
@@ -1167,6 +1176,21 @@ class _FileFacts:
         found = sorted(set(found))
         self._wildcard_cache[alias] = found
         return found
+
+    def module_bound_names(self) -> set:
+        """Every name bound at module scope, compound statements included."""
+        cached = self.__dict__.get("_module_bound_names")
+        if cached is None:
+            cached = set()
+            for statement in _module_statements(self.tree):
+                if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    cached.add(statement.name)
+                    continue
+                for node in ast.walk(statement):
+                    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                        cached.add(node.id)
+            self._module_bound_names = cached
+        return cached
 
     def exported_names(self) -> set:
         """What `import *` from this file binds: `__all__` if declared, else the publics."""
@@ -1843,6 +1867,9 @@ class _TaintPass(ast.NodeVisitor):
             for name in [name for name in table if name in local]:
                 table.pop(name, None)
         self.unsafe_torch_partials -= local
+        # A module `ENABLED = True` is invisible to a function that binds its own
+        # `ENABLED`; its own assignment re-adds the name if that one is True.
+        self.true_names -= local
 
     def drop_class_seeds(self) -> None:
         """A class body's own bindings start empty rather than from the module's.
@@ -2368,6 +2395,21 @@ class _TaintPass(ast.NodeVisitor):
                 self._bind(
                     self.state.tainted_globals, f"{self.facts.relative}::{target.id}", reason
                 )
+            # A mutation of a module-level container needs no `global` declaration:
+            # `SETTINGS["module"] = parsed` inside a function rewrites the shared dict, and
+            # only declared globals were published, so another function importing
+            # `SETTINGS["module"]` read clean. A plain assignment would have made the name
+            # local, so a name that reaches here without being one of this function's
+            # locals is exactly a mutation of the global.
+            elif (
+                self.qualname in self.facts.functions
+                and target.id not in self._own_locals()
+                and target.id not in self._masked
+                and target.id in self.facts.module_bound_names()
+            ):
+                self._bind(
+                    self.state.tainted_globals, f"{self.facts.relative}::{target.id}", reason
+                )
         elif isinstance(target, ast.Attribute):
             for key in self._attr_keys(target):
                 # Same tier-A-wins rule as locals and parameters. Writing unconditionally
@@ -2763,6 +2805,20 @@ class _TaintPass(ast.NodeVisitor):
                 self.callable_aliases[target.id] = _with(
                     self.callable_aliases.get(target.id), alias
                 )
+            elif isinstance(target, ast.Attribute):
+                # `self.invoke = execute` stores a plain helper as a callback, read back
+                # from another method. Same shared state the stored bound methods use.
+                for file, qualname in self.facts.targets_of(
+                    node.value,
+                    self.class_name,
+                    scope = self.qualname,
+                    instances = self.instance_types,
+                    aliases = self.callable_aliases,
+                ):
+                    for key in self._attr_keys(target):
+                        self.state.attr_callable_aliases[key] = _with(
+                            self.state.attr_callable_aliases.get(key), f"{file}::{qualname}"
+                        )
 
     def _note_construction(self, node: ast.Assign) -> None:
         """`parser = Parser()`, so `parser.parse(...)` resolves to `Parser.parse`.
@@ -2857,10 +2913,25 @@ class _TaintPass(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        if self._analysed_on_its_own(node):
+            return
         self._visit_nested(node)
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        if self._analysed_on_its_own(node):
+            return
         self._visit_nested(node)
+
+    def _analysed_on_its_own(self, node: ast.AST) -> bool:
+        """A function met while walking a module or class body, not another function.
+
+        A function defined under a module-level `if` or `try` sits inside the module
+        body's statements, so the module pass walked it as if it were a closure and
+        reported each sink in it twice, once under `<module>` and once under its own
+        name. There is no enclosing local scope for it to read at module or class level,
+        so its own pass is the whole story.
+        """
+        return self.qualname.startswith("<") and node in self.facts.functions.values()
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self._visit_nested(node)
@@ -3622,6 +3693,20 @@ class _State:
                 "held": sorted(
                     f"{key}={','.join(types)}" for key, types in self.attr_instances.items()
                 ),
+                # Every shared attribute map, not only the instances: a decoder or sink
+                # stored on an attribute after its reader had been analysed changed
+                # nothing the snapshot compared, so the fixpoint stopped one pass early
+                # and the reader's return summary was never updated.
+                "attr_sinks": sorted(
+                    f"{key}={','.join(sinks)}" for key, sinks in self.attr_sink_aliases.items()
+                ),
+                "attr_sources": sorted(
+                    f"{key}={source}" for key, source in self.attr_source_aliases.items()
+                ),
+                "attr_callables": sorted(
+                    f"{key}={','.join(callables)}"
+                    for key, callables in self.attr_callable_aliases.items()
+                ),
                 "globals": sorted(
                     f"{key}={reason}" for key, reason in self.tainted_globals.items()
                 ),
@@ -3903,6 +3988,10 @@ def _publish_class_attributes(
     # And the sinks: `class Hooks: loader = importlib.import_module` is a sink stored on
     # a class attribute, and `Hooks.loader(parsed)` could not recover it because only
     # the taint reasons left the body.
+    # And sources: `class Box: decode = json.loads` then `self.decode(blob)`.
+    for name, source in visitor.source_aliases.items():
+        if name in bound:
+            state.attr_source_aliases.setdefault(f"{facts.relative}::{owner}.{name}", source)
     for name, sinks in visitor.sink_aliases.items():
         if name not in bound:
             continue

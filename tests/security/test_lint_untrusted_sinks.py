@@ -5140,3 +5140,146 @@ def test_a_torch_load_partial_pinned_by_a_proven_name_is_quiet(tmp_path):
         "    return loader(hf_hub_download(repo, 'w.bin'))\n",
     )
     assert _sinks(findings) == set()
+
+
+def test_a_decoder_stored_after_its_reader_still_converges(tmp_path):
+    """`a_read` uses `self.decode`, which a later-sorted `z_install` assigns.
+
+    The convergence snapshot compared only held instances among the shared attribute
+    maps, so a decoder discovered after its reader changed nothing it looked at, the
+    fixpoint stopped a pass early, and the reader's return summary stayed clean.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, importlib\n"
+        "class Box:\n"
+        "    def a_read(self, blob):\n"
+        "        return self.decode(blob)['module']\n"
+        "    def z_install(self):\n"
+        "        self.decode = json.loads\n"
+        "def main(blob):\n"
+        "    return importlib.import_module(Box().a_read(blob))\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_module_container_mutated_in_a_function_is_shared_state(tmp_path):
+    """`SETTINGS["module"] = parsed` in one function, imported in another.
+
+    A mutation needs no `global` declaration, and only declared globals were published,
+    so the shared dict read clean everywhere else.
+    """
+    for label, write in (
+        ("item", "    SETTINGS['module'] = json.loads(blob)['module']\n"),
+        ("update", "    SETTINGS.update(json.loads(blob))\n"),
+    ):
+        findings = _scan(
+            tmp_path,
+            "import json, importlib\n"
+            "SETTINGS = {}\n"
+            "def parse(blob):\n" + write + "def run():\n"
+            "    return importlib.import_module(SETTINGS['module'])\n",
+            name = "sample_%s.py" % label,
+        )
+        assert "importlib.import_module" in _sinks(findings), label
+
+
+def test_a_local_container_of_the_same_name_does_not_touch_the_global(tmp_path):
+    """The guards: a function's own `SETTINGS = {}`, and a closure's list."""
+    local = _scan(
+        tmp_path,
+        "import json, importlib\n"
+        "SETTINGS = {'module': 'torch'}\n"
+        "def parse(blob):\n"
+        "    SETTINGS = {}\n"
+        "    SETTINGS['module'] = json.loads(blob)['module']\n"
+        "def run():\n"
+        "    return importlib.import_module(SETTINGS['module'])\n",
+        name = "local.py",
+    )
+    assert _sinks(local) == set()
+
+
+def test_a_plain_function_stored_as_a_callback_is_followed(tmp_path):
+    """`self.invoke = execute` in the constructor, `self.invoke(parsed)` later."""
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def execute(command):\n"
+        "    return subprocess.run(command)\n"
+        "class Holder:\n"
+        "    def __init__(self):\n"
+        "        self.invoke = execute\n"
+        "    def go(self, blob):\n"
+        "        return self.invoke(json.loads(blob)['command'])\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_source_declared_in_a_class_body_is_followed(tmp_path):
+    """`class Box: decode = json.loads` then `self.decode(blob)` in a method."""
+    findings = _scan(
+        tmp_path,
+        "import json, importlib\n"
+        "class Box:\n"
+        "    decode = json.loads\n"
+        "    def go(self, blob):\n"
+        "        return importlib.import_module(self.decode(blob)['module'])\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_local_flag_hides_a_module_true_flag_of_its_name(tmp_path):
+    """Module `ENABLED = True`, function `ENABLED = False` passed as the opt-in."""
+    shadowed = _scan(
+        tmp_path,
+        "from transformers import AutoModel\n"
+        "ENABLED = True\n"
+        "def load(name):\n"
+        "    ENABLED = False\n"
+        "    return AutoModel.from_pretrained(name, trust_remote_code = ENABLED)\n",
+        name = "shadowed.py",
+    )
+    plain = _scan(
+        tmp_path,
+        "from transformers import AutoModel\n"
+        "ENABLED = True\n"
+        "def load(name):\n"
+        "    return AutoModel.from_pretrained(name, trust_remote_code = ENABLED)\n",
+        name = "plain.py",
+    )
+    assert not any(f["sink"].startswith("trust_remote_code = True") for f in shadowed)
+    assert any(f["sink"].startswith("trust_remote_code = True") for f in plain)
+
+
+def test_a_module_level_bound_method_alias_is_followed(tmp_path):
+    """`runner = Runner()` and `invoke = runner.execute` at module scope."""
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "class Runner:\n"
+        "    def execute(self, command):\n"
+        "        return subprocess.run(command)\n"
+        "runner = Runner()\n"
+        "invoke = runner.execute\n"
+        "def load(blob):\n"
+        "    return invoke(json.loads(blob)['command'])\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_function_under_a_module_branch_is_reported_once(tmp_path):
+    """A function defined under a module-level `if` was walked by the module pass too.
+
+    It sits inside the module body's statements, so each sink in it was reported once
+    under `<module>` and once under its own name, which doubled its baseline entries.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, importlib, os\n"
+        "if os.environ.get('X'):\n"
+        "    def load(blob):\n"
+        "        return importlib.import_module(json.loads(blob)['m'])\n",
+    )
+    reported = [(f["qualname"], f["sink"]) for f in findings if f["tier"] == "A"]
+    assert reported == [("load", "importlib.import_module")]
