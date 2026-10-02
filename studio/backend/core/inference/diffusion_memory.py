@@ -2119,6 +2119,19 @@ def refine_plan_from_loaded_weights(
         return plan
 
 
+def _placed_on(tensor: Any, device_type: str, is_torchao: Callable[[Any], bool]) -> bool:
+    """Whether ``tensor``'s storage is on ``device_type``. A torchao subclass is judged by its inner tensors: after a
+    streamed offload its wrapper can still report the onload device while its data and scales sit on the host."""
+    if is_torchao(tensor):
+        try:
+            names, _ = tensor.__tensor_flatten__()
+            inner = [getattr(tensor, n) for n in names]
+            return all(getattr(t, "device", tensor.device).type == device_type for t in inner)
+        except Exception:  # noqa: BLE001 - unflattenable: move it, the swap is idempotent
+            return False
+    return tensor.device.type == device_type
+
+
 def _keep_groups_resident(
     module: Any,
     room_mib: int,
@@ -2190,7 +2203,7 @@ def _keep_groups_resident(
                 continue
             cpu = getattr(group, "cpu_param_dict", None) or {}
             for t in tensors:
-                if t.device.type == onload.type:
+                if _placed_on(t, onload.type, is_torchao):
                     continue
                 moved = cpu.get(t, t).to(onload)
                 if is_torchao(t):
@@ -2631,6 +2644,36 @@ def _background_pin_enabled() -> bool:
         "false",
         "no",
     )
+
+
+_DENOISER_NAMES = ("transformer", "transformer_2", "unconditional_transformer", "unet")
+
+
+def denoisers_pinned_resident(pipe: Any) -> bool:
+    """Whether the final placement left every denoiser in place: each one carries no offload hook, or only
+    group-offload hooks whose groups the measured placement pinned whole (``_keep_groups_resident``), and at least
+    one was pinned. Such a denoiser does not move per forward, so levers keyed on residency may engage; its hooks stay
+    so an oversized request can stream it again (``release_resident_groups``)."""
+    pinned = False
+    for name in _DENOISER_NAMES:
+        module = getattr(pipe, name, None)
+        if module is None:
+            continue
+        try:
+            if any(getattr(sub, "_hf_hook", None) is not None for sub in module.modules()):
+                return False  # accelerate (model / sequential) offload moves it
+        except Exception:  # noqa: BLE001 - unreadable: assume it moves
+            return False
+        groups = _offload_groups(module)
+        if not groups:
+            registry = getattr(module, "_diffusers_hook", None)
+            if any("offload" in str(key) for key in (getattr(registry, "hooks", None) or {})):
+                return False
+            continue
+        if not all(getattr(g, "_unsloth_resident", False) for g in groups):
+            return False
+        pinned = True
+    return pinned
 
 
 def _offload_groups(module: Any) -> list:

@@ -594,6 +594,39 @@ def apply_speed_optims(
     return applied
 
 
+def engage_pinned_denoisers(pipe: Any, applied: dict, logger: Any = None) -> dict:
+    """Engage the int8 fused-dequant GEMM that ``apply_speed_optims`` refused because the PLAN streamed the denoiser,
+    once the final placement pinned every denoiser offload group (``denoisers_pinned_resident``). Call after placement
+    and before the first forward (the regional compile traces the Linears lazily); a no-op unless the DiT compiled.
+
+    CUDA graphs stay off: the pinned groups keep their hooks so an oversized request can stream them again, which
+    would leave a graph replaying freed weight pointers, and the copy-stream wait those hooks keep runs a side-stream
+    synchronize inside the forward, which invalidates a capture."""
+    if getattr(pipe, "_unsloth_cuda_graph_reason", None) == "offload active":
+        try:
+            pipe._unsloth_cuda_graph_reason = "denoiser pinned resident under offload hooks"
+        except Exception:  # noqa: BLE001
+            pass
+    if not applied.get("compiled") or applied.get("int8_gemm"):
+        return applied
+    try:
+        from .diffusion_int8_gemm import install as install_int8_gemm
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, "int8 fused-dequant gemm", exc)
+        return applied
+    for transformer in _denoiser_dits(pipe):
+        try:
+            transformer._unsloth_int8_gemm = install_int8_gemm(
+                transformer, logger, offload_active = False
+            )
+        except Exception as exc:  # noqa: BLE001 - optimisation only
+            _warn(logger, "int8 fused-dequant gemm", exc)
+    applied["int8_gemm"] = any(
+        bool(getattr(t, "_unsloth_int8_gemm", 0)) for t in _denoiser_dits(pipe)
+    )
+    return applied
+
+
 def fp16_unet_offloaded(target: Any, pipe: Any, *, offload_active: bool) -> bool:
     """An offloaded fp16 U-Net stays eager: fused QKV costs more transfer than compile saves (L4: 5.43 vs 4.86 s)."""
     return (

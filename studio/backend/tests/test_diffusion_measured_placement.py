@@ -487,3 +487,101 @@ def test_generate_releases_and_restores_resident_groups():
     finally_at = src.index("if restore_resident is not None:")
     assert "restore_resident()" in src[finally_at : finally_at + 200]
     assert "pipe._unsloth_measured_reserve = (" in src
+
+
+def _pinned_pipe(monkeypatch, resident_flags, hf_hook = False):
+    """A pipe whose transformer carries one fake offload group per flag (True = pinned by the measured placement)."""
+    torch = pytest.importorskip("torch")
+    net = torch.nn.Linear(4, 4)
+    if hf_hook:
+        net._hf_hook = object()
+    groups = [types.SimpleNamespace(_unsloth_resident = flag) for flag in resident_flags]
+    monkeypatch.setattr(dm, "_offload_groups", lambda m: groups if m is net else [])
+    return types.SimpleNamespace(transformer = net, text_encoder = torch.nn.Linear(4, 4))
+
+
+def test_denoiser_residency_follows_the_final_placement(monkeypatch):
+    """16 GB Qwen-Image-2.1: the plan streams the DiT, the measured placement pins all 35 groups. Residency must read
+    the placement (every group pinned), not the plan's stream flag."""
+    assert dm.denoisers_pinned_resident(_pinned_pipe(monkeypatch, [True] * 35))
+    # 23 of 35 (the 12 GB partial keep): the rest streams every step
+    assert not dm.denoisers_pinned_resident(_pinned_pipe(monkeypatch, [True] * 23 + [False] * 12))
+    # an accelerate hook (model / sequential offload) moves it whatever the groups say
+    assert not dm.denoisers_pinned_resident(_pinned_pipe(monkeypatch, [True] * 35, hf_hook = True))
+    # no offload groups at all: nothing was pinned (a resident plan is already resident to the speed layer)
+    assert not dm.denoisers_pinned_resident(_pinned_pipe(monkeypatch, []))
+
+
+def test_pinned_denoiser_reads_real_group_offload_hooks(monkeypatch):
+    """Real diffusers group offloading: pinned whole -> resident; an oversized request streams it again -> moving;
+    restored -> resident."""
+    torch, net = _cuda_offload_model()
+    from diffusers.hooks import apply_group_offloading
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_PARTIAL_RESIDENT", raising = False)
+    apply_group_offloading(
+        net,
+        onload_device = torch.device("cuda"),
+        offload_device = torch.device("cpu"),
+        offload_type = "block_level",
+        num_blocks_per_group = 1,
+        use_stream = True,
+        record_stream = True,
+        non_blocking = True,
+    )
+    pipe = types.SimpleNamespace(transformer = net, components = {"transformer": net})
+    assert not dm.denoisers_pinned_resident(pipe)  # hooked, nothing pinned: streams
+    assert dm._keep_groups_resident(net, 1024, "cuda") > 0
+    assert dm.denoisers_pinned_resident(pipe)
+    restore = dm.release_resident_groups(pipe, 1024)
+    assert restore is not None and not dm.denoisers_pinned_resident(pipe)
+    restore()
+    assert dm.denoisers_pinned_resident(pipe)
+
+
+def test_torchao_groups_stay_on_device_after_release_and_restore(monkeypatch):
+    """An oversized request streams the pinned groups of a torchao int8 DiT, then restore pins them again. The int8
+    wrapper can still report the onload device after a streamed offload while its data and scales sit on the host;
+    restore must judge it by the inner tensors, else the next request computes on a host weight."""
+    torch, _ = _cuda_offload_model()
+    pytest.importorskip("torchao")
+    from diffusers.hooks import apply_group_offloading
+    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_PARTIAL_RESIDENT", raising = False)
+    cfg = Int8DynamicActivationInt8WeightConfig(set_inductor_config = False)
+    if not hasattr(cfg, "version"):
+        pytest.skip("torchao without config versions")
+    cfg.version = 2
+    torch.manual_seed(0)
+    net = torch.nn.Sequential(
+        torch.nn.Linear(256, 512),
+        torch.nn.Sequential(*[torch.nn.Linear(512, 512) for _ in range(3)]),
+    ).cuda().to(torch.bfloat16)
+    quantize_(net[1], cfg)
+    x = torch.randn(64, 256, device = "cuda", dtype = torch.bfloat16)
+    with torch.no_grad():
+        ref = net(x)
+    net.to("cpu")
+    kwargs = dict(
+        onload_device = torch.device("cuda"),
+        offload_device = torch.device("cpu"),
+        offload_type = "block_level",
+        num_blocks_per_group = 1,
+        use_stream = True,
+        record_stream = True,
+        non_blocking = True,
+    )
+    apply_group_offloading(net, **dm._torchao_group_offload_kwargs(net, kwargs, [0]))
+    pipe = types.SimpleNamespace(transformer = net, components = {"transformer": net})
+    assert dm._keep_groups_resident(net, 1024, "cuda") > 0
+    with torch.no_grad():
+        assert torch.equal(net(x), ref)
+        restore = dm.release_resident_groups(pipe, 1024)
+        assert restore is not None
+        for _ in range(2):
+            assert torch.equal(net(x), ref)
+        restore()
+        for lin in net[1]:
+            assert lin.weight.qdata.device.type == "cuda" and lin.weight.scale.device.type == "cuda"
+        assert torch.equal(net(x), ref)

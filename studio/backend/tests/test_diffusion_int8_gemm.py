@@ -197,3 +197,79 @@ def test_small_m_and_misaligned_keep_stock(forced):
     with torch.inference_mode():
         ok(torch.randn(16, 1024, device = "cuda", dtype = torch.bfloat16))  # M = 16 < _int_mm's floor: stock
     assert g8.call_count() == before
+
+
+@needs_cuda
+def test_pinned_group_offloaded_denoiser_takes_the_gemm_and_survives_release(forced, monkeypatch):
+    """The Qwen-Image-2.1 16 GB placement: diffusers group offloading on an int8 DiT with every group pinned resident.
+    The speed layer refused the GEMM on the plan; after placement engage_pinned_denoisers installs it, bit-identical to
+    the stock torchao Linear, and it stays correct when an oversized request streams the groups again and restores."""
+    pytest.importorskip("diffusers.hooks")
+    from diffusers.hooks import apply_group_offloading
+    import types as _types
+
+    from core.inference import diffusion_memory as dm
+    from core.inference import diffusion_speed as ds
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_PARTIAL_RESIDENT", raising = False)
+
+    class Dit(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj_in = torch.nn.Linear(256, 512).to(torch.bfloat16)
+            self.blocks = torch.nn.ModuleList(
+                torch.nn.Sequential(torch.nn.Linear(512, 1024), torch.nn.GELU(), torch.nn.Linear(1024, 512))
+                for _ in range(4)
+            )
+
+        def forward(self, x):
+            x = self.proj_in(x)
+            for block in self.blocks:
+                x = x + block(x)
+            return x
+
+    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+
+    torch.manual_seed(0)
+    dit = Dit().cuda().to(torch.bfloat16)
+    cfg = Int8DynamicActivationInt8WeightConfig(set_inductor_config = False)
+    if not hasattr(cfg, "version"):
+        pytest.skip("torchao without config versions")
+    cfg.version = 2  # what streams under diffusers group offloading (v1's subclass rejects is_pinned)
+    quantize_(dit.blocks, cfg)
+    x = torch.randn(300, 256, device = "cuda", dtype = torch.bfloat16)
+    with torch.no_grad():
+        ref = dit(x)
+    dit.to("cpu")
+    kwargs = dict(
+        onload_device = torch.device("cuda"),
+        offload_device = torch.device("cpu"),
+        offload_type = "block_level",
+        num_blocks_per_group = 1,
+        use_stream = True,
+        record_stream = True,
+        non_blocking = True,
+    )
+    # Studio's own torchao kwargs (frozen weights, the swap retry, the pin decision), as apply_memory_plan passes them
+    apply_group_offloading(dit, **dm._torchao_group_offload_kwargs(dit, kwargs, [0]))
+    pipe = _types.SimpleNamespace(transformer = dit, components = {"transformer": dit})
+    assert dm._keep_groups_resident(dit, 1024, "cuda") > 0
+    assert dm.denoisers_pinned_resident(pipe)
+
+    monkeypatch.setattr(ds, "_denoiser_dits", lambda p: [dit])
+    applied = {"compiled": True, "int8_gemm": False}
+    ds.engage_pinned_denoisers(pipe, applied)
+    assert applied["int8_gemm"] and dit._unsloth_int8_gemm == 8
+    # no_grad, as Studio renders an offloaded torchao denoiser (inference_mode rejects moving torchao weights)
+    with torch.no_grad():
+        before = g8.call_count()
+        assert torch.equal(dit(x), ref)
+        assert g8.call_count() == before + 8
+        restore = dm.release_resident_groups(pipe, 1024)
+        assert restore is not None and not dm.denoisers_pinned_resident(pipe)
+        for _ in range(2):  # first streamed forward traces the prefetch order
+            assert torch.equal(dit(x), ref)
+        restore()
+        assert dm.denoisers_pinned_resident(pipe)
+        assert torch.equal(dit(x), ref)
+    g8.uninstall(dit)

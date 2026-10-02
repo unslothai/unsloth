@@ -2333,3 +2333,32 @@ def test_family_compiles_regionally_closes_the_dynamo_import_window_first(monkey
     fam = types.SimpleNamespace(transformer_class = "Lumina2Transformer2DModel")
     assert family_compiles_regionally(fam) is True
     assert events[:2] == ["guard", "probe"]
+
+
+def test_pinned_denoiser_engages_the_int8_gemm_after_placement(monkeypatch):
+    """The speed layer runs on the plan (DiT streamed, so the int8 GEMM was refused); once the placement pinned every
+    group, engage_pinned_denoisers installs it with offload_active False, and only on a compiled DiT."""
+    calls = []
+    fake = types.ModuleType("core.inference.diffusion_int8_gemm")
+
+    def _install(transformer, logger = None, offload_active = False):
+        calls.append(offload_active)
+        return 0 if offload_active else 60
+
+    fake.install = _install
+    monkeypatch.setitem(sys.modules, "core.inference.diffusion_int8_gemm", fake)
+    dit = types.SimpleNamespace()
+    pipe = types.SimpleNamespace(_unsloth_cuda_graph_reason = "offload active")
+    monkeypatch.setattr(ds_mod, "_denoiser_dits", lambda p: [dit])
+
+    applied = {"compiled": True, "int8_gemm": False, "cuda_graph": False}
+    ds_mod.engage_pinned_denoisers(pipe, applied)
+    assert calls == [False] and applied["int8_gemm"] and dit._unsloth_int8_gemm == 60
+    # graphs stay off, with the reason naming the kept hooks rather than a streamed denoiser
+    assert not applied["cuda_graph"]
+    assert pipe._unsloth_cuda_graph_reason == "denoiser pinned resident under offload hooks"
+
+    calls.clear()
+    eager = {"compiled": False, "int8_gemm": False}
+    ds_mod.engage_pinned_denoisers(pipe, eager)
+    assert calls == [] and not eager["int8_gemm"]

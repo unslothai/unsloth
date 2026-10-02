@@ -120,6 +120,7 @@ from .diffusion_memory import (
     normalize_memory_mode,
     plan_diffusion_memory,
     plan_fits_total_capacity,
+    denoisers_pinned_resident,
     plan_keeps_transformer_resident,
     prequant_seed_device,
     raise_on_image_activation_shortfall,
@@ -155,6 +156,7 @@ from .diffusion_speed import (
     SPEED_MAX,
     SPEED_OFF,
     apply_speed_optims,
+    engage_pinned_denoisers,
     auto_dynamic_active,
     compile_dynamic,
     compile_eligible,
@@ -6888,6 +6890,10 @@ class DiffusionBackend:
                         pipe._unsloth_cuda_graphs = ()
                         pipe._unsloth_cuda_graph_reason = "offload active"
                         speed_applied["cuda_graph"] = False
+                    # The speed layer ran on the plan, before placement; the measured placement may since have pinned
+                    # every denoiser group, so residency follows the final placement.
+                    if denoisers_pinned_resident(pipe):
+                        engage_pinned_denoisers(pipe, speed_applied, logger)
 
                     # Per-control provenance for status. cpu_offload=False is the unset default, so only True is
                     # explicit.
@@ -8502,6 +8508,8 @@ class DiffusionBackend:
             and _denoiser_hooked(state.pipe),
             logger = logger,
         )
+        if denoisers_pinned_resident(state.pipe):
+            engage_pinned_denoisers(state.pipe, speed_applied, logger)
         if getattr(getattr(state.pipe, "vae", None), "_unsloth_fp16_decode", False):
             speed_applied["vae_fp16_decode"] = True
         object.__setattr__(state, "speed_mode", SPEED_DEFAULT)
