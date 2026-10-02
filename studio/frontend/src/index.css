@@ -854,7 +854,7 @@
 	--th-chart-5: #b08cff;
 }
 
-/* Cherry Cola */
+/* Cherry */
 :root[data-palette="cherry"]:not(.dark) {
 	--th-bg: #fdf6f6;
 	--th-surface: #f9ebeb;
