@@ -5893,3 +5893,54 @@ def test_objects_and_callbacks_handed_to_a_helper_are_followed(tmp_path):
         "    call_back(load, json.loads(blob)['module'])\n",
     )
     assert {"subprocess.run", "importlib.import_module"} <= _sinks(findings)
+
+
+def test_a_parsed_mapping_expanded_into_a_loader_is_reported(tmp_path):
+    """`AutoModel.from_pretrained(name, **json.loads(blob))` lets the data opt in."""
+    findings = _scan(
+        tmp_path,
+        "import json\n"
+        "from transformers import AutoModel\n"
+        "def load(name, blob):\n"
+        "    return AutoModel.from_pretrained(name, **json.loads(blob))\n",
+    )
+    quiet = _scan(
+        tmp_path,
+        "from transformers import AutoModel\n"
+        "from huggingface_hub import snapshot_download\n"
+        "def load(repo):\n"
+        "    kwargs = {'pretrained_model_name_or_path': snapshot_download(repo)}\n"
+        "    return AutoModel.from_pretrained(**kwargs)\n",
+        name = "quiet.py",
+    )
+    assert "trust_remote_code (untrusted **kwargs)" in _sinks(findings)
+    assert "trust_remote_code (untrusted **kwargs)" not in _sinks(quiet)
+
+
+def test_normcase_shell_executable_and_local_revision_aliases(tmp_path):
+    """`os.path.normcase`, `create_subprocess_shell(executable = ...)`, `revision = "main"`."""
+    findings = _scan(
+        tmp_path,
+        "import asyncio, json, os, sys\n"
+        "from huggingface_hub import snapshot_download\n"
+        "def a(repo):\n"
+        "    sys.path.append(os.path.normcase(snapshot_download(repo, revision = 'ab' * 20)))\n"
+        "async def b(blob):\n"
+        "    await asyncio.create_subprocess_shell('echo ok', executable = json.loads(blob)['shell'])\n"
+        "def c(repo):\n"
+        "    revision = 'main'\n"
+        "    sys.path.insert(0, snapshot_download(repo, revision = revision))\n",
+    )
+    sinks = _sinks(findings)
+    assert {"sys.path.append", "asyncio.create_subprocess_shell", "unpinned code fetch"} <= sinks
+
+
+def test_a_full_run_reports_allowances_for_deleted_files(monkeypatch):
+    """A whole-repository run checks the complete baseline, deleted files included."""
+    monkeypatch.setattr(L, "scan", lambda targets, **kwargs: [])
+    monkeypatch.setattr(
+        L,
+        "_load_baseline",
+        lambda: {"gone_for_good.py::f::importlib.import_module::0::0": 1},
+    )
+    assert L.main([]) != 0

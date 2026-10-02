@@ -267,9 +267,9 @@ SINKS: dict[str, tuple[tuple[int, ...], frozenset[str]]] = {
     "os.popen": ((0,), frozenset()),
     # The async spellings run a program exactly as the blocking ones do.
     "asyncio.create_subprocess_exec": ((0,), frozenset({"program", "executable"})),
-    "asyncio.create_subprocess_shell": ((0,), frozenset({"cmd"})),
+    "asyncio.create_subprocess_shell": ((0,), frozenset({"cmd", "executable"})),
     "create_subprocess_exec": ((0,), frozenset({"program", "executable"})),
-    "create_subprocess_shell": ((0,), frozenset({"cmd"})),
+    "create_subprocess_shell": ((0,), frozenset({"cmd", "executable"})),
     # executable beside args: it names the program that actually runs, so a fixed argv
     # with a tainted executable executes the tainted one. Only args was inspected.
     "subprocess.run": ((0,), frozenset({"args", "executable"})),
@@ -357,6 +357,21 @@ MODULE_ISH_NAMES = frozenset(
 
 # Loaders that take a `trust_remote_code`. A True literal here, or a default of True on a
 # first-party function that forwards into one, is consent the user did not give.
+# Sources whose result is a mapping with attacker-chosen keys.
+_DESERIALIZERS = frozenset(
+    {
+        "json.load",
+        "json.loads",
+        "yaml.load",
+        "yaml.safe_load",
+        "yaml.full_load",
+        "tomllib.load",
+        "tomllib.loads",
+        "toml.load",
+        "toml.loads",
+    }
+)
+
 # `sys.path[:] = [downloaded] + sys.path` and friends: the same import-path injection
 # as `sys.path.insert`, written as an assignment so no call reaches the sink table.
 SYS_PATH_ASSIGN_SINK = "sys.path (assignment)"
@@ -2255,6 +2270,7 @@ class _TaintPass(ast.NodeVisitor):
                 "io.StringIO",
                 "os.path.basename",
                 "os.path.normpath",
+                "os.path.normcase",
                 "os.path.splitext",
             },
         ):
@@ -3971,6 +3987,27 @@ class _TaintPass(ast.NodeVisitor):
                 self._record(node, sink, reason, _short(argument))
                 return
 
+    def _parsed_mapping(self, value: ast.AST) -> str | None:
+        """The deserialiser behind `value`, when `value` is a parsed mapping itself."""
+        if isinstance(value, ast.Name):
+            own = self.facts.functions.get(self.qualname)
+            body = own if own is not None else self.facts.tree
+            for child in ast.walk(body):
+                if isinstance(child, ast.Assign) and any(
+                    isinstance(t, ast.Name) and t.id == value.id for t in child.targets
+                ):
+                    reason = self._parsed_mapping(child.value)
+                    if reason:
+                        return reason
+            return None
+        if isinstance(value, ast.Subscript):
+            return self._parsed_mapping(value.value)
+        if isinstance(value, ast.Call):
+            source = _matches_any(self.facts.canonicals(_call_name(value.func)), _DESERIALIZERS)
+            if source:
+                return self.tainted(value)
+        return None
+
     def _partial_inner(self, call: ast.Call) -> str:
         """The callee a `functools.partial(callee, ...)` call wraps, else ""."""
         if (
@@ -4012,6 +4049,24 @@ class _TaintPass(ast.NodeVisitor):
         if not name:
             return
         for keyword in node.keywords:
+            # `from_pretrained(name, **json.loads(blob))`: the mapping chooses its own
+            # keys, `trust_remote_code` among them.
+            if keyword.arg is None:
+                # Only a mapping that IS parsed data chooses its keys: the deserialiser
+                # call itself, or a local bound straight to one. A kwargs dict built key
+                # by key, a literal with written keys, or a caller's own `**kwargs` keeps
+                # code-chosen keys even when a parsed value flows into one of them, and
+                # following taint there reported every loader in both trees.
+                reason = self._parsed_mapping(keyword.value)
+                if reason:
+                    self._record(
+                        node,
+                        "trust_remote_code (untrusted **kwargs)",
+                        reason,
+                        f"{name}(**{_short(keyword.value, 60)})",
+                        tier = "A",
+                    )
+                continue
             if keyword.arg != "trust_remote_code":
                 continue
             # A local name bound to True counts: `enabled = True` then
@@ -4569,6 +4624,20 @@ def _unpinned_code_fetches(facts: _FileFacts, reached: frozenset) -> list[dict]:
                 isinstance(default.value, str) and re.fullmatch(r"[0-9a-f]{40}", default.value)
             )
         }
+        # `revision = "main"` then `revision = revision`: a local bound to a literal
+        # that is not a commit is the same moving branch as the literal itself.
+        unpinned_params |= {
+            target.id
+            for child in ast.walk(node)
+            if isinstance(child, ast.Assign)
+            and isinstance(child.value, ast.Constant)
+            and not (
+                isinstance(child.value.value, str)
+                and re.fullmatch(r"[0-9a-f]{40}", child.value.value)
+            )
+            for target in child.targets
+            if isinstance(target, ast.Name)
+        }
         fetches: list[ast.Call] = []
         for child in ast.walk(node):
             if not isinstance(child, ast.Call):
@@ -4764,9 +4833,16 @@ def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
     files = _python_files(targets)
     if roots is None:
         roots = [REPO_ROOT]
-        backend = REPO_ROOT / "studio" / "backend"
-        if backend.is_dir():
-            roots.append(backend)
+        # Directories whose modules import each other by bare name: `studio/backend`
+        # for `utils.*`, and the shipped helpers under `docker` and `scripts`, which
+        # import siblings as `unsloth_nb_compat` rather than `docker.unsloth_nb_compat`.
+        for extra in (
+            REPO_ROOT / "studio" / "backend",
+            REPO_ROOT / "docker",
+            REPO_ROOT / "scripts",
+        ):
+            if extra.is_dir():
+                roots.append(extra)
     index = _ModuleIndex(roots, files)
 
     facts_by_path: dict[Path, _FileFacts] = {}
@@ -5235,8 +5311,10 @@ def main(argv: list[str] | None = None) -> int:
 
     baseline = _load_baseline()
     new = _unbaselined(findings, baseline = baseline)
-    # The stale check only means something for files this run looked at.
-    scanned = {_relative(path) for path in _python_files(targets)}
+    # The stale check only means something for files this run looked at, but a full
+    # run looked at everything, including files that are gone: an allowance left behind
+    # by a deleted file would otherwise be inherited if the same code came back.
+    scanned = {_relative(path) for path in _python_files(targets)} if arguments.paths else None
     stale = _stale_allowances(findings, baseline = baseline, scope = scanned)
 
     shown = [
