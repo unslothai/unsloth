@@ -35,6 +35,7 @@ import { InterfaceZoom, zoomInterfaceFromMenu } from "@/features/interface-zoom"
 import { bootstrapPersistedCredentials } from "@/features/credentials/bootstrap";
 import { SharedRunConfigLinkHandler } from "@/features/model-picker";
 import { backfillModelOverrides } from "@/features/model-picker/api/migrate-model-overrides";
+import { hydratePins } from "@/features/model-picker/components/model-selector/pins-mirror";
 import { usePersonalizationSync } from "@/features/profile";
 import { RemoteCodeConsentDialog } from "@/features/security";
 import {
@@ -467,12 +468,14 @@ function RootLayout() {
   }, [documentTitle]);
 
   // Settings predating the server override map live only here, so an API load would use
-  // app defaults. Backfill once, after auth.
+  // app defaults. Backfill once, after auth. Pins come back from the account's server copy,
+  // since an account switch clears them here.
   useEffect(() => {
     if (isAuthFlowRoute) {
       return;
     }
     void backfillModelOverrides();
+    void hydratePins();
   }, [isAuthFlowRoute]);
 
   useEffect(() => {
