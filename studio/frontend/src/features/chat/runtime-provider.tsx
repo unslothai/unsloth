@@ -37,6 +37,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
 } from "react";
@@ -191,6 +192,7 @@ import {
   listStoredChatMessages,
   listStoredChatThreads,
   markThreadIncognito,
+  registerNewThreadIdSource,
   saveStoredChatMessage,
   saveStoredChatThread,
   syncStoredChatMessages,
@@ -3290,6 +3292,17 @@ function ThreadNewChatSwitch({
   return null;
 }
 
+function NewThreadIdRegistrar(): null {
+  const aui = useAui();
+  // Register before passive effects read storage.
+  useLayoutEffect(
+    () =>
+      registerNewThreadIdSource(() => aui.threads().getState().newThreadId),
+    [aui],
+  );
+  return null;
+}
+
 function ActiveThreadSync({
   enabled,
 }: { enabled: boolean }): ReactElement | null {
@@ -3954,6 +3967,7 @@ export function ChatRuntimeProvider({
       <ChatProjectScopeContext.Provider value={projectId ?? null}>
       <ToolPaneScopeContext.Provider value={toolPaneScope(modelType, pairId)}>
         <ComparePaneContext.Provider value={Boolean(pairId)}>
+        <NewThreadIdRegistrar />
         <ActiveThreadSync
           enabled={
             modelType === "base" &&
