@@ -211,6 +211,7 @@ def test_install_is_off_on_cpu_and_with_the_kill_switch(monkeypatch):
 
 
 def test_group_offload_installs_prefetch_only_on_small_host_pipes(monkeypatch):
+    pytest.importorskip("diffusers")
     import core.inference.diffusion_memory as dm
 
     calls: list = []
@@ -316,6 +317,7 @@ def test_prefetched_encoder_is_bit_identical_to_diffusers_stream(tmp_path):
 
 def _mapped_streamed(enc, path):
     """The small-host setup: weights view a safetensors file mapping, diffusers leaf-level stream offload."""
+    pytest.importorskip("diffusers")
     from diffusers.hooks import apply_group_offloading
     from safetensors.torch import load_file, save_file
 
@@ -413,6 +415,7 @@ def test_dropped_prefetch_never_lands_in_a_reused_block(tmp_path, drop):
 def test_released_resident_groups_are_fenced():
     # release_resident_groups hands resident encoder groups back to diffusers' onload_, whose copy runs on diffusers'
     # stream next to groups this prefetcher onloads.
+    pytest.importorskip("diffusers")
     import copy
 
     import core.inference.diffusion_memory as dm
