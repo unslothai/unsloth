@@ -136,6 +136,39 @@ export function audioOptionLabel(name: string): string {
   return words ? words[0].toUpperCase() + words.slice(1) : name;
 }
 
+// Kokoro voice ids lead with a language letter and a gender letter (hexgrad/Kokoro-82M VOICES.md).
+const KOKORO_LANGUAGES: Record<string, string> = {
+  a: "American English",
+  b: "British English",
+  e: "Spanish",
+  f: "French",
+  h: "Hindi",
+  i: "Italian",
+  j: "Japanese",
+  p: "Brazilian Portuguese",
+  z: "Mandarin Chinese",
+};
+
+function titleWords(text: string): string {
+  return text
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .map((word) => word[0].toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+/** What a built-in voice is called in the picker; the request still sends the id. */
+export function audioVoiceLabel(voice: string, family?: string | null): string {
+  if (family === "kokoro_tts") {
+    const match = /^([a-z])([fm])_([a-z0-9_]+)$/.exec(voice);
+    const language = match ? KOKORO_LANGUAGES[match[1]] : undefined;
+    if (match && language) {
+      return `${titleWords(match[3])} (${language}, ${match[2] === "f" ? "female" : "male"})`;
+    }
+  }
+  return /^[a-z0-9]+(?:[_-][a-z0-9]+)*$/.test(voice) ? titleWords(voice) : voice;
+}
+
 /** A slider step for a float range: about a hundred steps, on a round number. */
 export function audioOptionFloatStep(min: number, max: number): number {
   const span = max - min;

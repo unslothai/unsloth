@@ -2819,7 +2819,7 @@ export function AudioPage({
   const capabilityLine =
     mode === "speak"
       ? ttsLoaded
-        ? audioCapabilityLine("tts", status?.audio_type)
+        ? audioCapabilityLine(musicGeneration ? "music" : "tts", status?.audio_type)
         : status?.active_model
           ? "The loaded model is not a TTS audio model."
           : "No TTS model loaded."
@@ -3166,6 +3166,7 @@ export function AudioPage({
                           values={audioOptionValues}
                           onChange={handleAudioOptionChange}
                           disabled={busy === "generating"}
+                          family={status?.audio_family}
                         />
                         {Object.keys(audioOptionValues).length > 0 ? (
                           <Button
@@ -3424,7 +3425,7 @@ export function AudioPage({
                       </div>
                     )}
                     <div className="flex items-center gap-2 text-ui-11p5 text-muted-foreground">
-                      <span>{selectedClip.model}</span>
+                      <span title={selectedClip.model}>{audioModelLabel(selectedClip.model)}</span>
                       <span>·</span>
                       <span>{formatClipDuration(selectedClip.duration_s)}</span>
                       <span className="flex-1" />
@@ -3465,7 +3466,7 @@ export function AudioPage({
                     />
                     <div className="flex items-center gap-2 text-ui-11p5 text-muted-foreground">
                       <span>
-                        {fallbackClip.model}
+                        {audioModelLabel(fallbackClip.model)}
                         {fallbackClip.saved
                           ? " · saved, waiting for the gallery"
                           : " · not saved to the gallery"}

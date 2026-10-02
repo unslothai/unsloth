@@ -17,6 +17,7 @@ const {
   audioOptionFloatStep,
   audioOptionLabel,
   audioOptionsForRequest,
+  audioVoiceLabel,
   coerceAudioOptionValue,
   missingRequiredAudioOptions,
   parseAudioOptions,
@@ -147,4 +148,14 @@ test("values are remembered per model id, whatever its casing", () => {
   // A corrupt store reads as empty rather than throwing.
   globalThis.localStorage.setItem(AUDIO_OPTIONS_STORAGE_KEY, "{not json");
   assert.deepEqual(readAudioOptionValues("audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF"), {});
+});
+
+test("built-in voices read as names, and Kokoro ids also name their language", () => {
+  assert.equal(audioVoiceLabel("af_heart", "kokoro_tts"), "Heart (American English, female)");
+  assert.equal(audioVoiceLabel("bm_george", "kokoro_tts"), "George (British English, male)");
+  assert.equal(audioVoiceLabel("zf_xiaoxiao", "kokoro_tts"), "Xiaoxiao (Mandarin Chinese, female)");
+  assert.equal(audioVoiceLabel("uncle_fu", "qwen3_tts"), "Uncle Fu");
+  // Another family's ids that happen to look like Kokoro's are not given a language.
+  assert.equal(audioVoiceLabel("af_heart", "kitten_tts"), "Af Heart");
+  assert.equal(audioVoiceLabel("Custom Voice.wav", null), "Custom Voice.wav");
 });

@@ -18,6 +18,7 @@ import {
   audioOptionDisplayValue,
   audioOptionFloatStep,
   audioOptionLabel,
+  audioVoiceLabel,
   coerceAudioOptionValue,
 } from "./audio-options";
 
@@ -34,12 +35,15 @@ export function AudioOptionFields({
   values,
   onChange,
   disabled,
+  family,
 }: {
   specs: readonly AudioOptionSpec[];
   values: AudioOptionValues;
   /** `undefined` clears the option back to the model's default. */
   onChange: (name: string, value: AudioOptionValue | undefined) => void;
   disabled?: boolean;
+  /** The loaded model's runtime family, for readable voice names. */
+  family?: string | null;
 }) {
   return (
     <>
@@ -106,7 +110,7 @@ export function AudioOptionFields({
                 <SelectContent>
                   {(spec.values ?? []).map((choice) => (
                     <SelectItem key={choice} value={choice}>
-                      {choice}
+                      {spec.name === "voice" ? audioVoiceLabel(choice, family) : choice}
                     </SelectItem>
                   ))}
                 </SelectContent>

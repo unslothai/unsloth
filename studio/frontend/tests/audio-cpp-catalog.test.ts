@@ -81,6 +81,7 @@ const { ENGLISH_ONLY_STT_MODELS, isSttModelLanguageCompatible } = await import(
   "../src/features/settings/stores/voice-settings-store.ts"
 );
 const {
+  audioCapabilityLine,
   audioModelRequiresRemoteCode,
   audioTaskFor,
   isMusicGenerationModel,
@@ -516,4 +517,11 @@ test("recommended speech and music picks are refused when the runtime cannot run
     page,
     /audioCppRuntimeProblem\(id, audioCppRuntime\.current\);\s*if \(runtimeProblem\) \{\s*toast\.error\(runtimeProblem, \{ duration: 7000 \}\);\s*return;/,
   );
+});
+
+test("the capability line names GGUF audio and music, never the runtime's internal type", () => {
+  assert.equal(audioCapabilityLine("tts", "audiocpp_tts"), "Text-to-speech · GGUF");
+  assert.equal(audioCapabilityLine("music", "audiocpp_music"), "Music generation · GGUF");
+  assert.equal(audioCapabilityLine("tts", "higgs_tts2"), "Text-to-speech · higgs_tts2");
+  assert.equal(audioCapabilityLine("stt", "ready"), "Speech-to-text · ready");
 });
