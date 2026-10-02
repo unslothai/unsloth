@@ -566,6 +566,7 @@ fn spawn_script(
     script: &Path,
     args: &[String],
     state: &InstallState,
+    extra_env: &[(&str, &str)],
 ) -> Result<
     (
         Option<std::process::ChildStdout>,
@@ -618,6 +619,9 @@ fn spawn_script(
         "UNSLOTH_DESKTOP_BACKEND_VERSION",
         crate::preflight::expected_backend_version(),
     );
+    for (name, value) in extra_env {
+        cmd.env(name, value);
+    }
 
     // We decode this child as UTF-8 below, so its Python descendants must emit
     // UTF-8 or the log fills with U+FFFD. The .ps1 entry points set these too;
@@ -852,14 +856,18 @@ pub fn run_install(
     state: InstallState,
     diagnostics: DiagnosticsState,
 ) -> Result<(), String> {
-    run_install_with_event_mode(app, state, diagnostics, InstallEventMode::Full, None)
+    run_install_with_event_mode(app, state, diagnostics, InstallEventMode::Full, None, false)
 }
 
+/// `upgrade_torch` is Settings' manual "Repair installation": the user asked for a reinstall,
+/// so the installer may move to the newest supported PyTorch instead of keeping the resident one.
+/// The startup auto-repair passes false and keeps it.
 pub(crate) fn run_install_for_repair(
     app: AppHandle,
     state: InstallState,
     diagnostics: DiagnosticsState,
     repair_group_id: String,
+    upgrade_torch: bool,
 ) -> Result<(), String> {
     run_install_with_event_mode(
         app,
@@ -867,7 +875,18 @@ pub(crate) fn run_install_for_repair(
         diagnostics,
         InstallEventMode::Repair,
         Some(repair_group_id),
+        upgrade_torch,
     )
+}
+
+/// Extra environment for the installer child. UNSLOTH_TORCH_UPGRADE=1 is install.sh's and
+/// install.ps1's opt-out from keeping an existing install's torch release.
+fn installer_env(upgrade_torch: bool) -> Vec<(&'static str, &'static str)> {
+    if upgrade_torch {
+        vec![("UNSLOTH_TORCH_UPGRADE", "1")]
+    } else {
+        Vec::new()
+    }
 }
 
 fn run_install_with_event_mode(
@@ -876,6 +895,7 @@ fn run_install_with_event_mode(
     diagnostics: DiagnosticsState,
     event_mode: InstallEventMode,
     repair_group_id: Option<String>,
+    upgrade_torch: bool,
 ) -> Result<(), String> {
     let attempt = match repair_group_id.as_deref() {
         Some(group_id) => diagnostics::begin_repair_child(&diagnostics, group_id, "install"),
@@ -920,7 +940,8 @@ fn run_install_with_event_mode(
         &format!("Using script: {}", script.display()),
     );
 
-    let (stdout, stderr) = match spawn_script(&script, &args, &state) {
+    let extra_env = installer_env(upgrade_torch);
+    let (stdout, stderr) = match spawn_script(&script, &args, &state, &extra_env) {
         Ok(handles) => handles,
         Err(msg) => {
             diagnostics::finish_attempt(
@@ -1526,6 +1547,12 @@ mod tests {
         let capped = capped_output_text(text.as_bytes());
         assert!(capped.ends_with("[elevated output truncated after 64KiB]"));
         assert!(capped.is_char_boundary(capped.len()));
+    }
+
+    #[test]
+    fn only_a_manual_repair_asks_the_installer_for_a_newer_torch() {
+        assert_eq!(installer_env(true), vec![("UNSLOTH_TORCH_UPGRADE", "1")]);
+        assert!(installer_env(false).is_empty());
     }
 
     #[test]

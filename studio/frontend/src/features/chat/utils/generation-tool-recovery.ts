@@ -458,14 +458,18 @@ export function createGenerationToolRecovery(
       if (!toolName) {
         return;
       }
+      // A save can hold this card past its cursor; minting it again duplicates the part key.
+      const toolCallId = `${backendId || "tool"}:${runId}:${seq}`;
+      entry ??= carried.find(({ part }) => {
+        const card = record(part);
+        return (
+          card?.type === "tool-call" &&
+          (card.toolCallId === toolCallId ||
+            card.generationToolCallId === `${runId}:${seq}`)
+        );
+      });
       if (!entry) {
-        entry = {
-          at,
-          part: {
-            type: "tool-call",
-            toolCallId: `${backendId || "tool"}:${runId}:${seq}`,
-          },
-        };
+        entry = { at, part: { type: "tool-call", toolCallId } };
         carried.push(entry);
       }
       const args = record(event.arguments) ?? {};

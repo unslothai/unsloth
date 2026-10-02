@@ -190,6 +190,20 @@ export function isServedByLlamaCpp(x: {
   );
 }
 
+/** Whether the backend can resume a reply stopped mid-thought: llama-server or reported MLX. */
+export function resumesThought(x: {
+  loadedIsGguf?: boolean | null;
+  loadedIsMlx?: boolean | null;
+  activeGgufVariant?: string | null;
+  activeNativePathToken?: string | null;
+  checkpoint?: string | null;
+}): boolean {
+  return (
+    isServedByLlamaCpp(x) ||
+    (!isExternalModelId(x.checkpoint) && x.loadedIsMlx === true)
+  );
+}
+
 /** The store's record of the context window a load left behind.
  *
  *  A window counts when the backend that reported it sized one. MLX always does, so its `context_length` stands

@@ -2484,6 +2484,14 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] When true, append tools from every enabled MCP server to this request's tool list.",
     )
+    mcp_image: Optional[str] = Field(
+        None,
+        max_length = 15 * 1024 * 1024,
+        description = (
+            "[x-unsloth] PNG, JPEG or WebP data URL that MCP tools with a mapped image field can "
+            "receive after the user approves each call. Never shown to the model."
+        ),
+    )
     deep_research_armed: Optional[bool] = Field(
         None,
         description = (
@@ -4653,6 +4661,11 @@ class DiffusionResolvedControl(BaseModel):
         '"prequant:<repo>/<file>", when a pre-quantized checkpoint was seeded rather than the '
         "weights being quantised in memory. Declared here or pydantic drops it and no API client "
         "ever sees the provenance. Null on every other control and on a runtime quantise.",
+    )
+    replaced: Optional[str] = Field(
+        None,
+        description = 'The picked checkpoint that did NOT run, as "gguf:<file>", when a GGUF pick whose memory plan '
+        "offloads loaded the hosted pre-quantized checkpoint (``artifact``) instead. Null otherwise.",
     )
 
 
