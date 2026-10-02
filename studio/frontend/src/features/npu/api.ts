@@ -199,13 +199,16 @@ export async function followNpuModelDownload(
   await readDownloadStream(response.body, onProgress);
 }
 
+/** The backend reported the download itself failed, as opposed to its progress stream breaking. */
+export class NpuDownloadError extends Error {}
+
 async function readDownloadStream(
   body: ReadableStream<Uint8Array>,
   onProgress: (event: NpuDownloadEvent) => void,
 ): Promise<void> {
   for await (const event of readSseJsonEvents<NpuDownloadEvent>(body)) {
     if (event.event === "error") {
-      throw new Error(event.error || "The download failed");
+      throw new NpuDownloadError(event.error || "The download failed");
     }
     onProgress(event);
     if (event.event === "complete") return;

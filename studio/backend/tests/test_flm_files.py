@@ -157,6 +157,29 @@ def test_a_server_that_ignores_range_sends_the_file_again(files, tmp_path):
     assert (tmp_path / "model.q4nx").read_bytes() == WEIGHTS
 
 
+def test_refetching_the_same_prefix_is_not_progress(files, tmp_path):
+    # A server that ignores Range and drops every connection early restarts the file each time,
+    # never passing the byte already reached; that must count as stalled, not loop forever.
+    (tmp_path / "config.json").write_bytes(CONFIG)
+    (tmp_path / "model.q4nx.partial").write_bytes(WEIGHTS[:4096])
+    files.ignore_range = True
+    files.cut_after = [1000] * 20
+    with pytest.raises(ff.FlmDownloadError, match = "model.q4nx failed"):
+        list(ff.download_files(files.model(tmp_path)))
+    assert len(files.ranges) == ff._MAX_STALLED_ATTEMPTS
+
+
+def test_a_restart_that_passes_the_furthest_byte_is_progress(files, tmp_path):
+    (tmp_path / "config.json").write_bytes(CONFIG)
+    (tmp_path / "model.q4nx.partial").write_bytes(WEIGHTS[:4096])
+    files.ignore_range = True
+    # Four stalls, a restart that gets past byte 4096, then four more stalls before it lands.
+    files.cut_after = [1000] * 4 + [6000] + [1000] * 4
+    list(ff.download_files(files.model(tmp_path)))
+    assert len(files.ranges) == 10
+    assert (tmp_path / "model.q4nx").read_bytes() == WEIGHTS
+
+
 def test_a_206_from_the_wrong_byte_is_not_appended(files, tmp_path):
     (tmp_path / "model.q4nx.partial").write_bytes(WEIGHTS[:4096])
     files.wrong_range = True

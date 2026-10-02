@@ -5,9 +5,11 @@ import { reportDownloadsActive } from "@/lib/downloads-activity";
 import { toast } from "@/lib/toast";
 import { create } from "zustand";
 import {
+  NpuDownloadError,
   type NpuModel,
   downloadNpuModel,
   followNpuModelDownload,
+  listNpuDownloads,
   listNpuModels,
 } from "./api";
 
@@ -58,11 +60,37 @@ function setProgress(id: string, percent: number | null): void {
 }
 
 const following = new Map<string, Promise<boolean>>();
+// Reconnects in a row that move the percent no further before a running pull is given up on.
+const MAX_SILENT_RECONNECTS = 5;
+const RECONNECT_DELAY_MS = 1000;
+
+/**
+ * Whether the backend still runs the model's pull: its percent if so, null if it runs none,
+ * undefined when the backend could not be asked.
+ */
+async function runningPull(
+  id: string,
+): Promise<{ percent: number | null } | null | undefined> {
+  try {
+    const running = await listNpuDownloads();
+    return running.find((download) => download.model === id) ?? null;
+  } catch {
+    return undefined;
+  }
+}
+
+function listedDownloaded(id: string): boolean {
+  return (
+    useNpuCatalogStore.getState().models?.find((model) => model.id === id)
+      ?.downloaded === true
+  );
+}
 
 /**
  * Show a model's pull until it ends, one stream per model. `follow` only joins a pull the
  * backend is already running, which replays its earlier progress; otherwise this starts one.
- * Resolves true once the model is downloaded and listed as such.
+ * A broken stream does not end a pull that the backend keeps running: it is followed again.
+ * Resolves true once the model is downloaded.
  */
 export function followNpuDownload(
   id: string,
@@ -74,41 +102,72 @@ export function followNpuDownload(
   const current = following.get(id);
   if (current) return current;
   setProgress(id, percent);
-  const onProgress = (event: { percent?: number }) => {
-    if (typeof event.percent === "number") setProgress(id, event.percent);
-  };
-  const job = (follow ? followNpuModelDownload : downloadNpuModel)(
-    id,
-    onProgress,
-  )
-    .then(
-      async () => {
+
+  const run = async (): Promise<boolean> => {
+    let joined = follow;
+    let completed = false;
+    // A followed stream replays every earlier event, so only a higher percent is progress.
+    let best = percent ?? -1;
+    let silentReconnects = 0;
+    for (;;) {
+      let advanced = false;
+      const onProgress = (event: { event: string; percent?: number }) => {
+        completed ||= event.event === "complete";
+        if (typeof event.percent === "number" && event.percent > best) {
+          best = event.percent;
+          advanced = true;
+          setProgress(id, event.percent);
+        }
+      };
+      try {
+        await (joined ? followNpuModelDownload : downloadNpuModel)(
+          id,
+          onProgress,
+        );
         // Listed before the progress clears, so the row never reads as not downloaded.
         await refreshNpuModels();
-        if (!follow) return true;
         // A followed pull can end, either way, before its stream opens; the list says how.
-        return (
-          useNpuCatalogStore.getState().models?.find((model) => model.id === id)
-            ?.downloaded === true
-        );
-      },
-      (error: unknown) => {
+        return completed || listedDownloaded(id);
+      } catch (error) {
+        silentReconnects = advanced ? 0 : silentReconnects + 1;
+        if (
+          !(error instanceof NpuDownloadError) &&
+          silentReconnects <= MAX_SILENT_RECONNECTS
+        ) {
+          const running = await runningPull(id);
+          // Still running, or the backend could not be asked yet: follow it again.
+          if (running !== null) {
+            if (running?.percent != null && running.percent > best) {
+              best = running.percent;
+              setProgress(id, running.percent);
+            }
+            joined = true;
+            await new Promise((resolve) =>
+              setTimeout(resolve, RECONNECT_DELAY_MS),
+            );
+            continue;
+          }
+        }
+        // Also lists what a failed download left, which the next one continues from.
+        await refreshNpuModels();
+        // The pull may have finished while its stream was broken.
+        if (listedDownloaded(id)) return true;
         toast.error(`Could not download ${id}`, {
           description: error instanceof Error ? error.message : String(error),
         });
-        // Lists what the failed download left, which the next one continues from.
-        void refreshNpuModels();
         return false;
-      },
-    )
-    .finally(() => {
-      following.delete(id);
-      useNpuCatalogStore.setState((state) => {
-        const progress = { ...state.progress };
-        delete progress[id];
-        return { progress };
-      });
+      }
+    }
+  };
+
+  const job = run().finally(() => {
+    following.delete(id);
+    useNpuCatalogStore.setState((state) => {
+      const progress = { ...state.progress };
+      delete progress[id];
+      return { progress };
     });
+  });
   following.set(id, job);
   return job;
 }

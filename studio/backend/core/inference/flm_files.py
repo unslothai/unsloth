@@ -28,7 +28,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 _CHUNK = 1 << 20
-# Attempts in a row that add no bytes before a download gives up; one that adds any resets it.
+# Attempts in a row that get no further into the file before a download gives up.
 _MAX_STALLED_ATTEMPTS = 5
 _RETRY_DELAY_SECONDS = 2.0
 _RETRIED_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
@@ -208,9 +208,11 @@ def _download_file(client: httpx.Client, file: FlmFile, partial: Path) -> Iterat
         partial.unlink()
         digest, offset = _hasher(file), 0
     yield offset
+    # Progress is a byte never reached before: a server that ignores Range restarts the file, and
+    # fetching the same prefix again must still count toward giving up.
+    furthest = offset
     stalled = 0
     while offset < file.size:
-        before = offset
         try:
             headers = {"Range": f"bytes={offset}-"} if offset else {}
             with client.stream("GET", file.url, headers = headers) as response:
@@ -218,7 +220,6 @@ def _download_file(client: httpx.Client, file: FlmFile, partial: Path) -> Iterat
                 if status == 200 and offset:
                     # The server ignored the Range header and sent the whole file.
                     digest, offset = _hasher(file), 0
-                    before = 0
                     yield offset
                 elif status == 206 and _resumed_from(response) != offset:
                     raise httpx.RemoteProtocolError(
@@ -239,7 +240,8 @@ def _download_file(client: httpx.Client, file: FlmFile, partial: Path) -> Iterat
             if offset < file.size:
                 raise httpx.RemoteProtocolError("the connection closed before the file ended")
         except (httpx.TransportError, httpx.HTTPStatusError) as exc:
-            stalled = 0 if offset > before else stalled + 1
+            stalled = 0 if offset > furthest else stalled + 1
+            furthest = max(furthest, offset)
             if stalled >= _MAX_STALLED_ATTEMPTS:
                 raise FlmDownloadError(f"Downloading {file.name} failed: {exc}") from exc
             logger.warning(

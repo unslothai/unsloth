@@ -28,6 +28,9 @@ function harness() {
   const listings: ReturnType<typeof deferred<{ id: string }[]>>[] = [];
   const toasts: string[] = [];
   const activity: boolean[] = [];
+  // What GET /api/npu/downloads answers: the pulls the backend is still running.
+  const running: { model: string; percent: number | null }[] = [];
+  const backend = { reachable: true };
   const pull = (follow: boolean) => (id: string, onProgress: Progress) =>
     new Promise<void>((resolve, reject) => {
       pulls.push({
@@ -50,6 +53,11 @@ function harness() {
         },
       },
       "./api": {
+        NpuDownloadError,
+        listNpuDownloads: async () => {
+          if (!backend.reachable) throw new Error("Failed to fetch");
+          return running;
+        },
         downloadNpuModel: pull(false),
         followNpuModelDownload: pull(true),
         listNpuModels: () => {
@@ -60,10 +68,110 @@ function harness() {
       },
     },
   );
-  return { store, pulls, listings, toasts, activity };
+  return { store, pulls, listings, toasts, activity, running, backend };
 }
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+class NpuDownloadError extends Error {}
+
+async function until(condition: () => boolean): Promise<void> {
+  for (let i = 0; i < 300 && !condition(); i++) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.ok(condition());
+}
+
+test("a broken stream follows the pull the backend still runs, and the quit warning holds", async () => {
+  const { store, pulls, listings, toasts, activity, running } = harness();
+  const job = store.followNpuDownload("qwen3.6-moe-35b-a3b-FLM");
+  pulls[0].onProgress({ event: "progress", percent: 12 });
+  running.push({ model: "qwen3.6-moe-35b-a3b-FLM", percent: 30 });
+  pulls[0].finish(new Error("network error"));
+  await until(() => pulls.length === 2);
+  assert.equal(pulls[1].follow, true);
+  assert.deepEqual(toasts, []);
+  assert.equal(activity.at(-1), true);
+  assert.equal(
+    store.useNpuCatalogStore.getState().progress["qwen3.6-moe-35b-a3b-FLM"],
+    30,
+  );
+  pulls[1].finish();
+  await tick();
+  listings[0].resolve([
+    { id: "qwen3.6-moe-35b-a3b-FLM", downloaded: true },
+  ] as never);
+  assert.equal(await job, true);
+  assert.equal(activity.at(-1), false);
+});
+
+test("a backend that cannot be asked yet is followed again, not given up on", async () => {
+  const { store, pulls, toasts, activity, backend } = harness();
+  void store.followNpuDownload("qwen3-8b-FLM");
+  backend.reachable = false;
+  pulls[0].finish(new TypeError("Failed to fetch"));
+  await until(() => pulls.length === 2);
+  assert.equal(pulls[1].follow, true);
+  assert.deepEqual(toasts, []);
+  assert.equal(activity.at(-1), true);
+});
+
+test("replayed progress does not reset the reconnect limit", async () => {
+  const { store, pulls, listings, toasts, running } = harness();
+  running.push({ model: "lfm2-1.2b-FLM", percent: 20 });
+  const job = store.followNpuDownload("lfm2-1.2b-FLM");
+  pulls[0].onProgress({ event: "progress", percent: 20 });
+  pulls[0].finish(new Error("network error"));
+  // Each reconnect replays the same percent and breaks again: five are allowed after the
+  // last one that moved it.
+  for (let i = 1; i <= 6; i++) {
+    await until(() => pulls.length === i + 1);
+    pulls[i].onProgress({ event: "progress", percent: 20 });
+    pulls[i].finish(new Error("network error"));
+  }
+  await until(() => listings.length === 1);
+  listings[0].resolve([]);
+  assert.equal(await job, false);
+  assert.equal(pulls.length, 7);
+  assert.deepEqual(toasts, ["Could not download lfm2-1.2b-FLM"]);
+});
+
+test("a pull that finished while its stream was broken is not reported failed", async () => {
+  const { store, pulls, listings, toasts } = harness();
+  const job = store.followNpuDownload("phi4-mini-it-4b-FLM");
+  pulls[0].finish(new Error("network error"));
+  await until(() => listings.length === 1);
+  listings[0].resolve([
+    { id: "phi4-mini-it-4b-FLM", downloaded: true },
+  ] as never);
+  assert.equal(await job, true);
+  assert.deepEqual(toasts, []);
+});
+
+test("a complete event counts even if the list refresh after it goes stale", async () => {
+  const { store, pulls, listings, running } = harness();
+  running.push({ model: "qwen3-4b-FLM", percent: 90 });
+  const job = store.followNpuDownload("qwen3-4b-FLM");
+  pulls[0].finish(new Error("network error"));
+  await until(() => pulls.length === 2);
+  pulls[1].onProgress({ event: "complete", percent: 100 });
+  pulls[1].finish();
+  await until(() => listings.length === 1);
+  listings[0].resolve([]);
+  assert.equal(await job, true);
+});
+
+test("a download the backend reports failed is not followed again", async () => {
+  const { store, pulls, listings, toasts, running } = harness();
+  running.push({ model: "gemma3-4b-FLM", percent: 50 });
+  const job = store.followNpuDownload("gemma3-4b-FLM");
+  pulls[0].finish(new NpuDownloadError("disk full"));
+  await until(() => listings.length === 1);
+  listings[0].resolve([]);
+  assert.equal(await job, false);
+  assert.equal(pulls.length, 1);
+  assert.deepEqual(toasts, ["Could not download gemma3-4b-FLM"]);
+});
 
 test("progress outlives the picker and one stream serves every follower", async () => {
   const { store, pulls, listings } = harness();
@@ -77,6 +185,8 @@ test("progress outlives the picker and one stream serves every follower", async 
     store.useNpuCatalogStore.getState().progress["qwen3-0.6b-FLM"],
     42,
   );
+  // downloadNpuModel resolves only after the stream's complete event.
+  pulls[0].onProgress({ event: "complete", percent: 100 });
   pulls[0].finish();
   await tick();
   // Still downloading until the refreshed list says otherwise, so the row never flickers back.
@@ -133,10 +243,11 @@ test("a failed pull is reported once, clears its progress, and the next try stre
   const job = store.followNpuDownload("llama3.2-1b-FLM");
   void store.followNpuDownload("llama3.2-1b-FLM");
   pulls[0].finish(new Error("connection reset"));
+  // Relisted, so the row offers to resume from what the failed pull kept.
+  await until(() => listings.length === 1);
+  listings[0].resolve([]);
   assert.equal(await job, false);
   assert.deepEqual(toasts, ["Could not download llama3.2-1b-FLM"]);
-  // Relisted, so the row offers to resume from what the failed pull kept.
-  assert.equal(listings.length, 1);
   assert.deepEqual(store.useNpuCatalogStore.getState().progress, {});
   void store.followNpuDownload("llama3.2-1b-FLM");
   assert.equal(pulls.length, 2);
