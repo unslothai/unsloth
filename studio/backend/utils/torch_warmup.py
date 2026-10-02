@@ -291,7 +291,6 @@ def ensure_dynamo_imported(
     if _dynamo_done:
         return True
     if not _dynamo_lock.acquire(blocking = False):
-        # Another thread (normally the torch warm) is importing it right now.
         waited = time.perf_counter()
         if log is not None:
             log.info(
