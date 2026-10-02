@@ -87,7 +87,12 @@ __all__ = [
     "maybe_prefetch_hf_snapshot",
     "is_moe_model",
     "install_block_swap",
+    "offload_embedding_if_tight",
+    "usable_cuda_bytes",
     "refuse_block_swap_load",
+    "block_swap_load_device",
+    "begin_block_swap_load",
+    "finish_block_swap_load",
     "trim_config_for_block_swap",
     "attach_block_swap_layers",
     "skip_swapped_checkpoint_keys",
@@ -172,6 +177,10 @@ try:
     from unsloth_zoo.block_swap import build_host_layers
 except ImportError:  # unsloth_zoo predates loading straight to host
     build_host_layers = None
+try:
+    from unsloth_zoo.block_swap import load_layers_to_host
+except ImportError:  # unsloth_zoo predates loading any architecture straight to host
+    load_layers_to_host = None
 try:
     from unsloth_zoo.block_swap import auto_swap_indices, estimate_training_reserve_bytes
 except ImportError:  # unsloth_zoo predates block_swap_layers = "auto"
@@ -6082,20 +6091,126 @@ def refuse_block_swap_load(block_swap_layers, reason):
     raise ValueError(f"Unsloth: from_pretrained(block_swap_layers = ...) {reason}")
 
 
-def _offload_embedding_for_room(model):
-    """Move a frozen, untied input embedding to host RAM unless the caller passed offload_embedding = False."""
-    if not getattr(model, "_unsloth_offload_embedding_allowed", True):
-        return False
-    embedding = model.get_input_embeddings()
-    if embedding is None or any(p.requires_grad for p in embedding.parameters()):
-        return False
-    from .loader_utils import OFFLOAD_EMBEDDING_AUTO
-    from .vision import _resolve_offload_embedding, offload_input_embedding
+def block_swap_load_device(device_map):
+    """The one CUDA card a load puts every layer on, else None: loading to host fetches onto one card."""
+    if DEVICE_TYPE_TORCH != "cuda" or not torch.cuda.is_available():
+        return None
+    target = device_map
+    if isinstance(device_map, dict):
+        if len(set(device_map.values())) != 1:
+            return None
+        target = next(iter(device_map.values()))
+    if target is None or target in ("auto", "balanced", "balanced_low_0", "sequential"):
+        return torch.cuda.current_device() if torch.cuda.device_count() == 1 else None
+    try:
+        target = torch.device("cuda", target) if isinstance(target, int) else torch.device(target)
+    except (RuntimeError, TypeError, ValueError):
+        return None
+    if target.type != "cuda":
+        return None
+    return target.index if target.index is not None else torch.cuda.current_device()
 
-    if not _resolve_offload_embedding(model, OFFLOAD_EMBEDDING_AUTO, needed = True):
+
+def begin_block_swap_load(
+    block_swap_layers,
+    device_map,
+    embeddings = False,
+):
+    """from_pretrained(block_swap_layers = N) on any architecture: the context the weight load runs in,
+    moving N decoder layers (and with `embeddings`, the large extra token tables) to host RAM as each
+    finishes loading. nullcontext when N is 0."""
+    if not block_swap_layers and not embeddings:
+        return contextlib.nullcontext()
+    if embeddings:
+        return load_layers_to_host(block_swap_layers, placement = "spread", embeddings = True)
+    return load_layers_to_host(block_swap_layers, placement = "spread")
+
+
+def finish_block_swap_load(model, state):
+    """Install the swap over the layers `begin_block_swap_load` moved, once the loader is done
+    patching (their host copies are what the slot pool streams)."""
+    if state is None or getattr(state, "layers", None) is None or not state.indices:
+        return None
+    head = model.get_output_embeddings() if hasattr(model, "get_output_embeddings") else None
+    weight = getattr(head, "weight", None)
+    device = weight.device if weight is not None and weight.device.type == "cuda" else None
+    if device is None:
+        device = torch.device("cuda", torch.cuda.current_device())
+    swapper = _new_block_swap(state.layers, state.indices, device = device, placement = "spread")
+    state.layers._unsloth_block_swap = swapper
+    model._unsloth_block_swap = swapper
+    return swapper
+
+
+# loader_utils.OFFLOAD_EMBEDDING_AUTO; loader_utils imports this module, so not imported from there.
+_OFFLOAD_EMBEDDING_AUTO = "auto"
+
+
+def _offload_embedding_for_room(model, require_frozen = True):
+    """Move the input-side embeddings lm_head does not share to host RAM, unless the caller passed
+    offload_embedding = False. After get_peft_model they must also be frozen."""
+    if getattr(model, "_unsloth_offload_embedding_mode", _OFFLOAD_EMBEDDING_AUTO) is False:
         return False
-    offload_input_embedding(model)
-    return True
+    from .vision import offload_spare_embeddings
+
+    return offload_spare_embeddings(model, require_frozen = require_frozen) > 0
+
+
+def _training_reserve_bytes(
+    model,
+    seq_len = None,
+    trainable = True,
+):
+    # Gradients at the trainable parameters' own size, AdamW's two fp32 moments and the foreach
+    # step's fp32 temporary. Before get_peft_model every parameter still says requires_grad, so a
+    # load-time check leaves them out.
+    extra = 0
+    if trainable:
+        extra = sum(
+            p.numel() * (p.element_size() + 12) for p in model.parameters() if p.requires_grad
+        )
+    seq_len = seq_len or getattr(model, "max_seq_length", None) or 2048
+    return estimate_training_reserve_bytes(model.config, seq_len, extra_bytes = extra), seq_len
+
+
+def usable_cuda_bytes(device):
+    """Bytes this process can still allocate on `device`: free card memory plus blocks torch's
+    caching allocator holds unused, capped by torch.cuda.set_per_process_memory_fraction."""
+    free, total = torch.cuda.mem_get_info(device)
+    allocated = torch.cuda.memory_allocated(device)
+    usable = free + torch.cuda.memory_reserved(device) - allocated
+    get_fraction = getattr(torch.cuda, "get_per_process_memory_fraction", None)
+    try:
+        fraction = get_fraction(device) if get_fraction is not None else 1.0
+    except Exception:
+        fraction = 1.0
+    if fraction < 1.0:
+        usable = min(usable, int(total * fraction) - allocated)
+    return max(0, int(usable))
+
+
+def offload_embedding_if_tight(
+    model,
+    seq_len = None,
+    at_load = False,
+):
+    """offload_embedding = "auto": move the input embedding to host RAM only when its GPU lacks a
+    training step's reserve (activations, logits, trainable state), on any architecture. Runs after
+    the load and again in get_peft_model, once the trainable parameters are known."""
+    if estimate_training_reserve_bytes is None or not torch.cuda.is_available():
+        return False
+    if getattr(model, "_unsloth_offload_embedding_mode", None) != _OFFLOAD_EMBEDDING_AUTO:
+        return False
+    try:
+        weight = getattr(model.get_input_embeddings(), "weight", None)
+    except Exception:
+        return False
+    if weight is None or weight.device.type != "cuda":
+        return False
+    reserve, _ = _training_reserve_bytes(model, seq_len, trainable = not at_load)
+    if usable_cuda_bytes(weight.device) >= reserve:
+        return False
+    return _offload_embedding_for_room(model, require_frozen = not at_load)
 
 
 def _auto_block_swap_indices(model, prefetch_depth):
@@ -6106,11 +6221,7 @@ def _auto_block_swap_indices(model, prefetch_depth):
             "Run `pip install --upgrade unsloth_zoo`."
         )
     layers = find_decoder_layers(model)
-    trainable = [p for p in model.parameters() if p.requires_grad]
-    # Gradients at the parameters' own size plus AdamW's two fp32 moments.
-    extra = sum(p.numel() * (p.element_size() + 8) for p in trainable)
-    seq_len = getattr(model, "max_seq_length", None) or 2048
-    reserve = estimate_training_reserve_bytes(model.config, seq_len, extra_bytes = extra)
+    reserve, seq_len = _training_reserve_bytes(model)
     indices, left = auto_swap_indices(layers, reserve, prefetch_depth)
     # Only the looked-up rows cross PCIe, so the embedding goes before any layer.
     if indices and _offload_embedding_for_room(model):

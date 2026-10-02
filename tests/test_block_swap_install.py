@@ -12,6 +12,7 @@ NAMES = (
     "_check_block_swap",
     "_new_block_swap",
     "refuse_block_swap_load",
+    "_training_reserve_bytes",
     "_auto_block_swap_indices",
     "install_block_swap",
     "trim_config_for_block_swap",
@@ -470,3 +471,64 @@ def test_auto_moves_the_embedding_before_any_layer():
     m = _Model()
     assert ns["install_block_swap"](m, "auto") is None
     assert moved == [m] and calls == []
+
+
+def _load_host_helpers(device_count = 1, cuda = True):
+    src = open(UTILS, encoding = "utf-8").read()
+    mod = ast.parse(src)
+    names = ("block_swap_load_device", "begin_block_swap_load")
+    nodes = {n.name: n for n in mod.body if isinstance(n, ast.FunctionDef) and n.name in names}
+    import contextlib, torch
+
+    seen = []
+    ns = {
+        "DEVICE_TYPE_TORCH": "cuda",
+        "contextlib": contextlib,
+        "load_layers_to_host": lambda n, **kw: seen.append((n, kw))
+        or contextlib.nullcontext("loading"),
+        "torch": types.SimpleNamespace(
+            device = torch.device,
+            cuda = types.SimpleNamespace(
+                is_available = lambda: cuda,
+                device_count = lambda: device_count,
+                current_device = lambda: 0,
+            ),
+        ),
+    }
+    for name in names:
+        exec(ast.get_source_segment(src, nodes[name]), ns)
+    return ns, seen
+
+
+@pytest.mark.parametrize(
+    "device_map, count, expected",
+    [
+        ({"": 0}, 2, 0),
+        ({"": "cuda:1"}, 2, 1),
+        ("cuda:1", 2, 1),
+        ("sequential", 1, 0),
+        ("sequential", 2, None),  # a strategy would split across the two cards
+        ({"a": 0, "b": 1}, 2, None),
+        ({"": "cpu"}, 1, None),
+        (None, 1, 0),
+    ],
+)
+def test_host_load_needs_one_card(device_map, count, expected):
+    ns, _ = _load_host_helpers(device_count = count)
+    assert ns["block_swap_load_device"](device_map) == expected
+
+
+def test_host_load_without_cuda_has_no_card():
+    ns, _ = _load_host_helpers(cuda = False)
+    assert ns["block_swap_load_device"]({"": 0}) is None
+
+
+def test_host_load_runs_for_layers_or_streamed_embeddings_only():
+    ns, seen = _load_host_helpers()
+    with ns["begin_block_swap_load"](0, {"": 0}) as state:
+        assert state is None
+    with ns["begin_block_swap_load"](0, {"": 0}, embeddings = True):
+        pass
+    with ns["begin_block_swap_load"](3, {"": 0}):
+        pass
+    assert seen == [(0, {"placement": "spread", "embeddings": True}), (3, {"placement": "spread"})]

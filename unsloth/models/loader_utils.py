@@ -497,6 +497,7 @@ def resolve_auto_block_swap(
     offload_embedding = False,
     planner_kwargs = None,
     skip_reason = None,
+    placement = "tail",
     **config_kwargs,
 ):
     """`from_pretrained(block_swap_layers = "auto")`: `(layers, device_map, embedding)`, the trailing
@@ -555,19 +556,25 @@ def resolve_auto_block_swap(
                 "it sizes one GPU or the `device_map = 'unsloth'` planner, not an explicit map"
             )
         devices = [target]
+    from ._utils import usable_cuda_bytes
+
     max_memory = {}
     for d in devices:
-        free = torch.cuda.mem_get_info(d)[0]
+        free = usable_cuda_bytes(d)
         cap = _as_bytes((requested_memory or {}).get(d)) if requested_memory else None
         max_memory[d] = free if cap is None else min(free, cap)
 
     options = {k: planner_kwargs[k] for k in _BLOCK_SWAP_PLANNER_KEYS if k in planner_kwargs}
-    if offload_embedding and not multi:
-        try:
-            if "offload_embedding" in inspect.signature(plan_block_swap).parameters:
-                options["offload_embedding"] = True
-        except (TypeError, ValueError):
-            pass
+    try:
+        planner_parameters = inspect.signature(plan_block_swap).parameters
+    except (TypeError, ValueError):
+        planner_parameters = {}
+    if offload_embedding and not multi and "offload_embedding" in planner_parameters:
+        options["offload_embedding"] = True
+    if placement != "tail" and not multi:
+        if "placement" not in planner_parameters:
+            return _none("this unsloth_zoo plans only trailing layers")
+        options["placement"] = placement
     plan = plan_block_swap(
         model_name,
         max_memory = max_memory,

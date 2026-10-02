@@ -26,6 +26,7 @@ from ._utils import per_layer_device
 from ._utils import embedding_applies_scale
 from ._utils import (
     _get_inference_mode_context_manager,
+    _offload_embedding_for_room,
     _prepare_model_for_qat,
     is_bfloat16_supported,
     get_quant_type,
@@ -2479,13 +2480,13 @@ class FastLlamaModel:
         user_config = kwargs.pop("config", None)
         block_swap_layers = kwargs.pop("block_swap_layers", 0)
         offload_embedding = kwargs.pop("offload_embedding", False)
-        _offload_embedding_allowed = offload_embedding is not False
         if offload_embedding and fast_inference:
             if offload_embedding != OFFLOAD_EMBEDDING_AUTO:
                 print(
                     "Unsloth: Not offloading embeddings; incompatible with fast_inference (vLLM)."
                 )
             offload_embedding = False
+        _offload_embedding_mode = offload_embedding
         # None: no memory plan; True / False: the block swap planner decided.
         _embedding_needed = None
         if block_swap_layers and kwargs.get("state_dict") is not None:
@@ -3138,14 +3139,23 @@ class FastLlamaModel:
             subfolder = kwargs.get("subfolder"),
             variant = kwargs.get("variant"),
         )
-        # A memory plan decides "auto"; without one "auto" is the size rule. An explicit True always asks.
-        if _embedding_needed is not None and offload_embedding == OFFLOAD_EMBEDDING_AUTO:
-            offload_embedding = _embedding_needed
-        if offload_embedding and num_labels is None:
-            if _resolve_offload_embedding(model, offload_embedding, needed = bool(_embedding_needed)):
+        # "auto" moves it only when memory is tight: the block swap plan, else free VRAM against a
+        # step's reserve, here and again in get_peft_model. An explicit True always asks.
+        model._unsloth_offload_embedding_mode = (
+            _offload_embedding_mode if num_labels is None else False
+        )
+        if num_labels is not None:
+            pass
+        elif offload_embedding == OFFLOAD_EMBEDDING_AUTO:
+            if _embedding_needed:
+                _offload_embedding_for_room(model, require_frozen = False)
+            elif _embedding_needed is None:
+                offload_embedding_if_tight(model, max_seq_length, at_load = True)
+        elif offload_embedding:
+            if _resolve_offload_embedding(model, offload_embedding):
                 offload_input_embedding(model)
-        # get_peft_model(block_swap_layers = "auto") may move it later, unless the caller said no.
-        model._unsloth_offload_embedding_allowed = _offload_embedding_allowed
+            else:
+                _offload_embedding_for_room(model, require_frozen = False)
 
         for idx, layer in enumerate(model.model.layers):
             layer.self_attn.apply_qkv = original_apply_qkv
@@ -3858,6 +3868,7 @@ class FastLlamaModel:
         model._saved_temp_tokenizer = _saved_temp_tokenizer
 
         model = FastLlamaModel.patch_peft_model(model, use_gradient_checkpointing)
+        offload_embedding_if_tight(model)
         install_block_swap(
             model, block_swap_layers, use_gradient_checkpointing = use_gradient_checkpointing
         )

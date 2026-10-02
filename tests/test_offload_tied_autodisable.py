@@ -41,6 +41,8 @@ def _load(*names):
         "os": os,
         "OFFLOAD_EMBEDDING_AUTO": "auto",
         "is_distributed": lambda: _DISTRIBUTED[0],
+        # An unsloth_zoo without the reserve estimate: "auto" keeps the size rule tested below.
+        "_zoo_reserve_estimate": None,
     }
     wanted = set(names)
     for node in mod.body:
@@ -185,7 +187,7 @@ def test_resolved_before_multidevice_hooks():
     # Hook attach returns early while offload_embedding is still True.
     call = _SRC.index("offload_embedding = _resolve_offload_embedding(")
     # Anchor on the indented CALL, not the module-level `def`.
-    hooks = _SRC.index("\n                _attach_bnb_multidevice_hooks(")
+    hooks = _SRC.index("\n                    _attach_bnb_multidevice_hooks(")
     assert call < hooks, "offload_embedding must be resolved before hook attach"
 
 
@@ -388,3 +390,72 @@ def test_a_distributed_launch_also_declines_an_explicit_request(capsys):
 def test_a_single_process_run_is_unaffected():
     with _as_platform("posix"), _card(16 * 2**30):
         assert resolve(_sized_model(int(2.5 * 2**30)), "auto") is True
+
+
+def test_auto_follows_free_memory_once_the_reserve_estimate_exists():
+    """With the estimate, `"auto"` never offloads on size alone; it waits for a memory shortfall
+    (`needed`, from offload_embedding_if_tight or the block swap planner)."""
+    _NS["_zoo_reserve_estimate"] = object()
+    try:
+        with _as_platform("posix"), _card(16 * 2**30):
+            big = _sized_model(int(2.5 * 2**30))
+            assert resolve(big, "auto") is False
+            assert resolve(big, "auto", needed = True) is True
+            assert resolve(big, True) is True
+    finally:
+        _NS["_zoo_reserve_estimate"] = None
+
+
+class _PerLayerModel(nn.Module):
+    """Tied input embedding plus a large per-layer table (Gemma 3n / 4 layout)."""
+
+    def __init__(self, device):
+        super().__init__()
+        self.embed_tokens = nn.Embedding(64, 8, device = device)
+        self.per_layer = nn.Embedding(64, 32, device = device)
+        self.lm_head = nn.Linear(8, 64, bias = False, device = device)
+        self.lm_head.weight = self.embed_tokens.weight
+
+    def get_input_embeddings(self):
+        return self.embed_tokens
+
+    def get_output_embeddings(self):
+        return self.lm_head
+
+
+def _spare_ns():
+    ns = _load(
+        "_embeddings_are_tied",
+        "_offload_embedding_unsupported_platform",
+        "_embedding_dispatch_device",
+        "_input_side_embeddings",
+        "offload_spare_embeddings",
+    )
+    ns["_EXTRA_EMBEDDING_MIN_BYTES"] = 64 * 32 * 4  # the per-layer table above, no bigger
+    moved = []
+    ns["offload_input_embedding"] = lambda model, embeddings: moved.extend(embeddings) or 1
+    return ns, moved
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a card to offload from")
+def test_tied_model_still_offloads_its_per_layer_table():
+    ns, moved = _spare_ns()
+    model = _PerLayerModel("cuda")
+    model.requires_grad_(False)
+    with _as_platform("posix"):
+        assert ns["offload_spare_embeddings"](model) == 1
+    assert moved == [model.per_layer]
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a card to offload from")
+def test_trainable_or_cpu_model_tables_stay():
+    ns, moved = _spare_ns()
+    model = _PerLayerModel("cuda")
+    with _as_platform("posix"):
+        # get_peft_model: a table still trainable is not offloaded.
+        assert ns["offload_spare_embeddings"](model, require_frozen = True) == 0
+    model = _PerLayerModel("cpu").requires_grad_(False)
+    with _as_platform("posix"):
+        # A model on the CPU has nothing to offload.
+        assert ns["offload_spare_embeddings"](model) == 0
+    assert moved == []
