@@ -17,6 +17,7 @@ base repo, exactly like the image GGUF path.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Optional
@@ -136,6 +137,17 @@ class VideoFamily:
     supports_cfg: bool = True
 
 
+# MiniMax-H3 at ComfyUI's template default (ResolutionSelector 16:9, 0.4 MP, multiple 32 -> 864x480). Both sides are
+# multiples of 32 (VAE spatial compression 16 x patch 2), the only spatial rule the diffusers modular pipeline and
+# stable-diffusion.cpp (align_image_size, multiple = vae_scale_factor 16 * down_factor 2) enforce, and 864/480 = 1.8 sits
+# inside the trained 1:4..4:1 range. UNSLOTH_VIDEO_H3_480P=0 withdraws the pair.
+def _h3_480p_presets() -> tuple[tuple[int, int], ...]:
+    flag = os.environ.get("UNSLOTH_VIDEO_H3_480P", "1").strip().lower()
+    if flag in ("0", "false", "no", "off"):
+        return ()
+    return ((864, 480), (480, 864))  # fastest
+
+
 _FAMILIES: tuple[VideoFamily, ...] = (
     VideoFamily(
         name = "minimax-h3",
@@ -165,7 +177,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             (768, 1344),
             (960, 544),  # faster
             (544, 960),  # faster
-        ),
+        )
+        + _h3_480p_presets(),
         duration_presets = (5.0, 10.0, 14.4),
         # Decimal GB resident estimates: transformer, Qwen3-VL conditioner, video+audio VAEs.
         bf16_components_gb = (66.3, 66.8, 11.1),
