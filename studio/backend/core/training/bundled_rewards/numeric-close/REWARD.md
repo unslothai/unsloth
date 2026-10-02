@@ -6,6 +6,7 @@ description: Partial credit when the number inside <answer> is close to the data
 type: numeric
 extract: {between: ['<answer>', '</answer>']}
 compare_to: answer
+reference_extract: {regex: '####\s*(.+?)\s*$'}
 bands:
   - {within: 0.0, score: 3.0}
   - {within: 0.1, score: 1.5}

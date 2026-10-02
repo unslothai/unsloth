@@ -84,6 +84,13 @@ def test_invalid_rewards_are_refused(raw, message):
         rewards.parse_reward_markdown(raw)
 
 
+def test_bundled_rewards_read_gsm8k_style_references(user_root):
+    specs = {r["name"]: r for r in rewards.list_rewards()}
+    gsm8k = "Natalia sold 48/2 = 24 clips in May.\n#### 72"
+    assert rewards.score_rule(specs["exact-answer"]["rule"], GOOD, gsm8k) == 2.0
+    assert rewards.score_rule(specs["numeric-close"]["rule"], GOOD, gsm8k) == 3.0
+
+
 def test_make_reward_func_reads_the_reference_column_and_conversational_completions():
     spec = rewards.parse_reward_markdown(
         _md("exact", "type: exact_match\nextract: {between: ['<answer>', '</answer>']}\nscore: {match: 2}")

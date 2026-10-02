@@ -136,6 +136,8 @@ def validate_rule(rule: dict) -> dict:
         if not isinstance(column, str) or not column:
             raise RewardError("compare_to must name a dataset column.")
         out["compare_to"] = column
+        # GSM8K-style references ("...reasoning #### 72") need their answer pulled out too.
+        out["reference_extract"] = _validate_extract(rule.get("reference_extract"))
         out["missing"] = _number(rule.get("missing", 0.0), "missing")
         if kind == "exact_match":
             norms = rule.get("normalize", ["strip"])
@@ -344,6 +346,10 @@ def score_rule(rule: dict, text: str, reference: Any = None) -> float:
     part = _extract(text, rule["extract"])
     if part is None or reference is None:
         return rule["missing"]
+    reference = str(reference)
+    if rule.get("reference_extract"):
+        # No match means the reference is already the bare answer.
+        reference = _extract(reference, rule["reference_extract"]) or reference
     if kind == "exact_match":
         same = _normalize(part, rule["normalize"]) == _normalize(str(reference), rule["normalize"])
         return rule["score"]["match" if same else "miss"]
