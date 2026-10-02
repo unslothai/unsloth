@@ -487,12 +487,14 @@ def test_long_audio_without_a_quiet_boundary_uses_timestamp_seek(monkeypatch):
         {
             "num_beams": 5,
             "return_timestamps": True,
+            "_stt_timestamp_overlap": True,
             "_stt_token_alignment": True,
             "_stt_skip_before_seconds": 0,
         },
         {
             "num_beams": 5,
             "return_timestamps": True,
+            "_stt_timestamp_overlap": True,
             "_stt_token_alignment": True,
             "_stt_skip_before_seconds": 1,
             "_stt_previous_text": "part 1",
@@ -596,7 +598,8 @@ def test_long_audio_with_segment_timestamps_seeks_without_token_alignment(monkey
             window = np.frombuffer(pcm, dtype = np.float32)
             starts.append(int(window[0]))
             calls.append(generate_kwargs)
-            return "part", 454400 if len(calls) == 1 else len(window)
+            text = "part 1" if len(calls) == 1 else "part 1 part 2"
+            return text, 454400 if len(calls) == 1 else len(window)
 
     sidecar = WhisperSttSidecar()
     monkeypatch.setattr(sidecar, "load", lambda _model: FakeWorker())
@@ -605,8 +608,20 @@ def test_long_audio_with_segment_timestamps_seeks_without_token_alignment(monkey
         "owner/segment-whisper", np.arange(50 * 16000, dtype = np.float32), {}
     )
 
-    assert starts == [0, 454400]
-    assert calls == [{"return_timestamps": True}, {}]
+    assert starts == [0, 438400]
+    assert calls == [
+        {
+            "return_timestamps": True,
+            "_stt_timestamp_overlap": True,
+            "_stt_skip_before_seconds": 0,
+        },
+        {
+            "return_timestamps": True,
+            "_stt_timestamp_overlap": True,
+            "_stt_skip_before_seconds": 1,
+            "_stt_previous_text": "part 1",
+        },
+    ]
 
 
 def test_unknown_language_is_rejected_before_decode_or_model_load(monkeypatch):

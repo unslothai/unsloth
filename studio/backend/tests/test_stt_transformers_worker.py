@@ -307,6 +307,20 @@ def _at(seconds):
     return _TIMESTAMP_BEGIN + round(seconds * 50)
 
 
+def test_segment_timestamps_supply_approximate_token_alignment():
+    generation_config = SimpleNamespace(
+        no_timestamps_token_id = _TIMESTAMP_BEGIN - 1, eos_token_id = _EOS
+    )
+    tokens = [_at(0), 10, 11, _at(1), _at(1), 12, _at(2)]
+
+    text_tokens, token_timestamps = worker_module._segment_token_timestamps(
+        tokens, list(range(len(tokens))), generation_config
+    )
+
+    assert text_tokens == [10, 11, 12]
+    assert token_timestamps == pytest.approx([1 / 3, 2 / 3, 1.5])
+
+
 @pytest.mark.parametrize(
     "tail, kept, consumed",
     [
@@ -351,6 +365,7 @@ def test_child_merges_the_timestamped_overlap_without_losing_new_tokens(monkeypa
         pcm,
         {
             "return_timestamps": True,
+            "_stt_timestamp_overlap": True,
             "_stt_token_alignment": True,
             "_stt_skip_before_seconds": 1,
             "_stt_previous_text": "previous text",
@@ -384,6 +399,7 @@ def test_child_keeps_an_unmatched_token_despite_an_early_alignment(monkeypatch):
         np.zeros(480000, dtype = np.float32).tobytes(),
         {
             "return_timestamps": True,
+            "_stt_timestamp_overlap": True,
             "_stt_token_alignment": True,
             "_stt_skip_before_seconds": 1,
             "_stt_previous_text": "previous text",

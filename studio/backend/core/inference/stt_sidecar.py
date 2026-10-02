@@ -1705,13 +1705,14 @@ class WhisperSttSidecar:
                     use_timestamps = True
             if use_timestamps:
                 window_generate_kwargs["return_timestamps"] = True
+                window_generate_kwargs["_stt_timestamp_overlap"] = True
+                window_generate_kwargs["_stt_skip_before_seconds"] = (
+                    skip_before / _TARGET_SAMPLE_RATE
+                )
                 if supports_token_timestamps:
                     window_generate_kwargs["_stt_token_alignment"] = True
-                    window_generate_kwargs["_stt_skip_before_seconds"] = (
-                        skip_before / _TARGET_SAMPLE_RATE
-                    )
-                    if skip_before and parts:
-                        window_generate_kwargs["_stt_previous_text"] = parts[-1]
+                if skip_before and parts:
+                    window_generate_kwargs["_stt_previous_text"] = parts[-1]
             segment = decoded_audio[start:end]
             pcm = np.ascontiguousarray(segment, dtype = np.float32).tobytes()
             text, consumed = engine.transcribe_window(pcm, window_generate_kwargs, cancel_event)
@@ -1732,7 +1733,7 @@ class WhisperSttSidecar:
                 )
             if cancel_event is not None and cancel_event.is_set():
                 raise SttTranscriptionCancelledError("Transcription cancelled.")
-            if use_timestamps and supports_token_timestamps and processed < len(decoded_audio):
+            if use_timestamps and processed < len(decoded_audio):
                 rewind = _STT_TIMESTAMP_REWIND_SECONDS * _TARGET_SAMPLE_RATE
                 if consumed <= rewind:
                     rewind = 0
