@@ -303,6 +303,10 @@ SINKS: dict[str, tuple[tuple[int, ...], frozenset[str]]] = {
     # `file` is the keyword both loaders take, and an empty set meant the named
     # spelling was inspected neither positionally nor by keyword.
     "pickle.load": ((0,), frozenset({"file"})),
+    # The object form: `pickle.Unpickler(stream).load()` runs the same reducers.
+    "pickle.Unpickler": ((0,), frozenset({"file"})),
+    "_pickle.Unpickler": ((0,), frozenset({"file"})),
+    "dill.Unpickler": ((0,), frozenset({"file"})),
     "pickle.loads": ((0,), frozenset({"data"})),
     "dill.load": ((0,), frozenset({"file"})),
     "dill.loads": ((0,), frozenset({"str"})),
@@ -702,6 +706,8 @@ class _FileFacts:
         # Class names defined in this file, so `parser = Parser()` can be recognised as
         # constructing one and `parser.parse(...)` resolved to `Parser.parse`.
         self.classes: set = set()
+        # Classes decorated `@dataclass`, whose generated `__init__` replaces any base's.
+        self.dataclasses: set = set()
         # class name -> the base names it declares, so `super().m()` can be resolved
         self.bases: dict = {}
         # qualname -> names it declares global, so a write lands in module state
@@ -848,6 +854,15 @@ class _FileFacts:
                 elif isinstance(child, ast.ClassDef):
                     self.classes.add(child.name)
                     self.classes.add(".".join(scope + [child.name]))
+                    if any(
+                        _call_name(
+                            decorator.func if isinstance(decorator, ast.Call) else decorator
+                        ).rpartition(".")[2]
+                        == "dataclass"
+                        for decorator in child.decorator_list
+                    ):
+                        self.dataclasses.add(child.name)
+                        self.dataclasses.add(".".join(scope + [child.name]))
                     declared_bases = []
                     for base in child.bases:
                         base_name = _call_name(base)
@@ -2256,7 +2271,9 @@ class _TaintPass(ast.NodeVisitor):
         # as a dataclass: the generated initialiser copies every argument onto the
         # instance, and there is no body for the summary to read that from.
         constructed = self.facts.resolve_construction(_call_name(node.func), self.qualname)
-        if constructed and not self.facts._methods_on(constructed, "__init__"):
+        if constructed and (
+            self._is_dataclass(constructed) or not self.facts._methods_on(constructed, "__init__")
+        ):
             for argument in list(node.args) + [k.value for k in node.keywords]:
                 reason = self.tainted(
                     argument.value if isinstance(argument, ast.Starred) else argument
@@ -3330,6 +3347,16 @@ class _TaintPass(ast.NodeVisitor):
         self._check_remote_code(node)
         self.generic_visit(node)
 
+    def _is_dataclass(self, constructed: str) -> bool:
+        """Whether the class a construction resolves to is decorated `@dataclass`."""
+        if constructed in self.facts.dataclasses:
+            return True
+        file, module = self.facts.index.resolve_module(constructed)
+        if file is None or not module or not constructed.startswith(module + "."):
+            return False
+        defining = self.facts.index.facts.get(file)
+        return defining is not None and constructed[len(module) + 1 :] in defining.dataclasses
+
     # Loaders that construct arbitrary Python objects from tags in the document.
     _UNSAFE_YAML_LOADERS = frozenset({"UnsafeLoader", "CUnsafeLoader", "Loader", "CLoader"})
 
@@ -3349,11 +3376,16 @@ class _TaintPass(ast.NodeVisitor):
                 self._UNSAFE_YAML_LOADERS
             ):
                 unsafe = "yaml.load"
-        if unsafe is None or not node.args:
+        stream = (
+            node.args[0]
+            if node.args
+            else next((k.value for k in node.keywords if k.arg == "stream"), None)
+        )
+        if unsafe is None or stream is None:
             return
-        reason = self.tainted(node.args[0])
+        reason = self.tainted(stream)
         if reason:
-            self._record(node, f"{unsafe}(unsafe loader)", reason, _short(node.args[0]))
+            self._record(node, f"{unsafe}(unsafe loader)", reason, _short(stream))
 
     _CONFIG_PARSERS = frozenset({"configparser.ConfigParser", "configparser.RawConfigParser"})
 
@@ -3366,7 +3398,12 @@ class _TaintPass(ast.NodeVisitor):
             and node.func.value.id in self._config_parsers()
         ):
             return
-        for argument in node.args:
+        inputs = list(node.args) + [
+            k.value
+            for k in node.keywords
+            if k.arg in ("filenames", "f", "string", "dictionary", "source")
+        ]
+        for argument in inputs:
             reason = self.tainted(argument)
             if reason:
                 self._assign(node.func.value, reason)

@@ -5801,3 +5801,50 @@ def test_a_dataclass_built_from_parsed_data_carries_it(tmp_path):
         "    return importlib.import_module(cfg.module)\n",
     )
     assert "importlib.import_module" in _sinks(findings)
+
+
+def test_keyword_streams_and_config_inputs_are_read(tmp_path):
+    """`yaml.unsafe_load(stream = ...)` and `parser.read_dict(dictionary = ...)`."""
+    findings = _scan(
+        tmp_path,
+        "import configparser, importlib, json, yaml\n"
+        "from huggingface_hub import hf_hub_download\n"
+        "def a(repo):\n"
+        "    yaml.unsafe_load(stream = open(hf_hub_download(repo, 'c.yaml')))\n"
+        "def b(blob):\n"
+        "    parser = configparser.ConfigParser()\n"
+        "    parser.read_dict(dictionary = json.loads(blob))\n"
+        "    return importlib.import_module(parser.get('plugin', 'module'))\n",
+    )
+    assert {"yaml.unsafe_load(unsafe loader)", "importlib.import_module"} <= _sinks(findings)
+
+
+def test_the_unpickler_object_form_is_a_sink(tmp_path):
+    """`pickle.Unpickler(open(downloaded, "rb")).load()` runs the same reducers."""
+    findings = _scan(
+        tmp_path,
+        "import pickle\n"
+        "from huggingface_hub import hf_hub_download\n"
+        "def go(repo):\n"
+        "    return pickle.Unpickler(open(hf_hub_download(repo, 'x.pkl'), 'rb')).load()\n",
+    )
+    assert "pickle.Unpickler" in _sinks(findings)
+
+
+def test_a_dataclass_over_a_base_with_an_init_still_carries_taint(tmp_path):
+    """`@dataclass` generates its own `__init__` even when a base defines one."""
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "from dataclasses import dataclass\n"
+        "class Base:\n"
+        "    def __init__(self):\n"
+        "        pass\n"
+        "@dataclass\n"
+        "class Config(Base):\n"
+        "    module: str\n"
+        "def go(blob):\n"
+        "    cfg = Config(**json.loads(blob))\n"
+        "    return importlib.import_module(cfg.module)\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
