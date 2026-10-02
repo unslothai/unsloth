@@ -24,7 +24,7 @@ interface SanitizeSchema {
 const HTML_TAG_NAME = /^\s*<\/?([a-z][^\s/<>]*)/i;
 const INNER_TAG = /<(\/?)([a-z][^\s/<>]*)/gi;
 // Formatting tags outside the schema that documents use as markup. Where a pipeline opts in, they are
-// left for sanitize to unwrap so their text shows: always inside a raw HTML block, which closes them
+// left for sanitize to unwrap so their text shows: always in a raw HTML block, which closes them
 // implicitly, and in prose only when matched, so "the <small> tag" stays text like any unknown tag.
 const UNWRAPPED_TAGS = new Set([
   "abbr",
@@ -91,6 +91,9 @@ const rehypeLiteralUnknownTags: Plugin<[LiteralTagOptions], Root> =
           if (!tag) return;
           if (
             isSchemaTag(tag) ||
+            (unwrapFormatting &&
+              node.type === "root" &&
+              UNWRAPPED_TAGS.has(tag.toLowerCase())) ||
             matched.has(`${index}:${child.value.indexOf("<")}`)
           ) {
             child.value = child.value.replace(

@@ -110,6 +110,8 @@ test("documents unwrap formatting tags used as markup", () => {
   for (const [block, line] of [
     ["<figure>\n<figcaption>Caption</figcaption>\n</figure>", "Caption"],
     ["<center>Use <your-api-key> here</center>", "Use <your-api-key> here"],
+    ["<center>\nCentered text", "Centered text"],
+    ["Intro\n\n<figure>\n<img src=x>", "Intro"],
     ["<table><tr><td>MMBench<sub><small>EN</td></tr></table>", "MMBench"],
     [
       '<div>The <abbr title="x">API</abbr> takes <T></div>',
