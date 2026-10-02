@@ -235,6 +235,8 @@ class _FakeSlot:
         self,
         flags = None,
         env = None,
+        *,
+        cancel_event = None,
     ):
         self.got.append((flags, env))
         if self.start_exc is not None:
@@ -788,16 +790,32 @@ def test_a_live_resident_server_is_not_pushed_back_to_offload_by_its_own_usage(
     monkeypatch.delenv(h3.H3_NATIVE_SERVER_ENV, raising = False)
     from test_h3_native_resident import AUTO_FLAGS
 
+    gib = 1024**3
     resident = tuple(f for f in AUTO_FLAGS if f not in ("--offload-to-cpu", "--stream-layers"))
     slot = _StartFailsSlot(live = ("/x/sd-server", (), resident, ()))
-    # The card reads nearly full because the live server holds the bundle; it must not be asked.
-    monkeypatch.setattr(
-        video, "_h3_card_free_bytes", lambda *_a: (_ for _ in ()).throw(AssertionError("probed"))
-    )
+    # The live server holds the 32 GiB bundle, so the card reads only 10 GiB free: enough for this clip's activations.
+    monkeypatch.setattr(video, "_h3_card_free_bytes", lambda *_a: 10 * gib)
     backend, calls, _ = _generate_backend(monkeypatch, tmp_path, slot)
     result = backend.generate(prompt = "a fox", width = 960, height = 544)
     assert slot.got[0][0] == list(resident)
     assert result["offload_policy"] == "none"
+
+
+def test_a_live_resident_server_does_not_hide_a_clip_too_large_for_the_card(monkeypatch, tmp_path):
+    import core.inference.video as video
+
+    monkeypatch.delenv(h3.H3_NATIVE_SERVER_ENV, raising = False)
+    from test_h3_native_resident import AUTO_FLAGS
+
+    gib = 1024**3
+    resident = tuple(f for f in AUTO_FLAGS if f not in ("--offload-to-cpu", "--stream-layers"))
+    slot = _StartFailsSlot(live = ("/x/sd-server", (), resident, ()))
+    monkeypatch.setattr(video, "_h3_card_free_bytes", lambda *_a: 10 * gib)
+    backend, calls, _ = _generate_backend(monkeypatch, tmp_path, slot)
+    # 8x the pixel volume: ~43 GiB of activations on top of the weights, more than the 10 GiB the card has left.
+    result = backend.generate(prompt = "a fox", width = 1920, height = 1088, num_frames = 241)
+    assert "--offload-to-cpu" in slot.got[0][0]
+    assert result["offload_policy"] == "group"
 
 
 def test_release_does_not_wait_on_a_server_start(life, monkeypatch):
@@ -825,3 +843,49 @@ def test_release_does_not_wait_on_a_server_start(life, monkeypatch):
     # The pending release is honoured when that render ends.
     assert slot.end_render() == "chat load"
     assert server.is_alive() is False
+
+
+def test_cancel_aborts_a_server_start_in_progress(monkeypatch):
+    """Unload and Cancel wait on the render, which holds the generate lock through the server's model load."""
+    import time as _time
+
+    monkeypatch.setattr("core.inference.sd_cpp_engine.is_managed_binary", lambda b: False)
+    loading = threading.Event()
+
+    class _SlowSrv:
+        def __init__(self, binary):
+            self.aborted = threading.Event()
+            self.stops = 0
+
+        def start(
+            self,
+            files,
+            *,
+            offload = None,
+            env = None,
+            extra_args = None,
+        ):
+            loading.set()
+            if not self.aborted.wait(10):
+                raise AssertionError("start was never aborted")
+            raise SdCppCancelled("sd-server startup was cancelled.")
+
+        def stop(self):
+            self.stops += 1
+            self.aborted.set()
+
+        def is_alive(self):
+            return False
+
+    monkeypatch.setattr(srv, "SdCppServer", _SlowSrv)
+    slot = h3.H3NativeServerSlot("/x/sd-server", _FILES)
+    cancel = threading.Event()
+    threading.Timer(0.3, cancel.set).start()
+    t0 = _time.monotonic()
+    with pytest.raises(SdCppCancelled):
+        slot.get(RESIDENT, {}, cancel_event = cancel)
+    assert loading.is_set() and _time.monotonic() - t0 < 5
+    assert slot.alive_signature() is None and slot.disabled_reason is None
+    # Already cancelled: nothing is spawned at all.
+    with pytest.raises(SdCppCancelled):
+        slot.get(RESIDENT, {}, cancel_event = cancel)

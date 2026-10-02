@@ -8669,7 +8669,7 @@ class VideoBackend:
         slot.begin_render()
         try:
             try:
-                server = slot.get(render_flags, render_env)
+                server = slot.get(render_flags, render_env, cancel_event = cancel)
             except SdCppCancelled:
                 raise
             except Exception as exc:  # noqa: BLE001 - any start failure leaves the one-shot path
@@ -8757,7 +8757,8 @@ class VideoBackend:
             free = None
             if need:
                 # A live resident server already holds this bundle on the card, so its own usage is not memory taken
-                # from the render: keep it resident rather than reading the card it fills and respawning it streaming.
+                # from the render: count the weights it holds as free rather than respawning it streaming. Only the
+                # weights: a larger clip's activations must still fit in what the card has left.
                 slot = getattr(runtime, "server_slot", None)
                 live = slot.alive_signature() if slot is not None else None
                 resident_flags, _ = h3_native_render_flags(
@@ -8771,7 +8772,8 @@ class VideoBackend:
                     and live[2] == tuple(resident_flags)
                     and "--offload-to-cpu" not in live[2]
                 ):
-                    free = need
+                    card_free = _h3_card_free_bytes(state.device, state.gpu_ordinal)
+                    free = need if card_free is None else card_free + file_bytes
                 else:
                     free = _h3_card_free_bytes(state.device, state.gpu_ordinal)
             render_flags, render_resident = h3_native_render_flags(

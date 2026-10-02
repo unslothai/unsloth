@@ -1348,11 +1348,16 @@ class H3NativeServerSlot:
         self,
         flags: "Optional[tuple[str, ...] | list[str]]" = None,
         env: "Optional[dict[str, str] | tuple[tuple[str, str], ...]]" = None,
+        *,
+        cancel_event: Any = None,
     ) -> Any:
         """The live server for this exact (flags, env), starting or respawning one if needed. Raises what
-        ``SdCppServer.start`` raises."""
+        ``SdCppServer.start`` raises. A set ``cancel_event`` aborts a start in progress (``SdCppCancelled``): the
+        render holds the generate lock through the model load, so unload and Cancel would otherwise wait it out."""
+        import threading
+
         from .sd_cpp_backend import register_tree_holder, unregister_tree_holder
-        from .sd_cpp_engine import is_managed_binary
+        from .sd_cpp_engine import SdCppCancelled, is_managed_binary
         from .sd_cpp_server import SdCppServer
 
         flag_tuple = tuple(self.offload_flags if flags is None else flags)
@@ -1367,6 +1372,8 @@ class H3NativeServerSlot:
                 self._stop_locked(
                     "signature changed" if self._server.is_alive() else "server exited"
                 )
+            if cancel_event is not None and cancel_event.is_set():
+                raise SdCppCancelled("sd-server start was cancelled before launch.")
             server = SdCppServer(self.server_binary)
             # Before start: the spawn itself is a process running out of the tree.
             managed = is_managed_binary(self.server_binary)
@@ -1374,6 +1381,21 @@ class H3NativeServerSlot:
             self._signature = wanted
             if managed:
                 register_tree_holder(self)
+            started = threading.Event()
+            if cancel_event is not None:
+
+                def abort_on_cancel() -> None:
+                    # stop() flags the abort before taking the server's lifecycle lock, so start() bails out of its
+                    # readiness wait.
+                    while not started.is_set():
+                        if cancel_event.wait(0.2):
+                            if not started.is_set():
+                                server.stop()
+                            return
+
+                threading.Thread(
+                    target = abort_on_cancel, daemon = True, name = "h3-sd-server-start-cancel"
+                ).start()
             try:
                 server.start(
                     self.files,
@@ -1384,6 +1406,7 @@ class H3NativeServerSlot:
                     extra_args = ["--rng", "cpu"],
                 )
             except BaseException:
+                started.set()
                 self._server = None
                 self._signature = None
                 try:
@@ -1391,6 +1414,11 @@ class H3NativeServerSlot:
                 finally:
                     unregister_tree_holder(self)
                 raise
+            started.set()
+            if cancel_event is not None and cancel_event.is_set() and not server.is_alive():
+                # The cancel landed as the start finished and stopped the fresh server.
+                self._stop_locked("cancelled")
+                raise SdCppCancelled("sd-server start was cancelled.")
             return server
 
     def begin_render(self) -> None:
