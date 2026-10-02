@@ -36,8 +36,8 @@ def isolated(monkeypatch, tmp_path):
     return tmp_path
 
 
-# Studio starts a local engine process only on a Linux host (Windows runs it in WSL, macOS is
-# refused), and these lean on POSIX process timing.
+# Studio installs and starts engines locally only on a Linux host (Windows uses the WSL guest,
+# macOS is refused); these fake its POSIX venv layout and process timing.
 _LOCAL_ENGINE_HOST = pytest.mark.skipif(
     sys.platform != "linux", reason = "local engine host is Linux only"
 )
@@ -73,6 +73,7 @@ def test_failed_update_preserves_active_environment(isolated, monkeypatch):
     assert [p.name for p in marker.parent.iterdir() if p.is_dir()] == ["env-prior"]
 
 
+@_LOCAL_ENGINE_HOST
 def test_activation_only_after_check_and_keeps_previous(isolated, monkeypatch):
     marker = active(isolated)
     calls = []
@@ -122,6 +123,7 @@ def studio_with_engine_torch(monkeypatch, engine, **changes):
     return packages
 
 
+@_LOCAL_ENGINE_HOST
 @pytest.mark.parametrize("engine", ["vllm", "sglang"])
 def test_shared_environment_installs_only_what_studio_lacks(isolated, monkeypatch, engine):
     studio = studio_with_engine_torch(monkeypatch, engine, numpy = "1.0.0")
@@ -437,6 +439,7 @@ def test_download_size_leaves_out_what_studio_shares(isolated, monkeypatch, engi
     assert install.status(engine)["download_bytes"] == shared
 
 
+@_LOCAL_ENGINE_HOST
 def test_changed_studio_torch_uses_an_isolated_environment(isolated, monkeypatch):
     studio_with_engine_torch(monkeypatch, "vllm", torch = "2.99.0")
     monkeypatch.setattr(install.shutil, "which", lambda _: "/uv")
@@ -458,6 +461,7 @@ def test_changed_studio_torch_uses_an_isolated_environment(isolated, monkeypatch
     assert install.status("vllm")["current"] is True
 
 
+@_LOCAL_ENGINE_HOST
 def test_rollback_refuses_a_shared_environment_studio_no_longer_matches(isolated, monkeypatch):
     studio = studio_with_engine_torch(monkeypatch, "vllm")
     monkeypatch.setattr(install.shutil, "which", lambda _: "/uv")
@@ -505,6 +509,7 @@ def test_engine_check_sees_every_locked_version_and_requirement(tmp_path):
     assert check("demo==1.0\n").returncode == 0
 
 
+@_LOCAL_ENGINE_HOST
 def test_cancel_before_activation_keeps_previous(isolated, monkeypatch):
     marker = active(isolated)
     monkeypatch.setattr(install.shutil, "which", lambda _: "/uv")
@@ -519,6 +524,7 @@ def test_cancel_before_activation_keeps_previous(isolated, monkeypatch):
     assert install.status("vllm")["job"]["state"] == "cancelled"
 
 
+@_LOCAL_ENGINE_HOST
 @pytest.mark.parametrize("engine", ["vllm", "sglang"])
 def test_explicit_rollback_allows_old_profile_until_replaced(isolated, monkeypatch, engine):
     marker = active(isolated, engine)
@@ -763,6 +769,7 @@ def test_unsupported_tools_are_not_silently_dropped(peer):
     assert requests == []
 
 
+@_LOCAL_ENGINE_HOST
 def test_interrupted_install_is_visible_after_restart(isolated):
     (isolated / "vllm.job.json").write_text(json.dumps({"state": "running", "phase": "installing"}))
     assert install.status("vllm")["job"]["state"] == "error"
