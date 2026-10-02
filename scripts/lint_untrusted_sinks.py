@@ -804,6 +804,12 @@ class _FileFacts:
             referenced = _call_name(value)
             if not referenced:
                 continue
+            # `ENABLED = True` then `REMOTE = ENABLED`, the module-scope counterpart of
+            # the local alias chain. Only the literal assignment was collected, so one
+            # hop was enough to hide remote-code enablement from the gate.
+            if referenced in self.module_true_names:
+                self.module_true_names.update(names)
+                continue
             # Chains collected at module scope: `loader = import_module` then
             # `invoke = loader`. Only imports were consulted, so function visitors were
             # seeded with the first alias and never the second.
@@ -1335,6 +1341,11 @@ class _TaintPass(ast.NodeVisitor):
         self.sink_aliases: dict[str, tuple] = dict(facts.module_sink_aliases)
         # local name -> every first-party callable it refers to, for `runner = execute`
         self.callable_aliases: dict[str, tuple] = dict(facts.module_callable_aliases)
+        # alias name -> how many positional arguments a `functools.partial` already
+        # bound into it. `add_path = partial(sys.path.insert, 0)` shifts the path from
+        # the sink's position 1 to the wrapper's position 0, so recording the sink
+        # identity alone left the later `add_path(parsed)` compared against nothing.
+        self.alias_offsets: dict[str, int] = {}
         # local name -> the source it refers to, for `decode = json.loads`. Sink aliases
         # were followed and source aliases were not, so a deserialiser behind a local
         # name read clean and everything downstream of it did too.
@@ -1502,6 +1513,13 @@ class _TaintPass(ast.NodeVisitor):
             "join",
             "split",
             "strip",
+            # Trimming a known prefix or suffix off an untrusted name selects a
+            # different module, it does not validate anything:
+            # `parsed["module"].removeprefix("plugins.")` reached an import clean.
+            "removeprefix",
+            "removesuffix",
+            "lstrip",
+            "rstrip",
             "lower",
             "upper",
             "replace",
@@ -1615,14 +1633,25 @@ class _TaintPass(ast.NodeVisitor):
         return None
 
     def _property_reason(self, node: ast.Attribute) -> str | None:
-        """The return summary of an `@property` getter reached through an instance."""
-        if not isinstance(node.value, ast.Name):
+        """The return summary of an `@property` getter reached through an instance.
+
+        The receiver does not have to be a plain name. `self.cfg = Config()` is tracked
+        as a held instance, yet requiring an `ast.Name` here meant
+        `import_module(self.cfg.module)` could not consult `Config.module`'s summary and
+        was accepted while the getter returns a parsed value.
+        """
+        holder = node.value.id if isinstance(node.value, ast.Name) else _call_name(node.value)
+        if not holder:
             return None
-        holder = node.value.id
         if holder in ("self", "cls"):
-            owners = (self.class_name,) if self.class_name else ()
+            owners = tuple((self.class_name,) if self.class_name else ())
         else:
-            owners = self.instance_types.get(holder) or ()
+            owners = tuple(self.instance_types.get(holder) or ())
+            if not owners and isinstance(node.value, ast.Attribute):
+                # Held on an attribute rather than a local, which is where a constructor
+                # puts it, so the type lives in the shared map the attribute keys use.
+                for key in self._attr_keys(node.value):
+                    owners = owners + tuple(self.state.attr_instances.get(key) or ())
         for owner in owners:
             for file, qualname in self.facts._methods_on(owner, node.attr):
                 if qualname not in (self.facts.index.facts.get(file) or self.facts).properties:
@@ -1725,6 +1754,11 @@ class _TaintPass(ast.NodeVisitor):
             return [(self.facts, self.class_name)] if self.class_name else []
         spelling = node.value.id if isinstance(node.value, ast.Name) else _call_name(node.value)
         found: list = []
+        # `Config.module` reads the class attribute directly, so the receiver is the
+        # class and not an instance of one. Only instances were resolved, so a class
+        # body's binding had nowhere to be read from under this spelling.
+        if spelling in self.facts.classes:
+            found.append((self.facts, spelling))
         for constructed in self.instance_types.get(spelling) or ():
             if constructed in self.facts.classes:
                 if (self.facts, constructed) not in found:
@@ -1825,27 +1859,59 @@ class _TaintPass(ast.NodeVisitor):
             if wrapped is None or not node.value.args:
                 return
             inner = _call_name(node.value.args[0])
-            held = _matches_any(self.facts.canonicals(inner), SINKS)
-            if held is None:
-                for candidate in self.sink_aliases.get(inner) or ():
-                    held = candidate
-                    break
-            if held is None:
-                return
-            for target in node.targets:
-                if isinstance(target, ast.Name):
-                    self.sink_aliases[target.id] = _with(self.sink_aliases.get(target.id), held)
-            # The arguments a partial pre-binds reach the sink whenever the wrapper is
-            # called, and recording only the sink's identity discarded them: a later
-            # `loader()` leaves the sink check nothing to look at. Checked here against
-            # the partial's own call, with the wrapped callee dropped off the front so
-            # the positions line up with the sink's.
+            # The partial's own call with the wrapped callee dropped off the front, so
+            # the positions line up with whatever it wraps. Used for the creation-time
+            # check and for the pre-bound arguments of a first-party callee alike.
             bound = ast.Call(
                 func = node.value.args[0],
                 args = list(node.value.args[1:]),
                 keywords = list(node.value.keywords),
             )
             ast.copy_location(bound, node.value)
+            # How many positional arguments the wrapper no longer takes. Every later
+            # call through the alias is shifted left by this much.
+            prebound = len(node.value.args) - 1
+            held = _matches_any(self.facts.canonicals(inner), SINKS)
+            if held is None:
+                for candidate in self.sink_aliases.get(inner) or ():
+                    held = candidate
+                    break
+            if held is None:
+                # Not a sink, but `partial` wraps first-party helpers at least as often:
+                # `runner = partial(execute)` with `execute` passing its parameter to
+                # `subprocess.run` recorded nothing at all, so neither the alias nor the
+                # pre-bound arguments ever reached the helper's parameters.
+                relayed = self.callable_aliases.get(inner) or ()
+                candidates = list(relayed) or (
+                    [self.facts.callable_alias(inner, self.qualname)]
+                    if self.facts.callable_alias(inner, self.qualname)
+                    else []
+                )
+                if not candidates:
+                    return
+                for target in node.targets:
+                    if not isinstance(target, ast.Name):
+                        continue
+                    for candidate in candidates:
+                        self.callable_aliases[target.id] = _with(
+                            self.callable_aliases.get(target.id), candidate
+                        )
+                    if prebound:
+                        self.alias_offsets[target.id] = prebound
+                # The arguments bound at creation reach the helper's parameters on every
+                # later call, exactly as the wrapped-sink case checks them against the
+                # sink.
+                if node.value.args[1:] or node.value.keywords:
+                    self._propagate_into_callee(bound)
+                return
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    self.sink_aliases[target.id] = _with(self.sink_aliases.get(target.id), held)
+                    if prebound:
+                        self.alias_offsets[target.id] = prebound
+            # The arguments a partial pre-binds reach the sink whenever the wrapper is
+            # called, and recording only the sink's identity discarded them: a later
+            # `loader()` leaves the sink check nothing to look at.
             self._check_one_sink(bound, held)
             return
         referenced = _call_name(node.value)
@@ -1856,12 +1922,17 @@ class _TaintPass(ast.NodeVisitor):
         # walked past the gate. One hop per pass, and the fixpoint settles the chain.
         chained = self.sink_aliases.get(referenced)
         if chained:
+            carried = self.alias_offsets.get(referenced)
             for target in node.targets:
                 if isinstance(target, ast.Name):
                     for candidate in chained:
                         self.sink_aliases[target.id] = _with(
                             self.sink_aliases.get(target.id), candidate
                         )
+                    # `invoke = add_path` keeps the partial's layout: without this the
+                    # second name was checked at the sink's own positions again.
+                    if carried:
+                        self.alias_offsets[target.id] = carried
             return
         sink = _matches_any(self.facts.canonicals(referenced), SINKS)
         if sink is None:
@@ -2093,6 +2164,7 @@ class _TaintPass(ast.NodeVisitor):
             dict(self.callable_aliases),
             dict(self.source_aliases),
             set(self.true_names),
+            dict(self.alias_offsets),
         )
         # The nested body's `return` is the nested function's output, not this one's.
         # Leaving it set made an outer function that returns a fixed literal carry a
@@ -2127,6 +2199,9 @@ class _TaintPass(ast.NodeVisitor):
         # And the true-flag set: a nested `enabled = True` leaked outward and made an
         # outer loader call that always receives False report a gated finding.
         self.true_names = saved[5]
+        # And the partial layouts, for the same reason: a nested wrapper's offset
+        # applied to an outer name that was never wrapped.
+        self.alias_offsets = saved[6]
 
     def visit_ListComp(self, node: ast.ListComp) -> None:
         self._visit_comprehension(node)
@@ -2307,6 +2382,11 @@ class _TaintPass(ast.NodeVisitor):
             "." in spelling and self.instance_types.get(spelling.rpartition(".")[0])
             for spelling in self.callable_aliases.get(node.func.id) or ()
         )
+        # A partial that pre-bound arguments shifts the rest left by that much, so the
+        # helper's second parameter is the wrapper's first.
+        partial_offset = (
+            self.alias_offsets.get(node.func.id, 0) if isinstance(node.func, ast.Name) else 0
+        )
         offset = (
             1
             if self.state.is_method.get(target)
@@ -2319,7 +2399,7 @@ class _TaintPass(ast.NodeVisitor):
                 )
             )
             else 0
-        )
+        ) + partial_offset
         for position, argument in enumerate(node.args):
             reason = self.tainted(argument)
             if not reason:
@@ -2409,11 +2489,21 @@ class _TaintPass(ast.NodeVisitor):
         if not candidates:
             self._check_getattr(node)
             return
+        offset = self.alias_offsets.get(_call_name(node.func), 0)
         for sink in candidates:
-            self._check_one_sink(node, sink)
+            self._check_one_sink(node, sink, offset)
 
-    def _check_one_sink(self, node: ast.Call, sink: str) -> None:
+    def _check_one_sink(
+        self,
+        node: ast.Call,
+        sink: str,
+        offset: int = 0,
+    ) -> None:
         positions, keywords = SINKS[sink]
+        # `offset` is what a `functools.partial` already bound, so the sink's position 1
+        # is the wrapper's position 0. A watched position that the partial itself filled
+        # goes negative and was already checked where it was bound.
+        positions = tuple(index - offset for index in positions if index >= offset)
         for index in positions:
             if index < len(node.args):
                 reason = self.tainted(node.args[index])
@@ -2727,6 +2817,54 @@ def _queue_class_bodies(node: ast.ClassDef, prefix: str, queue: list) -> None:
             _queue_class_bodies(inner, name, queue)
 
 
+_CLASS_BODIES: dict = {}
+
+
+def _class_bodies(facts: _FileFacts) -> list:
+    """Every class body in the file, collected once and shared.
+
+    Both the fixpoint and the reporting pass need these, and collecting them twice is
+    how the two halves of a check drift apart, so there is one list and one memo.
+    """
+    cached = _CLASS_BODIES.get(facts.path)
+    if cached is not None:
+        return cached
+    bodies: list = []
+    for child in ast.iter_child_nodes(facts.tree):
+        if isinstance(child, ast.ClassDef):
+            _queue_class_bodies(child, "", bodies)
+    _CLASS_BODIES[facts.path] = bodies
+    return bodies
+
+
+def _class_body_owner(qualname: str) -> str:
+    """`<class Config>` -> `Config`, the name an attribute key is built from."""
+    if qualname.startswith("<class ") and qualname.endswith(">"):
+        return qualname[len("<class ") : -1]
+    return qualname
+
+
+def _publish_class_attributes(facts: _FileFacts, qualname: str, visitor, state) -> None:
+    """A name bound in a class body IS a class attribute, so the binding has to leave.
+
+    `class Config: module = json.load(...)["module"]` kept the taint inside the body's
+    own pass and discarded it, so both `Config.module` and a method's `self.module`
+    read clean everywhere else. Published under the key attribute reads already use,
+    with the same tier-A-wins rule as every other write.
+    """
+    owner = _class_body_owner(qualname)
+    for name, reason in visitor.local_reasons.items():
+        key = f"{facts.relative}::{owner}.{name}"
+        if state.pending_attrs.get(key, NAMED_PARAM_REASON) == NAMED_PARAM_REASON:
+            state.pending_attrs[key] = reason
+
+
+# Statement kinds that can bind a class attribute. A body of nothing but a docstring,
+# `pass`, bare annotations and imports publishes nothing, and skipping those in the
+# fixpoint keeps the added work off the thousands of classes in these trees.
+_BINDING_STATEMENTS = (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.For, ast.With, ast.If, ast.Try)
+
+
 def _unpinned_code_fetches(facts: _FileFacts, reached: frozenset) -> list[dict]:
     """A download with no `revision` whose bytes the same function then imports.
 
@@ -2849,6 +2987,9 @@ def _settle(facts: _FileFacts, qualname: str, nodes: list, state: "_State"):
     # before rediscovering the assignment, so the second runtime iteration enabled
     # remote code and nothing was reported.
     trues: set = set()
+    # Carried like the aliases themselves: a partial built on a loop backedge otherwise
+    # had its layout discarded between passes and the shifted call read clean again.
+    offsets: dict[str, int] = {}
     visitor = None
     for _ in range(_LOCAL_BOUND):
         visitor = _TaintPass(facts, qualname, state)
@@ -2858,6 +2999,7 @@ def _settle(facts: _FileFacts, qualname: str, nodes: list, state: "_State"):
         visitor.source_aliases.update(sources)
         visitor.callable_aliases.update(callables)
         visitor.true_names.update(trues)
+        visitor.alias_offsets.update(offsets)
         visitor.seed_defaults()
         for child in nodes:
             visitor.visit(child)
@@ -2874,6 +3016,7 @@ def _settle(facts: _FileFacts, qualname: str, nodes: list, state: "_State"):
             and visitor.source_aliases == sources
             and visitor.callable_aliases == callables
             and visitor.true_names == trues
+            and visitor.alias_offsets == offsets
         ):
             return visitor, True
         reasons = dict(visitor.local_reasons)
@@ -2882,6 +3025,7 @@ def _settle(facts: _FileFacts, qualname: str, nodes: list, state: "_State"):
         sources = dict(visitor.source_aliases)
         callables = dict(visitor.callable_aliases)
         trues = set(visitor.true_names)
+        offsets = dict(visitor.alias_offsets)
     return visitor, False
 
 
@@ -2916,6 +3060,7 @@ def _module_level_taint(facts: _FileFacts, state: _State) -> None:
 def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
     """Every finding, sorted, for a deterministic report."""
     _CALL_NAMES.clear()
+    _CLASS_BODIES.clear()
     files = _python_files(targets)
     if roots is None:
         roots = [REPO_ROOT]
@@ -2997,6 +3142,15 @@ def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
                     known = state.returns_tainted.get(key)
                     if not known or known == NAMED_PARAM_REASON:
                         state.returns_tainted[key] = visitor.returns_tainted
+            # Class bodies too, for the attributes they bind. Only functions were
+            # settled here, so a class body's write was discovered in the reporting
+            # pass, after the last thing that could have read it had already run.
+            for class_qualname, statements in _class_bodies(facts):
+                if not any(isinstance(n, _BINDING_STATEMENTS) for n in statements):
+                    continue
+                class_visitor, _ = _settle(facts, class_qualname, statements, state)
+                if class_visitor is not None:
+                    _publish_class_attributes(facts, class_qualname, class_visitor, state)
         for key, names in state.pending_params.items():
             bound = state.tainted_params.setdefault(key, {})
             for name, reason in names.items():
@@ -3048,7 +3202,7 @@ def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
             )
             findings.extend(found)
         body = []
-        class_bodies: list = []
+        class_bodies = _class_bodies(facts)
         for child in ast.iter_child_nodes(facts.tree):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
@@ -3063,8 +3217,8 @@ def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
                 # Recursively, because Python runs a nested class body while defining
                 # its parent and the nested node was filtered out of the only worklist,
                 # so an import-time sink inside `class Outer: class Inner:` was never
-                # visited at all. Each body keeps its own namespace.
-                _queue_class_bodies(child, "", class_bodies)
+                # visited at all. Each body keeps its own namespace. Collected by
+                # `_class_bodies`, which the fixpoint reads from as well.
                 continue
             body.append(child)
         for qualname, statements in class_bodies:

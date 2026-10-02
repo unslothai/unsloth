@@ -3309,3 +3309,274 @@ def test_an_attribute_write_reaches_an_ancestor_two_files_away(tmp_path):
         roots = [tmp_path],
     )
     assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_class_body_binding_reaches_a_class_read(tmp_path):
+    """`class Config: module = parsed["module"]` then `Config.module` at a sink.
+
+    A class body was settled only when reporting, so its bindings were discovered after
+    everything that could read them had already run, and the binding was then thrown
+    away with the body's locals. A name bound in a class body is a class attribute, so
+    it is published under the key attribute reads already use and the fixpoint settles
+    the rest.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, importlib\n"
+        "from huggingface_hub import hf_hub_download\n"
+        "class Config:\n"
+        "    module = json.load(open(hf_hub_download('r', 'c.json')))['module']\n"
+        "def go():\n"
+        "    return importlib.import_module(Config.module)\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_class_body_binding_reaches_a_method_read(tmp_path):
+    """The same binding read as `self.module` from a method of that class."""
+    findings = _scan(
+        tmp_path,
+        "import json, importlib\n"
+        "from huggingface_hub import hf_hub_download\n"
+        "class Config:\n"
+        "    module = json.load(open(hf_hub_download('r', 'c.json')))['module']\n"
+        "    def go(self):\n"
+        "        return importlib.import_module(self.module)\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_nested_class_body_binding_is_published(tmp_path):
+    """`class Outer: class Inner: module = parsed[...]`, read as `Outer.Inner.module`."""
+    findings = _scan(
+        tmp_path,
+        "import json, importlib\n"
+        "from huggingface_hub import hf_hub_download\n"
+        "class Outer:\n"
+        "    class Inner:\n"
+        "        module = json.load(open(hf_hub_download('r', 'c.json')))['module']\n"
+        "def go():\n"
+        "    return importlib.import_module(Outer.Inner.module)\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_another_class_with_the_same_attribute_stays_quiet(tmp_path):
+    """The guard for publishing class bodies: the key is per class, not per name.
+
+    Two classes with a `module` attribute, one parsed and one fixed. Merging them is how
+    a gate starts failing on the safe one, which is the fastest way to get itself turned
+    off.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, importlib\n"
+        "from huggingface_hub import hf_hub_download\n"
+        "class Dirty:\n"
+        "    module = json.load(open(hf_hub_download('r', 'c.json')))['module']\n"
+        "class Clean:\n"
+        "    module = 'torch'\n"
+        "def go():\n"
+        "    return importlib.import_module(Clean.module)\n",
+    )
+    assert _sinks(findings) == set()
+
+
+def test_a_partial_shifts_the_watched_sink_position(tmp_path):
+    """`add_path = functools.partial(sys.path.insert, 0)` then `add_path(parsed)`.
+
+    The alias recorded the sink's identity and not the partial's layout, so the later
+    call was compared at position 1 while the partial had already moved the path to
+    position 0. The creation-time check saw only the clean index.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, functools, sys\n"
+        "def load(blob):\n"
+        "    add_path = functools.partial(sys.path.insert, 0)\n"
+        "    return add_path(json.loads(blob)['path'])\n",
+    )
+    assert "sys.path.insert" in _sinks(findings)
+
+
+def test_a_rebound_partial_keeps_its_layout(tmp_path):
+    """`invoke = add_path`: the second name is the same wrapper with the same shift."""
+    findings = _scan(
+        tmp_path,
+        "import json, functools, sys\n"
+        "def load(blob):\n"
+        "    add_path = functools.partial(sys.path.insert, 0)\n"
+        "    invoke = add_path\n"
+        "    return invoke(json.loads(blob)['path'])\n",
+    )
+    assert "sys.path.insert" in _sinks(findings)
+
+
+def test_an_unwrapped_sink_is_still_checked_at_its_own_positions(tmp_path):
+    """The guard for the shift: an ordinary call and an ordinary alias are not shifted."""
+    direct = _scan(
+        tmp_path,
+        "import json, sys\n"
+        "def load(blob):\n"
+        "    return sys.path.insert(0, json.loads(blob)['path'])\n",
+        name = "direct.py",
+    )
+    aliased = _scan(
+        tmp_path,
+        "import json, sys\n"
+        "def load(blob):\n"
+        "    add = sys.path.insert\n"
+        "    return add(0, json.loads(blob)['path'])\n",
+        name = "aliased.py",
+    )
+    assert "sys.path.insert" in _sinks(direct)
+    assert "sys.path.insert" in _sinks(aliased)
+
+
+def test_a_partial_around_a_literal_is_quiet(tmp_path):
+    """And the wrapper itself is not a finding when what flows through it is fixed."""
+    findings = _scan(
+        tmp_path,
+        "import functools, sys\n"
+        "def load():\n"
+        "    add_path = functools.partial(sys.path.insert, 0)\n"
+        "    return add_path('/opt/fixed')\n",
+    )
+    assert _sinks(findings) == set()
+
+
+def test_a_partial_around_a_first_party_helper_is_followed(tmp_path):
+    """`runner = functools.partial(execute)` then `runner(parsed)`.
+
+    The branch recognised a wrapped callable only when it matched a sink or an existing
+    sink alias, so wrapping a first-party helper recorded nothing at all: no callable
+    alias, no parameter propagation, and the `subprocess.run` inside the helper was
+    missed.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, functools, subprocess\n"
+        "def execute(command):\n"
+        "    return subprocess.run(command)\n"
+        "def load(blob):\n"
+        "    runner = functools.partial(execute)\n"
+        "    return runner(json.loads(blob)['command'])\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_partial_around_a_helper_shifts_its_parameters(tmp_path):
+    """The same wrapper with one argument pre-bound, so the shift applies to parameters."""
+    findings = _scan(
+        tmp_path,
+        "import json, functools, subprocess\n"
+        "def execute(tag, command):\n"
+        "    return subprocess.run(command)\n"
+        "def load(blob):\n"
+        "    runner = functools.partial(execute, 'build')\n"
+        "    return runner(json.loads(blob)['command'])\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_an_argument_bound_into_a_partial_reaches_the_helper(tmp_path):
+    """And an argument bound at creation time, which the wrapper then never takes."""
+    findings = _scan(
+        tmp_path,
+        "import json, functools, subprocess\n"
+        "def execute(command):\n"
+        "    return subprocess.run(command)\n"
+        "def load(blob):\n"
+        "    runner = functools.partial(execute, json.loads(blob)['command'])\n"
+        "    return runner()\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_property_reached_through_a_held_instance_resolves(tmp_path):
+    """`self.cfg = Config()` then `import_module(self.cfg.module)`.
+
+    The getter lookup rejected any receiver that was not a plain name, so the held
+    instance the constructor records could not be resolved and the property's tainted
+    return summary was never consulted.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, importlib\n"
+        "from huggingface_hub import hf_hub_download\n"
+        "class Config:\n"
+        "    @property\n"
+        "    def module(self):\n"
+        "        return json.load(open(hf_hub_download('r', 'c.json')))['module']\n"
+        "class Holder:\n"
+        "    def __init__(self):\n"
+        "        self.cfg = Config()\n"
+        "    def go(self):\n"
+        "        return importlib.import_module(self.cfg.module)\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_property_returning_a_literal_stays_quiet(tmp_path):
+    """The guard for that: the receiver resolving does not make the getter tainted."""
+    findings = _scan(
+        tmp_path,
+        "import importlib\n"
+        "class Config:\n"
+        "    @property\n"
+        "    def module(self):\n"
+        "        return 'torch'\n"
+        "class Holder:\n"
+        "    def __init__(self):\n"
+        "        self.cfg = Config()\n"
+        "    def go(self):\n"
+        "        return importlib.import_module(self.cfg.module)\n",
+    )
+    assert _sinks(findings) == set()
+
+
+def test_prefix_and_suffix_removal_carry_taint(tmp_path):
+    """`parsed["module"].removeprefix("plugins.")` selects a module, it validates nothing.
+
+    The pass-through list had `strip` and `replace` but not these, so trimming a known
+    prefix off an untrusted name laundered it.
+    """
+    for transform in ("removeprefix('plugins.')", "removesuffix('.main')", "lstrip('.')"):
+        findings = _scan(
+            tmp_path,
+            "import json, importlib\n"
+            "def load(blob):\n"
+            "    return importlib.import_module(json.loads(blob)['module'].%s)\n" % transform,
+            name = "sample_%s.py" % transform[:6],
+        )
+        assert "importlib.import_module" in _sinks(findings), transform
+
+
+def test_a_module_level_true_flag_reached_through_a_name(tmp_path):
+    """`ENABLED = True` then `REMOTE = ENABLED` forwarded as `trust_remote_code`.
+
+    Only the literal module-scope assignment was collected, so one hop was enough to
+    hide remote-code enablement even though the local alias chain was already handled.
+    """
+    findings = _scan(
+        tmp_path,
+        "from transformers import AutoModel\n"
+        "ENABLED = True\n"
+        "REMOTE = ENABLED\n"
+        "def load(name):\n"
+        "    return AutoModel.from_pretrained(name, trust_remote_code = REMOTE)\n",
+    )
+    assert any(f["sink"].startswith("trust_remote_code = True") for f in findings)
+
+
+def test_a_module_level_false_flag_stays_quiet(tmp_path):
+    """The guard: the chain is followed, the value is still what decides."""
+    findings = _scan(
+        tmp_path,
+        "from transformers import AutoModel\n"
+        "ENABLED = False\n"
+        "REMOTE = ENABLED\n"
+        "def load(name):\n"
+        "    return AutoModel.from_pretrained(name, trust_remote_code = REMOTE)\n",
+    )
+    assert not any(f["sink"].startswith("trust_remote_code = True") for f in findings)
