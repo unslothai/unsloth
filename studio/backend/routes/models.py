@@ -2264,7 +2264,6 @@ async def get_model_config(
     from models.inference import resolve_inventory_handle
 
     model_name = resolve_inventory_handle(model_name)
-    # Lemonade owns NPU models; they have no Hugging Face repo or local folder to inspect.
     if is_npu_model_path(model_name):
         return ModelDetails(id = model_name, model_name = model_name, model_type = "text")
     if local_path:

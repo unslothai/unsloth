@@ -83,7 +83,6 @@ class NpuModel:
     downloaded: bool
     labels: tuple[str, ...]
     max_context_length: Optional[int]
-    # How much of a model an interrupted download left on disk, which the next one continues.
     resume_percent: Optional[int] = None
 
     @property
@@ -550,9 +549,7 @@ class LemonadeNpuBackend:
                 "FastFlowLM's file list is unreadable; lemond downloads %s, without resume",
                 model.id,
             )
-            # FastFlowLM keeps the partial file of an interrupted pull, and the next pull skips it
-            # as complete, leaving a truncated model. Clear it so this pull starts whole. The
-            # answer is not checked: with nothing to clear, or a refusal, the pull runs as before.
+            # FastFlowLM's next pull trusts a truncated file an interrupted one left; clear it first.
             server.request("POST", "/v1/delete", json_body = {"model_name": model.id})
         event = "progress"
         completed = False
@@ -585,8 +582,7 @@ class LemonadeNpuBackend:
                 if isinstance(data, dict) and data.get("status") == "error":
                     raise NpuError(f"Downloading {model.id} failed: {data.get('message') or data}")
                 completed = completed or event == "complete"
-                # After Studio's own download lemond has nothing left to fetch, and its percent,
-                # which restarts with each file, would only move the bar backwards.
+                # lemond's per-file percent would move the bar backwards after Studio's download.
                 if isinstance(data, dict) and (files is None or event == "complete"):
                     yield {"event": event, **data}
                 event = "progress"

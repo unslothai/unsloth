@@ -3,9 +3,7 @@
 
 import { isTauri } from "@/lib/api-base";
 
-// A Tauri quit never fires beforeunload, so the desktop close button asks Rust whether any
-// backend download is in flight. Each source reports here and Rust gets one combined answer:
-// two sources writing the flag directly would overwrite each other.
+// One combined flag for Rust's quit warning: two sources writing it directly would overwrite each other.
 type DownloadSource = "hub" | "npu";
 
 const activeSources = new Set<DownloadSource>();

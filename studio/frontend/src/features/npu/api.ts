@@ -143,7 +143,6 @@ export interface NpuRunningDownload {
   percent: number | null;
 }
 
-/** Pulls the backend is still running, including ones no open page follows. */
 export async function listNpuDownloads(): Promise<NpuRunningDownload[]> {
   const response = await authFetch("/api/npu/downloads");
   if (!response.ok) {

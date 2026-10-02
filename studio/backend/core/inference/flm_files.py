@@ -28,7 +28,6 @@ import httpx
 logger = logging.getLogger(__name__)
 
 _CHUNK = 1 << 20
-# Attempts in a row that get no further into the file before a download gives up.
 _MAX_STALLED_ATTEMPTS = 5
 _RETRY_DELAY_SECONDS = 2.0
 _RETRIED_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
@@ -148,7 +147,7 @@ def download_files(
     client = client or httpx.Client(follow_redirects = True, timeout = httpx.Timeout(30.0, read = 120.0))
     total = model.total
     completed = 0  # bytes of the files already in place
-    # One event per percent and per file: a follower replays them all, and a pull can take hours.
+    # One event per (file, percent): followers replay every event of a pull that can take hours.
     reported = None
     try:
         for file in model.files:
@@ -163,7 +162,7 @@ def download_files(
                 completed += file.size
                 continue
             if have is not None:
-                # A killed FastFlowLM pull leaves a prefix under the final name: continue it.
+                # A killed FastFlowLM pull leaves a prefix under the final name.
                 if have < file.size:
                     final.replace(partial)
                 else:
@@ -208,8 +207,7 @@ def _download_file(client: httpx.Client, file: FlmFile, partial: Path) -> Iterat
         partial.unlink()
         digest, offset = _hasher(file), 0
     yield offset
-    # Progress is a byte never reached before: a server that ignores Range restarts the file, and
-    # fetching the same prefix again must still count toward giving up.
+    # Only a byte never reached before is progress, so refetching a prefix still counts as stalled.
     furthest = offset
     stalled = 0
     while offset < file.size:
@@ -218,7 +216,6 @@ def _download_file(client: httpx.Client, file: FlmFile, partial: Path) -> Iterat
             with client.stream("GET", file.url, headers = headers) as response:
                 status = response.status_code
                 if status == 200 and offset:
-                    # The server ignored the Range header and sent the whole file.
                     digest, offset = _hasher(file), 0
                     yield offset
                 elif status == 206 and _resumed_from(response) != offset:
