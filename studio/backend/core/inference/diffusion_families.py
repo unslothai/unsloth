@@ -127,6 +127,10 @@ class DiffusionFamily:
     fp16_guard: Optional[str] = None
     # false only for a family whose denoiser block does not compile cleanly with regional torch.compile
     supports_torch_compile: bool = True
+    # False keeps cudnn.benchmark off in apply_speed_optims: the benchmark times candidate conv algorithms per process,
+    # so two servers can pick different ones and render the same request to different pixels. With it off cuDNN
+    # selects deterministically (PyTorch "Reproducibility" notes). Same switch as VideoFamily.cudnn_benchmark.
+    cudnn_benchmark: bool = True
     # Optional pre-quantized transformer checkpoints as (scheme, repo_id): fetched instead of the dense bf16 (lower
     # load VRAM + download).
     prequant_repos: tuple[tuple[str, str], ...] = field(default_factory = tuple)
@@ -370,6 +374,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         aliases = ("qwen_image", "qwenimage"),
         # fp16 overflows to NaN latents (black images)
         fp16_incompatible = True,
+        # bit-identical renders across servers at no measured warm cost (B200: with it, 3 servers gave 2-3 images)
+        cudnn_benchmark = False,
         trainable = True,
         train_base_repos = ("unsloth/Qwen-Image-2512-unsloth-bnb-4bit", "Qwen/Qwen-Image"),
         img2img_pipeline_class = "QwenImageImg2ImgPipeline",
