@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import io
 import sys
 from pathlib import Path
 
@@ -62,6 +63,16 @@ def _text_parts_row():
     }
 
 
+def _encoded_image_row():
+    encoded = io.BytesIO()
+    Image.new("RGB", (8, 8), "red").save(encoded, format = "PNG")
+    return {"media": [{"bytes": encoded.getvalue(), "path": None}]}
+
+
+def _encoded_audio_row():
+    return {"clips": [{"bytes": b"RIFF\x00\x00\x00\x00WAVEfmt ", "path": None}]}
+
+
 @pytest.mark.parametrize(
     "row, expected_vlm_format",
     [
@@ -111,3 +122,12 @@ def test_text_only_datasets_stay_text(row):
 
     assert dataset_format.check_dataset_format(dataset, is_vlm = False)["is_image"] is False
     assert format_detection.detect_multimodal_dataset(dataset)["is_image"] is False
+
+
+@pytest.mark.parametrize("detector", [dataset_format, format_detection])
+def test_undecoded_media_lists_are_typed_as_images_only_for_image_data(detector):
+    image_dataset = Dataset.from_list([_encoded_image_row()])
+    audio_dataset = Dataset.from_list([_encoded_audio_row()])
+
+    assert detector.detect_multimodal_dataset(image_dataset)["is_image"] is True
+    assert detector.detect_multimodal_dataset(audio_dataset)["is_image"] is False
