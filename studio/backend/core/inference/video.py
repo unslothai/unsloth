@@ -6440,16 +6440,20 @@ class VideoBackend:
             # inside the first one; off by default so the same seed twice repeats.
             from . import diffusion_bg_compile as bg_compile
 
-            bg_module = None if not bg_compile.load_time_enabled() else bg_compile.select_module(
-                pipe,
-                speed_optims = speed_optims,
-                default_tier = effective_speed == SPEED_DEFAULT,
-                quantized = transformer_quant_engaged is not None,
-                gguf = kind == "gguf",
-                step_cache = bool(cache_engaged) or bool(cache_may_toggle),
-                device = getattr(target, "device", device),
-                backend = getattr(target, "backend", None),
-                denoiser_hooked = offload_policy != "none" and _video_denoiser_hooked(pipe),
+            bg_module = (
+                None
+                if not bg_compile.load_time_enabled()
+                else bg_compile.select_module(
+                    pipe,
+                    speed_optims = speed_optims,
+                    default_tier = effective_speed == SPEED_DEFAULT,
+                    quantized = transformer_quant_engaged is not None,
+                    gguf = kind == "gguf",
+                    step_cache = bool(cache_engaged) or bool(cache_may_toggle),
+                    device = getattr(target, "device", device),
+                    backend = getattr(target, "backend", None),
+                    denoiser_hooked = offload_policy != "none" and _video_denoiser_hooked(pipe),
+                )
             )
             load_bg_compile = (
                 bg_compile.arm(bg_module, logger = logger) if bg_module is not None else None

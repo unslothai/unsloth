@@ -170,7 +170,13 @@ def test_kill_switch_disables_arming(monkeypatch):
 
 @pytest.mark.parametrize(
     "raw, deferred, at_load",
-    [(None, True, False), ("", True, False), ("1", True, True), ("on", True, True), ("0", False, False)],
+    [
+        (None, True, False),
+        ("", True, False),
+        ("1", True, True),
+        ("on", True, True),
+        ("0", False, False),
+    ],
 )
 def test_load_time_background_compile_is_opt_in(monkeypatch, raw, deferred, at_load):
     # Render 1 eager + render 2 compiled would break "same seed twice repeats", so only the deferred profile (which
