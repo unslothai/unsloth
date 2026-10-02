@@ -314,6 +314,17 @@ def test_compat_file_matches_its_lock(engine):
     assert "flashinfer-cubin" in install.profile(engine)["omit"]
 
 
+def test_no_lock_downloads_the_cuda12_cutlass_libraries(monkeypatch):
+    # Every release needs driver 580 (CUDA 13), so CUTLASS DSL never loads its cu12 flavour.
+    for engine, entry in install.PROFILES.items():
+        for release in entry["releases"]:
+            monkeypatch.setattr(install, "_release", lambda engine, release = release: release)
+            assert install.profile(engine)["driver"] >= 580
+            assert "nvidia-cutlass-dsl-libs-cu12" in install.profile(engine)["omit"]
+            assert "nvidia-cutlass-dsl-libs-cu12" not in install._pins(engine), release["lock"]
+            assert "nvidia-cutlass-dsl-libs-cu13" in install._pins(engine), release["lock"]
+
+
 @pytest.mark.parametrize(
     ("engine", "studio_torch", "version"),
     [

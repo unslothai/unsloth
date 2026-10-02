@@ -207,7 +207,8 @@ Keep each lock's torch, torchvision, torchaudio and CUDA pins equal to the Studi
 install it serves, or no installation can share them. `engine_compat.py` also records
 each wheel's download size, which the install prompt shows. SGLang's excludes file drops `outlines`,
 whose `outlines-core` pin has no Python 3.13 wheel; SGLang only imports it for
-`--grammar-backend outlines`.
+`--grammar-backend outlines`. Every lock drops `nvidia-cutlass-dsl-libs-cu12`: CUTLASS DSL loads the newest
+CUDA flavour the driver runs, and the engines require driver 580 (CUDA 13).
 
 Add a release to `PROFILES` (newest first) and `PYTHON` in `engine_install.py` when
 changing the runtime baseline. SGLang's requirements explicitly pin its required Flash
