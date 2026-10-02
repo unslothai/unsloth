@@ -21,9 +21,6 @@ def _clean(monkeypatch):
     g8._DEVICE_CFG.clear()
 
 
-# ----------------------------------------------------------------------------------------------- gate (CPU only)
-
-
 @pytest.mark.parametrize(
     "cap, on",
     [
@@ -72,9 +69,6 @@ def test_rocm_never_probes(monkeypatch):
 
 def test_dense_linear_is_not_eligible():
     assert g8._eligible(torch.nn.Linear(128, 128)) is None
-
-
-# ----------------------------------------------------------------------------------------------- CUDA
 
 
 def _cuda_ready() -> bool:
