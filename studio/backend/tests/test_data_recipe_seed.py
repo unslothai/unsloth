@@ -106,7 +106,6 @@ def test_local_csv_seed_keeps_its_values_as_written(monkeypatch, tmp_path):
     ("filename", "package"),
     [
         ("paper.pdf", "pymupdf4llm"),
-        ("notes.docx", "mammoth"),
     ],
 )
 def test_unstructured_upload_names_missing_extractor_dependency(
@@ -397,6 +396,30 @@ def test_text_extraction_falls_back_to_raw_without_the_plugin(monkeypatch, tmp_p
 
     # The plugin is what collapses the run of blank lines.
     assert seed_route._extract_text_from_file(source, ".txt") == "a\n\n\n\nb"
+
+
+def test_docx_seed_reads_equations_tables_and_plain_text(monkeypatch, tmp_path):
+    docx = pytest.importorskip("docx")
+    from docx.oxml import parse_xml
+
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    _without_plugin(monkeypatch, seed_route)
+    document = docx.Document()
+    document.add_paragraph("See section 4.2 in file_name.py:")
+    m = 'xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"'
+    document.paragraphs[0]._p.append(
+        parse_xml(
+            f"<m:oMath {m}><m:r><m:t>E=m</m:t></m:r><m:sSup><m:e><m:r><m:t>c</m:t></m:r></m:e>"
+            "<m:sup><m:r><m:t>2</m:t></m:r></m:sup></m:sSup></m:oMath>"
+        )
+    )
+    document.add_table(rows = 1, cols = 2).rows[0].cells[0].text = "Mass"
+    source = tmp_path / "notes.docx"
+    document.save(str(source))
+
+    assert seed_route._extract_text_from_file(source, ".docx") == (
+        "See section 4.2 in file_name.py:E=mc^{2}\nMass | "
+    )
 
 
 def test_plugin_resolution_survives_a_reload_and_normalizes(monkeypatch, tmp_path):
