@@ -3536,8 +3536,10 @@ class VideoBackend:
         self._precommit_globals = None
         restore_backend_flags(flags)
         from . import diffusion_gguf_compile
+        from . import video_wan_fused
 
         diffusion_gguf_compile.uninstall_all()
+        video_wan_fused.uninstall()
 
     # LTX-2.3 gets DiT/connectors/VAEs/vocoder from the checkpoint + extras, so only the 2.0 base scheduler / text
     # encoder / tokenizer are pulled.
@@ -6074,6 +6076,16 @@ class VideoBackend:
                 "(quantized transformer must be compiled; eager is ~30x slower)"
             )
             effective_speed = SPEED_DEFAULT
+        # Wan on fp16 GPUs (T4): fused norm / modulation / gated-residual kernels, bit-identical to stock (self-checked
+        # on first use). Before the step cache and apply_memory_plan: their hooks capture the block forward when they attach.
+        from . import video_wan_fused
+        wan_fused_engaged = False
+        if effective_speed != SPEED_OFF:
+            wan_fused_engaged = video_wan_fused.install_for_pipe(
+                pipe, dtype, getattr(target, "device", "cuda"), logger = logger
+            )
+        else:
+            video_wan_fused.uninstall()
         # "off"/"fbcache" pinned; unset/"auto" only on max, by FBCACHE_MIN_STEPS. Run per expert.
         cache_request = normalize_transformer_cache(transformer_cache)
         cache_auto = transformer_cache is None or cache_request == TC_AUTO
@@ -6216,6 +6228,8 @@ class VideoBackend:
                     speed_optims += ("hunyuan_attn_trim",)
                 if hv15_mask_engaged:
                     speed_optims += ("hv15_vae_vector_mask",)
+                if wan_fused_engaged:
+                    speed_optims += ("wan_fused_adaln",)
         with self._generate_lock:
             # A cancelled/superseded load must not place weights on a GPU the arbiter may have reassigned; recheck
             # before placement.
@@ -8898,8 +8912,11 @@ class VideoBackend:
             # speed=off load is bit-identical.
             from . import diffusion_gguf_compile
             from . import diffusion_cuda_graph
+            from . import video_wan_fused
 
             diffusion_gguf_compile.uninstall_all()
+            # The fused Wan block forward is class-level: a later bf16 / speed=off load gets the stock one back.
+            video_wan_fused.uninstall()
             from . import diffusion_prompt_cache
 
             diffusion_prompt_cache.release(getattr(state, "pipe", None))
