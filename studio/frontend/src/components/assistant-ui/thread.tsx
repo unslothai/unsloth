@@ -90,6 +90,7 @@ import {
   useChatAudioUpload,
   useInComparePane,
   refreshSkillsCatalog,
+  stopRecoveredRun,
 } from "@/features/chat";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
@@ -7105,6 +7106,9 @@ const ComposerRightControls: FC<{
   );
   const isQueueRunning = Boolean(queueEntry);
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
+  const threadRemoteId = useAuiState(
+    ({ threadListItem }) => threadListItem.remoteId,
+  );
   // Id and status, not the run: run identity changes on every streamed research delta.
   const activeResearchRunId = useResearchRunStore((state) =>
     activeThreadId ? state.latestRunByThreadId[activeThreadId] : undefined,
@@ -7162,6 +7166,8 @@ const ComposerRightControls: FC<{
       return;
     }
     if (isQueueRunning) onStopClick?.();
+    // A reply replayed after a reload has no adapter run for Cancel to abort.
+    stopRecoveredRun(threadRemoteId);
   };
   return (
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
