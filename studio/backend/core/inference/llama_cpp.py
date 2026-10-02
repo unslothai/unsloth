@@ -6319,7 +6319,7 @@ def _widen_pin_ids_for_companion_devices(
     pin_ids: list[int],
     inherited_ids: Optional[list[int]],
     *,
-    may_widen: bool = True,
+    allowed_ids: Optional[Iterable[int]] = None,
 ) -> tuple[list[int], str]:
     """Fit a pinned GPU mask to the companion devices the argv names (#11810).
 
@@ -6327,12 +6327,14 @@ def _widen_pin_ids_for_companion_devices(
     ``inherited_ids``, else the physical index). Cards they name are appended after the
     pinned ones, the winning flag is renumbered to the child's mask, and a main
     ``--device`` is added so ``-ngl -1`` does not spread over the extra cards. Tokens
-    the parent cannot see are left alone. ``may_widen`` False (explicit gpu_ids) only
-    renumbers within the pin. Returns the mask and a log note, empty when unchanged.
+    the parent cannot see are left alone. With ``allowed_ids`` (explicit gpu_ids) the
+    mask only widens onto those cards. Returns the mask and a log note, empty when
+    unchanged.
     """
     if not pin_ids:
         return list(pin_ids), ""
     main_ids = [int(i) for i in pin_ids]
+    allowed = None if allowed_ids is None else {int(i) for i in allowed_ids}
     # A main --device past the pinned positions would resolve to a widened companion card.
     for token in str(_extra_args_main_device(cmd) or "").split(","):
         match = _GPU_DEVICE_TOKEN_RE.match(token.strip())
@@ -6366,7 +6368,7 @@ def _widen_pin_ids_for_companion_devices(
                     physical = n
                 elif n < len(inherited_ids):
                     physical = int(inherited_ids[n])
-                if not may_widen and physical not in main_ids:
+                if allowed is not None and physical not in main_ids and physical not in allowed:
                     physical = None
             tokens.append((token, physical))
         if any(physical is not None for _, physical in tokens):
@@ -29380,7 +29382,7 @@ class LlamaCppBackend:
                             cmd,
                             _pin_ids,
                             self._resolve_visible_physical_ids(),
-                            may_widen = not gpu_ids,
+                            allowed_ids = gpu_ids or None,
                         )
                         if _companion_widen:
                             _companion_fit_mask = list(_pin_ids)
@@ -30644,7 +30646,7 @@ class LlamaCppBackend:
                                 cmd,
                                 list(_remaining),
                                 list(_companion_fit_mask),
-                                may_widen = not gpu_ids,
+                                allowed_ids = gpu_ids or None,
                             )
                             _companion_added_device = (
                                 list(cmd[-2:])
