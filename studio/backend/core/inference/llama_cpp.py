@@ -23539,7 +23539,23 @@ class LlamaCppBackend:
                 self._requested_n_ctx = 0
                 self._effective_context_length = n_ctx
                 self._max_context_length = self._context_length
-                self._kv_cache_context_total = n_ctx * slots
+                # A unified cache is one shared pool (llama-server enables it for np auto):
+                # trust its startup line, else the options.
+                unified = next(
+                    (
+                        m[1] == "true"
+                        for line in reversed(self._stdout_lines)
+                        if (m := re.search(r"kv_unified = '(true|false)'", line))
+                    ),
+                    compiled.n_parallel is None
+                    or "--kv-unified" in compiled.options
+                    or "-kvu" in compiled.options,
+                )
+                if "--no-kv-unified" in compiled.options or "-no-kvu" in compiled.options:
+                    unified = False
+                self._kv_cache_unified = unified
+                per_slot = compiled.option("--kv-unified-per-slot")
+                self._kv_cache_context_total = n_ctx if unified and not per_slot else n_ctx * slots
                 self._has_video_input = bool((props.get("modalities") or {}).get("video"))
                 self._idle_slot_clearing_active = _idle_slot_clearing_active(
                     cmd, supports_cache_ram = bool(caps.get("supports_cache_ram"))

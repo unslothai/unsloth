@@ -128,6 +128,13 @@ def test_switches_follow_upstream_preset_semantics(ini, argv):
     assert compile_ini(ini).argv == argv
 
 
+def test_env_variable_keys_resolve_like_upstream_presets():
+    flags = {**FLAGS, "-c": "-c, --ctx-size N (env: LLAMA_ARG_CTX_SIZE)"}
+    flags["--ctx-size"] = flags["-c"]
+    compiled = compile_custom_config(source("LLAMA_ARG_CTX_SIZE=4096"), flags, SWITCHES)
+    assert compiled.argv == ("--ctx-size", "4096")
+
+
 def test_unprobed_binary_is_refused():
     with pytest.raises(CustomConfigError, match = "did not report"):
         compile_custom_config(source("c=1"), {}, set())
@@ -284,6 +291,23 @@ def test_custom_launch_reports_the_presets_reasoning_budget(launch):
     assert launch.backend.load_model(replace(launch.intent, llama_cpp_config = ini))
     assert launch.backend._requested_reasoning_budget == 256
     assert launch.backend._reasoning_budget_message == "done"
+
+
+@pytest.mark.parametrize(
+    "log,ini,total",
+    [
+        ("", "np=2\nc=56000", 56000),  # split cache: 2 slots x 28000
+        ("srv init: n_slots = 2, n_ctx_slot = 28000, kv_unified = 'true'", "np=2", 28000),
+        ("", "c=56000", 28000),  # np auto: llama-server unifies the cache
+    ],
+)
+def test_published_kv_capacity_follows_the_unified_cache(launch, log, ini, total):
+    from dataclasses import replace
+
+    launch.backend._stdout_lines = [log] if log else []
+    intent = replace(launch.intent, llama_cpp_config = parse_config_source(source(ini)))
+    assert launch.backend.load_model(intent)
+    assert launch.backend._kv_cache_context_total == total
 
 
 def test_gpu_custom_load_holds_vram(launch):

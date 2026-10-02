@@ -139,7 +139,12 @@ def _sections(ini: str) -> dict[str, dict[str, str]]:
 
 
 def _spelling(key: str, flags: Mapping) -> str | None:
-    return next((f for f in (f"--{key}", f"-{key}") if f in flags), None)
+    found = next((f for f in (f"--{key}", f"-{key}") if f in flags), None)
+    if found is None and re.fullmatch(r"[A-Z][A-Z0-9_]*", key):
+        # Presets may name an option by its env variable, which its help block lists.
+        marker = f"(env: {key})"
+        found = max((f for f, d in flags.items() if d and marker in d), key = len, default = None)
+    return found
 
 
 def compile_custom_config(source, flags: Mapping, switch_flags) -> CompiledCustomConfig:
