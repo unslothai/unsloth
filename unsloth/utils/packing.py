@@ -34,8 +34,18 @@ except Exception:
     except Exception:
         _XFormersBlockMask = None
 
+try:
+    from xformers.ops.fmha.attn_bias import BlockDiagonalMask as _XFormersBidirectionalMask
+except Exception:
+    try:
+        from xformers.attn_bias import BlockDiagonalMask as _XFormersBidirectionalMask
+    except Exception:
+        _XFormersBidirectionalMask = None
+
 _XFORMERS_MASK_CACHE_MAXSIZE = 32
-_XFORMERS_MASK_CACHE: OrderedDict[Tuple[torch.device, Tuple[int, ...], int], Any] = OrderedDict()
+_XFORMERS_MASK_CACHE: OrderedDict[Tuple[torch.device, Tuple[int, ...], int, bool], Any] = (
+    OrderedDict()
+)
 
 # Cache per device for get_packed_info_from_kwargs to avoid repeated D2H sync across layers
 _PACKED_INFO_CACHE: dict = {}
@@ -103,20 +113,24 @@ def move_xformers_attention_bias(attn_bias: Any, device: torch.device):
 
 
 def _get_cached_block_mask(
-    lengths: Tuple[int, ...], sliding_window: Optional[int], device: torch.device
+    lengths: Tuple[int, ...],
+    sliding_window: Optional[int],
+    device: torch.device,
+    is_causal: bool = True,
 ):
-    if _XFormersBlockMask is None:
+    mask_class = _XFormersBlockMask if is_causal else _XFormersBidirectionalMask
+    if mask_class is None:
         return None
 
     device = torch.device(device)
     window_key = _window_cache_key(sliding_window)
-    cache_key = (device, lengths, window_key)
+    cache_key = (device, lengths, window_key, is_causal)
     cached = _XFORMERS_MASK_CACHE.get(cache_key)
     if cached is not None:
         _XFORMERS_MASK_CACHE.move_to_end(cache_key)
         return cached
 
-    mask = _XFormersBlockMask.from_seqlens(list(lengths))
+    mask = mask_class.from_seqlens(list(lengths))
     if window_key and mask is not None and hasattr(mask, "make_local_attention"):
         mask = mask.make_local_attention(window_size = window_key)
     mask = move_xformers_attention_bias(mask, device)
@@ -636,14 +650,16 @@ def build_xformers_block_causal_mask(
     sliding_window: Optional[int] = None,
     base_mask: Optional[Any] = None,
     total_tokens: Optional[int] = None,
+    is_causal: bool = True,
 ):
-    if _XFormersBlockMask is None:
+    mask_class = _XFormersBlockMask if is_causal else _XFormersBidirectionalMask
+    if mask_class is None:
         return None
     if seq_info is not None:
         seq_lengths, _, _ = seq_info
         # Cache the mask to avoid repeated D2H sync across layers
         device = seq_lengths.device
-        params = (sliding_window, total_tokens)
+        params = (sliding_window, total_tokens, is_causal)
         entry = _XFORMERS_BLOCK_MASK_CACHE.get(device)
         if entry is not None and entry["seq_lengths"] is seq_lengths and entry["params"] == params:
             return entry["mask"]
@@ -653,7 +669,7 @@ def build_xformers_block_causal_mask(
             return None
         lengths = tuple(int(x) for x in lengths_tensor.tolist())
         lengths = _with_padding_segment(lengths, total_tokens)
-        mask = _get_cached_block_mask(lengths, sliding_window, device)
+        mask = _get_cached_block_mask(lengths, sliding_window, device, is_causal = is_causal)
 
         _XFORMERS_BLOCK_MASK_CACHE[device] = {
             "seq_lengths": seq_lengths,
@@ -680,10 +696,11 @@ def build_sdpa_packed_attention_mask(
     device: torch.device,
     sliding_window: Optional[int] = None,
     total_tokens: Optional[int] = None,
+    is_causal: bool = True,
 ) -> torch.Tensor:
     seq_lengths, _, _ = seq_info
 
-    params = (dtype, sliding_window, total_tokens)
+    params = (dtype, sliding_window, total_tokens, is_causal)
     entry = _SDPA_MASK_CACHE.get(device)
     if entry is not None and entry["seq_lengths"] is seq_lengths and entry["params"] == params:
         return entry["mask"]
@@ -704,8 +721,9 @@ def build_sdpa_packed_attention_mask(
         if length <= 0:
             continue
         block = torch.zeros((length, length), dtype = dtype, device = device)
-        upper = torch.triu(torch.ones((length, length), device = device), diagonal = 1).bool()
-        block = block.masked_fill(upper, float("-inf"))
+        if is_causal:
+            upper = torch.triu(torch.ones((length, length), device = device), diagonal = 1).bool()
+            block = block.masked_fill(upper, float("-inf"))
         if sliding_window is not None and sliding_window > 0 and length > sliding_window:
             idx = torch.arange(length, device = device)
             dist = idx.unsqueeze(1) - idx.unsqueeze(0)

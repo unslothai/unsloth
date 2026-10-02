@@ -348,6 +348,7 @@ from routes import (
     youtube_router,
 )
 from routes.llama import router as llama_router
+from routes.engines import router as engines_router
 from routes.llama_compat import is_engine_probe_path, router as llama_compat_router
 from routes.whisper import router as whisper_router
 from routes.npu import router as npu_router
@@ -1705,6 +1706,7 @@ app.include_router(profile_stats_router, prefix = "/api/profile", tags = ["profi
 app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
 app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
 app.include_router(llama_router, prefix = "/api/llama", tags = ["llama"])
+app.include_router(engines_router, prefix = "/api/engines", tags = ["engines"])
 app.include_router(whisper_router, prefix = "/api/whisper", tags = ["whisper"])
 app.include_router(npu_router, prefix = "/api/npu", tags = ["npu"])
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])
@@ -2460,6 +2462,17 @@ def _quantised_streaming() -> bool:
     return bool(_quantised_streaming_capability)
 
 
+def _diffusers_offload_tiers() -> dict:
+    """Extra picker fit tiers per curated Diffusers repo (lower-cased id), in the picker's GiB units.
+    Torch-free; the picker unions them with the catalog's own tiers, so they can only widen."""
+    try:
+        from core.inference.video_minimax_h3 import h3_diffusers_fit_tiers
+        tiers = h3_diffusers_fit_tiers()
+    except Exception:  # noqa: BLE001 -- a picker hint must never break the polled route
+        return {}
+    return {"minimaxai/minimax-h3": tiers} if tiers else {}
+
+
 def _nvfp4_diffusion_enabled() -> bool:
     """Whether image and video generation may offer NVFP4 (``UNSLOTH_NVFP4_DIFFUSION``)."""
     try:
@@ -2577,6 +2590,8 @@ def get_system_info(
         "dense_quant_schemes": _dense_quant_schemes(),
         # The streamed MiniMax-H3 tier needs group offload that swaps torchao weights.
         "quantised_streaming": _quantised_streaming(),
+        # Backend-measured offload tiers the picker unions with the catalog's. Additive key.
+        "diffusers_offload_tiers": _diffusers_offload_tiers(),
         # Torch-free env read, safe on this polled route.
         "nvfp4_diffusion": _nvfp4_diffusion_enabled(),
     }

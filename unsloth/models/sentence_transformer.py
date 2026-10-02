@@ -19,6 +19,7 @@ from .loader_utils import (
     unmarked_device_map,
 )
 from ._utils import (
+    config_return_dict,
     SUPPORTS_BFLOAT16,
     resolve_model_class,
     resolve_encoder_attention_implementation,
@@ -835,7 +836,9 @@ class FastSentenceTransformer(FastModel):
                 if output_hidden_states is not None
                 else self.config.output_hidden_states
             )
-            return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+            return_dict = (
+                return_dict if return_dict is not None else config_return_dict(self.config)
+            )
 
             if input_ids is not None and inputs_embeds is not None:
                 raise ValueError(
@@ -2168,8 +2171,22 @@ class FastSentenceTransformer(FastModel):
         return int(max(20, final_threshold))
 
     @staticmethod
+    def _enable_unpadding(st_model, use_unpadding):
+        if not use_unpadding:
+            return
+        from ._sentence_transformer_unpadding import enable_sentence_transformer_unpadding
+        if not enable_sentence_transformer_unpadding(st_model, auto = use_unpadding == "auto"):
+            print(
+                "Unsloth: use_unpadding needs Transformers 5, a BERT / RoBERTa encoder, "
+                "mean pooling and flash-attn or xformers; training stays padded."
+            )
+
+    @staticmethod
     def _apply_torch_compile(model, mode = "default"):
         """Apply torch.compile to a SentenceTransformer model (with an accelerate unwrap_model bug workaround)."""
+        if getattr(model, "_unsloth_unpadding_installed", False):
+            from ._sentence_transformer_unpadding import disable_sentence_transformer_unpadding
+            disable_sentence_transformer_unpadding(model)
         if hasattr(model, "__getitem__"):
             inner_model = model[0].auto_model
             compiled = torch.compile(inner_model, mode = mode)
@@ -2209,8 +2226,13 @@ class FastSentenceTransformer(FastModel):
         unsloth_tiled_mlp = False,
         pooling_mode = "mean",
         for_inference = False,
+        use_unpadding = False,
         **kwargs,
     ):
+        # use_unpadding: "auto" packs eligible training batches with >= 8192 padded slots,
+        # True packs every eligible batch (saves memory, can cost speed).
+        if use_unpadding not in (False, True, "auto") or type(use_unpadding) not in (bool, str):
+            raise ValueError('use_unpadding must be "auto", True, or False')
         try:
             from sentence_transformers import SentenceTransformer
             from sentence_transformers.models import Transformer, Pooling, Normalize
@@ -2448,6 +2470,7 @@ class FastSentenceTransformer(FastModel):
             st_model._dtype = dtype
             st_model._load_in_4bit = load_in_4bit
             st_model.no_modules = False
+            FastSentenceTransformer._enable_unpadding(st_model, use_unpadding)
             FastSentenceTransformer._patch_transformer_module_save_config(
                 st_model[0], getattr(st_model[0].auto_model, "config", None)
             )
@@ -2774,6 +2797,7 @@ class FastSentenceTransformer(FastModel):
 
         st_model.push_to_hub_merged = types.MethodType(_push_to_hub_merged, st_model)
         st_model._unsloth_trust_remote_code = trust_remote_code
+        FastSentenceTransformer._enable_unpadding(st_model, use_unpadding)
         return st_model
 
     @staticmethod

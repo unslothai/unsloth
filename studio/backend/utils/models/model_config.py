@@ -1520,6 +1520,40 @@ def detect_audio_type(
     )[0]
 
 
+def _audio_cpp_repo_audio_type(
+    model_name: str, hf_token: Optional[str], offline: bool
+) -> Optional[str]:
+    """``audiocpp_tts`` / ``audiocpp_music`` for an audio.cpp GGUF repo, ``""`` for one that is
+    audio.cpp but neither (speech-to-text), None when it is not audio.cpp or was not looked at.
+
+    Only names that can be a GGUF repo are looked at (an umbrella folder, an ``audio-cpp`` repo,
+    a ``*-GGUF`` or audio.cpp-named repo), so this costs an ordinary model nothing.
+    """
+    try:
+        from core.inference import audio_cpp_models
+    except Exception:  # noqa: BLE001 - no audio.cpp support
+        return None
+    name = model_name.strip()
+    lowered = name.lower()
+    if not (
+        audio_cpp_models.is_umbrella_id(name)
+        or lowered.startswith("audio-cpp/")
+        or "gguf" in lowered.rsplit("/", 1)[-1]
+        or "audiocpp" in lowered
+        or "audio.cpp" in lowered
+    ):
+        return None
+    if audio_cpp_models.parse_identifier(name) is None:
+        return None
+    try:
+        model = audio_cpp_models.resolve(name, None, hf_token, network = not offline)
+    except Exception:  # noqa: BLE001 - unknown, not "not audio.cpp"
+        return None
+    if model is None:
+        return None
+    return model.audio_type or ""
+
+
 def detect_audio_type_checked(
     model_name: str,
     hf_token: Optional[str] = None,
@@ -1538,8 +1572,10 @@ def detect_audio_type_checked(
         return None, True
 
     try:
-        from core.inference.native_audio import NATIVE_AUDIO_MODEL_IDS
-        curated_type = NATIVE_AUDIO_MODEL_IDS.get(str(model_name).strip().lower())
+        from core.inference.native_audio import NATIVE_AUDIO_MODEL_IDS, audio_cpp_audio_type
+        curated_type = NATIVE_AUDIO_MODEL_IDS.get(
+            str(model_name).strip().lower()
+        ) or audio_cpp_audio_type(str(model_name))
     except Exception:
         curated_type = None
     if curated_type:
@@ -1547,6 +1583,9 @@ def detect_audio_type_checked(
 
     # Key on effective offline (kwarg OR env) so an offline negative can't poison a later probe.
     effective_offline = bool(local_files_only or _env_offline())
+    audio_cpp_type = _audio_cpp_repo_audio_type(str(model_name), hf_token, effective_offline)
+    if audio_cpp_type is not None:
+        return audio_cpp_type or None, True
     if _offline_cache_read_refused(hf_token, model_name, model_name, effective_offline):
         return None, False
     local_fingerprint = (
@@ -4212,6 +4251,9 @@ class ModelConfig:
     gguf_cache_repo: Optional[str] = None
     gguf_variant: Optional[str] = None  # Quantization variant (e.g. "Q4_K_M")
     base_model: Optional[str] = None  # Base model (for LoRAs)
+    # The resolved audio.cpp model (core.inference.audio_cpp_models.AudioCppModel) for a GGUF only
+    # audiocpp_server runs. Such a config loads through the native-audio worker, never llama-server.
+    audio_cpp: Optional[Any] = None
 
     @classmethod
     def from_lora_path(
@@ -4308,6 +4350,9 @@ class ModelConfig:
             return None
 
         identifier = model_id.strip()
+        audio_cpp_config = cls._from_audio_cpp_identifier(identifier, gguf_variant, hf_token)
+        if audio_cpp_config is not None:
+            return audio_cpp_config
         is_local = is_local_path(identifier)
         path = normalize_path(identifier) if is_local else identifier
 
@@ -4341,6 +4386,11 @@ class ModelConfig:
             else:
                 gguf_file = detect_gguf_model(path)
             if gguf_file:
+                audio_cpp_config = cls._from_audio_cpp_identifier(
+                    identifier, gguf_variant, hf_token, gguf_file = gguf_file
+                )
+                if audio_cpp_config is not None:
+                    return audio_cpp_config
                 display_name = Path(gguf_file).stem
                 logger.info(f"Detected local GGUF model: {gguf_file}")
 
@@ -4520,6 +4570,13 @@ class ModelConfig:
                 if _env_offline():
                     raise GgufRepoUnreadableError(_gguf_repo_unreadable_message(identifier, None))
             if gguf_filename:
+                # A GGUF only audio.cpp reads never reaches llama-server: its header says so before
+                # anything is downloaded.
+                audio_cpp_config = cls._from_audio_cpp_identifier(
+                    identifier, gguf_variant, hf_token, gguf_hint = gguf_filename
+                )
+                if audio_cpp_config is not None:
+                    return audio_cpp_config
                 # Preflight: verify the llama-server binary exists before a multi-GB download.
                 # include_denied: a transiently locked binary still exists and the lock clears in time.
                 from core.inference.llama_cpp import (
@@ -4709,6 +4766,65 @@ class ModelConfig:
             audio_type = audio_type_val,
             has_audio_input = has_audio_in,
             base_model = base_model,
+        )
+
+    @classmethod
+    def _from_audio_cpp_identifier(
+        cls,
+        identifier: str,
+        gguf_variant: Optional[str],
+        hf_token: Optional[str],
+        *,
+        gguf_hint: Optional[str] = None,
+        gguf_file: Optional[str] = None,
+    ) -> Optional["ModelConfig"]:
+        """A GGUF only audio.cpp runs, as a speech or music config for the native-audio worker.
+
+        Called three ways: up front for an umbrella folder id (``audio-cpp/audio.cpp-gguf/<Folder>``,
+        which no repo probe below can read), for a local GGUF once found, and for a Hub repo once
+        its GGUF is known. The last two read the file's header, so an ordinary llama.cpp GGUF
+        returns None here at the cost of one header read. Raises ``ValueError`` for an audio.cpp
+        model Studio cannot run in this slot (speech-to-text, an unsupported task or variant).
+        """
+        try:
+            from core.inference import audio_cpp_models
+        except Exception:  # noqa: BLE001 - no audio.cpp support, no audio.cpp id
+            return None
+        if gguf_file is not None:
+            header = audio_cpp_models.read_local_header(gguf_file)
+            if header is None or not header.is_audio_cpp:
+                return None
+            target = gguf_file
+        elif gguf_hint is None and not audio_cpp_models.is_umbrella_id(identifier):
+            return None
+        else:
+            target = identifier
+        model = audio_cpp_models.resolve(
+            target,
+            gguf_variant,
+            hf_token,
+            network = not _env_offline(),
+            gguf_hint = gguf_hint,
+        )
+        if model is None:
+            return None
+        audio_cpp_models.require_runnable(model, "tts")
+        from core.inference import audio_cpp_files
+
+        return cls(
+            identifier = model.id,
+            display_name = model.display_name,
+            path = model.local_path or model.id,
+            is_local = bool(model.local_path),
+            is_cached = audio_cpp_files.is_downloaded(model),
+            is_vision = False,
+            is_lora = False,
+            is_audio = True,
+            audio_type = model.audio_type,
+            has_audio_input = False,
+            gguf_variant = model.variant.key,
+            base_model = None,
+            audio_cpp = model,
         )
 
     @classmethod
