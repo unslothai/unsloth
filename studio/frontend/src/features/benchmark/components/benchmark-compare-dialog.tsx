@@ -268,7 +268,7 @@ export function CompareDialog({
                     {/* Sample results summary */}
                     {detail.samples.length > 0 && (
                       <div className="space-y-1 border-t border-border/30 pt-2">
-                        <div className="text-[10px] font-medium text-muted-foreground/60">
+                        <div className="text-ui-10 font-medium text-muted-foreground/60">
                           {t("benchmark.compare.sampleSummary")}
                         </div>
                         <div className="flex items-center gap-3 text-xs">

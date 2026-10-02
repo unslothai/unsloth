@@ -212,11 +212,11 @@ function RunCard({
         <div className="flex min-w-0 flex-1 flex-col gap-0.5">
           <div className="flex items-center gap-2">
             <span className="truncate text-sm font-medium">{run.task}</span>
-            <Badge variant="outline" className="shrink-0 text-[10px]">
+            <Badge variant="outline" className="shrink-0 text-ui-10">
               {t("benchmark.history.samples", { count: run.n_samples })}
             </Badge>
             {run.num_fewshot != null && run.num_fewshot > 0 && (
-              <Badge variant="outline" className="shrink-0 text-[10px]">
+              <Badge variant="outline" className="shrink-0 text-ui-10">
                 {t("benchmark.history.shotCount", { count: run.num_fewshot })}
               </Badge>
             )}
@@ -237,7 +237,7 @@ function RunCard({
               <Badge
                 key={m.name}
                 variant="secondary"
-                className="text-[10px] font-mono"
+                className="text-ui-10 font-mono"
               >
                 {m.name}: {formatMetricValue(m)}
                 {m.score >= 0 && m.score <= 1 ? "%" : ""}
@@ -367,13 +367,13 @@ function RunDetailView({
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <div className="rounded-lg border border-border/60 bg-card p-3">
-              <div className="text-[10px] font-medium text-muted-foreground/60">
+              <div className="text-ui-10 font-medium text-muted-foreground/60">
                 {t("benchmark.history.task")}
               </div>
               <div className="mt-0.5 text-sm font-semibold">{detail.task}</div>
             </div>
             <div className="rounded-lg border border-border/60 bg-card p-3">
-              <div className="text-[10px] font-medium text-muted-foreground/60">
+              <div className="text-ui-10 font-medium text-muted-foreground/60">
                 {t("benchmark.history.accuracy")}
               </div>
               <div
@@ -386,7 +386,7 @@ function RunDetailView({
               </div>
             </div>
             <div className="rounded-lg border border-border/60 bg-card p-3">
-              <div className="text-[10px] font-medium text-muted-foreground/60">
+              <div className="text-ui-10 font-medium text-muted-foreground/60">
                 {t("benchmark.history.model")}
               </div>
               <div
@@ -397,7 +397,7 @@ function RunDetailView({
               </div>
             </div>
             <div className="rounded-lg border border-border/60 bg-card p-3">
-              <div className="text-[10px] font-medium text-muted-foreground/60">
+              <div className="text-ui-10 font-medium text-muted-foreground/60">
                 {t("benchmark.history.date")}
               </div>
               <div className="mt-0.5 text-sm tabular-nums">
@@ -480,13 +480,13 @@ function CompareColumn({ detail }: { detail: BenchmarkRunDetail }) {
     <div className="flex min-w-[calc(640px*var(--ui-space-scale,1))] flex-1 flex-col gap-4 rounded-lg border border-border/60 bg-card p-4">
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <div className="rounded-lg border border-border/60 bg-card p-3">
-          <div className="text-[10px] font-medium text-muted-foreground/60">
+          <div className="text-ui-10 font-medium text-muted-foreground/60">
             {t("benchmark.history.task")}
           </div>
           <div className="mt-0.5 text-sm font-semibold">{detail.task}</div>
         </div>
         <div className="rounded-lg border border-border/60 bg-card p-3">
-          <div className="text-[10px] font-medium text-muted-foreground/60">
+          <div className="text-ui-10 font-medium text-muted-foreground/60">
             {t("benchmark.history.accuracy")}
           </div>
           <div
@@ -499,7 +499,7 @@ function CompareColumn({ detail }: { detail: BenchmarkRunDetail }) {
           </div>
         </div>
         <div className="rounded-lg border border-border/60 bg-card p-3">
-          <div className="text-[10px] font-medium text-muted-foreground/60">
+          <div className="text-ui-10 font-medium text-muted-foreground/60">
             {t("benchmark.history.model")}
           </div>
           <div
@@ -510,7 +510,7 @@ function CompareColumn({ detail }: { detail: BenchmarkRunDetail }) {
           </div>
         </div>
         <div className="rounded-lg border border-border/60 bg-card p-3">
-          <div className="text-[10px] font-medium text-muted-foreground/60">
+          <div className="text-ui-10 font-medium text-muted-foreground/60">
             {t("benchmark.history.date")}
           </div>
           <div className="mt-0.5 text-sm tabular-nums">
