@@ -1073,6 +1073,9 @@ class TestLoadHubDownloadExclusion:
             # Read from requested_extra_args, which is what the load was invoked
             # with rather than the rewritten launch list.
             "requested_llama_extra_args",
+            # Constant None: llama-server never serves an audio GGUF.
+            "audio_family",
+            "audio_options",
         }
         unresolved = sorted(
             name
