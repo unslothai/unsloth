@@ -2811,3 +2811,161 @@ def test_a_nested_source_alias_does_not_leak_outward(tmp_path):
         "    return importlib.import_module(decode(blob)['module'])\n",
     )
     assert "importlib.import_module" not in _sinks(findings)
+
+
+def test_an_inherited_self_call_crosses_a_file(tmp_path):
+    """`self.execute(parsed)` in a child of a base declared in another module.
+
+    The branch checked the current class and its direct bases in this file only, so this
+    spelling reached no target at all while the constructed-instance spelling resolved.
+    """
+    (tmp_path / "producer.py").write_text(
+        "import subprocess\n"
+        "class Base:\n"
+        "    def execute(self, command):\n"
+        "        return subprocess.run(command)\n",
+        encoding = "utf-8",
+    )
+    consumer = tmp_path / "consumer.py"
+    consumer.write_text(
+        "import json\nfrom producer import Base\n"
+        "class Child(Base):\n"
+        "    def load(self, blob):\n"
+        "        return self.execute(json.loads(blob)['command'])\n",
+        encoding = "utf-8",
+    )
+    findings = L.scan([tmp_path / "producer.py", consumer], roots = [tmp_path])
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_an_attribute_written_on_a_subclass_reaches_an_inherited_reader(tmp_path):
+    """`child.command = parsed` then an inherited `Base.run` executing `self.command`.
+
+    The write recorded `Child.command` and the inherited method read `Base.command`, so
+    the two halves never met. Writes bind every ancestor's key and reads consult them.
+    """
+    (tmp_path / "producer.py").write_text(
+        "import subprocess\n"
+        "class Base:\n"
+        "    def run(self):\n"
+        "        return subprocess.run(self.command)\n",
+        encoding = "utf-8",
+    )
+    consumer = tmp_path / "consumer.py"
+    consumer.write_text(
+        "import json\nfrom producer import Base\n"
+        "class Child(Base):\n"
+        "    pass\n"
+        "def load(blob):\n"
+        "    child = Child()\n"
+        "    child.command = json.loads(blob)['command']\n"
+        "    return child.run()\n",
+        encoding = "utf-8",
+    )
+    findings = L.scan([tmp_path / "producer.py", consumer], roots = [tmp_path])
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_an_annotated_true_flag_still_enables_remote_code(tmp_path):
+    """`enabled: bool = True` is the same flag as the plain spelling."""
+    findings = _scan(
+        tmp_path,
+        "from transformers import AutoModel\n"
+        "def load(name):\n"
+        "    enabled: bool = True\n"
+        "    return AutoModel.from_pretrained(name, trust_remote_code = enabled)\n",
+    )
+    assert any(f["sink"].startswith("trust_remote_code = True") for f in findings)
+
+
+def test_a_true_flag_set_on_a_backedge_is_carried(tmp_path):
+    """Every pass visited the loader call before rediscovering the assignment."""
+    findings = _scan(
+        tmp_path,
+        "from transformers import AutoModel\n"
+        "def load(name, rounds):\n"
+        "    enabled = False\n"
+        "    for _ in range(rounds):\n"
+        "        AutoModel.from_pretrained(name, trust_remote_code = enabled)\n"
+        "        enabled = True\n",
+    )
+    assert any(f["sink"].startswith("trust_remote_code = True") for f in findings)
+
+
+def test_a_module_level_true_flag_reaches_a_loader(tmp_path):
+    """`ENABLED = True` at module scope, forwarded into a loader."""
+    findings = _scan(
+        tmp_path,
+        "from transformers import AutoModel\n"
+        "ENABLED = True\n"
+        "def load(name):\n"
+        "    return AutoModel.from_pretrained(name, trust_remote_code = ENABLED)\n",
+    )
+    assert any(f["sink"].startswith("trust_remote_code = True") for f in findings)
+
+
+def test_an_explicit_null_revision_is_unpinned(tmp_path):
+    """`revision = None` reaches the library as the same default as an omitted keyword.
+
+    A presence-only test let the explicit spelling through, which is worse than the
+    omitted one because changing a helper to `revision = None` does not alter the sink
+    function's context digest and so keeps its baseline allowance valid.
+    """
+    findings = _scan(
+        tmp_path,
+        "import sys\n"
+        "from huggingface_hub import snapshot_download\n"
+        "def load(repo):\n"
+        "    sys.path.insert(0, snapshot_download(repo, revision = None))\n",
+    )
+    assert "unpinned code fetch" in _sinks(findings)
+
+
+def test_a_pinned_revision_is_still_quiet(tmp_path):
+    """The half that must keep working: a real revision pins the code that runs."""
+    findings = _scan(
+        tmp_path,
+        "import sys\n"
+        "from huggingface_hub import snapshot_download\n"
+        "def load(repo):\n"
+        "    sys.path.insert(0, snapshot_download(repo, revision = 'abc123'))\n",
+    )
+    assert "unpinned code fetch" not in _sinks(findings)
+
+
+def test_format_map_preserves_taint(tmp_path):
+    """The mapping spelling of the same interpolation."""
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "def load(blob):\n"
+        "    return importlib.import_module('x.{n}'.format_map(json.loads(blob)))\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_asyncio_subprocess_creation_is_a_sink(tmp_path):
+    """The async spellings run a program exactly as the blocking ones do."""
+    findings = _scan(
+        tmp_path,
+        "import asyncio, json\n"
+        "async def load(blob):\n"
+        "    return await asyncio.create_subprocess_exec(json.loads(blob)['binary'])\n",
+    )
+    assert "asyncio.create_subprocess_exec" in _sinks(findings)
+
+
+def test_a_sink_wrapped_in_functools_partial_is_still_a_sink(tmp_path):
+    """`functools.partial(import_module)` is a reference to the sink, wrapped.
+
+    The alias handling skipped anything that was a call, so the partial walked past the
+    gate while the bare alias of the same sink was caught.
+    """
+    findings = _scan(
+        tmp_path,
+        "import functools, importlib, json\n"
+        "def load(blob):\n"
+        "    loader = functools.partial(importlib.import_module)\n"
+        "    return loader(json.loads(blob)['module'])\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)

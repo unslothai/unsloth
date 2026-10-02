@@ -261,6 +261,11 @@ SINKS: dict[str, tuple[tuple[int, ...], frozenset[str]]] = {
     # Shell. A tainted argv[0] or a tainted command string is execution.
     "os.system": ((0,), frozenset()),
     "os.popen": ((0,), frozenset()),
+    # The async spellings run a program exactly as the blocking ones do.
+    "asyncio.create_subprocess_exec": ((0,), frozenset({"program", "executable"})),
+    "asyncio.create_subprocess_shell": ((0,), frozenset({"cmd"})),
+    "create_subprocess_exec": ((0,), frozenset({"program", "executable"})),
+    "create_subprocess_shell": ((0,), frozenset({"cmd"})),
     # executable beside args: it names the program that actually runs, so a fixed argv
     # with a tainted executable executes the tainted one. Only args was inspected.
     "subprocess.run": ((0,), frozenset({"args", "executable"})),
@@ -548,6 +553,8 @@ class _FileFacts:
         self.module_callable_aliases: dict = {}
         # Module-scope `decode = json.loads`, the source counterpart of the sink table.
         self.module_source_aliases: dict = {}
+        # Module-scope `ENABLED = True`, forwarded as `trust_remote_code = ENABLED`.
+        self.module_true_names: set = set()
         # Aliases bound by a plain `import x` / `import x as y`, which are modules by
         # construction. `getattr(namespace, parsed)` on one is unsafe reflection, and the
         # name heuristic alone missed every module this tree imports under a name it does
@@ -724,6 +731,8 @@ class _FileFacts:
             names = [t.id for t in targets if isinstance(t, ast.Name)]
             if not names:
                 continue
+            if isinstance(value, ast.Constant) and value.value is True:
+                self.module_true_names.update(names)
             self._note_constant_map(names, value)
             if isinstance(value, ast.Lambda):
                 for name in names:
@@ -1079,17 +1088,11 @@ class _FileFacts:
         # a class that parses an untrusted config in one method and dynamically imports
         # the result in another was accepted. Most code in this tree is methods.
         if head in ("self", "cls") and tail and class_name:
-            candidate = f"{class_name}.{tail}"
-            if candidate in self.functions:
-                return [(self.path, candidate)]
-            # Inherited, not overridden. Only the explicit `super().m()` form was followed,
-            # so a base method that returns a parsed value fed `self.m(blob)` in a child
-            # with nothing reported, which is the ordinary way inheritance is used here.
-            for base in self.bases.get(class_name, ()):
-                inherited = f"{base}.{tail}"
-                if inherited in self.functions:
-                    return [(self.path, inherited)]
-            return []
+            # Through the shared resolver, so an inherited helper is found at any depth
+            # and in another first-party file. Checking the current class and its direct
+            # bases in this file only meant `self.execute(parsed)` in a child of an
+            # imported base reached no target at all.
+            return self._methods_on(class_name, tail)
         # `parser = Parser()` then `parser.parse(...)`. The head is a local variable, so
         # nothing resolved it and the method sat outside the analysis.
         if tail and instances:
@@ -1225,7 +1228,7 @@ class _TaintPass(ast.NodeVisitor):
         self.source_aliases: dict[str, str] = dict(facts.module_source_aliases)
         # Local names bound to a literal True, for `enabled = True` forwarded as
         # `trust_remote_code = enabled`.
-        self.true_names: set[str] = set()
+        self.true_names: set[str] = set(facts.module_true_names)
         self.artefacts: set[str] = set()
         self.returns_tainted: str = ""
         self.findings: list[dict] = []
@@ -1248,9 +1251,10 @@ class _TaintPass(ast.NodeVisitor):
                 return own
             return self._imported_global(node.id)
         if isinstance(node, ast.Attribute):
-            attribute_reason = self.state.tainted_attrs.get(self._attr_key(node))
-            if attribute_reason:
-                return attribute_reason
+            for key in self._attr_keys(node):
+                attribute_reason = self.state.tainted_attrs.get(key)
+                if attribute_reason:
+                    return attribute_reason
             # `import producer` then `producer.MODEL_TYPE`. The earlier fix covered only
             # `from producer import MODEL_TYPE`, so the module-qualified spelling of the
             # same tainted global fell through to the clean base name.
@@ -1359,6 +1363,8 @@ class _TaintPass(ast.NodeVisitor):
             "get",
             "pop",
             "format",
+            # The mapping spelling of the same interpolation.
+            "format_map",
             "join",
             "split",
             "strip",
@@ -1524,6 +1530,56 @@ class _TaintPass(ast.NodeVisitor):
                 return reason
         return None
 
+    def _attr_keys(self, node: ast.Attribute) -> list:
+        """Every key `node` can mean, the inherited owners included.
+
+        `child.command = parsed` recorded `Child.command` while the inherited `Base.run`
+        reads `self.command` as `Base.command`, so the write and the read never met and
+        the sink inside the inherited method was missed. Writes bind all of them and
+        reads consult all of them, which is the same fail-closed choice the rest of the
+        resolution makes.
+        """
+        first = self._attr_key(node)
+        if not first:
+            return []
+        keys = [first]
+        owner, _, attribute = first.rpartition(".")
+        relative, _, class_name = owner.partition("::")
+        for ancestor in self._ancestors(class_name):
+            candidate = f"{relative}::{ancestor}.{attribute}"
+            if candidate not in keys:
+                keys.append(candidate)
+            # An ancestor declared in another first-party file keys against THAT file,
+            # because that is where its methods read `self.attr`. Keying every ancestor
+            # against the writer's file left the two halves in different namespaces.
+            for dotted in self.facts._targets(ancestor):
+                file, module = self.facts.index.resolve_module(dotted)
+                if file is None or not module or not dotted.startswith(module + "."):
+                    continue
+                elsewhere = f"{_relative(file)}::{dotted[len(module) + 1 :]}.{attribute}"
+                if elsewhere not in keys:
+                    keys.append(elsewhere)
+        return keys
+
+    def _ancestors(
+        self,
+        class_name: str,
+        seen: set | None = None,
+    ) -> list:
+        """Declared base classes of `class_name`, transitively, within this file."""
+        if not class_name:
+            return []
+        if seen is None:
+            seen = set()
+        found: list = []
+        for base in self.facts.bases.get(class_name, ()):
+            if base in seen or base == class_name:
+                continue
+            seen.add(base)
+            found.append(base)
+            found.extend(self._ancestors(base, seen))
+        return found
+
     def _attr_key(self, node: ast.Attribute) -> str:
         # `cls` as well as `self`: a classmethod writing `cls.command` and another
         # reading it got an empty key on both halves, so an executable value passed
@@ -1569,8 +1625,7 @@ class _TaintPass(ast.NodeVisitor):
                     self.state.tainted_globals, f"{self.facts.relative}::{target.id}", reason
                 )
         elif isinstance(target, ast.Attribute):
-            key = self._attr_key(target)
-            if key:
+            for key in self._attr_keys(target):
                 # Same tier-A-wins rule as locals and parameters. Writing unconditionally
                 # let one method's tier-B assignment to self.command overwrite another
                 # method's tier-A one, purely on the order the methods are visited, and
@@ -1599,10 +1654,7 @@ class _TaintPass(ast.NodeVisitor):
         if reason:
             for target in node.targets:
                 self._assign(target, reason)
-        if isinstance(node.value, ast.Constant) and node.value.value is True:
-            for target in node.targets:
-                if isinstance(target, ast.Name):
-                    self.true_names.add(target.id)
+        self._note_true(node)
         self._note_construction(node)
         self._note_sink_alias(node)
         self._note_source_alias(node)
@@ -1612,6 +1664,26 @@ class _TaintPass(ast.NodeVisitor):
     def _note_sink_alias(self, node: ast.Assign) -> None:
         """`loader = importlib.import_module`: a reference to a sink, not a call to one."""
         if isinstance(node.value, ast.Call):
+            # `runner = functools.partial(subprocess.run)` is still a reference to the
+            # sink, wrapped. The call guard above skipped it, so the partial walked past
+            # the gate while the bare alias of the same sink was caught.
+            wrapped = _matches_any(
+                self.facts.canonicals(_call_name(node.value.func)),
+                {"functools.partial", "partial"},
+            )
+            if wrapped is None or not node.value.args:
+                return
+            inner = _call_name(node.value.args[0])
+            held = _matches_any(self.facts.canonicals(inner), SINKS)
+            if held is None:
+                for candidate in self.sink_aliases.get(inner) or ():
+                    held = candidate
+                    break
+            if held is None:
+                return
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    self.sink_aliases[target.id] = _with(self.sink_aliases.get(target.id), held)
             return
         referenced = _call_name(node.value)
         if not referenced:
@@ -1664,6 +1736,14 @@ class _TaintPass(ast.NodeVisitor):
             reason = self.tainted(default)
             if reason:
                 self._bind(self.local_reasons, parameter.arg, reason)
+
+    def _note_true(self, node: ast.Assign) -> None:
+        """`enabled = True`, in either the plain or the annotated spelling."""
+        if not (isinstance(node.value, ast.Constant) and node.value.value is True):
+            return
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                self.true_names.add(target.id)
 
     def _note_source_alias(self, node: ast.Assign) -> None:
         """`decode = json.loads`: a reference to a source, not a call to one."""
@@ -1740,6 +1820,9 @@ class _TaintPass(ast.NodeVisitor):
             # only the plain form was recording it, so the annotated spelling left the
             # method unresolvable.
             synthetic = ast.Assign(targets = [node.target], value = node.value)
+            # `enabled: bool = True` is the same flag as the plain form, and this mirrored
+            # handling omitted the update that `visit_Assign` performs.
+            self._note_true(synthetic)
             self._note_construction(synthetic)
             self._note_sink_alias(synthetic)
             self._note_source_alias(synthetic)
@@ -2418,7 +2501,13 @@ def _unpinned_code_fetches(facts: _FileFacts, reached: frozenset) -> list[dict]:
             )
             if not source:
                 continue
-            if any(keyword.arg == "revision" for keyword in child.keywords):
+            # `revision = None` reaches the library as the same unpinned default as an
+            # omitted keyword, so a presence-only test let the explicit spelling through.
+            if any(
+                keyword.arg == "revision"
+                and not (isinstance(keyword.value, ast.Constant) and keyword.value.value is None)
+                for keyword in child.keywords
+            ):
                 continue
             # Same identity the taint reason carries, so this is the download the sink
             # read and not merely one of the downloads in the same body.
@@ -2474,6 +2563,10 @@ def _settle(facts: _FileFacts, qualname: str, nodes: list, state: "_State"):
     # name recognised as a deserialiser.
     sources: dict[str, str] = {}
     callables: dict[str, str] = {}
+    # A flag that becomes true on a loop backedge: every pass visited the loader call
+    # before rediscovering the assignment, so the second runtime iteration enabled
+    # remote code and nothing was reported.
+    trues: set = set()
     visitor = None
     for _ in range(_LOCAL_BOUND):
         visitor = _TaintPass(facts, qualname, state)
@@ -2482,6 +2575,7 @@ def _settle(facts: _FileFacts, qualname: str, nodes: list, state: "_State"):
         visitor.sink_aliases.update(aliases)
         visitor.source_aliases.update(sources)
         visitor.callable_aliases.update(callables)
+        visitor.true_names.update(trues)
         visitor.seed_defaults()
         for child in nodes:
             visitor.visit(child)
@@ -2497,6 +2591,7 @@ def _settle(facts: _FileFacts, qualname: str, nodes: list, state: "_State"):
             and visitor.sink_aliases == aliases
             and visitor.source_aliases == sources
             and visitor.callable_aliases == callables
+            and visitor.true_names == trues
         ):
             return visitor, True
         reasons = dict(visitor.local_reasons)
@@ -2504,6 +2599,7 @@ def _settle(facts: _FileFacts, qualname: str, nodes: list, state: "_State"):
         aliases = dict(visitor.sink_aliases)
         sources = dict(visitor.source_aliases)
         callables = dict(visitor.callable_aliases)
+        trues = set(visitor.true_names)
     return visitor, False
 
 
