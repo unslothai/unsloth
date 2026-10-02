@@ -61,6 +61,9 @@ function harness() {
         downloadNpuModel: pull(false),
         followNpuModelDownload: pull(true),
         listNpuModels: () => {
+          if (!backend.reachable) {
+            return Promise.reject(new Error("Failed to fetch"));
+          }
           const listing = deferred<{ id: string }[]>();
           listings.push(listing);
           return listing.promise;
@@ -75,20 +78,38 @@ const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 class NpuDownloadError extends Error {}
 
-async function until(condition: () => boolean): Promise<void> {
-  for (let i = 0; i < 300 && !condition(); i++) {
-    await new Promise((resolve) => setTimeout(resolve, 10));
+type Clock = {
+  enable: (options: { apis: "setTimeout"[] }) => void;
+  tick: (ms: number) => void;
+};
+
+const settle = async () => {
+  for (let i = 0; i < 20; i++) await tick();
+};
+
+/** Wait for `condition`, letting promises settle and moving a mocked clock through reconnect delays. */
+async function until(condition: () => boolean, clock?: Clock): Promise<void> {
+  for (let i = 0; i < 200 && !condition(); i++) {
+    await tick();
+    clock?.tick(1000);
   }
   assert.ok(condition());
 }
 
-test("a broken stream follows the pull the backend still runs, and the quit warning holds", async () => {
+/** Reconnects wait real seconds; tests run them on a mocked clock instead. */
+function mockedClock(t: { mock: { timers: Clock } }): Clock {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  return t.mock.timers;
+}
+
+test("a broken stream follows the pull the backend still runs, and the quit warning holds", async (t) => {
+  const clock = mockedClock(t);
   const { store, pulls, listings, toasts, activity, running } = harness();
   const job = store.followNpuDownload("qwen3.6-moe-35b-a3b-FLM");
   pulls[0].onProgress({ event: "progress", percent: 12 });
   running.push({ model: "qwen3.6-moe-35b-a3b-FLM", percent: 30 });
   pulls[0].finish(new Error("network error"));
-  await until(() => pulls.length === 2);
+  await until(() => pulls.length === 2, clock);
   assert.equal(pulls[1].follow, true);
   assert.deepEqual(toasts, []);
   assert.equal(activity.at(-1), true);
@@ -105,35 +126,103 @@ test("a broken stream follows the pull the backend still runs, and the quit warn
   assert.equal(activity.at(-1), false);
 });
 
-test("a backend that cannot be asked yet is followed again, not given up on", async () => {
+test("a backend that cannot be asked yet is followed again, not given up on", async (t) => {
+  const clock = mockedClock(t);
   const { store, pulls, toasts, activity, backend } = harness();
   void store.followNpuDownload("qwen3-8b-FLM");
   backend.reachable = false;
   pulls[0].finish(new TypeError("Failed to fetch"));
-  await until(() => pulls.length === 2);
+  await until(() => pulls.length === 2, clock);
   assert.equal(pulls[1].follow, true);
   assert.deepEqual(toasts, []);
   assert.equal(activity.at(-1), true);
 });
 
-test("replayed progress does not reset the reconnect limit", async () => {
-  const { store, pulls, listings, toasts, running } = harness();
-  running.push({ model: "lfm2-1.2b-FLM", percent: 20 });
-  const job = store.followNpuDownload("lfm2-1.2b-FLM");
-  pulls[0].onProgress({ event: "progress", percent: 20 });
+test("streams that keep breaking never end a pull the backend still runs", async (t) => {
+  const clock = mockedClock(t);
+  const { store, pulls, listings, toasts, activity, running } = harness();
+  const id = "lfm2-1.2b-FLM";
+  running.push({ model: id, percent: 25 });
+  const job = store.followNpuDownload(id);
   pulls[0].finish(new Error("network error"));
-  // Each reconnect replays the same percent and breaks again: five are allowed after the
-  // last one that moved it.
-  for (let i = 1; i <= 6; i++) {
-    await until(() => pulls.length === i + 1);
-    pulls[i].onProgress({ event: "progress", percent: 20 });
+  // Seven streams in a row break while the backend reports the pull moving from 25% to 50%.
+  for (let i = 1; i <= 7; i++) {
+    await until(() => pulls.length === i + 1, clock);
+    assert.equal(
+      store.useNpuCatalogStore.getState().progress[id],
+      running[0].percent,
+    );
+    assert.equal(activity.at(-1), true);
+    running[0].percent = Math.min(50, 25 + i * 5);
     pulls[i].finish(new Error("network error"));
   }
-  await until(() => listings.length === 1);
-  listings[0].resolve([]);
+  await until(() => pulls.length === 9, clock);
+  assert.deepEqual(toasts, []);
+  assert.equal(store.useNpuCatalogStore.getState().progress[id], 50);
+  // The pull ends on the backend; the list says it finished.
+  running.length = 0;
+  pulls[8].finish(new Error("network error"));
+  await until(() => listings.length === 1, clock);
+  listings[0].resolve([{ id, downloaded: true }] as never);
+  assert.equal(await job, true);
+  assert.equal(activity.at(-1), false);
+});
+
+test("a pull stalled on the backend is still followed, at most every 5 s", async (t) => {
+  const clock = mockedClock(t);
+  const { store, pulls, toasts, activity, running } = harness();
+  const id = "gemma3-1b-FLM";
+  running.push({ model: id, percent: 40 });
+  void store.followNpuDownload(id);
+  pulls[0].finish(new Error("network error"));
+  for (let i = 1; i <= 7; i++) {
+    await until(() => pulls.length === i + 1, clock);
+    assert.equal(store.useNpuCatalogStore.getState().progress[id], 40);
+    assert.equal(activity.at(-1), true);
+    pulls[i].finish(new Error("network error"));
+  }
+  await settle();
+  clock.tick(4999);
+  await settle();
+  assert.equal(pulls.length, 8);
+  clock.tick(1);
+  await settle();
+  assert.equal(pulls.length, 9);
+  assert.deepEqual(toasts, []);
+});
+
+test("an answer from the backend resets the unreachable count", async (t) => {
+  const clock = mockedClock(t);
+  const { store, pulls, toasts, activity, running, backend } = harness();
+  const id = "llama3.2-3b-FLM";
+  running.push({ model: id, percent: 10 });
+  void store.followNpuDownload(id);
+  for (let i = 0; i < 9; i++) {
+    // Unreachable four times, answered once, then unreachable four times again.
+    backend.reachable = i !== 4;
+    await until(() => pulls.length === i + 1, clock);
+    pulls[i].finish(new TypeError("Failed to fetch"));
+  }
+  await until(() => pulls.length === 10, clock);
+  assert.deepEqual(toasts, []);
+  assert.equal(activity.at(-1), true);
+});
+
+test("a backend that stays unreachable ends the follow", async (t) => {
+  const clock = mockedClock(t);
+  const { store, pulls, listings, toasts, activity, backend } = harness();
+  const job = store.followNpuDownload("qwen3-it-4b-FLM");
+  backend.reachable = false;
+  for (let i = 0; i < 5; i++) {
+    await until(() => pulls.length === i + 1, clock);
+    pulls[i].finish(new TypeError("Failed to fetch"));
+  }
+  // The catalog cannot be listed either, so nothing says the model finished.
   assert.equal(await job, false);
-  assert.equal(pulls.length, 7);
-  assert.deepEqual(toasts, ["Could not download lfm2-1.2b-FLM"]);
+  assert.equal(listings.length, 0);
+  assert.equal(pulls.length, 5);
+  assert.deepEqual(toasts, ["Could not download qwen3-it-4b-FLM"]);
+  assert.equal(activity.at(-1), false);
 });
 
 test("a pull that finished while its stream was broken is not reported failed", async () => {
@@ -148,15 +237,16 @@ test("a pull that finished while its stream was broken is not reported failed", 
   assert.deepEqual(toasts, []);
 });
 
-test("a complete event counts even if the list refresh after it goes stale", async () => {
+test("a complete event counts even if the list refresh after it goes stale", async (t) => {
+  const clock = mockedClock(t);
   const { store, pulls, listings, running } = harness();
   running.push({ model: "qwen3-4b-FLM", percent: 90 });
   const job = store.followNpuDownload("qwen3-4b-FLM");
   pulls[0].finish(new Error("network error"));
-  await until(() => pulls.length === 2);
+  await until(() => pulls.length === 2, clock);
   pulls[1].onProgress({ event: "complete", percent: 100 });
   pulls[1].finish();
-  await until(() => listings.length === 1);
+  await until(() => listings.length === 1, clock);
   listings[0].resolve([]);
   assert.equal(await job, true);
 });

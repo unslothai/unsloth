@@ -60,9 +60,13 @@ function setProgress(id: string, percent: number | null): void {
 }
 
 const following = new Map<string, Promise<boolean>>();
-// Reconnects in a row that move the percent no further before a running pull is given up on.
-const MAX_SILENT_RECONNECTS = 5;
+// A broken stream is followed again for as long as the backend lists the pull. Checks that cannot
+// reach the backend this many times in a row mean Studio itself stopped, and the pull with it.
+const MAX_UNREACHABLE = 5;
+// A reconnect waits RECONNECT_DELAY_MS times one more than the reconnects in a row whose stream
+// brought no new percent, up to MAX_BACKOFF times.
 const RECONNECT_DELAY_MS = 1000;
+const MAX_BACKOFF = 5;
 
 /**
  * Whether the backend still runs the model's pull: its percent if so, null if it runs none,
@@ -89,7 +93,7 @@ function listedDownloaded(id: string): boolean {
 /**
  * Show a model's pull until it ends, one stream per model. `follow` only joins a pull the
  * backend is already running, which replays its earlier progress; otherwise this starts one.
- * A broken stream does not end a pull that the backend keeps running: it is followed again.
+ * A broken stream does not end a pull that the backend still lists: it is followed again.
  * Resolves true once the model is downloaded.
  */
 export function followNpuDownload(
@@ -108,17 +112,21 @@ export function followNpuDownload(
     let completed = false;
     // A followed stream replays every earlier event, so only a higher percent is progress.
     let best = percent ?? -1;
-    let silentReconnects = 0;
+    const advance = (next: number | null | undefined): boolean => {
+      if (next == null || next <= best) return false;
+      best = next;
+      setProgress(id, next);
+      return true;
+    };
+    let streamed = false;
+    const onProgress = (event: { event: string; percent?: number }) => {
+      completed ||= event.event === "complete";
+      if (advance(event.percent)) streamed = true;
+    };
+    let stalledReconnects = 0;
+    let unreachable = 0;
     for (;;) {
-      let advanced = false;
-      const onProgress = (event: { event: string; percent?: number }) => {
-        completed ||= event.event === "complete";
-        if (typeof event.percent === "number" && event.percent > best) {
-          best = event.percent;
-          advanced = true;
-          setProgress(id, event.percent);
-        }
-      };
+      streamed = false;
       try {
         await (joined ? followNpuModelDownload : downloadNpuModel)(
           id,
@@ -129,21 +137,19 @@ export function followNpuDownload(
         // A followed pull can end, either way, before its stream opens; the list says how.
         return completed || listedDownloaded(id);
       } catch (error) {
-        silentReconnects = advanced ? 0 : silentReconnects + 1;
-        if (
-          !(error instanceof NpuDownloadError) &&
-          silentReconnects <= MAX_SILENT_RECONNECTS
-        ) {
+        if (!(error instanceof NpuDownloadError)) {
           const running = await runningPull(id);
+          unreachable = running === undefined ? unreachable + 1 : 0;
           // Still running, or the backend could not be asked yet: follow it again.
-          if (running !== null) {
-            if (running?.percent != null && running.percent > best) {
-              best = running.percent;
-              setProgress(id, running.percent);
-            }
+          if (running !== null && unreachable < MAX_UNREACHABLE) {
+            advance(running?.percent);
+            // Backs off from a backend that answers while its stream keeps breaking.
+            stalledReconnects =
+              streamed || !running ? 0 : stalledReconnects + 1;
             joined = true;
+            const backoff = Math.min(stalledReconnects + 1, MAX_BACKOFF);
             await new Promise((resolve) =>
-              setTimeout(resolve, RECONNECT_DELAY_MS),
+              setTimeout(resolve, RECONNECT_DELAY_MS * backoff),
             );
             continue;
           }
