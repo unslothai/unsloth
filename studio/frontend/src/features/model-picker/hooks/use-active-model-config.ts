@@ -51,6 +51,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const loadMode = useChatRuntimeStore((s) => s.loadMode);
   const ctxCheckpoints = useChatRuntimeStore((s) => s.ctxCheckpoints);
   const cacheRam = useChatRuntimeStore((s) => s.cacheRam);
+  const llamaCppConfig = useChatRuntimeStore((s) => s.loadedLlamaCppConfig);
   const tensorParallel = useChatRuntimeStore((s) => s.tensorParallel);
   const disableVision = useChatRuntimeStore((s) => s.disableVision);
   const chatTemplateOverride = useChatRuntimeStore(
@@ -91,6 +92,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       return null;
     }
     const base: PerModelConfig = {
+      llamaCppConfig: isGguf ? llamaCppConfig ?? undefined : undefined,
       customContextLength: customContextLength ?? null,
       // A self-sizing backend carries no pin here, exactly as the GGUF path does: this
       // is the runtime's resolved length, and reading it back as the user's choice would
@@ -148,6 +150,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     loadMode,
     ctxCheckpoints,
     cacheRam,
+    llamaCppConfig,
     tensorParallel,
     disableVision,
     chatTemplateOverride,

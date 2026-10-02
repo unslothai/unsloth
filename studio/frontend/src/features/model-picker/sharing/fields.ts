@@ -41,7 +41,11 @@ const cacheType = nullable(
 
 export type SharedConfigKey = Exclude<
   keyof PerModelConfig,
-  "chatTemplateOverride" | "tensorSplit" | "maxSeqLength" | "mlxKvQuant"
+  | "chatTemplateOverride"
+  | "tensorSplit"
+  | "maxSeqLength"
+  | "mlxKvQuant"
+  | "llamaCppConfig"
 >;
 type Field = { label: string; valid: Validator; error?: string };
 
