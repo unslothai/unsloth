@@ -12,7 +12,7 @@ import {
 import { TabsContent } from "@/components/ui/tabs";
 import { useTrainingConfigStore } from "@/features/training";
 import type { TrainingParallelismMode } from "@/features/training/types/config";
-import { useGpuDevices } from "@/hooks/use-gpu-info";
+import { useGpuDevices, useGpuInfo } from "@/hooks/use-gpu-info";
 import type { ReactElement } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { ParamsRow } from "./params-section-controls";
@@ -22,6 +22,8 @@ const modeDescription: Record<TrainingParallelismMode, string> = {
   single: "One model copy on one selected GPU.",
   model_parallel:
     "One model sharded across the selected GPUs. This combines VRAM; it is not DDP.",
+  ddp:
+    "One model replica per selected GPU. Gradients are synchronized; each selected GPU must fit the model.",
 };
 
 function memoryLabel(free: number, total: number): string {
@@ -30,6 +32,7 @@ function memoryLabel(free: number, total: number): string {
 
 export function TrainingHardwareParams(): ReactElement {
   const devices = useGpuDevices();
+  const gpu = useGpuInfo();
   const store = useTrainingConfigStore(
     useShallow((state) => ({
       parallelismMode: state.parallelismMode,
@@ -68,14 +71,14 @@ export function TrainingHardwareParams(): ReactElement {
     const next = checked
       ? [...new Set([...selected, id])].sort((a, b) => a - b)
       : selected.filter((selectedId) => selectedId !== id);
-    store.setGpuSelection("model_parallel", next);
+    store.setGpuSelection(store.parallelismMode, next);
   };
 
   return (
     <TabsContent value="hardware" className="mt-3 flex flex-col gap-3">
       <ParamsRow
         label="GPU placement"
-        tooltip="Choose automatic selection, one GPU, or model-parallel sharding. DDP is intentionally not offered until the backend can launch and monitor all ranks safely."
+        tooltip="Choose automatic selection, one GPU, model sharding, or data-parallel DDP. DDP replicates the model on each selected GPU."
       >
         <Select
           value={store.parallelismMode}
@@ -94,7 +97,13 @@ export function TrainingHardwareParams(): ReactElement {
               value="model_parallel"
               disabled={selectable.length < 2}
             >
-              Model parallel
+              Model sharding
+            </SelectItem>
+            <SelectItem
+              value="ddp"
+              disabled={selectable.length < 2 || gpu.backend !== "cuda"}
+            >
+              DDP (data parallel)
             </SelectItem>
           </SelectContent>
         </Select>
@@ -107,17 +116,15 @@ export function TrainingHardwareParams(): ReactElement {
           No GPU with a stable physical index is available for explicit selection.
         </p>
       ) : store.parallelismMode === "auto" ? (
-        <p className="text-xs text-muted-foreground">
-          Live inventory: {selectable
-            .map(
-              (device) =>
-                `GPU ${device.index}: ${device.name} (${memoryLabel(
-                  device.memoryFreeGb,
-                  device.memoryTotalGb,
-                )})`,
-            )
-            .join(" · ")}
-        </p>
+        <div className="flex flex-col gap-1 text-xs text-muted-foreground">
+          <span>Live inventory:</span>
+          {selectable.map((device) => (
+            <span key={device.index}>
+              GPU {device.index}: {device.name} —{" "}
+              {memoryLabel(device.memoryFreeGb, device.memoryTotalGb)}
+            </span>
+          ))}
+        </div>
       ) : (
         <div className="flex flex-col gap-2">
           {selectable.map((device) => {
@@ -142,10 +149,12 @@ export function TrainingHardwareParams(): ReactElement {
               </label>
             );
           })}
-          {store.parallelismMode === "model_parallel" &&
+          {(store.parallelismMode === "model_parallel" ||
+            store.parallelismMode === "ddp") &&
             selected.length < 2 && (
               <p className="text-xs text-destructive">
-                Model parallel requires at least two selected GPUs.
+                {store.parallelismMode === "ddp" ? "DDP" : "Model sharding"}{" "}
+                requires at least two selected GPUs.
               </p>
             )}
         </div>
