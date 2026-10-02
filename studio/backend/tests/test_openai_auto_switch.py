@@ -5193,10 +5193,7 @@ def test_chat_count_tokens_prices_the_current_date(monkeypatch):
     thread = [{"role": "user", "content": "hi"}]
 
     _counted_body(_count_request(thread))
-    assert counted["messages"][0] == {
-        "role": "system",
-        "content": "The current date is 2026-08-15.",
-    }
+    assert counted["messages"] == [{"role": "user", "content": "[Current date: 2026-08-15]\n\nhi"}]
 
     # The passthrough forwards the caller's request verbatim, so counting a date it never sends
     # would overcount exactly those prompts.
@@ -5794,17 +5791,6 @@ def test_chat_count_tokens_renders_the_requested_reasoning_mode(
     payload = _count_request([{"role": "user", "content": "hello"}], **fields)
     assert _counted_body(payload) == {"input_tokens": 7, "model": "org/A-GGUF"}
     assert counted.get("chat_template_kwargs") == expected
-
-
-def test_chat_count_tokens_layers_explicit_template_kwargs_over_reasoning(monkeypatch):
-    _switched, counted = _count_tokens_backend(monkeypatch, count = 7)
-    payload = _count_request(
-        [{"role": "user", "content": "hello"}],
-        enable_thinking = True,
-        chat_template_kwargs = {"custom_switch": "kept"},
-    )
-    assert _counted_body(payload) == {"input_tokens": 7, "model": "org/A-GGUF"}
-    assert counted["chat_template_kwargs"] == {"custom_switch": "kept", "enable_thinking": True}
 
 
 @pytest.mark.parametrize(

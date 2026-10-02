@@ -466,7 +466,7 @@ PREFETCH_REPOS: tuple[str, ...] = (
     "unsloth/Qwen3.5-2B",
     # Default's model and the 4bit sibling `load_in_4bit=True` actually resolves to. Both, because FLOAT_TO_INT_MAPPER redirects at load time and warming only the name in the args warms a cache the leg never reads.
     "unsloth/Qwen3-0.6B",
-    "unsloth/qwen3-0.6b-unsloth-bnb-4bit",
+    "unsloth/Qwen3-0.6B-unsloth-bnb-4bit",
     "unsloth/Qwen2.5-0.5B-Instruct",
     # Last now rather than first: gptoss is admitted only once a card empties, around t~500 on the measured schedule, so it has the most slack of anything here.
     "unsloth/gpt-oss-20b-unsloth-bnb-4bit",
@@ -475,8 +475,8 @@ PREFETCH_REPOS: tuple[str, ...] = (
 # Declared name -> what actually gets loaded on an sm_75 card. Kept beside the list it corrects so the two cannot drift apart silently.
 LOAD_REDIRECTS: dict[str, str] = {
     "unsloth/gpt-oss-20b": "unsloth/gpt-oss-20b-unsloth-bnb-4bit",
-    # CASE MATTERS HERE, and it is not a typo: two runs report `resolved_checkpoint: unsloth/qwen3-0.6b-unsloth-bnb-4bit` in lower case while gpt-oss above resolves with its capitals intact. The HF cache keys on the literal string, so prefetching the pretty spelling warms a directory the leg never reads and the download happens twice. Copied from the report rather than typed.
-    "unsloth/Qwen3-0.6B": "unsloth/qwen3-0.6b-unsloth-bnb-4bit",
+    # CASE MATTERS HERE: the HF cache keys on the literal string, so prefetching another spelling warms a directory the leg never reads and the download happens twice. Copied from the report rather than typed. Runs before #8058 reported `unsloth/qwen3-0.6b-unsloth-bnb-4bit` in lower case; since #8058 the loader keeps the canonical case, and kernel unsloth-t4-ci-n361d0b65ec92-0d7d reports `resolved_checkpoint: unsloth/Qwen3-0.6B-unsloth-bnb-4bit`.
+    "unsloth/Qwen3-0.6B": "unsloth/Qwen3-0.6B-unsloth-bnb-4bit",
 }
 
 

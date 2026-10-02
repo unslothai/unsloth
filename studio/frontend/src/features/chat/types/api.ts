@@ -60,8 +60,6 @@ export interface LoadModelRequest {
    *  llama-server they all decode on. Set only after the user confirms. */
   force_cancel_active?: boolean;
   nativePathLease?: string | null;
-  /** Frontend-only source for a separately scoped custom validation grant. */
-  nativePathToken?: string | null;
   hf_token: string | null;
   max_seq_length: number;
   max_seq_length_auto_derived?: boolean;
@@ -624,7 +622,6 @@ export interface OpenAIChatMessage {
 }
 
 export interface OpenAIChatCompletionsRequest {
-  sampling_fields_explicit?: string[];
   model: string;
   messages: OpenAIChatMessage[];
   stream: boolean;
@@ -664,6 +661,8 @@ export interface OpenAIChatCompletionsRequest {
   enabled_tools?: string[];
   /** Local models + enable_tools only. */
   mcp_enabled?: boolean;
+  /** Data URL a mapped MCP tool field receives after the user approves each call. */
+  mcp_image?: string;
   /** The replayed tool calls came from Studio's own local tool loop. */
   studio_tool_history?: boolean;
   /** Local models + enable_tools only. */

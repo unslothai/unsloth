@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -10,127 +10,45 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-// eslint-disable-next-line no-restricted-imports -- The chat barrel imports the picker; validation needs only its API leaf.
-import { validateModel } from "@/features/chat/api/chat-api";
-import { consumeNativePathToken } from "@/features/native-intents";
 import {
   customConfigSections,
   MAX_LLAMA_CPP_CONFIG_BYTES,
   toggledLlamaCppConfig,
   type LlamaCppConfig,
-  type LlamaCppConfigSummary,
 } from "../model-config/llama-cpp-config";
 
-const lastCustomSource = new Map<string, { ini: string; section: string | null }>();
+// Module scope: switching back to custom restores the last INI even after a remount.
+const lastCustomSource = new Map<
+  string,
+  { ini: string; section: string | null }
+>();
 
 export function CustomLlamaConfigEditor({
   value,
   onChange,
-  modelPath,
-  ggufVariant,
-  hfToken,
-  nativePathToken,
+  sourceKey,
   onLoadableChange,
-  effectiveSummary,
 }: {
   value: LlamaCppConfig | undefined;
   onChange: (value: LlamaCppConfig) => void;
-  modelPath: string;
-  ggufVariant?: string | null;
-  hfToken: string | null;
-  nativePathToken?: string | null;
+  sourceKey: string;
   onLoadableChange: (value: boolean) => void;
-  effectiveSummary?: LlamaCppConfigSummary | null;
 }) {
   const id = useId();
-  const revision = useRef(0);
-  const [validationResult, setResult] = useState<{
-    inputKey: string;
-    message: string;
-    summary?: LlamaCppConfigSummary | null;
-    valid: boolean;
-  } | null>(null);
-  const [busyKey, setBusyKey] = useState<string | null>(null);
   const active = value?.mode === "custom";
   const ini = active ? value.ini : "";
   const section = active ? value.section : null;
-  // Module scope: a refused load remounts the editor without the source in value.
-  const sourceKey = `${modelPath}\u0000${ggufVariant ?? ""}`;
-  useEffect(() => {
-    if (active) lastCustomSource.set(sourceKey, { ini, section });
-  }, [active, ini, section, sourceKey]);
-  const inputKey = JSON.stringify([
-    modelPath,
-    ggufVariant,
-    active,
-    ini,
-    section,
-  ]);
-  const [previousInputKey, setPreviousInputKey] = useState(inputKey);
-  if (previousInputKey !== inputKey) {
-    setPreviousInputKey(inputKey);
-    setResult(null);
-    setBusyKey(null);
-  }
-  const result =
-    validationResult?.inputKey === inputKey ? validationResult : null;
-  const busy = busyKey === inputKey;
   const sections = customConfigSections(ini);
   const oversized =
     new TextEncoder().encode(ini).length > MAX_LLAMA_CPP_CONFIG_BYTES;
-  // Storage drops a blank config, which would then load and save as managed silently.
   const blank = active && ini.trim().length === 0;
+  const needsSection = active && sections.length > 0 && section === null;
   useEffect(() => {
-    // Load repeats the server preflight, so an unvalidated draft stays loadable.
-    onLoadableChange(!active || (!oversized && !blank));
-    // An in-flight validation of an older input (or after unmount) must not gate Load.
-    return () => {
-      revision.current += 1;
-    };
-  }, [inputKey, active, oversized, blank, onLoadableChange]);
-  const validate = async () => {
-    const current = ++revision.current;
-    setBusyKey(inputKey);
-    try {
-      const lease = nativePathToken
-        ? (await consumeNativePathToken(nativePathToken, "validate-model"))
-            .nativePathLease
-        : null;
-      const response = await validateModel({
-        model_path: modelPath,
-        gguf_variant: ggufVariant,
-        hf_token: hfToken,
-        nativePathLease: lease,
-        max_seq_length: 4096,
-        load_in_4bit: false,
-        is_lora: false,
-        llama_cpp_config: value,
-      });
-      if (current !== revision.current) return;
-      const valid =
-        response.valid && response.llama_cpp_config_summary?.mode === "custom";
-      setResult({
-        inputKey,
-        valid,
-        message: valid
-          ? "Configuration validated."
-          : response.message || "Configuration could not be validated.",
-        summary: response.llama_cpp_config_summary,
-      });
-      onLoadableChange(valid);
-    } catch (error) {
-      if (current !== revision.current) return;
-      setResult({
-        inputKey,
-        valid: false,
-        message: error instanceof Error ? error.message : "Validation failed.",
-      });
-      // No verdict: Load stays available and repeats the preflight.
-    } finally {
-      if (current === revision.current) setBusyKey(null);
-    }
-  };
-  const summary = result?.summary ?? effectiveSummary;
+    if (active) lastCustomSource.set(sourceKey, { ini, section });
+  }, [active, ini, section, sourceKey]);
+  useEffect(() => {
+    onLoadableChange(!active || !(oversized || blank || needsSection));
+  }, [active, oversized, blank, needsSection, onLoadableChange]);
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -142,7 +60,12 @@ export function CustomLlamaConfigEditor({
           variant="outline"
           size="sm"
           onClick={() =>
-            onChange(toggledLlamaCppConfig(value, lastCustomSource.get(sourceKey) ?? null))
+            onChange(
+              toggledLlamaCppConfig(
+                value,
+                lastCustomSource.get(sourceKey) ?? null,
+              ),
+            )
           }
         >
           {active ? "Use Studio settings" : "Use custom configuration"}
@@ -151,8 +74,9 @@ export function CustomLlamaConfigEditor({
       {active && (
         <>
           <p className="text-ui-11 text-muted-foreground">
-            Engine tuning comes from this configuration. Chat settings you edit
-            still apply.
+            llama-server runs with exactly this INI (llama.cpp preset format);
+            Studio adds only the model, host and port. Its sampling values
+            become this model&apos;s chat defaults.
           </p>
           <textarea
             id={id}
@@ -165,7 +89,9 @@ export function CustomLlamaConfigEditor({
               onChange({
                 ...value,
                 ini: nextIni,
-                section: customConfigSections(nextIni).includes(value.section ?? "")
+                section: customConfigSections(nextIni).includes(
+                  value.section ?? "",
+                )
                   ? value.section
                   : null,
               });
@@ -193,53 +119,14 @@ export function CustomLlamaConfigEditor({
               </Select>
             </div>
           )}
-          {oversized && (
+          {(oversized || blank || needsSection) && (
             <p role="alert" className="text-ui-11 text-destructive">
-              Configuration must fit within 64 KiB.
+              {oversized
+                ? "Configuration must fit within 64 KiB."
+                : blank
+                  ? "Configuration is empty."
+                  : "Choose which section to load."}
             </p>
-          )}
-          {blank && (
-            <p role="alert" className="text-ui-11 text-destructive">
-              Configuration is empty.
-            </p>
-          )}
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={busy || oversized || blank}
-            onClick={() => void validate()}
-          >
-            {busy ? "Validating…" : "Validate configuration"}
-          </Button>
-          {result && (
-            <p
-              role="status"
-              className={`text-ui-11 ${result.valid ? "text-muted-foreground" : "text-destructive"}`}
-            >
-              {result.message}
-            </p>
-          )}
-          {summary && (
-            <details className="text-ui-11 text-muted-foreground">
-              <summary>
-                Effective configuration
-                {summary.section ? ` · ${summary.section}` : ""}
-              </summary>
-              <pre className="mt-2 whitespace-pre-wrap break-all">
-                {JSON.stringify(
-                  {
-                    tuning: summary.tuning,
-                    sampling: summary.request_defaults,
-                  },
-                  null,
-                  2,
-                )}
-              </pre>
-              {summary.diagnostics.map((message, index) => (
-                <p key={`${index}-${message}`}>{message}</p>
-              ))}
-            </details>
           )}
         </>
       )}

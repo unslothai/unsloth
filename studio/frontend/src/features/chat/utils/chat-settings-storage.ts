@@ -23,7 +23,6 @@ import {
 } from "../presets/preset-policy";
 import type { ReasoningEffort } from "../stores/chat-runtime-store";
 import { MAX_SAMPLING_SEED } from "../types/runtime";
-import { explicitSamplingFields } from "../../model-picker/model-config/llama-cpp-config";
 import {
   assignSanitizedMirroredSettings,
   hasNoMirroredSettings,
@@ -142,12 +141,6 @@ function sanitizeInferenceParams(
   if (!isRecord(value)) return undefined;
 
   const params: PersistedInferenceParams = {};
-  if (Array.isArray(value.samplingFieldsExplicit)) {
-    // [] = automatic defaults; absent = legacy snapshot, inferred on read.
-    params.samplingFieldsExplicit = [
-      ...new Set(explicitSamplingFields(value)),
-    ];
-  }
   if (isMinPMode(value.minPMode)) params.minPMode = value.minPMode;
   for (const field of NUMERIC_INFERENCE_FIELDS) {
     const fieldValue = value[field];

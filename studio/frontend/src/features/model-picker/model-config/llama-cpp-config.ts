@@ -8,9 +8,8 @@ export type LlamaCppConfig =
 export interface LlamaCppConfigSummary {
   mode: "custom";
   section: string | null;
-  digest: string;
-  tuning: Record<string, unknown>;
-  request_defaults: Record<string, unknown>;
+  options: Record<string, string | boolean>;
+  request_defaults: Record<string, number>;
   diagnostics: string[];
 }
 
@@ -64,7 +63,7 @@ export function customConfigSections(ini: string): string[] {
   return [
     ...new Set(
       [...ini.matchAll(/^\[[ \t]*([^\]\r\n]+)\][ \t]*(?:[#;].*)?$/gm)]
-        .map((match) => match[1])
+        .map((match) => match[1].trim())
         .filter((name) => name !== "*"),
     ),
   ];
@@ -82,86 +81,4 @@ export function llamaCppConfigPayload(
         ? MANAGED_LLAMA_CPP_CONFIG
         : config,
   };
-}
-
-export const SAMPLING_WIRE_FIELDS = {
-  temperature: "temperature",
-  topP: "top_p",
-  topK: "top_k",
-  minP: "min_p",
-  repetitionPenalty: "repetition_penalty",
-  presencePenalty: "presence_penalty",
-  frequencyPenalty: "frequency_penalty",
-  reasoningEnabled: "enable_thinking",
-  reasoningEffort: "reasoning_effort",
-  preserveThinking: "preserve_thinking",
-} as const;
-
-/** The sampling a chat preset owns (getPresetOwnedParams); reasoning stays outside presets. */
-export const PRESET_SAMPLING_WIRES: readonly string[] = [
-  SAMPLING_WIRE_FIELDS.temperature,
-  SAMPLING_WIRE_FIELDS.topP,
-  SAMPLING_WIRE_FIELDS.topK,
-  SAMPLING_WIRE_FIELDS.minP,
-  SAMPLING_WIRE_FIELDS.repetitionPenalty,
-  SAMPLING_WIRE_FIELDS.presencePenalty,
-];
-
-export function explicitSamplingFields(
-  snapshot: Record<string, unknown>,
-): string[] {
-  if (Array.isArray(snapshot.samplingFieldsExplicit)) {
-    return snapshot.samplingFieldsExplicit.filter(
-      (field): field is string =>
-        typeof field === "string" &&
-        (Object.values(SAMPLING_WIRE_FIELDS) as string[]).includes(field),
-    );
-  }
-  // Presence in an old saved snapshot is user intent, regardless of its numeric value.
-  return Object.entries(SAMPLING_WIRE_FIELDS)
-    .filter(([key]) => snapshot[key] !== undefined)
-    .map(([, wire]) => wire);
-}
-
-export function inheritedSamplingFields(
-  snapshot: Record<string, unknown>,
-  fallback: Record<string, unknown>,
-): string[] {
-  const own = new Set(explicitSamplingFields(snapshot));
-  const inherited = new Set(explicitSamplingFields(fallback));
-  return Object.entries(SAMPLING_WIRE_FIELDS)
-    .filter(([key, wire]) =>
-      (snapshot[key] !== undefined ? own : inherited).has(wire),
-    )
-    .map(([, wire]) => wire);
-}
-
-export function markSamplingFields<
-  T extends { samplingFieldsExplicit?: string[] },
->(params: T, ...fields: string[]): T {
-  return {
-    ...params,
-    samplingFieldsExplicit: [
-      ...new Set([
-        ...(params.samplingFieldsExplicit ??
-          Object.values(SAMPLING_WIRE_FIELDS)),
-        ...fields,
-      ]),
-    ],
-  };
-}
-
-/** Unset provenance is a legacy user snapshot; an empty list is an automatic seed. */
-export function customSamplingPayload(
-  config: LlamaCppConfig | null | undefined,
-  explicit: readonly string[] | undefined,
-) {
-  return config?.mode === "custom"
-    ? {
-        sampling_fields_explicit:
-          explicit === undefined
-            ? Object.values(SAMPLING_WIRE_FIELDS)
-            : [...explicit],
-      }
-    : {};
 }

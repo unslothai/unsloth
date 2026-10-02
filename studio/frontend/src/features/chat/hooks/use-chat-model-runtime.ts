@@ -2486,7 +2486,6 @@ export function useChatModelRuntime() {
               model_path: loadPath,
               load_request_id: loadRun.requestId,
               nativePathLease: loadNativePathLease,
-              nativePathToken,
               hf_token: hfToken,
               max_seq_length: loadMaxSeqLength,
               max_seq_length_auto_derived: isReplayedLoadContext(
@@ -2858,7 +2857,6 @@ export function useChatModelRuntime() {
                   // The pin it loaded from: without it this retries the ref that needed pinning.
                   model_path: previousActiveLoadId || previousCheckpoint,
                   nativePathLease: rollbackNativePathLease,
-                  nativePathToken: previousActiveNativePathToken,
                   hf_token: hfToken,
                   max_seq_length: rollbackMaxSeqLength,
                   load_in_4bit: true,
@@ -2932,7 +2930,6 @@ export function useChatModelRuntime() {
                   llamaCppConfigSummary:
                     rollbackResponse.llama_cpp_config_summary ??
                     rollbackState.llamaCppConfigSummary,
-                  params: stateBeforeUnload.params,
                   activeModelIsLocal: rollbackResponse.is_local_model ?? false,
                   activeLoadId: previousActiveLoadId ?? null,
                   activeNativePathToken: previousActiveNativePathToken ?? null,

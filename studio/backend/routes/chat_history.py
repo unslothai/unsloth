@@ -160,7 +160,6 @@ class ChatThreadSettings(BaseModel):
     minP: Optional[float] = Field(default = None, ge = 0, le = 1)
     minPMode: Optional[Literal["server-default", "custom"]] = None
     repetitionPenalty: Optional[float] = Field(default = None, ge = 1, le = 2)
-    samplingFieldsExplicit: Optional[list[str]] = Field(default = None, max_length = 16)
     presencePenalty: Optional[float] = Field(default = None, ge = 0, le = 2)
     seed: SamplingSeed = None
     # Not length-capped, like the installation-wide copy: truncating here would
@@ -399,7 +398,6 @@ class ChatInferenceSettings(BaseModel):
     minP: Optional[float] = None
     minPMode: Optional[Literal["server-default", "custom"]] = None
     repetitionPenalty: Optional[float] = None
-    samplingFieldsExplicit: Optional[list[str]] = Field(default = None, max_length = 16)
     presencePenalty: Optional[float] = None
     maxSeqLength: Optional[float] = None
     maxTokens: Optional[float] = None

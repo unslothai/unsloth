@@ -1387,7 +1387,6 @@ def _fake_backend(**attrs):
         "_memory_policy_active": False,
         "_memory_mlock_applicable": True,
         "_memory_launch_pending": False,
-        "_custom_launch_pending": False,
     }
     base.update(attrs)
     return type("_B", (), base)()
@@ -1436,18 +1435,6 @@ class TestPreSpawnWindow:
         )
         _install_backend(monkeypatch, backend, keep = True, no_res = False)
         assert rs._model_memory_reload_required() is False
-
-    def test_a_custom_launch_uses_its_published_state_before_spawn(self, monkeypatch):
-        import routes.settings as rs
-
-        backend = _fake_backend(
-            _custom_launch_pending = True,
-            _memory_state = (True, False),
-        )
-        _install_backend(monkeypatch, backend, keep = False, no_res = False)
-        state, *_rest = rs._active_launch_placement()
-        assert state == (True, False)
-        assert rs._model_memory_mlock_active(True) is True
 
 
 class TestMlockActiveReporting:

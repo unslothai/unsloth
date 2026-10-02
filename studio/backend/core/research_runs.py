@@ -1707,13 +1707,6 @@ class ResearchSupervisor:
                 }
             elif enable_thinking is False and inference.get("supportsReasoningOff") is False:
                 enable_thinking = None
-        if "samplingFieldsExplicit" in inference and not inference.get("providerType"):
-            fields = list(inference["samplingFieldsExplicit"])
-            if enable_thinking is not None:
-                fields.append("enable_thinking")
-                if enable_thinking is False:
-                    fields.append("reasoning_effort")
-            payload["sampling_fields_explicit"] = list(dict.fromkeys(fields))
         if enable_thinking is not None:
             payload["enable_thinking"] = enable_thinking
         elif inference.get("enableThinking") is not None:

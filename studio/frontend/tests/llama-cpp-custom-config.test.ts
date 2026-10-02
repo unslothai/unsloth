@@ -16,32 +16,17 @@ const {
   customConfigSections,
   toggledLlamaCppConfig,
   llamaCppConfigPayload,
-  customSamplingPayload,
-  markSamplingFields,
-  explicitSamplingFields,
-} = await import(
-  "../src/features/model-picker/model-config/llama-cpp-config.ts"
-);
+} =
+  await import("../src/features/model-picker/model-config/llama-cpp-config.ts");
 const {
   DEFAULT_PER_MODEL_CONFIG,
   PER_MODEL_CONFIG_STORAGE_KEY,
   savePerModelConfig,
   resolveInitialConfig,
-} = await import(
-  "../src/features/model-picker/model-config/per-model-config.ts"
-);
-const { fromApiOverride, toApiOverride, resolveStoredOverride } = await import(
-  "../src/features/model-picker/api/model-overrides.ts"
-);
-const { getReplayedParams, pickRememberedParams } = await import(
-  "../src/features/chat/lib/per-model-params.ts"
-);
-const { DEFAULT_INFERENCE_PARAMS } = await import(
-  "../src/features/chat/types/runtime.ts"
-);
-const { snapshotQueuedChatRunSettings } = await import(
-  "../src/features/chat/utils/queued-chat-run-settings.ts"
-);
+} =
+  await import("../src/features/model-picker/model-config/per-model-config.ts");
+const { fromApiOverride, toApiOverride, resolveStoredOverride } =
+  await import("../src/features/model-picker/api/model-overrides.ts");
 const custom = {
   version: 1,
   mode: "custom",
@@ -50,55 +35,34 @@ const custom = {
 } as const;
 const managed = { version: 1, mode: "managed" } as const;
 
-test("removing a selected section clears the editor's stale selection", async () => {
-  const ts = await import("typescript");
-  const source = ts.createSourceFile(
-    "editor.tsx",
-    readSrc("features/model-picker/components/custom-llama-config-editor.tsx"),
-    ts.ScriptTarget.Latest,
-    true,
-    ts.ScriptKind.TSX,
-  );
-  let callback = "";
-  function visit(node: import("typescript").Node) {
-    if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(source) === "textarea") {
-      const change = node.attributes.properties.find(
-        (attr) => ts.isJsxAttribute(attr) && attr.name.getText(source) === "onChange",
-      );
-      if (change && ts.isJsxAttribute(change) && change.initializer && ts.isJsxExpression(change.initializer)) {
-        callback = change.initializer.expression?.getText(source) ?? "";
-      }
-    }
-    ts.forEachChild(node, visit);
-  }
-  visit(source);
-  assert.ok(callback);
-  let changed: typeof custom | undefined;
-  const onChange = new Function("value", "onChange", "customConfigSections", `return (${callback})`)(
-    custom,
-    (next: typeof custom) => { changed = next; },
-    customConfigSections,
-  );
-  onChange({ target: { value: "[*]\nnp=1" } });
-  assert.equal(changed?.section, null);
-  onChange({ target: { value: custom.ini } });
-  assert.equal(changed?.section, "my-model");
-});
-
 test("switching back to custom restores the last source instead of a blank one", () => {
   assert.deepEqual(toggledLlamaCppConfig(custom, null), managed);
-  assert.deepEqual(toggledLlamaCppConfig(managed, { ini: custom.ini, section: custom.section }), custom);
+  assert.deepEqual(
+    toggledLlamaCppConfig(managed, {
+      ini: custom.ini,
+      section: custom.section,
+    }),
+    custom,
+  );
   assert.deepEqual(toggledLlamaCppConfig(undefined, null), {
     version: 1,
     mode: "custom",
     ini: "[*]\n",
     section: null,
   });
-  const editor = readSrc("features/model-picker/components/custom-llama-config-editor.tsx");
+  const editor = readSrc(
+    "features/model-picker/components/custom-llama-config-editor.tsx",
+  );
   // A refused load remounts the editor, so the remembered source has to live outside it.
   assert.match(editor, /^const lastCustomSource = new Map</m);
-  assert.match(editor, /toggledLlamaCppConfig\(value, lastCustomSource\.get\(sourceKey\) \?\? null\)/);
-  assert.match(editor, /if \(active\) lastCustomSource\.set\(sourceKey, \{ ini, section \}\)/);
+  assert.match(
+    editor,
+    /toggledLlamaCppConfig\(\s*value,\s*lastCustomSource\.get\(sourceKey\) \?\? null,?\s*\)/,
+  );
+  assert.match(
+    editor,
+    /if \(active\) lastCustomSource\.set\(sourceKey, \{ ini, section \}\)/,
+  );
 });
 
 test("custom source and selection round-trip through storage and API without consuming legacy extras", () => {
@@ -277,21 +241,6 @@ test("blank custom source is rejected without erasing its saved predecessor", ()
   );
 });
 
-test("custom configuration is rendered under the advanced GGUF arguments", () => {
-  const page = readSrc("features/model-picker/components/model-config-page.tsx");
-  const start = page.indexOf('<ManagedFieldset locked={customActive} label="Studio engine settings">');
-  const fieldsetEnd = page.indexOf("</ManagedFieldset>", start);
-  const toggle = page.indexOf("<AdvancedSettingsToggle", fieldsetEnd);
-  const managed = page.indexOf('label="Managed llama.cpp settings"', toggle);
-  const managedAdvanced = page.indexOf("<GgufAdvancedSettings", managed);
-  const editor = page.indexOf("<CustomLlamaConfigEditor", managedAdvanced);
-  assert.ok(start > 0 && start < fieldsetEnd);
-  assert.ok(fieldsetEnd < toggle);
-  assert.ok(toggle < managed && managed < managedAdvanced);
-  assert.ok(managedAdvanced < editor);
-  assert.match(page, /configState\.llamaCppConfig\?\.mode === "custom" \|\|/);
-});
-
 test("selector suggestions never implicitly select a sole named section", () => {
   assert.deepEqual(customConfigSections("[*]\n[only]\nctx-size=56000"), [
     "only",
@@ -341,95 +290,6 @@ test("large per-model sources still obey the aggregate storage budget", () => {
   );
 });
 
-test("automatic sampling yields to the preset; explicit equal values, zero and false survive", () => {
-  assert.deepEqual(customSamplingPayload(custom, []), {
-    sampling_fields_explicit: [],
-  });
-  const params = markSamplingFields(
-    { ...DEFAULT_INFERENCE_PARAMS, temperature: 0 },
-    "temperature",
-    "enable_thinking",
-  );
-  assert.deepEqual(
-    customSamplingPayload(custom, params.samplingFieldsExplicit),
-    { sampling_fields_explicit: ["temperature", "enable_thinking"] },
-  );
-  assert.deepEqual(
-    explicitSamplingFields({ temperature: 0, reasoningEnabled: false }),
-    ["temperature", "enable_thinking"],
-  );
-  assert.deepEqual(customSamplingPayload(managed, []), {});
-});
-
-test("model memory and queued snapshots retain provenance separately from automatic values", () => {
-  const params = markSamplingFields(
-    { ...DEFAULT_INFERENCE_PARAMS, checkpoint: "org/model" },
-    "temperature",
-  );
-  const remembered = pickRememberedParams(params);
-  const replayed = getReplayedParams(
-    true,
-    { "org/model": remembered },
-    { ...DEFAULT_INFERENCE_PARAMS },
-    "org/model",
-    true,
-  );
-  assert.deepEqual(replayed.samplingFieldsExplicit, ["temperature"]);
-  const legacy = getReplayedParams(
-    true,
-    { "org/model": { temperature: 0, topP: 0.95 } },
-    { ...DEFAULT_INFERENCE_PARAMS },
-    "org/model",
-    true,
-  );
-  assert.deepEqual(legacy.samplingFieldsExplicit, ["temperature", "top_p"]);
-  const queued = snapshotQueuedChatRunSettings({
-    params,
-    loadedLlamaCppConfig: custom,
-    llamaCppConfig: custom,
-  } as never);
-  const next = markSamplingFields(params, "top_p");
-  assert.deepEqual(queued.params.samplingFieldsExplicit, ["temperature"]);
-  assert.deepEqual(next.samplingFieldsExplicit, ["temperature", "top_p"]);
-  assert.deepEqual(queued.loadedLlamaCppConfig, custom);
-});
-
-test("all ordinary load, preflight and estimate producers carry the config; rollback uses its resident source", () => {
-  assert.equal(
-    readSrc("features/chat/hooks/use-chat-model-runtime.ts").match(
-      /llamaCppConfigPayload\(loadLlamaCppConfig\)/g,
-    )?.length,
-    2,
-  );
-  assert.match(
-    readSrc("features/chat/api/chat-api.ts"),
-    /llama_cpp_config: payload\.llama_cpp_config/,
-  );
-  assert.match(
-    readSrc("features/model-picker/api/memory-estimate.ts"),
-    /llama_cpp_config: payload\.llamaCppConfig/,
-  );
-  assert.match(
-    readSrc("features/chat/shared-composer.tsx"),
-    /llamaCppConfigPayload\(ownConfig\.llamaCppConfig\)/,
-  );
-  // Both auto-load producers: the preflight and the load, each downgrading custom on diffusion.
-  assert.equal(
-    readSrc("features/chat/api/chat-adapter.ts").match(
-      /llamaCppConfigPayload\(config\.llamaCppConfig, \{ isDiffusion \}\)/g,
-    )?.length,
-    2,
-  );
-  assert.match(
-    readSrc("features/chat/hooks/use-chat-model-runtime.ts"),
-    /llamaCppConfigPayload\(\s*rollbackState\.loadedLlamaCppConfig/,
-  );
-  assert.match(
-    readSrc("features/chat/lib/apply-inference-status-to-store.ts"),
-    /loadedLlamaCppConfig: status\.requested_llama_cpp_config/,
-  );
-});
-
 test("a diffusion load sends managed in place of a custom config, never omits it", () => {
   assert.deepEqual(llamaCppConfigPayload(custom, { isDiffusion: true }), {
     llama_cpp_config: managed,
@@ -439,4 +299,20 @@ test("a diffusion load sends managed in place of a custom config, never omits it
     llama_cpp_config: managed,
   });
   assert.deepEqual(llamaCppConfigPayload(undefined, { isDiffusion: true }), {});
+});
+
+test("section suggestions trim padding the way the server does", () => {
+  assert.deepEqual(customConfigSections("[*]\n[ fast ]\nc=1\n[fast]\n"), [
+    "fast",
+  ]);
+});
+
+test("a custom config locks the managed rows and keeps the editor outside them", () => {
+  const page = readSrc(
+    "features/model-picker/components/model-config-page.tsx",
+  );
+  const fieldsetEnd = page.indexOf("</fieldset>");
+  assert.ok(page.indexOf("disabled={customActive}") < fieldsetEnd);
+  assert.ok(page.indexOf("<CustomLlamaConfigEditor") > fieldsetEnd);
+  assert.match(page, /!customActive &&\s*shouldRequestMemoryEstimate/);
 });

@@ -57,6 +57,9 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const chatTemplateOverride = useChatRuntimeStore(
     (s) => s.chatTemplateOverride,
   );
+  const loadedLlamaExtraArgs = useChatRuntimeStore(
+    (s) => s.loadedLlamaExtraArgs,
+  );
   const gpuMemoryMode = useChatRuntimeStore((s) => s.gpuMemoryMode);
   const gpuLayers = useChatRuntimeStore((s) => s.gpuLayers);
   const nCpuMoe = useChatRuntimeStore((s) => s.nCpuMoe);
@@ -123,6 +126,10 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       selectedGpuIds,
       selectedGpuIndexKind,
       tensorSplit: splitRatio,
+      // Absent until the runtime reports a list: undefined is what lets the editor hydrate the stored row.
+      ...(loadedLlamaExtraArgs != null
+        ? { llamaExtraArgs: [...loadedLlamaExtraArgs] }
+        : {}),
     };
   }, [
     checkpoint,
@@ -147,6 +154,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     tensorParallel,
     disableVision,
     chatTemplateOverride,
+    loadedLlamaExtraArgs,
     gpuMemoryMode,
     gpuLayers,
     nCpuMoe,

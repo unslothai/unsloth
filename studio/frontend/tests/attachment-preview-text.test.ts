@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { DOMParser as XmlDomParser } from "@xmldom/xmldom";
 import {
   Unzip,
   UnzipInflate,
@@ -28,6 +29,7 @@ const {
   getPdfAttachmentTextError,
   isAudioAttachment,
   isTextAttachment,
+  markDocxNotes,
   parseAttachmentText,
   readAttachmentText,
   repackDocxAttachmentArchive,
@@ -1165,6 +1167,132 @@ test("repackDocxAttachmentArchive refuses an archive that unpacks past the ceili
     () => repackDocxAttachmentArchive("wide.docx", archive),
     /DOCX file is too large: wide\.docx/,
   );
+});
+
+test("markDocxNotes numbers the references extractRawText keeps and marks the body", async () => {
+  const w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+  const note = (kind: string, id: number, text: string) =>
+    `<w:${kind} w:id="${id}"><w:p><w:r><w:${kind}Ref/></w:r><w:r><w:t xml:space="preserve"> ${text}</w:t></w:r></w:p></w:${kind}>`;
+  const notes = (kind: string, body: string) =>
+    strToU8(
+      `<w:${kind}s ${w}>` +
+        `<w:${kind} w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:${kind}>` +
+        `<w:${kind} w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:${kind}>` +
+        body +
+        `</w:${kind}s>`,
+    );
+  const ref = (kind: string, id: number) =>
+    kind === "endnote"
+      ? `<w:r><w:${kind}Reference w:id="${id}">\n</w:${kind}Reference >\n</w:r>`
+      : `<w:r><w:${kind}Reference w:id="${id}"/></w:r>`;
+  const archive = repackDocxAttachmentArchive(
+    "paper.docx",
+    zipSync({
+      "[Content_Types].xml": strToU8("<Types/>"),
+      "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+      "word/document.xml": strToU8(
+        `<w:document ${w}><w:body><w:p><w:del w:id="9">${ref("footnote", 4)}</w:del>` +
+          `<w:r><w:t>First.</w:t></w:r>${ref("footnote", 2)}` +
+          `<w:r><w:t> Second.</w:t></w:r>${ref("footnote", 1)}${ref("endnote", 1)}` +
+          `<w:r><w:t xml:space="preserve"> \uE0007\uE001</w:t></w:r>` +
+          `<w:r><x:footnoteReference xmlns:x="http://schemas.openxmlformats.org/wordprocessingml/2006/main" x:id="3"/></w:r>` +
+          `</w:p></w:body></w:document>`,
+      ),
+      "word/_rels/document.xml.rels": relationships([
+        ["footnotes", "notes/foot.xml"],
+        ["endnotes", "endnotes.xml"],
+      ]),
+      "word/notes/foot.xml": notes(
+        "footnote",
+        note("footnote", 1, "Source: LATER") +
+          note("footnote", 2, "Source: EARLIER") +
+          note("footnote", 3, "Source: LOCALLY DECLARED") +
+          note("footnote", 4, "Source: DELETED"),
+      ),
+      "word/endnotes.xml": notes("endnote", note("endnote", 1, "Source: ENDNOTEBODY")),
+    }),
+  );
+  const original = (globalThis as { DOMParser?: unknown }).DOMParser;
+  (globalThis as { DOMParser?: unknown }).DOMParser = XmlDomParser;
+  try {
+    const marked = markDocxNotes(archive);
+    const { default: mammoth } = await import("mammoth");
+    const { value } = await mammoth.extractRawText({
+      buffer: Buffer.from(marked.archive),
+    });
+    assert.equal(
+      marked.label(value),
+      "First.[1] Second.[2][i] \uE0007\uE001[3]\n\n" +
+        "Footnotes\n[1] Source: EARLIER\n[2] Source: LATER\n[3] Source: LOCALLY DECLARED\n\n" +
+        "Endnotes\n[i] Source: ENDNOTEBODY",
+    );
+  } finally {
+    (globalThis as { DOMParser?: unknown }).DOMParser = original;
+  }
+});
+
+test("markDocxNotes reads Strict OOXML notes and skips unfilled content controls", () => {
+  const w = 'xmlns:w="http://purl.oclc.org/ooxml/wordprocessingml/main"';
+  const run = (text: string) => `<w:r><w:t xml:space="preserve">${text}</w:t></w:r>`;
+  const archive = repackDocxAttachmentArchive(
+    "strict.docx",
+    zipSync({
+      "[Content_Types].xml": strToU8("<Types/>"),
+      "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+      "word/document.xml": strToU8(`<w:document ${w}><w:body/></w:document>`),
+      "word/footnotes.xml": strToU8(
+        `<w:footnotes ${w}><w:footnote w:id="1"><w:p>` +
+          run("Keep") +
+          `<w:sdt><w:sdtPr><w:showingPlcHdr/></w:sdtPr><w:sdtContent>${run(" Click or tap here to enter text.")}</w:sdtContent></w:sdt>` +
+          `<w:sdt><w:sdtPr><w:showingPlcHdr w:val="0"/></w:sdtPr><w:sdtContent>${run(" FILLED")}</w:sdtContent></w:sdt>` +
+          "</w:p></w:footnote></w:footnotes>",
+      ),
+    }),
+  );
+  const original = (globalThis as { DOMParser?: unknown }).DOMParser;
+  (globalThis as { DOMParser?: unknown }).DOMParser = XmlDomParser;
+  try {
+    assert.equal(markDocxNotes(archive).label(""), "Footnotes\n[1] Keep FILLED");
+  } finally {
+    (globalThis as { DOMParser?: unknown }).DOMParser = original;
+  }
+});
+
+test("markDocxNotes skips move sources, deletions and text box fallbacks", () => {
+  const w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+  const mc = 'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"';
+  const run = (text: string) => `<w:r><w:t xml:space="preserve">${text}</w:t></w:r>`;
+  const box = `<w:txbxContent><w:p>${run("BOX")}</w:p></w:txbxContent>`;
+  const archive = repackDocxAttachmentArchive(
+    "moved.docx",
+    zipSync({
+      "[Content_Types].xml": strToU8("<Types/>"),
+      "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+      "word/document.xml": strToU8(`<w:document ${w}><w:body/></w:document>`),
+      "word/_rels/document.xml.rels": relationships([["footnotes", "footnotes.xml"]]),
+      "word/footnotes.xml": strToU8(
+        `<w:footnotes ${w} ${mc}><w:footnote w:id="1"><w:p>` +
+          run("Keep") +
+          `<w:moveFrom w:id="7">${run(" MOVED")}</w:moveFrom>` +
+          `<w:del w:id="8"><w:r><w:delText> GONE</w:delText></w:r></w:del>` +
+          run(" COVID") + "<w:r><w:noBreakHyphen/></w:r>" + run("19") +
+          `<w:moveTo w:id="9">${run(" MOVED")}</w:moveTo>` +
+          `<w:r><mc:AlternateContent><mc:Choice Requires="wps">${box}</mc:Choice>` +
+          `<mc:Fallback>${box}</mc:Fallback></mc:AlternateContent></w:r>` +
+          "</w:p></w:footnote></w:footnotes>",
+      ),
+    }),
+  );
+  const original = (globalThis as { DOMParser?: unknown }).DOMParser;
+  (globalThis as { DOMParser?: unknown }).DOMParser = XmlDomParser;
+  try {
+    assert.equal(
+      markDocxNotes(archive).label(""),
+      "Footnotes\n[1] Keep COVID-19 MOVED BOX",
+    );
+  } finally {
+    (globalThis as { DOMParser?: unknown }).DOMParser = original;
+  }
 });
 
 /** A preview only colours what the filename says is source; extracted document text is prose whatever the file was called. */

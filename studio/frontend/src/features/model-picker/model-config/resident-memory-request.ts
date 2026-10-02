@@ -25,7 +25,7 @@ type ResidentState = Pick<
   | "loadedCpuFallback"
   | "specFallbackReason"
   | "mmprojFallbackReason"
-> & { loadedLlamaCppConfig?: ReturnType<typeof useChatRuntimeStore.getState>["loadedLlamaCppConfig"] };
+>;
 
 /** Editable controls can already describe the next load. */
 export function selectResidentEstimateSettings(state: ResidentState) {
@@ -62,7 +62,6 @@ export function selectResidentEstimateSettings(state: ResidentState) {
     nCpuMoe: state.loadedNCpuMoe,
     selectedGpuIds: state.loadedGpuIds,
     llamaExtraArgs: state.loadedLlamaExtraArgs,
-    ...(state.loadedLlamaCppConfig != null ? { llamaCppConfig: state.loadedLlamaCppConfig } : {}),
   };
 }
 

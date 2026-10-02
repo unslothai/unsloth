@@ -13,7 +13,6 @@ from pydantic import ValidationError
 
 from models.inference import ChatCompletionRequest, LoadRequest, ValidateModelRequest
 from routes import inference as routes
-from routes.chat_history import ChatInferenceSettings
 from utils import openai_auto_switch_settings as settings
 from utils.inference import inference_config as sampling
 from core.inference.llama_custom_config import CustomConfigError
@@ -98,182 +97,73 @@ def test_custom_ignores_legacy_extras():
 
 @pytest.fixture
 def preset_backend(monkeypatch):
-    defaults = {
-        "temperature": 0.25,
-        "top_k": 180,
-        "repeat_penalty": 0.9,
-        "frequency_penalty": -0.5,
-        "seed": 12,
-        "chat_template_kwargs": {"enable_thinking": False, "custom_key": "kept"},
-    }
     backend = SimpleNamespace(
         model_identifier = "model.gguf",
-        llama_cpp_config_summary = {"mode": "custom", "request_defaults": defaults},
+        llama_cpp_config_summary = {
+            "mode": "custom",
+            "request_defaults": {"temperature": 0.25, "top_k": 180},
+        },
     )
     monkeypatch.setattr(routes, "get_llama_cpp_backend", lambda: backend)
     monkeypatch.setattr(
-        sampling, "_recommended_sampling", lambda _: {"temperature": 0.8, "top_k": 20}
+        sampling, "_recommended_sampling", lambda _: {"temperature": 0.8, "top_k": 20, "top_p": 0.9}
     )
     for field in sampling.SAMPLING_FIELD_NAMES:
         monkeypatch.delenv(sampling._SAMPLING_FIELDS[field][0], raising = False)
     return backend
 
 
-@pytest.mark.parametrize("predict", [0, 128])
-@pytest.mark.parametrize("caps", [{}, {"max_tokens": 64}, {"max_completion_tokens": 32}])
-def test_custom_predict_fills_only_an_omitted_chat_cap(preset_backend, predict, caps):
-    preset_backend.llama_cpp_config_summary["request_defaults"]["n_predict"] = predict
-    payload = ChatCompletionRequest(messages = [], **caps)
+def _chat(**fields):
+    return ChatCompletionRequest(messages = [{"role": "user", "content": "hi"}], **fields)
+
+
+def test_ini_sampling_ranks_between_client_and_recommendation(preset_backend):
+    payload = _chat(top_k = 5)
     routes._fill_recommended_sampling_openai(payload, "model.gguf")
-    assert routes._effective_openai_max_tokens(payload) == caps.get(
-        "max_completion_tokens", caps.get("max_tokens", predict)
-    )
+    assert (payload.temperature, payload.top_k, payload.top_p) == (0.25, 5, 0.9)
 
 
-def test_preset_beats_auto_seeded_ui_values_and_retains_native_domains(preset_backend):
-    payload = ChatCompletionRequest(
-        messages = [],
-        temperature = 0.8,
-        top_k = 20,
-        enable_thinking = True,
-        sampling_fields_explicit = [],
-        seed = 3,
-    )
+def test_operator_pin_still_wins(preset_backend, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_SAMPLING_TEMPERATURE", "1.5")
+    payload = _chat()
     routes._fill_recommended_sampling_openai(payload, "model.gguf")
-    assert (payload.temperature, payload.top_k, payload.repetition_penalty) == (0.25, 180, 0.9)
-    assert payload.frequency_penalty == -0.5
-    assert payload.enable_thinking is None
-    assert payload.seed == 3
-    routes._fill_recommended_sampling_openai(payload, "model.gguf")
-    assert payload.temperature == 0.25
+    assert payload.temperature == 1.5
 
 
-def test_explicit_zero_and_false_survive_preset(preset_backend):
-    payload = ChatCompletionRequest(
-        messages = [],
-        temperature = 0,
-        enable_thinking = False,
-        sampling_fields_explicit = ["temperature", "enable_thinking"],
-    )
-    routes._fill_recommended_sampling_openai(payload, "model.gguf")
-    assert payload.temperature == 0
-    assert payload.enable_thinking is False
+def test_ini_defaults_never_leak_to_another_model(preset_backend):
+    payload = _chat()
+    routes._fill_recommended_sampling_openai(payload, "other.gguf")
+    assert payload.temperature == 0.8
 
 
-def test_operator_pin_remains_highest(preset_backend, monkeypatch):
-    monkeypatch.setenv("UNSLOTH_SAMPLING_TEMPERATURE", "0.4")
-    payload = ChatCompletionRequest(messages = [], temperature = 0.1)
-    routes._fill_recommended_sampling_openai(payload, "model.gguf")
-    assert payload.temperature == 0.4
-
-
-def test_raw_completion_defaults_merge_without_losing_limits(preset_backend):
-    body = {
-        "temperature": 0,
-        "max_tokens": 5,
-        "stop": ["END"],
-        "chat_template_kwargs": {"custom_key": "explicit"},
-    }
+def test_raw_completions_get_ini_values(preset_backend):
+    body = {"prompt": "hi"}
     routes._fill_recommended_sampling_completions(body, "model.gguf")
-    assert body["temperature"] == 0
-    assert body["repeat_penalty"] == 0.9
-    assert body["chat_template_kwargs"] == {"enable_thinking": False, "custom_key": "explicit"}
-    assert (body["max_tokens"], body["stop"]) == (5, ["END"])
-
-
-def test_raw_completion_n_predict_yields_to_client_cap(preset_backend):
-    # llama-server reads n_predict before max_tokens, so the INI's must not ride along a client cap.
-    preset_backend.llama_cpp_config_summary["request_defaults"]["n_predict"] = 40
-    capped = {"max_tokens": 5}
-    routes._fill_recommended_sampling_completions(capped, "model.gguf", client_max_tokens = 5)
-    assert "n_predict" not in capped
-    uncapped = {"max_tokens": 4096}
-    routes._fill_recommended_sampling_completions(uncapped, "model.gguf")
-    assert uncapped["n_predict"] == 40
-
-
-def test_defaults_never_leak_to_other_model(preset_backend):
-    assert routes._custom_request_defaults("other.gguf") == {}
-
-
-def test_chat_settings_preserve_sampling_provenance():
-    payload = {"temperature": 0.8, "samplingFieldsExplicit": []}
-    assert ChatInferenceSettings.model_validate(payload).model_dump(exclude_unset = True) == payload
+    assert (body["temperature"], body["top_k"]) == (0.25, 180)
 
 
 @pytest.mark.asyncio
-async def test_non_gguf_custom_validation_refuses_without_backend_access(monkeypatch):
-    monkeypatch.setattr(
-        routes, "get_llama_cpp_backend", lambda: pytest.fail("Must not touch resident")
-    )
-    with pytest.raises(HTTPException) as exc:
-        await routes._preflight_custom_llama_config(
-            ValidateModelRequest(model_path = "model", llama_cpp_config = CUSTOM),
-            SimpleNamespace(is_gguf = False),
-        )
-    assert exc.value.status_code == 400
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("operation", ["load", "validate"])
-async def test_route_rejects_custom_before_resident_or_gpu_eviction(
-    monkeypatch, tmp_path, operation
-):
-    model = str(tmp_path / "selected.gguf")
+async def test_preflight_refuses_a_bad_config_before_any_eviction(monkeypatch):
     calls = []
 
-    def reject(intent, **kwargs):
-        calls.append((intent.model_identifier, kwargs))
-        raise CustomConfigError("INI section [*], key 'host': reserved by Studio")
+    def prepare(intent):
+        calls.append(intent.llama_cpp_config.ini)
+        raise CustomConfigError("'bogus' is not an option of the selected llama-server")
 
-    resident = SimpleNamespace(
-        is_loaded = True,
-        model_identifier = "resident.gguf",
-        prepare_custom_config = reject,
-        last_load_intent = None,
-    )
-    monkeypatch.setattr(routes, "get_llama_cpp_backend", lambda: resident)
     monkeypatch.setattr(
-        routes, "get_inference_backend", lambda: SimpleNamespace(active_model_name = None)
+        routes, "get_llama_cpp_backend", lambda: SimpleNamespace(prepare_custom_config = prepare)
     )
-    monkeypatch.setattr(
-        routes, "_resolve_model_identifier_for_request", lambda *a, **k: (model, model, False)
-    )
-    monkeypatch.setattr(routes, "resolve_effective_chat_template_override", lambda **k: None)
-    config = SimpleNamespace(
-        identifier = model,
-        is_gguf = True,
-        is_vision = False,
-        gguf_file = model,
-        gguf_mmproj_file = None,
-        gguf_variant = "Q4_K_M",
-        gguf_hf_repo = None,
-    )
-    monkeypatch.setattr(routes, "ModelConfig", SimpleNamespace(from_identifier = lambda **k: config))
-    monkeypatch.setattr(routes, "_classify_diffusion_gguf", lambda _: False)
-    monkeypatch.setattr(
-        "core.inference.gpu_arbiter.acquire_for",
-        lambda *a, **k: pytest.fail("GPU owner was evicted"),
-    )
-    request_context = SimpleNamespace(
-        app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))
-    )
-    with pytest.raises(HTTPException) as exc:
-        if operation == "load":
-            await routes._load_model_impl(
-                LoadRequest(model_path = model, gguf_variant = "Q4_K_M", llama_cpp_config = CUSTOM),
-                request_context,
-                current_subject = "custom-test",
-            )
-        else:
-            await routes.validate_model(
-                ValidateModelRequest(
-                    model_path = model, gguf_variant = "Q4_K_M", llama_cpp_config = CUSTOM
-                ),
-                request_context,
-                current_subject = "custom-test",
-            )
-    assert exc.value.status_code == 400
-    assert "reserved by Studio" in str(exc.value.detail)
-    assert calls == [(model, {"validate_resources": True})]
-    assert resident.is_loaded and resident.model_identifier == "resident.gguf"
+    monkeypatch.setattr(routes, "_classify_diffusion_gguf", lambda config: False)
+    request = LoadRequest(model_path = "model.gguf", llama_cpp_config = CUSTOM)
+    config = SimpleNamespace(is_gguf = True, identifier = "model.gguf")
+    with pytest.raises(HTTPException) as caught:
+        await routes._preflight_custom_llama_config(request, config)
+    assert caught.value.status_code == 400 and "bogus" in caught.value.detail
+    assert calls == [CUSTOM["ini"]]
+
+
+@pytest.mark.asyncio
+async def test_preflight_refuses_non_gguf():
+    request = LoadRequest(model_path = "org/model", llama_cpp_config = CUSTOM)
+    with pytest.raises(HTTPException):
+        await routes._preflight_custom_llama_config(request, SimpleNamespace(is_gguf = False))

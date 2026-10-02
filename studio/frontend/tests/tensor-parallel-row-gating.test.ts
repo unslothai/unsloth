@@ -25,7 +25,7 @@ function gateAbove(marker: string): string {
   assert.notEqual(at, -1, `missing marker: ${marker}`);
   for (let i = at; i >= 0; i--) {
     const line = lines[i].trim();
-    if (line.startsWith("{!isDiffusion &&")) return "!isDiffusion";
+    if (line === "{!isDiffusion && (") return "!isDiffusion";
     // A `)}` first means the gate closed before the row, i.e. it is not inside one.
     if (line === ")}") return "closed";
   }
@@ -45,6 +45,5 @@ test("the Tensor Parallelism row is gated out for diffusion models", () => {
 test("the Vision row it sits beside stays gated too", () => {
   // Both rows are unsupported for the same reason; regating one and not the other is
   // the state this change exists to end.
-  // The switch lives in VisionRow; its GGUF use sits under the same gate.
-  assert.equal(gateAbove("<VisionRow config={config} update={update} />"), "!isDiffusion");
+  assert.equal(gateAbove("checked={!config.disableVision}"), "!isDiffusion");
 });

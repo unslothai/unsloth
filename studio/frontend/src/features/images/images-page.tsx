@@ -135,7 +135,12 @@ import {
 } from "@/lib/last-prompt";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useImageWorkflowStore } from "./stores/image-workflow-store";
-import { WORKFLOW_EXAMPLE_PROMPTS, WORKFLOW_TABS, type WorkflowId } from "./workflows";
+import {
+  WORKFLOW_EXAMPLE_PROMPTS,
+  WORKFLOW_TABS,
+  recipeWorkflowLabel,
+  type WorkflowId,
+} from "./workflows";
 import { ParamSlider } from "@/features/chat";
 import { ModelLoadDescription } from "@/features/chat/components/model-load-status";
 import {
@@ -298,6 +303,7 @@ function useImageModels(
 const CONDITIONED_WORKFLOW_INPUTS: Record<string, string> = {
   img2img: "the source image",
   inpaint: "the source image and mask",
+  outpaint: "the source image",
   upscale: "the source image",
   edit: "the source image",
   reference: "the source and reference images",
@@ -1139,7 +1145,7 @@ function RecipePopover({
               repo id alone does not say which quant ran. */}
           {image.gguf_filename ? <RecipeRow label="File" value={image.gguf_filename} mono /> : null}
           {image.transformer_quant ? (
-            <RecipeRow label="Quant" value={image.transformer_quant} />
+            <RecipeRow label="Transformer" value={image.transformer_quant} />
           ) : null}
           {/* The ENGAGED text-encoder precision and memory placement: the encoder is often the largest
               resident component, and the memory mode decides whether torchao modes could run at all. */}
@@ -1156,8 +1162,54 @@ function RecipePopover({
               value={memoryRecipeValue(image.memory_mode, image.offload_policy)}
             />
           ) : null}
+          {image.speed_mode ? (
+            <RecipeRow
+              label="Speed"
+              value={formatResolvedValue("speed_mode", image.speed_mode)}
+            />
+          ) : null}
+          {image.attention_backend ? (
+            <RecipeRow
+              label="Attention"
+              value={formatResolvedValue("attention_backend", image.attention_backend)}
+            />
+          ) : null}
+          {image.transformer_cache ? (
+            <RecipeRow
+              label="Step cache"
+              value={formatResolvedValue("transformer_cache", image.transformer_cache)}
+            />
+          ) : null}
+          {image.cpu_offload ? (
+            <RecipeRow label="CPU offload" value={formatResolvedValue("cpu_offload", true)} />
+          ) : null}
           {image.baked_loras?.length ? (
             <RecipeRow label="Baked" value={image.baked_loras.join(", ")} wrap />
+          ) : null}
+          {image.loras?.length ? (
+            <RecipeRow label="LoRAs" value={image.loras.join(", ")} wrap />
+          ) : null}
+          {image.controlnet ? <RecipeRow label="ControlNet" value={image.controlnet} wrap /> : null}
+          <RecipeRow label="Workflow" value={recipeWorkflowLabel(image.workflow)} />
+          {image.strength != null &&
+          (image.workflow === "img2img" ||
+            image.workflow === "edit" ||
+            image.workflow === "inpaint" ||
+            image.workflow === "upscale") ? (
+            <RecipeRow label="Strength" value={String(image.strength)} />
+          ) : null}
+          {image.upscale != null && image.workflow === "upscale" ? (
+            <RecipeRow label="Upscale" value={`${image.upscale}×`} />
+          ) : null}
+          {image.reference_image_count != null &&
+          (image.workflow === "reference" || image.workflow === "edit") ? (
+            <RecipeRow label="References" value={String(image.reference_image_count)} />
+          ) : null}
+          {image.localized_edit ? (
+            <RecipeRow
+              label="Edit mode"
+              value={image.localized_edit.charAt(0).toUpperCase() + image.localized_edit.slice(1)}
+            />
           ) : null}
           <RecipeRow label="Size" value={`${image.width} × ${image.height}`} />
           <RecipeRow label="Steps" value={String(image.steps)} />
@@ -1591,6 +1643,7 @@ export function ImagesPage({
     const size = resolutionFor(status?.base_repo ?? status?.repo_id ?? "", {
       modelKind: status?.model_kind,
       transformerQuant: status?.transformer_quant,
+      transformerQuantSource: status?.resolved?.transformer_quant?.source,
     });
     return {
       negativePrompt: "",
@@ -1608,6 +1661,7 @@ export function ImagesPage({
     status?.repo_id,
     status?.model_kind,
     status?.transformer_quant,
+    status?.resolved?.transformer_quant?.source,
   ]);
   const applyImagePresetParams = useCallback((params: ImageGenerationPresetParams) => {
     setNegativePrompt(params.negativePrompt);
@@ -2684,6 +2738,7 @@ export function ImagesPage({
     const size = resolutionFor(status?.base_repo ?? repoId, {
       modelKind: status?.model_kind,
       transformerQuant: status?.transformer_quant,
+      transformerQuantSource: status?.resolved?.transformer_quant?.source,
     });
     setWidth(size.width);
     setHeight(size.height);
@@ -2699,6 +2754,7 @@ export function ImagesPage({
     status?.base_repo,
     status?.model_kind,
     status?.transformer_quant,
+    status?.resolved?.transformer_quant?.source,
   ]);
 
   // Reseed the Advanced selects from the LOADED build, so a declined request snaps to what
@@ -3743,6 +3799,7 @@ export function ImagesPage({
         status.base_repo,
         status.model_kind,
         status.transformer_quant,
+        status.resolved?.transformer_quant?.source ?? "",
         (status.conditioning?.reference_resolutions ?? []).join(","),
       ].join("|")
     : null;
@@ -3753,6 +3810,7 @@ export function ImagesPage({
       const tier = resolutionFor(status.base_repo ?? status.repo_id ?? "", {
         modelKind: status.model_kind,
         transformerQuant: status.transformer_quant,
+        transformerQuantSource: status.resolved?.transformer_quant?.source,
       }).width;
       setReferenceResolution(
         seedReferenceResolution(status.conditioning?.reference_resolutions ?? [], tier),
@@ -4086,6 +4144,8 @@ export function ImagesPage({
         condInit = built.image;
         condMask = built.mask;
         condStrength = 1; // the new border is blank canvas: redraw it fully
+        // Runs as inpaint; the label only keeps the recipe saying Extend.
+        condFields = { workflow: "outpaint" };
       } else if (isUpscale) {
         // Hires fix: the backend enlarges the source and re-denoises at this low strength, gaining
         // detail without changing content.

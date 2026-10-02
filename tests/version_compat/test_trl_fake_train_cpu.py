@@ -335,6 +335,44 @@ def test_dpo_trains_on_cpu(tmp_path):
     DPOTrainer(model = model, processing_class = tok, args = cfg, train_dataset = ds).train()
 
 
+def test_grpo_evaluates_with_an_explicit_eval_batch_size(tmp_path):
+    """Shrinking an explicit eval batch of 8 to the train batch of 2 split num_generations = 4 groups."""
+    from datasets import Dataset
+    from trl import GRPOConfig, GRPOTrainer
+
+    model, tok = _load_plain()
+    _guard_finite_logits(model)
+    ds = Dataset.from_list([{"prompt": "hi there"}] * 8)
+    cfg = GRPOConfig(
+        output_dir = str(tmp_path / "ci_grpo_eval"),
+        per_device_train_batch_size = 2,
+        gradient_accumulation_steps = 2,
+        per_device_eval_batch_size = 8,
+        num_generations = 4,
+        eval_strategy = "steps",
+        max_completion_length = 8,
+        report_to = "none",
+        temperature = 1.0,
+        beta = 0.0,
+        save_strategy = "no",
+        use_cpu = True,
+        use_vllm = False,
+        fp16 = False,
+        bf16 = False,
+        optim = "adamw_torch",
+    )
+    trainer = GRPOTrainer(
+        model = model,
+        processing_class = tok,
+        reward_funcs = [lambda completions, **k: [float(len(c)) for c in completions]],
+        args = cfg,
+        train_dataset = ds,
+        eval_dataset = ds,
+    )
+    assert trainer.args.per_device_eval_batch_size == 8
+    assert "eval_loss" in trainer.evaluate()
+
+
 def test_grpo_trains_on_cpu_through_the_patched_batch_sampler(tmp_path):
     """The canary above proves the GRPO trainer runs. It does NOT prove Unsloth's own
     ``get_batch_samples`` runs, because ``_load_plain`` never goes through the loader that

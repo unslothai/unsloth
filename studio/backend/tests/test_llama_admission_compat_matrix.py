@@ -185,12 +185,7 @@ class TestNothingChangesWhenTheBudgetIsUnknown:
 
 
 # In the order they were added, so older positional callers keep their meaning.
-_TOOL_LOOP_HOOKS = (
-    "on_conversation_grew",
-    "on_decode_slot",
-    "thinking_budget_tokens",
-    "request_template_kwargs",
-)
+_TOOL_LOOP_HOOKS = ("on_conversation_grew", "on_decode_slot", "thinking_budget_tokens")
 
 
 class TestOldCallers:
@@ -243,8 +238,12 @@ class TestOldCallers:
         names = list(
             inspect.signature(LlamaCppBackend.generate_chat_completion_with_tools).parameters
         )
-        tail = names[-len(_TOOL_LOOP_HOOKS) :]
-        assert tail == list(_TOOL_LOOP_HOOKS), f"the hooks must stay at the tail, got {tail}"
+        # Later parameters may only be appended after the hooks, never inserted before them.
+        start = names.index(_TOOL_LOOP_HOOKS[0])
+        hooks = names[start : start + len(_TOOL_LOOP_HOOKS)]
+        assert hooks == list(
+            _TOOL_LOOP_HOOKS
+        ), f"the hooks must stay together in order, got {hooks}"
 
     def test_the_wait_timeout_has_a_sane_default(self):
         import inspect

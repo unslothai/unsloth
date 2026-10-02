@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// eslint-disable-next-line no-restricted-imports -- The picker barrel imports chat; compare loads need only its API leaf.
-import { fetchLoadModelOverride } from "@/features/model-picker/api/model-overrides";
 // eslint-disable-next-line no-restricted-imports -- Keep the import-free payload helper independent of the picker UI.
 import { llamaCppConfigPayload } from "@/features/model-picker/model-config/llama-cpp-config";
 import { useChatArtifactsStore } from "./artifacts/store";
@@ -1588,15 +1586,6 @@ export function SharedComposer({
                   windowsCommandBudget: managed?.windowsCommandBudget,
                 },
               );
-            if (ownConfig.llamaCppConfig === undefined) {
-              ownConfig.llamaCppConfig = (
-                await fetchLoadModelOverride(
-                  sel.id,
-                  sel.id,
-                  sel.ggufVariant ?? null,
-                )
-              )?.llama_cpp_config;
-            }
             const local = ownConfig.llamaExtraArgs;
             if (local === undefined) {
               const resolvedArgs = await fetchLoadExtraArgs(
