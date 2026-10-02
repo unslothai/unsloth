@@ -5755,7 +5755,16 @@ export function HubModelPicker({
     otherAdditionalOnDeviceModels.length > 0;
 
   const renderHubModelRow = (id: string, row: ReactNode) => {
-    if (isKnownGgufRepo(id) || !onConfigure) return row;
+    if (!onConfigure) return row;
+    if (isKnownGgufRepo(id)) {
+      // Same slot, left empty: GGUF repos configure per quant, and their badges must line up with the rest.
+      return (
+        <div className={downloadedRowShellClassName(isValueRow(id))}>
+          <div className="min-w-0 flex-1">{row}</div>
+          <span className={ROW_ACTIONS_CLASS} aria-hidden={true} />
+        </div>
+      );
+    }
     return (
       <div className={downloadedRowShellClassName(isValueRow(id))}>
         <div className="min-w-0 flex-1">{row}</div>
