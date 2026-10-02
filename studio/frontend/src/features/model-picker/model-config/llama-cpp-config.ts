@@ -79,12 +79,9 @@ export function llamaCppConfigPayload(
   config: LlamaCppConfig | undefined,
   options: { isDiffusion?: boolean } = {},
 ) {
-  if (config === undefined) return {};
   // The diffusion runner has no llama-server; explicit managed keeps the backend from inheriting custom.
-  return {
-    llama_cpp_config:
-      options.isDiffusion && config.mode === "custom"
-        ? MANAGED_LLAMA_CPP_CONFIG
-        : config,
-  };
+  if (options.isDiffusion)
+    return { llama_cpp_config: MANAGED_LLAMA_CPP_CONFIG };
+  if (config === undefined) return {};
+  return { llama_cpp_config: config };
 }

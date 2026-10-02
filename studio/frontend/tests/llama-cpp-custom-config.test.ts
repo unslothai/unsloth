@@ -301,6 +301,14 @@ test("large per-model sources still obey the aggregate storage budget", () => {
 });
 
 test("a diffusion load sends managed in place of a custom config, never omits it", () => {
+  const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
+  assert.equal(
+    runtime.match(
+      /llamaCppConfigPayload\(loadLlamaCppConfig, \{\s*isDiffusion: targetIsDiffusion/g,
+    )?.length,
+    2,
+    "validate and load both reset a diffusion target explicitly",
+  );
   assert.deepEqual(llamaCppConfigPayload(custom, { isDiffusion: true }), {
     llama_cpp_config: managed,
   });
@@ -308,7 +316,10 @@ test("a diffusion load sends managed in place of a custom config, never omits it
   assert.deepEqual(llamaCppConfigPayload(managed, { isDiffusion: true }), {
     llama_cpp_config: managed,
   });
-  assert.deepEqual(llamaCppConfigPayload(undefined, { isDiffusion: true }), {});
+  // Unknown config still resets, or the backend inherits a saved custom source.
+  assert.deepEqual(llamaCppConfigPayload(undefined, { isDiffusion: true }), {
+    llama_cpp_config: managed,
+  });
 });
 
 test("section suggestions trim padding the way the server does", () => {

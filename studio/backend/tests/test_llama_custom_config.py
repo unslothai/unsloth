@@ -317,6 +317,25 @@ def test_gpu_custom_load_holds_vram(launch):
     assert not launch.backend.holds_no_vram
 
 
+def test_audio_probe_runs_after_the_load_lock_is_released(launch, monkeypatch):
+    held = []
+    monkeypatch.setattr(launch.backend, "_detect_audio_type_strict", lambda: "snac")
+    monkeypatch.setattr(
+        launch.backend,
+        "_apply_detected_audio",
+        lambda *a: held.append(launch.backend._lock.locked()) or True,
+    )
+    assert launch.backend.load_model(launch.intent)
+    assert held == [False]
+
+
+def test_a_downloaded_diffusion_gguf_is_refused_before_launch(launch, monkeypatch):
+    monkeypatch.setattr(launch.backend, "_gguf_path_is_diffusion", lambda *a: True)
+    with pytest.raises(CustomConfigError, match = "diffusion"):
+        launch.backend.load_model(launch.intent)
+    assert launch.captured == []
+
+
 def test_bad_config_never_spawns(launch):
     from dataclasses import replace
 

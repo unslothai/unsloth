@@ -23380,6 +23380,11 @@ class LlamaCppBackend:
         refusal = self._non_chat_gguf_refusal_for_path(model_path, intent.model_identifier)
         if refusal:
             raise CustomConfigError(refusal)
+        # The route could not classify an uncached file; diffusion GGUFs run outside llama-server.
+        if self._gguf_path_is_diffusion(model_path, intent.model_identifier):
+            raise CustomConfigError(
+                "Diffusion GGUFs run on the diffusion runner; use Studio settings"
+            )
         if intent.is_vision and not projector and intent.hf_repo and not intent.disable_vision:
             with _hf_offline_if_unreachable():
                 projector = self._download_mmproj(
@@ -23575,19 +23580,6 @@ class LlamaCppBackend:
                 if cancelled() or not self._publish_healthy():
                     self._kill_process()
                     return False
-                # Same post-health probe as managed loads; the duplicate-load fast path requires it.
-                try:
-                    detected = self._detect_audio_type_strict()
-                    self._audio_probed = True
-                except Exception as exc:
-                    logger.debug("Audio probe failed: %s", exc)
-                    detected = None
-                if not (
-                    self._apply_detected_audio(detected)
-                    if intent.audio_codec_path is None
-                    else self._apply_detected_audio(detected, intent.audio_codec_path)
-                ):
-                    return False
             except Exception:
                 self._kill_process()
                 raise
@@ -23595,7 +23587,19 @@ class LlamaCppBackend:
                 if not self._healthy:
                     self._compiled_custom_config = None
                     self._last_load_intent = None
-        return True
+        # Outside self._lock (non-reentrant; _apply_detected_audio takes it), as managed loads
+        # do. The duplicate-load fast path requires the probe.
+        try:
+            detected = self._detect_audio_type_strict()
+            self._audio_probed = True
+        except Exception as exc:
+            logger.debug("Audio probe failed: %s", exc)
+            detected = None
+        return (
+            self._apply_detected_audio(detected)
+            if intent.audio_codec_path is None
+            else self._apply_detected_audio(detected, intent.audio_codec_path)
+        )
 
     @contextlib.contextmanager
     def _serial_load_scope(self):

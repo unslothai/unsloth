@@ -2232,9 +2232,9 @@ export function useChatModelRuntime() {
                     // The same list the load below sends: a --ctx-size or cache override changes the memory this
                     // preflight estimates, so omitting it approves a different command and /load then refuses
                     // the target with the real arguments.
-                    ...(!targetIsDiffusion
-                      ? llamaCppConfigPayload(loadLlamaCppConfig)
-                      : {}),
+                    ...llamaCppConfigPayload(loadLlamaCppConfig, {
+                      isDiffusion: targetIsDiffusion,
+                    }),
                     ...(!targetIsDiffusion && loadLlamaExtraArgs !== undefined
                       ? { llama_extra_args: loadLlamaExtraArgs ?? [] }
                       : {}),
@@ -2510,8 +2510,10 @@ export function useChatModelRuntime() {
                 isGguf && !targetIsDiffusion ? loadReasoningBudgetMessage : "",
               // Sent only once known, and [] is the explicit "launch with none": the flags are llama-server's,
               // so neither a transformers load nor a diffusion GGUF carries them.
-              ...(isGguf && !targetIsDiffusion
-                ? llamaCppConfigPayload(loadLlamaCppConfig)
+              ...(isGguf
+                ? llamaCppConfigPayload(loadLlamaCppConfig, {
+                    isDiffusion: targetIsDiffusion,
+                  })
                 : {}),
               ...(isGguf && !targetIsDiffusion && loadLlamaExtraArgs !== undefined
                 ? { llama_extra_args: loadLlamaExtraArgs ?? [] }
