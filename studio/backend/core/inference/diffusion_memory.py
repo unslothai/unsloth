@@ -2652,6 +2652,102 @@ def _offload_groups(module: Any) -> list:
     return groups
 
 
+# Video loads only. "0" restores the per-tensor ``pin_memory()``.
+FAST_PIN_ENV = "UNSLOTH_VIDEO_FAST_PIN"
+_FAST_PIN_REQUEST_ATTR = "_unsloth_fast_pin_requested"
+_FAST_PIN_THREADS = 8
+
+
+def request_fast_pins(pipe: Any) -> None:
+    """Ask the background pinners of ``pipe`` to use registered host memory."""
+    try:
+        setattr(pipe, _FAST_PIN_REQUEST_ATTR, True)
+    except Exception:  # noqa: BLE001 - a pipe refusing attributes pins the default way
+        pass
+
+
+def _fast_pin_supported() -> bool:
+    if (os.environ.get(FAST_PIN_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
+        return False
+    # WDDM / WSL2 cap page-locked memory; ROCm's register path is unmeasured.
+    if not sys.platform.startswith("linux") or _pinned_memory_capped():
+        return False
+    try:
+        import torch
+
+        if getattr(torch.version, "hip", None) or not torch.cuda.is_available():
+            return False
+        cudart = torch.cuda.cudart()
+        return hasattr(cudart, "cudaHostRegister") and hasattr(cudart, "cudaHostUnregister")
+    except Exception:  # noqa: BLE001
+        return False
+
+
+class _RegisteredHostBuffer:
+    """Anonymous mapping page-locked with ``cudaHostRegister``; tensor views keep it alive, the last one unregisters it.
+
+    Torch's pinned allocator pins on one thread (10.9-13.1 s for LTX-2.3's 24.6 GiB Gemma3); 8 threads + register: 2.3 s."""
+
+    def __init__(self, nbytes: int):
+        import ctypes
+        import mmap
+
+        import torch
+
+        self._cudart = torch.cuda.cudart()
+        self._size = max(int(nbytes), 1)
+        self._map = mmap.mmap(-1, self._size)
+        self._anchor = ctypes.c_char.from_buffer(self._map)
+        self.ptr = ctypes.addressof(self._anchor)
+        self._registered = False
+        self._device: Optional[int] = None
+        self.__array_interface__ = {
+            "shape": (int(nbytes),),
+            "typestr": "|u1",
+            "data": (self.ptr, False),
+            "version": 3,
+        }
+
+    def register(self) -> None:
+        err = self._cudart.cudaHostRegister(self.ptr, self._size, 0)
+        if int(err) != 0:
+            raise RuntimeError(f"cudaHostRegister failed ({err})")
+        import torch
+
+        # A bare synchronize() on another thread would wait on (and open a context on) device 0.
+        self._device = torch.cuda.current_device()
+        self._registered = True
+
+    def __del__(self) -> None:
+        try:
+            if self._registered:
+                import torch
+
+                # An async upload may still read these pages; never unmap under it.
+                torch.cuda.synchronize(self._device)
+                self._cudart.cudaHostUnregister(self.ptr)
+                self._registered = False
+        except Exception:  # noqa: BLE001 - interpreter teardown
+            pass
+        try:
+            del self._anchor
+            self._map.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def registered_host_copy(src: Any) -> Any:
+    """A contiguous copy of host tensor ``src`` in CUDA-registered (pinned) memory."""
+    import numpy as np
+    import torch
+
+    holder = _RegisteredHostBuffer(src.numel() * src.element_size())
+    out = torch.from_numpy(np.asarray(holder)).view(src.dtype).view(src.shape)
+    out.copy_(src)
+    holder.register()
+    return out
+
+
 class _GroupPinner:
     """Pins a streamed module's offload groups on a worker thread, first block first.
 
@@ -2666,9 +2762,11 @@ class _GroupPinner:
         groups: list,
         device: Any,
         logger: Any = None,
+        fast: bool = False,
     ):
         import threading
 
+        self.fast = bool(fast)
         self.module = module
         self.label = type(module).__name__
         self.groups = groups
@@ -2729,6 +2827,13 @@ class _GroupPinner:
             and not src.is_pinned()
         ]
 
+    @staticmethod
+    def _fast_result(future: Any, src: Any) -> Any:
+        try:
+            return future.result()
+        except Exception:  # noqa: BLE001 - registration refused: the allocator's pin for this tensor
+            return src.pin_memory()
+
     def _run(self) -> None:
         import time
 
@@ -2736,17 +2841,43 @@ class _GroupPinner:
 
         start = time.perf_counter()
         failed = None
+        pool = None
         try:
             if (
                 getattr(self.device, "type", None) == "cuda"
                 and getattr(self.device, "index", None) is not None
             ):
                 torch.cuda.set_device(self.device)
+            copies: dict = {}
+            if self.fast:
+                from concurrent.futures import ThreadPoolExecutor
+
+                # Queued in group order, so the first group is ready first.
+                pool = ThreadPoolExecutor(
+                    max_workers = _FAST_PIN_THREADS,
+                    thread_name_prefix = "unsloth-fast-pin",
+                    initializer = torch.cuda.set_device,
+                    initargs = (torch.cuda.current_device(),),
+                )
+                for group in self.groups:
+                    copies[id(group)] = [
+                        (tensor, src, pool.submit(registered_host_copy, src))
+                        for tensor, src in self._unpinned(group)
+                    ]
             for group in self.groups:
                 if self._stop.is_set():
                     break
-                # One pin per tensor, exactly what the eager apply makes: chunk views streamed ~10% slower on LTX-2.3.
-                placed = [(tensor, src, src.pin_memory()) for tensor, src in self._unpinned(group)]
+                if self.fast:
+                    placed = [
+                        (tensor, src, self._fast_result(future, src))
+                        for tensor, src, future in copies.pop(id(group))
+                    ]
+                else:
+                    # One pin per tensor, exactly what the eager apply makes: chunk views streamed ~10% slower on
+                    # LTX-2.3.
+                    placed = [
+                        (tensor, src, src.pin_memory()) for tensor, src in self._unpinned(group)
+                    ]
                 cpu = group.cpu_param_dict
                 for tensor, src, pinned in placed:
                     if cpu.get(tensor) is src:
@@ -2758,6 +2889,8 @@ class _GroupPinner:
         except Exception as exc:  # noqa: BLE001 - diffusers pins what is left on each onload
             failed = exc
         finally:
+            if pool is not None:
+                pool.shutdown(wait = True, cancel_futures = True)
             for event in self._done.values():
                 event.set()
         if self.logger is not None:
@@ -2770,11 +2903,12 @@ class _GroupPinner:
                     )
                 self.logger.info(
                     "diffusion.memory: pinned %.1f GiB of %s host weights in the background in %.1f s "
-                    "(onloads waited %.1f s)",
+                    "(onloads waited %.1f s%s)",
                     self.pinned / 2**30,
                     self.label,
                     time.perf_counter() - start,
                     self.waited_s,
+                    ", registered" if self.fast else "",
                 )
             except Exception:  # noqa: BLE001
                 pass
@@ -2850,7 +2984,8 @@ def _defer_pinning(pipe: Any, module: Any, device: Any, logger: Any) -> bool:
     groups = _offload_groups(module)
     if not groups:
         return False
-    pinner = _GroupPinner(module, groups, device, logger)
+    fast = bool(getattr(pipe, _FAST_PIN_REQUEST_ATTR, False)) and _fast_pin_supported()
+    pinner = _GroupPinner(module, groups, device, logger, fast = fast)
     pending = getattr(pipe, _PENDING_PINS_ATTR, None)
     if pending is None:
         pending = []

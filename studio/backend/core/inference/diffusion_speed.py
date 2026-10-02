@@ -43,6 +43,7 @@ from functools import lru_cache
 from typing import Any, Iterator, Optional
 
 from . import diffusion_compile_config as compile_config
+from .diffusion_bg_compile import eager_forced as _bg_eager_forced
 from . import diffusion_gguf_compile as gguf_compile
 
 SPEED_OFF = "off"
@@ -1095,7 +1096,8 @@ class _CompileGuard:
         guard = self
 
         def guarded(*args: Any, **kwargs: Any) -> Any:
-            if guard.error is None:
+            # Compile still in flight in the background: entering it here would compile inline.
+            if guard.error is None and not _bg_eager_forced():
                 compile_config.apply()
                 try:
                     return compiled(*args, **kwargs)

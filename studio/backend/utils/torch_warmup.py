@@ -469,6 +469,8 @@ def _clear_finished_warm_locked() -> None:
 
 
 DIFFUSERS_PREWARM_DISABLE_ENV_VAR = "UNSLOTH_STUDIO_DISABLE_DIFFUSERS_PREWARM"
+DIFFUSERS_PREWARM_MODELS_ENV_VAR = "UNSLOTH_STUDIO_DIFFUSERS_PREWARM_MODELS"
+_DIFFUSERS_PREWARM_MODEL_MODULES = ("diffusers.models.transformers",)
 
 # The catalog's own task identifiers, which _build_index compares with ==. Anything else
 # (a friendly "image"/"video") silently builds an empty index and reads as "no models here",
@@ -549,6 +551,20 @@ def _is_native_video_pick(pick) -> bool:
     return False
 
 
+def _prewarm_quant_probe() -> None:
+    """Run the 4-5 s quant smoke probe here instead of at the first image load; never fatal."""
+    try:
+        from core.inference.diffusion_transformer_quant import prewarm_probe_table  # noqa: PLC0415
+        started = time.perf_counter()
+        if prewarm_probe_table():
+            logger.info(
+                "quant smoke probe prewarmed in %.0fms; the first quantised load skips it",
+                (time.perf_counter() - started) * 1000,
+            )
+    except Exception as exc:  # noqa: BLE001 -- the load path probes again and reports
+        logger.debug("quant smoke probe prewarm skipped: %r", exc)
+
+
 def prewarm_diffusers_if_image_models_exist() -> bool:
     """Import diffusers off the first image load. True iff this call did the import.
 
@@ -624,6 +640,22 @@ def prewarm_diffusers_if_image_models_exist() -> bool:
                 purge_partial_import("diffusers.hooks")
                 return False
 
+        # The model classes too (1.5-3.7 s of the first load); own scope for the same lock-order reason as above.
+        if os.environ.get(DIFFUSERS_PREWARM_MODELS_ENV_VAR, "").strip().lower() not in (
+            "0",
+            "false",
+            "no",
+            "off",
+        ):
+            for module_name in _DIFFUSERS_PREWARM_MODEL_MODULES:
+                with _ModuleLockManager(module_name):
+                    try:
+                        importlib.import_module(module_name)
+                    except Exception as exc:  # noqa: BLE001 -- the load path imports it again and reports
+                        logger.debug("diffusers model prewarm of %s skipped: %r", module_name, exc)
+                        purge_partial_import(module_name)
+                        break
+
         # Outside both locks: it imports nothing under diffusers. diffusers hard-codes
         # diffusers hard-codes _tqdm_active = True and honours no env var, so without this
         # its bars draw onto the structlog stream mid-record.
@@ -638,6 +670,7 @@ def prewarm_diffusers_if_image_models_exist() -> bool:
             "diffusers prewarmed in %.0fms; the first image load skips that import",
             (time.perf_counter() - started) * 1000,
         )
+        _prewarm_quant_probe()
         return True
 
 
