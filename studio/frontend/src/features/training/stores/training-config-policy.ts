@@ -59,6 +59,9 @@ export const initialTrainingConfigState: TrainingConfigState = {
   modelKnownCached: false,
   modelLocalPath: null,
   modelFormat: null,
+  modelSubfolder: null,
+  decisionCheckpoints: null,
+  settingsBeforeDecision: null,
   projectName: "",
   trainingMethod: "qlora",
   trainingMethodProvenance: {

@@ -2277,6 +2277,7 @@ export const fr = {
         notDownloaded: "Non téléchargé · {size}",
         downloading: "Téléchargement…",
         downloaded: "Téléchargé · chargé à la première requête",
+        ready: "Prêt · chargé à la première requête",
         installing: "Installation…",
         loading: "Chargement…",
         loadedOn: "Chargé sur {device}",
@@ -2413,6 +2414,9 @@ export const fr = {
       datasetLabel: "Jeu de données",
       modelTooltip: "Le modèle de base que vous souhaitez affiner.",
       methodTooltip: "Comment le modèle est entraîné. LoRA et QLoRA mettent à jour de petits adaptateurs au lieu de tous les poids.",
+      checkpointLabel: "Checkpoint",
+      checkpointTooltip:
+        "Le checkpoint Laya à affiner. Multilingue convient à la plupart des jeux de données.",
       datasetTooltip: "Les données d'entraînement utilisées pour affiner le modèle.",
       hfTokenDescription:
         "Nécessaire pour les modèles et jeux de données restreints ou privés.",
@@ -2900,6 +2904,10 @@ export const fr = {
         learningRatePositive: "Saisissez un taux d'apprentissage supérieur à zéro.",
         embeddingLearningRateRange:
           "Saisissez un taux d'apprentissage des embeddings supérieur à 0 et inférieur à 1.",
+        decisionColumnsMissing:
+          "Les modèles de décision ont besoin des colonnes state, questions et gold (ou answers). Colonnes manquantes : {columns}.",
+        decisionOwnerOnly:
+          "Seul le propriétaire de Studio peut affiner des modèles de décision.",
         hfDatasetRequired:
           "Sélectionnez d'abord un jeu de données Hugging Face.",
         hfDatasetSplitRequired:
@@ -3054,6 +3062,10 @@ export const fr = {
       title: "Progression de l'entraînement",
       liveMetrics: "Métriques d'entraînement en direct",
       exportGguf: "Exporter en GGUF",
+      useInDecisionApi: "Utiliser dans l'API de décision",
+      decisionApiEnabled: "L'API de décision utilise maintenant {name}.",
+      decisionApiFailed:
+        "Impossible de passer l'API de décision sur ce modèle.",
       openConfig: "Ouvrir la configuration d'entraînement",
       configLabel: "Configuration d'entraînement",
       hyperparams: "Hyperparamètres",

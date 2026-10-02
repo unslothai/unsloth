@@ -54,8 +54,14 @@ export function buildTrainingStartPayload(
   config: TrainingConfigState,
   hfToken: string | null,
 ): TrainingStartRequest {
-  const isCpt = config.trainingMethod === "cpt";
-  const adapterMethod = config.trainingMethod !== "full";
+  const isDecision = config.modelType === "decision";
+  const trainingMethod =
+    isDecision && config.trainingMethod !== "full"
+      ? "lora"
+      : config.trainingMethod;
+  const isCpt = trainingMethod === "cpt";
+  const adapterMethod = trainingMethod !== "full";
+  const loraVariants = adapterMethod && !isDecision;
   const _selectedModelLower = (config.selectedModel ?? "").toLowerCase();
   // DeepSeek OCR ignores user-selected image size; do not send it.
   const isDeepseekOcr =
@@ -72,7 +78,7 @@ export function buildTrainingStartPayload(
       : [];
   const s3Config = buildS3PayloadConfig(config);
   const customFormatMapping: Record<string, unknown> | undefined =
-    Object.keys(config.datasetManualMapping).length > 0
+    !isDecision && Object.keys(config.datasetManualMapping).length > 0
       ? { ...config.datasetManualMapping }
       : undefined;
 
@@ -92,13 +98,14 @@ export function buildTrainingStartPayload(
   return {
     model_name: config.selectedModel ?? "",
     project_name: (config.projectName || "").trim() || null,
-    training_type: toBackendTrainingType(config.trainingMethod),
+    training_type: toBackendTrainingType(trainingMethod),
     hf_token: hfToken,
     model_known_cached: config.modelKnownCached,
     model_local_path: config.modelKnownCached ? config.modelLocalPath : null,
     model_format: config.modelFormat,
-    load_in_4bit: trainingLoadsIn4Bit(config),
-    max_seq_length: config.contextLength,
+    load_in_4bit: trainingLoadsIn4Bit({ ...config, trainingMethod }),
+    // Hidden for decision runs, which always train at Laya's 1024 tokens.
+    max_seq_length: isDecision ? 1024 : config.contextLength,
     vision_image_size:
       config.isVisionModel && config.isDatasetImage === true && !isDeepseekOcr
         ? config.visionImageSize
@@ -114,7 +121,8 @@ export function buildTrainingStartPayload(
     subset: hfDataset ? config.datasetSubset : null,
     train_split: hfDataset ? config.datasetSplit : null,
     eval_split: hfDataset ? config.datasetEvalSplit : null,
-    dataset_streaming: hfDataset ? config.datasetStreaming : false,
+    dataset_streaming:
+      hfDataset && !isDecision ? config.datasetStreaming : false,
     dataset_slice_start: parseSliceValue(config.datasetSliceStart),
     dataset_slice_end: parseSliceValue(config.datasetSliceEnd),
     local_datasets: localDatasets,
@@ -144,8 +152,8 @@ export function buildTrainingStartPayload(
     // that. Guarded by tests/training-start-payload-grad-norm.test.ts.
     max_grad_value: null,
     random_seed: config.randomSeed,
-    packing: isEmbedding ? false : config.packing,
-    optim: config.optimizerType,
+    packing: isEmbedding || isDecision ? false : config.packing,
+    optim: isDecision ? "adamw_torch" : config.optimizerType,
     lr_scheduler_type: config.lrSchedulerType,
     use_lora: adapterMethod,
     lora_r: config.loraRank,
@@ -153,19 +161,23 @@ export function buildTrainingStartPayload(
     lora_dropout: config.loraDropout,
     target_modules: adapterMethod ? config.targetModules : [],
     gradient_checkpointing: config.gradientCheckpointing,
-    use_rslora: adapterMethod && config.loraVariant === "rslora",
-    use_loftq: adapterMethod && config.loraVariant === "loftq",
-    use_dora: adapterMethod && config.loraVariant === "dora",
+    use_rslora: loraVariants && config.loraVariant === "rslora",
+    use_loftq: loraVariants && config.loraVariant === "loftq",
+    use_dora: loraVariants && config.loraVariant === "dora",
     // CPT always trains on full sequences (no chat format masking)
     train_on_completions:
-      isEmbedding || isCpt || isRawText ? false : config.trainOnCompletions,
+      isEmbedding || isDecision || isCpt || isRawText
+        ? false
+        : config.trainOnCompletions,
     finetune_vision_layers: config.finetuneVisionLayers,
     finetune_language_layers: config.finetuneLanguageLayers,
     finetune_attention_modules: config.finetuneAttentionModules,
     finetune_mlp_modules: config.finetuneMLPModules,
     is_dataset_image: isEmbedding ? false : !!config.isDatasetImage,
     is_dataset_audio: isEmbedding ? false : config.isDatasetAudio,
-    is_embedding: isEmbedding,
+    is_embedding: isEmbedding && !isDecision,
+    is_decision: isDecision,
+    model_subfolder: isDecision ? config.modelSubfolder : null,
     enable_wandb: config.enableWandb,
     wandb_token: config.enableWandb ? config.wandbToken.trim() || null : null,
     wandb_project: config.enableWandb

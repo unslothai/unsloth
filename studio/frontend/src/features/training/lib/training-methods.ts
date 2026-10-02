@@ -50,7 +50,9 @@ export function isTrainingModelTypeSupportedOnDevice(
 ): boolean {
   return (
     deviceType !== "mac" ||
-    (modelType !== "audio" && modelType !== "embeddings")
+    (modelType !== "audio" &&
+      modelType !== "embeddings" &&
+      modelType !== "decision")
   );
 }
 

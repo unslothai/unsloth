@@ -2267,6 +2267,7 @@ export const es = {
         notDownloaded: "No descargado · {size}",
         downloading: "Descargando…",
         downloaded: "Descargado · se carga con la primera solicitud",
+        ready: "Listo · se carga con la primera solicitud",
         installing: "Instalando…",
         loading: "Cargando…",
         loadedOn: "Cargado en {device}",
@@ -2401,6 +2402,9 @@ export const es = {
       datasetLabel: "Conjunto de datos",
       modelTooltip: "El modelo base que quieres ajustar.",
       methodTooltip: "Cómo se entrena el modelo. LoRA y QLoRA actualizan adaptadores pequeños en lugar de todos los pesos.",
+      checkpointLabel: "Checkpoint",
+      checkpointTooltip:
+        "El checkpoint de Laya que se ajustará. Multilingüe sirve para la mayoría de los conjuntos de datos.",
       datasetTooltip: "Los datos de entrenamiento usados para ajustar el modelo.",
       hfTokenDescription:
         "Necesario para modelos y conjuntos de datos restringidos o privados.",
@@ -2883,6 +2887,10 @@ export const es = {
         learningRatePositive: "Introduce una tasa de aprendizaje mayor que cero.",
         embeddingLearningRateRange:
           "Introduce una tasa de aprendizaje de embeddings mayor que 0 y menor que 1.",
+        decisionColumnsMissing:
+          "Los modelos de decisión necesitan las columnas state, questions y gold (o answers). Faltan: {columns}.",
+        decisionOwnerOnly:
+          "Solo el propietario de Studio puede ajustar modelos de decisión.",
         hfDatasetRequired:
           "Selecciona primero un conjunto de datos de Hugging Face.",
         hfDatasetSplitRequired:
@@ -3038,6 +3046,10 @@ export const es = {
       title: "Progreso del entrenamiento",
       liveMetrics: "Métricas de entrenamiento en vivo",
       exportGguf: "Exportar a GGUF",
+      useInDecisionApi: "Usar en la API de decisiones",
+      decisionApiEnabled: "La API de decisiones ahora usa {name}.",
+      decisionApiFailed:
+        "No se pudo cambiar la API de decisiones a este modelo.",
       openConfig: "Abrir configuración de entrenamiento",
       configLabel: "Configuración de entrenamiento",
       hyperparams: "Hiperparámetros",

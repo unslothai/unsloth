@@ -10,6 +10,8 @@ export type SystemOneModel = {
   name: string;
   description: string;
   downloadBytes: number;
+  kind: "catalog" | "fine_tune";
+  label: string | null;
 };
 
 export type SystemOneSettings = {
@@ -72,8 +74,14 @@ type ApiSystemOneSettings = {
   device_locked: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
   gpu_available: boolean;
-  // biome-ignore lint/style/useNamingConvention: API schema
-  models: { name: string; description: string; download_bytes: number }[];
+  models: {
+    name: string;
+    description: string;
+    // biome-ignore lint/style/useNamingConvention: API schema
+    download_bytes: number;
+    kind?: "catalog" | "fine_tune";
+    label?: string | null;
+  }[];
   // biome-ignore lint/style/useNamingConvention: API schema
   loaded_model: string | null;
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -139,6 +147,8 @@ function fromApi(settings: ApiSystemOneSettings): SystemOneSettings {
       name: m.name,
       description: m.description,
       downloadBytes: m.download_bytes,
+      kind: m.kind ?? "catalog",
+      label: m.label ?? null,
     })),
     loadedModel: settings.loaded_model,
     loadedDevice: settings.loaded_device,

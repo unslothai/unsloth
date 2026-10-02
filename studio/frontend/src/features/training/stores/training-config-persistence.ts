@@ -41,6 +41,7 @@ const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> =
     "manualDatasetOptionsValid",
     "trainOnCompletionsDefaultPendingFor",
     "maxPositionEmbeddings",
+    "decisionCheckpoints",
     "s3Config",
     "wandbToken",
   ]);
@@ -366,6 +367,16 @@ function normalizeTrainingMethodProvenance(
   };
 }
 
+function normalizeSettingsBeforeDecision(
+  value: unknown,
+): TrainingConfigState["settingsBeforeDecision"] {
+  if (value === null || typeof value !== "object") return null;
+  const { trainingMethod, datasetStreaming } = value as Record<string, unknown>;
+  return isTrainingMethod(trainingMethod)
+    ? { trainingMethod, datasetStreaming: datasetStreaming === true }
+    : null;
+}
+
 export function migrateTrainingConfig(
   persisted: unknown,
   version: number,
@@ -430,6 +441,9 @@ export function mergeTrainingConfig(
     trainingMethod: isTrainingMethod(persistedState.trainingMethod)
       ? persistedState.trainingMethod
       : current.trainingMethod,
+    settingsBeforeDecision: normalizeSettingsBeforeDecision(
+      persistedState.settingsBeforeDecision,
+    ),
   };
   return {
     ...merged,

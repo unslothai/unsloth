@@ -2276,6 +2276,7 @@ export const de = {
         notDownloaded: "Nicht heruntergeladen · {size}",
         downloading: "Wird heruntergeladen…",
         downloaded: "Heruntergeladen · wird bei der ersten Anfrage geladen",
+        ready: "Bereit · wird bei der ersten Anfrage geladen",
         installing: "Wird installiert…",
         loading: "Wird geladen…",
         loadedOn: "Geladen auf {device}",
@@ -2409,6 +2410,9 @@ export const de = {
       datasetLabel: "Datensatz",
       modelTooltip: "Das Basismodell, das du feinabstimmen möchtest.",
       methodTooltip: "Wie das Modell trainiert wird. LoRA und QLoRA aktualisieren kleine Adapter statt aller Gewichte.",
+      checkpointLabel: "Checkpoint",
+      checkpointTooltip:
+        "Der Laya-Checkpoint, der feinabgestimmt wird. Multilingual passt zu den meisten Datensätzen.",
       datasetTooltip: "Die Trainingsdaten für die Feinabstimmung des Modells.",
       hfTokenDescription:
         "Erforderlich für zugriffsbeschränkte oder private Modelle und Datensätze.",
@@ -2890,6 +2894,10 @@ export const de = {
         learningRatePositive: "Geben Sie eine Lernrate größer als null ein.",
         embeddingLearningRateRange:
           "Geben Sie eine Embedding-Lernrate größer als 0 und kleiner als 1 ein.",
+        decisionColumnsMissing:
+          "Entscheidungsmodelle brauchen die Spalten state, questions und gold (oder answers). Es fehlen: {columns}.",
+        decisionOwnerOnly:
+          "Nur der Studio-Inhaber kann Entscheidungsmodelle feinabstimmen.",
         hfDatasetRequired:
           "Wählen Sie zuerst einen Hugging Face-Datensatz aus.",
         hfDatasetSplitRequired:
@@ -3043,6 +3051,10 @@ export const de = {
       title: "Trainingsfortschritt",
       liveMetrics: "Live-Trainingsmetriken",
       exportGguf: "Nach GGUF exportieren",
+      useInDecisionApi: "In der Entscheidungs-API verwenden",
+      decisionApiEnabled: "Die Entscheidungs-API verwendet jetzt {name}.",
+      decisionApiFailed:
+        "Die Entscheidungs-API konnte nicht auf dieses Modell umgestellt werden.",
       openConfig: "Trainingskonfiguration öffnen",
       configLabel: "Trainingskonfiguration",
       hyperparams: "Hyperparameter",

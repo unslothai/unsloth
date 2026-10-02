@@ -90,7 +90,9 @@ export function DatasetSelector() {
   const dataset = useTrainingConfigStore((s) => s.dataset);
   const uploadedFile = useTrainingConfigStore((s) => s.uploadedFile);
   const datasetSource = useTrainingConfigStore((s) => s.datasetSource);
-  const modelType = useTrainingConfigStore((s) => s.modelType);
+  const modelType = useTrainingConfigStore((s) =>
+    s.modelType === "decision" ? null : s.modelType,
+  );
   const selectHfDataset = useTrainingConfigStore((s) => s.selectHfDataset);
   const selectLocalDataset = useTrainingConfigStore(
     (s) => s.selectLocalDataset,

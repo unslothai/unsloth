@@ -62,7 +62,11 @@ try:
         training_run_config,
     )
     from storage.studio_db import get_resumable_run_by_output_dir
-    from utils.models.model_config import detect_gguf_model, load_model_defaults
+    from utils.models.model_config import (
+        detect_gguf_model,
+        is_decision_model,
+        load_model_defaults,
+    )
     from utils.paths import is_local_path, normalize_path, resolve_dataset_path
 except ImportError:
     parent_backend = backend_path.parent / "backend"
@@ -84,7 +88,11 @@ except ImportError:
         training_run_config,
     )
     from storage.studio_db import get_resumable_run_by_output_dir
-    from utils.models.model_config import detect_gguf_model, load_model_defaults
+    from utils.models.model_config import (
+        detect_gguf_model,
+        is_decision_model,
+        load_model_defaults,
+    )
     from utils.paths import is_local_path, normalize_path, resolve_dataset_path
 
 from auth.authentication import authenticated_via_api_key, get_current_subject
@@ -1035,6 +1043,16 @@ def _reject_untrainable_model_request(
                 )
 
         refuse_unauthorized_cache(has_cached_model)
+        if request.is_decision:
+            from core.systemone import laya_runtime
+            from core.systemone.catalog import Checkpoint
+
+            # Laya caches only the files a checkpoint loads, which the snapshot lookup above misses.
+            if laya_runtime.is_cached(
+                Checkpoint("base", request.model_name, request.model_subfolder, "")
+            ):
+                refuse_unauthorized_cache(lambda: True)
+                return _ModelPreflightResult(model_name, model_local_path, None)
     if path is None and offline_mode:
         raise _hf_preflight_error(
             409,
@@ -1086,6 +1104,12 @@ def _reject_untrainable_model_request(
             )
         else:
             if remote_format is None:
+                if request.is_decision and not is_decision_model(request.model_name, hf_token):
+                    raise _training_start_error(
+                        400,
+                        "training_remote_model_not_decision",
+                        f"{request.model_name} is not a Laya decision model.",
+                    )
                 return _ModelPreflightResult(model_name, model_local_path, cached_model_pin)
             if remote_format == "gguf":
                 raise _training_start_error(
@@ -1098,6 +1122,16 @@ def _reject_untrainable_model_request(
                 "training_remote_model_adapter_only",
                 "Adapter models are inference-only and cannot be trained as base models.",
             )
+    if request.is_decision:
+        folder = path / request.model_subfolder if request.model_subfolder else path
+        if not is_decision_model(str(folder)):
+            raise _training_start_error(
+                400,
+                "training_local_model_not_decision",
+                "The selected model is not a Laya decision checkpoint: it needs "
+                "rl_agent_config.json, model.safetensors, encoder/ and tokenizer/.",
+            )
+        return _ModelPreflightResult(model_name, model_local_path, None)
     has_trainable_weights = _has_trainable_local_weights(path, request.model_name)
     if has_trainable_weights:
         return _ModelPreflightResult(model_name, model_local_path, cached_model_pin)
@@ -1148,6 +1182,11 @@ def _validate_training_platform(request: TrainingStartRequest) -> None:
             status_code = 400,
             detail = "Embedding model training is not supported for MLX training yet.",
         )
+    if request.is_decision:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Decision model training is not supported for MLX training yet.",
+        )
     if request.is_dataset_audio:
         raise HTTPException(
             status_code = 400,
@@ -1158,6 +1197,80 @@ def _validate_training_platform(request: TrainingStartRequest) -> None:
             status_code = 400,
             detail = "LoftQ is not supported for MLX training yet.",
         )
+
+
+# A plain folder name: no separators, globs, drive letters or dot segments.
+_CHECKPOINT_SUBFOLDER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+# The frontend's LR_DEFAULT_DECISION_FULL; the model defaults hold the LoRA rate.
+_DECISION_FULL_FINETUNING_LR = "2.5e-5"
+
+
+def _validate_decision_request(request: TrainingStartRequest) -> None:
+    if not request.is_decision:
+        return
+    from core.systemone.catalog import CHECKPOINTS, LAYA_REPO
+    from utils.account_context import is_owner_context
+
+    if not is_owner_context():
+        raise HTTPException(
+            status_code = 403,
+            detail = "Only the Studio owner can fine-tune decision models, since only the "
+            "owner's fine-tunes can be served by the Decision API.",
+        )
+    if sys.version_info < (3, 10):
+        raise HTTPException(
+            status_code = 400,
+            detail = "Decision model training needs Python 3.10 or newer, like the Decision "
+            "API that serves the fine-tunes.",
+        )
+    if request.training_type == "Continued Pretraining":
+        raise HTTPException(
+            status_code = 400,
+            detail = "Decision models train with LoRA or full fine-tuning; continued "
+            "pretraining is not available for them.",
+        )
+    if request.resume_from_checkpoint:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Decision model runs cannot be resumed; start a new run instead.",
+        )
+    if request.dataset_streaming:
+        raise HTTPException(
+            status_code = 400,
+            detail = "dataset_streaming is not supported for decision model training.",
+        )
+    unset = TrainingStartRequest.model_fields.keys() - request.model_fields_set
+    if (
+        request.training_type == "LoRA/QLoRA"
+        and request.load_in_4bit
+        and "load_in_4bit" not in unset
+    ):
+        raise HTTPException(
+            status_code = 400,
+            detail = "Decision models train in 16-bit, so QLoRA is not available for them. "
+            "Set load_in_4bit to false to train with LoRA.",
+        )
+    subfolder = request.model_subfolder
+    if subfolder is not None and (
+        not _CHECKPOINT_SUBFOLDER.fullmatch(subfolder)
+        or (
+            request.model_name == LAYA_REPO
+            and subfolder not in {c.subfolder for c in CHECKPOINTS.values()}
+        )
+    ):
+        raise HTTPException(
+            status_code = 400,
+            detail = f"Invalid checkpoint subfolder {subfolder!r} for {request.model_name}.",
+        )
+    request.load_in_4bit = False
+    # Fields an API or MCP caller left out take the Laya recipe the UI starts from.
+    defaults = load_model_defaults(LAYA_REPO)
+    for section in ("training", "lora", "logging"):
+        for key, value in (defaults.get(section) or {}).items():
+            if key in unset:
+                setattr(request, key, value)
+    if "learning_rate" in unset and request.training_type == "Full Finetuning":
+        request.learning_rate = _DECISION_FULL_FINETUNING_LR
 
 
 _RESUME_DATASET_DEFAULTS = {
@@ -1434,6 +1547,7 @@ async def start_training(
     Initiates training in the background and returns immediately. Use /status
     to check progress.
     """
+    _validate_decision_request(request)
     if managed_account():
         from utils.paths import tensorboard_root
 
@@ -1797,6 +1911,8 @@ async def start_training(
             "is_dataset_image": request.is_dataset_image,
             "is_dataset_audio": request.is_dataset_audio,
             "is_embedding": request.is_embedding,
+            "is_decision": request.is_decision,
+            "model_subfolder": request.model_subfolder,
             "enable_wandb": request.enable_wandb,
             "wandb_token": request.wandb_token or "",
             "wandb_project": request.wandb_project or "",
@@ -1917,6 +2033,14 @@ async def start_training(
                 gpu_arbiter.release(gpu_arbiter.VIDEO)
             except Exception as e:
                 logger.warning("Could not unload video model for training: %s", e)
+
+            try:
+                from core.systemone import laya_runtime
+                if laya_runtime.status()["device"] not in (None, "cpu"):
+                    logger.info("Unloading the Decision API model to free GPU memory for training")
+                    laya_runtime.unload()
+            except Exception as e:
+                logger.warning("Could not unload the Decision API model for training: %s", e)
 
             try:
                 from routes.training_vram import (
