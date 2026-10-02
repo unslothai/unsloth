@@ -38,6 +38,7 @@ from .engine_adapters import (
     ADAPTERS,
     gpu_memory_fraction,
     memory_reserve_mib,
+    RESERVE_SHARE,
     launch_arguments,
     tool_parser_for_template,
 )
@@ -360,7 +361,7 @@ class ManagedEngine:
                     child_env.pop("CUDA_PATH", None)
                     child_env.update(cuda_environment(info))
                     memory_fraction = gpu_memory_fraction(
-                        gpu_ids or [0], memory_reserve_mib(self.engine, options)
+                        gpu_ids or [0], memory_reserve_mib(self.engine, options), RESERVE_SHARE
                     )
                     child_env.update(self.adapter.environment(len(gpu_ids or [0])))
                     child_env.update(self.adapter.key_environment(self.key))
@@ -496,7 +497,9 @@ class ManagedEngine:
             port,
             self.key,
             self.context,
-            gpu_memory_fraction(gpu_ids or [0], memory_reserve_mib(self.engine, options)),
+            gpu_memory_fraction(
+                gpu_ids or [0], memory_reserve_mib(self.engine, options), RESERVE_SHARE
+            ),
             len(gpu_ids or [0]),
             **(
                 {

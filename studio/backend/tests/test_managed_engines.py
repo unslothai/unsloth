@@ -1136,6 +1136,35 @@ def test_memory_budget_uses_selected_gpu_and_reserves_headroom(monkeypatch):
         engine_adapters.gpu_memory_fraction([1])
 
 
+def test_memory_reserve_grows_with_the_card(monkeypatch):
+    from types import SimpleNamespace
+    from core.inference import engine_adapters
+    from utils import vram_budget_settings
+
+    monkeypatch.setattr(vram_budget_settings, "get_vram_budget_fraction", lambda: 0.97)
+    share = engine_adapters.RESERVE_SHARE
+    # 96 GB RTX PRO 6000, idle: 3 GiB left vLLM's sampler warmup out of memory there.
+    monkeypatch.setattr(
+        engine_adapters.subprocess, "run", lambda *a, **kw: SimpleNamespace(stdout = "97887, 97300")
+    )
+    fraction = engine_adapters.gpu_memory_fraction([0], 3072, share)
+    assert 97887 * (1 - fraction) >= 0.06 * 97887 - 1
+    assert fraction < engine_adapters.gpu_memory_fraction([0], 3072)
+    # A 24 GB L4 keeps the measured fixed reserve: 6% would be less than 3 GiB.
+    monkeypatch.setattr(
+        engine_adapters.subprocess, "run", lambda *a, **kw: SimpleNamespace(stdout = "23034, 22700")
+    )
+    assert engine_adapters.gpu_memory_fraction([0], 3072, share) == engine_adapters.gpu_memory_fraction([0], 3072)
+
+
+def test_engine_start_reserves_a_share_of_the_card():
+    import inspect
+    from core.inference import managed_engine
+
+    # The local and the WSL launch both keep the share free.
+    assert inspect.getsource(managed_engine).count("memory_reserve_mib(self.engine, options), RESERVE_SHARE") == 2
+
+
 @pytest.mark.parametrize("gpu_ids", [[1], [1, 0]])
 def test_server_outlives_short_lived_start_thread(isolated, monkeypatch, gpu_ids, tmp_path):
     import os
