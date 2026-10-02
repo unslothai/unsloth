@@ -44,6 +44,8 @@ export interface ChatSearchItem {
   searchText: string;
   createdAt: number;
   projectId?: string | null;
+  /** Forked from another chat (branch icon, as in the Library). */
+  isFork?: boolean;
 }
 
 // Messages are indexed for this many most recently updated threads; older chats match by title.
@@ -182,6 +184,7 @@ export async function buildChatSearchIndex(): Promise<ChatSearchIndexBuild> {
           title: t.title,
           createdAt: t.createdAt,
           projectId: t.projectId ?? null,
+          isFork: Boolean(t.forkedFromThreadId),
         },
         threadIds: [t.id],
       });

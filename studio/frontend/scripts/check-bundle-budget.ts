@@ -32,11 +32,12 @@ const DIST = resolve(HERE, "..", "dist");
  * machine.
  */
 export const BUDGET = {
-  // Re-measured together on one machine and build: 5,813.8 KB raw / 1,730.2 KB transfer at d7795365c,
-  // plus the margin the previous raise chose (210.8 KB raw, 65.1 KB transfer). The growth since is
-  // chat attachment cards, chips and their layout (#12017), which the first chat screen renders.
-  transferBytes: 1_840_000,
-  rawBytes: 6_170_000,
+  // Re-measured together on one machine and build: 6,032.2 KB raw / 1,805.1 KB transfer with the
+  // tabbed chat search on main at 9838541fc (main alone: 6,024.7 / 1,802.6, already over the old
+  // budget), plus the margin the previous raise chose (210.8 KB raw, 65.1 KB transfer). The growth is
+  // the search tabs and their strings, which the sidebar renders; the Library store loads on use.
+  transferBytes: 1_916_000,
+  rawBytes: 6_393_000,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
