@@ -3866,11 +3866,16 @@ def test_zimage_is_fp16_incompatible():
     assert detect_family("unsloth/FLUX.2-klein-4B-GGUF").fp16_incompatible is False
 
 
-def test_resolve_compute_dtype_promotes_fp16_for_zimage(fake_runtime):
+def test_resolve_compute_dtype_promotes_fp16_for_zimage(fake_runtime, monkeypatch):
+    from core.inference import diffusion_fp16_guard as guard
+
     torch = sys.modules["torch"]
     z = detect_family("unsloth/Z-Image-GGUF")
     q = detect_family("unsloth/FLUX.1-schnell-GGUF")
-    # Z-Image: fp16 promotes to fp32; bf16 / fp32 pass through unchanged.
+    monkeypatch.setattr(guard, "_recipe_supported", lambda fam, recipe: True)
+    assert _resolve_diffusion_compute_dtype(z, torch.float16) is torch.float16
+    # Kill switch: fp16 promotes to fp32; bf16 / fp32 unchanged.
+    monkeypatch.setenv(guard.FP16_GUARD_ENV, "0")
     assert _resolve_diffusion_compute_dtype(z, torch.float16) is torch.float32
     assert _resolve_diffusion_compute_dtype(z, torch.bfloat16) is torch.bfloat16
     assert _resolve_diffusion_compute_dtype(z, torch.float32) is torch.float32
@@ -3880,13 +3885,22 @@ def test_resolve_compute_dtype_promotes_fp16_for_zimage(fake_runtime):
 
 
 def test_load_promotes_fp16_to_fp32_for_zimage_only(fake_runtime, monkeypatch, tmp_path):
+    from core.inference import diffusion_fp16_guard as guard
+
     torch = sys.modules["torch"]
-    # Pre-Ampere CUDA resolves to fp16, so the guard must promote Z-Image (and only fp16-incompatible families) to fp32
-    # or it renders black.
+    # Pre-Ampere resolves fp16: Z-Image stays fp16 behind its guard; the kill switch promotes it to fp32.
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True, raising = False)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda: (7, 5), raising = False)
     (tmp_path / "m.gguf").write_bytes(b"x")
 
+    monkeypatch.setattr(guard, "_recipe_supported", lambda fam, recipe: True)
+    kept = DiffusionBackend().load_pipeline(
+        str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image"
+    )
+    assert kept["dtype"] == "float16"
+    assert str(_FakeTransformer.last["torch_dtype"]) == "torch.float16"
+
+    monkeypatch.setenv(guard.FP16_GUARD_ENV, "0")
     z = DiffusionBackend().load_pipeline(
         str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image"
     )
