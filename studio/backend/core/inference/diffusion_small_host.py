@@ -478,3 +478,309 @@ def mark(pipe: Any, info: dict) -> None:
 
 def engaged_on(pipe: Any) -> Optional[dict]:
     return getattr(pipe, SMALL_HOST_ATTR, None)
+
+
+# ------------------------------------------------------------------------------------ streamed-encoder prefetch
+ENCODER_PREFETCH_ENV = "UNSLOTH_DIFFUSION_SMALL_HOST_PREFETCH"
+ENCODER_PREFETCH_ATTR = "_unsloth_encoder_prefetch"
+# Pinned staging ring: the only host bytes this adds (diffusers pins a fresh copy of every tensor per onload instead).
+_STAGE_SLOT_BYTES = 32 * _MIB
+_STAGE_SLOTS = 4
+# Device bytes copied ahead of the encoder's forward: a few groups (a T5-XXL MLP weight is 80 MiB, a Qwen2.5-VL one
+# 130 MiB) keep the copy ahead of the compute.
+_PREFETCH_MAX_BYTES = 384 * _MIB
+_PREFETCH_MIN_BYTES = 128 * _MIB
+
+
+def encoder_prefetch_disabled() -> bool:
+    return _env(ENCODER_PREFETCH_ENV) in ("0", "off", "false", "no")
+
+
+def _group_tensors(group: Any) -> list:
+    """(tensor, host source) pairs of a diffusers offload group, in the order diffusers onloads them."""
+    out: list = []
+    seen: set[int] = set()
+    cpu = getattr(group, "cpu_param_dict", None) or {}
+    for t in (
+        [p for m in group.modules for p in m.parameters()]
+        + [b for m in group.modules for b in m.buffers()]
+        + list(getattr(group, "parameters", None) or [])
+        + list(getattr(group, "buffers", None) or [])
+    ):
+        if id(t) in seen:
+            continue
+        seen.add(id(t))
+        out.append((t, cpu.get(t, t)))
+    return out
+
+
+class _EncoderPrefetcher:
+    """Streams a memory-mapped text encoder's offload groups ahead of its forward.
+
+    diffusers' leaf-level stream pins a fresh host copy of every weight inside each group's ``onload_`` (a
+    single-threaded page-fault-and-copy on the calling thread) and then waits for that one copy, so the encoder
+    runs at the host's copy speed with the GPU and the PCIe link mostly idle. Here a worker thread copies the groups,
+    in the order the previous forward ran them, through a small reusable pinned ring into device tensors on a side
+    stream, up to a bounded number of bytes ahead; each group's ``onload_`` only makes the compute stream wait for its
+    copy. Bytes, dtypes and ops are unchanged, so the encoder output is bit-identical. A group the order did not
+    predict, or any worker error, falls back to a synchronous copy of that group."""
+
+    def __init__(self, module: Any, groups: list, device: Any):
+        import threading
+
+        import torch
+
+        self.module = module
+        self.groups = groups
+        dev = torch.device(device)
+        if dev.type == "cuda" and dev.index is None:
+            dev = torch.device("cuda", torch.cuda.current_device())
+        self.device = dev
+        self.stream = None  # side stream, created on the first copy
+        self.compute = None  # the stream the encoder runs on, read when a forward begins
+        self.order: list = []  # group ids in the last forward's onload order
+        self.seen: list = []
+        self.active = False
+        self.cond = threading.Condition()
+        self.ready: dict = {}  # id(group) -> (device tensors, event)
+        self.inflight = 0
+        self.budget = _PREFETCH_MIN_BYTES
+        self.pos = 0
+        self.stop = False
+        self.worker = None
+        self.error: Optional[BaseException] = None
+        self.stage: list = []
+        self.stage_events: list = []
+        self.slot = 0
+        self.stats = {"prefetched": 0, "sync": 0, "passes": 0}
+        self.by_id = {id(g): g for g in groups}
+
+    # -- copies ------------------------------------------------------------------------------------------------------
+    def _side_stream(self) -> Any:
+        import torch
+
+        if self.stream is None:
+            self.stream = torch.cuda.Stream(device = self.device)
+        return self.stream
+
+    def _ensure_stage(self) -> None:
+        import torch
+
+        if not self.stage:
+            self.stage = [
+                torch.empty(_STAGE_SLOT_BYTES, dtype = torch.uint8, pin_memory = True)
+                for _ in range(_STAGE_SLOTS)
+            ]
+            self.stage_events = [None] * _STAGE_SLOTS
+
+    def _copy_group(self, group: Any) -> tuple:
+        """Device copies of ``group``'s host tensors, issued on the side stream. Returns (tensors, event, bytes)."""
+        import torch
+
+        self._ensure_stage()
+        stream = self._side_stream()
+        compute = self.compute or torch.cuda.current_stream(self.device)
+        moved: list = []
+        nbytes = 0
+        with torch.cuda.stream(stream):
+            for _t, src in _group_tensors(group):
+                n = int(src.numel()) * int(src.element_size())
+                if src.device.type != "cpu" or n == 0 or not src.is_contiguous() or src.is_pinned():
+                    # Device-resident, empty, strided or already pinned: a plain copy on the compute stream.
+                    with torch.cuda.stream(compute):
+                        moved.append(src.to(self.device, non_blocking = src.device.type != "cpu" or src.is_pinned()))
+                    continue
+                nbytes += n
+                # Allocated from the compute stream's pool (a side-stream block would stay cached where the denoise
+                # cannot reuse it); the copy waits for everything already queued there, which covers whatever last used
+                # a freed block it receives.
+                with torch.cuda.stream(compute):
+                    dst = torch.empty(src.shape, dtype = src.dtype, device = self.device)
+                    queued = torch.cuda.Event()
+                    queued.record(compute)
+                stream.wait_event(queued)
+                sb = src.reshape(-1).view(torch.uint8)
+                db = dst.reshape(-1).view(torch.uint8)
+                off = 0
+                while off < n:
+                    k = min(_STAGE_SLOT_BYTES, n - off)
+                    i = self.slot
+                    self.slot = (i + 1) % _STAGE_SLOTS
+                    ev = self.stage_events[i]
+                    if ev is not None:
+                        ev.synchronize()
+                    buf = self.stage[i][:k]
+                    buf.copy_(sb[off : off + k])
+                    db[off : off + k].copy_(buf, non_blocking = True)
+                    ev = torch.cuda.Event()
+                    ev.record(stream)
+                    self.stage_events[i] = ev
+                    off += k
+                moved.append(dst)
+            done = torch.cuda.Event()
+            done.record(stream)
+        return moved, done, nbytes
+
+    def _attach(self, group: Any, moved: list, done: Any) -> None:
+        import torch
+
+        cur = torch.cuda.current_stream(self.device)
+        cur.wait_event(done)
+        for (t, _src), dev in zip(_group_tensors(group), moved):
+            t.data = dev
+            dev.record_stream(cur)
+
+    # -- worker ------------------------------------------------------------------------------------------------------
+    def _run(self, order: list) -> None:
+        import torch
+
+        try:
+            if self.device.type == "cuda":
+                torch.cuda.set_device(self.device)
+            for gid in order:
+                with self.cond:
+                    # A group the forward onloads twice waits for its first copy to be taken.
+                    while not self.stop and (
+                        (self.inflight > 0 and self.inflight >= self.budget) or gid in self.ready
+                    ):
+                        self.cond.wait(0.05)
+                    if self.stop:
+                        return
+                group = self.by_id.get(gid)
+                if group is None:
+                    continue
+                moved, done, n = self._copy_group(group)
+                with self.cond:
+                    if self.stop:
+                        return
+                    self.ready[gid] = (moved, done, n)
+                    self.inflight += n
+                    self.cond.notify_all()
+        except BaseException as exc:  # noqa: BLE001 - every group falls back to a synchronous copy
+            with self.cond:
+                self.error = exc
+                self.cond.notify_all()
+
+    def _halt(self) -> None:
+        with self.cond:
+            self.stop = True
+            self.cond.notify_all()
+        if self.worker is not None:
+            self.worker.join()
+        self.worker = None
+        with self.cond:
+            self.ready.clear()
+            self.inflight = 0
+
+    # -- hooks -------------------------------------------------------------------------------------------------------
+    def begin(self) -> None:
+        import threading
+
+        import torch
+
+        self._halt()
+        self.stop = False
+        self.error = None
+        self.seen = []
+        self.pos = 0
+        self.active = True
+        self.stats["passes"] += 1
+        self.compute = torch.cuda.current_stream(self.device) if self.device.type == "cuda" else None
+        if not self.order:
+            return  # first forward: synchronous copies, and it records the order
+        try:
+            free, _total = torch.cuda.mem_get_info(self.device)
+            self.budget = max(_PREFETCH_MIN_BYTES, min(_PREFETCH_MAX_BYTES, int(free) // 8))
+        except Exception:  # noqa: BLE001
+            self.budget = _PREFETCH_MIN_BYTES
+        self._order_after_compute()
+        self.worker = threading.Thread(
+            target = self._run, args = (list(self.order),), daemon = True, name = "unsloth-encoder-prefetch"
+        )
+        self.worker.start()
+
+    def _order_after_compute(self) -> None:
+        """The worker's copies must not overtake work the compute stream already queued (the prompt's input ids)."""
+        import torch
+
+        self._side_stream().wait_stream(torch.cuda.current_stream(self.device))
+
+    def end(self) -> None:
+        if not self.active:
+            return
+        self.active = False
+        self._halt()
+        if self.seen:
+            self.order = list(self.seen)
+
+    def onload(self, group: Any) -> None:
+        gid = id(group)
+        if self.active:
+            self.seen.append(gid)
+        entry = None
+        if self.worker is not None:
+            expected = self.order[self.pos] if self.pos < len(self.order) else None
+            if expected == gid:
+                self.pos += 1
+                with self.cond:
+                    while gid not in self.ready and self.error is None and self.worker.is_alive():
+                        self.cond.wait(0.05)
+                    entry = self.ready.pop(gid, None)
+                    if entry is not None:
+                        self.inflight -= entry[2]
+                        self.cond.notify_all()
+            else:
+                # Off the recorded order: stop prefetching for this forward; the next one re-records the order.
+                self._halt()
+        if entry is None:
+            moved, done, _n = self._copy_group(group)
+            self.stats["sync"] += 1
+        else:
+            moved, done, _n = entry
+            self.stats["prefetched"] += 1
+        self._attach(group, moved, done)
+
+
+def install_encoder_prefetch(module: Any, device: Any, logger: Any = None) -> int:
+    """Swap each streamed offload group's ``onload_`` of a small-host text encoder for the prefetching copy. Groups made
+    resident are left alone. Returns the number of groups covered (0: unchanged, e.g. kill switch or no CUDA)."""
+    if encoder_prefetch_disabled():
+        return 0
+    try:
+        import torch
+
+        if torch.device(device).type != "cuda" or not torch.cuda.is_available():
+            return 0
+        from .diffusion_memory import _offload_groups
+
+        groups = [
+            g
+            for g in _offload_groups(module)
+            if not getattr(g, "_unsloth_resident", False)
+            and getattr(g, "stream", None) is not None
+            and not getattr(g, "offload_to_disk_path", None)
+        ]
+        if not groups:
+            return 0
+        pf = _EncoderPrefetcher(module, groups, device)
+        disable = getattr(getattr(torch, "compiler", None), "disable", None)
+        for group in groups:
+
+            def onload_(*_a: Any, _g: Any = group, **_k: Any) -> None:
+                pf.onload(_g)
+
+            group.onload_ = disable(onload_) if callable(disable) else onload_
+        module.register_forward_pre_hook(lambda *_a, **_k: pf.begin())
+        module.register_forward_hook(lambda *_a, **_k: pf.end(), always_call = True)
+        setattr(module, ENCODER_PREFETCH_ATTR, pf)
+        if logger is not None:
+            logger.info(
+                "diffusion.small_host: %s streams %d offload groups through a prefetching copy",
+                type(module).__name__,
+                len(groups),
+            )
+        return len(groups)
+    except Exception as exc:  # noqa: BLE001 - keep diffusers' own onload
+        if logger is not None:
+            logger.warning("diffusion.small_host: encoder prefetch unavailable (%s)", exc)
+        return 0
