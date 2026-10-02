@@ -312,3 +312,159 @@ def test_prefetched_encoder_is_bit_identical_to_diffusers_stream(tmp_path):
     # weights are back on their host storage between forwards
     assert enc.blocks[0].wi.weight.device.type == "cpu"
     assert enc.blocks[0].wi.weight.dtype == torch.bfloat16
+
+
+def _mapped_streamed(enc, path):
+    """The small-host setup: weights view a safetensors file mapping, diffusers leaf-level stream offload."""
+    from diffusers.hooks import apply_group_offloading
+    from safetensors.torch import load_file, save_file
+
+    save_file({k: v.contiguous() for k, v in enc.state_dict().items()}, str(path))
+    loaded = load_file(str(path))
+    for name, p in enc.named_parameters():
+        p.data = loaded[name]
+    apply_group_offloading(
+        enc,
+        onload_device = torch.device("cuda"),
+        offload_device = torch.device("cpu"),
+        offload_type = "leaf_level",
+        use_stream = True,
+        non_blocking = True,
+        record_stream = True,
+        low_cpu_mem_usage = True,
+    )
+    return enc
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+def test_prefetch_runs_under_inference_mode(tmp_path):
+    # Studio renders under torch.inference_mode(); the worker thread is outside it and must still fill the ring.
+    def build():
+        torch.manual_seed(0)
+        return (
+            torch.nn.Sequential(*[torch.nn.Linear(512, 512) for _ in range(6)])
+            .to(torch.bfloat16)
+            .eval()
+        )
+
+    ref = build().cuda()
+    enc = _mapped_streamed(build(), tmp_path / "enc.safetensors")
+    assert sh.install_encoder_prefetch(enc, "cuda") > 0
+    pf = getattr(enc, sh.ENCODER_PREFETCH_ATTR)
+    with torch.inference_mode():
+        for i in range(4):
+            x = torch.randn(2 + i, 512, dtype = torch.bfloat16, device = "cuda")
+            assert torch.equal(enc(x), ref(x))
+    assert pf.error is None
+    assert pf.stats["prefetched"] == 3 * len(pf.order)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+@pytest.mark.parametrize("drop", ["exception", "prefix"])
+def test_dropped_prefetch_never_lands_in_a_reused_block(tmp_path, drop):
+    # Groups copied ahead but never onloaded are freed while their copy may still be queued on the side stream.
+    H = 4096
+
+    class Enc(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.head = torch.nn.ModuleList([torch.nn.Linear(H, H, bias = False) for _ in range(2)])
+            self.tail = torch.nn.ModuleList([torch.nn.Linear(H, H, bias = False) for _ in range(6)])
+
+        def forward(
+            self,
+            x,
+            tail = True,
+            boom = False,
+        ):
+            for m in self.head:
+                x = m(x)
+            if boom:
+                raise RuntimeError("boom")
+            for m in self.tail if tail else ():
+                x = m(x)
+            return x
+
+    enc = Enc().to(torch.bfloat16).eval()
+    with torch.no_grad():
+        for p in enc.parameters():
+            p.fill_(1.0)
+    enc = _mapped_streamed(enc, tmp_path / "enc.safetensors")
+    assert sh.install_encoder_prefetch(enc, "cuda") > 0
+    x = torch.zeros(1, H, dtype = torch.bfloat16, device = "cuda")
+    with torch.no_grad():
+        enc(x)  # records the full order
+        for _ in range(10):
+            try:
+                enc(x, tail = False, boom = drop == "exception")
+            except RuntimeError:
+                pass
+            outs = [torch.empty(H, H, dtype = torch.bfloat16, device = "cuda") for _ in range(6)]
+            for o in outs:
+                o.fill_(-2.0)
+            torch.cuda.synchronize()
+            assert all(bool((o == -2.0).all()) for o in outs)
+            del outs
+            enc(x)  # back to the full order
+            torch.cuda.synchronize()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+def test_released_resident_groups_are_fenced():
+    # release_resident_groups hands resident encoder groups back to diffusers' onload_, whose copy runs on diffusers'
+    # stream next to groups this prefetcher onloads.
+    import copy
+
+    import core.inference.diffusion_memory as dm
+
+    H, F = 4096, 16384
+
+    class Block(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.norm = torch.nn.LayerNorm(H)
+            self.wi = torch.nn.Linear(H, F, bias = False)
+            self.wo = torch.nn.Linear(F, H, bias = False)
+
+        def forward(self, x):
+            return x + self.wo(torch.relu(self.wi(self.norm(x))))
+
+    class Enc(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.embed = torch.nn.Embedding(1000, H)
+            self.blocks = torch.nn.ModuleList([Block() for _ in range(3)])
+            self.final = torch.nn.LayerNorm(H)
+
+        def forward(self, ids):
+            h = self.embed(ids)
+            for b in self.blocks:
+                h = b(h)
+            return self.final(h)
+
+    torch.manual_seed(0)
+    enc = Enc().half().eval()
+    for p in enc.parameters():
+        p.data.normal_(0, 0.02)
+    ref = copy.deepcopy(enc).cuda()
+    tr = torch.nn.Sequential(torch.nn.Linear(8, 8))
+    pipe = types.SimpleNamespace(
+        transformer = tr, text_encoder = enc, components = {"transformer": tr, "text_encoder": enc}
+    )
+    pipe._unsloth_small_host = {"components": {"text_encoder": "memory-mapped"}}
+    assert dm._apply_group_offload(
+        pipe, "cuda", None, stream_text_encoders = True, resident_text_encoder_mib = 140
+    )
+    pf = getattr(enc, sh.ENCODER_PREFETCH_ATTR)
+    with torch.no_grad():
+        for _ in range(2):
+            enc(torch.randint(0, 1000, (4, 512), device = "cuda"))
+        assert dm.release_resident_groups(pipe, 100, None) is not None
+        for _ in range(10):
+            ids = torch.randint(0, 1000, (4, 512), device = "cuda")
+            want = ref(ids)
+            torch.cuda.synchronize()
+            got = enc(ids)
+            torch.cuda.synchronize()
+            assert torch.equal(got, want)
+    assert pf.error is None and pf.stats["prefetched"] > 0

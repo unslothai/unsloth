@@ -573,10 +573,13 @@ class _EncoderPrefetcher:
     def _ensure_stage(self) -> None:
         import torch
         if not self.stage:
-            self.stage = [
-                torch.empty(_STAGE_SLOT_BYTES, dtype = torch.uint8, pin_memory = True)
-                for _ in range(_STAGE_SLOTS)
-            ]
+            # Out of inference mode: Studio renders under torch.inference_mode(), which is thread-local, and the worker
+            # cannot write into inference tensors created on the forward thread.
+            with torch.inference_mode(False):
+                self.stage = [
+                    torch.empty(_STAGE_SLOT_BYTES, dtype = torch.uint8, pin_memory = True)
+                    for _ in range(_STAGE_SLOTS)
+                ]
             self.stage_events = [None] * _STAGE_SLOTS
 
     def _copy_group(self, group: Any) -> tuple:
@@ -627,6 +630,9 @@ class _EncoderPrefetcher:
                     ev.record(stream)
                     self.stage_events[i] = ev
                     off += k
+                # A dropped entry (halt, exception mid-forward) frees dst before the copy lands; keep the block
+                # out of the compute pool until the side stream is done with it.
+                dst.record_stream(stream)
                 moved.append(dst)
             done = torch.cuda.Event()
             done.record(stream)
@@ -637,6 +643,10 @@ class _EncoderPrefetcher:
 
         cur = torch.cuda.current_stream(self.device)
         cur.wait_event(done)
+        if getattr(group, "stream", None) is not None:
+            # diffusers fences a group it prefetched on its own stream only in the next group's onload_, which this
+            # replaces (a resident group handed back by release_resident_groups); wait for those copies here.
+            cur.wait_stream(group.stream)
         for (t, _src), dev in zip(_group_tensors(group), moved):
             t.data = dev
             dev.record_stream(cur)
