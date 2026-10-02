@@ -12,13 +12,15 @@ from core.inference.llama_custom_config import (
     parse_config_source,
 )
 
-FLAGS = dict.fromkeys(
-    "--port -c --ctx-size -ngl --gpu-layers -fa --flash-attn -np --parallel -m --model "
-    "-mm --mmproj --temp --top-k --top-p --warmup --no-warmup --mmproj-offload "
-    "--no-mmproj-offload --jinja --no-jinja -dev --device -ctk --cache-type-k --host "
-    "--cache-prompt --no-cache-prompt -mmdev --mmproj-device -md --model-draft -devd --device-draft".split(),
-    True,
+_OPTIONS = (
+    "--port; -c --ctx-size; -ngl --gpu-layers; -fa --flash-attn; -np --parallel; -m --model; "
+    "-mm --mmproj; --temp; --top-k; --top-p; --warmup --no-warmup; "
+    "--mmproj-offload --no-mmproj-offload; --jinja --no-jinja; -dev --device; "
+    "-ctk --cache-type-k; --host; --cache-prompt --no-cache-prompt; -mmdev --mmproj-device; "
+    "-md --model-draft; -devd --device-draft"
 )
+# Like the probe: every spelling of one option maps to that option's help block.
+FLAGS = {flag: group for group in _OPTIONS.split("; ") for flag in group.split()}
 SWITCHES = {
     "--warmup",
     "--no-warmup",
@@ -81,6 +83,12 @@ def test_preset_grammar_compiles_to_argv_and_defaults():
 def test_refusals_name_the_key_not_the_value(ini, section, message):
     with pytest.raises(CustomConfigError, match = message):
         compile_ini(ini, section)
+
+
+@pytest.mark.parametrize("ini", ["c=1024\nctx-size=2048", "warmup=true\nno-warmup=true"])
+def test_two_spellings_of_one_option_are_refused(ini):
+    with pytest.raises(CustomConfigError, match = "set the same option"):
+        compile_ini(ini)
 
 
 def test_unprobed_binary_is_refused():
@@ -148,6 +156,7 @@ def launch(monkeypatch, tmp_path):
         "_spawn_is_stale": lambda: False,
         "_find_free_port": lambda: 8123,
         "_wait_for_health": lambda **k: True,
+        "_detect_audio_type_strict": lambda: None,
         "_llama_server_env_for_binary": lambda p: {
             "PATH": "libs",
             "LLAMA_ARG_CTX_SIZE": "1",
@@ -199,6 +208,21 @@ def test_custom_launch_runs_only_the_ini(launch):
     summary = launch.backend.llama_cpp_config_summary
     assert summary["request_defaults"] == {"temperature": 0.3}
     assert launch.backend.extra_args == []
+    # The duplicate-load fast path only reuses a probed server.
+    assert launch.backend._audio_probed is True
+
+
+def test_cpu_only_custom_load_still_masks_unsupported_rocm_cards(launch, monkeypatch):
+    from dataclasses import replace
+
+    masked = []
+    monkeypatch.setattr(launch.backend, "_arch_gate_survivors", lambda p: [1])
+    monkeypatch.setattr(
+        launch.backend, "_emit_child_gpu_visibility", lambda env, ids, **k: masked.append(ids)
+    )
+    cpu = replace(launch.intent, llama_cpp_config = parse_config_source(source("dev=none")))
+    assert launch.backend.load_model(cpu)
+    assert masked == ["1"]
 
 
 def test_bad_config_never_spawns(launch):

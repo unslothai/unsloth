@@ -23402,7 +23402,7 @@ class LlamaCppBackend:
             if not k.startswith("LLAMA_ARG_")
         }
         # HSA enumeration dies on an arch the build lacks before --device is read: mask like managed loads.
-        survivors = [] if compiled.cpu_only else self._arch_gate_survivors(binary)
+        survivors = self._arch_gate_survivors(binary)
         if survivors:
             self._emit_child_gpu_visibility(
                 env, ",".join(str(i) for i in survivors), prefer_rocr = True
@@ -23479,7 +23479,9 @@ class LlamaCppBackend:
             self._prompt_cache_disabled = "--no-cache-prompt" in compiled.options
             try:
                 if cancelled() or not self._start_llama_process(
-                    cmd, env, child_gpu_physical_ids = tuple(survivors) or None
+                    cmd,
+                    env,
+                    child_gpu_physical_ids = None if compiled.cpu_only else tuple(survivors) or None,
                 ):
                     self._kill_process()
                     return False
@@ -23542,6 +23544,19 @@ class LlamaCppBackend:
                 self._last_load_intent = resolved
                 if cancelled() or not self._publish_healthy():
                     self._kill_process()
+                    return False
+                # Same post-health probe as managed loads; the duplicate-load fast path requires it.
+                try:
+                    detected = self._detect_audio_type_strict()
+                    self._audio_probed = True
+                except Exception as exc:
+                    logger.debug("Audio probe failed: %s", exc)
+                    detected = None
+                if not (
+                    self._apply_detected_audio(detected)
+                    if intent.audio_codec_path is None
+                    else self._apply_detected_audio(detected, intent.audio_codec_path)
+                ):
                     return False
             except Exception:
                 self._kill_process()

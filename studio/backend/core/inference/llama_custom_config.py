@@ -161,12 +161,17 @@ def compile_custom_config(source, flags: Mapping, switch_flags) -> CompiledCusto
     defaults: dict = {}
     diagnostics: list[str] = []
     n_parallel = None
+    owners: dict = {}
     for key, value in entries.items():
         if key in _ROUTER_ONLY:
             continue
         flag = _spelling(key, flags)
         if flag is None:
             raise CustomConfigError(f"'{key[:80]}' is not an option of the selected llama-server")
+        # Aliases share one help block; llama.cpp maps them to one option, so pick neither.
+        other = owners.setdefault(flags[flag] or flag, key)
+        if other != key:
+            raise CustomConfigError(f"'{other[:80]}' and '{key[:80]}' set the same option")
         if flag in _IGNORED:
             note = "Studio selects the model and projector; m and mm entries are ignored."
             if note not in diagnostics:
