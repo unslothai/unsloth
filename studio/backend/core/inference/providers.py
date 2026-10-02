@@ -129,7 +129,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         # sync-external-providers.ts held a copy and had to go with it.
         "supports_streaming": True,
         "supports_vision": True,
-        "supports_tool_calling": False,
+        "supports_tool_calling": True,
+        "studio_tools": True,
         # Anthropic's own server tools, appended by `_stream_anthropic`.
         "hosted_tools": ("web_search", "web_fetch", "code_execution"),
         "auth_header": "x-api-key",
@@ -516,14 +517,8 @@ def provider_runs_local_tools(provider_type: str | None) -> bool:
 
     Unsloth's tools (web_search, python, terminal, MCP, knowledge-base search) execute on the
     Unsloth host, so any provider whose wire format can carry a tool schema out and a tool result
-    back can use them: the whole OpenAI-compatible family plus Gemini, whose native shape is
-    translated to and from OpenAI chunks in ``external_provider.py``.
-
-    Anthropic is deliberately absent: ``_stream_anthropic`` only appends Anthropic's own hosted
-    builtins and never forwards a caller's function-tool schemas, so the loop would advertise a
-    catalog the model never sees. Enabling it needs OpenAI -> Anthropic schema translation plus
-    tool_use / tool_result message replay, which is separate work. Anthropic keeps its hosted
-    web_search, web_fetch and code_execution meanwhile.
+    back can use them: the whole OpenAI-compatible family plus Gemini and Anthropic, whose
+    native shapes are translated to and from OpenAI chunks in ``external_provider.py``.
     """
     # isinstance, not a truthiness check: the value reaches here straight from a
     # request body, and a list or dict key raises TypeError inside dict.get, which

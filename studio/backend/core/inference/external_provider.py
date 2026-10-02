@@ -1599,6 +1599,7 @@ class ExternalProviderClient:
                 compaction_threshold,
                 tool_choice,
                 fast_mode = fast_mode,
+                tools = tools,
             ):
                 yield line
             return
@@ -2408,6 +2409,7 @@ class ExternalProviderClient:
         tool_choice: Optional[Any] = None,
         *,
         fast_mode: Optional[bool] = None,
+        tools: Optional[list[dict[str, Any]]] = None,
     ) -> AsyncGenerator[str, None]:
         """Call the Anthropic Messages API and translate its SSE to OpenAI format:
         content_block_delta -> chunk with delta.content, message_delta -> chunk with
@@ -2428,6 +2430,12 @@ class ExternalProviderClient:
                 continue
 
             content = msg.get("content")
+            extra = msg.get("extra_content") or {}
+            native_content = (extra.get("anthropic") or {}).get("content")
+            if msg.get("role") == "assistant" and isinstance(native_content, list):
+                # The loop's display text contains <think> markup and rendered hosted results. Replay the signed
+                # blocks instead, then append only the client calls retained by the execution controller below.
+                content = []
             # OpenAI role="tool" with list content -> Anthropic native tool_result block on a user message.
             # Translating only in the string-content branch below would forward the list-content form as an invalid
             # `role:"tool"` message Anthropic rejects, so handle both upfront.
@@ -2435,6 +2443,7 @@ class ExternalProviderClient:
                 _tr_id = msg.get("tool_call_id") or ""
                 if isinstance(content, list):
                     _flat_parts: list[str] = []
+                    _result_images: list[dict[str, Any]] = []
                     for part in content:
                         if (
                             isinstance(part, dict)
@@ -2442,31 +2451,53 @@ class ExternalProviderClient:
                             and part.get("text")
                         ):
                             _flat_parts.append(str(part["text"]))
+                        elif isinstance(part, dict) and part.get("type") == "image_url":
+                            image_url = part.get("image_url", {}).get("url", "")
+                            if image_url.startswith("data:"):
+                                header, _, data = image_url.partition(",")
+                                source = {
+                                    "type": "base64",
+                                    "media_type": header[5:].split(";")[0],
+                                    "data": data,
+                                }
+                            else:
+                                source = {"type": "url", "url": image_url}
+                            _result_images.append({"type": "image", "source": source})
                     _flat_result = "".join(_flat_parts)
+                    if _result_images:
+                        _flat_result = (
+                            [{"type": "text", "text": _flat_result}] if _flat_result else []
+                        ) + _result_images
                 elif content is None:
                     _flat_result = ""
                 elif isinstance(content, str):
                     _flat_result = content
                 else:
                     _flat_result = _json.dumps(content)
-                filtered.append(
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": _tr_id,
-                                "content": _flat_result,
-                            }
-                        ],
-                    }
-                )
+                result_block = {
+                    "type": "tool_result",
+                    "tool_use_id": _tr_id,
+                    "content": _flat_result,
+                }
+                if (
+                    filtered
+                    and filtered[-1]["role"] == "user"
+                    and isinstance(filtered[-1]["content"], list)
+                    and all(part.get("type") == "tool_result" for part in filtered[-1]["content"])
+                ):
+                    filtered[-1]["content"].append(result_block)
+                else:
+                    filtered.append({"role": "user", "content": [result_block]})
                 continue
             if isinstance(content, list):
                 # Translate OpenAI multimodal parts -> Anthropic native shapes: `image_url` -> `{type:"image",
                 # source:...}`, and `input_document` -> `{type:"document", source:...}` (an Unsloth extension
                 # mirroring Anthropic's document block, which supports PDFs as base64 or URL).
-                anthropic_parts: list[dict[str, Any]] = []
+                anthropic_parts: list[dict[str, Any]] = (
+                    list(native_content)
+                    if msg.get("role") == "assistant" and isinstance(native_content, list)
+                    else []
+                )
                 for part in content:
                     if part.get("type") == "text" and _anthropic_text_is_sendable(part.get("text")):
                         anthropic_parts.append({"type": "text", "text": part["text"]})
@@ -2647,6 +2678,19 @@ class ExternalProviderClient:
                     continue
                 filtered.append(msg)
 
+        pending_server_calls: dict[str, str] = {}
+        for message in filtered:
+            if message["role"] != "assistant" or not isinstance(message["content"], list):
+                continue
+            for block in message["content"]:
+                if block.get("type") == "server_tool_use":
+                    pending_server_calls[block["id"]] = block["name"]
+                elif block.get("tool_use_id"):
+                    pending_server_calls.pop(block["tool_use_id"], None)
+        pending_hosted_tools = set(pending_server_calls.values())
+        if pending_hosted_tools & {"bash_code_execution", "text_editor_code_execution"}:
+            pending_hosted_tools.add("code_execution")
+
         # Newer Claude models removed temperature/top_p/top_k entirely (400 "deprecated for this model"). Reuse the
         # capability wherever those fields are set, including the thinking-mode temperature override.
         sampling_removed = _anthropic_sampling_params_removed(model)
@@ -2779,9 +2823,46 @@ class ExternalProviderClient:
         _anthropic_hosted_builtins_allowed = (
             not _anthropic_tool_choice_disabled and not _anthropic_tool_choice_forced_function
         )
+        if _anthropic_tool_choice_disabled and pending_hosted_tools:
+            # A pending server call still needs its declaration on the result-only continuation. Disallow new calls.
+            body["tool_choice"] = {"type": "none"}
+
+        if tools and not _anthropic_tool_choice_disabled:
+            client_tools = []
+            for tool in tools:
+                if tool.get("type") != "function":
+                    continue
+                function = tool.get("function") or {}
+                if not function.get("name"):
+                    continue
+                entry = {
+                    "name": function["name"],
+                    "input_schema": function.get("parameters")
+                    or {"type": "object", "properties": {}},
+                }
+                for key in ("description", "strict"):
+                    if key in function:
+                        entry[key] = function[key]
+                client_tools.append(entry)
+            if client_tools:
+                body["tools"] = client_tools
+                if _anthropic_tool_choice_forced_function:
+                    body["tool_choice"] = {"type": "tool", "name": tool_choice["function"]["name"]}
+                elif tool_choice == "required":
+                    body["tool_choice"] = {"type": "any"}
+                else:
+                    body["tool_choice"] = {"type": "auto"}
+                # Manual thinking rejects forced tool use. Honor the explicit selection on that request.
+                if (
+                    body["tool_choice"]["type"] in ("any", "tool")
+                    and (body.get("thinking") or {}).get("type") == "enabled"
+                ):
+                    body.pop("thinking")
 
         # Anthropic web_search (date-pinned per model family).
-        if _anthropic_hosted_builtins_allowed and enabled_tools and "web_search" in enabled_tools:
+        if "web_search" in pending_hosted_tools or (
+            _anthropic_hosted_builtins_allowed and enabled_tools and "web_search" in enabled_tools
+        ):
             anthropic_tools = list(body.get("tools") or [])
             anthropic_tools.append(
                 {
@@ -2794,7 +2875,12 @@ class ExternalProviderClient:
 
         # Anthropic web_fetch: only URLs already in conversation. Date-pinned.
         web_fetch_enabled = bool(
-            _anthropic_hosted_builtins_allowed and enabled_tools and "web_fetch" in enabled_tools
+            "web_fetch" in pending_hosted_tools
+            or (
+                _anthropic_hosted_builtins_allowed
+                and enabled_tools
+                and "web_fetch" in enabled_tools
+            )
         )
         if web_fetch_enabled:
             anthropic_tools = list(body.get("tools") or [])
@@ -2810,9 +2896,12 @@ class ExternalProviderClient:
         # Anthropic server-side code execution (date-pinned type per model, both unlocked by the same beta header set
         # below).
         code_execution_enabled = bool(
-            _anthropic_hosted_builtins_allowed
-            and enabled_tools
-            and "code_execution" in enabled_tools
+            "code_execution" in pending_hosted_tools
+            or (
+                _anthropic_hosted_builtins_allowed
+                and enabled_tools
+                and "code_execution" in enabled_tools
+            )
         )
         if code_execution_enabled:
             anthropic_tools = list(body.get("tools") or [])
@@ -2948,6 +3037,12 @@ class ExternalProviderClient:
                 # NOTE: same manual __anext__ loop as stream_chat_completion — see comment there.
                 lines_gen = response.aiter_lines().__aiter__()
                 thinking_open = False
+                client_tool_indices: dict[int, int] = {}
+                # The shared loop accepts finish-less streams from other providers. Release Anthropic calls only
+                # after message_stop, so an error or disconnected stream cannot execute an unfinished call.
+                client_tool_chunks: list[str] = []
+                replay_blocks: dict[int, dict[str, Any]] = {}
+                replay_inputs: dict[int, str] = {}
                 # Diagnostic counters for "no thinking content" reports -- distinguish "Anthropic never sent
                 # thinking_delta" from "frontend did not render the chunks".
                 event_counts: dict[str, int] = {}
@@ -3004,6 +3099,15 @@ class ExternalProviderClient:
                         ],
                     }
                     return f"data: {_json.dumps(chunk)}"
+
+                def _delta_chunk(delta: dict[str, Any]) -> str:
+                    return "data: " + _json.dumps(
+                        {
+                            "id": completion_id,
+                            "object": "chat.completion.chunk",
+                            "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
+                        }
+                    )
 
                 def _emit_tool_event(payload: dict[str, Any]) -> str:
                     _stamp_server_tool_marker(payload)
@@ -3151,7 +3255,29 @@ class ExternalProviderClient:
                             content_block = event.get("content_block") or {}
                             block_type = content_block.get("type")
                             block_name = content_block.get("name")
-                            if block_type == "server_tool_use" and block_name == "web_search":
+                            block_index = event.get("index", 0)
+                            if tools and block_type != "tool_use":
+                                replay_blocks[block_index] = dict(content_block)
+                            if block_type == "tool_use":
+                                client_tool_indices[block_index] = len(client_tool_indices)
+                                client_tool_chunks.append(
+                                    _delta_chunk(
+                                        {
+                                            "tool_calls": [
+                                                {
+                                                    "index": client_tool_indices[block_index],
+                                                    "id": content_block["id"],
+                                                    "type": "function",
+                                                    "function": {
+                                                        "name": block_name,
+                                                        "arguments": "",
+                                                    },
+                                                }
+                                            ]
+                                        }
+                                    )
+                                )
+                            elif block_type == "server_tool_use" and block_name == "web_search":
                                 tool_use_id = content_block.get("id", "") or (
                                     f"ws_{len(web_search_calls)}"
                                 )
@@ -3233,6 +3359,34 @@ class ExternalProviderClient:
                         elif event_type == "content_block_delta":
                             delta = event.get("delta", {})
                             delta_type = delta.get("type")
+                            block_index = event.get("index", 0)
+                            replay = replay_blocks.get(block_index)
+                            if replay is not None:
+                                field = {
+                                    "text_delta": "text",
+                                    "thinking_delta": "thinking",
+                                    "signature_delta": "signature",
+                                }.get(delta_type)
+                                if field == "text" and replay.get("type") == "compaction":
+                                    field = "content"
+                                if field:
+                                    replay[field] = replay.get(field, "") + delta.get(
+                                        "text" if field == "content" else field, ""
+                                    )
+                                elif delta_type == "input_json_delta":
+                                    replay_inputs[block_index] = replay_inputs.get(
+                                        block_index, ""
+                                    ) + delta.get("partial_json", "")
+                                elif delta_type == "citations_delta":
+                                    replay.setdefault("citations", []).append(delta["citation"])
+                                elif delta_type == "compaction_delta":
+                                    replay.update(
+                                        {
+                                            key: value
+                                            for key, value in delta.items()
+                                            if key != "type"
+                                        }
+                                    )
                             if delta_type == "thinking_delta":
                                 # Wrap as <think>...</think> for parseAssistantContent.
                                 thinking_text = delta.get("thinking", "")
@@ -3279,16 +3433,36 @@ class ExternalProviderClient:
                                 # partial_json carrying tool inputs (web_search query, code-exec command, etc.); route
                                 # to whichever buffer is open.
                                 partial = delta.get("partial_json", "")
-                                if current_server_tool_use is not None:
+                                if block_index in client_tool_indices:
+                                    client_tool_chunks.append(
+                                        _delta_chunk(
+                                            {
+                                                "tool_calls": [
+                                                    {
+                                                        "index": client_tool_indices[block_index],
+                                                        "function": {"arguments": partial},
+                                                    }
+                                                ]
+                                            }
+                                        )
+                                    )
+                                elif current_server_tool_use is not None:
                                     current_server_tool_use["buffer"] += partial
                                 elif current_code_exec_use is not None:
                                     current_code_exec_use["buffer"] += partial
                                 elif current_web_fetch_use is not None:
                                     current_web_fetch_use["buffer"] += partial
-                            # signature_delta and other delta types are skipped -- they carry trust / verification
-                            # metadata, not user-visible content.
 
                         elif event_type == "content_block_stop":
+                            block_index = event.get("index", 0)
+                            if block_index in replay_inputs:
+                                try:
+                                    replay_blocks[block_index]["input"] = _json.loads(
+                                        replay_inputs.pop(block_index)
+                                    )
+                                except _json.JSONDecodeError:
+                                    # max_tokens can leave a partial tool block. Still process its terminal reason.
+                                    replay_blocks.pop(block_index)
                             if current_server_tool_use is not None:
                                 # End of the server_tool_use block -- parse the accumulated input_json into a query
                                 # and emit tool_start. The matching tool_end fires later when the
@@ -3450,6 +3624,14 @@ class ExternalProviderClient:
                                 thinking_open = False
 
                         elif event_type == "message_delta":
+                            if replay_blocks:
+                                yield _delta_chunk(
+                                    {
+                                        "extra_content": {
+                                            "anthropic": {"content": list(replay_blocks.values())}
+                                        }
+                                    }
+                                )
                             delta_usage = event.get("usage")
                             if isinstance(delta_usage, dict):
                                 last_usage.update(delta_usage)
@@ -3540,9 +3722,14 @@ class ExternalProviderClient:
                                             }
                                         ],
                                     }
-                                    yield f"data: {_json.dumps(chunk)}"
+                                    if client_tool_indices:
+                                        client_tool_chunks.append(f"data: {_json.dumps(chunk)}")
+                                    else:
+                                        yield f"data: {_json.dumps(chunk)}"
 
                         elif event_type == "message_stop":
+                            for client_chunk in client_tool_chunks:
+                                yield client_chunk
                             if thinking_open:
                                 yield _content_chunk("</think>")
                                 thinking_open = False

@@ -62,6 +62,9 @@ class OAICompatTransport:
         self._model = model
         self._continue_final_message = continue_final_message
         self._request_kwargs = request_kwargs
+        # Anthropic can leave a hosted call pending beside a client call; its continuation accepts only tool results.
+        self.tool_result_only_continuation = client.provider_type == "anthropic"
+        self._initial_message_count: int | None = None
         self.preserves_reasoning = (
             client.provider_type == "llama_cpp" and request_kwargs.get("preserve_thinking") is True
         )
@@ -74,6 +77,29 @@ class OAICompatTransport:
         tool_choice: Any,
         cancel_event: threading.Event,
     ) -> AsyncIterator[str]:
+        if self._initial_message_count is not None and self.tool_result_only_continuation:
+            # The loop promotes MCP images into a detached user turn. Anthropic needs those inside a tool result
+            # while a server tool waits for the client call, rather than a new user turn that ends the pending turn.
+            normalized = list(messages[: self._initial_message_count])
+            for message in messages[self._initial_message_count :]:
+                if (
+                    message.get("role") == "user"
+                    and normalized
+                    and normalized[-1].get("role") == "tool"
+                ):
+                    parts = []
+                    for source in (normalized[-1], message):
+                        content = source.get("content")
+                        if isinstance(content, list):
+                            parts.extend(content)
+                        elif isinstance(content, str) and content:
+                            parts.append({"type": "text", "text": content})
+                    normalized[-1] = {**normalized[-1], "content": parts}
+                else:
+                    normalized.append(message)
+            messages = normalized
+        elif self._initial_message_count is None:
+            self._initial_message_count = len(messages)
         # "Resume the trailing assistant turn", so it is only ever true of the first request. Once a tool runs the
         # conversation ends with a role="tool" result (or a role="user" no-op note), and vLLM / llama.cpp would splice
         # the generation prompt off the end of *that* message: the model continues the tool output instead of answering

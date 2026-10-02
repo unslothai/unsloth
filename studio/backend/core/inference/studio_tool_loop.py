@@ -1678,7 +1678,17 @@ async def stream_with_studio_tools(
             decision.provenance["round_id"] = round_id
             if not decision.should_execute:
                 completion = controller.record_noop(decision)
-                noop_messages.append(completion.model_message())
+                if getattr(transport, "tool_result_only_continuation", False):
+                    assistant_tool_calls.append(decision.as_assistant_tool_call())
+                    tool_messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": decision.tool_call_id,
+                            "content": completion.model_message()["content"],
+                        }
+                    )
+                else:
+                    noop_messages.append(completion.model_message())
                 # The provider's own tool_calls delta for this call was relayed verbatim while it streamed and the
                 # client painted a card from it. Nothing else closes that card, so without a terminal event it spins
                 # for the rest of the answer and then reads as a tool that ran and returned nothing. Keyed on the
@@ -1994,7 +2004,8 @@ async def stream_with_studio_tools(
             spent_budget_passes += 1
             # The catalog is gone from here on, so say why rather than letting the next pass ask for a tool no longer
             # offered
-            _append_user_turn(conversation, _BUDGET_EXHAUSTED_NUDGE)
+            if not getattr(transport, "tool_result_only_continuation", False):
+                _append_user_turn(conversation, _BUDGET_EXHAUSTED_NUDGE)
 
     usage_line = _usage_chunk_line(model_name, usage_totals)
     if usage_line is not None:
