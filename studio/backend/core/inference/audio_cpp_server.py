@@ -49,6 +49,11 @@ INSTALL_RECORD = "UNSLOTH_AUDIO_CPP_PREBUILT_INFO.json"
 # Model load happens before the server answers, and a multi-GB music model can take a while from a cold disk.
 _SERVER_START_TIMEOUT_SECONDS = 600.0
 _PROBE_TIMEOUT_SECONDS = 2.0
+# CUDA graph replay wedges these transducer families mid-request (the server spins at full CPU and
+# never answers): Nemotron on about the 72nd LibriSpeech clip in 7 of 8 runs, Parakeet TDT after
+# 117 clips; with graphs off both served 292 of 292 (v0.8.2 and v0.9.0 alike).
+_NO_CUDA_GRAPH_FAMILIES = frozenset({"nemotron_asr", "parakeet_tdt"})
+_GPU_HOST_THREADS = 8
 
 
 class AudioCppUnavailableError(RuntimeError):
@@ -369,6 +374,10 @@ class AudioCppServer:
         log_path = config_dir / "server.log"
         command = [binary, "--config", str(config_path), "--no-ui"]
         threads = _cpu_threads()
+        if threads is None and backend != "cpu":
+            # The runtime's default is every core; on a many-core host its host-side work thrashes
+            # (Piper 0.44 s -> 0.18 s, Moonshine tiny 0.085 s -> 0.035 s per request at 8 on a B200).
+            threads = min(os.cpu_count() or 1, _GPU_HOST_THREADS)
         if threads:
             command += ["--threads", str(threads)]
         logger.info(
@@ -384,6 +393,9 @@ class AudioCppServer:
             raise AudioCppStartCancelledError(
                 "Unsloth is shutting down; not starting audiocpp_server."
             )
+        env = child_env(binary)
+        if model.family in _NO_CUDA_GRAPH_FAMILIES:
+            env.setdefault("GGML_CUDA_DISABLE_GRAPHS", "1")
         # Released as late as possible: the server binds the port moments after this close.
         reservation.close()
         try:
@@ -393,7 +405,7 @@ class AudioCppServer:
                     stdout = log,
                     stderr = subprocess.STDOUT,
                     stdin = subprocess.DEVNULL,
-                    env = child_env(binary),
+                    env = env,
                     cwd = str(config_dir),
                     **child_popen_kwargs(),
                 )

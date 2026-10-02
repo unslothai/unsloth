@@ -346,6 +346,12 @@ def test_qwen3_tts_package_kind_comes_from_its_name(hub):
     base = acm.resolve(f"{AUDIO_CPP_REPO}/Qwen3-TTS-12Hz-0.6B-Base-GGUF", network = False)
     assert design.server_task == "vdes" and design.request_defaults["options"]["instruct"]
     assert custom.server_task == "tts" and custom.request_defaults["voice"] == "vivian"
+    # The published GGUF embeds no speaker list, so the picker offers the package's own nine.
+    voice = next(o for o in custom.options if o["name"] == "voice")
+    assert (
+        voice["default"] == "vivian" and len(voice["values"]) == 9 and "uncle_fu" in voice["values"]
+    )
+    assert not any(o["name"] == "voice" for o in design.options)
     assert "reference voice" in base.unsupported
 
 
@@ -868,7 +874,9 @@ def test_minimax_takes_the_caption_as_input_and_lyrics_and_duration_as_options()
     )
     request = srv.calls[0][1]["request"]
     assert request["text"] == "lofi" and request["seed"] == "3"
-    assert request["options"] == {"top_k": 9, "lyrics": "[verse] hi", "duration_sec": 20.0}
+    # The runtime rejects duration_sec beside duration_seconds ("conflicting option values").
+    assert request["options"] == {"top_k": 9, "lyrics": "[verse] hi"}
+    assert request["duration_seconds"] == 20.0
     with pytest.raises(RuntimeError, match = "needs lyrics"):
         b.generate_audio_response("", instructions = "lofi")
 

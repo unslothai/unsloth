@@ -88,6 +88,8 @@ class AudioCppFamily:
     package: tuple[AudioCppPackageVariant, ...] = ()
     # Request options Studio shows when neither the runtime nor the GGUF offers a current spec.
     options: tuple[dict, ...] = ()
+    # Built-in speakers when the spec lists none (the published Qwen3-TTS GGUFs embed a legacy spec).
+    voices: tuple[str, ...] = ()
     # Why Studio refuses this family, when it does.
     unsupported: Optional[str] = None
 
@@ -421,9 +423,23 @@ def family_policy(
                 },
             )
         if "customvoice" in text or "custom-voice" in text:
-            # A speaker is mandatory; the package's spk_id table names vivian, serena, ryan, aiden,
-            # ono_anna, sohee, uncle_fu, eric and dylan.
-            return AudioCppFamily(family, "tts", request_defaults = {"voice": "vivian"})
+            # A speaker is mandatory: the package's spk_id table.
+            return AudioCppFamily(
+                family,
+                "tts",
+                request_defaults = {"voice": "vivian"},
+                voices = (
+                    "vivian",
+                    "serena",
+                    "ryan",
+                    "aiden",
+                    "ono_anna",
+                    "sohee",
+                    "uncle_fu",
+                    "eric",
+                    "dylan",
+                ),
+            )
         if "base" in text:
             return AudioCppFamily(
                 family,
@@ -1186,7 +1202,7 @@ def option_schema(
         out.append(option)
     if policy.task == "tts" and policy.default_server_task != "vdes":
         ui = (source or {}).get("ui") or (embedded or {}).get("ui") or {}
-        voices = ui.get("builtin_voices") if isinstance(ui, dict) else None
+        voices = (ui.get("builtin_voices") if isinstance(ui, dict) else None) or list(policy.voices)
         if isinstance(voices, list) and voices and all(isinstance(v, str) for v in voices):
             default = policy.request_defaults.get("voice") or ui.get("default_voice")
             out.insert(

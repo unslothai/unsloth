@@ -363,12 +363,12 @@ class AudioCppBackend:
         if model.family == "minimax_music3":
             if not lyrics:
                 raise RuntimeError("MiniMax Music 3 needs lyrics.")
-            # The caption is the input; lyrics and the frame budget are options (the request fields too,
-            # which the task route maps onto the same options).
+            # The caption is the input. The task route maps duration_seconds onto the duration_sec
+            # option; sending both is refused as "conflicting option values", even when equal.
             request.update(
                 {"text": description or lyrics, "lyrics": lyrics, "duration_seconds": seconds}
             )
-            request_options.update({"lyrics": lyrics, "duration_sec": seconds})
+            request_options["lyrics"] = lyrics
         elif model.family == "yue2":
             if not description:
                 raise RuntimeError("YuE2 needs a style description.")

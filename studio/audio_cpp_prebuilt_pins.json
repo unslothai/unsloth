@@ -3,40 +3,40 @@
   "comment": "Trust anchor for install_audio_cpp_prebuilt.py: sha256 of each audio.cpp runtime archive, copied from the GitHub release asset digests. Generated; do not edit by hand. To bump: change DEFAULT_TAG / UPSTREAM_FALLBACK_TAG, then run `python studio/install_audio_cpp_prebuilt.py --write-pins` (the same digests `gh release view <tag> -R <repo> --json assets` lists).",
   "releases": {
     "unslothai/audio.cpp": {
-      "v0.8.2-audio8-perf-hotfix-unsloth.1": {
-        "audio-v0.8.2-audio8-perf-hotfix-unsloth.1-bin-macos-arm64-metal.tar.gz": "040e8dae4db35843d2f670c1b5124f97f00244978445f7b0bf1221d8dd93015e",
-        "audio-v0.8.2-audio8-perf-hotfix-unsloth.1-bin-macos-x64-metal.tar.gz": "e6d22cc309319f8eccb2130a3f4cd850cf35d98b1fd6e47ab27124fbec27a23b",
-        "audio-v0.8.2-audio8-perf-hotfix-unsloth.1-bin-ubuntu-arm64-cpu.tar.gz": "6a25d99a9ff9911b60b3238549cb8dce088e692b85c2823c8d1b4c7df128ed5c",
-        "audio-v0.8.2-audio8-perf-hotfix-unsloth.1-bin-ubuntu-x64-cpu-portable.tar.gz": "2259257f8e19192cb39be53f0fb3b7723ecce66ead32d05d6b152742fdbcb927",
-        "audio-v0.8.2-audio8-perf-hotfix-unsloth.1-bin-ubuntu-x64-cpu.tar.gz": "e2592cd6ebdfa7d519bfa2c2567c8fb083f46f07b348f44d70300179243abc24",
-        "audio-v0.8.2-audio8-perf-hotfix-unsloth.1-bin-ubuntu-x64-cuda12.tar.gz": "604cb08284b110dca50100ae041450ddbed1ceee9aa8001cf28a9b526092c078",
-        "audio-v0.8.2-audio8-perf-hotfix-unsloth.1-bin-ubuntu-x64-cuda13.tar.gz": "b8285bbc477df1d76cb71172ed71181c3144b1274599f5ef8d65764ea9fcc366",
-        "audio-v0.8.2-audio8-perf-hotfix-unsloth.1-bin-ubuntu-x64-vulkan.tar.gz": "092cd03f4c5b92dd73c2a4ef6b78870e5016d917b60620d09c6814578808f79a",
-        "audio-v0.8.2-audio8-perf-hotfix-unsloth.1-bin-windows-x64-cpu-portable.zip": "0e4dfaf438338b8d2d3d6e10f92804ec10973a6744f4259ff3a326f9be34d4d9",
-        "audio-v0.8.2-audio8-perf-hotfix-unsloth.1-bin-windows-x64-cpu.zip": "7d3d06971bed12b76ba575527158b47b8eec3a00d490f1b3b6f5b3c10aa08793",
-        "audio-v0.8.2-audio8-perf-hotfix-unsloth.1-bin-windows-x64-cuda12.zip": "baba3fa0452d362c599301699c7a040ad95eef0e202fbe87b2d490274460c222",
-        "audio-v0.8.2-audio8-perf-hotfix-unsloth.1-bin-windows-x64-cuda13.zip": "b599f939d7bd90ec8e98fba004aa0161bc098fe771080437d0d70bb0333ed0a0",
-        "audio-v0.8.2-audio8-perf-hotfix-unsloth.1-bin-windows-x64-vulkan.zip": "781ac06c7dfa00b5f1df2b307dee6591cb49fdfed5955db3308d1ea82ac39c68",
-        "audio-v0.8.2-audio8-perf-hotfix-unsloth.1-cudart-windows-x64-cuda12.zip": "78ff03c3215e254c5c38c8689a9054287d39d9490626a7c475babd88b326f2a6",
-        "audio-v0.8.2-audio8-perf-hotfix-unsloth.1-cudart-windows-x64-cuda13.zip": "3853900a3056a147737f09ffe5f440c3ca8047d4b1ae0554d1799b193db6bd7b"
+      "v0.9.0-unsloth.1": {
+        "audio-v0.9.0-unsloth.1-bin-macos-arm64-metal.tar.gz": "8eb13c99d0b1d9fec07b0cea2ab0b2b54cd10c95286c6b628494c8f168fa1f34",
+        "audio-v0.9.0-unsloth.1-bin-macos-x64-metal.tar.gz": "da2e7211b507ba456e7c1e3581e1f16f46c8caafd0214d3896854e9680ce9549",
+        "audio-v0.9.0-unsloth.1-bin-ubuntu-arm64-cpu.tar.gz": "1ce3a1c976216bbd451a3a16f0db0de6aed94602e652fa9208e03ac447319b9f",
+        "audio-v0.9.0-unsloth.1-bin-ubuntu-x64-cpu-portable.tar.gz": "46cc9315efa010bb8a00f20a269bd0f98ddb02d6abaa32a4eef06d20c2457385",
+        "audio-v0.9.0-unsloth.1-bin-ubuntu-x64-cpu.tar.gz": "10aecb17d4ea4e45a38c5b206909ad5ab8800ee6203e1cc307ff40f1cc99e680",
+        "audio-v0.9.0-unsloth.1-bin-ubuntu-x64-cuda12.tar.gz": "1f7ca305d8ec35560f71e6e928d85826cbd9be8c8fe6f5f87ae87d07fab8682e",
+        "audio-v0.9.0-unsloth.1-bin-ubuntu-x64-cuda13.tar.gz": "c4085661930256e66cecb21c3ee578407f17e5d2514e9abdf7f46f047da44cd1",
+        "audio-v0.9.0-unsloth.1-bin-ubuntu-x64-vulkan.tar.gz": "9b6e243196d42ac9890a3f0499eb4a0c9d0f6075cb36e0ad06cf327024476793",
+        "audio-v0.9.0-unsloth.1-bin-windows-x64-cpu-portable.zip": "05193187d2aaa47806e5dce1f8417cd31ef1a94d544041e4d083f882315ae8c2",
+        "audio-v0.9.0-unsloth.1-bin-windows-x64-cpu.zip": "3c3979d2b801b4ae562ee8e00d2d3a657c55f84b80fb5380ab7c779caf20713e",
+        "audio-v0.9.0-unsloth.1-bin-windows-x64-cuda12.zip": "ad157f2bd50abbd4d71b9fd370e6e9e73148bae2e3709e5b787fc360c3b08ff6",
+        "audio-v0.9.0-unsloth.1-bin-windows-x64-cuda13.zip": "09ee47dd7338dc16722512da2bdad51e1570238f5dca89d307f14aecd1171371",
+        "audio-v0.9.0-unsloth.1-bin-windows-x64-vulkan.zip": "ad6eb033d1d5fef44ab8000ec0db2650116f732658a1bc8244b02b0832778264",
+        "audio-v0.9.0-unsloth.1-cudart-windows-x64-cuda12.zip": "78ff03c3215e254c5c38c8689a9054287d39d9490626a7c475babd88b326f2a6",
+        "audio-v0.9.0-unsloth.1-cudart-windows-x64-cuda13.zip": "3853900a3056a147737f09ffe5f440c3ca8047d4b1ae0554d1799b193db6bd7b"
       }
     },
     "0xShug0/audio.cpp": {
-      "v0.8.2-audio8-perf-hotfix": {
-        "audio-v0.8.2-audio8-perf-hotfix-bin-macos-arm64-metal.tar.gz": "295c6b77476a9daa455025efe7931d89788e410eb4859d6a93a820c86d8afa26",
-        "audio-v0.8.2-audio8-perf-hotfix-bin-macos-x64-metal.tar.gz": "648e044850136d4fbc2c21979de7683c8186899baa4b064e762cf56f729ec16c",
-        "audio-v0.8.2-audio8-perf-hotfix-bin-ubuntu-x64-cpu-portable.tar.gz": "9df1b9744a2d98f757cd7c4be24a14a8f9e4bcdf66571c0b062e767cbe2020b7",
-        "audio-v0.8.2-audio8-perf-hotfix-bin-ubuntu-x64-cpu.tar.gz": "cf512fbb7e1b8547a740ad4268b14fef6affb56d02edbee07115dcc5759f2187",
-        "audio-v0.8.2-audio8-perf-hotfix-bin-ubuntu-x64-cuda12.8-colab.tar.gz": "ccfb35869d67e520801981392189a1ab8b6c829151093e0816ecd6a2d828d8c8",
-        "audio-v0.8.2-audio8-perf-hotfix-bin-ubuntu-x64-vulkan-portable.tar.gz": "0763c8a828be4d428884878d0de6b551ed269a3695fe78537e8f68de9067c98c",
-        "audio-v0.8.2-audio8-perf-hotfix-bin-ubuntu-x64-vulkan.tar.gz": "2144c8565f9b963dcea7a42cdc1bd09b09149f5934c0332f7383ed51a6b4418c",
-        "audio-v0.8.2-audio8-perf-hotfix-bin-windows-x64-cpu-portable.zip": "1d992c7861f3c9b00b20694c0fe7946c98fdaa2ba11f397c2b2bd29ec9fd31e6",
-        "audio-v0.8.2-audio8-perf-hotfix-bin-windows-x64-cpu.zip": "0117eb689c1fb265881112c2181ce14a5e1998e91d38c6d1ecec31c4f3aa69fa",
-        "audio-v0.8.2-audio8-perf-hotfix-bin-windows-x64-cuda12.4.zip": "024566e54ac04f064f334f97a4965437e770611875180af6ea8e177993ab3669",
-        "audio-v0.8.2-audio8-perf-hotfix-bin-windows-x64-cuda13.3.zip": "298255ed976244b70bc39cb15e9269e7bdb83a967ac37dfb34e50dfa4ddbb480",
-        "audio-v0.8.2-audio8-perf-hotfix-bin-windows-x64-vulkan.zip": "3426ed753f7c720221ce20d27a4c134b6e7595f20955d6a2b9d10e7f47cfec2b",
-        "audio-v0.8.2-audio8-perf-hotfix-cudart-windows-x64-cuda12.4.zip": "1bfdf9ba1cb189fd40f8cb837ed97fa7e03eb5043dbfbd739baf5e31801fd3c6",
-        "audio-v0.8.2-audio8-perf-hotfix-cudart-windows-x64-cuda13.3.zip": "f2c75df493c35fbe5b01c550dcf19770bd919f8f6668fc24c622f42ec1e5d024"
+      "v0.9.0": {
+        "audio-v0.9.0-bin-macos-arm64-metal.tar.gz": "7cea9219d5f06475011c5d225d71d988cecef633ff7d098ee8a4c7b08583b1b4",
+        "audio-v0.9.0-bin-macos-x64-metal.tar.gz": "f6e50c776bfe3b23cb5e420f1dd31b11661ed3dc01207cf05cf780dfdadca1c9",
+        "audio-v0.9.0-bin-ubuntu-x64-cpu-portable.tar.gz": "cf87b6baa46cf45fc8a2816b8f04f0f3f3fce32cca297231a4da56543f19fe87",
+        "audio-v0.9.0-bin-ubuntu-x64-cpu.tar.gz": "d0f0db4ab13bd3de1c15b6d60256e615d2bac65892fdd4fccc9a2b678db47635",
+        "audio-v0.9.0-bin-ubuntu-x64-cuda12.8-colab.tar.gz": "c9ed906f918246669c324f0d31f1b7dd80cbe003c35cf8a54932f333b57ca3f6",
+        "audio-v0.9.0-bin-ubuntu-x64-vulkan-portable.tar.gz": "ce661a7b39add12e91f1c7cc590d55854a39ec0a2fd04c004b3fed29cb978398",
+        "audio-v0.9.0-bin-ubuntu-x64-vulkan.tar.gz": "9f01f7bedb7aff67d553360ad62fa11db5b638ddbb85d49dd718127575f7d799",
+        "audio-v0.9.0-bin-windows-x64-cpu-portable.zip": "3ee19466a1a2b5366364ca8447a4794391dd89671e655ffd01aa421ac1668bfa",
+        "audio-v0.9.0-bin-windows-x64-cpu.zip": "6e65c6f112aee53e9f02cee134222915f3a88edf3c7bd0bc7db065683c07dfc5",
+        "audio-v0.9.0-bin-windows-x64-cuda12.4.zip": "f935d399b1cabb96422d9b35278dcabbbe7c16638a0e100a9b983421511eeb91",
+        "audio-v0.9.0-bin-windows-x64-cuda13.3.zip": "46eb928af284babb3526fc5198da12a4fe4e4445812d60e90a04e82cb5a87786",
+        "audio-v0.9.0-bin-windows-x64-vulkan.zip": "f884538138e44528a0bf17bb75dbe7ff7350cb91a14cb72c3e9cc1d4a31d6f1f",
+        "audio-v0.9.0-cudart-windows-x64-cuda12.4.zip": "155377e0b18d568002a6cb252a36dc2b96aaa93606c0e44ace945ec3123564fe",
+        "audio-v0.9.0-cudart-windows-x64-cuda13.3.zip": "2c7b1054df88a3cb357c005d5284a5d9d6faf14a13885f6cf0e74d966d74c013"
       }
     }
   }

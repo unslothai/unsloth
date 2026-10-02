@@ -208,3 +208,41 @@ def test_threads_budget_reaches_the_command_line(fake_binary, tmp_path, monkeypa
     assert seen["command"][-2:] == ["--threads", "3"]
     monkeypatch.setenv("UNSLOTH_CPU_THREADS", "zero")
     assert srv._cpu_threads() is None
+
+
+def test_cuda_graphs_are_off_only_for_families_that_wedge_with_them(
+    fake_binary, tmp_path, monkeypatch
+):
+    seen = []
+    launch = srv.subprocess.Popen  # the fixture's launcher
+
+    def spy(command, *args, **kwargs):
+        seen.append(kwargs["env"])
+        return launch(command, *args, **kwargs)
+
+    monkeypatch.setattr(srv.subprocess, "Popen", spy)
+    monkeypatch.delenv("GGML_CUDA_DISABLE_GRAPHS", raising = False)
+    for model in (_model("Nemotron-3.5-ASR-Streaming-0.6B-GGUF", "nemotron_asr", "asr"), CANARY):
+        srv.AudioCppServer.start(model, str(tmp_path / "m.gguf")).stop()
+    assert seen[0].get("GGML_CUDA_DISABLE_GRAPHS") == "1"
+    assert "GGML_CUDA_DISABLE_GRAPHS" not in seen[1]
+
+
+def test_gpu_runs_cap_host_threads_unless_the_user_set_a_budget(fake_binary, tmp_path, monkeypatch):
+    seen = []
+    launch = srv.subprocess.Popen  # the fixture's launcher
+
+    def spy(command, *args, **kwargs):
+        seen.append(command)
+        return launch(command, *args, **kwargs)
+
+    monkeypatch.setattr(srv.subprocess, "Popen", spy)
+    monkeypatch.delenv("UNSLOTH_CPU_THREADS", raising = False)
+    monkeypatch.setattr(srv.os, "cpu_count", lambda: 192)
+    srv.AudioCppServer.start(KOKORO, str(tmp_path / "m.gguf")).stop()  # the fixture's CPU backend
+    monkeypatch.setattr(srv, "select_backend", lambda binary, force_cpu: "cuda")
+    srv.AudioCppServer.start(KOKORO, str(tmp_path / "m.gguf")).stop()
+    monkeypatch.setenv("UNSLOTH_CPU_THREADS", "32")
+    srv.AudioCppServer.start(KOKORO, str(tmp_path / "m.gguf")).stop()
+    assert "--threads" not in seen[0]
+    assert seen[1][-2:] == ["--threads", "8"] and seen[2][-2:] == ["--threads", "32"]
