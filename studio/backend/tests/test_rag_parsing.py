@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 
@@ -337,7 +339,8 @@ _DOCX_XMLNS = (
     'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
     'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
     'xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape" '
-    'xmlns:v="urn:schemas-microsoft-com:vml"'
+    'xmlns:v="urn:schemas-microsoft-com:vml" '
+    'xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"'
 )
 
 
@@ -443,6 +446,113 @@ def test_docx_reads_one_branch_of_alternate_content(tmp_path):
         "</mc:AlternateContent></w:p>",
     )
     assert text == "Preferred"
+
+
+def _m(text):
+    return f'<m:r><w:rPr><w:rFonts w:ascii="Cambria Math"/></w:rPr><m:t>{text}</m:t></m:r>'
+
+
+def test_docx_keeps_equations_where_they_appear(tmp_path):
+    half = f"<m:f><m:fPr><m:ctrlPr><w:rPr><w:i/></w:rPr></m:ctrlPr></m:fPr><m:num>{_m('1')}</m:num><m:den>{_m('2')}</m:den></m:f>"
+    squared = f"<m:sSup><m:e>{_m('v')}</m:e><m:sup>{_m('2')}</m:sup></m:sSup>"
+    text = _docx_from_xml(
+        tmp_path,
+        f"<w:p>{_r('The kinetic energy is ')}<m:oMath>{_m('E=')}{half}{_m('m')}{squared}</m:oMath>{_r(' joules.')}</w:p>",
+        f"<w:p><m:oMathPara><m:oMathParaPr/><m:oMath>{_m('F=ma')}</m:oMath><m:oMath>{_m('p=mv')}</m:oMath></m:oMathPara></w:p>",
+    )
+    assert text == "The kinetic energy is E=\\frac{1}{2}mv^{2} joules.\nF=ma\np=mv"
+
+
+def test_docx_table_cells_keep_equations_without_deleted_parts(tmp_path):
+    root = f"<m:rad><m:radPr><m:degHide m:val=\"1\"/></m:radPr><m:deg/><m:e>{_m('x')}</m:e></m:rad>"
+    text = _docx_from_xml(
+        tmp_path,
+        "<w:tbl><w:tr>"
+        f"<w:tc><w:p>{_r('Work')}</w:p></w:tc>"
+        f"<w:tc><w:p><m:oMath>{_m('W=F')}<m:d><m:e>{_m('a+b')}</m:e></m:d>"
+        f'<w:del w:id="1" w:author="a">{_m("+c")}</w:del>{root}</m:oMath></w:p></w:tc>'
+        "</w:tr></w:tbl>",
+    )
+    assert text == "Work | W=F(a+b)\\sqrt{x}"
+
+
+def test_docx_equations_keep_binomials_and_skip_hidden_phantoms(tmp_path):
+    binom = f'<m:d><m:e><m:f><m:fPr><m:type m:val="noBar"/></m:fPr><m:num>{_m("n")}</m:num><m:den>{_m("k")}</m:den></m:f></m:e></m:d>'
+    phantom = (
+        f'<m:phant><m:phantPr><m:show m:val="off"/></m:phantPr><m:e>{_m("xyz")}</m:e></m:phant>'
+    )
+    text = _docx_from_xml(
+        tmp_path, f"<w:p><m:oMath>{binom}{_m('a')}{phantom}{_m('b')}</m:oMath></w:p>"
+    )
+    assert text == "({n \\atop k})ab"
+
+
+def test_docx_equations_keep_bars_and_group_characters(tmp_path):
+    mean = f'<m:bar><m:barPr><m:pos m:val="top"/></m:barPr><m:e>{_m("x")}</m:e></m:bar>'
+    brace = f"<m:limLow><m:e><m:groupChr><m:e>{_m('a+b')}</m:e></m:groupChr></m:e><m:lim>{_m('n')}</m:lim></m:limLow>"
+    arrow = f'<m:groupChr><m:groupChrPr><m:chr m:val="→"/><m:pos m:val="top"/></m:groupChrPr><m:e>{_m("Δ")}</m:e></m:groupChr>'
+    text = _docx_from_xml(
+        tmp_path, f"<w:p><m:oMath>{mean}{_m('=')}{brace}{_m(',')}{arrow}</m:oMath></w:p>"
+    )
+    assert text == "\\overline{x}=\\underbrace{a+b}_{n},\\overset{→}{Δ}"
+
+
+# Same cases and expected text as the chat attachment reader's test (attachment-preview-text.test.ts).
+_OMML_CASES = [
+    (
+        '<m:nary><m:naryPr><m:chr m:val="∑"/></m:naryPr><m:sub>{i=1}</m:sub><m:sup>{n}</m:sup><m:e>{i}</m:e></m:nary>',
+        "∑_{i=1}^{n}i",
+    ),
+    ("<m:nary><m:sub>{0}</m:sub><m:sup>{1}</m:sup><m:e>{x}</m:e></m:nary>", "∫_{0}^{1}x"),
+    (
+        "<m:sSubSup><m:e>{x}</m:e><m:sub>{i}</m:sub><m:sup>{2}</m:sup></m:sSubSup><m:sSub><m:e>{a}</m:e><m:sub>{0}</m:sub></m:sSub>",
+        "x_{i}^{2}a_{0}",
+    ),
+    ("<m:sPre><m:sub>{6}</m:sub><m:sup>{14}</m:sup><m:e>{C}</m:e></m:sPre>", "{}_{6}^{14}C"),
+    ("<m:limUpp><m:e>{x}</m:e><m:lim>{def}</m:lim></m:limUpp>", "x^{def}"),
+    ("<m:limLow><m:e>{lim}</m:e><m:lim>{n→∞}</m:lim></m:limLow>", "lim_{n→∞}"),
+    (
+        '<m:f><m:fPr><m:type m:val="noBar"/></m:fPr><m:num>{n}</m:num><m:den>{k}</m:den></m:f>'
+        '<m:phant><m:phantPr><m:show m:val="off"/></m:phantPr><m:e>{xyz}</m:e></m:phant>',
+        "{n \\atop k}",
+    ),
+    (
+        "<m:acc><m:e>{θ}</m:e></m:acc><m:rad><m:deg>{3}</m:deg><m:e>{y}</m:e></m:rad>",
+        "θ̂\\sqrt[3]{y}",
+    ),
+    (
+        '<m:rad><m:radPr><m:degHide m:val="1"/></m:radPr><m:deg>{3}</m:deg><m:e>{x}</m:e></m:rad>'
+        '<m:nary><m:naryPr><m:chr m:val="∑"/><m:subHide m:val="0"/><m:supHide/></m:naryPr><m:sub>{k}</m:sub><m:sup>{n}</m:sup><m:e>{a}</m:e></m:nary>',
+        "\\sqrt{x}∑_{k}a",
+    ),
+    ("<m:func><m:fName>{sin}</m:fName><m:e>{x}</m:e></m:func>", "sin x"),
+    (
+        "<m:m><m:mr><m:e>{a}</m:e><m:e>{b}</m:e></m:mr><m:mr><m:e>{c}</m:e><m:e>{d}</m:e></m:mr></m:m>",
+        "a & b \\\\ c & d",
+    ),
+    ("<m:eqArr><m:e>{x=1}</m:e><m:e>{y=2}</m:e></m:eqArr>", "x=1\ny=2"),
+    (
+        '<m:d><m:e>{a}</m:e><m:e>{b}</m:e></m:d><m:d><m:dPr><m:begChr m:val="["/><m:endChr m:val=""/></m:dPr><m:e>{c}</m:e></m:d>',
+        "(a|b)[c",
+    ),
+    (
+        '<m:bar><m:e>{x}</m:e></m:bar><m:groupChr><m:groupChrPr><m:chr m:val="⏞"/><m:pos m:val="top"/></m:groupChrPr><m:e>{y}</m:e></m:groupChr>'
+        '<m:groupChr><m:groupChrPr><m:chr m:val="←"/></m:groupChrPr><m:e>{z}</m:e></m:groupChr>',
+        "\\underline{x}\\overbrace{y}\\underset{←}{z}",
+    ),
+    (
+        '{a}<w:r><w:t xml:space="preserve"> if </w:t></w:r>'
+        "<w:sdt><w:sdtPr><w:showingPlcHdr/></w:sdtPr><w:sdtContent>{prompt}</w:sdtContent></w:sdt>{b}",
+        "a if b",
+    ),
+]
+
+
+@pytest.mark.parametrize(("omml", "expected"), _OMML_CASES)
+def test_docx_equation_structures(tmp_path, omml, expected):
+    filled = re.sub(r"\{([^{}]*)\}", lambda match: _m(match.group(1)), omml)
+    text = _docx_from_xml(tmp_path, f"<w:p><m:oMath>{filled}</m:oMath></w:p>")
+    assert text == expected
 
 
 def test_docx_keeps_rows_and_cells_wrapped_in_content_controls(tmp_path):

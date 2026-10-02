@@ -20,6 +20,9 @@ import weakref
 from functools import update_wrapper
 from typing import Any, Optional
 
+from .diffusion_bg_compile import capture_suppressed as _bg_capture_suppressed
+from .diffusion_bg_compile import eager_forced as _bg_eager_forced
+
 CUDA_GRAPH_DISABLE_ENV = "UNSLOTH_DISABLE_CUDA_GRAPH"
 
 # Per module. Legitimate second keys exist, but each costs a pool-sized slice of VRAM.
@@ -433,8 +436,12 @@ class GraphedForward:
         return self.orig(*args, **kwargs)
 
     def __call__(self, *args, **kwargs):
+        if _bg_capture_suppressed():
+            # Background compile thread: never capture off the render thread.
+            return self.orig(*args, **kwargs)
         if (
             not self.enabled
+            or _bg_eager_forced()
             or self.bypassed
             or self.poisoned
             # Belt to the caller's per-chunk bypass: one step's cond and uncond share a key.

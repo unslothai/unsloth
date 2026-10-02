@@ -57,6 +57,32 @@ after(async () => {
   await vite.close();
 });
 
+test("markdown transcripts import as conversations", () => {
+  const markdown = [
+    "## User",
+    "",
+    "Hello",
+    "",
+    "## Assistant",
+    "",
+    "Hi there",
+    "",
+  ].join("\n");
+  const conversations = parseImportText(markdown, "my-chat.md");
+  assert.equal(conversations.length, 1);
+  assert.equal(conversations[0].title, "my-chat");
+  assert.deepEqual(
+    conversations[0].messages.map(({ role, content }) => ({
+      role,
+      content: (content as ReadonlyArray<{ text: string }>)[0]?.text,
+    })),
+    [
+      { role: "user", content: "Hello" },
+      { role: "assistant", content: "Hi there" },
+    ],
+  );
+});
+
 test("message JSONL imports as one conversation", () => {
   const conversations = parseImportText(
     '{"role":"user","content":"Hello"}\n' +
