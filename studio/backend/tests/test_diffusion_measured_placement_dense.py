@@ -189,3 +189,15 @@ def test_gguf_denoiser_keeps_the_flat_plan(klein_pipe):
     # GGUF dequantizes a whole Linear per forward: a transient the dense eager table never measured
     plan = _flat_plan(12758)
     assert _refine(klein_pipe, plan) is plan
+
+
+def test_small_host_int8_denoiser_keeps_the_flat_plan(klein_pipe):
+    import torch
+
+    import core.inference.diffusion_small_host as sh
+
+    dit = torch.nn.Sequential(torch.nn.Linear(2048, 2048)).to(torch.bfloat16)
+    sh.quantize_int8_weight_(dit, compute_dtype = torch.float16, work_device = "cpu")
+    klein_pipe.transformer = types.SimpleNamespace(dtype = torch.float16, parameters = dit.parameters)
+    plan = _flat_plan(12758)
+    assert _refine(klein_pipe, plan) is plan

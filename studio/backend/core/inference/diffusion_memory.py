@@ -1425,12 +1425,17 @@ def _pipe_denoisers_hold_torchao(pipe: Any) -> bool:
     )
 
 
-def _pipe_denoisers_hold_gguf(pipe: Any) -> bool:
-    """GGUF weights dequantize a whole Linear per forward, a transient the dense eager table never measured."""
+def _pipe_denoisers_hold_packed(pipe: Any) -> bool:
+    """GGUF or int8 (small-host route) weights dequantize a whole Linear per forward, a transient the dense eager
+    table never measured."""
     try:
+        import torch
         for name in ("transformer", "transformer_2", "unconditional_transformer", "unet"):
             params = getattr(getattr(pipe, name, None), "parameters", None)
-            if callable(params) and any(type(p).__name__ == "GGUFParameter" for p in params()):
+            if callable(params) and any(
+                type(p).__name__ == "GGUFParameter" or p.dtype in (torch.int8, torch.uint8)
+                for p in params()
+            ):
                 return True
     except Exception:  # noqa: BLE001
         return True
@@ -2113,7 +2118,7 @@ def refine_plan_from_loaded_weights(
             return plan
         dense_mib = None if _pipe_denoisers_hold_torchao(pipe) else dit
         compute_bytes = _denoiser_compute_bytes(pipe)
-        if dense_mib is not None and (compute_bytes is None or _pipe_denoisers_hold_gguf(pipe)):
+        if dense_mib is not None and (compute_bytes is None or _pipe_denoisers_hold_packed(pipe)):
             # measured on fp16 / fp32 cards only; bf16 cards can compile later
             return plan
         headroom = measured_image_runtime_mib(
