@@ -181,9 +181,15 @@ def test_shared_engine_brings_its_own_nvcc_headers(isolated, monkeypatch, engine
     plan = install.install_plan(engine)
     assert plan["shared"] is True and plan["provided"]["torch"] == studio["torch"]
     assert "nvidia-cuda-crt" not in plan["provided"]
-    assert f"nvidia-cuda-crt=={pins['nvidia-cuda-crt']}" in plan["requirements"]
-    # The locked release itself is still shared.
-    assert plan["provided"]["nvidia-cuda-nvcc"] == pins["nvidia-cuda-nvcc"]
+    # nvcc finds its headers beside its own binary, so a matching nvcc comes along too.
+    for name in install._TOOLCHAIN:
+        assert name not in plan["provided"]
+        assert f"{name}=={pins[name]}" in plan["requirements"]
+
+    toolchain = {name: pins[name] for name in install._TOOLCHAIN}
+    studio_with_engine_torch(monkeypatch, engine, **toolchain)
+    plan = install.install_plan(engine)
+    assert {name: plan["provided"][name] for name in install._TOOLCHAIN} == toolchain
 
 
 def test_shared_engine_never_sees_studio_flashinfer(tmp_path):
