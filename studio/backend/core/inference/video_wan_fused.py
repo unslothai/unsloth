@@ -109,7 +109,9 @@ def _kernels() -> Optional[dict]:
         BLOCK: tl.constexpr,
     ):
         # out = fp16((rstd * (x - mean)) * (1 + (tbl[scale] + temb[scale])) + (tbl[shift] + temb[shift]))
-        row = tl.program_id(0)
+        # int64: the per-token temb offset l * 6 * D passes 2**31 from 116,510 tokens at D=3072 (a 529-frame 1280x704
+        # TI2V-5B clip), and an int32 product wraps to a read outside temb.
+        row = tl.program_id(0).to(tl.int64)
         col = tl.program_id(1) * BLOCK + tl.arange(0, BLOCK)
         mask = col < D
         b = row // L
@@ -134,7 +136,7 @@ def _kernels() -> Optional[dict]:
         X, A, T, TBL, OUT, D, L, stb, stl, stk, sbk, K_GATE: tl.constexpr, BLOCK: tl.constexpr
     ):
         # out = fp16(x.float() + a.float() * (tbl[gate] + temb[gate]))
-        row = tl.program_id(0)
+        row = tl.program_id(0).to(tl.int64)  # int64 temb offset, as in _modnorm
         col = tl.program_id(1) * BLOCK + tl.arange(0, BLOCK)
         mask = col < D
         b = row // L

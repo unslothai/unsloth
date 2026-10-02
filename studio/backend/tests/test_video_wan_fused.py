@@ -201,6 +201,31 @@ def test_fused_kernels_match_the_stock_op_chain_elementwise():
 
 
 @needs_cuda
+def test_modulation_kernels_index_past_two_gib_of_temb():
+    """A per-token temb past 2**31 elements (1280x704, 529 frames: 116,510+ tokens at D=3072) must not wrap the row
+    offset: the tail rows, beyond the int32 limit, still equal the stock expression."""
+    import torch.nn.functional as F
+
+    B, L, D = 1, 116_512, 3072
+    if torch.cuda.mem_get_info()[0] < 8 << 30:
+        pytest.skip("needs ~8 GiB free on the GPU")
+    g = torch.Generator(device = "cuda").manual_seed(5)
+    x = torch.randn(B, L, D, device = "cuda", generator = g).half()
+    a = torch.randn(B, L, D, device = "cuda", generator = g).half()
+    t = (torch.randn(B, L, 6, D, device = "cuda", generator = g) * 0.5).half()
+    tbl = torch.randn(1, 6, D, device = "cuda", generator = g) / D**0.5
+    k = wf._kernels()
+    mean, rstd = wf._stats(x, 1e-6)
+    got_n = k["modnorm"](x, mean, rstd, t, tbl, 0, 1)[:, -64:]
+    got_g = k["gate_residual"](x, a, t, tbl, 2)[:, -64:]
+    x, a, t = x[:, -64:], a[:, -64:], t[:, -64:]
+    sh, sc, gate = (tbl.unsqueeze(0) + t.float()).chunk(6, dim = 2)[:3]
+    ln = F.layer_norm(x.float(), (D,), None, None, 1e-6)
+    assert torch.equal(got_n, (ln * (1 + sc.squeeze(2)) + sh.squeeze(2)).type_as(x))
+    assert torch.equal(got_g, (x.float() + a * gate.squeeze(2)).type_as(x))
+
+
+@needs_cuda
 def test_fused_forward_survives_group_offload_hooks():
     """Installed before the offload hooks attach (as the loader does), the streamed blocks run the fused path."""
     pytest.importorskip("diffusers.hooks")
