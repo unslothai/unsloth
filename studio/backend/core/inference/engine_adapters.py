@@ -281,7 +281,11 @@ def memory_reserve_mib(engine: str, options: dict | None) -> int:
 RESERVE_SHARE = 0.06
 
 
-def gpu_memory_fraction(gpu_ids: list[int], reserve_mib: int = 512, reserve_share: float = 0.0) -> float:
+def gpu_memory_fraction(
+    gpu_ids: list[int],
+    reserve_mib: int = 512,
+    reserve_share: float = 0.0,
+) -> float:
     """Budget every selected physical GPU after the previous resident is stopped.
 
     Reserve the larger of ``reserve_mib`` and ``reserve_share`` of each card for allocations the
