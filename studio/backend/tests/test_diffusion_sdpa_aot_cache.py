@@ -39,7 +39,6 @@ def _restore_cacheable():
         compile_config.set_knob(module_name, attr, value)
 
 
-
 class _Block(torch.nn.Module):
     def __init__(self) -> None:
         super().__init__()
@@ -99,7 +98,9 @@ def test_sdpa_aot_cache_key_carries_the_priority_order(_restore_cacheable, monke
     assert f"sdp_priority={priority}" in marked[HELPERS[0]]
 
 
-def test_sdpa_kernel_graph_hits_the_aot_cache_after_a_restart(_restore_cacheable, monkeypatch, tmp_path):
+def test_sdpa_kernel_graph_hits_the_aot_cache_after_a_restart(
+    _restore_cacheable, monkeypatch, tmp_path
+):
     # A dynamo reset is a fresh process for dynamo; the second compile must be served by AOTAutogradCache, not bypass it.
     from torch._dynamo.utils import counters
     from core.inference import diffusion_aot_cache

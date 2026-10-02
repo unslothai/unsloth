@@ -57,7 +57,9 @@ def install(logger: Any = None) -> bool:
         import torch
         import torch.nn.attention as attention
 
-        if not all(callable(getattr(attention, name.rsplit(".", 1)[1], None)) for name in SDPA_HELPERS):
+        if not all(
+            callable(getattr(attention, name.rsplit(".", 1)[1], None)) for name in SDPA_HELPERS
+        ):
             return False
         # The recorded knob (what render threads re-apply) and this thread's live value: both must carry the helpers.
         recorded = compile_config.get_knob(_INDUCTOR_MODULE, _KNOB)
