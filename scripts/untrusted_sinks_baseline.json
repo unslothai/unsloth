@@ -9,6 +9,7 @@
     "studio/backend/cloudflare_tunnel.py::CloudflareTunnel.start::subprocess.Popen::7bde0180025a87ad::dac033ed599e5aa1": 1,
     "studio/backend/core/export/export.py::ExportBackend._convert_peft_dir_to_gguf::subprocess.run::1603cf8e92881a13::1edff34d46a1bd40": 1,
     "studio/backend/core/export/worker.py::_handle_load::trust_remote_code = True (assignment)::a751fa788de6b6e6::c91cd13d43340f10": 1,
+    "studio/backend/core/inference/diffusion.py::_class_pins_fp32::getattr(module, ...)::3e60e035488d43db::e37b634ccb2657aa": 1,
     "studio/backend/core/inference/diffusion_attention.py::_ensure_attention_backend_installed::subprocess.run::1233c4bae3af6ff4::95c7247064cbd43f": 1,
     "studio/backend/core/inference/diffusion_families.py::assert_pipeline_class_available::getattr(module, ...)::c1c2ea585e59b2c5::1f2d656a1f943807": 1,
     "studio/backend/core/inference/diffusion_prequant.py::load_prequantized_transformer::getattr(module, ...)::16ee61c6782c040e::a11208b85d90d5cd": 1,
@@ -56,6 +57,7 @@
     "unsloth/models/_utils.py::resolve_remote_code_model_class::get_class_from_dynamic_module::281f4ae0ed10fad9::e21171dbdef3d324": 1,
     "unsloth/models/loader_utils.py::_dequantize_leftover_fp8_params::getattr(module, ...)::04c2d4b7e025ad1d::c9144a36a56c6863": 1,
     "unsloth/models/loader_utils.py::_dequantize_leftover_fp8_params::getattr(module, ...)::12d3d0c5db05df5b::c9144a36a56c6863": 1,
+    "unsloth/models/loader_utils.py::_dequantize_leftover_fp8_params::getattr(module, ...)::6f222f3ec08ccf8b::c9144a36a56c6863": 1,
     "unsloth/models/sentence_transformer.py::FastSentenceTransformer._import_sentence_transformers_class::import_from_string::180573f5aeefdb98::ca21ebba6b774e10": 1,
     "unsloth/models/sentence_transformer.py::FastSentenceTransformer._resolve_module_class::import_from_string::180573f5aeefdb98::8f4d1ec90a70964f": 1,
     "unsloth/models/sentence_transformer.py::FastSentenceTransformer._resolve_module_class::import_module_class::9a08f32d1af83ea3::8f4d1ec90a70964f": 1,
@@ -67,6 +69,7 @@
     "unsloth_cli/_studio_deps.py::_venv_site_packages::subprocess.check_output::2f063ff51a6531cd::83388fb5335364a5": 1,
     "unsloth_cli/claude_subagent_mcp.py::run_local_agent::subprocess.Popen::11a73c0e3ba20623::f20339521068fe3f": 1,
     "unsloth_cli/codex_subagent_mcp.py::run_local_agent::subprocess.Popen::09b49293346c6e61::6f880f37d6d1d934": 1,
+    "unsloth_cli/commands/start.py::_install_agent::subprocess.run::b2cbfb6c7744e309::66eca467520bc819": 1,
     "unsloth_cli/commands/start.py::_launch::subprocess.run::eb772eb74b7f9cc9::6c1fd4a887382b2a": 1,
     "unsloth_cli/commands/start.py::_start_studio_server::subprocess.Popen::664080759b53253e::a8d21188c085bb02": 1
   }

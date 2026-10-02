@@ -508,6 +508,15 @@ class _FileFacts:
         self.module_instances: dict = {}
         # Module-scope `runner = execute`, for the same reason.
         self.module_callable_aliases: dict = {}
+        # Aliases bound by a plain `import x` / `import x as y`, which are modules by
+        # construction. `getattr(namespace, parsed)` on one is unsafe reflection, and the
+        # name heuristic alone missed every module this tree imports under a name it does
+        # not happen to list.
+        self.module_aliases: set = set()
+        # Module-level dicts whose values are all literals. A lookup in one is a
+        # validated translation, not a passthrough: the result can only be one of the
+        # constants written in the source, whatever key the attacker supplies.
+        self.constant_maps: set = set()
         self._collect()
         self._collect_module_bindings()
 
@@ -520,6 +529,7 @@ class _FileFacts:
                     for alias in child.names:
                         if alias.asname:
                             self._bind_import(alias.asname, alias.name)
+                            self.module_aliases.add(alias.asname)
                         else:
                             # `import pkg.parser` binds `pkg`, not `pkg.parser`. Recording
                             # the full dotted name against the head made resolution append
@@ -528,6 +538,7 @@ class _FileFacts:
                             # all: taint returned by that helper never reached its caller.
                             head = alias.name.split(".")[0]
                             self._bind_import(head, head)
+                            self.module_aliases.add(head)
                 elif isinstance(child, ast.ImportFrom):
                     base = self._absolute(child)
                     for alias in child.names:
@@ -573,6 +584,23 @@ class _FileFacts:
 
         walk(self.tree)
 
+    def _note_constant_map(self, names: list, value: ast.AST) -> None:
+        """`_DTYPES = {"F32": "float32", ...}`: a fixed translation table.
+
+        `getattr(mx, _DTYPES.get(meta["dtype"], "float32"))` reads as a dynamic name but
+        can only produce one of the literals above it, which is what validating at the
+        producer looks like. Reporting those is how a gate earns its way into being
+        switched off, so the lookup is treated as the sanitiser it is.
+        """
+        if not isinstance(value, ast.Dict) or not value.keys:
+            return
+        if any(key is None for key in value.keys):
+            return
+        if not all(isinstance(item, ast.Constant) for item in value.values):
+            return
+        for name in names:
+            self.constant_maps.add(name)
+
     def _collect_module_bindings(self) -> None:
         """Module-scope aliases of sinks and constructions, after imports are known."""
         for node in ast.iter_child_nodes(self.tree):
@@ -587,6 +615,7 @@ class _FileFacts:
             names = [t.id for t in targets if isinstance(t, ast.Name)]
             if not names:
                 continue
+            self._note_constant_map(names, value)
             if isinstance(value, ast.Call):
                 # Through the shared resolver, so an imported first-party class is
                 # accepted here too. Taking only classes declared in this file left
@@ -811,6 +840,27 @@ class _FileFacts:
                         resolved.append((file, qualname))
             if resolved:
                 return resolved
+        # `Runner(json.loads(blob)["command"])`: the call reaches `__init__`, which is
+        # where the value is stored on the instance. Nothing resolved a class name used
+        # as a callee, so a constructor that parks an argument on `self` and a method that
+        # later executes it were both outside the analysis.
+        if not tail:
+            constructed = self.resolve_construction(name)
+            if constructed:
+                local = f"{constructed}.__init__"
+                if local in self.functions:
+                    return [(self.path, local)]
+                # The constructor has to actually exist before this branch claims the
+                # call. `resolve_construction` resolves an imported NAME, not necessarily
+                # a class, so accepting whatever the index returned sent every bare call
+                # to an imported helper to a `f.__init__` that does not exist and the
+                # import resolution below never ran: two dozen findings went quiet.
+                file, module = self.index.resolve_module(constructed)
+                if file is not None and module and constructed.startswith(module + "."):
+                    inner = f"{constructed[len(module) + 1 :]}.__init__"
+                    defining = self.index.facts.get(file)
+                    if defining is not None and inner in defining.functions:
+                        return [(file, inner)]
         # `from pkg.mod import f` then `f(...)`.
         targets = self._targets(head)
         if not targets:
@@ -915,6 +965,11 @@ class _TaintPass(ast.NodeVisitor):
                 return f"read via .{method}"
             return self.tainted(node.value)
         if isinstance(node, ast.Subscript):
+            # `_DTYPES[meta["dtype"]]` is the raising form of the same translation table
+            # lookup, and the result is one of the literals in it either way. Reading it
+            # through the base would have carried the key's taint into a constant.
+            if _call_name(node.value) in self.facts.constant_maps:
+                return None
             return self.tainted(node.value)
         if isinstance(node, ast.Starred):
             return self.tainted(node.value)
@@ -981,6 +1036,15 @@ class _TaintPass(ast.NodeVisitor):
         method = _matches_any(names, UNTRUSTED_METHODS)
         if method:
             return f"read via .{method}"
+        # A lookup in a literal translation table, whatever the key. Before the
+        # passthrough list below, which would otherwise carry the key's taint into the
+        # looked-up constant.
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr in ("get", "pop")
+            and _call_name(node.func.value) in self.facts.constant_maps
+        ):
+            return None
         # Container and string operations preserve taint.
         if isinstance(node.func, ast.Attribute) and node.func.attr in (
             "get",
@@ -1011,7 +1075,9 @@ class _TaintPass(ast.NodeVisitor):
             reason = self.tainted(node.func.value)
             if reason:
                 return reason
-            for argument in node.args:
+            # Keywords too: `"x.{n}".format(n = parsed)` is the named spelling of the
+            # same interpolation, and checking positions only returned a clean string.
+            for argument in list(node.args) + [k.value for k in node.keywords]:
                 reason = self.tainted(argument)
                 if reason:
                     return reason
@@ -1345,6 +1411,50 @@ class _TaintPass(ast.NodeVisitor):
             saved[3],
         )
 
+    def visit_ListComp(self, node: ast.ListComp) -> None:
+        self._visit_comprehension(node)
+
+    def visit_SetComp(self, node: ast.SetComp) -> None:
+        self._visit_comprehension(node)
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:
+        self._visit_comprehension(node)
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+        self._visit_comprehension(node)
+
+    def _visit_comprehension(self, node: ast.AST) -> None:
+        """Bind each `for` target before the element is walked.
+
+        `[import_module(name) for name in json.loads(blob)["modules"]]` is one of the most
+        common shapes in this tree, and the target was never bound, so the sink inside the
+        element read `name` as clean. Taking the whole comprehension's value was already
+        handled; it was the sink INSIDE one that was invisible.
+        """
+        for generator in node.generators:
+            reason = self.tainted(generator.iter)
+            if reason:
+                self._assign(generator.target, reason)
+        self.generic_visit(node)
+
+    def visit_Match(self, node: ast.Match) -> None:
+        """`case {"module": name}` binds `name` out of the subject.
+
+        Structural matching is how a parsed config gets destructured, and the captures
+        were never bound, so everything a `match` pulled out of attacker JSON read clean.
+        """
+        reason = self.tainted(node.subject)
+        if reason:
+            for case in node.cases:
+                for captured in ast.walk(case.pattern):
+                    name = getattr(captured, "name", None)
+                    if isinstance(name, str):
+                        self._bind(self.local_reasons, name, reason)
+                    rest = getattr(captured, "rest", None)
+                    if isinstance(rest, str):
+                        self._bind(self.local_reasons, rest, reason)
+        self.generic_visit(node)
+
     def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
         # The async form fell through to generic traversal, so `async for name in
         # parse(blob)` left the loop target clean and an async consumer of a parsed
@@ -1444,11 +1554,22 @@ class _TaintPass(ast.NodeVisitor):
         if not params:
             return
         bound = self.state.pending_params.setdefault(target, {})
+        # `Runner(command)` is spelled with no receiver at all, yet `__init__` still
+        # takes `self` first, so without the offset the argument bound to `self` and the
+        # real parameter stayed clean.
+        constructing = target[1].rpartition(".")[2] == "__init__" and not isinstance(
+            node.func, ast.Attribute
+        )
         offset = (
             1
             if self.state.is_method.get(target)
-            and isinstance(node.func, ast.Attribute)
-            and not self._receiver_spelled_out(node.func, target)
+            and (
+                constructing
+                or (
+                    isinstance(node.func, ast.Attribute)
+                    and not self._receiver_spelled_out(node.func, target)
+                )
+            )
             else 0
         )
         for position, argument in enumerate(node.args):
@@ -1578,7 +1699,15 @@ class _TaintPass(ast.NodeVisitor):
             if not isinstance(holder, ast.Call)
             else []
         )
-        is_module_ish = any(held in MODULE_ISH_NAMES for held in holder_names) or (
+        # The spelling as written, not only the canonical target: `import x.y as ns`
+        # canonicalises to `x.y`, whose head is `x`, so matching the alias table on the
+        # canonical head never saw `ns` and the widening did nothing for an aliased import.
+        written = _call_name(holder).split(".")[0] if not isinstance(holder, ast.Call) else ""
+        is_module_ish = (
+            any(held in MODULE_ISH_NAMES for held in holder_names)
+            or (written in self.facts.module_aliases if written else False)
+            or any(held in self.facts.module_aliases for held in holder_names)
+        ) or (
             isinstance(holder, ast.Call)
             and _matches_any(
                 self.facts.canonicals(_call_name(holder.func)),
@@ -2069,11 +2198,21 @@ def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
                 and any(f["why"].startswith(prefix) for prefix in _DOWNLOADS)
             )
             findings.extend(found)
-        body = [
-            child
-            for child in ast.iter_child_nodes(facts.tree)
-            if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-        ]
+        body = []
+        for child in ast.iter_child_nodes(facts.tree):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if isinstance(child, ast.ClassDef):
+                # A class body executes at import time, and it was skipped outright, so a
+                # sink sitting in one was never scanned at all. Only the statements the
+                # body itself runs: the methods are analysed under their own qualnames.
+                body.extend(
+                    inner
+                    for inner in ast.iter_child_nodes(child)
+                    if not isinstance(inner, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                )
+                continue
+            body.append(child)
         module_visitor, module_converged = _settle(facts, "<module>", body, state)
         if not module_converged:
             unconverged.add(f"{facts.relative}::<module>")

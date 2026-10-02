@@ -1894,3 +1894,202 @@ def test_a_local_reconstructed_from_a_second_class_resolves_both(tmp_path):
         "    return runner.execute(json.loads(blob)['command'])\n",
     )
     assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_sink_inside_a_comprehension_is_reported(tmp_path):
+    """`[import_module(n) for n in json.loads(blob)["modules"]]`.
+
+    One of the most common shapes in this tree, and the `for` target was never bound, so
+    the sink in the element read it as clean. Taking the comprehension's whole value was
+    already handled; it was the sink INSIDE one that was invisible.
+    """
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "def load(blob):\n"
+        "    return [importlib.import_module(n) for n in json.loads(blob)['modules']]\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_generator_expression_target_is_bound(tmp_path):
+    """The lazy form is the one used inside `join`, which is how argv strings get built."""
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def load(blob):\n"
+        "    joined = ' '.join(part for part in json.loads(blob)['argv'])\n"
+        "    return subprocess.run(joined, shell = True)\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_match_capture_carries_the_subjects_taint(tmp_path):
+    """`case {"module": name}` is how a parsed config gets destructured."""
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "def load(blob):\n"
+        "    match json.loads(blob):\n"
+        "        case {'module': name}:\n"
+        "            return importlib.import_module(name)\n"
+        "    return None\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_sink_in_a_class_body_is_scanned(tmp_path):
+    """A class body runs at import time, and it was skipped outright.
+
+    Module-level statements were scanned and function bodies were scanned, so a sink
+    sitting between the two was the one place nothing looked at.
+    """
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "from pathlib import Path\n"
+        "class Loader:\n"
+        "    name = json.loads(Path('downloaded.json').read_text())['module']\n"
+        "    mod = importlib.import_module(name)\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_keyword_format_argument_keeps_its_taint(tmp_path):
+    """`"x.{n}".format(n = parsed)` is the named spelling of the same interpolation."""
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "def load(blob):\n"
+        "    return importlib.import_module('x.{n}'.format(n = json.loads(blob)['m']))\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_constructor_argument_reaches_init(tmp_path):
+    """`Runner(parsed)` is where a value gets parked on the instance.
+
+    A class name used as a callee resolved to nothing, so a constructor that stores an
+    argument on `self` and a method that later executes it were both outside the
+    analysis. The receiver offset has to apply here too, with no receiver written out.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "class Runner:\n"
+        "    def __init__(self, command):\n"
+        "        self.command = command\n"
+        "    def go(self):\n"
+        "        return subprocess.run(self.command)\n"
+        "def load(blob):\n"
+        "    runner = Runner(json.loads(blob)['command'])\n"
+        "    return runner.go()\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_bare_call_to_an_imported_helper_still_resolves(tmp_path):
+    """The guard for the constructor branch, which claimed calls it had no business in.
+
+    `resolve_construction` resolves an imported NAME, not necessarily a class, so taking
+    whatever the index returned sent every bare call to an imported helper to an
+    `__init__` that does not exist and the import resolution below never ran. Two dozen
+    real findings went quiet, which is how this was caught.
+    """
+    (tmp_path / "producer.py").write_text(
+        "import json\ndef parse(blob):\n    return json.loads(blob)['module']\n",
+        encoding = "utf-8",
+    )
+    consumer = tmp_path / "consumer.py"
+    consumer.write_text(
+        "import importlib\nfrom producer import parse\n"
+        "def load(blob):\n"
+        "    return importlib.import_module(parse(blob))\n",
+        encoding = "utf-8",
+    )
+    findings = L.scan([tmp_path / "producer.py", consumer], roots = [tmp_path])
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_getattr_on_an_imported_module_is_a_namespace(tmp_path):
+    """An alias bound by `import x` is a module by construction, not by its name.
+
+    The name heuristic caught the modules it happens to list and missed every other one
+    this tree imports, so reflection with a parsed name on them was reported nowhere.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json\n"
+        "import xml.etree.ElementTree as namespace\n"
+        "def load(blob):\n"
+        "    return getattr(namespace, json.loads(blob)['fn'])\n",
+    )
+    assert "getattr(module, ...)" in _sinks(findings)
+
+
+def test_getattr_on_a_plain_local_object_stays_quiet(tmp_path):
+    """The quiet half: `getattr(config, field)` is a dict-ish read and is everywhere.
+
+    Widening to imported modules must not widen to every receiver, or the gate becomes
+    noise and gets switched off.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json\n"
+        "def load(blob):\n"
+        "    config = json.loads(blob)\n"
+        "    settings = object()\n"
+        "    return getattr(settings, config['field'])\n",
+    )
+    assert "getattr(module, ...)" not in _sinks(findings)
+
+
+def test_a_lookup_in_a_literal_table_is_validation(tmp_path):
+    """`getattr(mx, _DTYPES.get(meta["dtype"], "float32"))` can only yield a literal.
+
+    Whatever key the attacker supplies, the value comes from the table written in the
+    source, which is what validating at the producer looks like. Reporting these is how
+    a gate earns its way into being switched off.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json\n"
+        "import mlx.core as mx\n"
+        "_DTYPES = {'F32': 'float32', 'F16': 'float16'}\n"
+        "def load(blob):\n"
+        "    meta = json.loads(blob)\n"
+        "    return getattr(mx, _DTYPES.get(meta['dtype'], 'float32'))\n",
+    )
+    assert "getattr(module, ...)" not in _sinks(findings)
+
+
+def test_a_subscript_of_a_literal_table_is_validation(tmp_path):
+    """The raising form of the same lookup produces the same constants."""
+    findings = _scan(
+        tmp_path,
+        "import json\n"
+        "import mlx.core as mx\n"
+        "_DTYPES = {'F32': 'float32', 'F16': 'float16'}\n"
+        "def load(blob):\n"
+        "    return getattr(mx, _DTYPES[json.loads(blob)['dtype']])\n",
+    )
+    assert "getattr(module, ...)" not in _sinks(findings)
+
+
+def test_a_table_built_from_parsed_values_is_not_validation(tmp_path):
+    """The quiet rule must not cover a table whose VALUES came from the artefact.
+
+    Only a dict of literals constrains the result. A mapping assembled out of parsed
+    data constrains nothing, and treating the two alike would have been a hole rather
+    than a precision fix.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json\n"
+        "import mlx.core as mx\n"
+        "from pathlib import Path\n"
+        "_TABLE = json.loads(Path('downloaded.json').read_text())\n"
+        "def load(blob):\n"
+        "    return getattr(mx, _TABLE.get(json.loads(blob)['dtype'], 'float32'))\n",
+    )
+    assert "getattr(module, ...)" in _sinks(findings)
