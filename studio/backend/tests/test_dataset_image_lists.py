@@ -171,6 +171,22 @@ def test_llava_conversion_rejects_undecoded_image_dictionary():
         convert_llava_to_vlm_format([row])
 
 
+def test_llava_conversion_preserves_string_turns():
+    row = _llava_row_without_index()
+    row["messages"].insert(0, {"role": "system", "content": "Answer accurately."})
+    dataset = [row]
+
+    assert dataset_format.detect_vlm_dataset_structure(dataset)["format"] == "vlm_messages_llava"
+    assert format_detection.detect_vlm_dataset_structure(dataset)["format"] == "vlm_messages_llava"
+
+    converted = convert_llava_to_vlm_format(dataset)
+
+    assert converted[0]["messages"][0] == {
+        "role": "system",
+        "content": [{"type": "text", "text": "Answer accurately."}],
+    }
+
+
 @pytest.mark.parametrize(
     "row",
     [

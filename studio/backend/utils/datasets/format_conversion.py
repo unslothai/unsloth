@@ -883,8 +883,18 @@ def convert_llava_to_vlm_format(dataset):
         new_messages = []
         for msg in messages:
             new_content = []
+            message_content = msg["content"]
 
-            for item in msg["content"]:
+            if isinstance(message_content, str):
+                new_messages.append(
+                    {
+                        "role": msg["role"],
+                        "content": [{"type": "text", "text": message_content}],
+                    }
+                )
+                continue
+
+            for item in message_content:
                 if item["type"] == "image":
                     img_idx = item.get("index")
                     if img_idx is None:
