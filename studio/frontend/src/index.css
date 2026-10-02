@@ -16,6 +16,30 @@
 @custom-variant dark (&:is(.dark *));
 
 @layer components {
+	/* The custom Windows/Linux titlebar stays above modal backdrops so native
+	   window actions remain usable. Repeat the standard backdrop over the surface
+	   and page navigation. Window controls paint above it, keeping their glyphs
+	   and hover feedback sharp without changing hit testing.
+	   Only viewport backdrops participate; a panel-local dialog or a menu must
+	   not dim the window chrome. :has also keeps stacked modals correct without
+	   a separate counter or document-wide MutationObserver. */
+	[data-slot="window-titlebar"]::after {
+		content: "";
+		position: absolute;
+		inset: 0;
+		z-index: 90;
+		pointer-events: none;
+		background: rgb(0 0 0 / 30%);
+		-webkit-backdrop-filter: blur(2px);
+		backdrop-filter: blur(2px);
+		opacity: 0;
+		transition: opacity 100ms;
+	}
+	body:has(> [data-viewport-backdrop="true"][data-state="open"])
+		[data-slot="window-titlebar"]::after {
+		opacity: 1;
+	}
+
 	/* The surface the sidebar panel actually paints. The collapsed icon rail
 	   repaints it, so gradients fading into the panel must read this rather
 	   than --sidebar, or they render as a block instead of a fade. */
@@ -830,7 +854,7 @@
 	--th-chart-5: #b08cff;
 }
 
-/* Cherry Cola */
+/* Cherry */
 :root[data-palette="cherry"]:not(.dark) {
 	--th-bg: #fdf6f6;
 	--th-surface: #f9ebeb;
