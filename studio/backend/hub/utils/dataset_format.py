@@ -380,15 +380,21 @@ def _has_image_header(data: bytes) -> bool:
     )
 
 
-def _is_image_value(value) -> bool:
-    if value is None:
-        return False
+def _is_decoded_image_value(value) -> bool:
     try:
         from PIL.Image import Image as PILImage
         if isinstance(value, PILImage):
             return True
     except ImportError:
         pass
+    return False
+
+
+def _is_image_value(value) -> bool:
+    if value is None:
+        return False
+    if _is_decoded_image_value(value):
+        return True
     if isinstance(value, dict):
         if "array" in value and "sampling_rate" in value:
             return False
@@ -407,6 +413,31 @@ def _is_image_value(value) -> bool:
         if lower.startswith(("http://", "https://")):
             return any(lower.split("?")[0].endswith(ext) for ext in image_exts)
         return any(lower.endswith(ext) for ext in image_exts)
+    return False
+
+
+def _is_image_list_item(value) -> bool:
+    if isinstance(value, (dict, bytes, bytearray)):
+        return False
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized.startswith(("http://", "https://")) or normalized.endswith(".svg"):
+            return False
+    return _is_image_value(value)
+
+
+def _holds_images(value) -> bool:
+    if not isinstance(value, list) or not value:
+        return False
+    if all(_is_image_list_item(item) for item in value):
+        return True
+    for item in value:
+        content = item.get("content") if isinstance(item, dict) else None
+        if isinstance(content, list) and any(
+            isinstance(part, dict) and part.get("type") == "image" and part.get("image") is not None
+            for part in content
+        ):
+            return True
     return False
 
 
@@ -452,7 +483,8 @@ def detect_multimodal_dataset(dataset):
             multimodal_columns.append(col_name)
             modality_types.add("image")
     for col_name in column_names:
-        if col_name not in multimodal_columns and _is_image_value(sample[col_name]):
+        value = sample[col_name]
+        if col_name not in multimodal_columns and (_is_image_value(value) or _holds_images(value)):
             multimodal_columns.append(col_name)
             modality_types.add("image")
     for col_name in column_names:
@@ -513,34 +545,43 @@ def detect_vlm_dataset_structure(dataset):
     is_text = text_cell_check(dataset)
     if "messages" in column_names:
         messages = sample["messages"]
-        if messages and len(messages) > 0:
-            first_msg = messages[0]
-            if "content" in first_msg:
-                content = first_msg["content"]
-                if (
-                    isinstance(content, list)
-                    and content
-                    and isinstance(content[0], dict)
-                    and "type" in content[0]
+        message_rows = messages if isinstance(messages, list) else []
+        image_parts = [
+            part
+            for message in message_rows
+            if isinstance(message, dict) and isinstance(message.get("content"), list)
+            for part in message["content"]
+            if isinstance(part, dict) and part.get("type") == "image"
+        ]
+        if image_parts:
+            embedded_images = [
+                part.get("image") for part in image_parts if part.get("image") is not None
+            ]
+            if embedded_images:
+                if len(embedded_images) == len(image_parts) and all(
+                    _is_decoded_image_value(image) for image in embedded_images
                 ):
-                    has_index = any("index" in item for item in content if isinstance(item, dict))
-                    if has_index and "images" in column_names:
-                        return {
-                            "format": "vlm_messages_llava",
-                            "needs_conversion": True,
-                            "messages_column": "messages",
-                            "image_column": "images",
-                            "text_column": None,
-                        }
-                    has_image = any("image" in item for item in content if isinstance(item, dict))
-                    if has_image:
-                        return {
-                            "format": "vlm_messages",
-                            "needs_conversion": False,
-                            "messages_column": "messages",
-                            "image_column": None,
-                            "text_column": None,
-                        }
+                    return {
+                        "format": "vlm_messages",
+                        "needs_conversion": False,
+                        "messages_column": "messages",
+                        "image_column": None,
+                        "text_column": None,
+                    }
+            else:
+                images = sample.get("images")
+                if (
+                    isinstance(images, list)
+                    and images
+                    and all(_is_image_list_item(image) for image in images)
+                ):
+                    return {
+                        "format": "vlm_messages_llava",
+                        "needs_conversion": True,
+                        "messages_column": "messages",
+                        "image_column": "images",
+                        "text_column": None,
+                    }
 
     for chat_col in ("conversations", "messages"):
         if chat_col not in column_names:

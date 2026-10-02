@@ -572,7 +572,7 @@ def detect_multimodal_dataset(dataset):
         if col_name in already_detected:
             continue
         value = sample[col_name]
-        if _is_image_value(value):
+        if _is_image_value(value) or _holds_images(value):
             multimodal_columns.append(col_name)
             modality_types.add("image")
 
@@ -630,17 +630,22 @@ def detect_multimodal_dataset(dataset):
     }
 
 
-def _is_image_value(value) -> bool:
-    """Check if a single sample value looks like image data."""
-    if value is None:
-        return False
-
+def _is_decoded_image_value(value) -> bool:
     try:
         from PIL.Image import Image as PILImage
         if isinstance(value, PILImage):
             return True
     except ImportError:
         pass
+    return False
+
+
+def _is_image_value(value) -> bool:
+    """Check if a single sample value looks like image data."""
+    if value is None:
+        return False
+    if _is_decoded_image_value(value):
+        return True
 
     # HF Image feature: decoded as PIL, or {"bytes", "path"} when undecoded. Exclude audio dicts, whose decoded form has "array" + "sampling_rate".
     if isinstance(value, dict):
@@ -668,6 +673,31 @@ def _is_image_value(value) -> bool:
         if any(lower.endswith(ext) for ext in _IMAGE_EXTS):
             return True
 
+    return False
+
+
+def _is_image_list_item(value) -> bool:
+    if isinstance(value, (dict, bytes, bytearray)):
+        return False
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized.startswith(("http://", "https://")) or normalized.endswith(".svg"):
+            return False
+    return _is_image_value(value)
+
+
+def _holds_images(value) -> bool:
+    if not isinstance(value, list) or not value:
+        return False
+    if all(_is_image_list_item(item) for item in value):
+        return True
+    for item in value:
+        content = item.get("content") if isinstance(item, dict) else None
+        if isinstance(content, list) and any(
+            isinstance(part, dict) and part.get("type") == "image" and part.get("image") is not None
+            for part in content
+        ):
+            return True
     return False
 
 
@@ -741,39 +771,43 @@ def detect_vlm_dataset_structure(dataset):
 
     if "messages" in column_names:
         messages = sample["messages"]
-
-        if messages and len(messages) > 0:
-            first_msg = messages[0]
-            if "content" in first_msg:
-                content = first_msg["content"]
-
-                if isinstance(content, list) and len(content) > 0:
-                    if isinstance(content[0], dict) and "type" in content[0]:
-                        has_index = any(
-                            "index" in item for item in content if isinstance(item, dict)
-                        )
-                        has_images_column = "images" in column_names
-
-                        if has_index and has_images_column:
-                            return {
-                                "format": "vlm_messages_llava",
-                                "needs_conversion": True,
-                                "messages_column": "messages",
-                                "image_column": "images",
-                                "text_column": None,
-                            }
-
-                        has_image = any(
-                            "image" in item for item in content if isinstance(item, dict)
-                        )
-                        if has_image:
-                            return {
-                                "format": "vlm_messages",
-                                "needs_conversion": False,
-                                "messages_column": "messages",
-                                "image_column": None,
-                                "text_column": None,
-                            }
+        message_rows = messages if isinstance(messages, list) else []
+        image_parts = [
+            part
+            for message in message_rows
+            if isinstance(message, dict) and isinstance(message.get("content"), list)
+            for part in message["content"]
+            if isinstance(part, dict) and part.get("type") == "image"
+        ]
+        if image_parts:
+            embedded_images = [
+                part.get("image") for part in image_parts if part.get("image") is not None
+            ]
+            if embedded_images:
+                if len(embedded_images) == len(image_parts) and all(
+                    _is_decoded_image_value(image) for image in embedded_images
+                ):
+                    return {
+                        "format": "vlm_messages",
+                        "needs_conversion": False,
+                        "messages_column": "messages",
+                        "image_column": None,
+                        "text_column": None,
+                    }
+            else:
+                images = sample.get("images")
+                if (
+                    isinstance(images, list)
+                    and images
+                    and all(_is_image_list_item(image) for image in images)
+                ):
+                    return {
+                        "format": "vlm_messages_llava",
+                        "needs_conversion": True,
+                        "messages_column": "messages",
+                        "image_column": "images",
+                        "text_column": None,
+                    }
 
     # ShareGPT/ChatML conversations with an <image> placeholder plus a companion image column, e.g. Lin-Chen/ShareGPT4V and LLaVA-style datasets.
     for chat_col in ("conversations", "messages"):
