@@ -161,6 +161,16 @@ class LoadRequest(LlamaCppConfigFields):
             self.mlx_kv_quant = encode_mlx_kv_quant(self.mlx_kv_bits)
         return self
 
+    mlx_int8_prefill: bool = Field(
+        False,
+        description = (
+            "Experimental, MLX only: run quantized projections with int8 activations on Apple "
+            "neural accelerators for faster prompt processing. Lossy: outputs change and "
+            "accuracy drops. Applied only when the model supports it; the status reports the "
+            "reason otherwise."
+        ),
+    )
+
     gpu_ids: Optional[List[int]] = Field(
         None,
         description = (
@@ -1024,6 +1034,27 @@ class EstimateMemoryRequest(BaseModel):
     _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
 
 
+class Int8PrefillAvailabilityRequest(BaseModel):
+    """A model whose run settings may offer MLX int8 prefill."""
+
+    model_path: str = Field(..., description = "Model identifier or local path")
+    hf_token: Optional[str] = Field(None, description = "Token for gated repositories")
+
+    _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
+
+
+class Int8PrefillAvailabilityResponse(BaseModel):
+    """Whether a load of this model could run MLX int8 prefill, judged from its downloaded files."""
+
+    available: bool
+    reason: Optional[str] = Field(
+        None,
+        description = "Cause when available is false: 'not_downloaded', 'unsupported_model', "
+        "'unsupported_zoo', or unsloth_zoo's own reason ('nax_unavailable', "
+        "'no_eligible_projections', 'probe_failed').",
+    )
+
+
 class EstimateMemoryResponse(BaseModel):
     """Itemized memory an inference load would occupy, or why it could not be sized."""
 
@@ -1499,6 +1530,17 @@ class _InferenceRuntimeFields(BaseModel):
     )
     mlx_kv_quant_note: Optional[str] = Field(
         None, description = "Caveat that applies when KV quantization is active"
+    )
+    mlx_int8_prefill: Optional[bool] = Field(
+        None, description = "Whether MLX int8 prefill is active for the loaded model"
+    )
+    mlx_int8_prefill_requested: Optional[bool] = Field(
+        None, description = "Whether the load asked for MLX int8 prefill"
+    )
+    mlx_int8_prefill_reason: Optional[str] = Field(
+        None,
+        description = "Why requested int8 prefill is not active, as unsloth_zoo reports it "
+        "(for example nax_unavailable or no_eligible_projections)",
     )
     chat_template: Optional[str] = Field(
         None,
