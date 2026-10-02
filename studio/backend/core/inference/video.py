@@ -6298,6 +6298,18 @@ class VideoBackend:
                     logger.warning("video.vae_tiling_failed: %s", exc)
             # Wan's decode also grows within a single tile, which tiling alone cannot bound.
             install_decoder_sync(pipe, target, logger = logger)
+            # Wan on fp16 GPUs: CFG's two batch-1 denoiser calls as one batch-2 call. After apply_memory_plan, so the
+            # wrapper sits outside the offload hooks and they still see every real forward.
+            if effective_speed != SPEED_OFF:
+                from .video_wan_cfg_batch import install_for_pipe as install_wan_cfg_batch
+                if install_wan_cfg_batch(
+                    pipe,
+                    dtype,
+                    getattr(target, "device", "cuda"),
+                    cache_engaged = bool(cache_engaged) or bool(cache_may_toggle),
+                    logger = logger,
+                ):
+                    speed_optims += ("wan_cfg_batch",)
 
             resolved = build_resolved_record(
                 {
