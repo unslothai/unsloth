@@ -212,7 +212,7 @@ def _peft_signature_and_calls(path):
 @pytest.mark.parametrize("path", ["llama.py", "vision.py"])
 def test_block_swap_layers_is_last_so_positional_callers_keep_their_slots(path):
     fn = _peft_signature_and_calls(path)
-    assert fn.args.args[-1].arg == "block_swap_layers"
+    assert [a.arg for a in fn.args.args[-2:]] == ["block_swap_layers", "checkpoint_skip_layers"]
     assert fn.args.kwarg is not None
 
 
@@ -228,7 +228,7 @@ def test_new_model_route_forwards_block_swap_layers():
     ]
     assert forwarded, "llama get_peft_model no longer delegates to FastBaseModel"
     for call in forwarded:
-        assert "block_swap_layers" in {k.arg for k in call.keywords}
+        assert {"block_swap_layers", "checkpoint_skip_layers"} <= {k.arg for k in call.keywords}
 
 
 @pytest.mark.parametrize("path", ["llama.py", "gemma.py", "gemma2.py"])
@@ -532,3 +532,53 @@ def test_host_load_runs_for_layers_or_streamed_embeddings_only():
     with ns["begin_block_swap_load"](3, {"": 0}):
         pass
     assert seen == [(0, {"placement": "spread", "embeddings": True}), (3, {"placement": "spread"})]
+
+
+def _load_skip():
+    src = open(UTILS, encoding = "utf-8").read()
+    mod = ast.parse(src)
+    names = ("_skip_aware_flag", "skip_checkpointing")
+    ns = {"find_decoder_layers": lambda m: m.layers}
+    for n in mod.body:
+        if isinstance(n, ast.FunctionDef) and n.name in names:
+            exec(ast.get_source_segment(src, n), ns)
+    return ns
+
+
+def _skip_model(n = 4, swapped = None):
+    class Layer:
+        gradient_checkpointing = False
+
+    model = types.SimpleNamespace(layers = [Layer() for _ in range(n)])
+    for layer in model.layers:
+        layer.gradient_checkpointing = True
+    if swapped is not None:
+        model._unsloth_block_swap = types.SimpleNamespace(indices = swapped)
+    return model
+
+
+def test_skipped_layers_stay_off_when_checkpointing_is_turned_back_on():
+    ns = _load_skip()
+    model = _skip_model()
+    assert ns["skip_checkpointing"](model, 2) == [1, 3]
+    # for_training / gradient_checkpointing_enable write the flag on every layer again.
+    for layer in model.layers:
+        layer.gradient_checkpointing = True
+    assert [l.gradient_checkpointing for l in model.layers] == [True, False, True, False]
+    for layer in model.layers:
+        layer.gradient_checkpointing = False
+    assert not any(l.gradient_checkpointing for l in model.layers)
+
+
+def test_skip_leaves_block_swapped_layers_checkpointed():
+    ns = _load_skip()
+    model = _skip_model(4, swapped = [0, 2])
+    assert ns["skip_checkpointing"](model, "max") == [1, 3]
+    assert [l.gradient_checkpointing for l in model.layers] == [True, False, True, False]
+
+
+def test_skip_zero_changes_nothing():
+    ns = _load_skip()
+    model = _skip_model()
+    assert ns["skip_checkpointing"](model, 0) == []
+    assert all(l.gradient_checkpointing for l in model.layers)

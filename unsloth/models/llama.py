@@ -3403,6 +3403,7 @@ class FastLlamaModel:
         target_parameters = None,  # For MoE expert layers (nn.Parameter)
         ensure_weight_tying = None,  # None = auto (tie when we redirect a tied pair)
         block_swap_layers = 0,
+        checkpoint_skip_layers = 0,
         **kwargs,
     ):
         if os.environ.get("UNSLOTH_USE_NEW_MODEL", "0") == "1":
@@ -3436,6 +3437,7 @@ class FastLlamaModel:
                 target_parameters = target_parameters,
                 ensure_weight_tying = ensure_weight_tying,
                 block_swap_layers = block_swap_layers,
+                checkpoint_skip_layers = checkpoint_skip_layers,
                 **kwargs,
             )
         if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
@@ -3565,6 +3567,7 @@ class FastLlamaModel:
                 install_block_swap(
                     model, block_swap_layers, use_gradient_checkpointing = use_gradient_checkpointing
                 )
+                skip_checkpointing(model, checkpoint_skip_layers)
                 return model
             else:
                 raise TypeError(
@@ -3872,6 +3875,7 @@ class FastLlamaModel:
         install_block_swap(
             model, block_swap_layers, use_gradient_checkpointing = use_gradient_checkpointing
         )
+        skip_checkpointing(model, checkpoint_skip_layers)
 
         if ensure_weight_tying:
             try:

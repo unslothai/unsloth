@@ -3344,6 +3344,7 @@ class FastBaseModel:
         ensure_weight_tying = None,  # None = auto (tie when we redirect a tied pair)
         finetune_audio_layers = False,  # placed last to preserve existing positional argument order
         block_swap_layers = 0,
+        checkpoint_skip_layers = 0,
         **kwargs,
     ):
         if os.environ.get("UNSLOTH_ENABLE_FULL_FINETUNING", "0") == "1":
@@ -3692,6 +3693,7 @@ class FastBaseModel:
         install_block_swap(
             model, block_swap_layers, use_gradient_checkpointing = use_gradient_checkpointing
         )
+        skip_checkpointing(model, checkpoint_skip_layers)
         for _ in range(3):
             gc.collect()
             clean_gpu_cache()

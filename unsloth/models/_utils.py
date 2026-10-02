@@ -89,6 +89,7 @@ __all__ = [
     "install_block_swap",
     "offload_embedding_if_tight",
     "usable_cuda_bytes",
+    "skip_checkpointing",
     "refuse_block_swap_load",
     "block_swap_load_device",
     "begin_block_swap_load",
@@ -6171,6 +6172,56 @@ def _training_reserve_bytes(
         )
     seq_len = seq_len or getattr(model, "max_seq_length", None) or 2048
     return estimate_training_reserve_bytes(model.config, seq_len, extra_bytes = extra), seq_len
+
+
+def _skip_aware_flag(cls):
+    # Every path that re-enables checkpointing (for_training, gradient_checkpointing_enable, the
+    # trainer) writes this flag on each layer; a marked layer keeps reading False.
+    if cls.__dict__.get("_unsloth_skip_aware", False):
+        return
+
+    def _get(self):
+        if self.__dict__.get("_unsloth_skip_checkpoint", False):
+            return False
+        # Unmarked layers of the class still hold the flag in their own dict.
+        return self.__dict__.get(
+            "_unsloth_gc_flag", self.__dict__.get("gradient_checkpointing", False)
+        )
+
+    def _set(self, value):
+        self.__dict__["_unsloth_gc_flag"] = value
+
+    cls.gradient_checkpointing = property(_get, _set)
+    cls._unsloth_skip_aware = True
+
+
+def skip_checkpointing(model, layers = 0):
+    """get_peft_model(checkpoint_skip_layers = K | "max"): K decoder layers (evenly spaced; "max" =
+    all) keep their activations instead of recomputing them in backward. Faster, at the cost of
+    each layer's activations on the card. Block-swapped layers keep checkpointing."""
+    if not layers:
+        return []
+    layer_list = find_decoder_layers(model)
+    swapper = getattr(model, "_unsloth_block_swap", None)
+    swapped = set(getattr(swapper, "indices", None) or ())
+    eligible = [i for i in range(len(layer_list)) if i not in swapped]
+    if layers == "max":
+        chosen = eligible
+    else:
+        count = max(0, min(int(layers), len(eligible)))
+        chosen = (
+            [eligible[(k + 1) * len(eligible) // count - 1] for k in range(count)] if count else []
+        )
+    for i in chosen:
+        layer = layer_list[i]
+        if not hasattr(layer, "gradient_checkpointing"):
+            continue
+        current = layer.__dict__.pop("gradient_checkpointing", None)
+        _skip_aware_flag(type(layer))
+        if current is not None:
+            layer.__dict__["_unsloth_gc_flag"] = current
+        layer.__dict__["_unsloth_skip_checkpoint"] = True
+    return chosen
 
 
 def usable_cuda_bytes(device):
