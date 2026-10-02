@@ -5283,3 +5283,87 @@ def test_a_function_under_a_module_branch_is_reported_once(tmp_path):
     )
     reported = [(f["qualname"], f["sink"]) for f in findings if f["tier"] == "A"]
     assert reported == [("load", "importlib.import_module")]
+
+
+def test_sys_path_extend_is_an_import_path_sink(tmp_path):
+    """`sys.path.extend([downloaded])` adds the directory just as `append` does."""
+    findings = _scan(
+        tmp_path,
+        "import sys\n"
+        "from huggingface_hub import snapshot_download\n"
+        "def add(repo):\n"
+        "    sys.path.extend([snapshot_download(repo)])\n",
+    )
+    assert "sys.path.extend" in _sinks(findings)
+
+
+def test_a_loader_partial_binding_remote_code_is_reported(tmp_path):
+    """`partial(AutoModel.from_pretrained, trust_remote_code = True)` and its use."""
+    created = _scan(
+        tmp_path,
+        "import functools\n"
+        "from transformers import AutoModel\n"
+        "def load(name):\n"
+        "    loader = functools.partial(AutoModel.from_pretrained, trust_remote_code = True)\n"
+        "    return loader(name)\n",
+        name = "created.py",
+    )
+    called = _scan(
+        tmp_path,
+        "import functools\n"
+        "from transformers import AutoModel\n"
+        "def load(name):\n"
+        "    loader = functools.partial(AutoModel.from_pretrained, revision = 'main')\n"
+        "    return loader(name, trust_remote_code = True)\n",
+        name = "called.py",
+    )
+    safe = _scan(
+        tmp_path,
+        "import functools\n"
+        "from transformers import AutoModel\n"
+        "def load(name):\n"
+        "    loader = functools.partial(AutoModel.from_pretrained, trust_remote_code = False)\n"
+        "    return loader(name)\n",
+        name = "safe.py",
+    )
+    assert any(f["sink"].startswith("trust_remote_code = True") for f in created)
+    assert any(f["sink"].startswith("trust_remote_code = True") for f in called)
+    assert not any(f["sink"].startswith("trust_remote_code = True") for f in safe)
+
+
+def test_a_partial_of_a_source_stays_a_source(tmp_path):
+    """`decode = partial(json.loads, ...)`, locally and at module scope."""
+    local = _scan(
+        tmp_path,
+        "import functools, importlib, json\n"
+        "def go(blob):\n"
+        "    decode = functools.partial(json.loads, object_hook = dict)\n"
+        "    return importlib.import_module(decode(blob)['module'])\n",
+        name = "local.py",
+    )
+    module = _scan(
+        tmp_path,
+        "import functools, importlib, json\n"
+        "decode = functools.partial(json.loads, object_hook = dict)\n"
+        "def go(blob):\n"
+        "    return importlib.import_module(decode(blob)['module'])\n",
+        name = "module.py",
+    )
+    assert "importlib.import_module" in _sinks(local)
+    assert "importlib.import_module" in _sinks(module)
+
+
+def test_match_and_except_captures_are_locals_of_a_nested_helper(tmp_path):
+    """A nested helper's own `case {"command": command}` hides the outer name."""
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def outer(blob):\n"
+        "    command = json.loads(blob)['command']\n"
+        "    def helper(spec):\n"
+        "        match spec:\n"
+        "            case {'command': command}:\n"
+        "                return subprocess.run(command)\n"
+        "    return helper({'command': ['ls']})\n",
+    )
+    assert "subprocess.run" not in _sinks(findings)

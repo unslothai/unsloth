@@ -246,6 +246,8 @@ SINKS: dict[str, tuple[tuple[int, ...], frozenset[str]]] = {
     # Import path injection: after this, a plain `import` statement is the sink.
     "sys.path.insert": ((1,), frozenset()),
     "sys.path.append": ((0,), frozenset()),
+    # The list form of `append`: every directory in it is searched by the next import.
+    "sys.path.extend": ((0,), frozenset()),
     # No bare `path.append` entry: `from sys import path` canonicalises to
     # `sys.path.append` through the import table, so the bare spelling only ever matched
     # an unrelated local list called `path`, and reporting `path = []; path.append(parsed)`
@@ -493,6 +495,13 @@ def _scope_locals(node: ast.AST) -> frozenset:
         current = pending.pop()
         if isinstance(current, ast.Name) and isinstance(current.ctx, (ast.Store, ast.Del)):
             bound.add(current.id)
+        elif isinstance(current, (ast.MatchAs, ast.MatchStar, ast.ExceptHandler)):
+            # `case {"command": command}` and `except E as error` bind plain strings,
+            # not Name nodes, and are locals all the same.
+            if current.name:
+                bound.add(current.name)
+        elif isinstance(current, ast.MatchMapping) and current.rest:
+            bound.add(current.rest)
         elif isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             bound.add(current.name)
             continue
@@ -958,6 +967,14 @@ class _FileFacts:
             return True
         inner = _call_name(value.args[0])
         prebound = len(value.args) - 1 + self.module_alias_offsets.get(inner, 0)
+        # `decode = partial(json.loads, object_hook = ...)` still returns parsed input.
+        source = self.module_source_aliases.get(inner) or _matches_any(
+            self.canonicals(inner), UNTRUSTED_CALLS
+        )
+        if source is not None:
+            for name in names:
+                self.module_source_aliases.setdefault(name, source)
+            return True
         # `load = partial(torch.load, map_location = "cpu")` at module scope is a common
         # way to set loading defaults once. Recorded like the local form: the marker
         # unless the wrapper pins a literal True, and the unsafe option when it binds
@@ -1960,9 +1977,12 @@ class _TaintPass(ast.NodeVisitor):
                 if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
                     continue
                 value = statement.value
-                if value is None or isinstance(value, ast.Call):
+                if value is None:
                     continue
-                referenced = _call_name(value)
+                # `loader = partial(AutoModel.from_pretrained, ...)` is still the loader.
+                referenced = (
+                    self._partial_inner(value) if isinstance(value, ast.Call) else _call_name(value)
+                )
                 if not referenced:
                     continue
                 targets = (
@@ -2710,9 +2730,11 @@ class _TaintPass(ast.NodeVisitor):
 
     def _note_source_alias(self, node: ast.Assign) -> None:
         """`decode = json.loads`: a reference to a source, not a call to one."""
-        if isinstance(node.value, ast.Call):
-            return
         referenced = _call_name(node.value)
+        if isinstance(node.value, ast.Call):
+            # `decode = partial(json.loads, object_hook = ...)` returns parsed input on
+            # every call just like the bare reference does.
+            referenced = self._partial_inner(node.value)
         if not referenced:
             return
         source = self.source_aliases.get(referenced) or _matches_any(
@@ -3583,8 +3605,28 @@ class _TaintPass(ast.NodeVisitor):
                 self._record(node, sink, reason, _short(argument))
                 return
 
+    def _partial_inner(self, call: ast.Call) -> str:
+        """The callee a `functools.partial(callee, ...)` call wraps, else ""."""
+        if (
+            not call.args
+            or _matches_any(
+                self.facts.canonicals(_call_name(call.func)), {"functools.partial", "partial"}
+            )
+            is None
+        ):
+            return ""
+        return _call_name(call.args[0])
+
     def _check_remote_code(self, node: ast.Call) -> None:
         """`trust_remote_code = True` written at a loader, or forwarded as a constant."""
+        # `partial(AutoModel.from_pretrained, trust_remote_code = True)` binds the
+        # opt-in at creation, so the wrapped loader is checked against those keywords.
+        wrapped = self._partial_inner(node)
+        if wrapped:
+            node = ast.copy_location(
+                ast.Call(func = node.args[0], args = node.args[1:], keywords = node.keywords),
+                node,
+            )
         names = list(self.facts.canonicals(_call_name(node.func)))
         # `loader = AutoModel.from_pretrained` then `loader(..., trust_remote_code =
         # True)`. Loaders are not in the sink table, so no alias was ever recorded and
