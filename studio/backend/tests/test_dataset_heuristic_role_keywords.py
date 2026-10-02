@@ -110,9 +110,13 @@ _ASSISTANT_LEFTOVER_CASES = [
 # for a manual mapping instead of silently training the system prompt as the user turn.
 _NO_USER_COLUMN_ROWS = [
     {"system": _MID, "output": _MID},
+    {"system_prompt": _MID, "output": _MID},
+    {"system_prompt": _MID, "context_id": "c1", "output": _MID},
     {"persona": _MID, "reply": _MID},
     {"role": _MID, "response": _MID},
     {"template": _MID, "output": _MID},
+    {"question_type": "causal", "answer": _MID},
+    {"answer": _MID, "explanation": _MID},
 ]
 
 
@@ -251,3 +255,16 @@ def test_system_and_context_columns_keep_the_system_prompt(heuristic, row, expec
 @pytest.mark.parametrize("heuristic", _HEURISTICS)
 def test_identifier_column_is_not_the_user_turn(heuristic):
     assert heuristic([{"task_id": "HumanEval/0", "canonical_solution": _MID}]) is None
+
+
+_SYSTEM_METADATA_CASES = [
+    {"question": _MID, "answer": _MID, "system_id": "s1"},
+    {"question": _MID, "answer": _MID, "context_id": "c1"},
+    {"question": _MID, "answer": _MID, "context_length": 4096},
+]
+
+
+@pytest.mark.parametrize("heuristic", _HEURISTICS)
+@pytest.mark.parametrize("row", _SYSTEM_METADATA_CASES)
+def test_system_metadata_is_not_mapped_to_the_system_prompt(heuristic, row):
+    assert heuristic([row]) == {"question": "user", "answer": "assistant"}

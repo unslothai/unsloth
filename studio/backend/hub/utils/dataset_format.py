@@ -205,12 +205,19 @@ def detect_custom_format_heuristic(dataset):
     def name_tokens(col_name):
         return set(re.findall(r"[a-z]+", col_name.lower()))
 
+    def is_non_metadata_column(col_name):
+        return not meta_tokens & name_tokens(col_name)
+
+    def is_prompt_content_column(col_name):
+        return is_non_metadata_column(col_name) and not isinstance(
+            sample.get(col_name), (bool, int, float)
+        )
+
     def is_context_column(col_name):
         tokens = name_tokens(col_name)
         return (
             any(token in context_words or token[:-1] in context_words for token in tokens)
-            and not meta_tokens & tokens
-            and not isinstance(sample.get(col_name), (bool, int, float))
+            and is_prompt_content_column(col_name)
             and not has_keyword(col_name, assistant_words)
         )
 
@@ -218,14 +225,16 @@ def detect_custom_format_heuristic(dataset):
     system_named = [
         col
         for col in content_columns
-        if has_keyword(col, ["system"]) and not has_keyword(col, assistant_words)
+        if has_keyword(col, ["system"])
+        and is_prompt_content_column(col)
+        and not has_keyword(col, assistant_words)
     ]
     assistant_potential = [col for col in content_columns if has_keyword(col, assistant_words)]
-    user_potential = [col for col in content_columns if has_keyword(col, user_words)]
-    if any(
-        col not in system_named and not meta_tokens & name_tokens(col) for col in user_potential
-    ):
-        user_potential = [col for col in user_potential if col not in system_named]
+    user_potential = [
+        col
+        for col in content_columns
+        if col not in system_named and is_non_metadata_column(col) and has_keyword(col, user_words)
+    ]
     assistant_candidates = [
         (col, score)
         for col in assistant_potential
@@ -252,7 +261,10 @@ def detect_custom_format_heuristic(dataset):
         shadowed_potential = [
             col
             for col in content_columns
-            if col not in user_potential and has_keyword(col, user_words, apply_shadowing = False)
+            if col not in system_named
+            and col not in user_potential
+            and is_non_metadata_column(col)
+            and has_keyword(col, user_words, apply_shadowing = False)
         ]
         for col in shadowed_potential:
             if col == assistant_col:
@@ -288,9 +300,9 @@ def detect_custom_format_heuristic(dataset):
     non_task_system_words = [word for word in system_words if word != "task"]
     system_tiers = [
         lambda col: col in system_named,
-        lambda col: has_keyword(col, non_task_system_words),
+        lambda col: has_keyword(col, non_task_system_words) and is_prompt_content_column(col),
         lambda col: user_col is not None and is_context_column(col),
-        lambda col: has_keyword(col, system_words) and not meta_tokens & name_tokens(col),
+        lambda col: has_keyword(col, system_words) and is_prompt_content_column(col),
     ]
     system_col = next(
         (col for tier in system_tiers for col in remaining_columns if tier(col)), None
@@ -302,8 +314,9 @@ def detect_custom_format_heuristic(dataset):
         remaining_col = remaining_columns[0]
         if (
             user_col is None
-            and has_keyword(remaining_col, user_words + assistant_words)
-            and not meta_tokens & name_tokens(remaining_col)
+            and has_keyword(remaining_col, user_words)
+            and not has_keyword(remaining_col, assistant_words + system_words)
+            and is_non_metadata_column(remaining_col)
         ):
             mapping[remaining_col] = "user"
 
@@ -311,7 +324,11 @@ def detect_custom_format_heuristic(dataset):
     has_assistant = any(role == "assistant" for role in mapping.values())
     if not has_user:
         for col in remaining_columns[1:]:
-            if col not in mapping:
+            if (
+                col not in mapping
+                and is_prompt_content_column(col)
+                and not has_keyword(col, assistant_words + system_words)
+            ):
                 mapping[col] = "user"
                 has_user = True
                 break
