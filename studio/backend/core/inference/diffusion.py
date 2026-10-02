@@ -18,6 +18,7 @@ in the arbiter the routes call, not here.
 from __future__ import annotations
 
 from contextlib import contextmanager
+import contextvars
 import functools
 import inspect
 import json
@@ -111,6 +112,7 @@ from .diffusion_memory import (
     OFFLOAD_NONE,
     OFFLOAD_STREAMING,
     apply_memory_plan,
+    calibrated_image_activation,
     engage_vae_tiling,
     estimate_gguf_resident_mib,
     estimate_image_runtime_mib,
@@ -176,6 +178,7 @@ from .diffusion_attention import (
     apply_attention_backend,
     normalize_attention_backend,
     sdpa_math_only,
+    sdpa_subquadratic_confirmed,
     select_attention_backend,
     _ensure_attention_backend_installed,
 )
@@ -1052,6 +1055,8 @@ class _LoadState:
     # The exact variant hint the memory plan was built from (family + checkpoint name + repo ids). Stored rather than
     # rebuilt so generate()'s activation re-check budgets with the SAME distilled / edit multipliers the load did.
     variant_hint: str = ""
+    # Promoted tiers leave no room for a later ControlNet.
+    calibrated_placement: bool = False
 
 
 @dataclass
@@ -1631,6 +1636,50 @@ def _dense_candidate_is_prequant(
         )
     except Exception:  # noqa: BLE001 - a probe that cannot answer keeps the decline
         return False
+
+
+# Unset outside a load, which then plans on the max tier's (larger) activations.
+_PLANNED_SPEED_MODE: contextvars.ContextVar[Any] = contextvars.ContextVar("_PLANNED_SPEED_MODE")
+_SPEED_UNKNOWN = object()
+
+
+def _plans_at_requested_speed(fn: Callable[..., Any]) -> Callable[..., Any]:
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        token = _PLANNED_SPEED_MODE.set(kwargs.get("speed_mode"))
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _PLANNED_SPEED_MODE.reset(token)
+
+    return wrapper
+
+
+def _calibrated_activation(fam: Any, target: Any) -> Any:
+    """Measured activations apply only where measured: NVIDIA with a sub-quadratic attention kernel."""
+    if getattr(target, "backend", None) != "cuda" or getattr(target, "vendor", None) != "nvidia":
+        return None
+    # Measured without input images: references the guard cannot size (no reference_resolutions) would overflow.
+    if getattr(fam, "reference", False) and not tuple(
+        getattr(fam, "reference_resolutions", ()) or ()
+    ):
+        return None
+    # Measured at 16-bit only; fp32-promoted families (Z-Image pre-Ampere) do not qualify.
+    compute = _resolve_diffusion_compute_dtype(fam, getattr(target, "dtype", None))
+    if (_float_load_itemsize(compute) or 2) > 2:
+        return None
+    requested = _PLANNED_SPEED_MODE.get(_SPEED_UNKNOWN)
+    try:
+        max_speed = requested is _SPEED_UNKNOWN or normalize_speed_mode(requested) == SPEED_MAX
+    except ValueError:
+        max_speed = True
+    activation = calibrated_image_activation(getattr(fam, "name", None), max_speed = max_speed)
+    if activation is None:
+        return None
+    try:
+        return activation if sdpa_subquadratic_confirmed(target) else None
+    except Exception:  # noqa: BLE001 - unprobed attention keeps the flat estimate
+        return None
 
 
 def _quadratic_attention(target: Any, engaged_backend: Optional[str] = None) -> bool:
@@ -3445,6 +3494,7 @@ class DiffusionBackend:
             logger.warning("diffusion.te_prequant_plan_failed: %s", exc)
             return {}
 
+    @_plans_at_requested_speed
     def _pipeline_planned_denoiser_scheme(
         self,
         fam: Any,
@@ -5088,6 +5138,7 @@ class DiffusionBackend:
 
     @_invalidates_gpu_memory("diffusion load")
     @_account_owned_load
+    @_plans_at_requested_speed
     def load_pipeline(
         self,
         repo_id: str,
@@ -7096,6 +7147,7 @@ class DiffusionBackend:
                         kind = kind,
                         cpu_offload = effective_policy != OFFLOAD_NONE,
                         offload_policy = effective_policy,
+                        calibrated_placement = "calibrated_headroom_mib" in plan.estimates,
                         vae_tiling = effective_tiling,
                         memory_mode = plan.requested_mode,
                         speed_mode = effective_speed,
@@ -8121,6 +8173,7 @@ class DiffusionBackend:
             runtime_headroom_mib = runtime_headroom,
             requested_mode = memory_mode,
             explicit_offload = cpu_offload,
+            calibrated_activation = _calibrated_activation(fam, target),
         )
 
     @staticmethod
@@ -8215,11 +8268,20 @@ class DiffusionBackend:
                 del cn_model
                 raise RuntimeError(DIFFUSION_CANCELLED_MSG)
             # Placement follows the base offload policy (resident base -> resident, offloaded -> group offload).
-            # Best-effort.
-            if getattr(state, "offload_policy", OFFLOAD_NONE) != OFFLOAD_NONE and (
+            # Calibrated tiers budget only the base model: ControlNet must stream, no resident fallback.
+            calibrated = bool(getattr(state, "calibrated_placement", False))
+            if (getattr(state, "offload_policy", OFFLOAD_NONE) != OFFLOAD_NONE or calibrated) and (
                 _offload_controlnet_module(cn_model, state.device, logger)
             ):
                 pass
+            elif calibrated:
+                del cn_model
+                clear_gpu_cache()
+                raise ValueError(
+                    "This ControlNet could not be streamed from system memory, and loading it fully onto "
+                    "the GPU beside the model could run out of memory. Reload the model with the balanced "
+                    "memory mode to use ControlNet, or generate without it."
+                )
             else:
                 cn_model = cn_model.to(state.device)
             if cancel.is_set():
@@ -9093,6 +9155,8 @@ class DiffusionBackend:
                             guard_target, getattr(state, "attention_backend", None)
                         ),
                         allow_oversized = allow_oversized,
+                        calibrated_placement = bool(getattr(state, "calibrated_placement", False)),
+                        controlnet = workflow == "controlnet" and control_pil is not None,
                         logger = logger,
                     )
                     verdict = raise_on_image_activation_shortfall(**guard_kwargs)
@@ -9803,7 +9867,7 @@ def _offload_controlnet_module(cn_model: Any, device: str, logger: Any) -> bool:
     base model was loaded with an offload policy: forcing the ControlNet fully resident with
     ``.to(device)`` would defeat that low-VRAM placement and can OOM. Group offloading is applied
     to this single module, so it is isolated and reversible. Returns True on success; on any
-    failure the caller falls back to a resident placement, so this never blocks a load."""
+    failure the caller falls back to a resident placement (a calibrated tier refuses instead)."""
     try:
         import torch
         from diffusers.hooks import apply_group_offloading

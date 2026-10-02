@@ -242,13 +242,22 @@ def _host_empty_cache() -> None:
         pass
 
 
+def _pinnable_layout(data: Any) -> bool:
+    if data.is_contiguous():
+        return True
+    import torch
+
+    fmt = {4: torch.channels_last, 5: torch.channels_last_3d}.get(data.dim())
+    return fmt is not None and data.is_contiguous(memory_format = fmt)
+
+
 def _pin_host_weights(
     module: Any,
     host: dict,
     logger: Any = None,
     buffer_host: Optional[dict] = None,
 ) -> int:
-    """Pack kept host weights and buffers into page-locked chunks; returns bytes pinned. Contiguous only, so channels_last survives."""
+    """Pack kept host weights and buffers into page-locked chunks; returns bytes pinned. Each copy keeps its source strides."""
     import torch
 
     mode = _pin_mode()
@@ -260,7 +269,7 @@ def _pin_host_weights(
         if host.get(name) is not None
         and p.device.type == "cpu"
         and _keepable(p)
-        and p.data.is_contiguous()
+        and _pinnable_layout(p.data)
         and not p.data.is_pinned()
     ]
     buffers = [
@@ -319,7 +328,12 @@ def _pin_host_weights(
         for (name, p), (index, start) in zip(params, slots):
             if index == len(bufs):
                 bufs.append(torch.empty(chunks[index], dtype = torch.uint8, pin_memory = True))
-            view = bufs[index][start : start + p.data.nbytes].view(p.dtype).view(p.shape)
+            view = bufs[index][start : start + p.data.nbytes].view(p.dtype)
+            view = (
+                view.view(p.shape)
+                if p.data.is_contiguous()
+                else view.as_strided(p.shape, p.data.stride())
+            )
             view.copy_(p.data)
             placed.append((name, p, view))
     except Exception as exc:  # noqa: BLE001 - e.g. a WSL pinned-memory cap: keep the pageable weights
@@ -1008,6 +1022,48 @@ def estimate_video_runtime_mib(
     return max(3072, int(4096 + 3.0 * decoded_mib))
 
 
+@dataclass(frozen = True)
+class CalibratedImageActivation:
+    """MiB above the resident weights, margin included: each phase at 1024x1024, then the 2048x2048 worst case."""
+
+    text_encoder_mib: int
+    denoise_mib: int
+    decode_mib: int
+    tiled_decode_mib: int
+    max_canvas_mib: int
+
+    def headroom(self, tiled: bool) -> int:
+        return max(
+            self.text_encoder_mib,
+            self.denoise_mib,
+            self.tiled_decode_mib if tiled else self.decode_mib,
+        )
+
+
+# NVIDIA worst case per (off / eager / default, max) tier; U-Nets unlisted (cannot stream encoders).
+_ACTIVATION_MARGIN = 1.2
+_MEASURED_IMAGE_ACTIVATION_MIB: dict[
+    str, tuple[tuple[int, int, int, int, int], tuple[int, int, int, int, int]]
+] = {
+    # text encoder, denoise, untiled decode, tiled decode (all at 1024x1024), max(denoise, tiled decode) at 2048x2048
+    "qwen-image-2.1": ((1_849, 666, 7_648, 449, 2_479), (1_849, 2_489, 7_648, 449, 9_602)),
+    "flux.1": ((288, 892, 2_666, 2_456, 2_674), (288, 892, 2_666, 2_456, 2_674)),
+    "flux.2-klein": ((1_516, 1_160, 2_645, 2_456, 3_876), (1_516, 1_205, 2_677, 2_456, 3_924)),
+    "z-image": ((744, 1_199, 2_666, 2_456, 4_327), (744, 1_271, 2_669, 2_456, 4_327)),
+}
+
+
+def calibrated_image_activation(
+    family: Optional[str], *, max_speed: bool = True
+) -> Optional[CalibratedImageActivation]:
+    measured = _MEASURED_IMAGE_ACTIVATION_MIB.get(str(family or ""))
+    if measured is None:
+        return None
+    return CalibratedImageActivation(
+        *(int(v * _ACTIVATION_MARGIN) for v in measured[1 if max_speed else 0])
+    )
+
+
 def _reserve_mib(memory_kind: str, base: int) -> int:
     if memory_kind == "unified_memory":
         return max(2048, int(base * 0.20))  # OS + CPU share this pool
@@ -1592,6 +1648,7 @@ def plan_diffusion_memory(
     base_overhead_mib: int = DEFAULT_BASE_OVERHEAD_MIB,
     requested_mode: Optional[str] = None,
     explicit_offload: bool = False,
+    calibrated_activation: Optional[CalibratedImageActivation] = None,
 ) -> MemoryPlan:
     """Pick an offload policy plus VAE memory savers for the current load.
 
@@ -1778,6 +1835,29 @@ def plan_diffusion_memory(
     # keeps the VAE resident.
     any_offload = policy != OFFLOAD_NONE or device_memory.backend in ("mps", "cpu")
     tile = policy in (OFFLOAD_MODEL, OFFLOAD_SEQUENTIAL) or device_memory.backend in ("mps", "cpu")
+    if (
+        calibrated_activation is not None
+        and mode == MEMORY_MODE_AUTO
+        and not (explicit_offload and normalize_memory_mode(requested_mode) is None)
+        and can_offload
+        and not device_memory.is_unified
+    ):
+        faster = _calibrated_faster_tier(
+            calibrated_activation,
+            budget = budget,
+            model_dense_mib = model_dense_mib,
+            companion_dense_mib = companion_dense_mib,
+            text_encoder_dense_mib = text_encoder_dense_mib,
+            base_overhead_mib = base_overhead_mib,
+            free_mib = device_memory.free_mib,
+            policy = policy,
+            stream_transformer = stream_transformer,
+        )
+        if faster is not None:
+            policy, stream_text_encoders, stream_transformer, tile, reason = faster
+            any_offload = policy != OFFLOAD_NONE
+            reasons.append(reason)
+            estimates["calibrated_headroom_mib"] = calibrated_activation.headroom(tile)
     return MemoryPlan(
         requested_mode = mode,
         offload_policy = policy,
@@ -1790,6 +1870,106 @@ def plan_diffusion_memory(
         stream_text_encoders = stream_text_encoders and policy == OFFLOAD_GROUP,
         stream_transformer = stream_transformer or policy != OFFLOAD_GROUP,
     )
+
+
+def _calibrated_faster_tier(
+    act: CalibratedImageActivation,
+    *,
+    budget: Optional[int],
+    model_dense_mib: Optional[int],
+    companion_dense_mib: Optional[int],
+    text_encoder_dense_mib: Optional[int],
+    base_overhead_mib: int,
+    free_mib: Optional[int],
+    policy: str,
+    stream_transformer: bool,
+) -> Optional[tuple[str, bool, bool, bool, str]]:
+    """Strictly faster tier than the flat pick, else None; resident tiers must fit the 2048 denoise (it cannot tile).
+    Every check grows with the budget, so more VRAM never picks a slower tier."""
+    if budget is None or free_mib is None or model_dense_mib is None or companion_dense_mib is None:
+        return None
+    te = max(0, int(text_encoder_dense_mib or 0))
+    transformer = max(0, int(model_dense_mib) - int(companion_dense_mib))
+    others = max(0, int(companion_dense_mib) - te)
+    overhead = max(0, int(base_overhead_mib))
+    budget = int(budget)
+    free = int(free_mib) - overhead
+    room = free - act.max_canvas_mib
+    if policy == OFFLOAD_NONE:
+        flat_rank = 0
+    elif policy == OFFLOAD_GROUP and not stream_transformer:
+        flat_rank = 1
+    elif policy == OFFLOAD_MODEL:
+        flat_rank = 4
+    elif policy == OFFLOAD_GROUP:
+        flat_rank = 5
+    else:
+        return None
+    model_viable = max(transformer, te, others) <= budget and (
+        flat_rank < 5
+        or (
+            transformer <= room
+            and te + act.text_encoder_mib <= free
+            and others + act.tiled_decode_mib <= free
+        )
+    )
+    resident_streamed_te = te > 0 and transformer + others <= room
+    candidates = (
+        (
+            transformer + te + others + act.headroom(False) + overhead <= int(budget * 0.85)
+            and transformer + te + others <= room,
+            (OFFLOAD_NONE, False, True, False, "measured activations fit resident with headroom"),
+        ),
+        (
+            resident_streamed_te
+            and transformer + others + act.headroom(False) + overhead <= budget,
+            (
+                OFFLOAD_GROUP,
+                True,
+                False,
+                False,
+                "measured activations keep the transformer resident with the text encoders streamed",
+            ),
+        ),
+        (
+            resident_streamed_te and transformer + others + act.headroom(True) + overhead <= budget,
+            (
+                OFFLOAD_GROUP,
+                True,
+                False,
+                True,
+                "measured activations keep the transformer resident with the text encoders "
+                "streamed and the VAE decode tiled",
+            ),
+        ),
+        (
+            model_viable and others + act.decode_mib + overhead <= budget,
+            (
+                OFFLOAD_MODEL,
+                False,
+                True,
+                False,
+                "whole-module offload uploads the transformer once per call, and the measured "
+                "VAE decode fits untiled",
+            ),
+        ),
+        (
+            model_viable,
+            (
+                OFFLOAD_MODEL,
+                False,
+                True,
+                True,
+                "whole-module offload uploads the transformer once per call instead of every step",
+            ),
+        ),
+    )
+    for rank, (fits, tier) in enumerate(candidates):
+        if rank >= flat_rank:
+            return None
+        if fits:
+            return tier
+    return None
 
 
 def _streamable_components(pipe: Any, torch: Any) -> dict[str, tuple[Any, str]]:
@@ -3587,9 +3767,13 @@ def _activation_refusal_message(
     source_driven: bool,
     condition_pixels: int,
     tiled: bool,
+    controlnet: bool = False,
+    calibrated: bool = False,
 ) -> str:
     batch_note = f" at a batch of {batch}" if batch > 1 else ""
-    cond_note = " with its input images" if condition_pixels else ""
+    cond_note = (
+        " with ControlNet" if controlnet else " with its input images" if condition_pixels else ""
+    )
     if source_driven:
         remedy = (
             "Upload a smaller source image (this workflow takes its output size from the image, "
@@ -3608,7 +3792,9 @@ def _activation_refusal_message(
         # Smaller-batch hint only when batch > 1: a one-image refusal cannot be fixed by asking for fewer.
         f"{remedy}"
         f"{' or a smaller batch size' if batch > 1 else ''}"
-        f"{', use fewer input images or a lower reference detail' if condition_pixels else ''}, "
+        f"{', use fewer input images or a lower reference detail' if condition_pixels else ''}"
+        f"{', generate without ControlNet' if controlnet else ''}"
+        f"{', reload the model with the balanced memory mode' if calibrated else ''}, "
         "or free GPU memory by closing other applications. To try anyway, turn on "
         f"'{OVERSIZED_GENERATE_SETTING_LABEL}' under Advanced on the Images page "
         "(API callers of /api/inference/images/generate can send allow_oversized; server installs "
@@ -3630,6 +3816,8 @@ def image_activation_verdict(
     vae_sliced: bool = False,
     quadratic_attention: bool = False,
     allow_oversized: bool = False,
+    calibrated_placement: bool = False,
+    controlnet: bool = False,
 ) -> ImageActivationVerdict:
     """Decide whether this generation's ACTIVATIONS fit the free device budget: run it as loaded,
     run it with the VAE tiled, or refuse.
@@ -3679,6 +3867,13 @@ def image_activation_verdict(
         budget = _safe_device_budget_mib(device_memory)
         if budget is None:
             return ImageActivationVerdict(ACTIVATION_RUN)
+        # Calibrated tiers measured only the unconditioned denoise; a ControlNet counts as one output-sized image.
+        input_pixels = max(0, int(condition_pixels or 0))
+        conditioned = bool(calibrated_placement) and (input_pixels > 0 or bool(controlnet))
+        if calibrated_placement and controlnet:
+            condition_pixels = input_pixels + max(64, int(width or DEFAULT_IMAGE_WIDTH)) * max(
+                64, int(height or DEFAULT_IMAGE_HEIGHT)
+            )
         needed = estimate_image_runtime_mib(
             width = width,
             height = height,
@@ -3716,9 +3911,11 @@ def image_activation_verdict(
     # false refusal at or below the default resolution, because the `needed <= planned` arm already exempts every
     # request the load itself budgeted for.
     numbers = dict(needed_mib = int(needed), tiled_needed_mib = tiled, budget_mib = int(budget))
-    if int(needed) + overhead <= int(budget) or needed <= planned:
+    if int(needed) + overhead <= int(budget) or (not conditioned and needed <= planned):
         return ImageActivationVerdict(ACTIVATION_RUN, **numbers)
-    if tiled is not None and (int(tiled) + overhead <= int(budget) or tiled <= planned):
+    if tiled is not None and (
+        int(tiled) + overhead <= int(budget) or (not conditioned and tiled <= planned)
+    ):
         return ImageActivationVerdict(ACTIVATION_TILE, **numbers)
     if override:
         # Tile even under quadratic attention: the estimate is untrusted there, but tiling still lowers the peak.
@@ -3738,8 +3935,10 @@ def image_activation_verdict(
         budget_mib = int(budget),
         free_mib = int(free),
         source_driven = source_driven,
-        condition_pixels = condition_pixels,
+        condition_pixels = input_pixels,
         tiled = tiled is not None,
+        controlnet = bool(controlnet),
+        calibrated = conditioned,
     )
     return ImageActivationVerdict(ACTIVATION_REFUSE, message = message, **numbers)
 
@@ -3758,6 +3957,8 @@ def image_activation_shortfall_message(
     vae_sliced: bool = False,
     quadratic_attention: bool = False,
     allow_oversized: bool = False,
+    calibrated_placement: bool = False,
+    controlnet: bool = False,
 ) -> Optional[str]:
     return image_activation_verdict(
         device_memory = device_memory,
@@ -3772,6 +3973,8 @@ def image_activation_shortfall_message(
         vae_sliced = vae_sliced,
         quadratic_attention = quadratic_attention,
         allow_oversized = allow_oversized,
+        calibrated_placement = calibrated_placement,
+        controlnet = controlnet,
     ).message
 
 
@@ -3789,6 +3992,8 @@ def raise_on_image_activation_shortfall(
     vae_sliced: bool = False,
     quadratic_attention: bool = False,
     allow_oversized: bool = False,
+    calibrated_placement: bool = False,
+    controlnet: bool = False,
     logger: Any = None,
 ) -> ImageActivationVerdict:
     """Refuse a generation whose activations cannot fit the free device budget; else return the verdict.
@@ -3810,6 +4015,8 @@ def raise_on_image_activation_shortfall(
         vae_sliced = vae_sliced,
         quadratic_attention = quadratic_attention,
         allow_oversized = allow_oversized,
+        calibrated_placement = calibrated_placement,
+        controlnet = controlnet,
     )
     if verdict.action == ACTIVATION_REFUSE:
         if logger is not None:
