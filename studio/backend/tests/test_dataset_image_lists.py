@@ -285,3 +285,14 @@ def test_embedded_images_require_convertible_values(detector):
     result = detector.detect_vlm_dataset_structure(dataset)
 
     assert result["format"] != "vlm_messages"
+
+
+@pytest.mark.parametrize("detector", [dataset_format, format_detection])
+def test_embedded_images_do_not_hide_top_level_placeholders(detector):
+    row = _image_part_row()
+    row["messages"][0]["content"].append({"type": "image", "image": None, "text": None})
+    row["images"] = [Image.new("RGB", (8, 8), "blue")]
+
+    result = detector.detect_vlm_dataset_structure([row])
+
+    assert result["format"] not in {"vlm_messages", "vlm_messages_llava"}

@@ -697,7 +697,9 @@ def detect_vlm_dataset_structure(dataset):
                 part.get("image") for part in image_parts if part.get("image") is not None
             ]
             if embedded_images:
-                if all(_is_image_list_item(image) for image in embedded_images):
+                if len(embedded_images) == len(image_parts) and all(
+                    _is_image_list_item(image) for image in embedded_images
+                ):
                     return {
                         "format": "vlm_messages",
                         "needs_conversion": False,
