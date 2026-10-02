@@ -2515,7 +2515,9 @@ class FastModel(FastBaseModel):
                         "Use FastVisionModel for multimodal inputs."
                     )
                     # Remap VLM text weights (tf >= 5) while model_config is still the parent (#5816).
-                    _apply_text_only_key_mapping(kwargs, model_config, text_config)
+                    _text_key_mapping = _apply_text_only_key_mapping(
+                        kwargs, model_config, text_config
+                    )
                     model_config = text_config
                     is_vlm = False
                     # model_config is no longer the repo's config, so anything rebuilding it from model_name (the device-map planner) sees a different model.
