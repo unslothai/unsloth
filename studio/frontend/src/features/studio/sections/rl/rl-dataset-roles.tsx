@@ -23,7 +23,13 @@ import {
   resolveRlMapping,
 } from "@/features/training/lib/rl-roles";
 import { type TranslationKey, useT } from "@/i18n";
-import { type ReactElement, useCallback, useEffect, useState } from "react";
+import {
+  type ReactElement,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { useShallow } from "zustand/react/shallow";
 
 const ROLE_LABEL: Record<RlRole, TranslationKey> = {
@@ -55,6 +61,7 @@ export function RlDatasetRoles({
   const [columns, setColumns] = useState<string[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const latestRequest = useRef(0);
   const roles = RL_ROLES[objective];
   const datasetName =
     config.datasetSource === "huggingface"
@@ -68,6 +75,9 @@ export function RlDatasetRoles({
     if (!datasetName) {
       return;
     }
+    // Picking a dataset changes the split a moment later; a reply for the old split
+    // ("Bad split: train") must not land on top of the newer one.
+    const request = ++latestRequest.current;
     setLoading(true);
     setError(null);
     try {
@@ -78,12 +88,18 @@ export function RlDatasetRoles({
         split: datasetSplit,
         isVlm: false,
       });
-      setColumns(res.columns);
+      if (request === latestRequest.current) {
+        setColumns(res.columns);
+      }
     } catch (err) {
-      setColumns(null);
-      setError(err instanceof Error ? err.message : String(err));
+      if (request === latestRequest.current) {
+        setColumns(null);
+        setError(err instanceof Error ? err.message : String(err));
+      }
     } finally {
-      setLoading(false);
+      if (request === latestRequest.current) {
+        setLoading(false);
+      }
     }
   }, [datasetName, datasetSubset, datasetSplit]);
 
