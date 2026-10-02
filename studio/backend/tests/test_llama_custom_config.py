@@ -358,6 +358,25 @@ def test_an_ini_that_disables_the_projector_launches_text_only(launch, monkeypat
     assert launch.backend._auto_tensor_split_emitted is None
 
 
+@pytest.mark.parametrize("ini,downloads", [("no-mmproj=true", 0), ("c=4096", 1)])
+def test_projector_download_follows_the_ini_not_the_vision_toggle(
+    launch, monkeypatch, ini, downloads
+):
+    from dataclasses import replace
+
+    fetched = []
+    monkeypatch.setattr(launch.backend, "_download_mmproj", lambda **k: fetched.append(k) or None)
+    intent = replace(
+        launch.intent,
+        is_vision = True,
+        disable_vision = True,  # an audio-only encoder survives this; its header decides
+        hf_repo = "org/model-GGUF",
+        llama_cpp_config = parse_config_source(source(ini)),
+    )
+    assert launch.backend.load_model(intent)
+    assert len(fetched) == downloads
+
+
 def test_bad_config_never_spawns(launch):
     from dataclasses import replace
 

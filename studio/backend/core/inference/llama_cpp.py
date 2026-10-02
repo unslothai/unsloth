@@ -23385,7 +23385,12 @@ class LlamaCppBackend:
             raise CustomConfigError(
                 "Diffusion GGUFs run on the diffusion runner; use Studio settings"
             )
-        if intent.is_vision and not projector and intent.hf_repo and not intent.disable_vision:
+        # The INI's own projector switch-off wins over Studio's --mmproj (last wins on argv).
+        if {"--no-mmproj", "--no-mmproj-auto"} & set(compiled.options):
+            projector = None
+        # Downloaded even with vision off, as managed loads do: only its header tells an
+        # audio-only encoder (kept) from an image tower (dropped below).
+        elif intent.is_vision and not projector and intent.hf_repo:
             with _hf_offline_if_unreachable():
                 projector = self._download_mmproj(
                     hf_repo = intent.hf_repo,
@@ -23399,9 +23404,6 @@ class LlamaCppBackend:
             )
             if projector and intent.disable_vision and not _mmproj_env_is_audio_only(projector):
                 projector = None
-        # The INI's own projector switch-off wins over Studio's --mmproj (last wins on argv).
-        if {"--no-mmproj", "--no-mmproj-auto"} & set(compiled.options):
-            projector = None
 
         binary = self._exec_path_for_launch(self._find_llama_server_binary())
         caps = self.probe_server_capabilities(binary)
