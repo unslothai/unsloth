@@ -2369,6 +2369,7 @@ export const ja = {
       context: "コンテキスト",
       lr: "LR",
       hardware: "ハードウェア",
+      vram: "VRAM",
       noGpu: "GPU が検出されませんでした",
       hfToken: "HF トークン",
       saved: "保存済み",

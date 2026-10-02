@@ -2396,6 +2396,7 @@ export const ko = {
       context: "컨텍스트",
       lr: "LR",
       hardware: "하드웨어",
+      vram: "VRAM",
       noGpu: "GPU가 감지되지 않았습니다",
       hfToken: "HF 토큰",
       saved: "저장됨",

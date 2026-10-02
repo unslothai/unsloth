@@ -2410,6 +2410,7 @@ export const hi = {
       context: "कॉन्टेक्स्ट",
       lr: "LR",
       hardware: "हार्डवेयर",
+      vram: "VRAM",
       noGpu: "कोई GPU नहीं मिला",
       hfToken: "HF टोकन",
       saved: "सहेजा गया",
