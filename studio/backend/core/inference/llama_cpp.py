@@ -7453,8 +7453,8 @@ def _extra_args_have_tensor_split(
 
 
 @functools.lru_cache(maxsize = 1)
-def _count_ssl_context() -> ssl.SSLContext:
-    # httpx loads the CA bundle per Client (~15 ms); admission counts once per chat request.
+def _local_ssl_context() -> ssl.SSLContext:
+    # httpx loads CA certificates even for loopback HTTP. Share that setup, not streaming sockets.
     return ssl.create_default_context()
 
 
@@ -34999,6 +34999,7 @@ class LlamaCppBackend:
             timeout = stream_timeout,
             limits = httpx.Limits(max_keepalive_connections = 0),
             trust_env = False,
+            verify = _local_ssl_context(),
         ) as client:
             first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
             with self._stream_with_retry(
@@ -40207,7 +40208,7 @@ class LlamaCppBackend:
                 timeout = 10,
                 headers = self._auth_headers,
                 trust_env = False,
-                verify = _count_ssl_context(),
+                verify = _local_ssl_context(),
             ) as client:
 
                 def _tokenize(text: str) -> int:
@@ -40543,6 +40544,7 @@ class LlamaCppBackend:
             timeout = httpx.Timeout(read_timeout, connect = 10),
             headers = self._auth_headers,
             trust_env = False,
+            verify = _local_ssl_context(),
         ) as client:
             finished = threading.Event()
             watcher: Optional[threading.Thread] = None
