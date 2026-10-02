@@ -255,18 +255,22 @@ def enable_padding_free_metadata(model, trainer):
 
     def torch_call_with_padding_free_metadata(examples: Sequence[dict]):
         seq_lengths: list[int] = []
+        collated = examples
         if examples and isinstance(examples[0], dict):
-            for example in examples:
+            for index, example in enumerate(examples):
                 lengths = example.get("seq_lengths")
                 if lengths is None:
                     ids = example.get("input_ids")
                     if ids is None:
                         continue
                     lengths = [len(ids)]
-                    example["seq_lengths"] = lengths
+                    # TRL's collator keys seq_lengths off examples[0] and reads every row: pass a copy, not the caller's row.
+                    if collated is examples:
+                        collated = list(examples)
+                    collated[index] = {**example, "seq_lengths": lengths}
                 seq_lengths.extend(lengths)
 
-        batch = original_torch_call(examples)
+        batch = original_torch_call(collated)
         if seq_lengths:
             # Labels left alone for the same reason as enable_sample_packing: num_items_in_batch is counted off
             # this batch and the zoo's discount of the boundary targets is idempotent.

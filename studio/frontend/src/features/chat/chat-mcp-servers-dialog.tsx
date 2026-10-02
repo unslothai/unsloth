@@ -41,6 +41,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { subscribeToMcpServerMutationSettlements } from "./api/mcp-server-mutation-tracker";
 import {
+  type McpImageInputMapping,
   type McpServerConfig,
   createMcpServer,
   decodeMcpStdioCommand,
@@ -57,6 +58,7 @@ import {
   createMcpStdioSnapshot,
   resolveMcpStdioUrl,
 } from "./mcp-server-form";
+import { McpImageMappings } from "./mcp-image-mappings";
 import { RefreshGlyph } from "@/lib/refresh-icon";
 
 type HeaderRow = { id: string; key: string; value: string };
@@ -72,7 +74,18 @@ type FormState = {
   headers: HeaderRow[];
   credentialTransport: Exclude<FormTransport, "unknown"> | null;
   useOauth: boolean;
+  imageInputMappings: McpImageInputMapping[];
 };
+
+// What image-field discovery reads: it probes the SAVED server, so it waits for these to be saved.
+function connectionKey(form: FormState): string {
+  return JSON.stringify([
+    form.url,
+    form.arguments.map((row) => row.value),
+    form.headers.map((row) => [row.key, row.value]),
+    form.useOauth,
+  ]);
+}
 
 const EMPTY_FORM: FormState = {
   displayName: "",
@@ -83,6 +96,7 @@ const EMPTY_FORM: FormState = {
   headers: [],
   credentialTransport: null,
   useOauth: false,
+  imageInputMappings: [],
 };
 
 function newRowId(): string {
@@ -360,6 +374,7 @@ export function ChatMcpServersDialog({
   const [loading, setLoading] = useState(false);
   const [view, setView] = useState<View>({ kind: "list" });
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
+  const [savedConnection, setSavedConnection] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [codecPending, setCodecPending] = useState(false);
@@ -505,18 +520,21 @@ export function ChatMcpServersDialog({
       headers: headersFromObject(server.headers ?? {}),
       credentialTransport: isHttpAddress(server.url) ? "http" : "stdio",
       useOauth: server.use_oauth ?? false,
+      imageInputMappings: server.image_input_mappings ?? [],
     };
 
     if (isHttpAddress(server.url)) {
       setCodecPending(false);
       setDecodingCommand(false);
       setForm(baseForm);
+      setSavedConnection(connectionKey(baseForm));
       return;
     }
 
     setCodecPending(true);
     setDecodingCommand(true);
     setForm(baseForm);
+    setSavedConnection(null);
     try {
       const decoded = await decodeMcpStdioCommand(server.url);
       if (
@@ -525,7 +543,7 @@ export function ChatMcpServersDialog({
       ) {
         return;
       }
-      setForm({
+      const decodedForm: FormState = {
         ...baseForm,
         url: decoded.command,
         arguments: argumentsFromStrings(decoded.arguments ?? []),
@@ -535,7 +553,9 @@ export function ChatMcpServersDialog({
           decoded.arguments ?? [],
         ),
         useOauth: false,
-      });
+      };
+      setForm(decodedForm);
+      setSavedConnection(connectionKey(decodedForm));
     } catch (err) {
       if (
         formGenerationRef.current !== generation ||
@@ -698,6 +718,7 @@ export function ChatMcpServersDialog({
           url,
           headers: headers ?? null,
           useOauth: stdio ? false : form.useOauth,
+          imageInputMappings: form.imageInputMappings,
         });
         if (formGenerationRef.current !== generation) return;
         toast.success("MCP server updated");
@@ -1045,6 +1066,20 @@ export function ChatMcpServersDialog({
                 />
               </div>
             )}
+
+            <McpImageMappings
+              key={view.kind === "edit" ? view.id : "new"}
+              serverId={view.kind === "edit" ? view.id : undefined}
+              value={form.imageInputMappings}
+              onChange={(imageInputMappings) =>
+                setForm((prev) => ({ ...prev, imageInputMappings }))
+              }
+              disabled={formPending}
+              connectionUnsaved={
+                savedConnection === null ||
+                connectionKey(form) !== savedConnection
+              }
+            />
 
             {form.transport !== "unknown" && (
               <HeadersEditor
