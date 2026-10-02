@@ -9,7 +9,6 @@ from .cells import cell_text
 from .format_detection import detect_dataset_format, detect_multimodal_dataset, detect_custom_format_heuristic
 from .iterable import is_streaming_dataset
 from .model_mappings import MODEL_TO_TEMPLATE_MAPPER
-from core.inference.chat_template_helpers import _normalize_tool_call_arguments
 from loggers import get_logger
 logger = get_logger(__name__)
 
@@ -173,6 +172,8 @@ def _drop_none_values(value):
 
 
 def _render_conversation(tokenizer, conversation):
+    from core.inference.chat_template_helpers import _normalize_tool_call_arguments
+
     attempts = []
     for messages in (_drop_none_values(conversation), conversation):
         for attempt in (_normalize_tool_call_arguments(messages), messages):
