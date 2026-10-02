@@ -6,6 +6,7 @@ import vm from "node:vm";
 import { after, before, test } from "node:test";
 import ts from "typescript";
 import { type ViteDevServer, createServer } from "vite";
+import { toolCallReplayArguments } from "../src/features/chat/tool-call-arguments.ts";
 import type { ParsedConversation } from "../src/features/chat/types.ts";
 
 import { readSrc } from "./helpers/kit.ts";
@@ -36,6 +37,7 @@ function loadMessageToOpenAI(): typeof messageToOpenAI {
   const context = {
     unwrapPastedTextContent: (text: string) => text,
     toolResultModelText: (result: unknown) => result,
+    toolCallReplayArguments,
   } as Record<string, unknown>;
   vm.runInNewContext(javascript, context);
   return context.__messageToOpenAI as typeof messageToOpenAI;
@@ -215,6 +217,113 @@ test("assistant images are represented explicitly in JSONL exports", () => {
     exported,
     [{ role: "assistant", content: "Chart\n\n[image attachment]" }],
   );
+});
+
+function toolCallPart(id: string, query: string, result: string) {
+  return {
+    type: "tool-call",
+    toolCallId: id,
+    toolName: "web_search",
+    args: { query },
+    argsText: JSON.stringify({ query }),
+    result,
+  };
+}
+
+function webSearchCall(id: string, query: string) {
+  return {
+    id,
+    type: "function",
+    function: { name: "web_search", arguments: JSON.stringify({ query }) },
+  };
+}
+
+test("JSONL exports put the answer after the tool result it used", () => {
+  const exported = structuredClone(
+    messageToOpenAI({
+      role: "assistant",
+      content: [
+        { type: "reasoning", text: "I should search." },
+        { type: "text", text: "Let me look that up." },
+        toolCallPart("c1", "capital of Australia", "Canberra is the capital."),
+        { type: "text", text: "The capital of Australia is Canberra." },
+      ],
+    }),
+  );
+  assert.deepEqual(exported, [
+    {
+      role: "assistant",
+      content: "<thinking>\nI should search.\n</thinking>\n\nLet me look that up.",
+      tool_calls: [webSearchCall("c1", "capital of Australia")],
+    },
+    { role: "tool", tool_call_id: "c1", name: "web_search", content: "Canberra is the capital." },
+    { role: "assistant", content: "The capital of Australia is Canberra." },
+  ]);
+});
+
+test("JSONL exports keep each tool round as its own assistant turn", () => {
+  const exported = structuredClone(
+    messageToOpenAI({
+      role: "assistant",
+      content: [
+        toolCallPart("a", "first", "A"),
+        { type: "text", text: "Let me check more." },
+        toolCallPart("b", "second", "B"),
+        { type: "text", text: "Final." },
+      ],
+    }),
+  );
+  assert.deepEqual(exported, [
+    { role: "assistant", content: null, tool_calls: [webSearchCall("a", "first")] },
+    { role: "tool", tool_call_id: "a", name: "web_search", content: "A" },
+    { role: "assistant", content: "Let me check more.", tool_calls: [webSearchCall("b", "second")] },
+    { role: "tool", tool_call_id: "b", name: "web_search", content: "B" },
+    { role: "assistant", content: "Final." },
+  ]);
+});
+
+test("JSONL exports split Studio's back-to-back searches into rounds", () => {
+  const local = { provenance: { source: "local" } };
+  const exported = structuredClone(
+    messageToOpenAI({
+      role: "assistant",
+      content: [
+        { ...toolCallPart("a", "first", "No results found."), ...local },
+        { ...toolCallPart("b", "second", "B"), ...local },
+        { type: "text", text: "Final." },
+      ],
+    }),
+  );
+  assert.deepEqual(exported, [
+    { role: "assistant", content: null, tool_calls: [webSearchCall("a", "first")] },
+    { role: "tool", tool_call_id: "a", name: "web_search", content: "No results found." },
+    { role: "assistant", content: null, tool_calls: [webSearchCall("b", "second")] },
+    { role: "tool", tool_call_id: "b", name: "web_search", content: "B" },
+    { role: "assistant", content: "Final." },
+  ]);
+});
+
+test("JSONL exports keep parallel tool calls in one assistant turn", () => {
+  const exported = structuredClone(
+    messageToOpenAI({
+      role: "assistant",
+      content: [
+        toolCallPart("a", "first", "A"),
+        toolCallPart("b", "second", "B"),
+        { type: "text", text: "Both done." },
+      ],
+    }),
+  );
+  assert.deepEqual(exported, [
+    {
+      role: "assistant",
+      content: null,
+      tool_calls: [webSearchCall("a", "first"), webSearchCall("b", "second")],
+    },
+    { role: "tool", tool_call_id: "a", name: "web_search", content: "A" },
+    { role: "tool", tool_call_id: "b", name: "web_search", content: "B" },
+    { role: "assistant", content: "Both done." },
+  ]);
 });
 
 test("imports without message send times mark their ordering timestamps as estimated", () => {
