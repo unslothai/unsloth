@@ -369,7 +369,11 @@ def prequant_mmap_enabled(destination: Any) -> bool:
     return bool(dest) and not dest.startswith("cpu") and dest != "meta"
 
 
-def _read_prequant_for(path: str, destination: Any, logger: Any = None) -> Any:
+def _read_prequant_for(
+    path: str,
+    destination: Any,
+    logger: Any = None,
+) -> Any:
     """``_load_prequant_checkpoint`` mapped when ``prequant_mmap_enabled``, falling back to the full read.
 
     The fallback covers what a mapping cannot open (a legacy non-zip pickle, a filesystem without mmap); a refusal the

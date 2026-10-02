@@ -6450,7 +6450,9 @@ class VideoBackend:
                 backend = getattr(target, "backend", None),
                 denoiser_hooked = offload_policy != "none" and _video_denoiser_hooked(pipe),
             )
-            load_bg_compile = bg_compile.arm(bg_module, logger = logger) if bg_module is not None else None
+            load_bg_compile = (
+                bg_compile.arm(bg_module, logger = logger) if bg_module is not None else None
+            )
             with self._lock:
                 if _load_token is not None and _load_token != self._load_token:
                     del pipe
@@ -7881,7 +7883,9 @@ class VideoBackend:
             if pending_bg is not None and pending_bg.compiling():
                 logger.info("video.bg_compile: render waits for the background compile to finish")
                 waited = pending_bg.wait(cancel)
-                logger.info("video.bg_compile: render waited %.1f s for the background compile", waited)
+                logger.info(
+                    "video.bg_compile: render waited %.1f s for the background compile", waited
+                )
             with self._lock:
                 # A teardown is waiting for this lock and Python locks are not FIFO, so refuse rather than denoise
                 # against a pipeline that is already being torn down.
@@ -9148,7 +9152,9 @@ class VideoBackend:
             "memory_mode": state.memory_mode,
             "speed_mode": state.speed_mode,
             "speed_optims": speed_optims,
-            "bg_compile": state.bg_compile.describe() if getattr(state, "bg_compile", None) is not None else None,
+            "bg_compile": state.bg_compile.describe()
+            if getattr(state, "bg_compile", None) is not None
+            else None,
             "attention_backend": state.attention_backend,
             "transformer_cache": state.transformer_cache,
             "transformer_cache_stats": (

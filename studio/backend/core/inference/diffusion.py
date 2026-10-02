@@ -1857,7 +1857,12 @@ def _dense_fast_path_reason(
 
 def _progress_latch_enabled() -> bool:
     """UNSLOTH_DIFFUSION_PROGRESS_LATCH=0 rescans the cache on every load-progress poll, as before."""
-    return os.environ.get("UNSLOTH_DIFFUSION_PROGRESS_LATCH", "").strip().lower() not in ("0", "false", "no", "off")
+    return os.environ.get("UNSLOTH_DIFFUSION_PROGRESS_LATCH", "").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
 
 
 def _bg_compile_module(
@@ -3300,7 +3305,11 @@ class DiffusionBackend:
         if loading is None:
             return _progress("ready" if self._state is not None else None)
         finalized = loading.finalized_scan
-        if finalized is not None and finalized[0] == loading.expected_bytes and _progress_latch_enabled():
+        if (
+            finalized is not None
+            and finalized[0] == loading.expected_bytes
+            and _progress_latch_enabled()
+        ):
             # Every expected byte was already on disk: the rest of the load reads and places weights, so another walk
             # of the repo trees (tens of ms, holding the GIL the load thread needs, at the UI's poll rate for the whole
             # load) cannot change the answer. A changed estimate rescans.
@@ -8667,9 +8676,13 @@ class DiffusionBackend:
             # outside the state lock so status polls keep answering, instead of rendering beside it.
             pending_bg = getattr(self._state, "bg_compile", None)
             if pending_bg is not None and pending_bg.compiling():
-                logger.info("diffusion.bg_compile: render waits for the background compile to finish")
+                logger.info(
+                    "diffusion.bg_compile: render waits for the background compile to finish"
+                )
                 waited = pending_bg.wait(cancel)
-                logger.info("diffusion.bg_compile: render waited %.1f s for the background compile", waited)
+                logger.info(
+                    "diffusion.bg_compile: render waited %.1f s for the background compile", waited
+                )
             with self._lock:
                 state = self._state
                 if state is None:
@@ -9304,7 +9317,10 @@ class DiffusionBackend:
                                 (reg_width, reg_height, int(chunk_batch)),
                                 static = static_shapes,
                             )
-                        if auto_dynamic_active(state.pipe) and fresh_compile_count() > graphs_before:
+                        if (
+                            auto_dynamic_active(state.pipe)
+                            and fresh_compile_count() > graphs_before
+                        ):
                             # Automatic dynamic recompiles on the first new text length at an already-registered
                             # (width, height, batch): persist those graphs too, or every fresh process pays them again.
                             compile_cache.mark_recompiled(state.compile_cache_ctx)

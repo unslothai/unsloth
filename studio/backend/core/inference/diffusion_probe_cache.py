@@ -35,7 +35,11 @@ _ENV_PREFIXES = ("UNSLOTH_DIFFUSION_", "UNSLOTH_NVFP4", "UNSLOTH_INT8", "TORCHAO
 # Never part of the key: paths and the switch itself.
 _ENV_IGNORED = frozenset({_ENV, "UNSLOTH_DIFFUSION_COMPILE_CACHE_DIR", "TORCHINDUCTOR_CACHE_DIR"})
 # The modules whose code decides a verdict; any edit to them invalidates every entry.
-_PROBE_SOURCES = ("diffusion_transformer_quant.py", "diffusion_torchao_patches.py", "diffusion_native_quant.py")
+_PROBE_SOURCES = (
+    "diffusion_transformer_quant.py",
+    "diffusion_torchao_patches.py",
+    "diffusion_native_quant.py",
+)
 
 _LOCK = threading.Lock()
 _SOURCE_DIGEST: Optional[str] = None
@@ -75,7 +79,6 @@ def _source_digest() -> str:
 def _version(module: str) -> Optional[str]:
     try:
         from importlib.metadata import version
-
         return version(module)
     except Exception:  # noqa: BLE001
         return None
@@ -185,7 +188,10 @@ def store(card: str, table: dict[str, Any]) -> bool:
             data = _read_all(path)
             data[_key(fp)] = {"fingerprint": fp, "verdicts": verdicts, "t": time.time()}
             if len(data) > _MAX_ENTRIES:
-                oldest = sorted(data, key = lambda k: (data[k] or {}).get("t", 0) if isinstance(data[k], dict) else 0)
+                oldest = sorted(
+                    data,
+                    key = lambda k: (data[k] or {}).get("t", 0) if isinstance(data[k], dict) else 0,
+                )
                 for k in oldest[: len(data) - _MAX_ENTRIES]:
                     data.pop(k, None)
             path.parent.mkdir(parents = True, exist_ok = True)

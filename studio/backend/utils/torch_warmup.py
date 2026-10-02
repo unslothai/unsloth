@@ -501,7 +501,6 @@ def _prewarm_quant_probe() -> None:
     the first image load. Same gate as the diffusers prewarm; never fatal."""
     try:
         from core.inference.diffusion_transformer_quant import prewarm_probe_table  # noqa: PLC0415
-
         started = time.perf_counter()
         if prewarm_probe_table():
             logger.info(
@@ -590,7 +589,12 @@ def prewarm_diffusers_if_image_models_exist() -> bool:
         # The model classes too: a load's first family check imports diffusers.models.transformers (every DiT module,
         # peft, the loaders), 1.5-3.7 s of the first image load on a B200 host. Its own scope for the same lock-order
         # reason as above, and optional: a failure here leaves the parent import in place and the load imports it.
-        if os.environ.get(DIFFUSERS_PREWARM_MODELS_ENV_VAR, "").strip().lower() not in ("0", "false", "no", "off"):
+        if os.environ.get(DIFFUSERS_PREWARM_MODELS_ENV_VAR, "").strip().lower() not in (
+            "0",
+            "false",
+            "no",
+            "off",
+        ):
             for module_name in _DIFFUSERS_PREWARM_MODEL_MODULES:
                 with _ModuleLockManager(module_name):
                     try:
