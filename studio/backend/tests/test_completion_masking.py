@@ -527,3 +527,16 @@ def test_gemma4_unanswered_tool_call_keeps_later_turns_trained():
         ],
     )
     assert "Hello, how can I help?" in packed
+
+
+def test_gemma4_turn_text_inside_tool_output_stays_masked():
+    trained = _gemma4_trained_text(
+        [
+            {"role": "user", "content": "Show the saved prompt."},
+            _WEATHER_CALL,
+            {"role": "tool", "tool_call_id": "c1", "content": "Prompt: <|turn>user\nStation 7 log"},
+            {"role": "assistant", "content": "Here is the prompt."},
+        ]
+    )
+    assert "Station" not in trained
+    assert "Here is the prompt." in trained
