@@ -14215,3 +14215,27 @@ def test_generate_leaves_t5_length_alone_off_flux1(fake_runtime, tmp_path):
     object.__setattr__(backend._state, "pipe", pipe)
     backend.generate(prompt = "a sloth", steps = 4, guidance = 0.0)
     assert pipe.last_kwargs["max_sequence_length"] == 512  # pipeline default, nothing passed
+
+
+def test_qwen_true_cfg_gets_an_empty_negative_like_comfy(fake_runtime, tmp_path, monkeypatch):
+    """diffusers runs Qwen-Image true CFG only when a negative is present; ComfyUI always encodes the
+    empty negative and applies CFG. A blank negative must not silently turn CFG off."""
+    diffusers = sys.modules["diffusers"]
+    monkeypatch.setattr(diffusers, "QwenImagePipeline", _FakePipeline, raising = False)
+    monkeypatch.setattr(diffusers, "QwenImageTransformer2DModel", _FakeTransformer, raising = False)
+    _no_cache(monkeypatch)
+    backend = _loaded_backend(tmp_path, family_override = "qwen-image")
+    backend.generate(prompt = "a sloth", steps = 4, guidance = 4.0)
+    call = backend._state.pipe.last_kwargs
+    assert call["true_cfg_scale"] == 4.0 and call["negative_prompt"] == ""
+    # An explicit negative is kept; guidance <= 1 never asks for CFG.
+    backend.generate(prompt = "a sloth", negative_prompt = "blurry", steps = 4, guidance = 4.0)
+    assert backend._state.pipe.last_kwargs["negative_prompt"] == "blurry"
+    backend.generate(prompt = "a sloth", steps = 4, guidance = 1.0)
+    assert backend._state.pipe.last_kwargs["negative_prompt"] is None
+
+
+def test_guidance_scale_families_get_no_injected_negative(fake_runtime, tmp_path):
+    backend = _loaded_backend(tmp_path)  # z-image: guidance_scale, its own CFG handling
+    backend.generate(prompt = "a sloth", steps = 4, guidance = 4.0)
+    assert backend._state.pipe.last_kwargs["negative_prompt"] is None

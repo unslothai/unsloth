@@ -226,7 +226,7 @@ from .diffusion_precision import (
     torchao_quantize_importable,
 )
 from .diffusion_te_prequant import te_prequant_pipe_kwargs
-from .diffusion_text_length import flux_t5_kwarg
+from .diffusion_text_length import flux_t5_kwarg, true_cfg_needs_empty_negative
 from .diffusion_denoiser_prequant import (
     DENOISER_COMPONENT,
     PIPELINE_SEED_DECLINED,
@@ -8897,6 +8897,13 @@ class DiffusionBackend:
                         kwargs["height"] = ih
                 if negative_prompt and "negative_prompt" in call_params:
                     kwargs["negative_prompt"] = negative_prompt
+                elif "negative_prompt" in call_params and true_cfg_needs_empty_negative(
+                    state.family.cfg_kwarg, guidance
+                ):
+                    # Qwen-Image style pipelines run true CFG only when a negative is PRESENT, so a blank negative
+                    # silently dropped CFG while the UI showed guidance 4. ComfyUI encodes an empty negative and
+                    # applies CFG; do the same.
+                    kwargs["negative_prompt"] = ""
                 if workflow == "controlnet" and control_pil is not None:
                     # CN pipeline takes the control map + scale; guidance start/end bound its step range. Every kwarg
                     # is signature-gated.

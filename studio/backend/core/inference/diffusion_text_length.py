@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""T5 sequence length for the FLUX.1 pipelines. No torch/diffusers imports.
+"""Text-conditioning defaults that follow ComfyUI. No torch/diffusers imports.
+
+FLUX.1 T5 sequence length:
 
 diffusers pads (and truncates) the FLUX.1 T5 prompt to ``max_sequence_length=512`` and runs T5
 without an attention mask, so every pad token takes part in the encoder's self-attention. ComfyUI,
@@ -86,3 +88,15 @@ def flux_t5_kwarg(
     if negative and true_cfg > 1.0:
         prompts.append(negative)
     return flux_t5_sequence_length(getattr(pipe, "tokenizer_2", None), prompts)
+
+
+def true_cfg_needs_empty_negative(cfg_kwarg: str, guidance: Any) -> bool:
+    """True when a ``true_cfg_scale`` pipeline (Qwen-Image family) would skip CFG for want of a
+    negative prompt. diffusers enables true CFG only when ``true_cfg_scale > 1`` AND a negative is
+    given; ComfyUI always encodes the (possibly empty) negative and applies CFG above 1."""
+    if cfg_kwarg != "true_cfg_scale":
+        return False
+    try:
+        return float(guidance) > 1.0
+    except (TypeError, ValueError):
+        return False
