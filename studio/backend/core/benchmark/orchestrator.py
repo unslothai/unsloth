@@ -128,6 +128,8 @@ def _run_benchmark_task(params: dict) -> dict:
     kwargs = {k: v for k, v in params.items() if not k.startswith("_")}
 
     import lm_eval as _lm_eval
+    # Registers the Studio-aware ``gguf`` model name used by build_gguf_kwargs.
+    from core.benchmark import gguf_client  # noqa: F401
 
     _install_tqdm_progress_patch()
     try:
@@ -155,6 +157,13 @@ class BenchmarkOrchestrator:
         self._active: bool = False
         self._cancel_requested: bool = False
         self._last_error: Optional[str] = None
+        # Outcome of the latest run ("success" | "error" | "cancelled") and a
+        # per-run counter, so a client whose /run request dropped can tell
+        # whether the finished run it sees on /status is its own.
+        self._last_op_status: Optional[str] = None
+        self._op_seq: int = 0
+        # Account that started the current/last run (see account_jobs.job_is_foreign).
+        self._result_account = None
 
         # Cancellation is best-effort in-process: set to signal the run loop to
         # stop waiting on the worker thread.
@@ -210,6 +219,12 @@ class BenchmarkOrchestrator:
     def get_last_error(self) -> Optional[str]:
         return self._last_error
 
+    def get_last_op_status(self) -> Optional[str]:
+        return self._last_op_status
+
+    def get_op_seq(self) -> int:
+        return self._op_seq
+
     def get_latest_progress(self) -> Optional[dict]:
         return get_latest_progress()
 
@@ -220,17 +235,40 @@ class BenchmarkOrchestrator:
             return False
         self._cancel_requested = True
         self._cancel_event.set()
+        self._last_op_status = "cancelled"
         self._active = False
         logger.info("Benchmark cancel requested")
         return True
+
+    def finish(
+        self,
+        op_seq: Optional[int] = None,
+        error: Optional[str] = None,
+    ) -> None:
+        """End a run that ``run`` returned successfully, once the caller has
+        stored its results. Until then the run still counts as active. A stale
+        ``op_seq`` (another run started since) or an already-ended run is a no-op."""
+        if not self._active or self._cancel_requested:
+            return
+        if op_seq is not None and op_seq != self._op_seq:
+            return
+        self._last_error = error
+        self._last_op_status = "error" if error else "success"
+        self._active = False
 
     def run(self, params: dict) -> dict:
         """Run a benchmark in a worker thread.
 
         Blocks (responsively) until the run completes or is cancelled, then
-        returns the lm_eval result dict. A cancelled run returns ``{}``.
+        returns the lm_eval result dict. A cancelled run returns ``{}``. After a
+        successful return the run stays active until ``finish`` is called.
         """
+        from utils.account_context import current_account
+
         self._active = True
+        self._op_seq += 1
+        self._result_account = current_account()
+        self._last_op_status = None
         self._cancel_requested = False
         self._last_error = None
         self._cancel_event.clear()
@@ -242,30 +280,30 @@ class BenchmarkOrchestrator:
 
         result: Any = None
         error: Optional[str] = None
-        try:
-            while True:
-                if self._cancel_event.is_set():
-                    # Best-effort cancel: stop waiting on the worker thread,
-                    # which finishes in the background and is discarded.
-                    self._cancel_requested = True
-                    return {}
-                try:
-                    result = future.result(timeout = 0.5)
-                    break
-                except FuturesTimeoutError:
-                    continue
-                except Exception as e:
-                    error = str(e)
-                    break
-        finally:
-            self._active = False
+        while True:
+            if self._cancel_event.is_set():
+                # Best-effort cancel: stop waiting on the worker thread,
+                # which finishes in the background and is discarded.
+                self._cancel_requested = True
+                self._last_op_status = "cancelled"
+                self._active = False
+                return {}
+            try:
+                result = future.result(timeout = 0.5)
+                break
+            except FuturesTimeoutError:
+                continue
+            except Exception as e:
+                error = str(e) or type(e).__name__
+                break
 
+        if error is None and result is None:
+            error = "Benchmark returned no result"
         if error:
             self._last_error = error
+            self._last_op_status = "error"
+            self._active = False
             raise RuntimeError(error)
-
-        if result is None:
-            raise RuntimeError("Benchmark returned no result")
 
         self._last_error = None
         return result

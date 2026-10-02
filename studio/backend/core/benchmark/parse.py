@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import json
 import re
 import time
 from typing import Optional
@@ -79,10 +80,13 @@ def parse_run_summary(dir_name: str, data: dict) -> Optional[dict]:
 
     metrics = []
     for key, val in task_results.items():
-        if key.endswith(",none") or key.lower() in _NON_METRIC_KEYS_LOWER:
+        # lm_eval keys are "<metric>,<filter>" ("acc,none",
+        # "exact_match,strict-match"); the stderr of each is "<metric>_stderr,<filter>".
+        metric, sep, filt = key.partition(",")
+        if metric.endswith("_stderr") or key.lower() in _NON_METRIC_KEYS_LOWER:
             continue
-        if isinstance(val, (int, float)):
-            stderr_key = key + "_stderr,none"
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            stderr_key = f"{metric}_stderr{sep}{filt}"
             stderr_val = str(task_results.get(stderr_key, "")) if stderr_key in task_results else None
             metrics.append({
                 "name": key,
@@ -152,6 +156,13 @@ def _sample_correct(s: dict) -> bool:
     return False
 
 
+def _as_text(value):
+    """eval_samples columns are text; loglikelihood responses are (logprob, greedy) tuples."""
+    if value is None or isinstance(value, str):
+        return value
+    return json.dumps(value, default = str)
+
+
 def extract_samples(data: dict, task_name: str) -> list[dict]:
     """Extract per-sample results from lm_eval output."""
     samples = []
@@ -163,7 +174,12 @@ def extract_samples(data: dict, task_name: str) -> list[dict]:
         question = doc.get("question", "") if isinstance(doc, dict) else ""
         target = s.get("target", "")
         filtered = s.get("filtered_resps", [])
-        response = filtered[0] if filtered else None
+        # Generation tasks have one text response; loglikelihood tasks have one
+        # (logprob, is_greedy) pair per choice, which only make sense together.
+        if len(filtered) == 1 or (filtered and isinstance(filtered[0], str)):
+            response = filtered[0]
+        else:
+            response = filtered or None
         raw_resp = s.get("resps", [])
         raw_response = raw_resp[0][0] if raw_resp and raw_resp[0] else None
 
@@ -171,10 +187,10 @@ def extract_samples(data: dict, task_name: str) -> list[dict]:
 
         samples.append({
             "doc_id": s.get("doc_id", 0),
-            "question": question,
-            "target": target,
-            "response": response,
-            "raw_response": raw_response,
+            "question": _as_text(question),
+            "target": _as_text(target),
+            "response": _as_text(response),
+            "raw_response": _as_text(raw_response),
             "correct": correct,
         })
     return samples

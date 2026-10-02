@@ -17,18 +17,19 @@ def build_gguf_kwargs(
     max_tokens: Optional[int] = None,
     num_fewshot: Optional[int] = None,
 ) -> dict:
-    """lm_eval kwargs for the ``gguf`` backend pointed at the local inference
-    server (llama.cpp behind the hood).
+    """lm_eval kwargs for the ``gguf`` backend pointed at this Studio server
+    (see ``gguf_client.StudioGGUFLM``).
 
     Unlike ``local-completions`` this needs no HF tokenizer: the backend queries
     the server's own ``/tokenize`` endpoint and scores continuations with
     ``logit_bias`` teacher forcing, so it matches the server exactly.
     """
     kwargs = {
-        "model": "gguf",
+        # Registered by core.benchmark.gguf_client, imported in the worker.
+        "model": "unsloth-studio-gguf",
         "model_args": {
             # Server root (no /v1): the backend derives /v1/completions,
-            # /tokenize and /props from it.
+            # /v1/tokenize and /props from it.
             "base_url": base_url,
             "model": identifier,
             "max_gen_toks": max_tokens if max_tokens is not None else 32768,
@@ -67,6 +68,8 @@ def resolve_model_details(
     here beyond the request parameters.
     """
     identifier = checkpoint_path.strip()
+    # The route passes the address Studio actually bound; 8888 is only the
+    # last resort when it is unknown (e.g. called outside a running server).
     base_url = (server_url or os.environ.get("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888")).rstrip("/")
 
     lm_eval_kwargs = build_gguf_kwargs(

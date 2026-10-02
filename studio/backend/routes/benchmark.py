@@ -25,6 +25,10 @@ if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
 from auth.authentication import get_current_subject
+from core.training.account_jobs import _has_managed_accounts
+from utils.account_context import AccountContext, current_account
+from utils.host_policy import LOOPBACK_FALLBACK_HOST, dial_host
+from utils.paths.storage_roots import outputs_root
 
 from models.benchmark import (
     BenchmarkRunRequest,
@@ -198,9 +202,41 @@ async def get_task_config(
         logger.warning(f"Failed to load config for task '{task_id}': {e}")
         return BenchmarkTaskConfigResponse(task_id = task_id, num_fewshot = None)
 
+# lm_eval with the gguf backend is not on PyPI yet (EleutherAI/lm-evaluation-harness#4012).
+_LM_EVAL_INSTALL_HINT = (
+    "lm_eval is not installed. Install it into Studio's Python environment with: "
+    "pip install 'lm_eval[hf,api] @ git+https://github.com/EleutherAI/lm-evaluation-harness.git"
+    "@ad8737ae7fad24cf64e50fc7fc31397bff586b9e'"
+)
+
+
+def _run_hidden_from(backend, viewer: AccountContext) -> bool:
+    """True when the current/last eval belongs to another account (multi-account
+    installs only): its log, outcome and Stop are then not this viewer's."""
+    owner = getattr(backend, "_result_account", None)
+    return (
+        isinstance(owner, AccountContext)
+        and owner.account_id != viewer.account_id
+        and _has_managed_accounts()
+    )
+
+
+def _studio_base_url(http_request: Request) -> Optional[str]:
+    """The address this Studio actually listens on, for lm_eval's requests back to it."""
+    state = http_request.app.state
+    port = getattr(state, "server_port", None)
+    if not isinstance(port, int) or port <= 0:
+        return None
+    host = getattr(state, "server_request_host", None)
+    if not isinstance(host, str) or not host:
+        host = LOOPBACK_FALLBACK_HOST
+    return f"http://{dial_host(host)}:{port}"
+
+
 @router.post("/run", response_model = BenchmarkOperationResponse)
 async def run_benchmark(
     request: BenchmarkRunRequest,
+    http_request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
     """Run a benchmark on the specified model using lm_eval."""
@@ -208,6 +244,7 @@ async def run_benchmark(
 
     api_key_raw: str | None = None
     api_key_id: int | None = None
+    run_seq: int | None = None
 
     try:
         if backend.is_active():
@@ -219,7 +256,7 @@ async def run_benchmark(
         if not _lm_eval_available:
             raise HTTPException(
                 status_code = 400,
-                detail = "lm_eval is not installed. Install it via: pip install 'lm_eval[hf]'",
+                detail = _LM_EVAL_INSTALL_HINT,
             )
 
         logger.info("=== Benchmark Run Request =========================")
@@ -227,7 +264,7 @@ async def run_benchmark(
         logger.info(f"model_source:    {request.model_source}")
         logger.info(f"hf_token:        {'<provided>' if request.hf_token else '<not provided>'}")
         logger.info(f"hf_token length: {len(request.hf_token) if request.hf_token else 0}")
-        logger.info(f"request model_dump: {request.model_dump()}")
+        logger.info(f"request model_dump: {request.model_dump(exclude = {'hf_token'})}")
         logger.info("===================================================")
 
         _run_start = time.monotonic()
@@ -235,11 +272,12 @@ async def run_benchmark(
         # Results are always written to an auto-managed directory; there is no
         # user-supplied output path.
         ts = time.strftime("%Y%m%d_%H%M%S")
-        output_path = os.path.abspath(f"outputs/benchmark_{request.task}_{ts}")
+        output_path = str(outputs_root() / "evals" / f"benchmark_{request.task}_{ts}")
 
         model_lines, lm_eval_kwargs = resolve_model_details(
             request.checkpoint_path,
             task = request.task,
+            server_url = _studio_base_url(http_request),
             batch_size = request.batch_size,
             num_fewshot = request.num_fewshot,
             max_tokens = request.max_tokens,
@@ -263,7 +301,7 @@ async def run_benchmark(
                 detail = detail,
             )
 
-        if lm_eval_kwargs.get("model") in ("local-completions", "gguf"):
+        if lm_eval_kwargs.get("model") == "unsloth-studio-gguf":
             from datetime import datetime, timedelta, timezone
             from auth.storage import create_api_key
 
@@ -276,10 +314,7 @@ async def run_benchmark(
             )
             api_key_raw = raw_key
             api_key_id = row["id"]
-            lm_eval_kwargs["model_args"]["auth_token"] = raw_key
-            lm_eval_kwargs["model_args"]["header"] = {"Authorization": f"Bearer {raw_key}"}
-            # The gguf backend takes the key directly (it has no header-merge
-            # logic upstream of lm_eval >= the auth-support change).
+            # StudioGGUFLM sends it as a bearer header on every request.
             lm_eval_kwargs["model_args"]["api_key"] = raw_key
             logger.info("Minted ephemeral API key for benchmark run")
 
@@ -289,7 +324,17 @@ async def run_benchmark(
             backend._append_log("stdout", line)
 
         loop = asyncio.get_event_loop()
+        run_seq = backend.get_op_seq() + 1
         results = await loop.run_in_executor(None, lambda: backend.run(lm_eval_kwargs))
+
+        # A cancelled run returns {}; by then a new run may already own the backend.
+        if not results or backend.was_cancelled():
+            backend._append_log("status", "Benchmark cancelled.")
+            return BenchmarkOperationResponse(
+                success = False,
+                message = "Benchmark cancelled",
+                details = {"checkpoint_path": request.checkpoint_path, "cancelled": True},
+            )
 
         # ── Post-run: save to disk + DB ───────────────────────────
         if output_path:
@@ -337,6 +382,7 @@ async def run_benchmark(
             line = f"  {task_name}: acc={acc}" + (f" ± {stderr}" if stderr else "")
             backend._append_log("stdout", line)
         backend._append_log("status", "Benchmark complete.")
+        backend.finish(op_seq = run_seq)
 
         return BenchmarkOperationResponse(
             success = True,
@@ -356,6 +402,10 @@ async def run_benchmark(
             detail = f"Failed to run benchmark: {safe_error_detail(e)}",
         )
     finally:
+        if run_seq is not None:
+            # No-op unless this request's run is still the active one, i.e.
+            # lm_eval returned but handling its results raised.
+            backend.finish(op_seq = run_seq, error = "Failed to store benchmark results")
         if api_key_id is not None:
             try:
                 from auth.storage import revoke_internal_api_key
@@ -370,6 +420,11 @@ async def cancel_benchmark(current_subject: str = Depends(get_current_subject)):
     """Cancel the in-flight benchmark."""
     try:
         backend = get_benchmark_backend()
+        if _run_hidden_from(backend, current_account()):
+            return BenchmarkOperationResponse(
+                success = True,
+                message = "No active benchmark to cancel",
+            )
         was_active = backend.cancel()
         return BenchmarkOperationResponse(
             success = True,
@@ -388,10 +443,14 @@ async def get_benchmark_status(current_subject: str = Depends(get_current_subjec
     """Get benchmark backend status."""
     try:
         backend = get_benchmark_backend()
+        if _run_hidden_from(backend, current_account()):
+            # Busy-ness stays visible so Run reports the 409, nothing else does.
+            return BenchmarkStatusResponse(is_benchmark_active = backend.is_active())
         return BenchmarkStatusResponse(
             is_benchmark_active = backend.is_active(),
-            last_op_status = "cancelled" if backend.was_cancelled() else ("error" if backend.get_last_error() else None),
+            last_op_status = backend.get_last_op_status(),
             last_op_error = backend.get_last_error(),
+            last_op_seq = backend.get_op_seq(),
         )
     except Exception as e:
         logger.error(f"Error getting benchmark status: {e}", exc_info = True)
@@ -426,6 +485,7 @@ async def stream_benchmark_logs(
     Each event's `id:` is the log entry's monotonic seq, used for resume.
     """
     backend = get_benchmark_backend()
+    viewer = current_account()
 
     # Resume cursor: explicit `since` wins, then Last-Event-ID on reconnect.
     last_event_id = request.headers.get("last-event-id")
@@ -459,6 +519,9 @@ async def stream_benchmark_logs(
                     return
 
                 entries, new_cursor = backend.get_logs_since(cursor)
+                if entries and _run_hidden_from(backend, viewer):
+                    cursor = new_cursor
+                    entries = []
                 if entries:
                     for entry in entries:
                         payload = json.dumps(
@@ -487,7 +550,11 @@ async def stream_benchmark_logs(
 
                 # Surface lm_eval tqdm progress as a dedicated SSE event.
                 progress = backend.get_latest_progress()
-                if progress is not None and progress != last_progress:
+                if (
+                    progress is not None
+                    and progress != last_progress
+                    and not _run_hidden_from(backend, viewer)
+                ):
                     last_progress = progress
                     yield _format_sse(json.dumps(progress), event = "progress")
 

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
+import { useBenchmarksStore } from "@/features/benchmarks/stores/benchmarks-store";
 import {
   cancelBenchmark,
   runBenchmark,
@@ -246,6 +247,14 @@ export const useBenchmarkRuntimeStore = create<BenchmarkRuntimeStore>()((set, ge
   },
 
   run: async (checkpointPath, modelSource, task, extraParams) => {
+    // A Config sweep reloads the server between rows; scoring under it is meaningless.
+    if (useBenchmarksStore.getState().live) {
+      set({
+        phase: "error",
+        error: "A Config sweep is running. Stop it or let it finish first.",
+      });
+      return;
+    }
     const runId = get().runId + 1;
 
     set({
@@ -277,8 +286,9 @@ export const useBenchmarkRuntimeStore = create<BenchmarkRuntimeStore>()((set, ge
       } catch {
         baseline = null;
       }
+      let res: BenchmarkOperationResponse;
       try {
-        await post();
+        res = await post();
       } catch (err) {
         if (!isRecoverableTransportError(err)) throw err;
         set({ reconnecting: true });
@@ -287,6 +297,12 @@ export const useBenchmarkRuntimeStore = create<BenchmarkRuntimeStore>()((set, ge
         } finally {
           if (isCurrent()) set({ reconnecting: false });
         }
+        return;
+      }
+      // A run stopped mid-way answers 200 with success=false.
+      if (res.success === false) {
+        if (res.details?.cancelled) throw new BenchmarkCanceledError();
+        throw new Error(res.message || "Benchmark failed");
       }
     };
 

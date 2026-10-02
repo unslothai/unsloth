@@ -63,6 +63,10 @@ class BenchmarkStatusResponse(BaseModel):
         None,
         description = "Error message of the most recently finished op, if it failed",
     )
+    last_op_seq: Optional[int] = Field(
+        None,
+        description = "Counter of runs started; tells a client whether the finished op is the one it started",
+    )
 
 
 class BenchmarkOperationResponse(BaseModel):
