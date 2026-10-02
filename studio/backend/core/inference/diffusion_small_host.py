@@ -51,7 +51,8 @@ def host_ram_check_disabled() -> bool:
 _ST_DTYPES = {"BF16": "bfloat16", "F16": "float16", "F32": "float32"}
 
 
-def _safetensors_bytes_by_dtype(path: Path) -> dict[str, int]:
+def _safetensors_bytes_by_dtype(path: Path, keep: tuple[str, ...] = ()) -> dict[str, int]:
+    """Stored bytes per dtype; tensors matching ``keep`` are also summed under ``"kept"``."""
     out: dict[str, int] = {}
     try:
         with open(path, "rb") as fh:
@@ -68,6 +69,8 @@ def _safetensors_bytes_by_dtype(path: Path) -> dict[str, int]:
             start, end = meta["data_offsets"]
             key = _ST_DTYPES.get(str(meta.get("dtype")), str(meta.get("dtype")).lower())
             out[key] = out.get(key, 0) + int(end) - int(start)
+            if keep and any(f".{k}." in f".{name}." for k in keep):
+                out["kept"] = out.get("kept", 0) + int(end) - int(start)
         except Exception:  # noqa: BLE001
             continue
     return out
@@ -78,6 +81,30 @@ class StoredComponent:
     name: str
     mib: int
     dtype: str  # dominant stored float dtype ("bfloat16", "float16", "float32", ...)
+    # stored MiB of ``_keep_in_fp32_modules`` tensors: they convert to fp32 on the host even on the route
+    kept_fp32_mib: int = 0
+
+
+def _keep_fp32_from_config(sub: Path) -> tuple[str, ...]:
+    try:
+        arch = (
+            json.loads((sub / "config.json").read_text(encoding = "utf-8")).get("architectures")
+            or [None]
+        )[0]
+        if not arch:
+            return ()
+        import transformers
+
+        return _keep_fp32_patterns(getattr(transformers, str(arch), None))
+    except Exception:  # noqa: BLE001
+        return ()
+
+
+def _weight_files(sub: Path) -> list[Path]:
+    files = sorted(sub.glob("*.safetensors"))
+    # ``model.fp16.safetensors`` next to ``model.safetensors`` is a variant from_pretrained does not read
+    plain = [f for f in files if "." not in f.name[: -len(".safetensors")]]
+    return plain or files
 
 
 def stored_components(snapshot: Any) -> dict[str, StoredComponent]:
@@ -89,13 +116,17 @@ def stored_components(snapshot: Any) -> dict[str, StoredComponent]:
             return out
         for sub in sorted(p for p in root.iterdir() if p.is_dir()):
             totals: dict[str, int] = {}
-            for f in sub.glob("*.safetensors"):
-                for k, v in _safetensors_bytes_by_dtype(f).items():
+            keep = _keep_fp32_from_config(sub) if sub.name.startswith("text_encoder") else ()
+            for f in _weight_files(sub):
+                for k, v in _safetensors_bytes_by_dtype(f, keep).items():
                     totals[k] = totals.get(k, 0) + v
+            kept = totals.pop("kept", 0)
             if not totals:
                 continue
             dtype = max(totals.items(), key = lambda kv: kv[1])[0]
-            out[sub.name] = StoredComponent(sub.name, -(-sum(totals.values()) // _MIB), dtype)
+            out[sub.name] = StoredComponent(
+                sub.name, -(-sum(totals.values()) // _MIB), dtype, -(-kept // _MIB)
+            )
     except Exception:  # noqa: BLE001 - no claim
         return {}
     return out
@@ -189,11 +220,11 @@ def decide_small_host(
         sum(c.mib * _itemsize(compute) / _itemsize(c.dtype) for c in converted.values())
         * _CONVERT_MARGIN
     )
-    # encoders stay memory-mapped; a DiT may land on the host as int8 (half its bf16 bytes)
+    # encoders stay memory-mapped except their fp32-kept layers; a DiT may land on the host as int8 (half its bf16 bytes)
     route = sum(
         c.mib // 2
         if n in INT8_DENOISER_NAMES
-        else 0
+        else c.kept_fp32_mib * 4 // _itemsize(c.dtype)
         if n.startswith("text_encoder")
         else c.mib * _itemsize(compute) // _itemsize(c.dtype)
         for n, c in converted.items()
