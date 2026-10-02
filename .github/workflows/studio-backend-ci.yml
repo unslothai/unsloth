@@ -645,7 +645,8 @@ jobs:
         with:
           python-version: '3.12'
 
-      - run: python -m pip install -U pip pytest typer pyyaml pydantic click rich
+      # pyjwt: test_start.py's owner-token row decodes the token it is handed.
+      - run: python -m pip install -U pip pytest typer pyyaml pydantic click rich pyjwt
 
       - name: CLI launcher tests (unsloth_cli/tests/test_start.py)
         env:
