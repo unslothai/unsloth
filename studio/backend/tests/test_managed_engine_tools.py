@@ -552,3 +552,22 @@ def test_a_catalog_with_tool_choice_none_is_plain_chat(native):
     )
     assert result["choices"][0]["message"]["content"]
     assert requests == []  # served by the plain path, not the native tool route
+
+
+@pytest.mark.parametrize("tools", [False, True])
+def test_managed_messages_keep_the_current_date_note(native, monkeypatch, tools):
+    backend, requests = native
+    monkeypatch.setattr(api, "_date_gate_blocks", lambda *a: False)
+    monkeypatch.setattr(api, "_current_date_parts", lambda *a: ("", "[DATE NOTE]"))
+    seen = []
+    plain = backend._responder
+
+    def responder(messages, tools):
+        seen.append(messages)
+        return plain(messages, tools)
+
+    backend._responder = responder
+    run(route_test._request(enable_tools = False, **({"tools": [route_test.LOOKUP_TOOL]} if tools else {})))
+    messages = requests[-1]["messages"] if tools else seen[-1]
+    user = [m for m in messages if m["role"] == "user"][-1]
+    assert "[DATE NOTE]" in json.dumps(user["content"])
