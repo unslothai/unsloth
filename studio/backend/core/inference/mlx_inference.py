@@ -1091,8 +1091,7 @@ def _resumes_thought(messages, continue_final_message) -> bool:
 
 
 def _think_prefix(prompt, special_tokens, messages, continue_final_message, **kwargs) -> str:
-    """``detect_think_prefill`` for this request. A resumed thought needs its opener re-emitted,
-    and none comes back when decoding would strip the ``</think>`` that ends it."""
+    """``detect_think_prefill``; refuses a resumed thought whose ``</think>`` decoding would strip."""
     from core.inference.chat_template_helpers import detect_think_prefill
 
     resumes = _resumes_thought(messages, continue_final_message)

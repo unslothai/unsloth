@@ -358,9 +358,8 @@ def _status_for_tool(tool_name: str, arguments: dict) -> str:
 
 
 def _append_raw_turn(conversation: list, assistant_msg: dict, *, continue_final_message: bool):
-    """``append_assistant_turn`` for this loop's raw-text turns, which replay their thought inline.
-    A resumed thought's tail follows the re-emitted ``<think>``, so the whole thought goes there;
-    text without that opener (a re-prompt's intent) drops it, as an ordinary turn's would."""
+    """``append_assistant_turn`` for raw-text turns: a resumed thought is replayed whole after the
+    re-emitted ``<think>``; text without that opener drops it."""
     if not (
         continue_final_message
         and trailing_assistant_resume_kind(conversation) == "reasoning_content"

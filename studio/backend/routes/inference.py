@@ -29745,8 +29745,7 @@ async def produce_openai_chat_completions(
 
     # A continued turn renders no generation prompt, so nothing is prefilled and the
     # resumed text is the visible answer. Only the first turn continues; later tool-loop
-    # turns render a fresh generation prompt and prefill as usual. MLX can also resume a
-    # thought, and that turn starts inside its reasoning.
+    # turns render a fresh generation prompt and prefill as usual. MLX also resumes a thought.
     _sf_continue = _continue_final_message(payload, thought = bool(_sf_model_info.get("is_mlx")))
     _sf_resumes_thought = _sf_continue and not _continue_final_message(payload)
     _sf_continued_turn = [_sf_continue]

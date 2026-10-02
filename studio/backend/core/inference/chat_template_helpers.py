@@ -2608,8 +2608,8 @@ def detect_think_prefill(
     a path streaming the detokenizer's own text does. The special-token list then says nothing, and
     skipping the opener is the same bug mirrored: a stray ``</think>``.
 
-    ``resumes_thought`` says the prompt ends inside a resumed thought; only the bare opener is
-    returned, since the thought itself is the client's text.
+    ``resumes_thought``: the prompt ends inside a resumed thought (the client's text), so only the
+    bare opener is returned.
     """
     if not prompt:
         return ""
@@ -3139,8 +3139,7 @@ class ThoughtUnresumableError(ValueError):
 
 
 def template_resumes_thought(tokenizer, tools = None) -> bool:
-    """Whether a thought can be reopened as ``<think>`` text: native reasoning channels and
-    templates that never emit ``<think>`` have no such opener to splice."""
+    """Whether a thought can be reopened as ``<think>`` text (not native reasoning channels)."""
     if detect_reasoning_channel_markers(tokenizer, tools = tools) is not None:
         return False
     return any(
@@ -3149,8 +3148,8 @@ def template_resumes_thought(tokenizer, tools = None) -> bool:
 
 
 def splice_resumed_thought(prefix: str, thought: str) -> str:
-    """Reopen *thought* on a generation prompt. The template's own reasoning prefill goes first,
-    open or the empty block a thinking-off render closes, as llama-server cuts it."""
+    """Reopen *thought* on a generation prompt, cutting the template's own reasoning prefill (open
+    or empty closed block) as llama-server does."""
     open_at = prefix.rfind(_THINK_OPEN)
     if open_at != -1 and prefix[open_at + len(_THINK_OPEN) :].strip() in ("", _THINK_CLOSE):
         prefix = prefix[:open_at]

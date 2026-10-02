@@ -190,8 +190,7 @@ export function isServedByLlamaCpp(x: {
   );
 }
 
-/** Whether the serving backend can resume a reply that stopped mid-thought: llama-server, or
- *  MLX by the backend's own report. */
+/** Whether the backend can resume a reply stopped mid-thought: llama-server or reported MLX. */
 export function resumesThought(x: {
   loadedIsGguf?: boolean | null;
   loadedIsMlx?: boolean | null;
