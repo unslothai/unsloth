@@ -203,10 +203,11 @@ function alignTurnTop(
   }
 }
 
+// keep the core wider than one frame of travel, or a thin line strobes
 const SHINE_GRADIENT = {
   light:
-    "linear-gradient(110deg, transparent 36%, rgb(0 0 0 / 0.07) 44%, rgb(255 255 255 / 0.95) 50%, rgb(0 0 0 / 0.07) 56%, transparent 64%)",
-  dark: "linear-gradient(110deg, transparent 36%, rgb(255 255 255 / 0.03) 44%, rgb(255 255 255 / 0.24) 50%, rgb(255 255 255 / 0.03) 56%, transparent 64%)",
+    "linear-gradient(110deg, transparent 34%, rgb(0 0 0 / 0.03) 40%, rgb(255 255 255 / 0.3) 45.5%, rgb(255 255 255 / 0.8) 48.5%, rgb(255 255 255) 50%, rgb(255 255 255 / 0.8) 51.5%, rgb(255 255 255 / 0.3) 54.5%, rgb(0 0 0 / 0.03) 60%, transparent 66%)",
+  dark: "linear-gradient(110deg, transparent 34%, rgb(255 255 255 / 0.03) 40%, rgb(255 255 255 / 0.1) 45.5%, rgb(255 255 255 / 0.28) 48.5%, rgb(255 255 255 / 0.36) 50%, rgb(255 255 255 / 0.28) 51.5%, rgb(255 255 255 / 0.1) 54.5%, rgb(255 255 255 / 0.03) 60%, transparent 66%)",
 };
 
 function shineTurn(target: HTMLElement): void {
@@ -226,7 +227,7 @@ function shineTurn(target: HTMLElement): void {
       { ...shine, backgroundPosition: "100% 0" },
       { ...shine, backgroundPosition: "0% 0" },
     ],
-    { duration: 900, easing: "cubic-bezier(0.4, 0, 0.2, 1)" },
+    { duration: 1100, easing: "cubic-bezier(0.4, 0, 0.2, 1)" },
   );
 }
 
