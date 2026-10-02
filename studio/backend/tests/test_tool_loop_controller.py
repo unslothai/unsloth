@@ -36,7 +36,13 @@ from core.inference.tool_loop_controller import (
     tool_event_provenance,
 )
 from core.inference.tool_call_parser import TOOL_ERROR_NUDGE, parse_tool_calls_from_text
-from core.inference.tools import ALL_TOOLS, _mcp_specs_for_server
+from core.inference.tools import (
+    ALL_TOOLS,
+    MAX_TOOL_TEXT_CHARS,
+    _TOOL_TEXT_TRUNCATION_NOTICE,
+    cap_tool_text,
+    _mcp_specs_for_server,
+)
 
 
 def test_append_deferred_nudges_merges_deduped_into_one_message():
@@ -728,3 +734,83 @@ def test_tool_call_limit_nudge_keeps_long_arguments_whole():
         [{"function": {"name": "python", "arguments": json.dumps({"code": code})}}], 8
     )
     assert json.dumps({"code": code}) in notice["content"]
+
+
+def test_cap_tool_text_passes_results_at_or_under_the_floor_through_unchanged():
+    assert cap_tool_text("short result") == "short result"
+    exact = "x" * MAX_TOOL_TEXT_CHARS
+    assert cap_tool_text(exact) is exact
+
+
+def test_cap_tool_text_cuts_oversized_text_at_a_nearby_line_break_and_appends_notice():
+    line = "x" * 100 + "\n"
+    big = line * (MAX_TOOL_TEXT_CHARS // len(line) + 100)
+    out = cap_tool_text(big)
+
+    assert out.endswith(_TOOL_TEXT_TRUNCATION_NOTICE)
+    body = out[: -len(_TOOL_TEXT_TRUNCATION_NOTICE)]
+    assert big.startswith(body)
+    assert len(body) < MAX_TOOL_TEXT_CHARS
+    assert big[len(body)] == "\n"
+    assert len(out) <= MAX_TOOL_TEXT_CHARS + len(_TOOL_TEXT_TRUNCATION_NOTICE)
+
+
+def test_cap_tool_text_cuts_a_single_line_mid_line_when_no_break_is_near():
+    big = "y" * (MAX_TOOL_TEXT_CHARS + 500)
+    out = cap_tool_text(big)
+
+    assert out.endswith(_TOOL_TEXT_TRUNCATION_NOTICE)
+    body = out[: -len(_TOOL_TEXT_TRUNCATION_NOTICE)]
+    assert body == big[:MAX_TOOL_TEXT_CHARS]
+
+
+def test_cap_tool_text_is_idempotent():
+    big = "\n".join(f"line-{i}" for i in range(250_000))
+    assert len(big) > MAX_TOOL_TEXT_CHARS
+    once = cap_tool_text(big)
+    assert cap_tool_text(once) is once
+
+
+def test_model_message_caps_an_oversized_result_but_the_card_payload_keeps_the_full_result():
+    controller = ToolLoopController(tools = [_tool("terminal")])
+    decision = controller.prepare_call(_call("terminal", {"command": "cat big.log"}))
+    huge = "line of output\n" * 400_000
+    completion = controller.record_result(decision, huge)
+
+    assert completion.tool_end_payload()["result"] == huge
+
+    content = completion.tool_message()["content"]
+    assert content.endswith(_TOOL_TEXT_TRUNCATION_NOTICE)
+    body = content[: -len(_TOOL_TEXT_TRUNCATION_NOTICE)]
+    assert len(body) <= MAX_TOOL_TEXT_CHARS
+    assert huge.startswith(body)
+    assert huge[len(body)] == "\n"
+
+
+def test_model_message_caps_after_the_suffix_strip_not_the_card_envelope():
+    envelope = '\n__WEB_IMAGES__:[{"id": "a1b2c3d4e5f6", "title": "A chart", "domain": "example.com", "source": "https://example.com/a.png"}]'
+    huge = ("z" * (MAX_TOOL_TEXT_CHARS + 2000)) + envelope
+    controller = ToolLoopController(tools = [_tool("web_search")])
+    completion = controller.record_result(
+        controller.prepare_call(_call("web_search", {"url": "https://example.com/a"})), huge
+    )
+
+    assert completion.tool_end_payload()["result"] == huge
+
+    content = completion.tool_message()["content"]
+    assert content.endswith(_TOOL_TEXT_TRUNCATION_NOTICE)
+    assert "__WEB_IMAGES__" not in content
+    body = content[: -len(_TOOL_TEXT_TRUNCATION_NOTICE)]
+    assert huge.startswith(body)
+    assert body == huge[:MAX_TOOL_TEXT_CHARS]
+
+
+def test_model_message_leaves_an_already_capped_result_alone():
+    big = "a" * (MAX_TOOL_TEXT_CHARS + 10_000)
+    already = cap_tool_text(big)
+    controller = ToolLoopController(tools = [_tool("terminal")])
+    completion = controller.record_result(
+        controller.prepare_call(_call("terminal", {"command": "ls"})), already
+    )
+
+    assert completion.tool_message()["content"] == already
