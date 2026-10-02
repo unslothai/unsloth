@@ -209,7 +209,7 @@ def wanted(dtype: Any, device: Any = "cuda") -> bool:
         import torch
     except Exception:  # noqa: BLE001
         return False
-    return dtype is torch.float16 and str(device).startswith("cuda") and not getattr(torch.version, "hip", None)
+    return dtype is torch.float16 and str(device).startswith("cuda") and not getattr(getattr(torch, "version", None), "hip", None)
 
 
 def install_for_pipe(

@@ -59,7 +59,7 @@ def wanted(dtype: Any, device: Any = "cuda") -> bool:
         return False
     if dtype is not torch.float16 or not str(device).startswith("cuda"):
         return False
-    if getattr(torch.version, "hip", None):
+    if getattr(getattr(torch, "version", None), "hip", None):
         return False
     return _kernels() is not None
 
