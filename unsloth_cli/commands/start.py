@@ -5755,6 +5755,7 @@ def _codex_app_owner_alive(owner: object) -> bool:
             os.kill(pid, 0)
             return True
         import psutil
+
         return abs(psutil.Process(pid).create_time() - float(owner["started"])) < 1.0
     except Exception:
         return False
