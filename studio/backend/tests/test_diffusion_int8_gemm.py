@@ -229,7 +229,9 @@ def test_pinned_group_offloaded_denoiser_takes_the_gemm_and_survives_release(for
             super().__init__()
             self.proj_in = torch.nn.Linear(256, 512).to(torch.bfloat16)
             self.blocks = torch.nn.ModuleList(
-                torch.nn.Sequential(torch.nn.Linear(512, 1024), torch.nn.GELU(), torch.nn.Linear(1024, 512))
+                torch.nn.Sequential(
+                    torch.nn.Linear(512, 1024), torch.nn.GELU(), torch.nn.Linear(1024, 512)
+                )
                 for _ in range(4)
             )
 
@@ -246,7 +248,9 @@ def test_pinned_group_offloaded_denoiser_takes_the_gemm_and_survives_release(for
     cfg = Int8DynamicActivationInt8WeightConfig(set_inductor_config = False)
     if not hasattr(cfg, "version"):
         pytest.skip("torchao without config versions")
-    cfg.version = 2  # what streams under diffusers group offloading (v1's subclass rejects is_pinned)
+    cfg.version = (
+        2  # what streams under diffusers group offloading (v1's subclass rejects is_pinned)
+    )
     quantize_(dit.blocks, cfg)
     x = torch.randn(300, 256, device = "cuda", dtype = torch.bfloat16)
     with torch.no_grad():

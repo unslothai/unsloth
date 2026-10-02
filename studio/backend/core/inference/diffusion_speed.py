@@ -595,7 +595,11 @@ def apply_speed_optims(
     return applied
 
 
-def engage_pinned_denoisers(pipe: Any, applied: dict, logger: Any = None) -> dict:
+def engage_pinned_denoisers(
+    pipe: Any,
+    applied: dict,
+    logger: Any = None,
+) -> dict:
     """Engage the int8 fused-dequant GEMM that ``apply_speed_optims`` refused because the PLAN streamed the denoiser,
     once the final placement pinned every denoiser offload group (``denoisers_pinned_resident``). Call after placement
     and before the first forward (the regional compile traces the Linears lazily); a no-op unless the DiT compiled.

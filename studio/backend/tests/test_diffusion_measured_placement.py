@@ -489,7 +489,11 @@ def test_generate_releases_and_restores_resident_groups():
     assert "pipe._unsloth_measured_reserve = (" in src
 
 
-def _pinned_pipe(monkeypatch, resident_flags, hf_hook = False):
+def _pinned_pipe(
+    monkeypatch,
+    resident_flags,
+    hf_hook = False,
+):
     """A pipe whose transformer carries one fake offload group per flag (True = pinned by the measured placement)."""
     torch = pytest.importorskip("torch")
     net = torch.nn.Linear(4, 4)
@@ -554,10 +558,14 @@ def test_torchao_groups_stay_on_device_after_release_and_restore(monkeypatch):
         pytest.skip("torchao without config versions")
     cfg.version = 2
     torch.manual_seed(0)
-    net = torch.nn.Sequential(
-        torch.nn.Linear(256, 512),
-        torch.nn.Sequential(*[torch.nn.Linear(512, 512) for _ in range(3)]),
-    ).cuda().to(torch.bfloat16)
+    net = (
+        torch.nn.Sequential(
+            torch.nn.Linear(256, 512),
+            torch.nn.Sequential(*[torch.nn.Linear(512, 512) for _ in range(3)]),
+        )
+        .cuda()
+        .to(torch.bfloat16)
+    )
     quantize_(net[1], cfg)
     x = torch.randn(64, 256, device = "cuda", dtype = torch.bfloat16)
     with torch.no_grad():

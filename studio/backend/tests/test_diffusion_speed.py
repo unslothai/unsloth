@@ -2341,7 +2341,11 @@ def test_pinned_denoiser_engages_the_int8_gemm_after_placement(monkeypatch):
     calls = []
     fake = types.ModuleType("core.inference.diffusion_int8_gemm")
 
-    def _install(transformer, logger = None, offload_active = False):
+    def _install(
+        transformer,
+        logger = None,
+        offload_active = False,
+    ):
         calls.append(offload_active)
         return 0 if offload_active else 60
 
