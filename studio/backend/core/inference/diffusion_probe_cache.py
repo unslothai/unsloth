@@ -1,19 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Persist the transformer-quant smoke-probe verdicts across processes.
+"""Persist the transformer-quant smoke-probe verdicts across processes (4-5 s of every cold quantised load).
 
-Every quantised load asks ``_scheme_supported`` whether a scheme runs on this card, and the first ask in a process
-spawns a throwaway child that imports torch + torchao and smoke-tests every scheme (``_child_probe_table``). That is
-4-5 s of every cold load (5.2 s measured on a B200 host, FLUX.1-schnell INT8), paid again by each new server process
-although the answer only changes with the software stack or the card.
-
-The table a child returns CLEANLY (not a crash verdict, not an allocator failure) is written here, keyed by everything
-the verdict depends on: torch / CUDA / torchao / triton versions, the driver, the card's UUID and capability, the
-probe code itself (a hash of the module sources that define it) and the quant-related environment. Any difference is a
-miss, which simply runs the child as before. A torn or unreadable file is a miss too, never an error.
-
-UNSLOTH_DIFFUSION_PROBE_CACHE=0 disables both the read and the write.
+Only a clean child table is stored, keyed by everything a verdict depends on (torch / CUDA / torchao / triton, driver,
+card UUID + capability, the probe sources, the quant env). Any difference, or a torn file, is a miss that runs the
+child as before. UNSLOTH_DIFFUSION_PROBE_CACHE=0 disables read and write.
 """
 
 from __future__ import annotations
@@ -30,11 +22,10 @@ _ENV = "UNSLOTH_DIFFUSION_PROBE_CACHE"
 _FILE_NAME = "diffusion_quant_probe.json"
 _FORMAT = 1
 _MAX_ENTRIES = 32
-# Environment that can change a probe verdict (scheme gates, kernel preferences). Matched as prefixes.
+# Env prefixes that can change a verdict.
 _ENV_PREFIXES = ("UNSLOTH_DIFFUSION_", "UNSLOTH_NVFP4", "UNSLOTH_INT8", "TORCHAO", "TORCHINDUCTOR_")
-# Never part of the key: paths and the switch itself.
 _ENV_IGNORED = frozenset({_ENV, "UNSLOTH_DIFFUSION_COMPILE_CACHE_DIR", "TORCHINDUCTOR_CACHE_DIR"})
-# The modules whose code decides a verdict; any edit to them invalidates every entry.
+# Any edit to these invalidates every entry.
 _PROBE_SOURCES = (
     "diffusion_transformer_quant.py",
     "diffusion_torchao_patches.py",
@@ -96,9 +87,7 @@ def _ordinal(card: str) -> Optional[int]:
 
 
 def fingerprint(card: str) -> Optional[dict[str, Any]]:
-    """Everything a verdict for ``card`` depends on, or None when the card cannot be identified.
-
-    Never allocates: device properties and the driver version do not create a CUDA context."""
+    """Everything a verdict for ``card`` depends on, or None. Creates no CUDA context."""
     if not str(card).startswith("cuda"):
         return None
     try:

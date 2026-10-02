@@ -354,7 +354,6 @@ def _load_checkpoint_without_dit(checkpoint_path: Path | str) -> Optional[dict[s
         }
 
 
-# Kill switch for the direct-to-device checkpoint read below ("0" keeps the host load + pipe.to()).
 DIRECT_LOAD_ENV = "UNSLOTH_VIDEO_DIRECT_LOAD"
 _DIRECT_CHUNK_BYTES = 16 << 20
 _DIRECT_BUFFERS = 16
@@ -384,7 +383,7 @@ def direct_load_enabled() -> bool:
 
 
 def direct_load_device(device: Any) -> Optional[Any]:
-    """The torch device a resident LTX-2.3 checkpoint is read straight onto, or None (CUDA/ROCm only, switch on)."""
+    """The device a resident LTX-2.3 checkpoint is read straight onto, or None."""
     if not direct_load_enabled() or device is None:
         return None
     try:
@@ -420,13 +419,8 @@ def read_safetensors_to_device(
     buffers: int = _DIRECT_BUFFERS,
     threads: int = _DIRECT_THREADS,
 ) -> Optional[dict[str, Any]]:
-    """Read the tensors of a safetensors file whose names pass ``keep`` straight into ``device`` memory.
-
-    The host path materialises every tensor from the mmap and then uploads it pageable (``pipe.to``): 13.5 s for the
-    46 GB LTX-2.3 file on a B200, page-faulting 4 KiB at a time. Here worker threads read the file in large chunks
-    into a small ring of pinned buffers and each chunk is copied async into its tensor's own device allocation, so
-    the bytes, shapes and dtypes are exactly the file's (2.5 s for the same file). None when the file holds a dtype
-    this reader does not map, so the caller keeps the host load."""
+    """Read the safetensors tensors passing ``keep`` straight into ``device`` memory via a pinned ring (46 GB: 13.5 s
+    host path vs 2.5 s). None for a dtype this reader does not map."""
     import torch
 
     path = str(checkpoint_path)
@@ -473,14 +467,13 @@ def _copy_file_chunks(
     buffers: int,
     threads: int,
 ) -> None:
-    """Copy ``(file offset, size, destination uint8 view, view offset)`` jobs; reads overlap the async uploads."""
+    """Copy ``(file offset, size, uint8 view, view offset)`` jobs; reads overlap the async uploads."""
     import queue
     from concurrent.futures import ThreadPoolExecutor
 
     import torch
 
     if torch.device(device).type != "cuda":
-        # Host destination: read straight into each tensor's bytes (no staging, nothing to overlap).
         with open(path, "rb", buffering = 0) as handle:
             for offset, size, flat, at in jobs:
                 view = memoryview(flat.numpy())[at : at + size]
@@ -499,7 +492,6 @@ def _copy_file_chunks(
     opened: list[Any] = []
 
     def _read(slot: int, offset: int, size: int) -> None:
-        # The upload that last used this slot must finish before its bytes are overwritten.
         event = done_events[slot]
         if event is not None:
             event.synchronize()
@@ -544,7 +536,7 @@ def _copy_file_chunks(
             stream.synchronize()
     finally:
         try:
-            # A failed read leaves uploads queued from the staging ring: drain them before it is released.
+            # A failed read leaves uploads queued from the staging ring.
             stream.synchronize()
         except Exception:  # noqa: BLE001
             pass
@@ -553,8 +545,7 @@ def _copy_file_chunks(
                 handle.close()
             except Exception:  # noqa: BLE001
                 pass
-        # Every tensor allocated on the default stream is written on the side stream; it is synchronised above, so
-        # the default stream sees finished bytes. Free the staging ring and hand its pinned blocks back.
+        # The side stream is synchronised above, so the default stream sees finished bytes.
         del staging
         try:
             torch._C._host_emptyCache()
@@ -565,7 +556,7 @@ def _copy_file_chunks(
 def _load_checkpoint_without_dit_to_device(
     checkpoint_path: Path | str, device: Any
 ) -> Optional[dict[str, Any]]:
-    """``_load_checkpoint_without_dit`` read onto ``device``; None to fall back to the host read."""
+    """``_load_checkpoint_without_dit`` onto ``device``; None falls back to the host read."""
     if not str(checkpoint_path).lower().endswith(".safetensors"):
         return None
     try:
@@ -587,8 +578,7 @@ def _release_device_cache() -> None:
 
 
 def load_checkpoint_to_device(checkpoint_path: Path | str, device: Any) -> Optional[dict[str, Any]]:
-    """Every tensor of a combined safetensors checkpoint on ``device`` (see read_safetensors_to_device); None when the
-    file is not safetensors or the read cannot be done, so the caller falls back to the host load."""
+    """Every tensor of a safetensors checkpoint on ``device``; None falls back to the host read."""
     if not str(checkpoint_path).lower().endswith(".safetensors"):
         return None
     try:
@@ -1115,7 +1105,7 @@ def load_ltx23_transformer(
     if is_gguf:
         kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(compute_dtype = torch_dtype)
     elif device is not None:
-        # The state is already on ``device``: build there, or the meta load copies every tensor back to the host.
+        # Else the meta load copies every tensor back to the host.
         kwargs["device"] = device
     return LTX2VideoTransformer3DModel.from_single_file(dit_state, **kwargs)
 
@@ -1211,7 +1201,6 @@ def load_ltx23_audio_vae_and_vocoder(
     return audio_vae, vocoder.to(torch_dtype)
 
 
-# Kill switch for warming the base repo's text encoder files in the page cache beside the checkpoint read.
 PREFETCH_ENV = "UNSLOTH_VIDEO_PREFETCH"
 _PREFETCH_THREADS = 8
 _PREFETCH_CHUNK_BYTES = 16 << 20
@@ -1227,8 +1216,7 @@ def _uncached_bytes(
     stride: int = 64 << 20,
     window: int = 1 << 20,
 ) -> int:
-    """Estimated bytes of ``path`` not in the page cache: Linux ``mincore`` over a ``window`` every ``stride`` bytes
-    (a full sweep of a 46 GB encoder costs ~0.25 s on a warm cache, the sample a few ms); 0 when it cannot tell."""
+    """Estimated bytes of ``path`` not in the page cache (sampled Linux ``mincore``); 0 when it cannot tell."""
     import ctypes
     import mmap
     import os
@@ -1267,8 +1255,7 @@ def _uncached_bytes(
 
 
 def _text_encoder_files(base_repo: str, cache_dir: Optional[str]) -> list[str]:
-    """The cached weight shards ``from_pretrained`` reads for ``base_repo``'s text encoder (its sharded index, cache
-    only, never a download); empty when they are not cached."""
+    """The cached text encoder shards of ``base_repo`` (cache only, never a download)."""
     import json
     import os
 
@@ -1289,12 +1276,8 @@ def _text_encoder_files(base_repo: str, cache_dir: Optional[str]) -> list[str]:
 
 
 def start_prefetch(paths: list[str]) -> Optional[Any]:
-    """Read the uncached parts of ``paths`` into the page cache on worker threads; returns a stop Event, or None when
-    there is nothing to warm or host RAM is too tight to hold it.
-
-    On a cold cache the base repo's 46 GB fp32 Gemma3 shards read through ``from_pretrained`` at ~1.7 GB/s (25 to
-    28 s on a B200 host) after the checkpoint read; warmed beside the checkpoint read, the encoder load finds them
-    cached. A warm cache costs one ``mincore`` sweep."""
+    """Warm the uncached parts of ``paths`` in the page cache on worker threads; a stop Event, or None when nothing
+    needs it or host RAM is too tight. Cold B200 cache: the Gemma3 shards otherwise read at ~1.7 GB/s after the checkpoint."""
     import os
     import threading
 
@@ -1311,7 +1294,6 @@ def start_prefetch(paths: list[str]) -> Optional[Any]:
         available = _available_system_memory_mib()
     except Exception:  # noqa: BLE001
         available = None
-    # The warmed pages must not push the checkpoint (or anything else) out of a small host's cache.
     if available is None or need > (int(available) << 20) // 2:
         return None
     stop = threading.Event()
@@ -1361,9 +1343,7 @@ def load_ltx23_pipeline(
     text_encoder: Optional[Any] = None,
     **kwargs: Any,
 ) -> Any:
-    """Full LTX-2.3 pipeline from a single-file/GGUF checkpoint (see ``_assemble_ltx23_pipeline``). When the base
-    repo's text encoder is built here, its cached files are warmed in the page cache beside the checkpoint read
-    (``start_prefetch``)."""
+    """Full LTX-2.3 pipeline (``_assemble_ltx23_pipeline``), warming the text encoder files beside the checkpoint read."""
     prefetch = None
     if text_encoder is None and prefetch_enabled():
         prefetch = start_prefetch(_text_encoder_files(base_repo, _live_cache_dir()))
@@ -1373,7 +1353,6 @@ def load_ltx23_pipeline(
         )
     finally:
         if prefetch is not None:
-            # Read by the encoder load by now, or the assembly failed: nothing is left to warm either way.
             prefetch.set()
 
 
@@ -1405,9 +1384,7 @@ def _assemble_ltx23_pipeline(
     scheduler, the tokenizer, the dense Gemma3 encoder and the companion VAE/vocoder artifacts are
     all fetched by a load that promised to fetch nothing.
 
-    ``device`` (a resident plan only, see ``direct_load_device``) reads the checkpoint's tensors straight onto that
-    device and builds every component there, so placement has nothing left to copy. ``text_encoder_device`` does the
-    same for the base-repo Gemma3 encoder (a plan that keeps it resident). Both leave the bytes untouched."""
+    ``device`` / ``text_encoder_device`` (resident plans only) read the checkpoint / build the Gemma3 encoder there."""
     import transformers
 
     from .ltx2_import_compat import ensure_ltx2_pipelines_importable

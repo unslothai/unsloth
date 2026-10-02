@@ -437,7 +437,7 @@ class GraphedForward:
 
     def __call__(self, *args, **kwargs):
         if _bg_capture_suppressed():
-            # The background compile thread: run the (compiled) callable, never record a graph off the render thread.
+            # Background compile thread: never capture off the render thread.
             return self.orig(*args, **kwargs)
         if (
             not self.enabled

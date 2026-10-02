@@ -2652,15 +2652,14 @@ def _offload_groups(module: Any) -> list:
     return groups
 
 
-# Video loads only (request_fast_pins): pin into page-aligned host memory registered with CUDA from worker threads
-# instead of torch's pinned allocator. "0" restores the per-tensor ``pin_memory()``.
+# Video loads only. "0" restores the per-tensor ``pin_memory()``.
 FAST_PIN_ENV = "UNSLOTH_VIDEO_FAST_PIN"
 _FAST_PIN_REQUEST_ATTR = "_unsloth_fast_pin_requested"
 _FAST_PIN_THREADS = 8
 
 
 def request_fast_pins(pipe: Any) -> None:
-    """Ask the background pinners of ``pipe`` to use registered host memory (see _RegisteredHostBuffer)."""
+    """Ask the background pinners of ``pipe`` to use registered host memory."""
     try:
         setattr(pipe, _FAST_PIN_REQUEST_ATTR, True)
     except Exception:  # noqa: BLE001 - a pipe refusing attributes pins the default way
@@ -2670,7 +2669,7 @@ def request_fast_pins(pipe: Any) -> None:
 def _fast_pin_supported() -> bool:
     if (os.environ.get(FAST_PIN_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
         return False
-    # Linux CUDA only: WDDM / WSL2 cap page-locked memory, and ROCm's register path is unmeasured here.
+    # WDDM / WSL2 cap page-locked memory; ROCm's register path is unmeasured.
     if not sys.platform.startswith("linux") or _pinned_memory_capped():
         return False
     try:
@@ -2685,14 +2684,9 @@ def _fast_pin_supported() -> bool:
 
 
 class _RegisteredHostBuffer:
-    """A page-aligned anonymous mapping page-locked with ``cudaHostRegister``, exposed to numpy (and so torch) through
-    ``__array_interface__`` so every tensor view keeps this object alive; the last view's release unregisters it before
-    the mapping is closed.
+    """Anonymous mapping page-locked with ``cudaHostRegister``; tensor views keep it alive, the last one unregisters it.
 
-    Torch's pinned allocator (``Tensor.pin_memory``) rounds every tensor up to a power of two and page-locks it with
-    ``cudaHostAlloc`` on one thread: 10.9 to 13.1 s for LTX-2.3's 24.6 GiB Gemma3 encoder, the wait in front of the
-    first render. Faulting the pages in by the copy on 8 threads and registering them took 2.3 s, with the same H2D
-    rate (52 to 55 GB/s on a B200)."""
+    Torch's pinned allocator pins on one thread (10.9-13.1 s for LTX-2.3's 24.6 GiB Gemma3); 8 threads + register: 2.3 s."""
 
     def __init__(self, nbytes: int):
         import ctypes
@@ -2720,7 +2714,7 @@ class _RegisteredHostBuffer:
             raise RuntimeError(f"cudaHostRegister failed ({err})")
         import torch
 
-        # The card the uploads from these pages go to: a bare synchronize() on another thread waits on device 0.
+        # A bare synchronize() on another thread would wait on (and open a context on) device 0.
         self._device = torch.cuda.current_device()
         self._registered = True
 
@@ -2743,7 +2737,7 @@ class _RegisteredHostBuffer:
 
 
 def registered_host_copy(src: Any) -> Any:
-    """A copy of host tensor ``src`` in CUDA-registered (pinned) memory; same dtype, shape and bytes, contiguous."""
+    """A contiguous copy of host tensor ``src`` in CUDA-registered (pinned) memory."""
     import numpy as np
     import torch
 
@@ -2858,8 +2852,7 @@ class _GroupPinner:
             if self.fast:
                 from concurrent.futures import ThreadPoolExecutor
 
-                # Queued in group order, so the first group is ready first; still swapped in group order below.
-                # Workers start on device 0: give them the pinner's card, which their buffers record.
+                # Queued in group order, so the first group is ready first.
                 pool = ThreadPoolExecutor(
                     max_workers = _FAST_PIN_THREADS,
                     thread_name_prefix = "unsloth-fast-pin",

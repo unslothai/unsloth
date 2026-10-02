@@ -1057,8 +1057,7 @@ class _CompileGuard:
         guard = self
 
         def guarded(*args: Any, **kwargs: Any) -> Any:
-            # A generation running while this compile is still in flight in the background (diffusion_bg_compile)
-            # stays eager: entering the compiled callable here would compile inline, the stall it exists to avoid.
+            # Compile still in flight in the background: entering it here would compile inline.
             if guard.error is None and not _bg_eager_forced():
                 compile_config.apply()
                 try:

@@ -3,40 +3,14 @@
 
 """Compile a dense denoiser in the background while the user's renders keep running eager.
 
-The regional / whole-module ``torch.compile`` of the denoiser is lazy: the first forward after the speed profile
-engages traces and codegens every graph, inside a user render. On a dense (bf16 / fp16) denoiser eager is a usable
-speed, so that compile is pure waiting: SDXL's deferred profile turned render 3 into a 66 s render on a B200 (68.9 s on
-an H100) against 1.3 s eager, with no compiled bundle on disk yet.
+``arm`` records the first few distinct denoiser inputs of a render run under ``force_eager`` (read by every compile
+guard and CUDA-graph wrapper); ``kick`` replays them through the compiled callable on a daemon thread with CUDA-graph
+capture suppressed, so the next render pays only the capture. A render arriving mid-compile waits for it: a render
+beside the compile was starved to 49-62 s on a B200. Any failure ends the attempt and the next render compiles inline.
 
-Flow, per armed denoiser:
-
-1. ``arm`` (under the generate lock, right after the speed optims installed the compile wrappers): a forward pre-hook
-   on the denoiser starts recording. The generation then runs with ``force_eager`` set, which every compile guard
-   (``diffusion_speed``) and every CUDA-graph wrapper (``diffusion_cuda_graph``) reads: they call the eager forward,
-   never dynamo, never a capture. The hook clones the first few distinct input trees it sees (one per input shape:
-   a CFG pair with two text lengths records two).
-2. ``kick`` (after that generation returned): the hook is removed and a daemon thread replays each recorded input
-   through the COMPILED callable on a side stream, under the grad / inference mode the render had, with
-   ``capture_suppressed`` set so no CUDA graph is recorded off the render thread. Compiling is what it is for; the
-   output is discarded.
-3. Once every sample replayed, ``pending()`` turns False and the NEXT generation runs the compiled path as before:
-   dynamo's cache already holds the graphs, so it pays only the CUDA-graph capture. A generation that starts while
-   the compile is still running waits for it (``wait``) rather than running beside it, so the compile only ever
-   overlaps the time between renders: a user reading the last image hides it, a back-to-back caller sees the
-   remainder once, one render later than before.
-
-Anything unexpected (an input tree that cannot be cloned, an exception in the warm forward) ends the background
-attempt with ``pending()`` False, which is exactly the old behaviour: the next generation compiles inline. A compile
-failure inside the warm is the compile guard's business, as on the render thread (it routes the denoiser eager for
-the rest of the load).
-
-Only for dense, non-offloaded denoisers: torchao-quantised ones are ~30x slower eager (they must compile before the
-first step) and an offload hook moves weights per block, which two concurrent forwards would fight over.
-
-By default only the deferred profile (generation 3) compiles in the background: it already switched eager ->
-compiled, so the same seed repeats exactly as before. UNSLOTH_DIFFUSION_BG_COMPILE=1 also moves a load's first-render
-compile off the render (image and video), at the cost of render 1 (eager) differing from render 2 (compiled) for one
-seed. UNSLOTH_DIFFUSION_BG_COMPILE=0 disables it (the compile lands on the render, as before).
+Dense, non-offloaded denoisers only: torchao ones are ~30x slower eager, and offload hooks would fight two forwards.
+By default only the deferred profile (generation 3, already eager -> compiled) uses it; UNSLOTH_DIFFUSION_BG_COMPILE=1
+also moves a load's first-render compile (render 1 then differs from render 2 for one seed), =0 disables it.
 """
 
 from __future__ import annotations
@@ -51,10 +25,7 @@ from typing import Any, Callable, Optional
 _ENV = "UNSLOTH_DIFFUSION_BG_COMPILE"
 _MAX_SAMPLES = 4
 
-# Read by the compile guards and the CUDA-graph wrappers. ContextVars, not thread-locals: the render thread runs each
-# generation inside a copy of the caller's context (diffusion_render_thread.run), so a value set around a generation
-# reaches the thread that actually runs the denoiser, and never leaks into the background compile thread, which starts
-# with a fresh context.
+# ContextVars, not thread-locals: diffusion_render_thread.run copies the caller's context onto the render thread.
 _FORCE_EAGER: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "unsloth_diffusion_force_eager", default = False
 )
@@ -69,11 +40,7 @@ def enabled() -> bool:
 
 
 def load_time_enabled() -> bool:
-    """Whether a load may arm the background compile for its first render (opt-in: ``=1``).
-
-    Off by default: a load that used to compile inside render 1 would render 1 eager and 2 compiled, so the same seed
-    twice in a row no longer repeats. The deferred profile (generation 3) already switched eager -> compiled, so it
-    keeps the background compile by default."""
+    """Opt-in (``=1``): render 1 eager and render 2 compiled would break "same seed twice repeats"."""
     raw = (os.environ.get(_ENV) or "").strip().lower()
     return raw in ("1", "true", "yes", "on", "all")
 
@@ -141,18 +108,16 @@ class BackgroundCompile:
         self.samples: list[tuple] = []
         self._keys: set = set()
         self._handle: Any = None
-        # (gate, inner) while a whole-module compiled denoiser (SDXL's U-Net) is gated, else None.
         self._gate: Optional[tuple] = None
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
         self._closed = threading.Event()
-        # recording -> compiling -> done | failed. pending() is True for the first two.
+        # recording -> compiling -> done | failed
         self.state = "recording"
         self.error: Optional[str] = None
         self.compile_s: Optional[float] = None
         self.eager_generations = 0
 
-    # ------------------------------------------------------------------ recording
     def install(self) -> bool:
         try:
             self._install_gate()
@@ -164,11 +129,7 @@ class BackgroundCompile:
             return False
 
     def _install_gate(self) -> None:
-        """Route a WHOLE-module compiled denoiser to its eager ``_call_impl`` under ``force_eager``.
-
-        A regionally compiled DiT needs nothing here (its block guards read the flag), but ``Module.compile`` serves
-        every call from ``_compiled_call_impl`` (whatever wraps it: the CUDA-graph layer, or the raw compiled callable
-        when graphs are off), so the flag has to be read in front of it."""
+        """``Module.compile`` serves every call from ``_compiled_call_impl``: route it eager under ``force_eager``."""
         inner = getattr(self.module, "_compiled_call_impl", None)
         if inner is None:
             return
@@ -208,10 +169,7 @@ class BackgroundCompile:
             live: list = []
             spec = _flatten((args, kwargs), live)
             if _capture_armed(module):
-                # The compiled callable will first be reached from the CUDA-graph layer's capture warm-up, which feeds
-                # it STATIC buffers made outside inference mode (diffusion_cuda_graph._capture). Dynamo guards on the
-                # dispatch keys an inference tensor lacks, so warming with the render's own (inference) tensors would
-                # compile a graph the capture then misses and recompiles: build the buffers the same way.
+                # Like the capture's static buffers (made outside inference mode): dynamo guards on inference-ness.
                 with torch.inference_mode(False):
                     clones = [torch.empty_like(t) for t in live]
                 for dst, src in zip(clones, live):
@@ -241,7 +199,6 @@ class BackgroundCompile:
             except Exception:  # noqa: BLE001
                 pass
 
-    # ------------------------------------------------------------------ lifecycle
     def pending(self) -> bool:
         return self.state in ("recording", "compiling")
 
@@ -257,14 +214,7 @@ class BackgroundCompile:
         cancel: Any = None,
         poll_s: float = 0.25,
     ) -> float:
-        """Block until an in-flight background compile ends; returns the seconds waited.
-
-        A render never runs next to the compile. Measured on a B200 (SDXL, render 4 eager beside the compile): the
-        render took 49-62 s instead of 1.3 s, because dynamo / inductor hold the GIL for most of a compile and make_fx
-        patches ``nn.Module.__call__`` process-wide while it traces, so every module call of the eager render went
-        through the tracer's wrapper. Waiting costs the same wall time with neither hazard, and is only reached when
-        the user starts the next render before the compile (which runs between renders) is done. ``cancel`` (an
-        Event) aborts the wait, not the compile."""
+        """Block until an in-flight background compile ends; returns the seconds waited. ``cancel`` aborts the wait."""
         t0 = time.perf_counter()
         thread = self._thread
         if thread is None or thread is threading.current_thread():
@@ -286,7 +236,7 @@ class BackgroundCompile:
             if not self.samples:
                 # The generation never reached the denoiser (cancelled / failed early): keep recording.
                 return False
-            # Before the thread starts: the compiled trace must not contain the recording hook.
+            # Before the thread starts: the compiled trace must not contain the hook.
             self._remove_hook()
             self.state = "compiling"
             self._thread = threading.Thread(
@@ -313,8 +263,7 @@ class BackgroundCompile:
 
             from . import diffusion_compile_config
 
-            # A fresh thread sees torch 2.12+'s default dynamo / inductor config (a ContextVar): without the recorded
-            # knobs a whole-module U-Net would compile without emulate_precision_casts, unlike on the render thread.
+            # torch 2.12+ keeps compile config per context: a fresh thread would compile without the recorded knobs.
             diffusion_compile_config.apply()
             _flatten, _rebuild, graph_key = _cuda_graph_helpers()
             for spec, clones, inference, grad, device in list(self.samples):
@@ -324,8 +273,6 @@ class BackgroundCompile:
                 if device is not None:
                     torch.cuda.set_device(device)
                 args, kwargs = _rebuild(spec, clones)
-                # The default stream, like a render: no render runs beside this (a render waits for it), and offload
-                # hooks synchronise against the current stream.
                 mode = torch.inference_mode() if inference else torch.set_grad_enabled(grad)
                 with mode:
                     self.module(*args, **kwargs)
@@ -370,7 +317,7 @@ class BackgroundCompile:
             thread.join(timeout)
         if self.pending():
             self._finish("failed", "closed")
-        # Unload uninstalls the CUDA-graph layer by identity, so the gate in front of it has to go first.
+        # Unload uninstalls the CUDA-graph layer by identity: the gate in front of it goes first.
         self._remove_gate()
         self.module = None
 
@@ -396,12 +343,10 @@ def select_module(
     backend: Any,
     denoiser_hooked: bool,
 ) -> Any:
-    """The denoiser whose compile may move off the render, or None.
+    """The one dense, resident, default-tier CUDA denoiser whose compile may move off the render, or None.
 
-    One dense, resident, regionally or whole-module compiled denoiser on the default tier of a CUDA load: a torchao
-    denoiser is ~30x slower eager than the compile costs, GGUF compiles only its dequant chain, a step cache toggles
-    graphs per step, max-autotune is an explicit request to pay the compile, and a denoiser an offload hook moves is
-    not the module a warm forward would compile against."""
+    Not torchao (~30x slower eager), GGUF (compiles only its dequant), a step cache (toggles graphs per step),
+    max-autotune (an explicit request to pay the compile) or an offloaded denoiser."""
     if not enabled():
         return None
     if "compiled" not in tuple(speed_optims or ()) or not default_tier:

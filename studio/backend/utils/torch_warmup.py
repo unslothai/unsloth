@@ -413,7 +413,6 @@ def _clear_finished_warm_locked() -> None:
 
 
 DIFFUSERS_PREWARM_DISABLE_ENV_VAR = "UNSLOTH_STUDIO_DISABLE_DIFFUSERS_PREWARM"
-# 0 keeps the prewarm to diffusers + diffusers.hooks (the model classes then import on the first load).
 DIFFUSERS_PREWARM_MODELS_ENV_VAR = "UNSLOTH_STUDIO_DIFFUSERS_PREWARM_MODELS"
 _DIFFUSERS_PREWARM_MODEL_MODULES = ("diffusers.models.transformers",)
 
@@ -497,8 +496,7 @@ def _is_native_video_pick(pick) -> bool:
 
 
 def _prewarm_quant_probe() -> None:
-    """The quantised-load smoke probe (a 4-5 s child process), resolved and persisted here instead of at the start of
-    the first image load. Same gate as the diffusers prewarm; never fatal."""
+    """Run the 4-5 s quant smoke probe here instead of at the first image load; never fatal."""
     try:
         from core.inference.diffusion_transformer_quant import prewarm_probe_table  # noqa: PLC0415
         started = time.perf_counter()
@@ -586,9 +584,7 @@ def prewarm_diffusers_if_image_models_exist() -> bool:
                 purge_partial_import("diffusers.hooks")
                 return False
 
-        # The model classes too: a load's first family check imports diffusers.models.transformers (every DiT module,
-        # peft, the loaders), 1.5-3.7 s of the first image load on a B200 host. Its own scope for the same lock-order
-        # reason as above, and optional: a failure here leaves the parent import in place and the load imports it.
+        # The model classes too (1.5-3.7 s of the first load); own scope for the same lock-order reason as above.
         if os.environ.get(DIFFUSERS_PREWARM_MODELS_ENV_VAR, "").strip().lower() not in (
             "0",
             "false",
