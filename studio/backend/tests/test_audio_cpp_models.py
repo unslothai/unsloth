@@ -1710,3 +1710,33 @@ def test_a_miss_without_a_token_is_not_served_to_a_caller_with_one(monkeypatch):
     assert acm.resolve("someone/Gated-ASR-GGUF", hf_token = "hf_secret") is CANARY
     assert acm.resolve("someone/Gated-ASR-GGUF", hf_token = "hf_secret") is CANARY
     assert seen == [None, "hf_secret"]
+
+
+def test_deleting_from_an_inactive_cache_prunes_that_caches_farm(monkeypatch, tmp_path):
+    import asyncio
+
+    from hub.services.models import deletion
+    from hub.utils import hf_cache_state
+
+    active, old = tmp_path / "active" / "hub", tmp_path / "old" / "hub"
+    pruned = []
+    monkeypatch.setattr(deletion.account_access, "require_installation_owner", lambda: None)
+    for name in (
+        "_llama_cpp_blocks_delete",
+        "_inference_backend_blocks_delete",
+        "_audio_cpp_blocks_delete",
+    ):
+        monkeypatch.setattr(deletion, name, lambda *a: False)
+    monkeypatch.setattr(deletion, "_diffusion_blocks_delete", lambda *a: None)
+    monkeypatch.setattr(deletion, "_video_blocks_delete", lambda *a: None)
+    monkeypatch.setattr(deletion, "resolve_cached_repo_id_case", lambda r, **k: r)
+    # The repo lives only in the remembered, inactive cache; cache_path is omitted.
+    monkeypatch.setattr(
+        deletion, "_delete_cached_model_blocking", lambda *a, **k: {"status": "deleted"}
+    )
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda *a: [active, old])
+    monkeypatch.setattr(
+        audio_cpp_files, "prune_link_farm", lambda root = None: pruned.append(root) or 0
+    )
+    asyncio.run(deletion.delete_cached_model_response("audio-cpp/Yue2-3B-GGUF"))
+    assert old in pruned

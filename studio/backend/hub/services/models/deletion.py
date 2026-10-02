@@ -958,11 +958,15 @@ async def delete_cached_model_response(
         # The audio.cpp link farm hardlinks the deleted blobs; without this they keep their disk space.
         # Any GGUF repo can be an audio.cpp model, and pruning an absent or current farm is a no-op.
         from core.inference.audio_cpp_files import prune_link_farm
-        from hub.utils.hf_cache_state import scoped_delete_root
+        from hub.utils.hf_cache_state import hf_cache_roots
 
-        # The farm beside the hub root the repo was deleted from: cache_path names the repo folder,
-        # which need not be in the active cache.
-        await asyncio.to_thread(prune_link_farm, scoped_delete_root("model", repo_id, cache_path))
+        # Every remembered root, not one recomputed from cache_path: an omitted path deletes from
+        # the sole owning cache, which need not be the active one. Pruning drops only stale entries.
+        def _prune_all() -> None:
+            for root in hf_cache_roots():
+                prune_link_farm(root)
+
+        await asyncio.to_thread(_prune_all)
         from core.inference.audio_cpp_models import forget
 
         forget()
