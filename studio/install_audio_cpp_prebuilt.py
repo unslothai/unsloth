@@ -191,9 +191,6 @@ def _accelerator_from_env() -> str:
     return raw
 
 
-# Digest pins
-
-
 def load_pins(path: Optional[Path] = None) -> dict:
     try:
         with open(path or PINS_PATH, "r", encoding = "utf-8") as f:
@@ -249,9 +246,6 @@ def default_install_dir() -> Path:
     return legacy if root == (Path.home() / ".unsloth" / "studio").resolve() else root / "audio.cpp"
 
 
-# Host detection
-
-
 def nvidia_driver_cuda_version() -> Optional[tuple[int, int]]:
     """The CUDA version the installed NVIDIA driver supports, from nvidia-smi, or None."""
     exe = shutil.which("nvidia-smi")
@@ -287,9 +281,6 @@ def torch_cuda_major() -> Optional[int]:
         digits = match.group(1)
         return int(digits[:-1]) if len(digits) >= 3 else int(digits[:2])
     return None
-
-
-# Asset resolution
 
 
 def resolve_release_asset(
@@ -389,9 +380,6 @@ def torch_provides_cuda_runtime(cuda_major: int) -> bool:
         return False
     needed = (f"cudart64_{cuda_major}*.dll", f"cublas64_{cuda_major}*.dll", "cufft64_*.dll")
     return all(glob.glob(str(lib / pattern)) for pattern in needed)
-
-
-# GitHub
 
 
 def _fetch_release(
@@ -524,9 +512,6 @@ def write_pins(path: Optional[Path] = None, token: Optional[str] = None) -> Path
     target = path or PINS_PATH
     target.write_text(json.dumps(payload, indent = 2) + "\n", encoding = "utf-8", newline = "\n")
     return target
-
-
-# Download and install
 
 
 def _download(url: str, dest: Path) -> None:

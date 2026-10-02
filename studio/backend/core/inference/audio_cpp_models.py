@@ -57,10 +57,6 @@ HUB_TASKS = {
 DEFAULT_AUDIO_CPP_STT_MODEL = f"{AUDIO_CPP_REPO}/Qwen3-ASR-0.6B-GGUF"
 
 
-# ---------------------------------------------------------------------------
-# Families
-
-
 @dataclass(frozen = True)
 class AudioCppPackageVariant:
     """One component mix of a package family: its files and the session options that pick them."""
@@ -565,9 +561,6 @@ def split_variant_ref(identifier: str) -> tuple[str, Optional[str]]:
     return text, None
 
 
-# ---------------------------------------------------------------------------
-# GGUF headers
-
 _FIXED_SIZES = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
 _WANTED_KEYS = (
     "general.architecture",
@@ -756,10 +749,6 @@ def read_remote_header(
     return _cached_header(("remote", repo_id.lower(), filename, size, token_id), compute)
 
 
-# ---------------------------------------------------------------------------
-# Listing
-
-
 @dataclass(frozen = True)
 class RepoFile:
     path: str
@@ -877,9 +866,6 @@ def list_files(
             logger.debug("audio.cpp: Hub listing of %s/%s failed: %s", repo_id, folder, exc)
     return _cached_listing(repo_id, folder), False
 
-
-# ---------------------------------------------------------------------------
-# Variants
 
 _QUANT_RE = re.compile(
     r"(?:^|[-_.])((?:i?q\d(?:_[a-z0-9]+)*)|bf16|f16|f32|fp16|fp32|orig)(?=$|[-_.])", re.IGNORECASE
@@ -1083,10 +1069,6 @@ def _match_by_words(variants: Sequence[AudioCppVariant], low: str) -> Optional[A
     return sorted(matches, key = _variant_rank)[0] if matches else None
 
 
-# ---------------------------------------------------------------------------
-# Options
-
-
 _STUDIO_DRIVEN_OPTIONS = frozenset(
     {
         "input",
@@ -1265,10 +1247,6 @@ def validate_options(schema: Sequence[dict], values: Optional[dict]) -> dict:
         except (TypeError, ValueError):
             continue
     return out
-
-
-# ---------------------------------------------------------------------------
-# Resolution
 
 
 @dataclass(frozen = True)

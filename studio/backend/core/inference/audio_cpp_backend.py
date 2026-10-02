@@ -289,10 +289,7 @@ class AudioCppBackend:
         defaults = dict(model.request_defaults)
         default_options = dict(defaults.pop("options", None) or {})
         body: dict[str, Any] = {"model": server.model_id, "input": text, **defaults}
-        # Sampling stays with each family's own defaults unless the user set it for this model. Studio's
-        # generic speech temperature is tuned for the token-codec models; handed to audio.cpp's families it
-        # can keep one from ever emitting its stop token (MOSS-TTS-Nano samples at 1.5 and runs to its length
-        # cap at 0.6).
+        # Family defaults win: Studio's generic temperature can stop one emitting its stop token (MOSS-TTS-Nano).
         del temperature, top_p
         chosen = dict(options)
         voice = chosen.pop("voice", None)

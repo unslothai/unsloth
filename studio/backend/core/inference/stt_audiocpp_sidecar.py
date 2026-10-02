@@ -165,9 +165,6 @@ def downloaded_model_ids() -> list[str]:
     return ids
 
 
-# Inference that failed after the server started (a runtime that answers /health and then cannot serve). Recorded on
-# failure and cleared on the next success, for logs and diagnostics only: unlike whisper.cpp there is no engine to fall
-# back to, so it must not mark the engine unavailable and hide every audio.cpp model after one bad clip.
 def acm_resolve_folder(key: str) -> str:
     """The lowercased row id a legacy key names."""
     return acm_row_id(key).lower()
@@ -180,6 +177,7 @@ def acm_row_id(model: Optional[str]) -> str:
     return ref.id if ref is not None else ""
 
 
+# Diagnostics only: with no engine to fall back to, one bad clip must not mark audio.cpp unavailable.
 _runtime_inference_failure: Optional[str] = None
 _runtime_failure_lock = threading.Lock()
 

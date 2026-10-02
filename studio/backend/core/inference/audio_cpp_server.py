@@ -49,9 +49,7 @@ INSTALL_RECORD = "UNSLOTH_AUDIO_CPP_PREBUILT_INFO.json"
 # Model load happens before the server answers, and a multi-GB music model can take a while from a cold disk.
 _SERVER_START_TIMEOUT_SECONDS = 600.0
 _PROBE_TIMEOUT_SECONDS = 2.0
-# CUDA graph replay wedges these transducer families mid-request (the server spins at full CPU and
-# never answers): Nemotron on about the 72nd LibriSpeech clip in 7 of 8 runs, Parakeet TDT after
-# 117 clips; with graphs off both served 292 of 292 (v0.8.2 and v0.9.0 alike).
+# CUDA graph replay wedges these transducers mid-request (server spins, never answers); graphs off fixes it.
 _NO_CUDA_GRAPH_FAMILIES = frozenset({"nemotron_asr", "parakeet_tdt"})
 _GPU_HOST_THREADS = 8
 
@@ -269,9 +267,7 @@ def child_env(binary: str) -> dict[str, str]:
     """Secrets scrubbed, home repointed at a scratch dir, co-located libs first on the loader path."""
     binary = str(Path(binary).resolve())
     env = scrub_env(os.environ)
-    # Outside the managed install dir (the installer refuses to replace a directory it does not own) and
-    # per user: eSpeak extracts its phoneme data here, so a shared or predictable path would let another
-    # local account plant data the server reads.
+    # Per user and outside the install dir: eSpeak extracts data here, so a shared path lets another account plant it.
     isolate_home(env, str(_child_home_dir()))
     bin_dir = str(Path(binary).parent)
     runtime_dirs: list[str] = []
