@@ -60,10 +60,12 @@ function MetaRow({
   label,
   value,
   mono,
+  title,
 }: {
   label: string;
   value: ReactNode;
   mono?: boolean;
+  title?: string;
 }): ReactElement {
   return (
     <div className="flex items-baseline justify-between gap-3">
@@ -75,6 +77,7 @@ function MetaRow({
           "min-w-0 truncate text-ui-12p5 text-foreground/90",
           mono && "font-mono text-ui-12",
         )}
+        title={title}
       >
         {value}
       </span>
@@ -511,10 +514,23 @@ export function RunPreviewCard({
       <section className="flex flex-col gap-3">
         <MetaRow
           label={t("studio.preview.hardware")}
-          value={
+          title={
             gpu.available
               ? `${gpu.name} · ${gpu.memoryTotalGb} GiB`
-              : t("studio.preview.noGpu")
+              : undefined
+          }
+          value={
+            gpu.available ? (
+              // Truncate the name, never the VRAM figure.
+              <span className="flex min-w-0 gap-1">
+                <span className="min-w-0 truncate">{gpu.name}</span>
+                <span className="shrink-0">
+                  · {Math.round(gpu.memoryTotalGb)} GiB
+                </span>
+              </span>
+            ) : (
+              t("studio.preview.noGpu")
+            )
           }
         />
         <MetaRow
