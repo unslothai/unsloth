@@ -381,6 +381,7 @@ def sd_cpp_accelerator_device_verdict(binary: str) -> Optional[bool]:
     indistinguishable from a real accelerator, so an unreadable re-probe would read as a build
     that changed underneath the load and refuse it."""
     text = _sd_cpp_probe_output(binary, "--list-devices")
+    _remember_device_listing(binary, text)
     if text is None:
         return None
     names = [line.split("\t", 1)[0].strip() for line in text.splitlines() if "\t" in line]
@@ -421,6 +422,65 @@ def sd_cpp_device_name_for_ordinal(binary: Optional[str], ordinal: Optional[int]
         "was unreadable" if text is None else "does not list it",
     )
     return None
+
+
+# ggml-cuda's own init log, printed on stderr by every CUDA build of sd-cli when it lists its devices. A HIP build
+# prints "ROCm devices" instead, so only a CUDA build ever matches.
+_CUDA_INIT_RE = re.compile(r"ggml_cuda_init: found \d+ CUDA devices")
+_CUDA_DEVICE_CC_RE = re.compile(r"^\s*Device (\d+): .*?, compute capability (\d+)\.(\d+)", re.MULTILINE)
+
+
+# The last --list-devices answer per binary path, with the (size, mtime_ns) it was read from. Remembered, never reused
+# for the accelerator verdict itself (a re-check has to ask again); it only spares the capability read below a
+# second subprocess for the answer the verdict just got.
+_LAST_DEVICE_LISTING: dict = {}
+
+
+def _binary_stat_identity(binary: str) -> Optional[tuple[int, int]]:
+    try:
+        st = os.stat(binary)
+    except OSError:
+        return None
+    return (st.st_size, st.st_mtime_ns)
+
+
+def _remember_device_listing(binary: Optional[str], text: Optional[str]) -> None:
+    if not binary:
+        return
+    if text is None:
+        _LAST_DEVICE_LISTING.pop(binary, None)
+        return
+    _LAST_DEVICE_LISTING[binary] = (_binary_stat_identity(binary), text)
+
+
+def sd_cpp_cuda_compute_capability(
+    binary: Optional[str], device_name: Optional[str], *, probe: bool = True
+) -> Optional[tuple[int, int]]:
+    """The compute capability the CUDA build ``binary`` itself reports for ``device_name``
+    (``CUDA<i>``), read from the ``ggml_cuda_init`` lines ``--list-devices`` prints. With no device
+    pinned, the LOWEST across its CUDA devices, since sd.cpp then picks one itself. None whenever
+    it is not certain: unreadable probe, not a CUDA build (ROCm, Vulkan, Metal, CPU), or a device
+    it does not list. ``probe = False`` reads only the listing the last accelerator verdict took of
+    this same file, and never spawns the binary."""
+    if not binary:
+        return None
+    text = None
+    seen = _LAST_DEVICE_LISTING.get(binary)
+    if seen is not None and seen[0] == _binary_stat_identity(binary):
+        text = seen[1]
+    elif probe:
+        text = _sd_cpp_probe_output(binary, "--list-devices")
+    if text is None or not _CUDA_INIT_RE.search(text):
+        return None
+    caps = {int(m.group(1)): (int(m.group(2)), int(m.group(3))) for m in _CUDA_DEVICE_CC_RE.finditer(text)}
+    if not caps:
+        return None
+    if device_name is None:
+        return min(caps.values())
+    head = device_name.rstrip("0123456789")
+    if head.upper() != "CUDA" or not device_name[len(head) :]:
+        return None
+    return caps.get(int(device_name[len(head) :]))
 
 
 # Every namespace ggml names a device in; the narrower list above is physical-index schemes only.
