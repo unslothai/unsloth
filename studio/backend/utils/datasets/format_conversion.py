@@ -872,7 +872,13 @@ def convert_llava_to_vlm_format(dataset):
     """Convert Llava format to standard VLM format: Llava carries messages whose content blocks name an image by {'type': 'image', 'index': 0} plus a parallel images list, while the standard form inlines the PIL object as {'type': 'image', 'image': PIL_Image}."""
     from PIL import Image
 
-    logger.info(f"🔄 Converting {len(dataset)} samples from Llava format to standard VLM format...")
+    is_iterable = is_streaming_dataset(dataset)
+    if is_iterable:
+        logger.info("🔄 Converting streaming samples from Llava format to standard VLM format...")
+    else:
+        logger.info(
+            f"🔄 Converting {len(dataset)} samples from Llava format to standard VLM format..."
+        )
 
     def _convert_single_sample(sample):
         """Convert one llava sample to standard VLM format."""
@@ -939,7 +945,19 @@ def convert_llava_to_vlm_format(dataset):
 
         return {"messages": new_messages}
 
-    converted_list = [_convert_single_sample(sample) for sample in dataset]
+    if is_iterable:
+        remove_columns = dataset.column_names or list(next(iter(dataset), {}))
+        converted_dataset = dataset.map(
+            _convert_single_sample,
+            remove_columns = remove_columns,
+        )
+        try:
+            next(iter(converted_dataset), None)
+        except Exception as exc:
+            raise ValueError(f"Streaming Llava conversion failed on the first row: {exc}") from exc
+        logger.info("✅ Configured streaming Llava conversion")
+        return converted_dataset
 
+    converted_list = [_convert_single_sample(sample) for sample in dataset]
     logger.info(f"✅ Converted {len(converted_list)} samples")
     return converted_list

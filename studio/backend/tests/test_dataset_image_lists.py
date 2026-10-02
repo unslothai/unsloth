@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from datasets import Dataset
+from datasets import Dataset, IterableDataset
 from PIL import Image
 
 _BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -43,6 +43,10 @@ def _llava_row_without_index():
         for part in message["content"]:
             part.pop("index", None)
     return row
+
+
+def _llava_rows():
+    yield _llava_row_without_index()
 
 
 def _image_part_row():
@@ -207,6 +211,16 @@ def test_llava_conversion_preserves_string_turns():
         "role": "system",
         "content": [{"type": "text", "text": "Answer accurately."}],
     }
+
+
+def test_llava_conversion_stays_lazy_for_streaming_dataset():
+    dataset = IterableDataset.from_generator(_llava_rows)
+
+    converted = convert_llava_to_vlm_format(dataset)
+
+    assert isinstance(converted, IterableDataset)
+    first = next(iter(converted))
+    assert first["messages"][0]["content"][0]["image"].getpixel((0, 0)) == (255, 0, 0)
 
 
 @pytest.mark.parametrize(
