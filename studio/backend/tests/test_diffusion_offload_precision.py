@@ -82,7 +82,8 @@ SURVIVAL = {
         s: {v: (True, OFFLOAD_GROUP) for v in (T016, T017, T018)} for s in ("int8", "fp8", "nvfp4")
     },
     "group_dit_streamed": {
-        "int8": {T016: (False, None), T017: (False, None), T018: (True, OFFLOAD_GROUP)},
+        # 0.17 streams int8 through its pinnable Int8Tensor (UNSLOTH_DIFFUSION_INT8_STREAM_TORCHAO17)
+        "int8": {T016: (False, None), T017: (True, OFFLOAD_GROUP), T018: (True, OFFLOAD_GROUP)},
         "fp8": {T016: (False, None), T017: (True, OFFLOAD_GROUP), T018: (True, OFFLOAD_GROUP)},
         "nvfp4": {T016: (False, None), T017: (False, None), T018: (False, None)},
     },
@@ -90,7 +91,11 @@ SURVIVAL = {
         s: {v: (True, OFFLOAD_MODEL) for v in (T016, T017, T018)} for s in ("int8", "fp8", "nvfp4")
     },
     "model_too_big": {
-        "int8": {T016: (False, None), T017: (False, None), T018: (True, OFFLOAD_STREAMING)},
+        "int8": {
+            T016: (False, None),
+            T017: (True, OFFLOAD_STREAMING),
+            T018: (True, OFFLOAD_STREAMING),
+        },
         "fp8": {
             T016: (False, None),
             T017: (True, OFFLOAD_STREAMING),
@@ -99,7 +104,11 @@ SURVIVAL = {
         "nvfp4": {T016: (False, None), T017: (False, None), T018: (False, None)},
     },
     "streaming": {
-        "int8": {T016: (False, None), T017: (False, None), T018: (True, OFFLOAD_STREAMING)},
+        "int8": {
+            T016: (False, None),
+            T017: (True, OFFLOAD_STREAMING),
+            T018: (True, OFFLOAD_STREAMING),
+        },
         "fp8": {
             T016: (False, None),
             T017: (True, OFFLOAD_STREAMING),
@@ -120,7 +129,10 @@ CASES = [
 
 
 @pytest.mark.parametrize("placement, scheme, version, survives, policy", CASES)
-def test_survival_table(placement, scheme, version, survives, policy):
+def test_survival_table(monkeypatch, placement, scheme, version, survives, policy):
+    # the table is about versions, not about which torchao this test host happens to have
+    monkeypatch.setattr(mem, "_int8_tensor_pinnable", lambda: True, raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_INT8_STREAM_TORCHAO17", raising = False)
     plan = PLACEMENTS[placement]
     assert torchao_survives_plan(plan, scheme, torchao_version = version) is survives
     placed = torchao_offload_plan(plan, scheme, torchao_version = version)
@@ -246,14 +258,18 @@ NO_STREAM = {"onload_device": "cuda", "use_stream": False}
         (("Int8Tensor",), True, 10**7, "pinned"),
         (("Float8Tensor",), True, 10**7, "pinned"),
         (("Int8Tensor",), True, None, "no stream"),
-        # torchao 0.17 default int8: no aten.is_pinned, so no copy stream
-        (("LinearActivationQuantizedTensor",), False, 10**7, "no stream"),
+        # torchao 0.17 default int8: no aten.is_pinned of its own; streams once Studio registers the pin ops
+        (("LinearActivationQuantizedTensor",), False, 10**7, "as is"),
+        (("LinearActivationQuantizedTensor",), False, 10**7, "no stream, no pin ops"),
     ],
 )
 def test_group_offload_kwargs_per_weight_class(
     monkeypatch, classes, low_cpu_mem_usage, pin_budget, expected
 ):
     monkeypatch.setattr(mem, "_pin_budget_mib", lambda: pin_budget)
+    # whether this host's torchao ships the v1 classes must not decide the table
+    pin_ops = expected != "no stream, no pin ops"
+    monkeypatch.setattr(mem, "install_torchao_v1_int8_pin_ops", lambda: pin_ops, raising = False)
     kwargs = {**STREAM_KW, "low_cpu_mem_usage": low_cpu_mem_usage}
     out = mem._torchao_group_offload_kwargs(_Module(*classes, plain = True), kwargs)
     if expected == "as is":
@@ -509,9 +525,12 @@ def test_auto_keeps_int8_on_the_offload_tier(planner, family, base, gib, expecte
     assert planner(family, base, gib) == expected
 
 
-@pytest.mark.parametrize("version, expected", [(T016, "bf16"), (T017, "hosted fp8")])
+# 0.17 now streams int8 (pinnable Int8Tensor), so it takes the same hosted int8 as 0.18 instead of falling to fp8
+@pytest.mark.parametrize("version, expected", [(T016, "bf16"), (T017, "hosted int8")])
 def test_older_torchao_streamed_seeds(planner, monkeypatch, version, expected):
     monkeypatch.setattr(mem, "_installed_torchao_version", lambda: version)
+    monkeypatch.setattr(mem, "_int8_tensor_pinnable", lambda: True, raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_INT8_STREAM_TORCHAO17", raising = False)
     precision, _policy = planner(
         "hunyuanimage-2.1", "hunyuanvideo-community/HunyuanImage-2.1-Diffusers", 16
     )
@@ -587,6 +606,8 @@ def test_quantised_blocks_survive_group_offload_under_no_grad(
         want = resident(x)
         for _ in range(3):
             assert torch.equal(offloaded(x), want)
+    if type(next(offloaded.parameters())).__name__ == "LinearActivationQuantizedTensor":
+        return  # torchao <= 0.17 v1 int8 (pin-op shim): its onload is a plain re-wrap, which inference_mode allows
     with pytest.raises(Exception), torch.inference_mode():
         offloaded(x)
 

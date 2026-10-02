@@ -44,6 +44,7 @@ import { sameGpuSelection } from "@/hooks/gpu-selection";
 import { resolveBatchSizeSeed } from "./resolve-batch-size-seed";
 import { resolveChatTemplateSeed } from "./resolve-chat-template-seed";
 import { resolveCtxPinSeed } from "./resolve-ctx-pin-seed";
+import { resolveLlamaExtraArgsSeed } from "./resolve-llama-extra-args-seed";
 import { shouldSeedVisionSwitch } from "./resolve-vision-switch-seed";
 
 type LocalReasoningEffort = Extract<ReasoningEffort, "low" | "medium" | "high">;
@@ -629,11 +630,12 @@ export function applyActiveModelStatusToStore(
     // status, not just the first: another client can reload the SAME model with different
     // arguments, and a pinned baseline would resurrect arguments that are not running.
     // seedLoadParams still guards it, so a mid-switch poll cannot overwrite performLoad.
-    ...(status.requested_llama_extra_args !== undefined &&
-      (status.is_gguf ?? true) &&
-      seedLoadParams && {
-        loadedLlamaExtraArgs: status.requested_llama_extra_args ?? null,
-      }),
+    ...resolveLlamaExtraArgsSeed({
+      incoming: status.requested_llama_extra_args,
+      isGguf: status.is_gguf ?? true,
+      hydratingExistingModel,
+      seedLoadParams,
+    }),
     // one rule per batch pair, see resolveBatchSizeSeed
     ...("loaded" in nBatchSeed && { loadedNBatch: nBatchSeed.loaded ?? null }),
     ...("value" in nBatchSeed && { nBatch: nBatchSeed.value ?? null }),

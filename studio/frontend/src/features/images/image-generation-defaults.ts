@@ -81,6 +81,9 @@ export const DEFAULT_RESOLUTION = { width: 1024, height: 1024 } as const;
 //
 // The GGUF route is deliberately absent. It streams the denoiser off disk, so its footprint does
 // not turn on this, and it keeps 1024.
+//
+// Only a PICKED quant shrinks it: auto precision takes the hosted int8 on every card, so it says
+// nothing about VRAM.
 const QUANTISED_CANVAS: Array<{
   match: string;
   schemes: readonly string[];
@@ -97,7 +100,12 @@ const QUANTISED_CANVAS: Array<{
 
 export function resolutionFor(
   repoId: string,
-  build: { modelKind?: string | null; transformerQuant?: string | null },
+  build: {
+    modelKind?: string | null;
+    transformerQuant?: string | null;
+    // Absent on older backends: treated as a pick.
+    transformerQuantSource?: string | null;
+  },
 ): { width: number; height: number } {
   // A GGUF resident reports no family substring in repo_id, so callers pass base_repo; the kind is
   // what actually excludes that route, not the id.
@@ -108,6 +116,9 @@ export function resolutionFor(
     .toLowerCase()
     .replace(/-/g, "_");
   if (!scheme) {
+    return DEFAULT_RESOLUTION;
+  }
+  if ((build.transformerQuantSource ?? "").toLowerCase() === "auto") {
     return DEFAULT_RESOLUTION;
   }
   const id = repoId.toLowerCase();

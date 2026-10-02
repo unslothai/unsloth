@@ -1362,20 +1362,13 @@ export const fr = {
           wide: "Large",
           full: "Pleine largeur",
         },
-        composerAttachments: {
-          label: "Pièces jointes dans la zone de saisie",
-          description:
-            "De grandes cartes qui agrandissent la zone de saisie, ou une rangée compacte de vignettes.",
-          cards: "Grandes cartes",
-          compact: "Vignettes compactes",
-        },
         sentAttachments: {
           label: "Pièces jointes dans les messages envoyés",
           description:
-            "Une liste indiquant le type de chaque fichier, ou de petites étiquettes. Le mode automatique passe aux étiquettes au-delà de six fichiers.",
+            "Standard affiche chaque fichier avec son type, Compact en place davantage sur chaque ligne. Le mode automatique passe en compact au-delà de six fichiers.",
           auto: "Automatique",
-          list: "Liste",
-          chips: "Étiquettes",
+          list: "Standard",
+          chips: "Compact",
         },
         reset: "Réinitialiser",
         resetAll: "Réinitialiser la personnalisation",
@@ -1843,9 +1836,6 @@ export const fr = {
         "Le texte collé de {count} caractères ou plus devient une pièce jointe .txt. Le texte plus court reste dans le champ de message.",
       pastedTextOffDescription:
         "Tout le texte collé reste dans le champ de message, quelle que soit sa longueur.",
-      projectsSection: "Afficher la section Projets",
-      projectsSectionDescription:
-        "Regroupe les discussions de projet sous un titre Projets. Désactivez cette option pour les lister dans Récents.",
       title: "Discussion",
       description: "Personnalisez le fonctionnement du chat sur cet appareil.",
       modelSelection: {
