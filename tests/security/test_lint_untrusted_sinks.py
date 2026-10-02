@@ -5444,3 +5444,79 @@ def test_a_closure_returning_a_captured_value_is_tainted(tmp_path):
     )
     assert "importlib.import_module" in _sinks(findings)
     assert "importlib.import_module" not in _sinks(quiet)
+
+
+def test_subprocess_shell_helpers_are_command_sinks(tmp_path):
+    """`subprocess.getoutput` and `getstatusoutput` run their argument in a shell."""
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def go(blob):\n"
+        "    subprocess.getoutput(json.loads(blob)['command'])\n"
+        "    subprocess.getstatusoutput(json.loads(blob)['command'])\n",
+    )
+    assert {"subprocess.getoutput", "subprocess.getstatusoutput"} <= _sinks(findings)
+
+
+def test_a_source_passed_to_a_helper_is_followed_into_it(tmp_path):
+    """`decode(json.loads, blob)` with `def decode(parser, value): return parser(value)`."""
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "def decode(parser, value):\n"
+        "    return parser(value)\n"
+        "def go(blob):\n"
+        "    return importlib.import_module(decode(json.loads, blob)['module'])\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_constant_map_lookup_with_an_untrusted_fallback_is_tainted(tmp_path):
+    """`MODULES.get(kind, cfg["fallback"])` returns the fallback when the key is absent."""
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "MODULES = {'a': 'json', 'b': 'csv'}\n"
+        "def go(blob):\n"
+        "    cfg = json.loads(blob)\n"
+        "    return importlib.import_module(MODULES.get(cfg['kind'], cfg['fallback']))\n",
+    )
+    quiet = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "MODULES = {'a': 'json', 'b': 'csv'}\n"
+        "def go(blob):\n"
+        "    cfg = json.loads(blob)\n"
+        "    return importlib.import_module(MODULES.get(cfg['kind'], 'json'))\n",
+        name = "quiet.py",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+    assert "importlib.import_module" not in _sinks(quiet)
+
+
+def test_a_remote_code_loader_passed_to_a_helper_is_followed(tmp_path):
+    """`load_with(AutoModel.from_pretrained, name)` opting in inside the helper."""
+    findings = _scan(
+        tmp_path,
+        "from transformers import AutoModel\n"
+        "def load_with(loader, name):\n"
+        "    return loader(name, trust_remote_code = True)\n"
+        "def go(name):\n"
+        "    return load_with(AutoModel.from_pretrained, name)\n",
+    )
+    assert any(f["sink"].startswith("trust_remote_code = True") for f in findings)
+
+
+def test_a_construction_chosen_by_a_conditional_expression_resolves(tmp_path):
+    """`runner = Runner() if enabled else None` then `runner.execute(parsed)`."""
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "class Runner:\n"
+        "    def execute(self, command):\n"
+        "        return subprocess.run(command)\n"
+        "def go(blob, enabled):\n"
+        "    runner = Runner() if enabled else None\n"
+        "    return runner.execute(json.loads(blob)['command'])\n",
+    )
+    assert "subprocess.run" in _sinks(findings)

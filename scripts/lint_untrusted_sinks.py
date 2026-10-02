@@ -275,6 +275,9 @@ SINKS: dict[str, tuple[tuple[int, ...], frozenset[str]]] = {
     "subprocess.check_call": ((0,), frozenset({"args", "executable"})),
     "subprocess.check_output": ((0,), frozenset({"args", "executable"})),
     "subprocess.Popen": ((0,), frozenset({"args", "executable"})),
+    # Both run their argument through the shell.
+    "subprocess.getoutput": ((0,), frozenset({"cmd"})),
+    "subprocess.getstatusoutput": ((0,), frozenset({"cmd"})),
     # The exec family replaces this process with the named program, so a tainted path
     # here IS execution with no shell in between. `os.posix_spawn` takes the same
     # argument shape; the spawn family puts a mode first, so the path sits at 1.
@@ -2050,6 +2053,13 @@ class _TaintPass(ast.NodeVisitor):
             and node.func.attr in ("get", "pop")
             and _call_name(node.func.value) in self.facts.constant_maps
         ):
+            # Unless the fallback is untrusted: `MODULES.get(kind, cfg["fallback"])`
+            # returns it whenever the key is absent.
+            fallbacks = node.args[1:] + [k.value for k in node.keywords if k.arg == "default"]
+            for fallback in fallbacks:
+                reason = self.tainted(fallback)
+                if reason:
+                    return reason
             return None
         # `.values()` on a dict whose keys alone are untrusted hands back the fixed
         # half, and treating the whole literal as tainted blocked provably safe code.
@@ -2482,6 +2492,8 @@ class _TaintPass(ast.NodeVisitor):
                 branch_assign = ast.copy_location(
                     ast.Assign(targets = node.targets, value = branch), node
                 )
+                self._note_construction(branch_assign)
+                self._note_instance_alias(branch_assign)
                 self._note_sink_alias(branch_assign)
                 self._note_source_alias(branch_assign)
                 self._note_callable_alias(branch_assign)
@@ -3369,16 +3381,39 @@ class _TaintPass(ast.NodeVisitor):
         # `invoke(subprocess.run, command)` hands the helper a sink, which it then
         # calls through its own parameter: the identity travels with the argument.
         handed = self.state.param_sink_aliases.setdefault(target, {})
-        for position, argument in enumerate(node.args):
-            sinks = self._sink_identities(argument)
-            if sinks and position + offset < len(params):
-                parameter = params[position + offset]
-                for sink in sinks:
-                    handed[parameter] = _with(handed.get(parameter), sink)
-        for keyword in node.keywords:
-            if keyword.arg in params:
-                for sink in self._sink_identities(keyword.value):
-                    handed[keyword.arg] = _with(handed.get(keyword.arg), sink)
+        # And sources: `decode(json.loads, blob)` with `return parser(value)` inside.
+        handed_sources = self.state.param_source_aliases.setdefault(target, {})
+        # And remote-code loaders: `load_with(AutoModel.from_pretrained, name)` with
+        # `loader(name, trust_remote_code = True)` inside.
+        handed_loaders = self.state.param_loader_aliases.setdefault(target, {})
+        bindings = [
+            (params[position + offset], argument)
+            for position, argument in enumerate(node.args)
+            if position + offset < len(params)
+        ] + [(keyword.arg, keyword.value) for keyword in node.keywords if keyword.arg in params]
+        for parameter, argument in bindings:
+            for sink in self._sink_identities(argument):
+                handed[parameter] = _with(handed.get(parameter), sink)
+            spelling = (
+                _call_name(argument) if isinstance(argument, (ast.Name, ast.Attribute)) else ""
+            )
+            source = spelling and (
+                self.source_aliases.get(spelling)
+                or _matches_any(self.facts.canonicals(spelling), UNTRUSTED_CALLS)
+            )
+            if source:
+                handed_sources.setdefault(parameter, source)
+            if spelling:
+                loaders = [
+                    candidate
+                    for candidate in self.facts.canonicals(spelling)
+                    if any(marker in candidate for marker in REMOTE_CODE_LOADERS)
+                ] + list(self._loader_aliases().get(spelling, []))
+                loaders += self.state.param_loader_aliases.get(
+                    (self.facts.path, self.qualname), {}
+                ).get(spelling, ())
+                for loader in loaders:
+                    handed_loaders[parameter] = _with(handed_loaders.get(parameter), loader)
         for position, argument in enumerate(node.args):
             reason = self.tainted(argument)
             if not reason:
@@ -3698,6 +3733,9 @@ class _TaintPass(ast.NodeVisitor):
         # True)`. Loaders are not in the sink table, so no alias was ever recorded and
         # the explicit opt-in read as a call to nothing in particular.
         names += self._loader_aliases().get(_call_name(node.func), [])
+        names += self.state.param_loader_aliases.get((self.facts.path, self.qualname), {}).get(
+            _call_name(node.func), ()
+        )
         name = next(
             (
                 candidate
@@ -3780,6 +3818,10 @@ class _State:
         # (file, qualname) -> parameter -> sinks a caller passed in for it, for
         # `invoke(subprocess.run, command)` reaching `def invoke(callback, value)`.
         self.param_sink_aliases: dict[tuple[Path, str], dict[str, tuple]] = {}
+        # (file, qualname) -> parameter -> the source a caller passed in for it.
+        self.param_source_aliases: dict[tuple[Path, str], dict[str, str]] = {}
+        # (file, qualname) -> parameter -> remote-code loaders a caller passed in for it.
+        self.param_loader_aliases: dict[tuple[Path, str], dict[str, tuple]] = {}
         self.tainted_globals: dict[str, str] = {}
         self.returns_tainted: dict[tuple[Path, str], str] = {}
         self.params: dict[tuple[Path, str], list[str]] = {}
@@ -3822,6 +3864,16 @@ class _State:
                     f"{path}::{qualname}::{name}={','.join(sinks)}"
                     for (path, qualname), names in self.param_sink_aliases.items()
                     for name, sinks in names.items()
+                ),
+                "param_sources": sorted(
+                    f"{path}::{qualname}::{name}={source}"
+                    for (path, qualname), names in self.param_source_aliases.items()
+                    for name, source in names.items()
+                ),
+                "param_loaders": sorted(
+                    f"{path}::{qualname}::{name}={','.join(loaders)}"
+                    for (path, qualname), names in self.param_loader_aliases.items()
+                    for name, loaders in names.items()
                 ),
                 "globals": sorted(
                     f"{key}={reason}" for key, reason in self.tainted_globals.items()
@@ -4286,6 +4338,8 @@ def _settle(facts: _FileFacts, qualname: str, nodes: list, state: "_State"):
         for name, sinks in state.param_sink_aliases.get((facts.path, qualname), {}).items():
             for sink in sinks:
                 visitor.sink_aliases[name] = _with(visitor.sink_aliases.get(name), sink)
+        for name, source in state.param_source_aliases.get((facts.path, qualname), {}).items():
+            visitor.source_aliases.setdefault(name, source)
         visitor.local_reasons.update(reasons)
         visitor.instance_types.update(instances)
         visitor.sink_aliases.update(aliases)
