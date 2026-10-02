@@ -222,8 +222,10 @@ class Fast_RoPE_Embedding(torch.autograd.Function):
         n_heads: int
         head_dim: int
         batch, seq_len, n_heads, head_dim = dY.shape
-        # The kernel writes in place: reshape of an expanded grad (e.g. from .sum()) stays a stride-0 view.
-        dY = dY.contiguous().view(batch * seq_len, n_heads * head_dim)
+        # The in-place kernel needs a private contiguous buffer, even for already-contiguous grads.
+        dY = dY.clone(memory_format = torch.contiguous_format).view(
+            batch * seq_len, n_heads * head_dim
+        )
         n_rows: int
         n_cols: int
         n_rows, n_cols = dY.shape
@@ -355,9 +357,9 @@ class Fast_RoPE_Embedding_QK(torch.autograd.Function):
 
         rope_ptr = ctx.rope_indices if ctx.has_indices else ctx.cos.new_empty(1, dtype = torch.int32)
 
-        # Inplace rotary embedding is generally fine.
-        dQ_out = dQ.clone() if not dQ.is_contiguous() else dQ
-        dK_out = dK.clone() if not dK.is_contiguous() else dK
+        # Contiguous gradients can still share storage with each other or another branch.
+        dQ_out = dQ.clone(memory_format = torch.contiguous_format)
+        dK_out = dK.clone(memory_format = torch.contiguous_format)
 
         Q_batch_stride, Q_head_stride, Q_seq_stride = (
             dQ_out.stride(0),
@@ -421,6 +423,7 @@ class Slow_RoPE_Embedding(torch.autograd.Function):
         # Q * cos + rotate_half.T(Q) * sin
         half = dY.shape[-1] // 2
         RH_dY = torch.cat((dY[..., half:], -dY[..., :half]), dim = -1)
+        dY = dY.clone()
         dY *= cos
         dY.addcmul_(RH_dY, sin)
         return dY, None, None, None
