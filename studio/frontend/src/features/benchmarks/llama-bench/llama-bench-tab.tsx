@@ -104,9 +104,11 @@ function testCount(c: LlamaBenchConfig): number {
 function LlamaBenchSetup({
   model,
   variant,
+  loaded,
 }: {
   model: string | null;
   variant: string | null;
+  loaded: string | null;
 }): ReactElement {
   const config = useLlamaBenchStore((s) => s.config);
   const setConfig = useLlamaBenchStore((s) => s.setConfig);
@@ -199,7 +201,9 @@ function LlamaBenchSetup({
         <Button
           size="lg"
           className={RUN_BUTTON}
-          disabled={busy || available === false || !model || count === 0}
+          disabled={
+            busy || available === false || !(model ?? loaded) || count === 0
+          }
           onClick={() => void start(model, variant)}
         >
           <HugeiconsIcon
@@ -207,7 +211,9 @@ function LlamaBenchSetup({
             strokeWidth={1.75}
             className="size-4"
           />
-          {model ? `Run ${count} test${count === 1 ? "" : "s"}` : "Pick a model"}
+          {(model ?? loaded)
+            ? `Run ${count} test${count === 1 ? "" : "s"}`
+            : "Pick a model"}
         </Button>
         <p className="text-center text-ui-11 leading-relaxed text-muted-foreground">
           Chat's model is unloaded during the run and loaded back after.
@@ -508,13 +514,16 @@ function SavedRuns(): ReactElement | null {
   );
 }
 
-/** The llama-bench tab. `model`/`variant` are the header pick, or null for chat's model. */
+/** The llama-bench tab. `model`/`variant` are the header pick, or null for chat's model;
+ * `loaded` is chat's model, so a null pick can still run. */
 export function LlamaBenchTab({
   model,
   variant,
+  loaded,
 }: {
   model: string | null;
   variant: string | null;
+  loaded: string | null;
 }): ReactElement {
   const job = useLlamaBenchStore((s) => s.job);
   const phase = useLlamaBenchStore((s) => s.phase);
@@ -552,7 +561,7 @@ export function LlamaBenchTab({
     <div className="@container/llamabench">
       <div className="grid grid-cols-1 items-start gap-6 @3xl/llamabench:grid-cols-[calc(264px*var(--ui-space-scale,1))_minmax(0,1fr)]">
         <div className="@3xl/llamabench:sticky @3xl/llamabench:top-6">
-          <LlamaBenchSetup model={model} variant={variant} />
+          <LlamaBenchSetup model={model} variant={variant} loaded={loaded} />
         </div>
         <div className="flex min-w-0 flex-col gap-4">
           {error && (

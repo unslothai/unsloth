@@ -6,6 +6,7 @@ GPU to itself, and the finished run is saved beside the config sweeps as kind "l
 The client never names a file: the GGUF is whatever chat has loaded, already resolved."""
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -21,7 +22,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from auth.authentication import authenticated_via_api_key, get_current_subject
 from hub.services.models import account_access
-from hub.utils.host_paths import host_paths_visible, redact_host_paths
+from hub.utils.host_paths import host_paths_visible, redact_host_paths, redact_paths_in_text
 from storage.benchmark_runs_db import upsert_run
 
 router = APIRouter()
@@ -67,7 +68,9 @@ class LlamaBenchRequest(BaseModel):
         return sorted(set(v))
 
     def test_count(self) -> int:
-        tests = sum(1 for n in self.prompt_tokens if n > 0) + sum(1 for n in self.gen_tokens if n > 0)
+        tests = sum(1 for n in self.prompt_tokens if n > 0) + sum(
+            1 for n in self.gen_tokens if n > 0
+        )
         return tests * len(self.depths)
 
 
@@ -109,11 +112,23 @@ class _Job:
 
 
 def _public(snapshot: Optional[dict[str, Any]], via_api_key: bool) -> Optional[dict[str, Any]]:
-    """A local GGUF's model is its absolute path; API-key callers get it redacted, as on /runs."""
-    if snapshot is None or host_paths_visible(via_api_key):
+    """A local GGUF's model is its absolute path; API-key callers get it redacted, as on /runs.
+    llama-bench's own errors name the file too, so the error and log lose their paths as well."""
+    if snapshot is None:
+        return None
+    # The run and the resident model are the owner's; /api/inference/status hides them from
+    # managed accounts the same way.
+    if account_access.managed_account():
+        return None
+    if host_paths_visible(via_api_key):
         return snapshot
     ids = redact_host_paths({"active_model": snapshot.get("model")}, via_api_key = via_api_key)
-    return {**snapshot, "model": ids["active_model"]}
+    public = {**snapshot, "model": ids["active_model"]}
+    if "error" in public:
+        public["error"] = redact_paths_in_text(public["error"]) or None
+    if "log" in public:
+        public["log"] = [redact_paths_in_text(line) for line in public["log"]]
+    return public
 
 
 _lock = threading.Lock()
@@ -130,7 +145,8 @@ def find_llama_bench() -> Optional[Path]:
     name = "llama-bench.exe" if sys.platform == "win32" else "llama-bench"
     for folder in (_llama_lib_dir(server), Path(server).parent):
         candidate = folder / name
-        if candidate.is_file():
+        # A non-executable copy would unload chat's model and then fail to start.
+        if candidate.is_file() and (sys.platform == "win32" or os.access(candidate, os.X_OK)):
             return candidate
     return None
 
@@ -178,7 +194,6 @@ def _save(job: _Job) -> None:
 
 def _run(job: _Job, binary: Path, gguf: str) -> None:
     from core.inference.llama_cpp import LlamaCppBackend
-
     try:
         env = LlamaCppBackend._llama_server_env_for_binary(str(binary))
         job.proc = subprocess.Popen(
@@ -260,8 +275,8 @@ def status(
     loaded_model = _public({"model": backend.model_identifier if loaded else None}, via_api_key)
     return {
         "available": find_llama_bench() is not None,
-        "model": loaded_model["model"],
-        "ggufVariant": backend.hf_variant if loaded else None,
+        "model": loaded_model["model"] if loaded_model else None,
+        "ggufVariant": backend.hf_variant if loaded and loaded_model else None,
         "job": _public(job, via_api_key),
     }
 
@@ -276,7 +291,9 @@ async def run(
     global _job
     _owner_only()
     if request.test_count() == 0:
-        raise HTTPException(status_code = 400, detail = "Nothing to measure: add a prompt or a generation size")
+        raise HTTPException(
+            status_code = 400, detail = "Nothing to measure: add a prompt or a generation size"
+        )
     binary = find_llama_bench()
     if binary is None:
         raise HTTPException(

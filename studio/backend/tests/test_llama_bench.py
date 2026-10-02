@@ -15,7 +15,7 @@ from routes import inference as inference_routes
 from routes import llama_bench
 
 # Prints what `llama-bench -o jsonl --progress` does: progress on stderr, one JSON row per test.
-FAKE = r'''
+FAKE = r"""
 import json, sys, time
 rows = [(512, 0, 1450.5), (0, 128, 61.25)]
 for i, (p, n, ts) in enumerate(rows, 1):
@@ -29,7 +29,7 @@ for i, (p, n, ts) in enumerate(rows, 1):
         "n_gpu_layers": 99, "flash_attn": 1, "avg_ts": ts, "stddev_ts": 1.5,
         "samples_ts": [ts - 1, ts + 1], "avg_ns": 1,
     }), flush=True)
-'''
+"""
 
 
 class _Backend:
@@ -143,3 +143,54 @@ def test_the_command_leaves_newer_and_default_flags_off():
     assert cmd[cmd.index("-d") + 1] == "0,4096"
     assert cmd[cmd.index("-fa") + 1] == "1"
     assert cmd[cmd.index("-ngl") + 1] == "20"
+
+
+def test_managed_accounts_do_not_see_the_owners_model_or_run(bench):
+    from utils.account_context import AccountContext, bind_account
+
+    client, _slow, _unloads = bench
+    assert client.post("/api/benchmarks/llama-bench/run", json = {}).status_code == 200
+    _wait(client)
+
+    async def managed():
+        bind_account(AccountContext("acct-bob", "bob", "user"))
+        return "bob"
+
+    client.app.dependency_overrides[get_current_subject] = managed
+    status = client.get("/api/benchmarks/llama-bench/status").json()
+    assert status["model"] is None and status["ggufVariant"] is None and status["job"] is None
+    assert client.get("/api/benchmarks/llama-bench/run").json() == {"job": None}
+
+
+def test_api_key_callers_get_paths_redacted_from_the_error_and_log(bench, tmp_path, monkeypatch):
+    client, _slow, _unloads = bench
+    secret = str(tmp_path / "private" / "owner-model.gguf")
+    failing = tmp_path / "failing.py"
+    failing.write_text(
+        f"import sys; print(\"main: error: failed to load model '{secret}'\", file=sys.stderr); sys.exit(1)\n",
+        encoding = "utf-8",
+    )
+    monkeypatch.setattr(
+        llama_bench, "_command", lambda binary, gguf, request: [sys.executable, str(failing)]
+    )
+    client.app.dependency_overrides[authenticated_via_api_key] = lambda: True
+    assert client.post("/api/benchmarks/llama-bench/run", json = {}).status_code == 200
+    job = _wait(client)
+    assert job["status"] == "error"
+    assert secret not in job["error"] and all(secret not in line for line in job["log"])
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX mode bits")
+def test_a_non_executable_llama_bench_is_not_offered(tmp_path, monkeypatch):
+    server = tmp_path / "llama-server"
+    server.write_text("", encoding = "utf-8")
+    bench_bin = tmp_path / "llama-bench"
+    bench_bin.write_text("", encoding = "utf-8")
+    bench_bin.chmod(0o644)
+    monkeypatch.setattr(
+        "core.inference.llama_cpp.LlamaCppBackend._find_llama_server_binary",
+        staticmethod(lambda: str(server)),
+    )
+    assert llama_bench.find_llama_bench() is None
+    bench_bin.chmod(0o755)
+    assert llama_bench.find_llama_bench() == bench_bin

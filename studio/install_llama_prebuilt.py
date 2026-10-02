@@ -5476,6 +5476,10 @@ def install_from_archives(
         raise PrebuiltFallback("unix executables were not installed correctly into build/bin")
     os.chmod(source_server, 0o755)
     os.chmod(source_quantize, 0o755)
+    # Optional (older bundles lack it), and the bundle does not ship it executable.
+    source_bench = build_bin / "llama-bench"
+    if source_bench.is_file():
+        os.chmod(source_bench, 0o755)
 
     root_server = install_dir / "llama-server"
     root_quantize = install_dir / "llama-quantize"

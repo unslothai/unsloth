@@ -568,6 +568,7 @@ export function BenchmarksPage(): ReactElement {
             <LlamaBenchTab
               model={config.tuneModel ?? null}
               variant={config.tuneVariant ?? null}
+              loaded={status?.active_model ?? null}
             />
           </TabsContent>
 
