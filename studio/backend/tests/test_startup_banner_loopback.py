@@ -43,33 +43,29 @@ def test_wildcard_aliases_show_reachable_urls(capsys, host, loopback_url):
     assert "http://192.168.1.24:8891" in out
 
 
-def test_wsl_windows_browser_hint_shows_localhost_for_wildcard_bind(capsys):
-    print_studio_access_banner(
-        port = 8888,
-        bind_host = "0.0.0.0",
-        display_host = "172.25.35.232",
-        network_host = "0.0.0.0",
-        wsl_windows_browser_hint = True,
-    )
-    out = capsys.readouterr().out
-    assert "From the Windows host (WSL2):" in out
-    assert "http://localhost:8888" in out
-    assert "networkingMode=mirrored" in out
-    assert "From another device on your network" not in out
-    assert "172.25.35.232" not in out
+WSL_HINT = "WSL2: open http://localhost:"
 
 
-def test_wsl_windows_browser_hint_yields_to_lan_share_line(capsys):
-    print_studio_access_banner(
-        port = 8888,
-        bind_host = "0.0.0.0",
-        display_host = "203.0.113.9",
-        network_host = "192.168.1.50",
-        wsl_windows_browser_hint = True,
-    )
+@pytest.mark.parametrize("mode,wsl", [("nat", True), (None, False)])
+def test_wsl_hint_replaces_the_private_address_note(capsys, monkeypatch, mode, wsl):
+    # Under WSL NAT the private address is WSL's own, so "reachable on this network" would be wrong.
+    import lan_access
+    import run
+    from utils.paths import file_manager
+
+    monkeypatch.setattr(lan_access, "_wsl_networking_mode", lambda: mode)
+    monkeypatch.setattr(file_manager, "_in_container", lambda: False)
+    monkeypatch.setattr(run, "_network_share_host_for_bind", lambda h: h)
+    monkeypatch.setattr(run, "_print_cloudflare_line", lambda *a, **k: None)
+    monkeypatch.setattr(run, "_localhost_ipv6_mismatch_url", lambda *a, **k: None)
+    run._emit_startup_output("0.0.0.0", 8888, "172.25.35.232")
     out = capsys.readouterr().out
-    assert "From another device on your network" in out
-    assert "From the Windows host (WSL2):" not in out
+    assert (WSL_HINT + "8888" in out) is wsl
+    assert ("networkingMode=mirrored" in out) is wsl
+    assert ("172.25.35.232 is a private/LAN address" in out) is not wsl
+    assert run._public_reachable is False
+    if wsl:
+        assert out.index("/api/health") < out.index(WSL_HINT)
 
 
 @pytest.mark.parametrize(
@@ -96,7 +92,7 @@ def test_startup_output_wsl_hint_gating(capsys, monkeypatch, host, mode, expecte
     monkeypatch.setattr(run, "_print_cloudflare_line", lambda *a, **k: None)
     monkeypatch.setattr(run, "_localhost_ipv6_mismatch_url", lambda *a, **k: None)
     run._emit_startup_output(host, 8888, host)
-    assert ("From the Windows host (WSL2):" in capsys.readouterr().out) is expected
+    assert (WSL_HINT in capsys.readouterr().out) is expected
 
 
 def test_startup_output_wsl_hint_skipped_in_container(capsys, monkeypatch):
@@ -111,7 +107,7 @@ def test_startup_output_wsl_hint_skipped_in_container(capsys, monkeypatch):
     monkeypatch.setattr(run, "_print_cloudflare_line", lambda *a, **k: None)
     monkeypatch.setattr(run, "_localhost_ipv6_mismatch_url", lambda *a, **k: None)
     run._emit_startup_output("0.0.0.0", 8000, "0.0.0.0")
-    assert "From the Windows host (WSL2):" not in capsys.readouterr().out
+    assert WSL_HINT not in capsys.readouterr().out
 
 
 def test_wsl_hint_check_skips_container_import_off_wsl(capsys, monkeypatch):
@@ -127,7 +123,7 @@ def test_wsl_hint_check_skips_container_import_off_wsl(capsys, monkeypatch):
     monkeypatch.setattr(run, "_print_cloudflare_line", lambda *a, **k: None)
     monkeypatch.setattr(run, "_localhost_ipv6_mismatch_url", lambda *a, **k: None)
     run._emit_startup_output("0.0.0.0", 8000, "0.0.0.0")
-    assert "From the Windows host (WSL2):" not in capsys.readouterr().out
+    assert WSL_HINT not in capsys.readouterr().out
 
 
 def test_banner_prints_on_strict_cp1252_stdout(monkeypatch):
