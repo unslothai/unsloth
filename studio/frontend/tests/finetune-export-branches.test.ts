@@ -86,29 +86,34 @@ function loadBuilder(chats: Record<string, StoredMessage[]>) {
 async function fineTuneMessages(
   chats: Record<string, StoredMessage[]>,
   liveBranch: string[] | null = null,
+  openedEarlier: string[] = [],
 ) {
   const build = loadBuilder(chats);
-  const unregister = liveBranch
-    ? liveThreadHead.registerLiveThreadView({
-        threadListItem: () => ({ getState: () => ({ remoteId: "open" }) }),
-        thread: () => ({
-          getState: () => ({ messages: liveBranch.map((id) => ({ id })) }),
+  // Chats opened earlier keep a runtime whose thread() reads the chat on screen.
+  const unregisters = liveBranch
+    ? [...openedEarlier, "open"].map((remoteId) =>
+        liveThreadHead.registerLiveThreadView({
+          threads: () => ({ getState: () => ({ mainThreadId: "open" }) }),
+          threadListItem: () => ({ getState: () => ({ id: remoteId, remoteId }) }),
+          thread: () => ({
+            getState: () => ({ messages: liveBranch.map((id) => ({ id })) }),
+          }),
         }),
-      })
-    : () => {};
+      )
+    : [];
   try {
     const { lines } = await build("openai");
     return [...lines].map((line) => JSON.parse(line).messages);
   } finally {
-    unregister();
+    for (const unregister of unregisters) unregister();
   }
 }
 
-const regenerated = () =>
+const regenerated = (prefix = "") =>
   storedMessages([
-    ["u1", null, "user", "Name one fruit."],
-    ["a1", "u1", "assistant", "Apples."],
-    ["a1-retry", "u1", "assistant", "Pears."],
+    [`${prefix}u1`, null, "user", "Name one fruit."],
+    [`${prefix}a1`, `${prefix}u1`, "assistant", "Apples."],
+    [`${prefix}a1-retry`, `${prefix}u1`, "assistant", "Pears."],
   ]);
 
 test("chat fine-tune data uses the reply picked in the branch picker", async () => {
@@ -137,4 +142,24 @@ test("chat fine-tune data uses the newest reply when no chat is open", async () 
       { role: "assistant", content: "Pears." },
     ],
   ]);
+});
+
+test("chat fine-tune data keeps chats opened earlier on their newest reply", async () => {
+  assert.deepEqual(
+    await fineTuneMessages(
+      { open: regenerated(), other: regenerated("other-") },
+      ["u1", "a1"],
+      ["other"],
+    ),
+    [
+      [
+        { role: "user", content: "Name one fruit." },
+        { role: "assistant", content: "Apples." },
+      ],
+      [
+        { role: "user", content: "Name one fruit." },
+        { role: "assistant", content: "Pears." },
+      ],
+    ],
+  );
 });
