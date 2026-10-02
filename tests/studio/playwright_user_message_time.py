@@ -121,6 +121,28 @@ async def check(url):
             await page.keyboard.press("Shift+Tab")
             assert await delete.evaluate("(e) => e === document.activeElement")
 
+            # Keep open menus idle; release hover on close without restoring focus.
+            await page.goto(url + "?popup")
+            await page.locator(".aui-assistant-message-root").focus()
+            await page.get_by_role("button", name = "More", exact = True).click()
+            await page.get_by_role("menuitem", name = "Menu action").wait_for()
+            await page.mouse.move(799, 640)
+            await paint(page)
+            await page.evaluate("""async () => {
+              const root = document.querySelector('.aui-assistant-message-root');
+              const original = root.querySelector.bind(root);
+              window.popupQueries = 0;
+              root.querySelector = (...args) => {
+                window.popupQueries++;
+                return original(...args);
+              };
+              for (let i = 0; i < 8; i++) await new Promise(requestAnimationFrame);
+            }""")
+            assert await page.evaluate("window.popupQueries") == 0
+            await page.keyboard.press("Escape")
+            await paint(page)
+            assert await page.get_by_role("button", name = "More", exact = True).count() == 0
+
             print("Keyboard passed; checking layout", flush = True)
             # Long dates, translations and font scaling must fit the viewport;
             # Copy/Edit/Fork/Delete and branch targets must retain their size.

@@ -8,6 +8,7 @@ stack loads."""
 
 import builtins
 import contextlib
+import json
 import dataclasses
 import functools
 import inspect
@@ -20,6 +21,7 @@ from pathlib import Path
 
 import pytest
 
+import core.inference.video as video_module
 from core.inference.diffusion_device import DiffusionDeviceTarget
 from core.inference.video import (
     VideoBackend,
@@ -143,9 +145,13 @@ def _assume_the_restricted_load_is_available(monkeypatch):
     tests are about the load/plan decisions; the capability is covered in
     test_diffusion_prequant.py."""
     import core.inference.diffusion_prequant as _pq
+
     monkeypatch.setattr(
         _pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True
     )
+    video_module._video_family_capabilities.cache_clear()
+    yield
+    video_module._video_family_capabilities.cache_clear()
 
 
 class _FakeDtype:
@@ -859,6 +865,15 @@ def test_validate_rejects_windows_shaped_missing_checkpoint(tmp_path):
     assert fam.name == "ltx-2"
 
 
+def _write_pipeline(root, class_name, cls, **extra):
+    index = extra.pop("index", "model_index.json")
+    (root / "transformer").mkdir(parents = True, exist_ok = True)
+    manifest = {"_class_name": class_name, "transformer": ["diffusers", cls], **extra}
+    (root / index).write_text(json.dumps(manifest))
+    (root / "transformer" / "config.json").write_text("{}")
+    (root / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
+
+
 def test_validate_rejects_local_pipeline_without_model_index(tmp_path):
     backend = VideoBackend()
     d = tmp_path / "ltx-local"
@@ -867,10 +882,47 @@ def test_validate_rejects_local_pipeline_without_model_index(tmp_path):
     # A local dir missing model_index.json is not a loadable pipeline; it must fail preflight BEFORE eviction.
     with pytest.raises(ValueError, match = "model_index.json"):
         backend.validate_load_request(str(d), family_override = "ltx-2")
-    # With a model_index.json it is a valid local pipeline pick and passes preflight.
     (d / "model_index.json").write_text("{}")
+    with pytest.raises(ValueError, match = "valid model_index.json"):
+        backend.validate_load_request(str(d), family_override = "ltx-2")
+    _write_pipeline(d, "LTX2Pipeline", "LTX2VideoTransformer3DModel")
     fam = backend.validate_load_request(str(d), family_override = "ltx-2")
     assert fam.name == "ltx-2"
+
+
+def test_validate_modular_family_requires_modular_manifest(tmp_path, fake_runtime, monkeypatch):
+    backend = VideoBackend()
+    root = tmp_path / "opaque-h3"
+    _write_pipeline(root, "LTX2Pipeline", "LTX2Transformer")
+    original_import = builtins.__import__
+
+    def _no_diffusers_import(name, *args, **kwargs):
+        if name == "diffusers" or name.startswith("diffusers."):
+            raise ModuleNotFoundError(f"No module named '{name}'", name = name)
+        return original_import(name, *args, **kwargs)
+
+    # The manifest is checked before diffusers is imported.
+    with monkeypatch.context() as no_diffusers:
+        no_diffusers.delitem(sys.modules, "diffusers")
+        no_diffusers.setattr(builtins, "__import__", _no_diffusers_import)
+        with pytest.raises(ValueError, match = "modular_model_index.json"):
+            backend.validate_load_request(str(root), family_override = "minimax-h3")
+
+    diffusers = sys.modules["diffusers"]
+    diffusers.ModularPipeline = _FakeModularPipeline
+    diffusers.MiniMaxH3Transformer3DModel = _FakeTransformer
+    (root / "modular_model_index.json").write_text("{}")
+    with pytest.raises(ValueError, match = "valid modular_model_index.json"):
+        backend.validate_load_request(str(root), family_override = "minimax-h3")
+    _write_pipeline(
+        root,
+        "ModularPipeline",
+        "MiniMaxH3Transformer3DModel",
+        index = "modular_model_index.json",
+        _blocks_class_name = "HunyuanVideo15PipelineBlocks",
+    )
+    fam = backend.validate_load_request(str(root), family_override = "minimax-h3")
+    assert fam.name == "minimax-h3"
 
 
 def test_validate_rejects_local_file_picked_as_pipeline(tmp_path):
@@ -894,8 +946,15 @@ def test_validate_rejects_local_base_repo_without_model_index(tmp_path):
             model_kind = "gguf",
             base_repo = str(bad_base),
         )
-    # A local base_repo that IS a real pipeline dir passes the gate.
-    (bad_base / "model_index.json").write_text("{}")
+    _write_pipeline(
+        bad_base,
+        "LTX2Pipeline",
+        "LTX2VideoTransformer3DModel",
+        scheduler = ["diffusers", "FlowMatchEulerDiscreteScheduler"],
+    )
+    (bad_base / "transformer" / "diffusion_pytorch_model.safetensors").unlink()
+    (bad_base / "scheduler").mkdir()
+    (bad_base / "scheduler" / "scheduler_config.json").write_text("{}")
     fam = backend.validate_load_request(
         "unsloth/LTX-2.3-GGUF",
         gguf_filename = "x.gguf",
@@ -903,6 +962,9 @@ def test_validate_rejects_local_base_repo_without_model_index(tmp_path):
         base_repo = str(bad_base),
     )
     assert fam.name == "ltx-2"
+
+    with pytest.raises(ValueError, match = "valid model_index.json"):
+        backend.validate_load_request(str(bad_base), model_kind = "pipeline", family_override = "ltx-2")
 
 
 def test_validate_rejects_gguf_repo_as_pipeline():
@@ -927,6 +989,14 @@ def test_detect_load_family_filename_fallback():
     fam = _detect_load_family("someorg/quants", "ltx-2-19b-Q4_K_M.gguf", "ltxv")
     assert fam is not None and fam.name == "ltx-2"
     assert _detect_load_family("someorg/quants", "ltx-2-19b-Q4_K_M.gguf", "bogus") is None
+
+
+def test_detect_load_family_uses_logical_id_for_an_opaque_pinned_snapshot():
+    fam = _detect_load_family("/cache/snapshots/deadbeef", None, None, "MiniMaxAI/MiniMax-H3")
+    assert fam is not None and fam.name == "minimax-h3"
+    # The logical id outranks a family token in the physical path.
+    fam = _detect_load_family("/cache/wan2.2/snapshots/deadbeef", None, None, "Lightricks/LTX-2")
+    assert fam is not None and fam.name == "ltx-2"
 
 
 def test_detect_load_family_cached_hub_arch_fallback(monkeypatch):
@@ -1652,6 +1722,7 @@ def test_hv15_guider_and_scheduler_progress(fake_runtime):
     backend = VideoBackend()
     status = backend.load_pipeline(
         "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
+        display_repo_id = "Org/pinned-hv15",
         model_kind = "pipeline",
     )
     assert status["family"] == "hunyuanvideo-1.5"
@@ -1669,6 +1740,23 @@ def test_hv15_guider_and_scheduler_progress(fake_runtime):
     assert pipe.scheduler.calls == 4
     assert pipe.scheduler.step.__func__ is _FakeHV15Scheduler.step
     assert result["num_frames"] == 9 and result["has_audio"] is False
+    assert result["repo_id"] == "Org/pinned-hv15"
+
+
+def test_pipeline_load_uses_logical_identity_for_a_commit_named_snapshot(fake_runtime, tmp_path):
+    snapshot = tmp_path / "deadbeef"
+    _write_pipeline(snapshot, "LTXPipeline", "LTXVideoTransformer3DModel")
+    status = VideoBackend().load_pipeline(
+        str(snapshot),
+        display_repo_id = "Lightricks/LTX-2-Distilled",
+        model_kind = "pipeline",
+    )
+
+    assert status["family"] == "ltx-2"
+    assert status["repo_id"] == str(snapshot)
+    assert status["display_repo_id"] == "Lightricks/LTX-2-Distilled"
+    assert status["defaults"]["steps"] == 8
+    assert status["defaults"]["guidance"] == 1.0
 
 
 def test_hv15_cancel_unwinds_scheduler_loop(fake_runtime):
@@ -2046,6 +2134,31 @@ def test_video_gguf_status_reports_selected_quant_instead_of_only_compute_dtype(
         is None
     )
     backend.unload()
+
+
+def test_video_status_family_capabilities_are_probed_once(monkeypatch):
+    calls = []
+    available = (
+        types.SimpleNamespace(name = "ltx-2", modular_workflow = False),
+        types.SimpleNamespace(name = "minimax-h3", modular_workflow = True),
+    )
+    monkeypatch.setattr(
+        video_module,
+        "pipeline_available_video_families",
+        lambda *, device: calls.append(device) or available,
+    )
+    resolves = []
+    monkeypatch.setattr(
+        video_module,
+        "resolve_diffusion_device_target",
+        lambda: resolves.append(1) or types.SimpleNamespace(device = "cpu"),
+    )
+    backend = VideoBackend()
+
+    assert backend.status()["supported_families"] == ["ltx-2", "minimax-h3"]
+    assert backend.status()["modular_families"] == ["minimax-h3"]
+    assert calls == ["cpu"]
+    assert resolves == [1]
 
 
 def test_video_status_response_carries_gguf_variant():
@@ -3536,6 +3649,21 @@ def test_direct_h3_native_load_uses_sd_cpp_path(monkeypatch):
     assert calls[0]["gguf_filename"] == "minimax_h3_fl2va-Q4_K_M.gguf"
 
 
+def test_direct_h3_native_load_hands_speed_mode_to_the_sd_cpp_path(monkeypatch):
+    backend = VideoBackend()
+    calls = []
+    monkeypatch.setattr("core.inference.video._ensure_mp4_encoder_available", lambda: None)
+    monkeypatch.setattr(backend, "_run_load_h3_native", lambda **kwargs: calls.append(kwargs))
+    backend.load_pipeline(
+        "leejet/MiniMax-H3-GGUF",
+        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
+        family_override = "minimax-h3",
+        model_kind = "gguf",
+        speed_mode = "max",
+    )
+    assert calls and calls[0]["speed_mode"] == "max"
+
+
 def test_h3_native_load_claims_the_companion_repos_before_the_preflight(monkeypatch, tmp_path):
     # asset_repos stops the delete-cached guard dropping the H3 companion repos mid-load, and the
     # preflight can spend minutes installing the sd-cli prebuilt. A delete admitted in that window
@@ -3904,6 +4032,7 @@ def _load_h3_native_offload(
     help_text,
     accelerator = True,
     memory_mode = None,
+    speed_mode = None,
 ):
     """Run the native H3 load against a stubbed sd-cli and hand back its committed offload flags.
 
@@ -3961,6 +4090,7 @@ def _load_h3_native_offload(
         repo_id = "leejet/MiniMax-H3-GGUF",
         gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
         memory_mode = memory_mode,
+        speed_mode = speed_mode,
     )
     assert backend._state is not None
     return backend._state, list(backend._state.pipe.offload_flags)
@@ -4002,6 +4132,97 @@ def test_h3_native_drops_stream_layers_without_cpu_offload(monkeypatch, tmp_path
     assert "--offload-to-cpu" not in offload
     assert offload[-2:] == ["--max-vram", "-1"]
     assert "--stream-layers" not in offload
+
+
+_SAGE_HELP = _GRAPH_CUT_HELP + "  --sage-attn           use native CUDA SageAttention\n"
+
+
+def test_h3_native_sage_attention_only_on_speed_max(monkeypatch, tmp_path):
+    """SageAttention is lossy (INT8 QK^T), so it rides only on an explicit speed_mode="max"."""
+    monkeypatch.delenv("UNSLOTH_H3_SAGE_ATTN", raising = False)
+    state, offload = _load_h3_native_offload(
+        monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = "max"
+    )
+    assert offload[-1] == "--sage-attn"
+    assert state.attention_backend == "sage"
+    assert state.speed_mode == "max" and state.resolved["speed_mode"]["value"] == "max"
+    for mode in (None, "default", "off"):
+        state, offload = _load_h3_native_offload(
+            monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = mode
+        )
+        assert "--sage-attn" not in offload, mode
+        assert state.attention_backend == "flash"
+        assert state.speed_mode == "off"
+
+
+def test_h3_native_sage_attention_needs_the_flag_and_honours_the_veto(monkeypatch, tmp_path):
+    """An older prebuilt (u13b9d92) has no --sage-attn, and sd-cli exits on an unknown option."""
+    monkeypatch.delenv("UNSLOTH_H3_SAGE_ATTN", raising = False)
+    _state, offload = _load_h3_native_offload(
+        monkeypatch, tmp_path, help_text = _GRAPH_CUT_HELP, speed_mode = "max"
+    )
+    assert "--sage-attn" not in offload
+    monkeypatch.setenv("UNSLOTH_H3_SAGE_ATTN", "0")
+    _state, offload = _load_h3_native_offload(
+        monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = "max"
+    )
+    assert "--sage-attn" not in offload
+
+
+def test_h3_native_speed_max_takes_the_bf16_cublas_path(monkeypatch, tmp_path):
+    """speed_mode=max also hands sd-cli GGML_CUDA_QUANT_CUBLAS_MIN_BATCH; every other mode launches with no extra env."""
+    monkeypatch.delenv("UNSLOTH_H3_SAGE_ATTN", raising = False)
+    monkeypatch.delenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", raising = False)
+    state, _offload = _load_h3_native_offload(
+        monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = "max"
+    )
+    assert dict(state.pipe.env) == {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": "1024"}
+    for mode in (None, "default", "off"):
+        state, _offload = _load_h3_native_offload(
+            monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = mode
+        )
+        assert state.pipe.env == (), mode
+    # The veto that drops sage drops this too, and a value the user exported (0 included) is never overridden.
+    monkeypatch.setenv("UNSLOTH_H3_SAGE_ATTN", "0")
+    state, _offload = _load_h3_native_offload(
+        monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = "max"
+    )
+    assert state.pipe.env == ()
+    monkeypatch.delenv("UNSLOTH_H3_SAGE_ATTN", raising = False)
+    monkeypatch.setenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", "0")
+    state, _offload = _load_h3_native_offload(
+        monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = "max"
+    )
+    assert state.pipe.env == ()
+
+
+def test_h3_native_generate_hands_the_runtime_env_to_sd_cli(monkeypatch):
+    import dataclasses
+
+    calls: list = []
+    backend = _h3_native_backend(monkeypatch, calls)
+    backend._state = dataclasses.replace(
+        backend._state,
+        pipe = dataclasses.replace(
+            backend._state.pipe, env = (("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", "1024"),)
+        ),
+    )
+    backend.generate(prompt = "a fox", width = 960, height = 544)
+    assert calls[0]["env"] == {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": "1024"}
+    calls.clear()
+    backend._state = dataclasses.replace(
+        backend._state, pipe = dataclasses.replace(backend._state.pipe, env = ())
+    )
+    backend.generate(prompt = "a fox", width = 960, height = 544)
+    assert calls[0]["env"] is None
+
+
+def test_h3_native_sage_attention_never_on_the_cpu_build(monkeypatch, tmp_path):
+    monkeypatch.delenv("UNSLOTH_H3_SAGE_ATTN", raising = False)
+    _state, offload = _load_h3_native_offload(
+        monkeypatch, tmp_path, help_text = _SAGE_HELP, accelerator = False, speed_mode = "max"
+    )
+    assert "--sage-attn" not in offload
 
 
 def test_h3_native_skips_the_graph_cut_flags_on_an_older_build(monkeypatch, tmp_path):
@@ -6029,10 +6250,12 @@ def test_h3_native_generate_records_the_build_it_ran_on(monkeypatch):
     pytest.importorskip("PIL.Image")
     calls: list = []
     backend = _h3_native_backend(monkeypatch, calls)
+    object.__setattr__(backend._state, "display_repo_id", "Org/pinned-h3")
 
     result = backend.generate(prompt = "a fox runs through snow", width = 960, height = 544)
 
     state = backend._state
+    assert result["repo_id"] == "Org/pinned-h3"
     assert result["model_kind"] == state.kind == "gguf"
     assert result["gguf_filename"] == state.gguf_filename
     assert result["memory_mode"] == state.memory_mode
@@ -6182,6 +6405,7 @@ def test_h3_modular_load_restricts_the_components_not_the_blocks(monkeypatch, tm
         torch = torch,
         fam = fam,
         repo_id = "MiniMaxAI/MiniMax-H3",
+        display_repo_id = "MiniMaxAI/MiniMax-H3",
         base = fam.base_repo,
         kind = "pipeline",
         dtype = torch.bfloat16,
@@ -6195,6 +6419,7 @@ def test_h3_modular_load_restricts_the_components_not_the_blocks(monkeypatch, tm
     assert "workflow" not in seen["from_pretrained"]
     assert seen["load_components"]["workflow"] == "fl2va"
     assert status["supports_keyframes"] is True
+    assert status["display_repo_id"] == "MiniMaxAI/MiniMax-H3"
     assert status["defaults"]["canvas_short_edge"] == 768
 
 
@@ -8143,8 +8368,8 @@ def test_pipeline_plan_budgets_a_pre_cast_text_encoder_at_its_real_size(fake_run
     assert calls[0]["model_dense_mib"] == int(
         (transformer_gb + text_encoder_gb * scale + vae_gb) * _MIB_PER_GB
     )
-    # The pipeline kind budgets one total, so companion_dense_mib stays None as before.
-    assert calls[0]["companion_dense_mib"] is None
+    assert calls[0]["companion_dense_mib"] == int((text_encoder_gb * scale + vae_gb) * _MIB_PER_GB)
+    assert calls[0]["text_encoder_dense_mib"] == int(text_encoder_gb * scale * _MIB_PER_GB)
 
 
 def test_plan_returns_to_bf16_when_the_pre_cast_encoder_does_not_inject(fake_runtime, monkeypatch):
@@ -8581,8 +8806,11 @@ def test_the_fp32_promotion_does_not_double_an_already_fp32_wan_vae(fake_runtime
     # ALREADY (the family comment says so) and assembly pins that VAE to fp32 whatever the
     # promotion does, so doubling it counts 2.8 GB twice on TI2V-5B. Against a hard refusal that
     # is a load rejected over bytes it never allocates.
+    from core.inference.diffusion_fp16_guard import FP16_GUARD_ENV
     from core.inference.video_families import detect_video_family
 
+    # TI2V-5B keeps fp16 by default (fp16_guard "native"); the kill switch restores the promotion under test.
+    monkeypatch.setenv(FP16_GUARD_ENV, "0")
     _fp32_promoted_cuda_target(monkeypatch)
     transformer_gb, te_gb, vae_gb = detect_video_family(
         "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
@@ -8594,6 +8822,20 @@ def test_the_fp32_promotion_does_not_double_an_already_fp32_wan_vae(fake_runtime
     assert calls[0]["model_dense_mib"] == int(
         ((transformer_gb + te_gb) * 2.0 + vae_gb) * _MIB_PER_GB
     )
+
+
+def test_fp16_native_wan_is_planned_at_fp16_size(fake_runtime, monkeypatch):
+    # On an fp16-only card TI2V-5B now stays fp16, so the plan prices the bf16-sized table as is (no doubling).
+    from core.inference.diffusion_fp16_guard import FP16_GUARD_ENV
+    from core.inference.video_families import detect_video_family
+
+    monkeypatch.delenv(FP16_GUARD_ENV, raising = False)
+    _fp32_promoted_cuda_target(monkeypatch)
+    components = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers").bf16_components_gb
+
+    calls = _capture_plan(monkeypatch)
+    VideoBackend().load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    assert calls[0]["model_dense_mib"] == int(sum(components) * _MIB_PER_GB)
 
 
 def test_the_fp32_promotion_still_doubles_a_bf16_vae(fake_runtime, monkeypatch):
@@ -11185,10 +11427,21 @@ def test_a_resident_video_int8_on_nvidia_keeps_torchao(fake_runtime, monkeypatch
     backend.unload()
 
 
-def test_video_auto_under_offload_on_nvidia_is_still_skipped(fake_runtime, monkeypatch):
+def test_video_auto_under_offload_on_nvidia_takes_the_torchao_free_int8(fake_runtime, monkeypatch):
     calls = _stub_nvidia_video_offload(monkeypatch)
     backend = VideoBackend()
     status = backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    assert [(call["mode"], call["offload"]) for call in calls] == [("int8", True)]
+    assert status["transformer_quant"] == "int8"
+    backend.unload()
+
+
+def test_video_auto_under_offload_on_nvidia_keeps_bf16_under_speed_off(fake_runtime, monkeypatch):
+    calls = _stub_nvidia_video_offload(monkeypatch)
+    backend = VideoBackend()
+    status = backend.load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = "off"
+    )
     assert calls == []
     assert status["transformer_quant"] is None
     backend.unload()
@@ -12173,3 +12426,75 @@ def test_ltx2_load_turns_cudnn_benchmark_back_off(fake_runtime, tmp_path, monkey
     backend = _load_ltx23_from_dir(tmp_path)
     assert calls == [1]
     assert "cudnn_benchmark" not in backend.status()["speed_optims"]
+
+
+@pytest.mark.parametrize(
+    "plan_fields, filename, direct, te_direct",
+    [
+        ({"offload_policy": "none"}, "ltx-2.3-22b-distilled.safetensors", True, True),
+        (
+            {"offload_policy": "group", "stream_transformer": False, "stream_text_encoders": True},
+            "ltx-2.3-22b-distilled.safetensors",
+            True,
+            False,
+        ),
+        (
+            {"offload_policy": "group", "stream_transformer": True},
+            "ltx-2.3-22b-distilled.safetensors",
+            False,
+            False,
+        ),
+        ({"offload_policy": "model"}, "ltx-2.3-22b-distilled.safetensors", False, False),
+        ({"offload_policy": "none"}, "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf", False, False),
+    ],
+    ids = ["resident", "streamed-encoders", "streamed-dit", "model-offload", "gguf"],
+)
+def test_ltx23_reads_the_checkpoint_onto_the_card_only_for_a_resident_dit(
+    fake_runtime, tmp_path, monkeypatch, plan_fields, filename, direct, te_direct
+):
+    # The direct read puts the weights where a resident plan places them anyway; any plan that moves the DiT (or a GGUF,
+    # which keeps its block-quantised host tensors) keeps the host load.
+    import dataclasses
+
+    from core.inference import video as video_mod, video_ltx2
+
+    monkeypatch.setattr(video_ltx2, "is_ltx23_checkpoint", lambda path: True)
+    _ltx23_official_file(monkeypatch)
+    sentinel = object()
+    asked: list = []
+
+    def _device(device):
+        asked.append(device)
+        return sentinel
+
+    monkeypatch.setattr(video_ltx2, "direct_load_device", _device)
+    real_plan = video_mod.plan_diffusion_memory
+    monkeypatch.setattr(
+        video_mod,
+        "plan_diffusion_memory",
+        lambda **kwargs: dataclasses.replace(real_plan(**kwargs), **plan_fields),
+    )
+    seen: dict = {}
+
+    def _assemble(checkpoint_path, **kwargs):
+        seen.update(kwargs)
+        return _FakePipeline.from_pretrained("Lightricks/LTX-2")
+
+    monkeypatch.setattr(video_ltx2, "load_ltx23_pipeline", _assemble)
+    monkeypatch.setattr(video_mod, "_return_direct_loaded_modules", lambda *a, **k: None)
+    # The fake pipeline has no offload hooks; placement is not what this test is about.
+    monkeypatch.setattr(
+        video_mod, "apply_memory_plan", lambda pipe, plan, **k: (plan.offload_policy, True)
+    )
+    (tmp_path / filename).write_bytes(b"w")
+    backend = VideoBackend()
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = filename,
+        base_repo = "Lightricks/LTX-2",
+        family_override = "ltx-2",
+    )
+    assert seen["device"] is (sentinel if direct else None)
+    assert seen["text_encoder_device"] is (sentinel if te_direct else None)
+    assert bool(asked) is direct
+    backend.unload()

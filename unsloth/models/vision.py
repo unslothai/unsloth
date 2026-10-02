@@ -66,6 +66,32 @@ def _multimodal_auto_classes():
     return classes
 
 
+def _is_text_seq2seq_config(config):
+    """T5 / BART / Marian: Seq2SeqLM-mapped, no multimodal class or sub-config (Voxtral, T5Gemma2 are Seq2SeqLM too)."""
+    import transformers
+
+    if config is None or any(
+        hasattr(config, key)
+        for key in ("vision_config", "audio_config", "text_config", "encoder_config")
+    ):
+        return False
+
+    def mapped(auto_class):
+        try:
+            return auto_class is not None and type(config) in auto_class._model_mapping
+        except Exception:
+            return False
+
+    if not mapped(getattr(transformers, "AutoModelForSeq2SeqLM", None)):
+        return False
+    return not any(mapped(auto_class) for auto_class in _multimodal_auto_classes())
+
+
+def _generation_padding_side(config):
+    # BART / Marian encoder positions are absolute, so left padding would shift every real token.
+    return "right" if _is_text_seq2seq_config(config) else "left"
+
+
 from ..kernels import (
     post_patch_loss_function,
 )
@@ -91,6 +117,7 @@ from ._utils import (
     _cast_text_only_prequantized_params,
     _select_moe_detection_targets,
     set_task_config_attr,
+    _unsloth_freeze_norm_running_stats,
 )
 from ._utils import *
 from ._remote_code_buffers import restore_remote_code_non_persistent_buffers
@@ -144,7 +171,7 @@ from unsloth_zoo.gradient_checkpointing import (
 import torch.utils.checkpoint as torch_checkpoint
 import transformers.modeling_utils as hf_modeling_utils
 from peft import LoraConfig, TaskType, get_peft_model as _get_peft_model
-from peft import PeftModelForCausalLM
+from peft import PeftModelForCausalLM, PeftModelForSeq2SeqLM
 from transformers import set_seed as transformers_set_seed
 from unsloth_zoo.peft_utils import (
     get_peft_regex,
@@ -431,6 +458,28 @@ def _align_root_hook_with_input_embeddings(model):
         return None
     hook.execution_device = target
     return target
+
+
+def _move_gemma4_token_types_to_input_embeddings(model):
+    inner = getattr(model, "model", None)
+    device_map = getattr(model, "hf_device_map", None)
+    if (
+        getattr(getattr(inner, "config", None), "model_type", None) != "gemma4"
+        or not device_map
+        or len(set(device_map.values())) < 2
+    ):
+        return
+    target = inner.get_input_embeddings().weight.device
+    if target.type in ("cpu", "meta"):
+        return
+
+    # transformers 5.5-5.8 build Gemma 4's vision mask groups on mm_token_type_ids' device (the root hook's) but index them from the embedding's; 5.9 moves them itself.
+    def to_input_embeddings(module, args, kwargs):
+        if kwargs.get("mm_token_type_ids") is not None:
+            kwargs["mm_token_type_ids"] = kwargs["mm_token_type_ids"].to(target)
+        return args, kwargs
+
+    inner.register_forward_pre_hook(to_input_embeddings, with_kwargs = True)
 
 
 def _hook_no_placement_ancestors(model):
@@ -1270,7 +1319,14 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     if model_eos_token_id is not None and hasattr(model_eos_token_id, "__iter__"):
         model_eos_token_id = model_eos_token_id[0]
 
-    kwargs["pad_token_id"] = kwargs.pop("pad_token_id", model_eos_token_id)
+    # Encoder-decoders keep their own pad (T5: pad 0, EOS 1), used to infer the encoder mask and pad finished rows.
+    default_pad_token_id = model_eos_token_id
+    if (
+        _is_text_seq2seq_config(self.config)
+        and getattr(self.config, "pad_token_id", None) is not None
+    ):
+        default_pad_token_id = self.config.pad_token_id
+    kwargs["pad_token_id"] = kwargs.pop("pad_token_id", default_pad_token_id)
 
     try:
         kwargs["pixel_values"] = kwargs["pixel_values"].to(dtype)
@@ -1636,6 +1692,236 @@ def _construct_vlm_processor_fallback(
     except Exception as _e:
         _fb_err = _e
     return None, _fb_err
+
+
+def _mxfp4_lora_keeps_experts_packed(
+    quant_method,
+    full_finetuning = False,
+    device_map = None,
+    model_name = None,
+    max_memory = None,
+    revision = None,
+    variant = None,
+    cache_dir = None,
+    subfolder = None,
+    local_files_only = False,
+    token = None,
+    use_safetensors = None,
+    num_layers = None,
+):
+    """Use unsloth_zoo's packed MXFP4 experts for LoRA: native matmul_ogs has no backward.
+
+    Off for full finetuning, UNSLOTH_MXFP4_KEEP_PACKED=0, or CPU / disk offload (zoo would
+    dequantize every expert to 16 bit); "auto" maps offload if the checkpoint exceeds free memory."""
+    # In-memory configs carry the QuantizationMethod enum; str() is "QuantizationMethod.MXFP4".
+    quant_method = getattr(quant_method, "value", quant_method)
+    if full_finetuning or str(quant_method).lower() != "mxfp4":
+        return False
+    if device_map is not None and not isinstance(device_map, (dict, str)):
+        device_map = str(device_map)
+    if device_map is None:
+        try:
+            import torch
+            device_map = str(getattr(torch, "get_default_device", lambda: "cpu")())
+        except Exception:
+            device_map = "cpu"
+    # unsloth_zoo only sees offload after this config is built, so check explicit maps here. Its guard
+    # unpacks every expert on ANY cpu / disk entry, so offloading even lm_head rules packed out.
+    if isinstance(device_map, dict) and any(
+        str(value).split(":")[0] in ("cpu", "disk") for value in device_map.values()
+    ):
+        return False
+    if isinstance(device_map, str) and device_map.split(":")[0] in ("cpu", "disk"):
+        return False
+    try:
+        import sys
+        from unsloth_zoo.temporary_patches.mxfp4 import keep_mxfp4_experts_packed
+        zoo_mxfp4 = sys.modules["unsloth_zoo.temporary_patches.mxfp4"]
+    except Exception:
+        return False
+    # zoo's offload flag belongs to the previous load (it clears it only once this load validates);
+    # this load's offload is judged above and below.
+    offloads = getattr(zoo_mxfp4, "_LOAD_OFFLOADS", None)
+    if isinstance(offloads, list) and offloads:
+        offloads[0] = False
+    try:
+        if not keep_mxfp4_experts_packed():
+            return False
+    except Exception:
+        return False
+    if isinstance(device_map, str) and device_map in (
+        "auto",
+        "balanced",
+        "balanced_low_0",
+        "sequential",
+    ):
+        # infer_auto_device_map spills to CPU / disk when full; unknown sizes stay packed.
+        try:
+            import json
+            import os
+            import torch
+
+            prefix = subfolder.strip("/") + "/" if subfolder else ""
+
+            def with_variant(name):
+                # Mirrors transformers' _add_variant.
+                if not variant:
+                    return name
+                parts = name.split(".")
+                return ".".join(parts[:-1] + [variant, parts[-1]])
+
+            def weight_bytes(
+                files,
+                read_index,
+                size_of = None,
+            ):
+                # Only files from_pretrained reads, in its order (not stale shards / original/).
+                files = {name.replace(os.sep, "/"): size or 0 for name, size in files}
+                formats = [
+                    ("model.safetensors", "model.safetensors.index.json"),
+                    ("pytorch_model.bin", "pytorch_model.bin.index.json"),
+                ]
+                for single, index in formats[1:] if use_safetensors is False else formats:
+                    single, index = prefix + with_variant(single), prefix + with_variant(index)
+                    if single in files:
+                        return files[single]
+                    if index in files:
+                        shards = set(json.loads(read_index(index))["weight_map"].values())
+                        # Shards may sit in nested folders a listing does not reach.
+                        return sum(
+                            files.get(prefix + shard) or (size_of(prefix + shard) if size_of else 0)
+                            for shard in shards
+                        )
+                return 0
+
+            def folder_files(folder):
+                root = os.path.join(folder, prefix) if prefix else folder
+                if not os.path.isdir(root):
+                    return []
+                return [
+                    (prefix + name, os.path.getsize(os.path.join(root, name)))
+                    for name in os.listdir(root)
+                    if os.path.isfile(os.path.join(root, name))
+                ]
+
+            def folder_size(folder):
+                def size(name):
+                    path = os.path.join(folder, name)
+                    return os.path.getsize(path) if os.path.isfile(path) else 0
+
+                return size
+
+            def folder_index(folder):
+                def read(name):
+                    with open(os.path.join(folder, name), encoding = "utf-8") as file:
+                        return file.read()
+
+                return read
+
+            if os.path.isdir(str(model_name)):
+                folder = str(model_name)
+                checkpoint_bytes = weight_bytes(
+                    folder_files(folder), folder_index(folder), folder_size(folder)
+                )
+            else:
+                try:
+                    from huggingface_hub import HfApi, hf_hub_download
+
+                    if local_files_only:
+                        raise OSError("local_files_only: no Hub lookup")
+                    info = HfApi().model_info(
+                        str(model_name), revision = revision, files_metadata = True, token = token
+                    )
+
+                    def hub_index(name):
+                        path = hf_hub_download(
+                            str(model_name),
+                            name,
+                            revision = revision,
+                            cache_dir = cache_dir,
+                            token = token,
+                        )
+                        with open(path, encoding = "utf-8") as file:
+                            return file.read()
+
+                    checkpoint_bytes = weight_bytes(
+                        [(sibling.rfilename, sibling.size) for sibling in (info.siblings or ())],
+                        hub_index,
+                    )
+                except Exception:
+                    # Offline: size the cache; not snapshot_download (fails on unfetched metal/, original/).
+                    from huggingface_hub import try_to_load_from_cache
+
+                    folder = None
+                    for name in (
+                        "model.safetensors",
+                        "model.safetensors.index.json",
+                        "pytorch_model.bin",
+                        "pytorch_model.bin.index.json",
+                    ):
+                        name = prefix + with_variant(name)
+                        path = try_to_load_from_cache(
+                            str(model_name), name, cache_dir = cache_dir, revision = revision
+                        )
+                        if isinstance(path, str):
+                            folder = path[: -len(name)]
+                            break
+                    if folder is None:
+                        raise OSError("checkpoint not in the local cache")
+                    checkpoint_bytes = weight_bytes(
+                        folder_files(folder), folder_index(folder), folder_size(folder)
+                    )
+            backend = torch.cuda
+            if not torch.cuda.is_available() and getattr(torch, "xpu", None) is not None:
+                if torch.xpu.is_available():
+                    backend = torch.xpu
+            probed = backend.is_available() and backend.device_count() > 0
+            if max_memory:
+                devices = (
+                    sorted(
+                        {
+                            int(key)
+                            for key in max_memory
+                            if str(key).isdigit() and int(key) < backend.device_count()
+                        }
+                    )
+                    if probed
+                    else []
+                )
+            else:
+                devices = list(range(backend.device_count())) if probed else []
+            frees = []
+            for index in devices:
+                try:
+                    free = backend.mem_get_info(index)[0]
+                except Exception:
+                    continue
+                budget = max_memory.get(index, max_memory.get(str(index))) if max_memory else None
+                if isinstance(budget, str):
+                    from accelerate.utils import convert_file_size_to_int
+                    budget = convert_file_size_to_int(budget)
+                if isinstance(budget, int):
+                    free = min(free, budget)
+                frees.append(free if max_memory else 0.9 * free)
+            # Measured free memory keeps an activation margin; an explicit max_memory is taken as given.
+            if device_map != "sequential" and len(frees) > 1 and checkpoint_bytes:
+                # get_balanced_memory caps every card but the last at size / n (its buffer left out).
+                low_zero = device_map == "balanced_low_0"
+                per_card = checkpoint_bytes / (len(frees) - 1 if low_zero else len(frees))
+                frees = [
+                    free if low_zero and i == 0 else min(free, per_card)
+                    for i, free in enumerate(frees[:-1])
+                ] + frees[-1:]
+            if len(frees) > 1 and checkpoint_bytes and num_layers:
+                # Decoder layers are placed whole, so each card but the last can strand up to one layer.
+                layer = checkpoint_bytes / num_layers
+                frees = [max(0, free - layer) for free in frees[:-1]] + frees[-1:]
+            limit = sum(frees)
+            if checkpoint_bytes and probed and checkpoint_bytes > limit:
+                return False
+        except Exception:
+            pass
+    return True
 
 
 def _get_total_transformer_layers(model):
@@ -2146,6 +2432,9 @@ def _offload_activation_pack(x):
 def _offload_activation_unpack(packed):
     device, x = packed
     return x if device is None else x.to(device, non_blocking = True)
+
+
+_NON_REENTRANT_GC_MODEL_TYPES = ("deepseek_v41",)
 
 
 class FastBaseModel:
@@ -2778,7 +3067,25 @@ class FastBaseModel:
                     pass
                 else:
                     # Cannot dequantize, since gpt-oss-20b MXFP4 would become gpt-oss-20b-BF16.
-                    if load_in_16bit and "dequantize" in inspect.signature(quantizer).parameters:
+                    # Except LoRA with zoo's packed experts: stays MXFP4 and has a backward.
+                    if (
+                        load_in_16bit
+                        or _mxfp4_lora_keeps_experts_packed(
+                            quant_method,
+                            full_finetuning,
+                            device_map,
+                            model_name,
+                            kwargs.get("max_memory", None),
+                            _revision,
+                            kwargs.get("variant", None),
+                            kwargs.get("cache_dir", None),
+                            kwargs.get("subfolder", None),
+                            kwargs.get("local_files_only", False),
+                            token,
+                            kwargs.get("use_safetensors", None),
+                            getattr(auto_config, "num_hidden_layers", None),
+                        )
+                    ) and "dequantize" in inspect.signature(quantizer).parameters:
                         quantizer_kwargs["dequantize"] = True
                     try:
                         quantization_config = quantizer.from_dict(
@@ -2891,6 +3198,7 @@ class FastBaseModel:
                         f"Unsloth: inputs now go straight to {_aligned_root_device}, where the input "
                         "embedding lives, instead of through the first device in the map."
                     )
+                _move_gemma4_token_types_to_input_embeddings(model)
                 # Re-apply block-fp8 weight_scale_inv tensors transformers dropped on load (#6200).
                 _restore_dropped_fp8_scales(
                     model,
@@ -3325,9 +3633,10 @@ class FastBaseModel:
         apply_accepts_loss_kwargs_fix(model)
         patch_gradient_accumulation_fix(Trainer)
 
-        tokenizer.padding_side = "left"
+        _padding_side = _generation_padding_side(getattr(model, "config", None))
+        tokenizer.padding_side = _padding_side
         if hasattr(tokenizer, "tokenizer"):
-            tokenizer.tokenizer.padding_side = "left"
+            tokenizer.tokenizer.padding_side = _padding_side
         # Audio feature extractors must stay right padded: left (a text setting, forwarded by from_pretrained) shifts Whisper mels and desyncs Gemma 4 audio token counts, crashing on transformers < 5.10.
         feature_extractor = getattr(tokenizer, "feature_extractor", None)
         if (
@@ -3442,8 +3751,34 @@ class FastBaseModel:
         if r <= 0:
             raise TypeError(f"Unsloth: Rank of {str(r)} must be larger than 0.")
 
-        if isinstance(model, PeftModelForCausalLM):
+        if isinstance(model, (PeftModelForCausalLM, PeftModelForSeq2SeqLM)):
             raise RuntimeError("Unsloth: You already added LoRA adapters to your model!")
+        if _is_text_seq2seq_config(getattr(model, "config", None)):
+            if task_type == TaskType.CAUSAL_LM:
+                task_type = TaskType.SEQ_2_SEQ_LM
+            # No vision tower: FastLanguageModel's finetune_vision_layers=False must not filter the encoder out.
+            finetune_vision_layers = True
+            # get_peft_regex misses T5's q/k/v/o/wi/wo and BART's fc1/fc2, so list the Linear leaves (minus the LM head) ourselves.
+            if (
+                target_modules is None or target_modules == "all-linear"
+            ) and finetune_language_layers:
+                _output = model.get_output_embeddings()
+                _linears = [
+                    name
+                    for name, module in model.named_modules()
+                    if isinstance(module, torch.nn.Linear) and module is not _output
+                ]
+                if finetune_attention_modules and finetune_mlp_modules:
+                    target_modules = sorted({name.rsplit(".", 1)[-1] for name in _linears})
+                elif finetune_attention_modules or finetune_mlp_modules:
+                    target_modules = [
+                        name
+                        for name in _linears
+                        if bool(re.search(r"attention|attn", name.lower()))
+                        == finetune_attention_modules
+                    ]
+                    # Full paths carry the family choice; get_peft_regex would reject them.
+                    finetune_attention_modules = finetune_mlp_modules = True
 
         # Remember whether the CALLER explicitly opted into audio: "all-linear" turns the flag on implicitly below, but an old unsloth_zoo without audio must not fail a plain all-linear run.
         _audio_explicitly_requested = bool(finetune_audio_layers)
@@ -3807,6 +4142,11 @@ class FastBaseModel:
 
         # VLMs can hit DDP "marked ready twice" with re-entrant checkpointing (#3713), so under DDP skip the offloaded/re-entrant checkpoint patch and default native checkpoint to non-reentrant, offloading via saved-tensor hooks instead.
         use_reentrant = not is_distributed()
+        # DeepSeek-V4.1 layers consume tensors from earlier layers; reentrant GC's no_grad pass drops those grads.
+        _gc_model_type = (getattr(getattr(model, "config", None), "model_type", "") or "").lower()
+        _force_non_reentrant = _gc_model_type.startswith(_NON_REENTRANT_GC_MODEL_TYPES)
+        if _force_non_reentrant:
+            use_reentrant = False
         if not use_reentrant:
             unpatch_unsloth_gradient_checkpointing()
             unpatch_unsloth_smart_gradient_checkpointing()
@@ -3829,6 +4169,16 @@ class FastBaseModel:
             _nonre_checkpoint._unsloth_original = _orig_checkpoint
             torch_checkpoint.checkpoint = _nonre_checkpoint
             hf_modeling_utils.checkpoint = _nonre_checkpoint
+        else:
+            # Drop the wrapper an earlier deepseek_v41 load in this process installed.
+            for _mod, _name in (
+                (torch_checkpoint, "checkpoint"),
+                (torch_checkpoint, "_old_checkpoint"),
+                (hf_modeling_utils, "checkpoint"),
+            ):
+                _orig = getattr(getattr(_mod, _name, None), "_unsloth_original", None)
+                if _orig is not None:
+                    setattr(_mod, _name, _orig)
 
         from .loader_utils import enable_composite_gradient_checkpointing
         from .remote_moe_shims import prepare_remote_moe_for_training
@@ -3849,6 +4199,7 @@ class FastBaseModel:
         if full_finetuning:
             # prepare_model_for_training re-enabled every parameter, a kept wrapper's siblings too.
             _freeze_unused_siblings(model)
+        _unsloth_freeze_norm_running_stats(model)
         _model_type = getattr(getattr(model, "config", None), "model_type", "") or ""
         if not use_reentrant and not any(x in _model_type.lower() for x in ("gemma3n", "gemma4")):
             # _set_gradient_checkpointing() binds torch's checkpoint as a default argument, bypassing the patch above.
@@ -3870,6 +4221,32 @@ class FastBaseModel:
                 return _original_gc_enable(**kwargs)
 
             model.gradient_checkpointing_enable = _gc_enable_reentrant
+
+        if _force_non_reentrant:
+            # Wrap the unpatched method so a second post_patch_model (get_peft_model) replaces the wrapper instead of nesting it.
+            _original_gc_enable_nr = getattr(
+                model.gradient_checkpointing_enable,
+                "_unsloth_gc_original",
+                model.gradient_checkpointing_enable,
+            )
+
+            def _gc_enable_non_reentrant(
+                gradient_checkpointing_kwargs = None,
+                *args,
+                **kwargs,
+            ):
+                gc_kwargs = dict(gradient_checkpointing_kwargs or {})
+                gc_kwargs["use_reentrant"] = False
+                # Bind this model's wrapper (and its offloading) even if a later load restored the global.
+                _prev_checkpoint = hf_modeling_utils.checkpoint
+                hf_modeling_utils.checkpoint = _nonre_checkpoint
+                try:
+                    return _original_gc_enable_nr(gc_kwargs, *args, **kwargs)
+                finally:
+                    hf_modeling_utils.checkpoint = _prev_checkpoint
+
+            _gc_enable_non_reentrant._unsloth_gc_original = _original_gc_enable_nr
+            model.gradient_checkpointing_enable = _gc_enable_non_reentrant
 
         from transformers.trainer import Trainer
 
@@ -3939,7 +4316,9 @@ class FastBaseModel:
             if hasattr(m, "training"):
                 m.training = False
             if hasattr(m, "_saved_temp_tokenizer"):
-                m._saved_temp_tokenizer.padding_side = "left"
+                m._saved_temp_tokenizer.padding_side = _generation_padding_side(
+                    getattr(m, "config", None)
+                )
             m._flag_for_generation = True
 
         m = model

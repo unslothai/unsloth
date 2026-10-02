@@ -327,3 +327,16 @@ test("the fastest tile names the baseline when nothing beats it, and the ratio d
   assert.equal(hl.best?.label, "Studio auto");
   assert.ok(hl.speedup !== null && hl.speedup < 0.05);
 });
+
+test("offload rows drop chat's --fit with its value and --cpu-moe alone", () => {
+  const row = offloadVariants({ layers: 48, moeLayers: 40 })[1];
+  const own = row.load.llama_extra_args ?? [];
+  const strip = (args: string[]) => {
+    const sent = variantLoad({ model_path: "m.gguf", llama_extra_args: args }, row);
+    return (sent.llama_extra_args ?? []).slice(0, -own.length || undefined);
+  };
+  assert.deepEqual(strip(["--fit", "off", "-t", "8"]), ["-t", "8"]);
+  assert.deepEqual(strip(["-fit=on", "--jinja"]), ["--jinja"]);
+  assert.deepEqual(strip(["--cpu-moe", "-t", "8"]), ["-t", "8"]);
+  assert.deepEqual(strip(["-cmoe", "--jinja"]), ["--jinja"]);
+});

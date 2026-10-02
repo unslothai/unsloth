@@ -15,8 +15,9 @@ const MAX_TRAINING_CONFIG_BYTES: u64 = 1024 * 1024;
 /// pieces, and a piece has to fit in one IPC response.
 const MAX_CHAT_IMPORT_CHUNK_BYTES: usize = 8 * 1024 * 1024;
 const NATIVE_FILE_NAME_HEADER: &str = "x-unsloth-default-name";
-const CHAT_IMPORT_EXTENSIONS: &[&str] = &["json", "jsonl", "ndjson", "csv"];
-const CHAT_IMPORT_TYPE_ERROR: &str = "Chat import must be a .json, .jsonl, .ndjson, or .csv file.";
+const CHAT_IMPORT_EXTENSIONS: &[&str] = &["json", "jsonl", "ndjson", "csv", "md", "markdown"];
+const CHAT_IMPORT_TYPE_ERROR: &str =
+    "Chat import must be a .json, .jsonl, .ndjson, .csv, or .md file.";
 const TRAINING_CONFIG_EXTENSIONS: &[&str] = &["yaml", "yml"];
 
 #[derive(Debug, Serialize)]
@@ -853,12 +854,17 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_path(name: &str) -> PathBuf {
+        // Tests run on parallel threads, and macOS's clock resolves only microseconds, so two
+        // calls with the same name could get the same path and one test's cleanup or swap would
+        // land on the other's file. The counter keeps every name in this process distinct.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!(
-            "unsloth-native-files-{name}-{}-{nanos}",
+            "unsloth-native-files-{name}-{}-{nanos}-{seq}",
             std::process::id()
         ))
     }

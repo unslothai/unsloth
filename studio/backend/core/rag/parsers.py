@@ -14,6 +14,7 @@ import codecs
 import logging
 import os
 import re
+import secrets
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
@@ -464,10 +465,19 @@ def render_pdf_pages(
 
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 _MC_FALLBACK = "{http://schemas.openxmlformats.org/markup-compatibility/2006}Fallback"
+_M = "{http://schemas.openxmlformats.org/officeDocument/2006/math}"
+_DOCX_MATH = frozenset((_M + "oMathPara", _M + "oMath"))
 # Runs not shown as body text; text boxes are read as blocks of their own.
 _DOCX_SKIP_RUNS_UNDER = frozenset(
     (_W + "del", _W + "moveFrom", _W + "rt", _W + "txbxContent", _MC_FALLBACK)
 )
+_DOCX_SKIP_RUNS_OR_MATH = _DOCX_SKIP_RUNS_UNDER | _DOCX_MATH
+_DOCX_MATH_ROWS = {
+    "oMathPara": ("oMath", "\n"),
+    "eqArr": ("e", "\n"),
+    "m": ("mr", " \\\\ "),
+    "mr": ("e", " & "),
+}
 
 
 def _docx_placeholder(element) -> bool:
@@ -527,11 +537,80 @@ def _docx_blocks(element, parent):
             yield from _docx_blocks(child if content is None else content, parent)
 
 
+def _docx_math_text(element) -> str:
+    # Mirrored by docxMathText in the frontend's attachment-content.ts.
+    tag = element.tag
+    if tag in _DOCX_SKIP_RUNS_UNDER or _docx_placeholder(element):
+        return ""
+    if tag == _W + "r":
+        return element.text
+    if tag == _M + "t":
+        return element.text or ""
+    name = tag[len(_M) :] if tag.startswith(_M) else ""
+
+    def arg(key):
+        child = element.find(_M + key)
+        if child is None or prop(f"{key}Hide", "off") not in ("0", "false", "off"):
+            return ""
+        return _docx_math_text(child)
+
+    def prop(key, default):
+        node = element.find(f"{_M}{name}Pr/{_M}{key}")
+        return default if node is None else node.get(_M + "val", "")
+
+    def scripts(sub, sup):
+        return (f"_{{{sub}}}" if sub else "") + (f"^{{{sup}}}" if sup else "")
+
+    if name == "f":
+        if prop("type", "bar") == "noBar":
+            return f"{{{arg('num')} \\atop {arg('den')}}}"
+        return f"\\frac{{{arg('num')}}}{{{arg('den')}}}"
+    if name == "phant" and prop("show", "on") in ("0", "false", "off"):
+        return ""
+    if name in ("sSub", "sSup", "sSubSup"):
+        return arg("e") + scripts(arg("sub"), arg("sup"))
+    if name == "sPre":
+        return "{}" + scripts(arg("sub"), arg("sup")) + arg("e")
+    if name == "limLow":
+        return arg("e") + scripts(arg("lim"), "")
+    if name == "limUpp":
+        return arg("e") + scripts("", arg("lim"))
+    if name == "nary":
+        return prop("chr", "\u222b") + scripts(arg("sub"), arg("sup")) + arg("e")
+    if name == "rad":
+        deg = arg("deg")
+        return f"\\sqrt[{deg}]{{{arg('e')}}}" if deg else f"\\sqrt{{{arg('e')}}}"
+    if name == "acc":
+        return arg("e") + prop("chr", "\u0302")
+    if name in ("bar", "groupChr"):
+        side = "over" if prop("pos", "bot") == "top" else "under"
+        if name == "bar":
+            return f"\\{side}line{{{arg('e')}}}"
+        mark = prop("chr", "\u23df")
+        if mark in ("\u23de", "\u23df"):
+            return f"\\{side}brace{{{arg('e')}}}"
+        return f"\\{side}set{{{mark}}}{{{arg('e')}}}"
+    if name == "func":
+        return f"{arg('fName')} {arg('e')}"
+    if name == "d":
+        return (
+            prop("begChr", "(")
+            + prop("sepChr", "|").join(_docx_math_text(e) for e in element.iterchildren(_M + "e"))
+            + prop("endChr", ")")
+        )
+    if name in _DOCX_MATH_ROWS:
+        child, sep = _DOCX_MATH_ROWS[name]
+        return sep.join(_docx_math_text(c) for c in element.iterchildren(_M + child))
+    return "".join(_docx_math_text(child) for child in element.iterchildren("*"))
+
+
 def _docx_paragraph_text(paragraph) -> str:
-    """Paragraph.text skips runs wrapped in w:ins, w:sdt, w:fldSimple, w:smartTag."""
+    """Paragraph.text skips runs wrapped in w:ins, w:sdt, w:fldSimple, w:smartTag, and equations."""
     p = paragraph._p
     return "".join(
-        run.text for run in p.iter(_W + "r") if not _docx_inside(run, p, _DOCX_SKIP_RUNS_UNDER)
+        _docx_math_text(node) if node.tag in _DOCX_MATH else node.text
+        for node in p.iter(_W + "r", *_DOCX_MATH)
+        if not _docx_inside(node, p, _DOCX_SKIP_RUNS_OR_MATH)
     )
 
 
@@ -583,6 +662,7 @@ def _docx(path: str) -> list[Page]:
     document = docx.Document(path)
     lines: list[str] = []
     _docx_unwrap_table_controls(document.element.body)
+    label_notes = _docx_mark_notes(document)
     # Walk body content in document order: paragraphs alone drop tables entirely.
     for block in _docx_blocks(document.element.body, document):
         if isinstance(block, Paragraph):
@@ -591,7 +671,100 @@ def _docx(path: str) -> list[Page]:
                 lines.append(text)
         elif isinstance(block, Table):
             lines.extend(_docx_table_rows(block))
-    return [_page("\n".join(lines), None)]
+    return [_page(label_notes("\n".join(lines)), None)]
+
+
+def _roman(n: int) -> str:
+    out = ""
+    for value, digits in zip(
+        (1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1),
+        ("m", "cm", "d", "cd", "c", "xc", "l", "xl", "x", "ix", "v", "iv", "i"),
+    ):
+        count, n = divmod(n, value)
+        out += digits * count
+    return out
+
+
+def _docx_mark_notes(document):
+    """Sentinels after body note references; the returned function labels the surviving ones (1, 2 / i, ii) and appends the notes."""
+    from docx.opc.constants import RELATIONSHIP_TYPE as RT
+    from docx.oxml import OxmlElement, parse_xml
+    from docx.table import Table
+
+    kinds = []
+    for kind, reltype, label in (
+        ("footnote", RT.FOOTNOTES, str),
+        ("endnote", RT.ENDNOTES, _roman),
+    ):
+        part = next(
+            (
+                r.target_part
+                for r in document.part.rels.values()
+                if r.reltype == reltype and not r.is_external
+            ),
+            None,
+        )
+        if part is None:
+            continue
+        bodies: dict[str, str] = {}
+        for note in parse_xml(part.blob).iterchildren(_W + kind):
+            if note.get(_W + "type", "normal") != "normal":
+                continue
+            texts = []
+            for block in _docx_blocks(note, document):
+                if isinstance(block, Table):
+                    texts.extend(_docx_table_rows(block))
+                else:
+                    texts.append(" ".join(_docx_paragraph_text(block).split()))
+            bodies[note.get(_W + "id")] = " ".join(t for t in texts if t)
+        if bodies:
+            kinds.append((kind, label, bodies))
+    if not kinds:
+        return lambda text: text
+
+    refs: list[tuple[int, str]] = []
+    # Nonce: document text shaped like a sentinel stays as written.
+    nonce = secrets.token_hex(4)
+    sentinel = re.compile(f"\ue000{nonce}\\.(\\d+)\ue001")
+    referenced: list[set[str]] = [set() for _ in kinds]
+    for k, (kind, _, bodies) in enumerate(kinds):
+        for ref in document.element.body.iter(_W + kind + "Reference"):
+            note_id = ref.get(_W + "id")
+            if note_id in bodies:
+                referenced[k].add(note_id)
+                marker = OxmlElement("w:t")
+                marker.text = f"\ue000{nonce}.{len(refs)}\ue001"
+                refs.append((k, note_id))
+                ref.addnext(marker)
+
+    def label_notes(text: str) -> str:
+        numbers: list[dict[str, int]] = [{} for _ in kinds]
+
+        def label(match) -> str:
+            index = int(match.group(1))
+            if index >= len(refs):
+                return match.group(0)
+            k, note_id = refs[index]
+            number = numbers[k].setdefault(note_id, len(numbers[k]) + 1)
+            return f"[{kinds[k][1](number)}]"
+
+        text = sentinel.sub(label, text)
+        lines = [text] if text else []
+        for k, (kind, label_of, bodies) in enumerate(kinds):
+            # Unreferenced notes stay; ones referenced only from deleted or moved text go.
+            for note_id in bodies:
+                if note_id not in referenced[k]:
+                    numbers[k].setdefault(note_id, len(numbers[k]) + 1)
+            notes = [
+                f"[{label_of(number)}] {bodies[note_id]}"
+                for note_id, number in sorted(numbers[k].items(), key = lambda item: item[1])
+                if bodies[note_id]
+            ]
+            if notes:
+                lines += [kind.capitalize() + "s", *notes]
+        return "\n".join(lines)
+
+    return label_notes
 
 
 def _declared_charset(data: bytes) -> str | None:
