@@ -16,13 +16,14 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { EyeIcon, RotateCwIcon, TerminalIcon, XIcon } from "lucide-react";
+import { EyeIcon, TerminalIcon, XIcon } from "lucide-react";
 import {
   Copy01Icon,
   Download01Icon,
   ExpandIcon,
 } from "@hugeicons/core-free-icons";
 import { Tick02Icon } from "@/lib/tick-icon";
+import { RefreshGlyph } from "@/lib/refresh-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type KeyboardEvent,
@@ -331,7 +332,7 @@ export function ArtifactSurface({
             isLoadingArtifact && "cursor-not-allowed opacity-50",
           )}
         >
-          <RotateCwIcon className="size-4" />
+          <RefreshGlyph className="size-4" />
         </button>
         <button
           type="button"

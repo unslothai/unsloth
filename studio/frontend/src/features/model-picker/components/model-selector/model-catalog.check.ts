@@ -948,6 +948,53 @@ assert.equal(
     .format,
   "bf16",
 );
+// The 30 GiB tier streams an int8 denoiser, which needs group offload that swaps torchao weights
+// (diffusers >= 0.40). Unknown or unsupported keeps the host on the runnable GGUF row.
+for (const quantisedStreaming of [undefined, false]) {
+  assert.equal(
+    pickDefaultArtifact(h3, {
+      gpuGb: 32,
+      systemRamGb: 80,
+      quantisedStreaming,
+      isDownloaded: notDownloaded,
+    }).format,
+    "gguf",
+  );
+  assert.equal(
+    curatedArtifactFitsDevice(H3, VIDEO_CATALOG, {
+      gpuGb: 32,
+      systemRamGb: 80,
+      quantisedStreaming,
+    }),
+    false,
+  );
+}
+assert.equal(
+  pickDefaultArtifact(h3, {
+    gpuGb: 32,
+    systemRamGb: 80,
+    quantisedStreaming: true,
+    isDownloaded: notDownloaded,
+  }).format,
+  "bf16",
+);
+assert.equal(
+  curatedArtifactFitsDevice(H3, VIDEO_CATALOG, {
+    gpuGb: 32,
+    systemRamGb: 80,
+    quantisedStreaming: true,
+  }),
+  true,
+);
+// The resident tiers need no streaming.
+assert.equal(
+  curatedArtifactFitsDevice(H3, VIDEO_CATALOG, {
+    gpuGb: 74,
+    systemRamGb: 140,
+    quantisedStreaming: false,
+  }),
+  true,
+);
 
 // Qwen-Image-2512 BF16 (54 GB) misses a 24/48 GB budget but fits an 80 GB GPU (budget 56)
 // and wins there.
@@ -1160,16 +1207,16 @@ for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG, AUDIO_CATALOG]) {
   }
 }
 
-// Z-Image-Turbo needs 42.9 GB of card dense and 34.9 GB pre-quantised under the 70% rule.
+// Z-Image-Turbo: 27.3 GB card dense (bf16, not the fp32 download), 19.3 GB pre-quantised, under the 70% rule.
 const zTurboId = "unsloth/Z-Image-Turbo";
 assert.equal(
-  curatedArtifactFitsDevice(zTurboId, IMAGE_CATALOG, { gpuGb: 40, systemRamGb: 128 }),
+  curatedArtifactFitsDevice(zTurboId, IMAGE_CATALOG, { gpuGb: 24, systemRamGb: 128 }),
   false,
 );
 for (const schemes of [["fp8"], ["int8"]]) {
   assert.equal(
     curatedArtifactFitsDevice(zTurboId, IMAGE_CATALOG, {
-      gpuGb: 40,
+      gpuGb: 24,
       systemRamGb: 128,
       denseQuantSchemes: schemes,
     }),
@@ -1179,11 +1226,15 @@ for (const schemes of [["fp8"], ["int8"]]) {
 }
 assert.equal(
   curatedArtifactFitsDevice(zTurboId, IMAGE_CATALOG, {
-    gpuGb: 40,
+    gpuGb: 24,
     systemRamGb: 128,
     denseQuantSchemes: [],
   }),
   false,
+);
+assert.equal(
+  curatedArtifactFitsDevice(zTurboId, IMAGE_CATALOG, { gpuGb: 32, systemRamGb: 128 }),
+  true,
 );
 assert.equal(
   curatedArtifactFitsDevice("Qwen/Qwen-Image", IMAGE_CATALOG, {
@@ -1276,7 +1327,7 @@ const zTurboGroup = groupForRepoId(zTurboId, IMAGE_CATALOG);
 assert.ok(zTurboGroup);
 assert.equal(
   pickDefaultArtifact(zTurboGroup, {
-    gpuGb: 40,
+    gpuGb: 24,
     systemRamGb: 128,
     isDownloaded: notDownloaded,
   }).format,
@@ -1294,6 +1345,15 @@ assert.equal(
 assert.equal(
   pickDefaultArtifact(zTurboGroup, {
     gpuGb: 24,
+    systemRamGb: 128,
+    denseQuantSchemes: ["fp8"],
+    isDownloaded: notDownloaded,
+  }).repoId,
+  zTurboId,
+);
+assert.equal(
+  pickDefaultArtifact(zTurboGroup, {
+    gpuGb: 16,
     systemRamGb: 128,
     denseQuantSchemes: ["fp8"],
     isDownloaded: notDownloaded,

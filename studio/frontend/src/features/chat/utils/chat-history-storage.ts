@@ -808,8 +808,15 @@ function inheritedMessageIds(
 export async function listStoredChatMessages(
   threadId: string,
 ): Promise<MessageRecord[]> {
-  if (isThreadIncognito(threadId)) return [];
-  if (isChatThreadDeleted(threadId)) return [];
+  return (await readStoredChatMessages(threadId)).messages;
+}
+
+/** `fromBackend` is false when the backend read failed and the legacy browser copy was returned. */
+export async function readStoredChatMessages(
+  threadId: string,
+): Promise<{ messages: MessageRecord[]; fromBackend: boolean }> {
+  if (isThreadIncognito(threadId)) return { messages: [], fromBackend: false };
+  if (isChatThreadDeleted(threadId)) return { messages: [], fromBackend: false };
   const legacyMessages = await readLegacyStore(
     () => db.messages.where("threadId").equals(threadId).toArray(),
     [] as MessageRecord[],
@@ -836,22 +843,26 @@ export async function listStoredChatMessages(
         (backendMessages.length === 0 && legacyMessages.length > 0),
     });
     if (legacyMessages.length > 0 && merged.shouldSync) {
-      return syncChatMessages(threadId, merged.messages, {
+      const messages = await syncChatMessages(threadId, merged.messages, {
         pruneMissing: false,
       }).catch(() => merged.messages);
+      return { messages, fromBackend: true };
     }
-    return merged.messages;
+    return { messages: merged.messages, fromBackend: true };
   }
   if (
     backendMessages &&
     isLegacyChatImportDone() &&
     legacyMessages.length === 0
   ) {
-    return [];
+    return { messages: [], fromBackend: true };
   }
-  return legacyMessages.filter(
-    (message) => !isChatThreadDeleted(message.threadId),
-  );
+  return {
+    messages: legacyMessages.filter(
+      (message) => !isChatThreadDeleted(message.threadId),
+    ),
+    fromBackend: false,
+  };
 }
 
 export async function getStoredChatMessage(

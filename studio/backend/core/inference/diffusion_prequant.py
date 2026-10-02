@@ -1112,8 +1112,11 @@ def load_prequantized_transformer(
     component: Optional[str] = None,
     local_files_only: bool = False,
     logger: Any = None,
+    placement_device: Optional[str] = None,
 ) -> Optional[Any]:
     """Load the pre-quantized transformer described by ``source`` onto ``device``.
+
+    ``placement_device`` (default ``device``) is where the module is materialised; ``device`` selects kernels.
 
     ``cache_dir`` is the live Hub cache root, as every other loader call pins it: unset, a fetch
     lands under huggingface_hub's import-time constant, so a mid-session cache change re-downloads
@@ -1228,7 +1231,7 @@ def load_prequantized_transformer(
         del state_dict
         del ckpt
 
-        transformer = transformer.to(device)
+        transformer = transformer.to(placement_device or device)
         if declares_rotation(metadata):
             try:
                 import torch
@@ -1237,7 +1240,12 @@ def load_prequantized_transformer(
                 dtype = getattr(
                     torch, str(metadata.get("torch_dtype") or "bfloat16"), torch.bfloat16
                 )
-                warm_rotation_cache(transformer, on.device if on is not None else device, dtype)
+                # a host-placed module still computes on ``device``
+                warm_rotation_cache(
+                    transformer,
+                    on.device if on is not None and placement_device is None else device,
+                    dtype,
+                )
             except Exception:  # noqa: BLE001
                 pass
         # Same small-M row padding the runtime quantise path applies, and for the same reason: a checkpoint built
@@ -1275,7 +1283,7 @@ def load_prequantized_transformer(
                 "diffusion.prequant: loaded %s checkpoint (%s) onto %s",
                 scheme,
                 source.kind,
-                device,
+                placement_device or device,
             )
         return transformer
     except Exception as exc:  # noqa: BLE001 - fall back to the dense-quantise path
@@ -1818,6 +1826,32 @@ def _same_base_model(a: str, b: str) -> bool:
     return a == b or _tail(a) == _tail(b)
 
 
+def _unhook_from_manager(
+    manager: Any,
+    module: Any,
+    *,
+    logger: Any = None,
+    what: str,
+) -> bool:
+    """Remove ``module`` from a ComponentsManager's offload rotation without moving it."""
+    hooks = list(getattr(manager, "model_hooks", None) or ())
+    target = next((hook for hook in hooks if getattr(hook, "model", None) is module), None)
+    if target is None:
+        return False
+    try:
+        target.remove()
+        # Unlist it too, else another pre_forward can evict it to CPU with no hook to bring it back.
+        for hook in hooks:
+            others = getattr(getattr(hook, "hook", None), "other_hooks", None)
+            if others:
+                hook.hook.other_hooks = [item for item in others if item is not target]
+        manager.model_hooks = [hook for hook in hooks if hook is not target]
+        return True
+    except Exception as exc:  # noqa: BLE001 -- the caller still places the module
+        _warn(logger, what, exc)
+        return False
+
+
 def pin_prequantized_module(
     manager: Any,
     module: Any,
@@ -1851,23 +1885,7 @@ def pin_prequantized_module(
     not look the way this expects, the module is still placed on ``device`` and False is returned,
     which is the behaviour before pinning existed.
     """
-    hooks = list(getattr(manager, "model_hooks", None) or ())
-    target = next((hook for hook in hooks if getattr(hook, "model", None) is module), None)
-    pinned = False
-    if target is not None:
-        try:
-            # Drop the accelerate hook so no pre_forward/offload ever moves this module again ...
-            target.remove()
-            # ... and unlist it, so another component's pre_forward cannot pick it as the thing to evict (which would
-            # move it to the CPU with no hook left to bring it back).
-            for hook in hooks:
-                others = getattr(getattr(hook, "hook", None), "other_hooks", None)
-                if others:
-                    hook.hook.other_hooks = [item for item in others if item is not target]
-            manager.model_hooks = [hook for hook in hooks if hook is not target]
-            pinned = True
-        except Exception as exc:  # noqa: BLE001 -- placement below still has to happen
-            _warn(logger, "pin:hook", exc)
+    pinned = _unhook_from_manager(manager, module, logger = logger, what = "pin:hook")
     module.to(device)
     if logger is not None:
         logger.info(
@@ -1877,6 +1895,187 @@ def pin_prequantized_module(
             "removed" if pinned else "unchanged",
         )
     return pinned
+
+
+def tensor_payload_bytes(tensor: Any) -> int:
+    """Payload bytes; torchao subclasses report their logical bf16 size, so sum the inner tensors."""
+    flatten = getattr(tensor, "__tensor_flatten__", None)
+    if callable(flatten) and type(tensor).__name__ not in ("Tensor", "Parameter"):
+        try:
+            return sum(tensor_payload_bytes(getattr(tensor, name)) for name in flatten()[0])
+        except Exception:  # noqa: BLE001 -- fall through to the logical size
+            pass
+    return int(tensor.numel()) * int(tensor.element_size())
+
+
+def torchao_group_offload_supported() -> bool:
+    """Whether group offloading swaps torchao internals (diffusers >= 0.40); older ones half-move via ``param.data``."""
+    try:
+        from diffusers.hooks import apply_group_offloading  # noqa: F401
+        from diffusers.hooks import group_offloading as go
+    except Exception:  # noqa: BLE001 -- no group offloading at all
+        return False
+    return callable(getattr(go, "_is_torchao_tensor", None)) and callable(
+        getattr(go, "_swap_torchao_tensor", None)
+    )
+
+
+def _weights_pinnable(module: Any) -> bool:
+    """Whether every weight class answers ``is_pinned`` (torchao <= 0.17's v1 int8 class raises)."""
+    from itertools import chain
+
+    seen: set = set()
+    try:
+        for tensor in chain(module.parameters(), module.buffers()):
+            cls = type(tensor)
+            if cls in seen:
+                continue
+            seen.add(cls)
+            tensor.is_pinned()
+    except Exception:  # noqa: BLE001 -- unimplemented for this subclass
+        return False
+    return True
+
+
+def _evict_rotation_hook(manager: Any, device: Any) -> Any:
+    """Pre-hook offloading rotating components on ``device``: the manager only evicts inside another
+    managed pre_forward, so the conditioner would otherwise stay beside the whole denoise loop."""
+    import torch
+
+    execution = torch.device(device)
+
+    @torch.compiler.disable
+    def _pre_forward(_module: Any, _args: Any) -> None:
+        moved = False
+        for hook in list(getattr(manager, "model_hooks", None) or ()):
+            model = getattr(hook, "model", None)
+            try:
+                where = next(model.parameters()).device
+            except Exception:  # noqa: BLE001 -- nothing to measure, nothing to move
+                continue
+            if where.type != execution.type:
+                continue
+            if execution.index is not None and where.index not in (None, execution.index):
+                continue
+            hook.offload()
+            moved = True
+        if moved and execution.type == "cuda":
+            torch.cuda.empty_cache()
+
+    return _pre_forward
+
+
+def _move_groups_outside_inference_mode(module: Any) -> int:
+    """Run group offload moves outside inference_mode (torchao v1 int8 raises
+    ``Cannot set version_counter for inference tensor``). Returns the number of groups wrapped."""
+    import torch
+
+    seen: set[int] = set()
+    for submodule in module.modules():
+        hooks = getattr(getattr(submodule, "_diffusers_hook", None), "hooks", None) or {}
+        for hook in list(hooks.values()):
+            group = getattr(hook, "group", None)
+            if group is None or id(group) in seen:
+                continue
+            seen.add(id(group))
+            for name in ("onload_", "offload_"):
+                move = getattr(group, name, None)
+                if not callable(move):
+                    continue
+
+                def _outside(_move: Any = move) -> Any:
+                    with torch.inference_mode(False), torch.no_grad():
+                        return _move()
+
+                setattr(group, name, torch.compiler.disable(_outside))
+    return len(seen)
+
+
+def stream_prequantized_module(
+    manager: Any,
+    module: Any,
+    device: Any,
+    *,
+    logger: Any = None,
+    label: str = "pre-quantized denoiser",
+) -> Optional[str]:
+    """Stream a torchao module block by block via group offloading, outside the ComponentsManager rotation.
+
+    Returns ``"stream"`` (fully pinned, async copies), ``"stream_lazy"`` (pinned one group at a time), ``"sync"``
+    (unpinnable weights) or None (nothing changed).
+    Raises once the module is unhooked: the caller only streams what does not fit pinned, so a resident
+    fallback would OOM or be refused on every render."""
+    if not torchao_group_offload_supported():
+        return None
+    import inspect
+
+    import torch
+    from diffusers.hooks import apply_group_offloading
+
+    from .diffusion_memory import (
+        DEFAULT_GROUP_BLOCKS,
+        _remove_group_offload_hooks,
+        _streamed_pin_plan,
+        install_group_offload_buffer_restore,
+    )
+
+    onload = torch.device(device)
+    if not _unhook_from_manager(manager, module, logger = logger, what = "stream:hook"):
+        return None
+    try:
+        # load_state_dict(assign=True) leaves the weights trainable; group offload's grad-mode .cpu() copy then holds
+        # each weight's AccumulateGrad, and swap_tensors on onload hits Int8Tensor's missing aten.view.
+        module.requires_grad_(False)
+        install_group_offload_buffer_restore()
+        use_stream = onload.type == "cuda" and _weights_pinnable(module)
+        if onload.type == "cuda" and not use_stream:
+            # Sync copies measured 16.4 s/step vs 0.8 s resident (B200): rebuild v1 int8 as pinnable Int8Tensor.
+            from .prequant_legacy_int8 import convert_legacy_int8_weights
+            converted = convert_legacy_int8_weights(module)
+            if converted:
+                use_stream = _weights_pinnable(module)
+                if logger is not None:
+                    logger.info(
+                        "diffusion.prequant: rebuilt %d v1 int8 weights as Int8Tensor for streaming",
+                        converted,
+                    )
+        kwargs: dict[str, Any] = {
+            "onload_device": onload,
+            "offload_device": torch.device("cpu"),
+            "offload_type": "block_level",
+            "num_blocks_per_group": DEFAULT_GROUP_BLOCKS,
+            "use_stream": use_stream,
+        }
+        params = inspect.signature(apply_group_offloading).parameters
+        if use_stream:
+            if "non_blocking" in params:
+                kwargs["non_blocking"] = True
+            if "record_stream" in params:
+                kwargs["record_stream"] = True
+            if "low_cpu_mem_usage" in params:
+                from itertools import chain
+                payload_mib = sum(
+                    tensor_payload_bytes(t) for t in chain(module.parameters(), module.buffers())
+                ) // (1024 * 1024)
+                kwargs["low_cpu_mem_usage"] = not _streamed_pin_plan(payload_mib, 0, logger)[0]
+        apply_group_offloading(module, **kwargs)
+        _move_groups_outside_inference_mode(module)
+        module.register_forward_pre_hook(_evict_rotation_hook(manager, onload))
+    except Exception as exc:
+        _remove_group_offload_hooks(module)
+        raise RuntimeError(f"group offloading could not be set up for the {label}: {exc}") from exc
+    # Only a full up-front pin keeps a second host copy; lazy pinning holds one group at a time.
+    mode = (
+        ("stream_lazy" if kwargs.get("low_cpu_mem_usage") else "stream") if use_stream else "sync"
+    )
+    if logger is not None:
+        logger.info(
+            "diffusion.prequant: %s streamed block by block on %s (%s copies)",
+            label,
+            device,
+            "overlapped" if use_stream else "synchronous",
+        )
+    return mode
 
 
 def _has_meta_tensors(module: Any) -> bool:

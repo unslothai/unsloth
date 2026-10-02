@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useHubDownloadQueue, useQueuedHubEntries } from "./use-hub-download-queue";
 import {
   Tooltip,
   TooltipContent,
@@ -207,6 +208,7 @@ export function DownloadManagerPanel({
 }: { positioned?: boolean } = {}) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const enabled = canUseDownloadManager(pathname);
+  useHubDownloadQueue();
   const [collapsed, setCollapsed] = useState(false);
 
   useEffect(() => {
@@ -216,9 +218,10 @@ export function DownloadManagerPanel({
 
   const selectOrderedJobKeys = useMemo(createOrderedJobKeysSelector, []);
   const jobKeys = useDownloadManagerStore(selectOrderedJobKeys);
-  const activeCount = useDownloadManagerStore(selectActiveJobCount);
+  const queued = useQueuedHubEntries();
+  const activeCount = useDownloadManagerStore(selectActiveJobCount) + queued.length;
 
-  if (!enabled || jobKeys.length === 0) return null;
+  if (!enabled || (jobKeys.length === 0 && queued.length === 0)) return null;
 
   const headerLabel =
     activeCount > 0
@@ -282,6 +285,10 @@ export function DownloadManagerPanel({
             {jobKeys.map((jobKey) => (
               <DownloadRow key={jobKey} jobKey={jobKey} />
             ))}
+            {queued.map((entry, i) => <li key={`${entry.planId}:${i}`} className="flex flex-col gap-1.5 py-2.5 pl-4 pr-3">
+              <span className="truncate text-ui-12p5 font-medium">{entry.repoId}<span className="text-muted-foreground"> · {entry.checkpoint !== false ? "Model file" : "Required assets"}</span></span>
+              <span className="text-ui-11 text-muted-foreground">Queued</span>
+            </li>)}
           </ul>
         </div>
       )}

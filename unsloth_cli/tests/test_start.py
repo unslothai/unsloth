@@ -5800,7 +5800,7 @@ def test_write_pi_config_fresh(tmp_path):
     # Pin the loaded window (and a sane output cap) so Pi compacts instead of
     # overflowing; without it Pi assumes its 128000 default.
     assert provider["models"] == [
-        {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 8192}
+        {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 32000}
     ]
 
 
@@ -5845,7 +5845,7 @@ def test_connect_pi_no_launch(fake_studio, tmp_path, monkeypatch):
     config = json.loads((home / ".pi" / "agent" / "models.json").read_text())
     assert config["providers"]["unsloth"]["apiKey"] == "sk-unsloth-feedfacefeedface"
     assert config["providers"]["unsloth"]["models"] == [
-        {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 8192}
+        {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 32000}
     ]
     assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
     assert (home / ".pi" / "agent" / "extensions" / "mine.ts").is_file()
@@ -6307,6 +6307,60 @@ def test_connect_pi_as_subagent_preserves_cloud_parent(fake_studio, tmp_path, yo
     assert "Ask Pi to spawn an Unsloth or local agent." in result.output
 
 
+def _pi_generated_model(tmp_path, as_subagent):
+    if as_subagent:
+        return json.loads((tmp_path / "agents" / "pi-subagent" / "subagent.json").read_text())
+    return json.loads((tmp_path / "agents" / "pi" / ".pi" / "agent" / "models.json").read_text())[
+        "providers"
+    ]["unsloth"]["models"][0]
+
+
+@pytest.mark.parametrize("as_subagent", [False, True])
+def test_connect_pi_output_limit(fake_studio, tmp_path, as_subagent):
+    args = ["pi", "--no-launch", "--max-tokens", "40000"]
+    if as_subagent:
+        args.append("--as-subagent")
+    # Each launch regenerates the config, so the second run must honour the flag too.
+    for _ in range(2):
+        result = CliRunner().invoke(start.start_app, args)
+        assert result.exit_code == 0, result.output
+        assert "--max-tokens" not in _launch_command(result.output)
+        config = _pi_generated_model(tmp_path, as_subagent)
+        assert config["maxTokens"] == 40000
+        assert config["contextWindow"] == MODEL["context_length"]
+
+
+@pytest.mark.parametrize("as_subagent", [False, True])
+def test_connect_pi_output_limit_capped_at_half_window(fake_studio, tmp_path, as_subagent):
+    args = ["pi", "--no-launch", "--max-tokens", "200000"]
+    if as_subagent:
+        args.append("--as-subagent")
+    result = CliRunner().invoke(start.start_app, args)
+    assert result.exit_code == 0, result.output
+    assert "leaves too little" in result.output
+    assert _pi_generated_model(tmp_path, as_subagent)["maxTokens"] == MODEL["context_length"] // 2
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "abc"])
+def test_connect_pi_invalid_output_limit(fake_studio, tmp_path, value):
+    result = CliRunner().invoke(start.start_app, ["pi", "--no-launch", "--max-tokens", value])
+    assert result.exit_code != 0
+    assert "--max-tokens" in result.output
+    assert not list((tmp_path / "agents").rglob("models.json"))
+
+
+@pytest.mark.parametrize("context", [{}, {"max_context_length": 32768}])
+def test_write_pi_output_limit_context_metadata(tmp_path, context):
+    path = tmp_path / "models.json"
+    start.write_pi_config(BASE, "test-key", {"id": "test-model", **context}, path, max_tokens = 10000)
+    model = json.loads(path.read_text())["providers"]["unsloth"]["models"][0]
+    assert model["maxTokens"] == 10000
+    if context:
+        assert model["contextWindow"] == 32768
+    else:
+        assert "contextWindow" not in model
+
+
 def test_connect_pi_no_launch_windows_relocates_userprofile(fake_studio, tmp_path, monkeypatch):
     # On native Windows Node resolves ~/.pi via USERPROFILE, not HOME, so the session
     # must point USERPROFILE at the relocated home or Pi reads the user's real ~/.pi.
@@ -6350,9 +6404,22 @@ def test_write_dsh_patch_fresh(dsh_patch):
     assert "sk-unsloth" not in dsh_patch.read_text()
     assert provider["compat"] == {"supportsDeveloperRole": False, "maxTokensField": "max_tokens"}
     assert provider["models"] == [
-        {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 8192}
+        {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 32000}
     ]
     assert entries["agent-default-model"]["config"] == {"provider": "unsloth", "model": MODEL["id"]}
+
+
+@pytest.mark.parametrize("window, expected", [(32_768, 8_192), (143_616, 32_000)])
+def test_pi_and_dsh_output_limit_follows_the_context(tmp_path, window, expected):
+    model = {**MODEL, "context_length": window}
+    start.write_pi_config(BASE, "sk-unsloth-abc", model, tmp_path / "models.json")
+    start.write_pi_subagent_config(BASE, "sk-unsloth-abc", model, tmp_path / "subagent.json")
+    start.write_dsh_patch(BASE, model, tmp_path / "unsloth.patch.yml")
+    pi = json.loads((tmp_path / "models.json").read_text())["providers"]["unsloth"]["models"][0]
+    subagent = json.loads((tmp_path / "subagent.json").read_text())
+    patch = _dsh_entries(tmp_path / "unsloth.patch.yml")
+    dsh = patch["llm-pi-ai"]["config"]["providers"]["unsloth"]["models"][0]
+    assert pi["maxTokens"] == subagent["maxTokens"] == dsh["maxTokens"] == expected
 
 
 def test_write_dsh_patch_without_window_omits_limits(dsh_patch):

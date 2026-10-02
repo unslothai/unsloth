@@ -55,7 +55,7 @@ export interface ModelArtifact {
   approxSizeGb?: number;
   /** Measured CPU-offload fit tiers. Any tier whose GPU and available-RAM floors are both met can
    *  auto-route this artifact without the resident 70% rule. */
-  offloadFitTiers?: readonly { gpuGb: number; systemRamGb: number }[];
+  offloadFitTiers?: readonly OffloadFitTier[];
   /** Extra search tokens beyond the id/label ("4bit", "nf4", ...). */
   keywords?: readonly string[];
   /** Parameter count of THIS artifact's checkpoint, for the row's size chip. Only a fallback: the
@@ -202,7 +202,8 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     description: "Text-to-image",
     scope: "image",
     artifacts: [
-      bf16Mirror("Tongyi-MAI/Z-Image-Turbo", 30, {
+      // Resident bf16 GiB, not the Hub's fp32 DiT: 11.5 DiT + 7.5 Qwen3-4B + 0.2 VAE.
+      bf16Mirror("Tongyi-MAI/Z-Image-Turbo", 19.1, {
         totalParams: 6154908736,
         prequantRepo: "unsloth/Z-Image-Turbo-FP8",
         prequantSizeGb: { fp8: 5.86, int8: 5.86 },
@@ -460,7 +461,9 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
         // mirror are decimal GB (video.py divides by 1_000_000_000), so never copy figures across:
         // converted, these are 79.5 / 150.3 and 132.1 / 85.9 GB, matching the estimators' 78.74 / 150
         // and 132 / 85. Copying applies the conversion twice and sends capable hosts to GGUF.
+        // 30 GiB: streamed int8 denoiser + int8 conditioner, measured 27.6 GB peak VRAM on a 32 GiB-capped B200.
         offloadFitTiers: [
+          { gpuGb: 30, systemRamGb: 80, requiresQuantisedStreaming: true },
           { gpuGb: 74, systemRamGb: 140 },
           { gpuGb: 123, systemRamGb: 80 },
         ],
@@ -1113,6 +1116,18 @@ export function groupMatchesQuery(group: CatalogGroup, query: string): boolean {
 }
 
 
+export interface OffloadFitTier {
+  gpuGb: number;
+  systemRamGb: number;
+  /** Only offered where `/api/system.quantised_streaming` says group offload streams torchao weights. */
+  requiresQuantisedStreaming?: boolean;
+}
+
+function offloadTierMet(tier: OffloadFitTier, budget: DeviceBudget): boolean {
+  if (tier.requiresQuantisedStreaming && budget.quantisedStreaming !== true) return false;
+  return budget.gpuGb >= tier.gpuGb && budget.systemRamGb >= tier.systemRamGb;
+}
+
 export interface DeviceBudget {
   /** Total GPU memory in GB (0/undefined = unknown or none). */
   gpuGb: number;
@@ -1124,6 +1139,8 @@ export interface DeviceBudget {
   gpuCount?: number;
   /** Dense quant schemes this host runs, best first; empty keeps the bf16 sizing rule. */
   denseQuantSchemes?: readonly string[];
+  /** Group offload can stream torchao weights; absent = unknown, so streamed tiers are not offered. */
+  quantisedStreaming?: boolean;
 }
 
 /** GGUF fit, delegated to the one formula the Hub badge already uses. Its old private rule
@@ -1317,7 +1334,7 @@ function fitsArtifactBudget(
 ): boolean {
   if (artifact.offloadFitTiers?.length) {
     return artifact.offloadFitTiers.some(
-      (tier) => budget.gpuGb >= tier.gpuGb && budget.systemRamGb >= tier.systemRamGb,
+      (tier) => offloadTierMet(tier, budget),
     );
   }
   const allowanceGb = budget.gpuGb * 0.7;
@@ -1438,7 +1455,7 @@ export function catalogGroupFitsDevice(
     if (a.format === "gguf") return true;
     if (a.offloadFitTiers?.length) {
       return a.offloadFitTiers.some(
-        (tier) => budget.gpuGb >= tier.gpuGb && budget.systemRamGb >= tier.systemRamGb,
+        (tier) => offloadTierMet(tier, budget),
       );
     }
     // The same quantised sizing the row badge and pickDefaultArtifact use: the dense figure would

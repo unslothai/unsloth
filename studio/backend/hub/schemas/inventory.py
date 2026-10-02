@@ -6,12 +6,22 @@
 Kept independent from upstream models/models.py so the Hub module can ship
 without modifying any upstream schema."""
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 from typing import List, Literal, Optional
 
 
 ModelFormat = Literal["gguf", "safetensors", "adapter", "checkpoint", "unknown"]
 ModelRuntime = Literal["llama_cpp", "transformers", "adapter", "unknown"]
+LocalArtifactKind = Literal[
+    "diffusers_pipeline",
+    "diffusers_modular_pipeline",
+    "diffusers_dual_pipeline",
+    "transformers_model",
+    "single_file_checkpoint",
+    "gguf",
+    "adapter",
+    "unknown",
+]
 
 
 class GgufVariantDetail(BaseModel):
@@ -146,6 +156,8 @@ class LocalModelCapabilities(BaseModel):
 class LocalModelInfo(BaseModel):
     """Discovered local model candidate."""
 
+    _scan_root: Optional[str] = PrivateAttr(None)
+
     id: str = Field(..., description = "Identifier to use for loading/training")
     inventory_id: Optional[str] = Field(
         None, description = "Stable semantic inventory row identifier"
@@ -157,6 +169,10 @@ class LocalModelInfo(BaseModel):
     path: str = Field(..., description = "Local path where model data was discovered")
     size_bytes: int = Field(0, description = "Observed model artifact size in bytes")
     model_format: ModelFormat = Field("unknown", description = "Model file format")
+    artifact_kind: LocalArtifactKind = Field(
+        "unknown",
+        description = "Structural contract, e.g. a Diffusers pipeline root vs a Transformers dir",
+    )
     runtime: ModelRuntime = Field("unknown", description = "Expected runtime backend")
     format_variant: Optional[str] = Field(
         None, description = "Format variant label, for example a GGUF quant"
@@ -275,6 +291,7 @@ class CachedRepoBase(BaseModel):
     inventory_id: Optional[str] = None
     load_id: Optional[str] = None
     model_format: ModelFormat = "unknown"
+    artifact_kind: LocalArtifactKind = "unknown"
     runtime: ModelRuntime = "unknown"
     format_variant: Optional[str] = None
     capabilities: LocalModelCapabilities = Field(default_factory = LocalModelCapabilities)
