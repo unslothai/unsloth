@@ -290,7 +290,14 @@ def _int8_linear_class():
             self.bias = None if bias is None else torch.nn.Parameter(bias, requires_grad = False)
 
         def forward(self, x):
-            w = self.qweight.to(x.dtype) * self.scale.to(x.dtype)
+            scale = self.scale
+            if scale.dtype == x.dtype:
+                # One elementwise pass: int8 * float promotes to the float dtype, so the cast and the per-row scale
+                # run in a single kernel. Same op math as cast-then-multiply (int8 -> fp16/fp32 is exact), so the
+                # weight is bit-identical; the separate multiply was a second full pass over the weight.
+                w = torch.mul(self.qweight, scale)
+            else:
+                w = self.qweight.to(x.dtype) * scale.to(x.dtype)
             return F.linear(x, w, None if self.bias is None else self.bias.to(x.dtype))
 
         def extra_repr(self) -> str:
