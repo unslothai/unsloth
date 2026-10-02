@@ -3580,3 +3580,389 @@ def test_a_module_level_false_flag_stays_quiet(tmp_path):
         "    return AutoModel.from_pretrained(name, trust_remote_code = REMOTE)\n",
     )
     assert not any(f["sink"].startswith("trust_remote_code = True") for f in findings)
+
+
+def test_torch_load_with_weights_only_off_is_a_sink(tmp_path):
+    """`torch.load(downloaded, weights_only = False)` runs the pickle-based loader.
+
+    That constructs arbitrary objects out of the checkpoint, which is the same execution
+    the `pickle` entries exist for, and the table covered only the `pickle` and `dill`
+    spellings.
+    """
+    findings = _scan(
+        tmp_path,
+        "import torch\n"
+        "from huggingface_hub import hf_hub_download\n"
+        "def load(repo):\n"
+        "    path = hf_hub_download(repo, 'weights.bin')\n"
+        "    return torch.load(path, weights_only = False)\n",
+    )
+    assert "torch.load(weights_only = False)" in _sinks(findings)
+
+
+def test_torch_load_through_a_bare_import_is_a_sink(tmp_path):
+    """`from torch import load`, resolved through the import table like every sink."""
+    findings = _scan(
+        tmp_path,
+        "from torch import load\n"
+        "from huggingface_hub import hf_hub_download\n"
+        "def go(repo):\n"
+        "    return load(hf_hub_download(repo, 'w.bin'), weights_only = False)\n",
+    )
+    assert "torch.load(weights_only = False)" in _sinks(findings)
+
+
+def test_torch_load_with_an_unproven_flag_is_a_sink(tmp_path):
+    """A `weights_only` this file cannot read as True is not proof that it is on."""
+    findings = _scan(
+        tmp_path,
+        "import torch\n"
+        "from huggingface_hub import hf_hub_download\n"
+        "def load(repo, flag):\n"
+        "    path = hf_hub_download(repo, 'weights.bin')\n"
+        "    return torch.load(path, weights_only = flag)\n",
+    )
+    assert "torch.load(weights_only = False)" in _sinks(findings)
+
+
+def test_torch_load_stays_quiet_when_weights_only_holds(tmp_path):
+    """The guards, and the reason this is not in the sink table.
+
+    The supported torch floor is 2.6, where `weights_only` defaults to True, so a call
+    that does not mention it is already restricted to tensors. Reporting those would
+    flag most weights loads in this tree for nothing, which is how a gate gets switched
+    off. An explicit True and a local name bound to True are the same answer.
+    """
+    head = (
+        "import torch\n"
+        "from huggingface_hub import hf_hub_download\n"
+        "def load(repo):\n"
+        "    path = hf_hub_download(repo, 'weights.bin')\n"
+    )
+    for tail, label in (
+        ("    return torch.load(path, weights_only = True)\n", "explicit True"),
+        ("    return torch.load(path)\n", "left at the default"),
+        ("    safe = True\n    return torch.load(path, weights_only = safe)\n", "local True"),
+    ):
+        findings = _scan(tmp_path, head + tail, name = "sample_%s.py" % label.replace(" ", "_"))
+        assert "torch.load(weights_only = False)" not in _sinks(findings), label
+
+
+def test_a_path_open_receiver_carries_its_taint(tmp_path):
+    """`Path(downloaded).open("rb")` carries the path on the receiver, not in the args.
+
+    The arguments are the mode, so the loop over them found nothing and the handle onto
+    attacker bytes read clean for the whole instance-method form.
+    """
+    findings = _scan(
+        tmp_path,
+        "import pickle\n"
+        "from pathlib import Path\n"
+        "from huggingface_hub import hf_hub_download\n"
+        "def load(repo):\n"
+        "    handle = Path(hf_hub_download(repo, 'w.pkl'))\n"
+        "    with handle.open('rb') as stream:\n"
+        "        return pickle.load(stream)\n",
+    )
+    assert "pickle.load" in _sinks(findings)
+
+
+def test_a_fixed_path_open_is_still_quiet(tmp_path):
+    """The guard: reading the receiver does not make every `.open` a source."""
+    findings = _scan(
+        tmp_path,
+        "import pickle\n"
+        "from pathlib import Path\n"
+        "def load():\n"
+        "    handle = Path('/opt/fixed.pkl')\n"
+        "    with handle.open('rb') as stream:\n"
+        "        return pickle.load(stream)\n",
+    )
+    assert _sinks(findings) == set()
+
+
+def test_an_annotated_instance_alias_keeps_its_type(tmp_path):
+    """`invoke: Runner = runner`, the annotated spelling of a rebinding.
+
+    This mirrored path called the other alias helpers and omitted the one that records
+    the type, so the method behind the second name did not resolve while the identical
+    unannotated assignment did.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "class Runner:\n"
+        "    def execute(self, command):\n"
+        "        return subprocess.run(command)\n"
+        "def load(blob):\n"
+        "    runner = Runner()\n"
+        "    invoke: Runner = runner\n"
+        "    return invoke.execute(json.loads(blob)['command'])\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_sink_stored_on_an_attribute_is_followed(tmp_path):
+    """`runner.loader = importlib.import_module` then `runner.loader(parsed)`.
+
+    Only name targets were recorded, so the binding was discarded and the call matched
+    neither the canonical table nor the alias table.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, importlib\n"
+        "class Runner:\n"
+        "    pass\n"
+        "def load(blob):\n"
+        "    runner = Runner()\n"
+        "    runner.loader = importlib.import_module\n"
+        "    return runner.loader(json.loads(blob)['module'])\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_sink_stored_on_self_is_read_by_another_method(tmp_path):
+    """The realistic shape: the constructor stores it, a method calls through it.
+
+    Separate passes, so the binding goes into the shared map under the same keys the
+    attribute reads use, exactly as the held instances already do.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, importlib\n"
+        "class Runner:\n"
+        "    def __init__(self):\n"
+        "        self.loader = importlib.import_module\n"
+        "    def go(self, blob):\n"
+        "        return self.loader(json.loads(blob)['module'])\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_getattr_stored_on_an_attribute_is_still_reflection(tmp_path):
+    """And `self.resolve = getattr`, which has its own check rather than a table entry."""
+    findings = _scan(
+        tmp_path,
+        "import json, transformers\n"
+        "class Runner:\n"
+        "    def __init__(self):\n"
+        "        self.resolve = getattr\n"
+        "    def go(self, blob):\n"
+        "        return self.resolve(transformers, json.loads(blob)['cls'])\n",
+    )
+    assert "getattr(module, ...)" in _sinks(findings)
+
+
+def test_an_unrelated_attribute_call_stays_quiet(tmp_path):
+    """The guard: a callable on an attribute that is not a sink is not one."""
+    findings = _scan(
+        tmp_path,
+        "import json\n"
+        "class Runner:\n"
+        "    def __init__(self):\n"
+        "        self.loader = len\n"
+        "    def go(self, blob):\n"
+        "        return self.loader(json.loads(blob)['module'])\n",
+    )
+    assert _sinks(findings) == set()
+
+
+def test_a_wildcard_import_resolves_its_callable(tmp_path):
+    """`from producer import *` then `execute(parsed)`.
+
+    Only the literal `*` was bound, so the call resolved to nothing and taint never
+    reached the helper. The exporting file is not parsed yet when the import is read, so
+    the base is kept and expanded against that file's exports on demand.
+    """
+    (tmp_path / "producer.py").write_text(
+        "import subprocess\ndef execute(command):\n    return subprocess.run(command)\n",
+        encoding = "utf-8",
+    )
+    consumer = tmp_path / "consumer.py"
+    consumer.write_text(
+        "import json\nfrom producer import *\n"
+        "def load(blob):\n"
+        "    return execute(json.loads(blob)['command'])\n",
+        encoding = "utf-8",
+    )
+    findings = L.scan([tmp_path / "producer.py", consumer], roots = [tmp_path])
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_wildcard_import_respects_dunder_all(tmp_path):
+    """The guard: a name `__all__` leaves out is not bound by `import *`.
+
+    Resolved against the exporting file rather than guessed, so the expansion cannot
+    invent a target that the star does not actually bind.
+    """
+    (tmp_path / "producer.py").write_text(
+        "import subprocess\n"
+        "__all__ = ['other']\n"
+        "def execute(command):\n"
+        "    return subprocess.run(command)\n"
+        "def other():\n"
+        "    pass\n",
+        encoding = "utf-8",
+    )
+    consumer = tmp_path / "consumer.py"
+    consumer.write_text(
+        "import json\nfrom producer import *\n"
+        "def load(blob):\n"
+        "    return execute(json.loads(blob)['command'])\n",
+        encoding = "utf-8",
+    )
+    findings = L.scan([tmp_path / "producer.py", consumer], roots = [tmp_path])
+    assert _sinks(findings) == set()
+
+
+def test_a_reexport_through_two_packages_is_followed(tmp_path):
+    """`pkg` -> `pkg.api` -> `pkg.api.impl`, where only the last one defines `execute`.
+
+    One hop landed on a file that does not define the symbol either, so the hop was
+    declined and the implementation was never analysed. Followed through the layers now,
+    bounded so a circular re-export terminates.
+    """
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "api").mkdir()
+    (tmp_path / "pkg" / "__init__.py").write_text("from pkg.api import execute\n", encoding = "utf-8")
+    (tmp_path / "pkg" / "api" / "__init__.py").write_text(
+        "from pkg.api.impl import execute\n", encoding = "utf-8"
+    )
+    (tmp_path / "pkg" / "api" / "impl.py").write_text(
+        "import subprocess\ndef execute(command):\n    return subprocess.run(command)\n",
+        encoding = "utf-8",
+    )
+    consumer = tmp_path / "consumer.py"
+    consumer.write_text(
+        "import json\nfrom pkg import execute\n"
+        "def load(blob):\n"
+        "    return execute(json.loads(blob)['command'])\n",
+        encoding = "utf-8",
+    )
+    findings = L.scan(
+        [
+            tmp_path / "pkg" / "__init__.py",
+            tmp_path / "pkg" / "api" / "__init__.py",
+            tmp_path / "pkg" / "api" / "impl.py",
+            consumer,
+        ],
+        roots = [tmp_path],
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_mapped_callback_receives_the_elements(tmp_path):
+    """`map(execute, parsed["commands"])` calls `execute` with every element.
+
+    The result carried the taint onward, which is right, but the callback was never
+    analysed with a tainted parameter, so a `subprocess.run` inside it ran every
+    attacker-chosen command with nothing reported.
+    """
+    (tmp_path / "producer.py").write_text(
+        "import subprocess\ndef execute(command):\n    return subprocess.run(command)\n",
+        encoding = "utf-8",
+    )
+    consumer = tmp_path / "consumer.py"
+    consumer.write_text(
+        "import json\nfrom producer import execute\n"
+        "def load(blob):\n"
+        "    return list(map(execute, json.loads(blob)['commands']))\n",
+        encoding = "utf-8",
+    )
+    findings = L.scan([tmp_path / "producer.py", consumer], roots = [tmp_path])
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_mapped_callback_over_a_literal_is_quiet(tmp_path):
+    """The guard: the callback is analysed with what it actually receives."""
+    (tmp_path / "producer.py").write_text(
+        "import subprocess\ndef execute(command):\n    return subprocess.run(command)\n",
+        encoding = "utf-8",
+    )
+    consumer = tmp_path / "consumer.py"
+    consumer.write_text(
+        "from producer import execute\n"
+        "def load():\n"
+        "    return list(map(execute, ['ls', 'pwd']))\n",
+        encoding = "utf-8",
+    )
+    findings = L.scan([tmp_path / "producer.py", consumer], roots = [tmp_path])
+    assert _sinks(findings) == set()
+
+
+def test_a_values_view_of_a_key_tainted_dict_is_quiet(tmp_path):
+    """`{parsed["label"]: ["echo", "ok"]}.values()` hands back only the fixed half.
+
+    Reading dict keys is right, because iterating a dict yields them, but marking the
+    whole literal tainted made `.values()` inherit it and blocked code whose every
+    iterated command is written out in the file.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def load(blob):\n"
+        "    table = {json.loads(blob)['label']: ['echo', 'ok']}\n"
+        "    for command in table.values():\n"
+        "        subprocess.run(command)\n",
+    )
+    assert _sinks(findings) == set()
+
+
+def test_the_key_half_of_that_dict_is_still_reported(tmp_path):
+    """The guard, four ways: everything that can expose the key still reports it."""
+    head = "import json, subprocess\ndef load(blob):\n    table = {json.loads(blob)['label']: ['echo']}\n"
+    shapes = {
+        "keys": "    for command in table.keys():\n        subprocess.run(command)\n",
+        "iteration": "    for command in table:\n        subprocess.run(command)\n",
+        "items": "    for key, command in table.items():\n        subprocess.run(key)\n",
+    }
+    for label, tail in shapes.items():
+        findings = _scan(tmp_path, head + tail, name = "sample_%s.py" % label)
+        assert "subprocess.run" in _sinks(findings), label
+    # And a dict whose VALUES are parsed is unaffected by the narrowing.
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def load(blob):\n"
+        "    table = {'label': json.loads(blob)['command']}\n"
+        "    for command in table.values():\n"
+        "        subprocess.run(command)\n",
+        name = "sample_values.py",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_rebinding_clears_the_key_only_narrowing(tmp_path):
+    """The narrowing is per binding: the second assignment reopens the name.
+
+    This is the one piece of state here that suppresses a finding, so it is also the one
+    that is not accumulated across passes of the fixpoint and not carried out of a
+    nested scope.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def load(blob):\n"
+        "    table = {json.loads(blob)['label']: ['echo', 'ok']}\n"
+        "    table = {'label': json.loads(blob)['command']}\n"
+        "    for command in table.values():\n"
+        "        subprocess.run(command)\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_nested_key_only_dict_does_not_clear_the_outer_one(tmp_path):
+    """And a nested body's narrowing stays inside it."""
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def load(blob):\n"
+        "    table = {'label': json.loads(blob)['command']}\n"
+        "    def inner():\n"
+        "        table = {json.loads(blob)['label']: ['echo']}\n"
+        "        return table\n"
+        "    inner()\n"
+        "    for command in table.values():\n"
+        "        subprocess.run(command)\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
