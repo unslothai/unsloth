@@ -2,7 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { fromMarkdown } from "mdast-util-from-markdown";
-import type { ConversationMarkdownMessage } from "./conversation-markdown.ts";
+import {
+  CONVERSATION_MARKDOWN_FRAME_PREFIX,
+  type ConversationMarkdownMessage,
+} from "./conversation-markdown.ts";
 
 type MarkdownNode = ReturnType<typeof fromMarkdown>["children"][number];
 
@@ -14,6 +17,76 @@ const LABEL_TO_ROLE = new Map([
   ["Message", ""],
   ["Tool", "tool"],
 ]);
+
+const FRAME_END = " -->\n\n";
+const CHAT_SEPARATOR = "\n---\n\n";
+const TITLE_LINE = /^# ([^\n]*)\n\n/;
+const ROLE_LINE = /^## ([^\n]+)\n\n/;
+
+function parseFramedDocument(
+  text: string,
+  fallbackTitle: string,
+): ParsedMarkdownConversation[] | undefined {
+  const conversations: ParsedMarkdownConversation[] = [];
+  let offset = 0;
+  while (offset < text.length) {
+    const title = TITLE_LINE.exec(text.slice(offset));
+    const frameStart = offset + (title?.[0].length ?? 0);
+    if (!text.startsWith(CONVERSATION_MARKDOWN_FRAME_PREFIX, frameStart)) {
+      if (offset === 0) return;
+      throw new Error("Missing Studio Markdown conversation framing.");
+    }
+    const metadataStart =
+      frameStart + CONVERSATION_MARKDOWN_FRAME_PREFIX.length;
+    const metadataEnd = text.indexOf(FRAME_END, metadataStart);
+    let lengths: unknown;
+    try {
+      lengths = JSON.parse(text.slice(metadataStart, metadataEnd));
+    } catch {
+      throw new Error("Invalid Studio Markdown conversation framing.");
+    }
+    if (
+      metadataEnd < 0 ||
+      !Array.isArray(lengths) ||
+      lengths.length === 0 ||
+      !lengths.every((length) => Number.isSafeInteger(length) && length > 0)
+    ) {
+      throw new Error("Invalid Studio Markdown message lengths.");
+    }
+    offset = metadataEnd + FRAME_END.length;
+    const messages: ConversationMarkdownMessage[] = [];
+    for (const [index, length] of lengths.entries()) {
+      const section = text.slice(offset, offset + length);
+      const heading = ROLE_LINE.exec(section);
+      if (section.length !== length || !heading) {
+        throw new Error("Incomplete Studio Markdown message.");
+      }
+      const label = heading[1];
+      messages.push({
+        role:
+          LABEL_TO_ROLE.get(label) ??
+          `${label[0].toLowerCase()}${label.slice(1)}`,
+        content: section.slice(heading[0].length),
+      });
+      offset += length;
+      const separator = index === lengths.length - 1 ? "\n" : "\n\n";
+      if (!text.startsWith(separator, offset)) {
+        throw new Error("Invalid Studio Markdown message boundary.");
+      }
+      offset += separator.length;
+    }
+    conversations.push({ title: title?.[1] ?? fallbackTitle, messages });
+    if (!text.slice(offset).trim()) break;
+    if (!text.startsWith(CHAT_SEPARATOR, offset)) {
+      throw new Error("Invalid Studio Markdown conversation boundary.");
+    }
+    offset += CHAT_SEPARATOR.length;
+    if (offset === text.length) {
+      throw new Error("Missing Studio Markdown conversation framing.");
+    }
+  }
+  return conversations;
+}
 
 function roleHeading(node: MarkdownNode | undefined, text: string) {
   if (node?.type !== "heading" || node.depth !== 2) return;
@@ -73,8 +146,11 @@ function messagesFromNodes(
 export function parseConversationMarkdownMessages(
   body: string,
 ): ConversationMarkdownMessage[] {
-  const text = body.replace(/\r\n/g, "\n");
-  return messagesFromNodes(text, fromMarkdown(text).children, text.length);
+  const text = body.replace(/\r\n?/g, "\n");
+  const framed = parseFramedDocument(text, "");
+  return framed
+    ? framed.flatMap((conversation) => conversation.messages)
+    : messagesFromNodes(text, fromMarkdown(text).children, text.length);
 }
 
 export type ParsedMarkdownConversation = {
@@ -86,7 +162,9 @@ export function parseConversationMarkdownDocument(
   input: string,
   fallbackTitle: string,
 ): ParsedMarkdownConversation[] {
-  const text = input.replace(/\r\n/g, "\n").trimStart();
+  const text = input.replace(/\r\n?/g, "\n").trimStart();
+  const framed = parseFramedDocument(text, fallbackTitle);
+  if (framed) return framed;
   const nodes = fromMarkdown(text).children;
   const firstTitle = documentTitle(nodes, 0, text);
   let title = firstTitle?.title ?? fallbackTitle;

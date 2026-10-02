@@ -3,7 +3,10 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildNamedConversationsMarkdown } from "../src/features/chat/utils/conversation-markdown-export.ts";
+import {
+  buildNamedConversationsMarkdown,
+  createConversationMarkdownBuilder,
+} from "../src/features/chat/utils/conversation-markdown-export.ts";
 import {
   parseConversationMarkdownDocument,
   parseConversationMarkdownMessages,
@@ -97,4 +100,65 @@ test("does not import an ordinary markdown document as a conversation", () => {
     parseConversationMarkdownDocument("## Summary\n\nA report.", "report"),
     [],
   );
+});
+
+for (const content of [
+  "Template:\n\n## User\n\nAsk a question.\n\n## Assistant\n\nAnswer it.",
+  "First part\n\n---\n\n# Another chat\n\n## System\n\nStill part of the answer.",
+  "Literal metadata: \n\n<!-- unsloth-chat-v1:[14] -->\n\n## User\n\nHello\n\nDone.",
+  "hello\r",
+  "Unicode 🦥 café\r\n\r\n## User\r\n\r\nA Windows template.",
+]) {
+  test(`framed exports preserve literal transcript boundaries: ${JSON.stringify(content)}`, async () => {
+    const messages = [{ role: "assistant", content }];
+    const expected = [
+      { role: "assistant", content: content.replace(/\r\n?/g, "\n") },
+    ];
+    const build = createConversationMarkdownBuilder({
+      loadMessages: async () => messages,
+      renderMessage: (message) => message.content,
+    });
+    const single = await build("first");
+    assert.ok(single);
+    assert.deepEqual(parseConversationMarkdownDocument(single, "chat"), [
+      { title: "chat", messages: expected },
+    ]);
+    const combined = await buildNamedConversationsMarkdown(
+      [
+        { id: "first", title: "First" },
+        { id: "second", title: "Second" },
+      ],
+      build,
+    );
+    for (const text of [combined, combined.replaceAll("\n", "\r\n")]) {
+      assert.deepEqual(parseConversationMarkdownDocument(text, "chat"), [
+        { title: "First", messages: expected },
+        { title: "Second", messages: expected },
+      ]);
+    }
+  });
+}
+
+test("rejects damaged framed exports rather than importing partial messages", async () => {
+  const build = createConversationMarkdownBuilder({
+    loadMessages: async () => [
+      { role: "assistant", content: "A complete answer." },
+    ],
+    renderMessage: (message) => message.content,
+  });
+  const exported = await build("chat");
+  assert.ok(exported);
+  for (const invalid of [
+    exported.slice(0, -8),
+    exported.replace("unsloth-chat-v1:[", "unsloth-chat-v1:[0,"),
+    exported.replace("unsloth-chat-v1:[", 'unsloth-chat-v1:["x",'),
+    `${exported}unexpected trailing content`,
+    `${exported}\n---\n\n`,
+    `${exported}\n---\n\n# Incomplete chat\n\n## User\n\nHello\n`,
+  ]) {
+    assert.throws(
+      () => parseConversationMarkdownDocument(invalid, "chat"),
+      /Studio Markdown/,
+    );
+  }
 });

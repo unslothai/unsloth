@@ -154,18 +154,20 @@ const edited = storedMessages([
 
 test("Markdown follows the older reply picked in the branch picker", async () => {
   const expected = "## User\n\nName one fruit.\n\n## Assistant\n\nApples.\n";
+  const expectedExport = `<!-- unsloth-chat-v1:[24,21] -->\n\n${expected}`;
   assert.deepEqual(await markdownOutputs(regenerated, ["u1", "a1"]), {
-    copied: expected,
-    downloads: [expected],
+    copied: expectedExport,
+    downloads: [expectedExport],
     sources: [expected],
   });
 });
 
 test("Markdown leaves out the reply a regeneration replaced", async () => {
   const expected = "## User\n\nName one fruit.\n\n## Assistant\n\nPears.\n";
+  const expectedExport = `<!-- unsloth-chat-v1:[24,20] -->\n\n${expected}`;
   assert.deepEqual(await markdownOutputs(regenerated), {
-    copied: expected,
-    downloads: [expected],
+    copied: expectedExport,
+    downloads: [expectedExport],
     sources: [expected],
   });
 });
@@ -173,9 +175,10 @@ test("Markdown leaves out the reply a regeneration replaced", async () => {
 // Mid-switch the branch on screen is briefly an empty list, which is no opinion about which reply is showing.
 test("Markdown still exports while the switched-to chat is loading", async () => {
   const expected = "## User\n\nName one fruit.\n\n## Assistant\n\nPears.\n";
+  const expectedExport = `<!-- unsloth-chat-v1:[24,20] -->\n\n${expected}`;
   assert.deepEqual(await markdownOutputs(regenerated, []), {
-    copied: expected,
-    downloads: [expected],
+    copied: expectedExport,
+    downloads: [expectedExport],
     sources: [expected],
   });
 });
@@ -192,15 +195,17 @@ test("CSV still writes both replies while markdown writes one", async () => {
 
 test("Markdown follows the prompt version on screen", async () => {
   const older = "## User\n\nName one color.\n\n## Assistant\n\nBlue.\n";
+  const olderExport = `<!-- unsloth-chat-v1:[24,19] -->\n\n${older}`;
   assert.deepEqual(await markdownOutputs(edited, ["u1", "a1"]), {
-    copied: older,
-    downloads: [older],
+    copied: olderExport,
+    downloads: [olderExport],
     sources: [older],
   });
   const newer = "## User\n\nName one animal.\n\n## Assistant\n\nCat.\n";
+  const newerExport = `<!-- unsloth-chat-v1:[25,18] -->\n\n${newer}`;
   assert.deepEqual(await markdownOutputs(edited), {
-    copied: newer,
-    downloads: [newer],
+    copied: newerExport,
+    downloads: [newerExport],
     sources: [newer],
   });
 });
