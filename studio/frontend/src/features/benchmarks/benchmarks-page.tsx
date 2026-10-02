@@ -33,9 +33,9 @@ import { HistoryGrid } from "./components/history-grid";
 import { RunResults } from "./components/results-panel";
 import { RunPreviewCard } from "./components/run-preview";
 import {
-  BenchModelPicker,
   SetupPanel,
   StatPill,
+  SweepsModelPicker,
 } from "./components/setup-panel";
 import { TuneVerdictCard } from "./components/tune-section";
 import { useLocale } from "@/i18n";
@@ -483,7 +483,7 @@ export function BenchmarksPage(): ReactElement {
             <div className="flex min-w-0 flex-wrap items-center gap-3 border-b border-border/60">
               <BenchSubNav value={tab} runCount={runs.length} />
               <div className="ml-auto min-w-0 max-w-full pb-1.5 sm:max-w-[60%]">
-                <BenchModelPicker status={status} locked={Boolean(live)} />
+                <SweepsModelPicker status={status} locked={Boolean(live)} />
               </div>
             </div>
           </header>

@@ -62,6 +62,7 @@ import {
   toCsv,
   toMarkdown,
 } from "../lib/bench-math";
+import { BENCH_CARD } from "./bench-ui";
 import { BenchChart, type ChartKind, type PendingRow } from "./bench-chart";
 import { svgToPng, svgToString } from "./chart-export";
 import { useFamilyColors } from "./family-colors";
@@ -202,8 +203,7 @@ function ResultsTable({
   );
 }
 
-const CARD =
-  "corner-squircle rounded-3xl bg-card ring-1 ring-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-edge-gain,1)),transparent)]";
+const CARD = BENCH_CARD;
 
 const TOP_ROWS = 8;
 

@@ -21,7 +21,6 @@ import {
   type InferenceStatusResponse,
   useChatRuntimeStore,
 } from "@/features/chat";
-import { ModelSelector } from "@/features/model-picker";
 import { cn } from "@/lib/utils";
 import {
   ArrowDown01Icon,
@@ -50,6 +49,7 @@ import {
   familyOf,
 } from "../lib/bench-math";
 import { type BenchKind, useBenchmarksStore } from "../stores/benchmarks-store";
+import { BenchModelPicker } from "./bench-model-picker";
 import { useFamilyColors } from "./family-colors";
 import { useFitToViewport } from "./use-fit-to-viewport";
 
@@ -82,7 +82,7 @@ export function StatPill({
 }
 
 /** Train's field: small-caps label with an info hint, then the control. */
-function Field({
+export function Field({
   label,
   hint,
   aside,
@@ -111,7 +111,7 @@ function Field({
 
 /** A number box that clamps when you leave it, not on every keystroke, so clearing it to
  * type a new value doesn't snap to the minimum. */
-function CountInput({
+export function CountInput({
   value,
   min,
   max,
@@ -310,8 +310,9 @@ function PromptListEditor({
 }
 
 /** Chat's own model picker, on-device GGUFs and their quants. Picking one other than the
- * loaded model makes the run load it first, with chat's Run Settings. */
-export function BenchModelPicker({
+ * loaded model makes the run load it first, with chat's Run Settings. Backed by the sweeps
+ * store; the dropdown itself is the shared BenchModelPicker the Evals page uses too. */
+export function SweepsModelPicker({
   status,
   locked,
 }: {
@@ -335,31 +336,30 @@ export function BenchModelPicker({
     [models],
   );
   return (
-    <div className={cn("min-w-0", locked && "pointer-events-none opacity-60")}>
-      <ModelSelector
-        models={pickable}
-        value={config.tuneModel ?? status?.active_model ?? undefined}
-        activeGgufVariant={
-          config.tuneModel
-            ? (config.tuneVariant ?? null)
-            : (status?.gguf_variant ?? null)
-        }
-        loaded={!config.tuneModel && Boolean(status?.active_model)}
-        onValueChange={(value, meta) => {
-          const same =
-            value === status?.active_model &&
-            (meta.ggufVariant ?? null) === (status?.gguf_variant ?? null);
-          setConfig(
-            same
-              ? { tuneModel: null, tuneVariant: null }
-              : { tuneModel: value, tuneVariant: meta.ggufVariant ?? null },
-          );
-        }}
-        variant="ghost"
-        className="!h-[calc(34px*var(--ui-space-scale,1))] max-w-full"
-        placeholder="Pick a GGUF to benchmark"
-      />
-    </div>
+    <BenchModelPicker
+      models={pickable}
+      value={config.tuneModel ?? status?.active_model ?? undefined}
+      ggufVariant={
+        config.tuneModel
+          ? (config.tuneVariant ?? null)
+          : (status?.gguf_variant ?? null)
+      }
+      loaded={!config.tuneModel && Boolean(status?.active_model)}
+      locked={locked}
+      variant="ghost"
+      className="!h-[calc(34px*var(--ui-space-scale,1))] max-w-full"
+      placeholder="Pick a GGUF to benchmark"
+      onPick={(value, meta) => {
+        const same =
+          value === status?.active_model &&
+          (meta.ggufVariant ?? null) === (status?.gguf_variant ?? null);
+        setConfig(
+          same
+            ? { tuneModel: null, tuneVariant: null }
+            : { tuneModel: value, tuneVariant: meta.ggufVariant ?? null },
+        );
+      }}
+    />
   );
 }
 
