@@ -197,3 +197,78 @@ def test_small_m_and_misaligned_keep_stock(forced):
     with torch.inference_mode():
         ok(torch.randn(16, 1024, device = "cuda", dtype = torch.bfloat16))  # M = 16 < _int_mm's floor: stock
     assert g8.call_count() == before
+
+
+# ----------------------------------------------------------------------------------------------- ConvRot (MiniMax-H3)
+
+
+def _convrot(lin, group = 256):
+    from core.inference.diffusion_convrot import _install_rotation
+
+    _install_rotation(lin, group)
+    return lin
+
+
+def test_convrot_linear_is_eligible_with_its_group(monkeypatch):
+    monkeypatch.delenv(g8.INT8_GEMM_CONVROT_ENV, raising = False)
+    scale = torch.ones(256, dtype = torch.bfloat16)
+    monkeypatch.setattr(g8, "_v1_parts", lambda w: (torch.zeros(256, 512, dtype = torch.int8), scale))
+    lin = _convrot(torch.nn.Linear(512, 256, bias = False))
+    rec = g8._eligible(lin)
+    assert rec is not None and rec[:2] == ("v1", 256) and rec[3] is lin.weight
+    # its own kill switch keeps the rotated Linears stock without touching plain ones
+    monkeypatch.setenv(g8.INT8_GEMM_CONVROT_ENV, "0")
+    assert g8._eligible(lin) is None
+    assert g8._eligible(torch.nn.Linear(512, 256, bias = False))[:2] == ("v1", None)
+
+
+def test_other_linear_subclasses_and_bad_groups_stay_stock(monkeypatch):
+    monkeypatch.delenv(g8.INT8_GEMM_CONVROT_ENV, raising = False)
+    monkeypatch.setattr(
+        g8, "_v1_parts", lambda w: (torch.zeros(256, 512, dtype = torch.int8), torch.ones(256, dtype = torch.bfloat16))
+    )
+
+    class Other(torch.nn.Linear):
+        pass
+
+    assert g8._eligible(Other(512, 256, bias = False)) is None
+    lin = _convrot(torch.nn.Linear(512, 256, bias = False))
+    lin.convrot_groupsize = 1024  # does not divide in_features: the forward could not rotate it
+    assert g8._eligible(lin) is None
+
+
+@needs_cuda
+@pytest.mark.parametrize("version", [None, 2])
+def test_convrot_linear_swap_is_bit_identical_eager_and_compiled(forced, monkeypatch, version):
+    """MiniMax-H3's rotated int8 Linear (and its fused QKV): rotation, act quant, fused GEMM == ConvRotLinear.forward."""
+    from torch._dynamo.utils import counters
+
+    monkeypatch.delenv(g8.INT8_GEMM_CONVROT_ENV, raising = False)
+    stock = _convrot(_int8_linear(1024, 768, False, version))
+    fused = _convrot(_int8_linear(1024, 768, False, version))
+    holder = torch.nn.Sequential(fused)
+    assert g8.install(holder) == 1 and g8.is_installed(fused)
+    x = torch.randn(2, 300, 1024, device = "cuda", dtype = torch.bfloat16) * 3
+    x[0, 7, :5] *= 200  # an outlier row, what the rotation exists for
+    with torch.inference_mode():
+        before = g8.call_count()
+        assert torch.equal(fused(x), stock(x))
+        assert g8.call_count() == before + 1
+        counters.clear()
+        torch._dynamo.reset()
+        with torch._inductor.config.patch(emulate_precision_casts = True):
+            out = torch.compile(fused, fullgraph = True)(x)
+            assert not counters["graph_break"]
+            assert torch.equal(out, torch.compile(stock, fullgraph = True)(x))
+    g8.uninstall(holder)
+    assert not g8.is_installed(fused)
+
+
+@needs_cuda
+def test_convrot_kill_switch_keeps_rotated_linears_stock(forced, monkeypatch):
+    monkeypatch.setenv(g8.INT8_GEMM_CONVROT_ENV, "0")
+    rotated = _convrot(_int8_linear(1024, 768, False, None))
+    plain = _int8_linear(1024, 768, False, None)
+    holder = torch.nn.Sequential(rotated, plain)
+    assert g8.install(holder) == 1
+    assert g8.is_installed(plain) and not g8.is_installed(rotated)

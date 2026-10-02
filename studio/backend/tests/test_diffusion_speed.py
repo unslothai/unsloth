@@ -2333,3 +2333,33 @@ def test_family_compiles_regionally_closes_the_dynamo_import_window_first(monkey
     fam = types.SimpleNamespace(transformer_class = "Lumina2Transformer2DModel")
     assert family_compiles_regionally(fam) is True
     assert events[:2] == ["guard", "probe"]
+
+
+@pytest.mark.parametrize(
+    "offload_active, denoiser_offloaded, expected",
+    [(True, False, False), (True, True, True), (True, None, True), (False, None, False)],
+)
+def test_int8_gemm_install_follows_the_denoiser_placement(
+    monkeypatch, offload_active, denoiser_offloaded, expected
+):
+    """A denoiser pinned resident under an offload rotation of the OTHER components (MiniMax-H3 on a 40 GB card)
+    still takes the fused int8 GEMM; only a moving denoiser keeps the stock path."""
+    from core.inference import diffusion_int8_gemm, diffusion_speed as ds_mod
+
+    seen = []
+    monkeypatch.setattr(
+        diffusion_int8_gemm, "install", lambda t, logger = None, offload_active = False: seen.append(offload_active) or 0
+    )
+
+    class _DiT:
+        def compile_repeated_blocks(self, **kwargs):
+            return None
+
+    monkeypatch.setattr(ds_mod, "_denoiser_dits", lambda pipe: [_DiT()])
+    ds_mod._compile_repeated_blocks(
+        types.SimpleNamespace(),
+        None,
+        offload_active = offload_active,
+        denoiser_offloaded = denoiser_offloaded,
+    )
+    assert seen == [expected]

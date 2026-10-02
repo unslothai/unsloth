@@ -21,6 +21,12 @@ RTX PRO 6000 0.138 -> 0.119, LPIPS vs the stock path inside its own compiled-vs-
 ROCm (weight-only int8 there) and CPU never reach it.
 
 Kill switch: ``UNSLOTH_DIFFUSION_INT8_GEMM=0``; ``=1`` also enables it on an unmeasured arch (still probe-gated).
+
+ConvRot Linears (``diffusion_convrot.ConvRotLinear``, MiniMax-H3's pre-quantized denoiser and its fused QKV) take the
+same kernel: the block-Hadamard rotation runs first, with the exact ops of ``ConvRotLinear.forward``, then torchao's
+activation quant and the fused GEMM, so the Linear output stays bit-identical to the stock rotated Linear in eager.
+MiniMax-H3 960x544x124, per denoiser call, int8 GEMM + dequant: <filled in from the Colab A/B>.
+Own kill switch: ``UNSLOTH_DIFFUSION_INT8_GEMM_CONVROT=0`` keeps rotated Linears on the stock path.
 """
 
 from __future__ import annotations
@@ -32,6 +38,7 @@ from functools import lru_cache
 from typing import Any, Optional
 
 INT8_GEMM_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM"
+INT8_GEMM_CONVROT_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_CONVROT"
 _MIN_TRITON = (3, 2)
 # Stock torch._int_mm needs M > 16; below that the stock path (padding wrappers, safe_int_mm) stays in charge.
 _MIN_ROWS = 17
@@ -66,6 +73,12 @@ def int8_gemm_mode() -> str:
     if raw in ("1", "on", "true", "yes", "force"):
         return "force"
     return "auto"
+
+
+def convrot_enabled() -> bool:
+    """Rotated (ConvRot) Linears take the fused GEMM unless ``UNSLOTH_DIFFUSION_INT8_GEMM_CONVROT=0``."""
+    raw = (os.environ.get(INT8_GEMM_CONVROT_ENV) or "").strip().lower()
+    return raw not in ("0", "off", "false", "no")
 
 
 def _triton_version_ok(version: Optional[str] = None) -> bool:
@@ -435,7 +448,7 @@ def _linear_forward(self: Any, x: Any) -> Any:
     rec = self.__dict__.get(_REC)
     if rec is None or x.dtype != torch.bfloat16 or not x.is_cuda:
         return type(self).forward(self, x)
-    kind, _wq, _ws, weight = rec
+    kind, group, _ws, weight = rec
     if self.weight is not weight:  # weight replaced since install (reload / LoRA bake): stock
         return type(self).forward(self, x)
     # Read the int8 payload off the live parameter, never a cached alias: a placement change that moves the weight
@@ -448,9 +461,16 @@ def _linear_forward(self: Any, x: Any) -> Any:
     if wq.device != x.device:
         return type(self).forward(self, x)
     lead = x.shape[:-1]
-    x2d = x.reshape(-1, x.shape[-1])
-    if x2d.shape[0] < _MIN_ROWS:
+    if x.numel() < _MIN_ROWS * x.shape[-1]:
         return type(self).forward(self, x)
+    if group is not None:
+        # ConvRotLinear.forward's own rotation, same ops and dtype, so the GEMM sees the input the stock path quantizes.
+        from .diffusion_convrot import build_convrot_hadamard, rotate_convrot_activation
+
+        x = rotate_convrot_activation(
+            x, build_convrot_hadamard(group, device = x.device, dtype = x.dtype), group
+        )
+    x2d = x.reshape(-1, x.shape[-1])
     if kind == "v1":
         xq, xs = _act_quant_v1(x2d)
     else:
@@ -477,11 +497,32 @@ def linear_from_q(q: Any, xs: Any, weight: Any, bias: Any) -> Optional[Any]:
     return _OP_HANDLE(q, parts[0], xs.reshape(-1), parts[1], bias)
 
 
+def _rotation_group(module: Any) -> Optional[int]:
+    """The ConvRot group of a rotated Linear whose input the forward above can rotate, else None."""
+    try:
+        from .diffusion_convrot import convrot_linear_class, is_power_of_four
+
+        if type(module) is not convrot_linear_class():
+            return None
+        group = module.convrot_groupsize
+        if not is_power_of_four(group) or module.in_features % group:
+            return None
+        return int(group)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _eligible(module: Any) -> Optional[tuple]:
+    """(kind, rotation group or None, scale, weight) for a Linear the fused GEMM can run, else None."""
     from torch import nn
 
-    if type(module) is not nn.Linear:  # a subclass (ConvRotLinear) transforms the input first
-        return None
+    group = None
+    if type(module) is not nn.Linear:
+        # The one subclass taken is ConvRotLinear, whose input rotation _linear_forward reproduces; any other subclass
+        # transforms its input in a way this forward would skip.
+        group = _rotation_group(module) if convrot_enabled() else None
+        if group is None:
+            return None
     w = module.weight
     bias = module.bias
     import torch
@@ -497,10 +538,10 @@ def _eligible(module: Any) -> Optional[tuple]:
         return None
     parts = _v1_parts(w)
     if parts is not None and parts[1].dtype == torch.bfloat16:
-        return ("v1",) + parts + (w,)
+        return ("v1", group, parts[1], w)
     parts = _v2_parts(w)
     if parts is not None and parts[1].dtype in (torch.bfloat16, torch.float32):
-        return ("v2",) + parts + (w,)
+        return ("v2", group, parts[1], w)
     return None
 
 
@@ -561,7 +602,7 @@ def _finalize(transformer: Any, logger: Any = None) -> int:
             if _MARK in module.__dict__:
                 count += 1
                 continue
-            module.__dict__[_REC] = (rec[0], None, None, rec[3])  # kind + the Parameter, no payload alias
+            module.__dict__[_REC] = (rec[0], rec[1], None, rec[3])  # kind, rotation, the Parameter; no payload alias
             module.__dict__[_MARK] = module.__dict__.get("forward", _NO_PREV)
             module.forward = types.MethodType(_linear_forward, module)
             count += 1

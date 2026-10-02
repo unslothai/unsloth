@@ -7258,6 +7258,9 @@ class VideoBackend:
                 # The conditioner and the VAEs stay in the rotation even when the denoiser is pinned, so the onload
                 # hooks are live and fullgraph has to drop.
                 offload_active = offload_policy != "none",
+                # The denoiser's OWN placement: pinned resident under the rotation (model offload) it never moves, so
+                # the fused int8 GEMM, which needs its weights on the card, engages there as on a hookless load.
+                denoiser_offloaded = bool(denoiser_streamed) or not denoiser_pinned,
                 cuda_graph_default = False,
                 logger = logger,
             )
