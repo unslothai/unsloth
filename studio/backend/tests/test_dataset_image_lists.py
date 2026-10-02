@@ -36,6 +36,14 @@ def _llava_row():
     }
 
 
+def _llava_row_without_index():
+    row = _llava_row()
+    for message in row["messages"]:
+        for part in message["content"]:
+            part.pop("index", None)
+    return row
+
+
 def _image_part_row():
     return {
         "messages": [
@@ -52,6 +60,18 @@ def _image_part_row():
             },
         ]
     }
+
+
+def _image_part_row_after_system_message():
+    row = _image_part_row()
+    row["messages"].insert(
+        0,
+        {
+            "role": "system",
+            "content": [{"type": "text", "image": None, "text": "Answer accurately."}],
+        },
+    )
+    return row
 
 
 def _text_parts_row():
@@ -77,7 +97,17 @@ def _encoded_audio_row():
     "row, expected_vlm_format",
     [
         pytest.param(_llava_row(), "vlm_messages_llava", id = "images-list"),
+        pytest.param(
+            _llava_row_without_index(),
+            "vlm_messages_llava",
+            id = "images-list-without-index",
+        ),
         pytest.param(_image_part_row(), "vlm_messages", id = "image-parts"),
+        pytest.param(
+            _image_part_row_after_system_message(),
+            "vlm_messages",
+            id = "image-parts-after-system-message",
+        ),
     ],
 )
 def test_images_in_a_list_or_in_messages_are_detected(row, expected_vlm_format):
