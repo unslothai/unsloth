@@ -5287,8 +5287,7 @@ class VideoBackend:
         )
         # Bound only at the commit past the token check: a superseded load may return from the install late.
         _nvfp4_install_outcome: Optional[tuple[bool, str]] = None
-        # Video DiTs are bf16-native; fp16 overflows, so a resolved fp16 promotes to float32 unless the family was
-        # measured finite in fp16 or carries an fp16 guard (VideoFamily.fp16_guard; UNSLOTH_STUDIO_FP16_GUARD=0 opts out).
+        # Video DiTs are bf16-native: fp16 promotes to float32 unless the family declares an fp16_guard.
         dtype = target.dtype
         if fp16_promotes_to_fp32(fam) and dtype is torch.float16:
             dtype = torch.float32

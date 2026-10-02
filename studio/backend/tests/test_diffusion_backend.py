@@ -3872,10 +3872,9 @@ def test_resolve_compute_dtype_promotes_fp16_for_zimage(fake_runtime, monkeypatc
     torch = sys.modules["torch"]
     z = detect_family("unsloth/Z-Image-GGUF")
     q = detect_family("unsloth/Qwen-Image-GGUF")
-    # Z-Image keeps fp16 behind its guard (diffusers block matches the recipe) ...
     monkeypatch.setattr(guard, "_recipe_supported", lambda fam, recipe: True)
     assert _resolve_diffusion_compute_dtype(z, torch.float16) is torch.float16
-    # ... and promotes fp16 to fp32 under the kill switch; bf16 / fp32 pass through unchanged.
+    # Kill switch: fp16 promotes to fp32; bf16 / fp32 unchanged.
     monkeypatch.setenv(guard.FP16_GUARD_ENV, "0")
     assert _resolve_diffusion_compute_dtype(z, torch.float16) is torch.float32
     assert _resolve_diffusion_compute_dtype(z, torch.bfloat16) is torch.bfloat16
@@ -3889,8 +3888,7 @@ def test_load_promotes_fp16_to_fp32_for_zimage_only(fake_runtime, monkeypatch, t
     from core.inference import diffusion_fp16_guard as guard
 
     torch = sys.modules["torch"]
-    # Pre-Ampere CUDA resolves to fp16. Z-Image stays fp16 behind its guard; under the kill switch (or a diffusers
-    # block the recipe does not recognise) it is promoted to fp32 (and only Z-Image), or it renders black.
+    # Pre-Ampere resolves fp16: Z-Image stays fp16 behind its guard; the kill switch promotes it (and only it) to fp32.
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True, raising = False)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda: (7, 5), raising = False)
     (tmp_path / "m.gguf").write_bytes(b"x")

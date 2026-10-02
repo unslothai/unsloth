@@ -29,9 +29,6 @@ def _video(name):
     return next(f for f in _VIDEO_FAMILIES if f.name == name)
 
 
-# capability flag resolution
-
-
 def test_every_declared_recipe_is_known():
     for fam in (*_FAMILIES, *_VIDEO_FAMILIES):
         recipe = getattr(fam, "fp16_guard", None)
@@ -89,9 +86,6 @@ def test_bf16_and_fp32_never_change():
     for fam in (*_FAMILIES, None):
         for dt in (torch.bfloat16, torch.float32):
             assert _resolve_diffusion_compute_dtype(fam, dt) is dt
-
-
-# the rescale on a tiny Z-Image-shaped block
 
 
 class _RMS(nn.Module):
@@ -288,8 +282,7 @@ def test_real_diffusers_zimage_source_matches_recipe(monkeypatch):
 
 
 class _LoRALinear(nn.Module):
-    """Minimal LoRA wrapper (base + B @ A), standing in for peft's so the test does not depend on its torchao
-    dispatch."""
+    """base + B @ A; peft's own injection imports torchao symbols some versions lack."""
 
     def __init__(self, base):
         super().__init__()
