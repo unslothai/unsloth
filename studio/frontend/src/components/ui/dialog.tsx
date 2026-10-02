@@ -59,6 +59,7 @@ function DialogOverlay({
   return (
     <DialogPrimitive.Overlay
       data-slot="dialog-overlay"
+      data-viewport-backdrop={position === "fixed" ? true : undefined}
       className={cn(
         "data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 bg-black/30 supports-backdrop-filter:backdrop-blur-[2px] duration-100  inset-0 isolate z-50",
         position === "fixed" ? "fixed" : "absolute",

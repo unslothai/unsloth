@@ -43,6 +43,7 @@ from functools import lru_cache
 from typing import Any, Iterator, Optional
 
 from . import diffusion_compile_config as compile_config
+from .diffusion_bg_compile import eager_forced as _bg_eager_forced
 from . import diffusion_gguf_compile as gguf_compile
 
 SPEED_OFF = "off"
@@ -918,6 +919,12 @@ def _compile_repeated_blocks(
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "compile_repeated_blocks", exc)
         return False
+    # A block whose attention runs inside sdpa_kernel would otherwise bypass AOTAutogradCache on every start.
+    try:
+        from . import diffusion_aot_cache
+        diffusion_aot_cache.install(logger)
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, "sdpa aot cache", exc)
     if unet is not None:
         # Whole-module static compile for the U-Net classes above. fullgraph mirrors the regional decision; dynamic is
         # ALWAYS False, so each new (height, width, batch) pays its own compile. ``Module.compile`` keeps the module
@@ -987,6 +994,12 @@ def _compile_repeated_blocks(
         try:
             transformer.compile_repeated_blocks(**dit_kwargs)
             engaged = True
+            # Kept so a caller that moves the compile below an offload hook (MiniMax-H3's streamed denoiser) compiles
+            # with exactly these settings.
+            try:
+                transformer._unsloth_regional_compile_kwargs = dict(dit_kwargs)
+            except Exception:  # noqa: BLE001 - not a settable module (tests/fakes)
+                pass
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "compile_repeated_blocks", exc)
             continue
@@ -1122,7 +1135,8 @@ class _CompileGuard:
         guard = self
 
         def guarded(*args: Any, **kwargs: Any) -> Any:
-            if guard.error is None:
+            # Compile still in flight in the background: entering it here would compile inline.
+            if guard.error is None and not _bg_eager_forced():
                 compile_config.apply()
                 try:
                     return compiled(*args, **kwargs)

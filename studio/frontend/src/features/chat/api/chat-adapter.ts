@@ -11,6 +11,11 @@ import {
   shouldOfferMinPRecovery,
 } from "../lib/min-p-recovery";
 import {
+  type ImageDisclosure,
+  modelVisibleMessage,
+  toolOnlyImages,
+} from "./mcp-image";
+import {
   clearedServerTuningState,
   committedServerTuningState,
   serverTuningLoadPayload,
@@ -33,6 +38,7 @@ import {
 import { isHiddenModelId } from "@/features/hub/lib/hidden-models";
 import {
   isServedByLlamaCpp,
+  resumesThought,
   isServedByMlx,
   loadedContextFields,
   resolveInitialConfig,
@@ -787,6 +793,7 @@ function buildTiming(
 }
 
 function collectTextParts(message: RunMessage): string[] {
+  message = modelVisibleMessage(message);
   const textParts = message.content
     .filter((part) => part.type === "text")
     .map((part) => part.text);
@@ -807,6 +814,7 @@ function collectTextParts(message: RunMessage): string[] {
 function collectImageParts(
   message: RunMessage,
 ): Array<{ type: "image_url"; image_url: { url: string } }> {
+  message = modelVisibleMessage(message);
   const parts: Array<{ type: "image_url"; image_url: { url: string } }> = [];
   const pushImagePart = (part: { type: string }) => {
     if (part.type !== "image" || !("image" in part)) {
@@ -1454,6 +1462,7 @@ function toOpenAIMessages(
   message: RunMessage,
   includeReasoningContent = false,
 ): SerializedMessage[] {
+  message = modelVisibleMessage(message);
   if (
     message.role !== "system" &&
     message.role !== "user" &&
@@ -1618,6 +1627,7 @@ function extractImageBase64(input: string): string | undefined {
 }
 
 function findLatestUserImageBase64(messages: RunMessages): string | undefined {
+  messages = messages.map(modelVisibleMessage);
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
     if (!message || message.role !== "user") {
@@ -1666,6 +1676,7 @@ function extractAudioPartBase64(
 
 // A predicate rather than collectImageParts: building the parts would copy the base64 this exists to avoid touching.
 export function messagesContainImage(messages: RunMessages): boolean {
+  messages = messages.map(modelVisibleMessage);
   const isImage = (part: { type: string }) =>
     part.type === "image" &&
     "image" in part &&
@@ -1697,7 +1708,13 @@ function isPrivateMediaPart(part: { type: string }): boolean {
 }
 
 export function messagesUsePrivateContent(messages: RunMessages): boolean {
-  if (messagesContainImage(messages)) return true;
+  // Tool-only images are hidden from the model, not public.
+  if (
+    messagesContainImage(messages) ||
+    messages.some((message) => toolOnlyImages(message).length > 0)
+  ) {
+    return true;
+  }
   return messages.some((message) => {
     if (
       (message.content ?? []).some(
@@ -1720,6 +1737,7 @@ export function messagesUsePrivateContent(messages: RunMessages): boolean {
 
 /** Every clip on the newest user message, in the order it was attached. */
 function latestUserAudioClips(messages: RunMessages): string[] {
+  messages = messages.map(modelVisibleMessage);
   const clips: string[] = [];
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
@@ -1785,6 +1803,7 @@ function extractVideoPartBase64(
 export function findLatestUserVideoBase64(
   messages: RunMessages,
 ): string | undefined {
+  messages = messages.map(modelVisibleMessage);
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
     if (!message || message.role !== "user") continue;
@@ -2387,6 +2406,7 @@ type QueuedResolvedModelRuntime = {
   preserveThinking: boolean;
   loadedContextLength: number | null;
   loadedIsGguf: boolean | null;
+  loadedIsMlx: boolean | null;
   loadedIsMultimodal: boolean;
   modelCapabilities: QueuedModelCapabilities | null;
 };
@@ -2539,6 +2559,7 @@ function queuedResolvedModelFromStore(
     preserveThinking: state.preserveThinking,
     loadedContextLength: state.loadedContextLength,
     loadedIsGguf: state.loadedIsGguf,
+    loadedIsMlx: state.loadedIsMlx,
     loadedIsMultimodal: state.loadedIsMultimodal,
     modelCapabilities: activeModel
       ? {
@@ -4177,6 +4198,7 @@ async function resolveQueuedEmptyLocalModel(abortSignal: AbortSignal): Promise<{
             preserveThinking: resolvePreserveThinkingOnLoad(status),
             loadedContextLength: loadedContextFields(status).loadedContextLength,
             loadedIsGguf: loadedContextFields(status).loadedIsGguf,
+            loadedIsMlx: loadedContextFields(status).loadedIsMlx,
             loadedIsMultimodal: isMultimodalResponse(status),
             modelCapabilities: {
               isVision: status.is_vision ?? false,
@@ -4409,6 +4431,7 @@ export function createOpenAIStreamAdapter(
                 preserveThinking: queuedEmptyModelRuntime.preserveThinking,
                 loadedContextLength: queuedEmptyModelRuntime.loadedContextLength,
                 loadedIsGguf: queuedEmptyModelRuntime.loadedIsGguf,
+                loadedIsMlx: queuedEmptyModelRuntime.loadedIsMlx,
                 models: mergeQueuedModelCapabilities(
                   base.models,
                   queuedEmptyModelRuntime.checkpoint,
@@ -4809,6 +4832,10 @@ export function createOpenAIStreamAdapter(
                 queuedEmptyModelRuntime !== null
                   ? queuedEmptyModelRuntime.loadedIsGguf
                   : liveRuntime.loadedIsGguf,
+              loadedIsMlx:
+                queuedEmptyModelRuntime !== null
+                  ? queuedEmptyModelRuntime.loadedIsMlx
+                  : liveRuntime.loadedIsMlx,
               loadedIsMultimodal:
                 queuedEmptyModelRuntime?.loadedIsMultimodal ??
                 liveRuntime.loadedIsMultimodal,
@@ -5040,11 +5067,12 @@ export function createOpenAIStreamAdapter(
         );
       }
 
-      // Carry reasoning only to llama-server, the one backend that can resume it.
+      // Carry reasoning only to a backend that can resume it.
       const resumedThought =
         continuation &&
-        isServedByLlamaCpp({
+        resumesThought({
           loadedIsGguf: runtime.loadedIsGguf,
+          loadedIsMlx: runtime.loadedIsMlx,
           activeGgufVariant: runtime.activeGgufVariant,
           activeNativePathToken: runtime.activeNativePathToken,
           checkpoint: params.checkpoint,
@@ -5054,7 +5082,7 @@ export function createOpenAIStreamAdapter(
       if (continuation && !continuation.partial && !resumedThought) {
         toast.error("This response cannot be resumed", {
           description:
-            "It stopped mid-thought, and only GGUF models can resume a thought. Use Retry instead.",
+            "It stopped mid-thought, and only GGUF and MLX models can resume a thought. Use Retry instead.",
         });
         throw new Error("A response that stopped mid-thought cannot be resumed here.");
       }
@@ -5326,8 +5354,16 @@ export function createOpenAIStreamAdapter(
       const currentTurnMessages = [generationUserMessage] as unknown as Parameters<
         typeof findLatestUserImageBase64
       >[0];
+      const [mcpImage, ...extraToolImages] = toolOnlyImages(
+        generationUserMessage,
+      );
+      if (extraToolImages.length > 0) {
+        throw new Error("Attach only one image for MCP tools per message.");
+      }
       const currentTurnCarriesMedia = Boolean(
-        findLatestUserImageBase64(currentTurnMessages) ||
+        // A tool-only image needs the live stream to ask before it is sent.
+        mcpImage ||
+          findLatestUserImageBase64(currentTurnMessages) ||
           findLatestUserAudioBase64(currentTurnMessages, !queuedRunSettings && !continuation) ||
           findLatestUserVideoBase64(currentTurnMessages),
       );
@@ -6665,6 +6701,7 @@ export function createOpenAIStreamAdapter(
               requestPayload = await buildRequestPayload(
                 retriedWithRefreshedKey,
               );
+              if (mcpImage) requestPayload = { ...requestPayload, mcp_image: mcpImage };
             } catch (error) {
               clearSelectedImageEditReference();
               throw error;
@@ -7159,6 +7196,7 @@ export function createOpenAIStreamAdapter(
                         approvalId,
                         sandboxSessionId ?? "",
                         toolConfirmationScopeId,
+                        toolEvent.image_disclosure as ImageDisclosure | undefined,
                       );
                   }
                 } else if (toolEvent.type === "tool_end") {

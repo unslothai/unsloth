@@ -445,7 +445,7 @@ def _continue_final_message(payload, *, thought: bool = False) -> bool:
 
     Nothing resumable (no assistant turn, or one holding tool calls) degrades to an
     ordinary new turn rather than erroring. ``thought`` also resumes a turn holding only
-    ``reasoning_content``, which only llama-server can continue inside its reasoning block.
+    ``reasoning_content``, which only llama-server and MLX reopen inside the reasoning block.
     """
     if not getattr(payload, "continue_final_message", None):
         return False
@@ -4918,6 +4918,40 @@ def _admit_tool_access(payload) -> None:
         bypass_permissions = bool(getattr(payload, "bypass_permissions", False)),
         disable_sandbox = bool(getattr(payload, "disable_sandbox", False)),
     )
+
+
+async def _request_mcp_image(payload, ui_events: bool):
+    """The decoded ``mcp_image``, or None. Sending it needs the user's approval, hence the UI stream."""
+    if not getattr(payload, "mcp_image", None):
+        return None
+    if not payload.mcp_enabled:
+        raise HTTPException(status_code = 400, detail = "mcp_image requires mcp_enabled=true.")
+    if not (payload.stream and ui_events):
+        raise HTTPException(
+            status_code = 400,
+            detail = "mcp_image requires stream=true and the X-Unsloth-Events: 1 header.",
+        )
+    from core.inference.mcp_image import McpImageError, parse_mcp_image
+
+    try:
+        return await asyncio.to_thread(parse_mcp_image, payload.mcp_image)
+    except McpImageError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
+
+
+_MCP_IMAGE_UNUSED = (
+    "This model and tool selection cannot run MCP tools, so the attached image cannot be sent."
+)
+
+
+def _refuse_unused_mcp_image(mcp_image, tool_names = None) -> None:
+    """Only a tool loop whose catalog has a mapped MCP tool can use the image; anything else would drop it silently."""
+    if mcp_image is None:
+        return
+    from core.inference.tools import mcp_catalog_takes_image
+
+    if tool_names is None or not mcp_catalog_takes_image(tool_names):
+        raise HTTPException(status_code = 400, detail = _MCP_IMAGE_UNUSED)
 
 
 def _permission_mode_confirm(payload) -> bool:
@@ -24745,6 +24779,9 @@ async def _proxy_to_external_provider(
     codex_studio_tool_loop = studio_tool_loop and provider_type == "openai_codex"
     # The loop relays the same control frames the local routes gate (see UI_STREAM_EVENTS_HEADER).
     _ui_events = _ui_stream_events_enabled(request)
+    _mcp_image = await _request_mcp_image(payload, _ui_events)
+    if not studio_tool_loop:
+        _refuse_unused_mcp_image(_mcp_image)
     _drop_keepalive = _DroppedFrameKeepalive()
     # One per request: carries the withheld-call state across the lines of a turn.
     _tool_call_stripper = ServerToolCallStripper()
@@ -25015,6 +25052,7 @@ async def _proxy_to_external_provider(
                 full_access_only = True,
             )
             chat_messages = _append_to_codex_instructions(chat_messages, _codex_nudge)
+        _refuse_unused_mcp_image(_mcp_image, _catalog_names(studio_tool_payloads))
         chat_messages = _prepend_current_date_to_messages(
             chat_messages,
             request,
@@ -25126,6 +25164,7 @@ async def _proxy_to_external_provider(
                         run = run,
                         policy = policy,
                         cancel_event = cancel_event,
+                        mcp_image = _mcp_image,
                     )
                     if policy
                     else client.stream(
@@ -25365,6 +25404,7 @@ async def _proxy_to_external_provider(
             mcp_allowed = bool(payload.mcp_enabled),
         )
     run_studio_tool_loop = bool(external_studio_tools)
+    _refuse_unused_mcp_image(_mcp_image, _catalog_names(external_studio_tools))
     if run_studio_tool_loop:
         # Only once the catalog is known: mcp_enabled with no MCP tools enabled leaves this
         # empty and skips the loop, so there is no prompt to find a channel for.
@@ -25512,6 +25552,7 @@ async def _proxy_to_external_provider(
                     on_provider_turn_end = _end_provider_turn,
                 ),
                 cancel_event = cancel_event,
+                mcp_image = _mcp_image,
             )
         else:
             gen = client.stream_chat_completion(
@@ -26597,6 +26638,7 @@ async def produce_openai_chat_completions(
             )
         return await _proxy_to_external_provider(payload, request, current_subject)
 
+    _mcp_image = await _request_mcp_image(payload, _ui_events)
     # Local path only: the lift targets audio_base64, which the proxy never reads.
     _normalise_chat_content_parts(payload)
 
@@ -26858,6 +26900,7 @@ async def produce_openai_chat_completions(
 
     _npu = peek_npu_backend()
     if _npu is not None and _npu.is_loaded:
+        _refuse_unused_mcp_image(_mcp_image)
         return await _npu_chat_completions(payload, request, current_subject)
 
     llama_backend = get_llama_cpp_backend()
@@ -26940,6 +26983,7 @@ async def produce_openai_chat_completions(
                         " Load a vision model to send one."
                     ),
                 )
+            _refuse_unused_mcp_image(_mcp_image)
             return await _monitored_generate_audio(
                 model_name,
                 context_length = llama_backend.context_length,
@@ -26994,7 +27038,7 @@ async def produce_openai_chat_completions(
                     "call: guided decoding admits only the document, so no tool would be "
                     "called. Use tool_choice 'auto' or 'none'.",
                 )
-            if _continue_final_message(payload):
+            if _continue_final_message(payload, thought = True):
                 _raise_unsupported_openai_parameter(
                     "response_format",
                     "response_format cannot resume a partial assistant message: guided "
@@ -27022,6 +27066,7 @@ async def produce_openai_chat_completions(
                         " Load a vision model to send one."
                     ),
                 )
+            _refuse_unused_mcp_image(_mcp_image)
             return await _monitored_generate_audio(model_name)
 
         # ── Whisper without audio: return clear error ──
@@ -27066,6 +27111,7 @@ async def produce_openai_chat_completions(
 
         # ── Audio INPUT path: decode WAV and route to audio input generation ──
         if payload.audio_base64 and model_info.get("has_audio_input"):
+            _refuse_unused_mcp_image(_mcp_image)
             # This route re-listens to the recording and answers afresh, so there is
             # no boundary to resume from; the Unsloth UI already hides Continue here.
             if _continue_final_message(payload):
@@ -27469,6 +27515,7 @@ async def produce_openai_chat_completions(
     # generate_chat_completion, which has no response_format kwarg and would silently drop the
     # schema. No ``supports_tools`` needed -- grammars are independent of it.
     if using_gguf and _takes_tool_passthrough(payload, llama_backend):
+        _refuse_unused_mcp_image(_mcp_image)
         if _wants_multiple_choices(payload):
             raise _reject_unsupported_n("GGUF tool or response_format passthrough")
         _reject_unresumable_thought(payload, llama_backend, _reject)
@@ -27771,6 +27818,7 @@ async def produce_openai_chat_completions(
                 ),
             )
 
+        _refuse_unused_mcp_image(_mcp_image, _catalog_names(tools_to_use) if use_tools else None)
         if use_tools:
             # permission_mode ask/auto require the confirm gate for Unsloth's own
             # tool loop. The request validator self-enables confirm only for
@@ -27935,13 +27983,19 @@ async def produce_openai_chat_completions(
                     # Bypass Permissions takes precedence over the confirm gate:
                     # never prompt while bypassing.
                     confirm_tool_calls = _effective_confirm and not bool(payload.bypass_permissions),
+                    mcp_image = _mcp_image,
                     bypass_permissions = bool(payload.bypass_permissions),
                     permission_mode = payload.permission_mode,
                     perf_callback = _gguf_perf_callback,
                     on_conversation_grew = _gguf_recost,
-                    # Only the streaming path parks and reclaims, so only it can use a slot.
+                    # Only the streaming path parks and reclaims, so only it can use a slot. An attached MCP
+                    # image forces the approval wait in every mode, so it parks too.
                     on_decode_slot = _gguf_record_decode_slot
-                    if payload.stream and _effective_confirm and not payload.bypass_permissions
+                    if payload.stream
+                    and (
+                        (_effective_confirm and not payload.bypass_permissions)
+                        or _mcp_image is not None
+                    )
                     else None,
                     context_overflow = _rolling_context_policy(payload),
                     context_policy = _request_context_policy(payload),
@@ -29691,8 +29745,9 @@ async def produce_openai_chat_completions(
 
     # A continued turn renders no generation prompt, so nothing is prefilled and the
     # resumed text is the visible answer. Only the first turn continues; later tool-loop
-    # turns render a fresh generation prompt and prefill as usual.
-    _sf_continue = _continue_final_message(payload)
+    # turns render a fresh generation prompt and prefill as usual. MLX also resumes a thought.
+    _sf_continue = _continue_final_message(payload, thought = bool(_sf_model_info.get("is_mlx")))
+    _sf_resumes_thought = _sf_continue and not _continue_final_message(payload)
     _sf_continued_turn = [_sf_continue]
 
     _sf_single_block = _response_format_constrains_decoding(payload)
@@ -29701,7 +29756,7 @@ async def produce_openai_chat_completions(
         prefilled = _sf_reasoning_prefilled
         if _sf_continued_turn[0]:
             _sf_continued_turn[0] = False
-            prefilled = False
+            prefilled = _sf_resumes_thought
         return _ResponsesReasoningExtractor(
             parse_think_markers = _sf_parse_think,
             reasoning_prefilled = prefilled,
@@ -29784,6 +29839,9 @@ async def produce_openai_chat_completions(
             ),
         )
 
+    _refuse_unused_mcp_image(
+        _mcp_image, _catalog_names(_sf_tools_to_use) if _sf_use_tools else None
+    )
     if _sf_use_tools:
         # permission_mode ask/auto require the confirm gate for Unsloth's own tool
         # loop; when a CLI policy (--enable-tools) forces the loop on without a
@@ -29838,9 +29896,7 @@ async def produce_openai_chat_completions(
 
         # Strip stale tool-call XML from prior assistant turns. The continuation target
         # keeps its exact whitespace (see the GGUF path).
-        _sf_continue_target = (
-            chat_messages[-1] if _continue_final_message(payload) and chat_messages else None
-        )
+        _sf_continue_target = chat_messages[-1] if _sf_continue and chat_messages else None
         _sf_chat_messages = []
         for _msg in chat_messages:
             if _msg.get("role") == "assistant" and isinstance(_msg.get("content"), str):
@@ -29927,7 +29983,7 @@ async def produce_openai_chat_completions(
                 enable_thinking = payload.enable_thinking,
                 reasoning_effort = payload.reasoning_effort,
                 preserve_thinking = payload.preserve_thinking,
-                continue_final_message = _continue_final_message(payload),
+                continue_final_message = _sf_continue,
                 auto_heal_tool_calls = _sf_auto_heal_tool_calls,
                 nudge_tool_calls = payload.nudge_tool_calls,
                 max_tool_iterations = _sf_tool_budget,
@@ -29940,6 +29996,7 @@ async def produce_openai_chat_completions(
                 # Bypass Permissions takes precedence over the confirm gate:
                 # never prompt while bypassing.
                 confirm_tool_calls = _sf_effective_confirm and not bool(payload.bypass_permissions),
+                mcp_image = _mcp_image,
                 bypass_permissions = bool(payload.bypass_permissions),
                 permission_mode = payload.permission_mode,
                 use_adapter = payload.use_adapter,
@@ -30200,7 +30257,7 @@ async def produce_openai_chat_completions(
                 # boundary and pin the mode of the turn that text came from (the same events
                 # reset the streaming path's extractor).
                 continued = _sf_continue
-                prefilled = _sf_reasoning_prefilled and not continued
+                prefilled = _sf_resumes_thought if continued else _sf_reasoning_prefilled
                 gen = sf_generate_with_tools()
                 for event in gen:
                     if cancel_event.is_set():
@@ -30221,7 +30278,7 @@ async def produce_openai_chat_completions(
                             auto_heal_tool_calls = _sf_auto_heal_tool_calls,
                             enabled_tool_names = _sf_display_tool_names,
                         )
-                        prefilled = _sf_reasoning_prefilled and not continued
+                        prefilled = _sf_resumes_thought if continued else _sf_reasoning_prefilled
                     elif _event_type == "tool_start" or (
                         _event_type == "status" and not event.get("text")
                     ):
@@ -30348,7 +30405,7 @@ async def produce_openai_chat_completions(
         gen_kwargs["reasoning_effort"] = payload.reasoning_effort
     if payload.preserve_thinking is not None:
         gen_kwargs["preserve_thinking"] = payload.preserve_thinking
-    if _continue_final_message(payload):
+    if _sf_continue:
         gen_kwargs["continue_final_message"] = True
 
     # Client-tool passthrough (safetensors + MLX): render client tools, generate one turn,
@@ -30966,7 +31023,9 @@ async def produce_openai_chat_completions(
                 _reasoning_text, _visible_text = _extract_responses_reasoning(
                     full_text,
                     parse_think_markers = _sf_parse_think,
-                    reasoning_prefilled = _sf_reasoning_prefilled and not _sf_continue,
+                    reasoning_prefilled = (
+                        _sf_resumes_thought if _sf_continue else _sf_reasoning_prefilled
+                    ),
                     single_block = _sf_single_block,
                 )
                 # Client-tool passthrough: promote text-form calls; opt-in single

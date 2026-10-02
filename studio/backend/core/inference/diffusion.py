@@ -185,6 +185,7 @@ from . import diffusion_compile_cache as compile_cache
 from . import diffusion_cond_cache as cond_cache
 from . import diffusion_prompt_cache as prompt_cache
 from . import diffusion_gguf_compile as gguf_compile
+from . import diffusion_bg_compile as bg_compile
 from . import diffusion_cuda_graph as cuda_graph
 from . import diffusion_render_thread as render_thread
 from .diffusion_batched import (
@@ -1034,6 +1035,7 @@ class _LoadState:
     generation_count: int = 0
     # Pre-warmed torch.compile cache context when a compiled tier ran, else None.
     compile_cache_ctx: Any = None
+    bg_compile: Any = None
     # GraphedForward handles installed on the denoiser modules.
     cuda_graphs: tuple = ()
     # Token kept so LoRA adapters selected at generate time can be fetched.
@@ -1071,6 +1073,8 @@ class _LoadingState:
     # ONE named file: the scan counts what this load adds, not every byte already in the repo.
     asset_files: tuple[tuple[str, str, int, int], ...] = ()
     account_id: Optional[str] = None
+    # (expected_bytes, downloaded) once every expected byte was on disk.
+    finalized_scan: Optional[tuple[int, int]] = None
 
 
 def _account_owned_load(method):
@@ -1851,6 +1855,42 @@ def _dense_fast_path_reason(
     if note:
         return f"engaged on the dense fast path; {note}, so the dense bf16 transformer was quantized instead"
     return "engaged on the dense fast path"
+
+
+def _progress_latch_enabled() -> bool:
+    """UNSLOTH_DIFFUSION_PROGRESS_LATCH=0 rescans the cache on every load-progress poll, as before."""
+    return os.environ.get("UNSLOTH_DIFFUSION_PROGRESS_LATCH", "").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def _bg_compile_module(
+    pipe: Any,
+    *,
+    speed_optims: Any,
+    speed_mode: Any,
+    transformer_quant: Any,
+    gguf_transformer: bool,
+    offload_policy: Any,
+    transformer_cache: Any,
+    cache_auto: bool,
+    target: Any,
+) -> Any:
+    """The denoiser whose compile may run in the background (``diffusion_bg_compile.select_module``), or None."""
+    return bg_compile.select_module(
+        pipe,
+        speed_optims = speed_optims,
+        default_tier = speed_mode == SPEED_DEFAULT,
+        quantized = transformer_quant is not None,
+        gguf = bool(gguf_transformer),
+        step_cache = bool(transformer_cache) or bool(cache_auto),
+        device = getattr(target, "device", None),
+        backend = getattr(target, "backend", None),
+        denoiser_hooked = offload_policy != OFFLOAD_NONE and _denoiser_hooked(pipe),
+    )
 
 
 class DiffusionBackend:
@@ -2990,6 +3030,12 @@ class DiffusionBackend:
         # load_pipeline and nothing before it, so the prefetch that moves the bytes ran unrestricted. READ, not
         # popped: load_pipeline takes it too.
         local_files_only = bool(kwargs.get("local_files_only"))
+        # Before any download: unsloth_zoo enters the dynamo cycle from the inductor side, racing the warm.
+        try:
+            from utils.torch_warmup import gate_torch_stack_import
+            gate_torch_stack_import("image load", logger)
+        except Exception as exc:  # noqa: BLE001 - a safety net, never a new failure
+            logger.debug("dynamo import gate skipped: %r", exc)
         try:
             # Resolve the base repo and estimate sizes here (both network) so begin_load returns instantly.
             fam = detect_family_for_pick(
@@ -3265,6 +3311,14 @@ class DiffusionBackend:
             return _progress("error", error = loading.error)
         if loading is None:
             return _progress("ready" if self._state is not None else None)
+        finalized = loading.finalized_scan
+        if (
+            finalized is not None
+            and finalized[0] == loading.expected_bytes
+            and _progress_latch_enabled()
+        ):
+            # Nothing left to download: another tree walk only holds the GIL the load thread needs.
+            return _progress("finalizing", finalized[1], finalized[0], 1.0)
 
         # Sum checkpoint + companion cache, scanning the repo the bytes LAND in (the mirror when one was swapped in),
         # else a mirrored companion download reads as zero and the bar sits still.
@@ -3294,6 +3348,7 @@ class DiffusionBackend:
         expected = loading.expected_bytes
         # Downloads done, still finalizing. The cache scan can exceed the estimate, so clamp to 100%.
         if expected > 0 and downloaded >= expected * 0.999:
+            loading.finalized_scan = (expected, min(downloaded, expected))
             return _progress("finalizing", min(downloaded, expected), expected, 1.0)
         if expected <= 0:
             # No size estimate: report the phase with no byte claim, since `downloaded` scans what is PRESENT.
@@ -5120,8 +5175,8 @@ class DiffusionBackend:
         apply_diffusion_device_ordinal(target)
         device, dtype = target.device, target.dtype
 
-        # Before the first `import diffusers` below, which is the earliest dynamo consumer on this
-        # path and therefore the only position that dominates the rest of them. Importing
+        # Before the first `import diffusers` below, the earliest dynamo consumer in load_pipeline
+        # (_run_load's downloads are gated earlier). Importing
         # diffusers alone pulls in torch._dynamo (every module in diffusers.hooks evaluates
         # @torch.compiler.disable() at class-body time), and so do the hook-based paths that
         # follow: the FP8 text-encoder cast (diffusion_precision), the step cache
@@ -5984,6 +6039,7 @@ class DiffusionBackend:
                 eager_patched = False
                 compile_ctx = None
                 state_committed = False
+                load_bg_compile = None
                 state = None
                 try:
                     self._raise_if_load_cancelled(_load_token)
@@ -7014,6 +7070,25 @@ class DiffusionBackend:
                         # Beside ``source``, never in it: the frontend branches on "auto"/"explicit".
                         resolved["transformer_quant"]["artifact"] = transformer_quant_artifact
 
+                    # Opt-in (UNSLOTH_DIFFUSION_BG_COMPILE=1): off by default so the same seed twice repeats.
+                    bg_module = (
+                        None
+                        if not bg_compile.load_time_enabled()
+                        else _bg_compile_module(
+                            pipe,
+                            speed_optims = tuple(k for k, v in speed_applied.items() if v),
+                            speed_mode = effective_speed,
+                            transformer_quant = transformer_quant_engaged,
+                            gguf_transformer = gguf_transformer,
+                            offload_policy = effective_policy,
+                            transformer_cache = cache_engaged,
+                            cache_auto = cache_may_toggle,
+                            target = target,
+                        )
+                    )
+                    load_bg_compile = (
+                        bg_compile.arm(bg_module, logger = logger) if bg_module is not None else None
+                    )
                     state = _LoadState(
                         pipe = pipe,
                         family = fam,
@@ -7044,6 +7119,7 @@ class DiffusionBackend:
                         eager_patched = eager_patched,
                         speed_deferred = speed_deferred,
                         compile_cache_ctx = compile_ctx,
+                        bg_compile = load_bg_compile,
                         hf_token = hf_token,
                         resolved = resolved,
                         gguf_filename = gguf_filename,
@@ -7065,6 +7141,10 @@ class DiffusionBackend:
                 finally:
                     # Pre-commit failure: roll back the process-wide mutations (symmetric with _unload_locked).
                     if not state_committed:
+                        # First: its gate sits in front of the CUDA-graph layer uninstalled by identity below.
+                        if load_bg_compile is not None:
+                            load_bg_compile.close()
+                            load_bg_compile = None
                         restore_backend_flags(backend_flags_before)
                         compile_cache.restore(compile_ctx, logger = logger)
                         gguf_compile.uninstall_all()  # idempotent
@@ -8544,10 +8624,26 @@ class DiffusionBackend:
                     or "speed tier does not capture"
                 )
             )
+        bg_module = _bg_compile_module(
+            state.pipe,
+            speed_optims = state.speed_optims,
+            speed_mode = SPEED_DEFAULT,
+            transformer_quant = state.transformer_quant,
+            gguf_transformer = gguf_transformer,
+            offload_policy = state.offload_policy,
+            transformer_cache = state.transformer_cache,
+            cache_auto = state.cache_auto,
+            target = target,
+        )
+        if bg_module is not None:
+            object.__setattr__(state, "bg_compile", bg_compile.arm(bg_module, logger = logger))
         logger.info(
-            "diffusion.speed: deferred profile engaged on generation 3 (optims=%s, attention=%s)",
+            "diffusion.speed: deferred profile engaged on generation 3 (optims=%s, attention=%s%s)",
             ",".join(state.speed_optims) or "none",
             attention_engaged or "native",
+            "; compiling in the background, this render runs eager"
+            if state.bg_compile is not None
+            else "",
         )
 
     @_release_render_on_unload
@@ -8595,6 +8691,16 @@ class DiffusionBackend:
         # Per-generation cancel Event that unload()/a superseding load set (under _lock) to abort just this denoise.
         cancel = threading.Event()
         with self._generation_slot(cancel):
+            # Never render beside a background compile; wait outside the state lock so status polls keep answering.
+            pending_bg = getattr(self._state, "bg_compile", None)
+            if pending_bg is not None and pending_bg.compiling():
+                logger.info(
+                    "diffusion.bg_compile: render waits for the background compile to finish"
+                )
+                waited = pending_bg.wait(cancel)
+                logger.info(
+                    "diffusion.bg_compile: render waited %.1f s for the background compile", waited
+                )
             with self._lock:
                 state = self._state
                 if state is None:
@@ -8612,6 +8718,9 @@ class DiffusionBackend:
             static_skip_pipe = None
             restore_vae: Optional[Callable[[], None]] = None
             restore_resident: Optional[Callable[[], None]] = None
+            bg = None
+            bg_eager = False
+            bg_token = None
             try:
                 self._state_device_target(state)
                 # The local `state` ref keeps the pipe alive even if unload() nulls _state. Resolve the per-image
@@ -8646,6 +8755,12 @@ class DiffusionBackend:
                             "diffusion.speed: deferred engagement failed, staying eager: %s",
                             exc,
                         )
+
+                # Compile still pending: this generation runs eager and records the denoiser inputs for it.
+                bg = state.bg_compile
+                bg_eager = bg is not None and bg.pending()
+                if bg_eager:
+                    bg_token = bg_compile._FORCE_EAGER.set(True)
 
                 # Apply/adjust LoRA before picking the workflow pipe; from_pipe pipes share the transformer.
                 self._apply_loras(state, loras, cancel)
@@ -9198,28 +9313,36 @@ class DiffusionBackend:
                 # a STATIC compile makes new artifacts per (w,h,batch), so register this shape. The write itself is
                 # QUEUED, not performed: nothing in this response depends on it (only the NEXT process reads the
                 # bundle), so save_async hands it to the shared worker and the user stops waiting on it.
-                try:
-                    # Register the dims the forward ACTUALLY compiled with, and every distinct chunk size (a static
-                    # compile makes one artifact per batch size too).
-                    reg_width, reg_height = _compile_shape_dims(
-                        workflow, init_pil, width, height, fam
-                    )
-                    static_shapes = "compiled" in (
-                        state.speed_optims or ()
-                    ) and compiled_shapes_are_static(state.pipe, state.speed_mode)
-                    for chunk_batch in sorted(set(chunk_shapes)):
-                        compile_cache.register_shape(
-                            state.compile_cache_ctx,
-                            (reg_width, reg_height, int(chunk_batch)),
-                            static = static_shapes,
+                if bg_eager:
+                    # Nothing compiled ran, so nothing to register or save yet.
+                    bg.note_eager_generation()
+                    bg.kick()
+                else:
+                    try:
+                        # Register the dims the forward ACTUALLY compiled with, and every distinct chunk size (a static
+                        # compile makes one artifact per batch size too).
+                        reg_width, reg_height = _compile_shape_dims(
+                            workflow, init_pil, width, height, fam
                         )
-                    if auto_dynamic_active(state.pipe) and fresh_compile_count() > graphs_before:
-                        # Automatic dynamic recompiles on the first new text length at an already-registered
-                        # (width, height, batch): persist those graphs too, or every fresh process pays them again.
-                        compile_cache.mark_recompiled(state.compile_cache_ctx)
-                    compile_cache.save_async(state.compile_cache_ctx, logger = logger)
-                except Exception:  # noqa: BLE001 - cache persistence is best-effort
-                    pass
+                        static_shapes = "compiled" in (
+                            state.speed_optims or ()
+                        ) and compiled_shapes_are_static(state.pipe, state.speed_mode)
+                        for chunk_batch in sorted(set(chunk_shapes)):
+                            compile_cache.register_shape(
+                                state.compile_cache_ctx,
+                                (reg_width, reg_height, int(chunk_batch)),
+                                static = static_shapes,
+                            )
+                        if (
+                            auto_dynamic_active(state.pipe)
+                            and fresh_compile_count() > graphs_before
+                        ):
+                            # Automatic dynamic recompiles on the first new text length at an already-registered
+                            # (width, height, batch): persist those graphs too, or every fresh process pays them again.
+                            compile_cache.mark_recompiled(state.compile_cache_ctx)
+                        compile_cache.save_async(state.compile_cache_ctx, logger = logger)
+                    except Exception:  # noqa: BLE001 - cache persistence is best-effort
+                        pass
                 # Last word on cancellation, AFTER the post-denoise work: the event stays registered through the
                 # compile-cache bookkeeping and the page still shows Stop for as long as progress reads active, so a Stop
                 # landing there was answered cancelled = true and then contradicted by the image the route persisted.
@@ -9279,6 +9402,8 @@ class DiffusionBackend:
                 )
                 return result
             finally:
+                if bg_token is not None:
+                    bg_compile._FORCE_EAGER.reset(bg_token)
                 if static_skip_pipe is not None:
                     try:
                         reset_static_step_skip(static_skip_pipe, None)
@@ -9439,6 +9564,12 @@ class DiffusionBackend:
         state = self._state
         if state is None:
             return
+        # An in-flight background compile still runs the denoiser the teardown below frees.
+        if state.bg_compile is not None:
+            try:
+                state.bg_compile.close()
+            except Exception:  # noqa: BLE001 - teardown is best effort
+                pass
         # Restore the process-wide backend flags this load flipped so the next `off` load is bit-identical. All
         # idempotent.
         restore_backend_flags(state.backend_flags_before)
@@ -9543,6 +9674,7 @@ class DiffusionBackend:
             "memory_mode": state.memory_mode,
             "speed_mode": state.speed_mode,
             "speed_optims": speed_optims,
+            "bg_compile": state.bg_compile.describe() if state.bg_compile is not None else None,
             "text_encoder_quant": state.text_encoder_quant,
             "transformer_quant": state.transformer_quant,
             **_nvfp4_backend_fields(_transformer_quant_backend(state), owner = self),
