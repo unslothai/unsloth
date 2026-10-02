@@ -241,12 +241,27 @@ def _launch(a: Any, w: Any, xs: Any, ws: Any, bias: Any, cfg: tuple) -> Any:
     return out
 
 
+def _aligned(a: Any, w: Any) -> bool:
+    """K, the row strides and the base pointers of both int8 operands on 16 bytes. Triton specialises on exactly
+    these; a K or stride off 16 compiles a variant that spills ~3.2-6.4 KB per thread (sm100 / sm80), and the driver
+    then reserves that local memory for every resident thread of the device (about 0.7 GB on B200, 1.4 GB on A100)
+    for the rest of the process, outside PyTorch's allocator. Such shapes keep the stock path."""
+    return (
+        a.shape[1] % 16 == 0
+        and a.stride(0) % 16 == 0
+        and w.stride(0) % 16 == 0
+        and a.data_ptr() % 16 == 0
+        and w.data_ptr() % 16 == 0
+    )
+
+
 def _run(a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
-    """Op body: the probed tile for this device, the stock epilogue if the launch fails."""
+    """Op body: the probed tile for this device, the stock epilogue if the launch fails or the operands are not
+    16-byte aligned (``_aligned``)."""
     _CALLS[0] += 1
     a = a if a.stride(-1) == 1 else a.contiguous()
     cfg = _DEVICE_CFG.get(a.device.index)
-    if cfg is not None:
+    if cfg is not None and w.stride(-1) == 1 and _aligned(a, w):
         try:
             return _launch(a, w, xs, ws, bias, cfg)
         except Exception:  # noqa: BLE001 - a failed launch keeps the stock math
@@ -311,17 +326,22 @@ def device_config(index: int) -> Optional[tuple]:
     return cfg
 
 
+# (M, N, K, bias, fp32 scales). Ragged K stays a multiple of 16 (K % BLOCK_K == 16 for BLOCK_K 64 and 128): a K off
+# 16 compiles the spilling variant ``_aligned`` keeps off, and its local-memory reservation would outlive the probe.
+_PROBE_SHAPES = (
+    (257, 384, 512, False, False),
+    (33, 200, 144, True, True),
+    (300, 520, 1040, True, False),
+)
+
+
 def _probe(index: int, cfg: tuple) -> bool:
     import torch
 
     dev = torch.device("cuda", index)
     g = torch.Generator(device = "cpu").manual_seed(0)
     try:
-        for m, n, k, bias, xs32 in (
-            (257, 384, 512, False, False),
-            (33, 200, 136, True, True),
-            (300, 520, 1000, True, False),
-        ):
+        for m, n, k, bias, xs32 in _PROBE_SHAPES:
             a = torch.randint(-127, 128, (m, k), generator = g, dtype = torch.int8).to(dev)
             w = torch.randint(-127, 128, (n, k), generator = g, dtype = torch.int8).to(dev)
             xs = (torch.rand(m, generator = g) * 0.02 + 1e-4).to(torch.bfloat16)

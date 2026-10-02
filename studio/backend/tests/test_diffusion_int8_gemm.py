@@ -79,6 +79,43 @@ def test_dense_linear_is_not_eligible():
     assert g8._eligible(torch.nn.Linear(128, 128)) is None
 
 
+def test_probe_shapes_stay_on_the_16_byte_grid():
+    """A probe K off 16 compiles the spilling kernel variant; its local memory stays reserved for the process."""
+    ks = [k for _m, _n, k, _b, _x in g8._PROBE_SHAPES]
+    assert all(k % 16 == 0 for k in ks)
+    for bk in (64, 128):  # every shipped BLOCK_K still sees a ragged K
+        assert any(k % bk for k in ks)
+
+
+def test_misaligned_operands_take_the_stock_epilogue(monkeypatch):
+    launched, stock = [], []
+    monkeypatch.setattr(g8, "_launch", lambda a, w, *rest: launched.append(a.shape) or "fused")
+    monkeypatch.setattr(g8, "reference", lambda a, w, *rest: stock.append(a.shape) or "stock")
+    g8._DEVICE_CFG[None] = g8._FALLBACK_CONFIG  # CPU tensors report device index None
+    xs, ws = torch.ones(32), torch.ones(64)
+
+    def run(a, w):
+        return g8._run(a, w, xs, ws, None)
+
+    assert (
+        run(torch.zeros(32, 1024, dtype = torch.int8), torch.zeros(64, 1024, dtype = torch.int8))
+        == "fused"
+    )
+    assert (
+        run(torch.zeros(32, 1000, dtype = torch.int8), torch.zeros(64, 1000, dtype = torch.int8))
+        == "stock"
+    )
+    flat = torch.zeros(64 * 1024 + 8, dtype = torch.int8)
+    assert (
+        run(flat[8 : 8 + 32 * 1024].view(32, 1024), torch.zeros(64, 1024, dtype = torch.int8))
+        == "stock"
+    )
+    assert run(torch.zeros(32, 1024, dtype = torch.int8), flat[8:].view(64, 1024)) == "stock"
+    wide = torch.zeros(64, 1032, dtype = torch.int8)[:, :1024]  # row stride 1032: off 16
+    assert run(torch.zeros(32, 1024, dtype = torch.int8), wide) == "stock"
+    assert len(launched) == 1 and len(stock) == 4
+
+
 def _cuda_ready() -> bool:
     if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
         return False
@@ -125,7 +162,7 @@ def _int8_linear(k, n, bias, version):
     "m, k, n, bias, xs32",
     [
         (4096, 4096, 4096, False, False),
-        (1037, 520, 1400, True, False),
+        (1037, 528, 1400, True, False),
         (17, 256, 1024, True, True),
         (300, 12288, 256, False, False),
     ],
@@ -193,6 +230,28 @@ def test_prequant_style_fp32_weight_scale(forced, bias):
             out = torch.compile(fused, fullgraph = True)(x)
             assert not counters["graph_break"]
             assert torch.equal(out, torch.compile(stock, fullgraph = True)(x))
+
+
+@needs_cuda
+def test_no_compiled_variant_spills_to_local_memory(forced):
+    """Local memory a kernel spills to is reserved by the driver for every resident thread of the device and kept for
+    the process (0.7 GB on B200, 1.4 GB on A100 for the K-off-16 variant), outside PyTorch's allocator."""
+    g = torch.Generator().manual_seed(0)
+    for m, k, n in ((4096, 3072, 3072), (300, 1040, 520), (300, 1000, 384)):
+        a = torch.randint(-127, 128, (m, k), generator = g, dtype = torch.int8).cuda()
+        w = torch.randint(-127, 128, (n, k), generator = g, dtype = torch.int8).cuda()
+        xs = (torch.rand(m, generator = g) * 0.02).to(torch.bfloat16).cuda()
+        ws = (torch.rand(n, generator = g) * 0.002).to(torch.bfloat16).cuda()
+        assert torch.equal(g8._op()(a, w, xs, ws, None), g8.reference(a, w, xs, ws, None))
+    torch.cuda.synchronize()
+    caches = getattr(g8._kernels().i8mm_dq, "device_caches", None)
+    if caches is None:
+        pytest.skip("Triton without per-device kernel caches")
+    variants = [ck for cache in caches.values() for ck in cache[0].values()]
+    assert variants
+    for ck in variants:
+        ck._init_handles()
+        assert ck.n_spills == 0, ck.n_spills
 
 
 @needs_cuda
