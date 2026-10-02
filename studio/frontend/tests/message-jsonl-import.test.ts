@@ -74,7 +74,7 @@ test("markdown transcripts import as conversations", () => {
   assert.deepEqual(
     conversations[0].messages.map(({ role, content }) => ({
       role,
-      content: (content as Array<{ text: string }>)[0]?.text,
+      content: (content as ReadonlyArray<{ text: string }>)[0]?.text,
     })),
     [
       { role: "user", content: "Hello" },
