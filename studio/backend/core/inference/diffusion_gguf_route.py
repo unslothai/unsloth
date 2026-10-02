@@ -16,11 +16,10 @@ from typing import Any, Optional
 # "0" restores the resident-only swap.
 GGUF_OFFLOAD_PREQUANT_ENV = "UNSLOTH_DIFFUSION_GGUF_OFFLOAD_PREQUANT"
 
-# Widest GGUF bit width a scheme's checkpoint replaces on auto. int8 is closer to bf16 than 5-bit GGUFs and further than
-# 6-bit (Qwen-Image-2.1 LPIPS vs bf16: Q5_K_M 0.077, int8 0.059, Q6_K 0.042); fp8 (0.10-0.11) only beats 4-bit.
+# Widest GGUF auto replaces (Qwen-Image-2.1 LPIPS vs bf16: Q5_K_M 0.077, int8 0.059, Q6_K 0.042, fp8 0.10-0.11).
 _MAX_REPLACED_GGUF_BITS = {"int8": 5}
 _DEFAULT_MAX_REPLACED_GGUF_BITS = 4
-# Only these spell their bit width as the leading number; anything else (BF16, F16, F32, an unknown token) is kept.
+# Tokens led by their bit width; any other (BF16, F16, F32, unknown) is kept.
 _GGUF_BITS_RE = re.compile(r"^(?:MXFP|IQ|P?TQ|P?Q)([0-9]+)")
 
 
