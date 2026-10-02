@@ -231,6 +231,10 @@ _CONTEXT_CASES = [
         {"prompt": _MID, "response": _LONG, "input_tokens": 12, "passage_id": "p1"},
         {"prompt": "user", "response": "assistant"},
     ),
+    (
+        {"question": _MID, "answer": _MID, "input_ids": [1, 2], "background": _LONG},
+        {"question": "user", "answer": "assistant", "background": "system"},
+    ),
 ]
 
 

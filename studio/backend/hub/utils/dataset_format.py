@@ -207,7 +207,7 @@ def detect_custom_format_heuristic(dataset):
         tokens = name_tokens(col_name)
         return (
             any(token in context_words or token[:-1] in context_words for token in tokens)
-            and not {"id", "title"} & tokens
+            and not {"id", "ids", "title"} & tokens
             and not isinstance(sample.get(col_name), (bool, int, float))
             and not has_keyword(col_name, assistant_words)
         )
