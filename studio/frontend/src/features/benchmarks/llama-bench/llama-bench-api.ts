@@ -23,6 +23,8 @@ export interface LlamaBenchRow {
   avg_ts: number;
   stddev_ts: number;
   samples_ts: number[];
+  n_gpu_layers?: number | null;
+  flash_attn?: number | boolean | string | null;
 }
 
 export interface LlamaBenchMeta {

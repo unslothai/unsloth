@@ -10,15 +10,18 @@ import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Tabs } from "@/components/ui/tabs";
 import { useLocale } from "@/i18n";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { cn } from "@/lib/utils";
 import {
   ArrowDown01Icon,
+  Copy01Icon,
   Delete02Icon,
   Rocket01Icon,
   SpeedTrain01Icon,
   StopIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { toast } from "sonner";
 import {
   type ReactElement,
   type ReactNode,
@@ -35,6 +38,7 @@ import type {
   LlamaBenchMeta,
   LlamaBenchRow,
 } from "./llama-bench-api";
+import { toLlamaBenchMarkdown } from "./llama-bench-markdown";
 import { useLlamaBenchStore } from "./llama-bench-store";
 
 const PROMPT_SIZES = [128, 512, 1024, 2048, 4096, 8192];
@@ -342,6 +346,22 @@ function Results({
               .filter(Boolean)
               .join(" · ")}
           </span>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="ml-auto h-7 rounded-full px-2.5 text-ui-12"
+            onClick={async () => {
+              if (await copyToClipboard(toLlamaBenchMarkdown(rows, meta)))
+                toast.success("Copied as llama-bench's markdown table");
+            }}
+          >
+            <HugeiconsIcon
+              icon={Copy01Icon}
+              strokeWidth={1.75}
+              className="size-3.5"
+            />
+            Copy as markdown
+          </Button>
         </div>
         <RateBars title="Prompt processing" rows={pp} />
         <RateBars title="Generation" rows={tg} />
