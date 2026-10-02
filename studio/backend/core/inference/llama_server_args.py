@@ -82,7 +82,6 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     frozenset({"-hfv", "-hfrv", "--hf-repo-v"}),
     frozenset({"-hffv", "--hf-file-v"}),
     frozenset({"-hft", "--hf-token"}),
-    frozenset({"-mm", "--mmproj"}),
     frozenset({"-mmu", "--mmproj-url"}),
     # Networking: Unsloth binds + proxies; retargeting orphans the proxy.
     frozenset({"--host"}),
@@ -90,6 +89,7 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     frozenset({"--path"}),
     frozenset({"--api-prefix"}),
     frozenset({"--reuse-port"}),
+    frozenset({"--rpc"}),
     # Auth / TLS: Unsloth terminates auth; upstream --api-key / TLS shadows Unsloth's key and breaks the proxy hop
     frozenset({"--api-key"}),
     frozenset({"--api-key-file"}),
@@ -1804,6 +1804,7 @@ DENIED_ENV_VARS: tuple[str, ...] = (
     "LLAMA_ARG_HOST",
     "LLAMA_ARG_PORT",
     "LLAMA_ARG_REUSE_PORT",
+    "LLAMA_ARG_RPC",
     "LLAMA_ARG_N_PARALLEL",
     "LLAMA_ARG_POOLING",
     "LLAMA_ARG_EMBEDDINGS",
@@ -1815,13 +1816,7 @@ DENIED_ENV_VARS: tuple[str, ...] = (
     "LLAMA_ARG_UI_CONFIG_FILE",
     "LLAMA_ARG_UI_MCP_PROXY",
     "LLAMA_ARG_STATIC_PATH",
-    # Deliberately absent: LLAMA_ARG_MMPROJ and LLAMA_ARG_MMPROJ_URL. --mmproj is refused in the box because Unsloth
-    # resolves the projector itself, but the environment twin is an INPUT here: _launch_has_mmproj reads both to know
-    # the launch has a projector at all, which is what keeps the vision and audio state of a model loaded through an
-    # inherited one. Only the paravirtual CPU recovery drops them, where an unpinned projector is the corrupt path it
-    # is undoing. The pooling twins are absent for the opposite reason: load_model already pops LLAMA_ARG_POOLING /
-    # _RERANKING / _EMBEDDINGS itself. The multi-model server mode is absent too: a child holding its own model
-    # directory, preset and autoload policy is not the single model Unsloth launched and accounts for.
+    # LLAMA_ARG_MMPROJ / _URL stay allowed: _launch_has_mmproj reads them as launch inputs.
     "LLAMA_ARG_MODELS_DIR",
     "LLAMA_ARG_MODELS_PRESET",
     "LLAMA_ARG_MODELS_MAX",

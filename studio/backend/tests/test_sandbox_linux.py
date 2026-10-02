@@ -16,6 +16,7 @@ import shutil
 import socket
 import stat
 import struct
+import subprocess
 import sys
 import sysconfig
 import tempfile
@@ -111,6 +112,29 @@ def test_identity_is_synthesised_rather_than_bound_from_the_host(prepared):
     with open(passwd, encoding = "utf-8") as stream:
         entries = stream.read().splitlines()
     assert len(entries) == 1 and entries[0].split(":")[2] == str(os.getuid())
+    assert entries[0].split(":")[5] == prepared.argv[prepared.argv.index("HOME") + 1]
+
+
+@pytest.mark.parametrize("name", ("a:b", "a\nb"))
+def test_a_workdir_that_would_corrupt_the_passwd_entry_is_not_its_home(tmp_path, name):
+    identity_dir, passwd, _ = sandbox_linux._identity_files(str(tmp_path / name))
+    try:
+        with open(passwd, encoding = "utf-8") as stream:
+            entries = stream.read().splitlines()
+        fields = entries[0].split(":")
+        assert len(entries) == 1 and len(fields) == 7 and fields[5] == "/nonexistent"
+    finally:
+        shutil.rmtree(identity_dir)
+
+
+def test_a_non_utf8_workdir_keeps_its_bytes_as_the_passwd_home(tmp_path):
+    home = os.fsdecode(os.fsencode(str(tmp_path)) + b"/caf\xe9")
+    identity_dir, passwd, _ = sandbox_linux._identity_files(home)
+    try:
+        with open(passwd, "rb") as stream:
+            assert stream.read().split(b":")[5] == os.fsencode(home)
+    finally:
+        shutil.rmtree(identity_dir)
 
 
 def test_the_writable_workdir_bind_lands_after_the_root_goes_read_only(prepared, tmp_path):
@@ -166,6 +190,109 @@ def test_no_private_key_directory_enters_the_jail_at_all(prepared):
         assert not sandbox_linux._within(secret, source), source
 
 
+def test_distro_jdk_configuration_is_bound_but_its_credentials_are_not(tmp_path, monkeypatch):
+    if sandbox_linux.shutil.which("bwrap") is None:
+        pytest.skip("bubblewrap is not installed on this host")
+    etc = tmp_path / "etc"
+    # Debian, Fedora (conf/ and lib/), and Arch layouts.
+    fedora = etc / "java" / "java-25-openjdk" / "java-25-openjdk"
+    roots = (etc / "java-21-openjdk", fedora / "conf", fedora / "lib", etc / "java21-openjdk")
+    secrets = []
+    for root in roots:
+        (root / "security").mkdir(parents = True)
+        marker = "default.policy" if root == fedora / "lib" else "java.security"
+        (root / "security" / marker).write_text("", encoding = "utf-8")
+        (root / "net.properties").write_text("", encoding = "utf-8")
+        (root / "management").mkdir()
+        secrets += [root / "management" / "jmxremote.password", root / "keystore.p12"]
+    (etc / "java-21-openjdk" / "jvm-amd64.cfg").write_text("", encoding = "utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    secrets.append(outside / "private-key")
+    # A non-JDK tree the glob also matches.
+    service = etc / "java-service"
+    (service / "security").mkdir(parents = True)
+    secrets += [service / "security" / "token", service / "app.properties"]
+    for secret in secrets:
+        secret.write_text("SECRET", encoding = "utf-8")
+    # Bind-source symlinks could expose host secrets; each target carries a marker.
+    (outside / "java.security").write_text("", encoding = "utf-8")
+    linked = etc / "java-8-openjdk"
+    linked.mkdir()
+    (linked / "security").symlink_to(outside)
+    (linked / "net.properties").symlink_to(outside / "private-key")
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "security").mkdir(parents = True)
+    (elsewhere / "security" / "java.security").write_text("", encoding = "utf-8")
+    secrets.append(elsewhere / "security" / "credential")
+    secrets[-1].write_text("SECRET", encoding = "utf-8")
+    linked_top = etc / "java-17-openjdk"
+    linked_top.symlink_to(elsewhere)
+    linked_marker = etc / "java-11-openjdk"
+    (linked_marker / "security").mkdir(parents = True)
+    (linked_marker / "security" / "java.security").symlink_to(outside / "java.security")
+    linked_file = etc / "java-21-openjdk" / "linked.properties"
+    linked_file.symlink_to(outside / "private-key")
+    monkeypatch.setattr(sandbox_linux, "_ETC_JAVA_GLOB", str(etc / "java*"))
+    workdir = tmp_path / "session"
+    workdir.mkdir()
+    launch = sandbox_linux.prepare(_plan(workdir))
+    try:
+        read_only = _pairs(launch.argv, "--ro-bind-try")
+        for path in (
+            *(root / name for root in roots for name in ("security", "net.properties")),
+            etc / "java-21-openjdk" / "jvm-amd64.cfg",
+        ):
+            assert (str(path), str(path)) in read_only
+        for flag in ("--bind", "--bind-try", "--ro-bind", "--ro-bind-try"):
+            for source, _ in _pairs(launch.argv, flag):
+                for link in (linked, linked_top, linked_marker, linked_file):
+                    assert not sandbox_linux._within(source, str(link)), source
+                for secret in secrets:
+                    assert not sandbox_linux._within(str(secret), source), (secret, source)
+    finally:
+        launch.cleanup()
+
+
+def test_a_host_jvm_initialises_its_security_properties_inside_the_jail(tmp_path):
+    java = shutil.which("java")
+    if sandbox_linux.shutil.which("bwrap") is None or java is None:
+        pytest.skip("needs bubblewrap and a Java runtime")
+    # Force Java to load java.security.
+    payload = (java, "-XshowSettings:security:properties", "-version")
+    if subprocess.run(payload, capture_output = True).returncode != 0:
+        pytest.skip("this JVM does not support -XshowSettings:security")
+
+    def run(argv):
+        launch = sandbox_linux.prepare(_plan(tmp_path, argv = argv))
+        try:
+            return subprocess.run(
+                launch.argv,
+                env = launch.env,
+                pass_fds = launch.pass_fds,
+                preexec_fn = launch.preexec_fn,
+                capture_output = True,
+                text = True,
+                timeout = 60,
+            )
+        finally:
+            launch.cleanup()
+
+    if run(("/bin/true",)).returncode != 0:
+        pytest.skip("bubblewrap cannot create a sandbox on this host")
+    completed = run(payload)
+    assert completed.returncode == 0, completed.stderr
+    assert "Error loading java.security" not in completed.stderr
+    # Distro JDKs reach cacerts through /etc links.
+    keytool = os.path.join(os.path.dirname(os.path.realpath(java)), "keytool")
+    if os.access(keytool, os.X_OK):
+        completed = run((keytool, "-list", "-cacerts", "-storepass", "changeit"))
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+    # Java reads user.home from getpwuid(), not $HOME.
+    properties = run((java, "-XshowSettings:properties", "-version")).stderr
+    assert f"user.home = {tmp_path}" in properties, properties
+
+
 def test_pip_gets_a_writable_target_inside_the_workdir(prepared):
     argv = prepared.argv
     packages = os.path.join(prepared.workdir, sandbox_linux.SESSION_PACKAGES_RELPATH)
@@ -180,6 +307,7 @@ def test_system_directories_are_bound_whole_and_never_file_by_file(prepared):
     assert "/usr/lib" in sources
     named = {
         *sandbox_linux._ETC_FILES,
+        *sandbox_linux._etc_java_binds(),
         *sandbox_linux._ETC_FILES_IF_TRUSTED,
         *sandbox_linux._NETWORK_FILES,
     }

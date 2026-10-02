@@ -21,6 +21,7 @@ from core.inference.memory_contract import (
     project_kv_cache_estimate,
 )
 from core.inference.model_ids import display_model_name
+from hub.schemas.inventory import LocalArtifactKind
 from hub.services.models import account_access
 from hub.services.models import catalog_classification as _catalog_classification
 from utils import gguf_archs as _gguf_archs
@@ -32,6 +33,7 @@ from hub.services.models.catalog_classification import (
     _repo_has_pipeline_index,
     _repo_is_diffusers,
 )
+from hub.services.models.common import _diffusers_pipeline_artifact_kind
 
 # Compatibility aliases: these moved to catalog_classification, but callers and tests still resolve them
 # from routes.models. Assigned through the module rather than re-imported, since an import this module never
@@ -96,6 +98,7 @@ class CachedModelRepo(BaseModel):
     load_id: Optional[str] = None
     # "adapter" for a cached LoRA/PEFT repo; pickers that offer whole models filter on it.
     model_format: Optional[str] = None
+    artifact_kind: Optional[LocalArtifactKind] = None
     # False for an encoder-only repo (embedding/CLIP/ViT); undeclared, response_model drops it.
     can_chat: Optional[bool] = None
     # True for an image/video diffusion repo. Not the same question as task, which says only whether this
@@ -1550,7 +1553,7 @@ def _build_browse_allowlist(
     _add(Path.home())
     if media_roots is None:
         media_roots = [
-            *external_media.linux_run_media_mount_roots(),
+            *external_media.linux_external_mount_roots(),
             *external_media.macos_volume_roots(),
         ]
     if drive_roots is None:
@@ -1836,7 +1839,7 @@ def browse_folders(
         []
         if managed
         else [
-            *external_media.linux_run_media_mount_roots(),
+            *external_media.linux_external_mount_roots(),
             *external_media.macos_volume_roots(),
         ]
     )
@@ -2257,9 +2260,12 @@ async def get_model_config(
     """Get configuration for a specific model (wraps load_model_defaults)."""
     # An API-key caller is shown a filesystem-backed row under an opaque `ref:` handle and hands
     # it back here, where it would otherwise read as a Hugging Face id.
+    from core.inference.npu_backend import is_npu_model_path
     from models.inference import resolve_inventory_handle
 
     model_name = resolve_inventory_handle(model_name)
+    if is_npu_model_path(model_name):
+        return ModelDetails(id = model_name, model_name = model_name, model_type = "text")
     if local_path:
         local_path = resolve_inventory_handle(local_path)
     if local_path:
@@ -2914,6 +2920,8 @@ def _disk_bytes(model_path: str, export_type: Optional[str]) -> Optional[int]:
 def _scan_loras_sync(
     resolved_outputs_dir: str, resolved_exports_dir: str, hf_token: Optional[str]
 ) -> List[LoRAInfo]:
+    from utils.models.checkpoints import parse_adapter_features
+
     lora_list: List[LoRAInfo] = []
 
     trained_models = scan_trained_models(outputs_dir = resolved_outputs_dir)
@@ -2928,6 +2936,7 @@ def _scan_loras_sync(
                 export_type = model_type,
                 size_bytes = _disk_bytes(model_path, model_type),
                 audio_type = _audio_type_of_checkpoint(model_path, base_model, hf_token),
+                adapter_features = parse_adapter_features(model_path),
             )
         )
 
@@ -2942,6 +2951,7 @@ def _scan_loras_sync(
                 export_type = export_type,
                 size_bytes = _disk_bytes(model_path, export_type),
                 audio_type = _audio_type_of_checkpoint(model_path, base_model, hf_token),
+                adapter_features = parse_adapter_features(model_path),
             )
         )
 
@@ -5350,8 +5360,13 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                         "size_bytes": total_size,
                         "task": row_task,
                     }
+                    pipeline_artifact_kind = _diffusers_pipeline_artifact_kind(selected)
+                    if pipeline_artifact_kind is not None:
+                        row["artifact_kind"] = pipeline_artifact_kind
                     # Pin a copy its bare id cannot reach, so the pick loads the found snapshot.
-                    if model_load_id:
+                    if row_task is None and pipeline_artifact_kind is not None:
+                        row["load_id"] = str(selected)
+                    elif model_load_id:
                         row["load_id"] = model_load_id
                     model_format = _repo_model_format(repo_info, selected)
                     if model_format:
@@ -5589,6 +5604,7 @@ async def list_checkpoints(
                 peft_type = metadata.get("peft_type"),
                 lora_rank = metadata.get("lora_rank"),
                 is_quantized = metadata.get("is_quantized", False),
+                adapter_features = metadata.get("adapter_features"),
             )
             for model_name, checkpoints, metadata in raw_models
         ]

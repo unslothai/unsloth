@@ -3,9 +3,11 @@
 // See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import type { en } from "./en";
+import { en } from "./en.ts";
 
 export const ja = {
+  // English fallback until this experimental feature is translated.
+  managedEngines: en.managedEngines,
   composerSettings: {
     title: "入力欄",
     plainText: "プレーンテキスト入力",
@@ -144,6 +146,13 @@ export const ja = {
       close: "検索を閉じる",
       truncated: "このページは長すぎるため、全体を検索できません。",
     },
+    zoom: {
+      label: "ズーム",
+      zoomOut: "縮小",
+      zoomIn: "拡大",
+      reset: "リセット",
+      announce: "ズーム {percent}%",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -204,6 +213,14 @@ export const ja = {
       help: "ヘルプ",
       logOut: "ログアウト",
       shutdown: "シャットダウン",
+    },
+    commandPalette: {
+      placeholder: "コマンドを入力または検索...",
+      noResults: "結果が見つかりません。",
+      navigation: "ナビゲーション",
+      actions: "アクション",
+      chat: "チャット",
+      searchChats: "チャットを検索...",
     },
     notFound: {
       title: "ページが見つかりません",
@@ -480,6 +497,10 @@ export const ja = {
         openKeyboardShortcuts: {
           label: "キーボードショートカット",
           description: "このショートカット一覧を開きます",
+        },
+        openCommandPalette: {
+          label: "コマンドパレット",
+          description: "コマンドパレットを開く",
         },
         searchChats: {
           label: "チャットを検索",
@@ -1298,20 +1319,13 @@ export const ja = {
           wide: "広い",
           full: "全幅",
         },
-        composerAttachments: {
-          label: "入力欄の添付ファイル",
-          description:
-            "入力欄を広げる大きなカード、またはコンパクトなタイルの列で表示します。",
-          cards: "大きなカード",
-          compact: "コンパクトなタイル",
-        },
         sentAttachments: {
           label: "送信済みメッセージの添付ファイル",
           description:
-            "各ファイルの種類を示すリスト、または小さなチップで表示します。自動では 7 件以上でチップに切り替わります。",
+            "標準では各ファイルを種類付きで表示し、コンパクトでは 1 行により多く表示します。自動では 7 件以上でコンパクトに切り替わります。",
           auto: "自動",
-          list: "リスト",
-          chips: "チップ",
+          list: "標準",
+          chips: "コンパクト",
         },
         reset: "リセット",
         resetAll: "カスタマイズをリセット",
@@ -1532,6 +1546,7 @@ export const ja = {
         noRamReserveDescription: "モデルの重みが占有する RAM を減らします。",
         noRamReserveHint: "モデルが GPU に完全にオフロードされている場合、対応する Windows ビルドではメモリマップ読み込みを行わず、ファイルのページが常駐しないようにします。それ以外ではメモリマップ読み込みを維持します。必要な CPU バッファは RAM を使用することがあります。--no-mmap と --mlock を除去します。",
         mlockVetoed: "--mlock は無効のままです。モデルを固定するとモデル全体分の RAM を確保することになります。アイドル時の自動アンロードは引き続き無効です。",
+        mlockNotApplicable: "すべて GPU 上にあるため、システム RAM に固定するものはありません。アイドル時の自動アンロードは無効のままです。",
         memlockCapped: "このシステムはロック可能なメモリを {limit} に制限しています。これより大きいモデルは完全には固定されません。ulimit -l で上限を引き上げてください。",
         reloadRequired: "新しいメモリ設定を適用するにはモデルを再読み込みしてください。",
         loadError: "モデルメモリ設定の読み込みに失敗しました",
@@ -1771,9 +1786,6 @@ export const ja = {
         "{count}文字以上の貼り付けテキストは .txt 添付ファイルになります。短いテキストは入力欄に残ります。",
       pastedTextOffDescription:
         "長さに関係なく、貼り付けたテキストはすべて入力欄に残ります。",
-      projectsSection: "プロジェクトセクションを表示",
-      projectsSectionDescription:
-        "プロジェクトのチャットを「プロジェクト」の見出しにまとめます。オフにすると「最近」に表示されます。",
       title: "チャット",
       description: "このデバイスでのチャットの動作をカスタマイズします。",
       modelSelection: {
@@ -1810,6 +1822,11 @@ export const ja = {
       autoScrollManual: "手動",
       autoScrollKeywords:
         "スクロール 自動スクロール 追従 下 ジャンプ ストリーミング 生成 固定 scroll autoscroll follow",
+      scrollToBottomButton: "一番下へスクロールボタン",
+      scrollToBottomButtonDescription:
+        "上にスクロールしたときに、最新のメッセージへ戻るボタンを表示します。",
+      scrollToBottomButtonKeywords:
+        "スクロール 一番下 最新 矢印 ボタン 非表示 scroll bottom button",
       showResponseModel: "応答モデルを表示",
       showResponseModelDescription:
         "アシスタントの応答にモデルのメタデータを表示します。",
@@ -1880,6 +1897,22 @@ export const ja = {
           "設定 → チャットで「{setting}」をオンにすると Canvas が外部リソースを読み込めます。この Canvas だけ許可することもできます。",
         blockedSettingsAction: "設定を開く",
         blockedDismiss: "閉じる",
+        errorTitle: "この Canvas でエラーが発生しました",
+        errorTitlePlural: "この Canvas で {count} 件のエラーが発生しました",
+        errorHint: "「モデルで修正」はエラーをメッセージ欄に入れるだけです。送信するまで何も送られません。",
+        errorBannerAction: "モデルで修正",
+        errorConsoleAction: "コンソールを開く",
+        errorConsoleHideAction: "コンソールを隠す",
+        errorLocation: "{line} 行目、{column} 列目",
+        errorLine: "{line} 行目",
+        consoleTitle: "コンソール",
+        reloadCanvas: "もう一度実行",
+        consoleMessageCount: "メッセージ {count} 件",
+        consoleMessageCountPlural: "メッセージ {count} 件",
+        consoleClear: "コンソールをクリア",
+        consoleClose: "コンソールを閉じる",
+        consoleEmpty: "コンソール出力はまだありません。",
+        consoleCapped: "直近の {count} 件のみ保持します。それより前の出力は破棄されました。",
       },
       data: "データ",
       exportHistory: "チャット履歴をエクスポート",
@@ -2150,11 +2183,13 @@ export const ja = {
       revoking: "失効中...",
       decisionApi: {
         title: "判定 API",
-        description: "ローカルの Laya モデルで、テキストに関するはい/いいえ・選択式・スコアの質問に答えます。TypeSafe SDK で使えます。",
+        description: "このマシン上のモデル、または接続の判定モデルで、テキストに関するはい/いいえ・選択式・スコアの質問に答えます。TypeSafe SDK で使えます。",
         enable: "リクエストに応答",
         enableDescription: "/v1/systemone を提供します。オンにするとモデルをダウンロードします。",
+        enableRemoteDescription: "/v1/systemone を提供します。",
         lockedByEnv: "{name} で設定されています。",
         model: "モデル",
+        thisMachine: "このマシン",
         modelMultilingual: "多言語",
         modelEnglish: "英語",
         modelTypedDecisions: "型付き判定",
@@ -2179,6 +2214,10 @@ export const ja = {
         downloadFailed: "ダウンロードを開始できませんでした。",
         saveFailed: "判定 API の設定を保存できませんでした。",
         loadError: "判定 API の設定を読み込めませんでした。",
+        sendsTo: "リクエストは {provider} に送信されます。",
+        connectionMissing: "この接続は存在しないか、判定モデルがありません。別のモデルを選んでください。",
+        addConnection: "ホスト型の判定モデルを使うには、接続で TypeSafe、Liquid AI、OpenRouter のいずれかを追加してください。",
+        openConnections: "接続を開く",
       },
       usageNoModel:
         "モデルを読み込むかダウンロードすると、実行できる例が表示されます。このサーバーにはまだ指定できるモデルがありません。",
