@@ -51,6 +51,22 @@ def test_opt_out_raises_with_manual_command_and_never_installs(pip_calls):
     assert "install_missing_dependencies=False" in str(e.value)
 
 
+@pytest.mark.parametrize("has_pip", [True, False])
+def test_manual_command_matches_the_available_installer(monkeypatch, has_pip):
+    import importlib.util
+
+    find_spec = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name, *a, **k: (find_spec(name, *a, **k) if has_pip else None)
+        if name == "pip"
+        else find_spec(name, *a, **k),
+    )
+    command = save.llm_compressor_manual_install_command()
+    assert command.startswith(f"{sys.executable} -m pip install" if has_pip else "uv pip install")
+
+
 def test_env_optout_blocks_install(pip_calls, monkeypatch):
     monkeypatch.setenv("UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL", "1")
     with pytest.raises(RuntimeError, match = "UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL") as e:

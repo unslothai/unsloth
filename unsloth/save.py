@@ -1599,6 +1599,9 @@ def _compressed_quantize_pythonpath():
 
 
 def llm_compressor_manual_install_command() -> str:
+    import importlib.util
+    if importlib.util.find_spec("pip") is not None:
+        return f"{sys.executable} -m pip install '{_LLM_COMPRESSOR_SPEC}'"
     return f"uv pip install --python {sys.executable} '{_LLM_COMPRESSOR_SPEC}'"
 
 
