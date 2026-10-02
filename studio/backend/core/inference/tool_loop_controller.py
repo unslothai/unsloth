@@ -1202,7 +1202,7 @@ class ToolLoopController:
             tool_schemas = self._tools,
         )
         arguments = coerced.arguments
-        if tool_name == "web_search":
+        if tool_name == "web_search" and UNPARSED_ARGUMENTS_KEY not in arguments:
             from core.inference.tools import canonicalize_web_search_arguments
             arguments = canonicalize_web_search_arguments(arguments)
         key = canonical_tool_call_key(tool_name, arguments)
