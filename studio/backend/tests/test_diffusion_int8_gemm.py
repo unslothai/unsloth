@@ -348,14 +348,21 @@ def test_streamed_kill_switch(forced, monkeypatch):
 
 @pytest.mark.parametrize(
     "cap, on",
-    [((8, 0), False), ((8, 9), False), ((10, 0), False), ((12, 0), True)],  # only the measured arch (G4) is on
+    [
+        ((8, 0), False),
+        ((8, 9), False),
+        ((10, 0), False),
+        ((12, 0), True),
+    ],  # only the measured arch (G4) is on
 )
 def test_rotquant_arch_gate(cap, on):
     assert (g8.rotquant_config(cap, "auto") is not None) is on
 
 
 def test_rotquant_kill_switch_and_force(monkeypatch):
-    assert g8.rotquant_config((12, 0), "off") is None  # the fused GEMM's own kill switch also turns it off
+    assert (
+        g8.rotquant_config((12, 0), "off") is None
+    )  # the fused GEMM's own kill switch also turns it off
     assert g8.rotquant_config((10, 0), "force") is not None
     assert g8.rotquant_config((7, 5), "force") is None
     monkeypatch.setenv(g8.INT8_ROTQUANT_ENV, "0")
@@ -380,7 +387,9 @@ def _act(m, k, seed):
 
 
 @needs_cuda
-@pytest.mark.parametrize("m, k", [(17, 256), (300, 256 * 3), (1037, 5376), (257, 7168), (129, 14336), (19, 256 * 128)])
+@pytest.mark.parametrize(
+    "m, k", [(17, 256), (300, 256 * 3), (1037, 5376), (257, 7168), (129, 14336), (19, 256 * 128)]
+)
 @pytest.mark.parametrize("kind", ["v1", "v2"])
 def test_rotquant_kernel_is_bit_exact_vs_rotation_then_torchao_quant(forced_rotq, m, k, kind):
     x = _act(m, k, m + k)
@@ -394,7 +403,9 @@ def test_rotquant_kernel_is_bit_exact_vs_rotation_then_torchao_quant(forced_rotq
 def test_rotquant_unsupported_shapes_take_the_stock_math(forced_rotq):
     x = _act(40, 256 * 129, 3)  # more groups than one tile holds
     assert not g8.rotquant_supported(x, 256, forced_rotq)
-    assert not g8.rotquant_supported(_act(40, 1024, 4), 64, forced_rotq)  # group outside the kernel's set
+    assert not g8.rotquant_supported(
+        _act(40, 1024, 4), 64, forced_rotq
+    )  # group outside the kernel's set
     assert not g8.rotquant_supported(_act(40, 1024, 5).half(), 256, forced_rotq)
     q, s = g8._rotq_op()(x, 256, True)
     rq, rs = g8.rotquant_reference(x, 256, "v2")
@@ -407,7 +418,9 @@ def test_rotquant_unsupported_shapes_take_the_stock_math(forced_rotq):
 
 @needs_cuda
 @pytest.mark.parametrize("version", [None, 2])
-def test_convrot_linear_fuses_rotation_into_act_quant_eager_and_compiled(forced_rotq, monkeypatch, version):
+def test_convrot_linear_fuses_rotation_into_act_quant_eager_and_compiled(
+    forced_rotq, monkeypatch, version
+):
     """The rotated Linear quantizes its activation with the fused kernel: same output as ConvRotLinear.forward, eager
     and compiled, one graph, no graph break, no recompile on a second call."""
     from torch._dynamo.utils import counters
@@ -419,7 +432,9 @@ def test_convrot_linear_fuses_rotation_into_act_quant_eager_and_compiled(forced_
     assert g8.install(holder) == 1 and fused.__dict__[g8._REC][2] is True
     x = torch.randn(2, 300, 1024, device = "cuda", dtype = torch.bfloat16) * 3
     x[0, 7, :5] *= 200
-    x2 = x * 0.5  # made outside inference_mode like x, so a recompile here would be the op's own guards
+    x2 = (
+        x * 0.5
+    )  # made outside inference_mode like x, so a recompile here would be the op's own guards
     with torch.inference_mode():
         before = g8.rotquant_call_count()
         assert torch.equal(fused(x), stock(x))
@@ -456,6 +471,8 @@ def test_rotquant_kill_switch_keeps_the_stock_rotation(forced, monkeypatch):
 @needs_cuda
 def test_rotquant_probe_refusal_keeps_the_stock_rotation(forced, monkeypatch):
     monkeypatch.delenv(g8.INT8_GEMM_CONVROT_ENV, raising = False)
-    monkeypatch.setattr(g8, "_rotq_probe", lambda index, cfg: False)  # e.g. an accumulation order that differs
+    monkeypatch.setattr(
+        g8, "_rotq_probe", lambda index, cfg: False
+    )  # e.g. an accumulation order that differs
     fused = _convrot(_int8_linear(1024, 768, False, 2))
     assert g8.install(torch.nn.Sequential(fused)) == 1 and fused.__dict__[g8._REC][2] is False
