@@ -1293,6 +1293,8 @@ def h3_quant_cublas_env(
     else:
         take = sage
     return ((H3_QUANT_CUBLAS_ENV, H3_QUANT_CUBLAS_MIN_BATCH),) if take else ()
+
+
 # Denoiser compute buffer at 960x544x124, from sd-cli's log; scaled by pixel volume.
 H3_NATIVE_DIT_COMPUTE_BYTES_H1 = int(5.4 * 1024**3)
 H3_NATIVE_H1_PIXEL_VOLUME = 960 * 544 * 124

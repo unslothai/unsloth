@@ -427,7 +427,9 @@ def sd_cpp_device_name_for_ordinal(binary: Optional[str], ordinal: Optional[int]
 # ggml-cuda's own init log, printed on stderr by every CUDA build of sd-cli when it lists its devices. A HIP build
 # prints "ROCm devices" instead, so only a CUDA build ever matches.
 _CUDA_INIT_RE = re.compile(r"ggml_cuda_init: found \d+ CUDA devices")
-_CUDA_DEVICE_CC_RE = re.compile(r"^\s*Device (\d+): .*?, compute capability (\d+)\.(\d+)", re.MULTILINE)
+_CUDA_DEVICE_CC_RE = re.compile(
+    r"^\s*Device (\d+): .*?, compute capability (\d+)\.(\d+)", re.MULTILINE
+)
 
 
 # The last --list-devices answer per binary path, with the (size, mtime_ns) it was read from. Remembered, never reused
@@ -454,7 +456,10 @@ def _remember_device_listing(binary: Optional[str], text: Optional[str]) -> None
 
 
 def sd_cpp_cuda_compute_capability(
-    binary: Optional[str], device_name: Optional[str], *, probe: bool = True
+    binary: Optional[str],
+    device_name: Optional[str],
+    *,
+    probe: bool = True,
 ) -> Optional[tuple[int, int]]:
     """The compute capability the CUDA build ``binary`` itself reports for ``device_name``
     (``CUDA<i>``), read from the ``ggml_cuda_init`` lines ``--list-devices`` prints. With no device
@@ -472,7 +477,10 @@ def sd_cpp_cuda_compute_capability(
         text = _sd_cpp_probe_output(binary, "--list-devices")
     if text is None or not _CUDA_INIT_RE.search(text):
         return None
-    caps = {int(m.group(1)): (int(m.group(2)), int(m.group(3))) for m in _CUDA_DEVICE_CC_RE.finditer(text)}
+    caps = {
+        int(m.group(1)): (int(m.group(2)), int(m.group(3)))
+        for m in _CUDA_DEVICE_CC_RE.finditer(text)
+    }
     if not caps:
         return None
     if device_name is None:

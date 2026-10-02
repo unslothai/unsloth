@@ -3495,6 +3495,7 @@ class VideoBackend:
             # Read off the listing the accelerator re-check above just took, so it costs no extra subprocess; a CPU or
             # MPS target never took one and stays None.
             from .sd_cpp_backend import sd_cpp_cuda_compute_capability
+
             native_cuda_cc = (
                 sd_cpp_cuda_compute_capability(binary, native_device_name, probe = False)
                 if native_device != "cpu" and listed_accelerator is not None

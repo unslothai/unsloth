@@ -4238,7 +4238,11 @@ def test_h3_native_bf16_cublas_user_value_wins(monkeypatch, tmp_path, value):
     monkeypatch.setenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", value)
     for mode in (None, "max"):
         state, _offload = _load_h3_native_offload(
-            monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = mode, devices = _cuda_devices("10.0")
+            monkeypatch,
+            tmp_path,
+            help_text = _SAGE_HELP,
+            speed_mode = mode,
+            devices = _cuda_devices("10.0"),
         )
         assert state.pipe.env == (), (value, mode)
 
