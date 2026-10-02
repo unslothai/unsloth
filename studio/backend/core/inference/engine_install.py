@@ -228,10 +228,19 @@ def _torch_runtime() -> set[str]:
     return names
 
 
-# nvcc reads the crt, nvvm and cccl headers beside its own binary, so mixing releases breaks
-# FlashInfer's JIT (Colab: crt 13.4.59 with nvcc 13.0.88, "'__cudaLaunch' was not declared").
-# Shared only when Studio holds every one at the locked version, else the engine brings all of them.
-_TOOLCHAIN = frozenset({"nvidia-cuda-nvcc", "nvidia-cuda-crt", "nvidia-nvvm", "nvidia-cuda-cccl"})
+# nvcc's cudafe stubs need the crt headers of its own release, and cuda_runtime.h pulls crt/ from
+# beside itself, so mixing releases breaks FlashInfer's JIT (Colab: crt 13.4.59 with nvcc 13.0.88,
+# "macro __cudaLaunch passed 2 arguments"). Shared only when Studio holds every one at the locked
+# version, else the engine brings all of them.
+_TOOLCHAIN = frozenset(
+    {
+        "nvidia-cuda-nvcc",
+        "nvidia-cuda-crt",
+        "nvidia-nvvm",
+        "nvidia-cuda-cccl",
+        "nvidia-cuda-runtime",
+    }
+)
 
 
 def _same_build(installed: str | None, locked: str | None, cuda: str) -> bool:
