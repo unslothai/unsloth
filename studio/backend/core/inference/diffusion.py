@@ -240,6 +240,15 @@ from .diffusion_precision import (
     torchao_quantize_importable,
 )
 from .diffusion_te_prequant import te_prequant_pipe_kwargs
+from .diffusion_flow_shift import apply_comfy_flow_shift
+from .diffusion_text_length import (
+    IDEOGRAM4_COMFY_GUIDANCE,
+    IDEOGRAM4_COMFY_MU,
+    IDEOGRAM4_COMFY_STD,
+    ideogram4_comfy_guidance_schedule,
+    flux_t5_kwarg,
+    true_cfg_needs_empty_negative,
+)
 from .diffusion_denoiser_prequant import (
     DENOISER_COMPONENT,
     PIPELINE_SEED_DECLINED,
@@ -6987,6 +6996,8 @@ class DiffusionBackend:
                         )
 
                     self._raise_if_load_cancelled(_load_token)
+                    # Sample at ComfyUI's static sigma shift where the shipped scheduler differs (before from_pipe copies it).
+                    apply_comfy_flow_shift(pipe, getattr(fam, "comfy_flow_shift", None), logger)
                     # Before the speed optims so their decode compile lands inside the non-finite check; `off` keeps fp32.
                     vae_fp16 = str(
                         speed_mode or ""
@@ -9405,7 +9416,20 @@ class DiffusionBackend:
                     if steps == 48 and abs(float(guidance) - 7.0) < 1e-6:
                         kwargs.pop(state.family.cfg_kwarg, None)
                     else:
-                        kwargs["guidance_schedule"] = None
+                        # Otherwise ComfyUI's template: its "Default" schedule (mu 0.0, std 1.75; the card taper above
+                        # keeps the pipeline's mu 0 / std 1.5) and, at the default guidance 7, its CFG override to 3
+                        # over the last 30% of sampling, as a per-step schedule. Any other guidance stays constant.
+                        if "mu" in call_params:
+                            kwargs["mu"] = IDEOGRAM4_COMFY_MU
+                        if "std" in call_params:
+                            kwargs["std"] = IDEOGRAM4_COMFY_STD
+                        if abs(float(guidance) - IDEOGRAM4_COMFY_GUIDANCE) < 1e-6:
+                            kwargs.pop(state.family.cfg_kwarg, None)
+                            kwargs["guidance_schedule"] = ideogram4_comfy_guidance_schedule(
+                                steps, width, height
+                            )
+                        else:
+                            kwargs["guidance_schedule"] = None
                 if state.family.name == LUMINA2_FAMILY_NAME and "cfg_trunc_ratio" in call_params:
                     # Lumina 2's card recipe truncates the CFG double-forward to the first quarter
                     # (cfg_trunc_ratio=0.25); the 1.0 default oversaturates.
@@ -9437,6 +9461,13 @@ class DiffusionBackend:
                         kwargs["height"] = ih
                 if negative_prompt and "negative_prompt" in call_params:
                     kwargs["negative_prompt"] = negative_prompt
+                elif "negative_prompt" in call_params and true_cfg_needs_empty_negative(
+                    state.family.cfg_kwarg, guidance
+                ):
+                    # Qwen-Image style pipelines run true CFG only when a negative is PRESENT, so a blank negative
+                    # silently dropped CFG while the UI showed guidance 4. ComfyUI encodes an empty negative and
+                    # applies CFG; do the same.
+                    kwargs["negative_prompt"] = ""
                 if workflow == "controlnet" and control_pil is not None:
                     # CN pipeline takes the control map + scale; guidance start/end bound its step range. Every kwarg
                     # is signature-gated.
@@ -9635,6 +9666,11 @@ class DiffusionBackend:
                                 chunk_kwargs["negative_prompt"] = [
                                     chunk_kwargs["negative_prompt"]
                                 ] * len(chunk)
+                        # FLUX.1 T5 length as ComfyUI pads it: 256 for prompts up to 256 tokens (diffusers pads every
+                        # prompt to 512); longer prompts keep the 512 bucket. Per chunk, since a prompts list varies.
+                        t5_len = flux_t5_kwarg(state.family.name, pipe, call_params, chunk_kwargs)
+                        if t5_len is not None:
+                            chunk_kwargs["max_sequence_length"] = t5_len
                         # A step cache keys residuals on the cond/uncond context, which a graph key
                         # cannot see. Per chunk because an AUTO decision is re-taken per generation.
                         if state.cuda_graphs:
