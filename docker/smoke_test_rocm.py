@@ -6,7 +6,9 @@ Smoke test for the Unsloth ROCm image (AMD GPU build).
 
 What this checks (in order, fail-fast):
   1. torch is a ROCm build (torch.version.hip is not None).
-  2. The runtime device is visible and its gfx arch is supported (RDNA2+).
+  2. The runtime device is visible and an fp16 matmul actually runs on it.
+     (gfx-arch support itself is validated by the container entrypoint, not
+     here -- this script only reports the arch it finds, for the log.)
   3. bitsandbytes / triton import without ImportError.
   4. unsloth imports and exposes FastLanguageModel.
   5. A 5-step LoRA train on a tiny model actually runs forward + backward.
