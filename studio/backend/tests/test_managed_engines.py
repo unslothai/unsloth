@@ -34,12 +34,14 @@ def isolated(monkeypatch, tmp_path):
     return tmp_path
 
 
-
 # Studio starts a local engine process only on a Linux host (Windows runs it in WSL, macOS is
 # refused), and these lean on POSIX process timing.
-_LOCAL_ENGINE_HOST = pytest.mark.skipif(sys.platform != "linux", reason = "local engine host is Linux only")
+_LOCAL_ENGINE_HOST = pytest.mark.skipif(
+    sys.platform != "linux", reason = "local engine host is Linux only"
+)
 # Engine leases and copy-on-write clones use fcntl, which Windows does not have.
 _POSIX_ENGINE_LOCKS = pytest.mark.skipif(sys.platform == "win32", reason = "engine locks use fcntl")
+
 
 def active(
     root,
