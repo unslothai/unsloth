@@ -2411,11 +2411,6 @@ class _TaintPass(ast.NodeVisitor):
                 found.append((defining, owner))
         return found
 
-    def _attr_key(self, node: ast.Attribute) -> str:
-        """The first key, for the one caller that wants a single spelling."""
-        keys = self._attr_keys(node)
-        return keys[0] if keys else ""
-
     def _ancestors(
         self,
         class_name: str,
@@ -2423,11 +2418,6 @@ class _TaintPass(ast.NodeVisitor):
     ) -> list:
         """Declared base classes of `class_name`, transitively, within this file."""
         return self.facts._base_chain(class_name, seen)
-
-    def _attr_key(self, node: ast.Attribute) -> str:
-        """The first key, for the one caller that wants a single spelling."""
-        owners = self._attr_owners(node)
-        return owners[0] if owners else ""
 
     # -- taint writes ------------------------------------------------------------------
 
