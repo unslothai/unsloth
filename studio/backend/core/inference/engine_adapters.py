@@ -265,7 +265,10 @@ def memory_reserve_mib(engine: str, options: dict | None) -> int:
     """MiB left outside the engine's budget, for what each engine allocates past it. On a 24 GB L4
     with Qwen2.5-0.5B, vLLM's sampler warmup failed at 512 MiB and passed from 1536 (it scales with
     the vocabulary, so larger ones need more); SGLang's CUDA graphs and NCCL buffers died mid-request
-    at 512 and passed from 2048. vLLM with TorchAO weights overruns by 2.4-4.8 GiB more (B200)."""
+    at 512 and passed from 2048. vLLM with TorchAO weights overruns by 2.4-4.8 GiB more (B200).
+    The warmup also grows with the card: vLLM raises its default max_num_seqs on large GPUs, and a
+    96 GB RTX PRO 6000 ran out of memory in the sampler warmup with 3 GiB left, so
+    ``gpu_memory_fraction`` keeps at least ``RESERVE_SHARE`` of each card free as well."""
     options = options or {}
     precision = options.get("precision", "auto")
     torchao = engine == "vllm" and (
@@ -275,10 +278,14 @@ def memory_reserve_mib(engine: str, options: dict | None) -> int:
     return (3072 if engine == "vllm" else 4096) + (6144 if torchao else 0)
 
 
-def gpu_memory_fraction(gpu_ids: list[int], reserve_mib: int = 512) -> float:
+RESERVE_SHARE = 0.06
+
+
+def gpu_memory_fraction(gpu_ids: list[int], reserve_mib: int = 512, reserve_share: float = 0.0) -> float:
     """Budget every selected physical GPU after the previous resident is stopped.
 
-    Reserve at least ``reserve_mib`` for allocations the engine does not budget. An unreadable
+    Reserve the larger of ``reserve_mib`` and ``reserve_share`` of each card for allocations the
+    engine does not budget. An unreadable
     device is an actionable failure, never permission to fall back to a larger engine default.
     """
     from utils.vram_budget_settings import get_vram_budget_fraction
@@ -304,10 +311,11 @@ def gpu_memory_fraction(gpu_ids: list[int], reserve_mib: int = 512) -> float:
         fraction = get_vram_budget_fraction()
         for row in rows:
             total, free = (float(value.strip()) for value in row.split(","))
-            if total <= 0 or free <= reserve_mib or free > total:
+            reserve = max(reserve_mib, reserve_share * total)
+            if total <= 0 or free <= reserve or free > total:
                 raise ValueError("Insufficient available GPU memory")
             # One fraction for all ranks: the most constrained GPU bounds it.
-            fraction = min(fraction, (free - reserve_mib) / total)
+            fraction = min(fraction, (free - reserve) / total)
         if fraction < 0.05:
             raise ValueError("Insufficient available GPU memory")
         return int(fraction * 1000) / 1000
