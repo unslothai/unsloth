@@ -445,9 +445,13 @@ async def test_a_prefill_reporting_only_progress_renews_the_lease(durable_run, m
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "comment, reaped",
-    [("_OPENAI_TOOL_HEARTBEAT_SSE", []), ("_OPENAI_PASSTHROUGH_SSE_KEEPALIVE", ["run-1"])],
+    [
+        ("_OPENAI_TOOL_HEARTBEAT_SSE", []),
+        ("_OPENAI_PREFILL_PROGRESS_SSE", []),
+        ("_OPENAI_PASSTHROUGH_SSE_KEEPALIVE", ["run-1"]),
+    ],
 )
-async def test_a_silent_tool_holds_the_lease_but_a_stalled_stream_does_not(
+async def test_progress_comments_hold_the_lease_but_a_stalled_stream_does_not(
     durable_run, monkeypatch, comment, reaped
 ):
     comment = getattr(inference, comment)

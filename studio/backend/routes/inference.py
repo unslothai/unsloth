@@ -857,7 +857,9 @@ def _is_prefill_progress_only(data) -> bool:
 
 
 class _ProgressKeepalive:
-    """Dropped progress still resets the relay's idle timer, so stand in for the keepalive it starved."""
+    """Dropped ``prompt_progress`` still needs a stand-in frame: the relay's idle timer, and the
+    durable-run lease (which ignores plain ``: keep-alive``). Emit ``: prefill-progress`` on the
+    same cadence."""
 
     def __init__(self, interval_s: Optional[float]):
         self._interval_s = interval_s
@@ -1885,6 +1887,9 @@ _OPENAI_ADMISSION_SSE_WAIT = ": admission-wait\n\n"
 _OPENAI_ADMISSION_SSE_DONE = ": admission-done\n\n"
 # A server-side tool still running, unlike a stall keep-alive: durable runs renew their lease on it.
 _OPENAI_TOOL_HEARTBEAT_SSE = ": tool-heartbeat\n\n"
+# Prefill still advancing while ``prompt_progress`` is dropped for clients that did not ask for it.
+# Same lease contract as the tool heartbeat: not a stall keep-alive.
+_OPENAI_PREFILL_PROGRESS_SSE = ": prefill-progress\n\n"
 _OPENAI_LLAMA_ADMISSION_POLL_S = 0.25
 # Cap on waiting for a cancelled teardown task. Request.is_disconnected() can swallow
 # cancel() (#7617), so teardown abandons the task rather than hold the response, and
@@ -32682,7 +32687,8 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                             )
                         ):
                             if progress_keepalive.due():
-                                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE.encode()
+                                # Distinct from stall keep-alive: durable runs renew their lease on it.
+                                yield _OPENAI_PREFILL_PROGRESS_SSE.encode()
                             continue
                         out = _cmpl_stream_event_out(event, _include_usage)
                         if out is not None:
@@ -41086,7 +41092,8 @@ async def _openai_passthrough_stream_admitted(
                     if not client_wants_progress and _is_prefill_progress_only(chunk_data):
                         _monitor_openai_sse_line(monitor_id, raw_line, llama_backend.context_length)
                         if progress_keepalive.due():
-                            yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                            # Distinct from stall keep-alive: durable runs renew their lease on it.
+                            yield _OPENAI_PREFILL_PROGRESS_SSE
                         continue
                     # With healing active, a content-bearing line may be replaced by
                     # held/promoted chunks; otherwise the single (already
