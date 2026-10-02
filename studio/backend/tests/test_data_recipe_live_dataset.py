@@ -83,3 +83,19 @@ def test_active_run_never_uses_the_fallback_reader(tmp_path, monkeypatch):
         JobManager, "_load_dataset_page_with_data_designer", staticmethod(_fallback)
     )
     assert m.get_dataset("job-live", limit = 10) is None
+
+
+@pytest.mark.parametrize("offset,limit", [(0, 5), (3, 6), (9, 4), (12, 20), (20, 5)])
+def test_duckdb_page_matches_shards_read_in_order(tmp_path, offset, limit):
+    sizes = [4, 5, 3, 7]
+    start = 0
+    for i, n in enumerate(sizes):
+        pd.DataFrame({"a": list(range(start, start + n))}).to_parquet(
+            tmp_path / f"batch_{i:05d}.parquet", index = False
+        )
+        start += n
+    page = JobManager._load_dataset_page_with_duckdb(
+        parquet_dir = tmp_path, limit = limit, offset = offset
+    )
+    assert page["total"] == sum(sizes)
+    assert [row["a"] for row in page["dataset"]] == list(range(sum(sizes)))[offset : offset + limit]
