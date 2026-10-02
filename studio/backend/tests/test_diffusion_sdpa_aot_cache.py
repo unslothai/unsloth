@@ -123,3 +123,6 @@ def test_sdpa_kernel_graph_hits_the_aot_cache_after_a_restart(
         second = torch.compile(block, backend = "inductor")(x)
     assert counters["aot_autograd"]["autograd_cache_hit"] >= 1
     assert counters["aot_autograd"]["autograd_cache_bypass"] == 0
+    # The cache hit must serve the artifact the first compile built.
+    assert torch.equal(second, first)
+    torch.testing.assert_close(first, ref)
