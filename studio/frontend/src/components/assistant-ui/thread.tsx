@@ -63,7 +63,9 @@ import {
   composerSubmitIntent,
   composerFollowUpBehavior,
   composerShortcutLabels,
+  composerKeyEventForImeSubmit,
   effectiveSendShortcut,
+  imeKeydownBlocksComposerSubmit,
   followUpSubmitIntent,
   steeringInsertionIndex,
   cancelPreStreamRunForThreadIds,
@@ -90,6 +92,7 @@ import {
   useChatAudioUpload,
   useInComparePane,
   refreshSkillsCatalog,
+  stopRecoveredRun,
 } from "@/features/chat";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
@@ -151,7 +154,7 @@ import {
   attachLibraryChatFiles,
   useLibraryChatHandoffStore,
 } from "@/features/library/chat-handoff-store";
-import { isServedByLlamaCpp } from "@/features/model-picker";
+import { resumesThought } from "@/features/model-picker";
 import { cancelResearchRun } from "@/features/chat/api/research-api";
 import {
   ingestResearchUpdate,
@@ -5641,6 +5644,8 @@ function useImeComposerInputHandlers({
 } = {}) {
   const aui = useAui();
   const composingRef = useRef(false);
+  const imeSessionOpenRef = useRef(false);
+  const compositionEndedAtRef = useRef(-Infinity);
   const [isComposing, setIsComposing] = useState(false);
   const stuckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -5723,6 +5728,7 @@ function useImeComposerInputHandlers({
     if (justSentRef) {
       justSentRef.current = markSentTextGuardUserInput(justSentRef.current);
     }
+    imeSessionOpenRef.current = true;
     setCompositionState(true);
   }, [justSentRef, setCompositionState]);
 
@@ -5732,6 +5738,8 @@ function useImeComposerInputHandlers({
 
   const onCompositionEnd = useCallback(
     (e: CompositionEvent<HTMLTextAreaElement>) => {
+      imeSessionOpenRef.current = false;
+      compositionEndedAtRef.current = e.timeStamp;
       setCompositionState(false);
       if (!setComposerText(e.currentTarget.value, e.nativeEvent)) {
         e.preventDefault();
@@ -5759,13 +5767,25 @@ function useImeComposerInputHandlers({
   // forever and block Send again.
   const onKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
-      if (e.nativeEvent.isComposing || e.keyCode === 229) {
-        // Deliberately NOT user input: picking a candidate in a composition the
-        // send left open is that composition continuing. One begun after the
-        // send is marked by compositionstart instead.
-        composingRef.current = true;
-        refreshStuckTimer();
-        return;
+      const msSinceCompositionEnd = e.timeStamp - compositionEndedAtRef.current;
+      compositionEndedAtRef.current = -Infinity;
+      const imeKey = e.nativeEvent.isComposing || e.keyCode === 229;
+      if (imeKey) {
+        if (
+          imeKeydownBlocksComposerSubmit(
+            e,
+            imeSessionOpenRef.current,
+            msSinceCompositionEnd,
+          )
+        ) {
+          // Deliberately NOT user input: picking a candidate in a composition the
+          // send left open is that composition continuing. One begun after the
+          // send is marked by compositionstart instead.
+          composingRef.current = true;
+          refreshStuckTimer();
+          return;
+        }
+        setCompositionState(false);
       }
       if (justSentRef && isGuardRetiringKey(e)) {
         justSentRef.current = markSentTextGuardUserInput(justSentRef.current);
@@ -5787,7 +5807,11 @@ function useImeComposerInputHandlers({
         setCompositionState(false);
       }
       if (submitOnEnter && !skipEnterRef?.current) {
-        const intent = composerSubmitIntent(e, sendShortcut, e.currentTarget?.value);
+        const intent = composerSubmitIntent(
+          imeKey ? composerKeyEventForImeSubmit(e) : e,
+          sendShortcut,
+          e.currentTarget?.value,
+        );
         if (intent) {
           e.preventDefault();
           if (onSubmitKey) onSubmitKey(e, intent);
@@ -5812,6 +5836,7 @@ function useImeComposerInputHandlers({
   // commits or cancels any in-progress composition before surrendering focus,
   // so blur is a safe unconditional reset point.
   const onBlur = useCallback(() => {
+    imeSessionOpenRef.current = false;
     setCompositionState(false);
   }, [setCompositionState]);
 
@@ -7105,6 +7130,9 @@ const ComposerRightControls: FC<{
   );
   const isQueueRunning = Boolean(queueEntry);
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
+  const threadRemoteId = useAuiState(
+    ({ threadListItem }) => threadListItem.remoteId,
+  );
   // Id and status, not the run: run identity changes on every streamed research delta.
   const activeResearchRunId = useResearchRunStore((state) =>
     activeThreadId ? state.latestRunByThreadId[activeThreadId] : undefined,
@@ -7162,6 +7190,8 @@ const ComposerRightControls: FC<{
       return;
     }
     if (isQueueRunning) onStopClick?.();
+    // A reply replayed after a reload has no adapter run for Cancel to abort.
+    stopRecoveredRun(threadRemoteId);
   };
   return (
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
@@ -7399,10 +7429,10 @@ function useContinuation() {
   const researchActive = useThreadResearchActive();
   const status = useAuiState(({ message }) => message.status);
   const metadata = useAuiState(({ message }) => message.metadata);
-  // Only llama-server can resume a thought.
   const thoughtResumable = useChatRuntimeStore((s) =>
-    isServedByLlamaCpp({
+    resumesThought({
       loadedIsGguf: s.loadedIsGguf,
+      loadedIsMlx: s.loadedIsMlx,
       activeGgufVariant: s.activeGgufVariant,
       activeNativePathToken: s.activeNativePathToken,
       checkpoint: s.params.checkpoint,
@@ -8520,100 +8550,104 @@ const AssistantActionBar: FC = () => {
             align="start"
             collisionPadding={moreMenuCollisionPadding}
             onCloseAutoFocus={(e) => e.preventDefault()}
-            className="aui-action-bar-more-content z-50 min-w-32 max-h-(--radix-dropdown-menu-content-available-height) overflow-x-hidden overflow-y-auto rounded-[21px] bg-popover px-[calc(9px*var(--ui-space-scale,1))] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-[0_8px_28px_-6px_var(--background)]"
+            className="aui-action-bar-more-content z-50 min-w-32 max-h-(--radix-dropdown-menu-content-available-height) flex flex-col overflow-hidden rounded-[21px] bg-popover px-[calc(9px*var(--ui-space-scale,1))] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-[0_8px_28px_-6px_var(--background)]"
           >
-            {/* Prevent an outside dismissal from triggering Delete. */}
-            <MenuDismissGuard triggerRef={moreMenuTriggerRef} />
-            <MessageMenuTime onShowDetails={() => setDetailsOpen(true)} />
-            {!inlineReadAloud && ttsEnabled && (
-              <MessagePrimitive.If speaking={false}>
-                <ActionBarPrimitive.Speak asChild={true}>
-                  <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50">
-                    <HugeiconsIcon
-                      icon={Volume02Icon}
-                      strokeWidth={1.75}
-                      className="size-icon"
-                    />
-                    Read aloud
-                  </ActionBarMorePrimitive.Item>
-                </ActionBarPrimitive.Speak>
-              </MessagePrimitive.If>
-            )}
-            {!inlineEdit && <EditAssistantMessageMenuItem />}
-            <ActionBarMorePrimitive.Item
-              disabled={forkDisabled}
-              onSelect={() => void forkMessage()}
-              className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
-            >
-              <GitBranchIcon strokeWidth={1.75} className="size-icon" />
-              Fork in new chat
-            </ActionBarMorePrimitive.Item>
-            <ActionBarPrimitive.ExportMarkdown
-              asChild={true}
-              onExport={exportMessageMarkdown}
-            >
-              <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
-                <HugeiconsIcon
-                  icon={Download01Icon}
-                  strokeWidth={1.75}
-                  className="size-icon"
-                />
-                Export as markdown
-              </ActionBarMorePrimitive.Item>
-            </ActionBarPrimitive.ExportMarkdown>
-            {activeProjectId && (
+            {/* Scroll an inner viewport: a scrollbar on the rounded surface squares its corners.
+                The surface padding insets it clear of the curve. */}
+            <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
+              {/* Prevent an outside dismissal from triggering Delete. */}
+              <MenuDismissGuard triggerRef={moreMenuTriggerRef} />
+              <MessageMenuTime onShowDetails={() => setDetailsOpen(true)} />
+              {!inlineReadAloud && ttsEnabled && (
+                <MessagePrimitive.If speaking={false}>
+                  <ActionBarPrimitive.Speak asChild={true}>
+                    <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50">
+                      <HugeiconsIcon
+                        icon={Volume02Icon}
+                        strokeWidth={1.75}
+                        className="size-icon"
+                      />
+                      Read aloud
+                    </ActionBarMorePrimitive.Item>
+                  </ActionBarPrimitive.Speak>
+                </MessagePrimitive.If>
+              )}
+              {!inlineEdit && <EditAssistantMessageMenuItem />}
               <ActionBarMorePrimitive.Item
-                onSelect={() => {
-                  // Not getCopyText: it joins text parts alone, so a reply's
-                  // reasoning, tool calls and citations would be dropped and a
-                  // tool-only reply would read as empty. Same conversion the
-                  // whole-chat save runs.
-                  // Stripped: a project source is retrieved back into context, so
-                  // saved tokens would teach the model ids that resolve to nothing.
-                  const text = stripSearchImageTokens(
-                    replySourceMarkdown(
-                      aui.message().getState().content,
-                      toolResultModelText,
-                    ),
-                  );
-                  if (!text.trim()) {
-                    toast.info("No content to save.");
-                    return;
-                  }
-                  const state = aui.threadListItem().getState();
-                  // The list item's title belongs to the whole chat, so mark the
-                  // reply apart or saving both lists two identical names.
-                  const title = state.title ? `${state.title} - reply` : "reply";
-                  // activeProjectId can lag a thread switch while the stored
-                  // thread loads; resolve the destination from this thread.
-                  const remoteId =
-                    state.remoteId ||
-                    useChatRuntimeStore.getState().activeThreadId;
-                  void (async () => {
-                    const thread = remoteId
-                      ? await getStoredChatThread(remoteId).catch(() => null)
-                      : null;
-                    if (!thread?.projectId) {
-                      toast.info("This chat isn't in a project.");
+                disabled={forkDisabled}
+                onSelect={() => void forkMessage()}
+                className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+              >
+                <GitBranchIcon strokeWidth={1.75} className="size-icon" />
+                Fork in new chat
+              </ActionBarMorePrimitive.Item>
+              <ActionBarPrimitive.ExportMarkdown
+                asChild={true}
+                onExport={exportMessageMarkdown}
+              >
+                <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
+                  <HugeiconsIcon
+                    icon={Download01Icon}
+                    strokeWidth={1.75}
+                    className="size-icon"
+                  />
+                  Export as markdown
+                </ActionBarMorePrimitive.Item>
+              </ActionBarPrimitive.ExportMarkdown>
+              {activeProjectId && (
+                <ActionBarMorePrimitive.Item
+                  onSelect={() => {
+                    // Not getCopyText: it joins text parts alone, so a reply's
+                    // reasoning, tool calls and citations would be dropped and a
+                    // tool-only reply would read as empty. Same conversion the
+                    // whole-chat save runs.
+                    // Stripped: a project source is retrieved back into context, so
+                    // saved tokens would teach the model ids that resolve to nothing.
+                    const text = stripSearchImageTokens(
+                      replySourceMarkdown(
+                        aui.message().getState().content,
+                        toolResultModelText,
+                      ),
+                    );
+                    if (!text.trim()) {
+                      toast.info("No content to save.");
                       return;
                     }
-                    await saveMarkdownAsProjectSource(
-                      thread.projectId,
-                      text,
-                      title,
-                    );
-                  })();
-                }}
-                className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
-              >
-                <HugeiconsIcon
-                  icon={FolderAttachmentIcon}
-                  strokeWidth={1.75}
-                  className="size-icon"
-                />
-                Save to project sources
-              </ActionBarMorePrimitive.Item>
-            )}
+                    const state = aui.threadListItem().getState();
+                    // The list item's title belongs to the whole chat, so mark the
+                    // reply apart or saving both lists two identical names.
+                    const title = state.title ? `${state.title} - reply` : "reply";
+                    // activeProjectId can lag a thread switch while the stored
+                    // thread loads; resolve the destination from this thread.
+                    const remoteId =
+                      state.remoteId ||
+                      useChatRuntimeStore.getState().activeThreadId;
+                    void (async () => {
+                      const thread = remoteId
+                        ? await getStoredChatThread(remoteId).catch(() => null)
+                        : null;
+                      if (!thread?.projectId) {
+                        toast.info("This chat isn't in a project.");
+                        return;
+                      }
+                      await saveMarkdownAsProjectSource(
+                        thread.projectId,
+                        text,
+                        title,
+                      );
+                    })();
+                  }}
+                  className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
+                >
+                  <HugeiconsIcon
+                    icon={FolderAttachmentIcon}
+                    strokeWidth={1.75}
+                    className="size-icon"
+                  />
+                  Save to project sources
+                </ActionBarMorePrimitive.Item>
+              )}
+            </div>
           </ActionBarMorePrimitive.Content>
         </ActionBarMorePrimitive.Root>
         <MessageTiming side="top" className="h-8 px-2" />

@@ -17,6 +17,37 @@ export type ComposerKeyEvent = {
   keyCode?: number;
 };
 
+// WebKit fires compositionend before the committing keydown (keyCode 229, WebKit bug 165004); ProseMirror's window.
+const IME_COMMIT_KEYDOWN_MS = 500;
+
+/** False only for a plain IME-marked Enter outside any composition, e.g. idle macOS Pinyin (#12137). */
+export function imeKeydownBlocksComposerSubmit(
+  event: ComposerKeyEvent,
+  imeSessionOpen: boolean,
+  msSinceCompositionEnd: number,
+): boolean {
+  return (
+    event.key !== "Enter" ||
+    event.metaKey ||
+    event.ctrlKey ||
+    imeSessionOpen ||
+    msSinceCompositionEnd < IME_COMMIT_KEYDOWN_MS
+  );
+}
+
+export function composerKeyEventForImeSubmit(
+  event: ComposerKeyEvent,
+): ComposerKeyEvent {
+  return {
+    key: event.key,
+    metaKey: event.metaKey,
+    ctrlKey: event.ctrlKey,
+    shiftKey: event.shiftKey,
+    altKey: event.altKey,
+    repeat: event.repeat,
+  };
+}
+
 /** The rule in force for `draft`. */
 export function effectiveSendShortcut(
   shortcut: ComposerSendShortcut,

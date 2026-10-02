@@ -55,6 +55,7 @@ SCANNED_SCRIPTS = ENTRY_POINTS + (
     "studio/nvidia_probe.py",
     # install_python_stack runs this one with sys.executable.
     "studio/backend/requirements/single-env/patch_metadata.py",
+    "studio/systemd/install_user_service.sh",
 )
 
 # Every question these scripts may ask, keyed by (script, normalised question) because line numbers move and wording

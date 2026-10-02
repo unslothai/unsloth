@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+// eslint-disable-next-line no-restricted-imports -- The picker barrel imports this store; this leaf is import-free.
+import type {
+  LlamaCppConfig,
+  LlamaCppConfigSummary,
+} from "@/features/model-picker/model-config/llama-cpp-config";
 import { authFetch } from "@/features/auth";
+import type { ImageDisclosure } from "../api/mcp-image";
 import {
   mirrorHfTokenInto,
   useHfTokenStore,
@@ -2098,6 +2104,55 @@ export function requestedGpuIdsFromResponse(resp: {
     : (resp.gpu_ids ?? null);
 }
 
+type LlamaCppConfigEcho = { requested_llama_cpp_config?: { mode: string } | null };
+
+function isCustomLlamaLoad(resp: LlamaCppConfigEcho): boolean {
+  return resp.requested_llama_cpp_config?.mode === "custom";
+}
+
+/** The config a load ran with: the server's echo, else what was sent. */
+export function loadedLlamaCppConfigFields(
+  resp: {
+    requested_llama_cpp_config?: LlamaCppConfig | null;
+    llama_cpp_config_summary?: LlamaCppConfigSummary | null;
+  },
+  sent: LlamaCppConfig | undefined,
+) {
+  const config = resp.requested_llama_cpp_config ?? sent;
+  return {
+    llamaCppConfig: config,
+    loadedLlamaCppConfig: config ?? null,
+    llamaCppConfigSummary: resp.llama_cpp_config_summary ?? null,
+  };
+}
+
+// A custom load echoes its INI's tuning; adopting it would carry that into the next managed load.
+export function managedKvCacheFields(
+  resp: { cache_type_kv?: string | null } & LlamaCppConfigEcho,
+) {
+  if (isCustomLlamaLoad(resp)) return {};
+  const kv = resp.cache_type_kv ?? null;
+  return { kvCacheDtype: kv, loadedKvCacheDtype: kv };
+}
+
+export function managedSpeculativeSettings(
+  resp: Parameters<typeof resolveLoadedSpeculativeSettings>[0] & LlamaCppConfigEcho,
+) {
+  return isCustomLlamaLoad(resp) ? {} : resolveLoadedSpeculativeSettings(resp);
+}
+
+export function managedGpuMemoryFields(
+  resp: Parameters<typeof loadedGpuMemoryFields>[0] & LlamaCppConfigEcho,
+) {
+  if (isCustomLlamaLoad(resp)) {
+    return {
+      ggufLayerCount: resp.n_layers ?? null,
+      moeLayerCount: resp.n_moe_layers ?? null,
+    };
+  }
+  return loadedGpuMemoryFields(resp);
+}
+
 // Store fields derived from a load/status response's GPU-memory settings, shared by every
 // load path so the manual-knob round-trip cannot drift.
 export function loadedGpuMemoryFields(resp: {
@@ -2375,7 +2430,12 @@ type ChatRuntimeStore = {
    *  `autoAllowKey` scopes "Always allow" per chat. Backend-gated local calls only. */
   toolConfirmations: Record<
     string,
-    { approvalId: string; sessionId: string; autoAllowKey: string }
+    {
+      approvalId: string;
+      sessionId: string;
+      autoAllowKey: string;
+      imageDisclosure?: ImageDisclosure;
+    }
   >;
   /** Fetch pill state, independent of `toolsEnabled` (Search). Read only when the provider
    *  supports builtin web_fetch. */
@@ -2436,6 +2496,9 @@ type ChatRuntimeStore = {
   /** Pass-through args the resident model is running, as far as this client knows. A rollback
    *  resends them: by then the target load has replaced the backend's inheritance source. */
   loadedLlamaExtraArgs: string[] | null;
+  llamaCppConfig?: LlamaCppConfig;
+  loadedLlamaCppConfig: LlamaCppConfig | null;
+  llamaCppConfigSummary: LlamaCppConfigSummary | null;
   /** user --ubatch-size override for gguf loads (null = llama.cpp default 512) */
   nUbatch: number | null;
   loadedNUbatch: number | null;
@@ -2643,6 +2706,7 @@ type ChatRuntimeStore = {
     approvalId: string,
     sessionId: string,
     autoAllowKey: string,
+    imageDisclosure?: ImageDisclosure,
   ) => void;
   clearToolConfirmation: (toolCallId: string) => void;
   setWebFetchToolsEnabled: (enabled: boolean) => void;
@@ -4204,6 +4268,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   nBatch: null,
   loadedNBatch: null,
   loadedLlamaExtraArgs: null,
+  loadedLlamaCppConfig: null,
+  llamaCppConfigSummary: null,
   nUbatch: null,
   loadedNUbatch: null,
   specDraftCacheDtype: null,
@@ -5152,6 +5218,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       nBatch: null,
       loadedNBatch: null,
       loadedLlamaExtraArgs: null,
+      loadedLlamaCppConfig: null,
+      llamaCppConfigSummary: null,
       nUbatch: null,
       loadedNUbatch: null,
       specDraftCacheDtype: null,
@@ -5521,11 +5589,17 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       next.set(sessionId, new Set(current ?? []).add(toolName));
       return { alwaysAllowToolsBySession: next };
     }),
-  setToolConfirmation: (toolCallId, approvalId, sessionId, autoAllowKey) =>
+  setToolConfirmation: (
+    toolCallId,
+    approvalId,
+    sessionId,
+    autoAllowKey,
+    imageDisclosure,
+  ) =>
     set((state) => ({
       toolConfirmations: {
         ...state.toolConfirmations,
-        [toolCallId]: { approvalId, sessionId, autoAllowKey },
+        [toolCallId]: { approvalId, sessionId, autoAllowKey, imageDisclosure },
       },
     })),
   clearToolConfirmation: (toolCallId) =>

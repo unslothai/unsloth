@@ -145,3 +145,19 @@ test("the model and its quant still key the editor", () => {
     modelConfigInstanceKey(MODEL, undefined, LIVE),
   );
 });
+
+test("the arguments the model is running with key the editor", () => {
+  // Another tab relaunching with only different arguments must re-seed, or Apply resends the old list.
+  const running = { ...LIVE, llamaExtraArgs: ["--numa", "distribute"] };
+  const base = modelConfigInstanceKey(MODEL, VARIANT, running);
+  assert.notEqual(
+    modelConfigInstanceKey(MODEL, VARIANT, { ...LIVE, llamaExtraArgs: ["--numa", "isolate"] }),
+    base,
+  );
+  assert.notEqual(modelConfigInstanceKey(MODEL, VARIANT, { ...LIVE, llamaExtraArgs: [] }), base);
+  assert.notEqual(modelConfigInstanceKey(MODEL, VARIANT, LIVE), base);
+  assert.equal(
+    modelConfigInstanceKey(MODEL, VARIANT, { ...LIVE, llamaExtraArgs: [...running.llamaExtraArgs] }),
+    base,
+  );
+});
