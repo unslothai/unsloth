@@ -19,7 +19,9 @@ def _wait_for_prefetch_threads(timeout = 10.0):
         time.sleep(0.01)
 
 
-def _fake_cache(tmp_path, shards = ("model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors")):
+def _fake_cache(
+    tmp_path, shards = ("model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors")
+):
     commit = "a" * 40
     repo = tmp_path / "models--Lightricks--LTX-2"
     (repo / "refs").mkdir(parents = True)
@@ -63,7 +65,6 @@ def test_uncached_bytes_reads_zero_once_a_file_was_read(tmp_path):
 
 def _pretend_cold(monkeypatch, available_mib = 1 << 30):
     from core.inference import diffusion_memory
-
     monkeypatch.setattr(video_ltx2, "_uncached_bytes", lambda path: 2 << 30)
     monkeypatch.setattr(diffusion_memory, "_available_system_memory_mib", lambda: available_mib)
 
@@ -120,7 +121,10 @@ def test_the_pipeline_load_stops_its_prefetch(monkeypatch, fails):
         with pytest.raises(RuntimeError):
             video_ltx2.load_ltx23_pipeline("ltx.safetensors", base_repo = "Lightricks/LTX-2")
     else:
-        assert video_ltx2.load_ltx23_pipeline("ltx.safetensors", base_repo = "Lightricks/LTX-2") == "pipe"
+        assert (
+            video_ltx2.load_ltx23_pipeline("ltx.safetensors", base_repo = "Lightricks/LTX-2")
+            == "pipe"
+        )
     assert stop.is_set()
 
 

@@ -1410,7 +1410,6 @@ def _child_probe_table(device: str) -> Optional[dict[str, Optional[bool]]]:
         # Only a clean table is persisted: a crash verdict or a timeout says nothing durable about the stack.
         try:
             from . import diffusion_probe_cache
-
             diffusion_probe_cache.store(device, table)
         except Exception:  # noqa: BLE001 - persistence is best-effort
             pass
@@ -1425,7 +1424,12 @@ def prewarm_probe_table(device: str = "cuda") -> bool:
     from the boot-time prewarm, so a user who takes a few seconds to pick a model never waits for it. Skips when the
     table is already known in this process or on disk. A load arriving mid-probe waits on the same lock and reads the
     verdicts this call stored. ``UNSLOTH_DIFFUSION_PROBE_PREWARM=0`` disables it."""
-    if (_os.environ.get("UNSLOTH_DIFFUSION_PROBE_PREWARM") or "").strip().lower() in ("0", "false", "no", "off"):
+    if (_os.environ.get("UNSLOTH_DIFFUSION_PROBE_PREWARM") or "").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
         return False
     try:
         from . import diffusion_probe_cache
@@ -1460,7 +1464,6 @@ def _persisted_probe_table(card: str) -> Optional[dict[str, bool]]:
     """The verdicts a previous process's clean child probe recorded for this card and stack, or None."""
     try:
         from . import diffusion_probe_cache
-
         return diffusion_probe_cache.load(card)
     except Exception:  # noqa: BLE001 - a miss, never an error
         return None

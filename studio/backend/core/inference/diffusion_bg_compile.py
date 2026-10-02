@@ -99,7 +99,6 @@ def force_eager(on: bool = True):
 
 def _cuda_graph_helpers() -> tuple[Callable, Callable, Callable]:
     from .diffusion_cuda_graph import _flatten, _rebuild, graph_key
-
     return _flatten, _rebuild, graph_key
 
 
@@ -121,14 +120,21 @@ def _capture_armed(module: Any) -> bool:
     except Exception:  # noqa: BLE001
         pass
     return any(
-        isinstance(c, GraphedForward) and c.enabled and not c.poisoned and not c.bypassed for c in candidates
+        isinstance(c, GraphedForward) and c.enabled and not c.poisoned and not c.bypassed
+        for c in candidates
     )
 
 
 class BackgroundCompile:
     """One armed denoiser: records eager inputs, then compiles from them on a daemon thread."""
 
-    def __init__(self, module: Any, *, logger: Any = None, max_samples: int = _MAX_SAMPLES) -> None:
+    def __init__(
+        self,
+        module: Any,
+        *,
+        logger: Any = None,
+        max_samples: int = _MAX_SAMPLES,
+    ) -> None:
         self.module = module
         self.logger = logger
         self.max_samples = int(max_samples)
@@ -246,7 +252,11 @@ class BackgroundCompile:
         thread = self._thread
         return self.state == "compiling" and thread is not None and thread.is_alive()
 
-    def wait(self, cancel: Any = None, poll_s: float = 0.25) -> float:
+    def wait(
+        self,
+        cancel: Any = None,
+        poll_s: float = 0.25,
+    ) -> float:
         """Block until an in-flight background compile ends; returns the seconds waited.
 
         A render never runs next to the compile. Measured on a B200 (SDXL, render 4 eager beside the compile): the
@@ -285,7 +295,11 @@ class BackgroundCompile:
             self._thread.start()
             return True
 
-    def _finish(self, state: str, error: Optional[str] = None) -> None:
+    def _finish(
+        self,
+        state: str,
+        error: Optional[str] = None,
+    ) -> None:
         self.state = state
         self.error = error
         self.samples = []
@@ -322,7 +336,10 @@ class BackgroundCompile:
                 )
         except BaseException as exc:  # noqa: BLE001 - never kills the process; the next render compiles inline
             self.compile_s = time.perf_counter() - t0
-            self._finish("failed", f"{type(exc).__name__}: {str(exc).splitlines()[0][:300] if str(exc) else ''}")
+            self._finish(
+                "failed",
+                f"{type(exc).__name__}: {str(exc).splitlines()[0][:300] if str(exc) else ''}",
+            )
             if self.logger is not None:
                 self.logger.warning(
                     "diffusion.bg_compile: background compile of %s failed after %.1f s (%s); the next render "
@@ -342,7 +359,9 @@ class BackgroundCompile:
         thread = self._thread
         if thread is not None and thread.is_alive() and thread is not threading.current_thread():
             if self.logger is not None:
-                self.logger.info("diffusion.bg_compile: waiting for the background compile before unloading")
+                self.logger.info(
+                    "diffusion.bg_compile: waiting for the background compile before unloading"
+                )
             thread.join(timeout)
         if self.pending():
             self._finish("failed", "closed")
@@ -388,7 +407,6 @@ def select_module(
         return None
     try:
         from .diffusion_cuda_graph import _denoiser_modules
-
         modules = _denoiser_modules(pipe)
     except Exception:  # noqa: BLE001
         return None

@@ -42,7 +42,13 @@ class _Net(torch.nn.Module):
         super().__init__()
         self.lin = torch.nn.Linear(8, 8)
 
-    def forward(self, x, *, scale = 1.0, return_dict = True):
+    def forward(
+        self,
+        x,
+        *,
+        scale = 1.0,
+        return_dict = True,
+    ):
         return self.lin(x) * scale
 
 
@@ -123,8 +129,14 @@ def test_force_eager_never_reaches_dynamo_and_the_background_compile_does(monkey
     monkeypatch.delenv("UNSLOTH_DIFFUSION_BG_COMPILE", raising = False)
     backend = Path(__file__).resolve().parents[1]
     env = dict(os.environ, CUDA_VISIBLE_DEVICES = "", PYTHONPATH = str(backend))
-    r = subprocess.run([sys.executable, "-c", _REAL_COMPILE], cwd = str(backend), env = env,
-                       capture_output = True, text = True, timeout = 300)
+    r = subprocess.run(
+        [sys.executable, "-c", _REAL_COMPILE],
+        cwd = str(backend),
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 300,
+    )
     assert r.returncode == 0 and "BG_COMPILE_OK" in r.stdout, r.stdout[-2000:] + r.stderr[-4000:]
 
 
@@ -136,7 +148,9 @@ def test_recording_dedups_by_input_shape_and_ignores_unforced_calls():
         with bg.force_eager():
             net(torch.randn(2, 8), return_dict = False)
             net(torch.randn(2, 8), return_dict = False)  # same shape: not recorded again
-            net(torch.randn(3, 8), return_dict = False)  # a second shape (e.g. the CFG half with another length)
+            net(
+                torch.randn(3, 8), return_dict = False
+            )  # a second shape (e.g. the CFG half with another length)
     assert len(job.samples) == 2
     job.close()
 
@@ -202,7 +216,9 @@ def test_a_failing_warm_forward_ends_the_attempt_without_raising():
     job = bg.BackgroundCompile(net)
     assert job.install()
     # Record by hand: the eager call itself would raise too.
-    job.samples.append((("l", True, [("l", True, [("t", 0)]), ("d", [])]), [torch.zeros(1)], False, False, None))
+    job.samples.append(
+        (("l", True, [("l", True, [("t", 0)]), ("d", [])]), [torch.zeros(1)], False, False, None)
+    )
     job.kick()
     job._thread.join(30)
     assert job.state == "failed" and "boom" in (job.error or "")
@@ -212,7 +228,9 @@ def test_a_failing_warm_forward_ends_the_attempt_without_raising():
 def test_compile_guard_routes_to_eager_under_force_eager():
     guard = speed._CompileGuard(None)
     calls = []
-    wrapped = guard.wrap(lambda *a, **k: calls.append("compiled"), lambda *a, **k: calls.append("eager"), object())
+    wrapped = guard.wrap(
+        lambda *a, **k: calls.append("compiled"), lambda *a, **k: calls.append("eager"), object()
+    )
     with bg.force_eager():
         wrapped()
     wrapped()
@@ -260,11 +278,15 @@ class _UNet2DConditionModel(torch.nn.Module):
         ({"target": types.SimpleNamespace(device = "mps", backend = "mps")}, False),
     ],
 )
-def test_only_dense_resident_default_tier_cuda_loads_compile_in_the_background(monkeypatch, override, expect):
+def test_only_dense_resident_default_tier_cuda_loads_compile_in_the_background(
+    monkeypatch, override, expect
+):
     from core.inference import diffusion as D
 
     monkeypatch.delenv("UNSLOTH_DIFFUSION_BG_COMPILE", raising = False)
-    monkeypatch.setattr(speed, "_UNET_WHOLE_COMPILE", frozenset({"_UNet2DConditionModel"}), raising = False)
+    monkeypatch.setattr(
+        speed, "_UNET_WHOLE_COMPILE", frozenset({"_UNet2DConditionModel"}), raising = False
+    )
     unet = _UNet2DConditionModel()
     if override.pop("_hooked", False):
         unet._hf_hook = object()
@@ -299,7 +321,10 @@ def probe_home(tmp_path, monkeypatch):
 def test_probe_table_round_trips_and_misses_on_any_stack_change(probe_home, monkeypatch):
     assert probe_cache.load("cuda:0") is None
     assert probe_cache.store("cuda:0", {"int8": True, "fp8": False, "mxfp8": None})
-    assert probe_cache.load("cuda:0") == {"int8": True, "fp8": False}, "an allocator failure (None) was persisted"
+    assert probe_cache.load("cuda:0") == {
+        "int8": True,
+        "fp8": False,
+    }, "an allocator failure (None) was persisted"
 
     monkeypatch.setattr(probe_cache, "fingerprint", lambda card: {**probe_home, "torch": "y"})
     assert probe_cache.load("cuda:0") is None
@@ -337,7 +362,9 @@ def test_a_clean_child_table_is_persisted(monkeypatch):
     from core.inference import diffusion_transformer_quant as tq
 
     stored = {}
-    monkeypatch.setattr(probe_cache, "store", lambda card, table: stored.setdefault(card, dict(table)))
+    monkeypatch.setattr(
+        probe_cache, "store", lambda card, table: stored.setdefault(card, dict(table))
+    )
 
     # Drive the tail of _child_probe_table: a table read off the queue is persisted and returned.
     class _Q:
@@ -389,8 +416,11 @@ def test_mapped_read_matches_the_full_read_and_falls_back(tmp_path, monkeypatch)
     from core.inference import diffusion_prequant as pq
 
     monkeypatch.delenv("UNSLOTH_DIFFUSION_PREQUANT_MMAP", raising = False)
-    ckpt = {"format": pq.PREQUANT_FORMAT, "state_dict": {"w": torch.arange(64, dtype = torch.int8).reshape(8, 8)},
-            "metadata": {"scheme": "int8"}}
+    ckpt = {
+        "format": pq.PREQUANT_FORMAT,
+        "state_dict": {"w": torch.arange(64, dtype = torch.int8).reshape(8, 8)},
+        "metadata": {"scheme": "int8"},
+    }
     path = tmp_path / "x.pt"
     torch.save(ckpt, path)
 
@@ -534,7 +564,9 @@ def test_boot_probe_fills_the_cache_once(quant_probe):
     tq, spawned = quant_probe
     assert tq.prewarm_probe_table() is True
     assert spawned == ["cuda:0"]
-    assert tq._SMOKE_CACHE == {("int8", "cuda:0"): True}, "an allocator failure (None) was cached as a verdict"
+    assert tq._SMOKE_CACHE == {
+        ("int8", "cuda:0"): True
+    }, "an allocator failure (None) was cached as a verdict"
     assert tq.prewarm_probe_table() is False
     assert spawned == ["cuda:0"]
 

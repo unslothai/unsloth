@@ -1222,7 +1222,11 @@ def prefetch_enabled() -> bool:
     return (os.environ.get(PREFETCH_ENV) or "").strip().lower() not in _SWITCH_OFF
 
 
-def _uncached_bytes(path: str, stride: int = 64 << 20, window: int = 1 << 20) -> int:
+def _uncached_bytes(
+    path: str,
+    stride: int = 64 << 20,
+    window: int = 1 << 20,
+) -> int:
     """Estimated bytes of ``path`` not in the page cache: Linux ``mincore`` over a ``window`` every ``stride`` bytes
     (a full sweep of a 46 GB encoder costs ~0.25 s on a warm cache, the sample a few ms); 0 when it cannot tell."""
     import ctypes
@@ -1304,7 +1308,6 @@ def start_prefetch(paths: list[str]) -> Optional[Any]:
         return None
     try:
         from .diffusion_memory import _available_system_memory_mib
-
         available = _available_system_memory_mib()
     except Exception:  # noqa: BLE001
         available = None
@@ -1344,7 +1347,9 @@ def start_prefetch(paths: list[str]) -> Optional[Any]:
     for index in range(_PREFETCH_THREADS):
         threading.Thread(target = _worker, name = f"unsloth-prefetch-{index}", daemon = True).start()
     logger.info(
-        "video.ltx23_prefetch: warming %.1f GiB of %d text encoder file(s)", need / 2**30, len(pending)
+        "video.ltx23_prefetch: warming %.1f GiB of %d text encoder file(s)",
+        need / 2**30,
+        len(pending),
     )
     return stop
 
