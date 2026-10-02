@@ -882,3 +882,52 @@ def test_snac_speech_cut_at_max_tokens_is_reported(monkeypatch, last_token, trun
     orchestrator.generate_audio_response("A long paragraph.", stats_holder = holder)
 
     assert holder["stats"]["truncated"] is truncated
+
+
+@pytest.mark.parametrize("audio_type", ("bicodec", "dac"))
+@pytest.mark.parametrize(("last_token", "truncated"), ((4242, True), (7, False)))
+def test_token_codec_speech_cut_at_max_tokens_is_reported(audio_type, last_token, truncated):
+    pytest.importorskip("peft")
+    import torch
+    from core.inference.inference import InferenceBackend
+
+    class _Inputs(dict):
+        def __init__(self):
+            super().__init__(input_ids = torch.tensor([[1, 2, 3]]))
+            self.input_ids = self["input_ids"]
+
+        def to(self, _device):
+            return self
+
+    class _Tokenizer:
+        eos_token_id = 7
+        pad_token_id = 0
+
+        def __call__(self, texts, return_tensors):
+            return _Inputs()
+
+        def batch_decode(self, tokens, skip_special_tokens):
+            return [""]
+
+    class _Model:
+        device = torch.device("cpu")
+        dtype = torch.float32
+        generation_config = types.SimpleNamespace(eos_token_id = 7)
+
+        def generate(self, input_ids, max_new_tokens, **_kwargs):
+            codes = [4242] * (max_new_tokens - 1) + [last_token]
+            return torch.cat([input_ids, torch.tensor([codes])], dim = 1)
+
+    backend = InferenceBackend.__new__(InferenceBackend)
+    backend.active_model_name = "tts"
+    backend._generation_lock = threading.Lock()
+    backend.models = {"tts": {"audio_type": audio_type, "model": _Model(), "tokenizer": _Tokenizer()}}
+    backend._audio_codec_manager = types.SimpleNamespace(
+        decode_bicodec = lambda *_args: (b"RIFFfake", 16000),
+        decode_dac = lambda *_args: (b"RIFFfake", 24000),
+    )
+    backend._patch_repetition_penalty_processor = lambda: None
+
+    backend.generate_audio_response("A long paragraph.", max_new_tokens = 14)
+
+    assert backend.last_generation_stats["truncated"] is truncated
