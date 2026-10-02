@@ -566,14 +566,12 @@ class _EncoderPrefetcher:
     # -- copies ------------------------------------------------------------------------------------------------------
     def _side_stream(self) -> Any:
         import torch
-
         if self.stream is None:
             self.stream = torch.cuda.Stream(device = self.device)
         return self.stream
 
     def _ensure_stage(self) -> None:
         import torch
-
         if not self.stage:
             self.stage = [
                 torch.empty(_STAGE_SLOT_BYTES, dtype = torch.uint8, pin_memory = True)
@@ -596,7 +594,12 @@ class _EncoderPrefetcher:
                 if src.device.type != "cpu" or n == 0 or not src.is_contiguous() or src.is_pinned():
                     # Device-resident, empty, strided or already pinned: a plain copy on the compute stream.
                     with torch.cuda.stream(compute):
-                        moved.append(src.to(self.device, non_blocking = src.device.type != "cpu" or src.is_pinned()))
+                        moved.append(
+                            src.to(
+                                self.device,
+                                non_blocking = src.device.type != "cpu" or src.is_pinned(),
+                            )
+                        )
                     continue
                 nbytes += n
                 # Allocated from the compute stream's pool (a side-stream block would stay cached where the denoise
@@ -641,7 +644,6 @@ class _EncoderPrefetcher:
     # -- worker ------------------------------------------------------------------------------------------------------
     def _run(self, order: list) -> None:
         import torch
-
         try:
             if self.device.type == "cuda":
                 torch.cuda.set_device(self.device)
@@ -693,7 +695,9 @@ class _EncoderPrefetcher:
         self.pos = 0
         self.active = True
         self.stats["passes"] += 1
-        self.compute = torch.cuda.current_stream(self.device) if self.device.type == "cuda" else None
+        self.compute = (
+            torch.cuda.current_stream(self.device) if self.device.type == "cuda" else None
+        )
         if not self.order:
             return  # first forward: synchronous copies, and it records the order
         try:
@@ -710,7 +714,6 @@ class _EncoderPrefetcher:
     def _order_after_compute(self) -> None:
         """The worker's copies must not overtake work the compute stream already queued (the prompt's input ids)."""
         import torch
-
         self._side_stream().wait_stream(torch.cuda.current_stream(self.device))
 
     def end(self) -> None:
@@ -749,7 +752,11 @@ class _EncoderPrefetcher:
         self._attach(group, moved, done)
 
 
-def install_encoder_prefetch(module: Any, device: Any, logger: Any = None) -> int:
+def install_encoder_prefetch(
+    module: Any,
+    device: Any,
+    logger: Any = None,
+) -> int:
     """Swap each streamed offload group's ``onload_`` of a small-host text encoder for the prefetching copy. Groups made
     resident are left alone. Returns the number of groups covered (0: unchanged, e.g. kill switch or no CUDA)."""
     if encoder_prefetch_disabled():
@@ -774,7 +781,11 @@ def install_encoder_prefetch(module: Any, device: Any, logger: Any = None) -> in
         disable = getattr(getattr(torch, "compiler", None), "disable", None)
         for group in groups:
 
-            def onload_(*_a: Any, _g: Any = group, **_k: Any) -> None:
+            def onload_(
+                *_a: Any,
+                _g: Any = group,
+                **_k: Any,
+            ) -> None:
                 pf.onload(_g)
 
             group.onload_ = disable(onload_) if callable(disable) else onload_

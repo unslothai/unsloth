@@ -43,7 +43,13 @@ def test_int8_dequant_is_one_pass_and_bit_identical(dtype):
             super().__init__()
             self.ops = []
 
-        def __torch_dispatch__(self, func, types_, args = (), kwargs = None):
+        def __torch_dispatch__(
+            self,
+            func,
+            types_,
+            args = (),
+            kwargs = None,
+        ):
             self.ops.append(str(func))
             return func(*args, **(kwargs or {}))
 
@@ -76,7 +82,13 @@ class _FakeGroup:
 class _FakePrefetcher(sh._EncoderPrefetcher):
     """The real ordering / budget / fallback logic with the CUDA copy replaced by a recorded fake."""
 
-    def __init__(self, groups, *, fail_at = None, delay = 0.0):
+    def __init__(
+        self,
+        groups,
+        *,
+        fail_at = None,
+        delay = 0.0,
+    ):
         super().__init__(module = None, groups = groups, device = "cpu")
         self.copies: list = []
         self.attached: list = []
@@ -89,7 +101,11 @@ class _FakePrefetcher(sh._EncoderPrefetcher):
         if self.delay:
             time.sleep(self.delay)
         with self.lock:
-            if self.fail_at is not None and group.name == self.fail_at and threading.current_thread() is not threading.main_thread():
+            if (
+                self.fail_at is not None
+                and group.name == self.fail_at
+                and threading.current_thread() is not threading.main_thread()
+            ):
                 raise RuntimeError("copy failed")
             self.copies.append((group.name, threading.current_thread() is threading.main_thread()))
         with self.cond:
@@ -198,14 +214,22 @@ def test_group_offload_installs_prefetch_only_on_small_host_pipes(monkeypatch):
     import core.inference.diffusion_memory as dm
 
     calls: list = []
-    monkeypatch.setattr(sh, "install_encoder_prefetch", lambda module, device, logger = None: calls.append(module) or 1)
+    monkeypatch.setattr(
+        sh,
+        "install_encoder_prefetch",
+        lambda module, device, logger = None: calls.append(module) or 1,
+    )
 
     def _pipe(small_host: bool):
         te = torch.nn.Sequential(torch.nn.Linear(8, 8), torch.nn.Linear(8, 8))
         tr = torch.nn.Sequential(torch.nn.Linear(8, 8))
-        pipe = types.SimpleNamespace(transformer = tr, text_encoder = te, components = {"transformer": tr, "text_encoder": te})
+        pipe = types.SimpleNamespace(
+            transformer = tr, text_encoder = te, components = {"transformer": tr, "text_encoder": te}
+        )
         if small_host:
-            pipe._unsloth_small_host = {"components": {"text_encoder": "memory-mapped, layerwise cast (1 MiB)"}}
+            pipe._unsloth_small_host = {
+                "components": {"text_encoder": "memory-mapped, layerwise cast (1 MiB)"}
+            }
         return pipe, te
 
     pipe, te = _pipe(False)

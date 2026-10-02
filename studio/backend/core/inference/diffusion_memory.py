@@ -3658,7 +3658,6 @@ def _apply_group_offload(
                     # Small-host route: the encoder streams unpinned from memory-mapped storage; copy its groups
                     # ahead of the forward instead of pinning each one on the calling thread.
                     from .diffusion_small_host import install_encoder_prefetch
-
                     install_encoder_prefetch(module, onload, logger)
             except Exception as exc:  # noqa: BLE001 -- degrade this encoder, never fail the load
                 if not stream_transformer and installed == 0:
