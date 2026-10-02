@@ -304,3 +304,39 @@ def test_fp16_cast_table_and_norm2_stay_bit_identical():
         assert wf.install(torch.float16, "cuda") is True
         got = blk(x, enc, temb, rot)
     assert torch.equal(want, got) and wf.counts()["fused"] == 1
+
+
+@needs_cuda
+def test_self_attention_rotary_is_bit_identical_and_scoped(monkeypatch):
+    D = 256
+    blk = _block(dim = D, ffn = 512, heads = 4, device = "cuda", dtype = torch.float16)
+    x, enc, temb, rot = _inputs(blk, 2, 300, D, "cuda", torch.float16)
+    assert wf.install(torch.float16, "cuda") is True
+    assert wf._STATE.get("attn_call") is transformer_wan.WanAttnProcessor.__call__
+    calls = []
+    real = wf._kernels()["rope"]
+    monkeypatch.setitem(wf._kernels(), "rope", lambda *a: calls.append(1) or real(*a))
+    with torch.no_grad():
+        want = blk.attn1(x, None, None, rot)
+        got = wf._self_attention(blk.attn1, x, rot)
+        assert got is not None and torch.equal(want, got) and len(calls) == 2
+        # an fp16 table rounds each product to fp16 in the stock path: not this kernel's arithmetic
+        assert wf._self_attention(blk.attn1, x, (rot[0].half(), rot[1].half())) is None
+        # a replaced processor (another attention backend's) is left alone
+        blk.attn1.processor = type("OtherProcessor", (transformer_wan.WanAttnProcessor,), {"__call__": lambda *a, **k: None})()
+        assert wf._self_attention(blk.attn1, x, rot) is None
+    monkeypatch.setenv(wf.WAN_FUSED_ROPE_ENV, "0")
+    assert wf._self_attention(blk.attn1, x, rot) is None
+
+
+def test_changed_attention_processor_keeps_the_stock_rotary(monkeypatch):
+    monkeypatch.setattr(wf, "_ATTN_FINGERPRINTS", frozenset({"not-this-processor"}))
+    monkeypatch.setattr(wf, "_kernels", lambda: {"modnorm": None})
+    assert wf.install(torch.float16, "cuda") is True
+    assert "attn_call" not in wf._STATE
+
+
+def test_attention_processor_matches_the_fingerprint():
+    from core.inference.diffusion_qwenimage21_rope import _digest
+
+    assert _digest(transformer_wan.WanAttnProcessor.__call__) in wf._ATTN_FINGERPRINTS

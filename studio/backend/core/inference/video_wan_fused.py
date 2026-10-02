@@ -17,11 +17,15 @@ This runs the same arithmetic per element without the float32 intermediates in m
   (read straight from the fp16 ``temb`` and the fp32 table), each product and sum rounded in float32 exactly where the
   stock op chain rounds (FMA contraction disabled), and rounds to fp16 once, where ``type_as`` does.
 * The gated residuals ``x.float() + branch * (table + temb)`` and the affine ``norm2`` are fused the same way.
+* Self-attention's rotary (``WanAttnProcessor``'s inline ``apply_rotary_emb``: fp16 q / k times the float32 cos / sin
+  tables, ~10 strided elementwise kernels with float32 temporaries per call) is one kernel per q / k with the same
+  rounding; the rest of the processor runs as stock (same projections, norms, attention dispatch and backend).
 
 So the fp16 block output is bit-identical to stock; a self-check against the stock forward runs once per device and
 shape class before the fused path is trusted. Scope: only ``WanTransformerBlock`` (class-level forward, fingerprinted),
 only fp16 CUDA (non-ROCm) tensors without grad, outside ``torch.compile``; everything else calls the stock forward.
-Installed only for an fp16 Wan load (bf16 GPUs keep stock). Kill switch: ``UNSLOTH_DIFFUSION_WAN_FUSED_ADALN=0``.
+Installed only for an fp16 Wan load (bf16 GPUs keep stock). Kill switch: ``UNSLOTH_DIFFUSION_WAN_FUSED_ADALN=0``
+(everything), ``UNSLOTH_DIFFUSION_WAN_FUSED_ROPE=0`` (the rotary only).
 """
 
 from __future__ import annotations
@@ -32,10 +36,15 @@ import threading
 from typing import Any, Callable, Optional
 
 WAN_FUSED_ENV = "UNSLOTH_DIFFUSION_WAN_FUSED_ADALN"
+# rotary only (the block fusion stays): UNSLOTH_DIFFUSION_WAN_FUSED_ROPE=0
+WAN_FUSED_ROPE_ENV = "UNSLOTH_DIFFUSION_WAN_FUSED_ROPE"
 _MODULE = "diffusers.models.transformers.transformer_wan"
 _CLASS = "WanTransformerBlock"
 # ``_digest(WanTransformerBlock.forward)``: identical in diffusers 0.36.0, 0.37.0, 0.40.0 and main (80c7ed26).
 _FINGERPRINTS = frozenset({"69aa0565fb00eeae"})
+# ``_digest(WanAttnProcessor.__call__)``: identical in diffusers 0.37.0, 0.40.0 and main (80c7ed26); 0.36.0 differs
+# and keeps the stock attention (the block fusion still applies).
+_ATTN_FINGERPRINTS = frozenset({"6c5a5095338dfe67"})
 
 _LOCK = threading.Lock()
 _STATE: dict = {}
@@ -175,6 +184,39 @@ def _kernels() -> Optional[dict]:
         y = tl.fma(w, _mul_rn(rstd, x - mean), bb)
         tl.store(OUT + row * D + col, y.to(OUT.dtype.element_ty), mask = mask)
 
+    @triton.jit
+    def _rope(
+        X,
+        COS,
+        SIN,
+        OUT,
+        L,
+        scl,
+        ssl,
+        PAIRS: tl.constexpr,
+        HALF: tl.constexpr,
+        BLOCK: tl.constexpr,
+    ):
+        # WanAttnProcessor's rotary on one (batch, position) row of a contiguous [B, L, H, D] fp16 q / k:
+        #   out[0::2] = x1 * cos[0::2] - x2 * sin[1::2];  out[1::2] = x1 * sin[1::2] + x2 * cos[0::2]
+        # each product a float32 multiply of the fp16 input by the float32 table, rounded on its own; then one fp16
+        # rounding where the stock assignment into the fp16 ``out`` casts.
+        row = tl.program_id(0)
+        l = row % L
+        idx = tl.arange(0, BLOCK)
+        mask = idx < PAIRS
+        i = idx % HALF
+        xo = X + row * (2 * PAIRS) + 2 * idx
+        x1 = tl.load(xo, mask = mask, other = 0.0).to(tl.float32)
+        x2 = tl.load(xo + 1, mask = mask, other = 0.0).to(tl.float32)
+        c = tl.load(COS + l * scl + 2 * i, mask = mask, other = 0.0).to(tl.float32)
+        sn = tl.load(SIN + l * ssl + 2 * i + 1, mask = mask, other = 0.0).to(tl.float32)
+        even = _mul_rn(x1, c) - _mul_rn(x2, sn)
+        odd = _mul_rn(x1, sn) + _mul_rn(x2, c)
+        oo = OUT + row * (2 * PAIRS) + 2 * idx
+        tl.store(oo, even.to(OUT.dtype.element_ty), mask = mask)
+        tl.store(oo + 1, odd.to(OUT.dtype.element_ty), mask = mask)
+
     block = 1024
 
     def _grid(rows: int, d: int) -> tuple:
@@ -257,7 +299,34 @@ def _kernels() -> Optional[dict]:
         )
         return out
 
-    return {"modnorm": modnorm, "gate_residual": gate_residual, "affine_norm": affine_norm}
+    def rope(x, cos, sin):
+        import torch
+
+        B, L, H, D = x.shape
+        out = torch.empty_like(x)
+        pairs = H * (D // 2)
+        _rope[(B * L,)](
+            x,
+            cos,
+            sin,
+            out,
+            L,
+            cos.stride(1),
+            sin.stride(1),
+            PAIRS = pairs,
+            HALF = D // 2,
+            BLOCK = triton.next_power_of_2(pairs),
+            num_warps = 4 if pairs <= 2048 else 8,
+            enable_fp_fusion = False,
+        )
+        return out
+
+    return {
+        "modnorm": modnorm,
+        "gate_residual": gate_residual,
+        "affine_norm": affine_norm,
+        "rope": rope,
+    }
 
 
 def _stats(x: Any, eps: float) -> tuple:
@@ -335,6 +404,76 @@ def _eligible(block: Any, x: Any, enc: Any, temb: Any) -> bool:
     return True
 
 
+def _rope_ok(x: Any, freqs: Any) -> bool:
+    import torch
+
+    B, L, H, D = x.shape
+    return (
+        torch.is_tensor(freqs)
+        and freqs.dtype is torch.float32
+        and freqs.device == x.device
+        and freqs.dim() == 4
+        and tuple(freqs.shape) == (1, L, 1, D)
+        and freqs.stride(-1) == 1
+    )
+
+
+def _self_attention(attn: Any, hidden_states: Any, rotary_emb: Any) -> Any:
+    """``WanAttnProcessor.__call__`` for self-attention (no mask, no image branch), step for step, with the rotary as
+    one kernel per q / k. None when the processor or the inputs are not the ones this reproduces; the caller then runs
+    the stock module."""
+    import torch
+
+    if (os.environ.get(WAN_FUSED_ROPE_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
+        return None
+    stock_call = _STATE.get("attn_call")
+    proc = getattr(attn, "processor", None)
+    if stock_call is None or type(proc).__call__ is not stock_call:
+        return None
+    if getattr(attn, "add_k_proj", None) is not None or not isinstance(rotary_emb, (tuple, list)) or len(rotary_emb) != 2:
+        return None
+    cos, sin = rotary_emb
+    L = hidden_states.shape[1]
+    for f in (cos, sin):
+        if not torch.is_tensor(f) or f.dtype is not torch.float32 or f.dim() != 4 or f.shape[1] != L:
+            return None
+    mod = _STATE.get("module")
+    query, key, value = mod._get_qkv_projections(attn, hidden_states, None)
+    query = attn.norm_q(query)
+    key = attn.norm_k(key)
+    query = query.unflatten(2, (attn.heads, -1))
+    key = key.unflatten(2, (attn.heads, -1))
+    value = value.unflatten(2, (attn.heads, -1))
+    if (
+        query.dtype is not torch.float16
+        or key.dtype is not torch.float16
+        or not query.is_contiguous()
+        or not key.is_contiguous()
+        or query.shape[-1] % 2
+        or not _rope_ok(query, cos)
+        or not _rope_ok(query, sin)
+    ):
+        return None
+    k = _kernels()
+    query = k["rope"](query, cos, sin)
+    key = k["rope"](key, cos, sin)
+    out = mod.dispatch_attention_fn(
+        query,
+        key,
+        value,
+        attn_mask = None,
+        dropout_p = 0.0,
+        is_causal = False,
+        backend = proc._attention_backend,
+        parallel_config = proc._parallel_config,
+    )
+    out = out.flatten(2, 3)
+    out = out.type_as(query)
+    out = attn.to_out[0](out)
+    out = attn.to_out[1](out)
+    return out
+
+
 def _fused_forward(block: Any, hidden_states: Any, encoder_hidden_states: Any, temb: Any, rotary_emb: Any) -> Any:
     """The stock block, step for step, with the float32 elementwise chains replaced by the kernels above."""
     import torch
@@ -345,7 +484,9 @@ def _fused_forward(block: Any, hidden_states: Any, encoder_hidden_states: Any, t
     # 1. self-attention: norm1 + (shift, scale) = chunks 0, 1; gate = chunk 2
     mean, rstd = _stats(x, block.norm1.eps)
     n = k["modnorm"](x, mean, rstd, temb, table, 0, 1)
-    attn = block.attn1(n, None, None, rotary_emb)
+    attn = _self_attention(block.attn1, n, rotary_emb) if rotary_emb is not None else None
+    if attn is None:
+        attn = block.attn1(n, None, None, rotary_emb)
     attn = attn if attn.dtype is torch.float16 and attn.is_contiguous() else None
     if attn is None:
         raise _Fallback()
@@ -429,6 +570,14 @@ def _make_forward(stock: Callable) -> Callable:
     return forward
 
 
+def _attn_supported(cls: Any) -> bool:
+    try:
+        from .diffusion_qwenimage21_rope import _digest
+    except Exception:  # noqa: BLE001
+        return False
+    return _digest(cls.__call__) in _ATTN_FINGERPRINTS
+
+
 def _stock_supported(cls: Any) -> bool:
     try:
         from .diffusion_qwenimage21_rope import _digest
@@ -468,6 +617,11 @@ def install(dtype: Any, device: Any = "cuda", logger: Any = None) -> bool:
         stock = cls.forward
         _STATE["forward"] = stock
         _STATE["cls"] = cls
+        _STATE["module"] = mod
+        # the rotary rides along only while WanAttnProcessor.__call__ is the version reproduced in _self_attention
+        proc_cls = getattr(mod, "WanAttnProcessor", None)
+        if proc_cls is not None and _attn_supported(proc_cls) and hasattr(mod, "_get_qkv_projections"):
+            _STATE["attn_call"] = proc_cls.__call__
         _STATE["logger"] = logger
         _VERIFIED.clear()
         _COUNTS["fused"] = _COUNTS["stock"] = 0
@@ -494,7 +648,8 @@ def uninstall() -> None:
     with _LOCK:
         stock = _STATE.pop("forward", None)
         cls = _STATE.pop("cls", None)
-        _STATE.pop("logger", None)
+        for key in ("logger", "module", "attn_call"):
+            _STATE.pop(key, None)
         _VERIFIED.clear()
         if stock is None or cls is None:
             return
