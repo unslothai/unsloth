@@ -5553,3 +5553,20 @@ def test_a_dispatch_table_of_sinks_is_followed(tmp_path):
     )
     assert "importlib.import_module" in _sinks(module)
     assert "subprocess.run" in _sinks(local)
+
+
+def test_a_stored_source_passed_to_a_helper_is_followed(tmp_path):
+    """`self.decode = json.loads`, then `parse(self.decode, blob)` in another method."""
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "def parse(parser, value):\n"
+        "    return parser(value)\n"
+        "class Loader:\n"
+        "    def __init__(self):\n"
+        "        self.decode = json.loads\n"
+        "    def go(self, blob):\n"
+        "        data = parse(self.decode, blob)\n"
+        "        return importlib.import_module(data['module'])\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)

@@ -3434,6 +3434,13 @@ class _TaintPass(ast.NodeVisitor):
                 self.source_aliases.get(spelling)
                 or _matches_any(self.facts.canonicals(spelling), UNTRUSTED_CALLS)
             )
+            # `parse(self.decode, blob)` after `self.decode = json.loads` elsewhere:
+            # the stored source and sinks live in the shared attribute maps.
+            if isinstance(argument, ast.Attribute):
+                for key in self._attr_keys(argument):
+                    source = source or self.state.attr_source_aliases.get(key)
+                    for sink in self.state.attr_sink_aliases.get(key) or ():
+                        handed[parameter] = _with(handed.get(parameter), sink)
             if source:
                 handed_sources.setdefault(parameter, source)
             if spelling:
