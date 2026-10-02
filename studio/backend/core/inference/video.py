@@ -6451,6 +6451,9 @@ class VideoBackend:
             )
             with self._lock:
                 if _load_token is not None and _load_token != self._load_token:
+                    if load_bg_compile is not None:
+                        load_bg_compile.close()
+                        load_bg_compile = None
                     del pipe
                     clear_gpu_cache()
                     raise RuntimeError("Video load was cancelled or superseded.")
