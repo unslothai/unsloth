@@ -4568,10 +4568,21 @@ def test_resolve_model_refused_load_reports_survivor(monkeypatch, capsys):
     assert "Nothing was unloaded; owner/model-GGUF is still serving." in captured.err
 
 
-def _other_account_studio(monkeypatch, capsys, load_status = "loaded"):
+def _other_account_studio(
+    monkeypatch,
+    capsys,
+    load_status = "loaded",
+):
     state = {"models": [], "loads": []}
 
-    def http_json(method, url, key, payload = None, timeout = 30, error = None):
+    def http_json(
+        method,
+        url,
+        key,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
         if url.endswith("/api/inference/loaded-models"):
             return {"object": "list", "data": state["models"]}
         assert url.endswith("/api/inference/status"), url
