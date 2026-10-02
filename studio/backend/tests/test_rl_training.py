@@ -157,3 +157,12 @@ def test_fsdp_stub_only_when_the_real_module_cannot_import(monkeypatch):
 
     assert FullyShardedDataParallel.__module__ == "core.training.rl"
     assert install_fsdp_import_stub() is False
+
+
+def test_system_prompt_fills_rows_without_one_and_keeps_their_own():
+    ds = Dataset.from_list([{"question": "2+2?", "answer": "4", "system": ""}, {"question": "3+3?", "answer": "6", "system": "Be terse."}])
+    out, _ = format_rl_dataset(ds, "grpo", {"question": "prompt", "answer": "answer", "system": "system"}, system_prompt = "Use <answer> tags.")
+    assert out[0]["prompt"][0] == {"role": "system", "content": "Use <answer> tags."}
+    assert out[1]["prompt"][0] == {"role": "system", "content": "Be terse."}
+    plain, _ = format_rl_dataset(Dataset.from_list([{"question": "q", "answer": "a"}]), "grpo")
+    assert [m["role"] for m in plain[0]["prompt"]] == ["user"]

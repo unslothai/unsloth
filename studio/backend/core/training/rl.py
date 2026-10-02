@@ -145,8 +145,10 @@ def format_rl_dataset(
     mapping: Optional[dict] = None,
     keep_columns: tuple[str, ...] = (),
     num_proc: Optional[int] = None,
+    system_prompt: Optional[str] = None,
 ):
-    """Shape a raw dataset into TRL's conversational prompt/chosen/rejected or prompt/answer rows."""
+    """Shape a raw dataset into TRL's conversational prompt/chosen/rejected or prompt/answer rows.
+    ``system_prompt`` fills in for rows with no system message of their own."""
     columns = list(getattr(dataset, "column_names", None) or [])
     if not columns:
         raise ValueError(f"{objective.upper()} training needs a dataset with known columns.")
@@ -156,6 +158,7 @@ def format_rl_dataset(
     def convert(row: dict) -> dict:
         prompt = _as_messages(row[roles["prompt"]], "user")
         system = row.get(roles["system"]) if "system" in roles else None
+        system = system or system_prompt
         if system and not any(m["role"] == "system" for m in prompt):
             prompt = [{"role": "system", "content": str(system)}] + prompt
         out: dict[str, Any] = {"prompt": prompt}

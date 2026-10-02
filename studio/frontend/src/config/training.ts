@@ -140,6 +140,10 @@ export const CPT_LORA_HYPERPARAMS = {
   loraVariant: "rslora",
 } as const;
 
+// The answer format every Unsloth GRPO notebook puts in the system prompt; the default rewards grade it.
+export const GRPO_DEFAULT_SYSTEM_PROMPT =
+  "Respond in the following format:\n<reasoning>\n...\n</reasoning>\n<answer>\n...\n</answer>";
+
 // Kept out of DEFAULT_HYPERPARAMS so the advanced-settings summary does not count them.
 export const DEFAULT_RL_SETTINGS = {
   trainingObjective: "sft" as import("@/types/training").TrainingObjective,
@@ -149,6 +153,7 @@ export const DEFAULT_RL_SETTINGS = {
   grpoNumGenerations: 4,
   grpoMaxCompletionLength: null as number | null,
   grpoTemperature: 1.0,
+  grpoSystemPrompt: GRPO_DEFAULT_SYSTEM_PROMPT,
   grpoVariant: "dapo" as import("@/types/training").GrpoVariant,
   grpoMaskTruncatedCompletions: false,
   grpoEpsilonHigh: null as number | null,

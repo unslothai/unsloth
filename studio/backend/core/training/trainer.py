@@ -2697,6 +2697,7 @@ class UnslothTrainer:
         is_cpt: bool = False,
         objective: str = "sft",
         rl_keep_columns: tuple = (),
+        rl_system_prompt: Optional[str] = None,
         s3_config: dict = None,
         dataset_local_files_only: bool = False,
         dataset_local_path: Optional[str] = None,
@@ -3329,6 +3330,7 @@ class UnslothTrainer:
                     objective = objective,
                     custom_format_mapping = custom_format_mapping,
                     keep_columns = rl_keep_columns,
+                    system_prompt = rl_system_prompt,
                     split_eval = eval_enabled and not has_separate_eval_source,
                 )
 
@@ -3423,17 +3425,18 @@ class UnslothTrainer:
         custom_format_mapping: Optional[Dict[str, Any]],
         keep_columns: tuple,
         split_eval: bool,
+        system_prompt: Optional[str] = None,
     ) -> tuple:
         """Shape rows for DPO/ORPO/GRPO; TRL applies the chat template itself."""
         from core.training.rl import format_rl_dataset
 
         num_proc = dataset_map_num_proc(None)
         formatted, roles = format_rl_dataset(
-            dataset, objective, custom_format_mapping, keep_columns, num_proc
+            dataset, objective, custom_format_mapping, keep_columns, num_proc, system_prompt
         )
         if eval_dataset is not None:
             eval_dataset, _ = format_rl_dataset(
-                eval_dataset, objective, custom_format_mapping, keep_columns, num_proc
+                eval_dataset, objective, custom_format_mapping, keep_columns, num_proc, system_prompt
             )
         elif split_eval:
             split_result = self._resolve_eval_split_from_dataset(formatted)

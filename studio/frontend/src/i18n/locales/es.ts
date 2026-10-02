@@ -3608,6 +3608,9 @@ export const es = {
       epsilonHighHint: "Límite superior del recorte (clip-higher de DAPO, p. ej. 0.28). Vacío usa el recorte normal de 0.2.",
       maskTruncated: "Enmascarar respuestas cortadas",
       maskTruncatedHint: "Excluir de la pérdida las respuestas que llegan al límite de longitud.",
+      systemPrompt: "Prompt de sistema",
+      systemPromptHint: "Se añade a cada prompt que no tiene mensaje de sistema. El valor por defecto pide el formato <reasoning>/<answer> que puntúan las recompensas incluidas, como en los notebooks de GRPO de Unsloth.",
+      systemPromptReset: "Restablecer formato del notebook",
     },
     rewards: {
       title: "Recompensas",

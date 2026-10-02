@@ -3545,6 +3545,9 @@ export const en = {
       epsilonHighHint: "Upper clip bound (DAPO clip-higher, e.g. 0.28). Empty uses the regular clip of 0.2.",
       maskTruncated: "Mask cut-off answers",
       maskTruncatedHint: "Leave answers that hit the completion length limit out of the loss.",
+      systemPrompt: "System prompt",
+      systemPromptHint: "Added to every prompt that has no system message. The default asks for the <reasoning>/<answer> format the bundled rewards grade, as in the Unsloth GRPO notebooks.",
+      systemPromptReset: "Reset to notebook format",
     },
     rewards: {
       title: "Rewards",

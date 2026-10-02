@@ -37,6 +37,7 @@ test("SFT payload is unchanged: objective sft, chat mapping, no GRPO rewards", (
   });
   assert.deepEqual(payload.grpo_rewards, []);
   assert.equal(payload.rl_beta, null);
+  assert.equal(payload.rl_system_prompt, null);
 });
 
 test("GRPO sends RL roles instead of chat roles, plus its rewards", () => {
@@ -59,6 +60,7 @@ test("GRPO sends RL roles instead of chat roles, plus its rewards", () => {
   assert.equal(payload.rl_beta, 0.04);
   assert.equal(payload.train_on_completions, false);
   assert.equal(payload.grpo_variant, "dapo");
+  assert.match(payload.rl_system_prompt ?? "", /<reasoning>/);
 });
 
 test("GRPO sends the loss variant and its clip/mask options; DPO drops them", () => {

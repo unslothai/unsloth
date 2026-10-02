@@ -1462,6 +1462,8 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           setUserEdit({ grpoMaxCompletionLength }),
         setGrpoTemperature: (grpoTemperature) =>
           setUserEdit({ grpoTemperature }),
+        setGrpoSystemPrompt: (grpoSystemPrompt) =>
+          setUserEdit({ grpoSystemPrompt }),
         setGrpoVariant: (grpoVariant) => setUserEdit({ grpoVariant }),
         setGrpoMaskTruncatedCompletions: (grpoMaskTruncatedCompletions) =>
           setUserEdit({ grpoMaskTruncatedCompletions }),

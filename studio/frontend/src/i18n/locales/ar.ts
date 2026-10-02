@@ -3542,6 +3542,9 @@ export const ar = {
       epsilonHighHint: "الحد الأعلى للقص (clip-higher من DAPO، مثل 0.28). الفراغ يستخدم القص العادي 0.2.",
       maskTruncated: "إخفاء الإجابات المقطوعة",
       maskTruncatedHint: "استبعاد الإجابات التي تبلغ حد الطول من حساب الخسارة.",
+      systemPrompt: "موجّه النظام",
+      systemPromptHint: "يُضاف إلى كل موجّه ليس له رسالة نظام. يطلب الافتراضي تنسيق <reasoning>/<answer> الذي تقيّمه المكافآت المضمّنة، كما في دفاتر GRPO من Unsloth.",
+      systemPromptReset: "إعادة تنسيق الدفتر",
     },
     rewards: {
       title: "المكافآت",

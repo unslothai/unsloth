@@ -607,6 +607,9 @@ class TrainingStartRequest(BaseModel):
     grpo_variant: Literal["dapo", "dr_grpo", "bnpo", "grpo", "gspo"] = Field(
         "dapo", description = "GRPO loss variant; dapo is the TRL and Unsloth default, gspo uses sequence-level ratios"
     )
+    rl_system_prompt: Optional[str] = Field(
+        None, max_length = 8000, description = "System prompt for rows without one (GRPO notebooks set the answer format here)"
+    )
     grpo_mask_truncated_completions: bool = Field(
         False, description = "Leave completions cut off at the length limit out of the loss"
     )

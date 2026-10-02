@@ -3549,6 +3549,9 @@ export const hi = {
       epsilonHighHint: "क्लिप की ऊपरी सीमा (DAPO clip-higher, जैसे 0.28)। खाली रहने पर सामान्य क्लिप 0.2 इस्तेमाल होता है।",
       maskTruncated: "कटे हुए जवाब छोड़ें",
       maskTruncatedHint: "लंबाई की सीमा तक पहुँचे जवाबों को लॉस से बाहर रखें।",
+      systemPrompt: "सिस्टम प्रॉम्प्ट",
+      systemPromptHint: "हर उस प्रॉम्प्ट में जोड़ा जाता है जिसमें सिस्टम संदेश नहीं है। डिफ़ॉल्ट वही <reasoning>/<answer> फ़ॉर्मैट माँगता है जिसे बंडल किए गए रिवॉर्ड जाँचते हैं, जैसा Unsloth GRPO नोटबुक में है।",
+      systemPromptReset: "नोटबुक फ़ॉर्मैट पर रीसेट करें",
     },
     rewards: {
       title: "रिवॉर्ड",

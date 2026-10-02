@@ -3569,6 +3569,9 @@ export const ru = {
       epsilonHighHint: "Верхняя граница клипа (clip-higher из DAPO, например 0.28). Пусто означает обычный клип 0.2.",
       maskTruncated: "Маскировать обрезанные ответы",
       maskTruncatedHint: "Не учитывать в loss ответы, упёршиеся в лимит длины.",
+      systemPrompt: "Системный промпт",
+      systemPromptHint: "Добавляется к каждому промпту без системного сообщения. По умолчанию просит формат <reasoning>/<answer>, который оценивают встроенные награды, как в GRPO-ноутбуках Unsloth.",
+      systemPromptReset: "Вернуть формат из ноутбука",
     },
     rewards: {
       title: "Вознаграждения",

@@ -4270,6 +4270,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     for spec in config.get("reward_specs") or []
                     if spec.get("rule", {}).get("compare_to")
                 ),
+                rl_system_prompt = (config.get("rl_settings") or {}).get("system_prompt"),
                 s3_config = config.get("s3_config"),
                 dataset_local_files_only = dataset_local_only,
                 dataset_local_path = config.get("dataset_snapshot_path"),

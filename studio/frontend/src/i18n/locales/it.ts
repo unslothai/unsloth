@@ -3609,6 +3609,9 @@ export const it = {
       epsilonHighHint: "Limite superiore del clip (clip-higher di DAPO, es. 0.28). Vuoto usa il clip normale di 0.2.",
       maskTruncated: "Maschera risposte troncate",
       maskTruncatedHint: "Escludi dalla loss le risposte che raggiungono il limite di lunghezza.",
+      systemPrompt: "Prompt di sistema",
+      systemPromptHint: "Aggiunto a ogni prompt senza messaggio di sistema. Il predefinito chiede il formato <reasoning>/<answer> valutato dalle ricompense incluse, come nei notebook GRPO di Unsloth.",
+      systemPromptReset: "Ripristina il formato del notebook",
     },
     rewards: {
       title: "Ricompense",
