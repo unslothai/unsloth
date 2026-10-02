@@ -645,8 +645,10 @@ jobs:
         with:
           python-version: '3.12'
 
-      # pyjwt: test_start.py's owner-token row decodes the token it is handed.
-      - run: python -m pip install -U pip pytest typer pyyaml pydantic click rich pyjwt
+      # The same backend requirements the Ubuntu leg installs: main's owner-token row
+      # (#12492) imports studio.backend.auth.storage, so the launcher suite no longer
+      # runs on the CLI's own dependencies alone.
+      - run: python -m pip install -U pip pytest typer pyyaml pydantic click rich pyjwt -r studio/backend/requirements/studio.txt
 
       - name: CLI launcher tests (unsloth_cli/tests/test_start.py)
         env:
