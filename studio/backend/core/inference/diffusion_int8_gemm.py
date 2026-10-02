@@ -14,11 +14,8 @@ The activation quant is torchao's own math, so Inductor still fuses it into the 
 bit-identical end to end: the consumer reductions (LayerNorm / RMSNorm Welford) that used to fuse the epilogue now
 read bf16 and Inductor re-tiles them, a rounding-order change smaller than compiled-vs-eager (LPIPS-gated).
 
-Per-arch gate (measured on L4 / A100 / G4 Colab, torch 2.11, vs the compiled stock path): sm80 / sm89 / sm120 on,
-everything else stock until measured. Qwen-Image-2.1 1024px q_auto s/step: L4 0.90 -> 0.76, A100 0.248 -> 0.205,
-RTX PRO 6000 0.138 -> 0.119, LPIPS vs the stock path inside its own compiled-vs-eager spread. sm75 (T4): Triton cannot lower the int8 dot; sm100 (B200): Triton int8 runs
-~2.5x slower than cuBLAS.
-ROCm (weight-only int8 there) and CPU never reach it.
+Per-arch gate: sm80 / sm89 / sm120 on (measured), everything else stock. sm75: Triton cannot lower the int8 dot;
+sm100: Triton int8 is slower than cuBLAS. ROCm (weight-only int8 there) and CPU never reach it.
 
 Kill switch: ``UNSLOTH_DIFFUSION_INT8_GEMM=0``; ``=1`` also enables it on an unmeasured arch (still probe-gated).
 """
@@ -33,7 +30,7 @@ from typing import Any, Optional
 
 INT8_GEMM_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM"
 _MIN_TRITON = (3, 2)
-# Stock torch._int_mm needs M > 16; below that the stock path (padding wrappers, safe_int_mm) stays in charge.
+# torch._int_mm needs M > 16; below that the stock path (safe_int_mm padding) stays in charge.
 _MIN_ROWS = 17
 _K_ALIGN = 64
 _N_ALIGN = 16
@@ -44,17 +41,23 @@ _MARK = "_unsloth_i8_gemm_prev"
 _NO_PREV = object()
 _LOCK = threading.Lock()
 _OP_HANDLE: Any = None
-# Python-side call counter of the op implementation (engagement census); never read inside a traced region.
+# Engagement census; never read inside a traced region.
 _CALLS = [0]
 
-# (BLOCK_M, BLOCK_N, BLOCK_K, GROUP_M, num_warps, num_stages) per (major, minor), measured best on the DiT shapes
-# (M = 4096, N/K in {3072, 3840, 4096, 9216, 10240, 11520, 12288, 14336, 15360}). An arch absent here is off.
+# (BLOCK_M, BLOCK_N, BLOCK_K, GROUP_M, num_warps, num_stages) per (major, minor), tuned on DiT shapes. Absent = off.
 _ARCH_CONFIG = {
-    (8, 0): (128, 128, 128, 8, 4, 3),  # A100: 1.10-1.39x over the stock GEMM + epilogue, beats bare _int_mm
-    (8, 9): (256, 128, 128, 8, 8, 3),  # L4: 1.04-1.47x, on par with bare _int_mm
-    (12, 0): (128, 128, 64, 8, 4, 4),  # RTX PRO 6000: 1.00-1.41x
+    (8, 0): (
+        128,
+        128,
+        128,
+        8,
+        4,
+        3,
+    ),  # A100
+    (8, 9): (256, 128, 128, 8, 8, 3),  # L4
+    (12, 0): (128, 128, 64, 8, 4, 4),  # RTX PRO 6000
 }
-# Smaller fallback tile when the arch tile does not fit this device's shared memory (consumer parts of an arch).
+# When the arch tile does not fit this part's shared memory.
 _FALLBACK_CONFIG = (128, 128, 64, 8, 4, 4)
 
 
@@ -179,7 +182,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
     return types.SimpleNamespace(i8mm_dq = i8mm_dq)
 
 
-# device index -> tile that launched and matched the reference on that device (None = stock).
+# device index -> probed tile (None = stock).
 _DEVICE_CFG: dict = {}
 
 
@@ -192,7 +195,9 @@ def reference(a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
         a = torch.cat([a, a.new_zeros((_MIN_ROWS - m, a.shape[1]))])
     c = torch._int_mm(a, w.t())[:m]
     y = (c * xs.reshape(-1, 1)).to(torch.bfloat16)
-    y = y * ws.reshape(-1)  # bf16 scales: a bf16 product; fp32 (prequant) scales: fp32 until after the bias (v2)
+    y = y * ws.reshape(
+        -1
+    )  # bf16 scales: a bf16 product; fp32 (prequant) scales: fp32 until after the bias (v2)
     if bias is not None:
         y = y + bias
     return y.to(torch.bfloat16)
@@ -288,7 +293,6 @@ def device_config(index: int) -> Optional[tuple]:
     cfg = None
     try:
         import torch
-
         if (
             torch.cuda.is_available()
             and not getattr(torch.version, "hip", None)
@@ -313,13 +317,19 @@ def _probe(index: int, cfg: tuple) -> bool:
     dev = torch.device("cuda", index)
     g = torch.Generator(device = "cpu").manual_seed(0)
     try:
-        for m, n, k, bias, xs32 in ((257, 384, 512, False, False), (33, 200, 136, True, True), (300, 520, 1000, True, False)):
+        for m, n, k, bias, xs32 in (
+            (257, 384, 512, False, False),
+            (33, 200, 136, True, True),
+            (300, 520, 1000, True, False),
+        ):
             a = torch.randint(-127, 128, (m, k), generator = g, dtype = torch.int8).to(dev)
             w = torch.randint(-127, 128, (n, k), generator = g, dtype = torch.int8).to(dev)
             xs = (torch.rand(m, generator = g) * 0.02 + 1e-4).to(torch.bfloat16)
             xs = (xs.float() if xs32 else xs).to(dev)
             ws = (torch.rand(n, generator = g) * 0.002 + 1e-5).to(torch.bfloat16).to(dev)
-            ws = ws.float() if xs32 else ws  # fp32 weight scales + bias: the prequant (v2) rounding order
+            ws = (
+                ws.float() if xs32 else ws
+            )  # fp32 weight scales + bias: the prequant (v2) rounding order
             b = (torch.randn(n, generator = g) * 0.1).to(torch.bfloat16).to(dev) if bias else None
             if not torch.equal(_launch(a, w, xs, ws, b, cfg), reference(a, w, xs, ws, b)):
                 return False
@@ -327,9 +337,6 @@ def _probe(index: int, cfg: tuple) -> bool:
         return True
     except Exception:  # noqa: BLE001 - out of shared memory, compile failure, ...
         return False
-
-
-# ------------------------------------------------------------------------------------------- weight recognition
 
 
 def _v1_parts(w: Any) -> Optional[tuple]:
@@ -347,7 +354,10 @@ def _v1_parts(w: Any) -> Optional[tuple]:
         if type(aqt).__name__ != "AffineQuantizedTensor":
             return None
         impl = aqt.tensor_impl
-        if type(impl).__name__ != "PlainAQTTensorImpl" or type(getattr(impl, "_layout", None)).__name__ != "PlainLayout":
+        if (
+            type(impl).__name__ != "PlainAQTTensorImpl"
+            or type(getattr(impl, "_layout", None)).__name__ != "PlainLayout"
+        ):
             return None
         data, scale, zp = impl.int_data, impl.scale, getattr(impl, "zero_point", None)
         import torch
@@ -363,14 +373,19 @@ def _v1_parts(w: Any) -> Optional[tuple]:
         return None
 
 
-def _v2_parts(w: Any) -> Optional[tuple]:
-    """(int8 [N, K], scale [N]) of a plain dynamic symmetric per-row torchao ``Int8Tensor``, else None."""
+def _v2_parts(w: Any, check_zero_point: bool = True) -> Optional[tuple]:
+    """(int8 [N, K], scale [N]) of a plain dynamic symmetric per-row torchao ``Int8Tensor``, else None.
+    ``check_zero_point=False`` inside a traced forward: the check is a host sync and a graph break."""
     try:
         from .diffusion_int8_fused import _plain_int8_weight
 
         if not _plain_int8_weight(w):
             return None
-        if getattr(w, "zero_point", None) is not None and bool((w.zero_point != 0).any()):
+        if (
+            check_zero_point
+            and getattr(w, "zero_point", None) is not None
+            and bool((w.zero_point != 0).any())
+        ):
             return None
         return w.qdata, w.scale.reshape(-1)
     except Exception:  # noqa: BLE001
@@ -404,7 +419,6 @@ def _act_quant_v1(x2d: Any) -> tuple:
 
 def _act_quant_v2(x2d: Any, weight: Any) -> tuple:
     from .diffusion_int8_fused import _act_quant
-
     return _act_quant(x2d, weight)
 
 
@@ -423,7 +437,9 @@ def _v1_act_quant_matches(index: int) -> bool:
         ref = _int8_symm_per_token_reduced_range_quant(x)
         q, s = _act_quant_v1(x)
         impl = ref.tensor_impl
-        return bool(torch.equal(q, impl.int_data) and torch.equal(s.reshape(-1), impl.scale.reshape(-1)))
+        return bool(
+            torch.equal(q, impl.int_data) and torch.equal(s.reshape(-1), impl.scale.reshape(-1))
+        )
     except Exception:  # noqa: BLE001
         return False
 
@@ -438,8 +454,7 @@ def _linear_forward(self: Any, x: Any) -> Any:
     kind, _wq, _ws, weight = rec
     if self.weight is not weight:  # weight replaced since install (reload / LoRA bake): stock
         return type(self).forward(self, x)
-    # Read the int8 payload off the live parameter, never a cached alias: a placement change that moves the weight
-    # must neither leave the kernel a stale device nor pin the old copy.
+    # Payload off the live parameter, never a cached alias: a moved weight must not leave a stale device or pin a copy.
     if kind == "v1":
         impl = weight.original_weight_tensor.tensor_impl
         wq, ws = impl.int_data, impl.scale.reshape(-1)
@@ -467,8 +482,13 @@ def linear_from_q(q: Any, xs: Any, weight: Any, bias: Any) -> Optional[Any]:
         return None
     if _DEVICE_CFG.get(q.device.index) is None:
         return None
-    parts = _v2_parts(weight)
-    if parts is None or q.shape[0] < _MIN_ROWS or parts[1].dtype not in (torch.bfloat16, torch.float32):
+    # The fused MLP already admitted this weight (symmetric, and its stock epilogue ignores the zero point too).
+    parts = _v2_parts(weight, check_zero_point = False)
+    if (
+        parts is None
+        or q.shape[0] < _MIN_ROWS
+        or parts[1].dtype not in (torch.bfloat16, torch.float32)
+    ):
         return None
     if parts[0].shape[1] % _K_ALIGN or parts[0].shape[0] % _N_ALIGN:
         return None
@@ -488,10 +508,7 @@ def _eligible(module: Any) -> Optional[tuple]:
 
     if bias is not None and bias.dtype != torch.bfloat16:
         return None
-    # Weight scales: v1 quantizes a bf16 weight to bf16 scales (its epilogue rounds before the bias add); v2 also takes
-    # the fp32 scales Studio's prequant checkpoints carry (its epilogue adds the bias first, as the kernel does with
-    # WS_FP32). Aligned shapes only: a K off the 64 grid (masked, unvectorized loads) ran 3-25x slower than cuBLAS on
-    # B200, and every DiT Linear measured sits on it.
+    # v1: bf16 scales only; v2 also fp32 (prequant checkpoints). Off-grid K runs masked loads, far slower than cuBLAS.
     out_f, in_f = getattr(module, "out_features", 0), getattr(module, "in_features", 0)
     if in_f % _K_ALIGN or out_f % _N_ALIGN:
         return None
@@ -511,7 +528,11 @@ def candidates(transformer: Any) -> int:
         return 0
 
 
-def install(transformer: Any, logger: Any = None, offload_active: bool = False) -> int:
+def install(
+    transformer: Any,
+    logger: Any = None,
+    offload_active: bool = False,
+) -> int:
     """Idempotent; returns the (candidate) count. Must run before the first compiled forward."""
     if int8_gemm_mode() == "off" or transformer is None or offload_active:
         return 0
@@ -519,12 +540,13 @@ def install(transformer: Any, logger: Any = None, offload_active: bool = False) 
 
     if resident_cuda_device(transformer) is not None:
         return _finalize(transformer, logger)
-    # Weights not on the GPU yet: decide the arch gate now (so status never claims an arch that stays stock), the
-    # probe and the swap at the first forward.
+    # Weights not on the GPU yet: arch gate now (status never claims a stock arch), probe + swap at the first forward.
     try:
         import torch
 
         if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+            return 0
+        if not _triton_version_ok() or _kernels() is None:
             return 0
         if arch_config(torch.cuda.get_device_capability(torch.cuda.current_device())) is None:
             return 0
@@ -537,6 +559,15 @@ def install(transformer: Any, logger: Any = None, offload_active: bool = False) 
 
 
 def _finalize(transformer: Any, logger: Any = None) -> int:
+    count = _swap(transformer, logger)
+    try:
+        transformer._unsloth_int8_gemm = count  # the deferred install recorded the candidate count
+    except Exception:  # noqa: BLE001
+        pass
+    return count
+
+
+def _swap(transformer: Any, logger: Any = None) -> int:
     global _OP_HANDLE
     from .diffusion_int8_fused import resident_cuda_device
 
@@ -561,14 +592,15 @@ def _finalize(transformer: Any, logger: Any = None) -> int:
             if _MARK in module.__dict__:
                 count += 1
                 continue
-            module.__dict__[_REC] = (rec[0], None, None, rec[3])  # kind + the Parameter, no payload alias
+            module.__dict__[_REC] = (
+                rec[0],
+                None,
+                None,
+                rec[3],
+            )  # kind + the Parameter, no payload alias
             module.__dict__[_MARK] = module.__dict__.get("forward", _NO_PREV)
             module.forward = types.MethodType(_linear_forward, module)
             count += 1
-    try:
-        transformer._unsloth_int8_gemm = count
-    except Exception:  # noqa: BLE001
-        pass
     if logger is not None and count:
         logger.info(
             "diffusion.int8_gemm: %d int8 Linear(s) run the fused-dequant GEMM (bf16 out) on sm_%d%d",

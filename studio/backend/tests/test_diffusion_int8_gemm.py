@@ -21,9 +21,6 @@ def _clean(monkeypatch):
     g8._DEVICE_CFG.clear()
 
 
-# ----------------------------------------------------------------------------------------------- gate (CPU only)
-
-
 @pytest.mark.parametrize(
     "cap, on",
     [
@@ -70,11 +67,16 @@ def test_rocm_never_probes(monkeypatch):
     assert g8.device_config(0) is None
 
 
+def test_deferred_finalize_records_the_final_count():
+    """A deferred install records the candidate count; a first forward that swaps nothing must clear it (status)."""
+    holder = torch.nn.Sequential(torch.nn.Linear(64, 64))
+    holder._unsloth_int8_gemm = 3
+    assert g8._finalize(holder) == 0
+    assert holder._unsloth_int8_gemm == 0
+
+
 def test_dense_linear_is_not_eligible():
     assert g8._eligible(torch.nn.Linear(128, 128)) is None
-
-
-# ----------------------------------------------------------------------------------------------- CUDA
 
 
 def _cuda_ready() -> bool:
@@ -90,7 +92,9 @@ def _cuda_ready() -> bool:
     return True
 
 
-needs_cuda = pytest.mark.skipif(not _cuda_ready(), reason = "needs NVIDIA sm80+ CUDA, Triton and torchao")
+needs_cuda = pytest.mark.skipif(
+    not _cuda_ready(), reason = "needs NVIDIA sm80+ CUDA, Triton and torchao"
+)
 
 
 @pytest.fixture
@@ -119,7 +123,12 @@ def _int8_linear(k, n, bias, version):
 @needs_cuda
 @pytest.mark.parametrize(
     "m, k, n, bias, xs32",
-    [(4096, 4096, 4096, False, False), (1037, 520, 1400, True, False), (17, 256, 1024, True, True), (300, 12288, 256, False, False)],
+    [
+        (4096, 4096, 4096, False, False),
+        (1037, 520, 1400, True, False),
+        (17, 256, 1024, True, True),
+        (300, 12288, 256, False, False),
+    ],
 )
 @pytest.mark.parametrize("ws32", [False, True])
 def test_op_is_bit_exact_vs_torchao_epilogue(forced, m, k, n, bias, xs32, ws32):
@@ -195,7 +204,9 @@ def test_small_m_and_misaligned_keep_stock(forced):
     assert g8.install(holder) == 1
     before = g8.call_count()
     with torch.inference_mode():
-        ok(torch.randn(16, 1024, device = "cuda", dtype = torch.bfloat16))  # M = 16 < _int_mm's floor: stock
+        ok(
+            torch.randn(16, 1024, device = "cuda", dtype = torch.bfloat16)
+        )  # M = 16 < _int_mm's floor: stock
     assert g8.call_count() == before
 
 
@@ -273,3 +284,57 @@ def test_pinned_group_offloaded_denoiser_takes_the_gemm_and_survives_release(for
         assert dm.denoisers_pinned_resident(pipe)
         assert torch.equal(dit(x), ref)
     g8.uninstall(dit)
+
+
+def test_fused_mlp_down_projection_traces_without_breaks(forced, monkeypatch):
+    """The fused MLP's down projection reaches the GEMM through ``linear_from_q`` inside the compiled block: no host
+    sync, no graph break, and the same bits as the fused MLP's own stock epilogue (kill switch), eager and compiled."""
+    from torch._dynamo.utils import counters
+
+    from core.inference import diffusion_int8_fused as f8
+
+    attention = pytest.importorskip("diffusers.models.attention")
+    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+
+    torch.manual_seed(0)
+    ff = attention.FeedForward(1024, dim_out = 1024, mult = 4, activation_fn = "gelu-approximate")
+    ff = ff.cuda().to(torch.bfloat16)
+    quantize_(ff, Int8DynamicActivationInt8WeightConfig(version = 2, set_inductor_config = False))
+    fused = torch.nn.Sequential(ff)
+    if not f8.install(fused):
+        pytest.skip("int8 fused MLP probe refused this device")
+    g8.install(fused)  # as diffusion_speed does: sets the op handle linear_from_q calls
+    x = torch.randn(2, 300, 1024, device = "cuda", dtype = torch.bfloat16)
+
+    def run(mode):
+        monkeypatch.setenv(g8.INT8_GEMM_ENV, mode)
+        before = g8.call_count()
+        eager = fused(x)
+        counters.clear()
+        torch._dynamo.reset()
+        with torch._inductor.config.patch(emulate_precision_casts = True):
+            compiled = torch.compile(fused, fullgraph = True)(x)
+        assert not counters["graph_break"]
+        return eager, compiled, g8.call_count() - before
+
+    with torch.inference_mode():
+        eager, compiled, calls = run("1")
+        ref_eager, ref_compiled, ref_calls = run("0")
+    assert calls == 2 and ref_calls == 0
+    assert torch.equal(eager, ref_eager)
+    assert torch.equal(compiled, ref_compiled)
+    g8.uninstall(fused)
+    f8.uninstall(fused)
+
+
+def test_status_drops_int8_gemm_once_the_deferred_probe_swapped_nothing():
+    from types import SimpleNamespace
+
+    from core.inference.diffusion_speed import int8_gemm_live
+
+    dit = SimpleNamespace(_unsloth_int8_gemm = 224)
+    pipe = SimpleNamespace(transformer = dit)
+    assert int8_gemm_live(pipe, ("compiled", "int8_gemm")) == ["compiled", "int8_gemm"]
+    dit._unsloth_int8_gemm = 0
+    assert int8_gemm_live(pipe, ("compiled", "int8_gemm")) == ["compiled"]
+    assert int8_gemm_live(pipe, ("compiled",)) == ["compiled"]
