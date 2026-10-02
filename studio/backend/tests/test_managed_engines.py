@@ -41,8 +41,8 @@ def isolated(monkeypatch, tmp_path):
 _LOCAL_ENGINE_HOST = pytest.mark.skipif(
     sys.platform != "linux", reason = "local engine host is Linux only"
 )
-# The copy-on-write clone probe uses a Linux ioctl; Windows installs run inside the WSL guest.
-_POSIX_ENGINE_LOCKS = pytest.mark.skipif(sys.platform == "win32", reason = "clone probe uses fcntl")
+# fcntl only: the copy-on-write clone probe, and a test that holds a lease with fcntl directly.
+_POSIX_ENGINE_LOCKS = pytest.mark.skipif(sys.platform == "win32", reason = "uses fcntl")
 
 
 def active(
@@ -287,6 +287,7 @@ def test_engine_cuda_home_is_the_locked_pip_nvcc(tmp_path, monkeypatch):
     assert sorted(os.listdir(home / "include")) == ["crt", "cuda_runtime.h"]
 
 
+@_LOCAL_ENGINE_HOST
 @pytest.mark.parametrize("engine", ["vllm", "sglang"])
 def test_glibc_floor_matches_the_lock_platform(engine, monkeypatch):
     # Both locks resolve for x86_64-manylinux_2_34 (see the lock headers).
@@ -407,6 +408,7 @@ def test_no_lock_downloads_the_cuda12_cutlass_libraries(monkeypatch):
         ("sglang", "2.10.0+cu128", "0.5.20"),
     ],
 )
+@_LOCAL_ENGINE_HOST
 def test_release_follows_studio_torch(monkeypatch, engine, studio_torch, version):
     monkeypatch.setattr(
         install, "_studio_packages", lambda: {"torch": studio_torch} if studio_torch else {}
@@ -418,6 +420,7 @@ def test_release_follows_studio_torch(monkeypatch, engine, studio_torch, version
     assert install._pins(engine)["torch"][0] == chosen["torch"]
 
 
+@_LOCAL_ENGINE_HOST
 @pytest.mark.parametrize("engine", ["vllm", "sglang"])
 def test_every_release_lock_is_current(monkeypatch, engine):
     for release in install.PROFILES[engine]["releases"]:
@@ -427,6 +430,7 @@ def test_every_release_lock_is_current(monkeypatch, engine):
         assert install._pins(engine)[engine][0] == release["version"]
 
 
+@_LOCAL_ENGINE_HOST
 @pytest.mark.parametrize("engine", ["vllm", "sglang"])
 def test_download_size_leaves_out_what_studio_shares(isolated, monkeypatch, engine):
     full = install.download_bytes(engine)
@@ -1975,6 +1979,7 @@ def test_non_base64_image_string_is_refused_before_the_engine(peer):
     assert requests == []
 
 
+@_POSIX_ENGINE_LOCKS
 def test_status_probe_does_not_fail_a_concurrent_engine_lease(isolated):
     import fcntl
     import time
@@ -2271,6 +2276,7 @@ def test_an_audio_model_that_also_reads_images_is_refused_as_audio():
     assert "detected as an audio model" in refused.value.detail
 
 
+@_LOCAL_ENGINE_HOST
 @pytest.mark.parametrize("engine", ["vllm", "sglang"])
 def test_wsl_installs_the_newest_release_and_prices_the_distro(isolated, monkeypatch, engine):
     from core.inference import wsl_host

@@ -24,6 +24,8 @@ FAKE = Path(__file__).with_name("fake_wsl.py")
 @pytest.fixture
 def wsl(tmp_path, monkeypatch):
     """Windows host with a fake wsl.exe; guest paths live under tmp_path."""
+    if sys.platform == "win32":
+        pytest.skip("the fake wsl.exe is a POSIX shell script")
     log = tmp_path / "wsl.log"
     log.touch()
     exe = tmp_path / "wsl.exe"
@@ -504,7 +506,10 @@ def test_sglang_launcher_is_read_through_mnt(wsl, monkeypatch):
 
 def test_linux_launch_is_unchanged_without_wsl(monkeypatch):
     assert wsl_host.active() is (sys.platform == "win32")
-    assert install._host_status() == {"host": "local"}
+    if sys.platform == "win32":
+        assert install._host_status()["host"] == "wsl"
+    else:
+        assert install._host_status() == {"host": "local"}
 
 
 def test_a_failed_reset_never_deletes_the_disk_of_a_registered_distro(wsl, monkeypatch, tmp_path):
