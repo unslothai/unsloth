@@ -5750,3 +5750,54 @@ def test_a_branch_default_for_a_forwarded_revision_is_unpinned(tmp_path):
         "    sys.path.insert(0, snapshot_download(repo, revision = revision))\n",
     )
     assert "unpinned code fetch" in _sinks(findings)
+
+
+def test_a_regex_substitution_keeps_taint(tmp_path):
+    """`re.sub("-", "_", parsed)` still names whatever the config named."""
+    findings = _scan(
+        tmp_path,
+        "import importlib, json, re\n"
+        "def go(blob):\n"
+        "    module = re.sub('-', '_', json.loads(blob)['module'])\n"
+        "    return importlib.import_module(module)\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_unsafe_yaml_loading_of_a_download_is_a_sink(tmp_path):
+    """`yaml.unsafe_load` and `yaml.load(..., Loader = yaml.UnsafeLoader)` run tags."""
+    findings = _scan(
+        tmp_path,
+        "import yaml\n"
+        "from huggingface_hub import hf_hub_download\n"
+        "def a(repo):\n"
+        "    yaml.unsafe_load(open(hf_hub_download(repo, 'c.yaml')))\n"
+        "def b(repo):\n"
+        "    yaml.load(open(hf_hub_download(repo, 'c.yaml')), Loader = yaml.UnsafeLoader)\n",
+    )
+    quiet = _scan(
+        tmp_path,
+        "import yaml\n"
+        "from huggingface_hub import hf_hub_download\n"
+        "def a(repo):\n"
+        "    yaml.load(open(hf_hub_download(repo, 'c.yaml')), Loader = yaml.SafeLoader)\n",
+        name = "quiet.py",
+    )
+    assert {"yaml.unsafe_load(unsafe loader)", "yaml.load(unsafe loader)"} <= _sinks(findings)
+    assert not any("unsafe loader" in sink for sink in _sinks(quiet))
+
+
+def test_a_dataclass_built_from_parsed_data_carries_it(tmp_path):
+    """`cfg = Config(**json.loads(blob))` then `cfg.module` with a generated `__init__`."""
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "from dataclasses import dataclass\n"
+        "@dataclass\n"
+        "class Config:\n"
+        "    module: str\n"
+        "def go(blob):\n"
+        "    cfg = Config(**json.loads(blob))\n"
+        "    return importlib.import_module(cfg.module)\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)

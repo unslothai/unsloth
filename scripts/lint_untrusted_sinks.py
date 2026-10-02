@@ -2242,6 +2242,27 @@ class _TaintPass(ast.NodeVisitor):
                 if reason:
                     return reason
             return None
+        # `re.sub("-", "_", parsed)` rewrites characters; the result is still parsed.
+        if _matches_any(names, {"re.sub", "re.subn"}):
+            arguments = list(node.args[1:]) + [
+                k.value for k in node.keywords if k.arg in ("repl", "string")
+            ]
+            for argument in arguments:
+                reason = self.tainted(argument)
+                if reason:
+                    return reason
+            return None
+        # `Config(**parsed)` on a first-party class with no `__init__` of its own, such
+        # as a dataclass: the generated initialiser copies every argument onto the
+        # instance, and there is no body for the summary to read that from.
+        constructed = self.facts.resolve_construction(_call_name(node.func), self.qualname)
+        if constructed and not self.facts._methods_on(constructed, "__init__"):
+            for argument in list(node.args) + [k.value for k in node.keywords]:
+                reason = self.tainted(
+                    argument.value if isinstance(argument, ast.Starred) else argument
+                )
+                if reason:
+                    return reason
         # A first-party callee that returns tainted data. Any of them: an alias bound
         # twice resolves to more than one callee, and only one of them need be dirty.
         for target in self.facts.targets_of(
@@ -3301,12 +3322,38 @@ class _TaintPass(ast.NodeVisitor):
     def visit_Call(self, node: ast.Call) -> None:
         self._note_mutation(node)
         self._note_config_read(node)
+        self._check_yaml_load(node)
         self._propagate_into_callee(node)
         self._propagate_into_mapped(node)
         self._check_sink(node)
         self._check_torch_load(node)
         self._check_remote_code(node)
         self.generic_visit(node)
+
+    # Loaders that construct arbitrary Python objects from tags in the document.
+    _UNSAFE_YAML_LOADERS = frozenset({"UnsafeLoader", "CUnsafeLoader", "Loader", "CLoader"})
+
+    def _check_yaml_load(self, node: ast.Call) -> None:
+        """`yaml.unsafe_load(downloaded)` or `yaml.load(..., Loader = yaml.UnsafeLoader)`.
+
+        Deserialisation is the execution here, so the result does not have to be used.
+        `safe_load` and the safe loaders stay plain sources.
+        """
+        names = self.facts.canonicals(_call_name(node.func))
+        unsafe = _matches_any(names, {"yaml.unsafe_load", "yaml.unsafe_load_all"})
+        if unsafe is None and _matches_any(names, {"yaml.load", "yaml.load_all"}):
+            loader = next((k.value for k in node.keywords if k.arg == "Loader"), None)
+            if loader is None and len(node.args) > 1:
+                loader = node.args[1]
+            if loader is not None and _call_name(loader).rpartition(".")[2] in (
+                self._UNSAFE_YAML_LOADERS
+            ):
+                unsafe = "yaml.load"
+        if unsafe is None or not node.args:
+            return
+        reason = self.tainted(node.args[0])
+        if reason:
+            self._record(node, f"{unsafe}(unsafe loader)", reason, _short(node.args[0]))
 
     _CONFIG_PARSERS = frozenset({"configparser.ConfigParser", "configparser.RawConfigParser"})
 
