@@ -287,17 +287,33 @@ def test_real_diffusers_zimage_source_matches_recipe(monkeypatch):
     )
 
 
+class _LoRALinear(nn.Module):
+    """Minimal LoRA wrapper (base + B @ A), standing in for peft's so the test does not depend on its torchao
+    dispatch."""
+
+    def __init__(self, base):
+        super().__init__()
+        self.base = base
+        self.lora_A = nn.Linear(base.in_features, 4, bias = False)
+        self.lora_B = nn.Linear(4, base.out_features, bias = False)
+
+    def forward(self, x):
+        return self.base(x) + self.lora_B(self.lora_A(x))
+
+
 @needs_fp16
 def test_guard_holds_through_a_lora_injected_after_install():
     """LoRA wrappers replace the Linear children after the guard is installed; the rescale lives on the parents, so the
     adapted branch is scaled as a whole."""
-    peft = pytest.importorskip("peft")
     targets = ["w1", "w2", "w3", "to_q", "to_k", "to_v", "to_out.0"]
 
     def adapted(model):
-        cfg = peft.LoraConfig(r = 4, lora_alpha = 4, target_modules = targets, init_lora_weights = False)
         torch.manual_seed(1)
-        return peft.inject_adapter_in_model(cfg, model)
+        for name, module in list(model.named_modules()):
+            if isinstance(module, nn.Linear) and any(name.endswith(t) for t in targets):
+                parent, _, child = name.rpartition(".")
+                setattr(model.get_submodule(parent), child, _LoRALinear(module))
+        return model
 
     x = torch.randn(2, 16, 64)
     with torch.no_grad():
@@ -306,6 +322,10 @@ def test_guard_holds_through_a_lora_injected_after_install():
         half = _overflowing_model().half()
         assert guard.install_fp16_guard(half, "rescale_post_norm", torch.float16) == 2
         half = adapted(half.float()).half()
+        assert isinstance(
+            half.get_submodule(next(n for n, m in half.named_modules() if n.endswith("w3"))),
+            _LoRALinear,
+        )
         fixed = half(x.half())
     assert torch.isfinite(fixed).all()
     err = (fixed.float() - ref).abs().max() / ref.abs().max()
