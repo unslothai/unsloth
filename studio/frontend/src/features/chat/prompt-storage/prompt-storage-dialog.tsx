@@ -246,13 +246,19 @@ async function loadConversationMessages(
   // No parentId = legacy flat thread (already DB createdAt-sorted); walking the chain would invert order.
   const hasParentIds = raw.some((m) => (m as { parentId?: unknown }).parentId != null);
   if (!hasParentIds) return raw;
-  // Newest saved turn of the branch on screen: a reply still generating is not stored yet, and falling back to the newest leaf would export the reply it replaces.
-  const storedIds = new Set(raw.map((m) => m.id));
-  // An empty list is no opinion, not an empty branch: switching chats sets remoteId before the history load refills the view.
-  const headId = liveBranch?.length
-    ? ([...liveBranch].reverse().find((id) => storedIds.has(id)) ?? null)
-    : undefined;
+  const headId = liveBranchHeadId(liveBranch, raw);
   return orderByParentChain(raw, { includeSiblings, headId }) as typeof raw;
+}
+
+// Newest saved turn of the branch on screen: a reply still generating is not stored yet, and falling back to the newest leaf would export the reply it replaces.
+function liveBranchHeadId(
+  liveBranch: string[] | null,
+  raw: Array<{ id: string }>,
+): string | null | undefined {
+  // An empty list is no opinion, not an empty branch: switching chats sets remoteId before the history load refills the view.
+  if (!liveBranch?.length) return undefined;
+  const storedIds = new Set(raw.map((m) => m.id));
+  return [...liveBranch].reverse().find((id) => storedIds.has(id)) ?? null;
 }
 
 function exportTs(): string {
@@ -933,13 +939,17 @@ export async function buildFineTuneJsonl(
   let conversations = 0;
   let skipped = 0;
   for (const id of ids) {
+    const liveBranch = liveThreadBranch(id);
     const raw = await listStoredChatMessages(id);
     const hasParentIds = raw.some(
       (m) => (m as { parentId?: unknown }).parentId != null,
     );
     // Chain only: retries/regenerations leave sibling branches, and mixing alternate replies into one conversation corrupts the training targets.
     const ordered = hasParentIds
-      ? (orderByParentChain(raw, { includeSiblings: false }) as typeof raw)
+      ? (orderByParentChain(raw, {
+          includeSiblings: false,
+          headId: liveBranchHeadId(liveBranch, raw),
+        }) as typeof raw)
       : raw;
     const turns = messagesToFineTuneTurns(ordered);
     const converted = turns ? turnsToFineTuneLines(turns, format) : [];
