@@ -29,7 +29,7 @@ const RENDERERS = [
 
 // `[^`$]*` keeps the match inside one literal segment, so an unrelated "GB"
 // later in the file cannot be paired with an earlier total.
-const SUFFIXED = /\$\{[^}]*(?:memoryTotalGb|vramTotalGb|systemRamTotalGb)[^}]*\}[^`$]*?\b(GiB|GB)\b/g;
+const SUFFIXED = /\$\{[^}]*(?:memoryTotalGb|vramTotalGb|systemRamTotalGb|displayedGpuMemoryGb)[^}]*\}[^`$]*?\b(GiB|GB)\b/g;
 
 test("VRAM and RAM totals are labelled GiB, not GB", () => {
   const offenders: string[] = [];
