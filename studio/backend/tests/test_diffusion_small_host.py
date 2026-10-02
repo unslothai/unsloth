@@ -160,6 +160,7 @@ def test_int8_weight_storage_matches_the_dense_layer():
 
 
 def test_streamed_encoder_keeps_linear_storage_and_reports_compute_dtype():
+    pytest.importorskip("diffusers")
     from diffusers.hooks import HookRegistry
 
     class Block(torch.nn.Module):
