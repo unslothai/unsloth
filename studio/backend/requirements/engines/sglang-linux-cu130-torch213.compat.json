@@ -1,5 +1,5 @@
 {
- "lock_sha256": "ccacba71448fb7819d49a626db151f179aa438f00abb2dba2ebdbaf9864d195a",
+ "lock_sha256": "4585c2b0d55890f1afcc2b50a65139c8cb6d7cf24a5359760af4918fb2bccf34",
  "requires": {
   "aiohappyeyeballs": [
    ">=2.5.0"
@@ -298,9 +298,6 @@
    "==4.6.2"
   ],
   "nvidia-cutlass-dsl-libs-core": [
-   "==4.6.2"
-  ],
-  "nvidia-cutlass-dsl-libs-cu12": [
    "==4.6.2"
   ],
   "nvidia-cutlass-dsl-libs-cu13": [
@@ -671,7 +668,6 @@
   "nvidia-cutlass-dsl": 10460,
   "nvidia-cutlass-dsl-libs-base": 2825075,
   "nvidia-cutlass-dsl-libs-core": 772393,
-  "nvidia-cutlass-dsl-libs-cu12": 88453568,
   "nvidia-cutlass-dsl-libs-cu13": 88036124,
   "nvidia-mathdx": 23013087,
   "nvidia-ml-py": 58132,
