@@ -73,6 +73,13 @@ def _pristine(cls):
 GRPO_TRL_FLOOR = "0.20.0"
 
 
+def _skip_if_trl_is_the_mlx_shim(trl):
+    # On Apple Silicon unsloth swaps trl.SFTConfig for an MLX alias (and stubs trl itself when it is
+    # absent), so there are no TRL config defaults to compare against.
+    if getattr(getattr(trl, "SFTConfig", None), "__name__", "") == "_MLXSFTConfig":
+        pytest.skip("trl is unsloth's MLX shim on this platform")
+
+
 def _grpo_refused():
     import trl
     from packaging.version import Version
@@ -83,6 +90,7 @@ def _config_cls(name):
     import unsloth  # noqa: F401
     import trl
 
+    _skip_if_trl_is_the_mlx_shim(trl)
     if name == "GRPOConfig" and _grpo_refused():
         pytest.skip(f"unsloth refuses GRPO on trl {trl.__version__} (< {GRPO_TRL_FLOOR})")
 
@@ -243,6 +251,7 @@ def test_grpo_below_its_trl_floor_is_refused_with_an_upgrade_hint():
     import unsloth  # noqa: F401
     import trl
 
+    _skip_if_trl_is_the_mlx_shim(trl)
     if not _grpo_refused():
         pytest.skip(f"trl {trl.__version__} supports GRPO")
     with pytest.raises(ImportError, match = "GRPO needs trl >= 0.20.0"):
