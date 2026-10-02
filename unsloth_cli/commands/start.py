@@ -1807,6 +1807,13 @@ def _inference_status(base: str, key: str) -> dict:
         return {}
 
 
+_OTHER_ACCOUNT_RESIDENT = (
+    "The model loaded in Unsloth belongs to another account, so this API key cannot use it. "
+    "Pass --model <hf-id-or-path> to load one: the same model and quant shares it, anything "
+    "else unloads it for every session using it."
+)
+
+
 def _resident_load_target(models: list, status: dict, allow_casefold: bool):
     """(identifier to post, id it is advertised as) for the running model. The loaded listing shows only the sanitized basename while _same_loaded_identifier compares resident paths exactly, so the load must carry the identifier status reports."""
     if status.get("is_diffusion"):
@@ -1839,6 +1846,8 @@ def _resident_load_target(models: list, status: dict, allow_casefold: bool):
             )
     public_id = active_id or (entry or {}).get("id")
     if not public_id:
+        if status.get("yours") is False:
+            _fail(_OTHER_ACCOUNT_RESIDENT)
         if status:
             # Status answered and named no chat model. Returning empty here would drop the knobs silently, which is the bug this path exists to fix.
             _fail(
@@ -2103,6 +2112,14 @@ def _resolve_model(
                 )
                 typer.echo("This unloads the current model for every attached session.")
                 announced_switch = True
+        elif not active_id and _inference_status(base, key).get("yours") is False:
+            typer.echo(
+                "Switching the Unsloth server from another account's model to "
+                f"{_display_model_spec(requested, load.gguf_variant)}."
+            )
+            typer.echo(
+                "This unloads it for every attached session, unless it is the same model and quant."
+            )
         # Mirror `unsloth run`'s load knobs; keep the default payload as just model_path so a bare `--model` load is unchanged. Membership decides, not truthiness: a reset like --context-length 0 equals the default yet must be sent.
         payload = {"model_path": requested}
         if "gguf_variant" in overrides and load.gguf_variant:
@@ -2204,6 +2221,8 @@ def _resolve_model(
         )
     resident = next((m for m in models if m.get("loaded") is not False), None)
     if resident is None:
+        if _inference_status(base, key).get("yours") is False:
+            _fail(_OTHER_ACCOUNT_RESIDENT)
         # An empty listing and one holding only unloaded entries are the same situation
         # to the user, and which one a server sends depends only on its version.
         _fail(

@@ -4568,6 +4568,67 @@ def test_resolve_model_refused_load_reports_survivor(monkeypatch, capsys):
     assert "Nothing was unloaded; owner/model-GGUF is still serving." in captured.err
 
 
+def _other_account_studio(monkeypatch, capsys, load_status = "loaded"):
+    state = {"models": [], "loads": []}
+
+    def http_json(method, url, key, payload = None, timeout = 30, error = None):
+        if url.endswith("/api/inference/loaded-models"):
+            return {"object": "list", "data": state["models"]}
+        assert url.endswith("/api/inference/status"), url
+        if state["models"]:
+            return {"is_gguf": True, "active_model": "owner/model-GGUF", "gguf_variant": "Q4_K_M"}
+        return {"loaded": [], "loading": [], "yours": False}
+
+    def load_model(base, key, model, load, payload):
+        state["loads"].append((payload, capsys.readouterr().out))
+        state["models"] = [{"id": model, "loaded": True}]
+        return {"status": load_status, "model": model}
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    monkeypatch.setattr(start, "_load_model_with_progress", load_model)
+    return state
+
+
+@pytest.mark.parametrize(
+    "load",
+    [start.LoadOptions(), start.LoadOptions(max_seq_length = 4096)],
+    ids = ["no-settings", "settings-only"],
+)
+def test_resolve_model_says_another_account_holds_the_resident(monkeypatch, capsys, load):
+    state = _other_account_studio(monkeypatch, capsys)
+
+    with pytest.raises(typer.Exit):
+        start._resolve_model(BASE, "key", None, load)
+
+    err = capsys.readouterr().err
+    assert "belongs to another account" in err
+    assert "No model is loaded" not in err and "No chat model" not in err
+    assert state["loads"] == []
+
+
+def test_resolve_model_warns_before_replacing_another_accounts_resident(monkeypatch, capsys):
+    state = _other_account_studio(monkeypatch, capsys)
+
+    start._resolve_model(BASE, "key", "owner/model-GGUF")
+
+    [(payload, before_load)] = state["loads"]
+    assert payload == {"model_path": "owner/model-GGUF"}
+    assert "from another account's model to owner/model-GGUF." in before_load
+    assert "unloads it for every attached session" in before_load
+
+
+def test_resolve_model_exact_match_shares_another_accounts_resident(monkeypatch, capsys):
+    state = _other_account_studio(monkeypatch, capsys, load_status = "already_loaded")
+
+    entry = start._resolve_model(
+        BASE, "key", "owner/model-GGUF", start.LoadOptions(gguf_variant = "Q4_K_M")
+    )
+
+    assert entry["id"] == "owner/model-GGUF"
+    assert state["loads"][0][0]["gguf_variant"] == "Q4_K_M"
+    assert "Reusing loaded model: owner/model-GGUF:Q4_K_M" in capsys.readouterr().out
+
+
 def test_resolve_model_interrupt_skips_survivor_probe(monkeypatch, capsys):
     models = [{"id": "owner/model-GGUF", "loaded": True}]
     probes = []
