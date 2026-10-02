@@ -8,6 +8,7 @@ import type {
   GradientCheckpointing,
   ModelType,
   GrpoRewardSelection,
+  GrpoVariant,
   S3Config,
   TrainingMethod,
   TrainingObjective,
@@ -149,6 +150,9 @@ export interface TrainingConfigState {
   grpoNumGenerations: number;
   grpoMaxCompletionLength: number | null;
   grpoTemperature: number;
+  grpoVariant: GrpoVariant;
+  grpoMaskTruncatedCompletions: boolean;
+  grpoEpsilonHigh: number | null;
   grpoRewards: GrpoRewardSelection[];
 }
 
@@ -273,6 +277,9 @@ export interface TrainingConfigActions {
   setGrpoNumGenerations: (value: number) => void;
   setGrpoMaxCompletionLength: (value: number | null) => void;
   setGrpoTemperature: (value: number) => void;
+  setGrpoVariant: (value: GrpoVariant) => void;
+  setGrpoMaskTruncatedCompletions: (value: boolean) => void;
+  setGrpoEpsilonHigh: (value: number | null) => void;
   setGrpoRewards: (value: GrpoRewardSelection[]) => void;
   reset: () => void;
   resetToModelDefaults: () => void;

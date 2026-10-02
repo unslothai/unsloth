@@ -75,6 +75,7 @@ def test_rule_types(body, text, reference, expected):
         (_md("t", "type: shell\ncmd: rm"), "type must be one of"),
         (_md("t", "type: regex\npattern: '('"), "Invalid regex"),
         (_md("t", "type: regex\npattern: x", kind = "python"), "Python rewards are not supported"),
+        (_md("t", "import os\nimport sys", kind = "python"), "Python rewards are not supported"),
         (_md("Bad Name", "type: regex\npattern: x"), "lowercase"),
         (_md("t", "type: numeric\nbands: []"), "bands"),
     ],

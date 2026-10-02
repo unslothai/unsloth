@@ -73,7 +73,6 @@ export { hasSeparateStreamingEvalSplit } from "./training-config-policy";
 // AbortController for in-flight dataset multimodal checks.
 let _datasetCheckController: AbortController | null = null;
 
-
 // AbortController for in-flight model default loads.
 let _modelConfigController: AbortController | null = null;
 
@@ -140,8 +139,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           const patch = typeof update === "function" ? update(state) : update;
           const invariantPatch = datasetSourceInvariantPatch({
             datasetSource: patch.datasetSource ?? state.datasetSource,
-            datasetStreaming:
-              patch.datasetStreaming ?? state.datasetStreaming,
+            datasetStreaming: patch.datasetStreaming ?? state.datasetStreaming,
           });
           const normalizedPatch = { ...patch, ...invariantPatch };
           if (trainingConfigPatchTouchesModelDefaults(normalizedPatch)) {
@@ -417,8 +415,15 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 : {}),
             };
 
+            // Model YAML LRs are SFT-tuned; keep the RL objective's rate.
+            const objective = get().trainingObjective;
+            const rlLearningRate =
+              shouldApplyTrainingDefaults && objective !== "sft"
+                ? { learningRate: RL_LEARNING_RATES[objective] }
+                : {};
             set({
               ...patch,
+              ...rlLearningRate,
               ...cptOverrides,
               ...cptTargetOverrides,
               ...deferredCompletionDefault,
@@ -480,14 +485,19 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                   set({ isLoadingModelDefaults: false });
                   return;
                 }
+                const currentObjective = get().trainingObjective;
                 const lrPatch =
-                  !get().trainingMethodProvenance.learningRateManuallySet &&
-                  !modelConfigHasLR
-                    ? {
+                  get().trainingMethodProvenance.learningRateManuallySet ||
+                  (modelConfigHasLR && currentObjective === "sft")
+                    ? {}
+                    : {
                         learningRate:
-                          method === "full" ? LR_DEFAULT_FULL : LR_DEFAULT_LORA,
-                      }
-                    : {};
+                          currentObjective !== "sft"
+                            ? RL_LEARNING_RATES[currentObjective]
+                            : method === "full"
+                              ? LR_DEFAULT_FULL
+                              : LR_DEFAULT_LORA,
+                      };
                 set({
                   trainingMethod: method,
                   ...lrPatch,
@@ -1452,6 +1462,11 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           setUserEdit({ grpoMaxCompletionLength }),
         setGrpoTemperature: (grpoTemperature) =>
           setUserEdit({ grpoTemperature }),
+        setGrpoVariant: (grpoVariant) => setUserEdit({ grpoVariant }),
+        setGrpoMaskTruncatedCompletions: (grpoMaskTruncatedCompletions) =>
+          setUserEdit({ grpoMaskTruncatedCompletions }),
+        setGrpoEpsilonHigh: (grpoEpsilonHigh) =>
+          setUserEdit({ grpoEpsilonHigh }),
         setGrpoRewards: (grpoRewards) => setUserEdit({ grpoRewards }),
         reset: () => {
           trainingDatasetCacheRejections.reset();

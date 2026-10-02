@@ -170,6 +170,10 @@ export function buildTrainingStartPayload(
     grpo_max_completion_length:
       objective === "grpo" ? config.grpoMaxCompletionLength : null,
     grpo_temperature: config.grpoTemperature,
+    grpo_variant: config.grpoVariant,
+    grpo_mask_truncated_completions:
+      objective === "grpo" && config.grpoMaskTruncatedCompletions,
+    grpo_epsilon_high: objective === "grpo" ? config.grpoEpsilonHigh : null,
     grpo_rewards: objective === "grpo" ? config.grpoRewards : [],
     finetune_vision_layers: config.finetuneVisionLayers,
     finetune_language_layers: config.finetuneLanguageLayers,

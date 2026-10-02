@@ -3,9 +3,21 @@
 
 import { NewBadge } from "@/components/new-badge";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { useTrainingConfigStore } from "@/features/training";
 import { useT } from "@/i18n";
-import type { TrainingObjective } from "@/types/training";
+import {
+  GRPO_VARIANTS,
+  type GrpoVariant,
+  type TrainingObjective,
+} from "@/types/training";
 import type { ReactElement } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { ParamsRow } from "../params-section-controls";
@@ -70,11 +82,17 @@ export function RlParamsSection({
       grpoNumGenerations: state.grpoNumGenerations,
       grpoMaxCompletionLength: state.grpoMaxCompletionLength,
       grpoTemperature: state.grpoTemperature,
+      grpoVariant: state.grpoVariant,
+      grpoMaskTruncatedCompletions: state.grpoMaskTruncatedCompletions,
+      grpoEpsilonHigh: state.grpoEpsilonHigh,
       setRlBeta: state.setRlBeta,
       setRlMaxPromptLength: state.setRlMaxPromptLength,
       setGrpoNumGenerations: state.setGrpoNumGenerations,
       setGrpoMaxCompletionLength: state.setGrpoMaxCompletionLength,
       setGrpoTemperature: state.setGrpoTemperature,
+      setGrpoVariant: state.setGrpoVariant,
+      setGrpoMaskTruncatedCompletions: state.setGrpoMaskTruncatedCompletions,
+      setGrpoEpsilonHigh: state.setGrpoEpsilonHigh,
     })),
   );
   const auto = t("rl.params.auto");
@@ -87,6 +105,29 @@ export function RlParamsSection({
       </p>
       {objective === "grpo" && (
         <>
+          <ParamsRow
+            label={t("rl.params.variant")}
+            tooltip={t("rl.params.variantHint")}
+          >
+            <Select
+              value={s.grpoVariant}
+              onValueChange={(v) => s.setGrpoVariant(v as GrpoVariant)}
+            >
+              <SelectTrigger
+                size="sm"
+                className="w-[calc(170px*var(--ui-space-scale,1))]"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {GRPO_VARIANTS.map((v) => (
+                  <SelectItem key={v} value={v}>
+                    {t(`rl.params.variants.${v}`)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </ParamsRow>
           <ParamsRow
             label={t("rl.params.generations")}
             tooltip={t("rl.params.generationsHint")}
@@ -125,6 +166,32 @@ export function RlParamsSection({
               onChange={(v) =>
                 s.setGrpoTemperature(Math.min(2, Math.max(0.1, v ?? 1)))
               }
+            />
+          </ParamsRow>
+          <ParamsRow
+            label={t("rl.params.epsilonHigh")}
+            tooltip={t("rl.params.epsilonHighHint")}
+          >
+            <NumberField
+              min={0.01}
+              max={1}
+              step={0.01}
+              value={s.grpoEpsilonHigh}
+              placeholder={auto}
+              onChange={(v) =>
+                s.setGrpoEpsilonHigh(
+                  v === null ? null : Math.min(1, Math.max(0.01, v)),
+                )
+              }
+            />
+          </ParamsRow>
+          <ParamsRow
+            label={t("rl.params.maskTruncated")}
+            tooltip={t("rl.params.maskTruncatedHint")}
+          >
+            <Switch
+              checked={s.grpoMaskTruncatedCompletions}
+              onCheckedChange={s.setGrpoMaskTruncatedCompletions}
             />
           </ParamsRow>
         </>

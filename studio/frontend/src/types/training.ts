@@ -19,9 +19,21 @@ export const TRAINING_OBJECTIVES: readonly TrainingObjective[] = [
   "grpo",
 ];
 
-export function isTrainingObjective(value: unknown): value is TrainingObjective {
+export function isTrainingObjective(
+  value: unknown,
+): value is TrainingObjective {
   return TRAINING_OBJECTIVES.includes(value as TrainingObjective);
 }
+
+export type GrpoVariant = "dapo" | "dr_grpo" | "bnpo" | "grpo" | "gspo";
+
+export const GRPO_VARIANTS: readonly GrpoVariant[] = [
+  "dapo",
+  "dr_grpo",
+  "gspo",
+  "bnpo",
+  "grpo",
+];
 
 export interface GrpoRewardSelection {
   name: string;

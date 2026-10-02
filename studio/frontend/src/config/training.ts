@@ -149,6 +149,9 @@ export const DEFAULT_RL_SETTINGS = {
   grpoNumGenerations: 4,
   grpoMaxCompletionLength: null as number | null,
   grpoTemperature: 1.0,
+  grpoVariant: "dapo" as import("@/types/training").GrpoVariant,
+  grpoMaskTruncatedCompletions: false,
+  grpoEpsilonHigh: null as number | null,
   grpoRewards: [
     { name: "strict-xml-format", weight: 1 },
     { name: "exact-answer", weight: 1 },

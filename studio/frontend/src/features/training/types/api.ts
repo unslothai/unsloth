@@ -4,6 +4,7 @@
 import type { ModelInventoryFormat } from "@/features/hub";
 import type {
   GrpoRewardSelection,
+  GrpoVariant,
   S3Config,
   TrainingObjective,
 } from "@/types/training";
@@ -75,6 +76,9 @@ export interface TrainingStartRequest {
   grpo_num_generations: number;
   grpo_max_completion_length: number | null;
   grpo_temperature: number;
+  grpo_variant: GrpoVariant;
+  grpo_mask_truncated_completions: boolean;
+  grpo_epsilon_high: number | null;
   grpo_rewards: GrpoRewardSelection[];
   finetune_vision_layers: boolean;
   finetune_language_layers: boolean;

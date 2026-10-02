@@ -15,31 +15,17 @@ import {
   checkDatasetFormat,
   useTrainingConfigStore,
 } from "@/features/training";
+import {
+  RL_ROLES,
+  type RlObjective,
+  type RlRole,
+  missingRlRoles,
+  resolveRlMapping,
+} from "@/features/training/lib/rl-roles";
 import { type TranslationKey, useT } from "@/i18n";
-import type { TrainingObjective } from "@/types/training";
-import { type ReactElement, useState } from "react";
+import { type ReactElement, useCallback, useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
-type RlRole = "prompt" | "answer" | "chosen" | "rejected" | "system";
-
-// Mirrors RL_ROLES / _AUTO_ROLE_NAMES in studio/backend/core/training/rl.py.
-const ROLES: Record<Exclude<TrainingObjective, "sft">, readonly RlRole[]> = {
-  dpo: ["prompt", "chosen", "rejected", "system"],
-  orpo: ["prompt", "chosen", "rejected", "system"],
-  grpo: ["prompt", "answer", "system"],
-};
-const REQUIRED: Record<Exclude<TrainingObjective, "sft">, readonly RlRole[]> = {
-  dpo: ["prompt", "chosen", "rejected"],
-  orpo: ["prompt", "chosen", "rejected"],
-  grpo: ["prompt"],
-};
-const AUTO_NAMES: Record<RlRole, readonly string[]> = {
-  prompt: ["prompt", "question", "instruction", "problem", "query", "input"],
-  answer: ["answer", "solution", "final_answer", "target", "label"],
-  chosen: ["chosen", "accepted", "preferred"],
-  rejected: ["rejected", "dispreferred"],
-  system: ["system", "system_prompt"],
-};
 const ROLE_LABEL: Record<RlRole, TranslationKey> = {
   prompt: "rl.dataset.role.prompt",
   answer: "rl.dataset.role.answer",
@@ -49,26 +35,10 @@ const ROLE_LABEL: Record<RlRole, TranslationKey> = {
 };
 const IGNORE = "__ignore";
 
-function autoMapping(
-  columns: string[],
-  roles: readonly RlRole[],
-): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const role of roles) {
-    const column = columns.find(
-      (c) => AUTO_NAMES[role].includes(c.toLowerCase()) && !(c in out),
-    );
-    if (column) {
-      out[column] = role;
-    }
-  }
-  return out;
-}
-
 export function RlDatasetRoles({
   objective,
 }: {
-  objective: Exclude<TrainingObjective, "sft">;
+  objective: RlObjective;
 }): ReactElement {
   const t = useT();
   const config = useTrainingConfigStore(
@@ -85,7 +55,7 @@ export function RlDatasetRoles({
   const [columns, setColumns] = useState<string[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const roles = ROLES[objective];
+  const roles = RL_ROLES[objective];
   const datasetName =
     config.datasetSource === "huggingface"
       ? config.dataset
@@ -93,7 +63,8 @@ export function RlDatasetRoles({
         ? config.uploadedFile
         : null;
 
-  const loadColumns = async () => {
+  const { datasetSubset, datasetSplit, mapping, setMapping } = config;
+  const loadColumns = useCallback(async () => {
     if (!datasetName) {
       return;
     }
@@ -103,20 +74,34 @@ export function RlDatasetRoles({
       const res = await checkDatasetFormat({
         datasetName,
         hfToken: getHfToken() || null,
-        subset: config.datasetSubset,
-        split: config.datasetSplit,
+        subset: datasetSubset,
+        split: datasetSplit,
         isVlm: false,
       });
       setColumns(res.columns);
-      if (Object.keys(config.mapping).length === 0) {
-        config.setMapping(autoMapping(res.columns, roles));
-      }
     } catch (err) {
+      setColumns(null);
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
-  };
+  }, [datasetName, datasetSubset, datasetSplit]);
+
+  // Reload on remount and on dataset changes, so roles survive leaving the page.
+  useEffect(() => {
+    loadColumns();
+  }, [loadColumns]);
+
+  // Drop roles from another objective and fill the rest from column names.
+  useEffect(() => {
+    if (!columns) {
+      return;
+    }
+    const next = resolveRlMapping(objective, columns, mapping);
+    if (JSON.stringify(next) !== JSON.stringify(mapping)) {
+      setMapping(next);
+    }
+  }, [columns, objective, mapping, setMapping]);
 
   const setRole = (column: string, role: string) => {
     const next = { ...config.mapping };
@@ -132,15 +117,9 @@ export function RlDatasetRoles({
     config.setMapping(next);
   };
 
-  const mapped = new Set(Object.values(config.mapping));
-  // Unmapped required roles still auto-detect on the backend, so only flag what has no match at all.
-  const missing = REQUIRED[objective].filter(
-    (role) =>
-      !(
-        mapped.has(role) ||
-        (columns ?? []).some((c) => AUTO_NAMES[role].includes(c.toLowerCase()))
-      ),
-  );
+  const missing = columns
+    ? missingRlRoles(objective, columns, config.mapping)
+    : [];
 
   return (
     <div className="flex flex-col gap-3 rounded-xl border border-border/70 p-3">
@@ -193,7 +172,7 @@ export function RlDatasetRoles({
               <SelectItem value={IGNORE}>
                 {t("rl.dataset.role.ignore")}
               </SelectItem>
-              {roles.map((role) => (
+              {roles.map((role: RlRole) => (
                 <SelectItem key={role} value={role}>
                   {t(ROLE_LABEL[role])}
                 </SelectItem>

@@ -58,6 +58,34 @@ test("GRPO sends RL roles instead of chat roles, plus its rewards", () => {
   assert.deepEqual(payload.grpo_rewards, [{ name: "exact-answer", weight: 2 }]);
   assert.equal(payload.rl_beta, 0.04);
   assert.equal(payload.train_on_completions, false);
+  assert.equal(payload.grpo_variant, "dapo");
+});
+
+test("GRPO sends the loss variant and its clip/mask options; DPO drops them", () => {
+  const grpo = buildTrainingStartPayload(
+    {
+      ...BASE,
+      trainingObjective: "grpo",
+      grpoVariant: "gspo",
+      grpoMaskTruncatedCompletions: true,
+      grpoEpsilonHigh: 0.28,
+    },
+    null,
+  );
+  assert.equal(grpo.grpo_variant, "gspo");
+  assert.equal(grpo.grpo_mask_truncated_completions, true);
+  assert.equal(grpo.grpo_epsilon_high, 0.28);
+  const dpo = buildTrainingStartPayload(
+    {
+      ...BASE,
+      trainingObjective: "dpo",
+      grpoMaskTruncatedCompletions: true,
+      grpoEpsilonHigh: 0.28,
+    },
+    null,
+  );
+  assert.equal(dpo.grpo_mask_truncated_completions, false);
+  assert.equal(dpo.grpo_epsilon_high, null);
 });
 
 test("DPO does not send GRPO-only fields", () => {

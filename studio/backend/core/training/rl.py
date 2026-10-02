@@ -29,6 +29,15 @@ _AUTO_ROLE_NAMES = {
     "system": ("system", "system_prompt"),
 }
 DEFAULT_BETA = {"dpo": 0.1, "orpo": 0.1, "grpo": 0.0}
+# variant -> (loss_type, importance_sampling_level). dapo is TRL's and Unsloth's default; gspo is
+# sequence-level ratios with the dr_grpo normaliser, as in the Unsloth vision GRPO notebooks.
+GRPO_VARIANTS = {
+    "dapo": ("dapo", "token"),
+    "dr_grpo": ("dr_grpo", "token"),
+    "bnpo": ("bnpo", "token"),
+    "grpo": ("grpo", "token"),
+    "gspo": ("dr_grpo", "sequence"),
+}
 # Unsloth's GRPO patch still logs the pre-0.20 TRL key completion_length next to completions/*.
 _RL_LOG_PREFIXES = (
     "reward",
@@ -82,7 +91,7 @@ def resolve_role_columns(
     if missing:
         raise ValueError(
             f"{objective.upper()} needs dataset columns for: {', '.join(missing)}. "
-            f"Map them in the dataset preview (found columns: {', '.join(columns)})."
+            f"Map them under Column roles (found columns: {', '.join(columns)})."
         )
     return resolved
 
@@ -209,8 +218,19 @@ def build_rl_trainer(
 
         if not reward_specs:
             raise ValueError("GRPO needs at least one reward selected.")
+        loss_type, sampling_level = GRPO_VARIANTS.get(settings.get("variant") or "dapo", GRPO_VARIANTS["dapo"])
+        variant_args = _config_kwargs(
+            trl.GRPOConfig,
+            {
+                "loss_type": loss_type,
+                "importance_sampling_level": sampling_level,
+                "mask_truncated_completions": bool(settings.get("mask_truncated_completions")),
+                "epsilon_high": settings.get("epsilon_high"),
+            },
+        )
         args = trl.GRPOConfig(
             **_config_kwargs(trl.GRPOConfig, base),
+            **variant_args,
             use_vllm = False,
             beta = beta,
             temperature = float(settings.get("temperature") or 1.0),

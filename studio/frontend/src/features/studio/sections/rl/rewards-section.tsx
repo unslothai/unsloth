@@ -142,6 +142,13 @@ export function RewardsSection(): ReactElement {
     refresh();
   }, [refresh]);
 
+  // Scores belong to the reward set they were computed for.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reset on any change to the selection
+  useEffect(() => {
+    setPreview(null);
+    setPreviewTotal(null);
+  }, [rewards]);
+
   const active = library.filter((r) => !r.shadowed);
   const byName = new Map(active.map((r) => [r.name, r]));
   const selectedNames = new Set(rewards.map((r) => r.name));

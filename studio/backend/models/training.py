@@ -604,6 +604,15 @@ class TrainingStartRequest(BaseModel):
         None, ge = 16, description = "Completion token budget. Null uses what the prompt leaves."
     )
     grpo_temperature: float = Field(1.0, gt = 0, le = 2.0, allow_inf_nan = False)
+    grpo_variant: Literal["dapo", "dr_grpo", "bnpo", "grpo", "gspo"] = Field(
+        "dapo", description = "GRPO loss variant; dapo is the TRL and Unsloth default, gspo uses sequence-level ratios"
+    )
+    grpo_mask_truncated_completions: bool = Field(
+        False, description = "Leave completions cut off at the length limit out of the loss"
+    )
+    grpo_epsilon_high: Optional[float] = Field(
+        None, gt = 0, le = 1, allow_inf_nan = False, description = "Upper clip bound (DAPO clip-higher). Null uses epsilon."
+    )
     grpo_rewards: List[RewardSelection] = Field(
         default_factory = list, max_length = 16, description = "Library rewards for GRPO"
     )
