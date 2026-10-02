@@ -32204,7 +32204,9 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             if not _prompt_value:
                 raise HTTPException(status_code = 400, detail = "'prompt' array must not be empty")
             _cancel_event = threading.Event()
-            _client = nonstreaming_client()
+            # Unpooled: the cancel watcher closes this client, which must not
+            # take down other requests sharing the pooled one.
+            _client = _cancelable_nonstreaming_client()
             _tracker = _TrackedCancel(_cancel_event, model = monitor_model, kind = "completions")
             _tracker.__enter__()
             _cancel_watcher = asyncio.create_task(
@@ -32269,6 +32271,10 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             finally:
                 try:
                     await _stop_local_disconnect_cancel_watcher(_cancel_watcher)
+                    try:
+                        await _client.aclose()
+                    except Exception:
+                        pass
                 finally:
                     _tracker.__exit__(None, None, None)
 
