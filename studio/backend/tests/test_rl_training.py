@@ -52,8 +52,20 @@ def test_rl_lengths_fit_inside_max_seq_length():
 
 
 def test_rl_log_metrics_picks_rl_keys_only():
-    logs = {"loss": 0.1, "reward": 1.5, "rewards/exact_answer/mean": 2.0, "kl": 0.01, "reward_std": float("nan")}
-    assert rl_log_metrics(logs) == {"reward": 1.5, "rewards/exact_answer/mean": 2.0, "kl": 0.01}
+    logs = {
+        "loss": 0.1,
+        "reward": 1.5,
+        "rewards/exact_answer/mean": 2.0,
+        "kl": 0.01,
+        "completion_length": 212.0,
+        "reward_std": float("nan"),
+    }
+    assert rl_log_metrics(logs) == {
+        "reward": 1.5,
+        "rewards/exact_answer/mean": 2.0,
+        "kl": 0.01,
+        "completion_length": 212.0,
+    }
     assert rl_log_metrics({"loss": 1.0}) is None
 
 

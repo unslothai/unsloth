@@ -33,7 +33,14 @@ const PALETTE = [
   "#eab308",
 ];
 
-const PER_REWARD_KEY = /^rewards\/.+\/mean$/;
+// New TRL logs rewards/<fn>/mean; older TRL (and the notebook tables) log rewards/<fn>.
+const PER_REWARD_KEY = /^rewards\/(.+?)(\/mean)?$/;
+const PREFERENCE_REWARD_KEYS = new Set([
+  "rewards/chosen",
+  "rewards/rejected",
+  "rewards/margins",
+  "rewards/accuracies",
+]);
 
 interface SeriesSpec {
   key: string;
@@ -55,12 +62,17 @@ function buildCards(
 ): CardSpec[] {
   const has = (k: string) => keys.has(k);
   const perReward = [...keys]
-    .filter((k) => PER_REWARD_KEY.test(k))
+    .filter(
+      (k) =>
+        PER_REWARD_KEY.test(k) &&
+        !k.endsWith("/std") &&
+        !PREFERENCE_REWARD_KEYS.has(k),
+    )
     .sort()
-    .map((k) => ({
-      key: k,
-      label: k.slice("rewards/".length, -"/mean".length),
-    }));
+    .map((k) => ({ key: k, label: k.replace(PER_REWARD_KEY, "$1") }));
+  const lengthKey = has("completions/mean_length")
+    ? "completions/mean_length"
+    : "completion_length";
   const cards: CardSpec[] = [];
   if (has("reward")) {
     cards.push({
@@ -78,14 +90,14 @@ function buildCards(
       series: [{ key: "reward_std", label: t("rl.charts.rewardStd") }],
     });
   }
-  if (has("completions/mean_length")) {
+  if (has(lengthKey)) {
     cards.push({
       id: "length",
       titleKey: "rl.charts.completionLength",
       descriptionKey: "rl.charts.completionLengthDescription",
       series: [
         {
-          key: "completions/mean_length",
+          key: lengthKey,
           label: t("rl.charts.completionLength"),
         },
       ],

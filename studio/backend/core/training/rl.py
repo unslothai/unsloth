@@ -29,7 +29,18 @@ _AUTO_ROLE_NAMES = {
     "system": ("system", "system_prompt"),
 }
 DEFAULT_BETA = {"dpo": 0.1, "orpo": 0.1, "grpo": 0.0}
-_RL_LOG_PREFIXES = ("reward", "rewards/", "kl", "completions/", "frac_reward_zero_std", "logps/", "nll_loss", "log_odds")
+# Unsloth's GRPO patch still logs the pre-0.20 TRL key completion_length next to completions/*.
+_RL_LOG_PREFIXES = (
+    "reward",
+    "rewards/",
+    "kl",
+    "completions/",
+    "completion_length",
+    "frac_reward_zero_std",
+    "logps/",
+    "nll_loss",
+    "log_odds",
+)
 
 
 def rl_log_metrics(logs: dict) -> Optional[dict]:
