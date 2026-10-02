@@ -3626,13 +3626,7 @@ def test_torch_load_with_an_unproven_flag_is_a_sink(tmp_path):
 
 
 def test_torch_load_stays_quiet_when_weights_only_holds(tmp_path):
-    """The guards, and the reason this is not in the sink table.
-
-    The supported torch floor is 2.6, where `weights_only` defaults to True, so a call
-    that does not mention it is already restricted to tensors. Reporting those would
-    flag most weights loads in this tree for nothing, which is how a gate gets switched
-    off. An explicit True and a local name bound to True are the same answer.
-    """
+    """The guards: an explicit True, or a local name bound to True, is accepted."""
     head = (
         "import torch\n"
         "from huggingface_hub import hf_hub_download\n"
@@ -3641,11 +3635,48 @@ def test_torch_load_stays_quiet_when_weights_only_holds(tmp_path):
     )
     for tail, label in (
         ("    return torch.load(path, weights_only = True)\n", "explicit True"),
-        ("    return torch.load(path)\n", "left at the default"),
         ("    safe = True\n    return torch.load(path, weights_only = safe)\n", "local True"),
     ):
         findings = _scan(tmp_path, head + tail, name = "sample_%s.py" % label.replace(" ", "_"))
-        assert "torch.load(weights_only = False)" not in _sinks(findings), label
+        assert not {
+            "torch.load(weights_only = False)",
+            "torch.load(weights_only unset)",
+        } & _sinks(findings), label
+
+
+def test_torch_load_with_weights_only_omitted_is_a_sink(tmp_path):
+    """`torch.load(downloaded)` with no `weights_only` at all.
+
+    It only defaults to True from torch 2.6, and unsloth-zoo still allows
+    `torch>=2.4.0`, so leaving it out unpickles arbitrary objects on a supported
+    install. Reported under its own label so a reviewed explicit-False entry and a
+    reviewed omission stay distinguishable in the baseline.
+    """
+    findings = _scan(
+        tmp_path,
+        "import torch\n"
+        "from huggingface_hub import hf_hub_download\n"
+        "def load(repo):\n"
+        "    return torch.load(hf_hub_download(repo, 'weights.bin'))\n",
+    )
+    assert "torch.load(weights_only unset)" in _sinks(findings)
+
+
+def test_json_load_is_not_mistaken_for_torch_load(tmp_path):
+    """The guard for the omitted rule: only the canonical `torch.load` is the sink.
+
+    A bare `load` entry in the name table suffix-matched every `*.load`, `json.load`
+    included, which the explicit-False requirement used to hide.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json\n"
+        "from huggingface_hub import hf_hub_download\n"
+        "def load(repo):\n"
+        "    with open(hf_hub_download(repo, 'config.json')) as handle:\n"
+        "        return json.load(handle)\n",
+    )
+    assert _sinks(findings) == set()
 
 
 def test_a_path_open_receiver_carries_its_taint(tmp_path):
@@ -4385,16 +4416,25 @@ def test_an_alias_of_torch_load_is_still_checked(tmp_path):
     assert "torch.load(weights_only = False)" in _sinks(at_module)
 
 
-def test_an_alias_of_torch_load_left_at_the_default_is_quiet(tmp_path):
-    """The guard: the alias follows the same rule as the direct call."""
-    findings = _scan(
-        tmp_path,
+def test_an_alias_of_torch_load_follows_the_direct_rule(tmp_path):
+    """The alias is judged exactly like the direct call: True is quiet, omitted is not."""
+    head = (
         "import torch\nfrom huggingface_hub import hf_hub_download\n"
         "def load(repo):\n"
         "    loader = torch.load\n"
-        "    return loader(hf_hub_download(repo, 'w.bin'))\n",
     )
-    assert _sinks(findings) == set()
+    held = _scan(
+        tmp_path,
+        head + "    return loader(hf_hub_download(repo, 'w.bin'), weights_only = True)\n",
+        name = "held.py",
+    )
+    omitted = _scan(
+        tmp_path,
+        head + "    return loader(hf_hub_download(repo, 'w.bin'))\n",
+        name = "omitted.py",
+    )
+    assert _sinks(held) == set()
+    assert "torch.load(weights_only unset)" in _sinks(omitted)
 
 
 def test_a_partial_of_a_reflection_alias_does_not_crash(tmp_path):
@@ -4411,3 +4451,222 @@ def test_a_partial_of_a_reflection_alias_does_not_crash(tmp_path):
         "    resolve = functools.partial(g, transformers)\n"
         "    return resolve(json.loads(blob)['cls'])\n",
     )
+
+
+def test_a_module_alias_bound_inside_a_compound_statement_counts(tmp_path):
+    """`if enabled: loader = importlib.import_module`, and the `try` import shim.
+
+    Only direct children of the module were collected, so a global alias bound under a
+    module-level `if`, `try`, `with` or loop was skipped and every function calling it
+    matched nothing.
+    """
+    branch = _scan(
+        tmp_path,
+        "import json, importlib, os\n"
+        "if os.environ.get('X'):\n"
+        "    loader = importlib.import_module\n"
+        "def load(blob):\n"
+        "    return loader(json.loads(blob)['module'])\n",
+        name = "branch.py",
+    )
+    shim = _scan(
+        tmp_path,
+        "import json\n"
+        "try:\n"
+        "    from importlib import import_module as loader\n"
+        "except ImportError:\n"
+        "    loader = None\n"
+        "def load(blob):\n"
+        "    return loader(json.loads(blob)['module'])\n",
+        name = "shim.py",
+    )
+    assert "importlib.import_module" in _sinks(branch)
+    assert "importlib.import_module" in _sinks(shim)
+
+
+def test_a_source_stored_on_an_attribute_is_followed(tmp_path):
+    """`self.decode = json.loads` then `import_module(self.decode(blob)[...])`.
+
+    Only name targets were recorded, so the decoder behind an attribute read clean, in
+    the same method and in any other one.
+    """
+    other_method = _scan(
+        tmp_path,
+        "import json, importlib\n"
+        "class Box:\n"
+        "    def __init__(self):\n"
+        "        self.decode = json.loads\n"
+        "    def go(self, blob):\n"
+        "        return importlib.import_module(self.decode(blob)['module'])\n",
+        name = "other_method.py",
+    )
+    same_method = _scan(
+        tmp_path,
+        "import json, importlib\n"
+        "class Box:\n"
+        "    def go(self, blob):\n"
+        "        self.decode = json.loads\n"
+        "        return importlib.import_module(self.decode(blob)['module'])\n",
+        name = "same_method.py",
+    )
+    assert "importlib.import_module" in _sinks(other_method)
+    assert "importlib.import_module" in _sinks(same_method)
+
+
+def test_a_local_name_shadows_a_tainted_global(tmp_path):
+    """A parsed module-level `command`, and functions whose own `command` is local.
+
+    A parameter or any name a function binds is local for the whole body, so the
+    global is unreachable from there, yet falling through to it reported a helper that
+    is only ever called with a literal.
+    """
+    head = (
+        "import json, subprocess\n"
+        "from huggingface_hub import hf_hub_download\n"
+        "command = %s\n" % "json.load(open(hf_hub_download('r', 'c.json')))['command']"
+    )
+    shapes = {
+        "parameter": "def execute(command):\n    return subprocess.run(command)\n"
+        "def go():\n    return execute('ls')\n",
+        "assignment": "def go():\n    command = 'ls'\n    return subprocess.run(command)\n",
+        "nested": "def go():\n    def helper(command):\n        return subprocess.run(command)\n"
+        "    return helper('ls')\n",
+    }
+    for label, tail in shapes.items():
+        findings = _scan(tmp_path, head + tail, name = "sample_%s.py" % label)
+        assert _sinks(findings) == set(), label
+
+
+def test_a_tainted_global_is_still_reported_where_it_is_read(tmp_path):
+    """The guards: a real global read, a `global` declaration, and a tainted caller."""
+    head = (
+        "import json, subprocess\n"
+        "from huggingface_hub import hf_hub_download\n"
+        "command = %s\n" % "json.load(open(hf_hub_download('r', 'c.json')))['command']"
+    )
+    shapes = {
+        "read": "def go():\n    return subprocess.run(command)\n",
+        "declared": "def go():\n    global command\n    return subprocess.run(command)\n",
+        "caller": "def execute(command):\n    return subprocess.run(command)\n"
+        "def go():\n    return execute(command)\n",
+    }
+    for label, tail in shapes.items():
+        findings = _scan(tmp_path, head + tail, name = "sample_%s.py" % label)
+        assert "subprocess.run" in _sinks(findings), label
+
+
+def test_a_class_attribute_does_not_inherit_a_module_global_of_its_name(tmp_path):
+    """Module-level `runner = Dirty()` and `class App: runner = Safe()`.
+
+    Every pass was seeded with the module's instances, so the class attribute became
+    both types and a call through it was propagated into a class it never holds.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "class Dirty:\n"
+        "    def execute(self, c):\n"
+        "        return subprocess.run(c)\n"
+        "class Safe:\n"
+        "    def execute(self, c):\n"
+        "        return len(c)\n"
+        "runner = Dirty()\n"
+        "class App:\n"
+        "    runner = Safe()\n"
+        "    def go(self, blob):\n"
+        "        return self.runner.execute(json.loads(blob)['c'])\n",
+    )
+    assert _sinks(findings) == set()
+
+
+def test_a_class_attribute_of_the_unsafe_type_is_still_reported(tmp_path):
+    """The guard, with the two classes swapped."""
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "class Dirty:\n"
+        "    def execute(self, c):\n"
+        "        return subprocess.run(c)\n"
+        "class Safe:\n"
+        "    def execute(self, c):\n"
+        "        return len(c)\n"
+        "runner = Safe()\n"
+        "class App:\n"
+        "    runner = Dirty()\n"
+        "    def go(self, blob):\n"
+        "        return self.runner.execute(json.loads(blob)['c'])\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_nonlocal_rebinding_merges_with_the_outer_alias(tmp_path):
+    """`action = subprocess.run`, then a helper rebinding it to `sys.path.insert`.
+
+    The nested candidates were carried only when the outer name had no entry, so the
+    old `subprocess.run` survived alone and the sink the helper rebound it to, with its
+    own watched position, was never checked.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess, sys\n"
+        "def load(blob):\n"
+        "    action = subprocess.run\n"
+        "    def rebind():\n"
+        "        nonlocal action\n"
+        "        action = sys.path.insert\n"
+        "    rebind()\n"
+        "    return action(0, json.loads(blob)['path'])\n",
+    )
+    assert "sys.path.insert" in _sinks(findings)
+
+
+def test_a_name_assigned_in_a_nested_function_masks_the_outer_one(tmp_path):
+    """`def helper(): command = "fixed"; subprocess.run(command)` under a tainted outer.
+
+    Only the nested function's parameters masked the enclosing binding, but any name it
+    assigns is local throughout it.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def load(blob):\n"
+        "    command = json.loads(blob)['command']\n"
+        "    def helper():\n"
+        "        command = 'fixed'\n"
+        "        return subprocess.run(command)\n"
+        "    return helper()\n",
+    )
+    assert _sinks(findings) == set()
+
+
+def test_a_mutated_constant_map_is_no_longer_a_sanitiser(tmp_path):
+    """`MAP = {"safe": "torch"}` then `MAP.update(parsed)` or `MAP["safe"] = parsed`.
+
+    The exemption recorded only the literal, so a download that replaces the values
+    still had `MAP["safe"]` treated as validated.
+    """
+    shapes = {
+        "update": "    MAP.update(json.loads(blob))\n",
+        "item": "    MAP['safe'] = json.loads(blob)['m']\n",
+    }
+    for label, middle in shapes.items():
+        findings = _scan(
+            tmp_path,
+            "import json, importlib\n"
+            "MAP = {'safe': 'torch'}\n"
+            "def load(blob):\n" + middle + "    return importlib.import_module(MAP['safe'])\n",
+            name = "sample_%s.py" % label,
+        )
+        assert "importlib.import_module" in _sinks(findings), label
+
+
+def test_an_untouched_constant_map_is_still_a_sanitiser(tmp_path):
+    """The guard: a lookup in a table nothing writes to stays the validation it is."""
+    findings = _scan(
+        tmp_path,
+        "import json, importlib\n"
+        "MAP = {'safe': 'torch'}\n"
+        "def load(blob):\n"
+        "    return importlib.import_module(MAP.get(json.loads(blob)['k'], 'torch'))\n",
+    )
+    assert _sinks(findings) == set()

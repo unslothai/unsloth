@@ -309,8 +309,12 @@ SINKS: dict[str, tuple[tuple[int, ...], frozenset[str]]] = {
 # construct arbitrary objects out of the checkpoint, which is the same execution the
 # `pickle` entries above exist for. Kept out of the table because the decision is the
 # value of `weights_only` rather than an argument position.
-TORCH_LOAD_NAMES = frozenset({"torch.load", "load"})
+# The canonical spelling only. `from torch import load` already canonicalises to it
+# through the import table, and a bare "load" matched every `*.load`, `json.load`
+# included, which the explicit-False requirement used to hide.
+TORCH_LOAD_NAMES = frozenset({"torch.load"})
 TORCH_LOAD_SINK = "torch.load(weights_only = False)"
+TORCH_LOAD_UNSET_SINK = "torch.load(weights_only unset)"
 # How an alias of `torch.load` is recorded in the sink-alias tables. Like "getattr" it is
 # not a SINKS key, so the table check skips it and the conditional check reads it.
 TORCH_LOAD_ALIAS = "torch.load"
@@ -456,6 +460,73 @@ def _norm_hash(node: ast.AST) -> str:
     except Exception:
         text = ast.dump(node)
     return hashlib.sha256(" ".join(text.split()).encode("utf-8")).hexdigest()[:16]
+
+
+_SCOPE_BOUNDARIES = (
+    ast.FunctionDef,
+    ast.AsyncFunctionDef,
+    ast.Lambda,
+    ast.ClassDef,
+    ast.ListComp,
+    ast.SetComp,
+    ast.DictComp,
+    ast.GeneratorExp,
+)
+_SCOPE_LOCALS: dict = {}
+
+
+def _scope_locals(node: ast.AST) -> frozenset:
+    """Names local to a function: its parameters and every name it binds.
+
+    Python decides this per function, not per statement: a name assigned anywhere in
+    the body is local throughout it unless declared `global` or `nonlocal`. Nested
+    scopes are not descended into, since their bindings are their own.
+    """
+    cached = _SCOPE_LOCALS.get(node)
+    if cached is not None:
+        return cached
+    declared = _declared_here(node, ast.Global) | _declared_here(node, ast.Nonlocal)
+    bound = set(_param_names(node)) if not isinstance(node, ast.ClassDef) else set()
+    body = node.body if isinstance(node.body, list) else [node.body]
+    pending = list(body)
+    while pending:
+        current = pending.pop()
+        if isinstance(current, ast.Name) and isinstance(current.ctx, (ast.Store, ast.Del)):
+            bound.add(current.id)
+        elif isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound.add(current.name)
+            continue
+        elif isinstance(current, (ast.Import, ast.ImportFrom)):
+            for alias in current.names:
+                if alias.name != "*":
+                    bound.add((alias.asname or alias.name).split(".")[0])
+        if isinstance(current, _SCOPE_BOUNDARIES):
+            continue
+        pending.extend(ast.iter_child_nodes(current))
+    result = frozenset(bound - declared)
+    _SCOPE_LOCALS[node] = result
+    return result
+
+
+def _module_statements(tree: ast.Module):
+    """Module-scope statements, including those inside `if`, `try`, `with` and loops.
+
+    A binding inside `try: ... except ImportError:` or `if TYPE_CHECKING:` is still a
+    module global, and this tree uses exactly those shapes for optional backends.
+    Function and class bodies are not module scope and are not entered.
+    """
+    pending = list(reversed(tree.body))
+    while pending:
+        current = pending.pop()
+        yield current
+        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        children: list = []
+        for field in ("body", "orelse", "finalbody"):
+            children.extend(getattr(current, field, None) or [])
+        for handler in getattr(current, "handlers", None) or []:
+            children.extend(handler.body)
+        pending.extend(reversed([child for child in children if isinstance(child, ast.stmt)]))
 
 
 def _norm_body_hash(statements: list) -> str:
@@ -673,6 +744,7 @@ class _FileFacts:
         self.lambdas: set = set()
         self._collect()
         self._collect_module_bindings()
+        self._invalidate_mutated_constant_maps()
 
     def _collect(self) -> None:
         scope: list[str] = []
@@ -806,6 +878,56 @@ class _FileFacts:
             self.varargs[qualname] = node.args.vararg.arg
         self.lambdas.add(qualname)
 
+    _MAP_MUTATORS = frozenset(
+        {"update", "setdefault", "pop", "popitem", "clear", "__setitem__", "__ior__"}
+    )
+
+    def _invalidate_mutated_constant_maps(self) -> None:
+        """Drop a literal table from the exemption once anything writes to it.
+
+        `MAP = {"safe": "torch"}` then `MAP.update(json.loads(blob))` lets the download
+        replace every value, and the exemption, which recorded only the literal, kept
+        treating `MAP["safe"]` as validated. Any item write, mutating method, augmented
+        assignment, deletion or second binding of the name anywhere in the file voids
+        it, which is the conservative reading: the lookup is a sanitiser only while the
+        table really is the literal written in the source.
+        """
+        if not self.constant_maps:
+            return
+        voided: set = set()
+        for node in ast.walk(self.tree):
+            if isinstance(node, ast.Subscript) and isinstance(node.ctx, (ast.Store, ast.Del)):
+                name = _call_name(node.value)
+                if name in self.constant_maps:
+                    voided.add(name)
+            elif isinstance(node, ast.AugAssign):
+                name = _call_name(node.target)
+                if name in self.constant_maps:
+                    voided.add(name)
+            elif (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in self._MAP_MUTATORS
+            ):
+                name = _call_name(node.func.value)
+                if name in self.constant_maps:
+                    voided.add(name)
+        # A second binding anywhere, including `global MAP; MAP = json.load(...)` in a
+        # function, means the literal is not the only value the name can hold.
+        voided |= {name for name in self.constant_maps if self._bindings_of(name) > 1}
+        self.constant_maps -= voided
+
+    def _bindings_of(self, name: str) -> int:
+        """How many times `name` is bound anywhere in the file."""
+        cached = getattr(self, "_binding_counts", None)
+        if cached is None:
+            cached = {}
+            for node in ast.walk(self.tree):
+                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                    cached[node.id] = cached.get(node.id, 0) + 1
+            self._binding_counts = cached
+        return cached.get(name, 0)
+
     def _note_module_partial(self, names: list, value: ast.Call) -> bool:
         """`functools.partial(...)` at module scope, recorded like the local form.
 
@@ -864,8 +986,14 @@ class _FileFacts:
             self.constant_maps.add(name)
 
     def _collect_module_bindings(self) -> None:
-        """Module-scope aliases of sinks and constructions, after imports are known."""
-        for node in ast.iter_child_nodes(self.tree):
+        """Module-scope aliases of sinks and constructions, after imports are known.
+
+        Through `_module_statements`, so an alias bound inside a module-level `if`,
+        `try`, `with` or loop counts: those were skipped outright, and
+        `if enabled: loader = importlib.import_module` left every function calling
+        `loader(parsed)` matching nothing.
+        """
+        for node in _module_statements(self.tree):
             if isinstance(node, ast.AnnAssign):
                 targets, value = ([node.target], node.value)
             elif isinstance(node, ast.Assign):
@@ -1480,6 +1608,9 @@ class _TaintPass(ast.NodeVisitor):
         # through every assignment, because the tier is decided by where the value came
         # from and a reason of "local" would lose exactly that.
         self.local_reasons: dict[str, str] = {}
+        # Names a nested function being walked binds locally, which therefore also hide
+        # any module global of the same name for the length of that walk.
+        self._masked: frozenset = frozenset()
         key = (facts.path, qualname)
         for name, reason in sorted(state.tainted_params.get(key, {}).items()):
             self.local_reasons[name] = reason
@@ -1540,6 +1671,12 @@ class _TaintPass(ast.NodeVisitor):
             reason = self.local_reasons.get(node.id)
             if reason:
                 return reason
+            # A parameter or any name this function binds is local for the whole body,
+            # so a module global of the same name is unreachable from here. Falling
+            # through to it reported `def execute(command): subprocess.run(command)`
+            # called only with a literal, purely because a global `command` was parsed.
+            if node.id in self._masked or node.id in self._own_locals():
+                return None
             own = self.state.tainted_globals.get(f"{self.facts.relative}::{node.id}")
             if own:
                 return own
@@ -1649,6 +1786,34 @@ class _TaintPass(ast.NodeVisitor):
                 values = values or spread
         return (keys, values)
 
+    def drop_class_seeds(self) -> None:
+        """A class body's own bindings start empty rather than from the module's.
+
+        Every pass is seeded with the module-scope instances and aliases, so in
+        `runner = Dirty()` at module level followed by `class App: runner = Safe()` the
+        class attribute became both types, and `self.runner.execute(parsed)` was
+        propagated into `Dirty.execute` although the class only ever holds `Safe`.
+        """
+        if not self.qualname.startswith("<class "):
+            return
+        for class_qualname, statements in _class_bodies(self.facts):
+            if class_qualname != self.qualname:
+                continue
+            for statement in statements:
+                for node in ast.walk(statement):
+                    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                        self.instance_types.pop(node.id, None)
+                        self.sink_aliases.pop(node.id, None)
+                        self.callable_aliases.pop(node.id, None)
+                        self.source_aliases.pop(node.id, None)
+                        self.alias_offsets.pop(node.id, None)
+            return
+
+    def _own_locals(self) -> frozenset:
+        """The names local to the function this pass is analysing, if it is one."""
+        node = self.facts.functions.get(self.qualname)
+        return _scope_locals(node) if node is not None else frozenset()
+
     def _tainted_call(self, node: ast.Call) -> str | None:
         names = self.facts.canonicals(_call_name(node.func))
         source = _matches_any(names, UNTRUSTED_CALLS)
@@ -1657,6 +1822,11 @@ class _TaintPass(ast.NodeVisitor):
             # source aliases were not, so a deserialiser behind an ordinary local name
             # read clean and everything downstream of it did too.
             source = self.source_aliases.get(_call_name(node.func))
+        if source is None and isinstance(node.func, ast.Attribute):
+            for key in self._attr_keys(node.func):
+                source = self.state.attr_source_aliases.get(key)
+                if source:
+                    break
         if source:
             # The file and line are part of the reason so that two downloads stay
             # distinguishable: the unpinned-fetch rule has to know WHICH download reached
@@ -2279,8 +2449,14 @@ class _TaintPass(ast.NodeVisitor):
         if source is None:
             return
         for target in node.targets:
-            if isinstance(target, ast.Name):
-                self.source_aliases.setdefault(target.id, source)
+            # Attribute targets too: `self.decode = json.loads` was discarded, so
+            # `self.decode(blob)` read clean in the same method and in every other one.
+            spelling = self._alias_target(target)
+            if spelling:
+                self.source_aliases.setdefault(spelling, source)
+            if isinstance(target, ast.Attribute):
+                for key in self._attr_keys(target):
+                    self.state.attr_source_aliases.setdefault(key, source)
 
     def _note_instance_alias(self, node: ast.Assign) -> None:
         """`invoke = runner`: the second name is the same object as the first.
@@ -2457,7 +2633,10 @@ class _TaintPass(ast.NodeVisitor):
         # only ever called with a literal. Masked here, which costs nothing: the nested
         # body is analysed under its own qualname with its parameters bound by its real
         # callers, so a caller that does pass a tainted value is still reported there.
-        for name in _param_names(node) if not isinstance(node, ast.ClassDef) else ():
+        # Every name the nested function binds, not only its parameters: one assigned
+        # anywhere in its body is local throughout it, so an outer tainted `command`
+        # made `def helper(): command = "fixed"; subprocess.run(command)` report.
+        for name in _scope_locals(node) if not isinstance(node, ast.ClassDef) else ():
             self.local_reasons.pop(name, None)
             self.instance_types.pop(name, None)
             self.sink_aliases.pop(name, None)
@@ -2471,7 +2650,11 @@ class _TaintPass(ast.NodeVisitor):
         # nested helper's tainted summary, and every caller of the outer one then failed
         # the gate on a value it never produces.
         returned = self.returns_tainted
+        masked = self._masked
+        if not isinstance(node, ast.ClassDef):
+            self._masked = masked | _scope_locals(node)
         self.generic_visit(node)
+        self._masked = masked
         self.returns_tainted = returned
         # A `nonlocal` write is a write to THIS scope, which is the whole point of the
         # declaration, so dropping it with the nested body's own names discarded a real
@@ -2517,7 +2700,19 @@ class _TaintPass(ast.NodeVisitor):
         restored = dict(outer)
         for name in sorted(shared):
             bound = nested.get(name)
-            if bound is not None and name not in restored:
+            if bound is None:
+                continue
+            existing = restored.get(name)
+            if existing is None:
+                restored[name] = bound
+            elif isinstance(existing, tuple) and isinstance(bound, tuple):
+                # Merged rather than kept: the outer name may hold either after the
+                # helper runs, and keeping only the outer candidate meant the sink the
+                # helper rebound it to was never checked.
+                for candidate in bound:
+                    existing = _with(existing, candidate)
+                restored[name] = existing
+            elif isinstance(bound, int) and not isinstance(bound, bool):
                 restored[name] = bound
         return restored
 
@@ -2930,11 +3125,12 @@ class _TaintPass(ast.NodeVisitor):
     def _check_torch_load(self, node: ast.Call) -> None:
         """`torch.load(downloaded, weights_only = False)` unpickles attacker bytes.
 
-        Narrow deliberately. The supported torch floor is 2.6, where `weights_only`
-        defaults to True, so a call that does not mention it is already restricted to
-        tensors and reporting it would flag most weights loads in this tree for nothing.
-        What is unsafe is turning it off, or handing it a value that cannot be read as
-        True here, and that is what this reports.
+        `weights_only` only defaults to True from torch 2.6, and unsloth-zoo still
+        allows `torch>=2.4.0`, so a call that leaves it out unpickles arbitrary objects
+        on a supported install. Omitting it is reported too, under its own label so a
+        reviewed explicit-False entry and a reviewed omission stay distinguishable in
+        the baseline. Only a literal True, or a name this file can read as True, is
+        accepted, and only a downloaded or otherwise untrusted path is reported.
         """
         called = _call_name(node.func)
         if _matches_any(
@@ -2944,9 +3140,10 @@ class _TaintPass(ast.NodeVisitor):
         weights_only = next(
             (keyword for keyword in node.keywords if keyword.arg == "weights_only"), None
         )
+        sink = TORCH_LOAD_SINK
         if weights_only is None:
-            return
-        value = weights_only.value
+            sink = TORCH_LOAD_UNSET_SINK
+        value = weights_only.value if weights_only is not None else ast.Constant(value = None)
         if isinstance(value, ast.Constant) and value.value is True:
             return
         if isinstance(value, ast.Name) and value.id in self.true_names:
@@ -2958,7 +3155,7 @@ class _TaintPass(ast.NodeVisitor):
         ]:
             reason = self.tainted(argument)
             if reason:
-                self._record(node, TORCH_LOAD_SINK, reason, _short(argument))
+                self._record(node, sink, reason, _short(argument))
                 return
 
     def _check_remote_code(self, node: ast.Call) -> None:
@@ -3037,6 +3234,9 @@ class _State:
         # reason the held instances are: `self.loader = importlib.import_module` in the
         # constructor and `self.loader(parsed)` in another method are separate passes.
         self.attr_sink_aliases: dict[str, tuple] = {}
+        # `relative::Class.attr` -> the source stored there, for `self.decode =
+        # json.loads` read back as `self.decode(blob)` from any method.
+        self.attr_source_aliases: dict[str, str] = {}
         self.tainted_globals: dict[str, str] = {}
         self.returns_tainted: dict[tuple[Path, str], str] = {}
         self.params: dict[tuple[Path, str], list[str]] = {}
@@ -3272,7 +3472,13 @@ def _class_body_owner(qualname: str) -> str:
     return qualname
 
 
-def _publish_class_attributes(facts: _FileFacts, qualname: str, visitor, state) -> None:
+def _publish_class_attributes(
+    facts: _FileFacts,
+    qualname: str,
+    visitor,
+    state,
+    statements: list = (),
+) -> None:
     """A name bound in a class body IS a class attribute, so the binding has to leave.
 
     `class Config: module = json.load(...)["module"]` kept the taint inside the body's
@@ -3281,7 +3487,18 @@ def _publish_class_attributes(facts: _FileFacts, qualname: str, visitor, state) 
     with the same tier-A-wins rule as every other write.
     """
     owner = _class_body_owner(qualname)
+    # Only names this body binds. Every visitor is seeded with the module's instances
+    # and aliases, so publishing its whole table recorded a module-level `runner =
+    # Dirty()` as an attribute of every class, and `App.runner = Safe()` then resolved
+    # to both and reported a sink in the class it never holds.
+    bound: set = set()
+    for statement in statements:
+        for node in ast.walk(statement):
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                bound.add(node.id)
     for name, reason in visitor.local_reasons.items():
+        if name not in bound:
+            continue
         key = f"{facts.relative}::{owner}.{name}"
         if state.pending_attrs.get(key, NAMED_PARAM_REASON) == NAMED_PARAM_REASON:
             state.pending_attrs[key] = reason
@@ -3289,6 +3506,8 @@ def _publish_class_attributes(facts: _FileFacts, qualname: str, visitor, state) 
     # collaborator is declared, and discarding it meant `self.runner.execute(parsed)`
     # resolved to nothing and a sink inside that method was reported nowhere.
     for name, constructed in visitor.instance_types.items():
+        if name not in bound:
+            continue
         key = f"{facts.relative}::{owner}.{name}"
         for candidate in constructed:
             state.attr_instances[key] = _with(state.attr_instances.get(key), candidate)
@@ -3296,7 +3515,7 @@ def _publish_class_attributes(facts: _FileFacts, qualname: str, visitor, state) 
     # a class attribute, and `Hooks.loader(parsed)` could not recover it because only
     # the taint reasons left the body.
     for name, sinks in visitor.sink_aliases.items():
-        if name in facts.module_sink_aliases and sinks == facts.module_sink_aliases[name]:
+        if name not in bound:
             continue
         key = f"{facts.relative}::{owner}.{name}"
         for candidate in sinks:
@@ -3441,6 +3660,7 @@ def _settle(facts: _FileFacts, qualname: str, nodes: list, state: "_State"):
     visitor = None
     for _ in range(_LOCAL_BOUND):
         visitor = _TaintPass(facts, qualname, state)
+        visitor.drop_class_seeds()
         visitor.local_reasons.update(reasons)
         visitor.instance_types.update(instances)
         visitor.sink_aliases.update(aliases)
@@ -3509,6 +3729,7 @@ def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
     """Every finding, sorted, for a deterministic report."""
     _CALL_NAMES.clear()
     _CLASS_BODIES.clear()
+    _SCOPE_LOCALS.clear()
     files = _python_files(targets)
     if roots is None:
         roots = [REPO_ROOT]
@@ -3598,7 +3819,9 @@ def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
                     continue
                 class_visitor, _ = _settle(facts, class_qualname, statements, state)
                 if class_visitor is not None:
-                    _publish_class_attributes(facts, class_qualname, class_visitor, state)
+                    _publish_class_attributes(
+                        facts, class_qualname, class_visitor, state, statements
+                    )
         for key, names in state.pending_params.items():
             bound = state.tainted_params.setdefault(key, {})
             for name, reason in names.items():
