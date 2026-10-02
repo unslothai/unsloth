@@ -226,6 +226,7 @@ from .diffusion_precision import (
     torchao_quantize_importable,
 )
 from .diffusion_te_prequant import te_prequant_pipe_kwargs
+from .diffusion_flow_shift import apply_comfy_flow_shift
 from .diffusion_text_length import (
     IDEOGRAM4_COMFY_MU,
     IDEOGRAM4_COMFY_STD,
@@ -6746,6 +6747,8 @@ class DiffusionBackend:
                         )
 
                     self._raise_if_load_cancelled(_load_token)
+                    # Sample at ComfyUI's static sigma shift where the shipped scheduler differs (before from_pipe copies it).
+                    apply_comfy_flow_shift(pipe, getattr(fam, "comfy_flow_shift", None), logger)
                     # Before the speed optims so their decode compile lands inside the non-finite check; `off` keeps fp32.
                     vae_fp16 = str(
                         speed_mode or ""

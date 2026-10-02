@@ -14262,3 +14262,36 @@ def test_generate_ideogram_constant_guidance_uses_comfy_schedule(fake_runtime, t
     backend.generate(prompt = "a sloth", steps = 48, guidance = 7.0)
     call = pipe.last_kwargs
     assert call["guidance_schedule"] == "card" and (call["mu"], call["std"]) == (0.0, 1.5)
+
+
+class _ShiftSchedulerConfig(dict):
+    pass
+
+
+class _ShiftFakeScheduler:
+    def __init__(self, **config):
+        self.config = _ShiftSchedulerConfig(config)
+
+    @classmethod
+    def from_config(cls, config, **overrides):
+        return cls(**{**config, **overrides})
+
+
+class _QwenShiftFakePipeline(_FakePipeline):
+    @classmethod
+    def from_pretrained(cls, base, **kwargs):
+        pipe = super().from_pretrained(base, **kwargs)
+        pipe.scheduler = _ShiftFakeScheduler(
+            shift = 1.0, use_dynamic_shifting = True, shift_terminal = 0.02
+        )
+        return pipe
+
+
+def test_qwen_load_samples_at_comfy_static_shift(fake_runtime, tmp_path, monkeypatch):
+    diffusers = sys.modules["diffusers"]
+    monkeypatch.setattr(diffusers, "QwenImagePipeline", _QwenShiftFakePipeline, raising = False)
+    monkeypatch.setattr(diffusers, "QwenImageTransformer2DModel", _FakeTransformer, raising = False)
+    _no_cache(monkeypatch)
+    backend = _loaded_backend(tmp_path, family_override = "qwen-image")
+    cfg = backend._state.pipe.scheduler.config
+    assert (cfg["shift"], cfg["use_dynamic_shifting"], cfg["shift_terminal"]) == (3.1, False, None)

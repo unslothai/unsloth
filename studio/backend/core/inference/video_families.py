@@ -127,6 +127,9 @@ class VideoFamily:
     modular_workflow: Optional[str] = None
     # Released video and audio sigma shifts, when configurable.
     default_flow_shift: Optional[float] = None
+    # Static sigma shift ComfyUI samples this family with by default; the loader rebuilds the scheduler at it. None =
+    # keep the shipped scheduler. Distinct from default_flow_shift, which also exposes a user control.
+    comfy_flow_shift: Optional[float] = None
     default_audio_flow_shift: Optional[float] = None
     # First/last-frame conditioning: the request may carry keyframe images.
     supports_keyframes: bool = False
@@ -251,6 +254,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     # temporal compression 4 gives valid frame counts 4k+1. Defaults 20 steps / CFG 5 (ComfyUI's template).
     VideoFamily(
         name = "wan2.2-ti2v-5b",
+        comfy_flow_shift = 8.0,  # ComfyUI ModelSamplingSD3 8 (TI2V-5B template)
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
         base_repo = "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
@@ -281,6 +285,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     # transformer_2, so cfg2_kwarg is threaded only here.
     VideoFamily(
         name = "wan2.2-t2v-a14b",
+        comfy_flow_shift = 5.0,  # ComfyUI ModelSamplingSD3 5 (T2V-A14B template)
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
         base_repo = "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
@@ -319,6 +324,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     # so only the community repacks load.
     VideoFamily(
         name = "hunyuanvideo-1.5",
+        comfy_flow_shift = 7.0,  # ComfyUI model default and template shift 7
         pipeline_class = "HunyuanVideo15Pipeline",
         transformer_class = "HunyuanVideo15Transformer3DModel",
         base_repo = "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
@@ -347,6 +353,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     # own family so a 720p load defaults to 720p sizes; the full-path alias outranks the generic token.
     VideoFamily(
         name = "hunyuanvideo-1.5-720p",
+        comfy_flow_shift = 7.0,  # ComfyUI model default and template shift 7
         pipeline_class = "HunyuanVideo15Pipeline",
         transformer_class = "HunyuanVideo15Transformer3DModel",
         base_repo = "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_t2v",
