@@ -3012,6 +3012,9 @@ def _merge_codex_config(existing: str, base: str) -> str:
 _CODEX_FALLBACK_PROMPT = Path(__file__).parent.parent / "codex_fallback_prompt.md"
 _CODEX_MODEL_CATALOG_MIN_VERSION = (0, 110, 0)
 _CODEX_PATCH_LINE_ENDINGS_MIN_VERSION = (0, 148, 0)
+# Older Codex sends no reasoning for a model without reasoning summaries, and older Pi has no samplingParams.
+_CODEX_REASONING_REQUEST_MIN_VERSION = (0, 145, 0)
+_PI_SAMPLING_PARAMS_MIN_VERSION = (0, 84, 0)
 
 
 def _codex_executable_version(executable: str) -> Optional[tuple[int, int, int]]:
@@ -3038,6 +3041,14 @@ def _codex_supports_model_catalog() -> bool:
         return True
     version = _codex_executable_version(executable)
     return version is not None and version >= _CODEX_MODEL_CATALOG_MIN_VERSION
+
+
+def _agent_version_at_least(command: str, minimum: tuple) -> bool:
+    executable = _which_with_install_dirs(command)
+    if executable is None:
+        return True
+    version = _codex_executable_version(executable)
+    return version is not None and version >= minimum
 
 
 def _codex_supports_patch_line_endings() -> bool:
@@ -4791,8 +4802,11 @@ def write_opencode_config(
         model_entry["limit"] = {"context": window, "input": window, "output": output}
     provider_options = {"baseURL": f"{base}/v1", "apiKey": key}
     if request_body:
-        # OpenCode 1.x sends model options (temperature only with the capability set); 2.x sends only the provider body.
-        model_entry["options"] = request_body
+        # OpenCode 1.x sends model options, reading the effort only as reasoningEffort; 2.x sends only the provider body.
+        model_entry["options"] = {
+            "reasoningEffort" if name == "reasoning_effort" else name: value
+            for name, value in request_body.items()
+        }
         if "temperature" in request_body:
             model_entry["temperature"] = True
         provider_options["body"] = request_body
@@ -5466,7 +5480,11 @@ def codex(
     # Before the install prompt: _install_agent runs a remote installer, and this can refuse outright, so asking first fetches a tool the run cannot use.
     _preflight_agent_gguf(_CODEX_GGUF_AGENT, model, serve = serve, launch = launch)
     _require_agent_for_launch("codex", install_hint, launch)
-    codex_effort = _codex_reasoning_effort(reasoning, reasoning_effort)
+    codex_effort = (
+        _codex_reasoning_effort(reasoning, reasoning_effort)
+        if not launch or _agent_version_at_least("codex", _CODEX_REASONING_REQUEST_MIN_VERSION)
+        else None
+    )
     server_options = ServerOptions(
         enable_tools = enable_tools,
         tool_call_healing = tool_call_healing,
@@ -5938,7 +5956,11 @@ def pi(
         min_p = min_p,
         repetition_penalty = repetition_penalty,
         presence_penalty = presence_penalty,
-        carried = _ALL_REQUEST_FIELDS,
+        carried = (
+            _ALL_REQUEST_FIELDS
+            if not launch or _agent_version_at_least("pi", _PI_SAMPLING_PARAMS_MIN_VERSION)
+            else frozenset()
+        ),
     )
     base, key, entry = _connect(
         api_key,

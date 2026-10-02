@@ -3550,6 +3550,43 @@ def test_codex_warns_about_reasoning_it_cannot_express(fake_studio, tmp_path, mo
     assert "model_reasoning_effort" not in profile
 
 
+@pytest.mark.parametrize("agent, version", [("codex", (0, 144, 0)), ("pi", (0, 83, 0))])
+def test_agent_too_old_to_send_the_flags_keeps_the_server_pin(
+    agent, version, fake_studio, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(start, "_which_with_install_dirs", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(start, "_codex_executable_version", lambda executable: version)
+    monkeypatch.setattr(start, "_launch", lambda *args, **kwargs: None)
+    result = CliRunner().invoke(start.start_app, [agent, "--persist", *_SESSION_FLAGS])
+    assert result.exit_code == 0, result.output
+    assert "cannot send --temperature, --top-k itself" in result.output
+    assert "cannot send --reasoning off itself" in result.output
+    if agent == "pi":
+        models = tmp_path / "agents" / "pi" / ".pi" / "agent" / "models.json"
+        provider = json.loads(models.read_text())["providers"]["unsloth"]
+        assert "samplingParams" not in provider["models"][0]
+    else:
+        profile = (
+            tmp_path / "agents" / "codex" / f"{start._CODEX_PROFILE}.config.toml"
+        ).read_text()
+        assert "model_reasoning_effort" not in profile
+
+
+def test_opencode_v1_reads_the_effort_as_reasoning_effort_option(
+    fake_studio, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(
+        start.start_app, ["opencode", "--no-launch", "--reasoning-effort", "low"]
+    )
+    assert result.exit_code == 0, result.output
+    provider = json.loads((tmp_path / "agents" / "opencode" / "opencode.json").read_text())
+    provider = provider["provider"][start._OPENCODE_PROVIDER]
+    assert provider["models"][MODEL["id"]]["options"] == {"reasoningEffort": "low"}
+    assert provider["options"]["body"] == {"reasoning_effort": "low"}
+
+
 def test_dsh_carries_reasoning_and_warns_about_sampling(fake_studio, tmp_path, monkeypatch):
     yaml = pytest.importorskip("yaml")
     monkeypatch.chdir(tmp_path)
@@ -3588,6 +3625,7 @@ def test_spawned_server_keeps_only_what_the_agent_cannot_send(
     monkeypatch.setattr(start, "_start_studio_server", fake_start)
     monkeypatch.setattr(start, "_shutdown_server", lambda server: None)
     monkeypatch.setattr(start.shutil, "which", lambda _: f"/usr/local/bin/{agent}")
+    monkeypatch.setattr(start, "_codex_executable_version", lambda executable: (1, 0, 0))
     monkeypatch.setattr(start.subprocess, "run", lambda command, env: SimpleNamespace(returncode = 0))
     result = CliRunner().invoke(
         start.start_app, [agent, "--model", "unsloth/Qwen3-1.7B-GGUF", *_SESSION_FLAGS]
