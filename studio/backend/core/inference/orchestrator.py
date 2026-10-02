@@ -2027,6 +2027,10 @@ class InferenceOrchestrator:
             if audio_cpp_model:
                 # The worker picks its backend from this: a Hub id alone does not say audio.cpp.
                 sub_config["audio_cpp"] = True
+                if audio_load_runs_on_cpu(getattr(config, "audio_type", None), audio_device):
+                    # A CPU-only runtime runs Auto on the CPU too: say so, so no card is chosen and the worker hides them.
+                    audio_device = "cpu"
+                    sub_config["audio_device"] = audio_device
             if audio_device_forces_cpu(audio_device) and (
                 audio_cpp_model or is_native_audio_model(model_name)
             ):

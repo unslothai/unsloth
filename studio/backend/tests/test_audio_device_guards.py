@@ -181,6 +181,56 @@ def test_a_gguf_audio_model_on_a_cpu_only_runtime_is_resident_in_cpu_ram(monkeyp
     assert not ri._resident_audio_placement_matches(resident, _request("auto"))
 
 
+def test_an_auto_load_on_a_cpu_only_runtime_reaches_the_worker_as_cpu(monkeypatch):
+    """The worker hides the accelerators and no card is sized only for an explicit CPU load, so the
+    orchestrator must turn Auto into CPU when the runtime can only run there."""
+    import threading
+
+    from core.inference import audio_cpp_server
+    from core.inference import orchestrator as orch_mod
+
+    seen = {}
+
+    class _StopAfterSelection(threading.Event):
+        def is_set(self):
+            return "selection" in seen
+
+    def _gpu_selection(*args, **kwargs):
+        seen["selection"] = "gpu"
+        return [0], {"selection_mode": "auto"}
+
+    monkeypatch.setattr(orch_mod, "prepare_gpu_selection", _gpu_selection)
+    orch = orch_mod.InferenceOrchestrator.__new__(orch_mod.InferenceOrchestrator)
+    orch.loading_models = set()
+    config = types.SimpleNamespace(
+        identifier = "unsloth/Kokoro-82M-GGUF",
+        audio_type = "audiocpp_tts",
+        audio_cpp = object(),
+        gguf_variant = None,
+    )
+
+    def _load():
+        seen.clear()
+        orig = orch_mod.audio_device_forces_cpu
+
+        def _forces(value):
+            if "selection" not in seen and orig(value):
+                seen["selection"] = "cpu"
+            return orig(value)
+
+        monkeypatch.setattr(orch_mod, "audio_device_forces_cpu", _forces)
+        assert (
+            orch.load_model(config, audio_device = "auto", load_cancel_event = _StopAfterSelection())
+            is False
+        )
+        return seen["selection"]
+
+    monkeypatch.setattr(audio_cpp_server, "runtime_runs_on_cpu", lambda: True)
+    assert _load() == "cpu"
+    monkeypatch.setattr(audio_cpp_server, "runtime_runs_on_cpu", lambda: False)
+    assert _load() == "gpu"
+
+
 def test_a_non_audio_model_keeps_the_shortcut():
     assert ri._resident_audio_placement_matches(
         _backend(audio_cpu = None, audio_type = None), _request("cpu")
