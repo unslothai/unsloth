@@ -4568,28 +4568,54 @@ def check_fbgemm_gpu_version():
 
 def patch_enable_input_require_grads():
     """Patch PreTrainedModel.enable_input_require_grads to tolerate vision models
-    that raise NotImplementedError from get_input_embeddings()."""
+    that raise NotImplementedError from get_input_embeddings(), and so that its hook traces
+    under torch.compile."""
     import inspect
+    import torch
     from transformers import PreTrainedModel
 
-    # Only patch the new variant that iterates over self.modules(); see huggingface/transformers#41993.
     try:
         original_source = inspect.getsource(PreTrainedModel.enable_input_require_grads)
     except:
         return
 
+    class _RequireGrad(torch.autograd.Function):
+        # x + -0.0 is x exactly (signed zeros too); the anchor only makes the output need grad.
+        @staticmethod
+        def forward(ctx, x, anchor):
+            return x + anchor
+
+        @staticmethod
+        def backward(ctx, grad):
+            return grad, None
+
+    # Created here: torch.compile cannot create a tensor that requires grad inside a graph.
+    anchor = torch.tensor(-0.0, requires_grad = True)
+
+    def make_inputs_require_grads(module, input, output):
+        # requires_grad_() on an intermediate is a graph break under torch.compile.
+        if torch.compiler.is_compiling():
+            if not torch.is_grad_enabled():
+                return  # a compiled decode step records no grad
+            return _RequireGrad.apply(output, anchor)
+        output.requires_grad_(True)
+
+    # Older transformers hooks a single embedding (huggingface/transformers#41993 added the loop).
+    # wraps keeps inspect.getsource on transformers' source for later source checks.
+    original = PreTrainedModel.enable_input_require_grads
     if "for module in self.modules()" not in original_source:
+
+        @functools.wraps(original)
+        def _patched_single_enable_input_require_grads(self):
+            self._require_grads_hook = self.get_input_embeddings().register_forward_hook(
+                make_inputs_require_grads
+            )
+
+        PreTrainedModel.enable_input_require_grads = _patched_single_enable_input_require_grads
         return
 
+    @functools.wraps(original)
     def _patched_enable_input_require_grads(self):
-        import torch
-
-        def make_inputs_require_grads(module, input, output):
-            # Dynamo graph-breaks on requires_grad_(); a compiled decode step records no grad anyway.
-            if torch.compiler.is_compiling() and not torch.is_grad_enabled():
-                return
-            output.requires_grad_(True)
-
         hooks = []
         seen_modules = set()
 

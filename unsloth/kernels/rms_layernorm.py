@@ -9,9 +9,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import hashlib
+import os
 import triton
 import triton.language as tl
 import torch
+from typing import Tuple
 from .utils import calculate_settings, torch_gpu_device
 
 
@@ -154,6 +157,55 @@ def _gemma_rms_layernorm_forward(
     tl.store(Y + col_offsets, output, mask = mask)
 
 
+def _rms_forward(X, W, eps, gemma, wrap):
+    n_rows, n_cols = X.shape
+    BLOCK_SIZE, num_warps = calculate_settings(n_cols)
+    Y = torch.empty((n_rows, n_cols), dtype = X.dtype, device = X.device)
+    r = torch.empty(n_rows, dtype = torch.float32, device = X.device)
+    fx = _gemma_rms_layernorm_forward if gemma else _rms_layernorm_forward
+    wrap(fx)[(n_rows,)](
+        Y,
+        Y.stride(0),
+        X,
+        X.stride(0),
+        W,
+        W.stride(0),
+        r,
+        r.stride(0),
+        n_cols,
+        eps,
+        BLOCK_SIZE = BLOCK_SIZE,
+        num_warps = num_warps,
+    )
+    return Y, r
+
+
+def _rms_backward(dY, dX, X, W, r, eps, gemma, wrap):
+    # Non-Gemma writes dX over dY (the kernel ignores dX); Gemma writes into dX.
+    n_rows, n_cols = dY.shape
+    BLOCK_SIZE, num_warps = calculate_settings(n_cols)
+    wrap(_rms_layernorm_backward)[(n_rows,)](
+        dY,
+        dY.stride(0),
+        dX,
+        dX.stride(0),
+        X,
+        X.stride(0),
+        W,
+        W.stride(0),
+        r,
+        r.stride(0),
+        n_cols,
+        eps,
+        GEMMA = gemma,
+        BLOCK_SIZE = BLOCK_SIZE,
+        num_warps = num_warps,
+    )
+
+
+_eager_kernel = lambda kernel: kernel
+
+
 class Fast_RMS_Layernorm(torch.autograd.Function):
     @staticmethod
     def forward(
@@ -168,36 +220,9 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         X = X.reshape(-1, dim).contiguous()
         # kernels read W at unit stride, and this W is the one saved for backward.
         W = W.contiguous()
-        n_rows: int
-        n_cols: int
-        n_rows, n_cols = X.shape
-        BLOCK_SIZE: int
-        num_warps: int
-        BLOCK_SIZE, num_warps = calculate_settings(n_cols)
-        device = X.device
-
-        Y = torch.empty((n_rows, n_cols), dtype = X.dtype, device = device)
-        r = torch.empty(n_rows, dtype = torch.float32, device = device)
-
-        fx = _gemma_rms_layernorm_forward if gemma else _rms_layernorm_forward
-        with torch_gpu_device(device):
-            fx[(n_rows,)](
-                Y,
-                Y.stride(0),
-                X,
-                X.stride(0),
-                W,
-                W.stride(0),
-                r,
-                r.stride(0),
-                n_cols,
-                eps,
-                BLOCK_SIZE = BLOCK_SIZE,
-                num_warps = num_warps,
-            )
+        with torch_gpu_device(X.device):
+            Y, r = _rms_forward(X, W, eps, gemma, _eager_kernel)
         ctx.eps = eps
-        ctx.BLOCK_SIZE = BLOCK_SIZE
-        ctx.num_warps = num_warps
         ctx.GEMMA = gemma
         ctx.save_for_backward(X, W, r)
         return Y.view(*shape)
@@ -208,35 +233,88 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         dim: int = shape[-1]
         dY = dY.reshape(-1, dim).contiguous()
         X, W, r = ctx.saved_tensors
-        n_rows: int
-        n_cols: int
-        n_rows, n_cols = dY.shape
         dX = torch.empty_like(dY) if ctx.GEMMA else dY
-
         with torch_gpu_device(dY.device):
-            _rms_layernorm_backward[(n_rows,)](
-                dY,
-                dY.stride(0),
-                dX,
-                dX.stride(0),
-                X,
-                X.stride(0),
-                W,
-                W.stride(0),
-                r,
-                r.stride(0),
-                n_cols,
-                ctx.eps,
-                GEMMA = ctx.GEMMA,
-                BLOCK_SIZE = ctx.BLOCK_SIZE,
-                num_warps = ctx.num_warps,
-            )
+            _rms_backward(dY, dX, X, W, r, ctx.eps, ctx.GEMMA, _eager_kernel)
         dX = dX.view(*shape)
         return dX, None, None, None
 
 
-# RMS Layernorm does not torch.compile properly; reason unknown.
+# Compiled graphs take these ops: same kernels, fresh outputs (the Function writes dX over dY).
+_TRACEABLE = hasattr(torch.library, "triton_op") and hasattr(torch.library, "wrap_triton")
+
+
+def _bf16_traceable():
+    # Dynamo cannot trace bf16 Triton without native bf16 (T4); any visible GPU may hold a layer.
+    try:
+        if torch.version.hip:
+            return True
+        n = torch.cuda.device_count()
+        return n > 0 and all(torch.cuda.get_device_capability(i)[0] >= 8 for i in range(n))
+    except Exception:
+        return False
+
+
+_BF16_TRACEABLE = _TRACEABLE and _bf16_traceable()
+
+
+def _tag_compile_cache(path):
+    # Inductor's FX cache keys a triton_op without its source; key on the file so upgrades miss.
+    config = getattr(torch.compiler, "config", None)
+    if config is None or not hasattr(config, "cache_key_tag"):
+        return
+    with open(path, "rb") as file:
+        tag = f"unsloth/{os.path.basename(path)}:{hashlib.sha256(file.read()).hexdigest()[:16]}"
+    tags = [t for t in config.cache_key_tag.split(",") if t]
+    if tag not in tags:
+        config.cache_key_tag = ",".join(tags + [tag])
+
+
+def _traced_kernel(kernel):
+    # wrap_triton needs the JITFunction under triton.heuristics; callers pass its constexprs.
+    if isinstance(kernel, triton.runtime.autotuner.Heuristics):
+        kernel = kernel.fn
+    return torch.library.wrap_triton(kernel)
+
+
+if _TRACEABLE:
+
+    @torch.library.triton_op("unsloth::rms_layernorm", mutates_args = ())
+    def _rms_layernorm_op(
+        X: torch.Tensor, W: torch.Tensor, eps: float, gemma: bool
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        return _rms_forward(X, W, eps, gemma, _traced_kernel)
+
+    @torch.library.triton_op("unsloth::rms_layernorm_backward", mutates_args = ())
+    def _rms_layernorm_backward_op(
+        dY: torch.Tensor, X: torch.Tensor, W: torch.Tensor, r: torch.Tensor, eps: float, gemma: bool
+    ) -> torch.Tensor:
+        dX = torch.empty_like(dY)
+        # Non-Gemma rewrites its dY argument, so it gets a copy.
+        _rms_backward(dY if gemma else dX.copy_(dY), dX, X, W, r, eps, gemma, _traced_kernel)
+        return dX
+
+    def _rms_setup_context(ctx, inputs, output):
+        X, W, eps, gemma = inputs
+        ctx.eps, ctx.gemma = eps, gemma
+        ctx.save_for_backward(X, W, output[1])
+
+    def _rms_layernorm_op_backward(ctx, dY, dr):
+        X, W, r = ctx.saved_tensors
+        dX = torch.ops.unsloth.rms_layernorm_backward(dY.contiguous(), X, W, r, ctx.eps, ctx.gemma)
+        return dX, None, None, None
+
+    _rms_layernorm_op.register_autograd(
+        _rms_layernorm_op_backward, setup_context = _rms_setup_context
+    )
+    _tag_compile_cache(__file__)
+
+
 @torch.compiler.disable
+def _fast_rms_layernorm_untraced(X, W, eps, gemma):
+    return Fast_RMS_Layernorm.apply(X, W, eps, gemma)
+
+
 def fast_rms_layernorm(
     layernorm,
     X: torch.Tensor,
@@ -246,8 +324,19 @@ def fast_rms_layernorm(
     eps: float = (
         layernorm.variance_epsilon if hasattr(layernorm, "variance_epsilon") else layernorm.eps
     )
-    out = Fast_RMS_Layernorm.apply(X, W, eps, gemma)
-    return out
+    if not torch.compiler.is_compiling():
+        return Fast_RMS_Layernorm.apply(X, W, eps, gemma)
+    if (
+        not _TRACEABLE
+        or X.device.type != "cuda"
+        or (X.dtype == torch.bfloat16 and not _BF16_TRACEABLE)
+    ):
+        return _fast_rms_layernorm_untraced(X, W, eps, gemma)
+    shape = X.shape
+    Y, _ = torch.ops.unsloth.rms_layernorm(
+        X.reshape(-1, shape[-1]).contiguous(), W.contiguous(), eps, gemma
+    )
+    return Y.view(shape)
 
 
 from transformers.models.llama.modeling_llama import LlamaRMSNorm
