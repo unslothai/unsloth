@@ -123,6 +123,12 @@ def test_installed_engine_is_not_reinstalled(fake_install):
     assert fake.started == 0
 
 
+def test_restored_engine_is_loaded_as_is(fake_install):
+    fake = fake_install({**_MISSING, "installed": True, "current": False, "restored": True})
+    studio_mod._ensure_engine_installed("vllm", yes = True, silent = True)
+    assert fake.started == 0
+
+
 def test_missing_engine_without_a_terminal_needs_yes(fake_install, monkeypatch):
     fake = fake_install(_MISSING)
     monkeypatch.setattr(sys.stdin, "isatty", lambda: False)

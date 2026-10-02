@@ -263,11 +263,16 @@ def test_engine_cuda_home_is_the_locked_pip_nvcc(tmp_path, monkeypatch):
     assert (home / "bin" / "nvcc").exists() and (home / "nvvm").resolve() == engine_cuda / "nvvm"
     assert (home / "lib64" / "libcudart.so").resolve() == studio_cuda / "lib" / "libcudart.so.13"
     cuda = install.cuda_environment({"path": str(env), "shared": True})
-    assert cuda["CUDA_HOME"] == str(home)
-    assert cuda["CPATH"].split(os.pathsep) == [
-        str(engine_cuda / "include"),
-        str(studio_cuda / "include"),
-    ]
+    assert cuda == {"CUDA_HOME": str(home), "CPATH": str(home / "include")}
+    # One tree: Studio's cuda_runtime.h sits beside the engine's crt/, so its quote includes of
+    # crt/ resolve to the engine's release (Colab ships a newer crt than its nvcc).
+    (studio_cuda / "include" / "crt").mkdir()
+    install.link_cuda_home(env, shared = True)
+    assert (
+        home / "include" / "cuda_runtime.h"
+    ).resolve() == studio_cuda / "include" / "cuda_runtime.h"
+    assert (home / "include" / "crt").resolve() == engine_cuda / "include" / "crt"
+    assert sorted(os.listdir(home / "include")) == ["crt", "cuda_runtime.h"]
 
 
 @pytest.mark.parametrize("engine", ["vllm", "sglang"])

@@ -1739,7 +1739,8 @@ def _ensure_engine_installed(engine: str, yes: bool, silent: bool) -> None:
     if reason:
         raise RuntimeError(reason)
     row = engine_install.status(engine)
-    if row.get("current"):
+    # A rollback the owner chose is loadable as is, as in Settings.
+    if row.get("current") or (row.get("installed") and row.get("restored")):
         return
     size = row.get("download_bytes")
     action = "Update" if row.get("installed") else "Install"
