@@ -651,9 +651,27 @@ export async function exportBulkConversationsMerged(
 
   if (format === "markdown" && threadIds.length > 1) {
     const conversations: Array<{ id: string; title: string }> = [];
+    const pairs = new Map<string, ThreadRecord[]>();
     for (const id of threadIds) {
       const thread = await getStoredChatThread(id);
       conversations.push({ id, title: thread?.title?.trim() || id });
+      if (thread?.pairId) {
+        const halves = pairs.get(thread.pairId) ?? [];
+        halves.push(thread);
+        pairs.set(thread.pairId, halves);
+      }
+    }
+    const pairedTitles = new Map<string, string>();
+    for (const [pairId, halves] of pairs) {
+      if (halves.length < 2) continue;
+      const plans = planChatItemSources(
+        { id: pairId, title: halves[0].title?.trim() || pairId, type: "pair" },
+        halves,
+      );
+      for (const plan of plans) pairedTitles.set(plan.id, plan.title);
+    }
+    for (const conversation of conversations) {
+      conversation.title = pairedTitles.get(conversation.id) ?? conversation.title;
     }
     const body = await buildNamedConversationsMarkdown(
       conversations,

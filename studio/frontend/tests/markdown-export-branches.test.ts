@@ -8,13 +8,21 @@ import ts from "typescript";
 
 import { stripSearchImageTokens } from "../src/features/chat/search-images/search-images.ts";
 import {
+  buildNamedConversationsMarkdown,
   createConversationMarkdownBuilder,
   createConversationMarkdownExporter,
 } from "../src/features/chat/utils/conversation-markdown-export.ts";
-import { buildConversationMarkdown } from "../src/features/chat/utils/conversation-markdown.ts";
+import {
+  buildConversationMarkdown,
+  CONVERSATION_MARKDOWN_MIME_TYPE,
+} from "../src/features/chat/utils/conversation-markdown.ts";
 import { csvDocument, CSV_MIME } from "../src/features/chat/utils/csv-export.ts";
 import * as liveThreadHead from "../src/features/chat/utils/live-thread-head.ts";
 import { orderByParentChain } from "../src/features/chat/utils/message-order.ts";
+import { parseConversationMarkdownDocument } from "../src/features/chat/utils/conversation-markdown-import.ts";
+import { canMergeConversationExport } from "../src/features/chat/utils/ndjson.ts";
+import { planChatItemSources } from "../src/features/chat/utils/project-source-plan.ts";
+import type { ThreadRecord } from "../src/features/chat/types.ts";
 import { readSrc } from "./helpers/kit.ts";
 
 type StoredMessage = {
@@ -36,6 +44,11 @@ type Exporters = {
     title: string,
   ) => Promise<string>;
   exportConversationCsv: (threadId: string) => Promise<void>;
+  exportBulkConversationsMerged: (
+    threadIds: string[],
+    format: "markdown",
+    basename: string,
+  ) => Promise<void>;
 };
 
 const SOURCE = readSrc(
@@ -66,6 +79,7 @@ function loadExporters(
   stored: StoredMessage[],
   downloads: string[],
   sources: string[],
+  threads: ThreadRecord[] = [],
 ) {
   const javascript = ts.transpileModule(
     [
@@ -77,7 +91,11 @@ function loadExporters(
         "export async function exportConversationCsv(",
         "export async function saveChatItemAsProjectSource(",
       ),
-      "globalThis.__exporters = { buildConversationMarkdownForThread, exportConversationMarkdown, saveConversationAsProjectSource, exportConversationCsv };",
+      sliceSource(
+        "export async function exportBulkConversationsMerged(",
+        "export async function exportBulkConversationsSeparate(",
+      ),
+      "globalThis.__exporters = { buildConversationMarkdownForThread, exportConversationMarkdown, saveConversationAsProjectSource, exportConversationCsv, exportBulkConversationsMerged };",
     ].join("\n"),
     {
       compilerOptions: {
@@ -90,6 +108,12 @@ function loadExporters(
     exports: {},
     toast: { info: () => {} },
     listStoredChatMessages: async () => stored,
+    getStoredChatThread: async (id: string) =>
+      threads.find((thread) => thread.id === id),
+    buildNamedConversationsMarkdown,
+    CONVERSATION_MARKDOWN_MIME_TYPE,
+    canMergeConversationExport,
+    planChatItemSources,
     ...liveThreadHead,
     orderByParentChain,
     createConversationMarkdownBuilder,
@@ -209,3 +233,48 @@ test("Markdown follows the prompt version on screen", async () => {
     sources: [newer],
   });
 });
+
+for (const { models, panes, titles } of [
+  {
+    models: ["org/Alpha", "org/Beta"],
+    panes: ["model1", "model2"],
+    titles: ["Compare - Beta", "Standalone", "Compare - Alpha"],
+  },
+  {
+    models: ["org/Alpha", "org/Alpha"],
+    panes: ["base", "lora"],
+    titles: [
+      "Compare - Alpha - fine-tuned",
+      "Standalone",
+      "Compare - Alpha - base",
+    ],
+  },
+]) {
+  test(`combined Markdown names comparison halves: ${panes.join("/")}`, async () => {
+    const threads = [
+      ...models.map((modelId, index) => ({
+        id: `half-${index}`,
+        title: "Compare",
+        pairId: "pair",
+        modelId,
+        modelType: panes[index],
+        createdAt: 1,
+      })),
+      { id: "single", title: "Standalone", modelType: "base", createdAt: 1 },
+    ] as ThreadRecord[];
+    const downloads: string[] = [];
+    const exporters = loadExporters(regenerated, downloads, [], threads);
+    await exporters.exportBulkConversationsMerged(
+      ["half-1", "single", "half-0"],
+      "markdown",
+      "chats",
+    );
+    assert.equal(downloads.length, 1);
+    assert.deepEqual(
+      parseConversationMarkdownDocument(downloads[0], "chats").map(
+        ({ title }) => title,
+      ),
+      titles,
+    );
+  });
+}
