@@ -58,7 +58,7 @@ def _fake_converter(
         (out_dir / "model.q4nx").write_bytes(b"q4nx")
         (out_dir / "tokenizer.json").write_text("from gguf")
 
-    monkeypatch.setattr(export_mod, "_convert_gguf_to_q4nx", convert)
+    monkeypatch.setattr(export_mod.q4nx, "convert_gguf_to_q4nx", convert)
 
 
 def test_q4nx_folder_matches_the_flm_layout(monkeypatch, tmp_path):
@@ -127,8 +127,8 @@ def test_without_the_flag_nothing_is_converted(monkeypatch, tmp_path):
 def test_source_follows_the_selection_order(monkeypatch, tmp_path):
     export_mod, _b, _s, _c = _backend(monkeypatch, tmp_path, object())
     ggufs = ["/x/M.Q4_0.gguf", "/x/M.Q4_K_M.gguf", "/x/M.Q8_0.gguf"]
-    assert export_mod._q4nx_source_gguf(ggufs, ["q8_0", "q4_k_m", "q4_0"]) == "/x/M.Q4_K_M.gguf"
-    assert export_mod._q4nx_source_gguf(ggufs, ["q8_0"]) is None
+    assert export_mod.q4nx.source_gguf(ggufs, ["q8_0", "q4_k_m", "q4_0"]) == "/x/M.Q4_K_M.gguf"
+    assert export_mod.q4nx.source_gguf(ggufs, ["q8_0"]) is None
 
 
 def test_converter_runs_in_this_interpreter(monkeypatch, tmp_path):
@@ -148,10 +148,63 @@ def test_converter_runs_in_this_interpreter(monkeypatch, tmp_path):
         ran.update(cmd = cmd, cwd = cwd, check = check)
         (Path(cmd[-1]) / "model.q4nx").write_bytes(b"q4nx")
 
-    monkeypatch.setattr(export_mod, "_q4nx_installer", lambda: _Installer)
-    monkeypatch.setattr(export_mod.subprocess, "run", run)
+    monkeypatch.setattr(export_mod.q4nx, "_installer", lambda: _Installer)
+    monkeypatch.setattr(export_mod.q4nx.subprocess, "run", run)
     out = tmp_path / "out"
-    export_mod._convert_gguf_to_q4nx("/x/M.Q4_1.gguf", out)
+    export_mod.q4nx.convert_gguf_to_q4nx("/x/M.Q4_1.gguf", out)
 
     assert ran["cmd"] == [sys.executable, str(script), "-i", "/x/M.Q4_1.gguf", "-o", str(out)]
     assert ran["cwd"] == str(script.parent) and ran["check"] is True
+
+
+def _base_folder(tmp_path, files):
+    base = tmp_path / "base"
+    base.mkdir()
+    for name, text in files.items():
+        (base / name).write_text(text)
+    return base
+
+
+def test_existing_gguf_takes_companions_from_the_base_model(monkeypatch, tmp_path):
+    export_mod, _b, _s, _c = _backend(monkeypatch, tmp_path, object())
+    _fake_converter(export_mod, monkeypatch, calls := [])
+    monkeypatch.setattr(export_mod.q4nx, "_gguf_chat_template", lambda _p: "{{ gguf }}")
+    base = _base_folder(
+        tmp_path,
+        {"config.json": "{}", "tokenizer.json": "hf", "tokenizer_config.json": '{"eos_token": "x"}'},
+    )
+    gguf = _gguf(tmp_path / "hub" / "Qwen3-0.6B-Q4_1.gguf")
+
+    out = export_mod.q4nx.convert_existing_gguf(gguf, str(base), tmp_path / "exports")
+
+    assert out == tmp_path / "exports" / "Qwen3-0.6B-Q4_1-q4nx"
+    assert calls == ["Qwen3-0.6B-Q4_1.gguf"]
+    assert (out / "tokenizer.json").read_text() == "hf"
+    # Neither the base folder nor its tokenizer_config carries a template, so the GGUF's is used.
+    assert (out / "chat_template.jinja").read_text() == "{{ gguf }}"
+
+
+def test_existing_gguf_keeps_a_template_already_in_tokenizer_config(monkeypatch, tmp_path):
+    export_mod, _b, _s, _c = _backend(monkeypatch, tmp_path, object())
+    _fake_converter(export_mod, monkeypatch, [])
+    base = _base_folder(
+        tmp_path, {"config.json": "{}", "tokenizer_config.json": '{"chat_template": "{{ hf }}"}'}
+    )
+
+    out = export_mod.q4nx.convert_existing_gguf(_gguf(tmp_path / "m.gguf"), str(base), tmp_path)
+
+    assert not (out / "chat_template.jinja").exists()
+
+
+def test_existing_gguf_without_tokenizer_config_fails_before_converting(monkeypatch, tmp_path):
+    export_mod, _b, _s, _c = _backend(monkeypatch, tmp_path, object())
+    _fake_converter(export_mod, monkeypatch, calls := [])
+    base = _base_folder(tmp_path, {"config.json": "{}"})
+
+    try:
+        export_mod.q4nx.convert_existing_gguf(_gguf(tmp_path / "m.gguf"), str(base), tmp_path)
+    except RuntimeError as e:
+        assert "tokenizer_config.json" in str(e)
+    else:
+        raise AssertionError("expected a RuntimeError")
+    assert calls == []

@@ -49,6 +49,7 @@ from models import (
     ExportBaseModelRequest,
     ExportGGUFRequest,
     ExportLoRAAdapterRequest,
+    ConvertQ4NXRequest,
 )
 
 router = APIRouter()
@@ -508,6 +509,56 @@ async def export_gguf(
             status_code = 500,
             detail = "Failed to export GGUF model",
         )
+
+
+@router.post("/convert/q4nx", response_model = ExportOperationResponse)
+async def convert_q4nx(
+    request: ConvertQ4NXRequest,
+    current_subject: str = Depends(get_current_subject),
+    allow_ambient: bool = Depends(allow_ambient_hf_token),
+):
+    """Convert an existing GGUF (local file or Hub repo) to FastFlowLM Q4NX for the AMD NPU.
+
+    Needs no loaded checkpoint or GPU, so it runs here rather than in the export worker.
+    """
+    validate_job_paths(request.model_dump())
+    if bool(request.gguf_path) == bool(request.repo_id and request.filename):
+        raise HTTPException(
+            status_code = 400,
+            detail = "Give either a local gguf_path or a repo_id with a filename.",
+        )
+    token = _resolve_export_hf_token(request.hf_token, allow_ambient = allow_ambient)
+
+    def run() -> str:
+        from core.export import q4nx
+        from utils.paths import resolve_export_write_dir
+
+        if request.gguf_path:
+            source = Path(request.gguf_path)
+            if not source.is_file() or source.suffix.lower() != ".gguf":
+                raise ValueError(f"{source} is not a .gguf file.")
+        else:
+            from huggingface_hub import hf_hub_download
+
+            source = Path(hf_hub_download(request.repo_id, request.filename, token = token))
+        out = q4nx.convert_existing_gguf(
+            source,
+            request.base_model.strip(),
+            Path(resolve_export_write_dir(request.save_directory)),
+            token = token,
+        )
+        return str(out.resolve())
+
+    try:
+        output_path = await asyncio.to_thread(run)
+    except Exception as e:
+        logger.error(f"Q4NX conversion failed: {e}", exc_info = True)
+        raise HTTPException(status_code = 400, detail = f"Q4NX conversion failed: {e}")
+    return ExportOperationResponse(
+        success = True,
+        message = "Converted to Q4NX for the AMD NPU",
+        details = await asyncio.to_thread(_export_details, output_path, refresh_index = True),
+    )
 
 
 @router.post("/export/lora", response_model = ExportOperationResponse)

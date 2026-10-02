@@ -67,6 +67,7 @@ import type { ModelCheckpoints } from "./api/export-api";
 import { adapterCompatibilityTip, type AdapterFormat } from "./constants";
 import { ExportRunPanel } from "./components/export-run-panel";
 import { MethodPicker } from "./components/method-picker";
+import { Q4nxConvertCard } from "./components/q4nx-convert-card";
 import { QuantPicker } from "./components/quant-picker";
 import {
   EXPORT_METHODS,
@@ -1891,6 +1892,7 @@ export function ExportPage() {
             </>
           )}
         </SectionCard>
+        <Q4nxConvertCard />
       </main>
     </div>
   );

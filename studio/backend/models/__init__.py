@@ -40,6 +40,7 @@ from .export import (
     ExportMergedModelRequest,
     ExportBaseModelRequest,
     ExportGGUFRequest,
+    ConvertQ4NXRequest,
     ExportLoRAAdapterRequest,
 )
 from .users import Token
@@ -97,6 +98,7 @@ __all__ = [
     "ExportMergedModelRequest",
     "ExportBaseModelRequest",
     "ExportGGUFRequest",
+    "ConvertQ4NXRequest",
     "ExportLoRAAdapterRequest",
     "Token",
     "LoadRequest",

@@ -232,6 +232,27 @@ class ExportGGUFRequest(BaseModel):
     )
 
 
+class ConvertQ4NXRequest(BaseModel):
+    """Convert a GGUF that already exists to FastFlowLM Q4NX, without loading a model."""
+
+    save_directory: str = Field(..., description = "Directory the Q4NX folder is written into")
+
+    @field_validator("save_directory", mode = "before")
+    @classmethod
+    def _check_save_directory(cls, v):
+        return _validate_save_directory(v)
+
+    gguf_path: Optional[str] = Field(None, description = "A local .gguf file")
+    repo_id: Optional[str] = Field(None, description = "Hub repo holding the GGUF, with filename")
+    filename: Optional[str] = Field(None, description = "GGUF file in repo_id")
+    base_model: str = Field(
+        ...,
+        description = "The original (non-GGUF) Hub repo or local model folder; FastFlowLM needs "
+        "its config.json and tokenizer files.",
+    )
+    hf_token: Optional[str] = Field(None, description = "Hugging Face token for gated repos")
+
+
 class ExportLoRAAdapterRequest(ExportCommonOptions):
     """Request for exporting only the LoRA adapter (not merged)."""
 

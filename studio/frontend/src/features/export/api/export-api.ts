@@ -186,6 +186,24 @@ export async function exportGGUF(params: {
   return parseJson<ExportOperationResponse>(response);
 }
 
+/** Convert a GGUF that already exists (local file or Hub repo) to Q4NX for the AMD NPU. */
+export async function convertGgufToQ4nx(params: {
+  save_directory: string;
+  gguf_path?: string | null;
+  repo_id?: string | null;
+  filename?: string | null;
+  /** Original (non-GGUF) repo or local folder that supplies config.json and the tokenizer files. */
+  base_model: string;
+  hf_token?: string | null;
+}): Promise<ExportOperationResponse> {
+  const response = await authFetch("/api/export/convert/q4nx", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  return parseJson<ExportOperationResponse>(response);
+}
+
 export async function exportLoRA(params: {
   save_directory: string;
   push_to_hub?: boolean;
