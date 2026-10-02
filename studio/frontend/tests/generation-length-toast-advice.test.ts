@@ -23,9 +23,8 @@ const CAP_REMEDY = /Increase Max Tokens or disable thinking/;
 const WINDOW_REMEDY = /cannot create room the window does not have/;
 const NO_UNLIMITED_CLAIM = /already unlimited/;
 const WINDOW_SETTING = /Length in Model settings/;
-const HIDDEN_WINDOW_REMEDY = /start "\s*\+\s*"a new chat, or shorten this one/;
-const BOTH_REMEDIES =
-  /used up either "\s*\+\s*"Max Tokens or what the model's context window/;
+const HIDDEN_WINDOW_REMEDY = /Start a new chat, or shorten this one, then retry/;
+const BOTH_REMEDIES = /Max Tokens or its context window before answering/;
 
 test("the toast repeats the advice the error chose, not the Max Tokens advice", () => {
   // GenerationLengthError already decides between the Max Tokens and the Context

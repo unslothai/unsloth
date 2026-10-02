@@ -124,16 +124,12 @@ const LENGTH_STOP_ADVICE: Record<LengthStopCause, string> = {
     "Context Length in Model settings, or disable thinking, then retry.",
   // No Studio setting controls a connected model's window.
   context_window:
-    "The conversation filled the model's context window: thinking used what " +
-    "the window had left after the prompt, before any answer was written. " +
-    "Raising Max Tokens cannot create room the window does not have -- start " +
-    "a new chat, or shorten this one, then retry.",
+    "The conversation filled the model's context window before an answer was " +
+    "written. Start a new chat, or shorten this one, then retry.",
   // Unknown cause: offer both remedies.
   unknown:
-    "The model stopped before producing a final answer: thinking used up either " +
-    "Max Tokens or what the model's context window had left after the prompt. " +
-    "Increase Max Tokens or disable thinking, or start a new chat if this one " +
-    "is long, then retry.",
+    "The model hit Max Tokens or its context window before answering. Increase " +
+    "Max Tokens, disable thinking, or start a new chat.",
 };
 
 /** Thrown when a reasoning model consumes its output budget before emitting any standard content,
