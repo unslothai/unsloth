@@ -109,9 +109,17 @@ _exec_start="$(_unit_quote "$_UNSLOTH_EXE") studio -H $(_unit_quote "$_HOST") -p
 _env_line=""
 [ -n "$_STUDIO_HOME" ] && _env_line="Environment=$(_unit_quote "UNSLOTH_STUDIO_HOME=$_STUDIO_HOME")"
 
-case "${XDG_CONFIG_HOME:-}" in
-    /*) _unit_dir="$XDG_CONFIG_HOME/systemd/user" ;;
-    *) _unit_dir="$HOME/.config/systemd/user" ;;
+# Enabling: the unit goes where the user manager looks, which follows its own HOME, not ours.
+_cfg_home="$HOME"
+_cfg_xdg="${XDG_CONFIG_HOME:-}"
+if [ "$_DO_ENABLE" = true ]; then
+    _mgr_env=$(systemctl --user show-environment 2>/dev/null || true)
+    _mgr_home=$(printf '%s\n' "$_mgr_env" | sed -n 's/^HOME=//p' | head -n 1)
+    case "$_mgr_home" in /*) _cfg_home="$_mgr_home"; _cfg_xdg=$(printf '%s\n' "$_mgr_env" | sed -n 's/^XDG_CONFIG_HOME=//p' | head -n 1) ;; esac
+fi
+case "$_cfg_xdg" in
+    /*) _unit_dir="$_cfg_xdg/systemd/user" ;;
+    *) _unit_dir="$_cfg_home/.config/systemd/user" ;;
 esac
 mkdir -p "$_unit_dir"
 _unit_path="$_unit_dir/$UNIT_NAME"

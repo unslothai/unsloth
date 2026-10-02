@@ -725,6 +725,11 @@ _unsloth_uninstall_main() {
     _remove_systemd_user_service() {
         _sd_dir="$(_xdg_dir "${XDG_CONFIG_HOME:-}" "$HOME/.config")/systemd/user"
         _sd_unit="$_sd_dir/unsloth-studio.service"
+        if [ ! -f "$_sd_unit" ] && command -v systemctl >/dev/null 2>&1; then
+            # HOME redirected: ask the manager where the unit it loaded lives.
+            _sd_frag=$(systemctl --user show -p FragmentPath --value unsloth-studio.service 2>/dev/null || true)
+            case "$_sd_frag" in */unsloth-studio.service) _sd_unit="$_sd_frag"; _sd_dir="${_sd_frag%/*}" ;; esac
+        fi
         [ -f "$_sd_unit" ] || return 0
         [ "$(head -n 1 "$_sd_unit" 2>/dev/null)" = "# unsloth-studio-managed-systemd" ] || return 0
         _sd_stopped=0

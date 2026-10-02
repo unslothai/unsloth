@@ -97,10 +97,35 @@ def test_enable_start_drives_systemctl(tmp_path):
     )
     assert log.read_text().splitlines() == [
         "--user show-environment",
+        "--user show-environment",
         "--user daemon-reload",
         "--user enable unsloth-studio.service",
         "--user restart unsloth-studio.service",
     ]
+
+
+def test_enable_writes_where_the_user_manager_looks(tmp_path):
+    # HOME redirected for the installer: the manager still reads its own HOME's config.
+    mgr_home = tmp_path / "passwd_home"
+    _fake_bin(
+        tmp_path,
+        "systemctl",
+        f'[ "$2" = show-environment ] && printf "HOME={mgr_home}\\nLANG=C\\n"; exit 0',
+    )
+    exe = _fake_bin(tmp_path, "unsloth", "exit 0")
+    out = subprocess.run(
+        ["bash", str(SYSTEMD_INSTALL_SH), "--unsloth-exe", str(exe), "--enable"],
+        check = True,
+        capture_output = True,
+        text = True,
+        env = {
+            **os.environ,
+            "HOME": str(tmp_path / "redirected"),
+            "XDG_CONFIG_HOME": str(tmp_path / "redirected" / ".config"),
+            "PATH": f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}",
+        },
+    ).stdout.strip()
+    assert out == str(mgr_home / ".config" / "systemd" / "user" / "unsloth-studio.service")
 
 
 _GATE = re.compile(
@@ -305,6 +330,26 @@ def test_uninstall_without_user_bus_still_drops_the_enable_link(tmp_path):
     assert not os.path.lexists(d / "default.target.wants" / "unsloth-studio.service")
     assert "could not reach the systemd user manager" in out
     assert "disable" not in out
+
+
+def test_installer_passes_studio_home_when_home_is_redirected(tmp_path):
+    out = _run_installer_tail(tmp_path, _INSTALL_SYSTEMD = "true", _STUDIO_HOME_REDIRECT = "home")
+    assert f"--studio-home {tmp_path / 'home'}" in out
+    out = _run_installer_tail(tmp_path, _INSTALL_SYSTEMD = "true")
+    assert "--studio-home" not in out
+
+
+def test_uninstall_finds_the_unit_through_the_manager(tmp_path):
+    other = tmp_path / "passwd_home" / ".config" / "systemd" / "user"
+    other.mkdir(parents = True)
+    (other / "unsloth-studio.service").write_text("# unsloth-studio-managed-systemd\n")
+    out = _run_uninstall_removal(
+        tmp_path,
+        None,
+        f'[ "$2" = show ] && echo "{other}/unsloth-studio.service"; exit 0',
+    )
+    assert "--user disable --now unsloth-studio.service" in out
+    assert not (other / "unsloth-studio.service").exists()
 
 
 def test_uninstall_with_user_bus_disables_then_removes(tmp_path):

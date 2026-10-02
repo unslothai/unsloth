@@ -1488,7 +1488,8 @@ _install_systemd_user_service() {
 
     set -- --unsloth-exe "$VENV_DIR/bin/unsloth" \
         --host "${UNSLOTH_SYSTEMD_HOST:-127.0.0.1}" --port "${UNSLOTH_SYSTEMD_PORT:-8888}" --enable --start
-    [ "$_STUDIO_HOME_REDIRECT" = "env" ] && set -- "$@" --studio-home "$STUDIO_HOME"
+    # The user manager runs with the passwd HOME, so any non-default home has to be spelled out.
+    [ "$_STUDIO_HOME_REDIRECT" != "default" ] && set -- "$@" --studio-home "$STUDIO_HOME"
 
     if bash "$_sd_script" "$@" >/dev/null; then
         _SYSTEMD_STARTED=true
