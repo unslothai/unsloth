@@ -380,14 +380,19 @@ def _v1_parts(w: Any) -> Optional[tuple]:
         return None
 
 
-def _v2_parts(w: Any) -> Optional[tuple]:
-    """(int8 [N, K], scale [N]) of a plain dynamic symmetric per-row torchao ``Int8Tensor``, else None."""
+def _v2_parts(w: Any, check_zero_point: bool = True) -> Optional[tuple]:
+    """(int8 [N, K], scale [N]) of a plain dynamic symmetric per-row torchao ``Int8Tensor``, else None.
+    ``check_zero_point=False`` inside a traced forward: the check is a host sync and a graph break."""
     try:
         from .diffusion_int8_fused import _plain_int8_weight
 
         if not _plain_int8_weight(w):
             return None
-        if getattr(w, "zero_point", None) is not None and bool((w.zero_point != 0).any()):
+        if (
+            check_zero_point
+            and getattr(w, "zero_point", None) is not None
+            and bool((w.zero_point != 0).any())
+        ):
             return None
         return w.qdata, w.scale.reshape(-1)
     except Exception:  # noqa: BLE001
@@ -485,7 +490,8 @@ def linear_from_q(q: Any, xs: Any, weight: Any, bias: Any) -> Optional[Any]:
         return None
     if _DEVICE_CFG.get(q.device.index) is None:
         return None
-    parts = _v2_parts(weight)
+    # The fused MLP already admitted this weight (symmetric, and its stock epilogue ignores the zero point too).
+    parts = _v2_parts(weight, check_zero_point = False)
     if (
         parts is None
         or q.shape[0] < _MIN_ROWS

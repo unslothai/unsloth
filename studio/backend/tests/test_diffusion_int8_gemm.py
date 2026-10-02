@@ -206,3 +206,40 @@ def test_small_m_and_misaligned_keep_stock(forced):
             torch.randn(16, 1024, device = "cuda", dtype = torch.bfloat16)
         )  # M = 16 < _int_mm's floor: stock
     assert g8.call_count() == before
+
+
+@needs_cuda
+def test_fused_mlp_down_projection_traces_without_breaks(forced):
+    """The fused MLP's down projection reaches the GEMM through ``linear_from_q`` inside the compiled block: no host
+    sync, no graph break, and the same bits as the stock epilogue."""
+    from torch._dynamo.utils import counters
+
+    from core.inference import diffusion_int8_fused as f8
+
+    attention = pytest.importorskip("diffusers.models.attention")
+    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+
+    def make():
+        torch.manual_seed(0)
+        ff = attention.FeedForward(1024, dim_out = 1024, mult = 4, activation_fn = "gelu-approximate")
+        ff = ff.cuda().to(torch.bfloat16)
+        quantize_(ff, Int8DynamicActivationInt8WeightConfig(version = 2, set_inductor_config = False))
+        return torch.nn.Sequential(ff)
+
+    stock, fused = make(), make()
+    if not f8.install(fused):
+        pytest.skip("int8 fused MLP probe refused this device")
+    g8.install(fused)  # as diffusion_speed does: sets the op handle linear_from_q calls
+    x = torch.randn(2, 300, 1024, device = "cuda", dtype = torch.bfloat16)
+    with torch.inference_mode():
+        before = g8.call_count()
+        assert torch.equal(fused(x), stock(x))
+        assert g8.call_count() == before + 1
+        counters.clear()
+        torch._dynamo.reset()
+        with torch._inductor.config.patch(emulate_precision_casts = True):
+            out = torch.compile(fused, fullgraph = True)(x)
+        assert not counters["graph_break"]
+        assert out.shape == x.shape and torch.isfinite(out).all()
+    g8.uninstall(fused)
+    f8.uninstall(fused)
