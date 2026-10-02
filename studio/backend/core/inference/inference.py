@@ -1995,6 +1995,7 @@ class InferenceBackend:
         repetition_penalty,
         use_adapter: Optional[Union[bool, str]] = None,
         cancel_event = None,
+        extra_audio_arrays: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Audio-input (ASR) generation: takes an audio numpy array, streams text.
 
@@ -2015,7 +2016,7 @@ class InferenceBackend:
         if not system_prompt:
             system_prompt = "You are an assistant that transcribes speech accurately."
 
-        # Gemma 3n format — audio goes INTO apply_chat_template
+        # Gemma 3n format: audio goes INTO apply_chat_template, one item per clip in order.
         audio_messages = messages_with_attached_image(
             alternating_turns(messages),
             system_prompt = system_prompt,
@@ -2023,6 +2024,7 @@ class InferenceBackend:
             structured_content = True,
             image = 0,
             audio = audio_array,
+            extra_audio = extra_audio_arrays or (),
         )
 
         # Direct processor render like the vision path, so neutralize here too, with
@@ -2155,7 +2157,9 @@ class InferenceBackend:
     def generate_whisper_response(
         self,
         audio_array,
+        use_adapter: Optional[Union[bool, str]] = None,
         cancel_event = None,
+        extra_audio_arrays: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Whisper ASR: takes an audio numpy array, yields transcribed text through the pipeline
         built at model load."""
@@ -2169,13 +2173,23 @@ class InferenceBackend:
             yield "Error: Whisper pipeline not initialized"
             return
 
+        clips = [audio_array, *(extra_audio_arrays or [])]
         try:
-            with self._generation_lock:
-                result = whisper_pipe({"raw": audio_array, "sampling_rate": 16000})
+            for index, clip in enumerate(clips):
+                if cancel_event is not None and cancel_event.is_set():
+                    return
+                with self._generation_lock:
+                    self._apply_adapter_state(use_adapter)
+                    try:
+                        result = whisper_pipe({"raw": clip, "sampling_rate": 16000})
+                    finally:
+                        # Plain requests keep the adapter state, so turn the LoRA back on.
+                        if use_adapter is False and isinstance(model_info.get("model"), PeftModel):
+                            model_info["model"].base_model.enable_adapter_layers()
 
-            text = result.get("text", "") if isinstance(result, dict) else str(result)
-            if text:
-                yield text
+                text = result.get("text", "") if isinstance(result, dict) else str(result)
+                if text:
+                    yield f"\n\n{text}" if index else text
         except Exception as e:
             logger.error(f"Whisper ASR error: {e}")
             yield f"Error: {str(e)}"

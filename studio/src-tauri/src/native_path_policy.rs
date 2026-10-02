@@ -46,7 +46,7 @@ pub fn classify_native_model_path(path: &Path) -> Result<ClassifiedPath, String>
     })
 }
 
-/// Document types the RAG ingest accepts; keep in sync with `config.UPLOAD_EXTS`.
+/// Document types the RAG ingest accepts; keep in sync with `config.SUPPORTED_UPLOAD_EXTS`.
 pub const ATTACHMENT_EXTS: &[&str] = &["pdf", "txt", "md", "markdown", "docx", "html", "htm"];
 /// OpenDocument files the chat composer parses directly rather than indexing as RAG sources.
 pub const OPEN_DOCUMENT_ATTACHMENT_EXTS: &[&str] = &["ods", "odt"];
@@ -1252,12 +1252,17 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_path(name: &str) -> PathBuf {
+        // Tests run on parallel threads, and macOS's clock resolves only microseconds, so two
+        // calls with the same name could get the same path and one test's cleanup or swap would
+        // land on the other's file. The counter keeps every name in this process distinct.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         scratch_root().join(format!(
-            "unsloth-native-policy-{name}-{}-{nanos}",
+            "unsloth-native-policy-{name}-{}-{nanos}-{seq}",
             std::process::id()
         ))
     }

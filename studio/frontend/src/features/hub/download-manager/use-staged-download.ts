@@ -169,5 +169,5 @@ export function useStagedDownload({
     [downloadedBytes, totalBytes, plan],
   );
 
-  return { stage, staging: queue !== null, progress };
+  return { stage, remaining: queue, staging: queue !== null, progress };
 }

@@ -48,6 +48,7 @@ from utils.audio_tokens import (
 from utils.models.gguf_metadata import (
     is_mmproj_by_metadata,
     mmproj_accepts_image,
+    mmproj_functional_match,
     pairing_score,
     read_gguf_general_metadata,
     read_gguf_nextn_predict_layers,
@@ -1934,8 +1935,10 @@ def _detect_family_token(filename: str) -> Optional[str]:
 
 
 def mmproj_matches_model_family(model_path: str, mmproj_path: str) -> bool:
-    """Launcher guard: True unless both filenames carry recognised family
-    tokens that disagree."""
+    """Prefer known functional metadata, falling back to filename family hints."""
+    functional_match, _ = mmproj_functional_match(model_path, mmproj_path)
+    if functional_match is not None:
+        return functional_match
     model_fam = _detect_family_token(Path(model_path).name)
     mmproj_fam = _detect_family_token(Path(mmproj_path).name)
     if model_fam is None or mmproj_fam is None:
@@ -2193,8 +2196,24 @@ def detect_mmproj_file(
     for c in candidates:
         cand_meta = read_gguf_general_metadata(str(c))
         meta_score = pairing_score(weight_meta, cand_meta)
+        functional_match, mismatch = mmproj_functional_match(str(p), str(c))
+        if functional_match is False:
+            logger.info(f"detect_mmproj_file: dropped {c.name} ({mismatch})")
+            continue
+        if functional_match is True:
+            meta_score = max(meta_score, 50)
         if meta_score == -1:
-            logger.info(f"detect_mmproj_file: dropped {c.name} (metadata mismatch)")
+            differences = "; ".join(
+                f"{key} {weight_meta.get(key)!r} != {cand_meta.get(key)!r}"
+                for key in (
+                    "general.base_model.0.repo_url",
+                    "general.basename",
+                    "general.base_model.0.organization",
+                    "general.organization",
+                )
+                if weight_meta.get(key) != cand_meta.get(key)
+            )
+            logger.info(f"detect_mmproj_file: dropped {c.name} (metadata mismatch: {differences})")
             continue
         if meta_score == 0 and model_family is not None:
             # Unrecognised candidate family is a wildcard (``mmproj-F16.gguf``).
@@ -2698,9 +2717,9 @@ def _extract_quant_label(filename: str) -> str:
         r"(UD-)?"  # Optional UD- prefix (Ultra Discrete)
         r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"  # MXFP variants: MXFP4, MXFP4_MOE
         r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"  # IQ variants: IQ4_XS, IQ4_NL, IQ1_S
-        r"|TQ[0-9]+_[0-9]+"  # Ternary quant: TQ1_0, TQ2_0
+        r"|P?TQ[0-9]+_[0-9]+"  # Ternary quant: TQ1_0, TQ2_0
         r"|Q[0-9]+_K_[A-Z]+"  # K-quant: Q4_K_M, Q3_K_S
-        r"|Q[0-9]+_[0-9]+"  # Standard: Q8_0, Q5_1
+        r"|P?Q[0-9]+_[0-9]+(?:_G[0-9]+)?"  # Standard/Packed: Q8_0, PQ2_0, Q2_0_g64
         r"|Q[0-9]+_K"  # Short K-quant: Q6_K
         r"|BF16|F16|F32)"  # Full precision
         # Optional bits-per-weight modifier so repos shipping several files at one base quant
@@ -2730,9 +2749,9 @@ _GGUF_KNOWN_QUANT_RE = re.compile(
     r"(UD-)?"
     r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
     r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
-    r"|TQ[0-9]+_[0-9]+"
+    r"|P?TQ[0-9]+_[0-9]+"
     r"|Q[0-9]+_K_[A-Z]+"
-    r"|Q[0-9]+_[0-9]+"
+    r"|P?Q[0-9]+_[0-9]+(?:_G[0-9]+)?"
     r"|Q[0-9]+_K"
     r"|BF16|F16|F32)",
     re.IGNORECASE,

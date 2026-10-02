@@ -2480,6 +2480,8 @@ class TestSandboxEnvIsolation:
             "NoDefaultCurrentDirectoryInExePath",  # Windows only; no cwd-first lookup
             "TEMP",  # Windows only; native programs honour these, not TMPDIR
             "TMP",
+            "HOMEDRIVE",  # Windows only; Path.home() at the workdir, never inherited
+            "HOMEPATH",
         }
         extras = set(env.keys()) - allowed
         assert not extras, f"sandbox env added unexpected keys: {extras}"
