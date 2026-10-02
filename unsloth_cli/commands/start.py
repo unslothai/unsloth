@@ -685,6 +685,8 @@ class ServerOptions(NamedTuple):
     presence_penalty: Optional[float] = None
     # Fields the agent's own config sends with each request, kept off the server.
     carried: frozenset = frozenset()
+    # Carried fields with a value: an inherited UNSLOTH_SAMPLING_* pin would override them.
+    unpinned: frozenset = frozenset()
 
     def sent_by_agent(self) -> frozenset:
         if self.reasoning_effort in _STUDIO_REASONING_EFFORTS:
@@ -1370,16 +1372,13 @@ def _start_studio_server(
     elif "UNSLOTH_TOOL_CALL_NUDGE" not in child_env:
         child_env["UNSLOTH_TOOL_CALL_NUDGE"] = "1"
     # Forward any sampling pin via the env; `unsloth run` reads UNSLOTH_SAMPLING_* and the backend resolver applies it as a hard override. Only set fields the operator specified.
-    for _sampling_env, _sampling_value in (
-        ("UNSLOTH_SAMPLING_TEMPERATURE", server.temperature),
-        ("UNSLOTH_SAMPLING_TOP_P", server.top_p),
-        ("UNSLOTH_SAMPLING_TOP_K", server.top_k),
-        ("UNSLOTH_SAMPLING_MIN_P", server.min_p),
-        ("UNSLOTH_SAMPLING_REPETITION_PENALTY", server.repetition_penalty),
-        ("UNSLOTH_SAMPLING_PRESENCE_PENALTY", server.presence_penalty),
-    ):
+    for _sampling_name in _SAMPLING_FIELDS:
+        _sampling_env = f"UNSLOTH_SAMPLING_{_sampling_name.upper()}"
+        _sampling_value = getattr(server, _sampling_name)
         if _sampling_value is not None:
             child_env[_sampling_env] = str(_sampling_value)
+        elif _sampling_name in server.unpinned:
+            child_env.pop(_sampling_env, None)
     kwargs: dict = {
         "stdout": log,
         "stderr": subprocess.STDOUT,
@@ -1484,7 +1483,11 @@ def _require_studio(
     server_options: ServerOptions = ServerOptions(),
 ) -> tuple:
     """Return (base, server). server is a Popen only when WE auto-started it."""
-    server_options = server_options._replace(**dict.fromkeys(server_options.sent_by_agent()))
+    sent = server_options.sent_by_agent()
+    server_options = server_options._replace(
+        unpinned = frozenset(name for name in sent if getattr(server_options, name) is not None),
+        **dict.fromkeys(sent),
+    )
     base = find_studio_server()
     if base is not None:
         # What the agent cannot send itself only reaches the env of a server WE launch, so warn instead of silently dropping it.

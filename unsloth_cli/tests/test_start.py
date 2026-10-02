@@ -3335,6 +3335,33 @@ def test_start_studio_server_respects_inherited_tool_call_env(monkeypatch):
     assert env["UNSLOTH_TOOL_CALL_NUDGE"] == "1"
 
 
+def test_start_studio_server_drops_an_inherited_pin_the_agent_overrides(monkeypatch):
+    captured = {}
+
+    class FakePopen:
+        def __init__(self, command, **kwargs):
+            captured["env"] = kwargs["env"]
+            self.pid = 1
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(start.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(start, "_studio_healthy", lambda base, timeout = 3.0: True)
+    monkeypatch.setattr(start, "_log_tail", lambda path, lines = 20: "API Key: sk-unsloth-x")
+    monkeypatch.setattr(start.time, "sleep", lambda _s: None)
+    monkeypatch.setenv("UNSLOTH_SAMPLING_TEMPERATURE", "0.7")
+    monkeypatch.setenv("UNSLOTH_SAMPLING_TOP_P", "0.5")
+    start._start_studio_server(
+        "http://127.0.0.1:8888",
+        "unsloth/M-GGUF",
+        start.LoadOptions(),
+        start.ServerOptions(unpinned = frozenset({"temperature"})),
+    )
+    assert "UNSLOTH_SAMPLING_TEMPERATURE" not in captured["env"]
+    assert captured["env"]["UNSLOTH_SAMPLING_TOP_P"] == "0.5"
+
+
 def test_start_studio_server_forwards_sampling_via_env(monkeypatch):
     # Sampling pins ride to the child server through UNSLOTH_SAMPLING_*; unset ones stay absent
     # so the backend keeps the per-model recommendation.
@@ -3635,6 +3662,7 @@ def test_spawned_server_keeps_only_what_the_agent_cannot_send(
     sampling = {name: getattr(options, name) for name in ("temperature", "top_k")}
     assert {k: v for k, v in sampling.items() if v is not None} == server_keeps
     assert options.reasoning is None
+    assert options.unpinned == {"reasoning", *({"temperature", "top_k"} - set(server_keeps))}
 
 
 @pytest.mark.parametrize("reasoning", ["on", "off", "auto"])
