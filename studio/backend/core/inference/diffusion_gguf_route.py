@@ -10,15 +10,18 @@ accurate than it. Device eligibility (CUDA bf16) is the caller's.
 from __future__ import annotations
 
 import os
+import re
 from typing import Any, Optional
 
 # "0" restores the resident-only swap.
 GGUF_OFFLOAD_PREQUANT_ENV = "UNSLOTH_DIFFUSION_GGUF_OFFLOAD_PREQUANT"
 
-# GGUFs at least as accurate as int8 (Qwen-Image-2.1 LPIPS vs bf16: Q5_K_M 0.077, int8 0.059, Q6_K 0.042): auto keeps them.
-_GGUF_PREFIXES_KEPT_UNDER_OFFLOAD = ("Q6", "Q8", "F16", "BF16", "F32")
-# fp8 (LPIPS 0.10-0.11) only replaces 4-bit and narrower.
-_GGUF_PREFIXES_KEPT_OTHER_SCHEMES = ("Q5", *_GGUF_PREFIXES_KEPT_UNDER_OFFLOAD)
+# Widest GGUF bit width a scheme's checkpoint replaces on auto. int8 is closer to bf16 than 5-bit GGUFs and further than
+# 6-bit (Qwen-Image-2.1 LPIPS vs bf16: Q5_K_M 0.077, int8 0.059, Q6_K 0.042); fp8 (0.10-0.11) only beats 4-bit.
+_MAX_REPLACED_GGUF_BITS = {"int8": 5}
+_DEFAULT_MAX_REPLACED_GGUF_BITS = 4
+# Only these spell their bit width as the leading number; anything else (BF16, F16, F32, an unknown token) is kept.
+_GGUF_BITS_RE = re.compile(r"^(?:MXFP|IQ|P?TQ|P?Q)([0-9]+)")
 
 
 def gguf_offload_prequant_enabled() -> bool:
@@ -46,14 +49,12 @@ def gguf_outranks_scheme(gguf_filename: Optional[str], scheme: Optional[str]) ->
     token = gguf_quant_token(gguf_filename)
     if token is None:
         return True
-    if token.startswith("UD-"):
-        token = token[3:]
-    kept = (
-        _GGUF_PREFIXES_KEPT_UNDER_OFFLOAD
-        if str(scheme) == "int8"
-        else _GGUF_PREFIXES_KEPT_OTHER_SCHEMES
+    match = _GGUF_BITS_RE.match(token[3:] if token.startswith("UD-") else token)
+    if match is None:
+        return True
+    return int(match.group(1)) > _MAX_REPLACED_GGUF_BITS.get(
+        str(scheme), _DEFAULT_MAX_REPLACED_GGUF_BITS
     )
-    return token.startswith(kept)
 
 
 def gguf_offload_prequant_placement(

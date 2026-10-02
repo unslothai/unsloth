@@ -126,6 +126,11 @@ def test_explicit_scheme_may_fetch_its_checkpoint():
         ("qwen-image-2.1-F16.gguf", True),
         ("qwen-image-2.1-BF16.gguf", True),
         ("model.gguf", True),
+        ("model-MXFP8.gguf", True),
+        ("model-IQ6_XS.gguf", True),
+        ("model-PQ8_0.gguf", True),
+        ("model-TQ1_0.gguf", False),
+        ("model-Q5_0.gguf", False),
         (None, True),
     ],
 )
@@ -134,7 +139,13 @@ def test_accuracy_gate_by_quant(gguf, outranks):
 
 
 @pytest.mark.parametrize(
-    "gguf, outranks", [("x-Q4_K_M.gguf", False), ("x-Q5_K_M.gguf", True), ("x-Q6_K.gguf", True)]
+    "gguf, outranks",
+    [
+        ("x-Q4_K_M.gguf", False),
+        ("x-Q5_K_M.gguf", True),
+        ("x-Q6_K.gguf", True),
+        ("x-MXFP8.gguf", True),
+    ],
 )
 def test_fp8_only_replaces_4_bit_and_narrower(gguf, outranks):
     assert route.gguf_outranks_scheme(gguf, "fp8") is outranks
