@@ -666,7 +666,9 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
                     _refresh_dense_quant_capability()
                 except Exception as _dq_exc:  # noqa: BLE001 -- a picker label must never break the warm
                     import structlog as _structlog
-                    _structlog.get_logger(__name__).debug("dense quant capability skipped: %s", _dq_exc)
+                    _structlog.get_logger(__name__).debug(
+                        "dense quant capability skipped: %s", _dq_exc
+                    )
                 try:
                     _refresh_quantised_streaming_capability()
                 except Exception as _qs_exc:  # noqa: BLE001 -- a picker tier must never break the warm
