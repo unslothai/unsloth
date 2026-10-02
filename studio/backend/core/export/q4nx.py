@@ -80,13 +80,15 @@ def _fetch_base_file(base_model: str, name: str, token) -> Optional[Path]:
 
 def _gguf_chat_template(gguf_path: Path) -> Optional[str]:
     import gguf
-
     field = gguf.GGUFReader(str(gguf_path)).fields.get("tokenizer.chat_template")
     return field.contents() if field is not None else None
 
 
 def convert_existing_gguf(
-    gguf_path: Path, base_model: str, save_directory: Path, token = None
+    gguf_path: Path,
+    base_model: str,
+    save_directory: Path,
+    token = None,
 ) -> Path:
     """Convert a GGUF already on disk; config and tokenizer files come from ``base_model``.
 

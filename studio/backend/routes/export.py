@@ -539,7 +539,6 @@ async def convert_q4nx(
                 raise ValueError(f"{source} is not a .gguf file.")
         else:
             from huggingface_hub import hf_hub_download
-
             source = Path(hf_hub_download(request.repo_id, request.filename, token = token))
         out = q4nx.convert_existing_gguf(
             source,

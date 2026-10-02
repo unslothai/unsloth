@@ -115,6 +115,7 @@ _PYTORCH_MISSING_MESSAGE = (
 
 _LLAMA_CPP_SCRIPTS_WARNING_EMITTED = False
 
+
 @contextlib.contextmanager
 def _llama_cpp_scripts_pin():
     """Pin convert_hf_to_gguf.py to setup.sh's llama.cpp ref for one conversion.

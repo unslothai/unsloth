@@ -171,7 +171,11 @@ def test_existing_gguf_takes_companions_from_the_base_model(monkeypatch, tmp_pat
     monkeypatch.setattr(export_mod.q4nx, "_gguf_chat_template", lambda _p: "{{ gguf }}")
     base = _base_folder(
         tmp_path,
-        {"config.json": "{}", "tokenizer.json": "hf", "tokenizer_config.json": '{"eos_token": "x"}'},
+        {
+            "config.json": "{}",
+            "tokenizer.json": "hf",
+            "tokenizer_config.json": '{"eos_token": "x"}',
+        },
     )
     gguf = _gguf(tmp_path / "hub" / "Qwen3-0.6B-Q4_1.gguf")
 
