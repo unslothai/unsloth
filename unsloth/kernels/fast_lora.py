@@ -10,9 +10,11 @@
 # limitations under the License.
 
 import torch
+from unsloth_zoo.utils import Version
 from .utils import (
     _has_multiple_active_adapters,
     _maybe_fake_quantize_activations,
+    addmm_,
     fast_dequantize,
     QUANT_STATE,
     get_lora_parameters,
@@ -21,6 +23,19 @@ from .utils import (
     torch_amp_custom_fwd,
     torch_amp_custom_bwd,
 )
+
+_is_compiling = torch.compiler.is_compiling
+
+# Inductor before torch 2.11 miscompiles these Functions' traced backward (wrong LoRA gradients).
+TRACE_LORA_FUNCTIONS = Version(torch.__version__) >= Version("2.11.0")
+
+
+def _apply(function, *args):
+    return function.apply(*args)
+
+
+if not TRACE_LORA_FUNCTIONS:
+    _apply = torch._dynamo.disable(_apply)
 
 
 class LoRA_MLP(torch.autograd.Function):
@@ -179,14 +194,15 @@ class LoRA_MLP(torch.autograd.Function):
 
         # dX = matmul_lora(df, upW.t(), ...) + matmul_lora(de, gateW.t(), ...), expanded below.
         upW = fast_dequantize(upW.t(), upW_quant)
-        dX = torch.matmul(df, upW.t(), out = X if ctx.inplace else None)
+        # Eager only: AOT autograd rejects a backward mutating a forward input that requires grad.
+        dX = torch.matmul(df, upW.t(), out = X if ctx.inplace and not _is_compiling() else None)
         del upW
-        dX.addmm_(up_dB, upA.t(), alpha = upS)
+        addmm_(dX, up_dB, upA.t(), alpha = upS)
 
         gateW = fast_dequantize(gateW.t(), gateW_quant)
-        dX.addmm_(de, gateW.t())
+        addmm_(dX, de, gateW.t())
         del gateW
-        dX.addmm_(gate_dB, gateA.t(), alpha = gateS)
+        addmm_(dX, gate_dB, gateA.t(), alpha = gateS)
 
         return (
             dX.view(batch, seq_len, hd),
@@ -228,7 +244,8 @@ def apply_lora_mlp_swiglu(
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW, upW_quant, upA, upB, upS = get_lora_parameters(self.up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
-    out = LoRA_MLP.apply(
+    out = _apply(
+        LoRA_MLP,
         X,
         gateW,
         gateW_quant,
@@ -269,7 +286,8 @@ def apply_lora_mlp_geglu_exact(
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW, upW_quant, upA, upB, upS = get_lora_parameters(self.up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
-    out = LoRA_MLP.apply(
+    out = _apply(
+        LoRA_MLP,
         X,
         gateW,
         gateW_quant,
@@ -306,7 +324,8 @@ def apply_lora_mlp_geglu_approx(self, X):
     gateW, gateW_quant, gateA, gateB, gateS = get_lora_parameters(self.gate_proj)
     upW, upW_quant, upA, upB, upS = get_lora_parameters(self.up_proj)
     downW, downW_quant, downA, downB, downS = get_lora_parameters(self.down_proj)
-    out = LoRA_MLP.apply(
+    out = _apply(
+        LoRA_MLP,
         X,
         gateW,
         gateW_quant,
@@ -480,19 +499,19 @@ class LoRA_QKV(torch.autograd.Function):
 
         # Combine the per-projection derivatives into dX.
         QW = fast_dequantize(QW.t(), QW_quant)
-        dX = torch.matmul(dQ, QW.t(), out = X if ctx.inplace else None)
+        dX = torch.matmul(dQ, QW.t(), out = X if ctx.inplace and not _is_compiling() else None)
         del QW
-        dX.addmm_(q_dB, QA.t(), alpha = QS)
+        addmm_(dX, q_dB, QA.t(), alpha = QS)
 
         KW = fast_dequantize(KW.t(), KW_quant)
-        dX.addmm_(dK, KW.t())
+        addmm_(dX, dK, KW.t())
         del KW
-        dX.addmm_(k_dB, KA.t(), alpha = KS)
+        addmm_(dX, k_dB, KA.t(), alpha = KS)
 
         VW = fast_dequantize(VW.t(), VW_quant)
-        dX.addmm_(dV, VW.t())
+        addmm_(dX, dV, VW.t())
         del VW
-        dX.addmm_(v_dB, VA.t(), alpha = VS)
+        addmm_(dX, v_dB, VA.t(), alpha = VS)
 
         return (
             dX.view(batch, seq_len, hd),
@@ -526,7 +545,8 @@ def apply_lora_qkv(
     QW, QW_quant, QA, QB, QS = get_lora_parameters(self.q_proj)
     KW, KW_quant, KA, KB, KS = get_lora_parameters(self.k_proj)
     VW, VW_quant, VA, VB, VS = get_lora_parameters(self.v_proj)
-    Q, K, V = LoRA_QKV.apply(
+    Q, K, V = _apply(
+        LoRA_QKV,
         X,
         QW,
         QW_quant,
@@ -617,7 +637,7 @@ class LoRA_W(torch.autograd.Function):
         W = fast_dequantize(W.t(), W_quant)
         dX = dY @ W.t()
         del W
-        dX.addmm_(y_dB, A.t(), alpha = S)
+        addmm_(dX, y_dB, A.t(), alpha = S)
 
         return dX.view(batch, seq_len, hd), None, None, d_A.t(), d_B.t(), None
 
@@ -627,7 +647,7 @@ def apply_lora_o(self, X):
         return self.o_proj(X)
     X = _maybe_fake_quantize_activations(X, self.o_proj)
     OW, OW_quant, OA, OB, OS = get_lora_parameters(self.o_proj)
-    O = LoRA_W.apply(X, OW, OW_quant, OA, OB, OS)
+    O = _apply(LoRA_W, X, OW, OW_quant, OA, OB, OS)
     return O
 
 
@@ -661,7 +681,7 @@ def fast_lora_forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
                 lora_B = self.lora_B[active_adapter].weight
                 scaling = self.scaling[active_adapter]
                 W = self.base_layer.weight
-                return LoRA_W.apply(x, W, QUANT_STATE(W), lora_A, lora_B, scaling)
+                return _apply(LoRA_W, x, W, QUANT_STATE(W), lora_A, lora_B, scaling)
             pass
         pass
 

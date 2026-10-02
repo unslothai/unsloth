@@ -477,7 +477,9 @@ export function applyActiveModelStatusToStore(
     specDrafterKind: status.spec_drafter_kind ?? null,
     // Controls follow the server while clean; loaded baselines always describe
     // the settled resident, including same-model reloads from another client.
+    // Never from a custom load: its echo is the INI's tuning.
     ...(seedLoadParams &&
+      status.requested_llama_cpp_config?.mode !== "custom" &&
       (status.speculative_type !== undefined ||
         prevState.loadedSpeculativeType === null ||
         hydratingExistingModel) && {
@@ -489,6 +491,7 @@ export function applyActiveModelStatusToStore(
         }),
       }),
     ...(seedLoadParams &&
+      status.requested_llama_cpp_config?.mode !== "custom" &&
       status.spec_draft_n_max !== undefined && {
         loadedSpecDraftNMax: status.spec_draft_n_max ?? null,
         ...((hydratingExistingModel ||
@@ -497,6 +500,7 @@ export function applyActiveModelStatusToStore(
         }),
       }),
     ...(seedLoadParams &&
+      status.requested_llama_cpp_config?.mode !== "custom" &&
       status.cache_type_kv !== undefined && {
         loadedKvCacheDtype: status.cache_type_kv,
         ...((prevState.loadedKvCacheDtype === null ||
@@ -630,6 +634,11 @@ export function applyActiveModelStatusToStore(
     // status, not just the first: another client can reload the SAME model with different
     // arguments, and a pinned baseline would resurrect arguments that are not running.
     // seedLoadParams still guards it, so a mid-switch poll cannot overwrite performLoad.
+    ...(status.requested_llama_cpp_config !== undefined && seedLoadParams ? {
+      llamaCppConfig: status.requested_llama_cpp_config ?? undefined,
+      loadedLlamaCppConfig: status.requested_llama_cpp_config ?? null,
+      llamaCppConfigSummary: status.llama_cpp_config_summary ?? null,
+    } : {}),
     ...resolveLlamaExtraArgsSeed({
       incoming: status.requested_llama_extra_args,
       isGguf: status.is_gguf ?? true,
@@ -681,8 +690,9 @@ export function applyActiveModelStatusToStore(
       }),
     // Re-seed on first hydration, model/variant changes, or a same-model backend
     // placement change. placementAndContextFields preserves dirty local edits in the last
-    // case while advancing their loaded baselines.
+    // case while advancing their loaded baselines. Never from a custom load (see above).
     ...(seedLoadParams &&
+      status.requested_llama_cpp_config?.mode !== "custom" &&
       (prevState.loadedGpuMemoryMode === null ||
         hydratingExistingModel ||
         placementOrContextChanged) &&

@@ -163,15 +163,43 @@ def _set_chat_template(tokenizer, chat_template):
         inner.chat_template = chat_template
 
 
+def _drop_none_values(value):
+    # A loaded dict cannot tell an explicit null from a key another row added, so dict-typed
+    # arguments lose their nulls; JSON-string arguments keep them.
+    if isinstance(value, dict):
+        return {key: _drop_none_values(item) for key, item in value.items() if item is not None}
+    if isinstance(value, list):
+        return [_drop_none_values(item) for item in value]
+    return value
+
+
+def _render_conversation(tokenizer, conversation):
+    from core.inference.chat_template_helpers import _normalize_tool_call_arguments
+
+    attempts = []
+    for messages in (_drop_none_values(conversation), conversation):
+        for attempt in (_normalize_tool_call_arguments(messages), messages):
+            if not any(attempt is seen for seen in attempts):
+                attempts.append(attempt)
+    first_error = None
+    for attempt in attempts:
+        try:
+            return tokenizer.apply_chat_template(
+                attempt, tokenize = False, add_generation_prompt = False
+            )
+        except Exception as error:
+            # The row as loaded is kept for templates that need a None content (DeepSeek V3), but its
+            # error is usually a key the loader filled with None, so report the cleaned row's.
+            if first_error is None:
+                first_error = error
+    raise first_error
+
+
 def _count_renderable(tokenizer, conversations):
     rendered = 0
     for conversation in conversations:
         try:
-            tokenizer.apply_chat_template(
-                conversation,
-                tokenize = False,
-                add_generation_prompt = False,
-            )
+            _render_conversation(tokenizer, conversation)
             rendered += 1
         except Exception:
             pass
@@ -267,6 +295,18 @@ def get_dataset_info_summary(dataset_info):
         "warnings": dataset_info.get("warnings", []),
         "ready_for_training": dataset_info["is_standardized"] and final_format != "unknown"
     }
+
+
+def _with_system_turn(convo, system):
+    if (
+        isinstance(system, str)
+        and system.strip()
+        and convo
+        and isinstance(convo[0], dict)
+        and convo[0].get("role") != "system"
+    ):
+        return [{"role": "system", "content": system}, *convo]
+    return convo
 
 
 def apply_chat_template_to_dataset(
@@ -488,16 +528,20 @@ def apply_chat_template_to_dataset(
 
         def _format_chatml(examples):
             convos = examples[chat_column]
+            systems = examples.get("system") or [None] * len(convos)
             texts = []
             row_errors = []
 
-            for convo in convos:
+            for convo, system in zip(convos, systems):
                 try:
-                    text = tokenizer.apply_chat_template(
-                        convo,
-                        tokenize = False,
-                        add_generation_prompt = False
-                    )
+                    with_system = _with_system_turn(convo, system)
+                    try:
+                        text = _render_conversation(tokenizer, with_system)
+                    except Exception:
+                        # A template without a system role still trains the conversation.
+                        if with_system is convo:
+                            raise
+                        text = _render_conversation(tokenizer, convo)
 
                     if remove_bos_prefix:
                         text = text.removeprefix('<bos>')

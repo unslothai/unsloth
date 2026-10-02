@@ -31,6 +31,7 @@ from core.inference.llama_server_args import (
 from core.inference.runtime_context import MAX_REQUESTABLE_CONTEXT
 from core.inference.video_families import MAX_VIDEO_NUM_FRAMES
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
+from models.llama_custom_config import LlamaCppConfigFields
 from utils.reasoning_budget import validate_reasoning_budget_message
 
 
@@ -51,7 +52,7 @@ def resolve_inventory_handle(value: str) -> str:
     return resolved
 
 
-class LoadRequest(BaseModel):
+class LoadRequest(LlamaCppConfigFields):
     """Request to load a model for inference"""
 
     engine_parallelism: Literal["tensor", "pipeline", "data"] = "tensor"
@@ -516,7 +517,7 @@ class SttLoadRequest(BaseModel):
     )
 
 
-class ValidateModelRequest(BaseModel):
+class ValidateModelRequest(LlamaCppConfigFields):
     """Check whether an identifier resolves to a ModelConfig; does NOT load weights."""
 
     engine_parallelism: Literal["tensor", "pipeline", "data"] = "tensor"
@@ -804,6 +805,7 @@ class ValidateModelResponse(BaseModel):
     """
 
     valid: bool = Field(..., description = "Whether the model identifier looks valid")
+    llama_cpp_config_summary: Optional[Dict[str, Any]] = None
     message: str = Field(..., description = "Human-readable validation message")
     identifier: Optional[str] = Field(None, description = "Resolved model identifier")
     resident: bool = Field(
@@ -1271,6 +1273,9 @@ class _InferenceRuntimeFields(BaseModel):
         description = "Active inference engine. 'auto' denotes Studio's default backend; "
         "'vllm' and 'sglang' denote optional managed engines.",
     )
+    requested_llama_cpp_config: Optional[Dict[str, Any]] = None
+    llama_cpp_config_summary: Optional[Dict[str, Any]] = None
+
     is_vision: bool = Field(False, description = "Whether model is a vision model")
     is_diffusion: bool = Field(
         False, description = "Whether model is a block-diffusion model (DiffusionGemma)"
@@ -4678,6 +4683,11 @@ class DiffusionResolvedControl(BaseModel):
         '"prequant:<repo>/<file>", when a pre-quantized checkpoint was seeded rather than the '
         "weights being quantised in memory. Declared here or pydantic drops it and no API client "
         "ever sees the provenance. Null on every other control and on a runtime quantise.",
+    )
+    replaced: Optional[str] = Field(
+        None,
+        description = 'The picked checkpoint that did NOT run, as "gguf:<file>", when a GGUF pick whose memory plan '
+        "offloads loaded the hosted pre-quantized checkpoint (``artifact``) instead. Null otherwise.",
     )
 
 

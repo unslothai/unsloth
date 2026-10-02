@@ -420,3 +420,18 @@ for (const [label, id] of [
     assert.equal(replayed.temperature, 0.2);
   });
 }
+
+test("a custom llama.cpp repeat-penalty seeds the slider; otherwise it is kept", async () => {
+  const { mergeBackendRecommendedInference } =
+    await import("../src/features/chat/presets/preset-policy.ts");
+  const merge = (inference: Record<string, number>) =>
+    mergeBackendRecommendedInference({
+      current: params({ repetitionPenalty: 1.3 }),
+      response: { inference, is_gguf: true, context_length: 4096 },
+      modelId: QWEN,
+      presetSource: "builtin-default",
+      loadedContextLength: 4096,
+    }).repetitionPenalty;
+  assert.equal(merge({ repetition_penalty: 1.1 }), 1.1);
+  assert.equal(merge({ temperature: 0.7 }), 1.3);
+});

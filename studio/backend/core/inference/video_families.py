@@ -17,6 +17,7 @@ base repo, exactly like the image GGUF path.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Optional
@@ -84,6 +85,8 @@ class VideoFamily:
     supports_cuda_graph: bool = False
     # Video DiTs are bf16-native, so fp16 promotes to float32; defaults True.
     fp16_incompatible: bool = True
+    # "native" = measured accurate in plain float16 on fp16-only cards; None = promote (unmeasured).
+    fp16_guard: Optional[str] = None
     # Wan VAE decodes in float32 (bf16 causes banding / black frames), so the loader pins it back. Its size term is
     # already fp32.
     vae_force_fp32: bool = False
@@ -136,6 +139,17 @@ class VideoFamily:
     supports_cfg: bool = True
 
 
+# MiniMax-H3 at ComfyUI's template default (ResolutionSelector 16:9, 0.4 MP, multiple 32 -> 864x480). Both sides are
+# multiples of 32 (VAE spatial compression 16 x patch 2), the only spatial rule the diffusers modular pipeline and
+# stable-diffusion.cpp (align_image_size, multiple = vae_scale_factor 16 * down_factor 2) enforce, and 864/480 = 1.8 sits
+# inside the trained 1:4..4:1 range. UNSLOTH_VIDEO_H3_480P=0 withdraws the pair.
+def _h3_480p_presets() -> tuple[tuple[int, int], ...]:
+    flag = os.environ.get("UNSLOTH_VIDEO_H3_480P", "1").strip().lower()
+    if flag in ("0", "false", "no", "off"):
+        return ()
+    return ((864, 480), (480, 864))  # fastest
+
+
 _FAMILIES: tuple[VideoFamily, ...] = (
     VideoFamily(
         name = "minimax-h3",
@@ -165,7 +179,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             (768, 1344),
             (960, 544),  # faster
             (544, 960),  # faster
-        ),
+        )
+        + _h3_480p_presets(),
         duration_presets = (5.0, 10.0, 14.4),
         # Decimal GB resident estimates: transformer, Qwen3-VL conditioner, video+audio VAEs.
         bf16_components_gb = (66.3, 66.8, 11.1),
@@ -273,6 +288,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # (11.4); VAE fp32 (2.8).
         bf16_components_gb = (10.0, 11.4, 2.8),
         vae_force_fp32 = True,
+        # UMT5 keeps its overflowing `wo` in fp32 itself; the VAE stays fp32 (vae_force_fp32).
+        fp16_guard = "native",
         # Byte-identical mirror of QuantStack/Wan2.2-TI2V-5B-GGUF (13 quants + companion VAE).
         gguf_repo = "unsloth/Wan2.2-TI2V-5B-GGUF",
     ),
@@ -341,6 +358,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         resolution_presets = ((832, 480), (480, 832), (640, 640)),
         # DiT fp32 on disk (32.0 to 16.6 bf16); VAE 4.7 to 2.4; Qwen2.5-VL TE bf16 14.0 + ByT5 0.8
         bf16_components_gb = (16.6, 14.8, 2.4),
+        fp16_guard = "native",
     ),
     # The 720p t2v repack: same architecture and footprint as the 480p entry, only the trained resolution differs. Its
     # own family so a 720p load defaults to 720p sizes; the full-path alias outranks the generic token.
@@ -365,6 +383,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # 720p-class presets: landscape, vertical, square (all /16).
         resolution_presets = ((1280, 720), (720, 1280), (960, 960)),
         bf16_components_gb = (16.6, 14.8, 2.4),
+        fp16_guard = "native",
     ),
 )
 
