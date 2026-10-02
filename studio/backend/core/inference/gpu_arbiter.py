@@ -77,6 +77,14 @@ def _evict_diffusion() -> None:
     get_active_diffusion_engine().unload()
 
 
+def _release_idle_video_servers(reason: str) -> None:
+    try:
+        from core.inference.video_minimax_h3 import release_h3_native_servers
+        release_h3_native_servers(reason)
+    except Exception as exc:  # noqa: BLE001 - never block an acquire on this
+        logger.warning("gpu_arbiter: could not release the idle video sd-server: %s", exc)
+
+
 def _evict_video() -> None:
     from core.inference.video import get_video_backend
     get_video_backend().unload()
@@ -197,6 +205,9 @@ def acquire_for(
                 raise GpuBusyForAnotherAccountError(_owner, busy)
             logger.info("gpu_arbiter: evicting %s for %s", _owner, owner)
             _EVICTORS[_owner]()
+        if owner != VIDEO:
+            # A resident H3 sd-server sits outside every owner's teardown.
+            _release_idle_video_servers(f"GPU acquired for {owner}")
         # Records who LOADED the model; a plain re-assert must not hand it to whoever asked last.
         claims = _owner != owner or register is not None or replacing
         _owner = owner
