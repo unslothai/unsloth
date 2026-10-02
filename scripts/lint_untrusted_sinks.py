@@ -84,6 +84,8 @@ DEFAULT_TARGETS = (
     "unsloth_cli",
     "studio",
     "scripts",
+    # The Docker images copy these helpers in and expose several as commands.
+    "docker",
     "cli.py",
     "unsloth-cli.py",
 )
@@ -2151,6 +2153,7 @@ class _TaintPass(ast.NodeVisitor):
             "rstrip",
             "lower",
             "upper",
+            "casefold",
             "replace",
             "rsplit",
             "partition",
@@ -2247,6 +2250,9 @@ class _TaintPass(ast.NodeVisitor):
                 "PurePath",
                 "PurePosixPath",
                 "PureWindowsPath",
+                # In-memory streams over downloaded bytes: `pickle.load(io.BytesIO(...))`.
+                "io.BytesIO",
+                "io.StringIO",
                 "os.path.basename",
                 "os.path.normpath",
                 "os.path.splitext",
@@ -3372,8 +3378,13 @@ class _TaintPass(ast.NodeVisitor):
             loader = next((k.value for k in node.keywords if k.arg == "Loader"), None)
             if loader is None and len(node.args) > 1:
                 loader = node.args[1]
-            if loader is not None and _call_name(loader).rpartition(".")[2] in (
-                self._UNSAFE_YAML_LOADERS
+            # Through the import table, so `from yaml import UnsafeLoader as Danger` counts.
+            if loader is not None and any(
+                candidate.rpartition(".")[2] in self._UNSAFE_YAML_LOADERS
+                for candidate in (
+                    _call_name(loader),
+                    *self.facts.canonicals(_call_name(loader)),
+                )
             ):
                 unsafe = "yaml.load"
         stream = (
@@ -3506,6 +3517,12 @@ class _TaintPass(ast.NodeVisitor):
             aliases = self.callable_aliases,
         ):
             self._propagate_into_one(node, target)
+        # A first-party callback a caller passed in for this parameter.
+        if isinstance(node.func, ast.Name):
+            passed = self.state.param_callable_aliases.get((self.facts.path, self.qualname), {})
+            for encoded in passed.get(node.func.id) or ():
+                file, _, qualname = encoded.partition("::")
+                self._propagate_into_one(node, (Path(file), qualname))
         # A bound method another method stored on an attribute. Its receiver is already
         # bound, so the call's own arguments line up from the method's first parameter.
         if isinstance(node.func, ast.Attribute):
@@ -3597,6 +3614,29 @@ class _TaintPass(ast.NodeVisitor):
         for parameter, argument in bindings:
             if mutated.get(parameter) and isinstance(argument, (ast.Name, ast.Attribute)):
                 self._assign(argument, mutated[parameter])
+        # Dependency injection: `invoke(runner, parsed)` hands the helper a tracked
+        # instance, and `invoke(execute, parsed)` a first-party callback.
+        for parameter, argument in bindings:
+            if not isinstance(argument, (ast.Name, ast.Attribute)):
+                continue
+            spelling = _call_name(argument)
+            for constructed in self.instance_types.get(spelling) or ():
+                portable = self._portable_class(constructed, target[0])
+                if portable:
+                    held = self.state.param_instance_types.setdefault(target, {})
+                    held[parameter] = _with(held.get(parameter), portable)
+            if self.facts.callable_alias(spelling, self.qualname) or self.callable_aliases.get(
+                spelling
+            ):
+                for file, qualname in self.facts.targets_of(
+                    argument,
+                    self.class_name,
+                    scope = self.qualname,
+                    instances = self.instance_types,
+                    aliases = self.callable_aliases,
+                ):
+                    passed = self.state.param_callable_aliases.setdefault(target, {})
+                    passed[parameter] = _with(passed.get(parameter), f"{file}::{qualname}")
         for parameter, argument in bindings:
             for sink in self._sink_identities(argument):
                 handed[parameter] = _with(handed.get(parameter), sink)
@@ -3677,6 +3717,15 @@ class _TaintPass(ast.NodeVisitor):
                 self._bind(bound, star_kwargs, reason)
             elif keyword.arg:
                 self._bind(bound, keyword.arg, reason)
+
+    def _portable_class(self, constructed: str, callee_path) -> str:
+        """A class spelling the callee's file can resolve: dotted when it is ours."""
+        if callee_path == self.facts.path:
+            return constructed
+        if constructed in self.facts.classes:
+            module = self.facts.index.files.get(self.facts.path)
+            return f"{module}.{constructed}" if module else ""
+        return constructed
 
     def _sink_identities(self, argument: ast.expr) -> tuple:
         """The sinks an argument expression refers to, without calling it."""
@@ -4039,6 +4088,10 @@ class _State:
         # (file, qualname) -> parameter -> taint the function writes INTO it (item writes,
         # mutating methods) without rebinding it, which the caller's argument receives.
         self.param_mutations: dict[tuple[Path, str], dict[str, str]] = {}
+        # (file, qualname) -> parameter -> classes / first-party callables a caller passed
+        # in for it, for objects and callbacks handed to a helper.
+        self.param_instance_types: dict[tuple[Path, str], dict[str, tuple]] = {}
+        self.param_callable_aliases: dict[tuple[Path, str], dict[str, tuple]] = {}
         # (file, qualname) -> parameter -> remote-code loaders a caller passed in for it.
         self.param_loader_aliases: dict[tuple[Path, str], dict[str, tuple]] = {}
         self.tainted_globals: dict[str, str] = {}
@@ -4083,6 +4136,16 @@ class _State:
                     f"{path}::{qualname}::{name}={','.join(sinks)}"
                     for (path, qualname), names in self.param_sink_aliases.items()
                     for name, sinks in names.items()
+                ),
+                "param_instances": sorted(
+                    f"{path}::{qualname}::{name}={','.join(types)}"
+                    for (path, qualname), names in self.param_instance_types.items()
+                    for name, types in names.items()
+                ),
+                "param_callables": sorted(
+                    f"{path}::{qualname}::{name}={','.join(callables)}"
+                    for (path, qualname), names in self.param_callable_aliases.items()
+                    for name, callables in names.items()
                 ),
                 "param_mutations": sorted(
                     f"{path}::{qualname}::{name}={reason}"
@@ -4625,6 +4688,9 @@ def _settle(facts: _FileFacts, qualname: str, nodes: list, state: "_State"):
                 visitor.sink_aliases[name] = _with(visitor.sink_aliases.get(name), sink)
         for name, source in state.param_source_aliases.get((facts.path, qualname), {}).items():
             visitor.source_aliases.setdefault(name, source)
+        for name, types in state.param_instance_types.get((facts.path, qualname), {}).items():
+            for constructed in types:
+                visitor.instance_types[name] = _with(visitor.instance_types.get(name), constructed)
         visitor.local_reasons.update(reasons)
         visitor.instance_types.update(instances)
         visitor.sink_aliases.update(aliases)

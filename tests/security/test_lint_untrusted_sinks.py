@@ -5848,3 +5848,48 @@ def test_a_dataclass_over_a_base_with_an_init_still_carries_taint(tmp_path):
         "    return importlib.import_module(cfg.module)\n",
     )
     assert "importlib.import_module" in _sinks(findings)
+
+
+def test_byte_streams_casefold_and_aliased_loaders_keep_taint(tmp_path):
+    """`io.BytesIO(...)`, `.casefold()` and `UnsafeLoader as Danger` do not launder."""
+    findings = _scan(
+        tmp_path,
+        "import importlib, io, json, pickle, requests, yaml\n"
+        "from yaml import UnsafeLoader as Danger\n"
+        "def a(url):\n"
+        "    return pickle.load(io.BytesIO(requests.get(url).content))\n"
+        "def b(blob):\n"
+        "    return importlib.import_module(json.loads(blob)['module'].casefold())\n"
+        "def c(url):\n"
+        "    return yaml.load(stream = requests.get(url).text, Loader = Danger)\n",
+    )
+    assert {"pickle.load", "importlib.import_module", "yaml.load(unsafe loader)"} <= _sinks(
+        findings
+    )
+
+
+def test_the_default_scope_includes_the_docker_helpers():
+    """The images copy `docker/*.py` in, so the CI scan has to cover them."""
+    assert "docker" in L.DEFAULT_TARGETS
+
+
+def test_objects_and_callbacks_handed_to_a_helper_are_followed(tmp_path):
+    """`invoke(runner, parsed)` and `invoke(execute, parsed)`."""
+    findings = _scan(
+        tmp_path,
+        "import importlib, json, subprocess\n"
+        "class Runner:\n"
+        "    def execute(self, command):\n"
+        "        return subprocess.run(command)\n"
+        "def call_method(runner, command):\n"
+        "    return runner.execute(command)\n"
+        "def load(name):\n"
+        "    return importlib.import_module(name)\n"
+        "def call_back(callback, value):\n"
+        "    return callback(value)\n"
+        "def go(blob):\n"
+        "    runner = Runner()\n"
+        "    call_method(runner, json.loads(blob)['command'])\n"
+        "    call_back(load, json.loads(blob)['module'])\n",
+    )
+    assert {"subprocess.run", "importlib.import_module"} <= _sinks(findings)
