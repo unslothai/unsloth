@@ -6343,7 +6343,7 @@ def _widen_pin_ids_for_companion_devices(
     pin_ids: list[int],
     inherited_ids: Optional[list[int]],
     *,
-    may_widen: bool = True,
+    allowed_ids: Optional[Iterable[int]] = None,
 ) -> tuple[list[int], str]:
     """Fit a pinned GPU mask to the companion devices the argv names (#11810).
 
@@ -6351,12 +6351,14 @@ def _widen_pin_ids_for_companion_devices(
     ``inherited_ids``, else the physical index). Cards they name are appended after the
     pinned ones, the winning flag is renumbered to the child's mask, and a main
     ``--device`` is added so ``-ngl -1`` does not spread over the extra cards. Tokens
-    the parent cannot see are left alone. ``may_widen`` False (explicit gpu_ids) only
-    renumbers within the pin. Returns the mask and a log note, empty when unchanged.
+    the parent cannot see are left alone. With ``allowed_ids`` (explicit gpu_ids) the
+    mask only widens onto those cards. Returns the mask and a log note, empty when
+    unchanged.
     """
     if not pin_ids:
         return list(pin_ids), ""
     main_ids = [int(i) for i in pin_ids]
+    allowed = None if allowed_ids is None else {int(i) for i in allowed_ids}
     # A main --device past the pinned positions would resolve to a widened companion card.
     for token in str(_extra_args_main_device(cmd) or "").split(","):
         match = _GPU_DEVICE_TOKEN_RE.match(token.strip())
@@ -6390,7 +6392,7 @@ def _widen_pin_ids_for_companion_devices(
                     physical = n
                 elif n < len(inherited_ids):
                     physical = int(inherited_ids[n])
-                if not may_widen and physical not in main_ids:
+                if allowed is not None and physical not in main_ids and physical not in allowed:
                     physical = None
             tokens.append((token, physical))
         if any(physical is not None for _, physical in tokens):
@@ -8567,6 +8569,17 @@ class LlamaCppBackend:
         raw = self._requested_gpu_ids or None
         effective = self._gpu_ids or None
         return requested == raw or requested == effective
+
+    def _adopt_widened_pin(self, pin_ids: List[int]) -> None:
+        """Record a companion-widened explicit pin as the effective one (#12467).
+
+        The effective pin is recorded before the mask widens. /status echoes it and
+        dedupe adopts a request carrying it, so the narrower pin would come back as
+        the stored intent and reload without the companion card. Only an already
+        recorded pin is replaced: a launch that recorded none (forced CPU) stays None.
+        """
+        if self._gpu_ids is not None:
+            self._gpu_ids = [int(i) for i in pin_ids]
 
     def _record_matching_gpu_request(self, gpu_ids: Optional[List[int]]) -> None:
         """Adopt the caller's explicit pool after a full already-loaded match.
@@ -29753,12 +29766,14 @@ class LlamaCppBackend:
                             cmd,
                             _pin_ids,
                             self._resolve_visible_physical_ids(),
-                            may_widen = not gpu_ids,
+                            allowed_ids = gpu_ids or None,
                         )
                         if _companion_widen:
                             _companion_fit_mask = list(_pin_ids)
                             if not _had_main_device and _extra_args_main_device(cmd) is not None:
                                 _companion_added_device = list(cmd[-2:])
+                            if gpu_ids:
+                                self._adopt_widened_pin(_pin_ids)
                     if _companion_widen:
                         logger.info(
                             "Companion device flags name GPUs by their unpinned "
@@ -31017,7 +31032,7 @@ class LlamaCppBackend:
                                 cmd,
                                 list(_remaining),
                                 list(_companion_fit_mask),
-                                may_widen = not gpu_ids,
+                                allowed_ids = gpu_ids or None,
                             )
                             _companion_added_device = (
                                 list(cmd[-2:])
