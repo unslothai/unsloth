@@ -2275,6 +2275,8 @@ def test_legacy_load_in_4bit_is_validated_as_int4(monkeypatch):
     vllm = {"path": "/env", "profile_digest": install.profile_digest("vllm")}
     monkeypatch.setattr(managed_engine, "installed", lambda _: vllm)
     out = asyncio.run(
-        routes._managed_engine_request(LoadRequest(model_path = "m", engine = "vllm", load_in_4bit = True))
+        routes._managed_engine_request(
+            LoadRequest(model_path = "m", engine = "vllm", load_in_4bit = True)
+        )
     )
     assert out.engine_precision == "int4" and out.load_in_4bit is False and out.gpu_ids == [0]
