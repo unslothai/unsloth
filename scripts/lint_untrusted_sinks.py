@@ -1635,6 +1635,9 @@ class _TaintPass(ast.NodeVisitor):
         # yields, but `.values()` hands back only the fixed half and reporting a sink on
         # it blocks code that is provably safe.
         self.key_taint_only: set = set()
+        # Wrappers built as `partial(torch.load, weights_only = <not True>)`, so a call
+        # through one is judged by the option the wrapper carries.
+        self.unsafe_torch_partials: set = set()
         # local name -> the source it refers to, for `decode = json.loads`. Sink aliases
         # were followed and source aliases were not, so a deserialiser behind a local
         # name read clean and everything downstream of it did too.
@@ -1808,6 +1811,51 @@ class _TaintPass(ast.NodeVisitor):
                         self.source_aliases.pop(node.id, None)
                         self.alias_offsets.pop(node.id, None)
             return
+
+    def _loader_aliases(self) -> dict:
+        """Names bound to a remote-code loader, in this body and at module scope.
+
+        Read straight off the assignments rather than tracked through the fixpoint: the
+        loader check only needs to know what a name can refer to, and these bindings are
+        plain references that never depend on taint.
+        """
+        cache = self.facts.__dict__.setdefault("_loader_alias_cache", {})
+        cached = cache.get(self.qualname)
+        if cached is not None:
+            return cached
+        found: dict = {}
+        scopes = [list(_module_statements(self.facts.tree))]
+        own = self.facts.functions.get(self.qualname)
+        if own is not None and isinstance(own.body, list):
+            scopes.append([node for node in ast.walk(own) if isinstance(node, ast.stmt)])
+        for statements in scopes:
+            for statement in statements:
+                if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
+                    continue
+                value = statement.value
+                if value is None or isinstance(value, ast.Call):
+                    continue
+                referenced = _call_name(value)
+                if not referenced:
+                    continue
+                loaders = [
+                    candidate
+                    for candidate in self.facts.canonicals(referenced)
+                    if any(marker in candidate for marker in REMOTE_CODE_LOADERS)
+                ]
+                if not loaders:
+                    continue
+                targets = (
+                    [statement.target]
+                    if isinstance(statement, ast.AnnAssign)
+                    else statement.targets
+                )
+                for target in targets:
+                    spelling = _call_name(target)
+                    if spelling:
+                        found.setdefault(spelling, []).extend(loaders)
+        cache[self.qualname] = found
+        return found
 
     def _own_locals(self) -> frozenset:
         """The names local to the function this pass is analysing, if it is one."""
@@ -2289,12 +2337,49 @@ class _TaintPass(ast.NodeVisitor):
                 # `runner = partial(execute)` with `execute` passing its parameter to
                 # `subprocess.run` recorded nothing at all, so neither the alias nor the
                 # pre-bound arguments ever reached the helper's parameters.
+                # `partial(torch.load, weights_only = False)`: the conditional sink.
+                # Recorded under the same marker an alias of it uses unless the
+                # partial itself pins `weights_only` to a literal True, and the bound
+                # call is checked at creation so a pre-bound path is not lost.
+                if _matches_any(
+                    self.facts.canonicals(inner), TORCH_LOAD_NAMES
+                ) is not None or TORCH_LOAD_ALIAS in (self.sink_aliases.get(inner) or ()):
+                    self._check_torch_load(bound, assume_torch = True)
+                    pinned = any(
+                        keyword.arg == "weights_only"
+                        and isinstance(keyword.value, ast.Constant)
+                        and keyword.value.value is True
+                        for keyword in node.value.keywords
+                    )
+                    if not pinned:
+                        explicit = any(
+                            keyword.arg == "weights_only" for keyword in node.value.keywords
+                        )
+                        for target in node.targets:
+                            spelling = self._alias_target(target)
+                            if spelling:
+                                self.sink_aliases[spelling] = _with(
+                                    self.sink_aliases.get(spelling), TORCH_LOAD_ALIAS
+                                )
+                                if explicit:
+                                    self.unsafe_torch_partials.add(spelling)
+                    return
                 relayed = self.callable_aliases.get(inner) or ()
                 candidates = list(relayed) or (
                     [self.facts.callable_alias(inner, self.qualname)]
                     if self.facts.callable_alias(inner, self.qualname)
                     else []
                 )
+                # `partial(runner.execute)`: a method taken off a tracked instance. Kept
+                # as the dotted spelling, which the instance-aware resolution reads and
+                # which marks the call as already bound to its receiver, exactly as a
+                # plain `execute = runner.execute` alias is recorded.
+                if (
+                    not candidates
+                    and "." in inner
+                    and self.instance_types.get(inner.rpartition(".")[0])
+                ):
+                    candidates = [inner]
                 if not candidates:
                     return
                 for target in node.targets:
@@ -3122,7 +3207,11 @@ class _TaintPass(ast.NodeVisitor):
         ast.copy_location(invoked, node)
         self._propagate_into_callee(invoked)
 
-    def _check_torch_load(self, node: ast.Call) -> None:
+    def _check_torch_load(
+        self,
+        node: ast.Call,
+        assume_torch: bool = False,
+    ) -> None:
         """`torch.load(downloaded, weights_only = False)` unpickles attacker bytes.
 
         `weights_only` only defaults to True from torch 2.6, and unsloth-zoo still
@@ -3133,10 +3222,30 @@ class _TaintPass(ast.NodeVisitor):
         accepted, and only a downloaded or otherwise untrusted path is reported.
         """
         called = _call_name(node.func)
-        if _matches_any(
-            self.facts.canonicals(called), TORCH_LOAD_NAMES
-        ) is None and TORCH_LOAD_ALIAS not in self._held_sinks(called, node):
+        held = self._held_sinks(called, node)
+        if (
+            not assume_torch
+            and _matches_any(self.facts.canonicals(called), TORCH_LOAD_NAMES) is None
+            and TORCH_LOAD_ALIAS not in held
+        ):
             return
+        # A partial built with `weights_only = False` and called without it: the unsafe
+        # option lives on the wrapper, which is only recorded when it did not pin True,
+        # so the call is judged as explicitly unsafe rather than as an omission.
+        if (
+            TORCH_LOAD_ALIAS in held
+            and called in self.unsafe_torch_partials
+            and not any(keyword.arg == "weights_only" for keyword in node.keywords)
+        ):
+            node = ast.copy_location(
+                ast.Call(
+                    func = node.func,
+                    args = node.args,
+                    keywords = list(node.keywords)
+                    + [ast.keyword(arg = "weights_only", value = ast.Constant(value = False))],
+                ),
+                node,
+            )
         weights_only = next(
             (keyword for keyword in node.keywords if keyword.arg == "weights_only"), None
         )
@@ -3160,7 +3269,11 @@ class _TaintPass(ast.NodeVisitor):
 
     def _check_remote_code(self, node: ast.Call) -> None:
         """`trust_remote_code = True` written at a loader, or forwarded as a constant."""
-        names = self.facts.canonicals(_call_name(node.func))
+        names = list(self.facts.canonicals(_call_name(node.func)))
+        # `loader = AutoModel.from_pretrained` then `loader(..., trust_remote_code =
+        # True)`. Loaders are not in the sink table, so no alias was ever recorded and
+        # the explicit opt-in read as a call to nothing in particular.
+        names += self._loader_aliases().get(_call_name(node.func), [])
         name = next(
             (
                 candidate

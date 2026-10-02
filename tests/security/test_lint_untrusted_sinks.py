@@ -4670,3 +4670,112 @@ def test_an_untouched_constant_map_is_still_a_sanitiser(tmp_path):
         "    return importlib.import_module(MAP.get(json.loads(blob)['k'], 'torch'))\n",
     )
     assert _sinks(findings) == set()
+
+
+def test_a_partial_of_torch_load_keeps_its_unsafe_option(tmp_path):
+    """`partial(torch.load, weights_only = False)` called with a downloaded path.
+
+    The partial branch dropped the conditional sink's marker, so creation recognised
+    nothing and the call no longer carried the unsafe keyword. A path bound at creation
+    is checked there too.
+    """
+    head = "import torch, functools\nfrom huggingface_hub import hf_hub_download\ndef load(repo):\n"
+    later = _scan(
+        tmp_path,
+        head + "    unsafe = functools.partial(torch.load, weights_only = False)\n"
+        "    return unsafe(hf_hub_download(repo, 'w.bin'))\n",
+        name = "later.py",
+    )
+    bound = _scan(
+        tmp_path,
+        head + "    unsafe = functools.partial(torch.load, hf_hub_download(repo, 'w.bin'), "
+        "weights_only = False)\n"
+        "    return unsafe()\n",
+        name = "bound.py",
+    )
+    omitted = _scan(
+        tmp_path,
+        head + "    loader = functools.partial(torch.load, map_location = 'cpu')\n"
+        "    return loader(hf_hub_download(repo, 'w.bin'))\n",
+        name = "omitted.py",
+    )
+    assert "torch.load(weights_only = False)" in _sinks(later)
+    assert "torch.load(weights_only = False)" in _sinks(bound)
+    assert "torch.load(weights_only unset)" in _sinks(omitted)
+
+
+def test_a_partial_of_torch_load_pinned_safe_is_quiet(tmp_path):
+    """The guards: a wrapper that pins True, and an unsafe wrapper over a fixed path."""
+    pinned = _scan(
+        tmp_path,
+        "import torch, functools\nfrom huggingface_hub import hf_hub_download\n"
+        "def load(repo):\n"
+        "    safe = functools.partial(torch.load, weights_only = True)\n"
+        "    return safe(hf_hub_download(repo, 'w.bin'))\n",
+        name = "pinned.py",
+    )
+    literal = _scan(
+        tmp_path,
+        "import torch, functools\n"
+        "def load():\n"
+        "    unsafe = functools.partial(torch.load, weights_only = False)\n"
+        "    return unsafe('/opt/x.bin')\n",
+        name = "literal.py",
+    )
+    assert _sinks(pinned) == set()
+    assert _sinks(literal) == set()
+
+
+def test_a_partial_of_a_bound_method_is_followed(tmp_path):
+    """`invoke = functools.partial(runner.execute)` then `invoke(parsed)`.
+
+    Neither the local alias table nor `callable_alias` resolved `runner` through the
+    tracked instances, so the method behind the wrapper never saw the tainted argument.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, functools, subprocess\n"
+        "class Runner:\n"
+        "    def execute(self, command):\n"
+        "        return subprocess.run(command)\n"
+        "def load(blob):\n"
+        "    runner = Runner()\n"
+        "    invoke = functools.partial(runner.execute)\n"
+        "    return invoke(json.loads(blob)['command'])\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_an_aliased_loader_still_gates_remote_code(tmp_path):
+    """`loader = AutoModel.from_pretrained` then `loader(..., trust_remote_code = True)`.
+
+    Loaders are handled by their own check rather than the sink table, so an alias was
+    never recorded and the explicit opt-in read as a call to nothing in particular.
+    """
+    local = _scan(
+        tmp_path,
+        "from transformers import AutoModel\n"
+        "def load(name):\n"
+        "    loader = AutoModel.from_pretrained\n"
+        "    return loader(name, trust_remote_code = True)\n",
+        name = "local.py",
+    )
+    at_module = _scan(
+        tmp_path,
+        "from transformers import AutoModel\n"
+        "loader = AutoModel.from_pretrained\n"
+        "def load(name):\n"
+        "    return loader(name, trust_remote_code = True)\n",
+        name = "at_module.py",
+    )
+    quiet = _scan(
+        tmp_path,
+        "from transformers import AutoModel\n"
+        "def load(name):\n"
+        "    loader = AutoModel.from_pretrained\n"
+        "    return loader(name, trust_remote_code = False)\n",
+        name = "quiet.py",
+    )
+    for findings in (local, at_module):
+        assert any(f["sink"].startswith("trust_remote_code = True") for f in findings)
+    assert not any(f["sink"].startswith("trust_remote_code = True") for f in quiet)
