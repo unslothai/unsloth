@@ -23408,6 +23408,7 @@ class LlamaCppBackend:
             for k, v in self._llama_server_env_for_binary(binary).items()
             if not k.startswith("LLAMA_ARG_")
         }
+        scrub_denied_env(env)  # LLAMA_API_KEY: the child would refuse Studio's own requests
         # HSA enumeration dies on an arch the build lacks before --device is read: mask like managed loads.
         survivors = self._arch_gate_survivors(binary)
         if survivors:

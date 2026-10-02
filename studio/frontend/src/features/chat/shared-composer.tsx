@@ -1728,7 +1728,9 @@ export function SharedComposer({
                   : ownConfig.reasoningBudgetMessage,
                 // Only when this panel has read the stored value: omitted, the load inherits it, which is what
                 // keeps CLI-set flags working.
-                ...llamaCppConfigPayload(ownConfig.llamaCppConfig),
+                ...llamaCppConfigPayload(ownConfig.llamaCppConfig, {
+                  isDiffusion: resolvedIsDiffusion === true,
+                }),
                 ...(ownConfig.llamaExtraArgs !== undefined
                   ? // biome-ignore lint/style/useNamingConvention: API schema
                     { llama_extra_args: ownConfig.llamaExtraArgs ?? [] }
@@ -1828,7 +1830,9 @@ export function SharedComposer({
                 n_cpu_moe: effectiveNCpuMoe,
                 tensor_split: compareLoadKnobs.splitRatio ?? undefined,
                 gpu_ids: effectiveSelectedGpuIds ?? undefined,
-                ...llamaCppConfigPayload(ownConfig.llamaCppConfig),
+                ...llamaCppConfigPayload(ownConfig.llamaCppConfig, {
+                  isDiffusion: resolvedIsDiffusion === true,
+                }),
                 ...(ownConfig.llamaExtraArgs !== undefined
                   ? // biome-ignore lint/style/useNamingConvention: API schema
                     { llama_extra_args: ownConfig.llamaExtraArgs ?? [] }

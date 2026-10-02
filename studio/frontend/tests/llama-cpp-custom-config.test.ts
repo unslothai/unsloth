@@ -309,6 +309,14 @@ test("a diffusion load sends managed in place of a custom config, never omits it
     2,
     "validate and load both reset a diffusion target explicitly",
   );
+  const compare = readSrc("features/chat/shared-composer.tsx");
+  assert.equal(
+    compare.match(
+      /llamaCppConfigPayload\(ownConfig\.llamaCppConfig, \{\s*isDiffusion: resolvedIsDiffusion === true/g,
+    )?.length,
+    2,
+    "compare validate and load reset a diffusion target too",
+  );
   assert.deepEqual(llamaCppConfigPayload(custom, { isDiffusion: true }), {
     llama_cpp_config: managed,
   });

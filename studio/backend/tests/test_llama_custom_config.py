@@ -213,6 +213,7 @@ def launch(monkeypatch, tmp_path):
         "_llama_server_env_for_binary": lambda p: {
             "PATH": "libs",
             "LLAMA_ARG_CTX_SIZE": "1",
+            "LLAMA_API_KEY": "x",
             "KEEP": "1",
         },
         "_query_server_props": lambda: {
@@ -256,7 +257,7 @@ def test_custom_launch_runs_only_the_ini(launch):
     assert cmd[cmd.index("--parallel") + 1] == "2"
     assert "99999" not in cmd and "--jinja" in cmd
     assert cmd[cmd.index("-c") + 1] == "56000" and "--no-warmup" in cmd
-    assert not any(k.startswith("LLAMA_ARG_") for k in env)
+    assert not any(k.startswith("LLAMA_ARG_") or k == "LLAMA_API_KEY" for k in env)
     assert env["KEEP"] == "1"
     summary = launch.backend.llama_cpp_config_summary
     assert summary["request_defaults"] == {"temperature": 0.3}
