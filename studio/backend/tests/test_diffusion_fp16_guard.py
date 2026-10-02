@@ -88,6 +88,39 @@ def test_bf16_and_fp32_never_change():
             assert _resolve_diffusion_compute_dtype(fam, dt) is dt
 
 
+def test_non_fp16_resolution_never_probes_diffusers(monkeypatch):
+    def probe(fam, recipe):
+        raise AssertionError("bf16 / fp32 must not import diffusers")
+
+    monkeypatch.setattr(guard, "_recipe_supported", probe)
+    z = detect_family("Tongyi-MAI/Z-Image-Turbo")
+    assert _resolve_diffusion_compute_dtype(z, torch.bfloat16) is torch.bfloat16
+    assert _resolve_diffusion_compute_dtype(z, torch.float32) is torch.float32
+
+
+def test_probe_closes_dynamo_import_window_before_diffusers(monkeypatch):
+    import importlib
+
+    from utils import torch_warmup
+
+    monkeypatch.undo()
+    monkeypatch.setattr(guard, "_SUPPORTED", {})
+    order = []
+    monkeypatch.setattr(
+        torch_warmup, "close_dynamo_import_window", lambda log: order.append("close")
+    )
+    real = importlib.import_module
+
+    def tracking(name, *a, **k):
+        if name == "diffusers":
+            order.append("diffusers")
+        return real(name, *a, **k)
+
+    monkeypatch.setattr(importlib, "import_module", tracking)
+    guard._recipe_supported(detect_family("Tongyi-MAI/Z-Image-Turbo"), "rescale_post_norm")
+    assert order[:2] == ["close", "diffusers"], order
+
+
 class _RMS(nn.Module):
     def __init__(
         self,

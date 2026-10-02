@@ -1148,11 +1148,14 @@ def _resolve_diffusion_compute_dtype(fam: Optional[DiffusionFamily], dtype: Any)
     """Promote float16 -> float32 for fp16-incompatible families without a usable fp16 guard; else unchanged."""
     from .diffusion_fp16_guard import fp16_promotes_to_fp32
 
-    if not fp16_promotes_to_fp32(fam):
+    if fam is None or not getattr(fam, "fp16_incompatible", False):
         return dtype
     import torch
 
-    return torch.float32 if dtype == torch.float16 else dtype
+    # dtype first: the guard probe imports diffusers, which only an fp16 load needs.
+    if dtype != torch.float16 or not fp16_promotes_to_fp32(fam):
+        return dtype
+    return torch.float32
 
 
 def _float_load_itemsize(dtype: Any) -> Optional[int]:

@@ -60,6 +60,13 @@ def _recipe_supported(fam: Any, recipe: str) -> bool:
         return False
     key = (cls_name, recipe)
     if key not in _SUPPORTED:
+        # Runs from dtype resolution, ahead of load_pipeline's own guard: `import diffusers` imports torch._dynamo.
+        try:
+            from loggers import get_logger
+            from utils.torch_warmup import close_dynamo_import_window
+            close_dynamo_import_window(get_logger(__name__))
+        except Exception:  # noqa: BLE001, S110 - optimisation only
+            pass
         try:
             import importlib
             import inspect

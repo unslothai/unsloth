@@ -3813,7 +3813,7 @@ class VideoBackend:
                     else resolve_diffusion_device_target(ordinal = gpu_ordinal)
                 )
                 dtype = target.dtype
-                if fp16_promotes_to_fp32(fam) and dtype is torch.float16:
+                if dtype is torch.float16 and fp16_promotes_to_fp32(fam):
                     dtype = torch.float32
                 return _h3_auto_denoiser_scheme(
                     fam,
@@ -3854,7 +3854,7 @@ class VideoBackend:
                     if gpu_ordinal is None
                     else resolve_diffusion_device_target(ordinal = gpu_ordinal)
                 )
-                if fp16_promotes_to_fp32(fam) and target.dtype is torch.float16:
+                if target.dtype is torch.float16 and fp16_promotes_to_fp32(fam):
                     # The loader promotes fp16 to float32 here, so read the dtype the load will.
                     return None
                 scheme = _video_auto_denoiser_scheme(
@@ -5289,7 +5289,7 @@ class VideoBackend:
         _nvfp4_install_outcome: Optional[tuple[bool, str]] = None
         # Video DiTs are bf16-native: fp16 promotes to float32 unless the family declares an fp16_guard.
         dtype = target.dtype
-        if fp16_promotes_to_fp32(fam) and dtype is torch.float16:
+        if dtype is torch.float16 and fp16_promotes_to_fp32(fam):
             dtype = torch.float32
             logger.warning(
                 "video.dtype_promoted: family=%s float16 -> float32 (fp16-incompatible)", fam.name
