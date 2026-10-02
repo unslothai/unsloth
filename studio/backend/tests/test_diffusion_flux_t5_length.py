@@ -19,7 +19,12 @@ from core.inference.diffusion_text_length import (
 class _WordTokenizer:
     """One id per whitespace word plus EOS, like T5TokenizerFast on plain words."""
 
-    def __call__(self, text, add_special_tokens = True, **_):
+    def __call__(
+        self,
+        text,
+        add_special_tokens = True,
+        **_,
+    ):
         ids = [5] * len(text.split())
         return {"input_ids": ids + ([1] if add_special_tokens else [])}
 
@@ -67,7 +72,10 @@ def test_negative_counts_only_under_true_cfg():
 
 
 def test_ideogram4_comfy_guidance_switches_where_sigma_falls_to_0_3():
-    from core.inference.diffusion_text_length import ideogram4_comfy_guidance_schedule, ideogram4_sigmas
+    from core.inference.diffusion_text_length import (
+        ideogram4_comfy_guidance_schedule,
+        ideogram4_sigmas,
+    )
 
     sigmas = ideogram4_sigmas(20, 1024, 1024, 0.0, 1.75)
     assert sigmas == sorted(sigmas, reverse = True) and sigmas[0] > 0.999  # clamped at logSNR -15

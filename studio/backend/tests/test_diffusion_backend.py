@@ -14182,7 +14182,12 @@ def test_candidate_overrides_price_the_encoder_the_load_opens(monkeypatch):
 class _T5WordTokenizer:
     """One id per whitespace word plus EOS, like T5TokenizerFast on plain words."""
 
-    def __call__(self, text, add_special_tokens = True, **_):
+    def __call__(
+        self,
+        text,
+        add_special_tokens = True,
+        **_,
+    ):
         return {"input_ids": [5] * len(text.split()) + ([1] if add_special_tokens else [])}
 
 
@@ -14191,7 +14196,13 @@ class _FluxFakePipe(_FakePipe):
         super().__init__()
         self.tokenizer_2 = _T5WordTokenizer()
 
-    def __call__(self, *, prompt = None, max_sequence_length = 512, **kwargs):
+    def __call__(
+        self,
+        *,
+        prompt = None,
+        max_sequence_length = 512,
+        **kwargs,
+    ):
         return super().__call__(prompt = prompt, max_sequence_length = max_sequence_length, **kwargs)
 
 
@@ -14242,7 +14253,15 @@ def test_guidance_scale_families_get_no_injected_negative(fake_runtime, tmp_path
 
 
 class _IdeogramScheduleFakePipe(_FakePipe):
-    def __call__(self, *, prompt = None, mu = 0.0, std = 1.5, guidance_schedule = "card", **kwargs):
+    def __call__(
+        self,
+        *,
+        prompt = None,
+        mu = 0.0,
+        std = 1.5,
+        guidance_schedule = "card",
+        **kwargs,
+    ):
         return super().__call__(
             prompt = prompt, mu = mu, std = std, guidance_schedule = guidance_schedule, **kwargs
         )
@@ -14269,7 +14288,6 @@ def test_generate_ideogram_defaults_follow_comfy_template(fake_runtime, tmp_path
     backend.generate(prompt = "a sloth", steps = 48, guidance = 7.0)
     call = pipe.last_kwargs
     assert call["guidance_schedule"] == "card" and (call["mu"], call["std"]) == (0.0, 1.5)
-
 
 
 class _ShiftSchedulerConfig(dict):
