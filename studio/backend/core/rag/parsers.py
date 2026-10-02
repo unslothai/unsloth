@@ -538,6 +538,7 @@ def _docx_blocks(element, parent):
 
 
 def _docx_math_text(element) -> str:
+    # Mirrored by docxMathText in the frontend's attachment-content.ts.
     tag = element.tag
     if tag in _DOCX_SKIP_RUNS_UNDER or _docx_placeholder(element):
         return ""

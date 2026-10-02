@@ -497,6 +497,7 @@ def test_docx_equations_keep_bars_and_group_characters(tmp_path):
     assert text == "\\overline{x}=\\underbrace{a+b}_{n},\\overset{→}{Δ}"
 
 
+# Same cases and expected text as the chat attachment reader's test (attachment-preview-text.test.ts).
 _OMML_CASES = [
     (
         '<m:nary><m:naryPr><m:chr m:val="∑"/></m:naryPr><m:sub>{i=1}</m:sub><m:sup>{n}</m:sup><m:e>{i}</m:e></m:nary>',
