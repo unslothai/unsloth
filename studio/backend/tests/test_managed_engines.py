@@ -164,6 +164,28 @@ def test_pytorch_index_build_of_the_locked_torch_is_shared(isolated, monkeypatch
     assert install.install_plan(engine)["shared"] is False
 
 
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+def test_shared_engine_brings_its_own_nvcc_headers(isolated, monkeypatch, engine):
+    # Colab: torch 2.11's runtime matches, but its crt headers are 13.4.59 beside nvcc 13.0.88.
+    pins = {name: version for name, (version, _) in install._pins(engine).items()}
+    assert {"nvidia-cuda-nvcc", "nvidia-cuda-crt"} <= set(pins)
+    studio = studio_with_engine_torch(
+        monkeypatch,
+        engine,
+        **{"nvidia-cuda-crt": "13.4.59", "nvidia-cuda-nvcc": pins["nvidia-cuda-nvcc"]},
+    )
+    monkeypatch.setattr(
+        install, "_torch_runtime", lambda: {"torch", "triton", "nvidia-cublas", "nvidia-cuda-crt"}
+    )
+    monkeypatch.setattr(install, "_compat", lambda engine: {"nvidia-cuda-crt": [">=13"]})
+    plan = install.install_plan(engine)
+    assert plan["shared"] is True and plan["provided"]["torch"] == studio["torch"]
+    assert "nvidia-cuda-crt" not in plan["provided"]
+    assert f"nvidia-cuda-crt=={pins['nvidia-cuda-crt']}" in plan["requirements"]
+    # The locked release itself is still shared.
+    assert plan["provided"]["nvidia-cuda-nvcc"] == pins["nvidia-cuda-nvcc"]
+
+
 def test_shared_engine_never_sees_studio_flashinfer(tmp_path):
     import subprocess
     import sys
