@@ -81,7 +81,10 @@ import {
   type NpuModel,
   type NpuPickerSource,
   NpuSetupNotice,
+  npuDownloadLabel,
+  npuResumeLabel,
   npuRowsFor,
+  npuSizeLabel,
   useNpuCatalog,
 } from "@/features/npu";
 import {
@@ -6501,12 +6504,11 @@ export function HubModelPicker({
     const isLoaded = loadedModelId === model.model_path;
     const downloading = model.id in npuCatalog.downloads;
     const progress = npuCatalog.downloads[model.id];
-    const size =
-      model.size_gb == null
-        ? null
-        : model.size_gb < 1
-          ? `${Math.round(model.size_gb * 1000)} MB`
-          : `${model.size_gb.toFixed(1)} GB`;
+    const details = [
+      "NPU",
+      npuSizeLabel(model.size_gb),
+      npuResumeLabel(model),
+    ].filter(Boolean);
     const pick = () =>
       onSelect(model.model_path, {
         source: "local",
@@ -6518,8 +6520,8 @@ export function HubModelPicker({
         label={model.id}
         meta={
           downloading
-            ? `NPU · Downloading${progress == null ? "" : ` ${Math.round(progress)}%`}`
-            : `NPU${size ? ` · ${size}` : ""}`
+            ? `NPU · ${npuDownloadLabel(progress)}`
+            : details.join(" · ")
         }
         selected={isSelected}
         loaded={isLoaded}

@@ -8,6 +8,7 @@ POSIX only: the stub executable is a shell script.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -17,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from core.inference import flm_files as ff
 from core.inference import npu_backend as nb
 from core.inference.lemonade_server import LemonadeServer, LemonadeUnavailable
 
@@ -156,11 +158,109 @@ def test_catalog_keeps_flm_chat_models_only(npu):
 
 
 def test_download_relays_progress_then_completes(npu):
+    # No FastFlowLM file list to read, so lemond downloads the model and its events are relayed.
     npu.enable()
     events = list(npu.download("qwen3-0.6b-FLM"))
     assert events[0]["percent"] == 40
     assert events[-1]["event"] == "complete"
     assert {m.id: m.downloaded for m in npu.catalog()}["qwen3-0.6b-FLM"] is True
+
+
+@pytest.mark.parametrize("delete_fails", [False, True])
+def test_a_pull_clears_what_an_interrupted_one_left(npu, monkeypatch, delete_fails):
+    # FastFlowLM would skip the partial file as complete and report the model downloaded.
+    if delete_fails:
+        monkeypatch.setenv("FAKE_LEMOND_DELETE_FAILS", "1")
+    npu.enable()
+    assert list(npu.download("qwen3-0.6b-FLM"))[-1]["event"] == "complete"
+    paths = [r["path"] for r in _requests(npu) if r["path"] in ("/v1/delete", "/v1/pull")]
+    assert paths == ["/v1/delete", "/v1/pull"]
+
+
+def test_pulling_a_downloaded_model_keeps_its_files(npu, monkeypatch):
+    monkeypatch.setenv("FAKE_LEMOND_DOWNLOADED", '["qwen3-0.6b-FLM"]')
+    npu.enable()
+    list(npu.download("qwen3-0.6b-FLM"))
+    assert "/v1/delete" not in [r["path"] for r in _requests(npu)]
+
+
+@pytest.fixture
+def flm_manifest(npu, monkeypatch):
+    """FastFlowLM's file list for qwen3:0.6b, pointing at a local server, next to the fake flm."""
+    from .test_flm_files import CONFIG, WEIGHTS, _Files
+
+    monkeypatch.setattr(ff, "_RETRY_DELAY_SECONDS", 0.0)
+    server = _Files()
+    npu.enable()
+    bin_dir = npu._flm_binary().parent
+    (bin_dir / "model_list.json").write_text(
+        json.dumps(
+            {
+                "model_path": "models",
+                "models": {
+                    "qwen3": {
+                        "0.6b": {
+                            "name": "Qwen3-0.6B-NPU2",
+                            "url": server.url,
+                            "files": ["config.json", "model.q4nx"],
+                        }
+                    }
+                },
+            }
+        )
+    )
+    blob = hashlib.sha1(f"blob {len(CONFIG)}\0".encode() + CONFIG).hexdigest()
+    (bin_dir / "model_info.json").write_text(
+        json.dumps(
+            {
+                "qwen3:0.6b": [
+                    {"path": "config.json", "size": len(CONFIG), "oid": blob},
+                    {
+                        "path": "model.q4nx",
+                        "size": len(WEIGHTS),
+                        "oid": "unused",
+                        "lfs": {"oid": hashlib.sha256(WEIGHTS).hexdigest()},
+                    },
+                ]
+            }
+        )
+    )
+    yield server
+    server.server.shutdown()
+    server.server.server_close()
+
+
+def test_studio_downloads_the_files_and_lemond_only_registers_them(npu, flm_manifest):
+    from .test_flm_files import WEIGHTS
+
+    events = list(npu.download("qwen3-0.6b-FLM"))
+    folder = npu.root / "flm" / "models" / "Qwen3-0.6B-NPU2"
+    assert (folder / "model.q4nx").read_bytes() == WEIGHTS
+    percents = [event["percent"] for event in events]
+    # lemond's own percent (40, for one file) never reaches the stream.
+    assert percents == sorted(percents) and percents[-1] == 100
+    assert events[-1] == {"event": "complete", "model": "qwen3-0.6b-FLM", "percent": 100}
+    pulls = [r for r in _requests(npu) if r["path"] in ("/v1/delete", "/v1/pull")]
+    assert pulls == [
+        {
+            "path": "/v1/pull",
+            "body": {"model_name": "qwen3-0.6b-FLM", "stream": True, "do_not_upgrade": True},
+        }
+    ]
+    assert {m.id: m.downloaded for m in npu.catalog()}["qwen3-0.6b-FLM"] is True
+
+
+def test_the_catalog_offers_to_resume_an_interrupted_download(npu, flm_manifest):
+    flm_manifest.cut_after = [None, 1 << 20] + [0] * 10
+    with pytest.raises(nb.NpuError, match = "model.q4nx failed"):
+        list(npu.download("qwen3-0.6b-FLM"))
+    by_id = {m.id: m for m in npu.catalog()}
+    assert by_id["qwen3-0.6b-FLM"].resume_percent == 33
+    assert by_id["gemma3-4b-FLM"].resume_percent is None
+    flm_manifest.cut_after = []
+    assert list(npu.download("qwen3-0.6b-FLM"))[-1]["event"] == "complete"
+    assert flm_manifest.ranges[-1] == f"bytes={1 << 20}-"
+    assert {m.id: m.resume_percent for m in npu.catalog()}["qwen3-0.6b-FLM"] is None
 
 
 @pytest.mark.parametrize(

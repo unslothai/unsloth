@@ -23,7 +23,8 @@ export type ResourceTypeFilter = "models" | "datasets";
 
 export type HubModelType = "text" | "vision" | "audio" | "embeddings";
 
-export type ModelFormatFilter = "all" | "gguf" | "checkpoint" | "mlx";
+/** "npu" lists Lemonade's NPU catalog in place of Hub repos. */
+export type ModelFormatFilter = "all" | "gguf" | "checkpoint" | "mlx" | "npu";
 
 export type CapabilityFilter = "all" | CapabilityKey;
 
