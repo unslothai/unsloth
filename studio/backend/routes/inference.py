@@ -11336,6 +11336,13 @@ def release_chat_gpu_claim() -> bool:
     return release_if(CHAT, chat_idle)
 
 
+def reap_dead_managed_engine(backend) -> None:
+    """A crashed engine leaves nothing resident, so its claim and sharers go with it."""
+    from core.inference.gpu_arbiter import CHAT, current_owner
+    if backend.reap_dead_managed_engine() and (release_chat_gpu_claim() or current_owner() != CHAT):
+        account_access.clear_resident("chat")
+
+
 def _preview_same_checkpoint(loaded: str, requested: str) -> bool:
     """True when the resident slot already serves the preview's checkpoint. Exact string
     match first: it is the fast path and the only comparison that makes sense for a non-path
@@ -20670,6 +20677,9 @@ async def get_status(current_subject: str):
     Get current inference backend status.
     Reports whichever backend (Unsloth or llama-server) is active.
     """
+    backend = _peek_inference_backend()
+    if getattr(backend, "_managed_engine", None) is not None:
+        await asyncio.to_thread(reap_dead_managed_engine, backend)
     if account_access.resident_hidden("chat"):
         return account_access.hidden_chat_status_response()
     try:
@@ -20711,8 +20721,6 @@ async def get_status(current_subject: str):
         _tracked_loading_id = _loading_public_id(_tracked_loading_id) or ""
         _loading = [_tracked_loading_id] if _tracked_loading_id else []
         backend = _peek_inference_backend()
-        if getattr(backend, "_managed_engine", None) is not None:
-            await asyncio.to_thread(backend.reap_dead_managed_engine)
 
         from core.inference.npu_backend import peek_npu_backend
 

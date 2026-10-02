@@ -498,8 +498,36 @@ def test_engine_left_by_a_cancelled_load_is_reaped_once_it_dies():
     backend.reap_dead_managed_engine()
     assert reaped == []  # a load still starting it is not reaped
     backend.loading_models = set()
-    backend.reap_dead_managed_engine()
+
+    def shutdown(*a, **k):
+        reaped.append(True)
+        backend._managed_engine = None
+
+    backend._shutdown_subprocess = shutdown
+    assert backend.reap_dead_managed_engine() is True
     assert reaped == [True]
+
+
+def test_reaping_a_crashed_engine_drops_its_claim_and_sharers(monkeypatch):
+    # Otherwise other accounts keep getting the hidden-resident status for an engine that died.
+    from core.inference import gpu_arbiter
+    from routes import inference as api
+
+    calls = []
+    monkeypatch.setattr(api, "release_chat_gpu_claim", lambda: calls.append("release") or True)
+    monkeypatch.setattr(api.account_access, "clear_resident", calls.append)
+    api.reap_dead_managed_engine(SimpleNamespace(reap_dead_managed_engine = lambda: True))
+    assert calls == ["release", "chat"]
+
+    calls.clear()
+    api.reap_dead_managed_engine(SimpleNamespace(reap_dead_managed_engine = lambda: False))
+    assert calls == []
+
+    # A newer load took the claim before the release: its sharers stay.
+    monkeypatch.setattr(api, "release_chat_gpu_claim", lambda: False)
+    monkeypatch.setattr(gpu_arbiter, "current_owner", lambda: gpu_arbiter.CHAT)
+    api.reap_dead_managed_engine(SimpleNamespace(reap_dead_managed_engine = lambda: True))
+    assert calls == []
 
 
 @pytest.mark.parametrize("stream", [False, True])
