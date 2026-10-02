@@ -352,6 +352,16 @@ def test_uninstall_finds_the_unit_through_the_manager(tmp_path):
     assert not (other / "unsloth-studio.service").exists()
 
 
+def test_uninstall_finds_the_unit_under_the_passwd_home_without_a_bus(tmp_path):
+    other = tmp_path / "passwd_home" / ".config" / "systemd" / "user"
+    other.mkdir(parents = True)
+    (other / "unsloth-studio.service").write_text("# unsloth-studio-managed-systemd\n")
+    _fake_bin(tmp_path, "getent", f'echo "me:x:1:1::{tmp_path / "passwd_home"}:/bin/sh"')
+    out = _run_uninstall_removal(tmp_path, None, "exit 1")
+    assert not (other / "unsloth-studio.service").exists()
+    assert "could not reach the systemd user manager" in out
+
+
 def test_uninstall_with_user_bus_disables_then_removes(tmp_path):
     out = _run_uninstall_removal(
         tmp_path, "# unsloth-studio-managed-systemd\n[Service]\n", "exit 0"

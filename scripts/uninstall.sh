@@ -730,6 +730,11 @@ _unsloth_uninstall_main() {
             _sd_frag=$(systemctl --user show -p FragmentPath --value unsloth-studio.service 2>/dev/null || true)
             case "$_sd_frag" in */unsloth-studio.service) _sd_unit="$_sd_frag"; _sd_dir="${_sd_frag%/*}" ;; esac
         fi
+        if [ ! -f "$_sd_unit" ] && command -v getent >/dev/null 2>&1; then
+            # No manager to ask: its HOME is the passwd one.
+            _sd_pw=$(getent passwd "$(id -un 2>/dev/null)" 2>/dev/null | cut -d: -f6)
+            case "$_sd_pw" in /*) _sd_dir="$_sd_pw/.config/systemd/user"; _sd_unit="$_sd_dir/unsloth-studio.service" ;; esac
+        fi
         [ -f "$_sd_unit" ] || return 0
         [ "$(head -n 1 "$_sd_unit" 2>/dev/null)" = "# unsloth-studio-managed-systemd" ] || return 0
         _sd_stopped=0

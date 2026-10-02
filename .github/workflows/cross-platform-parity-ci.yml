@@ -42,6 +42,8 @@ on:
       - 'tests/test_installer_skip_autostart.py'
       - 'tests/test_installer_system32_guard.py'
       - 'tests/test_installer_interactive_prompts.py'
+      - 'tests/test_installer_systemd.py'
+      - 'studio/systemd/unsloth-studio.service.in'
       - 'tests/test_installer_profile_hardening.py'
       - 'install*.sh'
       - 'install*.ps1'
@@ -164,6 +166,8 @@ on:
       - 'tests/test_installer_skip_autostart.py'
       - 'tests/test_installer_system32_guard.py'
       - 'tests/test_installer_interactive_prompts.py'
+      - 'tests/test_installer_systemd.py'
+      - 'studio/systemd/unsloth-studio.service.in'
       - 'tests/test_installer_profile_hardening.py'
       - 'install*.sh'
       - 'install*.ps1'
@@ -347,6 +351,7 @@ jobs:
           tests/test_installer_skip_autostart.py
           tests/test_installer_system32_guard.py
           tests/test_installer_interactive_prompts.py
+          tests/test_installer_systemd.py
           tests/test_installer_profile_hardening.py
           tests/studio/install/test_keep_install_backcompat_9979.py
           -q -rs
