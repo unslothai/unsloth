@@ -1,16 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Recommended audio GGUF models that the backend serves through its audio runtime. They are
-// ordinary GGUF repos to the rest of the app (variants, fit, downloads); this list only seeds the
-// Audio pickers and dictation settings. Any other repo the backend recognises from the GGUF header
-// works too. Packages in the shared repo are addressed as the repo plus the top-level folder
-// ("audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF"). Free of app imports so the node test runner can
-// load it directly.
+// Seeds the Audio pickers and dictation settings; any GGUF the backend recognises works too.
+// Free of app imports so the node test runner can load it directly.
 
 export const AUDIO_CPP_REPO = "audio-cpp/audio.cpp-gguf";
 
-/** The audio_type the backend reports for these speech and music models. */
 export const AUDIO_CPP_TTS_AUDIO_TYPE = "audiocpp_tts";
 export const AUDIO_CPP_MUSIC_AUDIO_TYPE = "audiocpp_music";
 export const AUDIO_CPP_AUDIO_TYPES: ReadonlySet<string> = new Set([
@@ -26,8 +21,7 @@ export interface AudioCppModel {
   task: AudioCppTask;
   /** ASR only: the primary language codes the model transcribes. Absent = multilingual. */
   languages?: readonly string[];
-  /** Phonemizes with eSpeak-ng, which upstream runtime bundles are built without (backend
-   *  needs_espeak). */
+  /** Phonemizes with eSpeak-ng, which upstream runtime bundles lack (backend needs_espeak). */
   needsEspeak?: boolean;
 }
 
@@ -45,7 +39,6 @@ const folder = (name: string) => `${AUDIO_CPP_REPO}/${name}`;
 const ENGLISH = ["en"] as const;
 
 export const AUDIO_CPP_MODELS: readonly AudioCppModel[] = [
-  // Text to speech.
   { id: folder("Kokoro-82M-GGUF"), task: "tts", needsEspeak: true },
   { id: folder("KittenTTS-GGUF"), task: "tts", needsEspeak: true },
   { id: folder("Piper-TTS-GGUF"), task: "tts", needsEspeak: true },
@@ -57,12 +50,10 @@ export const AUDIO_CPP_MODELS: readonly AudioCppModel[] = [
   { id: folder("VoxCPM2-GGUF"), task: "tts" },
   { id: folder("Qwen3-TTS-12Hz-1.7B-CustomVoice-GGUF"), task: "tts" },
   { id: folder("Qwen3-TTS-12Hz-1.7B-VoiceDesign-GGUF"), task: "tts" },
-  // Music generation.
   { id: "audio-cpp/MiniMax-Music3-GGUF", task: "music" },
   { id: "audio-cpp/Yue2-3B-GGUF", task: "music" },
   { id: folder("ACE-Step1.5-GGUF"), task: "music" },
   { id: folder("Stable-Audio-3-Small-Music-GGUF"), task: "music" },
-  // Speech to text.
   { id: folder("Qwen3-ASR-0.6B-GGUF"), task: "asr" },
   { id: folder("Qwen3-ASR-1.7B-GGUF"), task: "asr" },
   { id: folder("Parakeet-TDT-0.6B-v3-GGUF"), task: "asr" },
@@ -71,14 +62,12 @@ export const AUDIO_CPP_MODELS: readonly AudioCppModel[] = [
   { id: folder("Nemotron-3.5-ASR-Streaming-0.6B-GGUF"), task: "asr", languages: ENGLISH },
 ];
 
-/** The dictation keys Settings > Voice saved before these models were plain GGUF repos. The
- *  backend still accepts them and maps each to its folder id (and variant). */
+/** Legacy Settings > Voice keys; the backend still maps each to its folder id (and variant). */
 export interface AudioCppDictationModel {
   key: string;
   id: string;
   /** The folder's sub-package when it ships several (Moonshine sizes). */
   variant?: string;
-  /** Default download size, shown beside the name. */
   sizeBytes: number;
 }
 
@@ -125,7 +114,6 @@ const DICTATION_BY_KEY = new Map<string, AudioCppDictationModel>(
   AUDIO_CPP_DICTATION_MODELS.map((model) => [model.key, model]),
 );
 
-/** Whether `id` names a package folder of the shared repo (three segments or more). */
 export function isAudioCppFolderId(id: string | null | undefined): boolean {
   const text = normalizedId(id);
   return (
@@ -134,8 +122,6 @@ export function isAudioCppFolderId(id: string | null | undefined): boolean {
   );
 }
 
-/** The name a row shows: the package folder for the shared repo, else the repo name, as the
- *  Hub spells it ("Kokoro-82M-GGUF", "MiniMax-Music3-GGUF"). */
 export function audioCppDisplayName(id: string): string {
   const trimmed = id.trim().replace(/\/+$/, "");
   if (isAudioCppFolderId(trimmed)) {
@@ -144,12 +130,10 @@ export function audioCppDisplayName(id: string): string {
   return trimmed.split("/").pop() || trimmed;
 }
 
-/** The recommended model for a Studio id, else null. */
 export function audioCppModelFor(id: string | null | undefined): AudioCppModel | null {
   return BY_ID.get(normalizedId(id)) ?? null;
 }
 
-/** The dictation model a saved Settings > Voice key names, else null. */
 export function audioCppDictationModelFor(
   key: string | null | undefined,
 ): AudioCppDictationModel | null {
@@ -157,8 +141,7 @@ export function audioCppDictationModelFor(
   return text ? (DICTATION_BY_KEY.get(text) ?? null) : null;
 }
 
-/** Whether a GGUF row is one the backend runs on its audio runtime rather than llama-server, as
- *  far as the picker can tell: a recommended id, a package folder, or a reported audio type. */
+/** Served by the audio runtime rather than llama-server, as far as the picker can tell. */
 export function isAudioRuntimeGguf(
   id: string | null | undefined,
   audioType?: string | null,
@@ -174,12 +157,10 @@ export function audioCppModelsForTask(task: AudioCppTask): AudioCppModel[] {
   return AUDIO_CPP_MODELS.filter((model) => model.task === task);
 }
 
-/** Music length the backend generates, whatever max_tokens asks for. The frame rate is the
- *  MiniMax Music 3 convention the Audio page already sends. */
+/** Music length the backend clamps to, whatever max_tokens asks for. */
 export const AUDIO_CPP_MUSIC_MIN_SECONDS = 5;
 export const AUDIO_CPP_MUSIC_MAX_SECONDS = 240;
 
-/** "181 MB" / "2.8 GB", in the style of the dictation model sizes. */
 export function audioCppSizeLabel(sizeBytes: number): string {
   const mb = sizeBytes / MB;
   return mb < 1000 ? `${Math.round(mb)} MB` : `${(mb / 1024).toFixed(1)} GB`;
