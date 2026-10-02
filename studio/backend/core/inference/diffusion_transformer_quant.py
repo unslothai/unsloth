@@ -1268,7 +1268,6 @@ def _scheme_supported(
             # Re-checked under the lock: the route answers plans concurrently, and a burst of them must not each spawn
             # a child that imports torch.
             if (scheme, card) not in _SMOKE_CACHE:
-                # A previous process's clean child table for this exact stack and card skips the spawn (4-5 s).
                 table = _persisted_probe_table(card)
                 if table is None or scheme not in table:
                     table = _child_probe_table(card)
@@ -1407,7 +1406,6 @@ def _child_probe_table(device: str) -> Optional[dict[str, Optional[bool]]]:
     finally:
         _close_probe_child(proc, queue)
     if isinstance(table, dict):
-        # Only a clean table is persisted: a crash verdict or a timeout says nothing durable about the stack.
         try:
             from . import diffusion_probe_cache
             diffusion_probe_cache.store(device, table)
@@ -1418,12 +1416,10 @@ def _child_probe_table(device: str) -> Optional[dict[str, Optional[bool]]]:
 
 
 def prewarm_probe_table(device: str = "cuda") -> bool:
-    """Resolve (and persist) this card's smoke-probe table off the load path; True iff a child probe ran.
+    """Resolve and persist this card's smoke-probe table at boot; True iff a child probe ran.
 
-    The first quantised load of a fresh install otherwise starts with this 4-5 s child before anything else. Called
-    from the boot-time prewarm, so a user who takes a few seconds to pick a model never waits for it. Skips when the
-    table is already known in this process or on disk. A load arriving mid-probe waits on the same lock and reads the
-    verdicts this call stored. ``UNSLOTH_DIFFUSION_PROBE_PREWARM=0`` disables it."""
+    A load arriving mid-probe waits on the same lock and reads these verdicts. ``UNSLOTH_DIFFUSION_PROBE_PREWARM=0``
+    disables it."""
     if (_os.environ.get("UNSLOTH_DIFFUSION_PROBE_PREWARM") or "").strip().lower() in (
         "0",
         "false",
@@ -1461,7 +1457,7 @@ def prewarm_probe_table(device: str = "cuda") -> bool:
 
 
 def _persisted_probe_table(card: str) -> Optional[dict[str, bool]]:
-    """The verdicts a previous process's clean child probe recorded for this card and stack, or None."""
+    """A previous process's clean child table for this card and stack, or None."""
     try:
         from . import diffusion_probe_cache
         return diffusion_probe_cache.load(card)

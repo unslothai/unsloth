@@ -966,7 +966,7 @@ def _ensure_mp4_encoder_available() -> None:
 
 
 def _video_denoiser_hooked(pipe: Any) -> bool:
-    """Whether an offload hook moves one of ``pipe``'s denoisers (encoders streamed alone leave it resident)."""
+    """Whether an offload hook moves one of ``pipe``'s denoisers."""
     for name in ("transformer", "transformer_2"):
         module = getattr(pipe, name, None)
         if module is None:
@@ -1037,7 +1037,6 @@ class _VideoLoadState:
     # MiniMax-H3: the streamed denoiser also holds a full pinned host copy, which the host floor counts twice.
     denoiser_host_copy: bool = False
     resolved: Optional[dict] = None
-    # diffusion_bg_compile.BackgroundCompile while the dense denoiser's compile runs between renders, else None.
     bg_compile: Any = None
 
 
@@ -2310,10 +2309,7 @@ def _return_direct_loaded_modules(
     plan: Any,
     logger: Any = None,
 ) -> None:
-    """Move what the LTX-2.3 direct load put on the card back to the host where ``plan`` no longer keeps it there.
-
-    The direct read is taken only for a plan that keeps the DiT resident (and the text encoder too when nothing
-    streams); a plan refined after the load (a component that outgrew the card) offloads from the host instead."""
+    """Move what the LTX-2.3 direct load put on the card back to the host when a refined ``plan`` offloads it."""
     try:
         import torch
         if not plan_keeps_transformer_resident(plan):
@@ -5701,7 +5697,6 @@ class VideoBackend:
             _nvfp4_install_wanted, denoiser_seed_scheme, device, local_files_only = local_files_only
         )
         denoiser_injected: dict[str, Any] = {}
-        # Set when the LTX-2.3 assembly read its weights straight onto the card (video_ltx2.direct_load_device).
         ltx23_direct_loaded = False
         if denoiser_seed_scheme is not None:
             from .video_denoiser_prequant import denoiser_prequant_pipe_kwargs
@@ -5832,9 +5827,7 @@ class VideoBackend:
                     raise_on_unified_memory_shortfall(
                         plan, family = getattr(fam, "name", None), logger = logger
                     )
-                # A plan that keeps the DiT resident reads the checkpoint straight onto the card (placement then has
-                # nothing left to copy), and the Gemma3 encoder too when nothing streams. Judged on the bf16 plan as
-                # well: a single-file load never engages the runtime quant, so a quant-sized plan falls back to it.
+                # Judged on the bf16 plan too: a single-file load never engages the runtime quant.
                 ltx23_device = None
                 ltx23_te_device = None
                 if kind != "gguf" and all(
@@ -6309,7 +6302,6 @@ class VideoBackend:
                     clear_gpu_cache()
                     raise RuntimeError(shortfall)
             if ltx23_direct_loaded:
-                # Read onto the card for a resident plan; a plan refined since then gets the host copy it expects.
                 _return_direct_loaded_modules(pipe, plan, logger)
             # the streamed modules pin after the load returns, overlapping the first encode and compile
             request_background_pins(pipe)
@@ -6436,8 +6428,7 @@ class VideoBackend:
                 },
                 logger = logger,
             )
-            # Opt-in (UNSLOTH_DIFFUSION_BG_COMPILE=1): a dense default-tier denoiser compiles between renders instead of
-            # inside the first one; off by default so the same seed twice repeats.
+            # Opt-in (UNSLOTH_DIFFUSION_BG_COMPILE=1): off by default so the same seed twice repeats.
             from . import diffusion_bg_compile as bg_compile
 
             bg_module = (
@@ -7882,8 +7873,7 @@ class VideoBackend:
         # begin_generate passes its already-registered event; a direct call makes its own.
         cancel = cancel_event if cancel_event is not None else threading.Event()
         with self._generate_lock:
-            # A background compile of the denoiser still running (it runs between renders): wait it out rather than
-            # render beside it, outside the state lock so status polls keep answering.
+            # Never render beside a background compile; wait outside the state lock so status polls keep answering.
             pending_bg = getattr(self._state, "bg_compile", None)
             if pending_bg is not None and pending_bg.compiling():
                 logger.info("video.bg_compile: render waits for the background compile to finish")
@@ -7905,8 +7895,7 @@ class VideoBackend:
             # Bound below, once the request is resolved. None means the failure beat the resolution, and there is
             # nothing truthful to report.
             request_shape: Optional[dict[str, Any]] = None
-            # While the denoiser's compile is still pending, this render runs eager (compile guards and graph wrappers
-            # read the flag) and records the denoiser inputs the background compile then replays.
+            # Compile still pending: this render runs eager and records the denoiser inputs for it.
             from . import diffusion_bg_compile as bg_compile
 
             bg = getattr(state, "bg_compile", None)
@@ -9008,7 +8997,7 @@ class VideoBackend:
         cannot observe a half-torn-down backend."""
         state, self._state = self._state, None
         if state is not None:
-            # An in-flight background compile still runs the denoiser: wait for it before the teardown frees it.
+            # An in-flight background compile still runs the denoiser the teardown frees.
             if getattr(state, "bg_compile", None) is not None:
                 try:
                     state.bg_compile.close()

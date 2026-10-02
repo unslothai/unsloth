@@ -347,19 +347,12 @@ def _load_prequant_checkpoint(path: str, **kwargs: Any) -> Any:
     return _torch_load_prequant(path, **kwargs)
 
 
-# UNSLOTH_DIFFUSION_PREQUANT_MMAP: 1 (default) maps a pickle checkpoint headed for an accelerator instead of reading it
-# into anonymous host memory first; 0 restores the full read. The tensors only pass through host memory on their way
-# to the device, so a mapping skips one whole copy: FLUX.1-schnell INT8 (15.2 GB, warm page cache, B200 host) went
-# from 9.1 s read + 3.3 s to(cuda) to 1.0 s map + 3.5 s to(cuda), and the host peak drops by the checkpoint size.
+# 0 reads a pickle checkpoint headed for an accelerator into host memory instead of mapping it.
 _PREQUANT_MMAP_ENV = "UNSLOTH_DIFFUSION_PREQUANT_MMAP"
 
 
 def prequant_mmap_enabled(destination: Any) -> bool:
-    """Whether a pickle pre-quant checkpoint bound for ``destination`` is read through a file mapping.
-
-    Only for a non-CPU destination: a module PLACED on the host would keep serving its weights out of the mapping
-    (copy-on-write, so never written back, but the file would stay open under the loaded model, which Windows then
-    refuses to delete or replace)."""
+    """Map only for a non-CPU destination: a host-placed module would keep the file open (Windows then cannot delete it)."""
     import os
 
     raw = (os.environ.get(_PREQUANT_MMAP_ENV) or "").strip().lower()
@@ -374,10 +367,7 @@ def _read_prequant_for(
     destination: Any,
     logger: Any = None,
 ) -> Any:
-    """``_load_prequant_checkpoint`` mapped when ``prequant_mmap_enabled``, falling back to the full read.
-
-    The fallback covers what a mapping cannot open (a legacy non-zip pickle, a filesystem without mmap); a refusal the
-    mapping did not cause raises again from the plain read, so nothing that failed before passes now."""
+    """``_load_prequant_checkpoint`` mapped when enabled; anything the mapping cannot open is re-read in full."""
     if prequant_mmap_enabled(destination):
         try:
             return _load_prequant_checkpoint(path, map_location = "cpu", mmap = True)

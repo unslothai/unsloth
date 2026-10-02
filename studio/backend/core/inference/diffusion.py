@@ -1032,7 +1032,6 @@ class _LoadState:
     generation_count: int = 0
     # Pre-warmed torch.compile cache context when a compiled tier ran, else None.
     compile_cache_ctx: Any = None
-    # diffusion_bg_compile.BackgroundCompile while a dense denoiser's compile runs off the render path, else None.
     bg_compile: Any = None
     # GraphedForward handles installed on the denoiser modules.
     cuda_graphs: tuple = ()
@@ -1071,7 +1070,7 @@ class _LoadingState:
     # ONE named file: the scan counts what this load adds, not every byte already in the repo.
     asset_files: tuple[tuple[str, str, int, int], ...] = ()
     account_id: Optional[str] = None
-    # (expected_bytes, downloaded) once a scan found every expected byte on disk; see load_progress.
+    # (expected_bytes, downloaded) once every expected byte was on disk.
     finalized_scan: Optional[tuple[int, int]] = None
 
 
@@ -1887,7 +1886,6 @@ def _bg_compile_module(
         step_cache = bool(transformer_cache) or bool(cache_auto),
         device = getattr(target, "device", None),
         backend = getattr(target, "backend", None),
-        # An offload policy that leaves the denoiser resident (encoders streamed) still qualifies.
         denoiser_hooked = offload_policy != OFFLOAD_NONE and _denoiser_hooked(pipe),
     )
 
@@ -3310,9 +3308,7 @@ class DiffusionBackend:
             and finalized[0] == loading.expected_bytes
             and _progress_latch_enabled()
         ):
-            # Every expected byte was already on disk: the rest of the load reads and places weights, so another walk
-            # of the repo trees (tens of ms, holding the GIL the load thread needs, at the UI's poll rate for the whole
-            # load) cannot change the answer. A changed estimate rescans.
+            # Nothing left to download: another tree walk only holds the GIL the load thread needs.
             return _progress("finalizing", finalized[1], finalized[0], 1.0)
 
         # Sum checkpoint + companion cache, scanning the repo the bytes LAND in (the mirror when one was swapped in),
@@ -7060,8 +7056,7 @@ class DiffusionBackend:
                         # Beside ``source``, never in it: the frontend branches on "auto"/"explicit".
                         resolved["transformer_quant"]["artifact"] = transformer_quant_artifact
 
-                    # Opt-in (UNSLOTH_DIFFUSION_BG_COMPILE=1): a dense default-tier load compiles its denoiser in the
-                    # background while the first renders run eager; off by default so the same seed twice repeats.
+                    # Opt-in (UNSLOTH_DIFFUSION_BG_COMPILE=1): off by default so the same seed twice repeats.
                     bg_module = (
                         None
                         if not bg_compile.load_time_enabled()
@@ -8676,8 +8671,7 @@ class DiffusionBackend:
         # Per-generation cancel Event that unload()/a superseding load set (under _lock) to abort just this denoise.
         cancel = threading.Event()
         with self._generation_slot(cancel):
-            # A background compile of this load's denoiser still running (it runs between renders): wait it out here,
-            # outside the state lock so status polls keep answering, instead of rendering beside it.
+            # Never render beside a background compile; wait outside the state lock so status polls keep answering.
             pending_bg = getattr(self._state, "bg_compile", None)
             if pending_bg is not None and pending_bg.compiling():
                 logger.info(
@@ -8742,8 +8736,7 @@ class DiffusionBackend:
                             exc,
                         )
 
-                # While the denoiser's compile is still pending in the background, this whole generation runs eager
-                # (the compile guards and graph wrappers read the flag) and records its denoiser inputs for it.
+                # Compile still pending: this generation runs eager and records the denoiser inputs for it.
                 bg = state.bg_compile
                 bg_eager = bg is not None and bg.pending()
                 if bg_eager:
@@ -9301,8 +9294,7 @@ class DiffusionBackend:
                 # QUEUED, not performed: nothing in this response depends on it (only the NEXT process reads the
                 # bundle), so save_async hands it to the shared worker and the user stops waiting on it.
                 if bg_eager:
-                    # Nothing compiled ran: no shapes to register and no bundle to save yet (the first compiled
-                    # generation does both). Hand the recorded inputs to the background compile.
+                    # Nothing compiled ran, so nothing to register or save yet.
                     bg.note_eager_generation()
                     bg.kick()
                 else:
@@ -9552,7 +9544,7 @@ class DiffusionBackend:
         state = self._state
         if state is None:
             return
-        # An in-flight background compile still runs the denoiser: wait for it before the teardown below frees it.
+        # An in-flight background compile still runs the denoiser the teardown below frees.
         if state.bg_compile is not None:
             try:
                 state.bg_compile.close()
@@ -9661,7 +9653,6 @@ class DiffusionBackend:
             "memory_mode": state.memory_mode,
             "speed_mode": state.speed_mode,
             "speed_optims": speed_optims,
-            # Background compile of a dense denoiser (diffusion_bg_compile): recording / compiling / done / failed.
             "bg_compile": state.bg_compile.describe() if state.bg_compile is not None else None,
             "text_encoder_quant": state.text_encoder_quant,
             "transformer_quant": state.transformer_quant,
