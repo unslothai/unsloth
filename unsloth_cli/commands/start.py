@@ -227,7 +227,7 @@ _GPU_MEMORY_MODE_OPTION = typer.Option(
     ),
 )
 
-# Server knobs. Only used when `unsloth start` auto-starts the server (--serve); they have no effect when attaching to a server someone else already started.
+# Server knobs. Tool flags only configure a server `unsloth start` auto-starts (--serve); reasoning rides in the agent's own config where it can.
 _SERVE_OPTION = typer.Option(
     True,
     "--serve/--no-serve",
@@ -670,7 +670,7 @@ def _load_options(
 
 
 class ServerOptions(NamedTuple):
-    """Tool-call knobs forwarded to an auto-started `unsloth run` server."""
+    """Start flags: carried fields ride in the agent's requests; the rest configure an auto-started server."""
 
     enable_tools: Optional[bool] = None
     tool_call_healing: Optional[bool] = None
@@ -1488,21 +1488,22 @@ def _require_studio(
         unpinned = frozenset(name for name in sent if getattr(server_options, name) is not None),
         **dict.fromkeys(sent),
     )
+    # What the agent cannot send itself only reaches the env of a server WE launch, which then applies it to every client.
+    _pinned = [
+        "--" + _name.replace("_", "-")
+        for _name in _SAMPLING_FIELDS
+        if getattr(server_options, _name) is not None
+    ]
+    _reasoning_pins = [
+        f"{_flag} {_value}"
+        for _flag, _value in (
+            ("--reasoning", server_options.reasoning),
+            ("--reasoning-effort", server_options.reasoning_effort),
+        )
+        if _value is not None
+    ]
     base = find_studio_server()
     if base is not None:
-        # What the agent cannot send itself only reaches the env of a server WE launch, so warn instead of silently dropping it.
-        _pinned = [
-            _flag
-            for _flag, _value in (
-                ("--temperature", server_options.temperature),
-                ("--top-p", server_options.top_p),
-                ("--top-k", server_options.top_k),
-                ("--min-p", server_options.min_p),
-                ("--repetition-penalty", server_options.repetition_penalty),
-                ("--presence-penalty", server_options.presence_penalty),
-            )
-            if _value is not None
-        ]
         if _pinned:
             typer.echo(
                 f"Warning: an Unsloth server is already running at {base}, and this agent "
@@ -1511,14 +1512,6 @@ def _require_studio(
                 "with `unsloth studio stop` and re-run to apply them.",
                 err = True,
             )
-        _reasoning_pins = [
-            f"{_flag} {_value}"
-            for _flag, _value in (
-                ("--reasoning", server_options.reasoning),
-                ("--reasoning-effort", server_options.reasoning_effort),
-            )
-            if _value is not None
-        ]
         if _reasoning_pins:
             typer.echo(
                 f"Warning: an Unsloth server is already running at {base}, and this agent "
@@ -1566,6 +1559,25 @@ def _require_studio(
         # Normalize to the port unsloth run actually binds, so the health poll and the returned base hit the same server we launch, not a portless :80.
         expected = _effective_base(expected)
         load = load or LoadOptions()
+        _server_wide = _pinned + [pin for pin in _reasoning_pins if pin != "--reasoning auto"]
+        if _server_wide:
+            typer.echo(
+                f"Warning: this agent cannot send {', '.join(_server_wide)} itself, so the "
+                "server this command starts applies them to every client until it stops.",
+                err = True,
+            )
+        _dropped = [
+            f"UNSLOTH_SAMPLING_{_name.upper()}"
+            for _name in _SAMPLING_FIELDS
+            if _name in server_options.unpinned
+            and os.environ.get(f"UNSLOTH_SAMPLING_{_name.upper()}")
+        ]
+        if _dropped:
+            typer.echo(
+                f"Warning: this agent's flags replace the inherited {', '.join(_dropped)}, so "
+                "the server this command starts drops those pins for every client.",
+                err = True,
+            )
         # Leave a bare GGUF repo's variant unset: the server's own quant preference already picks the best available (UD-Q4_K_XL for Unsloth uploads, else Q4_K_M) and falls back when that exact quant is missing, which forcing a fixed variant here would break.
         return _start_studio_server(expected, model, load, server_options)
     model_hint = "" if model else " Pass --model to have it start one for you, or"
@@ -3049,6 +3061,7 @@ def _codex_supports_model_catalog() -> bool:
 def _agent_version_at_least(command: str, minimum: tuple) -> bool:
     executable = _which_with_install_dirs(command)
     if executable is None:
+        # Only --no-launch gets here without the agent; its recipe may run elsewhere.
         return True
     version = _codex_executable_version(executable)
     return version is not None and version >= minimum
@@ -4648,7 +4661,7 @@ def write_openclaw_config(
     agents = _subdict(config, "agents")
     defaults = _subdict(agents, "defaults")
     _subdict(defaults, "model")["primary"] = f"unsloth/{model['id']}"
-    # extra_body is OpenClaw's last word on the request body; params.top_p is dropped.
+    # OpenClaw applies extra_body last; its own params only read camelCase keys, so top_p would be lost.
     model_ref = f"unsloth/{model['id']}"
     model_settings = defaults.get("models")
     if request_body or (isinstance(model_settings, dict) and model_ref in model_settings):
@@ -5483,11 +5496,9 @@ def codex(
     # Before the install prompt: _install_agent runs a remote installer, and this can refuse outright, so asking first fetches a tool the run cannot use.
     _preflight_agent_gguf(_CODEX_GGUF_AGENT, model, serve = serve, launch = launch)
     _require_agent_for_launch("codex", install_hint, launch)
-    codex_effort = (
-        _codex_reasoning_effort(reasoning, reasoning_effort)
-        if not launch or _agent_version_at_least("codex", _CODEX_REASONING_REQUEST_MIN_VERSION)
-        else None
-    )
+    codex_effort = _codex_reasoning_effort(reasoning, reasoning_effort)
+    if codex_effort and not _agent_version_at_least("codex", _CODEX_REASONING_REQUEST_MIN_VERSION):
+        codex_effort = None
     server_options = ServerOptions(
         enable_tools = enable_tools,
         tool_call_healing = tool_call_healing,
@@ -5959,12 +5970,12 @@ def pi(
         min_p = min_p,
         repetition_penalty = repetition_penalty,
         presence_penalty = presence_penalty,
-        carried = (
-            _ALL_REQUEST_FIELDS
-            if not launch or _agent_version_at_least("pi", _PI_SAMPLING_PARAMS_MIN_VERSION)
-            else frozenset()
-        ),
+        carried = _ALL_REQUEST_FIELDS,
     )
+    if server_options.request_body() and not _agent_version_at_least(
+        "pi", _PI_SAMPLING_PARAMS_MIN_VERSION
+    ):
+        server_options = server_options._replace(carried = frozenset())
     base, key, entry = _connect(
         api_key,
         model,

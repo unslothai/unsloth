@@ -3577,15 +3577,16 @@ def test_codex_warns_about_reasoning_it_cannot_express(fake_studio, tmp_path, mo
     assert "model_reasoning_effort" not in profile
 
 
+@pytest.mark.parametrize("mode", ["--persist", "--no-launch"])
 @pytest.mark.parametrize("agent, version", [("codex", (0, 144, 0)), ("pi", (0, 83, 0))])
 def test_agent_too_old_to_send_the_flags_keeps_the_server_pin(
-    agent, version, fake_studio, tmp_path, monkeypatch
+    agent, version, mode, fake_studio, tmp_path, monkeypatch
 ):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(start, "_which_with_install_dirs", lambda name: f"/bin/{name}")
     monkeypatch.setattr(start, "_codex_executable_version", lambda executable: version)
     monkeypatch.setattr(start, "_launch", lambda *args, **kwargs: None)
-    result = CliRunner().invoke(start.start_app, [agent, "--persist", *_SESSION_FLAGS])
+    result = CliRunner().invoke(start.start_app, [agent, mode, *_SESSION_FLAGS])
     assert result.exit_code == 0, result.output
     assert "cannot send --temperature, --top-k itself" in result.output
     assert "cannot send --reasoning off itself" in result.output
@@ -3663,6 +3664,41 @@ def test_spawned_server_keeps_only_what_the_agent_cannot_send(
     assert {k: v for k, v in sampling.items() if v is not None} == server_keeps
     assert options.reasoning is None
     assert options.unpinned == {"reasoning", *({"temperature", "top_k"} - set(server_keeps))}
+    assert ("applies them to every client" in result.output) == bool(server_keeps)
+
+
+@pytest.mark.parametrize("reasoning, warns", [("on", True), ("auto", False)])
+def test_require_studio_warns_when_the_started_server_pins_reasoning(
+    monkeypatch, capsys, reasoning, warns
+):
+    monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888")
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
+    monkeypatch.setattr(
+        start, "_start_studio_server", lambda base, model, load, server: (base, None)
+    )
+    start._require_studio(
+        "unsloth/M-GGUF", serve = True, server_options = start.ServerOptions(reasoning = reasoning)
+    )
+    assert ("every client" in capsys.readouterr().err) is warns
+
+
+@pytest.mark.parametrize("inherited", ["0.7", None])
+def test_require_studio_warns_when_a_flag_drops_an_inherited_pin(monkeypatch, capsys, inherited):
+    monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888")
+    if inherited:
+        monkeypatch.setenv("UNSLOTH_SAMPLING_TEMPERATURE", inherited)
+    else:
+        monkeypatch.delenv("UNSLOTH_SAMPLING_TEMPERATURE", raising = False)
+    monkeypatch.setenv("UNSLOTH_SAMPLING_TOP_P", "0.5")
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
+    monkeypatch.setattr(
+        start, "_start_studio_server", lambda base, model, load, server: (base, None)
+    )
+    options = start.ServerOptions(temperature = 0.3, carried = frozenset({"temperature"}))
+    start._require_studio("unsloth/M-GGUF", serve = True, server_options = options)
+    err = capsys.readouterr().err
+    assert ("replace the inherited UNSLOTH_SAMPLING_TEMPERATURE" in err) is bool(inherited)
+    assert "UNSLOTH_SAMPLING_TOP_P" not in err
 
 
 @pytest.mark.parametrize("reasoning", ["on", "off", "auto"])
@@ -3750,7 +3786,7 @@ def test_require_studio_warns_on_explicit_reasoning_effort_when_reusing_server(m
     assert "unsloth studio stop" in err
 
 
-def test_start_claude_parses_sampling_flags(fake_studio, monkeypatch):
+def test_start_claude_sends_sampling_flags_itself(fake_studio, monkeypatch):
     # Claude sends the flags itself, so the server it starts is left at its defaults.
     monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888")
     monkeypatch.setattr(start, "find_studio_server", lambda: None)
