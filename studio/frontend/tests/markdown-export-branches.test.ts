@@ -12,6 +12,7 @@ import {
   createConversationMarkdownExporter,
 } from "../src/features/chat/utils/conversation-markdown-export.ts";
 import { buildConversationMarkdown } from "../src/features/chat/utils/conversation-markdown.ts";
+import { csvDocument, CSV_MIME } from "../src/features/chat/utils/csv-export.ts";
 import * as liveThreadHead from "../src/features/chat/utils/live-thread-head.ts";
 import { orderByParentChain } from "../src/features/chat/utils/message-order.ts";
 import { readSrc } from "./helpers/kit.ts";
@@ -98,6 +99,8 @@ function loadExporters(
     messageToMarkdown: (message: StoredMessage) => message.content,
     messageToText: (message: StoredMessage) => message.content,
     csvEscape: (value: string) => value,
+    csvDocument,
+    CSV_MIME,
     exportTs: () => "ts",
     downloadBlob: async (body: string) => {
       downloads.push(body);
@@ -183,7 +186,7 @@ test("CSV still writes both replies while markdown writes one", async () => {
   const exporters = loadExporters(regenerated, downloads, []);
   await exporters.exportConversationCsv("thread");
   assert.deepEqual(downloads, [
-    "role,content\nuser,Name one fruit.\nassistant,Pears.\nassistant,Apples.",
+    "\ufeffrole,content\nuser,Name one fruit.\nassistant,Pears.\nassistant,Apples.",
   ]);
 });
 

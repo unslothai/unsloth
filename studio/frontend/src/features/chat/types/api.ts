@@ -57,6 +57,7 @@ export interface LoadModelRequest {
   nativePathLease?: string | null;
   hf_token: string | null;
   max_seq_length: number;
+  max_seq_length_auto_derived?: boolean;
   load_in_4bit: boolean;
   is_lora: boolean;
   gguf_variant?: string | null;
@@ -504,6 +505,14 @@ export interface ApiMonitorEntry {
   reason?: "manual" | "idle" | "api" | null;
   // 0-100 while a download row is running.
   progress?: number | null;
+  running_phase?: "prompt_processing" | "token_generation" | null;
+  prompt_progress?: {
+    total: number | null;
+    processed: number | null;
+    cached: number | null;
+    time_ms: number | null;
+    percent: number | null;
+  } | null;
   // Server-side time to first token (measured, else engine prefill).
   ttft_ms?: number | null;
   tok_per_sec?: number | null;
@@ -616,6 +625,8 @@ export interface OpenAIChatCompletionsRequest {
   seed?: number;
   image_base64?: string;
   audio_base64?: string;
+  /** Further clips after audio_base64, in attach order. */
+  extra_audio_base64?: string[];
   video_base64?: string;
   use_adapter?: boolean | string | null;
   enable_thinking?: boolean | null;
@@ -638,6 +649,8 @@ export interface OpenAIChatCompletionsRequest {
   enabled_tools?: string[];
   /** Local models + enable_tools only. */
   mcp_enabled?: boolean;
+  /** Data URL a mapped MCP tool field receives after the user approves each call. */
+  mcp_image?: string;
   /** The replayed tool calls came from Studio's own local tool loop. */
   studio_tool_history?: boolean;
   /** Local models + enable_tools only. */
@@ -703,7 +716,8 @@ export interface OpenAIChatCompletionsRequest {
 
 export interface OpenAIChatDelta {
   role?: string;
-  content?: string | null;
+  /** Magistral streams structured content parts: read through extractDeltaText. */
+  content?: string | unknown[] | null;
   /** Streamed assistant tool calls. The Gemini and OpenAI Responses translators emit incremental
    *  deltas so the chat-adapter can render tool cards as they arrive. */
   tool_calls?: OpenAIToolCallPart[];
@@ -725,6 +739,8 @@ export interface OpenAIChatChunk {
     total_tokens: number;
   };
   timings?: Record<string, number>;
+  /** Studio heuristic: the response may have stopped mid-quote. */
+  quote_cut?: boolean;
   context_truncated?: {
     dropped_messages: number;
     prompt_tokens_before?: number;

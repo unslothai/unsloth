@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import math
+import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,6 +57,8 @@ H3_TRANSFORMER_BF16_GB = 66.3
 # Video + audio VAE, from the family's bf16_components_gb. Only a floor for the offloaded term: it stops a very small
 # conditioner from claiming a base no component rotation could actually fit in.
 H3_VAE_RESIDENT_GB = 11.1
+# Streamed denoiser's device footprint (running + prefetched group + top-level modules); below the VAE term.
+H3_TRANSFORMER_STREAMED_GB = 3.0
 
 
 # Resident decimal GB of each hosted pre-quantized denoiser, from the artifact sizes in unsloth/MiniMax-H3-FP8
@@ -100,13 +103,26 @@ def estimate_h3_diffusers_vram_gb(
     text_encoder_gb: Optional[float] = None,
     transformer_gb: Optional[float] = None,
     transformer_pinned: bool = False,
+    transformer_streamed: bool = False,
 ) -> float:
     """Measured available-VRAM floor for an H3 Diffusers generation.
 
     ``text_encoder_gb`` / ``transformer_gb`` are the RESIDENT sizes this load actually holds and
     ``transformer_pinned`` whether the denoiser was taken out of the offload rotation; all unset
-    keeps the released-bfloat16 floor this shipped with."""
+    keeps the released-bfloat16 floor this shipped with.
+    ``transformer_streamed``: no two large components are ever resident together."""
     volume_mpixel_frames = width * height * num_frames / 1_000_000
+    if transformer_streamed:
+        text_encoder = (
+            H3_TEXT_ENCODER_BF16_GB if text_encoder_gb is None else float(text_encoder_gb)
+        )
+        activations = H3_DIFFUSERS_VRAM_GB_PER_MPIXEL_FRAME * volume_mpixel_frames
+        return max(
+            text_encoder + H3_DIFFUSERS_VRAM_OVERHEAD_GB,
+            max(H3_TRANSFORMER_STREAMED_GB, H3_VAE_RESIDENT_GB)
+            + H3_DIFFUSERS_VRAM_OVERHEAD_GB
+            + activations,
+        )
     base = h3_diffusers_vram_base_gb(
         text_encoder_gb = text_encoder_gb,
         transformer_gb = transformer_gb,
@@ -131,6 +147,7 @@ def estimate_h3_diffusers_host_ram_gb(
     *,
     text_encoder_gb: Optional[float] = None,
     transformer_gb: Optional[float] = None,
+    transformer_streamed: bool = False,
 ) -> float:
     """Host-RAM floor for the offload tier selected at the available VRAM.
 
@@ -145,11 +162,15 @@ def estimate_h3_diffusers_host_ram_gb(
 
     A pinned denoiser is still counted here. It lives on the device during the generation, but it
     was built on the host to get there, and keeping it in the sum errs toward refusing a load that
-    would have fitted rather than admitting one that will not."""
-    if available_vram_gb >= H3_DIFFUSERS_HOST_RAM_TIER_VRAM_GB:
+    would have fitted rather than admitting one that will not.
+    A streamed denoiser counts twice (pinned staging copy; measured 80.2 GB peak vs 64.5 GB single count)."""
+    # A streamed load keeps its staging copy even when free VRAM later climbs past the tier.
+    if available_vram_gb >= H3_DIFFUSERS_HOST_RAM_TIER_VRAM_GB and not transformer_streamed:
         return H3_DIFFUSERS_HOST_RAM_HIGH_VRAM_GB
     text_encoder = H3_TEXT_ENCODER_BF16_GB if text_encoder_gb is None else float(text_encoder_gb)
     transformer = H3_TRANSFORMER_BF16_GB if transformer_gb is None else float(transformer_gb)
+    if transformer_streamed:
+        transformer *= 2
     return text_encoder + transformer + H3_VAE_RESIDENT_GB + H3_DIFFUSERS_HOST_RAM_HEADROOM_GB
 
 
@@ -1082,6 +1103,48 @@ def h3_component_metadata_repo(repo_id: str) -> str:
     return H3_COMPONENT_REPO if repo_id == H3_LEGACY_COMPONENT_REPO else repo_id
 
 
+# Resident peak is the four files plus ~1 GiB (sd.cpp frees the text encoder before the denoiser's compute buffer);
+# the estimate still adds that buffer on top of every file, plus a margin.
+H3_NATIVE_RESIDENT_ENV = "UNSLOTH_H3_NATIVE_RESIDENT"
+# Unsloth sd.cpp fork: quantized matmuls with >= this many rows run BF16 cuBLAS instead of int8 MMQ. Unset/0 = MMQ.
+H3_QUANT_CUBLAS_ENV = "GGML_CUDA_QUANT_CUBLAS_MIN_BATCH"
+H3_QUANT_CUBLAS_MIN_BATCH = "1024"
+# Denoiser compute buffer at 960x544x124, from sd-cli's log; scaled by pixel volume.
+H3_NATIVE_DIT_COMPUTE_BYTES_H1 = int(5.4 * 1024**3)
+H3_NATIVE_H1_PIXEL_VOLUME = 960 * 544 * 124
+H3_NATIVE_RESIDENT_MARGIN_BYTES = 2 * 1024**3
+_H3_STREAM_ONLY_FLAGS = ("--offload-to-cpu", "--stream-layers")
+
+
+def h3_native_resident_bytes(file_bytes: int, width: int, height: int, frames: int) -> int:
+    volume = max(1, int(width)) * max(1, int(height)) * max(1, int(frames))
+    compute = math.ceil(
+        H3_NATIVE_DIT_COMPUTE_BYTES_H1 * max(1.0, volume / H3_NATIVE_H1_PIXEL_VOLUME)
+    )
+    return int(file_bytes) + compute + H3_NATIVE_RESIDENT_MARGIN_BYTES
+
+
+def h3_native_render_flags(
+    offload_flags: "tuple[str, ...] | list[str]",
+    *,
+    memory_mode: Optional[str],
+    free_bytes: Optional[int],
+    need_bytes: Optional[int],
+    env: Optional[dict] = None,
+) -> tuple[list[str], bool]:
+    """Flags for one render and whether it runs resident: only memory auto, only when the live free VRAM covers
+    the estimate; anything unknown keeps the committed flags."""
+    flags = list(offload_flags)
+    environ = env if env is not None else os.environ
+    if str(environ.get(H3_NATIVE_RESIDENT_ENV, "")).strip().lower() in ("0", "false", "no", "off"):
+        return flags, False
+    if (memory_mode or "auto") != "auto" or "--offload-to-cpu" not in flags:
+        return flags, False
+    if free_bytes is None or need_bytes is None or int(free_bytes) < int(need_bytes):
+        return flags, False
+    return [f for f in flags if f not in _H3_STREAM_ONLY_FLAGS], True
+
+
 def h3_native_hub_files(transformer_filename: str) -> tuple[tuple[str, str], ...]:
     validate_h3_transformer_filename(transformer_filename)
     return (
@@ -1105,6 +1168,7 @@ class MiniMaxH3NativeRuntime:
     binary_identity: Optional[tuple[int, int]] = None
     # The card the load resolved, kept for failure records: re-resolving at failure time can read None.
     selected_card: Optional[str] = None
+    env: tuple[tuple[str, str], ...] = ()
 
 
 def transcode_video_to_mp4(source: Path, *, fps: int) -> bytes:

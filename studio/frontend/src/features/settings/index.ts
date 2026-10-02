@@ -13,6 +13,10 @@ export { loadEmbeddingModelSettings } from "./api/embedding-model";
 export { updateHubSource } from "./api/hub-settings";
 export { loadOpenAIAutoSwitchSettings } from "./api/openai-auto-switch";
 export {
+  loadSystemOneSettings,
+  subscribeSystemOneSettings,
+} from "./api/systemone";
+export {
   loadHuggingFaceCacheSettings,
   updateHuggingFaceCacheSettings,
 } from "./api/hugging-face-cache";
@@ -97,6 +101,7 @@ export {
 export type { ShortcutId } from "./lib/keyboard-shortcuts";
 export { SETTINGS_TABS, useSettingsDialogStore } from "./stores/settings-dialog-store";
 export { settingsTabVisible } from "./settings-tab-visibility";
+export { DIALOG_SETTINGS_SEARCH_INDEX } from "./dialog-search-index";
 export type { SettingsTab } from "./stores/settings-dialog-store";
 export { requestSttDownload } from "./stores/stt-download-prompt-store";
 export {

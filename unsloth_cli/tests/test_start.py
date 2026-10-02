@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -5799,7 +5800,7 @@ def test_write_pi_config_fresh(tmp_path):
     # Pin the loaded window (and a sane output cap) so Pi compacts instead of
     # overflowing; without it Pi assumes its 128000 default.
     assert provider["models"] == [
-        {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 8192}
+        {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 32000}
     ]
 
 
@@ -5844,7 +5845,7 @@ def test_connect_pi_no_launch(fake_studio, tmp_path, monkeypatch):
     config = json.loads((home / ".pi" / "agent" / "models.json").read_text())
     assert config["providers"]["unsloth"]["apiKey"] == "sk-unsloth-feedfacefeedface"
     assert config["providers"]["unsloth"]["models"] == [
-        {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 8192}
+        {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 32000}
     ]
     assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
     assert (home / ".pi" / "agent" / "extensions" / "mine.ts").is_file()
@@ -6306,6 +6307,60 @@ def test_connect_pi_as_subagent_preserves_cloud_parent(fake_studio, tmp_path, yo
     assert "Ask Pi to spawn an Unsloth or local agent." in result.output
 
 
+def _pi_generated_model(tmp_path, as_subagent):
+    if as_subagent:
+        return json.loads((tmp_path / "agents" / "pi-subagent" / "subagent.json").read_text())
+    return json.loads((tmp_path / "agents" / "pi" / ".pi" / "agent" / "models.json").read_text())[
+        "providers"
+    ]["unsloth"]["models"][0]
+
+
+@pytest.mark.parametrize("as_subagent", [False, True])
+def test_connect_pi_output_limit(fake_studio, tmp_path, as_subagent):
+    args = ["pi", "--no-launch", "--max-tokens", "40000"]
+    if as_subagent:
+        args.append("--as-subagent")
+    # Each launch regenerates the config, so the second run must honour the flag too.
+    for _ in range(2):
+        result = CliRunner().invoke(start.start_app, args)
+        assert result.exit_code == 0, result.output
+        assert "--max-tokens" not in _launch_command(result.output)
+        config = _pi_generated_model(tmp_path, as_subagent)
+        assert config["maxTokens"] == 40000
+        assert config["contextWindow"] == MODEL["context_length"]
+
+
+@pytest.mark.parametrize("as_subagent", [False, True])
+def test_connect_pi_output_limit_capped_at_half_window(fake_studio, tmp_path, as_subagent):
+    args = ["pi", "--no-launch", "--max-tokens", "200000"]
+    if as_subagent:
+        args.append("--as-subagent")
+    result = CliRunner().invoke(start.start_app, args)
+    assert result.exit_code == 0, result.output
+    assert "leaves too little" in result.output
+    assert _pi_generated_model(tmp_path, as_subagent)["maxTokens"] == MODEL["context_length"] // 2
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "abc"])
+def test_connect_pi_invalid_output_limit(fake_studio, tmp_path, value):
+    result = CliRunner().invoke(start.start_app, ["pi", "--no-launch", "--max-tokens", value])
+    assert result.exit_code != 0
+    assert "--max-tokens" in result.output
+    assert not list((tmp_path / "agents").rglob("models.json"))
+
+
+@pytest.mark.parametrize("context", [{}, {"max_context_length": 32768}])
+def test_write_pi_output_limit_context_metadata(tmp_path, context):
+    path = tmp_path / "models.json"
+    start.write_pi_config(BASE, "test-key", {"id": "test-model", **context}, path, max_tokens = 10000)
+    model = json.loads(path.read_text())["providers"]["unsloth"]["models"][0]
+    assert model["maxTokens"] == 10000
+    if context:
+        assert model["contextWindow"] == 32768
+    else:
+        assert "contextWindow" not in model
+
+
 def test_connect_pi_no_launch_windows_relocates_userprofile(fake_studio, tmp_path, monkeypatch):
     # On native Windows Node resolves ~/.pi via USERPROFILE, not HOME, so the session
     # must point USERPROFILE at the relocated home or Pi reads the user's real ~/.pi.
@@ -6349,9 +6404,22 @@ def test_write_dsh_patch_fresh(dsh_patch):
     assert "sk-unsloth" not in dsh_patch.read_text()
     assert provider["compat"] == {"supportsDeveloperRole": False, "maxTokensField": "max_tokens"}
     assert provider["models"] == [
-        {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 8192}
+        {"id": MODEL["id"], "contextWindow": MODEL["context_length"], "maxTokens": 32000}
     ]
     assert entries["agent-default-model"]["config"] == {"provider": "unsloth", "model": MODEL["id"]}
+
+
+@pytest.mark.parametrize("window, expected", [(32_768, 8_192), (143_616, 32_000)])
+def test_pi_and_dsh_output_limit_follows_the_context(tmp_path, window, expected):
+    model = {**MODEL, "context_length": window}
+    start.write_pi_config(BASE, "sk-unsloth-abc", model, tmp_path / "models.json")
+    start.write_pi_subagent_config(BASE, "sk-unsloth-abc", model, tmp_path / "subagent.json")
+    start.write_dsh_patch(BASE, model, tmp_path / "unsloth.patch.yml")
+    pi = json.loads((tmp_path / "models.json").read_text())["providers"]["unsloth"]["models"][0]
+    subagent = json.loads((tmp_path / "subagent.json").read_text())
+    patch = _dsh_entries(tmp_path / "unsloth.patch.yml")
+    dsh = patch["llm-pi-ai"]["config"]["providers"]["unsloth"]["models"][0]
+    assert pi["maxTokens"] == subagent["maxTokens"] == dsh["maxTokens"] == expected
 
 
 def test_write_dsh_patch_without_window_omits_limits(dsh_patch):
@@ -9798,3 +9866,163 @@ def test_openclaw_memory_search_clears_a_stale_external_fallback(
     config = json.loads(config_path.read_text())
     assert config["memory"]["search"]["fallback"] == "none"
     assert config["memory"]["search"]["provider"] == "openai-compatible"
+
+
+def test_direct_gguf_labels_keep_packed_and_grouped_quants():
+    # Mirrors model_config._extract_quant_label: prism-ml/Ternary-Bonsai-*-gguf ships all three.
+    for name, label in (
+        ("Ternary-Bonsai-8B-PQ2_0.gguf", "PQ2_0"),
+        ("Ternary-Bonsai-8B-Q2_0.gguf", "Q2_0"),
+        ("Ternary-Bonsai-8B-Q2_0_g64.gguf", "Q2_0_g64"),
+        ("Ternary-Bonsai-2-27B-PTQ1_0.gguf", "PTQ1_0"),
+    ):
+        assert start._direct_gguf_variant_labels(name)[1] == label
+
+
+GiB = 1024**3
+
+
+class _LoadServer:
+    """Fake Studio: `listing` answers active-downloads, `repos` maps repo -> iterator of progress readings."""
+
+    def __init__(self, listing, repos):
+        self.listing = listing
+        self.repos = {repo: iter(readings) for repo, readings in repos.items()}
+        self.urls = []
+
+    def __call__(
+        self,
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        self.urls.append(url)
+        if url.endswith("/active-downloads"):
+            if isinstance(self.listing, Exception):
+                raise self.listing
+            return {"downloads": self.listing}
+        repo = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["repo_id"][0]
+        reading = next(self.repos[repo])
+        if isinstance(reading, Exception):
+            raise reading
+        return reading
+
+    def count(self, fragment):
+        return sum(fragment in url for url in self.urls)
+
+
+def _reading(
+    downloaded,
+    expected = 4 * GiB,
+    completed = 0,
+):
+    return {
+        "downloaded_bytes": downloaded,
+        "completed_bytes": completed,
+        "expected_bytes": expected,
+    }
+
+
+def _load_job(repo, **extra):
+    return {"repo_id": repo, "owner": "load", "state": "running", **extra}
+
+
+def _progress(monkeypatch, server, clock):
+    monkeypatch.setattr(start, "_http_json", server)
+    monkeypatch.setattr(start.time, "monotonic", lambda: clock[0])
+    return start._ModelDownloadProgress(BASE, "sk-test", "owner/adapter", None)
+
+
+def test_model_download_progress_counts_the_base_a_load_reports(monkeypatch, capsys):
+    adapter_done = _reading(8 * 1024**2, 8 * 1024**2, 8 * 1024**2)
+    server = _LoadServer(
+        [
+            _load_job("owner/base"),
+            {"repo_id": "someone/else", "state": "running"},
+            {"repo_id": "owner/attached", "state": "running", "load_attached": True},
+        ],
+        {
+            "owner/adapter": [adapter_done] * 3,
+            "owner/base": [_reading(0), _reading(1 * GiB), _reading(2 * GiB)],
+            "owner/attached": [_reading(3 * GiB)] + [TimeoutError("slow")] * 2,
+        },
+    )
+    clock = [0.0]
+    progress = _progress(monkeypatch, server, clock)
+
+    for _ in range(3):
+        progress.poll()
+        clock[0] += 1.0
+
+    assert progress.downloaded_bytes == 8 * 1024**2 + 2 * GiB + 3 * GiB
+    assert server.count("someone%2Felse") == 0
+    # The line follows the base as it grows, not the attached job first seen at 3 GiB.
+    out = capsys.readouterr().out
+    assert "1.0 GiB / 4.0 GiB" in out and "3.0 GiB" not in out
+
+
+def test_model_download_progress_lists_load_jobs_at_most_every_interval(monkeypatch):
+    done = _reading(4 * GiB, completed = 4 * GiB)
+    server = _LoadServer(
+        [_load_job("owner/base")],
+        {
+            "owner/adapter": [_reading(1024)] * 20,
+            "owner/base": [_reading(GiB), done] + [AssertionError] * 20,
+        },
+    )
+    clock = [0.0]
+    progress = _progress(monkeypatch, server, clock)
+
+    for _ in range(12):
+        progress.poll()
+        clock[0] += 1.0
+
+    assert server.count("/active-downloads") == 3
+    # A finished base is not scanned again, but its bytes still count.
+    assert server.count("owner%2Fbase") == 2
+    assert progress.downloaded_bytes == 1024 + 4 * GiB
+
+
+def test_model_download_progress_stops_listing_on_a_server_without_the_route(monkeypatch):
+    missing = urllib.error.HTTPError(BASE, 404, "Not Found", None, None)
+    server = _LoadServer(missing, {"owner/adapter": [_reading(1024)] * 20})
+    clock = [0.0]
+    progress = _progress(monkeypatch, server, clock)
+
+    for _ in range(12):
+        progress.poll()
+        clock[0] += 1.0
+
+    assert server.count("/active-downloads") == 1
+    assert progress.downloaded_bytes == 1024
+
+
+def test_download_progress_display_restarts_when_the_repo_changes(monkeypatch, capsys):
+    monkeypatch.setattr(start.sys.stdout, "isatty", lambda: False, raising = False)
+    display = start._DownloadProgressDisplay()
+
+    display.update(_reading(19 * 1024**2, 20 * 1024**2), "owner/adapter")
+    display.update(_reading(GiB), "owner/base")
+
+    out = capsys.readouterr().out
+    assert "19.0 MiB / 20.0 MiB" in out
+    assert "1.0 GiB / 4.0 GiB" in out
+
+
+def test_model_download_progress_counts_the_remote_base_of_a_local_adapter(monkeypatch):
+    server = _LoadServer(
+        [_load_job("owner/base")], {"owner/base": [_reading(GiB), _reading(2 * GiB)]}
+    )
+    clock = [0.0]
+    monkeypatch.setattr(start, "_http_json", server)
+    monkeypatch.setattr(start.time, "monotonic", lambda: clock[0])
+    progress = start._ModelDownloadProgress(BASE, "sk-test", "/models/my-lora", None)
+
+    progress.poll()
+    progress.poll()
+
+    assert progress.downloaded_bytes == 2 * GiB
+    assert server.count("my-lora") == 0

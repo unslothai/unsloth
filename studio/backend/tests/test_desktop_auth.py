@@ -829,6 +829,12 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     library_module.router = APIRouter()
     systemone_module = ModuleType("routes.systemone")
     systemone_module.router = APIRouter()
+    # main.py mounts the Decisions MCP app from these at import.
+    from fastmcp import FastMCP
+
+    systemone_module.MCP_PATH = "/mcp/decisions"
+    systemone_module.RequireStudioAuth = lambda app: app
+    systemone_module.decisions_mcp = FastMCP("Unsloth Decisions")
 
     # Derived from main.py's import block, not hand-listed: the old hardcoded dict went stale
     # twice (#8511's openai_codex_auth_router, #8648's youtube_router), each time killing every

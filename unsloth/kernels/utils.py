@@ -28,6 +28,7 @@ from ..device_type import (
 )
 from ..bnb_availability import native_kernels_ready
 from .fp8 import weight_dequant, fp8_linear, can_use_fp8_rowwise_gemv, fp8_rowwise_gemv
+from .nvfp4 import NVFP4QuantState, nvfp4_dequantize, nvfp4_linear
 import functools
 
 # torch.cuda.amp.custom_fwd is deprecated from 2.4.
@@ -270,12 +271,14 @@ if bnb is None or not native_kernels_ready(bnb, DEVICE_TYPE):
     cdequantize_blockwise_fp32 = _bnb_required
     cdequantize_blockwise_fp16_nf4 = _bnb_required
     cdequantize_blockwise_bf16_nf4 = _bnb_required
+    cdequantize_blockwise_fp32_nf4 = _bnb_required
     cgemm_4bit_inference_naive_fp16 = _bnb_required
     cgemm_4bit_inference_naive_bf16 = _bnb_required
 else:
     cdequantize_blockwise_fp32 = bnb_functional.lib.cdequantize_blockwise_fp32
     cdequantize_blockwise_fp16_nf4 = bnb_functional.lib.cdequantize_blockwise_fp16_nf4
     cdequantize_blockwise_bf16_nf4 = bnb_functional.lib.cdequantize_blockwise_bf16_nf4
+    cdequantize_blockwise_fp32_nf4 = bnb_functional.lib.cdequantize_blockwise_fp32_nf4
 
     if DEVICE_TYPE == "xpu":
         # xpu inference gemv, per bitsandbytes backends/xpu/ops.py#L115.
@@ -334,6 +337,14 @@ _FP8_WEIGHT_DTYPES = tuple(
     )
     if dtype is not None
 )
+
+
+def _has_multiple_active_adapters(proj):
+    # Adapter activation can change after the single-adapter fast paths are installed.
+    adapters = getattr(proj, "active_adapters", None)
+    if adapters is None:
+        adapters = getattr(proj, "active_adapter", ())
+    return not isinstance(adapters, str) and len(adapters) > 1
 
 
 def has_mxfp4_base(*projs):
@@ -402,7 +413,10 @@ def get_lora_parameters(proj):
     adapter = getattr(proj, "active_adapters", None)
     if adapter is None:
         adapter = getattr(proj, "active_adapter", ("default"))
-    adapter = adapter[0]
+    if not isinstance(adapter, str):
+        if len(adapter) > 1:
+            raise ValueError("Unsloth: LoRA parameter extraction requires a single active adapter.")
+        adapter = adapter[0]
 
     # Optionally apply fake quantization to lora weights for QAT.
     lora_A_linear = proj.lora_A[adapter]
@@ -457,7 +471,10 @@ def get_lora_parameters_bias(proj):
     adapter = getattr(proj, "active_adapters", None)
     if adapter is None:
         adapter = getattr(proj, "active_adapter", ("default"))
-    adapter = adapter[0]
+    if not isinstance(adapter, str):
+        if len(adapter) > 1:
+            raise ValueError("Unsloth: LoRA parameter extraction requires a single active adapter.")
+        adapter = adapter[0]
 
     return (
         W,
@@ -496,6 +513,10 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
             return W
         if W.dtype == torch.float8_e4m3fn:
             return weight_dequant(W, quant_state)
+        if type(quant_state) is NVFP4QuantState:
+            return nvfp4_dequantize(
+                W, quant_state.scale, quant_state.global_scale, quant_state.dtype
+            )
         if type(quant_state) is not list:
             # New quant_state as a class, per TimDettmers/bitsandbytes#763.
             absmax = quant_state.absmax
@@ -569,9 +590,12 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
             )
             out_absmax += offset
 
+            # Kernel must match `out`'s dtype: bf16 bits in an fp32 buffer corrupt silently.
             fx = (
                 cdequantize_blockwise_fp16_nf4
                 if dtype == torch_float16
+                else cdequantize_blockwise_fp32_nf4
+                if dtype == torch_float32
                 else cdequantize_blockwise_bf16_nf4
             )
             fx(
@@ -602,6 +626,10 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
             return W
         if W.dtype == torch.float8_e4m3fn:
             return weight_dequant(W, quant_state)
+        if type(quant_state) is NVFP4QuantState:
+            return nvfp4_dequantize(
+                W, quant_state.scale, quant_state.global_scale, quant_state.dtype
+            )
         if type(quant_state) is not list:
             # New quant_state as a class, per TimDettmers/bitsandbytes#763.
             absmax = quant_state.absmax
@@ -680,6 +708,8 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
             fx = (
                 cdequantize_blockwise_fp16_nf4
                 if dtype == torch_float16
+                else cdequantize_blockwise_fp32_nf4
+                if dtype == torch_float32
                 else cdequantize_blockwise_bf16_nf4
             )
             fx(
@@ -712,6 +742,10 @@ else:
             return W
         if W.dtype == torch.float8_e4m3fn:
             return weight_dequant(W, quant_state)
+        if type(quant_state) is NVFP4QuantState:
+            return nvfp4_dequantize(
+                W, quant_state.scale, quant_state.global_scale, quant_state.dtype
+            )
         if type(quant_state) is not list:
             # New quant_state as a class, per TimDettmers/bitsandbytes#763.
             # https://github.com/TimDettmers/bitsandbytes/pull/763/files
@@ -756,6 +790,8 @@ else:
         fx = (
             cdequantize_blockwise_fp16_nf4
             if dtype == torch_float16
+            else cdequantize_blockwise_fp32_nf4
+            if dtype == torch_float32
             else cdequantize_blockwise_bf16_nf4
         )
         fx(
@@ -1108,12 +1144,21 @@ def fast_gemv(
     return _fast_gemv_bnb(X, W, quant_state, out = out)
 
 
+def _quant_state_dtype(quant_state):
+    if type(quant_state) is list:
+        return quant_state[2]
+    return getattr(quant_state, "dtype", None)
+
+
 def fast_linear_forward(
     proj,
     X,
     temp_lora = None,
     out = None,
 ):
+    if _has_multiple_active_adapters(proj):
+        result = proj(X)
+        return result if out is None else out.copy_(result)
     W, W_quant, lora_A, lora_B, lora_S, bias = get_lora_parameters_bias(proj)
     bsz, q_len, in_dim = X.shape
     if q_len != 1:
@@ -1121,6 +1166,9 @@ def fast_linear_forward(
 
     if W_quant is None:
         out = torch_matmul(X, W.t(), out = out)
+    elif type(W_quant) is NVFP4QuantState:
+        # Bias is added once below.
+        out = nvfp4_linear(X, W, W_quant.scale, W_quant.global_scale)
     elif _is_packed_state(W_quant):
         out = W_quant.matmul(X, W, out = out)
     elif W.dtype == torch.float8_e4m3fn:
@@ -1131,7 +1179,8 @@ def fast_linear_forward(
             out = fp8_linear(X, W, W_quant)
     elif type(W_quant) is Int4QuantState:
         out = _int4_matmul(X, W, W_quant, out = out)
-    elif bsz == 1 and q_len == 1:
+    elif bsz == 1 and q_len == 1 and _quant_state_dtype(W_quant) != torch_float32:
+        # The 4bit gemv kernels are fp16/bf16 only.
         out = fast_gemv(X, W, W_quant, out = out)
     else:
         W = fast_dequantize(W.t(), W_quant, use_global_buffer = True)

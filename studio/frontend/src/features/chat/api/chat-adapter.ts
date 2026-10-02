@@ -11,6 +11,11 @@ import {
   shouldOfferMinPRecovery,
 } from "../lib/min-p-recovery";
 import {
+  type ImageDisclosure,
+  modelVisibleMessage,
+  toolOnlyImages,
+} from "./mcp-image";
+import {
   clearedServerTuningState,
   committedServerTuningState,
   serverTuningLoadPayload,
@@ -75,6 +80,12 @@ import {
   sandboxSessionIdFor,
 } from "@/components/assistant-ui/sandbox-files";
 import { apiUrl } from "@/lib/api-base";
+import {
+  type McpUiToolResult,
+  extractMcpUiEnvelope,
+  isMcpUiToolResult,
+  mcpUiReplayImages,
+} from "../mcp-apps/mcp-ui";
 import { isMcpToolName } from "../utils/mcp-tool-name";
 import {
   type McpImage,
@@ -127,8 +138,6 @@ import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import { parsePartialJsonObject } from "assistant-stream/utils";
 import {
-  getExternalProviderApiKey,
-  isCustomProviderType,
   isExternalModelId,
   isPromptCacheTtl,
   loadExternalProviders,
@@ -138,7 +147,6 @@ import {
   providerModelTakesMcpImages,
   supportsProviderPromptCacheTtl,
   supportsProviderPromptCaching,
-  toExternalBackendProviderType,
 } from "../external-providers";
 
 import {
@@ -171,6 +179,11 @@ import {
 import { buildResearchInferenceRequest } from "../research-inference-request";
 import { pickFriendlyContainerName } from "../lib/friendly-names";
 import {
+  buildExternalRoutingFields,
+  type ExternalRoutingUnavailableReason,
+  resolveExternalRouting,
+} from "../utils/chat-title";
+import {
   reasoningCapsFromLoad,
   resolveInferenceCheckpointId,
   tryAdoptServerActiveModel,
@@ -191,7 +204,6 @@ import {
   getExternalReasoningCapabilities,
   providerSupportsPreserveThinking,
   getProviderCapabilities,
-  isGeminiCustomOpenAICompatBase,
   providerHostsCodeExecution,
   providerSupportsBuiltinCodeExecution,
   providerSupportsBuiltinImageGeneration,
@@ -300,6 +312,7 @@ import type { CachedGgufRepo, CachedModelRepo } from "./chat-api";
 import {
   budgetImpliesTruncation,
   CONTINUE_INSTRUCTION,
+  continuationSeed,
   createContinuationMerger,
   hasRenderableContent,
   incompleteLabel,
@@ -319,6 +332,7 @@ import {
   generationIsSettled,
   releaseLiveGenerationRun,
   requestParsesThinkTags,
+  usageCacheWriteTokens,
 } from "../utils/chat-generation-recovery";
 import {
   generateAudio,
@@ -337,10 +351,7 @@ import {
   createOpenAIContainer,
   listOpenAIContainers,
 } from "./openai-containers";
-import {
-  encryptProviderApiKey,
-  isProviderKeyRotationError,
-} from "./providers-api";
+import { isProviderKeyRotationError } from "./providers-api";
 import {
   beginExternalResearchFollow,
   ingestResearchUpdate,
@@ -377,6 +388,28 @@ import {
 // Small models (<=9B) answer from memory, so "auto" forces retrieval for them.
 const AUTOINJECT_AUTO_MAX_SIZE_B = 9;
 
+const EXTERNAL_ROUTING_REFUSALS: Record<
+  ExternalRoutingUnavailableReason,
+  { title: string; description: string; error: string }
+> = {
+  "connections-disabled": {
+    title: "Connections are disabled.",
+    description:
+      "Turn on Enable connections in Settings → Connections to use hosted models.",
+    error: "Connections disabled.",
+  },
+  "connection-missing": {
+    title: "Connection not found.",
+    description: "Open Settings → Connections and add it again.",
+    error: "Connection not found.",
+  },
+  "missing-api-key": {
+    title: "Missing API key for selected connection.",
+    description: "Open Settings → Connections and set the API key again.",
+    error: "Missing connection API key.",
+  },
+};
+
 class ChatGenerationTerminalError extends Error {
   readonly generationStatus: "cancelled" | "failed";
 
@@ -401,9 +434,10 @@ interface ServerUsage {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
-  // External prompt-cache fields (external_provider.py); cache_creation is Anthropic-only.
+  // cache_creation is Anthropic's cache-write count, cache_write_tokens OpenRouter's.
   prompt_tokens_details?: {
     cached_tokens?: number;
+    cache_write_tokens?: number;
   };
   cache_creation_input_tokens?: number;
   cache_read_input_tokens?: number;
@@ -758,6 +792,7 @@ function buildTiming(
 }
 
 function collectTextParts(message: RunMessage): string[] {
+  message = modelVisibleMessage(message);
   const textParts = message.content
     .filter((part) => part.type === "text")
     .map((part) => part.text);
@@ -778,6 +813,7 @@ function collectTextParts(message: RunMessage): string[] {
 function collectImageParts(
   message: RunMessage,
 ): Array<{ type: "image_url"; image_url: { url: string } }> {
+  message = modelVisibleMessage(message);
   const parts: Array<{ type: "image_url"; image_url: { url: string } }> = [];
   const pushImagePart = (part: { type: string }) => {
     if (part.type !== "image" || !("image" in part)) {
@@ -1025,6 +1061,7 @@ export function toolResultModelText(
   toolName?: string,
 ): unknown {
   if (
+    isMcpUiToolResult(result, toolName) ||
     isMcpImageToolResult(result) ||
     isSearchImagesToolResult(result) ||
     isSandboxWrapper(result, toolName)
@@ -1055,10 +1092,16 @@ export function isMcpImageToolResult(val: unknown): val is McpImageToolResult {
   if (typeof val !== "object" || val === null) {
     return false;
   }
-  const v = val as { text?: unknown; images?: unknown; sessionId?: unknown };
+  const v = val as {
+    text?: unknown;
+    images?: unknown;
+    sessionId?: unknown;
+    ui?: unknown;
+  };
   return (
     typeof v.text === "string" &&
     v.sessionId === undefined &&
+    v.ui === undefined &&
     Array.isArray(v.images) &&
     v.images.length > 0 &&
     v.images.every(
@@ -1088,6 +1131,7 @@ function serializeToolResultPart(
     // Backend ChatMessage rejects role="tool" with empty content; a sentinel JSON round-trips it.
     content = result.length > 0 ? result : JSON.stringify({ result: "" });
   } else if (
+    isMcpUiToolResult(result, tc.toolName ?? "") ||
     // The wrapper the live parser builds -- {text, images} and nothing else -- from an
     // MCP result, or from any tool whose raw output ends in a valid envelope. Those
     // are unwrapped by shape, since JSON.stringify below would replay the whole base64
@@ -1110,6 +1154,9 @@ function serializeToolResultPart(
     // envelope would hand its bytes to the model as image input.
     if (isMcpImageToolResult(result) && isMcpToolName(tc.toolName)) {
       content += mcpImagesEnvelope(result.images);
+    } else if (isMcpToolName(tc.toolName)) {
+      const uiImages = mcpUiReplayImages(result, tc.toolName ?? "");
+      if (uiImages.length > 0) content += mcpImagesEnvelope(uiImages);
     }
   } else {
     try {
@@ -1414,6 +1461,7 @@ function toOpenAIMessages(
   message: RunMessage,
   includeReasoningContent = false,
 ): SerializedMessage[] {
+  message = modelVisibleMessage(message);
   if (
     message.role !== "system" &&
     message.role !== "user" &&
@@ -1578,6 +1626,7 @@ function extractImageBase64(input: string): string | undefined {
 }
 
 function findLatestUserImageBase64(messages: RunMessages): string | undefined {
+  messages = messages.map(modelVisibleMessage);
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
     if (!message || message.role !== "user") {
@@ -1626,6 +1675,7 @@ function extractAudioPartBase64(
 
 // A predicate rather than collectImageParts: building the parts would copy the base64 this exists to avoid touching.
 export function messagesContainImage(messages: RunMessages): boolean {
+  messages = messages.map(modelVisibleMessage);
   const isImage = (part: { type: string }) =>
     part.type === "image" &&
     "image" in part &&
@@ -1657,7 +1707,13 @@ function isPrivateMediaPart(part: { type: string }): boolean {
 }
 
 export function messagesUsePrivateContent(messages: RunMessages): boolean {
-  if (messagesContainImage(messages)) return true;
+  // Tool-only images are hidden from the model, not public.
+  if (
+    messagesContainImage(messages) ||
+    messages.some((message) => toolOnlyImages(message).length > 0)
+  ) {
+    return true;
+  }
   return messages.some((message) => {
     if (
       (message.content ?? []).some(
@@ -1678,24 +1734,24 @@ export function messagesUsePrivateContent(messages: RunMessages): boolean {
   });
 }
 
-export function findLatestUserAudioBase64(
-  messages: RunMessages,
-  includePendingAudio = true,
-): string | undefined {
+/** Every clip on the newest user message, in the order it was attached. */
+function latestUserAudioClips(messages: RunMessages): string[] {
+  messages = messages.map(modelVisibleMessage);
+  const clips: string[] = [];
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
     if (!message || message.role !== "user") continue;
 
     for (const part of message.content ?? []) {
       const base64 = extractAudioPartBase64(part);
-      if (base64) return base64;
+      if (base64) clips.push(base64);
     }
 
     if ("attachments" in message) {
       for (const attachment of message.attachments ?? []) {
         for (const part of attachment.content ?? []) {
           const base64 = extractAudioPartBase64(part);
-          if (base64) return base64;
+          if (base64) clips.push(base64);
         }
       }
     }
@@ -1706,11 +1762,28 @@ export function findLatestUserAudioBase64(
     // retranscribe the stale clip. Matches the consumed-on-send semantics of the legacy pendingAudio.
     break;
   }
+  return clips;
+}
+
+export function findLatestUserAudioBase64(
+  messages: RunMessages,
+  includePendingAudio = true,
+): string | undefined {
+  const [first] = latestUserAudioClips(messages);
+  if (first) return first;
 
   const pendingAudio = includePendingAudio
     ? useChatRuntimeStore.getState().pendingAudioBase64
     : null;
   return pendingAudio ?? undefined;
+}
+
+/** Clips after the first, for extra_audio_base64. Undefined when empty so text turns stay durable. */
+export function findLatestUserExtraAudioBase64(
+  messages: RunMessages,
+): string[] | undefined {
+  const extra = latestUserAudioClips(messages).slice(1);
+  return extra.length > 0 ? extra : undefined;
 }
 
 function extractVideoPartBase64(
@@ -1729,6 +1802,7 @@ function extractVideoPartBase64(
 export function findLatestUserVideoBase64(
   messages: RunMessages,
 ): string | undefined {
+  messages = messages.map(modelVisibleMessage);
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
     if (!message || message.role !== "user") continue;
@@ -2254,7 +2328,7 @@ const MAX_AUTO_LOAD_ATTEMPTS = 3;
 const MAX_AUTO_VALIDATE_FAILURES = 12;
 const BIG_ENDIAN_GGUF_FILENAME_RE = /(^|[-_])be(?:[._-]|$)/gi;
 const GGUF_KNOWN_QUANT_RE =
-  /(UD-)?(MXFP[0-9]+(?:_[A-Z0-9]+)*|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?|TQ[0-9]+_[0-9]+|Q[0-9]+_K_[A-Z]+|Q[0-9]+_[0-9]+|Q[0-9]+_K|BF16|F16|F32)/i;
+  /(UD-)?(MXFP[0-9]+(?:_[A-Z0-9]+)*|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?|P?TQ[0-9]+_[0-9]+|Q[0-9]+_K_[A-Z]+|P?Q[0-9]+_[0-9]+(?:_G[0-9]+)?|Q[0-9]+_K|BF16|F16|F32)/i;
 
 type AutoLoadCandidate = {
   id: string;
@@ -4817,22 +4891,15 @@ export function createOpenAIStreamAdapter(
         : false;
       const externalSelection = parseExternalModelId(params.checkpoint);
       const isExternalRequest = externalSelection !== null;
-      if (
-        isExternalRequest &&
-        !useExternalProvidersStore.getState().connectionsEnabled
-      ) {
-        toast.error("Connections are disabled.", {
-          description:
-            "Turn on Enable connections in Settings → Connections to use hosted models.",
-        });
+      const externalRouting = resolveExternalRouting(params.checkpoint);
+      if (externalRouting.kind === "unavailable") {
+        const refusal = EXTERNAL_ROUTING_REFUSALS[externalRouting.reason];
+        toast.error(refusal.title, { description: refusal.description });
         clearSelectedImageEditReference();
-        throw new Error("Connections disabled.");
+        throw new Error(refusal.error);
       }
-      const externalProvider = isExternalRequest
-        ? loadExternalProviders().find(
-            (provider) => provider.id === externalSelection.providerId,
-          )
-        : null;
+      const externalProvider =
+        externalRouting.kind === "external" ? externalRouting.provider : null;
 
       const externalUsesStudioTools =
         providerModelSupportsStudioTools(
@@ -4847,43 +4914,9 @@ export function createOpenAIStreamAdapter(
         (model) => model.id === params.checkpoint,
       );
       const externalApiKey =
-        externalProvider && !externalProvider.hasApiKey
-          ? getExternalProviderApiKey(externalProvider.id).trim()
-          : "";
-
-      if (isExternalRequest && !externalProvider) {
-        toast.error("Connection not found.", {
-          description: "Open Settings → Connections and add it again.",
-        });
-        clearSelectedImageEditReference();
-        throw new Error("Connection not found.");
-      }
-      // Local providers and custom Gemini bases allow an empty key.
-      const externalProviderIsCustom = externalProvider
-        ? isCustomProviderType(externalProvider.providerType)
-        : false;
-      const externalProviderIsGeminiCustomBase = Boolean(
-        externalProvider &&
-          externalProvider.providerType === "gemini" &&
-          isGeminiCustomOpenAICompatBase(externalProvider.baseUrl),
-      );
-      const externalProviderUsesOAuth =
-        externalProvider?.authKind === "chatgpt_oauth";
-
-      if (
-        isExternalRequest &&
-        !externalApiKey &&
-        !externalProvider?.hasApiKey &&
-        !externalProviderUsesOAuth &&
-        !externalProviderIsCustom &&
-        !externalProviderIsGeminiCustomBase
-      ) {
-        toast.error("Missing API key for selected connection.", {
-          description: "Open Settings → Connections and set the API key again.",
-        });
-        clearSelectedImageEditReference();
-        throw new Error("Missing connection API key.");
-      }
+        externalRouting.kind === "external" ? externalRouting.apiKey : "";
+      const externalModelId =
+        externalRouting.kind === "external" ? externalRouting.modelId : "";
 
       // Image-generation flag; computed first so Gemini image mode can suppress Search/Code.
       const imageGenerationEnabledForThisTurn = Boolean(
@@ -5025,11 +5058,30 @@ export function createOpenAIStreamAdapter(
         );
       }
 
+      // Carry reasoning only to llama-server, the one backend that can resume it.
+      const resumedThought =
+        continuation &&
+        isServedByLlamaCpp({
+          loadedIsGguf: runtime.loadedIsGguf,
+          activeGgufVariant: runtime.activeGgufVariant,
+          activeNativePathToken: runtime.activeNativePathToken,
+          checkpoint: params.checkpoint,
+        })
+          ? (continuation.reasoning ?? "")
+          : "";
+      if (continuation && !continuation.partial && !resumedThought) {
+        toast.error("This response cannot be resumed", {
+          description:
+            "It stopped mid-thought, and only GGUF models can resume a thought. Use Retry instead.",
+        });
+        throw new Error("A response that stopped mid-thought cannot be resumed here.");
+      }
       // The run's messages stop at the user turn, so the partial is appended here for the backend to resume.
       if (continuation) {
         outboundMessages.push({
           role: "assistant",
           content: continuation.partial,
+          ...(resumedThought ? { reasoning_content: resumedThought } : {}),
         });
         // The original assistant message is not in this branch, so without its signature the history
         // goes back unsigned.
@@ -5221,6 +5273,7 @@ export function createOpenAIStreamAdapter(
           externalModelLabel(params.checkpoint) ||
           params.checkpoint,
         audio: Boolean(findLatestUserAudioBase64(survivingMessages, false)),
+        audioCount: latestUserAudioClips(survivingMessages).length,
         video: Boolean(videoBase64),
       });
       if (attachedMediaReason) {
@@ -5291,8 +5344,16 @@ export function createOpenAIStreamAdapter(
       const currentTurnMessages = [generationUserMessage] as unknown as Parameters<
         typeof findLatestUserImageBase64
       >[0];
+      const [mcpImage, ...extraToolImages] = toolOnlyImages(
+        generationUserMessage,
+      );
+      if (extraToolImages.length > 0) {
+        throw new Error("Attach only one image for MCP tools per message.");
+      }
       const currentTurnCarriesMedia = Boolean(
-        findLatestUserImageBase64(currentTurnMessages) ||
+        // A tool-only image needs the live stream to ask before it is sent.
+        mcpImage ||
+          findLatestUserImageBase64(currentTurnMessages) ||
           findLatestUserAudioBase64(currentTurnMessages, !queuedRunSettings && !continuation) ||
           findLatestUserVideoBase64(currentTurnMessages),
       );
@@ -5436,9 +5497,12 @@ export function createOpenAIStreamAdapter(
         local: !isExternalRequest,
         owner: serverCancel,
       });
-      // Seeded with the partial so the bubble reads as one response; the boundary lets the
-      // finalizers repair a repeat or restart.
-      let cumulativeText = continuation ? continuation.partial : "";
+      const continuationPartial = continuation
+        ? continuationSeed(continuation.partial, resumedThought)
+        : "";
+      // A seed that ends inside the thought: the next reasoning delta extends it.
+      const resumesInsideThought = Boolean(resumedThought) && !continuation?.partial;
+      let cumulativeText = continuationPartial;
       // Reading `cumulativeText` costs O(reply): each `+=` builds a cons string that the first read
       // flattens, so one charCodeAt per arrival is as expensive as a scan. Everything below is fed
       // the delta through `appendCumulative` and the buffer is read only where the reply is
@@ -5452,7 +5516,6 @@ export function createOpenAIStreamAdapter(
       // Whether this run appended reply text of its own: a continuation is SEEDED with the previous
       // run's partial, so a run that adds nothing must not have its tail trimmed.
       let producedReplyText = false;
-      const continuationPartial = continuation?.partial ?? "";
       // Local backends resume at the exact token boundary, so trimming could only delete words the
       // model meant; the repair is for providers that repeat or restart.
       const repairContinuation =
@@ -5508,6 +5571,7 @@ export function createOpenAIStreamAdapter(
         buildAssistantContent(mergeContinuation(cumulativeText));
       // Declared above the live metadata that reads it, or it is in its temporal dead zone.
       let contextWindowExceeded = false;
+      let quoteCut = false;
       // Provisional reason on every streamed yield: an abort skips the terminal yields and a reload
       // rebuilds messages as "complete". Stop is only the guess; a reported window outranks it.
       const liveCustom = () => ({
@@ -5538,9 +5602,15 @@ export function createOpenAIStreamAdapter(
       let requestedMaxTokens: number | undefined;
       const isMlxRequest = !isExternalRequest && activeModel?.isMlx === true;
       const reasoningDurationTracker = createReasoningDurationTracker();
-      // True while wrapping a `delta.reasoning_content` stream in <think> for parseAssistantContent;
-      // outside the SSE loop because the close tag fires when content arrives.
-      let reasoningContentOpen = false;
+      if (resumedThought) {
+        reasoningDurationTracker.seedThought({
+          duration: continuation?.reasoningDuration,
+          open: resumesInsideThought,
+          textLength: resumedThought.length,
+        });
+      }
+      // Keep the <think> block open across reasoning deltas; answer content closes it.
+      let reasoningContentOpen = resumesInsideThought;
       type ToolCallProvenance = {
         source?: string;
         healed?: boolean;
@@ -5954,10 +6024,13 @@ export function createOpenAIStreamAdapter(
             : { thinking: { type: reasoningEnabled ? "enabled" : "disabled" } }
         : {};
       // Decided before the continuation yield below, which an abort during load saves as is.
+      // A carried thought is reasoning whatever this request's thinking setting says.
       setParseThink(
         isExternalRequest
           ? requestParsesThinkTags(externalReasoningFields)
-          : reasoningAlwaysOn || requestParsesThinkTags(localReasoningFields),
+          : reasoningAlwaysOn ||
+              Boolean(resumedThought) ||
+              requestParsesThinkTags(localReasoningFields),
       );
       // Yielded before the request starts: an abort during load skips the partial-content yield
       // below, saving an empty message.
@@ -6097,9 +6170,6 @@ export function createOpenAIStreamAdapter(
         }
 
         const { supportsPreserveThinking, preserveThinking } = runtime;
-        const externalBackendProviderType = toExternalBackendProviderType(
-          externalProvider?.providerType,
-        );
         const buildResponseDetails = (
           finishedAt: number,
         ): ResponseDetailsMetadata => ({
@@ -6308,9 +6378,6 @@ export function createOpenAIStreamAdapter(
                 ),
               ),
 
-              ...(externalUsesStudioTools && resolvedThreadId
-                ? { thread_id: resolvedThreadId }
-                : {}),
               ...(externalCapabilities?.topK ? { top_k: params.topK } : {}),
               ...(externalCapabilities?.minP
                 ? minPSamplingPayload(externalProvider?.providerType, params)
@@ -6379,9 +6446,6 @@ export function createOpenAIStreamAdapter(
                     ...(sandboxAttachments.length > 0
                       ? { sandbox_attachments: sandboxAttachments }
                       : {}),
-                    ...(resolvedThreadId
-                      ? { thread_id: resolvedThreadId }
-                      : {}),
                     ...(ragEnabled || projectRagEnabled
                       ? {
                           rag_scope: {
@@ -6438,19 +6502,16 @@ export function createOpenAIStreamAdapter(
               // Also on this body: a provider whose models run Studio tools can hand off too, and omitting
               // it makes arming research a no-op.
               ...(deepResearchArmed ? { deep_research_armed: true } : {}),
-              provider_id: externalProvider.id,
-              provider_type: externalBackendProviderType,
-              external_model: externalSelection.modelId,
-              ...(externalApiKey
-                ? {
-                    encrypted_api_key: await encryptProviderApiKey(
-                      externalApiKey,
-                      forceRefreshPublicKey,
-                    ),
-                  }
-                : {}),
-              provider_base_url: externalProvider.baseUrl || null,
-              provider_api_type: externalProvider.apiType ?? "chat_completions",
+              ...(await buildExternalRoutingFields(
+                {
+                  provider: externalProvider,
+                  modelId: externalModelId,
+                  apiKey: externalApiKey,
+                },
+                { forceRefreshPublicKey },
+              )),
+              // On every external request: OpenRouter's cache routing, and the prompt date unless Claude caches.
+              ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
               ...(openaiCodeExecContainerId
                 ? {
                     openai_code_exec_container_id: openaiCodeExecContainerId,
@@ -6523,6 +6584,8 @@ export function createOpenAIStreamAdapter(
               currentTurnMessages,
               !queuedRunSettings && !continuation,
             ),
+            extra_audio_base64:
+              findLatestUserExtraAudioBase64(currentTurnMessages),
             video_base64: findLatestUserVideoBase64(currentTurnMessages),
             cancel_id: cancelId,
             ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
@@ -6628,6 +6691,7 @@ export function createOpenAIStreamAdapter(
               requestPayload = await buildRequestPayload(
                 retriedWithRefreshedKey,
               );
+              if (mcpImage) requestPayload = { ...requestPayload, mcp_image: mcpImage };
             } catch (error) {
               clearSelectedImageEditReference();
               throw error;
@@ -6813,6 +6877,11 @@ export function createOpenAIStreamAdapter(
                   toolStatusText || null,
                   serverCancel,
                 );
+                continue;
+              }
+
+              if (chunk.quote_cut) {
+                quoteCut = true;
                 continue;
               }
 
@@ -7117,6 +7186,7 @@ export function createOpenAIStreamAdapter(
                         approvalId,
                         sandboxSessionId ?? "",
                         toolConfirmationScopeId,
+                        toolEvent.image_disclosure as ImageDisclosure | undefined,
                       );
                   }
                 } else if (toolEvent.type === "tool_end") {
@@ -7155,10 +7225,16 @@ export function createOpenAIStreamAdapter(
                     const rawEvent = (toolEvent.result as string) ?? "";
                     // Pulled out first, ahead of __IMAGES__, so the image slice below is unchanged. Only from the
                     // tools that emit it: elsewhere that line is content.
-                    const { text: rawResult, files: createdFiles } =
+                    const { text: withUi, files: createdFiles } =
                       SANDBOX_FILE_TOOLS.has(toolCallParts[idx].toolName ?? "")
                         ? extractCreatedFiles(rawEvent)
                         : { text: rawEvent, files: [] as SandboxFile[] };
+                    // Ahead of the image slice, which parses to end of string.
+                    const { text: rawResult, ui: mcpUi } =
+                      extractMcpUiEnvelope(
+                        withUi,
+                        toolCallParts[idx].toolName ?? "",
+                      );
                     // Same rule: only from the tool that emits it.
                     const { text: searchText, images: webImages } =
                       toolCallParts[idx].toolName === SEARCH_IMAGE_TOOL
@@ -7182,6 +7258,7 @@ export function createOpenAIStreamAdapter(
                           files?: SandboxFile[];
                         }
                       | McpImageToolResult
+                      | McpUiToolResult
                       | SearchImagesToolResult
                       | {
                           image_b64: string;
@@ -7250,6 +7327,17 @@ export function createOpenAIStreamAdapter(
                       parsedResult = { text: searchText, webImages };
                     } else {
                       parsedResult = rawResult;
+                    }
+                    if (mcpUi) {
+                      parsedResult = isMcpImageToolResult(parsedResult)
+                        ? { ...parsedResult, ui: mcpUi }
+                        : {
+                            text:
+                              typeof parsedResult === "string"
+                                ? parsedResult
+                                : rawResult,
+                            ui: mcpUi,
+                          };
                     }
                     const nextArgs =
                       toolEvent.arguments &&
@@ -8024,8 +8112,7 @@ export function createOpenAIStreamAdapter(
           meta?.usage?.prompt_tokens_details?.cached_tokens ??
           meta?.usage?.cache_read_input_tokens ??
           0;
-        // Anthropic-only (billed at the write premium).
-        const cacheWriteTokens = meta?.usage?.cache_creation_input_tokens ?? 0;
+        const cacheWriteTokens = usageCacheWriteTokens(meta?.usage);
 
         // Gate on the captured checkpoint and thread so a late completion from provider A cannot
         // repaint the bar after a switch to B. A first turn is adopted onto an id mid-run, so read
@@ -8184,9 +8271,15 @@ export function createOpenAIStreamAdapter(
         ];
         const finalIncompleteReason =
           resolveIncompleteReason(incompleteReason, contextWindowExceeded) ??
+          (quoteCut ? "quote_cut" : null) ??
           // A run can stop cleanly on its first token and leave nothing behind.
           // Saved as complete that is a blank bubble with no way out.
           (hasRenderableContent(finalContent) ? null : "empty");
+        if (continuation && !producedReplyText && !finalIncompleteReason) {
+          toast("The model had nothing to add", {
+            description: "It ended the reply where it already stopped.",
+          });
+        }
         yield {
           content: finalContent,
           metadata: {

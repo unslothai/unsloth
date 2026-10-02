@@ -14,7 +14,7 @@ import re
 import string
 import weakref
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -2825,6 +2825,19 @@ def trailing_assistant_text(messages: list) -> Optional[str]:
     return None
 
 
+def trailing_assistant_resume_kind(messages: list) -> Optional[str]:
+    """Return the trailing assistant field to resume, or None; prefer content over reasoning."""
+    text = trailing_assistant_text(messages)
+    if text:
+        return "content"
+    if text is None:
+        return None
+    reasoning = messages[-1].get("reasoning_content")
+    if isinstance(reasoning, str) and reasoning.strip():
+        return "reasoning_content"
+    return None
+
+
 def last_user_text(messages: list) -> str:
     """Text of the newest user turn, with any ``<img>`` markup stripped. Scans back rather than
     reading ``messages[-1]``: a continuation ends on the assistant partial. Stops at the newest
@@ -2955,13 +2968,15 @@ def messages_with_attached_image(
     image: int = 1,
     video: bool = False,
     audio: Any = None,
+    extra_audio: Sequence[Any] = (),
 ) -> list:
     """The conversation to render for a turn that carries attached media.
 
     Prepends *system_prompt* as a leading system turn, then injects *image* ``{"type": "image"}``
     parts, or a ``{"type": "video"}`` part, plus any *audio* waveform as an ``{"type": "audio"}``
-    part, into the LAST user turn and leaves every other turn --
-    assistant ``tool_calls`` and ``role="tool"`` results included -- exactly as the caller sent it.
+    part (one more per *extra_audio* clip, in order), into the LAST user turn and leaves every
+    other turn -- assistant ``tool_calls`` and ``role="tool"`` results included -- exactly as the
+    caller sent it.
     Rebuilding from the newest user TEXT instead dropped the folded system instruction and the
     tool history an OpenAI tool loop replays (#10092). Nothing the caller owns is mutated: callers
     still read those dicts after generation, and a retry re-renders the same list.
@@ -3014,6 +3029,7 @@ def messages_with_attached_image(
     ]
     if audio is not None:
         parts.append({"type": "audio", "audio": audio})
+        parts.extend({"type": "audio", "audio": clip} for clip in extra_audio)
     if not parts and not fallback_user_text:
         return conversation
     for index in range(len(conversation) - 1, -1, -1):
@@ -3081,6 +3097,14 @@ def append_assistant_turn(
         # Copy rather than mutate: the caller owns assistant_msg and may still read it.
         merged_msg = {**conversation[-1], **assistant_msg}
         merged_msg["content"] = f"{prev_text}{assistant_msg['content']}"
+        added_reasoning = assistant_msg.get("reasoning_content")
+        if (
+            isinstance(added_reasoning, str)
+            and trailing_assistant_resume_kind(conversation) == "reasoning_content"
+        ):
+            merged_msg["reasoning_content"] = (
+                f"{conversation[-1]['reasoning_content']}{added_reasoning}"
+            )
         conversation[-1] = merged_msg
         return
     conversation.append(assistant_msg)
