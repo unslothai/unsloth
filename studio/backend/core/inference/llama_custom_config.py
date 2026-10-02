@@ -87,9 +87,14 @@ class CompiledCustomConfig:
     options: dict = field(default_factory = dict)
     request_defaults: dict = field(default_factory = dict)
     diagnostics: tuple[str, ...] = ()
+    # Every help-block spelling of a valued option, so lookups match whichever alias the INI used.
+    aliases: dict = field(default_factory = dict)
 
     def option(self, *names: str):
-        return next((self.options[n] for n in names if n in self.options), None)
+        return next(
+            (table[n] for table in (self.options, self.aliases) for n in names if n in table),
+            None,
+        )
 
     @property
     def cpu_only(self) -> bool:
@@ -99,7 +104,7 @@ class CompiledCustomConfig:
             self.option("-dev", "--device") == "none"
             and self.option("-mmdev", "--mmproj-device") in (None, "none")
             and (
-                self.option("-md", "--model-draft") is None
+                self.option("-md", "-hfd") is None
                 or self.option("-devd", "--device-draft") == "none"
             )
         )
@@ -156,24 +161,32 @@ def compile_custom_config(source, flags: Mapping, switch_flags) -> CompiledCusto
         section = "default"
     if section is not None and section not in named:
         raise CustomConfigError("The selected INI section does not exist")
-    entries = {**sections.get("*", {}), **sections.get(section or "", {})}
+    # llama.cpp resolves keys to options before cascading: the section overrides [*] per option.
+    entries: dict = {}
+    for name in ("*", section):
+        owners: dict = {}
+        for key, value in sections.get(name or "", {}).items():
+            if key in _ROUTER_ONLY:
+                continue
+            flag = _spelling(key, flags)
+            if flag is None:
+                raise CustomConfigError(
+                    f"'{key[:80]}' is not an option of the selected llama-server"
+                )
+            # Two aliases in one section: llama.cpp keeps one arbitrarily, so refuse both.
+            identity = flags[flag] or flag
+            other = owners.setdefault(identity, key)
+            if other != key:
+                raise CustomConfigError(f"'{other[:80]}' and '{key[:80]}' set the same option")
+            entries[identity] = (key, flag, value)
 
     argv: list[str] = []
     options: dict = {}
+    aliases: dict = {}
     defaults: dict = {}
     diagnostics: list[str] = []
     n_parallel = None
-    owners: dict = {}
-    for key, value in entries.items():
-        if key in _ROUTER_ONLY:
-            continue
-        flag = _spelling(key, flags)
-        if flag is None:
-            raise CustomConfigError(f"'{key[:80]}' is not an option of the selected llama-server")
-        # Aliases share one help block; llama.cpp maps them to one option, so pick neither.
-        other = owners.setdefault(flags[flag] or flag, key)
-        if other != key:
-            raise CustomConfigError(f"'{other[:80]}' and '{key[:80]}' set the same option")
+    for identity, (key, flag, value) in entries.items():
         if flag in _IGNORED:
             note = "Studio selects the model and projector; m and mm entries are ignored."
             if note not in diagnostics:
@@ -206,6 +219,7 @@ def compile_custom_config(source, flags: Mapping, switch_flags) -> CompiledCusto
             raise CustomConfigError(f"'{key[:80]}' needs a value")
         argv += [flag, value]
         options[flag] = value
+        aliases.update((f, value) for f, d in flags.items() if d and d == identity)
         sampling = next((s for s in _SAMPLING if s in flags and flags[s] == flags[flag]), None)
         if sampling is not None:
             name, low, high = _SAMPLING[sampling]
@@ -224,5 +238,5 @@ def compile_custom_config(source, flags: Mapping, switch_flags) -> CompiledCusto
     except ValueError as exc:
         raise CustomConfigError(str(exc)) from None
     return CompiledCustomConfig(
-        source, tuple(argv), n_parallel, options, defaults, tuple(diagnostics)
+        source, tuple(argv), n_parallel, options, defaults, tuple(diagnostics), aliases
     )

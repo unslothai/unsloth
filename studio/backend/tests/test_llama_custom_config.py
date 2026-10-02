@@ -17,7 +17,8 @@ _OPTIONS = (
     "-mm --mmproj; --temp --temperature; --top-k; --top-p; --warmup --no-warmup; "
     "--mmproj-offload --no-mmproj-offload; --jinja --no-jinja; -dev --device; "
     "-ctk --cache-type-k; --host; --cache-prompt --no-cache-prompt; -mmdev --mmproj-device; "
-    "-md --model-draft; -devd --device-draft"
+    "-md --model-draft --spec-draft-model; -hfd --hf-repo-draft --spec-draft-hf; "
+    "-devd --device-draft; --reasoning-budget; --reasoning-budget-message"
 )
 # Like the probe: every spelling of one option maps to that option's help block.
 FLAGS = {flag: group for group in _OPTIONS.split("; ") for flag in group.split()}
@@ -135,10 +136,19 @@ def test_wire_validation(value):
         ("ngl=0", False),  # op offload and the projector still use the GPU
         ("dev=none\nmmdev=CUDA0", False),
         ("dev=none\nmd=d.gguf", False),
+        ("dev=none\nspec-draft-model=d.gguf", False),
+        ("dev=none\nspec-draft-hf=org/d", False),
+        ("dev=none\nspec-draft-hf=org/d\ndevice-draft=none", True),
     ],
 )
 def test_cpu_only_counts_every_companion(ini, cpu_only):
     assert compile_ini(ini).cpu_only is cpu_only
+
+
+def test_a_section_overrides_global_through_another_alias():
+    compiled = compile_ini("[*]\nc=1024\n[large]\nctx-size=2048", "large")
+    assert compiled.argv == ("--ctx-size", "2048")
+    assert compiled.option("-c") == "2048"
 
 
 def test_unsectioned_keys_are_the_default_section_not_global():
@@ -239,6 +249,19 @@ def test_cpu_only_custom_load_still_masks_unsupported_rocm_cards(launch, monkeyp
     assert masked == ["1"]
     # The GPU arbiter leaves image/video work alone for a zero-VRAM resident server.
     assert launch.backend.holds_no_vram
+
+
+def test_custom_launch_reports_the_presets_reasoning_budget(launch):
+    from dataclasses import replace
+
+    launch.backend._reasoning_budget = launch.backend._requested_reasoning_budget = 512
+    launch.backend._reasoning_budget_message = "stale"
+    assert launch.backend.load_model(launch.intent)
+    assert (launch.backend._reasoning_budget, launch.backend._reasoning_budget_message) == (-1, "")
+    ini = parse_config_source(source("reasoning-budget=256\nreasoning-budget-message=done"))
+    assert launch.backend.load_model(replace(launch.intent, llama_cpp_config = ini))
+    assert launch.backend._requested_reasoning_budget == 256
+    assert launch.backend._reasoning_budget_message == "done"
 
 
 def test_gpu_custom_load_holds_vram(launch):

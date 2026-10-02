@@ -23479,6 +23479,13 @@ class LlamaCppBackend:
             self._layer_preserves_tensor_intent = self._capability_probe_inconclusive = False
             self._flash_attn_enabled = self._swa_full = self._kv_cache_unified = False
             self._prompt_cache_disabled = "--no-cache-prompt" in compiled.options
+            budget = compiled.option("--reasoning-budget")
+            self._reasoning_budget = self._requested_reasoning_budget = (
+                int(budget) if budget is not None and re.fullmatch(r"-?[0-9]+", budget) else -1
+            )
+            self._reasoning_budget_message = self._requested_reasoning_budget_message = (
+                compiled.option("--reasoning-budget-message") or ""
+            )
             try:
                 if cancelled() or not self._start_llama_process(
                     cmd,
