@@ -73,6 +73,7 @@ export {
   adoptCachedRepoConfig,
   adoptLegacyConfigKey,
   isServedByLlamaCpp,
+  resumesThought,
   contextPinPatch,
   listPerModelConfigs,
   isServedByMlx,

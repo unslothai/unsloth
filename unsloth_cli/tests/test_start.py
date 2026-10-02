@@ -3353,6 +3353,33 @@ def test_start_studio_server_respects_inherited_tool_call_env(monkeypatch):
     assert env["UNSLOTH_TOOL_CALL_NUDGE"] == "1"
 
 
+def test_start_studio_server_drops_an_inherited_pin_the_agent_overrides(monkeypatch):
+    captured = {}
+
+    class FakePopen:
+        def __init__(self, command, **kwargs):
+            captured["env"] = kwargs["env"]
+            self.pid = 1
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(start.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(start, "_studio_healthy", lambda base, timeout = 3.0: True)
+    monkeypatch.setattr(start, "_log_tail", lambda path, lines = 20: "API Key: sk-unsloth-x")
+    monkeypatch.setattr(start.time, "sleep", lambda _s: None)
+    monkeypatch.setenv("UNSLOTH_SAMPLING_TEMPERATURE", "0.7")
+    monkeypatch.setenv("UNSLOTH_SAMPLING_TOP_P", "0.5")
+    start._start_studio_server(
+        "http://127.0.0.1:8888",
+        "unsloth/M-GGUF",
+        start.LoadOptions(),
+        start.ServerOptions(unpinned = frozenset({"temperature"})),
+    )
+    assert "UNSLOTH_SAMPLING_TEMPERATURE" not in captured["env"]
+    assert captured["env"]["UNSLOTH_SAMPLING_TOP_P"] == "0.5"
+
+
 def test_start_studio_server_forwards_sampling_via_env(monkeypatch):
     # Sampling pins ride to the child server through UNSLOTH_SAMPLING_*; unset ones stay absent
     # so the backend keeps the per-model recommendation.
@@ -3413,29 +3440,303 @@ def test_require_studio_warns_on_sampling_pin_when_reusing_server(monkeypatch, c
     assert "--top-p" not in err
 
 
-def test_require_studio_no_sampling_warning_without_pins(monkeypatch, capsys):
-    # Reusing a server with no sampling pins stays silent (tool flags are out of scope here).
+def test_require_studio_no_warning_without_server_flags(monkeypatch, capsys):
     monkeypatch.setattr(start, "find_studio_server", lambda: BASE)
     base, server = start._require_studio(
         "unsloth/M-GGUF",
         start.LoadOptions(),
         serve = True,
-        server_options = start.ServerOptions(enable_tools = True),
+        server_options = start.ServerOptions(),
     )
     assert base == BASE and server is None
     assert capsys.readouterr().err == ""
 
 
-@pytest.mark.parametrize("reasoning", ["on", "off", "auto"])
+def test_require_studio_warns_on_tool_flags_when_reusing_server(monkeypatch, capsys):
+    monkeypatch.setattr(start, "find_studio_server", lambda: BASE)
+    base, server = start._require_studio(
+        "unsloth/M-GGUF",
+        start.LoadOptions(),
+        serve = True,
+        server_options = start.ServerOptions(
+            enable_tools = True, tool_call_healing = False, tool_call_nudging = None
+        ),
+    )
+    assert base == BASE and server is None
+    err = capsys.readouterr().err
+    assert "already running" in err
+    assert "--enable-tools" in err and "--disable-tool-call-healing" in err
+    assert "nudging" not in err
+
+
+_SESSION_FLAGS = ["--temperature", "0.3", "--top-k", "40", "--reasoning", "off"]
+_SESSION_BODY = {"temperature": 0.3, "top_k": 40, "enable_thinking": False}
+
+
+def _session_request_body(agent, root, output):
+    yaml = pytest.importorskip("yaml")
+    home = root / "agents" / agent
+    model_ref = f"unsloth/{MODEL['id']}"
+    if agent == "pi":
+        config = json.loads((home / ".pi" / "agent" / "models.json").read_text())
+        return config["providers"]["unsloth"]["models"][0].get("samplingParams")
+    if agent == "hermes":
+        config = yaml.safe_load((home / "config.yaml").read_text())
+        return config["providers"]["unsloth"].get("extra_body")
+    if agent == "openclaw":
+        config = json.loads((home / "openclaw.json").read_text())
+        models = config["agents"]["defaults"].get("models", {})
+        return models.get(model_ref, {}).get("params", {}).get("extra_body")
+    if agent == "opencode":
+        provider = json.loads((home / "opencode.json").read_text())["provider"]
+        provider = provider[start._OPENCODE_PROVIDER]
+        options = provider["models"][MODEL["id"]].get("options")
+        assert provider["options"].get("body") == options
+        return options
+    if agent == "claude":
+        settings = Path(shlex.split(re.search(r"--settings (\S+)", output).group(1))[0])
+        extra = json.loads(settings.read_text())["env"].get("CLAUDE_CODE_EXTRA_BODY")
+        return json.loads(extra) if extra else None
+    raise AssertionError(agent)
+
+
+@pytest.mark.parametrize("agent", ["pi", "hermes", "openclaw", "opencode", "claude"])
+def test_session_flags_ride_in_the_agent_config_on_a_running_server(
+    agent, fake_studio, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(start.start_app, [agent, "--no-launch", *_SESSION_FLAGS])
+    assert result.exit_code == 0, result.output
+    assert "already running" not in result.output
+    assert _session_request_body(agent, tmp_path, result.output) == _SESSION_BODY
+
+
+@pytest.mark.parametrize("agent", ["pi", "hermes", "openclaw", "opencode", "claude"])
+def test_session_flags_from_an_earlier_run_do_not_stick(agent, fake_studio, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    for argv in ([agent, "--no-launch", *_SESSION_FLAGS], [agent, "--no-launch"]):
+        result = CliRunner().invoke(start.start_app, argv)
+        assert result.exit_code == 0, result.output
+    assert not _session_request_body(agent, tmp_path, result.output)
+
+
+def test_openclaw_session_flags_keep_the_users_own_extra_body(fake_studio, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / "agents" / "openclaw" / "openclaw.json"
+    config_path.parent.mkdir(parents = True)
+    model_ref = f"unsloth/{MODEL['id']}"
+    config_path.write_text(
+        json.dumps(
+            {
+                "agents": {
+                    "defaults": {
+                        "models": {
+                            model_ref: {"params": {"extra_body": {"tool_choice": "required"}}}
+                        }
+                    }
+                }
+            }
+        )
+    )
+    result = CliRunner().invoke(
+        start.start_app, ["openclaw", "--no-launch", "--temperature", "0.3"]
+    )
+    assert result.exit_code == 0, result.output
+    assert _session_request_body("openclaw", tmp_path, result.output) == {
+        "tool_choice": "required",
+        "temperature": 0.3,
+    }
+    result = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    assert _session_request_body("openclaw", tmp_path, result.output) == {"tool_choice": "required"}
+
+
+def test_opencode_session_temperature_needs_the_capability(fake_studio, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / "agents" / "opencode" / "opencode.json"
+    for argv, capability in ((["--temperature", "0.3"], True), (["--top-k", "40"], None)):
+        result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch", *argv])
+        assert result.exit_code == 0, result.output
+        provider = json.loads(config_path.read_text())["provider"][start._OPENCODE_PROVIDER]
+        assert provider["models"][MODEL["id"]].get("temperature") is capability
+
+
+def test_pi_subagent_carries_the_session_flags(fake_studio, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(
+        start.start_app, ["pi", "--as-subagent", "--no-launch", *_SESSION_FLAGS]
+    )
+    assert result.exit_code == 0, result.output
+    assert "already running" not in result.output
+    config = json.loads((tmp_path / "agents" / "pi-subagent" / "subagent.json").read_text())
+    assert config["samplingParams"] == _SESSION_BODY
+
+
+def test_codex_carries_reasoning_and_warns_about_sampling(fake_studio, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(start.start_app, ["codex", "--no-launch", *_SESSION_FLAGS])
+    assert result.exit_code == 0, result.output
+    profile = (tmp_path / "agents" / "codex" / f"{start._CODEX_PROFILE}.config.toml").read_text()
+    assert 'model_reasoning_effort = "none"' in profile
+    assert "cannot send --temperature, --top-k itself" in result.output
+    assert "--reasoning" not in result.output
+    result = CliRunner().invoke(start.start_app, ["codex", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    profile = (tmp_path / "agents" / "codex" / f"{start._CODEX_PROFILE}.config.toml").read_text()
+    assert "model_reasoning_effort" not in profile
+
+
+def test_codex_warns_about_reasoning_it_cannot_express(fake_studio, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(start.start_app, ["codex", "--no-launch", "--reasoning", "on"])
+    assert result.exit_code == 0, result.output
+    assert "cannot send --reasoning on itself" in result.output
+    profile = (tmp_path / "agents" / "codex" / f"{start._CODEX_PROFILE}.config.toml").read_text()
+    assert "model_reasoning_effort" not in profile
+
+
+@pytest.mark.parametrize("mode", ["--persist", "--no-launch"])
+@pytest.mark.parametrize("agent, version", [("codex", (0, 144, 0)), ("pi", (0, 83, 0))])
+def test_agent_too_old_to_send_the_flags_keeps_the_server_pin(
+    agent, version, mode, fake_studio, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(start, "_which_with_install_dirs", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(start, "_codex_executable_version", lambda executable: version)
+    monkeypatch.setattr(start, "_launch", lambda *args, **kwargs: None)
+    result = CliRunner().invoke(start.start_app, [agent, mode, *_SESSION_FLAGS])
+    assert result.exit_code == 0, result.output
+    assert "cannot send --temperature, --top-k itself" in result.output
+    assert "cannot send --reasoning off itself" in result.output
+    if agent == "pi":
+        models = tmp_path / "agents" / "pi" / ".pi" / "agent" / "models.json"
+        provider = json.loads(models.read_text())["providers"]["unsloth"]
+        assert "samplingParams" not in provider["models"][0]
+    else:
+        profile = (
+            tmp_path / "agents" / "codex" / f"{start._CODEX_PROFILE}.config.toml"
+        ).read_text()
+        assert "model_reasoning_effort" not in profile
+
+
+def test_opencode_v1_reads_the_effort_as_reasoning_effort_option(
+    fake_studio, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(
+        start.start_app, ["opencode", "--no-launch", "--reasoning-effort", "low"]
+    )
+    assert result.exit_code == 0, result.output
+    provider = json.loads((tmp_path / "agents" / "opencode" / "opencode.json").read_text())
+    provider = provider["provider"][start._OPENCODE_PROVIDER]
+    assert provider["models"][MODEL["id"]]["options"] == {"reasoningEffort": "low"}
+    assert provider["options"]["body"] == {"reasoning_effort": "low"}
+
+
+def test_dsh_carries_reasoning_and_warns_about_sampling(fake_studio, tmp_path, monkeypatch):
+    yaml = pytest.importorskip("yaml")
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(start.start_app, ["dsh", "--no-launch", *_SESSION_FLAGS])
+    assert result.exit_code == 0, result.output
+    assert "cannot send --temperature, --top-k itself" in result.output
+    assert "--reasoning" not in result.output
+    patch = tmp_path / "agents" / "dsh" / start._DSH_PATCH_FILE
+    provider = yaml.safe_load(patch.read_text())[0]["config"]["providers"][start._DSH_PROVIDER]
+    assert provider["compat"]["thinkingFormat"] == "chat-template"
+    assert provider["compat"]["chatTemplateKwargs"] == {"enable_thinking": False}
+    assert "off" in provider["models"][0]["reasoningEfforts"]
+
+
+@pytest.mark.parametrize(
+    "agent, server_keeps",
+    [("pi", {}), ("codex", {"temperature": 0.3, "top_k": 40})],
+)
+def test_spawned_server_keeps_only_what_the_agent_cannot_send(
+    agent, server_keeps, fake_studio, monkeypatch
+):
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
+    started = {}
+    fake = SimpleNamespace(pid = 999, poll = lambda: None)
+
+    def fake_start(
+        base,
+        model,
+        load,
+        server_options = None,
+    ):
+        started["options"] = server_options
+        start._auto_served_server = fake
+        return base, fake
+
+    monkeypatch.setattr(start, "_start_studio_server", fake_start)
+    monkeypatch.setattr(start, "_shutdown_server", lambda server: None)
+    monkeypatch.setattr(start.shutil, "which", lambda _: f"/usr/local/bin/{agent}")
+    monkeypatch.setattr(start, "_codex_executable_version", lambda executable: (1, 0, 0))
+    monkeypatch.setattr(start.subprocess, "run", lambda command, env: SimpleNamespace(returncode = 0))
+    result = CliRunner().invoke(
+        start.start_app, [agent, "--model", "unsloth/Qwen3-1.7B-GGUF", *_SESSION_FLAGS]
+    )
+    assert result.exit_code == 0, result.output
+    options = started["options"]
+    sampling = {name: getattr(options, name) for name in ("temperature", "top_k")}
+    assert {k: v for k, v in sampling.items() if v is not None} == server_keeps
+    assert options.reasoning is None
+    assert options.unpinned == {"reasoning", *({"temperature", "top_k"} - set(server_keeps))}
+    assert ("applies them to every client" in result.output) == bool(server_keeps)
+
+
+@pytest.mark.parametrize("reasoning, warns", [("on", True), ("auto", False)])
+def test_require_studio_warns_when_the_started_server_pins_reasoning(
+    monkeypatch, capsys, reasoning, warns
+):
+    monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888")
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
+    monkeypatch.setattr(
+        start, "_start_studio_server", lambda base, model, load, server: (base, None)
+    )
+    start._require_studio(
+        "unsloth/M-GGUF", serve = True, server_options = start.ServerOptions(reasoning = reasoning)
+    )
+    assert ("every client" in capsys.readouterr().err) is warns
+
+
+@pytest.mark.parametrize("inherited", ["0.7", None])
+def test_require_studio_warns_when_a_flag_drops_an_inherited_pin(monkeypatch, capsys, inherited):
+    monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888")
+    if inherited:
+        monkeypatch.setenv("UNSLOTH_SAMPLING_TEMPERATURE", inherited)
+    else:
+        monkeypatch.delenv("UNSLOTH_SAMPLING_TEMPERATURE", raising = False)
+    monkeypatch.setenv("UNSLOTH_SAMPLING_TOP_P", "0.5")
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
+    monkeypatch.setattr(
+        start, "_start_studio_server", lambda base, model, load, server: (base, None)
+    )
+    options = start.ServerOptions(temperature = 0.3, carried = frozenset({"temperature"}))
+    start._require_studio("unsloth/M-GGUF", serve = True, server_options = options)
+    err = capsys.readouterr().err
+    assert ("replace the inherited UNSLOTH_SAMPLING_TEMPERATURE" in err) is bool(inherited)
+    assert "UNSLOTH_SAMPLING_TOP_P" not in err
+
+
+@pytest.mark.parametrize(
+    "reasoning, carried",
+    [
+        ("on", frozenset()),
+        ("off", frozenset()),
+        ("auto", frozenset()),
+        ("auto", start._ALL_REQUEST_FIELDS),
+    ],
+)
 def test_require_studio_warns_on_explicit_reasoning_when_reusing_server(
-    monkeypatch, capsys, reasoning
+    monkeypatch, capsys, reasoning, carried
 ):
     monkeypatch.setattr(start, "find_studio_server", lambda: BASE)
     base, server = start._require_studio(
         "unsloth/M-GGUF",
         start.LoadOptions(),
         serve = True,
-        server_options = start.ServerOptions(reasoning = reasoning),
+        server_options = start.ServerOptions(reasoning = reasoning, carried = carried),
     )
     assert base == BASE and server is None
     err = capsys.readouterr().err
@@ -3511,8 +3812,8 @@ def test_require_studio_warns_on_explicit_reasoning_effort_when_reusing_server(m
     assert "unsloth studio stop" in err
 
 
-def test_start_claude_parses_sampling_flags(fake_studio, monkeypatch):
-    # `unsloth start claude ... --temperature 0.3 --top-k 40` routes the pins into ServerOptions.
+def test_start_claude_sends_sampling_flags_itself(fake_studio, monkeypatch):
+    # Claude sends the flags itself, so the server it starts is left at its defaults.
     monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888")
     monkeypatch.setattr(start, "find_studio_server", lambda: None)
     captured = {}
@@ -3531,7 +3832,11 @@ def test_start_claude_parses_sampling_flags(fake_studio, monkeypatch):
     monkeypatch.setattr(start, "_start_studio_server", fake_start)
     monkeypatch.setattr(start, "_shutdown_server", lambda server: None)
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
-    monkeypatch.setattr(start.subprocess, "run", lambda command, env: SimpleNamespace(returncode = 0))
+    monkeypatch.setattr(
+        start.subprocess,
+        "run",
+        lambda command, env: captured.update(env = env) or SimpleNamespace(returncode = 0),
+    )
 
     result = CliRunner().invoke(
         start.start_app,
@@ -3549,9 +3854,12 @@ def test_start_claude_parses_sampling_flags(fake_studio, monkeypatch):
     )
     assert result.exit_code == 0, result.output
     so = captured["server_options"]
-    assert so.temperature == 0.3 and so.top_k == 40 and so.top_p is None
-    assert so.reasoning == "on"
-    assert so.reasoning_effort is None
+    assert so.temperature is None and so.top_k is None and so.reasoning is None
+    assert json.loads(captured["env"]["CLAUDE_CODE_EXTRA_BODY"]) == {
+        "temperature": 0.3,
+        "top_k": 40,
+        "enable_thinking": True,
+    }
 
 
 def test_connect_model_bare_id_matches_loaded_without_reload(fake_studio):
@@ -6589,8 +6897,9 @@ def test_dsh_permission_mode_overrides_an_inherited_bypass(
 
 
 def test_start_dsh_forwards_reasoning_effort(fake_studio, monkeypatch):
-    # --reasoning-effort is a shared server option: it must reach ServerOptions rather
-    # than pass through to `dsh web`, which does not accept it.
+    # --reasoning-effort is a shared option: it must reach the dsh config rather than
+    # pass through to `dsh web`, which does not accept it.
+    yaml = pytest.importorskip("yaml")
     monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888")
     monkeypatch.setattr(start, "find_studio_server", lambda: None)
     captured = {}
@@ -6618,6 +6927,7 @@ def test_start_dsh_forwards_reasoning_effort(fake_studio, monkeypatch):
         **kwargs,
     ):
         captured["command"] = command
+        captured["patch"] = Path(command[command.index("--patch") + 1]).read_text()
         return SimpleNamespace(returncode = 0)
 
     monkeypatch.setattr(start.subprocess, "run", run)
@@ -6627,8 +6937,10 @@ def test_start_dsh_forwards_reasoning_effort(fake_studio, monkeypatch):
         ["dsh", "--model", "unsloth/gemma-4-E2B-it-GGUF", "--reasoning-effort", "high"],
     )
     assert result.exit_code == 0, result.output
-    assert captured["server_options"].reasoning_effort == "high"
+    assert captured["server_options"].reasoning_effort is None
     assert "--reasoning-effort" not in captured["command"]
+    provider = yaml.safe_load(captured["patch"])[0]["config"]["providers"][start._DSH_PROVIDER]
+    assert provider["compat"]["chatTemplateKwargs"] == {"reasoning_effort": "high"}
 
 
 # ── WSLENV path translation + PowerShell quoting (helper units) ──

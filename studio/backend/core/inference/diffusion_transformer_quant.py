@@ -1268,7 +1268,9 @@ def _scheme_supported(
             # Re-checked under the lock: the route answers plans concurrently, and a burst of them must not each spawn
             # a child that imports torch.
             if (scheme, card) not in _SMOKE_CACHE:
-                table = _child_probe_table(card)
+                table = _persisted_probe_table(card)
+                if table is None or scheme not in table:
+                    table = _child_probe_table(card)
                 if table is not None:
                     for name, child_verdict in table.items():
                         # None is the child's out-of-memory: not a verdict, so not cached.
@@ -1403,7 +1405,64 @@ def _child_probe_table(device: str) -> Optional[dict[str, Optional[bool]]]:
                 break
     finally:
         _close_probe_child(proc, queue)
-    return table if isinstance(table, dict) else _crashed_child_verdict(proc, device)
+    if isinstance(table, dict):
+        try:
+            from . import diffusion_probe_cache
+            diffusion_probe_cache.store(device, table)
+        except Exception:  # noqa: BLE001 - persistence is best-effort
+            pass
+        return table
+    return _crashed_child_verdict(proc, device)
+
+
+def prewarm_probe_table(device: str = "cuda") -> bool:
+    """Resolve and persist this card's smoke-probe table at boot; True iff a child probe ran.
+
+    A load arriving mid-probe waits on the same lock and reads these verdicts. ``UNSLOTH_DIFFUSION_PROBE_PREWARM=0``
+    disables it."""
+    if (_os.environ.get("UNSLOTH_DIFFUSION_PROBE_PREWARM") or "").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return False
+    try:
+        from . import diffusion_probe_cache
+
+        if not diffusion_probe_cache.enabled():
+            return False
+        import torch
+
+        if not torch.cuda.is_available():
+            return False
+    except Exception:  # noqa: BLE001
+        return False
+    card = _smoke_cache_device_key(device)
+    schemes = without_nvfp4(TQ_SCHEMES)
+    if any((scheme, card) in _SMOKE_CACHE for scheme in schemes):
+        return False
+    if _persisted_probe_table(card) is not None:
+        return False
+    with _CHILD_PROBE_LOCK:
+        if any((scheme, card) in _SMOKE_CACHE for scheme in schemes):
+            return False
+        table = _child_probe_table(card)
+        if table is None:
+            return False
+        for name, verdict in table.items():
+            if verdict is not None:
+                _SMOKE_CACHE[(name, card)] = verdict
+    return True
+
+
+def _persisted_probe_table(card: str) -> Optional[dict[str, bool]]:
+    """A previous process's clean child table for this card and stack, or None."""
+    try:
+        from . import diffusion_probe_cache
+        return diffusion_probe_cache.load(card)
+    except Exception:  # noqa: BLE001 - a miss, never an error
+        return None
 
 
 # SIGKILL may be OOM and SIGTERM is timeout cleanup, so neither is a scheme verdict.
