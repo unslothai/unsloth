@@ -284,20 +284,52 @@ def test_real_tiny_wan_pipeline_one_batched_call_per_step(expand):
 
 @needs_cuda
 def test_real_tiny_wan_pipeline_under_group_offload_hooks():
+    """The loader's order: offload hooks attach, the batcher wraps them, and only then the first render runs.
+    diffusers' lazy prefetch hook removes itself after that first forward and restores the forward it captured, which
+    used to drop the batcher after step 1 (one batched call per render on a real T4)."""
     import numpy as np
     from diffusers.hooks import apply_group_offloading
 
+    ref = _tiny_wan_pipe(True)
+    want = _render(ref)
+    del ref
     pipe = _tiny_wan_pipe(True)
-    want = _render(pipe)
     apply_group_offloading(
         pipe.transformer, onload_device = torch.device("cuda"), offload_device = torch.device("cpu"),
         offload_type = "block_level", num_blocks_per_group = 1, use_stream = True,
     )
-    assert np.abs(_render(pipe) - want).max() < 2e-2
     assert cb.install_for_pipe(pipe, torch.float16, "cuda") is True
     got = _render(pipe)
-    assert cb.counts()["batched"] == 4
+    assert cb.counts() == {"batched": 4, "single": 0, "fallback": 0}
     assert np.abs(got - want).max() < 2e-2
+    again = _render(pipe)
+    assert cb.counts()["batched"] == 8
+    assert np.array_equal(got, again)
+
+
+def test_a_hook_registered_after_the_batcher_is_not_wrapped_again(monkeypatch):
+    monkeypatch.setattr(cb._CfgBatcher, "_armed", lambda self, call: False)
+
+    class Dit(torch.nn.Module):
+        def forward(self, hidden_states, timestep, encoder_hidden_states, return_dict = True):
+            return (hidden_states,)
+
+    dit = Dit()
+    batcher = cb._CfgBatcher(_pipe(), dit, dit.forward)
+    dit.forward = batcher
+    import functools
+
+    def hooked(*a, **k):
+        return batcher(*a, **k)
+
+    dit.forward = functools.update_wrapper(hooked, batcher)  # a later hook wraps the batcher
+    x, t, cond, _ = _io()
+    dit(hidden_states = x, timestep = t, encoder_hidden_states = cond, return_dict = False)
+    assert dit.forward is hooked  # left alone: it already reaches the batcher
+    # the hook goes away and restores a forward without the batcher: the batcher puts itself back on top
+    dit.forward = Dit.forward.__get__(dit)
+    batcher(hidden_states = x, timestep = t, encoder_hidden_states = cond, return_dict = False)
+    assert dit.forward is batcher
 
 
 def test_module_is_torch_free_at_import():

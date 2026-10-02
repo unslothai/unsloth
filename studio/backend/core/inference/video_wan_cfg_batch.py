@@ -105,6 +105,7 @@ class _CfgBatcher:
         import weakref
 
         self._pipe = weakref.ref(pipe)
+        self._dit = weakref.ref(transformer) if transformer is not None else (lambda: None)
         self._inner = inner
         self._pending: Optional[_Pending] = None
         self.__wrapped__ = inner
@@ -170,7 +171,32 @@ class _CfgBatcher:
         _COUNTS["batched"] += 1
         return (out[1:].contiguous(),)
 
+    def _reassert(self) -> None:
+        """Stay the outermost forward. diffusers' lazy prefetch hook removes itself after the first real forward, and
+        ``HookRegistry.remove_hook`` restores the forward it captured at registration, which drops this wrapper; put it
+        back around whatever forward is current, unless that forward already wraps this one (a hook registered later)."""
+        dit = self._dit()
+        if dit is None:
+            return
+        current = dit.__dict__.get("forward")
+        if current is self:
+            return
+        f, depth = current, 0
+        while f is not None and depth < 64:
+            if f is self:
+                return
+            f = getattr(f, "__wrapped__", None)
+            depth += 1
+        self._inner = current if current is not None else dit.forward
+        dit.forward = self
+
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        try:
+            return self._call(*args, **kwargs)
+        finally:
+            self._reassert()
+
+    def _call(self, *args: Any, **kwargs: Any) -> Any:
         import torch
 
         call = _as_kwargs(args, kwargs)
