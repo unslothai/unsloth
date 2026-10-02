@@ -870,7 +870,9 @@ def _is_prefill_progress_only(data) -> bool:
 
 
 class _ProgressKeepalive:
-    """Dropped progress still resets the relay's idle timer, so stand in for the keepalive it starved."""
+    """Dropped ``prompt_progress`` still needs a stand-in frame: the relay's idle timer, and the
+    durable-run lease (which ignores plain ``: keep-alive``). Emit ``: prefill-progress`` on the
+    same cadence."""
 
     def __init__(self, interval_s: Optional[float]):
         self._interval_s = interval_s
@@ -1907,6 +1909,10 @@ _OPENAI_ADMISSION_SSE_WAIT = ": admission-wait\n\n"
 _OPENAI_ADMISSION_SSE_DONE = ": admission-done\n\n"
 # A server-side tool still running, unlike a stall keep-alive: durable runs renew their lease on it.
 _OPENAI_TOOL_HEARTBEAT_SSE = ": tool-heartbeat\n\n"
+# Prefill still advancing with nothing to stream: ``prompt_progress`` dropped for a client that did
+# not ask for it, or a native GGUF generator still in prefill. Same lease contract as the tool
+# heartbeat: not a stall keep-alive.
+_OPENAI_PREFILL_PROGRESS_SSE = ": prefill-progress\n\n"
 _OPENAI_LLAMA_ADMISSION_POLL_S = 0.25
 # Cap on waiting for a cancelled teardown task. Request.is_disconnected() can swallow
 # cancel() (#7617), so teardown abandons the task rather than hold the response, and
@@ -7082,6 +7088,45 @@ def _monitor_perf_callback(monitor_id: Optional[str], context_length):
 
     _callback.needs_phase = True
     return _callback
+
+
+class _PrefillProgressSignal:
+    """Wrap a GGUF perf callback to count advancing ``prompt_progress`` from the backend thread.
+
+    The native GGUF generators consume progress themselves and yield nothing until the first
+    token, so the route's stall loop would only ever send ``: keep-alive``, which the durable
+    lease ignores. The stall loop polls ``advanced()`` to send ``: prefill-progress`` instead."""
+
+    def __init__(self, inner):
+        self._inner = inner
+        self._last_processed = None
+        self._advances = 0
+        self._seen = 0
+        # Only ask llama-server for per-token timings when a monitor actually consumes them.
+        self.wants_timings = inner is not None
+
+    @property
+    def needs_phase(self) -> bool:
+        return self._inner is not None and getattr(self._inner, "needs_phase", True)
+
+    def __call__(self, sample: dict) -> None:
+        progress = sample.get("prompt_progress")
+        if isinstance(progress, dict):
+            processed = progress.get("processed")
+            # Any change counts, so a new prefill round (lower count) renews too; a repeat does not.
+            if processed is not None and processed != self._last_processed:
+                self._last_processed = processed
+                self._advances += 1
+        if self._inner is not None:
+            self._inner(sample)
+
+    def advanced(self) -> bool:
+        """True once per stall tick when prefill moved since the previous call."""
+        advances = self._advances
+        if advances == self._seen:
+            return False
+        self._seen = advances
+        return True
 
 
 def _monitor_call_text(name: Any, arguments: Any = None) -> str:
@@ -28286,11 +28331,14 @@ async def produce_openai_chat_completions(
                 )
             )
 
-        _gguf_perf_callback = (
+        _gguf_monitor_callback = (
             _monitor_perf_callback(monitor_id, llama_backend.context_length)
             if not _wants_multiple_choices(payload)
             else None
         )
+        # Only a stream has a stall loop to feed; elsewhere the monitor callback (or None) stands.
+        _gguf_prefill_signal = _PrefillProgressSignal(_gguf_monitor_callback)
+        _gguf_perf_callback = _gguf_prefill_signal if payload.stream else _gguf_monitor_callback
 
         def _gguf_chat_delta_line(delta: ChoiceDelta, finish_reason = None) -> str:
             if delta.reasoning_content is not None and delta.content is None:
@@ -28779,7 +28827,12 @@ async def produce_openai_chat_completions(
                                 )
                                 if done_tasks:
                                     break
-                                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                                # Advancing prefill renews the durable lease; a bare keep-alive does not.
+                                yield (
+                                    _OPENAI_PREFILL_PROGRESS_SSE
+                                    if _gguf_prefill_signal.advanced()
+                                    else _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                                )
                                 approval_flush_pending = False
                                 wait_timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S
                             event = next_task.result()
@@ -29474,7 +29527,12 @@ async def produce_openai_chat_completions(
                                 )
                                 if done_tasks:
                                     break
-                                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                                # Advancing prefill renews the durable lease; a bare keep-alive does not.
+                                yield (
+                                    _OPENAI_PREFILL_PROGRESS_SSE
+                                    if _gguf_prefill_signal.advanced()
+                                    else _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                                )
                             cumulative = next_task.result()
                         finally:
                             if next_task.done():
@@ -33383,7 +33441,8 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                             )
                         ):
                             if progress_keepalive.due():
-                                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE.encode()
+                                # Distinct from stall keep-alive: durable runs renew their lease on it.
+                                yield _OPENAI_PREFILL_PROGRESS_SSE.encode()
                             continue
                         out = _cmpl_stream_event_out(event, _include_usage)
                         if out is not None:
@@ -41810,7 +41869,8 @@ async def _openai_passthrough_stream_admitted(
                     if not client_wants_progress and _is_prefill_progress_only(chunk_data):
                         _monitor_openai_sse_line(monitor_id, raw_line, llama_backend.context_length)
                         if progress_keepalive.due():
-                            yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                            # Distinct from stall keep-alive: durable runs renew their lease on it.
+                            yield _OPENAI_PREFILL_PROGRESS_SSE
                         continue
                     # With healing active, a content-bearing line may be replaced by
                     # held/promoted chunks; otherwise the single (already

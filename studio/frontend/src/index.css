@@ -4755,23 +4755,55 @@ html[data-chat-font] .aui-root {
 }
 
 .sidebar-row-ghost {
+	--row-ghost-surface: var(--sidebar);
 	position: fixed;
 	top: 0;
 	z-index: 60;
 	display: flex;
 	align-items: center;
 	border-radius: 10px;
-	background: var(--sidebar-accent);
-	box-shadow:
-		0 0 0 1px color-mix(in oklab, var(--foreground) 8%, transparent),
-		0 8px 24px -8px rgb(0 0 0 / 0.35);
 	pointer-events: none;
 	will-change: transform;
+}
+
+/* A carried row: a translucent shade off its list. */
+:is(.sidebar-row-ghost, .model-picker-row-ghost) {
+	background: color-mix(in oklab, color-mix(in oklab, var(--row-ghost-surface), var(--foreground) 5%) 85%, transparent);
+	-webkit-backdrop-filter: blur(8px);
+	backdrop-filter: blur(8px);
+	box-shadow:
+		0 0 0 1px color-mix(in oklab, var(--foreground) 7%, transparent),
+		0 4px 14px -6px rgb(0 0 0 / 0.16);
 }
 
 .sidebar-section-ghost > *,
 .sidebar-row-ghost * {
 	pointer-events: none;
+}
+
+/* A Pinned row carried in the model picker (use-pinned-row-drag.ts). */
+.model-picker-row-ghost {
+	--row-ghost-surface: var(--popover);
+	position: fixed;
+	top: 0;
+	z-index: 60;
+	display: flex;
+	align-items: center;
+	pointer-events: none;
+	will-change: transform;
+}
+
+.model-picker-row-ghost * {
+	pointer-events: none;
+}
+
+/* The row fills the pill, which paints the tint. Its margin stays behind: the pill was sized
+   without it, so a Connected row's ml-4 would push the copy off its own pill. */
+.model-picker-row-ghost > * {
+	width: 100%;
+	height: 100%;
+	margin: 0;
+	background: transparent;
 }
 
 /* The drop cue under a carried row's copy, drawn again above it (use-sidebar-drag.ts). */
@@ -4783,7 +4815,7 @@ html[data-chat-font] .aui-root {
 	pointer-events: none;
 }
 
-/* A row's copy is its face as drawn, lit like a hovered row but never like the open chat. */
+/* A row's copy is its face as drawn, never lit like the open chat. */
 .sidebar-row-ghost > [data-sidebar="menu-button"] {
 	width: 100%;
 	height: 100%;
