@@ -2,7 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { ModelInventoryFormat } from "@/features/hub";
-import type { S3Config } from "@/types/training";
+import type {
+  GrpoRewardSelection,
+  S3Config,
+  TrainingObjective,
+} from "@/types/training";
 
 export interface TrainingStartRequest {
   model_name: string;
@@ -65,6 +69,13 @@ export interface TrainingStartRequest {
   use_loftq: boolean;
   use_dora: boolean;
   train_on_completions: boolean;
+  objective: TrainingObjective;
+  rl_beta: number | null;
+  rl_max_prompt_length: number | null;
+  grpo_num_generations: number;
+  grpo_max_completion_length: number | null;
+  grpo_temperature: number;
+  grpo_rewards: GrpoRewardSelection[];
   finetune_vision_layers: boolean;
   finetune_language_layers: boolean;
   finetune_attention_modules: boolean;

@@ -10,6 +10,24 @@ export function isTrainingMethod(value: unknown): value is TrainingMethod {
   );
 }
 
+export type TrainingObjective = "sft" | "dpo" | "orpo" | "grpo";
+
+export const TRAINING_OBJECTIVES: readonly TrainingObjective[] = [
+  "sft",
+  "dpo",
+  "orpo",
+  "grpo",
+];
+
+export function isTrainingObjective(value: unknown): value is TrainingObjective {
+  return TRAINING_OBJECTIVES.includes(value as TrainingObjective);
+}
+
+export interface GrpoRewardSelection {
+  name: string;
+  weight: number;
+}
+
 export function isAdapterMethod(method: TrainingMethod): boolean {
   return method === "lora" || method === "qlora" || method === "cpt";
 }

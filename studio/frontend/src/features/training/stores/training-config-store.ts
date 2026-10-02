@@ -5,6 +5,7 @@ import {
   DEFAULT_HYPERPARAMS,
   LR_DEFAULT_FULL,
   LR_DEFAULT_LORA,
+  RL_LEARNING_RATES,
 } from "@/config/training";
 import { getHfToken } from "@/features/hub";
 import { translate } from "@/i18n";
@@ -1069,6 +1070,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             ...(patch.trainOnCompletions !== undefined
               ? { trainOnCompletionsDefaultPendingFor: null }
               : {}),
+            ...(trainingMethod === "cpt" ? { trainingObjective: "sft" } : {}),
           });
         },
         selectHfDataset: selectHfDatasetInternal,
@@ -1416,6 +1418,41 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           setUserEdit({ targetModules });
         },
         setS3Config: (s3Config) => setUserEdit({ s3Config }),
+        setTrainingObjective: (trainingObjective) => {
+          const state = get();
+          if (state.trainingObjective === trainingObjective) return;
+          // CPT is its own objective; the selector disables RL for it, this keeps the store honest.
+          if (state.trainingMethod === "cpt" && trainingObjective !== "sft") {
+            return;
+          }
+          const patch: Partial<TrainingConfigState> = { trainingObjective };
+          if (!state.trainingMethodProvenance.learningRateManuallySet) {
+            patch.learningRate =
+              trainingObjective === "sft"
+                ? state.trainingMethod === "full"
+                  ? LR_DEFAULT_FULL
+                  : LR_DEFAULT_LORA
+                : RL_LEARNING_RATES[trainingObjective];
+          }
+          if (trainingObjective !== "sft") {
+            // TRL formats these rows itself; SFT-only toggles would be silently ignored.
+            patch.trainOnCompletions = false;
+            patch.packing = false;
+            patch.datasetStreaming = false;
+          }
+          setUserEdit(patch);
+        },
+        setRlBeta: (rlBeta) => setUserEdit({ rlBeta }),
+        setRlMaxPromptLength: (rlMaxPromptLength) =>
+          setUserEdit({ rlMaxPromptLength }),
+        setRlRoleMapping: (rlRoleMapping) => setUserEdit({ rlRoleMapping }),
+        setGrpoNumGenerations: (grpoNumGenerations) =>
+          setUserEdit({ grpoNumGenerations }),
+        setGrpoMaxCompletionLength: (grpoMaxCompletionLength) =>
+          setUserEdit({ grpoMaxCompletionLength }),
+        setGrpoTemperature: (grpoTemperature) =>
+          setUserEdit({ grpoTemperature }),
+        setGrpoRewards: (grpoRewards) => setUserEdit({ grpoRewards }),
         reset: () => {
           trainingDatasetCacheRejections.reset();
           _trainOnCompletionsManuallySet = false;

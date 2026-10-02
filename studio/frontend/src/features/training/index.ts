@@ -53,10 +53,19 @@ export type {
 export { getModelConfig, listLocalModels } from "./api/models-api";
 export type { LocalModelInfo, ModelConfigResponse } from "./api/models-api";
 export type {
+  RlMetricPoint,
   TrainingPhase,
   TrainingViewData,
   TrainingSeriesPoint,
 } from "./types/runtime";
+export {
+  deleteReward,
+  exportReward,
+  importReward,
+  listRewards,
+  previewRewards,
+} from "./api/rewards-api";
+export type { RewardRecord } from "./api/rewards-api";
 export type {
   TrainingRunSummary,
   TrainingRunListResponse,
