@@ -5944,3 +5944,33 @@ def test_a_full_run_reports_allowances_for_deleted_files(monkeypatch):
         lambda: {"gone_for_good.py::f::importlib.import_module::0::0": 1},
     )
     assert L.main([]) != 0
+
+
+def test_string_and_iterator_deserialisers_and_the_yaml_object_form(tmp_path):
+    """`toml.loads`, `yaml.safe_load_all`, and `yaml.Loader(stream)` on a download."""
+    findings = _scan(
+        tmp_path,
+        "import importlib, toml, yaml\n"
+        "from huggingface_hub import hf_hub_download\n"
+        "def a(blob):\n"
+        "    return importlib.import_module(toml.loads(blob)['module'])\n"
+        "def b(blob):\n"
+        "    return importlib.import_module(next(yaml.safe_load_all(blob))['module'])\n"
+        "def c(repo):\n"
+        "    return yaml.Loader(open(hf_hub_download(repo, 'c.yaml'))).get_data()\n",
+    )
+    sinks = _sinks(findings)
+    assert "yaml.Loader" in sinks
+    assert sum(f["sink"] == "importlib.import_module" for f in findings if f["tier"] == "A") == 2
+
+
+def test_a_revision_read_from_data_is_not_a_pin(tmp_path):
+    """`revision = json.loads(blob)["revision"]` lets the data choose a moving branch."""
+    findings = _scan(
+        tmp_path,
+        "import json, sys\n"
+        "from huggingface_hub import snapshot_download\n"
+        "def load(repo, blob):\n"
+        "    sys.path.insert(0, snapshot_download(repo, revision = json.loads(blob)['revision']))\n",
+    )
+    assert "unpinned code fetch" in _sinks(findings)

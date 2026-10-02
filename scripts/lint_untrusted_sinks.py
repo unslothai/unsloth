@@ -127,9 +127,12 @@ UNTRUSTED_CALLS = frozenset(
         "yaml.load",
         "yaml.safe_load",
         "yaml.full_load",
+        "yaml.load_all",
+        "yaml.safe_load_all",
         "tomllib.load",
         "tomllib.loads",
         "toml.load",
+        "toml.loads",
         # Weight files. The tensor NAMES in a downloaded checkpoint are attacker-chosen
         # just as a config value is, and they get used as attribute names and as paths.
         # Without these the only chain the scanner could see into an adapter loader was
@@ -307,6 +310,11 @@ SINKS: dict[str, tuple[tuple[int, ...], frozenset[str]]] = {
     "pickle.load": ((0,), frozenset({"file"})),
     # The object form: `pickle.Unpickler(stream).load()` runs the same reducers.
     "pickle.Unpickler": ((0,), frozenset({"file"})),
+    # The YAML object form: `yaml.Loader(stream).get_data()` builds tagged objects.
+    "yaml.Loader": ((0,), frozenset({"stream"})),
+    "yaml.CLoader": ((0,), frozenset({"stream"})),
+    "yaml.UnsafeLoader": ((0,), frozenset({"stream"})),
+    "yaml.CUnsafeLoader": ((0,), frozenset({"stream"})),
     "_pickle.Unpickler": ((0,), frozenset({"file"})),
     "dill.Unpickler": ((0,), frozenset({"file"})),
     "pickle.loads": ((0,), frozenset({"data"})),
@@ -4665,6 +4673,9 @@ def _unpinned_code_fetches(facts: _FileFacts, reached: frozenset) -> list[dict]:
                 and not (
                     isinstance(keyword.value, ast.Name) and keyword.value.id in unpinned_params
                 )
+                # A revision computed by a call or a lookup (`cfg["revision"]`) is data
+                # choosing the branch, not a pin anyone wrote down.
+                and not isinstance(keyword.value, (ast.Call, ast.Subscript))
                 for keyword in child.keywords
             ):
                 continue
