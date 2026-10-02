@@ -270,7 +270,10 @@ def test_file_actions_route_through_native_commands_only_in_tauri():
     assert 'accept=".json,.jsonl,.ndjson,.csv,.md,.markdown"' in data_tab
 
     native_dialogs = _ui_source(NATIVE_DIALOGS)
-    assert 'CHAT_IMPORT_EXTENSIONS: &[&str] = &["json", "jsonl", "ndjson", "csv", "md", "markdown"]' in native_dialogs
+    assert (
+        'CHAT_IMPORT_EXTENSIONS: &[&str] = &["json", "jsonl", "ndjson", "csv", "md", "markdown"]'
+        in native_dialogs
+    )
     assert "InvokeBody::Raw" in native_dialogs
 
     assert ".tempfile_in(parent)" in native_dialogs
