@@ -960,6 +960,7 @@ function artifactBudget(gpu: {
   systemRamAvailableGb: number;
   denseQuantSchemes?: readonly string[];
   quantisedStreaming?: boolean;
+  extraOffloadFitTiers?: DeviceBudget["extraOffloadFitTiers"];
 }): DeviceBudget {
   return {
     gpuGb: gpu.memoryTotalGb,
@@ -967,6 +968,7 @@ function artifactBudget(gpu: {
     // Judges a pre-quantised row by that checkpoint's size, not the bf16 shards it replaces.
     denseQuantSchemes: gpu.denseQuantSchemes,
     quantisedStreaming: gpu.quantisedStreaming,
+    extraOffloadFitTiers: gpu.extraOffloadFitTiers,
   };
 }
 

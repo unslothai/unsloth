@@ -19,19 +19,14 @@ async function moreFlyout() {
 test("the sidebar More flyout previews on mouse hover and pins on a press", async () => {
   const { source, flyout } = await moreFlyout();
 
-  assert.match(source, /const moreOpen = moreHoverOpen \|\| morePinnedOpen/);
-  // Mouse only, so a touch tap does not flash a preview.
   assert.match(
     source,
-    /openMorePreview = useCallback\(\s*\(event: PointerEvent<HTMLElement>\) => \{\s*if \(event\.pointerType !== "mouse"\) return;/,
+    /const moreHover = useHoverFlyout\(NAV_FLYOUT_INTENT, moreContentRef\);/,
   );
-  assert.match(source, /setTimeout\(\(\) => setMoreHoverOpen\(false\), 180\)/);
-  // Row and flyout both keep it open.
-  assert.equal(flyout.match(/onPointerEnter=\{openMorePreview\}/g)?.length, 2);
-  assert.equal(
-    flyout.match(/onPointerLeave=\{closeMorePreviewSoon\}/g)?.length,
-    2,
-  );
+  assert.match(source, /const moreOpen = moreHover\.open \|\| morePinnedOpen/);
+  assert.match(flyout, /ref=\{moreTriggerRef\}\s*\{\.\.\.moreHover\.trigger\}/);
+  assert.match(flyout, /\{\.\.\.moreHover\.content\}/);
+  assert.doesNotMatch(flyout, /<SidebarMenuItem\s+onPointer/);
   // A press pins or unpins, and is not treated as an outside press.
   assert.match(
     flyout,
@@ -76,7 +71,7 @@ test("a hover preview leaves focus where it was", async () => {
   assert.match(flyout, /ref=\{moreContentRef\}/);
   assert.match(
     flyout,
-    /if \(!morePinnedOpen && moreHoverOpen\) \{\s*moreContentRef\.current\?\.focus\(\{ preventScroll: true \}\);/,
+    /if \(!morePinnedOpen && moreHover\.open\) \{\s*moreContentRef\.current\?\.focus\(\{ preventScroll: true \}\);/,
   );
   assert.match(
     flyout,
