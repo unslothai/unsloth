@@ -471,6 +471,13 @@ _DOCX_MATH = frozenset((_M + "oMathPara", _M + "oMath"))
 _DOCX_SKIP_RUNS_UNDER = frozenset(
     (_W + "del", _W + "moveFrom", _W + "rt", _W + "txbxContent", _MC_FALLBACK)
 )
+_DOCX_SKIP_RUNS_OR_MATH = _DOCX_SKIP_RUNS_UNDER | _DOCX_MATH
+_DOCX_MATH_ROWS = {
+    "oMathPara": ("oMath", "\n"),
+    "eqArr": ("e", "\n"),
+    "m": ("mr", " \\\\ "),
+    "mr": ("e", " & "),
+}
 
 
 def _docx_placeholder(element) -> bool:
@@ -572,6 +579,14 @@ def _docx_math_text(element) -> str:
         return f"\\sqrt[{deg}]{{{arg('e')}}}" if deg else f"\\sqrt{{{arg('e')}}}"
     if name == "acc":
         return arg("e") + prop("chr", "\u0302")
+    if name in ("bar", "groupChr"):
+        side = "over" if prop("pos", "bot") == "top" else "under"
+        if name == "bar":
+            return f"\\{side}line{{{arg('e')}}}"
+        mark = prop("chr", "\u23df")
+        if mark in ("\u23de", "\u23df"):
+            return f"\\{side}brace{{{arg('e')}}}"
+        return f"\\{side}set{{{mark}}}{{{arg('e')}}}"
     if name == "func":
         return f"{arg('fName')} {arg('e')}"
     if name == "d":
@@ -580,25 +595,19 @@ def _docx_math_text(element) -> str:
             + prop("sepChr", "|").join(_docx_math_text(e) for e in element.iterchildren(_M + "e"))
             + prop("endChr", ")")
         )
-    rows = {
-        "oMathPara": ("oMath", "\n"),
-        "eqArr": ("e", "\n"),
-        "m": ("mr", " \\\\ "),
-        "mr": ("e", " & "),
-    }
-    if name in rows:
-        child, sep = rows[name]
+    if name in _DOCX_MATH_ROWS:
+        child, sep = _DOCX_MATH_ROWS[name]
         return sep.join(_docx_math_text(c) for c in element.iterchildren(_M + child))
     return "".join(_docx_math_text(child) for child in element.iterchildren("*"))
 
 
 def _docx_paragraph_text(paragraph) -> str:
-    """Paragraph.text skips runs wrapped in w:ins, w:sdt, w:fldSimple, w:smartTag."""
+    """Paragraph.text skips runs wrapped in w:ins, w:sdt, w:fldSimple, w:smartTag, and equations."""
     p = paragraph._p
     return "".join(
-        _docx_math_text(run) if run.tag in _DOCX_MATH else run.text
-        for run in p.iter(_W + "r", *_DOCX_MATH)
-        if not _docx_inside(run, p, _DOCX_SKIP_RUNS_UNDER | _DOCX_MATH)
+        _docx_math_text(node) if node.tag in _DOCX_MATH else node.text
+        for node in p.iter(_W + "r", *_DOCX_MATH)
+        if not _docx_inside(node, p, _DOCX_SKIP_RUNS_OR_MATH)
     )
 
 
