@@ -51,7 +51,7 @@ def _image_part_row():
             {
                 "role": "user",
                 "content": [
-                    {"type": "image", "image": "/data/photos/a.jpg", "text": None},
+                    {"type": "image", "image": Image.new("RGB", (8, 8), "red"), "text": None},
                     {"type": "text", "image": None, "text": "Describe this."},
                 ],
             },
@@ -112,7 +112,7 @@ def _encoded_audio_row():
     ],
 )
 def test_images_in_a_list_or_in_messages_are_detected(row, expected_vlm_format):
-    dataset = Dataset.from_list([row])
+    dataset = [row] if expected_vlm_format == "vlm_messages" else Dataset.from_list([row])
 
     assert dataset_format.check_dataset_format(dataset, is_vlm = False)["is_image"] is True
     vlm = dataset_format.check_dataset_format(dataset, is_vlm = True)
@@ -283,6 +283,16 @@ def test_embedded_images_require_convertible_values(detector):
     dataset = Dataset.from_list([row])
 
     result = detector.detect_vlm_dataset_structure(dataset)
+
+    assert result["format"] != "vlm_messages"
+
+
+@pytest.mark.parametrize("detector", [dataset_format, format_detection])
+def test_embedded_image_paths_require_conversion(detector):
+    row = _image_part_row()
+    row["messages"][0]["content"][0]["image"] = "/data/photos/a.jpg"
+
+    result = detector.detect_vlm_dataset_structure([row])
 
     assert result["format"] != "vlm_messages"
 

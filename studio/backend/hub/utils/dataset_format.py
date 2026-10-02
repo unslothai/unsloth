@@ -297,15 +297,21 @@ def _has_image_header(data: bytes) -> bool:
     )
 
 
-def _is_image_value(value) -> bool:
-    if value is None:
-        return False
+def _is_decoded_image_value(value) -> bool:
     try:
         from PIL.Image import Image as PILImage
         if isinstance(value, PILImage):
             return True
     except ImportError:
         pass
+    return False
+
+
+def _is_image_value(value) -> bool:
+    if value is None:
+        return False
+    if _is_decoded_image_value(value):
+        return True
     if isinstance(value, dict):
         if "array" in value and "sampling_rate" in value:
             return False
@@ -470,7 +476,7 @@ def detect_vlm_dataset_structure(dataset):
             ]
             if embedded_images:
                 if len(embedded_images) == len(image_parts) and all(
-                    _is_image_list_item(image) for image in embedded_images
+                    _is_decoded_image_value(image) for image in embedded_images
                 ):
                     return {
                         "format": "vlm_messages",

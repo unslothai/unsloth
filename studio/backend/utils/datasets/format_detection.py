@@ -548,17 +548,22 @@ def detect_multimodal_dataset(dataset):
     }
 
 
-def _is_image_value(value) -> bool:
-    """Check if a single sample value looks like image data."""
-    if value is None:
-        return False
-
+def _is_decoded_image_value(value) -> bool:
     try:
         from PIL.Image import Image as PILImage
         if isinstance(value, PILImage):
             return True
     except ImportError:
         pass
+    return False
+
+
+def _is_image_value(value) -> bool:
+    """Check if a single sample value looks like image data."""
+    if value is None:
+        return False
+    if _is_decoded_image_value(value):
+        return True
 
     # HF Image feature: decoded as PIL, or {"bytes", "path"} when undecoded. Exclude audio dicts, whose decoded form has "array" + "sampling_rate".
     if isinstance(value, dict):
@@ -698,7 +703,7 @@ def detect_vlm_dataset_structure(dataset):
             ]
             if embedded_images:
                 if len(embedded_images) == len(image_parts) and all(
-                    _is_image_list_item(image) for image in embedded_images
+                    _is_decoded_image_value(image) for image in embedded_images
                 ):
                     return {
                         "format": "vlm_messages",
