@@ -78,7 +78,11 @@ def test_loss_type_replacement_did_not_leak_to_other_trainers():
     import unsloth  # noqa: F401
     import trl
 
-    expected = {"DPOConfig": ["sigmoid"], "KTOConfig": "kto", "GRPOConfig": "bnpo"}
+    from packaging.version import Version
+
+    # Unsloth follows TRL's GRPO default from 0.22, the first TRL with "dapo".
+    grpo = "dapo" if Version(trl.__version__) >= Version("0.22.0") else "bnpo"
+    expected = {"DPOConfig": ["sigmoid"], "KTOConfig": "kto", "GRPOConfig": grpo}
     for name, want in expected.items():
         cfg_cls = getattr(trl, name, None)
         if cfg_cls is None or not hasattr(cfg_cls, "loss_type"):

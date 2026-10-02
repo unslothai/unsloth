@@ -1706,6 +1706,37 @@ class TestResponsesNonStreamingAdapter:
         assert entry["completion_tokens"] == 3
         assert request.state.skip_api_monitor is False
 
+    def test_monitor_records_client_disconnect_as_cancelled(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        async def fake_chat_completions(
+            chat_req,
+            request,
+            current_subject = None,
+        ):
+            return JSONResponse(
+                content = {
+                    "model": "test-model",
+                    "choices": [{"message": {"content": "par"}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 2, "completion_tokens": 1},
+                }
+            )
+
+        async def is_disconnected():
+            return True
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "openai_chat_completions", fake_chat_completions)
+        messages, request = _shared_setup_4()
+        request.is_disconnected = is_disconnected
+
+        asyncio.run(_responses_non_streaming(ResponsesRequest(input = "hi"), messages, request))
+
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "cancelled"
+        assert monitor.active_count() == 0
+
     @staticmethod
     def _run_in_process_completion(
         monkeypatch,

@@ -28,7 +28,10 @@ export interface DiffusionResolvedControl {
 export interface DiffusionStatus {
   loaded: boolean;
   repo_id: string | null;
+  /** Logical Hub identity when repo_id is an exact local snapshot. */
+  display_repo_id?: string | null;
   family: string | null;
+  supported_families?: string[];
   base_repo: string | null;
   device: string | null;
   dtype: string | null;
@@ -107,6 +110,8 @@ export interface DiffusionLoadProgress {
 
 export interface DiffusionLoadRequest {
   model_path: string;
+  /** Logical Hub identity to publish while model_path remains the physical load target. */
+  display_repo_id?: string;
   // Optional now: required for the gguf / single_file kinds, omitted for a full pipeline loaded via from_pretrained.
   gguf_filename?: string;
   // How to load the model (omit to auto-detect from gguf_filename). Non-GGUF kinds are restricted to unsloth/* repos.
@@ -171,7 +176,7 @@ export interface DiffusionGenerateRequest {
   allow_oversized?: boolean;
   // Additional images after init_image, in order, for the reference and edit workflows.
   reference_images?: string[];
-  workflow?: "edit" | "reference";
+  workflow?: "edit" | "reference" | "outpaint";
   reference_resolution?: number;
   // Unified edit only: annotate/paint composite onto the source, mask is sent as Image 2.
   localized_edit?: { mode: LocalizedEditMode; image: string };
@@ -246,6 +251,11 @@ export interface GalleryImage {
   text_encoder_quant?: string | null;
   memory_mode?: string | null;
   offload_policy?: string | null;
+  speed_mode?: string | null;
+  attention_backend?: string | null;
+  transformer_cache?: string | null;
+  cpu_offload?: boolean | null;
+  schema_version?: number | null;
   baked_loras?: string[];
   loras?: string[];
   controlnet?: string | null;
@@ -551,6 +561,11 @@ export async function fetchGalleryObjectUrl(
   // cannot work out from the URL.
   const blob = await fetchGalleryBlob(url);
   return { url: URL.createObjectURL(blob), bytes: blob.size };
+}
+
+/** Thumbnail URL for use with fetchGalleryObjectUrl. */
+export function galleryThumbnailUrl(url: string, thumb = 256): string {
+  return `${url}?thumb=${thumb}`;
 }
 
 // Diffusion LoRA training. Mirrors DiffusionTrainingStartRequest on the backend; only the paths

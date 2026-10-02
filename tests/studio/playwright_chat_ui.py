@@ -314,13 +314,47 @@ def exercise_permission_mode_controls(page, shoot):
     # same reason and with the same note about macOS. This does the same after
     # each reload. It asserts exactly what it asserted before; it just stops
     # asking before the answer can exist.
-    def reload_and_wait_for_pill():
-        page.reload(wait_until = "domcontentloaded")
+    #
+    # The pill wait is the settle, not "networkidle". With this block's page.route on /api/chat/settings
+    # in place, Playwright's networkidle wait after a reload stopped returning at all once /api reads
+    # went out as Cache-Control: no-store (#12148): its own 30s timeout never fired, and the step sat
+    # there until the 180s watchdog killed the job (Chat UI Tests (chat) on main at 1dddc1437). The
+    # pill is the one thing the next assertion needs, and waiting for it is bounded.
+    #
+    # One more reload, only when the app never booted. Seen once on the Windows msedge permissions lane
+    # (#12438's run 36881445186): after the reload the server served /chat and the three boot scripts and
+    # then no /api request at all, the page stayed on "Loading...", and the pill never mounted. That is
+    # the app shell failing to start, not this step's assertion, so it gets one retry with the evidence
+    # logged; a page that booted and still lacks the pill fails at once, and so does a second boot failure.
+    def _boot_state():
         try:
-            page.wait_for_load_state("networkidle", timeout = 30_000)
-        except Exception:
-            pass  # best-effort -- proceed even if network never idles
+            return page.evaluate(
+                """() => ({
+                    url: location.href,
+                    readyState: document.readyState,
+                    composer: !!document.querySelector('textarea[aria-label="Message input"]'),
+                    root: (document.getElementById("root")?.innerText || "").trim().slice(0, 80),
+                })"""
+            )
+        except Exception as exc:
+            return {"evaluate_failed": repr(exc)}
+
+    def reload_and_wait_for_pill():
+        page.reload(wait_until = "load")
+        try:
+            expect(pill).to_be_visible(timeout = 30_000)
+            return
+        except AssertionError:
+            state = _boot_state()
+            shoot("04-permission-pill-missing")
+            info(f"WARN permission pill missing 30s after reload; page state {state}")
+            if state.get("composer") or state.get("evaluate_failed"):
+                raise
+        page.reload(wait_until = "load")
         expect(pill).to_be_visible(timeout = 30_000)
+        info(
+            "WARN the app did not boot on the first reload and did on the second; see the state above"
+        )
 
     # choose() only drives THIS tab.
     # The mirror to /api/chat/settings is a 400ms trailing-edge debounce (SETTINGS_DEBOUNCE_MS, chat-runtime-store.ts)
@@ -2460,32 +2494,44 @@ with sync_playwright() as p:
     step("persisted monitor: reset the browser session and open a fresh page")
     # Start fresh after the CLI rotation invalidates this browser session.
     # Stay in the SAME context: it keeps the init script and costs nothing to reuse.
+    #
+    # Nothing here runs script in the OLD page. It is CPU-throttled and its auth was
+    # just revoked, so the app can be busy retrying, and page.evaluate waits for its
+    # event loop with no timeout of its own: this step wedged for its whole budget on
+    # Windows and on the Kaggle T4 runner with no line printed. Closing a page and
+    # clearing cookies are browser-side calls, and the storage writes go through the
+    # fresh page parked on a same-origin JSON endpoint where no app code runs. Each call
+    # announces itself first, so a wedge that remains names the call it sits in.
+    info("closing the stale page")
+    try:
+        page.close()
+    except Exception as exc:
+        info(f"WARN closing the stale page failed: {exc!r}")
+    info("clearing stale session cookies")
     try:
         ctx.clear_cookies()
     except Exception as exc:
         info(f"WARN clearing stale session cookies failed: {exc!r}")
-    robust_evaluate(
-        page,
-        """() => localStorage.setItem(
-            "unsloth_monitor_overlay",
-            JSON.stringify({ state: { isOpen: true, isMinimized: false }, version: 0 })
-        )""",
-    )
-    try:
-        page.evaluate(
-            "['unsloth_auth_token', 'unsloth_auth_refresh_token']"
-            ".forEach((key) => localStorage.removeItem(key))"
-        )
-    except Exception as exc:
-        info(f"WARN clearing stale auth tokens failed: {exc!r}")
+    info("opening the fresh page")
     _fresh_page = new_throttled_page(ctx)
     _fresh_page.on("pageerror", lambda e: page_errors.append(str(e)))
     _fresh_page.on("console", _on_console)
-    try:
-        page.close()
-    except Exception:
-        pass
     page = _fresh_page
+    info("parking the fresh page on /api/health to write localStorage")
+    page.goto(f"{BASE}/api/health", wait_until = "domcontentloaded", timeout = 30_000)
+    info("writing the monitor overlay and clearing the auth tokens")
+    robust_evaluate(
+        page,
+        """() => {
+            localStorage.setItem(
+                "unsloth_monitor_overlay",
+                JSON.stringify({ state: { isOpen: true, isMinimized: false }, version: 0 })
+            );
+            ["unsloth_auth_token", "unsloth_auth_refresh_token"].forEach(
+                (key) => localStorage.removeItem(key)
+            );
+        }""",
+    )
     login_system_request_count = len(system_requests)
 
     step("persisted monitor stays dormant on /login and resumes after auth", NO_STEP_CEILING)

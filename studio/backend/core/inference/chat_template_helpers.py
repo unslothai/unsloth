@@ -14,7 +14,7 @@ import re
 import string
 import weakref
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -2603,9 +2603,9 @@ def detect_think_prefill(
     unclosed block that swallows the answer; in that case return ``""`` and fall back to plain text.
 
     ``preserves_think_close`` says the stream keeps that closer anyway, as
-    ``NativeToolTokenDecoder`` does so the parser can see a call rehearsed inside the block. The
-    special-token list then says nothing, and skipping the opener is the same bug mirrored: a stray
-    ``</think>``.
+    ``NativeToolTokenDecoder`` does so the parser can see a call rehearsed inside the block, and as
+    a path streaming the detokenizer's own text does. The special-token list then says nothing, and
+    skipping the opener is the same bug mirrored: a stray ``</think>``.
     """
     if not prompt:
         return ""
@@ -2825,6 +2825,19 @@ def trailing_assistant_text(messages: list) -> Optional[str]:
     return None
 
 
+def trailing_assistant_resume_kind(messages: list) -> Optional[str]:
+    """Return the trailing assistant field to resume, or None; prefer content over reasoning."""
+    text = trailing_assistant_text(messages)
+    if text:
+        return "content"
+    if text is None:
+        return None
+    reasoning = messages[-1].get("reasoning_content")
+    if isinstance(reasoning, str) and reasoning.strip():
+        return "reasoning_content"
+    return None
+
+
 def last_user_text(messages: list) -> str:
     """Text of the newest user turn, with any ``<img>`` markup stripped. Scans back rather than
     reading ``messages[-1]``: a continuation ends on the assistant partial. Stops at the newest
@@ -2919,6 +2932,34 @@ def messages_have_tool_history(messages) -> bool:
     )
 
 
+def alternating_turns(messages: list) -> list:
+    """User/assistant text turns, alternating and ending on the newest user turn as sent; of two
+    same-role neighbours the later one is kept."""
+    from core.inference.message_content import content_to_text, named_turn
+
+    messages = list(messages or [])
+    newest = max(
+        (i for i, m in enumerate(messages) if isinstance(m, dict) and m.get("role") == "user"),
+        default = -1,
+    )
+    turns = []
+    for index, message in enumerate(messages[: newest + 1]):
+        turn = message
+        if index != newest:
+            if not isinstance(message, dict) or message.get("role") not in ("user", "assistant"):
+                continue
+            text = content_to_text(message.get("content")).strip()
+            # Kept even empty: an earlier recording or picture replays as a user turn with no text.
+            if not text and message["role"] == "assistant":
+                continue
+            turn = named_turn({"role": message["role"], "content": text}, message)
+        if turns and turns[-1]["role"] == turn["role"]:
+            turns[-1] = turn
+        elif turns or turn["role"] == "user":
+            turns.append(turn)
+    return turns
+
+
 def messages_with_attached_image(
     messages: list,
     system_prompt: str = "",
@@ -2926,12 +2967,16 @@ def messages_with_attached_image(
     structured_content: bool = False,
     image: int = 1,
     video: bool = False,
+    audio: Any = None,
+    extra_audio: Sequence[Any] = (),
 ) -> list:
     """The conversation to render for a turn that carries attached media.
 
     Prepends *system_prompt* as a leading system turn, then injects *image* ``{"type": "image"}``
-    parts, or a ``{"type": "video"}`` part, into the LAST user turn and leaves every other turn --
-    assistant ``tool_calls`` and ``role="tool"`` results included -- exactly as the caller sent it.
+    parts, or a ``{"type": "video"}`` part, plus any *audio* waveform as an ``{"type": "audio"}``
+    part (one more per *extra_audio* clip, in order), into the LAST user turn and leaves every
+    other turn -- assistant ``tool_calls`` and ``role="tool"`` results included -- exactly as the
+    caller sent it.
     Rebuilding from the newest user TEXT instead dropped the folded system instruction and the
     tool history an OpenAI tool loop replays (#10092). Nothing the caller owns is mutated: callers
     still read those dicts after generation, and a retry re-renders the same list.
@@ -2982,6 +3027,9 @@ def messages_with_attached_image(
         )
         for _ in range(int(wanted))
     ]
+    if audio is not None:
+        parts.append({"type": "audio", "audio": audio})
+        parts.extend({"type": "audio", "audio": clip} for clip in extra_audio)
     if not parts and not fallback_user_text:
         return conversation
     for index in range(len(conversation) - 1, -1, -1):
@@ -2990,7 +3038,8 @@ def messages_with_attached_image(
             continue
         content = message.get("content", "")
         if isinstance(content, str):
-            content = [{"type": "text", "text": content or fallback_user_text}]
+            text = content if content.strip() else fallback_user_text or content
+            content = [{"type": "text", "text": text}]
         elif not isinstance(content, list):
             break
         elif fallback_user_text and not last_user_text([message]):
@@ -3048,6 +3097,14 @@ def append_assistant_turn(
         # Copy rather than mutate: the caller owns assistant_msg and may still read it.
         merged_msg = {**conversation[-1], **assistant_msg}
         merged_msg["content"] = f"{prev_text}{assistant_msg['content']}"
+        added_reasoning = assistant_msg.get("reasoning_content")
+        if (
+            isinstance(added_reasoning, str)
+            and trailing_assistant_resume_kind(conversation) == "reasoning_content"
+        ):
+            merged_msg["reasoning_content"] = (
+                f"{conversation[-1]['reasoning_content']}{added_reasoning}"
+            )
         conversation[-1] = merged_msg
         return
     conversation.append(assistant_msg)

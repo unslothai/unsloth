@@ -16,6 +16,7 @@ import inspect
 import os
 import struct
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -1631,3 +1632,204 @@ def test_an_unloadable_drafter_is_not_charged_before_it_is_dropped(tmp_path):
     assert "--model-draft" not in cmd
     assert "--no-mmproj-offload" not in cmd
     assert backend.mtp_draft_suppressed_path == str(tmp_path / "mtp.gguf")
+
+
+def test_a_replayed_context_places_the_projector_like_a_fresh_forced_drafter(tmp_path):
+    # Classified after the projector probe, the replay priced it at 65536 and pinned it to CPU.
+    memory = [(0, 13_500, 24_000)]
+
+    def load(**kwargs):
+        backend, gguf = _backend(tmp_path, memory = memory, drafter_bytes = 2 * GIB, native_ctx = 65536)
+        cmd = _launch(backend, gguf, mtp_draft_path = str(tmp_path / "mtp.gguf"), **kwargs)["cmd"]
+        return backend, cmd, int(cmd[cmd.index("-c") + 1])
+
+    _, auto, replayed = load(speculative_type = "auto", n_ctx = 0)
+    assert "--model-draft" not in auto
+    _, fresh, fresh_ctx = load(speculative_type = "mtp", n_ctx = 0)
+    backend, replay, replay_ctx = load(
+        speculative_type = "mtp", n_ctx = replayed, max_seq_length_auto_derived = True
+    )
+
+    assert "--no-mmproj-offload" not in fresh
+    assert "--no-mmproj-offload" not in replay
+    assert replay_ctx == fresh_ctx < replayed
+    assert backend._requested_n_ctx == replay_ctx
+
+
+def test_a_replayed_context_refits_for_a_cpu_pinned_drafter_too(tmp_path):
+    # --spec-draft-ngl 0 keeps the drafter off the GPU; the hybrid target still pays rollback state.
+    memory = [(0, 10_000, 24_000)]
+    extras = ["--spec-draft-ngl", "0"]
+
+    def load(**kwargs):
+        backend, gguf = _backend(tmp_path, memory = memory, drafter_bytes = 2 * GIB, native_ctx = 65536)
+        backend._rollback_state_bytes = lambda n_parallel = 1, *_a, **_kw: n_parallel * 256 * MIB
+        cmd = _launch(
+            backend,
+            gguf,
+            mtp_draft_path = str(tmp_path / "mtp.gguf"),
+            extra_args = extras,
+            **kwargs,
+        )["cmd"]
+        return cmd, int(cmd[cmd.index("-c") + 1])
+
+    _, replayed = load(speculative_type = "off", n_ctx = 0)
+    fresh, fresh_ctx = load(speculative_type = "mtp", n_ctx = 0)
+    replay, replay_ctx = load(
+        speculative_type = "mtp", n_ctx = replayed, max_seq_length_auto_derived = True
+    )
+
+    assert replay_ctx == fresh_ctx < replayed
+    assert ("--no-mmproj-offload" in replay) == ("--no-mmproj-offload" in fresh)
+
+
+@pytest.mark.parametrize("flag", ["--mmproj", "-mm"])
+@pytest.mark.parametrize("vision_off", [False, True])
+def test_custom_projector_replaces_discovery_and_respects_vision_switch(tmp_path, flag, vision_off):
+    backend, gguf = _backend(tmp_path, memory = [(0, 12_000, 24_000)])
+    backend._resolve_launch_mmproj_path = LlamaCppBackend._resolve_launch_mmproj_path.__get__(
+        backend
+    )
+    gguf = gguf.rename(tmp_path / "Qwen-model.gguf")
+    custom = _write_gguf(tmp_path / "gemma-custom projector.gguf")
+    seen = []
+    backend._mmproj_vram_bytes = lambda path: seen.append(path) or GIB
+    cmd = _launch(
+        backend,
+        gguf,
+        is_vision = False,
+        disable_vision = vision_off,
+        extra_args = [flag, str(custom)],
+    )["cmd"]
+    if vision_off:
+        assert "--mmproj" not in cmd and "-mm" not in cmd
+    else:
+        assert cmd.count("--mmproj") == 1
+        assert cmd[cmd.index("--mmproj") + 1] == str(custom)
+        assert str(custom) in seen
+
+
+def test_vision_off_still_charges_a_custom_audio_only_projector(tmp_path, monkeypatch):
+    model = _write_gguf(tmp_path / "model.gguf")
+    custom = _write_gguf(tmp_path / "custom-audio.gguf")
+    monkeypatch.setattr(_meta, "mmproj_accepts_image", lambda _path: False)
+    config = SimpleNamespace(
+        gguf_file = str(model),
+        gguf_mmproj_file = None,
+        gguf_mtp_file = None,
+        gguf_dspark_file = None,
+        gguf_dflash_file = None,
+        gguf_hf_repo = None,
+        gguf_variant = None,
+        is_vision = False,
+    )
+    enabled = _estimate_gguf_required_gb(config, llama_extra_args = ["--mmproj", str(custom)])
+    disabled = _estimate_gguf_required_gb(
+        config,
+        llama_extra_args = ["--mmproj", str(custom)],
+        disable_vision = True,
+    )
+    assert enabled == disabled
+
+
+@pytest.mark.parametrize("vision_off", [False, True])
+def test_custom_projector_does_not_hide_remote_model_bytes(tmp_path, monkeypatch, vision_off):
+    import routes.inference as routes
+    import utils.models.model_config as model_config
+
+    custom = _write_gguf(tmp_path / "custom-vision.gguf")
+    config = SimpleNamespace(
+        gguf_file = None,
+        gguf_mmproj_file = None,
+        gguf_mtp_file = None,
+        gguf_dspark_file = None,
+        gguf_dflash_file = None,
+        gguf_hf_repo = "org/vision-GGUF",
+        gguf_variant = "Q4_K_M",
+        is_vision = True,
+    )
+    monkeypatch.setattr(
+        model_config,
+        "list_gguf_variants",
+        lambda *_a, **_kw: (
+            [SimpleNamespace(quant = "Q4_K_M", size_bytes = 4 * GIB)],
+            True,
+        ),
+    )
+    seen = []
+    monkeypatch.setattr(
+        routes, "_remote_gguf_companion_bytes", lambda *_a, **kw: seen.append(kw) or 0
+    )
+    monkeypatch.setattr(routes, "_remote_gguf_compute_reserve_gb", lambda **_kw: 0)
+    result = _estimate_gguf_required_gb(
+        config,
+        llama_extra_args = ["--mmproj", str(custom)],
+        disable_vision = vision_off,
+        speculative_type = "off",
+    )
+    expected = 4 * GIB + (0 if vision_off else custom.stat().st_size)
+    assert result * GIB == expected
+    assert seen[0]["include_mmproj"] is False
+
+
+def test_missing_custom_projector_is_rejected_before_unloading(tmp_path, monkeypatch):
+    backend = LlamaCppBackend()
+    unloaded = []
+    monkeypatch.setattr(backend, "unload_model", lambda: unloaded.append(True))
+    with pytest.raises(ValueError, match = "custom mmproj path"):
+        backend.load_model(
+            GgufLoadIntent(
+                model_identifier = "test",
+                gguf_path = str(tmp_path / "model.gguf"),
+                extra_args = ("--mmproj", str(tmp_path / "missing.gguf")),
+            )
+        )
+    assert unloaded == []
+
+
+@pytest.mark.parametrize("flag", ["--mmproj", "-mm"])
+def test_hub_load_rechecks_custom_projector_replaced_in_place(tmp_path, flag):
+    backend, gguf = _backend(tmp_path, memory = [(0, 12_000, 24_000)])
+    backend._resolve_launch_mmproj_path = LlamaCppBackend._resolve_launch_mmproj_path.__get__(
+        backend
+    )
+    custom = _write_gguf(tmp_path / "custom-projector.gguf")
+    _launch(backend, gguf, is_vision = False, extra_args = [flag, str(custom)])
+    backend._hf_variant = "Q4_K_M"
+    intent = GgufLoadIntent(
+        model_identifier = "test",
+        hf_repo = "org/model",
+        hf_variant = "Q4_K_M",
+        extra_args = (flag, str(custom)),
+    )
+    assert backend.matches_load_source(intent)
+    assert not backend.matches_load_source(replace(intent, hf_variant = "Q8_0"))
+    replacement = _write_gguf(tmp_path / "replacement.gguf")
+    replacement.replace(custom)
+    assert not backend.matches_load_source(intent)
+
+
+def test_remote_ubatch_sizes_the_custom_projector_not_the_repo_one(tmp_path, monkeypatch):
+    import routes.inference as routes
+
+    custom = _write_gguf(tmp_path / "custom-audio.gguf")
+    monkeypatch.setattr(_meta, "mmproj_accepts_image", lambda _path: False)
+    config = SimpleNamespace(is_vision = True)
+    assert routes._remote_required_ubatch(config, []) > 0
+    assert routes._remote_required_ubatch(config, ["--mmproj", str(custom)]) == 0
+
+
+@pytest.mark.parametrize("flag", ["--mmproj", "-mm"])
+@pytest.mark.parametrize("managed", [False, True])
+def test_only_the_owner_may_name_a_custom_projector(monkeypatch, flag, managed):
+    import routes.inference as routes
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(routes.account_access, "managed_account", lambda: managed)
+    routes._refuse_managed_custom_projector(["--ctx-size", "4096"])
+    if not managed:
+        routes._refuse_managed_custom_projector([flag, "/models/p.gguf"])
+        return
+    with pytest.raises(HTTPException) as err:
+        routes._refuse_managed_custom_projector([flag, "/models/p.gguf"])
+    assert err.value.status_code == 403

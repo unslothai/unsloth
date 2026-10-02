@@ -308,7 +308,6 @@ def test_media_galleries_save_natively_with_feedback():
 
 
 def test_chat_exports_await_native_saves_and_markdown_uses_shared_helper():
-    app_sidebar = _ui_source(APP_SIDEBAR)
     prompt_storage = _ui_source(PROMPT_STORAGE)
     thread = _ui_source(THREAD)
     thread_sidebar = _ui_source(THREAD_SIDEBAR)
@@ -322,12 +321,21 @@ def test_chat_exports_await_native_saves_and_markdown_uses_shared_helper():
     assert "catch (error)" not in download_blob
     assert "isDownloadCancelled(error)" in prompt_storage
 
-    for source in (app_sidebar, thread, thread_sidebar, shared_composer, data_tab, projects):
+    # #12122 moved chat export out of the sidebar into the Library and the project menu.
+    chats_library = _ui_source(FRONTEND / "features/library/chats/chats-library.tsx")
+    project_menu = _ui_source(FRONTEND / "features/chat/components/project-menu-items.tsx")
+    for source in (thread, thread_sidebar, shared_composer, data_tab, projects):
         assert "isDownloadCancelled(error)" in source
+    assert "if (!isDownloadCancelled(err)) toast.error(" in chats_library
+    assert "if (!isDownloadCancelled(error)) toast.error(" in project_menu
     assert "const handleExport = useCallback(async () =>" in prompt_storage
     assert prompt_storage.count("await export") >= 12
-    assert "await Promise.all(" not in app_sidebar
-    assert "for (const id of ids)" in app_sidebar
+    # One native save at a time: the Library exports selected chats in a sequential loop.
+    assert "for (const id of threadIds) await exportConversationByFormat(" in chats_library
+    assert "await exportThreads(" in chats_library
+    # Promise.all / allSettled / any over exports would open the dialogs together.
+    assert not re.search(r"Promise\.\w+\((?:(?!;).)*?\bexport\w*\(", chats_library, re.S)
+    assert "await exportThreads(" in project_menu
     assert prompt_storage.count("await downloadBlob(") >= 5
 
     assert "await downloadBlob(zipped," in prompt_storage
@@ -458,7 +466,17 @@ def test_clipboard_file_paste_is_bounded_and_wired_to_both_composers():
     assert "aui.composer().addAttachment(file)" in thread
     assert "onPaste={handleFilePaste}" in shared_composer
     assert "pasteClipboardFiles" in shared_composer
-    assert "addFiles(files)" in shared_composer
+    # The paste handler has to hand the pasted files to the same add path a drop or the file picker
+    # uses. #9788 moved it from addFiles(files) to trackAttaching(... addFilesUntracked(files)) so
+    # the in-flight counter is bumped once rather than twice; either spelling is the contract, but
+    # an untracked add must sit inside trackAttaching or a send can race the paste.
+    paste = shared_composer[shared_composer.index("const handleFilePaste") :]
+    paste = paste[: paste.index("\n  );\n")]
+    assert "pasteClipboardFiles(" in paste
+    added = re.findall(r"\b(addFiles|addFilesUntracked)\(files\)", paste)
+    assert added, "the compare composer's paste handler no longer adds the pasted files"
+    if "addFilesUntracked" in added:
+        assert "trackAttaching(" in paste
     assert capabilities.count('"clipboard-manager:allow-read-image"') == 1
     assert '"clipboard-manager:allow-read-text"' not in capabilities
 
@@ -624,25 +642,39 @@ def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
     assert "style={{ width: titlebarNavigationWidth }}" in source
     assert "left: titlebarNavigationWidth" in source
     assert "<DesktopTitlebarNavigation" in source
-    assert "const contentBorderLeft = pinned" in source
-    assert ': "0px";' in source
+    # The card's corner starts on the sidebar's last column, so its left edge meets the sidebar's.
+    assert "const cornerLeft = `calc(${sidebarWidth} - 1px)`;" in source
 
     # Keep the decoration below z-50 modals and outside the z-[70] header.
     assert 'data-slot="window-titlebar-decoration"' in source
     decoration = source.split('data-slot="window-titlebar-decoration"', 1)[1].split("<header", 1)[0]
     assert (
         'className="pointer-events-none absolute inset-x-0 '
-        'top-[var(--studio-custom-titlebar-height)] z-[45] h-3"' in decoration
+        'top-[var(--studio-custom-titlebar-height)] z-[45] h-[12px]"' in decoration
     )
-    # The border is always visible.
-    assert 'className="absolute top-0 h-px bg-sidebar-border"' in decoration
-    # The backing and corner only appear when pinned.
-    assert decoration.count("{pinned && (") == 2
-    assert 'className="absolute top-0 size-3 -translate-x-px bg-sidebar"' in decoration
+    # One border draws the edge and, when pinned, its rounded corner; the top edge always shows.
     assert (
-        'className="absolute top-0 size-3 -translate-x-px rounded-tl-[12px] border-l border-t border-sidebar-border bg-background"'
+        '"absolute top-0 right-0 h-[12px] border-t border-sidebar-border dark:border-transparent",'
         in decoration
     )
+    # Dark draws no seam: a border lighter than both surfaces reads as a white line on Windows.
+    assert "dark:border-white" not in decoration
+    assert "dark:border-t-white" not in decoration
+    # Pinned, it is the sidebar's full-height edge: dark has no sidebar border-r to continue it.
+    assert re.search(
+        r'pinned &&\s*"h-\[calc\(100dvh-var\(--studio-custom-titlebar-height\)\)\] '
+        r"rounded-tl-\[12px\] border-l ",
+        decoration,
+    )
+    assert re.search(
+        r"usesDesktopTitlebar && !usesNativeMacTitlebar && pinned &&\s*"
+        r'"\[&_\[data-sidebar=sidebar\]\]:border-r-0"',
+        APP_SIDEBAR.read_text(encoding = "utf-8"),
+    )
+    assert "style={{ left: pinned ? cornerLeft : 0 }}" in decoration
+    # The sidebar-coloured mask outside the corner only appears when pinned.
+    assert decoration.count("{pinned && (") == 1
+    assert "transparent_11px,var(--color-sidebar)_12px" in decoration
 
 
 def test_desktop_titlebar_separates_navigation_from_sidebar_brand():
@@ -662,6 +694,29 @@ def test_desktop_titlebar_separates_navigation_from_sidebar_brand():
     assert "window.history.forward()" in titlebar
     assert 'src="/circle-logo-small.png"' in header
     assert header.index("<DesktopTitlebarNavigation") < header.index('src="/circle-logo-small.png"')
+
+
+def _new_chat_button_class_tokens(chat_page: str) -> list[str]:
+    label = chat_page.index('aria-label="New chat"')
+    start = chat_page.rindex("<Button", 0, label)
+    # First `>` outside braces and quotes: arrow functions in props hold `>`.
+    depth, quote, end = 0, "", start
+    for end in range(start, len(chat_page)):
+        ch = chat_page[end]
+        if quote:
+            quote = "" if ch == quote else quote
+        elif ch in "\"'`":
+            quote = ch
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+        elif ch == ">" and depth == 0:
+            break
+    assert label < end, 'aria-label="New chat" is not on the <Button> opening tag'
+    match = re.search(r'className="([^"]*)"', chat_page[start:end])
+    assert match, "the New chat button has no static className"
+    return match.group(1).split()
 
 
 def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker():
@@ -706,8 +761,12 @@ def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker(
     }
     assert insets, "no style block sets both the traffic-light and collapsed-controls insets"
     assert set(insets.values()) == {188}, insets
-    assert 'className="!size-[30px] rounded-[10px] text-muted-foreground"' in chat_page
     assert 'aria-label="New chat"' in chat_page
+    # Token by token, not the exact string: #12355 added `shrink-0` beside the same look.
+    new_chat_tokens = _new_chat_button_class_tokens(chat_page)
+    assert "!size-[30px]" in new_chat_tokens, new_chat_tokens
+    assert "rounded-[10px]" in new_chat_tokens, new_chat_tokens
+    assert "text-muted-foreground" in new_chat_tokens, new_chat_tokens
     new_chat_click = chat_page.index("onClick={handleDesktopNewChat}")
     assert new_chat_click < chat_page.index("<ModelSelector", new_chat_click)
 

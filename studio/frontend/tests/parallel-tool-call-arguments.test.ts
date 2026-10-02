@@ -173,15 +173,24 @@ function liftDeltaLoop(): string {
     loopStart >= 0,
     "the delta.tool_calls loop moved in chat-adapter.ts",
   );
-  const gate = adapterSource.lastIndexOf(
-    "if (",
-    adapterSource.indexOf("addedToolCall ||", loopStart),
+  // Searching back for `if (` truncated the slice once the condition moved into a variable.
+  const gate = adapterSource.indexOf(
+    "if (forcePublish || canPublish(",
+    loopStart,
   );
   assert.ok(gate > loopStart, "the publish gate moved in chat-adapter.ts");
   const lifted = adapterSource.slice(loopStart, gate);
   assert.ok(
     lifted.includes("splitTopLevelJsonObjects"),
     "the loop no longer splits on JSON object boundaries",
+  );
+  assert.ok(
+    lifted.includes("endProviderTurn()"),
+    "the lifted loop stops before the turn ends, so it is not the loop production runs",
+  );
+  assert.ok(
+    lifted.includes("const forcePublish ="),
+    "the lifted loop stops before the publish decision it is supposed to reach",
   );
   return lifted;
 }

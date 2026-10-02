@@ -151,9 +151,11 @@ def test_trl_fields_the_overrides_key_on_are_unchanged():
     assert fields["scale_rewards"].default in (True, "group"), fields["scale_rewards"].default
     assert fields["epsilon_high"].default is None, fields["epsilon_high"].default
     assert fields["mask_truncated_completions"].default is False
-    assert set(("dr_grpo", "dapo")) <= set(
-        _documented_loss_types()
-    ), "TRL dropped a loss_type Unsloth special-cases"
+    import trl
+    from packaging.version import Version
+
+    special = {"dr_grpo", "dapo"} if Version(trl.__version__) >= Version("0.22.0") else {"dr_grpo"}
+    assert special <= set(_documented_loss_types()), "TRL dropped a loss_type Unsloth special-cases"
 
 
 def _documented_loss_types():
@@ -164,3 +166,61 @@ def _documented_loss_types():
         for lt in ("grpo", "bnpo", "dr_grpo", "dapo", "cispo", "sapo", "luspo", "vespo")
         if f'"{lt}"' in src
     ]
+
+
+def _needs_loss_type(loss_type):
+    if loss_type not in _documented_loss_types():
+        pytest.skip(f"this TRL has no loss_type={loss_type!r}")
+
+
+def test_default_loss_type_is_trls_dapo():
+    cfg = _grpo()
+    if "dapo" not in _documented_loss_types():
+        assert (
+            cfg.loss_type == "bnpo" and cfg.beta == 0.001
+        ), "TRL <= 0.21 has no dapo to default to"
+        return
+    assert cfg.loss_type == "dapo" and cfg.beta == 0.0
+
+
+def test_default_dapo_keeps_trl_clip_and_truncation():
+    """Only an explicit loss_type="dapo" gets the paper's settings: masking truncated rows zeroes every update when all are."""
+    _needs_loss_type("dapo")
+    trl_default = _pristine(_config_cls("GRPOConfig"))(output_dir = "unused")
+    cfg = _grpo()
+    assert cfg.epsilon_high == trl_default.epsilon_high
+    assert cfg.mask_truncated_completions is trl_default.mask_truncated_completions is False
+
+
+@pytest.mark.parametrize(
+    "loss_type, beta", [("dapo", 0.0), ("dr_grpo", 0.0), ("bnpo", 0.001), ("grpo", 0.001)]
+)
+def test_unset_beta_follows_loss_type(loss_type, beta):
+    _needs_loss_type(loss_type)
+    assert _grpo(loss_type = loss_type).beta == beta
+
+
+@pytest.mark.parametrize("loss_type", ["dapo", "dr_grpo", "bnpo", "grpo"])
+@pytest.mark.parametrize("beta", [0.0, 0.001, 0.04])
+def test_explicit_beta_is_kept(loss_type, beta):
+    assert _grpo(loss_type = loss_type, beta = beta).beta == beta
+
+
+def test_cispo_caps_the_is_weight_at_scalerl_epsilon_high():
+    """TRL clamps the CISPO weight at epsilon_high itself; its epsilon fallback (0.2) would cap every weight below 1."""
+    _needs_loss_type("cispo")
+    cfg = _grpo(loss_type = "cispo")
+    assert cfg.epsilon_high == 5.0
+    assert cfg.mask_truncated_completions is False, "the dapo recommendations leaked into cispo"
+    assert cfg.beta == 0.001
+    assert _grpo(loss_type = "cispo", epsilon_high = 3.0).epsilon_high == 3.0
+
+
+@pytest.mark.parametrize("loss_type", ["bnpo", "grpo", "dr_grpo"])
+def test_other_loss_types_keep_trl_epsilon_high(loss_type):
+    assert (
+        _grpo(loss_type = loss_type).epsilon_high
+        == _pristine(_config_cls("GRPOConfig"))(
+            output_dir = "unused", loss_type = loss_type
+        ).epsilon_high
+    )

@@ -14,6 +14,7 @@ import {
   batchListChatMessages,
 } from "../api/chat-api";
 import { splitMcpImages } from "../api/mcp-images";
+import { isMcpUiToolResult } from "../mcp-apps/mcp-ui";
 import type { MessageRecord } from "../types";
 import { isCoalescedHistoryEvent } from "../utils/chat-history-revision";
 import {
@@ -56,7 +57,7 @@ const BINARY_KEY = /b64|base64|^(images?|audio|video)$/i;
 
 // Readable text from tool args/results, dropping base64 image/audio blobs so they never
 // bloat the index.
-function searchableText(value: unknown, depth = 0): string {
+function searchableText(value: unknown, depth = 0, toolName?: string): string {
   if (typeof value === "string") {
     let text = splitMcpImages(value).text;
     const cut = text.indexOf("\n__IMAGES__:");
@@ -70,6 +71,10 @@ function searchableText(value: unknown, depth = 0): string {
     return value.map((v) => searchableText(v, depth + 1)).join(" ");
   }
   if (typeof value === "object") {
+    // A widget result is indexed by what was shown, not its up-to-1MB UI seed.
+    if (depth === 0 && isMcpUiToolResult(value, toolName ?? "")) {
+      return searchableText(value.text, 1);
+    }
     const out: string[] = [];
     for (const [k, v] of Object.entries(value)) {
       if (!BINARY_KEY.test(k)) out.push(searchableText(v, depth + 1));
@@ -118,7 +123,11 @@ function extractText(message: MessageRecord): string {
         typeof p.argsText === "string" ? p.argsText : p.args,
       );
       if (args) parts.push(args);
-      const result = searchableText(p.result);
+      const result = searchableText(
+        p.result,
+        0,
+        typeof p.toolName === "string" ? p.toolName : undefined,
+      );
       if (result) parts.push(result);
     } else if (p.type === "source") {
       for (const v of [p.title, p.url])

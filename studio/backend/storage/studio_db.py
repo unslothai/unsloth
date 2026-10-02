@@ -18,13 +18,16 @@ import re
 import shutil
 import sqlite3
 import threading
+import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
-from typing import Any, Callable, Iterable, Mapping, Optional
+from typing import Any, Callable, Iterable, Iterator, Mapping, Optional
 
 
+from core import chat_originals
 from utils.account_context import is_owner_context
 from utils.paths import (
     ensure_account_dir,
@@ -33,6 +36,7 @@ from utils.paths import (
     studio_db_path,
 )
 from utils.paths.external_media import is_linux_run_media_path, is_local_filesystem_root
+from utils.paths import path_utils as _path_utils
 from utils.paths.path_utils import macos_volume_ignores_case
 from utils.paths.scan_folder_health import is_readable_dir
 from utils.paths.sensitive import (
@@ -75,6 +79,23 @@ def _denied_path_prefixes() -> list[str]:
     return []
 
 
+_WSL_WINDOWS_SYSTEM_DIRS = ("windows", "program files", "program files (x86)")
+
+
+def _is_wsl_windows_system_path(path: str) -> bool:
+    """``/mnt/<drive>/Windows`` and ``Program Files`` under WSL: the native-Windows denylist, case-folded like DrvFs."""
+    root = _path_utils._WSL_AUTOMOUNT_ROOT
+    if not _path_utils._IS_WSL or not path.startswith(root):
+        return False
+    parts = path[len(root) :].split("/")
+    return (
+        len(parts) >= 2
+        and len(parts[0]) == 1
+        and parts[0].isalpha()
+        and parts[1].casefold() in _WSL_WINDOWS_SYSTEM_DIRS
+    )
+
+
 def is_denied_system_path(path: str) -> bool:
     """True if *path* is, or descends from, a denied system directory.
 
@@ -105,7 +126,7 @@ def is_denied_system_path(path: str) -> bool:
             if prefix == "/run" and is_linux_run_media_path(check):
                 continue
             return True
-    return False
+    return system == "Linux" and _is_wsl_windows_system_path(path)
 
 
 def _contains_sensitive_path_component(path: str) -> bool:
@@ -120,7 +141,7 @@ _schema_lock = threading.Lock()
 _schema_ready: set[Path] = set()
 _SQLITE_IN_CHUNK_SIZE = 900
 _PROJECT_WORKSPACE_SUBDIRS = ("sandbox",)
-_CHAT_ATTACHMENT_INVENTORY_VERSION = 3
+_CHAT_ATTACHMENT_INVENTORY_VERSION = 5
 
 
 def _project_slug(name: str) -> str:
@@ -444,6 +465,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             fork_boundary_message_id TEXT,
             fork_title_base TEXT,
             settings_json TEXT,
+            modified_at INTEGER,
             FOREIGN KEY(project_id) REFERENCES chat_projects(id) ON DELETE CASCADE
         )
         """
@@ -480,6 +502,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     # Null on every earlier row, which then numbers from its whole title.
     if "fork_title_base" not in chat_thread_cols:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN fork_title_base TEXT")
+    # Last rename, move or (un)archive. Null until then.
+    if "modified_at" not in chat_thread_cols:
+        conn.execute("ALTER TABLE chat_threads ADD COLUMN modified_at INTEGER")
     if "updated_at" not in chat_thread_cols:
         conn.execute("ALTER TABLE chat_threads ADD COLUMN updated_at INTEGER")
         # Floor at created_at: forked threads copy older ancestor messages, so the fork's creation time wins.
@@ -619,10 +644,19 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             type TEXT,
             content_type TEXT,
             size_bytes INTEGER,
+            original_sha256 TEXT,
+            text_bytes INTEGER,
             PRIMARY KEY(message_id, attachment_id)
         ) WITHOUT ROWID
         """
     )
+    inventory_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(chat_attachment_inventory)")
+    }
+    if "original_sha256" not in inventory_columns:
+        conn.execute("ALTER TABLE chat_attachment_inventory ADD COLUMN original_sha256 TEXT")
+    if "text_bytes" not in inventory_columns:
+        conn.execute("ALTER TABLE chat_attachment_inventory ADD COLUMN text_bytes INTEGER")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS chat_attachment_inventory_state (
@@ -750,6 +784,42 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_prompt_lists_created_at ON prompt_lists(created_at)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS data_recipes (
+            id TEXT NOT NULL PRIMARY KEY,
+            name TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            learning_recipe_id TEXT,
+            learning_recipe_title TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """
+    )
+    # Deleted ids stay here so a stale tab or a re-run legacy import cannot bring them back.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS data_recipe_tombstones (
+            id TEXT NOT NULL PRIMARY KEY,
+            deleted_at INTEGER NOT NULL
+        ) WITHOUT ROWID
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS data_recipe_executions (
+            id TEXT NOT NULL PRIMARY KEY,
+            recipe_id TEXT NOT NULL REFERENCES data_recipes(id) ON DELETE CASCADE,
+            created_at INTEGER NOT NULL,
+            record_json TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_data_recipe_executions_recipe"
+        " ON data_recipe_executions(recipe_id, created_at)"
     )
     conn.execute(
         """
@@ -1943,6 +2013,9 @@ def add_scan_folder(path: str) -> dict:
 
 
 def remove_scan_folder(id: int) -> bool:
+    # sqlite INTEGER is signed 64-bit: binding a wider id raises instead of matching nothing.
+    if not -(2**63) <= id < 2**63:
+        return False
     conn = get_connection()
     try:
         cursor = conn.execute("DELETE FROM scan_folders WHERE id = ?", (id,))
@@ -1982,6 +2055,7 @@ def _chat_thread_from_row(row: sqlite3.Row, include_settings: bool = True) -> di
         "forkedFromMessageId": data.get("forked_from_message_id"),
         "forkBoundaryMessageId": data.get("fork_boundary_message_id"),
         "forkTitleBase": data.get("fork_title_base"),
+        "modifiedAt": data.get("modified_at"),
     }
     if include_settings:
         thread["settings"] = _json_loads(data.get("settings_json"), None)
@@ -2180,6 +2254,17 @@ def update_chat_thread(
             "fork_title_base = CASE WHEN title = ? THEN fork_title_base ELSE NULL END"
         )
         values.append(patch.get("title"))
+    # Stamp real renames, moves and (un)archives. The CASE reads the pre-update row.
+    edited = [
+        (column, value)
+        for key, (column, value) in allowed.items()
+        if key in patch and key in ("title", "projectId", "archived")
+    ]
+    if edited:
+        changed = " OR ".join(f"{column} IS NOT ?" for column, _ in edited)
+        assignments.append(f"modified_at = CASE WHEN {changed} THEN ? ELSE modified_at END")
+        values.extend(value for _, value in edited)
+        values.append(int(time.time() * 1000))
     if not assignments and settings_write is None:
         return get_chat_thread(id)
 
@@ -3518,6 +3603,8 @@ def _chat_attachment_inventory_entries(
                 "type": _chat_attachment_metadata_text(attachment.get("type")),
                 "contentType": _chat_attachment_metadata_text(attachment.get("contentType")),
                 "sizeBytes": _chat_attachment_size_bytes(attachment),
+                "originalSha256": chat_originals.attachment_sha256(attachment),
+                "textBytes": _chat_attachment_text_bytes(attachment),
             }
         )
     return entries
@@ -3545,8 +3632,9 @@ def _replace_chat_attachment_inventory(
     conn.executemany(
         """
         INSERT INTO chat_attachment_inventory
-            (message_id, attachment_id, name, type, content_type, size_bytes)
-        VALUES (?, ?, ?, ?, ?, ?)
+            (message_id, attachment_id, name, type, content_type, size_bytes, original_sha256,
+             text_bytes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             (
@@ -3556,6 +3644,8 @@ def _replace_chat_attachment_inventory(
                 entry["type"],
                 entry["contentType"],
                 entry["sizeBytes"],
+                entry["originalSha256"],
+                entry["textBytes"],
             )
             for entry in entries
         ],
@@ -4405,10 +4495,26 @@ def _attachment_content_parts(attachment: dict) -> list[dict]:
     return [part for part in content if isinstance(part, dict)]
 
 
+def _chat_attachment_text_bytes(attachment: dict) -> Optional[int]:
+    """UTF-8 size of a kept original's extracted text, which the database stores as well. None
+    without an original, whose size already counts its text."""
+    if chat_originals.attachment_sha256(attachment) is None:
+        return None
+    return sum(
+        len(part["text"].encode("utf-8", errors = "ignore"))
+        for part in _attachment_content_parts(attachment)
+        if isinstance(part.get("text"), str)
+    )
+
+
 def _chat_attachment_size_bytes(attachment: dict) -> Optional[int]:
     """Approximate stored size of one attachment's content parts. Image, audio and file (video)
     parts hold base64 payloads (decoded bytes ~= 3/4 of the encoded length); text parts count their
-    character length. None when there is no sizable content."""
+    character length. None when there is no sizable content. A document whose original file is kept
+    counts that file instead of its extracted text."""
+    original_size = chat_originals.attachment_size(attachment)
+    if original_size is not None:
+        return original_size
     total = 0
     found = False
     for part in _attachment_content_parts(attachment):
@@ -4516,7 +4622,7 @@ def list_chat_attachments_page(
         rows = conn.execute(
             """
             SELECT i.attachment_id, i.name, i.type, i.content_type,
-                   i.size_bytes, m.id AS message_id, m.thread_id,
+                   i.size_bytes, i.original_sha256, i.text_bytes, m.id AS message_id, m.thread_id,
                    m.created_at, t.title AS thread_title, t.pair_id
             FROM chat_attachment_inventory i
             JOIN chat_messages m ON m.id = i.message_id
@@ -4531,6 +4637,7 @@ def list_chat_attachments_page(
 
     has_more = len(rows) > limit
     page_rows = rows[:limit]
+    originals = chat_originals.originals_dir()
     attachments = [
         {
             "id": row["attachment_id"],
@@ -4542,11 +4649,49 @@ def list_chat_attachments_page(
             "type": row["type"],
             "contentType": row["content_type"],
             "sizeBytes": row["size_bytes"],
+            "originalSha256": row["original_sha256"],
+            "textBytes": row["text_bytes"],
+            "hasOriginal": bool(row["original_sha256"])
+            and (originals / row["original_sha256"]).is_file(),
             "createdAt": row["created_at"],
         }
         for row in page_rows
     ]
     return attachments, offset + limit if has_more else None
+
+
+def referenced_chat_original_hashes() -> set[str]:
+    """Every stored original a chat attachment still points at."""
+    conn = get_connection()
+    try:
+        _ensure_chat_attachment_inventory_current(conn)
+        rows = conn.execute(
+            "SELECT DISTINCT original_sha256 FROM chat_attachment_inventory"
+            " WHERE original_sha256 IS NOT NULL"
+        ).fetchall()
+    finally:
+        conn.close()
+    return {row[0] for row in rows}
+
+
+@contextmanager
+def chat_original_unreferenced(sha256: str) -> Iterator[bool]:
+    """Whether no attachment references ``sha256``, with the write lock held until the block
+    ends: a message that would reference it waits, so it cannot do so while the file is removed."""
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _ensure_chat_attachment_inventory_current(conn)
+        row = conn.execute(
+            "SELECT 1 FROM chat_attachment_inventory WHERE original_sha256 = ? LIMIT 1", (sha256,)
+        ).fetchone()
+        yield row is None
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def list_chat_attachments() -> list[dict]:
@@ -4703,6 +4848,49 @@ def delete_chat_attachment(message_id: str, attachment_id: str) -> bool:
         conn.close()
 
 
+def count_chat_messages_for_threads(thread_ids: list[str]) -> dict[str, int]:
+    """User and assistant messages per thread on its newest branch, without reading bodies.
+
+    Mirrors the frontend's ``summarizeChatMessages``. Unknown ids count 0.
+    """
+    unique_thread_ids = list(dict.fromkeys(thread_ids))
+    rows_by_thread: dict[str, list[tuple[str, Optional[str], str, int]]] = {
+        tid: [] for tid in unique_thread_ids
+    }
+    if not unique_thread_ids:
+        return {}
+    conn = get_connection()
+    try:
+        for start in range(0, len(unique_thread_ids), _SQLITE_IN_CHUNK_SIZE):
+            chunk = unique_thread_ids[start : start + _SQLITE_IN_CHUNK_SIZE]
+            placeholders = ",".join("?" for _ in chunk)
+            for row in conn.execute(
+                f"""
+                SELECT thread_id, id, parent_id, role, created_at FROM chat_messages
+                WHERE thread_id IN ({placeholders})
+                ORDER BY created_at ASC, id ASC
+                """,
+                chunk,
+            ):
+                rows_by_thread[row[0]].append((row[1], row[2], row[3], row[4]))
+    finally:
+        conn.close()
+    counts: dict[str, int] = {}
+    for tid, rows in rows_by_thread.items():
+        path = rows
+        if any(parent for _, parent, _, _ in rows):
+            by_id = {row[0]: row for row in rows}
+            # First newest message, matching the frontend.
+            at = max(rows, key = lambda row: row[3]) if rows else None
+            path, seen = [], set()
+            while at is not None and at[0] not in seen:
+                seen.add(at[0])
+                path.append(at)
+                at = by_id.get(at[1]) if at[1] else None
+        counts[tid] = sum(1 for _, _, role, _ in path if role in ("user", "assistant"))
+    return counts
+
+
 def list_chat_messages_for_threads(thread_ids: list[str]) -> list[dict]:
     if not thread_ids:
         return []
@@ -4760,17 +4948,30 @@ def get_app_settings(keys: list[str]) -> dict[str, Any]:
         conn.close()
 
 
-def compare_and_set_app_setting(key: str, expected: Any, value: Any) -> bool:
-    """Write ``value`` to ``key`` only while it still holds ``expected``. A read-then-upsert cannot
-    express "clear this flag": another save committing in the gap is silently reverted by the write
-    that follows it. Comparing inside one immediate transaction makes a losing update a no-op
-    instead. Returns whether the write happened."""
+def compare_and_set_app_setting(
+    key: str,
+    expected: Any,
+    value: Any,
+    *,
+    absent: tuple[str, ...] = (),
+) -> bool:
+    """Write ``value`` to ``key`` only while it still holds ``expected`` and no key in ``absent``
+    is set. A read-then-upsert cannot express "clear this flag": another save committing in the
+    gap is silently reverted by the write that follows it. Comparing inside one immediate
+    transaction makes a losing update a no-op instead. Returns whether the write happened."""
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute("SELECT value_json FROM app_settings WHERE key = ?", (key,)).fetchone()
         current = _json_loads(row["value_json"], None) if row is not None else None
-        if current != expected:
+        present = (
+            absent
+            and conn.execute(
+                f"SELECT 1 FROM app_settings WHERE key IN ({', '.join('?' * len(absent))}) LIMIT 1",
+                absent,
+            ).fetchone()
+        )
+        if current != expected or present:
             conn.rollback()
             return False
         conn.execute(

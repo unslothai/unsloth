@@ -525,6 +525,8 @@ test("no default takes a chord the browser owns without a reason", () => {
     // because the browser's own find is what it replaces. Reserving it is still
     // right -- it is what warns a web user before they rebind onto it.
     "Mod+KeyF",
+    // The command palette takes Print the same way.
+    "Mod+KeyP",
   ]);
   for (const def of SHORTCUT_DEFS) {
     for (const slot of SHORTCUT_SLOTS) {
@@ -1514,6 +1516,7 @@ test("every action has a useShortcut call site", async () => {
   const files = [
     "../src/app/routes/__root.tsx",
     "../src/components/app-sidebar.tsx",
+    "../src/components/command-palette.tsx",
     "../src/components/ui/sidebar.tsx",
     "../src/components/assistant-ui/thread.tsx",
     "../src/components/assistant-ui/tool-confirmation-controls.tsx",

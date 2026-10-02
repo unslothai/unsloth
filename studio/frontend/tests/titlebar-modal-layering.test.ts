@@ -2,6 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
 import test from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
@@ -16,6 +18,21 @@ const ALERT_DIALOG_OVERLAY_PATTERN =
   /data-slot="alert-dialog-overlay"[\s\S]*?"([^"]*\bz-50\b[^"]*)"/;
 const TOP_FULL_PATTERN = /top-full/;
 const CLOSED_DECORATION_PATTERN = /<\/div>\s*\)\}\s*$/;
+const DIALOG_SURFACE_CLASSES =
+  /<(?:DialogContent|AlertDialogContent|CommandDialog)\b(?:[^>]|=>)*?\bclassName="([^"]*)"/g;
+const WHOLE_WINDOW_CENTRE = /(?:^|\s)(?:max-sm:)?top-1\/2(?:\s|$)/;
+const DIRECT_VIEWPORT_BACKDROP_PATTERN =
+  /body:has\(> \[data-viewport-backdrop="true"\]\[data-state="open"\]\)/;
+const DESCENDANT_VIEWPORT_BACKDROP_PATTERN =
+  /body:has\(\[data-viewport-backdrop="true"\]\[data-state="open"\]\)/;
+const TOUR_VIEWPORT_BACKDROP_PATTERN =
+  /data-slot="dialog-overlay"[\s\S]*?data-viewport-backdrop=\{true\}/;
+
+/** Every component under src, so a new dialog cannot slip past. */
+const COMPONENTS = readdirSync(join(import.meta.dirname, "../src"), {
+  recursive: true,
+  encoding: "utf8",
+}).filter((path) => path.endsWith(".tsx"));
 
 function zIndex(block: string): number {
   const match = block.match(Z_INDEX_PATTERN);
@@ -68,4 +85,28 @@ test("below-titlebar decoration is not trapped in the titlebar stacking context"
   assert.notEqual(headerEnd, -1);
   const header = titlebar.slice(headerIndex, headerEnd);
   assert.doesNotMatch(header, TOP_FULL_PATTERN);
+});
+
+// A top-* class at a call site makes twMerge drop the base's chrome-aware centre, so a plain
+// top-1/2 centres on the whole window and the titlebar covers the dialog's top.
+test("dialogs that set their own top still centre below the window chrome", () => {
+  let checked = 0;
+  for (const file of COMPONENTS) {
+    for (const [, classes] of readSrc(file).matchAll(DIALOG_SURFACE_CLASSES)) {
+      checked += 1;
+      assert.doesNotMatch(classes, WHOLE_WINDOW_CENTRE, file);
+    }
+  }
+  assert.ok(checked > 10, `only ${checked} dialog surfaces matched`);
+});
+
+test("viewport titlebar effects stay mutation-scoped and cover custom modal chrome", async () => {
+  const [styles, tour] = await Promise.all([
+    readSrc("index.css"),
+    readSrc("features/tour/components/guided-tour.tsx"),
+  ]);
+
+  assert.match(styles, DIRECT_VIEWPORT_BACKDROP_PATTERN);
+  assert.doesNotMatch(styles, DESCENDANT_VIEWPORT_BACKDROP_PATTERN);
+  assert.match(tour, TOUR_VIEWPORT_BACKDROP_PATTERN);
 });
