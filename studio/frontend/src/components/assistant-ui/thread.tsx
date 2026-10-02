@@ -154,7 +154,7 @@ import {
   attachLibraryChatFiles,
   useLibraryChatHandoffStore,
 } from "@/features/library/chat-handoff-store";
-import { isServedByLlamaCpp } from "@/features/model-picker";
+import { resumesThought } from "@/features/model-picker";
 import { cancelResearchRun } from "@/features/chat/api/research-api";
 import {
   ingestResearchUpdate,
@@ -7429,10 +7429,10 @@ function useContinuation() {
   const researchActive = useThreadResearchActive();
   const status = useAuiState(({ message }) => message.status);
   const metadata = useAuiState(({ message }) => message.metadata);
-  // Only llama-server can resume a thought.
   const thoughtResumable = useChatRuntimeStore((s) =>
-    isServedByLlamaCpp({
+    resumesThought({
       loadedIsGguf: s.loadedIsGguf,
+      loadedIsMlx: s.loadedIsMlx,
       activeGgufVariant: s.activeGgufVariant,
       activeNativePathToken: s.activeNativePathToken,
       checkpoint: s.params.checkpoint,
