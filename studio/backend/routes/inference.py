@@ -15329,21 +15329,13 @@ def _native_audio_cpu_load(config, request) -> bool:
     for everything else, so a chat model cannot send it to skip the VRAM guards
     that read this.
     """
-    from core.inference.audio_device import audio_device_forces_cpu
+    from core.inference.audio_device import audio_load_runs_on_cpu
     from core.inference.native_audio import NATIVE_AUDIO_TYPES
 
     audio_type = getattr(config, "audio_type", None)
-    if audio_type not in NATIVE_AUDIO_TYPES:
-        return False
-    if audio_device_forces_cpu(getattr(request, "audio_device", None)):
-        return True
-    from core.inference.audio_cpp_models import AUDIO_CPP_AUDIO_TYPES
-
-    if audio_type in AUDIO_CPP_AUDIO_TYPES:
-        # A CPU-only runtime launches there whatever Auto asked, so it needs no VRAM and evicts nothing.
-        from core.inference.audio_cpp_server import runtime_runs_on_cpu
-        return runtime_runs_on_cpu()
-    return False
+    return audio_type in NATIVE_AUDIO_TYPES and audio_load_runs_on_cpu(
+        audio_type, getattr(request, "audio_device", None)
+    )
 
 
 def _resident_audio_placement_matches(backend, request) -> bool:
@@ -15355,14 +15347,15 @@ def _resident_audio_placement_matches(backend, request) -> bool:
     from before this existed has no key and is read as GPU, which is what those
     loads did.
     """
-    from core.inference.audio_device import audio_device_forces_cpu
+    from core.inference.audio_device import audio_load_runs_on_cpu
     from core.inference.native_audio import NATIVE_AUDIO_TYPES
 
     resident = backend.models.get(backend.active_model_name, {})
-    if resident.get("audio_type") not in NATIVE_AUDIO_TYPES:
+    audio_type = resident.get("audio_type")
+    if audio_type not in NATIVE_AUDIO_TYPES:
         return True
-    return bool(resident.get("audio_cpu", False)) == audio_device_forces_cpu(
-        getattr(request, "audio_device", None)
+    return bool(resident.get("audio_cpu", False)) == audio_load_runs_on_cpu(
+        audio_type, getattr(request, "audio_device", None)
     )
 
 

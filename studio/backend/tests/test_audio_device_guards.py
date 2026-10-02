@@ -165,6 +165,22 @@ def test_a_model_loaded_before_this_existed_is_read_as_gpu():
     assert not ri._resident_audio_placement_matches(_backend(audio_cpu = None), _request("cpu"))
 
 
+def test_a_gguf_audio_model_on_a_cpu_only_runtime_is_resident_in_cpu_ram(monkeypatch):
+    """Auto on a CPU-only runtime lands in CPU RAM: the orchestrator must record that, and a repeat
+    Auto load must neither reload it nor take the GPU from a running Images/Video pipeline."""
+    import inspect
+
+    from core.inference import audio_cpp_server, orchestrator
+
+    monkeypatch.setattr(audio_cpp_server, "runtime_runs_on_cpu", lambda: True)
+    resident = _backend(audio_cpu = True, audio_type = "audiocpp_tts")
+    assert ri._resident_audio_placement_matches(resident, _request("auto"))
+    assert ri._resident_audio_holds_no_gpu(resident)
+    assert "audio_load_runs_on_cpu(_audio_type, audio_device)" in inspect.getsource(orchestrator)
+    monkeypatch.setattr(audio_cpp_server, "runtime_runs_on_cpu", lambda: False)
+    assert not ri._resident_audio_placement_matches(resident, _request("auto"))
+
+
 def test_a_non_audio_model_keeps_the_shortcut():
     assert ri._resident_audio_placement_matches(
         _backend(audio_cpu = None, audio_type = None), _request("cpu")

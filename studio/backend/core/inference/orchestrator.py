@@ -23,7 +23,7 @@ import uuid
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable, Generator, Mapping, Optional, Sequence, Tuple, Union
-from core.inference.audio_device import audio_device_forces_cpu
+from core.inference.audio_device import audio_device_forces_cpu, audio_load_runs_on_cpu
 from core.inference.context_refusal import ContextBudgetExceeded
 from core.inference.native_audio import NATIVE_AUDIO_TYPES, is_native_audio_model
 from core.inference.audio_errors import (
@@ -2241,9 +2241,11 @@ class InferenceOrchestrator:
                         # Lets the already-loaded shortcut tell a CPU request from the GPU
                         # model it would otherwise report as satisfied. Native audio only:
                         # marking anything else tells training a GPU model holds no VRAM.
-                        self.models[self.active_model_name]["audio_cpu"] = model_info.get(
-                            "audio_type"
-                        ) in NATIVE_AUDIO_TYPES and audio_device_forces_cpu(audio_device)
+                        _audio_type = model_info.get("audio_type")
+                        self.models[self.active_model_name]["audio_cpu"] = (
+                            _audio_type in NATIVE_AUDIO_TYPES
+                            and audio_load_runs_on_cpu(_audio_type, audio_device)
+                        )
                         self.models[self.active_model_name].update(
                             _mlx_runtime_mirror_fields(model_info)
                         )
