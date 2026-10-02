@@ -1758,6 +1758,8 @@ def _ensure_engine_installed(engine: str, yes: bool, silent: bool) -> None:
         if not typer.confirm(f"{question}?", default = False):
             raise RuntimeError(f"{engine} was not installed, so the model was not loaded.")
     elif not silent:
+        if notice:
+            typer.echo(notice)
         typer.echo(f"{question}: --yes given, installing.")
     engine_install.start_install(engine)
     last = None
@@ -1775,7 +1777,21 @@ def _ensure_engine_installed(engine: str, yes: bool, silent: bool) -> None:
 
 
 def _engine_install_notice(engine: str, row: dict) -> Optional[str]:
-    return None
+    """The Windows consent text Settings shows before the same install (managedEngines.wsl*)."""
+    if row.get("host") != "wsl":
+        return None
+    wsl = row.get("wsl") or {}
+    if wsl.get("state") == "restart_required":
+        return "Restart Windows to finish turning on WSL2, then run this command again."
+    if wsl.get("state") == "ready" and wsl.get("distro"):
+        return f"On Windows, {engine} runs inside Studio's private WSL2 environment."
+    return (
+        f"On Windows, {engine} runs inside WSL2 (Windows Subsystem for Linux). Studio will turn "
+        "on WSL2 and set up its own private Ubuntu environment for engines; your existing Linux "
+        "distributions are not touched. Windows will show one administrator (UAC) prompt, and "
+        "may ask you to restart before the installation can finish. Nothing changes unless you "
+        "answer yes."
+    )
 
 
 def _format_context_length_line(load_result: dict) -> Optional[str]:

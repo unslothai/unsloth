@@ -159,3 +159,30 @@ def test_unsupported_host_is_refused_before_installing(fake_install):
     with pytest.raises(RuntimeError, match = "NVIDIA"):
         studio_mod._ensure_engine_installed("vllm", yes = True, silent = True)
     assert fake.started == 0
+
+
+def test_windows_asks_before_turning_on_wsl(fake_install, monkeypatch):
+    fake = fake_install({**_MISSING, "host": "wsl", "wsl": {"state": "missing", "distro": None}})
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    shown = []
+    monkeypatch.setattr(typer, "echo", lambda text = "", **k: shown.append(text))
+    monkeypatch.setattr(typer, "confirm", lambda text, default = False: False)
+    with pytest.raises(RuntimeError):
+        studio_mod._ensure_engine_installed("vllm", yes = False, silent = True)
+    assert fake.started == 0
+    assert any("administrator (UAC) prompt" in line and "WSL2" in line for line in shown)
+
+
+@pytest.mark.parametrize(
+    ("wsl", "expected"),
+    [
+        ({"state": "restart_required"}, "Restart Windows"),
+        ({"state": "ready", "distro": "UnslothStudio"}, "private WSL2 environment"),
+    ],
+)
+def test_wsl_notice_follows_its_state(wsl, expected):
+    assert expected in studio_mod._engine_install_notice("vllm", {"host": "wsl", "wsl": wsl})
+
+
+def test_linux_has_no_wsl_notice():
+    assert studio_mod._engine_install_notice("vllm", {"host": "local"}) is None
