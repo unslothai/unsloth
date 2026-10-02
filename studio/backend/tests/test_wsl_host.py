@@ -340,6 +340,42 @@ def test_wsl_launch_command(wsl, monkeypatch):
     assert "/mnt/c/vllm_server.py" in command
 
 
+def test_a_logged_in_token_file_reaches_the_guest(wsl, monkeypatch, tmp_path):
+    monkeypatch.setattr(wsl_host, "guest_gpu_indices", lambda ids: [0])
+    monkeypatch.setattr(managed_engine, "gpu_memory_fraction", lambda *_: 0.5)
+    monkeypatch.setattr(wsl_host, "to_guest_path", lambda path: "/mnt/c/" + Path(path).name)
+    guest = Path(wsl_host.GUEST_ROOT) / "engines" / "vllm" / "env-abc" / "bin"
+    guest.mkdir(parents = True)
+    (guest / "python").write_text("", encoding = "utf-8")
+    (guest / "python").chmod(0o755)
+    (tmp_path / "token").write_text("hf_from_login\n", encoding = "utf-8")
+    engine = managed_engine.ManagedEngine("vllm")
+    engine.context = 2048
+    info = {"path": str(guest.parent), "host": "wsl"}
+    # `hf auth login` stores the token under the host HF_HOME, which the guest does not share.
+    command, env = engine._wsl_command(
+        info, {"HF_HOME": str(tmp_path)}, [0], None, False, "m", None, 8123
+    )
+    assert env["HF_TOKEN"] == "hf_from_login" and "HF_TOKEN/u" in env["WSLENV"]
+    assert "hf_from_login" not in " ".join(command)
+    # An explicit token wins, and an anonymous load sends none.
+    _, env = engine._wsl_command(
+        info, {"HF_HOME": str(tmp_path), "HF_TOKEN": "hf_explicit"}, [0], None, False, "m", None, 8123
+    )
+    assert env["HF_TOKEN"] == "hf_explicit"
+    _, env = engine._wsl_command(
+        info,
+        {"HF_HOME": str(tmp_path), "HF_HUB_DISABLE_IMPLICIT_TOKEN": "1"},
+        [0],
+        None,
+        False,
+        "m",
+        None,
+        8123,
+    )
+    assert "HF_TOKEN" not in env or env["HF_TOKEN"] != "hf_from_login"
+
+
 def test_offline_mode_reaches_the_guest(wsl, monkeypatch):
     monkeypatch.setattr(wsl_host, "guest_gpu_indices", lambda ids: [0])
     monkeypatch.setattr(managed_engine, "gpu_memory_fraction", lambda *_: 0.5)

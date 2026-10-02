@@ -247,6 +247,22 @@ STARTUP_STALL_S = 900
 STARTUP_LIMIT_S = 4 * 3600
 
 
+def _token_file_token(env) -> str | None:
+    """The `hf auth login` token a local engine would read from its inherited HF_HOME; the WSL
+    guest gets its own HF_HOME, so the token has to cross over. Anonymous loads keep none."""
+    if (env.get("HF_HUB_DISABLE_IMPLICIT_TOKEN") or "").upper() in ("1", "ON", "YES", "TRUE"):
+        return None
+    home = env.get("HF_HOME") or os.path.join(
+        env.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache"), "huggingface"
+    )
+    path = env.get("HF_TOKEN_PATH") or os.path.join(os.path.expandvars(os.path.expanduser(home)), "token")
+    try:
+        token = Path(os.path.expandvars(os.path.expanduser(path))).read_text(encoding = "utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return token or None
+
+
 class ManagedEngine:
     def __init__(self, engine: str):
         self.engine = engine
@@ -519,6 +535,10 @@ class ManagedEngine:
             for key in (*_HF_TOKEN_ENV_KEYS, "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY")
             if env.get(key)
         }
+        if not any(key in secrets for key in _HF_TOKEN_ENV_KEYS):
+            token = _token_file_token(env)
+            if token:
+                secrets["HF_TOKEN"] = token
         # The engine key goes through WSLENV like the tokens: guest_env lands on /usr/bin/env's argv.
         secrets.update(self.adapter.key_environment(self.key))
         return wsl_host.guest_command(
