@@ -203,7 +203,8 @@ def detect_custom_format_heuristic(dataset):
     meta_tokens = {"id", "ids", "idx", "type", "category", "label", "title", "tag"}
 
     def name_tokens(col_name):
-        return set(re.findall(r"[a-z]+", col_name.lower()))
+        separated_name = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", col_name)
+        return set(re.findall(r"[a-z]+", separated_name.lower()))
 
     def is_non_metadata_column(col_name):
         return not meta_tokens & name_tokens(col_name)

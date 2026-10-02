@@ -260,6 +260,10 @@ def test_identifier_column_is_not_the_user_turn(heuristic):
 _SYSTEM_METADATA_CASES = [
     {"question": _MID, "answer": _MID, "system_id": "s1"},
     {"question": _MID, "answer": _MID, "context_id": "c1"},
+    {"question": _MID, "answer": _MID, "systemId": "s1"},
+    {"question": _MID, "answer": _MID, "contextId": "c1"},
+    {"question": _MID, "answer": _MID, "systemID": "s1"},
+    {"question": _MID, "answer": _MID, "contextID": "c1"},
     {"question": _MID, "answer": _MID, "context_length": 4096},
 ]
 
