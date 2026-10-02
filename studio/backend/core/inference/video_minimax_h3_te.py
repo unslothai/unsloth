@@ -651,6 +651,7 @@ def stream_h3_text_encoder(
         _pin_vision_embedding_device,
         _remove_group_offload_hooks,
         install_group_offload_buffer_restore,
+        install_group_offload_hooks_eager,
     )
     from .diffusion_prequant import _evict_rotation_hook, _unhook_from_manager
 
@@ -683,6 +684,7 @@ def stream_h3_text_encoder(
         text_encoder.requires_grad_(False)
         # The int8 weights are buffers, which stock diffusers leaves on the device after offload.
         install_group_offload_buffer_restore()
+        install_group_offload_hooks_eager()
         apply_group_offloading(target, **kwargs)
         # Image prompts: Qwen3-VL's position interpolation reads the offloaded embedding's CPU device (transformers 5.5).
         _pin_vision_embedding_device(target)
