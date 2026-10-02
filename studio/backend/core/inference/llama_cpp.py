@@ -8543,6 +8543,17 @@ class LlamaCppBackend:
         effective = self._gpu_ids or None
         return requested == raw or requested == effective
 
+    def _adopt_widened_pin(self, pin_ids: List[int]) -> None:
+        """Record a companion-widened explicit pin as the effective one (#12467).
+
+        The effective pin is recorded before the mask widens. /status echoes it and
+        dedupe adopts a request carrying it, so the narrower pin would come back as
+        the stored intent and reload without the companion card. Only an already
+        recorded pin is replaced: a launch that recorded none (forced CPU) stays None.
+        """
+        if self._gpu_ids is not None:
+            self._gpu_ids = [int(i) for i in pin_ids]
+
     def _record_matching_gpu_request(self, gpu_ids: Optional[List[int]]) -> None:
         """Adopt the caller's explicit pool after a full already-loaded match.
 
@@ -29388,6 +29399,8 @@ class LlamaCppBackend:
                             _companion_fit_mask = list(_pin_ids)
                             if not _had_main_device and _extra_args_main_device(cmd) is not None:
                                 _companion_added_device = list(cmd[-2:])
+                            if gpu_ids:
+                                self._adopt_widened_pin(_pin_ids)
                     if _companion_widen:
                         logger.info(
                             "Companion device flags name GPUs by their unpinned "

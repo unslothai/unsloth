@@ -144,6 +144,33 @@ def test_load_model_uses_the_argv_and_skips_an_unmappable_mask():
     assert "allowed_ids = gpu_ids or None" in src[at : at + 300]
 
 
+def test_a_widened_explicit_pin_is_what_status_and_dedupe_see():
+    # #12467: gpu_ids [0, 1] fitted to [0] then widened for the projector. The effective
+    # pin was recorded before widening, so /status echoed [0]; a client re-sending that
+    # matched, became the stored intent, and the replayed load lost GPU 1 again.
+    import inspect
+
+    src = inspect.getsource(llama_cpp.LlamaCppBackend.load_model)
+    at = src.index("_widen_pin_ids_for_companion_devices(")
+    window = src[at : at + 900]
+    assert "if gpu_ids:" in window
+    assert "self._adopt_widened_pin(_pin_ids)" in window
+
+    backend = llama_cpp.LlamaCppBackend.__new__(llama_cpp.LlamaCppBackend)
+    backend._is_diffusion = False
+    backend._requested_gpu_ids, backend._gpu_ids = [0, 1], [0]
+    backend._adopt_widened_pin([0, 1])
+    assert backend._gpu_ids == [0, 1]
+    assert backend.matches_gpu_ids([0, 1]) is True
+    # Dropping the projector's card is a real placement change, so it reloads.
+    assert backend.matches_gpu_ids([0]) is False
+
+    # A launch that recorded no effective pin (forced CPU) keeps recording none.
+    backend._gpu_ids = None
+    backend._adopt_widened_pin([0, 1])
+    assert backend._gpu_ids is None
+
+
 def test_explicit_gpu_ids_never_widen_onto_an_unselected_card():
     cmd, pin, note = _widen([0], ["--mmproj-device", "CUDA1"], allowed_ids = [0])
     assert pin == [0]
