@@ -1333,20 +1333,13 @@ export const ko = {
           wide: "넓게",
           full: "전체 너비",
         },
-        composerAttachments: {
-          label: "입력창의 첨부 파일",
-          description:
-            "입력창을 키우는 큰 카드 또는 작은 타일 한 줄로 표시합니다.",
-          cards: "큰 카드",
-          compact: "작은 타일",
-        },
         sentAttachments: {
           label: "보낸 메시지의 첨부 파일",
           description:
-            "각 파일의 형식을 보여 주는 목록 또는 작은 칩으로 표시합니다. 자동은 파일이 6개를 넘으면 칩으로 바뀝니다.",
+            "표준은 각 파일을 형식과 함께 표시하고, 컴팩트는 한 줄에 더 많이 표시합니다. 자동은 파일이 6개를 넘으면 컴팩트로 바뀝니다.",
           auto: "자동",
-          list: "목록",
-          chips: "칩",
+          list: "표준",
+          chips: "컴팩트",
         },
         reset: "초기화",
         resetAll: "사용자 지정 초기화",
@@ -1803,9 +1796,6 @@ export const ko = {
         "붙여넣은 텍스트가 {count}자 이상이면 .txt 첨부 파일이 됩니다. 더 짧은 텍스트는 입력창에 남습니다.",
       pastedTextOffDescription:
         "길이와 관계없이 붙여넣은 모든 텍스트가 입력창에 남습니다.",
-      projectsSection: "프로젝트 섹션 표시",
-      projectsSectionDescription:
-        "프로젝트 채팅을 프로젝트 제목 아래에 모읍니다. 끄면 최근 항목에 표시됩니다.",
       title: "채팅",
       description: "이 기기에서 채팅이 작동하는 방식을 사용자 지정합니다.",
       modelSelection: {

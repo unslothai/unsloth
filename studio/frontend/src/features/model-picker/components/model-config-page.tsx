@@ -2744,7 +2744,9 @@ export function ModelConfigPage({
     platform.deviceType,
     platform.chatOnlyReason,
   );
-  const atBaseline = perModelConfigsEqual(config, baseline);
+  const atBaseline = perModelConfigsEqual(config, baseline, {
+    followGlobal: true,
+  });
   // The fitted value is an outcome, not an override. Auto stays at the default even
   // when a loaded model reports less than its native context. A non-GGUF pin is an
   // override too, read from whichever field it was saved in.
@@ -3239,7 +3241,9 @@ export function ModelConfigPage({
     // Recheck the committed draft so Save/Forget reloads when needed.
     const effectivePersistenceOnly =
       isActiveModel &&
-      perModelConfigsEqual(effectiveConfig, baseline) &&
+      perModelConfigsEqual(effectiveConfig, baseline, {
+        followGlobal: true,
+      }) &&
       rememberChanged;
     const { saved, defaultConfig } = persistConfig(effectiveRuntimeConfig);
     if (effectivePersistenceOnly) {

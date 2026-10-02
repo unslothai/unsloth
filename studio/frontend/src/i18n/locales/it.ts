@@ -1324,20 +1324,13 @@ export const it = {
           wide: "Ampia",
           full: "Larghezza piena",
         },
-        composerAttachments: {
-          label: "Allegati nel campo di testo",
-          description:
-            "Schede grandi che ingrandiscono il campo di testo, oppure una riga compatta di riquadri.",
-          cards: "Schede grandi",
-          compact: "Riquadri compatti",
-        },
         sentAttachments: {
           label: "Allegati nei messaggi inviati",
           description:
-            "Un elenco con il tipo di ogni file, oppure piccole etichette. Automatico passa alle etichette oltre i sei file.",
+            "Standard mostra ogni file con il suo tipo, Compatto ne mette di più su ogni riga. Automatico passa a compatto oltre i sei file.",
           auto: "Automatico",
-          list: "Elenco",
-          chips: "Etichette",
+          list: "Standard",
+          chips: "Compatto",
         },
         reset: "Ripristina",
         resetAll: "Ripristina la personalizzazione",
@@ -1807,9 +1800,6 @@ export const it = {
         "Il testo incollato di almeno {count} caratteri diventa un allegato .txt. Il testo più breve resta nel campo del messaggio.",
       pastedTextOffDescription:
         "Tutto il testo incollato resta nel campo del messaggio, indipendentemente dalla lunghezza.",
-      projectsSection: "Mostra la sezione Progetti",
-      projectsSectionDescription:
-        "Raggruppa le chat di progetto sotto un titolo Progetti. Disattivalo per elencarle in Recenti.",
       title: "Chat",
       description:
         "Personalizza il comportamento della chat su questo dispositivo.",

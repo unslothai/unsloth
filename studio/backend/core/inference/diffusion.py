@@ -121,13 +121,18 @@ from .diffusion_memory import (
     plan_diffusion_memory,
     plan_fits_total_capacity,
     plan_keeps_transformer_resident,
+    prequant_seed_device,
     raise_on_image_activation_shortfall,
     raise_on_unified_memory_shortfall,
     reclaimable_snapshot_device_memory,
     reclaim_host_memory,
     reclaim_offload_host_memory,
     release_pinned_host_memory,
+    refine_balanced_plan_for_components,
     refine_memory_plan_for_components,
+    refine_plan_from_loaded_weights,
+    release_resident_groups,
+    measured_request_extra_mib,
     settled_snapshot_device_memory,
     snapshot_device_memory,
     _torchao_stream_pinnable,
@@ -6160,6 +6165,10 @@ class DiffusionBackend:
                                         scheme = pipeline_seed_scheme,
                                         dtype = dtype,
                                         device = device,
+                                        # offloading plans seed it on the host: a GPU seed OOMed 8 GB cards
+                                        placement_device = prequant_seed_device(
+                                            plan, device, pipeline_seed_scheme
+                                        ),
                                         hf_token = hf_token,
                                         target = target,
                                         path_override = transformer_prequant_path,
@@ -6802,7 +6811,9 @@ class DiffusionBackend:
                     # Whole-module offload still onloads one complete component for its forward. Refine it from the
                     # loaded, possibly quantized weights so an oversized text encoder uses leaf streaming instead of
                     # failing during prompt encoding.
-                    refined_plan = refine_memory_plan_for_components(pipe, plan)
+                    refined_plan = refine_memory_plan_for_components(
+                        pipe, refine_balanced_plan_for_components(pipe, plan)
+                    )
                     if refined_plan.offload_policy != plan.offload_policy:
                         logger.info(
                             "diffusion.memory: refined policy %s -> %s (%s)",
@@ -6811,6 +6822,24 @@ class DiffusionBackend:
                             "; ".join(refined_plan.reasons),
                         )
                     plan = refined_plan
+                    # not under the legacy cpu_offload flag alone: that request asked for offload
+                    if not cpu_offload or normalize_memory_mode(memory_mode) is not None:
+                        plan = refine_plan_from_loaded_weights(
+                            pipe,
+                            plan,
+                            family = fam.name,
+                            speed_mode = effective_speed,
+                            logger = logger,
+                        )
+                        headroom = plan.estimates.get("measured_runtime_headroom_mib")
+                        if headroom and (
+                            plan.resident_transformer_mib or plan.resident_text_encoder_mib
+                        ):
+                            pipe._unsloth_measured_reserve = (
+                                int(headroom),
+                                fam.name,
+                                effective_speed,
+                            )
 
                     from .diffusion_qwenimage21_vision import configure_vision_attention
 
@@ -8573,6 +8602,7 @@ class DiffusionBackend:
             # Reset in the finally, so a failed or cancelled generation frees its reused outputs.
             static_skip_pipe = None
             restore_vae: Optional[Callable[[], None]] = None
+            restore_resident: Optional[Callable[[], None]] = None
             try:
                 self._state_device_target(state)
                 # The local `state` ref keeps the pipe alive even if unload() nulls _state. Resolve the per-image
@@ -8896,6 +8926,25 @@ class DiffusionBackend:
                     )
                     guard_batch = _activation_guard_batch(chunks)
                     guard_target = self._state_device_target(state)
+                    # past what the measured placement reserved: stream resident groups again for this call
+                    extra_mib = measured_request_extra_mib(
+                        state.pipe,
+                        width = guard_width,
+                        height = guard_height,
+                        batch_size = guard_batch,
+                        condition_pixels = (
+                            int(
+                                (1 + len(ref_extra))
+                                * ref_resolution
+                                * ref_resolution
+                                * getattr(fam, "condition_pixel_weight", 1.0)
+                            )
+                            if ref_resolution is not None
+                            else 0
+                        ),
+                    )
+                    if extra_mib > 0:
+                        restore_resident = release_resident_groups(state.pipe, extra_mib, logger)
                     guard_kwargs = dict(
                         # NOT the settled snapshot the load uses: that one calls empty_cache(), which is right once
                         # per load but wrong on a per-generation path, since it releases every cached block and the
@@ -9193,6 +9242,11 @@ class DiffusionBackend:
                     "text_encoder_quant": state.text_encoder_quant,
                     "memory_mode": state.memory_mode,
                     "offload_policy": state.offload_policy,
+                    # Read after the deferred speed / step-cache toggles, so this is what ran.
+                    "speed_mode": state.speed_mode,
+                    "attention_backend": state.attention_backend,
+                    "transformer_cache": state.transformer_cache,
+                    "cpu_offload": state.cpu_offload,
                     # Adapters baked in at LOAD time: disabling them at generate time is not the same build, so they
                     # belong to the build record.
                     "baked_loras": _baked_lora_names(state.pipe),
@@ -9223,6 +9277,11 @@ class DiffusionBackend:
                         logger.debug("diffusion.step_skip: reset failed: %s", exc)
                 if restore_vae is not None:
                     restore_vae()
+                if restore_resident is not None:
+                    try:
+                        restore_resident()
+                    except Exception as exc:  # noqa: BLE001 - the groups keep streaming
+                        logger.warning("diffusion.memory: re-residency failed: %s", exc)
                 with self._generation_cancel_lock:
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
