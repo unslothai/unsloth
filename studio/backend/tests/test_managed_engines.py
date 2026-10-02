@@ -213,6 +213,30 @@ def test_shared_engine_never_sees_studio_flashinfer(tmp_path):
     assert out.stdout.strip() == "None None ['studio_only']"
 
 
+def test_shared_engine_keeps_its_own_nvidia_tree_first(tmp_path):
+    # Colab's site has a regular nvidia package, which hid the engine's crt headers from
+    # FlashInfer's JIT ("'__cudaLaunch' was not declared").
+    import subprocess
+    import sys
+
+    studio, engine = tmp_path / "studio", tmp_path / "engine"
+    (studio / "nvidia" / "studio_only").mkdir(parents = True)
+    (studio / "nvidia" / "__init__.py").write_text("")
+    (studio / "nvidia" / "studio_only" / "__init__.py").write_text("")
+    (engine / "nvidia" / "engine_only").mkdir(parents = True)
+    (engine / "nvidia" / "engine_only" / "__init__.py").write_text("")
+    (engine / f"{install._BASE_MODULE}.py").write_text(
+        install._STUDIO_BASE_SOURCE.format(paths = [str(studio)])
+    )
+    probe = (
+        f"import sys; sys.path.insert(0, {str(engine)!r}); import {install._BASE_MODULE}; "
+        "import nvidia, nvidia.engine_only, nvidia.studio_only; print(list(nvidia.__path__))"
+    )
+    out = subprocess.run([sys.executable, "-I", "-S", "-c", probe], capture_output = True, text = True)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == str([str(engine / "nvidia"), str(studio / "nvidia")])
+
+
 def test_engine_cuda_home_is_the_locked_pip_nvcc(tmp_path, monkeypatch):
     import os
 
