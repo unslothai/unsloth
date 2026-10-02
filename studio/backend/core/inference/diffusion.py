@@ -226,6 +226,7 @@ from .diffusion_precision import (
     torchao_quantize_importable,
 )
 from .diffusion_te_prequant import te_prequant_pipe_kwargs
+from .diffusion_text_length import flux_t5_kwarg
 from .diffusion_denoiser_prequant import (
     DENOISER_COMPONENT,
     PIPELINE_SEED_DECLINED,
@@ -9092,6 +9093,11 @@ class DiffusionBackend:
                                 chunk_kwargs["negative_prompt"] = [
                                     chunk_kwargs["negative_prompt"]
                                 ] * len(chunk)
+                        # FLUX.1 T5 length as ComfyUI tokenises it: the prompt's real length, floored at 256, capped at
+                        # 512 (diffusers pads every prompt to 512). Per chunk, since a prompts list varies by chunk.
+                        t5_len = flux_t5_kwarg(state.family.name, pipe, call_params, chunk_kwargs)
+                        if t5_len is not None:
+                            chunk_kwargs["max_sequence_length"] = t5_len
                         # A step cache keys residuals on the cond/uncond context, which a graph key
                         # cannot see. Per chunk because an AUTO decision is re-taken per generation.
                         if state.cuda_graphs:

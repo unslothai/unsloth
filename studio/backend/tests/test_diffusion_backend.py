@@ -14176,3 +14176,42 @@ def test_candidate_overrides_price_the_encoder_the_load_opens(monkeypatch):
         ]
         == 0
     )
+
+
+# FLUX.1 T5 length (ComfyUI parity): real prompt length floored at 256, capped at 512.
+class _T5WordTokenizer:
+    """One id per whitespace word plus EOS, like T5TokenizerFast on plain words."""
+
+    def __call__(self, text, add_special_tokens = True, **_):
+        return {"input_ids": [5] * len(text.split()) + ([1] if add_special_tokens else [])}
+
+
+class _FluxFakePipe(_FakePipe):
+    def __init__(self):
+        super().__init__()
+        self.tokenizer_2 = _T5WordTokenizer()
+
+    def __call__(self, *, prompt = None, max_sequence_length = 512, **kwargs):
+        return super().__call__(prompt = prompt, max_sequence_length = max_sequence_length, **kwargs)
+
+
+def test_generate_passes_flux1_t5_length_like_comfy(fake_runtime, tmp_path, monkeypatch):
+    diffusers = sys.modules["diffusers"]
+    monkeypatch.setattr(diffusers, "FluxPipeline", _FakePipeline, raising = False)
+    monkeypatch.setattr(diffusers, "FluxTransformer2DModel", _FakeTransformer, raising = False)
+    _no_cache(monkeypatch)
+    backend = _loaded_backend(tmp_path, family_override = "flux.1")
+    pipe = _FluxFakePipe()
+    object.__setattr__(backend._state, "pipe", pipe)
+    backend.generate(prompt = "a sloth on a branch", steps = 4, guidance = 0.0)
+    assert pipe.last_kwargs["max_sequence_length"] == 256
+    backend.generate(prompt = " ".join(["w"] * 320), steps = 4, guidance = 0.0)
+    assert pipe.last_kwargs["max_sequence_length"] == 321
+
+
+def test_generate_leaves_t5_length_alone_off_flux1(fake_runtime, tmp_path):
+    backend = _loaded_backend(tmp_path, family_override = "z-image")
+    pipe = _FluxFakePipe()
+    object.__setattr__(backend._state, "pipe", pipe)
+    backend.generate(prompt = "a sloth", steps = 4, guidance = 0.0)
+    assert pipe.last_kwargs["max_sequence_length"] == 512  # pipeline default, nothing passed

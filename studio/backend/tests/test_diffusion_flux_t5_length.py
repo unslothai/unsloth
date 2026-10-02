@@ -1,0 +1,65 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""FLUX.1 T5 sequence length follows ComfyUI: the prompt's real T5 length (EOS included), floored
+at 256 and capped at the pipeline's 512, instead of diffusers' fixed 512."""
+
+from __future__ import annotations
+
+import types
+
+import pytest
+
+from core.inference.diffusion_text_length import (
+    flux_t5_kwarg,
+    flux_t5_sequence_length,
+)
+
+
+class _WordTokenizer:
+    """One id per whitespace word plus EOS, like T5TokenizerFast on plain words."""
+
+    def __call__(self, text, add_special_tokens = True, **_):
+        ids = [5] * len(text.split())
+        return {"input_ids": ids + ([1] if add_special_tokens else [])}
+
+
+def _words(n):
+    return " ".join(["w"] * n)
+
+
+@pytest.mark.parametrize(
+    "words, expected",
+    [(3, 256), (255, 256), (256, 257), (300, 301), (511, 512), (700, 512)],
+)
+def test_length_is_floored_at_256_and_capped_at_512(words, expected):
+    assert flux_t5_sequence_length(_WordTokenizer(), [_words(words)]) == expected
+
+
+def test_longest_prompt_of_a_list_sets_the_length():
+    assert flux_t5_sequence_length(_WordTokenizer(), [["a", _words(400)]]) == 401
+
+
+def test_no_tokenizer_keeps_the_pipeline_default():
+    assert flux_t5_sequence_length(None, ["a"]) is None
+
+
+def test_only_flux1_families_and_only_when_accepted():
+    pipe = types.SimpleNamespace(tokenizer_2 = _WordTokenizer())
+    params = {"max_sequence_length": None}
+    assert flux_t5_kwarg("flux.1", pipe, params, {"prompt": "a"}) == 256
+    assert flux_t5_kwarg("flux.1-kontext", pipe, params, {"prompt": "a"}) == 256
+    assert flux_t5_kwarg("flux.2-klein", pipe, params, {"prompt": "a"}) is None
+    assert flux_t5_kwarg("flux.1", pipe, {}, {"prompt": "a"}) is None
+    # An explicit value is never overridden.
+    assert flux_t5_kwarg("flux.1", pipe, params, {"prompt": "a", "max_sequence_length": 77}) is None
+
+
+def test_negative_counts_only_under_true_cfg():
+    pipe = types.SimpleNamespace(tokenizer_2 = _WordTokenizer())
+    params = {"max_sequence_length": None}
+    kw = {"prompt": "a", "negative_prompt": _words(300)}
+    assert flux_t5_kwarg("flux.1", pipe, params, kw) == 256
+    assert flux_t5_kwarg("flux.1", pipe, params, {**kw, "true_cfg_scale": 4.0}) == 301
+    # prompt_2 is what FLUX.1 feeds T5 when given.
+    assert flux_t5_kwarg("flux.1", pipe, params, {"prompt": "a", "prompt_2": _words(280)}) == 281
