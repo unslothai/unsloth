@@ -2969,6 +2969,9 @@ export function AppSidebar() {
   function handleInlineRenameKeyDown(
     event: React.KeyboardEvent<HTMLInputElement>,
   ) {
+    // Enter confirms an IME candidate; Escape dismisses one. Neither should
+    // finish the rename. Check before preventDefault so the IME keeps its key.
+    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
     if (event.key === "Enter") {
       event.preventDefault();
       skipRenameBlurRef.current = true;
@@ -5975,7 +5978,13 @@ export function AppSidebar() {
         if (!open) setRenamingTarget(null);
       }}
     >
-      <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-md">
+      <DialogContent
+        className="corner-squircle dialog-soft-surface sm:max-w-md"
+        // Radix closes on Escape before the input sees it; keep IME candidate dismissal from closing.
+        onEscapeKeyDown={(event) => {
+          if (event.isComposing || event.keyCode === 229) event.preventDefault();
+        }}
+      >
         <DialogHeader>
           <DialogTitle>
             {renamingTarget?.kind === "run"
@@ -5987,6 +5996,7 @@ export function AppSidebar() {
           value={renameDraft}
           onChange={(event) => setRenameDraft(event.target.value)}
           onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing || event.keyCode === 229) return;
             if (event.key === "Enter") {
               event.preventDefault();
               void commitRename();
