@@ -52,6 +52,36 @@ _RL_LOG_PREFIXES = (
 )
 
 
+def install_fsdp_import_stub() -> bool:
+    """TRL's GRPOTrainer imports FSDP at module level, which needs ``torch._C._distributed_c10d``.
+    AMD's Windows ROCm torch wheels ship without it, so GRPO cannot even import there. Single-GPU
+    GRPO never wraps the model in FSDP, so a stand-in class is enough. Call before importing unsloth."""
+    import sys
+    import types
+
+    try:
+        import torch.distributed.fsdp  # noqa: F401
+
+        return False
+    except Exception:
+        for name in [n for n in sys.modules if n.startswith("torch.distributed.fsdp")]:
+            sys.modules.pop(name, None)
+
+    class FullyShardedDataParallel:  # never instantiated without a process group
+        pass
+
+    stub = types.ModuleType("torch.distributed.fsdp")
+    stub.FullyShardedDataParallel = FullyShardedDataParallel
+    sys.modules["torch.distributed.fsdp"] = stub
+    try:
+        import torch.distributed as dist
+
+        dist.fsdp = stub
+    except Exception:
+        pass
+    return True
+
+
 def rl_log_metrics(logs: dict) -> Optional[dict]:
     """GRPO/DPO/ORPO log keys (reward, rewards/<fn>/mean, kl, rewards/margins, ...) that the fixed
     progress fields have no slot for."""

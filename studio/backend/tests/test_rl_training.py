@@ -9,7 +9,7 @@ import pytest
 from datasets import Dataset
 from pydantic import ValidationError
 
-from core.training.rl import build_rl_trainer, format_rl_dataset, resolve_role_columns, rl_lengths, rl_log_metrics
+from core.training.rl import build_rl_trainer, install_fsdp_import_stub, format_rl_dataset, resolve_role_columns, rl_lengths, rl_log_metrics
 from models.training import TrainingStartRequest
 
 BASE = {"model_name": "unsloth/Qwen3-4B-Base", "training_type": "LoRA/QLoRA", "format_type": "auto"}
@@ -136,3 +136,24 @@ def test_grpo_variant_reaches_the_trl_config(monkeypatch, variant, loss_type, le
 def test_request_refuses_unknown_grpo_variant():
     with pytest.raises(ValidationError):
         TrainingStartRequest(**{**BASE, "objective": "grpo", "grpo_rewards": [{"name": "x"}], "grpo_variant": "ppo"})
+
+
+def test_fsdp_stub_only_when_the_real_module_cannot_import(monkeypatch):
+    import builtins
+
+    real_import = builtins.__import__
+
+    def no_fsdp(name, *args, **kwargs):
+        if name.startswith("torch.distributed.fsdp"):
+            raise ModuleNotFoundError("No module named 'torch._C._distributed_c10d'")
+        return real_import(name, *args, **kwargs)
+
+    for name in [n for n in sys.modules if n.startswith("torch.distributed.fsdp")]:
+        monkeypatch.delitem(sys.modules, name)
+    monkeypatch.setattr(builtins, "__import__", no_fsdp)
+    assert install_fsdp_import_stub() is True
+    monkeypatch.setattr(builtins, "__import__", real_import)
+    from torch.distributed.fsdp import FullyShardedDataParallel
+
+    assert FullyShardedDataParallel.__module__ == "core.training.rl"
+    assert install_fsdp_import_stub() is False

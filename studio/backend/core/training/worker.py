@@ -3812,6 +3812,12 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         except Exception:
             pass
 
+    if config.get("objective") == "grpo":
+        from core.training.rl import install_fsdp_import_stub
+
+        if install_fsdp_import_stub():
+            logger.info("torch has no distributed backend; stubbed torch.distributed.fsdp so TRL's GRPOTrainer imports")
+
     # Windows ROCm runtime patches. torch._grouped_mm has a null HIP kernel on gfx1200 (ROCm <= 7.12 Windows), causing
     # 0xC0000005 during training. JitDecomp (not torch.compile) dispatches _grouped_mm to the null crash and
     # TORCHDYNAMO_DISABLE doesn't cover it, so also override the CUDA dispatch key with a Python fallback. Fixed in
