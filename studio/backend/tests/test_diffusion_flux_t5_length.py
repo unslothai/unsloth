@@ -63,3 +63,13 @@ def test_negative_counts_only_under_true_cfg():
     assert flux_t5_kwarg("flux.1", pipe, params, {**kw, "true_cfg_scale": 4.0}) == 301
     # prompt_2 is what FLUX.1 feeds T5 when given.
     assert flux_t5_kwarg("flux.1", pipe, params, {"prompt": "a", "prompt_2": _words(280)}) == 281
+
+
+def test_ideogram4_comfy_guidance_switches_where_sigma_falls_to_0_3():
+    from core.inference.diffusion_text_length import ideogram4_comfy_guidance_schedule, ideogram4_sigmas
+
+    sigmas = ideogram4_sigmas(20, 1024, 1024, 0.0, 1.75)
+    assert sigmas == sorted(sigmas, reverse = True) and sigmas[0] > 0.999  # clamped at logSNR -15
+    schedule = ideogram4_comfy_guidance_schedule(20, 1024, 1024)
+    assert schedule == [7.0] * 17 + [3.0] * 3
+    assert sigmas[16] > 0.3 >= sigmas[17]

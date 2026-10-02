@@ -18,12 +18,52 @@ prompt in the call (EOS included), floored at 256 and capped at the pipeline's 5
 
 from __future__ import annotations
 
+import math
 from typing import Any, Iterable, Optional
 
-# ComfyUI's Ideogram 4 scheduler defaults (its official template): logit-normal mean and spread before the resolution
-# term, which both implementations add the same way.
-IDEOGRAM4_COMFY_MU = 0.5
+# ComfyUI's Ideogram 4 template ("Default" preset): 20 steps, logit-normal mean 0.0 and spread 1.75 before the
+# resolution term (both implementations add it the same way), and guidance 7 overridden to 3 over the last 30% of
+# sampling (CFG override, start 0.7 / end 1.0). Ideogram 4 samples a plain flow model (shift 1), so that range is
+# sigma <= 0.3.
+IDEOGRAM4_COMFY_STEPS = 20
+IDEOGRAM4_COMFY_MU = 0.0
 IDEOGRAM4_COMFY_STD = 1.75
+IDEOGRAM4_COMFY_GUIDANCE = 7.0
+IDEOGRAM4_COMFY_TAIL_GUIDANCE = 3.0
+IDEOGRAM4_COMFY_TAIL_SIGMA = 0.3
+_IDEOGRAM4_LOGSNR_MIN = -15.0
+_IDEOGRAM4_LOGSNR_MAX = 18.0
+
+
+def ideogram4_sigmas(steps: int, width: int, height: int, mu: float, std: float) -> list[float]:
+    """The ``steps`` sigmas the Ideogram 4 logit-normal schedule visits (terminal 0 excluded), highest first."""
+    from statistics import NormalDist
+
+    mean = float(mu) + 0.5 * math.log((int(width) * int(height)) / (512 * 512))
+    t_min = 1.0 / (1.0 + math.exp(0.5 * _IDEOGRAM4_LOGSNR_MAX))
+    t_max = 1.0 / (1.0 + math.exp(0.5 * _IDEOGRAM4_LOGSNR_MIN))
+    out = []
+    for i in range(int(steps)):
+        u = 1.0 - i / int(steps)  # the schedule is built on linspace(0, 1) and flipped
+        if u >= 1.0:
+            t = 0.0
+        else:
+            y = mean + float(std) * NormalDist().inv_cdf(u)
+            t = 1.0 - 1.0 / (1.0 + math.exp(-y))
+        out.append(1.0 - min(max(t, t_min), t_max))
+    return out
+
+
+def ideogram4_comfy_guidance_schedule(steps: int, width: int, height: int) -> list[float]:
+    """Per-step guidance ComfyUI's template applies: 7, then 3 on every step whose sigma is <= 0.3."""
+    return [
+        IDEOGRAM4_COMFY_TAIL_GUIDANCE
+        if sigma <= IDEOGRAM4_COMFY_TAIL_SIGMA
+        else IDEOGRAM4_COMFY_GUIDANCE
+        for sigma in ideogram4_sigmas(
+            steps, width, height, IDEOGRAM4_COMFY_MU, IDEOGRAM4_COMFY_STD
+        )
+    ]
 
 # FLUX.1 families on a FluxPipeline-style ``max_sequence_length`` whose ComfyUI tokenizer is the FLUX T5 one.
 FLUX_T5_FAMILIES = frozenset({"flux.1", "flux.1-kontext"})

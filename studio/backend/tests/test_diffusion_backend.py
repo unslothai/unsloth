@@ -14248,20 +14248,28 @@ class _IdeogramScheduleFakePipe(_FakePipe):
         )
 
 
-def test_generate_ideogram_constant_guidance_uses_comfy_schedule(fake_runtime, tmp_path):
-    """Constant guidance runs ComfyUI's Ideogram 4 schedule (mu 0.5, std 1.75); the 48 / 7 card taper
-    keeps the pipeline's own."""
+def test_generate_ideogram_defaults_follow_comfy_template(fake_runtime, tmp_path):
+    """ComfyUI's Ideogram 4 template: 20 steps, mu 0.0 / std 1.75, guidance 7 overridden to 3 where sigma <= 0.3
+    (the last 3 of 20 steps at 1024^2). Another guidance stays constant; an explicit 48 / 7 keeps the card taper."""
     backend = DiffusionBackend()
     _load_ideogram(backend, tmp_path)
     pipe = _IdeogramScheduleFakePipe()
     object.__setattr__(backend._state, "pipe", pipe)
-    backend.generate(prompt = "a sloth", steps = 20, guidance = 7.0)
+    backend.generate(prompt = "a sloth", width = 1024, height = 1024, steps = 20, guidance = 7.0)
     call = pipe.last_kwargs
-    assert call["guidance_scale"] == 7.0 and call["guidance_schedule"] is None
-    assert (call["mu"], call["std"]) == (0.5, 1.75)
+    assert call["guidance_scale"] is None
+    assert call["guidance_schedule"] == [7.0] * 17 + [3.0] * 3
+    assert (call["mu"], call["std"]) == (0.0, 1.75)
+    backend.generate(prompt = "a sloth", width = 512, height = 512, steps = 20, guidance = 7.0)
+    assert pipe.last_kwargs["guidance_schedule"] == [7.0] * 14 + [3.0] * 6
+    backend.generate(prompt = "a sloth", width = 1024, height = 1024, steps = 20, guidance = 5.0)
+    call = pipe.last_kwargs
+    assert call["guidance_scale"] == 5.0 and call["guidance_schedule"] is None
+    assert (call["mu"], call["std"]) == (0.0, 1.75)
     backend.generate(prompt = "a sloth", steps = 48, guidance = 7.0)
     call = pipe.last_kwargs
     assert call["guidance_schedule"] == "card" and (call["mu"], call["std"]) == (0.0, 1.5)
+
 
 
 class _ShiftSchedulerConfig(dict):

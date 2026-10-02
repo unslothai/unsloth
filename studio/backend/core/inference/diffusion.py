@@ -228,8 +228,10 @@ from .diffusion_precision import (
 from .diffusion_te_prequant import te_prequant_pipe_kwargs
 from .diffusion_flow_shift import apply_comfy_flow_shift
 from .diffusion_text_length import (
+    IDEOGRAM4_COMFY_GUIDANCE,
     IDEOGRAM4_COMFY_MU,
     IDEOGRAM4_COMFY_STD,
+    ideogram4_comfy_guidance_schedule,
     flux_t5_kwarg,
     true_cfg_needs_empty_negative,
 )
@@ -8873,13 +8875,20 @@ class DiffusionBackend:
                     if steps == 48 and abs(float(guidance) - 7.0) < 1e-6:
                         kwargs.pop(state.family.cfg_kwarg, None)
                     else:
-                        kwargs["guidance_schedule"] = None
-                        # Constant guidance runs ComfyUI's Ideogram 4 schedule (mu 0.5, std 1.75); the card taper
-                        # above keeps the pipeline's own (mu 0, std 1.5).
+                        # Otherwise ComfyUI's template: its "Default" schedule (mu 0.0, std 1.75; the card taper above
+                        # keeps the pipeline's mu 0 / std 1.5) and, at the default guidance 7, its CFG override to 3
+                        # over the last 30% of sampling, as a per-step schedule. Any other guidance stays constant.
                         if "mu" in call_params:
                             kwargs["mu"] = IDEOGRAM4_COMFY_MU
                         if "std" in call_params:
                             kwargs["std"] = IDEOGRAM4_COMFY_STD
+                        if abs(float(guidance) - IDEOGRAM4_COMFY_GUIDANCE) < 1e-6:
+                            kwargs.pop(state.family.cfg_kwarg, None)
+                            kwargs["guidance_schedule"] = ideogram4_comfy_guidance_schedule(
+                                steps, width, height
+                            )
+                        else:
+                            kwargs["guidance_schedule"] = None
                 if state.family.name == LUMINA2_FAMILY_NAME and "cfg_trunc_ratio" in call_params:
                     # Lumina 2's card recipe truncates the CFG double-forward to the first quarter
                     # (cfg_trunc_ratio=0.25); the 1.0 default oversaturates.
