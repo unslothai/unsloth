@@ -537,6 +537,81 @@ def test_a_server_that_never_answers_is_reported(tmp_path):
     assert not server.is_alive()
 
 
+def _held_port():
+    """A port another process could have taken between _find_free_port and lemond's bind."""
+    import socket
+
+    holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    holder.bind(("127.0.0.1", 0))
+    holder.listen(1)
+    return holder, holder.getsockname()[1]
+
+
+def _server(tmp_path, binary):
+    return LemonadeServer(
+        binary,
+        cache_dir = tmp_path / "cache",
+        config_dir = tmp_path / "config",
+        flm_model_dir = tmp_path / "flm",
+    )
+
+
+def test_a_port_taken_before_lemond_binds_it_is_retried_on_a_new_one(tmp_path, monkeypatch):
+    """The release-then-bind window lost a CI start to another xdist worker (#12493's run)."""
+    holder, taken = _held_port()
+    original = LemonadeServer._find_free_port
+    handed = []
+
+    def _find_free_port():
+        port = taken if not handed else original()
+        handed.append(port)
+        return port
+
+    monkeypatch.setattr(LemonadeServer, "_find_free_port", staticmethod(_find_free_port))
+    server = _server(tmp_path, _binary(tmp_path))
+    try:
+        server.start(timeout = 30)
+        assert server.is_alive()
+        assert handed[0] == taken and server.port == handed[-1] != taken
+        assert len(handed) == 2
+    finally:
+        holder.close()
+        server.close()
+
+
+def test_a_port_that_stays_taken_gives_up_after_the_attempts(tmp_path, monkeypatch):
+    holder, taken = _held_port()
+    handed = []
+    monkeypatch.setattr(
+        LemonadeServer,
+        "_find_free_port",
+        staticmethod(lambda: handed.append(taken) or taken),
+    )
+    server = _server(tmp_path, _binary(tmp_path))
+    try:
+        with pytest.raises(LemonadeUnavailable, match = "Address already in use"):
+            server.start(timeout = 30)
+        assert len(handed) == 3
+        assert not server.is_alive()
+    finally:
+        holder.close()
+        server.close()
+
+
+def test_an_exit_that_is_not_a_port_collision_is_not_retried(tmp_path):
+    spawns = tmp_path / "spawns"
+    binary = tmp_path / "lemond"
+    binary.write_text(
+        f"#!/bin/sh\necho x >> '{spawns}'\necho 'bind failed'\nexit 3\n", encoding = "utf-8"
+    )
+    binary.chmod(0o755)
+    server = _server(tmp_path, binary)
+    with pytest.raises(LemonadeUnavailable, match = "bind failed"):
+        server.start(timeout = 10)
+    assert spawns.read_text(encoding = "utf-8").count("x") == 1
+    server.close()
+
+
 def test_stop_interrupts_a_start_that_never_becomes_ready(tmp_path):
     import threading
 
