@@ -511,9 +511,30 @@ def test_eager_offload_hooks_install_is_idempotent():
     assert [cls.__dict__[name] for cls, name in hooks] == patched
 
 
-def test_eager_offload_hooks_kill_switch(monkeypatch):
+def test_eager_offload_hooks_kill_switch(monkeypatch, traced_offload_hooks):
+    go = pytest.importorskip("diffusers.hooks.group_offloading")
     monkeypatch.setenv(dm.EAGER_OFFLOAD_HOOKS_ENV, "0")
     assert dm.install_group_offload_hooks_eager() is False
+    assert not getattr(go.GroupOffloadingHook.__dict__["pre_forward"], "_unsloth_eager", False)
+
+
+def test_failed_release_keeps_the_copy_stream_wait(monkeypatch):
+    groups = [
+        types.SimpleNamespace(
+            stream = object(), _unsloth_resident = True, _unsloth_resident_bytes = 1 << 20
+        )
+        for _ in range(2)
+    ]
+    module = types.SimpleNamespace(_unsloth_resident_room = 1, _unsloth_stream_state = {"streamed": 0})
+    monkeypatch.setattr(dm, "_offload_groups", lambda m: groups)
+
+    def boom(group):
+        raise RuntimeError("offload callback failed")
+
+    monkeypatch.setattr(dm, "_release_group", boom)
+    pipe = types.SimpleNamespace(components = {"transformer": module})
+    assert dm.release_resident_groups(pipe, 4) is None
+    assert module._unsloth_stream_state["streamed"] >= 1
 
 
 @pytest.mark.skipif(

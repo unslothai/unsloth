@@ -2281,6 +2281,10 @@ def release_resident_groups(
                     break
                 if not getattr(group, "_unsloth_resident", False):
                     continue
+                # Before demoting: a release that fails part way must still wait on the copy stream.
+                state = getattr(module, "_unsloth_stream_state", None)
+                if isinstance(state, dict):
+                    state["streamed"] = 1
                 _release_group(group)
                 left -= int(getattr(group, "_unsloth_resident_bytes", 0))
                 if module not in released:
@@ -2914,6 +2918,7 @@ def install_group_offload_hooks_eager() -> bool:
                 continue
             eager = disable(fn)
             eager._unsloth_eager = True
+            eager._unsloth_orig = fn
             setattr(cls, name, eager)
             patched = True
     return patched
