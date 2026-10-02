@@ -31,6 +31,7 @@ import {
 } from "@/features/chat";
 import {
   chatModelLoaded,
+  DROP_CUE_CLASS,
   isExternalModelId,
   modelCatalogVersion,
   parseExternalModelId,
@@ -5765,7 +5766,8 @@ export function HubModelPicker({
       <div
         key={key}
         {...drag.rowProps(key)}
-        className={cn("relative", edge && PINNED_DROP_CUE[edge])}
+        // DROP_CUE_CLASS: the drag redraws the line above the carried copy.
+        className={cn("relative", edge && [DROP_CUE_CLASS, PINNED_DROP_CUE[edge]])}
         style={drag.draggingKey === key ? { opacity: 0.4 } : undefined}
       >
         {row}
