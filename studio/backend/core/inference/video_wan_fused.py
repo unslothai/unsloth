@@ -131,19 +131,7 @@ def _kernels() -> Optional[dict]:
 
     @triton.jit
     def _gate_residual(
-        X,
-        A,
-        T,
-        TBL,
-        OUT,
-        D,
-        L,
-        stb,
-        stl,
-        stk,
-        sbk,
-        K_GATE: tl.constexpr,
-        BLOCK: tl.constexpr,
+        X, A, T, TBL, OUT, D, L, stb, stl, stk, sbk, K_GATE: tl.constexpr, BLOCK: tl.constexpr
     ):
         # out = fp16(x.float() + a.float() * (tbl[gate] + temb[gate]))
         row = tl.program_id(0)
@@ -153,7 +141,9 @@ def _kernels() -> Optional[dict]:
         l = row - b * L
         x = tl.load(X + row * D + col, mask = mask, other = 0.0).to(tl.float32)
         a = tl.load(A + row * D + col, mask = mask, other = 0.0).to(tl.float32)
-        t_g = tl.load(T + b * stb + l * stl + K_GATE * stk + col, mask = mask, other = 0.0).to(tl.float32)
+        t_g = tl.load(T + b * stb + l * stl + K_GATE * stk + col, mask = mask, other = 0.0).to(
+            tl.float32
+        )
         g_g = tl.load(TBL + K_GATE * sbk + col, mask = mask, other = 0.0).to(tl.float32)
         gate = g_g + t_g
         y = _mul_rn(a, gate)
@@ -161,16 +151,7 @@ def _kernels() -> Optional[dict]:
         tl.store(OUT + row * D + col, y.to(OUT.dtype.element_ty), mask = mask)
 
     @triton.jit
-    def _affine_norm(
-        X,
-        MEAN,
-        RSTD,
-        W,
-        BIAS,
-        OUT,
-        D,
-        BLOCK: tl.constexpr,
-    ):
+    def _affine_norm(X, MEAN, RSTD, W, BIAS, OUT, D, BLOCK: tl.constexpr):
         # out = fp16(fma(w, rstd * (x - mean), b)): PyTorch's vectorised kernel writes ``gamma * (...) + beta``, which
         # nvcc contracts to one fma; checked bit for bit by the self-check.
         row = tl.program_id(0)
@@ -186,16 +167,7 @@ def _kernels() -> Optional[dict]:
 
     @triton.jit
     def _rope(
-        X,
-        COS,
-        SIN,
-        OUT,
-        L,
-        scl,
-        ssl,
-        PAIRS: tl.constexpr,
-        HALF: tl.constexpr,
-        BLOCK: tl.constexpr,
+        X, COS, SIN, OUT, L, scl, ssl, PAIRS: tl.constexpr, HALF: tl.constexpr, BLOCK: tl.constexpr
     ):
         # WanAttnProcessor's rotary on one (batch, position) row of a contiguous [B, L, H, D] fp16 q / k:
         #   out[0::2] = x1 * cos[0::2] - x2 * sin[1::2];  out[1::2] = x1 * sin[1::2] + x2 * cos[0::2]
@@ -350,7 +322,6 @@ def _plain_fp32_norm(norm: Any) -> bool:
 
 def _affine_fp32_norm(norm: Any, dim: int) -> bool:
     import torch
-
     w, b = getattr(norm, "weight", None), getattr(norm, "bias", None)
     return (
         type(norm).__name__ == "FP32LayerNorm"
@@ -371,7 +342,9 @@ def _eligible(block: Any, x: Any, enc: Any, temb: Any) -> bool:
 
     if not torch.is_tensor(x) or x.dtype is not torch.float16 or not x.is_cuda or x.dim() != 3:
         return False
-    if torch.is_grad_enabled() and (x.requires_grad or any(p.requires_grad for p in block.parameters(recurse = False))):
+    if torch.is_grad_enabled() and (
+        x.requires_grad or any(p.requires_grad for p in block.parameters(recurse = False))
+    ):
         return False
     if torch.compiler.is_compiling():
         return False
@@ -380,7 +353,11 @@ def _eligible(block: Any, x: Any, enc: Any, temb: Any) -> bool:
         return False
     table = getattr(block, "scale_shift_table", None)
     # float32 as diffusers keeps it (_keep_in_fp32_modules); an fp16 table upcasts exactly in both paths
-    if not torch.is_tensor(table) or table.dtype not in (torch.float32, torch.float16) or tuple(table.shape) != (1, 6, D):
+    if (
+        not torch.is_tensor(table)
+        or table.dtype not in (torch.float32, torch.float16)
+        or tuple(table.shape) != (1, 6, D)
+    ):
         return False
     if table.device != x.device or table.stride(-1) != 1:
         return False
@@ -406,7 +383,6 @@ def _eligible(block: Any, x: Any, enc: Any, temb: Any) -> bool:
 
 def _rope_ok(x: Any, freqs: Any) -> bool:
     import torch
-
     B, L, H, D = x.shape
     return (
         torch.is_tensor(freqs)
@@ -430,12 +406,21 @@ def _self_attention(attn: Any, hidden_states: Any, rotary_emb: Any) -> Any:
     proc = getattr(attn, "processor", None)
     if stock_call is None or type(proc).__call__ is not stock_call:
         return None
-    if getattr(attn, "add_k_proj", None) is not None or not isinstance(rotary_emb, (tuple, list)) or len(rotary_emb) != 2:
+    if (
+        getattr(attn, "add_k_proj", None) is not None
+        or not isinstance(rotary_emb, (tuple, list))
+        or len(rotary_emb) != 2
+    ):
         return None
     cos, sin = rotary_emb
     L = hidden_states.shape[1]
     for f in (cos, sin):
-        if not torch.is_tensor(f) or f.dtype is not torch.float32 or f.dim() != 4 or f.shape[1] != L:
+        if (
+            not torch.is_tensor(f)
+            or f.dtype is not torch.float32
+            or f.dim() != 4
+            or f.shape[1] != L
+        ):
             return None
     mod = _STATE.get("module")
     query, key, value = mod._get_qkv_projections(attn, hidden_states, None)
@@ -474,7 +459,9 @@ def _self_attention(attn: Any, hidden_states: Any, rotary_emb: Any) -> Any:
     return out
 
 
-def _fused_forward(block: Any, hidden_states: Any, encoder_hidden_states: Any, temb: Any, rotary_emb: Any) -> Any:
+def _fused_forward(
+    block: Any, hidden_states: Any, encoder_hidden_states: Any, temb: Any, rotary_emb: Any
+) -> Any:
     """The stock block, step for step, with the float32 elementwise chains replaced by the kernels above."""
     import torch
 
@@ -518,7 +505,6 @@ class _Fallback(Exception):
 def _verify(block: Any, args: tuple, stock: Callable) -> bool:
     """Run the fused and stock block once on the same inputs; trust the fused path only on a bit-for-bit match."""
     import torch
-
     try:
         with torch.no_grad():
             ref = stock(block, *args)
@@ -547,7 +533,9 @@ def _make_forward(stock: Callable) -> Callable:
             if logger is not None:
                 try:
                     if ok:
-                        logger.info("video.wan_fused: fused fp16 modulation matched the stock block bit for bit")
+                        logger.info(
+                            "video.wan_fused: fused fp16 modulation matched the stock block bit for bit"
+                        )
                     else:
                         logger.warning(
                             "video.wan_fused: fused fp16 modulation did not match the stock block; keeping stock"
@@ -586,7 +574,11 @@ def _stock_supported(cls: Any) -> bool:
     return _digest(cls.forward) in _FINGERPRINTS
 
 
-def install(dtype: Any, device: Any = "cuda", logger: Any = None) -> bool:
+def install(
+    dtype: Any,
+    device: Any = "cuda",
+    logger: Any = None,
+) -> bool:
     """Point ``WanTransformerBlock.forward`` at the fused version for an fp16 load. Idempotent; False (and nothing
     patched) when not wanted, disabled, or the installed diffusers block is not the one this was built for. Must run
     before group-offload hooks are attached: they capture the block's bound forward at registration."""
@@ -610,7 +602,9 @@ def install(dtype: Any, device: Any = "cuda", logger: Any = None) -> bool:
         if not _stock_supported(cls):
             if logger is not None:
                 try:
-                    logger.info("video.wan_fused: diffusers' WanTransformerBlock changed; keeping the stock forward")
+                    logger.info(
+                        "video.wan_fused: diffusers' WanTransformerBlock changed; keeping the stock forward"
+                    )
                 except Exception:  # noqa: BLE001
                     pass
             return False
@@ -620,7 +614,11 @@ def install(dtype: Any, device: Any = "cuda", logger: Any = None) -> bool:
         _STATE["module"] = mod
         # the rotary rides along only while WanAttnProcessor.__call__ is the version reproduced in _self_attention
         proc_cls = getattr(mod, "WanAttnProcessor", None)
-        if proc_cls is not None and _attn_supported(proc_cls) and hasattr(mod, "_get_qkv_projections"):
+        if (
+            proc_cls is not None
+            and _attn_supported(proc_cls)
+            and hasattr(mod, "_get_qkv_projections")
+        ):
             _STATE["attn_call"] = proc_cls.__call__
         _STATE["logger"] = logger
         _VERIFIED.clear()
@@ -628,13 +626,20 @@ def install(dtype: Any, device: Any = "cuda", logger: Any = None) -> bool:
         cls.forward = _make_forward(stock)
     if logger is not None:
         try:
-            logger.info("video.wan_fused: fused fp16 norm / modulation / gated-residual kernels installed")
+            logger.info(
+                "video.wan_fused: fused fp16 norm / modulation / gated-residual kernels installed"
+            )
         except Exception:  # noqa: BLE001
             pass
     return True
 
 
-def install_for_pipe(pipe: Any, dtype: Any, device: Any = "cuda", logger: Any = None) -> bool:
+def install_for_pipe(
+    pipe: Any,
+    dtype: Any,
+    device: Any = "cuda",
+    logger: Any = None,
+) -> bool:
     """Per-load entry: install for an fp16 Wan denoiser, otherwise make sure the stock forward is back."""
     dits = [getattr(pipe, name, None) for name in ("transformer", "transformer_2")]
     if not any(d is not None and type(d).__module__ == _MODULE for d in dits):

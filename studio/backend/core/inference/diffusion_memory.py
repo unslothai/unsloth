@@ -3575,7 +3575,9 @@ def _skip_top_level_copy_back(module: Any, logger: Any = None) -> bool:
         return True
     except Exception as exc:  # noqa: BLE001 - diffusers keeps its own path
         if logger is not None:
-            logger.debug("diffusion.memory: top-level group copy-back left as diffusers built it (%s)", exc)
+            logger.debug(
+                "diffusion.memory: top-level group copy-back left as diffusers built it (%s)", exc
+            )
         return False
 
 

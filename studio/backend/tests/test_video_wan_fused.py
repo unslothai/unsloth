@@ -34,7 +34,6 @@ def _clean(monkeypatch):
 
 def test_stock_block_matches_the_fingerprint():
     from core.inference.diffusion_qwenimage21_rope import _digest
-
     assert _digest(WanTransformerBlock.forward) in wf._FINGERPRINTS
 
 
@@ -113,9 +112,18 @@ def test_cpu_tensors_take_the_stock_path(monkeypatch):
     assert wf.counts()["fused"] == 0 and wf.counts()["stock"] == 1
 
 
-def _block(dim, ffn, heads, device, dtype, cross_attn_norm = True):
+def _block(
+    dim,
+    ffn,
+    heads,
+    device,
+    dtype,
+    cross_attn_norm = True,
+):
     torch.manual_seed(0)
-    blk = WanTransformerBlock(dim, ffn, heads, "rms_norm_across_heads", cross_attn_norm = cross_attn_norm, eps = 1e-6)
+    blk = WanTransformerBlock(
+        dim, ffn, heads, "rms_norm_across_heads", cross_attn_norm = cross_attn_norm, eps = 1e-6
+    )
     blk = blk.to(device = device, dtype = dtype).eval()
     # diffusers keeps these in float32 (WanTransformer3DModel._keep_in_fp32_modules)
     blk.scale_shift_table.data = blk.scale_shift_table.data.float()
@@ -127,7 +135,15 @@ def _block(dim, ffn, heads, device, dtype, cross_attn_norm = True):
     return blk
 
 
-def _inputs(blk, B, L, D, device, dtype, per_token = True):
+def _inputs(
+    blk,
+    B,
+    L,
+    D,
+    device,
+    dtype,
+    per_token = True,
+):
     g = torch.Generator(device = "cpu").manual_seed(1)
     x = (torch.randn(B, L, D, generator = g) * 8).to(device = device, dtype = dtype)
     enc = torch.randn(B, 16, D, generator = g).to(device = device, dtype = dtype)
@@ -144,7 +160,9 @@ def _inputs(blk, B, L, D, device, dtype, per_token = True):
 @pytest.mark.parametrize("batch", [1, 2])
 def test_fused_block_is_bit_identical_to_stock_on_gpu(per_token, cross_attn_norm, batch):
     D = 256
-    blk = _block(dim = D, ffn = 512, heads = 4, device = "cuda", dtype = torch.float16, cross_attn_norm = cross_attn_norm)
+    blk = _block(
+        dim = D, ffn = 512, heads = 4, device = "cuda", dtype = torch.float16, cross_attn_norm = cross_attn_norm
+    )
     x, enc, temb, rot = _inputs(blk, batch, 300, D, "cuda", torch.float16, per_token = per_token)
     x[0, :3, :5] = 300.0  # rows far from zero mean, where a different reduction order would show
     with torch.no_grad():
@@ -260,14 +278,17 @@ def test_grad_and_non_fp16_inputs_take_the_stock_path():
 
 def _video_src() -> ast.AST:
     from core.inference import video
-
     return ast.parse(inspect.getsource(video))
 
 
 def test_loader_installs_before_the_step_cache_and_offload_hooks():
     from core.inference import video
 
-    src = inspect.getsource(video.VideoBackend.load_pipeline) if hasattr(video, "VideoBackend") else None
+    src = (
+        inspect.getsource(video.VideoBackend.load_pipeline)
+        if hasattr(video, "VideoBackend")
+        else None
+    )
     if src is None:
         cls = next(
             c for c in vars(video).values() if inspect.isclass(c) and hasattr(c, "load_pipeline")
@@ -278,14 +299,17 @@ def test_loader_installs_before_the_step_cache_and_offload_hooks():
     assert install < src.index("apply_memory_plan(")
     # held off on speed_mode=off, like every other optimisation layer
     head = src[src.rindex("if effective_speed != SPEED_OFF:", 0, install) : install]
-    assert "video_wan_fused" in src[: install] and head
+    assert "video_wan_fused" in src[:install] and head
     assert '"wan_fused_adaln"' in src
 
 
 def test_teardown_and_rollback_restore_the_stock_forward():
     from core.inference import video
-
-    cls = next(c for c in vars(video).values() if inspect.isclass(c) and hasattr(c, "_teardown_state_locked"))
+    cls = next(
+        c
+        for c in vars(video).values()
+        if inspect.isclass(c) and hasattr(c, "_teardown_state_locked")
+    )
     for name in ("_teardown_state_locked", "_rollback_precommit_globals"):
         body = ast.unparse(ast.parse(inspect.getsource(getattr(cls, name)).lstrip()))
         assert "video_wan_fused.uninstall()" in body, name
@@ -323,7 +347,11 @@ def test_self_attention_rotary_is_bit_identical_and_scoped(monkeypatch):
         # an fp16 table rounds each product to fp16 in the stock path: not this kernel's arithmetic
         assert wf._self_attention(blk.attn1, x, (rot[0].half(), rot[1].half())) is None
         # a replaced processor (another attention backend's) is left alone
-        blk.attn1.processor = type("OtherProcessor", (transformer_wan.WanAttnProcessor,), {"__call__": lambda *a, **k: None})()
+        blk.attn1.processor = type(
+            "OtherProcessor",
+            (transformer_wan.WanAttnProcessor,),
+            {"__call__": lambda *a, **k: None},
+        )()
         assert wf._self_attention(blk.attn1, x, rot) is None
     monkeypatch.setenv(wf.WAN_FUSED_ROPE_ENV, "0")
     assert wf._self_attention(blk.attn1, x, rot) is None
@@ -338,5 +366,4 @@ def test_changed_attention_processor_keeps_the_stock_rotary(monkeypatch):
 
 def test_attention_processor_matches_the_fingerprint():
     from core.inference.diffusion_qwenimage21_rope import _digest
-
     assert _digest(transformer_wan.WanAttnProcessor.__call__) in wf._ATTN_FINGERPRINTS
