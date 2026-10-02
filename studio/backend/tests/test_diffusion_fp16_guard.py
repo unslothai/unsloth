@@ -29,9 +29,6 @@ def _video(name):
     return next(f for f in _VIDEO_FAMILIES if f.name == name)
 
 
-# capability flag resolution
-
-
 def test_every_declared_recipe_is_known():
     for fam in (*_FAMILIES, *_VIDEO_FAMILIES):
         recipe = getattr(fam, "fp16_guard", None)
@@ -91,7 +88,37 @@ def test_bf16_and_fp32_never_change():
             assert _resolve_diffusion_compute_dtype(fam, dt) is dt
 
 
-# the rescale on a tiny Z-Image-shaped block
+def test_non_fp16_resolution_never_probes_diffusers(monkeypatch):
+    def probe(fam, recipe):
+        raise AssertionError("bf16 / fp32 must not import diffusers")
+
+    monkeypatch.setattr(guard, "_recipe_supported", probe)
+    z = detect_family("Tongyi-MAI/Z-Image-Turbo")
+    assert _resolve_diffusion_compute_dtype(z, torch.bfloat16) is torch.bfloat16
+    assert _resolve_diffusion_compute_dtype(z, torch.float32) is torch.float32
+
+
+def test_probe_closes_dynamo_import_window_before_diffusers(monkeypatch):
+    import importlib
+
+    from utils import torch_warmup
+
+    monkeypatch.undo()
+    monkeypatch.setattr(guard, "_SUPPORTED", {})
+    order = []
+    monkeypatch.setattr(
+        torch_warmup, "close_dynamo_import_window", lambda log: order.append("close")
+    )
+    real = importlib.import_module
+
+    def tracking(name, *a, **k):
+        if name == "diffusers":
+            order.append("diffusers")
+        return real(name, *a, **k)
+
+    monkeypatch.setattr(importlib, "import_module", tracking)
+    guard._recipe_supported(detect_family("Tongyi-MAI/Z-Image-Turbo"), "rescale_post_norm")
+    assert order[:2] == ["close", "diffusers"], order
 
 
 class _RMS(nn.Module):
@@ -287,17 +314,32 @@ def test_real_diffusers_zimage_source_matches_recipe(monkeypatch):
     )
 
 
+class _LoRALinear(nn.Module):
+    """base + B @ A; peft's own injection imports torchao symbols some versions lack."""
+
+    def __init__(self, base):
+        super().__init__()
+        self.base = base
+        self.lora_A = nn.Linear(base.in_features, 4, bias = False)
+        self.lora_B = nn.Linear(4, base.out_features, bias = False)
+
+    def forward(self, x):
+        return self.base(x) + self.lora_B(self.lora_A(x))
+
+
 @needs_fp16
 def test_guard_holds_through_a_lora_injected_after_install():
     """LoRA wrappers replace the Linear children after the guard is installed; the rescale lives on the parents, so the
     adapted branch is scaled as a whole."""
-    peft = pytest.importorskip("peft")
     targets = ["w1", "w2", "w3", "to_q", "to_k", "to_v", "to_out.0"]
 
     def adapted(model):
-        cfg = peft.LoraConfig(r = 4, lora_alpha = 4, target_modules = targets, init_lora_weights = False)
         torch.manual_seed(1)
-        return peft.inject_adapter_in_model(cfg, model)
+        for name, module in list(model.named_modules()):
+            if isinstance(module, nn.Linear) and any(name.endswith(t) for t in targets):
+                parent, _, child = name.rpartition(".")
+                setattr(model.get_submodule(parent), child, _LoRALinear(module))
+        return model
 
     x = torch.randn(2, 16, 64)
     with torch.no_grad():
@@ -306,6 +348,10 @@ def test_guard_holds_through_a_lora_injected_after_install():
         half = _overflowing_model().half()
         assert guard.install_fp16_guard(half, "rescale_post_norm", torch.float16) == 2
         half = adapted(half.float()).half()
+        assert isinstance(
+            half.get_submodule(next(n for n, m in half.named_modules() if n.endswith("w3"))),
+            _LoRALinear,
+        )
         fixed = half(x.half())
     assert torch.isfinite(fixed).all()
     err = (fixed.float() - ref).abs().max() / ref.abs().max()

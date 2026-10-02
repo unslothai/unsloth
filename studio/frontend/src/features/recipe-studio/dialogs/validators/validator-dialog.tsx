@@ -63,10 +63,20 @@ export function ValidatorDialog({
   const advancedOpen = config.advancedOpen === true;
   const selectedOxcMode = normalizeOxcValidationMode(config.oxc_validation_mode);
   const selectedOxcCodeShape = normalizeOxcCodeShape(config.oxc_code_shape);
-  const codeOptions = useMemo(
+  const targetOptions = useMemo(
     () =>
       Object.values(configs)
         .flatMap((item) => {
+          if (config.validator_type === "json" || config.validator_type === "markdown") {
+            if (
+              item.kind === "llm" ||
+              item.kind === "expression" ||
+              item.kind === "sampler"
+            ) {
+              return [{ name: item.name, codeLang: config.code_lang }];
+            }
+            return [];
+          }
           if (!(item.kind === "llm" && item.llm_type === "code")) {
             return [];
           }
@@ -95,7 +105,7 @@ export function ValidatorDialog({
         })
         .filter((item) => item.name.trim())
         .sort((a, b) => a.name.localeCompare(b.name)),
-    [configs],
+    [config.code_lang, config.validator_type, configs],
   );
   const currentTarget = config.target_columns[0] ?? "";
 
@@ -109,9 +119,17 @@ export function ValidatorDialog({
       />
       <div className="grid gap-1.5">
         <FieldLabel
-          label="Code to check"
+          label={config.validator_type === "json" || config.validator_type === "markdown"
+            ? "Field to check"
+            : "Code to check"}
           htmlFor={targetColumnId}
-          hint="Choose the AI code step this check should review."
+          hint={
+            config.validator_type === "json"
+              ? "Choose the column that should contain valid JSON."
+              : config.validator_type === "markdown"
+                ? "Choose the column that should contain valid markdown."
+                : "Choose the AI code step this check should review."
+          }
         />
         <Select
           value={currentTarget || NONE_VALUE}
@@ -123,7 +141,7 @@ export function ValidatorDialog({
               });
               return;
             }
-            const targetConfig = codeOptions.find((item) => item.name === value);
+            const targetConfig = targetOptions.find((item) => item.name === value);
             const nextCodeLang = targetConfig?.codeLang?.trim();
             onUpdate({
               // biome-ignore lint/style/useNamingConvention: api schema
@@ -141,16 +159,20 @@ export function ValidatorDialog({
           </SelectTrigger>
           <SelectContent>
             <SelectItem value={NONE_VALUE}>None</SelectItem>
-            {codeOptions.map((item) => (
+            {targetOptions.map((item) => (
               <SelectItem key={item.name} value={item.name}>
                 {item.name}
               </SelectItem>
             ))}
           </SelectContent>
         </Select>
-        {codeOptions.length === 0 && (
+        {targetOptions.length === 0 && (
               <p className="text-xs text-muted-foreground">
-                {config.validator_type === "oxc"
+                {config.validator_type === "json"
+                  ? "Add a generation step that outputs JSON first."
+                  : config.validator_type === "markdown"
+                    ? "Add a generation step that outputs markdown first."
+                    : config.validator_type === "oxc"
                   ? "Add an AI code step that generates JavaScript or TypeScript first."
                   : "Add an AI code step first."}
               </p>

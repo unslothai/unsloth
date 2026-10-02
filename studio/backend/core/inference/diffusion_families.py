@@ -120,8 +120,7 @@ class DiffusionFamily:
     # True for families whose activations overflow float16 (-> black image); the backend promotes a resolved float16
     # to float32.
     fp16_incompatible: bool = False
-    # For an fp16_incompatible family: the diffusion_fp16_guard recipe that keeps it finite in float16 (accuracy-gated
-    # against float32), so an fp16-only card (T4) runs float16 instead of the promotion. None = promote.
+    # diffusion_fp16_guard recipe keeping an fp16_incompatible family in float16 on fp16-only cards; None = promote.
     fp16_guard: Optional[str] = None
     # false only for a family whose denoiser block does not compile cleanly with regional torch.compile
     supports_torch_compile: bool = True
@@ -338,6 +337,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             "qwenimageedit",
         ),
         edit = True,
+        # same DiT as qwen-image
+        fp16_incompatible = True,
     ),
     DiffusionFamily(
         name = "qwen-image",
@@ -362,6 +363,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-FP8"),),
         cfg_kwarg = "true_cfg_scale",
         aliases = ("qwen_image", "qwenimage"),
+        # fp16 overflows to NaN latents (black images)
+        fp16_incompatible = True,
         trainable = True,
         train_base_repos = ("unsloth/Qwen-Image-2512-unsloth-bnb-4bit", "Qwen/Qwen-Image"),
         img2img_pipeline_class = "QwenImageImg2ImgPipeline",
@@ -512,8 +515,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         img2img_pipeline_class = "ZImageImg2ImgPipeline",
         inpaint_pipeline_class = "ZImageInpaintPipeline",
         fp16_incompatible = True,
-        # The attention / FFN branches overflow float16 before their post-norm (FFN output 1.1e6 at 1024 px); the
-        # rescale keeps them at <= 8.7e3, LPIPS vs float32 at the level of float32 vs bf16.
+        # The attention / FFN branches overflow float16 before their post-norm.
         fp16_guard = "rescale_post_norm",
         # Byte-identical mirror of Comfy-Org/z_image_turbo (AE + Qwen3-4B).
         sd_cpp_vae = ("unsloth/Z-Image-Turbo-ComfyUI", "split_files/vae/ae.safetensors"),

@@ -359,7 +359,7 @@ export const CONTINUATION_RUN_CONFIG_KEY = "unslothContinuation";
 export type ContinuationRequest = {
   /** The partial answer exactly as rendered; empty when stopped mid-thought. */
   partial: string;
-  /** Carried only to llama-server. */
+  /** Carried only to a backend that resumes a thought. */
   reasoning?: string;
   /** Seconds, so the resumed turn keeps its timer. */
   reasoningDuration?: number;

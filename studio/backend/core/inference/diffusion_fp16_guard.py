@@ -3,26 +3,11 @@
 
 """Keep bf16-native DiTs in float16 on fp16-only cards (T4 / sm75) instead of promoting them to float32.
 
-Some families overflow float16 in a few places only, and every one measured so far is a branch whose output feeds a
-scale-invariant RMSNorm before the gated residual add (``x + gate * norm2(branch(norm1(x)))``). Z-Image-Turbo at
-1024 px, measured against float32 activations: the FFN gate product ``silu(w1 x) * w3 x`` reaches 2.9e5 and the FFN
-output 1.1e6, the attention output 1.4e5 (float16 max 65504); the residual stream itself stays under 7.3e3 and the
-Qwen3 text encoder under 1.7e4.
-
-``rescale_post_norm`` divides each such branch by a power of two before the overflow point and divides the norm's eps by
-its square, so ``rms_norm(y / s, eps / s**2) == rms_norm(y, eps)``: the same function, no clamp of real values.
-
-* attention: the block input is scaled (a pre-hook on the attention module). q / k pass through the per-head RMSNorm
-  (eps scaled too), v and the bias-free output projection are linear, so the output arrives already divided.
-* FFN: the ``w3`` half of the gate is scaled before the product (``silu`` is applied to ``w1`` only), so the product and
-  ``w2`` stay in range.
-
-Both act on the parent modules and call through ``to_q`` / ``w1`` / ... at run time, so a LoRA wrapper, a fused QKV
-or a quantized Linear installed later still sees the same reparameterisation (all of them are linear and bias-free
-here). A final ``nan_to_num`` to the float16 range is a backstop only.
-
-Installed only on a float16 denoiser of a family that names a recipe in ``fp16_guard``; bf16 / fp32 loads are not
-touched. Kill switch: ``UNSLOTH_STUDIO_FP16_GUARD=0`` restores the float32 promotion.
+``rescale_post_norm``: a branch that overflows float16 but feeds an RMSNorm is divided by a power of two s before the
+overflow point and that norm's eps by s**2, since ``rms_norm(y / s, eps / s**2) == rms_norm(y, eps)`` (no clamping).
+Attention scales its input (q / k RMSNorm eps scaled too; v and the bias-free out projection are linear); the FFN scales
+the ``w3`` half of the gate. Hooks sit on the parents and call ``to_q`` / ``w1`` / ... at run time, so a later LoRA or
+quantized Linear sees the same rescale. Kill switch: ``UNSLOTH_STUDIO_FP16_GUARD=0`` restores the float32 promotion.
 """
 
 from __future__ import annotations
@@ -34,9 +19,7 @@ FP16_GUARD_ENV = "UNSLOTH_STUDIO_FP16_GUARD"
 _MARK = "_unsloth_fp16_guard"
 _FP16_MAX = 65504.0
 
-# recipe -> (attention scale, ffn scale), powers of two so the rescale itself is exact in float16; None = the family
-# was measured finite in plain float16 and needs no patch.
-# rescale_post_norm on Z-Image-Turbo (1024 px): the largest guarded activation is 8.7e3, a 7.5x margin.
+# recipe -> (attention, ffn) scale, powers of two (exact in float16); None = finite in plain float16, no patch.
 RECIPES: dict[str, Optional[tuple[float, float]]] = {
     "native": None,
     "rescale_post_norm": (16.0, 128.0),
@@ -48,15 +31,13 @@ def fp16_guard_disabled() -> bool:
 
 
 def family_fp16_guard(fam: Any) -> Optional[str]:
-    """The family's fp16 recipe name when it is known and enabled, else None."""
     if fam is None or fp16_guard_disabled():
         return None
     recipe = getattr(fam, "fp16_guard", None)
     return recipe if isinstance(recipe, str) and recipe in RECIPES else None
 
 
-# Source tokens the patching recipes rely on, checked in the denoiser's diffusers module BEFORE the dtype is chosen: a
-# diffusers release that restructures the block keeps the float32 promotion instead of rendering black in float16.
+# Checked before the dtype is chosen: a diffusers release that restructures the block keeps the float32 promotion.
 _RECIPE_TOKENS: dict[str, tuple[str, ...]] = {
     "rescale_post_norm": (
         "self.attention_norm2(",
@@ -79,6 +60,13 @@ def _recipe_supported(fam: Any, recipe: str) -> bool:
         return False
     key = (cls_name, recipe)
     if key not in _SUPPORTED:
+        # Runs from dtype resolution, ahead of load_pipeline's own guard: `import diffusers` imports torch._dynamo.
+        try:
+            from loggers import get_logger
+            from utils.torch_warmup import close_dynamo_import_window
+            close_dynamo_import_window(get_logger(__name__))
+        except Exception:  # noqa: BLE001, S110 - optimisation only
+            pass
         try:
             import importlib
             import inspect
