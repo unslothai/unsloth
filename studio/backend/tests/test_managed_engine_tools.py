@@ -567,7 +567,11 @@ def test_managed_messages_keep_the_current_date_note(native, monkeypatch, tools)
         return plain(messages, tools)
 
     backend._responder = responder
-    run(route_test._request(enable_tools = False, **({"tools": [route_test.LOOKUP_TOOL]} if tools else {})))
+    run(
+        route_test._request(
+            enable_tools = False, **({"tools": [route_test.LOOKUP_TOOL]} if tools else {})
+        )
+    )
     messages = requests[-1]["messages"] if tools else seen[-1]
     user = [m for m in messages if m["role"] == "user"][-1]
     assert "[DATE NOTE]" in json.dumps(user["content"])
