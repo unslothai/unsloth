@@ -80,6 +80,7 @@ studio = [
     "backend/core/data_recipe/oxc-validator/*.json",
     "backend/core/data_recipe/oxc-validator/*.mjs",
     "backend/core/inference/bundled_skills/**/*.md",
+    "backend/core/training/bundled_rewards/**/*.md",
 ]
 
 [tool.setuptools.packages.find]

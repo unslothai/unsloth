@@ -113,6 +113,15 @@ def _resolve_inventory_handle(value: str) -> str:
     return resolve_inventory_handle(value)
 
 
+class RewardSelection(BaseModel):
+    """One library reward enabled for a GRPO run, with its weight in the summed reward."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    name: str = Field(..., min_length = 1, max_length = 64)
+    weight: float = Field(1.0, ge = -10, le = 10, allow_inf_nan = False)
+
+
 class TrainingStartRequest(BaseModel):
     """Request schema for starting training"""
 
@@ -576,6 +585,29 @@ class TrainingStartRequest(BaseModel):
     use_dora: bool = Field(False, description = "Use DoRA")
     train_on_completions: bool = Field(False, description = "Train on completions only")
 
+    objective: Literal["sft", "dpo", "orpo", "grpo"] = Field(
+        "sft",
+        description = "Training objective: supervised fine-tuning, or DPO / ORPO / GRPO.",
+    )
+    rl_beta: Optional[float] = Field(
+        None,
+        ge = 0,
+        le = 10,
+        allow_inf_nan = False,
+        description = "DPO/ORPO beta, or the GRPO KL coefficient. Null uses the objective's default.",
+    )
+    rl_max_prompt_length: Optional[int] = Field(
+        None, ge = 16, description = "Prompt token budget for DPO/ORPO/GRPO. Null derives it from max_seq_length."
+    )
+    grpo_num_generations: int = Field(4, ge = 2, le = 16, description = "Completions sampled per prompt")
+    grpo_max_completion_length: Optional[int] = Field(
+        None, ge = 16, description = "Completion token budget. Null uses what the prompt leaves."
+    )
+    grpo_temperature: float = Field(1.0, gt = 0, le = 2.0, allow_inf_nan = False)
+    grpo_rewards: List[RewardSelection] = Field(
+        default_factory = list, max_length = 16, description = "Library rewards for GRPO"
+    )
+
     finetune_vision_layers: bool = Field(False, description = "Finetune vision layers")
     finetune_language_layers: bool = Field(True, description = "Finetune language layers")
     finetune_attention_modules: bool = Field(True, description = "Finetune attention modules")
@@ -637,6 +669,23 @@ class TrainingStartRequest(BaseModel):
                         f"dataset_streaming requires a plain split name in {field_name} "
                         f"(got {split_val!r}); use a name such as 'train' or 'validation'."
                     )
+        return self
+
+    @model_validator(mode = "after")
+    def _validate_objective(self) -> "TrainingStartRequest":
+        objective = getattr(self, "objective", "sft")
+        if objective == "sft":
+            return self
+        if getattr(self, "training_type", None) == "Continued Pretraining":
+            raise ValueError(f"{objective.upper()} cannot be combined with Continued Pretraining.")
+        if self.is_dataset_image or self.is_dataset_audio or self.is_embedding:
+            raise ValueError(f"{objective.upper()} supports text datasets only for now.")
+        if self.dataset_streaming:
+            raise ValueError(f"{objective.upper()} does not support dataset streaming yet.")
+        if objective == "grpo" and not self.grpo_rewards:
+            raise ValueError("GRPO needs at least one reward.")
+        if objective == "grpo" and len({r.name for r in self.grpo_rewards}) != len(self.grpo_rewards):
+            raise ValueError("Each GRPO reward can only be selected once.")
         return self
 
     @model_validator(mode = "after")
@@ -758,6 +807,9 @@ class TrainingProgress(BaseModel):
     num_tokens: Optional[int] = Field(None, description = "Total number of tokens processed so far")
     eval_loss: Optional[float] = Field(
         None, description = "Eval loss from the most recent evaluation step"
+    )
+    rl_metrics: Optional[Dict[str, float]] = Field(
+        None, description = "DPO/ORPO/GRPO metrics from the latest log, keyed as TRL logs them"
     )
 
 

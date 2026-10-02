@@ -4258,6 +4258,12 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 dataset_slice_start = config.get("dataset_slice_start"),
                 dataset_slice_end = config.get("dataset_slice_end"),
                 is_cpt = is_cpt_for_dataset,
+                objective = config.get("objective", "sft"),
+                rl_keep_columns = tuple(
+                    spec["rule"].get("compare_to")
+                    for spec in config.get("reward_specs") or []
+                    if spec.get("rule", {}).get("compare_to")
+                ),
                 s3_config = config.get("s3_config"),
                 dataset_local_files_only = dataset_local_only,
                 dataset_local_path = config.get("dataset_snapshot_path"),
@@ -4731,6 +4737,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             optim = config.get("optim", "adamw_8bit"),
             lr_scheduler_type = config.get("lr_scheduler_type", "linear"),
             is_cpt = is_cpt,
+            objective = config.get("objective", "sft"),
+            rl_settings = config.get("rl_settings") or {},
+            reward_specs = config.get("reward_specs") or [],
             resume_from_checkpoint = resume_from_checkpoint,
         )
 
@@ -4945,6 +4954,7 @@ def _create_trainer_progress_callback(event_queue: Any) -> Callable[[TrainingPro
                     "grad_norm": progress.grad_norm,
                     "num_tokens": progress.num_tokens,
                     "eval_loss": progress.eval_loss,
+                    "rl_metrics": progress.rl_metrics,
                     "status_message": progress.status_message,
                     "ts": time.time(),
                 }
