@@ -867,6 +867,12 @@ def _compile_repeated_blocks(
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "compile_repeated_blocks", exc)
         return False
+    # A block whose attention runs inside sdpa_kernel would otherwise bypass AOTAutogradCache on every start.
+    try:
+        from . import diffusion_aot_cache
+        diffusion_aot_cache.install(logger)
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, "sdpa aot cache", exc)
     if unet is not None:
         # Whole-module static compile for the U-Net classes above. fullgraph mirrors the regional decision; dynamic is
         # ALWAYS False, so each new (height, width, batch) pays its own compile. ``Module.compile`` keeps the module
