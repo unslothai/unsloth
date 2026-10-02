@@ -272,6 +272,23 @@ def _short_model(model: str) -> str:
     return short if len(short) <= 25 else f"{short[:23]}…"
 
 
+def _legend_labels(models: list[str]) -> dict[str, str]:
+    """Short legend text per full model string, kept distinct: two quants of one
+    model share a truncated prefix, so colliding names show their tail instead."""
+    labels = {m: _short_model(m) for m in models}
+    taken = [labels[m] for m in models]
+    for m in models:
+        if taken.count(labels[m]) > 1:
+            base = m.split("/")[-1]
+            labels[m] = base if len(base) <= 25 else f"…{base[-23:]}"
+    seen: dict[str, int] = {}
+    for m in models:
+        seen[labels[m]] = seen.get(labels[m], 0) + 1
+        if seen[labels[m]] > 1:
+            labels[m] = f"{labels[m]} ({seen[labels[m]]})"
+    return labels
+
+
 def _grouped_bar_chart_inner(
     runs: list[dict[str, Any]], metric_name: str, width: float, height: float, theme: str
 ) -> tuple[Any, Any]:
@@ -282,12 +299,13 @@ def _grouped_bar_chart_inner(
     task_model: dict[str, dict[str, float]] = {}
     for r in runs:
         task = r.get("task", "???")
-        model = _short_model(r.get("model", "???"))
+        model = str(r.get("model", "???"))
         score = _get_score_for_metric(r, metric_name)
         task_model.setdefault(task, {})[model] = score
 
     tasks = list(task_model.keys())
-    models = list({m for d in task_model.values() for m in d})
+    models = list(dict.fromkeys(m for d in task_model.values() for m in d))
+    legend = _legend_labels(models)
     colors = _resolve_palette(theme, len(models))
 
     n_tasks = len(tasks)
@@ -303,7 +321,7 @@ def _grouped_bar_chart_inner(
             scores,
             width = bar_width,
             color = colors[j],
-            label = model,
+            label = legend[model],
             edgecolor = "none",
             zorder = 3,
         )
@@ -333,12 +351,13 @@ def _radar_chart_inner(
     task_model: dict[str, dict[str, float]] = {}
     for r in runs:
         task = r.get("task", "???")
-        model = _short_model(r.get("model", "???"))
+        model = str(r.get("model", "???"))
         score = _get_score_for_metric(r, metric_name)
         task_model.setdefault(task, {})[model] = score
 
     tasks = list(task_model.keys())
-    models = list({m for d in task_model.values() for m in d})
+    models = list(dict.fromkeys(m for d in task_model.values() for m in d))
+    legend = _legend_labels(models)
 
     if len(tasks) < 3:
         raise ValueError(
@@ -357,7 +376,7 @@ def _radar_chart_inner(
         scores = [task_model[t].get(model, 0.0) for t in tasks]
         scores += scores[:1]
         color = colors[i % len(colors)]
-        ax.plot(angles, scores, marker = "o", linewidth = 2, label = model, color = color)
+        ax.plot(angles, scores, marker = "o", linewidth = 2, label = legend[model], color = color)
         ax.fill(angles, scores, alpha = 0.1, color = color)
 
     ax.set_xticks(angles[:-1])

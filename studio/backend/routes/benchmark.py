@@ -315,6 +315,16 @@ def _run_hidden_from(backend, viewer: AccountContext) -> bool:
     )
 
 
+def _gguf_backend_supported() -> bool:
+    """PyPI lm_eval (and unsloth[eval]) ships an older ``gguf`` model that
+    StudioGGUFLM cannot drive; only the pinned commit has the server-slot API."""
+    try:
+        from lm_eval.models.gguf import GGUFLM
+    except Exception:
+        return False
+    return hasattr(GGUFLM, "_detect_total_slots") and hasattr(GGUFLM, "_post_with_retries")
+
+
 def _studio_base_url(http_request: Request) -> Optional[str]:
     """The address this Studio actually listens on, for lm_eval's requests back to it."""
     state = http_request.app.state
@@ -339,18 +349,23 @@ async def run_benchmark(
     api_key_raw: str | None = None
     api_key_id: int | None = None
     run_seq: int | None = None
+    started = False
 
     try:
-        if backend.is_active():
-            raise HTTPException(
-                status_code = 409,
-                detail = "A benchmark is already running.",
-            )
-
-        if not _lm_eval_available:
+        if not _lm_eval_available or not _gguf_backend_supported():
             raise HTTPException(
                 status_code = 400,
                 detail = _LM_EVAL_INSTALL_HINT,
+            )
+
+        # Claimed before the first await: checking here and claiming later on
+        # the executor thread let two concurrent requests both start a run.
+        account = current_account()
+        run_seq = backend.try_begin(account)
+        if run_seq is None:
+            raise HTTPException(
+                status_code = 409,
+                detail = "A benchmark is already running.",
             )
 
         logger.info("=== Benchmark Run Request =========================")
@@ -422,9 +437,10 @@ async def run_benchmark(
             backend._append_log("stdout", line)
 
         loop = asyncio.get_event_loop()
-        run_seq = backend.get_op_seq() + 1
-        account = current_account()
-        results = await loop.run_in_executor(None, lambda: backend.run(lm_eval_kwargs, account))
+        started = True
+        results = await loop.run_in_executor(
+            None, lambda: backend.run(lm_eval_kwargs, account, op_seq = run_seq)
+        )
 
         # A cancelled run returns {}; by then a new run may already own the backend.
         if not results or backend.was_cancelled():
@@ -502,7 +518,10 @@ async def run_benchmark(
             detail = f"Failed to run benchmark: {safe_error_detail(e)}",
         )
     finally:
-        if run_seq is not None:
+        if run_seq is not None and not started:
+            # Refused before lm_eval started (bad request, key minting): free the slot.
+            backend.release(run_seq)
+        elif run_seq is not None:
             # No-op unless this request's run is still the active one, i.e.
             # lm_eval returned but handling its results raised.
             backend.finish(op_seq = run_seq, error = "Failed to store benchmark results")

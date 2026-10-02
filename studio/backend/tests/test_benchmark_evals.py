@@ -360,3 +360,61 @@ def test_saved_results_and_api_key_views_drop_secrets_and_paths(monkeypatch):
     redacted = benchmark_routes._redact_eval_run(run, via_api_key = True)
     assert "/home/me" not in json.dumps(redacted)
     assert redacted["output_path"] == "benchmark_copa_x"
+
+
+def test_concurrent_run_requests_get_one_slot(monkeypatch):
+    # Two requests that both reach the route before either run starts on its
+    # executor thread must not both be admitted.
+    import asyncio
+
+    release = threading.Event()
+    backend = _orchestrator(monkeypatch, lambda params: (release.wait(5), {"results": {}})[1])
+    monkeypatch.setattr(benchmark_routes, "get_benchmark_backend", lambda: backend)
+    monkeypatch.setattr(benchmark_routes, "_lm_eval_available", True)
+    monkeypatch.setattr(benchmark_routes, "_gguf_backend_supported", lambda: True)
+    monkeypatch.setattr(
+        benchmark_routes,
+        "resolve_model_details",
+        lambda *a, **k: ([], {"model": "stub", "model_args": {}, "tasks": ["arc_easy"]}),
+    )
+    monkeypatch.setattr(benchmark_routes, "parse_run_summary", lambda *a, **k: None)
+    req = benchmark_routes.BenchmarkRunRequest(
+        checkpoint_path = "m.gguf", model_source = "local", task = "arc_easy"
+    )
+    http = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+
+    async def main():
+        async def call():
+            try:
+                return await benchmark_routes.run_benchmark(req, http, current_subject = "u")
+            except benchmark_routes.HTTPException as exc:
+                return exc.status_code
+
+        first = asyncio.create_task(call())
+        second = asyncio.create_task(call())
+        await asyncio.sleep(0.2)
+        release.set()
+        return await asyncio.gather(first, second)
+
+    outcomes = asyncio.run(main())
+    assert sorted(o if isinstance(o, int) else 200 for o in outcomes) == [200, 409]
+    assert not backend.is_active()
+
+
+def test_charts_keep_two_quants_of_one_model_apart():
+    from core.benchmark.graph import _legend_labels
+
+    a = "/models/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf"
+    b = "/models/Qwen3-30B-A3B-Instruct-2507-Q8_0.gguf"
+    labels = _legend_labels([a, b])
+    assert labels[a] != labels[b] and "Q4_K_M" in labels[a] and "Q8_0" in labels[b]
+
+
+def test_pypi_gguf_backend_is_reported_as_missing(monkeypatch):
+    import sys
+    import types
+
+    old = types.ModuleType("lm_eval.models.gguf")
+    old.GGUFLM = type("GGUFLM", (), {})  # the PyPI class: no server-slot API
+    monkeypatch.setitem(sys.modules, "lm_eval.models.gguf", old)
+    assert not benchmark_routes._gguf_backend_supported()

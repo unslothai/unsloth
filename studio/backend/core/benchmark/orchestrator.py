@@ -240,6 +240,34 @@ class BenchmarkOrchestrator:
 
     # ── Run and cancel ────────────────────────────────────
 
+    def try_begin(self, account = None) -> Optional[int]:
+        """Claim the single run slot, or return None when a run already holds it.
+
+        Synchronous so the route can call it before yielding to the event loop:
+        a check in the route plus a claim inside ``run`` (on an executor thread)
+        let two concurrent requests both pass the check.
+        """
+        from utils.account_context import current_account
+        with self._lock:
+            if self._active:
+                return None
+            self._active = True
+            self._op_seq += 1
+            self._result_account = account if account is not None else current_account()
+            self._last_op_status = None
+            self._cancel_requested = False
+            self._last_error = None
+            # A fresh event per run: clearing a shared one would let a Run issued
+            # right after Stop un-cancel the run being stopped.
+            self._cancel_event = threading.Event()
+            return self._op_seq
+
+    def release(self, op_seq: int) -> None:
+        """Free a slot claimed with ``try_begin`` whose run never started."""
+        with self._lock:
+            if self._active and op_seq == self._op_seq:
+                self._active = False
+
     def cancel(self) -> bool:
         if not self._active:
             return False
@@ -270,27 +298,27 @@ class BenchmarkOrchestrator:
         self,
         params: dict,
         account = None,
+        op_seq: Optional[int] = None,
     ) -> dict:
         """Run a benchmark in a worker thread.
 
         Blocks (responsively) until the run completes or is cancelled, then
         returns the lm_eval result dict. A cancelled run returns ``{}``. After a
         successful return the run stays active until ``finish`` is called.
-        """
-        from utils.account_context import current_account
 
-        self._active = True
-        self._op_seq += 1
-        # Passed in by the route: an executor thread does not inherit the
-        # request's account context, so current_account() there is the owner.
-        self._result_account = account if account is not None else current_account()
-        self._last_op_status = None
-        self._cancel_requested = False
-        self._last_error = None
-        # A fresh event per run: clearing a shared one would let a Run issued
-        # right after Stop un-cancel the run being stopped.
-        cancel_event = self._cancel_event = threading.Event()
-        my_seq = self._op_seq
+        ``op_seq`` is the slot the caller already claimed with ``try_begin``;
+        without it the slot is claimed here for ``account`` (the route passes
+        its account: an executor thread does not inherit the request's).
+        """
+        if op_seq is None:
+            op_seq = self.try_begin(account)
+            if op_seq is None:
+                raise RuntimeError("A benchmark is already running.")
+        with self._lock:
+            if op_seq != self._op_seq:
+                return {}  # stopped and superseded before it started
+            cancel_event = self._cancel_event
+        my_seq = op_seq
         clear_progress()
 
         self._append_log("stdout", "Starting benchmark run...")

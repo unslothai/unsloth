@@ -204,6 +204,9 @@ export function BenchmarkPage({ evals }: { evals: EvalsModel }) {
           prepareHfTokenForUse(hfToken, { allowAnonymous: true }).then((preparedToken) => {
             if (preparedToken.proceed) {
               void runBenchmark(model, resolvedSource, selectedTask, extraParams);
+            } else {
+              // Declined token prompt: nothing runs, so don't leave a "Starting" panel open.
+              setPanelOpen(false);
             }
           });
         },
@@ -231,6 +234,8 @@ export function BenchmarkPage({ evals }: { evals: EvalsModel }) {
     prepareHfTokenForUse(hfToken, { allowAnonymous: true }).then((preparedToken) => {
       if (preparedToken.proceed) {
         void runBenchmark(model, resolvedSource, selectedTask, extraParams);
+      } else {
+        setPanelOpen(false);
       }
     });
   }, [evals, selectedTask, hfToken, runBenchmark, isRunning, resetBenchmarkRun, batchSize, numFewshot, maxTokens]);
