@@ -9,6 +9,8 @@ import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import os
+
 import pytest
 
 from core.inference import engine_install as install
@@ -39,8 +41,8 @@ def isolated(monkeypatch, tmp_path):
 _LOCAL_ENGINE_HOST = pytest.mark.skipif(
     sys.platform != "linux", reason = "local engine host is Linux only"
 )
-# Engine leases and copy-on-write clones use fcntl, which Windows does not have.
-_POSIX_ENGINE_LOCKS = pytest.mark.skipif(sys.platform == "win32", reason = "engine locks use fcntl")
+# fcntl only: the copy-on-write clone probe, and a test that holds a lease with fcntl directly.
+_POSIX_ENGINE_LOCKS = pytest.mark.skipif(sys.platform == "win32", reason = "uses fcntl")
 
 
 def active(
@@ -285,6 +287,7 @@ def test_engine_cuda_home_is_the_locked_pip_nvcc(tmp_path, monkeypatch):
     assert sorted(os.listdir(home / "include")) == ["crt", "cuda_runtime.h"]
 
 
+@_LOCAL_ENGINE_HOST
 @pytest.mark.parametrize("engine", ["vllm", "sglang"])
 def test_glibc_floor_matches_the_lock_platform(engine, monkeypatch):
     # Both locks resolve for x86_64-manylinux_2_34 (see the lock headers).
@@ -405,6 +408,7 @@ def test_no_lock_downloads_the_cuda12_cutlass_libraries(monkeypatch):
         ("sglang", "2.10.0+cu128", "0.5.20"),
     ],
 )
+@_LOCAL_ENGINE_HOST
 def test_release_follows_studio_torch(monkeypatch, engine, studio_torch, version):
     monkeypatch.setattr(
         install, "_studio_packages", lambda: {"torch": studio_torch} if studio_torch else {}
@@ -416,6 +420,7 @@ def test_release_follows_studio_torch(monkeypatch, engine, studio_torch, version
     assert install._pins(engine)["torch"][0] == chosen["torch"]
 
 
+@_LOCAL_ENGINE_HOST
 @pytest.mark.parametrize("engine", ["vllm", "sglang"])
 def test_every_release_lock_is_current(monkeypatch, engine):
     for release in install.PROFILES[engine]["releases"]:
@@ -425,6 +430,7 @@ def test_every_release_lock_is_current(monkeypatch, engine):
         assert install._pins(engine)[engine][0] == release["version"]
 
 
+@_LOCAL_ENGINE_HOST
 @pytest.mark.parametrize("engine", ["vllm", "sglang"])
 def test_download_size_leaves_out_what_studio_shares(isolated, monkeypatch, engine):
     full = install.download_bytes(engine)
@@ -558,7 +564,6 @@ def test_explicit_rollback_allows_old_profile_until_replaced(isolated, monkeypat
     assert install.status(engine)["restored"] is False
 
 
-@_POSIX_ENGINE_LOCKS
 def test_runtime_lease_blocks_removal(isolated):
     marker = active(isolated)
     with install.engine_lease("vllm"):
@@ -570,7 +575,6 @@ def test_runtime_lease_blocks_removal(isolated):
     assert not marker.exists()
 
 
-@_POSIX_ENGINE_LOCKS
 def test_removal_keeps_shared_models_and_cache(isolated):
     active(isolated)
     shared = isolated / "shared-model.safetensors"
@@ -605,6 +609,27 @@ def test_installer_does_not_inherit_base_python_or_secrets(monkeypatch):
         )
     )
     assert env["UV_LINK_MODE"] == "copy"
+
+
+def test_only_driver_directories_survive_the_library_path(tmp_path):
+    driver, runtime = tmp_path / "lib64-nvidia", tmp_path / "cuda" / "lib64"
+    for folder, library in ((driver, "libcuda.so.1"), (runtime, "libcudart.so.13")):
+        folder.mkdir(parents = True)
+        (folder / library).write_bytes(b"")
+    joined = os.pathsep.join([str(runtime), "", "lib64-nvidia", str(driver)])
+    assert install.driver_library_path({"LD_LIBRARY_PATH": joined}) == str(driver)
+    assert install.driver_library_path({"LD_LIBRARY_PATH": str(runtime)}) is None
+    assert install.driver_library_path({}) is None
+
+
+def test_installer_keeps_the_driver_its_checks_import(monkeypatch, tmp_path):
+    driver = tmp_path / "lib64-nvidia"
+    driver.mkdir()
+    (driver / "libcuda.so.1").write_bytes(b"")
+    monkeypatch.setenv("LD_LIBRARY_PATH", os.pathsep.join(["/opt/cuda-12/lib64", str(driver)]))
+    assert install.install_environment()["LD_LIBRARY_PATH"] == str(driver)
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/opt/cuda-12/lib64")
+    assert "LD_LIBRARY_PATH" not in install.install_environment()
 
 
 def test_installer_reuses_recorded_cache(monkeypatch, tmp_path):
@@ -778,7 +803,6 @@ def test_install_routes_require_owner(isolated, monkeypatch):
     assert called == []
 
 
-@_POSIX_ENGINE_LOCKS
 def test_engine_routes_reap_a_crashed_engine_before_reporting(isolated, monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
@@ -961,7 +985,6 @@ def test_validate_rejects_engine_settings_before_the_picker_unloads(monkeypatch,
     assert "already quantized" in raised.value.detail
 
 
-@_POSIX_ENGINE_LOCKS
 def test_busy_install_does_not_overwrite_another_job(isolated):
     job = {"state": "running", "phase": "installing", "message": "Downloading"}
     (isolated / "vllm.job.json").write_text(json.dumps(job))
@@ -971,7 +994,6 @@ def test_busy_install_does_not_overwrite_another_job(isolated):
         assert install.status("vllm")["job"] == job
 
 
-@_POSIX_ENGINE_LOCKS
 def test_another_instance_can_request_install_cancellation(isolated):
     (isolated / "vllm.job.json").write_text(json.dumps({"state": "running"}))
     with install.engine_lease("vllm", exclusive = True):
@@ -979,7 +1001,6 @@ def test_another_instance_can_request_install_cancellation(isolated):
     assert (isolated / "vllm.cancel").exists()
 
 
-@_POSIX_ENGINE_LOCKS
 def test_rollback_rejects_traversal(isolated):
     marker = active(isolated)
     info = json.loads(marker.read_text())
@@ -1162,14 +1183,15 @@ def test_memory_reserve_grows_with_the_card(monkeypatch):
 def test_engine_start_reserves_a_share_of_the_card():
     import inspect
     from core.inference import managed_engine
-    assert "memory_reserve_mib(self.engine, options), RESERVE_SHARE" in inspect.getsource(
-        managed_engine
-    )
+
+    # The local and the WSL launch both keep the share free.
+    source = inspect.getsource(managed_engine)
+    assert source.count("memory_reserve_mib(self.engine, options), RESERVE_SHARE") == 2
 
 
 @_LOCAL_ENGINE_HOST
 @pytest.mark.parametrize("gpu_ids", [[1], [1, 0]])
-def test_server_outlives_short_lived_start_thread(isolated, monkeypatch, gpu_ids):
+def test_server_outlives_short_lived_start_thread(isolated, monkeypatch, gpu_ids, tmp_path):
     import os
     import sys
     import time
@@ -1188,7 +1210,7 @@ def test_server_outlives_short_lived_start_thread(isolated, monkeypatch, gpu_ids
             "class Handler(BaseHTTPRequestHandler):\n"
             " def do_GET(self):\n"
             "  self.send_response(200); self.end_headers()\n"
-            "  self.wfile.write('|'.join(os.environ[k] for k in ('CUDA_VISIBLE_DEVICES', 'TRITON_CACHE_DIR', 'FLASHINFER_WORKSPACE_BASE')).encode())\n"
+            "  self.wfile.write('|'.join(os.environ.get(k, '') for k in ('CUDA_VISIBLE_DEVICES', 'TRITON_CACHE_DIR', 'FLASHINFER_WORKSPACE_BASE', 'LD_LIBRARY_PATH')).encode())\n"
             " def log_message(self, *args): pass\n"
             f"HTTPServer(('127.0.0.1', {port}), Handler).serve_forever()\n"
         )
@@ -1201,6 +1223,11 @@ def test_server_outlives_short_lived_start_thread(isolated, monkeypatch, gpu_ids
         key_environment = lambda _: {},
     )
     errors = []
+    # Colab reaches libcuda only through LD_LIBRARY_PATH; a CUDA runtime there must not follow.
+    driver, runtime = tmp_path / "lib64-nvidia", tmp_path / "cuda-12" / "lib64"
+    for folder, library in ((driver, "libcuda.so.1"), (runtime, "libcudart.so.12")):
+        folder.mkdir(parents = True)
+        (folder / library).write_bytes(b"")
 
     def start():
         try:
@@ -1209,7 +1236,10 @@ def test_server_outlives_short_lived_start_thread(isolated, monkeypatch, gpu_ids
                 2048,
                 gpu_ids,
                 dict(
-                    os.environ, TRITON_CACHE_DIR = "/shared-cache", FLASHINFER_WORKSPACE_BASE = "/home"
+                    os.environ,
+                    TRITON_CACHE_DIR = "/shared-cache",
+                    FLASHINFER_WORKSPACE_BASE = "/home",
+                    LD_LIBRARY_PATH = os.pathsep.join(map(str, (runtime, driver))),
                 ),
             )
         except Exception as exc:
@@ -1224,9 +1254,10 @@ def test_server_outlives_short_lived_start_thread(isolated, monkeypatch, gpu_ids
         assert engine.alive()
         import httpx
 
-        visible, cache_path, flashinfer_base = httpx.get(
+        visible, cache_path, flashinfer_base, library_path = httpx.get(
             engine.base_url, trust_env = False
         ).text.split("|")
+        assert library_path == str(driver)
         assert flashinfer_base == install.installed("vllm")["path"]
         assert visible == ",".join(map(str, gpu_ids))
         assert Path(cache_path).parent.parent == isolated / "vllm" / "cache"
@@ -2243,6 +2274,27 @@ def test_an_audio_model_that_also_reads_images_is_refused_as_audio():
     with pytest.raises(HTTPException) as refused:
         route._reject_unsupported_managed_kind(SimpleNamespace(engine = "vllm"), config)
     assert "detected as an audio model" in refused.value.detail
+
+
+@_LOCAL_ENGINE_HOST
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+def test_wsl_installs_the_newest_release_and_prices_the_distro(isolated, monkeypatch, engine):
+    from core.inference import wsl_host
+
+    studio_with_engine_torch(monkeypatch, engine)
+    monkeypatch.setattr(install, "_studio_packages", lambda: {"torch": "2.11.0+cu130"})
+    local = install.profile(engine)["version"]
+    monkeypatch.setattr(wsl_host, "active", lambda: True)
+    newest = install.PROFILES[engine]["releases"][0]
+    assert install.profile(engine)["version"] == newest["version"] != local
+    sizes = install._compat_file(engine)["sizes"]
+    omit = set(install.profile(engine)["omit"])
+    complete = sum(size or 0 for name, size in sizes.items() if name not in omit)
+    extra = wsl_host.ROOTFS["size"] + wsl_host.UV["size"]
+    monkeypatch.setattr(wsl_host, "summary", lambda: {"state": None, "distro": None})
+    assert install.download_bytes(engine) == complete + extra
+    monkeypatch.setattr(wsl_host, "summary", lambda: {"state": "ready", "distro": "UnslothStudio"})
+    assert install.download_bytes(engine) == complete
 
 
 @pytest.mark.parametrize("version", ["0.5.20", "0.5.18"])
