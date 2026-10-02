@@ -15,6 +15,7 @@ import {
   type MouseEvent,
   type PointerEvent,
   type RefObject,
+  type UIEvent,
   memo,
   useCallback,
   useEffect,
@@ -466,6 +467,16 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
     },
     [magnify],
   );
+  // the dashes move under a still pointer when the rail itself scrolls
+  const onRailScroll = useCallback(
+    (event: UIEvent<HTMLElement>) => {
+      if (magnifiedRef.current.length > 0 && !magnifyFrameRef.current) {
+        const rail = event.currentTarget;
+        magnifyFrameRef.current = requestAnimationFrame(() => magnify(rail));
+      }
+    },
+    [magnify],
+  );
   const hidePreview = useCallback(() => {
     cancelHide();
     hideTimerRef.current = window.setTimeout(() => {
@@ -589,6 +600,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
           onKeyDown={onRailKeyDown}
           onPointerMove={onRailPointerMove}
           onPointerLeave={clearMagnify}
+          onScroll={onRailScroll}
           className="aui-turn-navigator group/rail pointer-events-auto absolute top-0 right-[-1.125rem] hidden w-8 -translate-y-1/2 flex-col overflow-y-auto py-1 [contain:layout_paint] [scrollbar-width:none] @[1.5rem]/turn-gutter:flex [&::-webkit-scrollbar]:hidden"
         >
           {markers}
