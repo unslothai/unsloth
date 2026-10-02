@@ -134,6 +134,14 @@ def _hasher(file: FlmFile):
     return digest
 
 
+def _matches(path: Path, file: FlmFile) -> bool:
+    digest = _hasher(file)
+    with open(path, "rb") as handle:
+        while chunk := handle.read(_CHUNK):
+            digest.update(chunk)
+    return digest.hexdigest() == file.digest
+
+
 def download_files(
     model: FlmModelFiles, client: Optional[httpx.Client] = None
 ) -> Iterator[dict[str, Any]]:
@@ -157,11 +165,14 @@ def download_files(
                 have = final.stat().st_size
             except FileNotFoundError:
                 have = None
-            if have == file.size:
+            # Same size is not proof: an older release's config.json differs only in its version.
+            if have == file.size and _matches(final, file):
                 partial.unlink(missing_ok = True)
                 completed += file.size
                 continue
-            if have is not None:
+            if have == file.size:
+                final.unlink()
+            elif have is not None:
                 # A killed FastFlowLM pull leaves a prefix under the final name.
                 if have < file.size:
                     final.replace(partial)

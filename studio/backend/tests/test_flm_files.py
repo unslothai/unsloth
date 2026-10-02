@@ -205,6 +205,15 @@ def test_a_complete_file_drops_a_leftover_partial(files, tmp_path):
     assert not (tmp_path / "model.q4nx.partial").exists()
 
 
+def test_a_same_sized_file_with_other_content_is_downloaded_again(files, tmp_path):
+    stale = bytes([CONFIG[0] ^ 1]) + CONFIG[1:]
+    (tmp_path / "config.json").write_bytes(stale)
+    (tmp_path / "model.q4nx").write_bytes(WEIGHTS)
+    list(ff.download_files(files.model(tmp_path)))
+    assert (tmp_path / "config.json").read_bytes() == CONFIG
+    assert (tmp_path / "model.q4nx").read_bytes() == WEIGHTS
+
+
 def test_a_file_that_fails_its_hash_is_removed(files, tmp_path):
     with pytest.raises(ff.FlmDownloadError, match = "did not match its published hash"):
         list(ff.download_files(files.model(tmp_path, weights_digest = "0" * 64)))
