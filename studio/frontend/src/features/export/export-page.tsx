@@ -1795,18 +1795,18 @@ export function ExportPage() {
                       <div className="flex items-center justify-between gap-3 rounded-lg border p-3">
                         <div className="space-y-0.5">
                           <div className="text-sm font-medium">
-                            AMD NPU (Q4NX)
+                            Also convert to Q4NX (AMD NPU)
                           </div>
                           <div className="text-xs text-muted-foreground">
                             {destination !== "local"
                               ? "Saves locally only: pick a local destination."
                               : q4nxSourceSelected
-                                ? "Also writes a FastFlowLM folder for Ryzen AI NPUs (XDNA 2), next to the GGUFs."
+                                ? "Converts the Q4 GGUF into a FastFlowLM folder for Ryzen AI NPUs (XDNA 2), next to the GGUFs."
                                 : "Needs Q4_0, Q4_1 or Q4_K_M in the selection."}
                           </div>
                         </div>
                         <Switch
-                          aria-label="AMD NPU (Q4NX)"
+                          aria-label="Also convert to Q4NX (AMD NPU)"
                           checked={effectiveNpuQ4nx}
                           onCheckedChange={setNpuQ4nx}
                           disabled={!q4nxSourceSelected || destination !== "local"}
