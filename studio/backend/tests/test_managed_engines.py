@@ -2287,3 +2287,26 @@ def test_sglang_without_torchao_refuses_int8_and_int4(version):
         options = {"precision": "int8", "engine_version": "0.5.17"},
     )
     assert legacy[legacy.index("--torchao-config") + 1] == "int8wo"
+
+
+def test_legacy_load_in_4bit_is_validated_as_int4(monkeypatch):
+    # An older client's load_in_4bit becomes INT4; the SGLang refusal must see that before unloading.
+    import asyncio
+    from fastapi import HTTPException
+    from core.inference import managed_engine
+    from models.inference import LoadRequest
+    from routes import inference as routes
+
+    info = {"path": "/env", "version": "0.5.20", "profile_digest": install.profile_digest("sglang")}
+    monkeypatch.setattr(managed_engine, "installed", lambda _: info)
+    monkeypatch.setattr(managed_engine, "support_reason", lambda *a: None)
+    monkeypatch.setattr(managed_engine, "resolve_requested_gpu_ids", lambda ids: [0])
+    request = LoadRequest(model_path = "m", engine = "sglang", load_in_4bit = True)
+    with pytest.raises(HTTPException, match = "Choose FP8"):
+        asyncio.run(routes._managed_engine_request(request))
+    vllm = {"path": "/env", "profile_digest": install.profile_digest("vllm")}
+    monkeypatch.setattr(managed_engine, "installed", lambda _: vllm)
+    out = asyncio.run(
+        routes._managed_engine_request(LoadRequest(model_path = "m", engine = "vllm", load_in_4bit = True))
+    )
+    assert out.engine_precision == "int4" and out.load_in_4bit is False and out.gpu_ids == [0]

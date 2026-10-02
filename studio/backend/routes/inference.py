@@ -16957,10 +16957,6 @@ async def _managed_engine_request(request):
     """Normalize an optional-engine request; /validate and /load must judge the same one."""
     from core.inference.managed_engine import validate_load
 
-    try:
-        gpu_ids = await asyncio.to_thread(validate_load, request.engine, request)
-    except ValueError as exc:
-        raise HTTPException(status_code = 400, detail = str(exc)) from exc
     precision = request.engine_precision
     if (
         "engine_precision" not in request.model_fields_set
@@ -16968,13 +16964,13 @@ async def _managed_engine_request(request):
         and request.load_in_4bit
     ):
         precision = "int4"
-    return request.model_copy(
-        update = {
-            "load_in_4bit": False,
-            "gpu_ids": gpu_ids,
-            "engine_precision": precision,
-        }
-    )
+    # Validate the precision the engine will be started with, before anything is unloaded.
+    request = request.model_copy(update = {"load_in_4bit": False, "engine_precision": precision})
+    try:
+        gpu_ids = await asyncio.to_thread(validate_load, request.engine, request)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    return request.model_copy(update = {"gpu_ids": gpu_ids})
 
 
 def _managed_engine_unsupported_controls(payload) -> bool:
