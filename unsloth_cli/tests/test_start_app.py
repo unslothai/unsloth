@@ -400,6 +400,25 @@ def test_opencode_app_reads_a_commented_jsonc(studio, monkeypatch):
     assert "unsloth-studio" in data["provider"]
 
 
+def test_opencode_app_keeps_each_config_dirs_backup_and_key(studio, monkeypatch, tmp_path):
+    monkeypatch.setattr(start, "_opencode_command", lambda *_: ("opencode", False))
+    originals = {}
+    for name in ("a", "b"):
+        config = tmp_path / name / "opencode" / "opencode.json"
+        config.parent.mkdir(parents = True)
+        originals[name] = json.dumps({"model": f"openai/{name}"}) + "\n"
+        config.write_text(originals[name])
+
+    for name in ("a", "b", "a"):
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / name))
+        assert CliRunner().invoke(start.start_app, ["opencode", "--app"]).exit_code == 0
+
+    for name in ("a", "b"):
+        backup = tmp_path / name / "opencode" / "opencode.json.unsloth-backup"
+        assert backup.read_text() == originals[name]
+    assert studio["minted"] == 2
+
+
 def test_codex_app_owner_without_psutil(monkeypatch):
     monkeypatch.setitem(sys.modules, "psutil", None)
     owner = start._codex_app_owner()

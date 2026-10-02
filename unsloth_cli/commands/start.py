@@ -5433,8 +5433,10 @@ class _AppTarget(NamedTuple):
     updates: object = None
 
 
-def _app_state_path(agent: str) -> Path:
-    return _agents_config_root() / "app" / f"{agent}.json"
+def _app_state_path(agent: str, path: Optional[Path] = None) -> Path:
+    # One state per settings file, so another profile or config dir keeps its own backup and key.
+    name = agent if path is None else f"{agent}-{hashlib.sha256(str(path).encode()).hexdigest()[:12]}"
+    return _agents_config_root() / "app" / f"{name}.json"
 
 
 def _read_app_file(path: Path) -> Optional[str]:
@@ -5619,7 +5621,7 @@ def _open_app_config(target: _AppTarget, base: str, explicit_key: Optional[str])
             f"{base} isn't on this machine. --app saves the key in your {target.label} "
             "config, so pass the key for that server with --api-key."
         )
-    state_path = _app_state_path(target.agent)
+    state_path = _app_state_path(target.agent, None if target.agent == "codex" else target.path)
     state = _read_json_object(state_path) or {}
     if state.get("path") != str(target.path):
         state = {}
