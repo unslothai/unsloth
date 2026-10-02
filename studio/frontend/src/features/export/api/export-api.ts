@@ -175,6 +175,8 @@ export async function exportGGUF(params: {
   imatrix?: boolean;
   imatrix_path?: string | null;
   private?: boolean;
+  /** Also convert a Q4_0/Q4_1/Q4_K_M GGUF to Q4NX for the AMD NPU, into <save_directory>/npu-q4nx. */
+  npu_q4nx?: boolean;
 }): Promise<ExportOperationResponse> {
   const response = await authFetch("/api/export/export/gguf", {
     method: "POST",

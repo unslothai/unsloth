@@ -485,6 +485,7 @@ async def export_gguf(
             ),
             imatrix_file = imatrix_file,
             private = request.private,
+            npu_q4nx = request.npu_q4nx,
         )
 
         if not success:

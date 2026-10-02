@@ -11,6 +11,7 @@ from loggers import get_logger
 import os
 import sys
 import shutil
+import subprocess
 import contextlib
 from pathlib import Path
 from typing import Optional, Tuple, List
@@ -113,6 +114,48 @@ _PYTORCH_MISSING_MESSAGE = (
 )
 
 _LLAMA_CPP_SCRIPTS_WARNING_EMITTED = False
+
+# GGUF types FastFlowLM's Q4NX packs directly; any other quant is dequantized and rounded again.
+Q4NX_SOURCE_QUANTS = ("q4_0", "q4_1", "q4_k_m")
+# What FLM loads next to model.q4nx; it hard-exits without tokenizer_config.json, and reads the
+# chat template from it or from chat_template.jinja, where transformers 5 saves it.
+_Q4NX_TOKENIZER_FILES = ("tokenizer.json", "tokenizer_config.json", "chat_template.jinja")
+
+
+def _q4nx_installer():
+    studio_dir = Path(__file__).resolve().parents[3]
+    if str(studio_dir) not in sys.path:
+        sys.path.insert(0, str(studio_dir))
+    import install_q4nx_converter
+
+    return install_q4nx_converter
+
+
+def _q4nx_source_gguf(ggufs: List[str], quant_methods: List[str]) -> Optional[str]:
+    """The exported GGUF to convert: the first selected quant Q4NX packs directly."""
+    for quant in quant_methods:
+        if quant not in Q4NX_SOURCE_QUANTS:
+            continue
+        for path in ggufs:
+            if os.path.basename(path).lower().endswith(f".{quant}.gguf"):
+                return path
+    return None
+
+
+def _convert_gguf_to_q4nx(gguf_path: str, out_dir: Path) -> None:
+    from utils.paths.storage_roots import studio_root
+
+    script = _q4nx_installer().install(studio_root() / "q4nx_converter")
+    ensure_dir(out_dir)
+    logger.info(f"Converting {os.path.basename(gguf_path)} to Q4NX for the AMD NPU → {out_dir}")
+    # Runs in this env: the converter only needs torch, gguf, einops and safetensors.
+    subprocess.run(
+        [sys.executable, str(script), "-i", gguf_path, "-o", str(out_dir)],
+        cwd = str(script.parent),
+        check = True,
+    )
+    if not (out_dir / "model.q4nx").is_file():
+        raise RuntimeError(f"The Q4NX converter wrote no model.q4nx to {out_dir}")
 
 
 @contextlib.contextmanager
@@ -1400,12 +1443,14 @@ class ExportBackend:
         hf_token: HfTokenArg = None,
         imatrix_file = None,
         private: bool = False,
+        npu_q4nx: bool = False,
     ) -> Tuple[bool, str, Optional[str]]:
         """Export the model in GGUF format.
 
         ``quantization_method`` is a single GGUF quant method ("Q4_K_M") or a list of them; a list
         produces one GGUF per quant from a single model load, since unsloth save_to_gguf loops
-        internally. ``imatrix_file`` is an importance matrix path or boolean.
+        internally. ``imatrix_file`` is an importance matrix path or boolean. ``npu_q4nx`` also
+        converts one Q4_0 / Q4_1 / Q4_K_M GGUF to FastFlowLM's Q4NX for the AMD Ryzen AI NPU.
         """
         if not _export_runtime_available():
             return False, _export_runtime_message(), None
@@ -1447,6 +1492,14 @@ class ExportBackend:
             if not quant_methods:
                 quant_methods = ["q4_k_m"]
             quant_method = quant_methods if len(quant_methods) > 1 else quant_methods[0]
+            if npu_q4nx and not save_directory:
+                return False, "The AMD NPU (Q4NX) export needs a local save directory.", None
+            if npu_q4nx and not any(q in Q4NX_SOURCE_QUANTS for q in quant_methods):
+                return (
+                    False,
+                    "The AMD NPU (Q4NX) export needs a Q4_0, Q4_1 or Q4_K_M GGUF in the selection.",
+                    None,
+                )
 
             if save_directory:
                 save_directory = str(resolve_export_write_dir(save_directory))
@@ -1594,6 +1647,23 @@ class ExportBackend:
                 self._write_export_metadata(abs_save_dir)
                 output_path = str(Path(abs_save_dir).resolve())
 
+                if npu_q4nx:
+                    source = _q4nx_source_gguf(exported_ggufs, quant_methods)
+                    try:
+                        if source is None:
+                            raise RuntimeError("no Q4_0, Q4_1 or Q4_K_M GGUF was written")
+                        q4nx_dir = Path(abs_save_dir) / "npu-q4nx"
+                        _convert_gguf_to_q4nx(source, q4nx_dir)
+                        self._write_q4nx_companions(q4nx_dir, exported_config)
+                    except Exception as exception:
+                        logger.error(f"Q4NX conversion failed: {exception}")
+                        return (
+                            False,
+                            f"GGUF files were saved to {output_path}, but the AMD NPU (Q4NX) "
+                            f"conversion failed: {exception}",
+                            output_path,
+                        )
+
             if push_to_hub:
                 if not repo_id or not hf_token:
                     return (
@@ -1683,6 +1753,17 @@ class ExportBackend:
                     output_path,
                 )
             return False, f"GGUF export failed: {str(e)}", None
+
+    def _write_q4nx_companions(self, q4nx_dir: Path, config: Optional[bytes]) -> None:
+        """Lay out the folder like FastFlowLM's own uploads: HF config and tokenizer files."""
+        if config is not None:
+            (q4nx_dir / "config.json").write_bytes(config)
+        with tempfile.TemporaryDirectory(prefix = "_tmp_tokenizer_", dir = q4nx_dir) as scratch:
+            self.current_tokenizer.save_pretrained(scratch)
+            for name in _Q4NX_TOKENIZER_FILES:
+                # The converter rebuilds tokenizer.json from the GGUF; the HF one is what FLM ships.
+                if (Path(scratch) / name).is_file():
+                    shutil.copyfile(Path(scratch) / name, q4nx_dir / name)
 
     def _save_mlx_adapter(
         self,

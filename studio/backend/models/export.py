@@ -225,6 +225,11 @@ class ExportGGUFRequest(BaseModel):
         False,
         description = "If True, create a private Hugging Face Hub repository",
     )
+    npu_q4nx: bool = Field(
+        False,
+        description = "Also convert one Q4_0 / Q4_1 / Q4_K_M GGUF to FastFlowLM's Q4NX for the "
+        "AMD Ryzen AI NPU, written to <save_directory>/npu-q4nx.",
+    )
 
 
 class ExportLoRAAdapterRequest(ExportCommonOptions):
