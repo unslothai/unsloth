@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { withLiteralUnknownTags } from "@/lib/markdown-data-images";
 import { markdownPluginNeeds } from "@/lib/markdown-plugins";
 import { openLink } from "@/lib/open-link";
 import { safeMarkdownUrl } from "@/lib/safe-markdown-url";
@@ -24,6 +25,7 @@ import "katex/dist/katex.min.css";
 type MarkdownPlugins = NonNullable<
   ComponentProps<typeof Streamdown>["plugins"]
 >;
+const REHYPE_PLUGINS = withLiteralUnknownTags();
 const MARKDOWN_COMPONENTS = {
   a: ({ href, children, ...props }: ComponentProps<"a">) => (
     <a
@@ -100,6 +102,7 @@ function MarkdownPreviewImpl({
         <Streamdown
           mode="static"
           plugins={plugins}
+          rehypePlugins={REHYPE_PLUGINS}
           components={inert ? INERT_MARKDOWN_COMPONENTS : MARKDOWN_COMPONENTS}
           urlTransform={safeMarkdownUrl}
           controls={false}

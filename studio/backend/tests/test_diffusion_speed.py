@@ -438,6 +438,7 @@ def test_speed_off_applies_nothing(monkeypatch):
         "compiled_vae_decode": False,
         "fp16_accum": False,
         "cuda_graph": False,
+        "int8_gemm": False,
     }
     assert pipe.vae.mem_format is None and pipe.compiled is False
     # off must not touch any process-wide flag (the bit-identical reference path).
