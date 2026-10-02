@@ -1943,9 +1943,12 @@ async def start_training(
                 if freed:
                     logger.info("Freed models for training: %s", freed)
             except Exception as e:
+                if getattr(e, "blocks_training", False):
+                    raise
                 logger.warning("Inference/training memory coordination failed; proceeding: %s", e)
 
         # The hook runs only once start guards pass -> VRAM freed iff training starts.
+        from routes.training_vram import ManagedEngineStillRunning
         from utils.transformers_version import SidecarSwapInProgress
 
         def _run_backend_start_without_admission() -> bool:
@@ -1957,7 +1960,11 @@ async def start_training(
                     resume_source_run_id = resume_run["id"] if resume_run else None,
                     **training_kwargs,
                 )
-            except (SidecarSwapInProgress, ExactResumeResourcesUnavailable) as exc:
+            except (
+                SidecarSwapInProgress,
+                ExactResumeResourcesUnavailable,
+                ManagedEngineStillRunning,
+            ) as exc:
                 _reject_start_request(backend, reserved_start_request_id, str(exc))
                 raise
             except ValueError as exc:
@@ -2014,7 +2021,7 @@ async def start_training(
         except SidecarSwapInProgress as exc:
             # Expected loss of the race against a sidecar install: a retryable 409, not an internal error.
             raise HTTPException(status_code = 409, detail = str(exc))
-        except ExactResumeResourcesUnavailable as exc:
+        except (ExactResumeResourcesUnavailable, ManagedEngineStillRunning) as exc:
             raise HTTPException(status_code = 409, detail = str(exc))
 
         if not success:
@@ -2943,6 +2950,8 @@ def _free_gpu_for_diffusion_training() -> None:
             freed = free_chat_models_for_training(reason = "diffusion training starting")
             logger.info("Freed chat model(s) for diffusion training: %s", freed)
     except Exception as e:  # noqa: BLE001
+        if getattr(e, "blocks_training", False):
+            raise
         logger.warning("Could not free chat models for diffusion training: %s", e)
 
 

@@ -57,7 +57,12 @@ def _evict_chat() -> None:
     for pending in list(getattr(orchestrator, "loading_models", ()) or ()):
         orchestrator.cancel_load(pending)
     # Kill the subprocess too: its base CUDA context holds VRAM diffusion needs.
-    orchestrator._shutdown_subprocess(timeout = 5.0)
+    managed = getattr(orchestrator, "_managed_engine", None) is not None
+    stopped = orchestrator._shutdown_subprocess(timeout = 5.0)
+    if managed and stopped is False:
+        raise RuntimeError(
+            "The inference engine did not stop; GPU ownership cannot be transferred."
+        )
     # The driver reclaims the killed VRAM asynchronously, so wait for it to settle before diffusion allocates, else a
     # warm handoff can transiently OOM.
     llama._wait_for_vram_settle(since_kill = time.monotonic())
@@ -70,6 +75,14 @@ def _evict_diffusion() -> None:
     # Unload whichever engine the router has active (diffusers or native sd.cpp).
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
     get_active_diffusion_engine().unload()
+
+
+def _release_idle_video_servers(reason: str) -> None:
+    try:
+        from core.inference.video_minimax_h3 import release_h3_native_servers
+        release_h3_native_servers(reason)
+    except Exception as exc:  # noqa: BLE001 - never block an acquire on this
+        logger.warning("gpu_arbiter: could not release the idle video sd-server: %s", exc)
 
 
 def _evict_video() -> None:
@@ -192,6 +205,9 @@ def acquire_for(
                 raise GpuBusyForAnotherAccountError(_owner, busy)
             logger.info("gpu_arbiter: evicting %s for %s", _owner, owner)
             _EVICTORS[_owner]()
+        if owner != VIDEO:
+            # A resident H3 sd-server sits outside every owner's teardown.
+            _release_idle_video_servers(f"GPU acquired for {owner}")
         # Records who LOADED the model; a plain re-assert must not hand it to whoever asked last.
         claims = _owner != owner or register is not None or replacing
         _owner = owner
