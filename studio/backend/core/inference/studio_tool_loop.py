@@ -1276,6 +1276,30 @@ async def stream_with_studio_tools(
     confirm_tool_calls = policy.confirm_calls
     rag_scope = policy.rag_scope
 
+    from core.inference.skill_mentions import load_mentioned_skills
+
+    skill_loads = load_mentioned_skills(
+        conversation,
+        tools,
+        permission_mode = permission_mode,
+        bypass_permissions = bypass_permissions,
+        confirm_tool_calls = confirm_tool_calls,
+        session_id = session_id,
+        cancel_event = cancel_event,
+        continue_final_message = run.continue_final_message,
+    )
+    load_task = None
+    try:
+        while True:
+            load_task = asyncio.create_task(asyncio.to_thread(next, skill_loads, _STEP_DONE))
+            event = await asyncio.shield(load_task)
+            load_task = None
+            if event is _STEP_DONE:
+                break
+            yield _sse(event)
+    finally:
+        await _drain_step_task(load_task, cancel_event)
+        skill_loads.close()
     # The promotion allowlist is the selected catalog, never None: an unrestricted parse re-opens markerless tool-call
     # promotion.
     heal_names = (
