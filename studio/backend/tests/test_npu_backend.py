@@ -598,6 +598,24 @@ def test_a_port_that_stays_taken_gives_up_after_the_attempts(tmp_path, monkeypat
         server.close()
 
 
+@pytest.mark.parametrize(
+    "tail, collision",
+    [
+        ("OSError: [Errno 98] Address already in use", True),
+        ("bind: EADDRINUSE", True),
+        ("OSError: [WinError 10048] Normalerweise darf jede Socketadresse nur einmal", True),
+        ("socket error 10048", True),
+        ("Only one usage of each socket address is normally permitted", True),
+        ("listening on port 10048", False),
+        ("bind failed", False),
+        ("flm validate: memlock too low", False),
+    ],
+)
+def test_the_collision_pattern(tail, collision):
+    from core.inference.lemonade_server import _PORT_TAKEN
+    assert bool(_PORT_TAKEN.search(tail)) is collision
+
+
 def test_an_exit_that_is_not_a_port_collision_is_not_retried(tmp_path):
     spawns = tmp_path / "spawns"
     binary = tmp_path / "lemond"

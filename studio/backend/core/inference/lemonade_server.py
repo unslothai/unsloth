@@ -58,7 +58,9 @@ _CONFIG_OVERRIDES: dict[str, Any] = {
 # is a real failure and is reported at once.
 _START_ATTEMPTS = 3
 _PORT_TAKEN = re.compile(
-    r"address already in use|eaddrinuse|only one usage of each socket address|errno 98\b|errno 48\b",
+    r"address already in use|eaddrinuse|only one usage of each socket address|errno 98\b|errno 48\b"
+    # A localized Windows message still carries the code; never a bare 10048, which can be a port.
+    r"|(?:winerror|errno|error)\s*:?\s*10048\b",
     re.IGNORECASE,
 )
 
