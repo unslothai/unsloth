@@ -554,7 +554,9 @@ def _inner_devices(tensor):
     out = []
     for name in names:
         inner = getattr(tensor, name)
-        out += _inner_devices(inner) if hasattr(inner, "__tensor_flatten__") else [inner.device.type]
+        out += (
+            _inner_devices(inner) if hasattr(inner, "__tensor_flatten__") else [inner.device.type]
+        )
     return out
 
 
