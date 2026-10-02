@@ -12453,7 +12453,9 @@ def test_cudnn_benchmark_opt_out_families():
 
     off = {fam.name for fam in _FAMILIES if not fam.cudnn_benchmark}
     assert {"wan2.2-ti2v-5b", "wan2.2-t2v-a14b", "ltx-2"} <= off
-    assert all(fam.vae_force_fp32 or fam.name == "ltx-2" for fam in _FAMILIES if not fam.cudnn_benchmark)
+    assert all(
+        fam.vae_force_fp32 or fam.name == "ltx-2" for fam in _FAMILIES if not fam.cudnn_benchmark
+    )
 
 
 @pytest.mark.parametrize(
