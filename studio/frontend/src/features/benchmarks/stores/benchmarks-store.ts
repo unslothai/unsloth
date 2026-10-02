@@ -7,6 +7,7 @@
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { useBenchmarkRuntimeStore } from "@/features/benchmark/stores/benchmark-runtime-store";
 import { applyVariantToChat } from "../api/apply-to-chat";
 import { BenchSetupError, runBenchmark } from "../api/bench-runner";
 import {
@@ -209,6 +210,12 @@ export const useBenchmarksStore = create<BenchmarksState>()(
       },
       start: async () => {
         if (get().live) return;
+        // Each row reloads the model under a running eval and would skew both.
+        const evals = useBenchmarkRuntimeStore.getState();
+        if (evals.isRunning || evals.backendActive) {
+          set({ error: "An eval is running. Stop it or let it finish first." });
+          return;
+        }
         const { config, disabled } = get();
         const variants: Variant[] = config.variants.filter(
           (v) => !disabled.includes(v.label),

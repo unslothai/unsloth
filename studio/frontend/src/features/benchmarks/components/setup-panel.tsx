@@ -252,7 +252,8 @@ function PromptListEditor({
   value: string;
   onChange: (v: string) => void;
 }): ReactElement {
-  const list = value.split(/\r?\n\s*---\s*\r?\n/);
+  // [ \t] not \s: a newline typed at the end of a prompt must stay part of it.
+  const list = value.split(/\r?\n[ \t]*---[ \t]*\r?\n/);
   const items = list.length ? list : [""];
   const write = (next: string[]) => onChange(next.join(PROMPT_SEP));
   return (
