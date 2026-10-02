@@ -583,11 +583,12 @@ def test_speed_default_respects_family_cudnn_benchmark_opt_out(monkeypatch):
 
 
 def test_cudnn_benchmark_opt_out_image_families():
-    # Qwen-Image renders differed across servers with the benchmark (VAE decode); the rest keep it.
+    # Renders differed across servers with the benchmark on (VAE decode, or SDXL's compiled UNet); ComfyUI leaves it
+    # off by default. Unmeasured families keep it.
     from core.inference.diffusion_families import _FAMILIES
 
     off = {fam.name for fam in _FAMILIES if not fam.cudnn_benchmark}
-    assert off == {"qwen-image"}
+    assert off == {"qwen-image", "flux.1", "z-image", "sdxl"}
 
 
 def test_speed_max_enables_tf32_and_fused_qkv(monkeypatch):

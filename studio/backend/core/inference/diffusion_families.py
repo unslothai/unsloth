@@ -211,6 +211,8 @@ class DiffusionFamily:
 _FAMILIES: tuple[DiffusionFamily, ...] = (
     DiffusionFamily(
         name = "flux.1",
+        # VAE decode drift across servers with the benchmark (B200: 2 of 22); off costs ~1.8 ms per decode. ComfyUI default.
+        cudnn_benchmark = False,
         pipeline_class = "FluxPipeline",
         transformer_class = "FluxTransformer2DModel",
         base_repo = "black-forest-labs/FLUX.1-schnell",
@@ -499,6 +501,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     ),
     DiffusionFamily(
         name = "z-image",
+        # VAE decode drift across servers with the benchmark (B200); off costs ~1.6 ms per decode. ComfyUI default.
+        cudnn_benchmark = False,
         comfy_flow_shift = 3.0,  # ComfyUI shift 3 for Turbo and base (Turbo already ships 3.0)
         pipeline_class = "ZImagePipeline",
         transformer_class = "ZImageTransformer2DModel",
@@ -634,6 +638,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     # pipeline. img2img / inpaint / ControlNet are the standard SDXL pipelines. No GGUF path.
     DiffusionFamily(
         name = "sdxl",
+        # compiled UNet drift across servers with the benchmark (B200: 8 of 9 distinct, 1 of 8 off); ~1.8% slower warm off. ComfyUI default.
+        cudnn_benchmark = False,
         pipeline_class = "StableDiffusionXLPipeline",
         transformer_class = "UNet2DConditionModel",
         base_repo = "stabilityai/stable-diffusion-xl-base-1.0",
