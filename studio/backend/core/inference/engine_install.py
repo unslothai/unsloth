@@ -221,19 +221,10 @@ def _torch_runtime() -> set[str]:
     return names
 
 
-# nvcc's cudafe stubs need the crt headers of its own release, and cuda_runtime.h pulls crt/ from
-# beside itself, so mixing releases breaks FlashInfer's JIT (Colab: crt 13.4.59 with nvcc 13.0.88,
-# "macro __cudaLaunch passed 2 arguments"). Shared only when Studio holds every one at the locked
-# version, else the engine brings all of them.
-_TOOLCHAIN = frozenset(
-    {
-        "nvidia-cuda-nvcc",
-        "nvidia-cuda-crt",
-        "nvidia-nvvm",
-        "nvidia-cuda-cccl",
-        "nvidia-cuda-runtime",
-    }
-)
+# nvcc's cudafe stubs need the crt headers of its own release, so mixing releases breaks
+# FlashInfer's JIT (Colab: crt 13.4.59 with nvcc 13.0.88, "macro __cudaLaunch passed 2 arguments").
+# Shared only when Studio holds every one at the locked version, else the engine brings all of them.
+_TOOLCHAIN = frozenset({"nvidia-cuda-nvcc", "nvidia-cuda-crt", "nvidia-nvvm", "nvidia-cuda-cccl"})
 
 
 def _same_build(installed: str | None, locked: str | None, cuda: str) -> bool:
@@ -389,10 +380,20 @@ def link_cuda_home(env: Path, shared: bool) -> None:
     home = env / "cuda"
     (home / "lib64").mkdir(parents = True, exist_ok = True)
     trees = _cuda_trees(env, shared)
+    # One include tree, the engine's entries first: a Studio header such as curand_kernel.h
+    # quote-includes crt/ from beside itself, which then resolves to the engine's crt.
+    include = home / "include"
+    if include.is_symlink():
+        include.unlink()
+    include.mkdir(exist_ok = True)
+    for tree in trees:
+        if (tree / "include").is_dir():
+            for entry in (tree / "include").iterdir():
+                if not (include / entry.name).is_symlink():
+                    (include / entry.name).symlink_to(entry)
     for name, link in (
         ("bin", home / "bin"),
         ("nvvm", home / "nvvm"),
-        ("include", home / "include"),
     ):
         source = next(
             (
@@ -418,16 +419,11 @@ def link_cuda_home(env: Path, shared: bool) -> None:
 
 
 def cuda_environment(info: dict) -> dict[str, str]:
-    """CUDA_HOME for the engine's JIT compiles; CPATH covers headers split across a shared environment."""
+    """CUDA_HOME for the engine's JIT compiles; CPATH is its merged include tree for other compilers."""
     env = Path(info["path"])
     if not (env / "cuda" / "bin" / "nvcc").exists():
         return {}
-    return {
-        "CUDA_HOME": str(env / "cuda"),
-        "CPATH": os.pathsep.join(
-            str(tree / "include") for tree in _cuda_trees(env, bool(info.get("shared")))
-        ),
-    }
+    return {"CUDA_HOME": str(env / "cuda"), "CPATH": str(env / "cuda" / "include")}
 
 
 def stale(info: dict) -> bool:
