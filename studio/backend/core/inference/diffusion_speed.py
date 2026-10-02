@@ -921,6 +921,12 @@ def _compile_repeated_blocks(
         try:
             transformer.compile_repeated_blocks(**dit_kwargs)
             engaged = True
+            # Kept so a caller that moves the compile below an offload hook (MiniMax-H3's streamed denoiser) compiles
+            # with exactly these settings.
+            try:
+                transformer._unsloth_regional_compile_kwargs = dict(dit_kwargs)
+            except Exception:  # noqa: BLE001 - not a settable module (tests/fakes)
+                pass
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "compile_repeated_blocks", exc)
             continue
