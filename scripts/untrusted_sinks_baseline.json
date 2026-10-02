@@ -1,6 +1,7 @@
 {
   "comment": "Reviewed sinks that a value from a downloaded artefact can reach. Regenerate with: python scripts/lint_untrusted_sinks.py --update",
   "entries": {
+    "docker/unsloth_nb_compat.py::activate::sys.path.insert::5371cda675d0cc57::275b548215fa6126": 1,
     "scripts/check_frontend_dep_removal.py::run::subprocess.run::5198d9910540f87f::3e492839b89bb196": 1,
     "scripts/scan_packages.py::_pip_download_with_deps::subprocess.run::582f5f81df9ad3f4::46eaaa70e2e0daa3": 1,
     "scripts/scan_packages.py::_resolve_per_spec_with_deps::subprocess.run::0dab39c2a2332ff7::ac2880e6a09f5d2b": 2,
@@ -78,7 +79,6 @@
     "studio/install_llama_prebuilt.py::validate_quantize::subprocess.run::8f81ba3c6591d7fc::c7aef3f9e84b9186": 1,
     "unsloth/models/_utils.py::_resolve_remote_model_class::get_class_from_dynamic_module::1bf1ae2e2285284f::e1a660b88479f807": 1,
     "unsloth/models/_utils.py::_resolve_text_causal_lm_class::get_class_from_dynamic_module::b7a268bb9c7ebe2c::c2920e71229fb914": 1,
-    "unsloth/models/_utils.py::offload_to_disk::torch.load(weights_only = False)::7de1f016ac2d1555::51943afd3cd82306": 1,
     "unsloth/models/_utils.py::resolve_remote_code_model_class::get_class_from_dynamic_module::281f4ae0ed10fad9::e21171dbdef3d324": 1,
     "unsloth/models/loader_utils.py::_dequantize_leftover_fp8_params::getattr(module, ...)::04c2d4b7e025ad1d::c9144a36a56c6863": 1,
     "unsloth/models/loader_utils.py::_dequantize_leftover_fp8_params::getattr(module, ...)::12d3d0c5db05df5b::c9144a36a56c6863": 1,
