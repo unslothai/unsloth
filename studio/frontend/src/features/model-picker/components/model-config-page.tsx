@@ -3554,17 +3554,19 @@ export function ModelConfigPage({
         )}
       </fieldset>
 
-      {target.isGguf && !resolvedIsDiffusion && (
-        <div className="mt-5 space-y-5">
-          {customActive && <VisionRow config={config} update={update} />}
-          <CustomLlamaConfigEditor
-            value={config.llamaCppConfig}
-            onChange={(llamaCppConfig) => update({ llamaCppConfig })}
-            sourceKey={draftKey}
-            onLoadableChange={setCustomConfigLoadable}
-          />
-        </div>
-      )}
+      {target.isGguf &&
+        !resolvedIsDiffusion &&
+        (showAdvanced || customActive) && (
+          <div className="mt-5 space-y-5">
+            {customActive && <VisionRow config={config} update={update} />}
+            <CustomLlamaConfigEditor
+              value={config.llamaCppConfig}
+              onChange={(llamaCppConfig) => update({ llamaCppConfig })}
+              sourceKey={draftKey}
+              onLoadableChange={setCustomConfigLoadable}
+            />
+          </div>
+        )}
 
       {/* Stacked in both variants: a row that wraps on demand reflows when the same click that
           commits a draft mounts Save settings, moving Load out from under the cursor. */}

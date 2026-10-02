@@ -323,5 +323,10 @@ test("a custom config locks the managed rows and keeps the editor outside them",
   assert.match(page, /!customActive &&\s*shouldRequestMemoryEstimate/);
   // Custom launches honour disable_vision, so its switch stays outside the lock.
   assert.ok(page.indexOf("hideVision={customActive}") < fieldsetEnd);
+  // Hidden behind Advanced settings unless custom mode is already on.
+  assert.match(
+    page,
+    /!resolvedIsDiffusion &&\s*\(showAdvanced \|\| customActive\)/,
+  );
   assert.ok(page.indexOf("{customActive && <VisionRow") > fieldsetEnd);
 });
