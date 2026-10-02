@@ -2955,7 +2955,10 @@ def _claude_local_command(model_id: str, settings: str, yolo: bool, passthrough:
 
 
 def _claude_local_env(
-    base: str, key: str, entry: dict, extra_body: Optional[dict] = None
+    base: str,
+    key: str,
+    entry: dict,
+    extra_body: Optional[dict] = None,
 ) -> dict:
     """Build the local endpoint, cache, display, and compaction environment."""
     model_id = entry["id"]
@@ -3078,7 +3081,10 @@ def _codex_model_catalog(model: dict) -> dict:
 
 
 def write_codex_config(
-    base: str, model: dict, home: Path, reasoning_effort: Optional[str] = None
+    base: str,
+    model: dict,
+    home: Path,
+    reasoning_effort: Optional[str] = None,
 ) -> None:
     home.mkdir(parents = True, exist_ok = True)
 
@@ -4853,7 +4859,10 @@ def write_opencode_config(
 
 
 def write_hermes_config(
-    base: str, model: dict, path: Path, request_body: Optional[dict] = None
+    base: str,
+    model: dict,
+    path: Path,
+    request_body: Optional[dict] = None,
 ) -> None:
     import yaml
 
@@ -5231,7 +5240,10 @@ def write_pi_subagent_config(
 
 
 def write_dsh_patch(
-    base: str, model: dict, path: Path, request_body: Optional[dict] = None
+    base: str,
+    model: dict,
+    path: Path,
+    request_body: Optional[dict] = None,
 ) -> None:
     """Write the dsh loader patch that points the booted profile at Unsloth.
 

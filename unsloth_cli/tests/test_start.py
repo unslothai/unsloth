@@ -3503,9 +3503,7 @@ def test_openclaw_session_flags_keep_the_users_own_extra_body(fake_studio, tmp_p
     }
     result = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch"])
     assert result.exit_code == 0, result.output
-    assert _session_request_body("openclaw", tmp_path, result.output) == {
-        "tool_choice": "required"
-    }
+    assert _session_request_body("openclaw", tmp_path, result.output) == {"tool_choice": "required"}
 
 
 def test_opencode_session_temperature_needs_the_capability(fake_studio, tmp_path, monkeypatch):
@@ -3577,7 +3575,12 @@ def test_spawned_server_keeps_only_what_the_agent_cannot_send(
     started = {}
     fake = SimpleNamespace(pid = 999, poll = lambda: None)
 
-    def fake_start(base, model, load, server_options = None):
+    def fake_start(
+        base,
+        model,
+        load,
+        server_options = None,
+    ):
         started["options"] = server_options
         start._auto_served_server = fake
         return base, fake
