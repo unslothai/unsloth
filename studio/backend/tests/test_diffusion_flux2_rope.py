@@ -43,8 +43,9 @@ def _restore(monkeypatch):
 
 @pytest.fixture
 def fake_kernel(monkeypatch):
-    """Gate tests run without a GPU: pretend Triton built the kernel."""
+    """Gate tests run without a GPU: pretend Triton built the kernel on a CUDA (non-ROCm) torch."""
     monkeypatch.setattr(fr, "_kernel", lambda: (lambda x, cos, sin: None))
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
 
 
 def test_stock_symbol_is_the_one_flux2_calls():
