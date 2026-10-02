@@ -7,7 +7,10 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Streamdown } from "streamdown";
 
-import { withDataImageSupport } from "../src/lib/markdown-data-images.ts";
+import {
+  withDataImageSupport,
+  withLiteralUnknownTags,
+} from "../src/lib/markdown-data-images.ts";
 
 const ALLOWED_TAGS = { "search-image": ["token"] };
 
@@ -85,6 +88,19 @@ test("allowed HTML tags still render as elements", () => {
     render('<search-image token="t1"></search-image>'),
     /<search-image token="t1"/,
   );
+});
+
+test("withLiteralUnknownTags merges caller tags into the schema", () => {
+  const html = renderToStaticMarkup(
+    createElement(Streamdown, {
+      mode: "static",
+      children:
+        '<video src="https://example.com/v.mp4" controls></video>\n\nPad with <unk> tokens.',
+      rehypePlugins: withLiteralUnknownTags({ video: ["src", "controls"] }),
+    }),
+  );
+  assert.match(html, /<video src="https:\/\/example\.com\/v\.mp4" controls/);
+  assert.match(html, /Pad with &lt;unk&gt; tokens\./);
 });
 
 test("hostile markup never renders as markup", () => {

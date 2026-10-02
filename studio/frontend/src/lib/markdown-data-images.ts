@@ -8,8 +8,8 @@
  * of the image. Streamdown extends its own schema with caller `allowedTags` only when it receives
  * its default pipeline (identity check), so callers that pass one must carry that merge themselves.
  *
- * Sanitize also drops every tag outside the schema, which erases `<placeholder>` and `Vec<T>` from
- * replies, so those become text before `raw`. Sanitize and harden still decide every element.
+ * Sanitize also drops every tag outside the schema, which erases `<placeholder>` and `Vec<T>`, so
+ * those become text before `raw`. Sanitize and harden still decide every element.
  */
 import type { Element, Root, RootContent } from "hast";
 import type { Pluggable, Plugin } from "unified";
@@ -65,20 +65,15 @@ const rehypeLiteralUnknownTags: Plugin<[string[]], Root> =
     };
   };
 
-export function withLiteralUnknownTags(): Pluggable[] {
-  const [, schema] = defaultRehypePlugins.sanitize as [Plugin<[SanitizeSchema]>, SanitizeSchema];
-  return [
-    [rehypeLiteralUnknownTags, schema.tagNames ?? []],
-    ...Object.values(defaultRehypePlugins),
-  ];
-}
-
-/** Keep data images, show disallowed tags as text, resolve sandbox paths before URL hardening. */
-export function withDataImageSupport(
+function literalTagPipeline(
   allowedTags: Record<string, string[]>,
-  beforeHarden: Pluggable[] = [],
+  srcProtocols: string[],
+  beforeHarden: Pluggable[],
 ): Pluggable[] {
-  const sanitize = defaultRehypePlugins.sanitize as [Plugin<[SanitizeSchema]>, SanitizeSchema];
+  const sanitize = defaultRehypePlugins.sanitize as [
+    Plugin<[SanitizeSchema]>,
+    SanitizeSchema,
+  ];
   const [sanitizePlugin, schema] = sanitize;
   // Positional by design: Streamdown itself builds its default pipeline as `Object.values` of this
   // same object, so spreading it in the same order reproduces that pipeline exactly. Naming the keys
@@ -96,12 +91,27 @@ export function withDataImageSupport(
         attributes: { ...schema.attributes, ...allowedTags },
         protocols: {
           ...schema.protocols,
-          // Harden still gates the scheme on `allowDataImages` and only honors `data:image/*`.
-          src: [...(schema.protocols?.src ?? []), "data"],
+          src: [...(schema.protocols?.src ?? []), ...srcProtocols],
         },
       },
     ],
     ...beforeHarden,
     harden,
   ];
+}
+
+/** Streamdown's default pipeline plus `allowedTags`, with tags outside the schema kept as text. */
+export function withLiteralUnknownTags(
+  allowedTags: Record<string, string[]> = {},
+): Pluggable[] {
+  return literalTagPipeline(allowedTags, [], []);
+}
+
+/** Keep data images, keep tags outside the schema as text, resolve sandbox paths before URL hardening. */
+export function withDataImageSupport(
+  allowedTags: Record<string, string[]>,
+  beforeHarden: Pluggable[] = [],
+): Pluggable[] {
+  // Harden still gates the scheme on `allowDataImages` and only honors `data:image/*`.
+  return literalTagPipeline(allowedTags, ["data"], beforeHarden);
 }
