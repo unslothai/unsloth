@@ -32,6 +32,13 @@ test("the palette header is chat search's search, input and close row", () => {
   assert.match(PALETTE, /aria-label=\{t\("common\.close"\)\}/);
 });
 
+test("Enter on the close button closes instead of running the selected row", () => {
+  // The button sits inside cmdk, whose root handles Enter by selecting the highlighted row.
+  const button = /<button\s+type="button"\s+onClick=\{close\}([\s\S]*?)aria-label=/.exec(PALETTE);
+  assert.ok(button);
+  assert.match(button[1], /onKeyDown=\{\(e\) => \{\s*if \(e\.key === "Enter"\) e\.stopPropagation\(\);\s*\}\}/);
+});
+
 test("palette rows are chat search's pill rows", () => {
   assert.match(PALETTE, /const ROW_CLASS =\s*"gap-3 rounded-full px-3 py-2\.5 text-ui-13 font-medium data-selected:bg-muted/);
   assert.match(SEARCH, /rounded-full px-3 py-2\.5 text-sm outline-hidden data-selected:bg-muted/);

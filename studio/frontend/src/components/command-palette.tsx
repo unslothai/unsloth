@@ -261,9 +261,13 @@ function PaletteContent() {
           onValueChange={setQuery}
           className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
         />
+        {/* cmdk runs the selected row on an Enter from anywhere inside it, so keep this one on the button. */}
         <button
           type="button"
           onClick={close}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") e.stopPropagation();
+          }}
           className="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           aria-label={t("common.close")}
         >
