@@ -55,6 +55,7 @@ type SheetView =
   | "validator"
   | "expression"
   | "note"
+  | "train"
   | "processor";
 type SheetKind =
   | "sampler"
@@ -62,7 +63,8 @@ type SheetKind =
   | "llm"
   | "validator"
   | "expression"
-  | "note";
+  | "note"
+  | "train";
 type RootSheetView = Exclude<SheetView, "root">;
 type RootGroup = {
   kind: RootSheetView;
@@ -88,6 +90,7 @@ type BlockSheetProps = {
     type: "validator_python" | "validator_sql" | "validator_oxc",
   ) => void;
   onAddMarkdownNote: () => void;
+  onAddTrain: () => void;
   onOpenProcessors: () => void;
   copied: boolean;
   onCopy: () => void;
@@ -119,6 +122,9 @@ function getSheetTitle(sheetView: SheetView): string {
   if (sheetView === "note") {
     return "Notes";
   }
+  if (sheetView === "train") {
+    return "Train";
+  }
   if (sheetView === "processor") {
     return "Processor blocks";
   }
@@ -133,6 +139,7 @@ const VIEW_KIND: Record<SheetView, SheetKind | null> = {
   validator: "validator",
   expression: "expression",
   note: "note",
+  train: "train",
   processor: null,
 };
 
@@ -148,6 +155,7 @@ const SEARCHABLE_KINDS: SheetKind[] = [
   "validator",
   "expression",
   "note",
+  "train",
 ];
 const PROCESSOR_TITLE = "Final dataset shape";
 const PROCESSOR_DESCRIPTION = "Rename, reorder, or reshape the final dataset.";
@@ -246,6 +254,7 @@ export function BlockSheet({
   onAddExpression,
   onAddValidator,
   onAddMarkdownNote,
+  onAddTrain,
   onOpenProcessors,
   copied,
   onCopy,
@@ -257,6 +266,7 @@ export function BlockSheet({
   const expressionBlocks = useMemo(() => getBlocksForKind("expression"), []);
   const noteBlocks = useMemo(() => getBlocksForKind("note"), []);
   const seedBlocks = useMemo(() => getBlocksForKind("seed"), []);
+  const trainBlocks = useMemo(() => getBlocksForKind("train"), []);
   const isControlled = typeof open === "boolean";
   const sheetOpen = isControlled ? (open as boolean) : uncontrolledOpen;
   const normalizedSearch = search.trim().toLowerCase();
@@ -387,6 +397,10 @@ export function BlockSheet({
       onAddExpression();
       return;
     }
+    if (kind === "train") {
+      onAddTrain();
+      return;
+    }
     onAddMarkdownNote();
   };
 
@@ -510,16 +524,24 @@ export function BlockSheet({
                     icon={item.icon}
                     title={item.title}
                     description={item.description}
-                    draggable={item.kind === "expression" || item.kind === "note"}
+                    draggable={
+                      item.kind === "expression" ||
+                      item.kind === "note" ||
+                      item.kind === "train"
+                    }
                     onDragStart={
                       item.kind === "expression" && expressionBlocks[0]
                         ? buildDragStart("expression", expressionBlocks[0].type)
                         : item.kind === "note" && noteBlocks[0]
                           ? buildDragStart("note", noteBlocks[0].type)
-                          : undefined
+                          : item.kind === "train" && trainBlocks[0]
+                            ? buildDragStart("train", trainBlocks[0].type)
+                            : undefined
                     }
                     trailing={
-                      item.kind === "expression" || item.kind === "note"
+                      item.kind === "expression" ||
+                      item.kind === "note" ||
+                      item.kind === "train"
                         ? "drag"
                         : "chevron"
                     }
@@ -537,6 +559,11 @@ export function BlockSheet({
                       if (item.kind === "note" && noteBlocks.length === 1) {
                         setSheetOpen(false);
                         onAddMarkdownNote();
+                        return;
+                      }
+                      if (item.kind === "train" && trainBlocks.length === 1) {
+                        setSheetOpen(false);
+                        onAddTrain();
                         return;
                       }
                       onViewChange(item.kind);
