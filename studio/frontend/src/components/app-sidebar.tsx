@@ -334,6 +334,12 @@ type NavRowDef = {
 };
 
 // An expanded project shows this many recent chats before "Show more".
+// Row kebab with centred dots: Hugeicons draws them half a unit low.
+const MoreVerticalCenteredIcon = MoreVerticalIcon.map(([tag, attrs]) => [
+  tag,
+  { ...attrs, transform: "translate(0 -0.5)" },
+]) as unknown as IconSvgElement;
+
 const PROJECT_CHAT_LIMIT = 4;
 // And the Projects section shows this many folders before its own "Show more".
 const SIDEBAR_PROJECT_LIMIT = 5;
@@ -4698,7 +4704,7 @@ export function AppSidebar() {
                   className={actionClass}
                 >
                   <span className="sidebar-row-action-glyph">
-                    <HugeiconsIcon icon={MoreVerticalIcon} strokeWidth={1.75} className="size-icon" />
+                    <HugeiconsIcon icon={MoreVerticalCenteredIcon} strokeWidth={1.75} className="size-icon" />
                   </span>
                 </button>
               )}
@@ -4886,7 +4892,7 @@ export function AppSidebar() {
                 className="sidebar-row-action sidebar-touch-reveal group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
               >
                 <span className="sidebar-row-action-glyph">
-                  <HugeiconsIcon icon={MoreVerticalIcon} strokeWidth={1.75} className="size-icon" />
+                  <HugeiconsIcon icon={MoreVerticalCenteredIcon} strokeWidth={1.75} className="size-icon" />
                 </span>
               </button>
             )}
@@ -5550,7 +5556,7 @@ export function AppSidebar() {
                               className="sidebar-row-action group-hover/run-item:opacity-100 group-hover/run-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
                             >
                               <span className="sidebar-row-action-glyph">
-                                <HugeiconsIcon icon={MoreVerticalIcon} strokeWidth={1.75} className="size-icon" />
+                                <HugeiconsIcon icon={MoreVerticalCenteredIcon} strokeWidth={1.75} className="size-icon" />
                               </span>
                             </button>
                           )}
