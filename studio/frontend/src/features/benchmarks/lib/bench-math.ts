@@ -517,16 +517,18 @@ export function userExtraArgs(
 // Offload flags an inherited extra arg could carry (llama_server_args._OFFLOAD_SHADOWING_FLAGS).
 // The value flags last-wins-promote into the manual layer count on /load, so an offload row's
 // requested placement would be silently replaced by the chat model's pass-through -ngl.
+// Arity matches the backend (llama_server_args._BOOLEAN_SHADOWING_FLAGS): -cmoe/--cpu-moe are
+// switches, -fit/--fit take on|off.
 const OFFLOAD_VALUE_FLAGS = [
   "-ngl",
   "--gpu-layers",
   "--n-gpu-layers",
   "-ncmoe",
   "--n-cpu-moe",
-  "-cmoe",
-  "--cpu-moe",
+  "-fit",
+  "--fit",
 ];
-const OFFLOAD_BOOL_FLAGS = ["-fit", "--fit"];
+const OFFLOAD_BOOL_FLAGS = ["-cmoe", "--cpu-moe"];
 
 /** Drop inherited GPU-offload flags: the offload sweep owns placement, so its rows set it themselves. */
 function stripOffloadArgs(args: readonly string[] | null | undefined): string[] {
