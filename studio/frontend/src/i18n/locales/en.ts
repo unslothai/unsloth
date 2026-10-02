@@ -1201,7 +1201,7 @@ export const en = {
         action: "Repair install",
         confirmTitle: "Repair this installation?",
         confirmDescription:
-          "Stops the server and reruns the installer, which reinstalls PyTorch for this machine's GPU. Chats and settings are kept. This can take several minutes.",
+          "Stops the server and reruns the installer, which reinstalls PyTorch for this machine's GPU at the newest supported release. Chats and settings are kept. This can take several minutes.",
         confirmAction: "Repair now",
       },
       resetPreferences: {
@@ -1934,7 +1934,7 @@ export const en = {
       exportingAction: "Exporting...",
       exportConversations: "Export Recents and Projects",
       exportConversationsDescription:
-        "Download Recents or Recents plus project chats as Training JSONL, CSV, or ShareGPT JSONL, combined or per chat. Message JSONL is available per chat.",
+        "Download Recents or Recents plus project chats as Training JSONL, CSV, ShareGPT JSONL, or Markdown, combined or per chat. Message JSONL is available per chat.",
       exportConversationsAction: "Export",
       exportScopeRecents: "Recents",
       exportScopeAll: "Recents + Projects",
@@ -1942,7 +1942,7 @@ export const en = {
       exportPerChatSuffix: "(per chat)",
       importChats: "Import chats",
       importChatsDescription:
-        "Import JSON, JSONL, NDJSON, or CSV files into Recents.",
+        "Import JSON, JSONL, NDJSON, CSV, or Markdown files into Recents.",
       importChatsAction: "Import",
       importNoConversations: "No conversations found in file.",
       importedOneChat: "Imported 1 conversation to Recents.",

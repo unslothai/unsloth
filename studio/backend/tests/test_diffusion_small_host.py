@@ -67,6 +67,23 @@ def test_flux1_on_a_31gb_fp16_host_takes_the_route():
     assert d.route_host_mib == 22700 // 2
 
 
+def test_unet_and_large_vae_are_budgeted_at_their_converted_size():
+    comps = {
+        "unet": sh.StoredComponent("unet", 4900, "bfloat16"),
+        "vae": sh.StoredComponent("vae", 600, "bfloat16"),
+        "text_encoder_2": sh.StoredComponent("text_encoder_2", 1300, "bfloat16"),
+    }
+    d = _decide(comps, total = 8 * 1024, available = 6000)
+    assert d.engaged
+    # only a DiT is stored as int8; the UNet and VAE convert dense on the host, the encoder stays memory-mapped
+    assert d.route_host_mib == 4900 + 600
+    assert d.refuse is not None
+    assert (
+        d.route_host_mib
+        == _decide(comps, dtype = torch.float32, total = 8 * 1024, available = 6000).route_host_mib // 2
+    )
+
+
 def test_qwen_image_fp32_promoted_takes_the_route():
     d = _decide(QWEN, dtype = torch.float32)
     assert d.engaged and d.refuse is None
@@ -141,6 +158,28 @@ def test_stored_components_read_headers_only(tmp_path):
     assert sh.resolve_snapshot_dir(tmp_path) == tmp_path
 
 
+def test_t5_kept_fp32_layers_are_budgeted_and_variants_ignored(tmp_path):
+    te = tmp_path / "text_encoder_2"
+    te.mkdir()
+    (te / "config.json").write_text(json.dumps({"architectures": ["T5EncoderModel"]}))
+    _write_safetensors(
+        te / "model.safetensors",
+        {
+            "encoder.block.0.layer.1.DenseReluDense.wo.weight": ("BF16", 2 << 20),
+            "encoder.block.0.layer.1.DenseReluDense.wi.weight": ("BF16", 6 << 20),
+        },
+    )
+    _write_safetensors(te / "model.fp16.safetensors", {"w": ("F16", 8 << 20)})
+    comps = sh.stored_components(tmp_path)
+    assert comps["text_encoder_2"] == sh.StoredComponent("text_encoder_2", 8, "bfloat16", 2)
+    tiny = {
+        "transformer": sh.StoredComponent("transformer", 4000, "bfloat16"),
+        "text_encoder_2": sh.StoredComponent("text_encoder_2", 9084, "bfloat16", 1920),
+    }
+    # the streamed encoder's ``wo`` converts to fp32 on the host: 1920 MiB stored -> 3840 MiB loaded
+    assert _decide(tiny).route_host_mib == 2000 + 3840
+
+
 def test_int8_weight_storage_matches_the_dense_layer():
     torch.manual_seed(0)
     model = torch.nn.Sequential(
@@ -160,6 +199,7 @@ def test_int8_weight_storage_matches_the_dense_layer():
 
 
 def test_streamed_encoder_keeps_linear_storage_and_reports_compute_dtype():
+    pytest.importorskip("diffusers")
     from diffusers.hooks import HookRegistry
 
     class Block(torch.nn.Module):

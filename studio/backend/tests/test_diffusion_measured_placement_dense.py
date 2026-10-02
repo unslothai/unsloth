@@ -175,3 +175,29 @@ def test_dense_request_extra_releases_for_oversized(monkeypatch):
     # the three-field torchao reserve still reads as before
     q21 = types.SimpleNamespace(_unsloth_measured_reserve = (2304, "qwen-image-2.1", "default"))
     assert dm.measured_request_extra_mib(q21, width = 2048, height = 2048) == 8704 - 2304
+
+
+def test_gguf_denoiser_keeps_the_flat_plan(klein_pipe):
+    import torch
+
+    class GGUFParameter(torch.nn.Parameter):
+        pass
+
+    dit = torch.nn.Linear(4, 4)
+    dit.weight = GGUFParameter(dit.weight.data, requires_grad = False)
+    klein_pipe.transformer = types.SimpleNamespace(dtype = torch.float16, parameters = dit.parameters)
+    # GGUF dequantizes a whole Linear per forward: a transient the dense eager table never measured
+    plan = _flat_plan(12758)
+    assert _refine(klein_pipe, plan) is plan
+
+
+def test_small_host_int8_denoiser_keeps_the_flat_plan(klein_pipe):
+    import torch
+
+    import core.inference.diffusion_small_host as sh
+
+    dit = torch.nn.Sequential(torch.nn.Linear(2048, 2048)).to(torch.bfloat16)
+    sh.quantize_int8_weight_(dit, compute_dtype = torch.float16, work_device = "cpu")
+    klein_pipe.transformer = types.SimpleNamespace(dtype = torch.float16, parameters = dit.parameters)
+    plan = _flat_plan(12758)
+    assert _refine(klein_pipe, plan) is plan
