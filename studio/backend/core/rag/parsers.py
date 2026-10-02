@@ -552,7 +552,11 @@ def _docx_math_text(element) -> str:
         return (f"_{{{sub}}}" if sub else "") + (f"^{{{sup}}}" if sup else "")
 
     if name == "f":
+        if prop("type", "bar") == "noBar":
+            return f"{{{arg('num')} \\atop {arg('den')}}}"
         return f"\\frac{{{arg('num')}}}{{{arg('den')}}}"
+    if name == "phant" and prop("show", "on") in ("0", "false", "off"):
+        return ""
     if name in ("sSub", "sSup", "sSubSup"):
         return arg("e") + scripts(arg("sub"), arg("sup"))
     if name == "sPre":

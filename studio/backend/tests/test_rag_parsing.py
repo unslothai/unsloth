@@ -474,6 +474,13 @@ def test_docx_table_cells_keep_equations_without_deleted_parts(tmp_path):
     assert text == "Work | W=F(a+b)\\sqrt{x}"
 
 
+def test_docx_equations_keep_binomials_and_skip_hidden_phantoms(tmp_path):
+    binom = f'<m:d><m:e><m:f><m:fPr><m:type m:val="noBar"/></m:fPr><m:num>{_m("n")}</m:num><m:den>{_m("k")}</m:den></m:f></m:e></m:d>'
+    phantom = f'<m:phant><m:phantPr><m:show m:val="off"/></m:phantPr><m:e>{_m("xyz")}</m:e></m:phant>'
+    text = _docx_from_xml(tmp_path, f"<w:p><m:oMath>{binom}{_m('a')}{phantom}{_m('b')}</m:oMath></w:p>")
+    assert text == "({n \\atop k})ab"
+
+
 def test_docx_keeps_rows_and_cells_wrapped_in_content_controls(tmp_path):
     document, docx, parsers = _shared_setup_1()
     from docx.oxml import parse_xml
