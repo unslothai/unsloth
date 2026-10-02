@@ -1,89 +1,80 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { fromMarkdown } from "mdast-util-from-markdown";
 import type { ConversationMarkdownMessage } from "./conversation-markdown.ts";
 
-/** Inverse of roleLabel() in conversation-markdown.ts for exports this app wrote. */
-const KNOWN_LABEL_TO_ROLE: Readonly<Record<string, string>> = {
-  Assistant: "assistant",
-  System: "system",
-  User: "user",
-  Message: "",
-  Tool: "tool",
-};
+type MarkdownNode = ReturnType<typeof fromMarkdown>["children"][number];
 
-export function markdownLabelToRole(label: string): string {
-  const trimmed = label.trim();
-  const known = KNOWN_LABEL_TO_ROLE[trimmed];
-  if (known !== undefined) return known;
-  if (trimmed.length === 0) return "";
-  return `${trimmed[0]?.toLowerCase() ?? ""}${trimmed.slice(1)}`;
+const LABEL_TO_ROLE = new Map([
+  ["Assistant", "assistant"],
+  ["System", "system"],
+  ["User", "user"],
+  ["Developer", "developer"],
+  ["Message", ""],
+  ["Tool", "tool"],
+]);
+
+function roleHeading(node: MarkdownNode | undefined, text: string) {
+  if (node?.type !== "heading" || node.depth !== 2) return;
+  const start = node.position?.start.offset;
+  const end = node.position?.end.offset;
+  if (
+    start === undefined ||
+    end === undefined ||
+    !text.startsWith("## ", start) ||
+    (start > 0 && text.slice(start - 2, start) !== "\n\n") ||
+    text.slice(end, end + 2) !== "\n\n"
+  )
+    return;
+  const role = LABEL_TO_ROLE.get(text.slice(start + 3, end));
+  return role === undefined
+    ? undefined
+    : { role, start, contentStart: end + 2 };
 }
 
-const MULTI_CHAT_SEPARATOR = "\n---\n\n";
-
-function splitMarkdownChats(text: string): string[] {
-  const normalized = text.replace(/\r\n/g, "\n").trim();
-  if (!normalized) return [];
-  return normalized.split(MULTI_CHAT_SEPARATOR).map((chunk) => chunk.trim()).filter(Boolean);
+function documentTitle(nodes: MarkdownNode[], index: number, text: string) {
+  const node = nodes[index];
+  if (node?.type !== "heading" || node.depth !== 1) return;
+  const start = node.position?.start.offset;
+  const end = node.position?.end.offset;
+  const firstMessage = roleHeading(nodes[index + 1], text);
+  if (
+    start === undefined ||
+    end === undefined ||
+    !text.startsWith("# ", start) ||
+    !firstMessage ||
+    text.slice(end, firstMessage.start).trim()
+  )
+    return;
+  return { title: text.slice(start + 2, end).trim(), start };
 }
 
-function stripLeadingDocumentTitle(chunk: string): {
-  title?: string;
-  body: string;
-} {
-  const normalized = chunk.replace(/\r\n/g, "\n").trimStart();
-  if (!normalized.startsWith("# ")) {
-    return { body: chunk };
-  }
-  const lineEnd = normalized.indexOf("\n");
-  if (lineEnd === -1) {
-    return { body: chunk };
-  }
-  const title = normalized.slice(2, lineEnd).trim();
-  let rest = normalized.slice(lineEnd + 1);
-  if (rest.startsWith("\n")) rest = rest.slice(1);
-  if (!rest.startsWith("## ")) {
-    return { body: chunk };
-  }
-  return { title, body: rest };
+function messagesFromNodes(
+  text: string,
+  nodes: MarkdownNode[],
+  end: number,
+): ConversationMarkdownMessage[] {
+  if (!roleHeading(nodes[0], text)) return [];
+  // only root headings delimit turns; headings in code, quotes and lists remain content.
+  const headings = nodes.flatMap((node) => {
+    const heading = roleHeading(node, text);
+    return heading ? [heading] : [];
+  });
+  return headings.flatMap(({ role, contentStart }, index) => {
+    const next = headings[index + 1];
+    const contentEnd = next ? next.start - 2 : end;
+    const content = text.slice(contentStart, contentEnd);
+    const value = next ? content : content.replace(/\n$/, "");
+    return value.trim() ? [{ role, content: value }] : [];
+  });
 }
 
-/** Reads ## Role sections produced by buildConversationMarkdown(). */
 export function parseConversationMarkdownMessages(
   body: string,
 ): ConversationMarkdownMessage[] {
-  const normalized = body.replace(/\r\n/g, "\n").trimEnd();
-  if (!normalized.startsWith("## ")) {
-    return [];
-  }
-
-  const messages: ConversationMarkdownMessage[] = [];
-  let pos = 0;
-  while (pos < normalized.length) {
-    if (!normalized.startsWith("## ", pos)) break;
-    const labelEnd = normalized.indexOf("\n", pos + 3);
-    if (labelEnd === -1) break;
-    const label = normalized.slice(pos + 3, labelEnd);
-    let contentStart = labelEnd + 1;
-    if (normalized[contentStart] !== "\n") break;
-    contentStart += 1;
-
-    const nextHeading = normalized.indexOf("\n\n## ", contentStart);
-    const rawContent =
-      nextHeading === -1
-        ? normalized.slice(contentStart)
-        : normalized.slice(contentStart, nextHeading);
-    const content = rawContent.replace(/\n$/, "");
-    if (content.trim()) {
-      messages.push({
-        role: markdownLabelToRole(label),
-        content,
-      });
-    }
-    pos = nextHeading === -1 ? normalized.length : nextHeading + 2;
-  }
-  return messages;
+  const text = body.replace(/\r\n/g, "\n");
+  return messagesFromNodes(text, fromMarkdown(text).children, text.length);
 }
 
 export type ParsedMarkdownConversation = {
@@ -91,21 +82,45 @@ export type ParsedMarkdownConversation = {
   messages: ConversationMarkdownMessage[];
 };
 
-/** One or more chats from a markdown export (single thread or bulk combined file). */
 export function parseConversationMarkdownDocument(
-  text: string,
+  input: string,
   fallbackTitle: string,
 ): ParsedMarkdownConversation[] {
-  const chats = splitMarkdownChats(text);
+  const text = input.replace(/\r\n/g, "\n").trimStart();
+  const nodes = fromMarkdown(text).children;
+  const firstTitle = documentTitle(nodes, 0, text);
+  let title = firstTitle?.title ?? fallbackTitle;
+  let firstNode = firstTitle === undefined ? 0 : 1;
   const results: ParsedMarkdownConversation[] = [];
-  for (const [index, chunk] of chats.entries()) {
-    const { title: docTitle, body } = stripLeadingDocumentTitle(chunk);
-    const messages = parseConversationMarkdownMessages(body);
-    if (messages.length === 0) continue;
-    const title =
-      docTitle ??
-      (chats.length > 1 ? `${fallbackTitle} ${index + 1}` : fallbackTitle);
-    results.push({ title, messages });
+  const append = (endNode: number, end: number) => {
+    const messages = messagesFromNodes(
+      text,
+      nodes.slice(firstNode, endNode),
+      end,
+    );
+    if (messages.length > 0) results.push({ title, messages });
+  };
+
+  for (let index = firstNode; index < nodes.length; index++) {
+    const node = nodes[index];
+    if (firstTitle === undefined || node.type !== "thematicBreak") continue;
+    const nextTitle = documentTitle(nodes, index + 1, text);
+    const start = node.position?.start.offset;
+    const end = node.position?.end.offset;
+    // bulk exports frame each chat with a rule, title and first role heading.
+    if (
+      start === undefined ||
+      end === undefined ||
+      nextTitle === undefined ||
+      text.slice(start, end) !== "---" ||
+      text.slice(end, nextTitle.start).trim()
+    )
+      continue;
+    append(index, start - 1);
+    title = nextTitle.title;
+    firstNode = index + 2;
+    index++;
   }
+  append(nodes.length, text.length);
   return results;
 }
