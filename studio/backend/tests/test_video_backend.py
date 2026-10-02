@@ -12428,6 +12428,34 @@ def test_ltx2_load_turns_cudnn_benchmark_back_off(fake_runtime, tmp_path, monkey
     assert "cudnn_benchmark" not in backend.status()["speed_optims"]
 
 
+def test_wan_load_turns_cudnn_benchmark_back_off(fake_runtime, monkeypatch):
+    # cudnn.benchmark picks conv algorithms by timing, per process: two servers decoded the same Wan latents to frames
+    # differing by 1/255 on ~0.4% of values. Held off, the pick is deterministic and the decode bit-reproducible.
+    from core.inference import video as video_mod, video_ltx2
+
+    monkeypatch.setattr(
+        video_mod,
+        "apply_speed_optims",
+        lambda *a, **k: {"cudnn_benchmark": True, "compiled": False},
+    )
+    calls = []
+    monkeypatch.setattr(video_ltx2, "disable_cudnn_benchmark", lambda: calls.append(1) or True)
+    backend = VideoBackend()
+    status = backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    assert status["family"] == "wan2.2-ti2v-5b"
+    assert calls == [1]
+    assert "cudnn_benchmark" not in backend.status()["speed_optims"]
+
+
+def test_cudnn_benchmark_opt_out_families():
+    # Every family on the Wan VAE opts out (reproducibility), LTX-2 keeps its re-tune opt-out, the rest keep the benchmark.
+    from core.inference.video_families import _FAMILIES
+
+    off = {fam.name for fam in _FAMILIES if not fam.cudnn_benchmark}
+    assert {"wan2.2-ti2v-5b", "wan2.2-t2v-a14b", "ltx-2"} <= off
+    assert all(fam.vae_force_fp32 or fam.name == "ltx-2" for fam in _FAMILIES if not fam.cudnn_benchmark)
+
+
 @pytest.mark.parametrize(
     "plan_fields, filename, direct, te_direct",
     [

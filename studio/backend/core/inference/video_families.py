@@ -90,6 +90,10 @@ class VideoFamily:
     # Wan VAE decodes in float32 (bf16 causes banding / black frames), so the loader pins it back. Its size term is
     # already fp32.
     vae_force_fp32: bool = False
+    # False holds cudnn.benchmark off after the speed optims: the benchmark times candidate conv algorithms per process,
+    # so two servers can pick different ones and decode the same latents to different pixels (Wan: up to 1/255 on ~0.4%
+    # of values). With it off cuDNN selects deterministically (PyTorch "Reproducibility" notes).
+    cudnn_benchmark: bool = True
     # Curated GGUF repo for the picker (the DiT as single-file GGUF quants).
     gguf_repo: Optional[str] = None
     # Hosted PRE-CAST text-encoder checkpoints as (scheme, component, repo_id); same semantics as
@@ -264,6 +268,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/LTX-2-FP8"),),
         # Hosted 2.3 DISTILLED DiT, used only by the 2.3 single-file assembly. fp8 only: LTX-2.3-INT8.pt predates the int8 excludes.
         prequant_variant_repos = (("lightricks/ltx-2.3", "fp8", "unsloth/LTX-2.3-FP8"),),
+        # no steady gain on LTX's VAE / vocoder convs, but a per-shape re-tune (first render 26 s vs 10 s)
+        cudnn_benchmark = False,
     ),
     # Wan2.2-TI2V-5B (diffusers >= 0.35, verified on 0.39): ~5B single-stream DiT (UMT5 encoder), no audio. Its VAE's
     # temporal compression 4 gives valid frame counts 4k+1. Defaults 20 steps / CFG 5 (ComfyUI's template).
@@ -292,6 +298,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # (11.4); VAE fp32 (2.8).
         bf16_components_gb = (10.0, 11.4, 2.8),
         vae_force_fp32 = True,
+        # run-to-run bit-identical decodes at no measured speed cost (B200 fp16 + bf16)
+        cudnn_benchmark = False,
         # UMT5 keeps its overflowing `wo` in fp32 itself; the VAE stays fp32 (vae_force_fp32).
         fp16_guard = "native",
         # Byte-identical mirror of QuantStack/Wan2.2-TI2V-5B-GGUF (13 quants + companion VAE).
@@ -334,6 +342,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # 114.3 fp32 sum. UMT5 TE bf16 (11.4); VAE fp32 (0.5).
         bf16_components_gb = (57.2, 11.4, 0.5),
         vae_force_fp32 = True,
+        # same Wan VAE convs as TI2V-5B: deterministic cuDNN algorithm selection
+        cudnn_benchmark = False,
         # no gguf_repo: community GGUFs split the experts, and a single-file load covers only one
     ),
     # HunyuanVideo-1.5 (diffusers >= 0.39): 8.3B DiT, Qwen2.5-VL + ByT5 encoders. Three quirks: no guidance kwarg (CFG
