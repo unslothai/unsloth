@@ -802,6 +802,14 @@ def _decode_text(data: bytes, *, html: bool = False) -> str:
     non_ascii = len(text) - len(text.encode("ascii", "ignore"))
     if non_ascii >= 2 * text.count("\ufffd"):
         return text
+    # A Latin-alphabet language never has more accented letters than plain ones.
+    if len(re.findall(rb"[\x80-\xff]", data)) > len(re.findall(rb"[A-Za-z]", data)):
+        from charset_normalizer import from_bytes
+
+        legacy = ["cp1252", "gb18030", "cp950", "cp932", "cp949", "cp1251"]
+        match = from_bytes(data, cp_isolation = legacy).best()
+        if match is not None:
+            return str(match)
     return data.decode("cp1252", errors = "replace")
 
 
