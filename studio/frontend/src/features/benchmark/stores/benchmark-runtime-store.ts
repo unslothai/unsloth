@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
-import { useBenchmarksStore } from "@/features/benchmarks/stores/benchmarks-store";
 import {
   cancelBenchmark,
   runBenchmark,
@@ -248,6 +247,10 @@ export const useBenchmarkRuntimeStore = create<BenchmarkRuntimeStore>()((set, ge
 
   run: async (checkpointPath, modelSource, task, extraParams) => {
     // A Config sweep reloads the server between rows; scoring under it is meaningless.
+    // Loaded on use: this store is on the startup path, the sweeps store is not.
+    const { useBenchmarksStore } = await import(
+      "@/features/benchmarks/stores/benchmarks-store"
+    );
     if (useBenchmarksStore.getState().live) {
       set({
         phase: "error",
