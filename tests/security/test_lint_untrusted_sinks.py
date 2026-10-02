@@ -2624,3 +2624,190 @@ def test_a_container_written_through_setdefault_is_tainted(tmp_path):
         "    return importlib.import_module(group(blob)['all']['module'])\n",
     )
     assert "importlib.import_module" in _sinks(findings)
+
+
+def test_an_unpinned_fetch_is_correlated_across_a_helper(tmp_path):
+    """`fetch()` returns the download and `load()` puts it on `sys.path`.
+
+    The correlation was keyed by the sink's qualname, so a download returned by one
+    helper and imported by another was never correlated at all: removing a `revision`
+    changed only the helper, the sink's own allowance stayed valid, and nothing was
+    reported.
+    """
+    findings = _scan(
+        tmp_path,
+        "import sys\n"
+        "from huggingface_hub import snapshot_download\n"
+        "def fetch(repo):\n"
+        "    return snapshot_download(repo)\n"
+        "def load(repo):\n"
+        "    sys.path.insert(0, fetch(repo))\n",
+    )
+    assert "unpinned code fetch" in _sinks(findings)
+
+
+def test_a_weights_download_through_a_helper_is_still_not_a_code_fetch(tmp_path):
+    """The quiet half: following a branch for weights is correct behaviour.
+
+    Making the correlation global must not turn it back into proximity, or every lazy
+    import beside a weights download is reported again.
+    """
+    findings = _scan(
+        tmp_path,
+        "import torch\n"
+        "from huggingface_hub import snapshot_download\n"
+        "def fetch(repo):\n"
+        "    return snapshot_download(repo)\n"
+        "def load(repo):\n"
+        "    return torch.load(fetch(repo) + '/model.bin')\n",
+    )
+    assert "unpinned code fetch" not in _sinks(findings)
+
+
+def test_a_qualified_imported_base_resolves(tmp_path):
+    """`import producer` then `class Child(producer.Base)`.
+
+    Stripping every base to its last segment left `Base`, which the import table has no
+    binding for, so this spelling of imported inheritance resolved to nothing while the
+    `from producer import Base` spelling worked.
+    """
+    (tmp_path / "producer.py").write_text(
+        "import subprocess\n"
+        "class Base:\n"
+        "    def execute(self, command):\n"
+        "        return subprocess.run(command)\n",
+        encoding = "utf-8",
+    )
+    consumer = tmp_path / "consumer.py"
+    consumer.write_text(
+        "import json\nimport producer\n"
+        "class Child(producer.Base):\n"
+        "    pass\n"
+        "def load(blob):\n"
+        "    return Child().execute(json.loads(blob)['command'])\n",
+        encoding = "utf-8",
+    )
+    findings = L.scan([tmp_path / "producer.py", consumer], roots = [tmp_path])
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_super_reaches_a_method_on_an_imported_base(tmp_path):
+    """`super().execute(...)` where the base lives in another first-party module.
+
+    Resolving from the class itself would find the overriding method that contains the
+    `super()` call, so the inherited lookup has to skip the class's own declaration.
+    """
+    (tmp_path / "producer.py").write_text(
+        "import subprocess\n"
+        "class Base:\n"
+        "    def execute(self, command):\n"
+        "        return subprocess.run(command)\n",
+        encoding = "utf-8",
+    )
+    consumer = tmp_path / "consumer.py"
+    consumer.write_text(
+        "import json\nfrom producer import Base\n"
+        "class Child(Base):\n"
+        "    def execute(self, command):\n"
+        "        return super().execute(command)\n"
+        "def load(blob):\n"
+        "    return Child().execute(json.loads(blob)['command'])\n",
+        encoding = "utf-8",
+    )
+    findings = L.scan([tmp_path / "producer.py", consumer], roots = [tmp_path])
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_method_inherited_through_two_levels_resolves(tmp_path):
+    """`Root.execute`, `Mid(Root)`, `Child(Mid)`: only the direct bases were checked."""
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "class Root:\n"
+        "    def execute(self, command):\n"
+        "        return subprocess.run(command)\n"
+        "class Mid(Root):\n"
+        "    pass\n"
+        "class Child(Mid):\n"
+        "    pass\n"
+        "def load(blob):\n"
+        "    return Child().execute(json.loads(blob)['command'])\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_chained_alias_collected_at_module_scope_resolves(tmp_path):
+    """`loader = import_module` then `invoke = loader`, both at module scope.
+
+    The collector matched the referenced name against imports only and never consulted
+    the aliases it had already collected, so function visitors were seeded with the
+    first name and never the second.
+    """
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "loader = importlib.import_module\n"
+        "invoke = loader\n"
+        "def load(blob):\n"
+        "    return invoke(json.loads(blob)['module'])\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_an_alias_rebound_to_a_second_sink_watches_both(tmp_path):
+    """`action = subprocess.run` then `action = sys.path.insert`.
+
+    The two sinks watch different argument positions, so keeping only the first examined
+    argument 0 and missed the tainted path in argument 1.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess, sys\n"
+        "def load(blob):\n"
+        "    action = subprocess.run\n"
+        "    action = sys.path.insert\n"
+        "    return action(0, json.loads(blob)['path'])\n",
+    )
+    assert "sys.path.insert" in _sinks(findings)
+
+
+def test_a_source_alias_bound_on_a_backedge_is_carried(tmp_path):
+    """`decode` used before it is rebound to `json.loads` for the next iteration.
+
+    The fixpoint carried sink and callable aliases between passes and dropped the source
+    table, so the sink was never revisited with the name recognised as a deserialiser.
+    """
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "def safe(value):\n"
+        "    return {'module': 'fixed'}\n"
+        "def load(blob, rounds):\n"
+        "    decode = safe\n"
+        "    for _ in range(rounds):\n"
+        "        importlib.import_module(decode(blob)['module'])\n"
+        "        decode = json.loads\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_nested_source_alias_does_not_leak_outward(tmp_path):
+    """A nested helper binding `decode = json.loads` must not rename the outer `decode`.
+
+    The saved-state tuple restored the other alias maps and not this one, so an outer
+    function whose own `decode` is a safe callable was reported as though it had called
+    `json.loads`, even when the nested helper is never invoked.
+    """
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "def safe(value):\n"
+        "    return {'module': 'fixed'}\n"
+        "def load(blob):\n"
+        "    def helper():\n"
+        "        decode = json.loads\n"
+        "        return decode(blob)\n"
+        "    decode = safe\n"
+        "    return importlib.import_module(decode(blob)['module'])\n",
+    )
+    assert "importlib.import_module" not in _sinks(findings)

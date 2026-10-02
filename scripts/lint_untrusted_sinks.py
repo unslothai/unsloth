@@ -646,7 +646,15 @@ class _FileFacts:
                     for base in child.bases:
                         base_name = _call_name(base)
                         if base_name:
+                            # Both spellings: the final segment is what a class declared
+                            # in this file is indexed under, and the qualified form is
+                            # what the import table can resolve. Stripping every base
+                            # left `class Child(producer.Base)` with only `Base`, which
+                            # `_targets` has no binding for, so inherited sinks behind
+                            # the `import producer` style resolved to nothing.
                             declared_bases.append(base_name.rpartition(".")[2])
+                            if base_name not in declared_bases:
+                                declared_bases.append(base_name)
                     if declared_bases:
                         self.bases[".".join(scope + [child.name])] = declared_bases
                         self.bases.setdefault(child.name, declared_bases)
@@ -737,12 +745,36 @@ class _FileFacts:
             referenced = _call_name(value)
             if not referenced:
                 continue
+            # Chains collected at module scope: `loader = import_module` then
+            # `invoke = loader`. Only imports were consulted, so function visitors were
+            # seeded with the first alias and never the second.
+            chained = self.module_sink_aliases.get(referenced)
+            if chained:
+                for name in names:
+                    for candidate in chained:
+                        self.module_sink_aliases[name] = _with(
+                            self.module_sink_aliases.get(name), candidate
+                        )
+                continue
+            carried = self.module_source_aliases.get(referenced)
+            if carried is not None:
+                for name in names:
+                    self.module_source_aliases.setdefault(name, carried)
+                continue
+            relayed = self.module_callable_aliases.get(referenced)
+            if relayed:
+                for name in names:
+                    for candidate in relayed:
+                        self.module_callable_aliases[name] = _with(
+                            self.module_callable_aliases.get(name), candidate
+                        )
+                continue
             sink = _matches_any(self.canonicals(referenced), SINKS)
             if sink is None and _matches_any(self.canonicals(referenced), {"getattr"}):
                 sink = "getattr"
             if sink is not None:
                 for name in names:
-                    self.module_sink_aliases.setdefault(name, sink)
+                    self.module_sink_aliases[name] = _with(self.module_sink_aliases.get(name), sink)
                 continue
             source = _matches_any(self.canonicals(referenced), UNTRUSTED_CALLS)
             if source is not None:
@@ -862,11 +894,43 @@ class _FileFacts:
                 return full
         return None
 
-    def _methods_on(self, constructed: str, tail: str) -> list:
-        """`tail` resolved on a class, declared or inherited, local or imported."""
+    def _methods_on(
+        self,
+        constructed: str,
+        tail: str,
+        seen: set | None = None,
+    ) -> list:
+        """`tail` resolved on a class: declared, or inherited at any depth, local or not.
+
+        The whole chain, not just the direct bases. With `Root.execute`, `Mid(Root)` and
+        `Child(Mid)`, a call on a `Child` resolved nowhere, so taint never reached the
+        sink in `Root.execute`. A `seen` set because a declaration cycle must not spin.
+        """
+        if seen is None:
+            seen = set()
+        key = (str(self.path), constructed)
+        if key in seen:
+            return []
+        seen.add(key)
         candidate = f"{constructed}.{tail}"
         if candidate in self.functions:
             return [(self.path, candidate)]
+        return self._inherited_methods_on(constructed, tail, seen)
+
+    def _inherited_methods_on(
+        self,
+        constructed: str,
+        tail: str,
+        seen: set | None = None,
+    ) -> list:
+        """`tail` resolved on the BASES of a class, skipping its own declaration.
+
+        What `super().m()` needs: resolving from the class itself would find the
+        overriding method that contains the `super()` call and never reach the base.
+        """
+        if seen is None:
+            seen = set()
+        candidate = f"{constructed}.{tail}"
         # Inherited rather than declared on the constructed class. The `self.m()`
         # spelling already walked the bases, so a call through an instance gave up where
         # a call from inside the class did not.
@@ -879,9 +943,16 @@ class _FileFacts:
             return [(self.path, qualname) for qualname in inherited]
         # A first-party base imported from another module. The lookup searched this file
         # only, and most base classes in this tree are imported.
-        crossed = self._imported_base_method(constructed, tail)
-        if crossed is not None:
-            return [crossed]
+        crossed = self._imported_base_method(constructed, tail, seen)
+        if crossed:
+            return crossed
+        # Further up a local chain: a grandparent that declares the method.
+        for base in self.bases.get(constructed, ()):
+            if base == constructed:
+                continue
+            deeper = self._methods_on(base, tail, seen)
+            if deeper:
+                return deeper
         # An imported class: the instance carries the dotted target instead.
         file, module = self.index.resolve_module(candidate)
         if file is not None and module and candidate.startswith(module + "."):
@@ -890,8 +961,12 @@ class _FileFacts:
                 return [(file, qualname)]
         return []
 
-    def _imported_base_method(self, constructed: str, tail: str) -> tuple | None:
-        """`class Child(Base)` where `Base` came from another first-party module."""
+    def _imported_base_method(self, constructed: str, tail: str, seen: set) -> list:
+        """`class Child(Base)` where `Base` came from another first-party module.
+
+        Recurses into the defining file, so a chain that crosses a file boundary more
+        than once still resolves.
+        """
         for base in self.bases.get(constructed, ()):
             for dotted in self._targets(base):
                 full = f"{dotted}.{tail}"
@@ -901,8 +976,16 @@ class _FileFacts:
                 qualname = full[len(module) + 1 :]
                 defining = self.index.facts.get(file)
                 if qualname and (defining is None or qualname in defining.functions):
-                    return (file, qualname)
-        return None
+                    return [(file, qualname)]
+                if defining is None or defining is self:
+                    continue
+                # The base is there but does not declare the method either, so keep
+                # walking from the base's own file.
+                owner = dotted.rpartition(".")[2]
+                deeper = defining._methods_on(owner, tail, seen)
+                if deeper:
+                    return deeper
+        return []
 
     def callable_alias(
         self,
@@ -948,10 +1031,13 @@ class _FileFacts:
         # argument to a sink was invisible from every subclass call site.
         if isinstance(callee, ast.Attribute) and isinstance(callee.value, ast.Call):
             if _call_name(callee.value.func).rpartition(".")[2] == "super" and class_name:
-                for base in self.bases.get(class_name, ()):
-                    candidate = f"{base}.{callee.attr}"
-                    if candidate in self.functions:
-                        return [(self.path, candidate)]
+                # Through the shared resolver, so an inherited method defined in another
+                # first-party module is reached. Checking this file only meant a tainted
+                # argument handed to `super().execute(...)` never entered an imported
+                # base, which is how most of this tree is laid out.
+                inherited = self._inherited_methods_on(class_name, callee.attr)
+                if inherited:
+                    return inherited
                 return []
         # `Child().execute(...)`: a method on a fresh instance. `_call_name` cannot
         # reduce a Call to a name, so the callee did not resolve at all and every method
@@ -1127,7 +1213,10 @@ class _TaintPass(ast.NodeVisitor):
         # local name -> class it was constructed from, for `parser = Parser()`
         self.instance_types: dict[str, tuple] = dict(facts.module_instances)
         # local name -> the sink it refers to, for `loader = importlib.import_module`
-        self.sink_aliases: dict[str, str] = dict(facts.module_sink_aliases)
+        # Every sink a name was bound to, not just the first: `action = subprocess.run`
+        # then `action = sys.path.insert` runs the second, and the two watch different
+        # argument positions, so keeping one examined the wrong index.
+        self.sink_aliases: dict[str, tuple] = dict(facts.module_sink_aliases)
         # local name -> every first-party callable it refers to, for `runner = execute`
         self.callable_aliases: dict[str, tuple] = dict(facts.module_callable_aliases)
         # local name -> the source it refers to, for `decode = json.loads`. Sink aliases
@@ -1531,10 +1620,13 @@ class _TaintPass(ast.NodeVisitor):
         # does not canonically match a sink, so it was discarded and the second alias
         # walked past the gate. One hop per pass, and the fixpoint settles the chain.
         chained = self.sink_aliases.get(referenced)
-        if chained is not None:
+        if chained:
             for target in node.targets:
                 if isinstance(target, ast.Name):
-                    self.sink_aliases.setdefault(target.id, chained)
+                    for candidate in chained:
+                        self.sink_aliases[target.id] = _with(
+                            self.sink_aliases.get(target.id), candidate
+                        )
             return
         sink = _matches_any(self.facts.canonicals(referenced), SINKS)
         if sink is None:
@@ -1545,7 +1637,7 @@ class _TaintPass(ast.NodeVisitor):
             return
         for target in node.targets:
             if isinstance(target, ast.Name):
-                self.sink_aliases.setdefault(target.id, sink)
+                self.sink_aliases[target.id] = _with(self.sink_aliases.get(target.id), sink)
 
     def seed_defaults(self) -> None:
         """`def execute(argv = CONFIG["argv"])` runs the default when a caller omits it.
@@ -1699,6 +1791,7 @@ class _TaintPass(ast.NodeVisitor):
             dict(self.instance_types),
             dict(self.sink_aliases),
             dict(self.callable_aliases),
+            dict(self.source_aliases),
         )
         # The nested body's `return` is the nested function's output, not this one's.
         # Leaving it set made an outer function that returns a fixed literal carry a
@@ -1726,6 +1819,10 @@ class _TaintPass(ast.NodeVisitor):
             saved[2],
             saved[3],
         )
+        # The source table too: a nested helper binding `decode = json.loads` made the
+        # OUTER function's own safe `decode` read as a deserialiser, so a benign call
+        # was reported even when the nested helper is never invoked.
+        self.source_aliases = saved[4]
 
     def visit_ListComp(self, node: ast.ListComp) -> None:
         self._visit_comprehension(node)
@@ -1985,18 +2082,25 @@ class _TaintPass(ast.NodeVisitor):
 
     def _check_sink(self, node: ast.Call) -> None:
         names = self.facts.canonicals(_call_name(node.func))
-        sink = _matches_any(names, SINKS)
-        if sink is None:
+        matched = _matches_any(names, SINKS)
+        candidates = [matched] if matched is not None else []
+        if not candidates:
             # `loader = importlib.import_module` then `loader(name)`. Matched only under
             # the textual name `loader`, so an ordinary local alias walked past the gate.
-            aliased = self.sink_aliases.get(_call_name(node.func))
             # getattr is not in SINKS; it has its own check because it needs the holder
             # inspected, so an alias of it has to go there rather than into this table.
-            if aliased is not None and aliased != "getattr":
-                sink = aliased
-        if sink is None:
+            candidates = [
+                aliased
+                for aliased in self.sink_aliases.get(_call_name(node.func)) or ()
+                if aliased != "getattr"
+            ]
+        if not candidates:
             self._check_getattr(node)
             return
+        for sink in candidates:
+            self._check_one_sink(node, sink)
+
+    def _check_one_sink(self, node: ast.Call, sink: str) -> None:
         positions, keywords = SINKS[sink]
         for index in positions:
             if index < len(node.args):
@@ -2026,10 +2130,9 @@ class _TaintPass(ast.NodeVisitor):
         # resolve` left the holder-alias support in place while the alias of this sink
         # itself was skipped. A local alias counts too.
         called = _call_name(node.func)
-        is_getattr = (
-            _matches_any(self.facts.canonicals(called), {"getattr", "builtins.getattr"}) is not None
-            or self.sink_aliases.get(called) == "getattr"
-        )
+        is_getattr = _matches_any(
+            self.facts.canonicals(called), {"getattr", "builtins.getattr"}
+        ) is not None or "getattr" in (self.sink_aliases.get(called) or ())
         if not is_getattr or len(node.args) < 2:
             return
         holder = node.args[0]
@@ -2273,7 +2376,7 @@ def _remote_code_defaults(facts: _FileFacts) -> list[dict]:
     return findings
 
 
-def _unpinned_code_fetches(facts: _FileFacts, reached: dict[str, frozenset]) -> list[dict]:
+def _unpinned_code_fetches(facts: _FileFacts, reached: frozenset) -> list[dict]:
     """A download with no `revision` whose bytes the same function then imports.
 
     `snapshot_download(repo)` without a revision resolves to whatever the branch points
@@ -2290,16 +2393,20 @@ def _unpinned_code_fetches(facts: _FileFacts, reached: dict[str, frozenset]) -> 
     co-location while none of the fetched bytes are executed.
 
     The test is whether the fetched value REACHES the import, which the taint analysis
-    has already decided: `reached` carries, per function, the identity of each download
-    whose value arrived at an import sink. Correlation, not proximity, and per download
-    rather than per function: a function that pins the code it imports and separately
-    downloads weights used to have the weights fetch reported, because a function-wide
-    boolean cannot say which of the two the sink actually consumed.
+    has already decided: `reached` carries the identity of each download whose value
+    arrived at an import sink. Correlation, not proximity, and per download rather than
+    per function: a function that pins the code it imports and separately downloads
+    weights used to have the weights fetch reported, because a function-wide boolean
+    cannot say which of the two the sink actually consumed.
+
+    The identity is the fetch's own file and line, so the set is global rather than
+    keyed by the sink's qualname. Keying it by the sink meant a download returned by one
+    helper and imported by another was never correlated at all: dropping a `revision`
+    changed only the helper, the sink's allowance stayed valid, and nothing was reported.
     """
     findings: list[dict] = []
     for qualname, node in sorted(facts.functions.items()):
-        arrived = reached.get(qualname) or frozenset()
-        if not arrived:
+        if not reached:
             continue
         fetches: list[ast.Call] = []
         for child in ast.walk(node):
@@ -2315,7 +2422,7 @@ def _unpinned_code_fetches(facts: _FileFacts, reached: dict[str, frozenset]) -> 
                 continue
             # Same identity the taint reason carries, so this is the download the sink
             # read and not merely one of the downloads in the same body.
-            if f"{source}()@{facts.relative}:{child.lineno}" not in arrived:
+            if f"{source}()@{facts.relative}:{child.lineno}" not in reached:
                 continue
             fetches.append(child)
         for call in fetches:
@@ -2362,6 +2469,10 @@ def _settle(facts: _FileFacts, qualname: str, nodes: list, state: "_State"):
     # the object would otherwise never resolve on any pass.
     instances: dict[str, str] = {}
     aliases: dict[str, str] = {}
+    # Carried like the others: a source bound on a loop backedge, after its first
+    # lexical use, was dropped between passes and the sink was never revisited with the
+    # name recognised as a deserialiser.
+    sources: dict[str, str] = {}
     callables: dict[str, str] = {}
     visitor = None
     for _ in range(_LOCAL_BOUND):
@@ -2369,6 +2480,7 @@ def _settle(facts: _FileFacts, qualname: str, nodes: list, state: "_State"):
         visitor.local_reasons.update(reasons)
         visitor.instance_types.update(instances)
         visitor.sink_aliases.update(aliases)
+        visitor.source_aliases.update(sources)
         visitor.callable_aliases.update(callables)
         visitor.seed_defaults()
         for child in nodes:
@@ -2383,12 +2495,14 @@ def _settle(facts: _FileFacts, qualname: str, nodes: list, state: "_State"):
             visitor.local_reasons == reasons
             and visitor.instance_types == instances
             and visitor.sink_aliases == aliases
+            and visitor.source_aliases == sources
             and visitor.callable_aliases == callables
         ):
             return visitor, True
         reasons = dict(visitor.local_reasons)
         instances = dict(visitor.instance_types)
         aliases = dict(visitor.sink_aliases)
+        sources = dict(visitor.source_aliases)
         callables = dict(visitor.callable_aliases)
     return visitor, False
 
@@ -2535,14 +2649,19 @@ def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
     )
 
     findings: list[dict] = []
+    # (facts, the download identities that reached an import in that file). The rule
+    # runs after the loop against the union, so a fetch in one file and the import it
+    # feeds in another are correlated.
+    pending_fetches: list = []
+    all_reached: set = set()
     for path, facts in sorted(facts_by_path.items()):
-        reached: dict[str, frozenset] = {}
+        reached: set = set()
         for qualname, node in sorted(facts.functions.items()):
             visitor, converged = _settle(facts, qualname, list(ast.iter_child_nodes(node)), state)
             if not converged:
                 unconverged.add(f"{facts.relative}::{qualname}")
             found = visitor.findings if visitor is not None else []
-            reached[qualname] = frozenset(
+            reached.update(
                 f["why"]
                 for f in found
                 if f["sink"] in _IMPORT_SINKS
@@ -2588,7 +2707,15 @@ def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
         if module_visitor is not None:
             findings.extend(module_visitor.findings)
         findings.extend(_remote_code_defaults(facts))
-        findings.extend(_unpinned_code_fetches(facts, reached))
+        # Deferred until every file has been settled, because a download returned by a
+        # helper in one file and imported in another is only correlated once both sides
+        # have been seen.
+        pending_fetches.append(facts)
+        all_reached.update(reached)
+
+    frozen = frozenset(all_reached)
+    for facts in pending_fetches:
+        findings.extend(_unpinned_code_fetches(facts, frozen))
 
     if not settled:
         unconverged.add(f"<whole scan>::interprocedural fixpoint")
