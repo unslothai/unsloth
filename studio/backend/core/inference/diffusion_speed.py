@@ -334,7 +334,8 @@ def compile_eligible(target: Any, *, is_gguf: bool, family: Any) -> bool:
     dtype = getattr(target, "dtype", None)
     if _is_bfloat16(dtype):
         return True
-    # fp16-incompatible families run in fp32 though video passes the fp16 target; fp32 compile is unmeasured.
+    # fp16-incompatible families run in fp32 (unmeasured under compile) or in fp16 behind diffusion_fp16_guard, which
+    # must stay eager: the int8 fused MLP installed for compile replaces the guard's FFN forward.
     if bool(getattr(family, "fp16_incompatible", False)):
         return False
     return _is_float16(dtype) and _fp16_compile_capable(target)
