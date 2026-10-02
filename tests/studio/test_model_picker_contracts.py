@@ -2103,13 +2103,18 @@ def test_staged_downloads_always_scope_their_files():
     it would finish instantly having fetched everything except the weights and leave the
     repo on device unloadable."""
     src = _read("features/hub/download-manager/use-staged-download.ts")
-    start = re.search(r"downloadManager\.requestStart\(\{.*?\}\);", src, re.S)
+    # A GGUF quant entry goes out as the standard variant download (its plan brings companions);
+    # every other entry is the scoped branch.
+    start = re.search(r"downloadManager\.requestStart\(.*?\n      \);", src, re.S)
     assert start, "requestStart call not found"
     body = start.group(0)
     # Unconditional: no branch may send a null scope or omit the files.
     assert "scopeId," in body and "files: current.files," in body
     assert "? null" not in body and "? undefined" not in body
-    assert "const activeVariant = current ? scopedVariant(scopeId) : null;" in src
+    assert re.search(
+        r"const activeVariant = current\s*\?\s*\(current\.ggufVariant \?\? scopedVariant\(scopeId\)\)\s*:\s*null;",
+        src,
+    )
 
 
 def test_staged_downloads_use_one_actionable_download_surface():
@@ -2154,7 +2159,7 @@ def test_staged_plans_label_the_checkpoint_without_guessing_from_the_extension()
 
     staged = _read("features/hub/download-manager/use-staged-download.ts")
     assert "checkpoint?: boolean;" in staged
-    start = re.search(r"downloadManager\.requestStart\(\{.*?\}\);", staged, re.S)
+    start = re.search(r"downloadManager\.requestStart\(.*?\n      \);", staged, re.S)
     assert start, "requestStart call not found"
     assert "checkpoint: current.checkpoint," in start.group(0)
 
