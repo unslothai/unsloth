@@ -3966,3 +3966,250 @@ def test_a_nested_key_only_dict_does_not_clear_the_outer_one(tmp_path):
         "        subprocess.run(command)\n",
     )
     assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_module_level_partial_is_collected(tmp_path):
+    """Module-scope `add_path = functools.partial(sys.path.insert, 0)`.
+
+    The module-scope collector asked only whether the call constructs a class and then
+    moved on, so neither the wrapped sink nor its layout was ever seeded into a function
+    visitor and a call from any function in the file reported nothing.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, functools, sys\n"
+        "add_path = functools.partial(sys.path.insert, 0)\n"
+        "def load(blob):\n"
+        "    return add_path(json.loads(blob)['path'])\n",
+    )
+    assert "sys.path.insert" in _sinks(findings)
+
+
+def test_a_module_level_partial_around_a_helper_is_collected(tmp_path):
+    """The same at module scope for a first-party helper rather than a sink."""
+    (tmp_path / "producer.py").write_text(
+        "import subprocess\ndef execute(command):\n    return subprocess.run(command)\n",
+        encoding = "utf-8",
+    )
+    consumer = tmp_path / "consumer.py"
+    consumer.write_text(
+        "import json, functools\nfrom producer import execute\n"
+        "runner = functools.partial(execute)\n"
+        "def load(blob):\n"
+        "    return runner(json.loads(blob)['command'])\n",
+        encoding = "utf-8",
+    )
+    findings = L.scan([tmp_path / "producer.py", consumer], roots = [tmp_path])
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_module_level_partial_around_a_literal_is_quiet(tmp_path):
+    """The guard, and that an ordinary module-scope sink alias is unaffected."""
+    wrapped = _scan(
+        tmp_path,
+        "import functools, sys\n"
+        "add_path = functools.partial(sys.path.insert, 0)\n"
+        "def load():\n"
+        "    return add_path('/opt/fixed')\n",
+        name = "wrapped.py",
+    )
+    plain = _scan(
+        tmp_path,
+        "import json, importlib\n"
+        "loader = importlib.import_module\n"
+        "def load(blob):\n"
+        "    return loader(json.loads(blob)['module'])\n",
+        name = "plain.py",
+    )
+    assert _sinks(wrapped) == set()
+    assert "importlib.import_module" in _sinks(plain)
+
+
+def test_nested_partials_accumulate_their_offsets(tmp_path):
+    """`invoke = partial(add_path)` around a partial that already bound a position.
+
+    The second wrapper counted only its own arguments, so it recorded no offset and the
+    call was checked back at the original sink's position 1, which the first wrapper had
+    already filled.
+    """
+    local = _scan(
+        tmp_path,
+        "import json, functools, sys\n"
+        "def load(blob):\n"
+        "    add_path = functools.partial(sys.path.insert, 0)\n"
+        "    invoke = functools.partial(add_path)\n"
+        "    return invoke(json.loads(blob)['path'])\n",
+        name = "local.py",
+    )
+    at_module = _scan(
+        tmp_path,
+        "import json, functools, sys\n"
+        "add_path = functools.partial(sys.path.insert, 0)\n"
+        "invoke = functools.partial(add_path)\n"
+        "def load(blob):\n"
+        "    return invoke(json.loads(blob)['path'])\n",
+        name = "at_module.py",
+    )
+    assert "sys.path.insert" in _sinks(local)
+    assert "sys.path.insert" in _sinks(at_module)
+
+
+def test_a_partial_checks_every_sink_its_target_can_be(tmp_path):
+    """`action = subprocess.run` then `action = sys.path.insert`, wrapped in a partial.
+
+    Keeping the first candidate meant the wrapper was checked against a sink whose
+    watched position the offset had already removed, so the sink it really calls was
+    never checked at all and nothing was reported.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, functools, subprocess, sys\n"
+        "def load(blob):\n"
+        "    action = subprocess.run\n"
+        "    action = sys.path.insert\n"
+        "    wrapper = functools.partial(action, 0)\n"
+        "    return wrapper(json.loads(blob)['path'])\n",
+    )
+    assert "sys.path.insert" in _sinks(findings)
+
+
+def test_a_property_on_a_fresh_instance_resolves(tmp_path):
+    """`importlib.import_module(Config().module)`, with no name for the receiver.
+
+    The receiver is the construction itself, which has no spelling, so the getter lookup
+    gave up before it started even though the construction is right there to resolve.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, importlib\n"
+        "from huggingface_hub import hf_hub_download\n"
+        "class Config:\n"
+        "    @property\n"
+        "    def module(self):\n"
+        "        return json.load(open(hf_hub_download('r', 'c.json')))['module']\n"
+        "def go():\n"
+        "    return importlib.import_module(Config().module)\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_fresh_instance_property_returning_a_literal_is_quiet(tmp_path):
+    """The guard: resolving the construction is not by itself a finding."""
+    findings = _scan(
+        tmp_path,
+        "import importlib\n"
+        "class Config:\n"
+        "    @property\n"
+        "    def module(self):\n"
+        "        return 'torch'\n"
+        "def go():\n"
+        "    return importlib.import_module(Config().module)\n",
+    )
+    assert _sinks(findings) == set()
+
+
+def test_a_nonlocal_sink_rebinding_reaches_the_enclosing_scope(tmp_path):
+    """`nonlocal action; action = subprocess.run` in a helper, called in the outer scope.
+
+    Only the taint reason was carried out of a nested body for `nonlocal` names, and the
+    alias tables were restored unconditionally, so the outer `action(parsed)` matched
+    neither the canonical table nor any alias.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def load(blob):\n"
+        "    action = len\n"
+        "    def setup():\n"
+        "        nonlocal action\n"
+        "        action = subprocess.run\n"
+        "    setup()\n"
+        "    return action(json.loads(blob)['command'])\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_nonlocal_taint_rebinding_still_reaches_the_enclosing_scope(tmp_path):
+    """The guard for that restructuring: the taint reason itself still comes out."""
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def load(blob):\n"
+        "    command = 'ls'\n"
+        "    def setup():\n"
+        "        nonlocal command\n"
+        "        command = json.loads(blob)['command']\n"
+        "    setup()\n"
+        "    return subprocess.run(command)\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_an_instance_built_in_a_class_body_resolves_for_methods(tmp_path):
+    """`class App: runner = Runner()` then `self.runner.execute(parsed)`.
+
+    Class-body settlement published the tainted bindings and discarded the types, so the
+    shared collaborator a class declares this way had no type and the method behind it
+    resolved to nothing.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "class Runner:\n"
+        "    def execute(self, command):\n"
+        "        return subprocess.run(command)\n"
+        "class App:\n"
+        "    runner = Runner()\n"
+        "    def go(self, blob):\n"
+        "        return self.runner.execute(json.loads(blob)['command'])\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_nested_parameter_masks_the_enclosing_binding(tmp_path):
+    """An outer tainted `command` and `def helper(command)` called with a literal.
+
+    The nested body was walked with every enclosing binding still live, so the parameter
+    never shadowed the outer name and the helper reported a finding on a value it cannot
+    receive. Masking costs nothing: the nested body is also analysed under its own
+    qualname with its parameters bound by its real callers.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def load(blob):\n"
+        "    command = json.loads(blob)['command']\n"
+        "    def helper(command):\n"
+        "        return subprocess.run(command)\n"
+        "    return helper('ls')\n",
+    )
+    assert _sinks(findings) == set()
+
+
+def test_a_real_caller_of_that_helper_is_still_reported(tmp_path):
+    """The guard, two ways: a tainted argument, and a closure over the outer name.
+
+    Masking the parameter must not lose the case the mask exists to make precise, nor
+    the case where the nested body reads the enclosing name rather than shadowing it.
+    """
+    passed = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def load(blob):\n"
+        "    def helper(command):\n"
+        "        return subprocess.run(command)\n"
+        "    return helper(json.loads(blob)['command'])\n",
+        name = "passed.py",
+    )
+    closed_over = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def load(blob):\n"
+        "    command = json.loads(blob)['command']\n"
+        "    def helper():\n"
+        "        return subprocess.run(command)\n"
+        "    return helper()\n",
+        name = "closed_over.py",
+    )
+    assert "subprocess.run" in _sinks(passed)
+    assert "subprocess.run" in _sinks(closed_over)
