@@ -29,7 +29,7 @@ def lookup_manual_markers(model_name):
     return template, None, None
 
 
-def _mask_tool_responses(trainer, start_id, end_id):
+def _mask_tool_responses(trainer, start_id, end_ids):
     def mask(batch):
         all_labels = []
         for input_ids, labels in zip(batch["input_ids"], batch["labels"]):
@@ -41,7 +41,7 @@ def _mask_tool_responses(trainer, start_id, end_id):
                         labels[i] = -100
                     if token == start_id:
                         inside = True
-                    elif token == end_id:
+                    elif token in end_ids:
                         inside = False
             all_labels.append(labels)
         return {"labels": all_labels}
@@ -109,12 +109,14 @@ def apply_completion_masking(
 
     # Gemma 4 puts tool results inside the model turn; MLX labels its batches inside train_fn, out of reach here.
     vocab = inner.get_added_vocab() if hasattr(inner, "get_added_vocab") else {}
-    tool_response = (vocab.get("<|tool_response>"), vocab.get("<tool_response|>"))
-    if None not in tool_response and type(trainer).__name__ != "MLXTrainer":
+    start_id, end_id = vocab.get("<|tool_response>"), vocab.get("<tool_response|>")
+    if None not in (start_id, end_id) and type(trainer).__name__ != "MLXTrainer":
         mask_responses = train_fn
+        # A tool call with no result leaves the start marker open, so the next turn also ends the span.
+        end_ids = {end_id, vocab.get("<|turn>")} - {None}
 
         def train_fn(trainer, **kwargs):
-            return _mask_tool_responses(mask_responses(trainer, **kwargs), *tool_response)
+            return _mask_tool_responses(mask_responses(trainer, **kwargs), start_id, end_ids)
 
     if dataset_template is not None:
         markers = TEMPLATE_TO_RESPONSES_MAPPER.get(dataset_template)

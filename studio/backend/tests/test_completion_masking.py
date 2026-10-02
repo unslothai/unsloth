@@ -449,31 +449,28 @@ def _gemma4_tokenizer():
     return tokenizer
 
 
-def test_gemma4_tool_output_is_not_trained():
+_WEATHER_CALL = {
+    "role": "assistant",
+    "content": "",
+    "tool_calls": [
+        {
+            "id": "c1",
+            "type": "function",
+            "function": {"name": "get_weather", "arguments": {"city": "Paris"}},
+        }
+    ],
+}
+
+
+def _gemma4_trained_text(*conversations):
     zoo = pytest.importorskip("unsloth_zoo.dataset_utils")
     from datasets import Dataset
 
     tokenizer = _gemma4_tokenizer()
-    payload = "\n".join(f"Station {i}: {i * 3} degrees, wind {i * 2} km/h" for i in range(20))
-    conversation = [
-        {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": "What's the weather in Paris?"},
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {
-                    "id": "c1",
-                    "type": "function",
-                    "function": {"name": "get_weather", "arguments": {"city": "Paris"}},
-                }
-            ],
-        },
-        {"role": "tool", "tool_call_id": "c1", "name": "get_weather", "content": payload},
-        {"role": "assistant", "content": "It is mild in Paris today."},
-    ]
-    text = tokenizer.apply_chat_template(conversation, tokenize = False)
-    input_ids = tokenizer(text, add_special_tokens = False)["input_ids"]
+    input_ids = []
+    for conversation in conversations:
+        text = tokenizer.apply_chat_template(conversation, tokenize = False)
+        input_ids += tokenizer(text, add_special_tokens = False)["input_ids"]
 
     def train_on_responses_only(trainer, **kwargs):
         mask = zoo.train_on_responses_only(
@@ -490,11 +487,43 @@ def test_gemma4_tool_output_is_not_trained():
     trainer, applied = apply_completion_masking(
         trainer, "unsloth/gemma-4-E2B-it", train_on_responses_only
     )
-
-    labels = trainer.train_dataset[0]["labels"]
-    trained = tokenizer.decode([t for t, label in zip(input_ids, labels) if label != -100])
     assert applied is True
+    labels = trainer.train_dataset[0]["labels"]
+    return tokenizer.decode([t for t, label in zip(input_ids, labels) if label != -100])
+
+
+def test_gemma4_tool_output_is_not_trained():
+    payload = "\n".join(f"Station {i}: {i * 3} degrees, wind {i * 2} km/h" for i in range(20))
+    trained = _gemma4_trained_text(
+        [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "What's the weather in Paris?"},
+            _WEATHER_CALL,
+            {"role": "tool", "tool_call_id": "c1", "name": "get_weather", "content": payload},
+            {"role": "assistant", "content": "It is mild in Paris today."},
+        ]
+    )
     assert "Station" not in trained
     assert "<|tool_call>call:get_weather" in trained
     assert "<|tool_response>" in trained
     assert "It is mild in Paris today." in trained
+
+
+def test_gemma4_unanswered_tool_call_keeps_later_turns_trained():
+    unanswered = [{"role": "user", "content": "What's the weather in Paris?"}, _WEATHER_CALL]
+    trained = _gemma4_trained_text(
+        unanswered
+        + [
+            {"role": "user", "content": "Never mind, say hi."},
+            {"role": "assistant", "content": "Hi there."},
+        ]
+    )
+    assert "Hi there." in trained
+    packed = _gemma4_trained_text(
+        unanswered,
+        [
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hello, how can I help?"},
+        ],
+    )
+    assert "Hello, how can I help?" in packed
