@@ -317,6 +317,13 @@ test("a diffusion load sends managed in place of a custom config, never omits it
     2,
     "compare validate and load reset a diffusion target too",
   );
+  // Both GGUF autoload paths record what launched, including the default-model fallback.
+  assert.equal(
+    readSrc("features/chat/api/chat-adapter.ts").split(
+      "...loadedLlamaCppConfigFields(loadResp",
+    ).length - 1,
+    2,
+  );
   assert.deepEqual(llamaCppConfigPayload(custom, { isDiffusion: true }), {
     llama_cpp_config: managed,
   });

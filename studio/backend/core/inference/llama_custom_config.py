@@ -138,12 +138,25 @@ def _sections(ini: str) -> dict[str, dict[str, str]]:
     return sections
 
 
+def _polarity(block: str) -> tuple[list[str], list[str]]:
+    """Positive and negative spellings from a help block's declaration line.
+
+    llama.cpp prints args then args_neg, each run ending in its long form:
+    ``-kvo, --kv-offload, -nkvo, --no-kv-offload``."""
+    head = re.match(r"(-[\w.-]+(?:, -[\w.-]+)*)", block or "")
+    names = head[1].split(", ") if head else []
+    cut = next((i + 1 for i, n in enumerate(names) if n.startswith("--")), len(names))
+    return names[:cut], names[cut:]
+
+
 def _spelling(key: str, flags: Mapping) -> str | None:
     found = next((f for f in (f"--{key}", f"-{key}") if f in flags), None)
     if found is None and re.fullmatch(r"[A-Z][A-Z0-9_]*", key):
-        # Presets may name an option by its env variable, which its help block lists.
-        marker = f"(env: {key})"
-        found = max((f for f, d in flags.items() if d and marker in d), key = len, default = None)
+        # Presets may name an option by its env variable, which maps to the option itself.
+        block = next((d for d in flags.values() if d and f"(env: {key})" in d), None)
+        if block is not None:
+            positive = [f for f in _polarity(block)[0] if f in flags]
+            found = max(positive, key = len, default = None)
     return found
 
 
@@ -212,12 +225,13 @@ def compile_custom_config(source, flags: Mapping, switch_flags) -> CompiledCusto
         if flag in switches:
             if value.lower() not in _TRUE | _FALSE:
                 raise CustomConfigError(f"'{key[:80]}' needs true or false")
-            # Like common/preset.cpp: a negative alias (-nocb, --no-x) inverts the value, and
+            # Like common/preset.cpp: a negative alias (-nkvo, --no-x) inverts the value, and
             # false on a switch with no negative form is dropped.
-            group = [f for f in switches if f in flags and flags[f] == identity] or [flag]
-            negative = [f for f in group if f.lstrip("-").startswith("no")]
+            positive, negative = _polarity(identity)
+            if flag not in positive + negative:
+                positive, negative = [flag], []
             on = (value.lower() in _TRUE) != (flag in negative)
-            pick = [f for f in group if (f in negative) != on]
+            pick = [f for f in (positive if on else negative) if f in flags]
             if not pick:
                 continue
             flag = flag if flag in pick else max(pick, key = len)

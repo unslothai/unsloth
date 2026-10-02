@@ -4101,6 +4101,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           loadedVisionDisabledByUser:
             loadResp.vision_disabled_by_user ?? false,
           ...managedGpuMemoryFields(loadResp),
+          // The request omits llama_cpp_config, so a saved custom source may be what launched.
+          ...loadedLlamaCppConfigFields(loadResp, undefined),
           // Drives the GPU Memory controls' diffusion gate; set on every load path so the gate cannot read stale.
           loadedIsDiffusion: loadResp.is_diffusion ?? false,
           defaultChatTemplate: loadResp.chat_template ?? null,

@@ -18,12 +18,24 @@ _OPTIONS = (
     "--mmproj-offload --no-mmproj-offload; --no-mmproj; --mmproj-auto --no-mmproj-auto; --jinja --no-jinja; -dev --device; "
     "-ctk --cache-type-k; --host; --cache-prompt --no-cache-prompt; -mmdev --mmproj-device; "
     "-sp --special; -cb --cont-batching -nocb --no-cont-batching; "
+    "-kvo --kv-offload -nkvo --no-kv-offload; "
     "-md --model-draft --spec-draft-model; -hfd --hf-repo-draft --spec-draft-hf; "
     "-devd --device-draft; --kv-unified-per-slot; --reasoning-budget; --reasoning-budget-message"
 )
 # Like the probe: every spelling of one option maps to that option's help block.
-FLAGS = {flag: group for group in _OPTIONS.split("; ") for flag in group.split()}
+FLAGS = {
+    flag: ", ".join(group.split())
+    + " (env: LLAMA_ARG_"
+    + group.split()[-1].lstrip("-").upper().replace("-", "_")
+    + ")"
+    for group in _OPTIONS.split("; ")
+    for flag in group.split()
+}
 SWITCHES = {
+    "-kvo",
+    "--kv-offload",
+    "-nkvo",
+    "--no-kv-offload",
     "--no-mmproj",
     "--mmproj-auto",
     "--no-mmproj-auto",
@@ -125,6 +137,10 @@ def test_defaults_outside_the_chat_schema_are_refused(ini):
         ("nocb=true", ("-nocb",)),
         ("cont-batching=off", ("--no-cont-batching",)),
         ("no-warmup=true", ("--no-warmup",)),
+        ("nkvo=false", ("--kv-offload",)),
+        ("nkvo=true", ("-nkvo",)),
+        ("LLAMA_ARG_NO_KV_OFFLOAD=true", ("--kv-offload",)),
+        ("LLAMA_ARG_NO_KV_OFFLOAD=false", ("--no-kv-offload",)),
     ],
 )
 def test_switches_follow_upstream_preset_semantics(ini, argv):
