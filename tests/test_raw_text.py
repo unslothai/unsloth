@@ -800,6 +800,81 @@ def test_validate_dataset_reports_zero_min_length_when_nothing_has_content():
     return True
 
 
+def _eos_tokenizer():
+    class Tokenizer:
+        eos_token_id = 99
+        eos_token = "</s>"
+
+        def __call__(self, text, **kwargs):
+            return {"input_ids": [[int(word) for word in text.split()]]}
+
+        def decode(self, ids, **kwargs):
+            return "".join(f" {i}" for i in ids)
+
+    return Tokenizer()
+
+
+def test_tokenized_chunks_reserve_space_for_the_final_eos():
+    for size in (2, 4):
+        for stride in range(size):
+            loader = RawTextDataLoader(_eos_tokenizer(), chunk_size = size, stride = stride)
+            for count in (size - 1, size, 2 * size - stride, 2 * size, 3 * size):
+                if count == 0:
+                    continue
+                chunks = loader.chunk_text(" ".join(map(str, range(count))))
+                assert all(len(chunk["input_ids"]) <= size for chunk in chunks)
+                assert all(chunk["input_ids"] != [99] for chunk in chunks)
+                assert all(
+                    len(chunk["attention_mask"]) == len(chunk["input_ids"]) for chunk in chunks
+                )
+                assert chunks[-1]["input_ids"][-1] == 99
+                restored = list(chunks[0]["input_ids"])
+                for chunk in chunks[1:]:
+                    restored.extend(t for t in chunk["input_ids"] if t not in restored)
+                assert restored == list(range(count)) + [99]
+                # A chunk's first token is never a label: the last content token must still be one.
+                labelled = {t for chunk in chunks for t in chunk["input_ids"][1:]}
+                assert count < 2 or count - 1 in labelled
+                if stride == 0 and count % size == 0:
+                    # The EOS gets a full window of context, not a [token, EOS] row.
+                    assert len(chunks[-1]["input_ids"]) == size
+                dataset = loader.create_causal_dataset(chunks)
+                assert dataset["labels"] == dataset["input_ids"]
+
+
+def test_text_chunks_reserve_space_for_the_final_eos():
+    # MLX trains on text chunks and truncates at max_seq_length, which would drop an overflowing EOS.
+    for size in (2, 4):
+        for stride in range(size):
+            loader = RawTextDataLoader(_eos_tokenizer(), chunk_size = size, stride = stride)
+            for count in (size - 1, size, 2 * size - stride, 2 * size, 3 * size):
+                if count == 0:
+                    continue
+                chunks = loader.chunk_text(" ".join(map(str, range(count))), return_tokenized = False)
+                pieces = [chunk.replace("</s>", " </s>").split() for chunk in chunks]
+                assert all(len(piece) <= size for piece in pieces)
+                assert all(piece != ["</s>"] for piece in pieces)
+                assert pieces[-1][-1] == "</s>"
+                restored = list(pieces[0])
+                for piece in pieces[1:]:
+                    restored.extend(t for t in piece if t not in restored)
+                assert restored == [str(i) for i in range(count)] + ["</s>"]
+                labelled = {t for piece in pieces for t in piece[1:]}
+                assert count < 2 or str(count - 1) in labelled
+
+
+def test_chunk_size_one_keeps_the_final_eos_overflow():
+    # Reserving here would only produce a lone-EOS chunk.
+    loader = RawTextDataLoader(_eos_tokenizer(), chunk_size = 1, stride = 0)
+    for count in (1, 2, 3):
+        chunks = loader.chunk_text(" ".join(map(str, range(count))))
+        assert all(chunk["input_ids"] != [99] for chunk in chunks)
+        assert all(len(chunk["attention_mask"]) == len(chunk["input_ids"]) for chunk in chunks)
+        assert chunks[-1]["input_ids"] == [count - 1, 99]
+        restored = [token for chunk in chunks for token in chunk["input_ids"]]
+        assert restored == list(range(count)) + [99]
+
+
 if __name__ == "__main__":
     success = test_raw_text_loader()
     test_clean_text_keeps_text_in_any_script()
@@ -815,4 +890,7 @@ if __name__ == "__main__":
     success = test_validate_dataset_accepts_objects_without_column_names() and success
     success = test_validate_dataset_streams_instead_of_materialising_columns() and success
     success = test_validate_dataset_reports_zero_min_length_when_nothing_has_content() and success
+    test_tokenized_chunks_reserve_space_for_the_final_eos()
+    test_text_chunks_reserve_space_for_the_final_eos()
+    test_chunk_size_one_keeps_the_final_eos_overflow()
     sys.exit(0 if success else 1)

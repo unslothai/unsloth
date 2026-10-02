@@ -100,6 +100,7 @@ from core.inference.tools import (
     build_rag_autoinject,
     execute_tool,
     is_high_risk_tool_call,
+    mcp_image_share,
     never_needs_approval,
 )
 from state.tool_approvals import (
@@ -1248,6 +1249,7 @@ async def stream_with_studio_tools(
     run: ToolLoopRun,
     policy: ToolLoopPolicy,
     cancel_event: threading.Event,
+    mcp_image = None,
 ) -> AsyncIterator[str]:
     """Stream a provider, execute requested Unsloth tools, continue to a final answer."""
     conversation = [dict(message) for message in run.messages]
@@ -1676,7 +1678,17 @@ async def stream_with_studio_tools(
             decision.provenance["round_id"] = round_id
             if not decision.should_execute:
                 completion = controller.record_noop(decision)
-                noop_messages.append(completion.model_message())
+                if getattr(transport, "tool_result_only_continuation", False):
+                    assistant_tool_calls.append(decision.as_assistant_tool_call())
+                    tool_messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": decision.tool_call_id,
+                            "content": completion.model_message()["content"],
+                        }
+                    )
+                else:
+                    noop_messages.append(completion.model_message())
                 # The provider's own tool_calls delta for this call was relayed verbatim while it streamed and the
                 # client painted a card from it. Nothing else closes that card, so without a terminal event it spins
                 # for the rest of the answer and then reads as a tool that ran and returned nothing. Keyed on the
@@ -1717,6 +1729,13 @@ async def stream_with_studio_tools(
             )
             if needs_confirmation and permission_mode == "auto":
                 needs_confirmation = is_high_risk_tool_call(name, arguments)
+            # Sending the user's image always asks, whatever the permission mode.
+            image_share = (
+                await asyncio.to_thread(mcp_image_share, name, arguments, mcp_image)
+                if mcp_image is not None
+                else None
+            )
+            needs_confirmation = needs_confirmation or image_share is not None
             approval_id = new_approval_id() if needs_confirmation else ""
             decision_slot = (
                 begin_tool_decision(session_id, approval_id) if needs_confirmation else None
@@ -1725,6 +1744,8 @@ async def stream_with_studio_tools(
             start_event = decision.tool_start_event()
             start_event["approval_id"] = approval_id
             start_event["awaiting_confirmation"] = needs_confirmation
+            if image_share is not None:
+                start_event["image_disclosure"] = image_share["disclosure"]
             denied = False
             try:
                 # A gated call has not started, so it must not read as running.
@@ -1840,6 +1861,8 @@ async def stream_with_studio_tools(
                 if accepts_output_callback(execute_tool):
                     kwargs["output_callback"] = output_callback
                 kwargs.update(search_images_kwargs(execute_tool, call.tool_name))
+                if image_share is not None:
+                    kwargs["mcp_image"] = image_share["image"]
                 return execute_tool(call.tool_name, call.arguments, **kwargs)
 
             # The same wrapper the local loops run tools through: live stdout for the card, and a heartbeat so a long
@@ -1981,7 +2004,8 @@ async def stream_with_studio_tools(
             spent_budget_passes += 1
             # The catalog is gone from here on, so say why rather than letting the next pass ask for a tool no longer
             # offered
-            _append_user_turn(conversation, _BUDGET_EXHAUSTED_NUDGE)
+            if not getattr(transport, "tool_result_only_continuation", False):
+                _append_user_turn(conversation, _BUDGET_EXHAUSTED_NUDGE)
 
     usage_line = _usage_chunk_line(model_name, usage_totals)
     if usage_line is not None:

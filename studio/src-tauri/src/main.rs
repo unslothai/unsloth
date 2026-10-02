@@ -1812,8 +1812,9 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     // template mode lets AppKit choose the correct monochrome color for the current menu bar.
     #[cfg(target_os = "macos")]
     let tray_icon = tauri::include_image!("./icons/tray-icon@2x.png");
+    // Supplied tray exports are monochrome; retain the existing Windows/Linux color pixels.
     #[cfg(not(target_os = "macos"))]
-    let tray_icon = app.default_window_icon().unwrap().clone();
+    let tray_icon = tauri::include_image!("./icons/tray-icon-color.png");
 
     let tray = TrayIconBuilder::new()
         .menu(&menu)

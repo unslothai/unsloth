@@ -14,7 +14,8 @@ edition = "2021"
 rust-version = "1.89"
 
 [dependencies]
-tauri = { version = "~2.11.5", features = ["tray-icon", "unstable"] }
+# Windows executable-resource icons and ICO entry selection (tauri #15274 / #15241).
+tauri = { version = "~2.12.0", features = ["tray-icon", "unstable"] }
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-deep-link = "2"
@@ -67,14 +68,14 @@ webkit2gtk = "2.0.2"
 
 [target.'cfg(windows)'.dependencies]
 # Keep these versions aligned with Tauri's WebView2 controller bindings.
-webview2-com = "0.38"
+webview2-com = "0.39.1"
 winreg = "0.55"
 windows = { version = "0.62.2", features = ["Win32_System_Threading"] }
-windows-core = "0.61.2"
+windows-core = "0.62.2"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse"] }
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "~2.7.0", features = [] }
 
 [features]
 default = ["custom-protocol"]
