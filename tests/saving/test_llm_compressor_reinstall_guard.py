@@ -68,7 +68,7 @@ def test_broken_or_out_of_range_install_is_still_reinstalled(env, fake):
     root, pip_calls = env
     _write_fake(root, **fake)
     with pytest.raises(RuntimeError, match = "installed but could not be imported"):
-        save.install_llm_compressor(install_missing_dependencies = True)
+        save.install_llm_compressor()
     assert len(pip_calls) == 1
 
 
@@ -80,7 +80,7 @@ def test_install_that_the_subprocess_can_use_is_accepted(env, monkeypatch):
         "check_call",
         lambda cmd, *a, **k: (pip_calls.append(cmd), _write_fake(root)),
     )
-    assert save.install_llm_compressor(install_missing_dependencies = True) == (None, None)
+    assert save.install_llm_compressor() == (None, None)
     assert len(pip_calls) == 1
 
 

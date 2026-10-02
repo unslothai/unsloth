@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""FP8/FP4 export installs a missing llm-compressor only with install_missing_dependencies=True (#8904)."""
+"""FP8/FP4 export auto-installs a missing llm-compressor unless install_missing_dependencies=False or the env opt-out is set (#8904)."""
 
 import importlib.abc
 import inspect
@@ -36,27 +36,27 @@ def pip_calls(tmp_path, monkeypatch):
     sys.meta_path.remove(blocker)
 
 
-def test_default_raises_with_manual_command_and_never_installs(pip_calls):
-    with pytest.raises(RuntimeError) as e:
-        save.install_llm_compressor()
-    assert pip_calls == []
-    assert save.llm_compressor_manual_install_command() in str(e.value)
-    assert "install_missing_dependencies=True" in str(e.value)
-
-
-def test_consent_runs_the_pinned_install(pip_calls):
+def test_default_runs_the_pinned_install(pip_calls):
     with pytest.raises(RuntimeError, match = "installed but could not be imported"):
-        save.install_llm_compressor(install_missing_dependencies = True)
+        save.install_llm_compressor()
     assert len(pip_calls) == 1
     assert save._LLM_COMPRESSOR_SPEC in pip_calls[0]
 
 
-def test_env_optout_beats_consent(pip_calls, monkeypatch):
+def test_opt_out_raises_with_manual_command_and_never_installs(pip_calls):
+    with pytest.raises(RuntimeError) as e:
+        save.install_llm_compressor(install_missing_dependencies = False)
+    assert pip_calls == []
+    assert save.llm_compressor_manual_install_command() in str(e.value)
+    assert "install_missing_dependencies=False" in str(e.value)
+
+
+def test_env_optout_blocks_install(pip_calls, monkeypatch):
     monkeypatch.setenv("UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL", "1")
     with pytest.raises(RuntimeError, match = "UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL") as e:
         save.install_llm_compressor(install_missing_dependencies = True)
     assert pip_calls == []
-    assert "install_missing_dependencies=True" not in str(e.value)
+    assert "install_missing_dependencies" not in str(e.value)
 
 
 @pytest.mark.parametrize(
@@ -69,5 +69,5 @@ def test_env_optout_beats_consent(pip_calls, monkeypatch):
         save._unsloth_save_compressed_tensors,
     ],
 )
-def test_entrypoints_default_to_no_install(fn):
-    assert inspect.signature(fn).parameters["install_missing_dependencies"].default is False
+def test_entrypoints_default_to_install(fn):
+    assert inspect.signature(fn).parameters["install_missing_dependencies"].default is True
