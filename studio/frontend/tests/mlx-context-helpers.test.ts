@@ -389,3 +389,31 @@ test("a background load cannot leave the visible model reading another model's w
     assert.match(list, new RegExp(`"${key}"`), `${key} is not preserved`);
   }
 });
+
+test("a queued run keeps its own model's MLX thought-resume verdict", async () => {
+  const { snapshotQueuedChatRunSettings } = await import(
+    "../src/features/chat/utils/queued-chat-run-settings.ts"
+  );
+  const resident = {
+    params: { checkpoint: "mlx-community/Qwen3-0.6B-4bit" },
+    activeGgufVariant: null,
+    activeNativePathToken: null,
+    loadedIsGguf: false,
+    loadedIsMlx: true,
+  };
+  const queued = snapshotQueuedChatRunSettings(
+    resident as unknown as Parameters<typeof snapshotQueuedChatRunSettings>[0],
+  );
+  const live = { ...resident, ...loadedContextFields(null) };
+  const runtime = { ...live, ...queued };
+  assert.equal(
+    resumesThought({
+      loadedIsGguf: runtime.loadedIsGguf,
+      loadedIsMlx: runtime.loadedIsMlx,
+      activeGgufVariant: runtime.activeGgufVariant,
+      activeNativePathToken: runtime.activeNativePathToken,
+      checkpoint: runtime.params.checkpoint,
+    }),
+    true,
+  );
+});

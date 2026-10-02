@@ -2406,6 +2406,7 @@ type QueuedResolvedModelRuntime = {
   preserveThinking: boolean;
   loadedContextLength: number | null;
   loadedIsGguf: boolean | null;
+  loadedIsMlx: boolean | null;
   loadedIsMultimodal: boolean;
   modelCapabilities: QueuedModelCapabilities | null;
 };
@@ -2558,6 +2559,7 @@ function queuedResolvedModelFromStore(
     preserveThinking: state.preserveThinking,
     loadedContextLength: state.loadedContextLength,
     loadedIsGguf: state.loadedIsGguf,
+    loadedIsMlx: state.loadedIsMlx,
     loadedIsMultimodal: state.loadedIsMultimodal,
     modelCapabilities: activeModel
       ? {
@@ -4196,6 +4198,7 @@ async function resolveQueuedEmptyLocalModel(abortSignal: AbortSignal): Promise<{
             preserveThinking: resolvePreserveThinkingOnLoad(status),
             loadedContextLength: loadedContextFields(status).loadedContextLength,
             loadedIsGguf: loadedContextFields(status).loadedIsGguf,
+            loadedIsMlx: loadedContextFields(status).loadedIsMlx,
             loadedIsMultimodal: isMultimodalResponse(status),
             modelCapabilities: {
               isVision: status.is_vision ?? false,
@@ -4428,6 +4431,7 @@ export function createOpenAIStreamAdapter(
                 preserveThinking: queuedEmptyModelRuntime.preserveThinking,
                 loadedContextLength: queuedEmptyModelRuntime.loadedContextLength,
                 loadedIsGguf: queuedEmptyModelRuntime.loadedIsGguf,
+                loadedIsMlx: queuedEmptyModelRuntime.loadedIsMlx,
                 models: mergeQueuedModelCapabilities(
                   base.models,
                   queuedEmptyModelRuntime.checkpoint,
@@ -4828,6 +4832,10 @@ export function createOpenAIStreamAdapter(
                 queuedEmptyModelRuntime !== null
                   ? queuedEmptyModelRuntime.loadedIsGguf
                   : liveRuntime.loadedIsGguf,
+              loadedIsMlx:
+                queuedEmptyModelRuntime !== null
+                  ? queuedEmptyModelRuntime.loadedIsMlx
+                  : liveRuntime.loadedIsMlx,
               loadedIsMultimodal:
                 queuedEmptyModelRuntime?.loadedIsMultimodal ??
                 liveRuntime.loadedIsMultimodal,
