@@ -14,7 +14,7 @@ from core.inference.llama_custom_config import (
 
 _OPTIONS = (
     "--port; -c --ctx-size; -ngl --gpu-layers; -fa --flash-attn; -np --parallel; -m --model; "
-    "-mm --mmproj; --temp; --top-k; --top-p; --warmup --no-warmup; "
+    "-mm --mmproj; --temp --temperature; --top-k; --top-p; --warmup --no-warmup; "
     "--mmproj-offload --no-mmproj-offload; --jinja --no-jinja; -dev --device; "
     "-ctk --cache-type-k; --host; --cache-prompt --no-cache-prompt; -mmdev --mmproj-device; "
     "-md --model-draft; -devd --device-draft"
@@ -88,6 +88,20 @@ def test_refusals_name_the_key_not_the_value(ini, section, message):
 @pytest.mark.parametrize("ini", ["c=1024\nctx-size=2048", "warmup=true\nno-warmup=true"])
 def test_two_spellings_of_one_option_are_refused(ini):
     with pytest.raises(CustomConfigError, match = "set the same option"):
+        compile_ini(ini)
+
+
+def test_sampling_aliases_and_router_keys():
+    compiled = compile_ini(
+        "temperature=0.2\nload-on-startup=true\nstop-timeout=5\ndedup-cache-models=1"
+    )
+    assert compiled.request_defaults == {"temperature": 0.2}
+    assert compiled.argv == ("--temperature", "0.2")
+
+
+@pytest.mark.parametrize("ini", ["top-k=180", "temp=nan", "top-p=inf", "temp=-1"])
+def test_defaults_outside_the_chat_schema_are_refused(ini):
+    with pytest.raises(CustomConfigError, match = "between"):
         compile_ini(ini)
 
 
@@ -223,6 +237,13 @@ def test_cpu_only_custom_load_still_masks_unsupported_rocm_cards(launch, monkeyp
     cpu = replace(launch.intent, llama_cpp_config = parse_config_source(source("dev=none")))
     assert launch.backend.load_model(cpu)
     assert masked == ["1"]
+    # The GPU arbiter leaves image/video work alone for a zero-VRAM resident server.
+    assert launch.backend.holds_no_vram
+
+
+def test_gpu_custom_load_holds_vram(launch):
+    assert launch.backend.load_model(launch.intent)
+    assert not launch.backend.holds_no_vram
 
 
 def test_bad_config_never_spawns(launch):

@@ -101,7 +101,7 @@ def preset_backend(monkeypatch):
         model_identifier = "model.gguf",
         llama_cpp_config_summary = {
             "mode": "custom",
-            "request_defaults": {"temperature": 0.25, "top_k": 180},
+            "request_defaults": {"temperature": 0.25, "top_k": 80},
         },
     )
     monkeypatch.setattr(routes, "get_llama_cpp_backend", lambda: backend)
@@ -139,7 +139,7 @@ def test_ini_defaults_never_leak_to_another_model(preset_backend):
 def test_raw_completions_get_ini_values(preset_backend):
     body = {"prompt": "hi"}
     routes._fill_recommended_sampling_completions(body, "model.gguf")
-    assert (body["temperature"], body["top_k"]) == (0.25, 180)
+    assert (body["temperature"], body["top_k"]) == (0.25, 80)
 
 
 @pytest.mark.asyncio

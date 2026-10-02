@@ -23,14 +23,16 @@ _FALSE = frozenset({"off", "disabled", "false", "0"})
 # Studio selects the model and projector; preset files commonly carry both.
 _IGNORED = frozenset({"-m", "--model", "-mm", "--mmproj"})
 _PARALLEL = frozenset({"-np", "--parallel", "--n-parallel"})
-_ROUTER_ONLY = frozenset({"load-on-startup", "version"})
+# Router metadata in upstream preset files; llama-server itself has no such options.
+_ROUTER_ONLY = frozenset({"load-on-startup", "stop-timeout", "dedup-cache-models", "version"})
+# Flag -> (request field, Studio chat API bounds in models/inference.py).
 _SAMPLING = {
-    "--temp": "temperature",
-    "--top-p": "top_p",
-    "--top-k": "top_k",
-    "--min-p": "min_p",
-    "--repeat-penalty": "repetition_penalty",
-    "--presence-penalty": "presence_penalty",
+    "--temp": ("temperature", 0.0, 2.0),
+    "--top-p": ("top_p", 0.0, 1.0),
+    "--top-k": ("top_k", -1, 100),
+    "--min-p": ("min_p", 0.0, 1.0),
+    "--repeat-penalty": ("repetition_penalty", 1.0, 2.0),
+    "--presence-penalty": ("presence_penalty", 0.0, 2.0),
 }
 
 
@@ -204,11 +206,17 @@ def compile_custom_config(source, flags: Mapping, switch_flags) -> CompiledCusto
             raise CustomConfigError(f"'{key[:80]}' needs a value")
         argv += [flag, value]
         options[flag] = value
-        if flag in _SAMPLING:
+        sampling = next((s for s in _SAMPLING if s in flags and flags[s] == flags[flag]), None)
+        if sampling is not None:
+            name, low, high = _SAMPLING[sampling]
             try:
-                defaults[_SAMPLING[flag]] = int(value) if flag == "--top-k" else float(value)
+                number = int(value) if sampling == "--top-k" else float(value)
             except ValueError:
                 raise CustomConfigError(f"'{key[:80]}' needs a number") from None
+            # It becomes the chat default, so it must pass the chat request schema.
+            if not low <= number <= high:
+                raise CustomConfigError(f"'{key[:80]}' must be between {low} and {high}")
+            defaults[name] = number
     if "--no-jinja" in options:
         raise CustomConfigError("jinja = false would break Studio's tool calling")
     try:

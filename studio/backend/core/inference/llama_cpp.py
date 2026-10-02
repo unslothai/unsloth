@@ -8493,6 +8493,8 @@ class LlamaCppBackend:
         never competed with."""
         if self._arch_gate_forced_cpu:
             return True
+        if self._compiled_custom_config is not None:
+            return self._compiled_custom_config.cpu_only and self._gpu_offload_active is False
         return (
             self._gpu_memory_mode == "manual"
             and self._gpu_layers == 0
