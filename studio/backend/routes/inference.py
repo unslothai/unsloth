@@ -33468,11 +33468,13 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 raise HTTPException(status_code = 400, detail = "'prompt' array must not be empty")
             _cancel_event = threading.Event()
             # Unpooled: the cancel watcher closes this client, which must not
-            # take down other requests sharing the pooled one. One connection per
-            # prompt keeps the batch concurrent instead of queueing on one socket.
+            # take down other requests sharing the pooled one. Up to a connection per
+            # prompt keeps the batch concurrent, capped like the shared pool so a huge
+            # batch cannot exhaust file descriptors.
             _client = httpx.AsyncClient(
                 limits = httpx.Limits(
-                    max_connections = len(_prompt_value), max_keepalive_connections = 0
+                    max_connections = min(len(_prompt_value), 64),
+                    max_keepalive_connections = 0,
                 ),
                 trust_env = False,
             )
@@ -33487,6 +33489,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             )
             try:
                 try:
+
                     async def _call_llama(prompt: str) -> dict:
                         if _cancel_event.is_set():
                             raise asyncio.CancelledError()
