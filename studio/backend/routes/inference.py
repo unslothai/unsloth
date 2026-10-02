@@ -29724,6 +29724,13 @@ async def produce_openai_chat_completions(
             )
             if message.get("role") not in ("system", "developer")
         ]
+        # Rebuilt from the payload, so the date note added to the original messages is gone.
+        chat_messages = _append_current_date_note(
+            chat_messages,
+            request,
+            thread_id = getattr(payload, "thread_id", None),
+            system_prompt = system_prompt,
+        )
         if any(
             isinstance(message.get("content"), list)
             and any(part.get("type") == "image_url" for part in message["content"])
