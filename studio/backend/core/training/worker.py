@@ -2952,8 +2952,15 @@ def _run_mlx_training(event_queue, stop_queue, config):
         all_files = _resolve_mlx_local_dataset_files(file_paths)
         if not all_files:
             raise ValueError("No local dataset files found")
+        from utils.datasets.cells import csv_as_text_kwargs
+
         loader = _mlx_local_dataset_loader_for_files(all_files)
-        return load_dataset(loader, data_files = all_files, split = "train")
+        return load_dataset(
+            loader,
+            data_files = all_files,
+            split = "train",
+            **csv_as_text_kwargs(all_files),
+        )
 
     eval_dataset = None
     if hf_dataset:
@@ -5126,6 +5133,10 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 token = hf_token,
                 revision = model_revision,
                 use_exact_model_name = model_revision is not None,
+                # Deliberately NOT config["trust_remote_code"]: the consent scan above decides purely
+                # on auto_map, so a modules.json module class is never scanned. Forwarding consent
+                # here would fetch and run that unscanned code.
+                trust_remote_code = False,
             )
         except Exception as error:
             if not model_local_only:
@@ -5154,6 +5165,8 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 token = hf_token,
                 revision = model_revision,
                 use_exact_model_name = model_revision is not None,
+                # Deliberately False, as above.
+                trust_remote_code = False,
             )
     except Exception as e:
         event_queue.put(

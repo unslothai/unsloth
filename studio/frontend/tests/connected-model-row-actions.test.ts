@@ -810,3 +810,15 @@ test("a served catalogue cannot take away a context window it has no field for",
 
   setModelsDevCatalog({ fetched_at: Date.now(), providers: {} } as never);
 });
+
+test("connection saves write back the live store, not the render snapshot", () => {
+  const liveWrites = providersDialog.match(
+    /onProvidersChange\(\s*\[?\s*(\.\.\.)?useExternalProvidersStore\.getState\(\)\.providers\.(map|filter)\(/g,
+  );
+  assert.equal(liveWrites?.length, 3);
+  assert.match(providersDialog, /models: keepSavedModels \? undefined : modelsToSave,/);
+  assert.match(providersDialog, /availableModels: keepSavedModels \? undefined : availableModelsToSave,/);
+  // An empty response (row never backfilled) keeps this browser's lists instead of blanking them.
+  assert.match(providersDialog, /updated\.models\?\.length \? updated\.models : existing\.models/);
+  assert.match(providersDialog, /updated\.available_models\?\.length\s*\?\s*updated\.available_models\s*:\s*existing\.availableModels/);
+});

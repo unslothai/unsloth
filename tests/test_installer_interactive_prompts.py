@@ -44,6 +44,7 @@ SCANNED_SCRIPTS = ENTRY_POINTS + (
     "scripts/install_rocm_wsl_strixhalo.sh",
     "scripts/uninstall.sh",
     "scripts/uninstall.ps1",
+    "studio/install_audio_cpp_prebuilt.py",
     "studio/install_lemonade_prebuilt.py",
     "studio/install_llama_prebuilt.py",
     "studio/install_manifest.py",
@@ -55,6 +56,7 @@ SCANNED_SCRIPTS = ENTRY_POINTS + (
     "studio/nvidia_probe.py",
     # install_python_stack runs this one with sys.executable.
     "studio/backend/requirements/single-env/patch_metadata.py",
+    "studio/systemd/install_user_service.sh",
 )
 
 # Every question these scripts may ask, keyed by (script, normalised question) because line numbers move and wording

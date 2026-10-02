@@ -10,8 +10,8 @@ import {
   DragDropVerticalIcon,
   FlimSlateIcon,
   Folder01Icon,
-  Globe02Icon,
   Image03Icon,
+  InternetIcon,
   LibrariesIcon,
   MoreHorizontalIcon,
   PencilEdit02Icon,
@@ -45,7 +45,7 @@ const ITEM_META: Record<
   audio: { icon: AudioWave01Icon, labelKey: "shell.navigation.audio" },
   recipes: { icon: ChefHatIcon, labelKey: "shell.navigation.recipes" },
   export: { icon: Download01Icon, labelKey: "shell.navigation.export" },
-  api: { icon: Globe02Icon, labelKey: "shell.navigation.api" },
+  api: { icon: InternetIcon, labelKey: "shell.navigation.api" },
   benchmarks: {
     icon: DashboardSpeed01Icon,
     labelKey: "shell.navigation.benchmarks",

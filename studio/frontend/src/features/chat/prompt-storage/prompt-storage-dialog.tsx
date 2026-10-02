@@ -69,6 +69,7 @@ import {
   savePromptList,
 } from "../api/prompts-api";
 import {
+  getStoredChatThread,
   listStoredChatMessages,
   listStoredChatThreads,
   saveStoredChatThread,
@@ -84,6 +85,7 @@ import {
   createConversationMarkdownBuilder,
   createConversationMarkdownExporter,
 } from "../utils/conversation-markdown-export";
+import { csvDocument, csvEscape, CSV_MIME } from "../utils/csv-export";
 import { parseCsv } from "../utils/csv-parse";
 import {
   canMergeConversationExport,
@@ -96,6 +98,7 @@ import { orderByParentChain } from "../utils/message-order";
 import { liveThreadBranch } from "../utils/live-thread-head";
 import { unwrapPastedTextContent } from "../utils/pasted-text.ts";
 import {
+  CONVERSATION_MARKDOWN_MIME_TYPE,
   buildConversationMarkdown,
   contentBlocksToMarkdownBlocks,
   renderConversationBlocks,
@@ -124,10 +127,6 @@ async function downloadBlob(
   return downloadFile(content, filename, mimeType);
 }
 
-function csvEscape(val: string): string {
-  return `"${val.replace(/"/g, '""')}"`;
-}
-
 function exportPromptJsonl(entry: PromptEntry): Promise<void> {
   return downloadBlob(
     ndjsonBody([JSON.stringify({ name: entry.name, text: entry.text })]),
@@ -138,9 +137,9 @@ function exportPromptJsonl(entry: PromptEntry): Promise<void> {
 
 function exportPromptCsv(entry: PromptEntry): Promise<void> {
   return downloadBlob(
-    `name,text\n${csvEscape(entry.name)},${csvEscape(entry.text)}`,
+    csvDocument(["name,text", `${csvEscape(entry.name)},${csvEscape(entry.text)}`]),
     `${sanitizeFilename(entry.name)}.csv`,
-    "text/csv",
+    CSV_MIME,
   );
 }
 
@@ -151,7 +150,7 @@ function exportAllPromptsJsonl(entries: PromptEntry[]): Promise<void> {
 
 function exportAllPromptsCsv(entries: PromptEntry[]): Promise<void> {
   const rows = entries.map((e) => `${csvEscape(e.name)},${csvEscape(e.text)}`).join("\n");
-  return downloadBlob(`name,text\n${rows}`, "prompts.csv", "text/csv");
+  return downloadBlob(csvDocument(["name,text", rows]), "prompts.csv", CSV_MIME);
 }
 
 function exportListJsonl(entry: PromptListEntry): Promise<void> {
@@ -172,9 +171,9 @@ function exportListCsv(entry: PromptListEntry): Promise<void> {
     .map((text, i) => `${csvEscape(entry.name)},${i + 1},${csvEscape(text)}`)
     .join("\n");
   return downloadBlob(
-    `list_name,order,prompt_text\n${rows}`,
+    csvDocument(["list_name,order,prompt_text", rows]),
     `${sanitizeFilename(entry.name)}.csv`,
-    "text/csv",
+    CSV_MIME,
   );
 }
 
@@ -182,7 +181,7 @@ function exportAllListsCsv(entries: PromptListEntry[]): Promise<void> {
   const rows = entries
     .flatMap((e) => e.items.map((text, i) => `${csvEscape(e.name)},${i + 1},${csvEscape(text)}`))
     .join("\n");
-  return downloadBlob(`list_name,order,prompt_text\n${rows}`, "prompt-lists.csv", "text/csv");
+  return downloadBlob(csvDocument(["list_name,order,prompt_text", rows]), "prompt-lists.csv", CSV_MIME);
 }
 
 function contentBlocksToText(content: unknown): string {
@@ -461,9 +460,9 @@ export async function exportConversationCsv(threadId: string): Promise<void> {
 
   if (rows.length <= 1) { toast.info("No exportable content."); return; }
   await downloadBlob(
-    rows.join("\n"),
+    csvDocument(rows),
     "conversation-" + exportTs() + ".csv",
-    "text/csv",
+    CSV_MIME,
   );
 }
 
@@ -558,13 +557,19 @@ export async function buildChatItemMarkdown(item: {
   );
 }
 
-export type ConvExportFormat = "jsonl-raw" | "jsonl-messages" | "csv" | "sharegpt";
+export type ConvExportFormat =
+  | "jsonl-raw"
+  | "jsonl-messages"
+  | "csv"
+  | "sharegpt"
+  | "markdown";
 
 const EXPORT_FORMAT_LABELS: Record<ConvExportFormat, string> = {
   "jsonl-raw": "Training JSONL",
   "jsonl-messages": "Message JSONL",
   csv: "CSV",
   sharegpt: "ShareGPT JSONL",
+  markdown: "Markdown",
 };
 
 export const EXPORT_FORMATS_LIST = (
@@ -604,6 +609,10 @@ async function buildThreadContent(
     return JSON.stringify({ conversations });
   }
 
+  if (format === "markdown") {
+    return await buildConversationMarkdownForThread(threadId);
+  }
+
   const rows: string[] = [];
   for (const msg of messages) {
     const content = messageToText(msg);
@@ -618,11 +627,15 @@ function csvHeader(format: ConvExportFormat): string {
 }
 
 function exportExt(format: ConvExportFormat): string {
-  return format === "csv" ? "csv" : "jsonl";
+  if (format === "csv") return "csv";
+  if (format === "markdown") return "md";
+  return "jsonl";
 }
 
 function exportMime(format: ConvExportFormat): string {
-  return format === "csv" ? "text/csv" : "application/x-ndjson";
+  if (format === "csv") return CSV_MIME;
+  if (format === "markdown") return CONVERSATION_MARKDOWN_MIME_TYPE;
+  return "application/x-ndjson";
 }
 
 export async function exportBulkConversationsMerged(
@@ -633,6 +646,43 @@ export async function exportBulkConversationsMerged(
   if (threadIds.length === 0) { toast.info("No conversations to export."); return; }
   if (!canMergeConversationExport(format) && threadIds.length > 1) {
     toast.info("Message JSONL is available per chat.");
+    return;
+  }
+
+  if (format === "markdown" && threadIds.length > 1) {
+    const conversations: Array<{ id: string; title: string }> = [];
+    const pairs = new Map<string, ThreadRecord[]>();
+    for (const id of threadIds) {
+      const thread = await getStoredChatThread(id);
+      conversations.push({ id, title: thread?.title?.trim() || id });
+      if (thread?.pairId) {
+        const halves = pairs.get(thread.pairId) ?? [];
+        halves.push(thread);
+        pairs.set(thread.pairId, halves);
+      }
+    }
+    const pairedTitles = new Map<string, string>();
+    for (const [pairId, halves] of pairs) {
+      if (halves.length < 2) continue;
+      const plans = planChatItemSources(
+        { id: pairId, title: halves[0].title?.trim() || pairId, type: "pair" },
+        halves,
+      );
+      for (const plan of plans) pairedTitles.set(plan.id, plan.title);
+    }
+    for (const conversation of conversations) {
+      conversation.title = pairedTitles.get(conversation.id) ?? conversation.title;
+    }
+    const body = await buildNamedConversationsMarkdown(
+      conversations,
+      buildConversationMarkdownForThread,
+    );
+    if (!body) { toast.info("No exportable content."); return; }
+    await downloadBlob(
+      body,
+      `${basename}.md`,
+      CONVERSATION_MARKDOWN_MIME_TYPE,
+    );
     return;
   }
 
@@ -647,8 +697,10 @@ export async function exportBulkConversationsMerged(
   if (parts.length === 0) { toast.info("No exportable content."); return; }
 
   const body = header
-    ? header + "\n" + parts.join("\n")
-    : ndjsonBody(parts);
+    ? csvDocument([header, ...parts])
+    : format === "markdown"
+      ? parts[0] ?? ""
+      : ndjsonBody(parts);
 
   await downloadBlob(
     body,
@@ -672,7 +724,7 @@ export async function exportBulkConversationsSeparate(
   for (const id of threadIds) {
     const content = await buildThreadContent(id, format);
     if (!content) continue;
-    const body = header ? header + "\n" + content : ndjsonBody([content]);
+    const body = header ? csvDocument([header, content]) : ndjsonBody([content]);
     files[`${id}.${ext}`] = strToU8(body);
   }
 
