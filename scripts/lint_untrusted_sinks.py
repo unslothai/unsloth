@@ -2468,6 +2468,23 @@ class _TaintPass(ast.NodeVisitor):
         self._note_source_alias(node)
         self._note_instance_alias(node)
         self._note_callable_alias(node)
+        # `loader = importlib.import_module if enabled else safe_loader` can bind
+        # either branch, so every branch is recorded as a possible alias.
+        pending = [node.value]
+        while pending:
+            current = pending.pop()
+            if not isinstance(current, ast.IfExp):
+                continue
+            for branch in (current.body, current.orelse):
+                pending.append(branch)
+                if isinstance(branch, ast.IfExp):
+                    continue
+                branch_assign = ast.copy_location(
+                    ast.Assign(targets = node.targets, value = branch), node
+                )
+                self._note_sink_alias(branch_assign)
+                self._note_source_alias(branch_assign)
+                self._note_callable_alias(branch_assign)
         self.generic_visit(node)
 
     def _note_sink_alias(self, node: ast.Assign) -> None:
@@ -3002,11 +3019,24 @@ class _TaintPass(ast.NodeVisitor):
         # nested helper's tainted summary, and every caller of the outer one then failed
         # the gate on a value it never produces.
         returned = self.returns_tainted
+        self.returns_tainted = ""
         masked = self._masked
         if not isinstance(node, ast.ClassDef):
             self._masked = masked | _scope_locals(node)
         self.generic_visit(node)
         self._masked = masked
+        # But it IS the nested function's output, and a closure returning a captured
+        # `module = json.loads(blob)["module"]` is only tainted here: its own pass has
+        # no enclosing binding to read. Kept under its own qualname for its callers.
+        nested_key = (self.facts.path, f"{self.qualname}.{getattr(node, 'name', '')}")
+        if (
+            self.returns_tainted
+            and not isinstance(node, ast.ClassDef)
+            and nested_key[1] in self.facts.functions
+        ):
+            known = self.state.returns_tainted.get(nested_key)
+            if not known or known == NAMED_PARAM_REASON:
+                self.state.returns_tainted[nested_key] = self.returns_tainted
         self.returns_tainted = returned
         # A `nonlocal` write is a write to THIS scope, which is the whole point of the
         # declaration, so dropping it with the nested body's own names discarded a real
@@ -3336,6 +3366,19 @@ class _TaintPass(ast.NodeVisitor):
             )
             else 0
         ) + partial_offset
+        # `invoke(subprocess.run, command)` hands the helper a sink, which it then
+        # calls through its own parameter: the identity travels with the argument.
+        handed = self.state.param_sink_aliases.setdefault(target, {})
+        for position, argument in enumerate(node.args):
+            sinks = self._sink_identities(argument)
+            if sinks and position + offset < len(params):
+                parameter = params[position + offset]
+                for sink in sinks:
+                    handed[parameter] = _with(handed.get(parameter), sink)
+        for keyword in node.keywords:
+            if keyword.arg in params:
+                for sink in self._sink_identities(keyword.value):
+                    handed[keyword.arg] = _with(handed.get(keyword.arg), sink)
         for position, argument in enumerate(node.args):
             reason = self.tainted(argument)
             if not reason:
@@ -3386,6 +3429,29 @@ class _TaintPass(ast.NodeVisitor):
                 self._bind(bound, star_kwargs, reason)
             elif keyword.arg:
                 self._bind(bound, keyword.arg, reason)
+
+    def _sink_identities(self, argument: ast.expr) -> tuple:
+        """The sinks an argument expression refers to, without calling it."""
+        if isinstance(argument, ast.IfExp):
+            return tuple(
+                dict.fromkeys(
+                    self._sink_identities(argument.body) + self._sink_identities(argument.orelse)
+                )
+            )
+        if not isinstance(argument, (ast.Name, ast.Attribute)):
+            return ()
+        spelling = _call_name(argument)
+        if not spelling:
+            return ()
+        names = self.facts.canonicals(spelling)
+        direct = _matches_any(names, SINKS)
+        if direct is not None:
+            return (direct,)
+        if _matches_any(names, TORCH_LOAD_NAMES) is not None:
+            return (TORCH_LOAD_ALIAS,)
+        if _matches_any(names, {"getattr"}) is not None:
+            return ("getattr",)
+        return tuple(self.sink_aliases.get(spelling) or ())
 
     def _receiver_spelled_out(self, func: ast.Attribute, target) -> bool:
         """`Runner.execute(runner, ...)`: the receiver is already in `node.args`.
@@ -3711,6 +3777,9 @@ class _State:
         # `relative::Class.attr` -> first-party callables stored there, for
         # `self.invoke = runner.execute` in one method and `self.invoke(parsed)` in another.
         self.attr_callable_aliases: dict[str, tuple] = {}
+        # (file, qualname) -> parameter -> sinks a caller passed in for it, for
+        # `invoke(subprocess.run, command)` reaching `def invoke(callback, value)`.
+        self.param_sink_aliases: dict[tuple[Path, str], dict[str, tuple]] = {}
         self.tainted_globals: dict[str, str] = {}
         self.returns_tainted: dict[tuple[Path, str], str] = {}
         self.params: dict[tuple[Path, str], list[str]] = {}
@@ -3748,6 +3817,11 @@ class _State:
                 "attr_callables": sorted(
                     f"{key}={','.join(callables)}"
                     for key, callables in self.attr_callable_aliases.items()
+                ),
+                "param_sinks": sorted(
+                    f"{path}::{qualname}::{name}={','.join(sinks)}"
+                    for (path, qualname), names in self.param_sink_aliases.items()
+                    for name, sinks in names.items()
                 ),
                 "globals": sorted(
                     f"{key}={reason}" for key, reason in self.tainted_globals.items()
@@ -4040,6 +4114,21 @@ def _publish_class_attributes(
         key = f"{facts.relative}::{owner}.{name}"
         for candidate in sinks:
             state.attr_sink_aliases[key] = _with(state.attr_sink_aliases.get(key), candidate)
+    # And first-party callbacks: `class Hooks: invoke = execute`, then
+    # `Hooks.invoke(parsed)`, in the shared form a stored `self.invoke = execute` uses.
+    for name, callables in visitor.callable_aliases.items():
+        if name not in bound:
+            continue
+        key = f"{facts.relative}::{owner}.{name}"
+        for candidate in callables:
+            try:
+                callee = ast.parse(candidate, mode = "eval").body
+            except SyntaxError:
+                continue
+            for file, target in facts.targets_of(callee, instances = visitor.instance_types):
+                state.attr_callable_aliases[key] = _with(
+                    state.attr_callable_aliases.get(key), f"{file}::{target}"
+                )
 
 
 # Statement kinds that can bind a class attribute. A body of nothing but a docstring,
@@ -4194,6 +4283,9 @@ def _settle(facts: _FileFacts, qualname: str, nodes: list, state: "_State"):
         visitor = _TaintPass(facts, qualname, state)
         visitor.drop_class_seeds()
         visitor.drop_shadowed_module_seeds()
+        for name, sinks in state.param_sink_aliases.get((facts.path, qualname), {}).items():
+            for sink in sinks:
+                visitor.sink_aliases[name] = _with(visitor.sink_aliases.get(name), sink)
         visitor.local_reasons.update(reasons)
         visitor.instance_types.update(instances)
         visitor.sink_aliases.update(aliases)

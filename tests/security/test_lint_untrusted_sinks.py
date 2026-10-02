@@ -5367,3 +5367,80 @@ def test_match_and_except_captures_are_locals_of_a_nested_helper(tmp_path):
         "    return helper({'command': ['ls']})\n",
     )
     assert "subprocess.run" not in _sinks(findings)
+
+
+def test_a_sink_chosen_by_a_conditional_expression_is_an_alias(tmp_path):
+    """`loader = importlib.import_module if enabled else safe_loader`."""
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "def safe_loader(name):\n"
+        "    return name\n"
+        "def go(blob, enabled):\n"
+        "    loader = importlib.import_module if enabled else safe_loader\n"
+        "    return loader(json.loads(blob)['module'])\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_sink_passed_to_a_helper_is_followed_into_it(tmp_path):
+    """`invoke(subprocess.run, parsed)` with `def invoke(callback, value)`."""
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def invoke(callback, value):\n"
+        "    return callback(value)\n"
+        "def go(blob):\n"
+        "    return invoke(subprocess.run, json.loads(blob)['command'])\n",
+    )
+    quiet = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def invoke(callback, value):\n"
+        "    return callback(value)\n"
+        "def go(blob):\n"
+        "    return invoke(subprocess.run, ['ls'])\n",
+        name = "quiet.py",
+    )
+    assert "subprocess.run" in _sinks(findings)
+    assert "subprocess.run" not in _sinks(quiet)
+
+
+def test_a_callback_declared_in_a_class_body_is_followed(tmp_path):
+    """`class Hooks: invoke = execute` then `Hooks.invoke(parsed)`."""
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def execute(command):\n"
+        "    return subprocess.run(command)\n"
+        "class Hooks:\n"
+        "    invoke = execute\n"
+        "def go(blob):\n"
+        "    return Hooks.invoke(json.loads(blob)['command'])\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_closure_returning_a_captured_value_is_tainted(tmp_path):
+    """`def get_module(): return module` with `module` parsed in the enclosing scope."""
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "def go(blob):\n"
+        "    module = json.loads(blob)['module']\n"
+        "    def get_module():\n"
+        "        return module\n"
+        "    return importlib.import_module(get_module())\n",
+    )
+    quiet = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "def go(blob):\n"
+        "    module = json.loads(blob)['module']\n"
+        "    def get_module():\n"
+        "        return 'json'\n"
+        "    return importlib.import_module(get_module())\n",
+        name = "quiet.py",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+    assert "importlib.import_module" not in _sinks(quiet)
