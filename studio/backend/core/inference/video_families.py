@@ -248,7 +248,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         prequant_variant_repos = (("lightricks/ltx-2.3", "fp8", "unsloth/LTX-2.3-FP8"),),
     ),
     # Wan2.2-TI2V-5B (diffusers >= 0.35, verified on 0.39): ~5B single-stream DiT (UMT5 encoder), no audio. Its VAE's
-    # temporal compression 4 gives valid frame counts 4k+1. Defaults 50 steps / CFG 5.
+    # temporal compression 4 gives valid frame counts 4k+1. Defaults 20 steps / CFG 5 (ComfyUI's template).
     VideoFamily(
         name = "wan2.2-ti2v-5b",
         pipeline_class = "WanPipeline",
@@ -260,7 +260,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # "wan2.2-5b"/"wan-ti2v" are the picker/GGUF short ids; "wan2.2-ti2v" catches the repo stem
         aliases = ("wan2.2-5b", "wan-ti2v", "wan2.2-ti2v", "wan-ti2v-5b"),
         has_audio = False,
-        default_steps = 50,
+        default_steps = 20,
         default_guidance = 5.0,
         default_num_frames = 121,
         default_fps = 24,
@@ -298,8 +298,9 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         transformer2_class = "WanTransformer3DModel",
         is_moe = True,
         cfg2_kwarg = "guidance_scale_2",
-        default_steps = 50,
-        default_guidance = 5.0,
+        # ComfyUI's A14B template without the Lightning LoRA: 20 steps at CFG 3.5 on both experts.
+        default_steps = 20,
+        default_guidance = 3.5,
         # 81 frames at 16 fps ~5s (81 = 4*20 + 1), the A14B card's default clip.
         default_num_frames = 81,
         default_fps = 16,  # A14B runs at 16 fps (vs TI2V-5B's 24)
@@ -328,7 +329,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         aliases = ("hunyuanvideo-1-5", "hunyuanvideo1.5", "hunyuanvideo1-5", "hv15"),
         has_audio = False,
         guidance_via_guider = True,
-        default_steps = 50,
+        default_steps = 20,
         default_guidance = 6.0,
         default_num_frames = 121,
         default_fps = 24,
@@ -356,7 +357,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         aliases = ("hunyuanvideo-1.5-diffusers-720p_t2v", "hv15-720p"),
         has_audio = False,
         guidance_via_guider = True,
-        default_steps = 50,
+        default_steps = 20,
         default_guidance = 6.0,
         default_num_frames = 121,
         default_fps = 24,
@@ -790,10 +791,14 @@ def validate_video_reference_conditioning(
 _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("distilled", 8, 1.0),
     ("ltx", 40, 4.0),
-    # Wan2.2 pipelines default to 50 steps / CFG 5.0; both TI2V-5B and A14B share these.
-    ("wan", 50, 5.0),
-    # HunyuanVideo-1.5: 50 steps with the guider's shipped CFG 6.0.
-    ("hunyuanvideo", 50, 6.0),
+    # ComfyUI's templates for the same models (our baseline). Wan2.2-T2V-A14B: 20 steps at CFG 3.5 (Lightning LoRA
+    # off); before the generic Wan key.
+    ("a14b", 20, 3.5),
+    ("wan2.2-14b", 20, 3.5),
+    # Wan2.2-TI2V-5B: 20 steps at CFG 5.
+    ("wan", 20, 5.0),
+    # HunyuanVideo-1.5: 20 steps with the guider's shipped CFG 6.0.
+    ("hunyuanvideo", 20, 6.0),
 )
 
 
