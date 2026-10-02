@@ -85,6 +85,8 @@ class VideoFamily:
     supports_cuda_graph: bool = False
     # Video DiTs are bf16-native, so fp16 promotes to float32; defaults True.
     fp16_incompatible: bool = True
+    # "native" = measured accurate in plain float16 on fp16-only cards; None = promote (unmeasured).
+    fp16_guard: Optional[str] = None
     # Wan VAE decodes in float32 (bf16 causes banding / black frames), so the loader pins it back. Its size term is
     # already fp32.
     vae_force_fp32: bool = False
@@ -286,6 +288,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # (11.4); VAE fp32 (2.8).
         bf16_components_gb = (10.0, 11.4, 2.8),
         vae_force_fp32 = True,
+        # UMT5 keeps its overflowing `wo` in fp32 itself; the VAE stays fp32 (vae_force_fp32).
+        fp16_guard = "native",
         # Byte-identical mirror of QuantStack/Wan2.2-TI2V-5B-GGUF (13 quants + companion VAE).
         gguf_repo = "unsloth/Wan2.2-TI2V-5B-GGUF",
     ),
@@ -354,6 +358,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         resolution_presets = ((832, 480), (480, 832), (640, 640)),
         # DiT fp32 on disk (32.0 to 16.6 bf16); VAE 4.7 to 2.4; Qwen2.5-VL TE bf16 14.0 + ByT5 0.8
         bf16_components_gb = (16.6, 14.8, 2.4),
+        fp16_guard = "native",
     ),
     # The 720p t2v repack: same architecture and footprint as the 480p entry, only the trained resolution differs. Its
     # own family so a 720p load defaults to 720p sizes; the full-path alias outranks the generic token.
@@ -378,6 +383,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # 720p-class presets: landscape, vertical, square (all /16).
         resolution_presets = ((1280, 720), (720, 1280), (960, 960)),
         bf16_components_gb = (16.6, 14.8, 2.4),
+        fp16_guard = "native",
     ),
 )
 
