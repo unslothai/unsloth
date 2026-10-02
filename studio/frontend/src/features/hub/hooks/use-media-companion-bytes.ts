@@ -104,6 +104,14 @@ export function ggufVariantFootprint(
   };
 }
 
+/** A cached GGUF that Run would still fetch companions for is not ready to run (#11637). */
+export function awaitsCompanions(
+  downloaded: boolean | undefined,
+  footprint: GgufVariantFootprint | null,
+): boolean {
+  return Boolean(downloaded) && (footprint?.companionBytes ?? 0) > 0;
+}
+
 /** Companion bytes by group. Plans live as long as the card, so returning from Run,
  *  which fetches the companions, plans again. */
 export function useMediaCompanionBytes(
