@@ -511,6 +511,7 @@ def _rotq_rows(k: int, group: int, cfg: tuple) -> int:
 
 def _rotq_launch(x2d: Any, group: int, kind: str, cfg: tuple) -> tuple:
     import torch
+    import triton
     from .diffusion_convrot import build_convrot_hadamard
 
     kern = _kernels()
