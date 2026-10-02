@@ -731,8 +731,10 @@ class AudioCppSttSidecar:
         lang = normalize_whisper_language(language)
         if cancel_event is not None and cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
-        # A missing model fails before decoding so a long clip does not burn CPU only to 409.
-        self._ensure_model_downloaded(entry)
+        # A missing model fails before decoding so a long clip does not burn CPU only to 409. The
+        # cheap probe first: materialize prunes the link farm, which a warm request does not need.
+        if not audio_cpp_files.is_downloaded(entry):
+            self._ensure_model_downloaded(entry)
         decoded_audio = _decode_audio_bounded(audio, cancel_event)
         if cancel_event is not None and cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
