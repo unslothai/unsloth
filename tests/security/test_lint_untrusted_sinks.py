@@ -5974,3 +5974,31 @@ def test_a_revision_read_from_data_is_not_a_pin(tmp_path):
         "    sys.path.insert(0, snapshot_download(repo, revision = json.loads(blob)['revision']))\n",
     )
     assert "unpinned code fetch" in _sinks(findings)
+
+
+def test_annotated_and_copied_parsed_mappings_and_annotated_parsers(tmp_path):
+    """`kwargs: dict = json.loads(...)`, `dict(json.loads(...))`, `parser: ConfigParser = ...`."""
+    findings = _scan(
+        tmp_path,
+        "import configparser, importlib, json\n"
+        "from transformers import AutoModel\n"
+        "def a(name, blob):\n"
+        "    kwargs: dict = json.loads(blob)\n"
+        "    return AutoModel.from_pretrained(name, **kwargs)\n"
+        "def b(name, blob):\n"
+        "    kwargs = dict(json.loads(blob))\n"
+        "    return AutoModel.from_pretrained(name, **kwargs)\n"
+        "def c(blob):\n"
+        "    parser: configparser.ConfigParser = configparser.ConfigParser()\n"
+        "    parser.read_dict(json.loads(blob))\n"
+        "    return importlib.import_module(parser.get('plugin', 'module'))\n",
+    )
+    assert (
+        sum(
+            f["sink"] == "trust_remote_code (untrusted **kwargs)"
+            for f in findings
+            if f["tier"] == "A"
+        )
+        == 2
+    )
+    assert "importlib.import_module" in _sinks(findings)

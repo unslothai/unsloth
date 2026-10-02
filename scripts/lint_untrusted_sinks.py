@@ -3455,14 +3455,17 @@ class _TaintPass(ast.NodeVisitor):
         found = set()
         for statement in ast.walk(body):
             if (
-                isinstance(statement, ast.Assign)
+                isinstance(statement, (ast.Assign, ast.AnnAssign))
                 and isinstance(statement.value, ast.Call)
                 and _matches_any(
                     self.facts.canonicals(_call_name(statement.value.func)),
                     self._CONFIG_PARSERS,
                 )
             ):
-                found.update(t.id for t in statement.targets if isinstance(t, ast.Name))
+                targets = (
+                    statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+                )
+                found.update(t.id for t in targets if isinstance(t, ast.Name))
         cache[self.qualname] = frozenset(found)
         return cache[self.qualname]
 
@@ -4001,9 +4004,14 @@ class _TaintPass(ast.NodeVisitor):
             own = self.facts.functions.get(self.qualname)
             body = own if own is not None else self.facts.tree
             for child in ast.walk(body):
-                if isinstance(child, ast.Assign) and any(
-                    isinstance(t, ast.Name) and t.id == value.id for t in child.targets
-                ):
+                targets = (
+                    child.targets
+                    if isinstance(child, ast.Assign)
+                    else [child.target]
+                    if isinstance(child, ast.AnnAssign) and child.value is not None
+                    else []
+                )
+                if any(isinstance(t, ast.Name) and t.id == value.id for t in targets):
                     reason = self._parsed_mapping(child.value)
                     if reason:
                         return reason
@@ -4014,6 +4022,11 @@ class _TaintPass(ast.NodeVisitor):
             source = _matches_any(self.facts.canonicals(_call_name(value.func)), _DESERIALIZERS)
             if source:
                 return self.tainted(value)
+            # `dict(parsed)` and `parsed.copy()` keep every key.
+            if _call_name(value.func) == "dict" and value.args:
+                return self._parsed_mapping(value.args[0])
+            if isinstance(value.func, ast.Attribute) and value.func.attr == "copy":
+                return self._parsed_mapping(value.func.value)
         return None
 
     def _partial_inner(self, call: ast.Call) -> str:
