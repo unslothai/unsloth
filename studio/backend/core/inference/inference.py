@@ -2774,7 +2774,9 @@ class InferenceBackend:
             raise RuntimeError("Audio generation cancelled")
         self._record_generation_stats(
             prompt_tokens = inputs.input_ids.shape[1],
-            completion_tokens = self._generated_token_count(model, generated, inputs.input_ids.shape[1]),
+            completion_tokens = self._generated_token_count(
+                model, generated, inputs.input_ids.shape[1]
+            ),
             max_new_tokens = max_new_tokens,
             ended_on_stop_token = self._ended_on_stop_token(
                 generated, self._generation_stop_token_ids(model, {})

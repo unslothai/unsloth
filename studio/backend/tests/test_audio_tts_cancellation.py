@@ -921,7 +921,9 @@ def test_token_codec_speech_cut_at_max_tokens_is_reported(audio_type, last_token
     backend = InferenceBackend.__new__(InferenceBackend)
     backend.active_model_name = "tts"
     backend._generation_lock = threading.Lock()
-    backend.models = {"tts": {"audio_type": audio_type, "model": _Model(), "tokenizer": _Tokenizer()}}
+    backend.models = {
+        "tts": {"audio_type": audio_type, "model": _Model(), "tokenizer": _Tokenizer()}
+    }
     backend._audio_codec_manager = types.SimpleNamespace(
         decode_bicodec = lambda *_args: (b"RIFFfake", 16000),
         decode_dac = lambda *_args: (b"RIFFfake", 24000),
