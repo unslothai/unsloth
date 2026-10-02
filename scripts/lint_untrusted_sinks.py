@@ -4036,7 +4036,9 @@ def _remote_code_defaults(facts: _FileFacts) -> list[dict]:
         for argument, default in pairs:
             if argument.arg != "trust_remote_code":
                 continue
-            if isinstance(default, ast.Constant) and default.value is True:
+            # A default is evaluated in the enclosing scope, so `ENABLED = True` then
+            # `def load(..., trust_remote_code = ENABLED)` is the same opt-in default.
+            if is_true(default, node):
                 record(
                     node,
                     "default",

@@ -5570,3 +5570,24 @@ def test_a_stored_source_passed_to_a_helper_is_followed(tmp_path):
         "        return importlib.import_module(data['module'])\n",
     )
     assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_remote_code_default_bound_to_a_true_name_is_reported(tmp_path):
+    """`ENABLED = True` then `def load(name, trust_remote_code = ENABLED)`."""
+    findings = _scan(
+        tmp_path,
+        "from transformers import AutoModel\n"
+        "ENABLED = True\n"
+        "def load(name, trust_remote_code = ENABLED):\n"
+        "    return AutoModel.from_pretrained(name, trust_remote_code = trust_remote_code)\n",
+    )
+    quiet = _scan(
+        tmp_path,
+        "from transformers import AutoModel\n"
+        "ENABLED = False\n"
+        "def load(name, trust_remote_code = ENABLED):\n"
+        "    return AutoModel.from_pretrained(name, trust_remote_code = trust_remote_code)\n",
+        name = "quiet.py",
+    )
+    assert any(f["sink"].startswith("trust_remote_code = True") for f in findings)
+    assert not any(f["sink"].startswith("trust_remote_code = True") for f in quiet)
