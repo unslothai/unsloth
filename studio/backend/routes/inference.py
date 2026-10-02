@@ -8138,7 +8138,9 @@ def _gguf_load_response(
         is_local_model = is_local_model,
         # A custom INI's sampling seeds the chat controls like a model recommendation.
         inference = {
-            **load_inference_config(inference_identifier or llama_backend.model_identifier or model),
+            **load_inference_config(
+                inference_identifier or llama_backend.model_identifier or model
+            ),
             **(getattr(llama_backend, "llama_cpp_config_summary", None) or {}).get(
                 "request_defaults", {}
             ),
