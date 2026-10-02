@@ -253,6 +253,27 @@ SINKS: dict[str, tuple[tuple[int, ...], frozenset[str]]] = {
     "subprocess.check_call": ((0,), frozenset({"args", "executable"})),
     "subprocess.check_output": ((0,), frozenset({"args", "executable"})),
     "subprocess.Popen": ((0,), frozenset({"args", "executable"})),
+    # The exec family replaces this process with the named program, so a tainted path
+    # here IS execution with no shell in between. `os.posix_spawn` takes the same
+    # argument shape; the spawn family puts a mode first, so the path sits at 1.
+    "os.execv": ((0,), frozenset()),
+    "os.execve": ((0,), frozenset()),
+    "os.execvp": ((0,), frozenset()),
+    "os.execvpe": ((0,), frozenset()),
+    "os.execl": ((0,), frozenset()),
+    "os.execle": ((0,), frozenset()),
+    "os.execlp": ((0,), frozenset()),
+    "os.execlpe": ((0,), frozenset()),
+    "os.posix_spawn": ((0,), frozenset()),
+    "os.posix_spawnp": ((0,), frozenset()),
+    "os.spawnv": ((1,), frozenset()),
+    "os.spawnve": ((1,), frozenset()),
+    "os.spawnvp": ((1,), frozenset()),
+    "os.spawnvpe": ((1,), frozenset()),
+    "os.spawnl": ((1,), frozenset()),
+    "os.spawnle": ((1,), frozenset()),
+    "os.spawnlp": ((1,), frozenset()),
+    "os.spawnlpe": ((1,), frozenset()),
     # Deserialisers that construct arbitrary objects.
     "pickle.load": ((0,), frozenset()),
     "pickle.loads": ((0,), frozenset()),
@@ -517,11 +538,19 @@ class _FileFacts:
         # validated translation, not a passthrough: the result can only be one of the
         # constants written in the source, whatever key the attacker supplies.
         self.constant_maps: set = set()
+        # Qualnames whose immediate enclosing scope is a class and which are not
+        # `@staticmethod`. Python does not require the receiver to be named `self`, so
+        # reading method status off the first parameter misclassified `def execute(this,
+        # command)` and bound a tainted argument to the receiver instead of the parameter.
+        self.methods: set = set()
         self._collect()
         self._collect_module_bindings()
 
     def _collect(self) -> None:
         scope: list[str] = []
+        # Whether each open scope is a class, so the function below knows if its
+        # immediate parent is one. A nested helper inside a method is not a method.
+        kinds: list[str] = []
 
         def walk(node: ast.AST) -> None:
             for child in ast.iter_child_nodes(node):
@@ -545,8 +574,15 @@ class _FileFacts:
                         target = f"{base}.{alias.name}" if base else alias.name
                         self._bind_import(alias.asname or alias.name, target)
                 elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    in_class = bool(kinds) and kinds[-1] == "class"
                     scope.append(child.name)
+                    kinds.append("function")
                     qualname = ".".join(scope)
+                    if in_class and not any(
+                        _call_name(decorator).rpartition(".")[2] == "staticmethod"
+                        for decorator in child.decorator_list
+                    ):
+                        self.methods.add(qualname)
                     self.functions[qualname] = child
                     self.params[qualname] = _param_names(child)
                     self.contexts[qualname] = _norm_hash(child)
@@ -564,6 +600,7 @@ class _FileFacts:
                         self.globals_declared[qualname] = declared
                     walk(child)
                     scope.pop()
+                    kinds.pop()
                     continue
                 elif isinstance(child, ast.ClassDef):
                     self.classes.add(child.name)
@@ -577,8 +614,10 @@ class _FileFacts:
                         self.bases[".".join(scope + [child.name])] = declared_bases
                         self.bases.setdefault(child.name, declared_bases)
                     scope.append(child.name)
+                    kinds.append("class")
                     walk(child)
                     scope.pop()
+                    kinds.pop()
                     continue
                 walk(child)
 
@@ -1404,8 +1443,23 @@ class _TaintPass(ast.NodeVisitor):
             dict(self.callable_aliases),
         )
         self.generic_visit(node)
+        # A `nonlocal` write is a write to THIS scope, which is the whole point of the
+        # declaration, so dropping it with the nested body's own names discarded a real
+        # flow: a helper setting an outer `command` from a parsed config left the sink
+        # below it clean. Only ordinary nested locals are dropped.
+        shared = {
+            name
+            for inner in ast.walk(node)
+            if isinstance(inner, ast.Nonlocal)
+            for name in inner.names
+        }
+        reasons = dict(saved[0])
+        for name in sorted(shared):
+            carried = self.local_reasons.get(name)
+            if carried and reasons.get(name, NAMED_PARAM_REASON) == NAMED_PARAM_REASON:
+                reasons[name] = carried
         self.local_reasons, self.instance_types, self.sink_aliases, self.callable_aliases = (
-            saved[0],
+            reasons,
             saved[1],
             saved[2],
             saved[3],
@@ -2096,10 +2150,10 @@ def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
         for qualname, node in sorted(facts.functions.items()):
             key = (path, qualname)
             state.params[key] = facts.params[qualname]
-            state.is_method[key] = bool(facts.params[qualname]) and facts.params[qualname][0] in (
-                "self",
-                "cls",
-            )
+            # Class containment, not the receiver's spelling. `def execute(this,
+            # command)` is a valid method and read as a plain function, so a tainted
+            # argument bound to `this` and the parameter the sink consumed stayed clean.
+            state.is_method[key] = qualname in facts.methods
             if any(
                 _call_name(decorator).rpartition(".")[2] == "classmethod"
                 for decorator in node.decorator_list

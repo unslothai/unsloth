@@ -2093,3 +2093,91 @@ def test_a_table_built_from_parsed_values_is_not_validation(tmp_path):
         "    return getattr(mx, _TABLE.get(json.loads(blob)['dtype'], 'float32'))\n",
     )
     assert "getattr(module, ...)" in _sinks(findings)
+
+
+def test_os_execv_is_a_sink(tmp_path):
+    """The exec family replaces this process with the named program.
+
+    No shell sits in between, so a parsed path here IS execution, and none of these
+    APIs were in the sink table at all.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, os\n"
+        "def load(blob):\n"
+        "    return os.execv(json.loads(blob)['binary'], ['binary'])\n",
+    )
+    assert "os.execv" in _sinks(findings)
+
+
+def test_os_spawnv_takes_its_path_after_the_mode(tmp_path):
+    """The spawn family puts a mode first, so the path sits at position 1.
+
+    Registering it at 0 like the exec family would have watched the mode and ignored the
+    program, which is a sink that cannot fail.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, os\n"
+        "def load(blob):\n"
+        "    return os.spawnv(os.P_WAIT, json.loads(blob)['binary'], ['binary'])\n",
+    )
+    assert "os.spawnv" in _sinks(findings)
+
+
+def test_a_nonlocal_write_from_a_nested_function_survives(tmp_path):
+    """`nonlocal command` writes the ENCLOSING scope, which is the point of it.
+
+    Scoping nested writes dropped these too, so a helper setting an outer name from a
+    parsed config left the sink below it clean. Only ordinary nested locals are dropped.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def load(blob):\n"
+        "    command = ['ls']\n"
+        "    def parse():\n"
+        "        nonlocal command\n"
+        "        command = json.loads(blob)['command']\n"
+        "    parse()\n"
+        "    return subprocess.run(command)\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_method_whose_receiver_is_not_named_self_is_still_a_method(tmp_path):
+    """Python does not require the receiver to be called `self`.
+
+    Reading method status off the first parameter's name bound the tainted argument to
+    `this` and left `command` clean, so the sink consuming it was missed.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "class Runner:\n"
+        "    def execute(this, command):\n"
+        "        return subprocess.run(command)\n"
+        "def load(blob):\n"
+        "    runner = Runner()\n"
+        "    return runner.execute(json.loads(blob)['command'])\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_staticmethod_takes_no_receiver(tmp_path):
+    """The other half of deriving method status from class containment.
+
+    A `@staticmethod` is inside a class but takes no receiver, so counting it as a method
+    would shift every argument one place right and lose the finding.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "class Runner:\n"
+        "    @staticmethod\n"
+        "    def execute(command):\n"
+        "        return subprocess.run(command)\n"
+        "def load(blob):\n"
+        "    return Runner.execute(json.loads(blob)['command'])\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
