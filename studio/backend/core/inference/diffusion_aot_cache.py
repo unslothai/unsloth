@@ -3,23 +3,11 @@
 
 """Let AOTAutogradCache store the denoiser graphs that hold an ``sdpa_kernel`` block.
 
-Dynamo bakes every ``sdpa_kernel`` context into the FX graph as two helper calls, ``_backend_from_string`` and
-``_sdpa_kernel`` (``torch/_dynamo/variables/ctx_manager.py``), and neither is on AOTAutogradCache's allowlist, so
-every such graph logs "Bypassing autograd cache due to: Unsupported call_function target _backend_from_string" and
-re-runs AOT tracing + partitioning on EVERY process start, warm Mega-cache bundle or not (pytorch/pytorch#194007).
-diffusers' ``_native_cudnn`` / ``_native_efficient`` / ``_native_flash`` attention backends wrap each SDPA call in
-one, so this hits every regional block of FLUX.1, Z-Image and Qwen-Image. Measured on a B200 restart (torch 2.11,
-int8 denoisers): AOT dispatch 2.6 / 4.7 / 1.8 s of the first render, of which inductor's own (cached) codegen is only
-0.5 / 0.8 / 0.5 s.
-
-Both helpers are cache-safe for the calls dynamo emits here: their arguments are constants in the graph (backend
-names, ``set_priority``), and the graph is the cache key, so two graphs that pick different backends key apart.
-The one piece of ambient state is SDPA's backend priority order, which ``_sdpa_kernel(..., set_priority=True)``
-reads; that order goes into the value of ``unsafe_marked_cacheable_functions``, which torch folds into the cache key,
-so a process running a different order never hits these entries. A cache hit returns the artifact the same graph
-compiled to before, so outputs are unchanged.
-
-UNSLOTH_DIFFUSION_SDPA_AOT_CACHE=0 disables it (the graphs bypass the cache, as before).
+Dynamo bakes ``sdpa_kernel`` into the graph as ``_backend_from_string`` / ``_sdpa_kernel`` calls, which are not on
+AOTAutogradCache's allowlist, so every regional block of FLUX.1, Z-Image and Qwen-Image re-ran AOT tracing on each
+process start (pytorch/pytorch#194007; 2.6 / 4.7 / 1.8 s of a B200 restart's first render). Their arguments are graph
+constants, so the graph keys them apart; the one ambient input, SDPA's backend priority order, goes into the marked
+value torch folds into the cache key. UNSLOTH_DIFFUSION_SDPA_AOT_CACHE=0 disables it.
 """
 
 from __future__ import annotations
@@ -61,7 +49,7 @@ def install(logger: Any = None) -> bool:
             callable(getattr(attention, name.rsplit(".", 1)[1], None)) for name in SDPA_HELPERS
         ):
             return False
-        # The recorded knob (what render threads re-apply) and this thread's live value: both must carry the helpers.
+        # Both the recorded knob (re-applied on render threads) and this thread's live value.
         recorded = compile_config.get_knob(_INDUCTOR_MODULE, _KNOB)
         live = getattr(getattr(torch._inductor, "config", None), _KNOB, None)
         if not isinstance(recorded, dict) or not isinstance(live, dict):
