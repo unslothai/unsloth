@@ -1810,11 +1810,13 @@ def _auto_quant_eager_reason(
 def _uninstall_fused_dit_patches() -> None:
     """Restore the process-global fused DiT patches so the next load honours its own kill switches."""
     try:
+        from .diffusion_flux2_rope import uninstall as uninstall_flux2_rope
         from .diffusion_qwenimage_rope import uninstall as uninstall_qwen_real_rope
         from .diffusion_zimage_fused import uninstall as uninstall_zimage_fused
 
         uninstall_qwen_real_rope()
         uninstall_zimage_fused()
+        uninstall_flux2_rope()
     except Exception:  # noqa: BLE001 - teardown is best effort
         pass
 
@@ -6698,6 +6700,10 @@ class DiffusionBackend:
                     from .diffusion_qwenimage21 import install_for_pipe as install_q21_fast_step
 
                     install_q21_fast_step(pipe, logger)
+                    from .diffusion_flux2_rope import install_for_pipe as install_flux2_rope
+
+                    # fp16 GPUs only (T4 and other pre-Ampere cards): one bit-identical RoPE kernel; bf16 keeps stock.
+                    install_flux2_rope(pipe, dtype, device, logger)
 
                     self._raise_if_load_cancelled(_load_token)
                     # Pre-warmed torch.compile cache: a per-fingerprint inductor dir plus a bundle loaded before the
