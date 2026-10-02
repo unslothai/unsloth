@@ -27,7 +27,9 @@ import re
 import logging
 import textwrap
 import warnings
+import platform
 import sys
+import sysconfig
 import threading
 import functools
 import inspect
@@ -4566,28 +4568,54 @@ def check_fbgemm_gpu_version():
 
 def patch_enable_input_require_grads():
     """Patch PreTrainedModel.enable_input_require_grads to tolerate vision models
-    that raise NotImplementedError from get_input_embeddings()."""
+    that raise NotImplementedError from get_input_embeddings(), and so that its hook traces
+    under torch.compile."""
     import inspect
+    import torch
     from transformers import PreTrainedModel
 
-    # Only patch the new variant that iterates over self.modules(); see huggingface/transformers#41993.
     try:
         original_source = inspect.getsource(PreTrainedModel.enable_input_require_grads)
     except:
         return
 
+    class _RequireGrad(torch.autograd.Function):
+        # x + -0.0 is x exactly (signed zeros too); the anchor only makes the output need grad.
+        @staticmethod
+        def forward(ctx, x, anchor):
+            return x + anchor
+
+        @staticmethod
+        def backward(ctx, grad):
+            return grad, None
+
+    # Created here: torch.compile cannot create a tensor that requires grad inside a graph.
+    anchor = torch.tensor(-0.0, requires_grad = True)
+
+    def make_inputs_require_grads(module, input, output):
+        # requires_grad_() on an intermediate is a graph break under torch.compile.
+        if torch.compiler.is_compiling():
+            if not torch.is_grad_enabled():
+                return  # a compiled decode step records no grad
+            return _RequireGrad.apply(output, anchor)
+        output.requires_grad_(True)
+
+    # Older transformers hooks a single embedding (huggingface/transformers#41993 added the loop).
+    # wraps keeps inspect.getsource on transformers' source for later source checks.
+    original = PreTrainedModel.enable_input_require_grads
     if "for module in self.modules()" not in original_source:
+
+        @functools.wraps(original)
+        def _patched_single_enable_input_require_grads(self):
+            self._require_grads_hook = self.get_input_embeddings().register_forward_hook(
+                make_inputs_require_grads
+            )
+
+        PreTrainedModel.enable_input_require_grads = _patched_single_enable_input_require_grads
         return
 
+    @functools.wraps(original)
     def _patched_enable_input_require_grads(self):
-        import torch
-
-        def make_inputs_require_grads(module, input, output):
-            # Dynamo graph-breaks on requires_grad_(); a compiled decode step records no grad anyway.
-            if torch.compiler.is_compiling() and not torch.is_grad_enabled():
-                return
-            output.requires_grad_(True)
-
         hooks = []
         seen_modules = set()
 
@@ -9032,6 +9060,85 @@ def _is_broken_causal_conv1d_error(error) -> bool:
     return False
 
 
+# Our Linux x86_64 cp313 CUDA 13 builds for torch 2.13 / 2.14, the minors whose extension ABI no
+# upstream wheel matches (release prebuilt-wheels-cu13, .github/workflows/prebuilt-cuda-wheels.yml).
+_PREBUILT_KERNEL_RELEASE_URL = (
+    "https://github.com/unslothai/unsloth/releases/download/prebuilt-wheels-cu13"
+)
+_FLASH_ATTN_TORCH213_SOURCE = "flash-attn @ git+https://github.com/Dao-AILab/flash-attention@edb5c76ee329b18ed95d1f7ea9aa522a1331ab7d"
+_PREBUILT_KERNEL_VERSIONS = {
+    "flash_attn": "2.8.4",
+    "causal_conv1d": "1.7.0",
+    "mamba_ssm": "2.3.2.post1",
+}
+
+
+def _glibc_at_least(major: int, minor: int) -> bool:
+    # The builds run on ubuntu-22.04, and the linux_x86_64 tag lets pip install them on older glibc.
+    try:
+        name, version = platform.libc_ver()
+        return name == "glibc" and tuple(int(x) for x in version.split(".")[:2]) >= (major, minor)
+    except Exception:
+        return False
+
+
+def stale_kernel_hint(package: str, error) -> str:
+    """How to rebuild ``package`` when ``error`` says its extension was built for another torch, else ""."""
+    checked = set()
+    current = error
+    while current is not None and id(current) not in checked:
+        checked.add(id(current))
+        # A torch ABI break leaves a mangled c10 / at / torch symbol unresolved; other undefined
+        # symbols (e.g. CUDA libraries out of step) are not fixed by a rebuild.
+        if re.search(r"undefined symbol: (?:_ZN\w*?(?:3c10|2at|5torch)|aoti_torch_)", str(current)):
+            break
+        current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+    else:
+        return ""
+    try:
+        import torch
+
+        torch_version = str(torch.__version__)
+        cuda = str(torch.version.cuda or "")
+        cxx11 = bool(getattr(torch._C, "_GLIBCXX_USE_CXX11_ABI", True))
+    except Exception:
+        return ""
+    public = torch_version.split("+")[0]
+    # Only a stable release matches the wheel; a nightly or rc of the same minor has its own ABI.
+    stable = re.fullmatch(r"(\d+)\.(\d+)\.\d+", public)
+    minor = ".".join(stable.groups()) if stable else ""
+    loose = re.match(r"(\d+)\.(\d+)", public)
+    torch_minor = tuple(int(x) for x in loose.groups()) if loose else (0, 0)
+    head = f"Unsloth: {package} was built for a different torch than {torch_version}, so its fast kernels are off."
+    if (
+        package in _PREBUILT_KERNEL_VERSIONS
+        and sys.platform.startswith("linux")
+        and platform.machine().lower() in ("x86_64", "amd64")
+        and sys.version_info[:2] == (3, 13)
+        and not sysconfig.get_config_var("Py_GIL_DISABLED")
+        and _glibc_at_least(2, 35)
+        and minor in ("2.13", "2.14")
+        and cuda.startswith("13.")
+        and cxx11
+    ):
+        wheel = (
+            f"{package}-{_PREBUILT_KERNEL_VERSIONS[package]}+cu13torch{minor}cxx11abiTRUE"
+            "-cp313-cp313-linux_x86_64.whl"
+        )
+        return f"{head} To restore them:\n  pip install --no-deps --force-reinstall {_PREBUILT_KERNEL_RELEASE_URL}/{wheel}"
+    dist = package.replace("_", "-")
+    if package == "flash_attn" and torch_minor >= (2, 13):
+        # The last flash-attn release predates the c++20 switch torch 2.13 headers need.
+        return (
+            f"{head} To restore them, rebuild it against this torch:\n"
+            f'  pip install --no-deps --no-build-isolation --no-cache-dir --force-reinstall "{_FLASH_ATTN_TORCH213_SOURCE}"'
+        )
+    return (
+        f"{head} To restore them, rebuild it against this torch:\n"
+        f"  pip install --no-deps --no-build-isolation --no-cache-dir --force-reinstall --no-binary {dist} {dist}"
+    )
+
+
 def _is_broken_vllm_error(error) -> bool:
     checked = set()
     current = error
@@ -9530,6 +9637,7 @@ def disable_broken_causal_conv1d():
     except Exception as error:
         if not _is_broken_causal_conv1d_error(error):
             return
+        hint = stale_kernel_hint("causal_conv1d", error)
 
     CAUSAL_CONV1D_BROKEN = True
     _clear_causal_conv1d_modules()
@@ -9539,6 +9647,8 @@ def disable_broken_causal_conv1d():
         "Unsloth: Detected broken causal_conv1d binary; "
         "disabling causal_conv1d fast path and continuing import."
     )
+    if hint:
+        print(hint)
 
 
 _BNB_ROCM_DLL_RE = re.compile(r"libbitsandbytes_rocm(\d+)\.dll", re.IGNORECASE)

@@ -377,7 +377,7 @@ def test_resident_group_keeps_copy_stream_wait(monkeypatch):
         def synchronize(self):
             Stream.waits += 1
 
-    module = object()
+    module = types.SimpleNamespace()
     stream = Stream()
     groups = [
         types.SimpleNamespace(
@@ -394,6 +394,13 @@ def test_resident_group_keeps_copy_stream_wait(monkeypatch):
     monkeypatch.setattr(dm, "_offload_groups", lambda m: groups)
     dm._keep_groups_resident(module, 1, "cpu")
     assert all(getattr(g, "_unsloth_resident", False) for g in groups)
+    # every group resident: nothing is ever queued on the copy stream, so there is nothing to wait for
+    for g in groups:
+        g.onload_()
+        g.offload_()
+    assert Stream.waits == 0
+    # one group of the module streams again (an oversized request): the resident ones wait for it again
+    module._unsloth_stream_state["streamed"] = 1
     for g in groups:
         g.onload_()
         g.offload_()
@@ -487,3 +494,96 @@ def test_generate_releases_and_restores_resident_groups():
     finally_at = src.index("if restore_resident is not None:")
     assert "restore_resident()" in src[finally_at : finally_at + 200]
     assert "pipe._unsloth_measured_reserve = (" in src
+
+
+def test_eager_offload_hooks_install_is_idempotent():
+    go = pytest.importorskip("diffusers.hooks.group_offloading")
+    dm.install_group_offload_hooks_eager()
+    hooks = (
+        (go.GroupOffloadingHook, "pre_forward"),
+        (go.GroupOffloadingHook, "post_forward"),
+        (go.LayerExecutionTrackerHook, "pre_forward"),
+        (go.LazyPrefetchGroupOffloadingHook, "post_forward"),
+    )
+    patched = [cls.__dict__[name] for cls, name in hooks]
+    assert all(getattr(fn, "_unsloth_eager", False) for fn in patched)
+    assert dm.install_group_offload_hooks_eager() is False
+    assert [cls.__dict__[name] for cls, name in hooks] == patched
+
+
+def test_eager_offload_hooks_kill_switch(monkeypatch, traced_offload_hooks):
+    go = pytest.importorskip("diffusers.hooks.group_offloading")
+    monkeypatch.setenv(dm.EAGER_OFFLOAD_HOOKS_ENV, "0")
+    assert dm.install_group_offload_hooks_eager() is False
+    assert not getattr(go.GroupOffloadingHook.__dict__["pre_forward"], "_unsloth_eager", False)
+
+
+def test_failed_release_keeps_the_copy_stream_wait(monkeypatch):
+    groups = [
+        types.SimpleNamespace(
+            stream = object(), _unsloth_resident = True, _unsloth_resident_bytes = 1 << 20
+        )
+        for _ in range(2)
+    ]
+    module = types.SimpleNamespace(_unsloth_resident_room = 1, _unsloth_stream_state = {"streamed": 0})
+    monkeypatch.setattr(dm, "_offload_groups", lambda m: groups)
+
+    def boom(group):
+        raise RuntimeError("offload callback failed")
+
+    monkeypatch.setattr(dm, "_release_group", boom)
+    pipe = types.SimpleNamespace(components = {"transformer": module})
+    assert dm.release_resident_groups(pipe, 4) is None
+    assert module._unsloth_stream_state["streamed"] >= 1
+
+
+@pytest.mark.skipif(
+    not __import__("torch").cuda.is_available(), reason = "stream group offload needs a CUDA device"
+)
+def test_compiled_blocks_under_group_offload_skip_hook_tracing():
+    import torch
+
+    pytest.importorskip("diffusers.hooks.group_offloading")
+    from diffusers.hooks import apply_group_offloading
+    from torch._dynamo.utils import counters
+
+    dm.install_group_offload_hooks_eager()
+    torch.manual_seed(0)
+    make = lambda: torch.nn.Sequential(torch.nn.Linear(256, 256), torch.nn.GELU())
+    blocks = torch.nn.ModuleList([make() for _ in range(6)])
+    plain = [make().cuda() for _ in blocks]
+    for ref, block in zip(plain, blocks):
+        ref.load_state_dict(block.state_dict())
+
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.blocks = blocks
+
+        def forward(self, x):
+            for block in self.blocks:
+                x = block(x)
+            return x
+
+    model = Model()
+    apply_group_offloading(
+        model,
+        onload_device = torch.device("cuda"),
+        offload_type = "block_level",
+        num_blocks_per_group = 1,
+        use_stream = True,
+    )
+    x = torch.randn(64, 256, device = "cuda")
+    with torch.no_grad():
+        for block in [*model.blocks, *plain]:
+            block.compile()
+        expected = x
+        for ref in plain:
+            expected = ref(expected)
+        torch._dynamo.reset()
+        counters.clear()
+        outs = [model(x) for _ in range(3)]
+    for out in outs:
+        torch.testing.assert_close(out, expected, rtol = 0, atol = 1e-6)
+    # Traced hooks add a graph per hook variant; eager hooks leave only the block graph.
+    assert counters["stats"]["unique_graphs"] <= 1

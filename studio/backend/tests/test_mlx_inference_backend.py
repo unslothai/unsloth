@@ -24,16 +24,24 @@ def native_vlm_generation_context():
     return mlx_inference._vlm_generation_context
 
 
+FUSIONS = (
+    "moe_gate_up",
+    "decode_conv_silu",
+    "residual_norm",
+    "moe_router",
+    "moe_routed_experts",
+    "residual_norm_handoff",
+)
+
+
 @pytest.fixture(autouse = True)
 def mlx_inference_patches(monkeypatch, native_vlm_generation_context):
     from core.inference import mlx_inference
 
     monkeypatch.setattr(mlx_inference, "_vlm_generation_context", contextlib.nullcontext)
     module = types.ModuleType("unsloth_zoo.mlx.inference")
-    module.fused_moe_gate_up = contextlib.nullcontext
-    module.fused_decode_conv_silu = contextlib.nullcontext
-    module.fused_residual_norm = contextlib.nullcontext
-    module.fused_moe_router = contextlib.nullcontext
+    for name in FUSIONS:
+        setattr(module, f"fused_{name}", contextlib.nullcontext)
     monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.inference", module)
     return module
 
@@ -48,9 +56,7 @@ def mlx_decode(mlx_inference_patches):
     return mlx_inference_patches
 
 
-@pytest.mark.parametrize(
-    "feature", ["moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"]
-)
+@pytest.mark.parametrize("feature", FUSIONS)
 @pytest.mark.parametrize(
     "error",
     [
@@ -86,9 +92,7 @@ def test_mlx_fusion_import_never_fails_the_request(monkeypatch, error, feature):
         assert active is model
 
 
-@pytest.mark.parametrize(
-    "feature", ["moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"]
-)
+@pytest.mark.parametrize("feature", FUSIONS)
 def test_mlx_fusion_that_cannot_be_entered_keeps_native(
     monkeypatch, mlx_inference_patches, feature
 ):
@@ -108,9 +112,7 @@ def test_mlx_fusion_that_cannot_be_entered_keeps_native(
         assert active is model
 
 
-@pytest.mark.parametrize(
-    "feature", ["moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"]
-)
+@pytest.mark.parametrize("feature", FUSIONS)
 @pytest.mark.parametrize(
     "message",
     [
@@ -139,9 +141,7 @@ def test_mlx_dead_gpu_queue_is_not_reported_as_a_working_fallback(
     assert mlx_inference._MLX_FUSION_UNAVAILABLE == set()
 
 
-@pytest.mark.parametrize(
-    "feature", ["moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"]
-)
+@pytest.mark.parametrize("feature", FUSIONS)
 def test_mlx_packing_that_runs_out_of_memory_still_keeps_native(
     monkeypatch, mlx_inference_patches, feature
 ):
@@ -219,7 +219,7 @@ def test_mlx_fusion_that_refuses_everywhere_still_generates(monkeypatch, mlx_moe
 
         return refuse
 
-    for name in ("moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"):
+    for name in FUSIONS:
         monkeypatch.setattr(mlx_moe, f"fused_{name}", _refusing(name))
     monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
     config = SimpleNamespace(identifier = "fake/text", is_vision = False, is_lora = False)
@@ -229,9 +229,7 @@ def test_mlx_fusion_that_refuses_everywhere_still_generates(monkeypatch, mlx_moe
     stream = backend.generate_chat_response(messages = [{"role": "user", "content": "p"}])
     assert next(stream) == "7"
     stream.close()
-    assert Counter(refused) == Counter(
-        moe_gate_up = 2, decode_conv_silu = 1, residual_norm = 1, moe_router = 1
-    )
+    assert Counter(refused) == Counter({**dict.fromkeys(FUSIONS, 1), "moe_gate_up": 2})
 
 
 def _all_fusions_refuse(monkeypatch, patches):
@@ -248,7 +246,7 @@ def _all_fusions_refuse(monkeypatch, patches):
 
         return refuse
 
-    for name in ("moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"):
+    for name in FUSIONS:
         monkeypatch.setattr(patches, f"fused_{name}", _refusing(name))
     monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
     return refused
@@ -292,9 +290,7 @@ def test_mlx_vlm_generation_survives_every_fusion_refusing(monkeypatch, mlx_infe
         None,
     )
     assert list(backend._generate_vlm(*args)) == ["ok"]
-    assert Counter(refused) == Counter(
-        moe_gate_up = 1, decode_conv_silu = 1, residual_norm = 1, moe_router = 1
-    )
+    assert Counter(refused) == Counter(dict.fromkeys(FUSIONS, 1))
 
 
 def test_mlx_audio_input_generation_survives_every_fusion_refusing(
@@ -330,14 +326,10 @@ def test_mlx_audio_input_generation_survives_every_fusion_refusing(
             max_new_tokens = 64,
         )
     ) == ["H", "e", "l"]
-    assert Counter(refused) == Counter(
-        moe_gate_up = 1, decode_conv_silu = 1, residual_norm = 1, moe_router = 1
-    )
+    assert Counter(refused) == Counter(dict.fromkeys(FUSIONS, 1))
 
 
-@pytest.mark.parametrize(
-    "feature", ["moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"]
-)
+@pytest.mark.parametrize("feature", FUSIONS)
 def test_mlx_missing_inference_export_keeps_native(monkeypatch, mlx_inference_patches, feature):
     from core.inference import mlx_inference
 
@@ -1038,9 +1030,7 @@ def test_vlm_iterator_restores_each_callers_stream_and_closes_on_generation_stre
     assert closed == [generation]
 
 
-@pytest.mark.parametrize(
-    "feature", ["moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"]
-)
+@pytest.mark.parametrize("feature", FUSIONS)
 def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(
     monkeypatch, mlx_moe, mlx_decode, feature
 ):
@@ -1300,9 +1290,7 @@ def test_mlx_vlm_model_config_prefers_config_with_model_type():
     )
 
 
-@pytest.mark.parametrize(
-    "feature", ["moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"]
-)
+@pytest.mark.parametrize("feature", FUSIONS)
 def test_mlx_generate_text_forwards_kwargs_into_template_helper(
     monkeypatch, mlx_moe, mlx_decode, feature
 ):
@@ -2895,9 +2883,7 @@ def test_mlx_audio_input_normalizes_split_native_reasoning_channels(monkeypatch)
     ) == ["<think>"]
 
 
-@pytest.mark.parametrize(
-    "feature", ["moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"]
-)
+@pytest.mark.parametrize("feature", FUSIONS)
 def test_mlx_audio_input_honors_adapter_selection(monkeypatch, mlx_moe, mlx_decode, feature):
     """Base-vs-LoRA compare sends audio_base64 and use_adapter in one body.
 

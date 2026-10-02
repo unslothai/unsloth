@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+// eslint-disable-next-line no-restricted-imports -- The picker barrel imports this store; this leaf is import-free.
+import type {
+  LlamaCppConfig,
+  LlamaCppConfigSummary,
+} from "@/features/model-picker/model-config/llama-cpp-config";
 import { authFetch } from "@/features/auth";
 import type { ImageDisclosure } from "../api/mcp-image";
 import {
@@ -2099,9 +2104,59 @@ export function requestedGpuIdsFromResponse(resp: {
     : (resp.gpu_ids ?? null);
 }
 
+type LlamaCppConfigEcho = { requested_llama_cpp_config?: { mode: string } | null };
+
+function isCustomLlamaLoad(resp: LlamaCppConfigEcho): boolean {
+  return resp.requested_llama_cpp_config?.mode === "custom";
+}
+
+/** The config a load ran with: the server's echo, else what was sent. */
+export function loadedLlamaCppConfigFields(
+  resp: {
+    requested_llama_cpp_config?: LlamaCppConfig | null;
+    llama_cpp_config_summary?: LlamaCppConfigSummary | null;
+  },
+  sent: LlamaCppConfig | undefined,
+) {
+  const config = resp.requested_llama_cpp_config ?? sent;
+  return {
+    llamaCppConfig: config,
+    loadedLlamaCppConfig: config ?? null,
+    llamaCppConfigSummary: resp.llama_cpp_config_summary ?? null,
+  };
+}
+
+// A custom load echoes its INI's tuning; adopting it would carry that into the next managed load.
+export function managedKvCacheFields(
+  resp: { cache_type_kv?: string | null } & LlamaCppConfigEcho,
+) {
+  if (isCustomLlamaLoad(resp)) return {};
+  const kv = resp.cache_type_kv ?? null;
+  return { kvCacheDtype: kv, loadedKvCacheDtype: kv };
+}
+
+export function managedSpeculativeSettings(
+  resp: Parameters<typeof resolveLoadedSpeculativeSettings>[0] & LlamaCppConfigEcho,
+) {
+  return isCustomLlamaLoad(resp) ? {} : resolveLoadedSpeculativeSettings(resp);
+}
+
+export function managedGpuMemoryFields(
+  resp: Parameters<typeof loadedGpuMemoryFields>[0] & LlamaCppConfigEcho,
+) {
+  if (isCustomLlamaLoad(resp)) {
+    return {
+      ggufLayerCount: resp.n_layers ?? null,
+      moeLayerCount: resp.n_moe_layers ?? null,
+    };
+  }
+  return loadedGpuMemoryFields(resp);
+}
+
 // Store fields derived from a load/status response's GPU-memory settings, shared by every
 // load path so the manual-knob round-trip cannot drift.
 export function loadedGpuMemoryFields(resp: {
+  engine?: "auto" | "vllm" | "sglang";
   is_gguf?: boolean;
   is_diffusion?: boolean;
   gpu_memory_mode?: "auto" | "manual";
@@ -2121,11 +2176,16 @@ export function loadedGpuMemoryFields(resp: {
     // Clear the GPU pick / offload baseline a prior GGUF load left, else a stale loadedGpuIds reads as
     // dirty. gpuIdsDirty is ungated, so Reset would restore it while the picker is hidden. gpuMemoryMode
     // is kept as the standing preference, but its loaded baseline clears to null.
+    const managed = resp.engine === "vllm" || resp.engine === "sglang";
+    const gpuIds = managed
+      ? (requestedGpuIdsFromResponse(resp) ?? resp.gpu_ids ?? [0])
+      : null;
+    const indexKind = managed ? ("physical" as const) : null;
     return {
-      selectedGpuIds: null,
-      selectedGpuIndexKind: null,
-      loadedGpuIds: null,
-      loadedGpuIndexKind: null,
+      selectedGpuIds: gpuIds,
+      selectedGpuIndexKind: indexKind,
+      loadedGpuIds: gpuIds,
+      loadedGpuIndexKind: indexKind,
       loadedGpuMemoryMode: null,
       loadedCpuFallback: false,
       gpuLayers: GPU_LAYERS_AUTO,
@@ -2287,6 +2347,10 @@ type ChatRuntimeStore = {
   loadedContextLength: number | null;
   maxContextLength: number | null;
   nativeContextLength: number | null;
+  /** The resident's own engine launch settings, which a failed switch rolls back to. */
+  loadedEngine: "auto" | "vllm" | "sglang";
+  loadedEnginePrecision: NonNullable<InferenceParams["enginePrecision"]>;
+  loadedEngineParallelism: NonNullable<InferenceParams["engineParallelism"]>;
   /** The backend's own is_gguf for the loaded model; null until one loads. Set wherever
    *  loadedContextLength is, so a context never arrives unattributed. */
   loadedIsGguf: boolean | null;
@@ -2442,6 +2506,9 @@ type ChatRuntimeStore = {
   /** Pass-through args the resident model is running, as far as this client knows. A rollback
    *  resends them: by then the target load has replaced the backend's inheritance source. */
   loadedLlamaExtraArgs: string[] | null;
+  llamaCppConfig?: LlamaCppConfig;
+  loadedLlamaCppConfig: LlamaCppConfig | null;
+  llamaCppConfigSummary: LlamaCppConfigSummary | null;
   /** user --ubatch-size override for gguf loads (null = llama.cpp default 512) */
   nUbatch: number | null;
   loadedNUbatch: number | null;
@@ -4112,6 +4179,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedContextLength: null,
   maxContextLength: null,
   nativeContextLength: null,
+  loadedEngine: "auto",
+  loadedEnginePrecision: "auto",
+  loadedEngineParallelism: "tensor",
   loadedIsGguf: null,
   loadedIsMlx: null,
   loadedContextEnforced: null,
@@ -4211,6 +4281,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   nBatch: null,
   loadedNBatch: null,
   loadedLlamaExtraArgs: null,
+  loadedLlamaCppConfig: null,
+  llamaCppConfigSummary: null,
   nUbatch: null,
   loadedNUbatch: null,
   specDraftCacheDtype: null,
@@ -5159,6 +5231,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       nBatch: null,
       loadedNBatch: null,
       loadedLlamaExtraArgs: null,
+      loadedLlamaCppConfig: null,
+      llamaCppConfigSummary: null,
       nUbatch: null,
       loadedNUbatch: null,
       specDraftCacheDtype: null,

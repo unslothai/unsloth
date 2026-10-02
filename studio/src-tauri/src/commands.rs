@@ -1199,6 +1199,7 @@ pub async fn start_managed_repair(
             install_state,
             install_diagnostics,
             install_repair_group_id,
+            force_installer,
         )
     })
     .await
