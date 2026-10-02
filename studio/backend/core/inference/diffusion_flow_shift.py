@@ -36,7 +36,11 @@ def flow_shift_overrides(config: Any, shift: float) -> Optional[dict]:
     return None
 
 
-def apply_comfy_flow_shift(pipe: Any, shift: Optional[float], logger: Any = None) -> bool:
+def apply_comfy_flow_shift(
+    pipe: Any,
+    shift: Optional[float],
+    logger: Any = None,
+) -> bool:
     """Rebuild ``pipe.scheduler`` at ComfyUI's static ``shift``. True when it changed."""
     if shift is None:
         return False

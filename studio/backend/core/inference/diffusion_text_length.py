@@ -60,10 +60,9 @@ def ideogram4_comfy_guidance_schedule(steps: int, width: int, height: int) -> li
         IDEOGRAM4_COMFY_TAIL_GUIDANCE
         if sigma <= IDEOGRAM4_COMFY_TAIL_SIGMA
         else IDEOGRAM4_COMFY_GUIDANCE
-        for sigma in ideogram4_sigmas(
-            steps, width, height, IDEOGRAM4_COMFY_MU, IDEOGRAM4_COMFY_STD
-        )
+        for sigma in ideogram4_sigmas(steps, width, height, IDEOGRAM4_COMFY_MU, IDEOGRAM4_COMFY_STD)
     ]
+
 
 # FLUX.1 families on a FluxPipeline-style ``max_sequence_length`` whose ComfyUI tokenizer is the FLUX T5 one.
 FLUX_T5_FAMILIES = frozenset({"flux.1", "flux.1-kontext"})
@@ -115,10 +114,7 @@ def flux_t5_sequence_length(
 
 
 def flux_t5_kwarg(
-    family_name: str,
-    pipe: Any,
-    call_params: Any,
-    chunk_kwargs: dict,
+    family_name: str, pipe: Any, call_params: Any, chunk_kwargs: dict
 ) -> Optional[int]:
     """The ``max_sequence_length`` to pass for this chunk, or None to leave the kwarg alone.
 

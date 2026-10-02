@@ -26,7 +26,9 @@ class _FakeScheduler:
 
 
 # Shipped configs (the fields that matter) of the Qwen-Image, Wan2.2-TI2V-5B and HunyuanVideo-1.5 720p repos.
-_QWEN = dict(shift = 1.0, use_dynamic_shifting = True, shift_terminal = 0.02, time_shift_type = "exponential")
+_QWEN = dict(
+    shift = 1.0, use_dynamic_shifting = True, shift_terminal = 0.02, time_shift_type = "exponential"
+)
 _WAN = dict(flow_shift = 5.0, use_flow_sigmas = True, solver_order = 2)
 _HV15 = dict(shift = 9.0, use_dynamic_shifting = False, shift_terminal = None)
 
