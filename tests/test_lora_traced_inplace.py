@@ -61,10 +61,15 @@ def test_addmm_keeps_autograd_with_grad_enabled():
     assert W.grad is not None and torch.isfinite(W.grad).all()
 
 
-def test_traced_swiglu_backward_matches_the_kernel():
+# bf16 only where Unsloth trains in it (compute capability 8+); T4 trains in fp16.
+DTYPES = [torch.float16] + ([torch.bfloat16] if torch.cuda.get_device_capability()[0] >= 8 else [])
+
+
+@pytest.mark.parametrize("dtype", DTYPES, ids = str)
+def test_traced_swiglu_backward_matches_the_kernel(dtype):
     torch._dynamo.reset()
     g = torch.Generator(device = "cuda").manual_seed(2)
-    d = dict(device = "cuda", dtype = torch.bfloat16, generator = g)
+    d = dict(device = "cuda", dtype = dtype, generator = g)
     DW, e, gate = (
         torch.randn(256, 1024, **d),
         torch.randn(256, 1024, **d),
@@ -73,6 +78,6 @@ def test_traced_swiglu_backward_matches_the_kernel():
     ref = swiglu_DWf_DW_dfg_kernel(DW.clone(), e.clone(), gate.clone())
     traced = torch.compile(swiglu_DWf_DW_dfg_kernel, fullgraph = True)(DW, e, gate)
     for name, a, b in zip(("h", "df", "de"), traced, ref):
-        # Inductor keeps the intermediate products in fp32 where the kernel rounds them to bf16.
+        # Inductor keeps the intermediate products in fp32 where the kernel rounds them to dtype.
         err = ((a.float() - b.float()).abs().max() / b.float().abs().max()).item()
         assert err < 1e-2, (name, err)
