@@ -25,7 +25,9 @@ Kill switch: ``UNSLOTH_DIFFUSION_INT8_GEMM=0``; ``=1`` also enables it on an unm
 ConvRot Linears (``diffusion_convrot.ConvRotLinear``, MiniMax-H3's pre-quantized denoiser and its fused QKV) take the
 same kernel: the block-Hadamard rotation runs first, with the exact ops of ``ConvRotLinear.forward``, then torchao's
 activation quant and the fused GEMM, so the Linear output stays bit-identical to the stock rotated Linear in eager.
-MiniMax-H3 960x544x124, per denoiser call, int8 GEMM + dequant: <filled in from the Colab A/B>.
+MiniMax-H3 960x544x124, 20 steps, torch 2.11 (Colab, vs the same tree with the lever off): RTX PRO 6000 resident
+2.89 -> 2.75 s/step (2824 -> 2717 ms per denoiser call), A100 40 GB streamed 5.33 -> 4.87 s/step (5323 -> 4840 ms;
+int8 GEMM family 1835 -> 1610 ms), LPIPS vs the stock path inside the stock path's own cross-process spread.
 Own kill switch: ``UNSLOTH_DIFFUSION_INT8_GEMM_CONVROT=0`` keeps rotated Linears on the stock path.
 
 A block-streamed denoiser (group offload, MiniMax-H3 on a 40 GB card) installs against its onload device
