@@ -158,9 +158,14 @@ def print_studio_access_banner(
                 style("  From the Windows host (WSL2):", dim),
                 style(f"    {alt_local}", secondary),
                 style(
-                    "    WSL forwards localhost from Windows -- use this in your browser, "
-                    "not the WSL eth0 IP.",
+                    "    WSL forwards localhost to Windows, so open this in a Windows browser.", dim
+                ),
+                style(
+                    "    Other devices on your network can't reach WSL's NAT address; set",
                     dim,
+                ),
+                style(
+                    "    networkingMode=mirrored in %UserProfile%\\.wslconfig for LAN access.", dim
                 ),
             ]
         )

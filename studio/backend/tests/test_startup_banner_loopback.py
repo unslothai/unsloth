@@ -54,6 +54,7 @@ def test_wsl_windows_browser_hint_shows_localhost_for_wildcard_bind(capsys):
     out = capsys.readouterr().out
     assert "From the Windows host (WSL2):" in out
     assert "http://localhost:8888" in out
+    assert "networkingMode=mirrored" in out
     assert "From another device on your network" not in out
     assert "172.25.35.232" not in out
 
@@ -75,6 +76,7 @@ def test_wsl_windows_browser_hint_yields_to_lan_share_line(capsys):
     "host,mode,expected",
     [
         ("0.0.0.0", "nat", True),
+        ("::", "nat", True),
         ("0.0.0.0", "unknown", True),
         ("0.0.0.0", "none", False),
         ("0.0.0.0", "mirrored", False),
@@ -104,6 +106,22 @@ def test_startup_output_wsl_hint_skipped_in_container(capsys, monkeypatch):
 
     monkeypatch.setattr(lan_access, "_wsl_networking_mode", lambda: "unknown")
     monkeypatch.setattr(file_manager, "_in_container", lambda: True)
+    monkeypatch.setattr(run, "_network_share_host_for_bind", lambda h: h)
+    monkeypatch.setattr(run, "_verify_global_reachability", lambda *a, **k: None)
+    monkeypatch.setattr(run, "_print_cloudflare_line", lambda *a, **k: None)
+    monkeypatch.setattr(run, "_localhost_ipv6_mismatch_url", lambda *a, **k: None)
+    run._emit_startup_output("0.0.0.0", 8000, "0.0.0.0")
+    assert "From the Windows host (WSL2):" not in capsys.readouterr().out
+
+
+def test_wsl_hint_check_skips_container_import_off_wsl(capsys, monkeypatch):
+    # Every wildcard bind runs the WSL check, so off WSL it must not need the container probe's module
+    # (a stubbed utils.paths in tests/studio/install has none).
+    import lan_access
+    import run
+
+    monkeypatch.setattr(lan_access, "_wsl_networking_mode", lambda: None)
+    monkeypatch.setitem(sys.modules, "utils.paths.file_manager", None)
     monkeypatch.setattr(run, "_network_share_host_for_bind", lambda h: h)
     monkeypatch.setattr(run, "_verify_global_reachability", lambda *a, **k: None)
     monkeypatch.setattr(run, "_print_cloudflare_line", lambda *a, **k: None)
