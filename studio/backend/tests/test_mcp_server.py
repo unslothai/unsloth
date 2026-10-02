@@ -25,6 +25,10 @@ def test_studio_mcp_registers_control_plane_tools():
         "start_training",
         "stop_training",
         "list_training_runs",
+        "get_diffusion_training_status",
+        "start_diffusion_training",
+        "stop_diffusion_training",
+        "list_diffusion_training_runs",
         "validate_recipe",
         "get_recipe_job_status",
         "get_recipe_job_dataset",
@@ -341,6 +345,77 @@ def test_start_training_forwards_as_api_key_caller(monkeypatch):
     assert captured["current_subject"] == "mcp"
     assert captured["via_api_key"] is True
     assert result == {"status": "queued"}
+
+
+def test_start_diffusion_training_forwards_as_api_key_caller(monkeypatch):
+    captured = {}
+
+    class FakeDiffusionTrainingStartRequest:
+        @classmethod
+        def model_validate(cls, config):
+            captured["config"] = config
+            return cls()
+
+    async def fake_start(request, current_subject, via_api_key):
+        assert isinstance(request, FakeDiffusionTrainingStartRequest)
+        captured["current_subject"] = current_subject
+        captured["via_api_key"] = via_api_key
+        return {"job_id": "diff-1", "status": "running"}
+
+    _stub_module(monkeypatch, "models")
+    _stub_module(
+        monkeypatch,
+        "models.training",
+        DiffusionTrainingStartRequest = FakeDiffusionTrainingStartRequest,
+    )
+    _stub_module(monkeypatch, "routes")
+    _stub_module(monkeypatch, "routes.training", start_diffusion_training = fake_start)
+
+    config = {"base_model": "unsloth/sdxl", "data_dir": "cats", "output_dir": "cats-lora"}
+    result = asyncio.run(_get_tool("start_diffusion_training").fn(config = config))
+
+    assert captured["config"] == config
+    assert captured["current_subject"] == "mcp"
+    assert captured["via_api_key"] is True
+    assert result == {"job_id": "diff-1", "status": "running"}
+
+
+def test_stop_diffusion_training_forwards_save(monkeypatch):
+    captured = {}
+
+    class FakeStopRequest:
+        def __init__(self, save):
+            self.save = save
+
+    async def fake_stop(body, current_subject):
+        captured["save"] = body.save
+        captured["current_subject"] = current_subject
+        return {"status": "stopping"}
+
+    _stub_module(monkeypatch, "models")
+    _stub_module(monkeypatch, "models.training", DiffusionTrainingStopRequest = FakeStopRequest)
+    _stub_module(monkeypatch, "routes")
+    _stub_module(monkeypatch, "routes.training", stop_diffusion_training = fake_stop)
+
+    result = asyncio.run(_get_tool("stop_diffusion_training").fn(save = False))
+
+    assert captured == {"save": False, "current_subject": "mcp"}
+    assert result == {"status": "stopping"}
+
+
+def test_list_diffusion_training_runs_clamps_limit(monkeypatch):
+    captured = {}
+
+    async def fake_list_runs(limit, current_subject):
+        captured["limit"] = limit
+        return {"runs": []}
+
+    _stub_module(monkeypatch, "routes")
+    _stub_module(monkeypatch, "routes.training", list_diffusion_training_runs = fake_list_runs)
+
+    asyncio.run(_get_tool("list_diffusion_training_runs").fn(limit = 10_000))
+
+    assert captured["limit"] == 200
 
 
 def test_list_training_runs_clamps_pagination(monkeypatch):

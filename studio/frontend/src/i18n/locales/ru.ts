@@ -2187,6 +2187,8 @@ export const ru = {
       usageTools: "Инструменты",
       exampleCurlTools: "curl + инструменты",
       examplePythonTools: "Python + инструменты",
+      exampleCurlTraining: "curl + обучение",
+      examplePythonTraining: "Python + обучение",
       exampleJavaScriptTools: "JavaScript + инструменты",
       exampleCurlAdvanced: "curl + расширенное",
       examplePythonAdvanced: "Python + расширенное",

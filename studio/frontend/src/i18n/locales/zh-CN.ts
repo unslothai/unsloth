@@ -2125,6 +2125,8 @@ export const zhCN = {
       usageTools: "工具",
       exampleCurlTools: "curl + 工具",
       examplePythonTools: "Python + 工具",
+      exampleCurlTraining: "curl + 训练",
+      examplePythonTraining: "Python + 训练",
       exampleJavaScriptTools: "JavaScript + 工具",
       exampleCurlAdvanced: "curl + 高级",
       examplePythonAdvanced: "Python + 高级",

@@ -2209,6 +2209,8 @@ export const en = {
       usageTools: "Tools",
       exampleCurlTools: "curl + tools",
       examplePythonTools: "Python + tools",
+      exampleCurlTraining: "curl + training",
+      examplePythonTraining: "Python + training",
       exampleJavaScriptTools: "JavaScript + tools",
       exampleCurlAdvanced: "curl + advanced",
       examplePythonAdvanced: "Python + advanced",

@@ -2219,6 +2219,8 @@ export const fr = {
       usageTools: "Outils",
       exampleCurlTools: "curl + outils",
       examplePythonTools: "Python + outils",
+      exampleCurlTraining: "curl + entraînement",
+      examplePythonTraining: "Python + entraînement",
       exampleJavaScriptTools: "JavaScript + outils",
       exampleCurlAdvanced: "curl + avancé",
       examplePythonAdvanced: "Python + avancé",

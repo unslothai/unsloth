@@ -159,6 +159,38 @@ def create_studio_mcp() -> FastMCP:
         return _dump(await list_runs(limit = limit, offset = offset, current_subject = "mcp"))
 
     @mcp.tool
+    async def get_diffusion_training_status() -> dict[str, Any]:
+        """Read the active diffusion (Images) LoRA training job, its step, loss, and metrics."""
+        from routes.training import diffusion_training_status
+        return _dump(await diffusion_training_status(current_subject = "mcp"))
+
+    @mcp.tool
+    async def start_diffusion_training(config: dict[str, Any]) -> dict[str, Any]:
+        """Start a diffusion (Images) LoRA training job from a DiffusionTrainingStartRequest-shaped object.
+
+        Requires base_model, data_dir (a dataset name under the Unsloth datasets root) and output_dir.
+        Call get_diffusion_training_status first and do not start work while another job runs.
+        """
+        from models.training import DiffusionTrainingStartRequest
+        from routes.training import start_diffusion_training as start
+
+        request = DiffusionTrainingStartRequest.model_validate(config)
+        return _dump(await start(request, current_subject = "mcp", via_api_key = True))
+
+    @mcp.tool
+    async def stop_diffusion_training(save: bool = True) -> dict[str, Any]:
+        """Stop the running diffusion training job; save=False cancels without exporting the adapter."""
+        from models.training import DiffusionTrainingStopRequest
+        from routes.training import stop_diffusion_training as stop
+        return _dump(await stop(DiffusionTrainingStopRequest(save = save), current_subject = "mcp"))
+
+    @mcp.tool
+    async def list_diffusion_training_runs(limit: int = 20) -> dict[str, Any]:
+        """List finished diffusion training runs, newest first."""
+        from routes.training import list_diffusion_training_runs as list_runs
+        return _dump(await list_runs(limit = _clamp(limit, 1, 200), current_subject = "mcp"))
+
+    @mcp.tool
     def validate_recipe(recipe: dict[str, Any]) -> dict[str, Any]:
         """Validate a Data Recipe with the same validator used by Unsloth."""
         from models.data_recipe import RecipePayload
