@@ -228,3 +228,24 @@ def test_studio_gguf_backend_authenticates_and_uses_v1_tokenize():
         server.shutdown()
     assert ("POST", "/v1/tokenize", "Bearer sk-test") in seen
     assert ("GET", "/props", "Bearer sk-test") in seen
+
+
+def test_run_from_an_executor_records_the_requesting_account(monkeypatch):
+    # The route runs backend.run in an executor thread, which does not inherit
+    # the request's account context; it passes the account explicitly.
+    import asyncio
+
+    from utils.account_context import arun_as
+
+    backend = _orchestrator(monkeypatch, lambda params: {"results": {}})
+    alice = AccountContext("alice-id", "alice")
+
+    async def route_like():
+        from utils.account_context import current_account
+
+        account = current_account()
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, lambda: backend.run({}, account))
+
+    asyncio.run(arun_as(alice, route_like()))
+    assert backend._result_account == alice

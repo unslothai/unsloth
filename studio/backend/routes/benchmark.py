@@ -325,7 +325,8 @@ async def run_benchmark(
 
         loop = asyncio.get_event_loop()
         run_seq = backend.get_op_seq() + 1
-        results = await loop.run_in_executor(None, lambda: backend.run(lm_eval_kwargs))
+        account = current_account()
+        results = await loop.run_in_executor(None, lambda: backend.run(lm_eval_kwargs, account))
 
         # A cancelled run returns {}; by then a new run may already own the backend.
         if not results or backend.was_cancelled():

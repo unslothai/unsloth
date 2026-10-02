@@ -256,7 +256,7 @@ class BenchmarkOrchestrator:
         self._last_op_status = "error" if error else "success"
         self._active = False
 
-    def run(self, params: dict) -> dict:
+    def run(self, params: dict, account = None) -> dict:
         """Run a benchmark in a worker thread.
 
         Blocks (responsively) until the run completes or is cancelled, then
@@ -267,7 +267,9 @@ class BenchmarkOrchestrator:
 
         self._active = True
         self._op_seq += 1
-        self._result_account = current_account()
+        # Passed in by the route: an executor thread does not inherit the
+        # request's account context, so current_account() there is the owner.
+        self._result_account = account if account is not None else current_account()
         self._last_op_status = None
         self._cancel_requested = False
         self._last_error = None

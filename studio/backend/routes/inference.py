@@ -32205,8 +32205,14 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 raise HTTPException(status_code = 400, detail = "'prompt' array must not be empty")
             _cancel_event = threading.Event()
             # Unpooled: the cancel watcher closes this client, which must not
-            # take down other requests sharing the pooled one.
-            _client = _cancelable_nonstreaming_client()
+            # take down other requests sharing the pooled one. One connection per
+            # prompt keeps the batch concurrent instead of queueing on one socket.
+            _client = httpx.AsyncClient(
+                limits = httpx.Limits(
+                    max_connections = len(_prompt_value), max_keepalive_connections = 0
+                ),
+                trust_env = False,
+            )
             _tracker = _TrackedCancel(_cancel_event, model = monitor_model, kind = "completions")
             _tracker.__enter__()
             _cancel_watcher = asyncio.create_task(
