@@ -81,7 +81,10 @@ import {
   type NpuModel,
   type NpuPickerSource,
   NpuSetupNotice,
+  npuDownloadLabel,
+  npuResumeLabel,
   npuRowsFor,
+  npuSizeLabel,
   useNpuCatalog,
 } from "@/features/npu";
 import {
@@ -494,7 +497,7 @@ function ListLabel({
   );
 }
 
-function formatBytes(bytes: number): string {
+function formatBytes(bytes: number, unitSeparator = ""): string {
   // Guard non-positive / non-finite sizes so we never render "NaN undefined".
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
   // Decimal (base-1000) units to match Hugging Face's reported sizes; the GPU-fit math stays
@@ -508,7 +511,7 @@ function formatBytes(bytes: number): string {
     i += 1;
   }
   // No space: "145MB" reads as one value beside the quant chip.
-  return `${value.toFixed(value < 10 ? 1 : 0)}${units[i]}`;
+  return `${value.toFixed(value < 10 ? 1 : 0)}${unitSeparator}${units[i]}`;
 }
 
 // Most distinguishing first, since only the first MAX_CAPABILITY_BADGES are drawn: what a
@@ -863,6 +866,15 @@ function SizeText({ value }: { value: string }) {
   );
 }
 
+/** One decimal through GB/TB, so a total and its model + assets breakdown visibly add up. */
+export function formatFootprintBytes(bytes: number): string {
+  return bytes >= 1_000_000_000 && bytes < 1_000_000_000_000
+    ? `${(bytes / 1_000_000_000).toFixed(1)} GB`
+    : bytes >= 1_000_000_000_000
+      ? `${(bytes / 1_000_000_000_000).toFixed(1)} TB`
+      : formatBytes(bytes, " ");
+}
+
 /** Keep the row's size treatment consistent with every other model; diffusion GGUFs get one
  *  small explanation affordance, since their checkpoint is only part of what is kept on disk. */
 export function GgufDownloadFootprint({
@@ -872,25 +884,21 @@ export function GgufDownloadFootprint({
   checkpointBytes: number;
   companionBytes: number;
 }) {
-  const totalBytes = checkpointBytes + companionBytes;
-  // Whole-GB rounding is too lossy for a sum ("2.6 GB + 8.2 GB = 11 GB" looks contradictory),
-  // so keep one decimal through GB/TB.
-  const totalLabel =
-    totalBytes >= 1_000_000_000 && totalBytes < 1_000_000_000_000
-      ? `${(totalBytes / 1_000_000_000).toFixed(1)} GB`
-      : totalBytes >= 1_000_000_000_000
-        ? `${(totalBytes / 1_000_000_000_000).toFixed(1)} TB`
-        : formatBytes(totalBytes);
+  const totalLabel = formatFootprintBytes(checkpointBytes + companionBytes);
   return (
     <span
       data-model-download-footprint={true}
       className="flex items-center gap-1 whitespace-nowrap text-muted-foreground"
     >
-      <SizeText value={totalLabel} />
+      {/* Keep flex gaps out of SizeText's fragments. */}
+      <span>
+        <SizeText value={totalLabel} />
+      </span>
+      {/* Align the icon with the digits. */}
       <span
         data-model-download-footprint-help={true}
         aria-hidden={true}
-        className="flex size-3.5 shrink-0 items-center justify-center text-muted-foreground/80"
+        className="flex size-3.5 shrink-0 -translate-y-[0.25em] items-center justify-center text-muted-foreground/80"
       >
         <HugeiconsIcon icon={HelpCircleIcon} className="size-3" strokeWidth={1.8} />
       </span>
@@ -910,7 +918,8 @@ export function GgufDownloadFootprintExplanation({
     <>
       <span className="font-medium">Full required size</span>
       <span className="ml-1 text-muted-foreground">
-        {formatBytes(checkpointBytes)} model + {formatBytes(companionBytes)} required assets
+        {formatFootprintBytes(checkpointBytes)} model +{" "}
+        {formatFootprintBytes(companionBytes)} required assets
       </span>
     </>
   );
@@ -953,12 +962,16 @@ function artifactBudget(gpu: {
   memoryTotalGb: number;
   systemRamAvailableGb: number;
   denseQuantSchemes?: readonly string[];
+  quantisedStreaming?: boolean;
+  extraOffloadFitTiers?: DeviceBudget["extraOffloadFitTiers"];
 }): DeviceBudget {
   return {
     gpuGb: gpu.memoryTotalGb,
     systemRamGb: gpu.systemRamAvailableGb,
     // Judges a pre-quantised row by that checkpoint's size, not the bf16 shards it replaces.
     denseQuantSchemes: gpu.denseQuantSchemes,
+    quantisedStreaming: gpu.quantisedStreaming,
+    extraOffloadFitTiers: gpu.extraOffloadFitTiers,
   };
 }
 
@@ -2441,7 +2454,7 @@ function GgufVariantExpander({
                     allowPin && v.downloaded
                       ? {
                           pinned: pinnedKeys.includes(pinKey(repoId, v.quant)),
-                          pinLabel: "Pin to top",
+                          pinLabel: "Pin",
                           unpinLabel: "Unpin",
                           onToggle: () => togglePinnedQuant(repoId, v.quant),
                         }
@@ -2618,6 +2631,7 @@ function passesTaskGate(
   filter: HfTaskFilter,
   catalog?: CatalogGroup[],
   activeCatalogArtifactIds?: ReadonlySet<string>,
+  localModel?: { opaque?: boolean },
 ): boolean {
   if (filter) {
     const exactArtifact =
@@ -2634,7 +2648,7 @@ function passesTaskGate(
           pickerTask: filter,
         })) &&
       !isImageEditModel(repoId)
-    );
+    ) || localModel?.opaque === true;
   }
   // Unfiltered (chat) picker: an on-device diffusion model stays listed and routes to its page
   // on click; only the never-loadable tag is hidden.
@@ -2838,6 +2852,7 @@ function localModelMeta(
   isGguf = false,
   pipelineTag?: string | null,
   audioType?: string | null,
+  familyOverrideRequired = false,
 ): ModelSelectorChangeMeta {
   return {
     source: "local",
@@ -2846,6 +2861,7 @@ function localModelMeta(
     ...(isGguf ? { isGguf: true } : {}),
     pipelineTag: pipelineTag ?? null,
     audioType: audioType ?? null,
+    familyOverrideRequired,
   };
 }
 
@@ -2901,6 +2917,7 @@ export function HubModelPicker({
   task,
   catalog,
   communityModelPolicy = "none",
+  opaqueKind,
   npu,
 }: {
   models: ModelOption[];
@@ -2934,6 +2951,7 @@ export function HubModelPicker({
   /** Also surface community models carrying `task`'s pipeline tags, below the unsloth rows.
    *  Opt-in, since the runtime has to load an arbitrary publisher's checkpoint: true of audio. */
   communityModelPolicy?: CommunityModelPolicy;
+  opaqueKind?: "diffusers_pipeline" | "diffusers_modular_pipeline";
   npu?: NpuPickerSource;
 }) {
   const gpu = useGpuInfo();
@@ -3204,6 +3222,7 @@ export function HubModelPicker({
   const pickerInventory = useChatPickerInventory({
     enabled: true,
     allowedHiddenModelIds: activeCatalogArtifactIds,
+    opaqueKind,
   });
   const {
     cachedGguf,
@@ -4134,6 +4153,7 @@ export function HubModelPicker({
               task,
               catalog,
               activeCatalogArtifactIds,
+              c,
             ) &&
             // Diffusion pickers: unsloth repos plus any repo the backend can LOAD. Gate on a curated
             // ARTIFACT, not a group-key match: a base sibling matches by key but dead-ends at the trust
@@ -4166,7 +4186,9 @@ export function HubModelPicker({
                 })) ||
               (catalog
                 ? artifactForRepoId(c.repo_id, catalog) !== null
-                : false)),
+                : false) ||
+              // A pinned snapshot admitted only by an explicit family.
+              (c.opaque === true && Boolean(c.load_id?.trim()) && c.load_id?.trim() !== c.repo_id.trim())),
         ),
         downloadedSort,
         loadTimes,
@@ -4232,6 +4254,7 @@ export function HubModelPicker({
               task,
               catalog,
               activeCatalogArtifactIds,
+              m,
             ) &&
             localModelMatchesFormat(m, formatFilter) &&
             matchesLocalQuery(m),
@@ -4278,6 +4301,7 @@ export function HubModelPicker({
               task,
               catalog,
               activeCatalogArtifactIds,
+              m,
             ) &&
             (!chatOnly ||
               Boolean(task) ||
@@ -4327,6 +4351,7 @@ export function HubModelPicker({
               task,
               catalog,
               activeCatalogArtifactIds,
+              m,
             ) &&
             localModelMatchesFormat(m, formatFilter) &&
             matchesLocalQuery(m),
@@ -5635,7 +5660,7 @@ export function HubModelPicker({
   // Sort dropdown inline right of the section toggle; options depend on the tab and stay visible
   // while searching. Fixed width matches the Search Hub button.
   const sortTriggerClassName =
-    "h-(--picker-control-h) w-(--picker-control-w) shrink-0 justify-between pr-2.5 !border-0 text-xs [&>span]:!text-clip";
+    "h-(--picker-control-h) w-(--picker-control-w) shrink-0 justify-between gap-1.5 pl-4 pr-3.5 !border-0 text-xs [&>span]:!text-clip";
   // Tighter menu matching the trigger; keep the option's right padding so the checkmark never overlaps the label.
   const sortMenuContentClassName =
     "!p-1 !rounded-[14px] [&_[role=option]]:!pl-2 [&_[role=option]]:!py-1.5 [&_[role=option]]:!text-xs [&_[role=option]]:!rounded-[10px]";
@@ -5836,7 +5861,7 @@ export function HubModelPicker({
             ariaLabel={`More options for ${model.name}`}
             pin={{
               pinned: isPinned,
-              pinLabel: "Pin to top",
+              pinLabel: "Pin",
               unpinLabel: "Unpin",
               onToggle: () => togglePinnedConnected(model.id),
             }}
@@ -5985,7 +6010,7 @@ export function HubModelPicker({
             cachePath={{ repoId: entry.repoId, variant: entry.quant }}
             pin={{
               pinned: true,
-              pinLabel: "Pin to top",
+              pinLabel: "Pin",
               unpinLabel: "Unpin",
               onToggle: () => togglePinned(entry.repoId, entry.quant),
             }}
@@ -6126,7 +6151,7 @@ export function HubModelPicker({
             cachePath={{ repoId: c.repo_id, variant: variant.quant }}
             pin={{
               pinned: isPinned,
-              pinLabel: "Pin to top",
+              pinLabel: "Pin",
               unpinLabel: "Unpin",
               onToggle: () => togglePinned(c.repo_id, variant.quant),
             }}
@@ -6354,6 +6379,7 @@ export function HubModelPicker({
                 isDownloaded: !isPartial,
                 pipelineTag: c.task ?? null,
                 audioType: c.audio_type ?? null,
+                familyOverrideRequired: c.opaque === true,
               })
             }
             vramStatus={null}
@@ -6378,6 +6404,7 @@ export function HubModelPicker({
                   isGguf: false,
                   pipelineTag: c.task ?? null,
                   audioType: c.audio_type ?? null,
+                  familyOverrideRequired: c.opaque === true,
                 })
               }
             />
@@ -6387,7 +6414,7 @@ export function HubModelPicker({
             cachePath={{ repoId: c.repo_id }}
             pin={{
               pinned: pinnedSet.has(pinKey(c.repo_id)),
-              pinLabel: "Pin to top",
+              pinLabel: "Pin",
               unpinLabel: "Unpin",
               onToggle: () => togglePinned(c.repo_id),
             }}
@@ -6479,12 +6506,12 @@ export function HubModelPicker({
     const isLoaded = loadedModelId === model.model_path;
     const downloading = model.id in npuCatalog.downloads;
     const progress = npuCatalog.downloads[model.id];
-    const size =
-      model.size_gb == null
-        ? null
-        : model.size_gb < 1
-          ? `${Math.round(model.size_gb * 1000)} MB`
-          : `${model.size_gb.toFixed(1)} GB`;
+    const reconnecting = model.id in npuCatalog.reconnecting;
+    const details = [
+      "NPU",
+      npuSizeLabel(model.size_gb),
+      npuResumeLabel(model),
+    ].filter(Boolean);
     const pick = () =>
       onSelect(model.model_path, {
         source: "local",
@@ -6496,8 +6523,8 @@ export function HubModelPicker({
         label={model.id}
         meta={
           downloading
-            ? `NPU · Downloading${progress == null ? "" : ` ${Math.round(progress)}%`}`
-            : `NPU${size ? ` · ${size}` : ""}`
+            ? `NPU · ${npuDownloadLabel(progress, reconnecting)}`
+            : details.join(" · ")
         }
         selected={isSelected}
         loaded={isLoaded}
@@ -7310,7 +7337,7 @@ export function HubModelPicker({
                                     } else {
                                       onSelect(
                                         m.id,
-                                        localModelMeta(false, m.task, m.audio_type),
+                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true),
                                       );
                                     }
                                   }}
@@ -7351,7 +7378,7 @@ export function HubModelPicker({
                                     onConfigure={() =>
                                       onConfigure(
                                         m.id,
-                                        localModelMeta(false, m.task, m.audio_type),
+                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true),
                                       )
                                     }
                                   />
@@ -7450,7 +7477,7 @@ export function HubModelPicker({
                                     } else {
                                       onSelect(
                                         m.id,
-                                        localModelMeta(false, m.task, m.audio_type),
+                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true),
                                       );
                                     }
                                   }}
@@ -7491,7 +7518,7 @@ export function HubModelPicker({
                                     onConfigure={() =>
                                       onConfigure(
                                         m.id,
-                                        localModelMeta(false, m.task, m.audio_type),
+                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true),
                                       )
                                     }
                                   />
@@ -7581,7 +7608,7 @@ export function HubModelPicker({
                                     } else {
                                       onSelect(
                                         m.id,
-                                        localModelMeta(false, m.task, m.audio_type),
+                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true),
                                       );
                                     }
                                   }}
@@ -7618,7 +7645,7 @@ export function HubModelPicker({
                                     onConfigure={() =>
                                       onConfigure(
                                         m.id,
-                                        localModelMeta(false, m.task, m.audio_type),
+                                        localModelMeta(false, m.task, m.audio_type, m.opaque === true),
                                       )
                                     }
                                   />
@@ -8297,7 +8324,7 @@ function FineTunedRows({
                   ariaLabel={`More options for ${adapter.name}`}
                   pin={{
                     pinned: pinnedKeys.includes(pinKey(adapter.id)),
-                    pinLabel: "Pin to top",
+                    pinLabel: "Pin",
                     unpinLabel: "Unpin",
                     onToggle: () => togglePinned(adapter.id),
                   }}

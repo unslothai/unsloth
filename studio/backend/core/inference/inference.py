@@ -40,10 +40,12 @@ from core.inference.chat_eos import (
     resolve_chat_turn_end_eos_ids_using,
 )
 from core.inference.chat_template_helpers import (
+    alternating_turns,
     build_dac_tts_prompt,
     make_reasoning_normalizer,
     detect_reasoning_channel_markers,
     detect_think_prefill,
+    messages_with_attached_image,
     neutralize_control_markup_in_messages,
     neutralize_tts_prompt_text,
     prompt_opens_reasoning_channel,
@@ -1993,6 +1995,7 @@ class InferenceBackend:
         repetition_penalty,
         use_adapter: Optional[Union[bool, str]] = None,
         cancel_event = None,
+        extra_audio_arrays: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Audio-input (ASR) generation: takes an audio numpy array, streams text.
 
@@ -2010,35 +2013,19 @@ class InferenceBackend:
         processor = model_info.get("processor") or model_info.get("tokenizer")
         raw_tokenizer = getattr(processor, "tokenizer", processor)
 
-        user_text = "Please transcribe this audio."
-        if messages:
-            for msg in reversed(messages):
-                if msg["role"] == "user" and msg.get("content"):
-                    user_text = content_to_text(msg["content"])
-                    break
-        # Not the caption scan above: that one falls back past a media-only turn.
-        last_user = next(
-            (m for m in reversed(messages or []) if m.get("role") == "user"),
-            None,
-        )
-
         if not system_prompt:
             system_prompt = "You are an assistant that transcribes speech accurately."
 
-        # Gemma 3n format — audio goes INTO apply_chat_template
-        audio_messages = [
-            {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
-            named_turn(
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "audio", "audio": audio_array},
-                        {"type": "text", "text": user_text},
-                    ],
-                },
-                last_user,
-            ),
-        ]
+        # Gemma 3n format: audio goes INTO apply_chat_template, one item per clip in order.
+        audio_messages = messages_with_attached_image(
+            alternating_turns(messages),
+            system_prompt = system_prompt,
+            fallback_user_text = "Please transcribe this audio.",
+            structured_content = True,
+            image = 0,
+            audio = audio_array,
+            extra_audio = extra_audio_arrays or (),
+        )
 
         # Direct processor render like the vision path, so neutralize here too, with
         # this processor's own profile so another family's marker stays untouched (#7066).
@@ -2170,7 +2157,9 @@ class InferenceBackend:
     def generate_whisper_response(
         self,
         audio_array,
+        use_adapter: Optional[Union[bool, str]] = None,
         cancel_event = None,
+        extra_audio_arrays: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Whisper ASR: takes an audio numpy array, yields transcribed text through the pipeline
         built at model load."""
@@ -2184,13 +2173,23 @@ class InferenceBackend:
             yield "Error: Whisper pipeline not initialized"
             return
 
+        clips = [audio_array, *(extra_audio_arrays or [])]
         try:
-            with self._generation_lock:
-                result = whisper_pipe({"raw": audio_array, "sampling_rate": 16000})
+            for index, clip in enumerate(clips):
+                if cancel_event is not None and cancel_event.is_set():
+                    return
+                with self._generation_lock:
+                    self._apply_adapter_state(use_adapter)
+                    try:
+                        result = whisper_pipe({"raw": clip, "sampling_rate": 16000})
+                    finally:
+                        # Plain requests keep the adapter state, so turn the LoRA back on.
+                        if use_adapter is False and isinstance(model_info.get("model"), PeftModel):
+                            model_info["model"].base_model.enable_adapter_layers()
 
-            text = result.get("text", "") if isinstance(result, dict) else str(result)
-            if text:
-                yield text
+                text = result.get("text", "") if isinstance(result, dict) else str(result)
+                if text:
+                    yield f"\n\n{text}" if index else text
         except Exception as e:
             logger.error(f"Whisper ASR error: {e}")
             yield f"Error: {str(e)}"

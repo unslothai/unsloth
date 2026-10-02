@@ -32,6 +32,11 @@ import {
   type ReloadHint,
   serverWideReloadRequired,
 } from "../lib/server-wide-reload";
+import {
+  type OffloadCounts,
+  offloadCountsFrom,
+  offloadWarning,
+} from "../lib/partial-offload";
 import { isSettingsRouteAbsent } from "@/features/settings/api/settings-route-absent";
 import {
   failureLogPath,
@@ -128,6 +133,7 @@ import {
   loadedContextForParams,
   mergeBackendRecommendedInference,
   resolveFitMaxSeqLength,
+  isReplayedLoadContext,
   unpinnedDefaultRequest,
   unpinnedLoadContext,
   resolveLoadMaxSeqLength,
@@ -1860,6 +1866,7 @@ export function useChatModelRuntime() {
       let downloadComplete = isDownloaded || isCachedLora;
       let cpuFallbackReason: CpuFallbackReason | null = null;
       let mmprojFallbackReason: MmprojFallbackReason | null = null;
+      let offloadCounts: OffloadCounts = {};
       try {
         async function performLoad(): Promise<void> {
           if (abortCtrl.signal.aborted) throw new Error("Cancelled");
@@ -2466,6 +2473,11 @@ export function useChatModelRuntime() {
               nativePathLease: loadNativePathLease,
               hf_token: hfToken,
               max_seq_length: loadMaxSeqLength,
+              max_seq_length_auto_derived: isReplayedLoadContext(
+                isGguf,
+                loadCustomContextLength,
+                loadMaxSeqLength,
+              ),
               load_in_4bit: true,
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
@@ -2508,6 +2520,7 @@ export function useChatModelRuntime() {
             });
             cpuFallbackReason = loadResponse.cpu_fallback_reason ?? null;
             mmprojFallbackReason = loadResponse.mmproj_fallback_reason ?? null;
+            offloadCounts = offloadCountsFrom(loadResponse);
 
             // If cancelled while loading, do not show the model as active: it is being unloaded.
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");
@@ -3334,6 +3347,7 @@ export function useChatModelRuntime() {
             `${toastDisplayName} loaded`,
             cpuFallbackReason,
             mmprojFallbackReason,
+            offloadWarning(offloadCounts),
           );
           const loadedTitle = notice.title;
           const loadedDescription = notice.description;

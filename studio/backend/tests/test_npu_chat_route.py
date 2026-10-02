@@ -14,6 +14,7 @@ import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -909,6 +910,109 @@ def test_a_second_download_request_follows_the_running_pull(monkeypatch):
     release.set()
     assert [event["event"] for event in second.follow()] == ["complete"]
     assert started == ["gemma3-4b-FLM"]
+
+
+def _wait_for(condition) -> None:
+    deadline = time.monotonic() + 10
+    while not condition():
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+
+
+def test_running_downloads_are_listed_until_they_end(monkeypatch):
+    from routes import npu as npu_routes
+
+    release = threading.Event()
+
+    class _Npu:
+        def download(self, model_id):
+            yield {"event": "progress", "percent": 12}
+            yield {"event": "progress", "bytes_downloaded": 5}
+            assert release.wait(10)
+            yield {"event": "complete", "model": model_id, "percent": 100}
+
+    job = npu_routes._start_download(_Npu(), "lfm2-1.2b-FLM")
+    _wait_for(lambda: len(job.events) == 2)
+    listed = asyncio.run(npu_routes.list_npu_downloads())["downloads"]
+    assert {"model": "lfm2-1.2b-FLM", "percent": 12} in listed
+    release.set()
+    _wait_for(lambda: job.finished)
+    listed = asyncio.run(npu_routes.list_npu_downloads())["downloads"]
+    assert all(row["model"] != "lfm2-1.2b-FLM" for row in listed)
+
+
+def test_following_a_download_never_starts_one(monkeypatch):
+    from routes import npu as npu_routes
+
+    started: list[str] = []
+    release = threading.Event()
+
+    class _Npu:
+        def download(self, model_id):
+            started.append(model_id)
+            yield {"event": "progress", "percent": 30}
+            assert release.wait(10)
+            yield {"event": "complete", "model": model_id, "percent": 100}
+
+    monkeypatch.setattr(npu_routes, "get_npu_backend", lambda: _Npu())
+    with pytest.raises(HTTPException) as missing:
+        asyncio.run(npu_routes.follow_npu_download("qwen3-1.7b-FLM"))
+    assert missing.value.status_code == 404 and started == []
+
+    job = npu_routes._start_download(_Npu(), "qwen3-1.7b-FLM")
+    _wait_for(lambda: len(job.events) == 1)
+
+    async def follow():
+        response = await npu_routes.follow_npu_download("qwen3-1.7b-FLM")
+        release.set()
+        return [chunk async for chunk in response.body_iterator]
+
+    chunks = asyncio.run(follow())
+    assert '"percent": 30' in chunks[0] and '"complete"' in chunks[-1]
+    assert started == ["qwen3-1.7b-FLM"]
+    _wait_for(lambda: "qwen3-1.7b-FLM" not in npu_routes._downloads)
+    with pytest.raises(HTTPException):
+        asyncio.run(npu_routes.follow_npu_download("qwen3-1.7b-FLM"))
+
+
+def test_a_failed_download_is_logged(monkeypatch):
+    from routes import npu as npu_routes
+
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        npu_routes,
+        "logger",
+        SimpleNamespace(info = lambda message: None, warning = warnings.append),
+    )
+
+    class _Npu:
+        def download(self, model_id):
+            yield {"event": "progress", "percent": 37}
+            raise nb.NpuError(f"Downloading {model_id} failed: connection reset")
+
+    job = npu_routes._start_download(_Npu(), "llama3.2-1b-FLM")
+    assert [event["event"] for event in job.follow()] == ["progress", "error"]
+    assert warnings == [
+        "NPU model download of llama3.2-1b-FLM failed at 37%: "
+        "Downloading llama3.2-1b-FLM failed: connection reset"
+    ]
+
+
+def test_npu_model_config_does_not_reach_hugging_face(monkeypatch):
+    from routes import models as models_route
+
+    def _hub(*args, **kwargs):
+        raise AssertionError("an NPU model id reached Hugging Face handling")
+
+    monkeypatch.setattr(models_route, "_get_model_size_bytes", _hub)
+    monkeypatch.setattr(models_route, "_require_model_access_or_caller_token", _hub)
+    result = asyncio.run(
+        models_route.get_model_config(
+            model_name = "lemonade:qwen3.5-9b-FLM", hf_token = None, current_subject = "tester"
+        )
+    )
+    assert result.id == "lemonade:qwen3.5-9b-FLM"
+    assert result.max_position_embeddings is None and not result.is_vision
 
 
 @pytest.mark.parametrize("stream", [True, False])

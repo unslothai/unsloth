@@ -8,6 +8,8 @@ import { normalizeOxcCodeShape } from "../../validators/oxc-code-shape";
 import { normalizeOxcValidationMode } from "../../validators/oxc-mode";
 
 const OXC_VALIDATION_FN_MARKER = "unsloth_oxc_validator";
+const JSON_VALIDATION_FN_MARKER = "unsloth_json_validator";
+const MARKDOWN_VALIDATION_FN_MARKER = "unsloth_markdown_validator";
 
 function parseOxcValidationMarker(
   validationFunctionRaw: string,
@@ -50,12 +52,24 @@ export function parseValidator(
     typeof params.validation_function === "string"
       ? params.validation_function.trim()
       : "";
+  const isLocalCallable =
+    String(column.validator_type ?? "").trim() === "local_callable";
   const isOxc =
-    String(column.validator_type ?? "").trim() === "local_callable" &&
-    validationFunctionRaw.startsWith(OXC_VALIDATION_FN_MARKER);
+    isLocalCallable && validationFunctionRaw.startsWith(OXC_VALIDATION_FN_MARKER);
+  const isJson =
+    isLocalCallable && validationFunctionRaw === JSON_VALIDATION_FN_MARKER;
+  const isMarkdown =
+    isLocalCallable && validationFunctionRaw === MARKDOWN_VALIDATION_FN_MARKER;
   const marker = isOxc
     ? parseOxcValidationMarker(validationFunctionRaw)
     : { codeLang: "", mode: "syntax", codeShape: "auto" };
+  const validatorType = isJson
+    ? "json"
+    : isMarkdown
+      ? "markdown"
+      : isOxc
+        ? "oxc"
+        : "code";
   return {
     id,
     kind: "validator",
@@ -63,10 +77,16 @@ export function parseValidator(
     drop: column.drop === true,
     // biome-ignore lint/style/useNamingConvention: api schema
     target_columns: targetColumns,
-    validator_type: isOxc ? "oxc" : "code",
+    validator_type: validatorType,
     // biome-ignore lint/style/useNamingConvention: api schema
     code_lang: normalizeValidatorCodeLang(
-      isOxc ? marker.codeLang || "javascript" : params.code_lang,
+      isJson
+        ? "json"
+        : isMarkdown
+          ? "markdown"
+          : isOxc
+            ? marker.codeLang || "javascript"
+            : params.code_lang,
     ),
     oxc_validation_mode: isOxc
       ? normalizeOxcValidationMode(marker.mode)

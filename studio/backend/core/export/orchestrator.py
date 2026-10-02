@@ -207,6 +207,12 @@ class ExportOrchestrator:
         return True
 
     def _spawn_subprocess(self, config: dict) -> None:
+        # Export does not evict loaded models; at least free an idle resident H3 sd-server.
+        try:
+            from core.inference.video_minimax_h3 import release_h3_native_servers
+            release_h3_native_servers("export subprocess starting")
+        except Exception as exc:  # noqa: BLE001 - never block an export on this
+            logger.warning("Could not release the idle video sd-server for export: %s", exc)
         # Inside an op a reservation is an install about to abort on is_export_active(), so raising here
         # would kill the export for an install that never proceeds.
         from utils.transformers_version import sidecar_swap_in_progress
@@ -662,6 +668,7 @@ class ExportOrchestrator:
         private: bool = False,
         gguf: bool = False,
         gguf_outtype: str = "q8_0",
+        adapter_format: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         """Export LoRA adapter only (optionally also as a GGUF LoRA file)."""
         return self._run_export(
@@ -674,6 +681,7 @@ class ExportOrchestrator:
                 "private": private,
                 "gguf": gguf,
                 "gguf_outtype": gguf_outtype,
+                "adapter_format": adapter_format,
             },
         )
 

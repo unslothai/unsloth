@@ -143,6 +143,13 @@ export const en = {
       close: "Close find",
       truncated: "This page is too long to search in full.",
     },
+    zoom: {
+      label: "Zoom",
+      zoomOut: "Zoom out",
+      zoomIn: "Zoom in",
+      reset: "Reset",
+      announce: "Zoom {percent}%",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -207,6 +214,14 @@ export const en = {
       help: "Help",
       logOut: "Log out",
       shutdown: "Shutdown",
+    },
+    commandPalette: {
+      placeholder: "Type a command or search...",
+      noResults: "No results found.",
+      navigation: "Navigation",
+      actions: "Actions",
+      chat: "Chat",
+      searchChats: "Search chats...",
     },
     notFound: {
       title: "Page not found",
@@ -485,6 +500,10 @@ export const en = {
         openKeyboardShortcuts: {
           label: "Keyboard shortcuts",
           description: "Open this shortcuts list",
+        },
+        openCommandPalette: {
+          label: "Command palette",
+          description: "Open the command palette",
         },
         searchChats: {
           label: "Search chats",
@@ -1182,7 +1201,7 @@ export const en = {
         action: "Repair install",
         confirmTitle: "Repair this installation?",
         confirmDescription:
-          "Stops the server and reruns the installer, which reinstalls PyTorch for this machine's GPU. Chats and settings are kept. This can take several minutes.",
+          "Stops the server and reruns the installer, which reinstalls PyTorch for this machine's GPU at the newest supported release. Chats and settings are kept. This can take several minutes.",
         confirmAction: "Repair now",
       },
       resetPreferences: {
@@ -1317,20 +1336,13 @@ export const en = {
           wide: "Wide",
           full: "Full width",
         },
-        composerAttachments: {
-          label: "Attachments in the composer",
-          description:
-            "Large cards that grow the message box, or a compact row of tiles.",
-          cards: "Large cards",
-          compact: "Compact tiles",
-        },
         sentAttachments: {
           label: "Attachments in sent messages",
           description:
-            "A list with each file's type, or small chips. Auto switches to chips past six files.",
+            "Standard shows each file with its type, compact fits more on each line. Auto switches to compact past six files.",
           auto: "Auto",
-          list: "List",
-          chips: "Chips",
+          list: "Standard",
+          chips: "Compact",
         },
         reset: "Reset",
         resetAll: "Reset customization",
@@ -1552,6 +1564,7 @@ export const en = {
         noRamReserveDescription: "Reduce host RAM held for model weights.",
         noRamReserveHint: "Skips memory-mapped loading on supported Windows builds when the model is fully offloaded to the GPU, so its pages are not held resident. Otherwise keeps memory-mapped loading. Required CPU buffers can still use RAM. Drops --no-mmap and --mlock.",
         mlockVetoed: "--mlock stays off: pinning the model in place would reserve RAM for all of it. Idle auto-unload is still disabled.",
+        mlockNotApplicable: "Fully on the GPU: nothing in system RAM to lock. Idle auto-unload stays off.",
         memlockCapped: "This system caps locked memory at {limit}. A larger model will not be fully pinned; raise the limit with ulimit -l.",
         reloadRequired: "Reload the model to apply the new memory flags.",
         loadError: "Failed to load model memory settings",
@@ -1783,9 +1796,6 @@ export const en = {
       pastedTextShortDescription:
         "Pastes of {count} characters or more become .txt attachments.",
       pastedTextOffDescription: "Pasted text always stays in the message box.",
-      projectsSection: "Projects section",
-      projectsSectionDescription:
-        "Group project chats under Projects. When off, show them in Recents.",
       title: "Chat",
       description: "Customize how chat behaves on this device.",
       modelSelection: {
@@ -1821,6 +1831,11 @@ export const en = {
       autoScrollManual: "Manual",
       autoScrollKeywords:
         "scroll autoscroll auto-scroll follow stick bottom jump streaming generating viewport lock hold auto manual",
+      scrollToBottomButton: "Scroll to bottom button",
+      scrollToBottomButtonDescription:
+        "Show a button to jump back to the latest message after you scroll up.",
+      scrollToBottomButtonKeywords:
+        "scroll bottom jump latest newest arrow down button floating hide show",
       showResponseModel: "Response model",
       showResponseModelDescription:
         "Show model details in assistant responses.",
@@ -1895,6 +1910,22 @@ export const en = {
           "Turn on “{setting}” in Settings → Chat to let canvases load external resources, or allow it just for this canvas.",
         blockedSettingsAction: "Open Settings",
         blockedDismiss: "Dismiss",
+        errorTitle: "This canvas hit an error",
+        errorTitlePlural: "This canvas hit {count} errors",
+        errorHint: "Fix with the model puts the error in the message box. Nothing is sent until you send it.",
+        errorBannerAction: "Fix with the model",
+        errorConsoleAction: "Open console",
+        errorConsoleHideAction: "Hide console",
+        errorLocation: "line {line}, column {column}",
+        errorLine: "line {line}",
+        consoleTitle: "Console",
+        reloadCanvas: "Run again",
+        consoleMessageCount: "{count} message",
+        consoleMessageCountPlural: "{count} messages",
+        consoleClear: "Clear console",
+        consoleClose: "Close console",
+        consoleEmpty: "No console output yet.",
+        consoleCapped: "Only the last {count} entries are kept; earlier output was dropped.",
       },
       data: "Data",
       exportHistory: "Export chat history",
@@ -1903,7 +1934,7 @@ export const en = {
       exportingAction: "Exporting...",
       exportConversations: "Export Recents and Projects",
       exportConversationsDescription:
-        "Download Recents or Recents plus project chats as Training JSONL, CSV, or ShareGPT JSONL, combined or per chat. Message JSONL is available per chat.",
+        "Download Recents or Recents plus project chats as Training JSONL, CSV, ShareGPT JSONL, or Markdown, combined or per chat. Message JSONL is available per chat.",
       exportConversationsAction: "Export",
       exportScopeRecents: "Recents",
       exportScopeAll: "Recents + Projects",
@@ -1911,7 +1942,7 @@ export const en = {
       exportPerChatSuffix: "(per chat)",
       importChats: "Import chats",
       importChatsDescription:
-        "Import JSON, JSONL, NDJSON, or CSV files into Recents.",
+        "Import JSON, JSONL, NDJSON, CSV, or Markdown files into Recents.",
       importChatsAction: "Import",
       importNoConversations: "No conversations found in file.",
       importedOneChat: "Imported 1 conversation to Recents.",
@@ -2175,11 +2206,13 @@ export const en = {
       revoking: "Revoking...",
       decisionApi: {
         title: "Decision API",
-        description: "Answer yes/no, multiple choice and score questions about text with a local Laya model. Works with the TypeSafe SDK.",
+        description: "Answer yes/no, multiple choice and score questions about text with a model on this machine or a decision model from Connections. Works with the TypeSafe SDK.",
         enable: "Serve requests",
         enableDescription: "Serves /v1/systemone. Turning it on downloads the model.",
+        enableRemoteDescription: "Serves /v1/systemone.",
         lockedByEnv: "Set by {name}.",
         model: "Model",
+        thisMachine: "This machine",
         modelMultilingual: "Multilingual",
         modelEnglish: "English",
         modelTypedDecisions: "Typed decisions",
@@ -2204,6 +2237,10 @@ export const en = {
         downloadFailed: "Couldn't start the download.",
         saveFailed: "Couldn't save the Decision API setting.",
         loadError: "Couldn't load Decision API settings.",
+        sendsTo: "Requests are sent to {provider}.",
+        connectionMissing: "This connection is gone or has no decision models. Pick another model.",
+        addConnection: "To use a hosted decision model, add TypeSafe, Liquid AI or OpenRouter in Connections.",
+        openConnections: "Open Connections",
       },
     },
     about: {

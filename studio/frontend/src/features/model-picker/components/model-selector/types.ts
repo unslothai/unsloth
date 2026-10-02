@@ -78,6 +78,8 @@ export interface ModelSelectorChangeMeta {
   /** Hub pipeline tag for an uncurated pick, so a task page can tell which task the repo does when
    *  it is not in the page's catalog. */
   pipelineTag?: string | null;
+  /** Admitted only via an explicit family; detected picks must not inherit it. */
+  familyOverrideRequired?: boolean;
   /** Detected local audio architecture, used when a filesystem path has no Hub id. */
   audioType?: string | null;
   nativePathExpiresAtMs?: number | null;
