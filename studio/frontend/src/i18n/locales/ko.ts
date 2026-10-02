@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import type { en } from "./en";
+import { en } from "./en.ts";
 
 export const ko = {
   benchmark: {
@@ -127,6 +127,8 @@ export const ko = {
       step3: "결과를 확인하세요",
     },
   },
+  // English fallback until this experimental feature is translated.
+  managedEngines: en.managedEngines,
   composerSettings: {
     title: "메시지 입력",
     plainText: "일반 텍스트 입력",
@@ -264,6 +266,13 @@ export const ko = {
       close: "찾기 닫기",
       truncated: "이 페이지는 너무 길어 전체를 검색할 수 없습니다.",
     },
+    zoom: {
+      label: "확대/축소",
+      zoomOut: "축소",
+      zoomIn: "확대",
+      reset: "재설정",
+      announce: "확대/축소 {percent}%",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -325,6 +334,14 @@ export const ko = {
       help: "도움말",
       logOut: "로그아웃",
       shutdown: "종료",
+    },
+    commandPalette: {
+      placeholder: "명령어를 입력하거나 검색하세요...",
+      noResults: "결과를 찾을 수 없습니다.",
+      navigation: "탐색",
+      actions: "작업",
+      chat: "채팅",
+      searchChats: "채팅 검색...",
     },
     notFound: {
       title: "페이지를 찾을 수 없습니다",
@@ -601,6 +618,10 @@ export const ko = {
         openKeyboardShortcuts: {
           label: "키보드 단축키",
           description: "이 단축키 목록을 엽니다",
+        },
+        openCommandPalette: {
+          label: "명령 팔레트",
+          description: "명령 팔레트 열기",
         },
         searchChats: {
           label: "채팅 검색",
@@ -1435,20 +1456,13 @@ export const ko = {
           wide: "넓게",
           full: "전체 너비",
         },
-        composerAttachments: {
-          label: "입력창의 첨부 파일",
-          description:
-            "입력창을 키우는 큰 카드 또는 작은 타일 한 줄로 표시합니다.",
-          cards: "큰 카드",
-          compact: "작은 타일",
-        },
         sentAttachments: {
           label: "보낸 메시지의 첨부 파일",
           description:
-            "각 파일의 형식을 보여 주는 목록 또는 작은 칩으로 표시합니다. 자동은 파일이 6개를 넘으면 칩으로 바뀝니다.",
+            "표준은 각 파일을 형식과 함께 표시하고, 컴팩트는 한 줄에 더 많이 표시합니다. 자동은 파일이 6개를 넘으면 컴팩트로 바뀝니다.",
           auto: "자동",
-          list: "목록",
-          chips: "칩",
+          list: "표준",
+          chips: "컴팩트",
         },
         reset: "초기화",
         resetAll: "사용자 지정 초기화",
@@ -1905,9 +1919,6 @@ export const ko = {
         "붙여넣은 텍스트가 {count}자 이상이면 .txt 첨부 파일이 됩니다. 더 짧은 텍스트는 입력창에 남습니다.",
       pastedTextOffDescription:
         "길이와 관계없이 붙여넣은 모든 텍스트가 입력창에 남습니다.",
-      projectsSection: "프로젝트 섹션 표시",
-      projectsSectionDescription:
-        "프로젝트 채팅을 프로젝트 제목 아래에 모읍니다. 끄면 최근 항목에 표시됩니다.",
       title: "채팅",
       description: "이 기기에서 채팅이 작동하는 방식을 사용자 지정합니다.",
       modelSelection: {
@@ -1944,6 +1955,11 @@ export const ko = {
       autoScrollManual: "수동",
       autoScrollKeywords:
         "스크롤 자동 스크롤 따라가기 아래 이동 스트리밍 생성 고정 scroll autoscroll follow",
+      scrollToBottomButton: "맨 아래로 스크롤 버튼",
+      scrollToBottomButtonDescription:
+        "위로 스크롤한 뒤 최신 메시지로 돌아가는 버튼을 표시합니다.",
+      scrollToBottomButtonKeywords:
+        "스크롤 맨 아래 최신 화살표 버튼 숨기기 scroll bottom button",
       showResponseModel: "응답 모델 표시",
       showResponseModelDescription:
         "어시스턴트 응답에 모델 메타데이터를 표시합니다.",
@@ -2313,11 +2329,13 @@ export const ko = {
       revoking: "폐기 중...",
       decisionApi: {
         title: "판단 API",
-        description: "로컬 Laya 모델로 텍스트에 대한 예/아니오, 객관식, 점수 질문에 답합니다. TypeSafe SDK와 함께 사용할 수 있습니다.",
+        description: "이 컴퓨터의 모델이나 연결의 판단 모델로 텍스트에 대한 예/아니오, 객관식, 점수 질문에 답합니다. TypeSafe SDK와 함께 사용할 수 있습니다.",
         enable: "요청 처리",
         enableDescription: "/v1/systemone을 제공합니다. 켜면 모델을 다운로드합니다.",
+        enableRemoteDescription: "/v1/systemone을 제공합니다.",
         lockedByEnv: "{name}(으)로 설정됨.",
         model: "모델",
+        thisMachine: "이 컴퓨터",
         modelMultilingual: "다국어",
         modelEnglish: "영어",
         modelTypedDecisions: "유형별 판단",
@@ -2342,6 +2360,10 @@ export const ko = {
         downloadFailed: "다운로드를 시작하지 못했습니다.",
         saveFailed: "판단 API 설정을 저장하지 못했습니다.",
         loadError: "판단 API 설정을 불러오지 못했습니다.",
+        sendsTo: "요청은 {provider}(으)로 전송됩니다.",
+        connectionMissing: "이 연결이 없거나 판단 모델이 없습니다. 다른 모델을 선택하세요.",
+        addConnection: "호스팅된 판단 모델을 사용하려면 연결에서 TypeSafe, Liquid AI 또는 OpenRouter를 추가하세요.",
+        openConnections: "연결 열기",
       },
       usageNoModel:
         "모델을 로드하거나 다운로드하면 실행 가능한 예제가 표시됩니다. 이 서버에는 아직 지정할 모델이 없습니다.",

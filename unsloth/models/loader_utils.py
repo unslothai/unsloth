@@ -9,7 +9,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from ..device_type import DEVICE_TYPE_TORCH
+from ..device_type import DEVICE_TYPE_TORCH, clean_gpu_cache
 import hashlib
 import importlib
 import os
@@ -53,11 +53,11 @@ WORLD_SIZE_KEYS = ("WORLD_SIZE",)
 LOCAL_RANK_ONLY_KEYS = ("LOCAL_RANK",)
 
 BAD_MAPPINGS = {
-    "unsloth/Qwen3-32B-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-32B-bnb-4bit".lower(),  # 32B dynamic quant is way too big
-    "unsloth/Qwen3-30B-A3B-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B".lower(),  # HF loads MoEs too slowly
-    "unsloth/Qwen3-30B-A3B-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B".lower(),  # We rather do it on the fly
-    "unsloth/Qwen3-30B-A3B-Base-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B-Base".lower(),  # HF loads MoEs too slowly
-    "unsloth/Qwen3-30B-A3B-Base-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B-Base".lower(),  # We rather do it on the fly
+    "unsloth/Qwen3-32B-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-32B-bnb-4bit",  # 32B dynamic quant is way too big
+    "unsloth/Qwen3-30B-A3B-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B",  # HF loads MoEs too slowly
+    "unsloth/Qwen3-30B-A3B-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B",  # We rather do it on the fly
+    "unsloth/Qwen3-30B-A3B-Base-unsloth-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B-Base",  # HF loads MoEs too slowly
+    "unsloth/Qwen3-30B-A3B-Base-bnb-4bit".lower(): "unsloth/Qwen3-30B-A3B-Base",  # We rather do it on the fly
 }
 
 
@@ -1234,12 +1234,60 @@ def _resolve_with_mappers(
     )
 
 
+def _prefer_legacy_lowercase_cache(
+    repo_id,
+    local_files_only = False,
+    cache_dir = None,
+    revision = None,
+):
+    # The mapper returned lowercased ids before #2506, so an offline cache may only hold that spelling.
+    if not (local_files_only or _env_says_offline()) or not isinstance(repo_id, str):
+        return repo_id
+    legacy = repo_id.lower()
+    if legacy == repo_id:
+        return repo_id
+    try:
+        from huggingface_hub import try_to_load_from_cache
+
+        if cache_dir is None:
+            # transformers 4.x still honours TRANSFORMERS_CACHE, which can differ from HF_HUB_CACHE.
+            from transformers.utils import hub as _tf_hub
+            cache_dir = getattr(_tf_hub, "TRANSFORMERS_CACHE", None)
+
+        def cached(repo, files):
+            return any(
+                isinstance(
+                    try_to_load_from_cache(repo, f, cache_dir = cache_dir, revision = revision), str
+                )
+                for f in files
+            )
+
+        # A config-only canonical snapshot must not hide a legacy one that also has weights.
+        weights = (
+            "model.safetensors",
+            "model.safetensors.index.json",
+            "pytorch_model.bin",
+            "pytorch_model.bin.index.json",
+        )
+        for files in (weights, ("config.json",)):
+            if cached(repo_id, files) and cached(repo_id, ("config.json",)):
+                return repo_id
+            if cached(legacy, files) and cached(legacy, ("config.json",)):
+                return legacy
+    except Exception:
+        pass
+    return repo_id
+
+
 def get_model_name(
     model_name,
     load_in_4bit = True,
     load_in_fp8 = False,
     token = None,
     trust_remote_code = False,
+    local_files_only = False,
+    cache_dir = None,
+    revision = None,
 ):
     assert load_in_fp8 in (True, False, "block")
     new_model_name = _resolve_with_mappers(
@@ -1294,6 +1342,13 @@ def get_model_name(
 
     if new_model_name is None:
         new_model_name = model_name
+    else:
+        # Also when the result equals the input: main returned it lowercased, so that is what is cached.
+        # The loader drops the revision on a real remap (_revision_for_resolved_repo), so probe main then.
+        same_repo = new_model_name.lower() == str(model_name).lower()
+        new_model_name = _prefer_legacy_lowercase_cache(
+            new_model_name, local_files_only, cache_dir, revision if same_repo else None
+        )
 
     return new_model_name
 
@@ -1373,7 +1428,7 @@ def _offline_quantize_to_fp8(
         model.save_pretrained(new_model_name, safe_serialization = False)
         del model
         for _ in range(2):
-            torch.cuda.empty_cache()
+            clean_gpu_cache()
             gc.collect()
         tokenizer.save_pretrained(new_model_name)
     return new_model_name
@@ -3496,10 +3551,7 @@ def _offline_aware_load(fn):
         # Retry OUTSIDE the except so the failed attempt's traceback (a partial model) is freed before reallocating, else a large VLM can OOM on the second load.
         try:
             gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            if hasattr(torch, "xpu") and torch.xpu.is_available():
-                torch.xpu.empty_cache()
+            clean_gpu_cache()
         except Exception:
             pass
         # A failed attempt may have left HF progress bars disabled; restore before retry.

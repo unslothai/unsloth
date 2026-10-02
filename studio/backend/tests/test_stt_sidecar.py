@@ -1927,3 +1927,14 @@ def test_decoding_stops_as_soon_as_the_request_is_cancelled(monkeypatch):
     cancelled.set()
     with pytest.raises(stt_sidecar_module.SttTranscriptionCancelledError):
         stt_sidecar_module._decode_audio_bounded(buf.getvalue(), cancelled)
+
+
+def test_unloading_an_empty_sidecar_skips_the_collection(monkeypatch):
+    # The registry releases idle engines on every other engine's transcription; a full
+    # gc.collect there cost each audio.cpp / GGUF dictation request ~130 ms.
+    collected = []
+    monkeypatch.setattr(stt_sidecar_module.gc, "collect", lambda *a: collected.append(1))
+    sidecar = stt_sidecar_module.WhisperSttSidecar()
+    sidecar.unload(wait = False)
+    sidecar.unload()
+    assert collected == []

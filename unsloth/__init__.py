@@ -656,9 +656,9 @@ if _IS_MLX:
         strategy = strategy.rsplit(".", 1)[-1]
         return strategy in ("no", "none", "false")
 
+    # Mirrors zoo's _normalize_mlx_optimizer_name; adamw_8bit is a real MLX optimizer, never collapse it.
     _MLX_ADAMW_OPTIMIZER_ALIASES = frozenset(
         (
-            "adamw_8bit",
             "paged_adamw_8bit",
             "adamw_bnb_8bit",
             "paged_adamw_32bit",
@@ -690,8 +690,7 @@ if _IS_MLX:
         try:
             return _normalize_mlx_optimizer_name(value)
         except ValueError:
-            # Older unsloth-zoo lacks the CUDA/TRL optimizer aliases, so map the common adamw_* names and keep
-            # notebook defaults (optim="adamw_8bit") working.
+            # Older unsloth-zoo lacks the CUDA/TRL optimizer aliases, so map the common adamw_* names.
             opt = str(getattr(value, "value", value) or "adamw").strip().lower()
             opt = opt.rsplit(".", 1)[-1].replace("-", "_")
             if opt in _MLX_ADAMW_OPTIMIZER_ALIASES:

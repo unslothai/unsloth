@@ -78,6 +78,8 @@ function contextLimitAdvice(
 
 export type ContextUsageBarState = {
   face: string;
+  // shown instead of the ring when the header is too narrow for the face; null shows the ring
+  compactFace: string | null;
   label: string;
   totalRowName: string;
   totalRowValue: string;
@@ -117,6 +119,7 @@ export function deriveContextUsageBar({
     if (usedTokens <= 0 && !hasUsageDetails) return null;
     return {
       face: `${formatTokenCount(usedTokens)} tokens`,
+      compactFace: formatTokenCount(usedTokens),
       label: `Token usage: ${formatTokenCount(usedTokens)} tokens`,
       totalRowName: "Total tokens",
       totalRowValue: formatTokenCountFull(usedTokens),
@@ -129,6 +132,7 @@ export function deriveContextUsageBar({
   if (usedTokens === null) {
     return {
       face: `— / ${formatTokenCount(limit)}`,
+      compactFace: null,
       label: `Context window: ${formatTokenCount(limit)} tokens, usage not counted yet`,
       totalRowName: "Context window",
       totalRowValue: formatTokenCountFull(limit),
@@ -138,12 +142,14 @@ export function deriveContextUsageBar({
     };
   }
 
+  const percent = Math.min((usedTokens / limit) * 100, 100);
   return {
     face: `${formatTokenCount(usedTokens)} / ${formatTokenCount(limit)}`,
+    compactFace: null,
     label: `Context usage: ${formatTokenCount(usedTokens)} of ${formatTokenCount(limit)} tokens`,
     totalRowName: "Total",
     totalRowValue: `${formatTokenCountFull(usedTokens)} / ${formatTokenCountFull(limit)}`,
-    percent: Math.min((usedTokens / limit) * 100, 100),
+    percent,
     hasUsageDetails,
     advice: contextLimitAdvice(
       usedTokens,

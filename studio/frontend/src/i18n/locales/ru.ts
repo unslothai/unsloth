@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import type { en } from "./en";
+import { en } from "./en.ts";
 
 export const ru = {
   benchmark: {
@@ -127,6 +127,8 @@ export const ru = {
       step3: "Просмотрите результаты",
     },
   },
+  // English fallback until this experimental feature is translated.
+  managedEngines: en.managedEngines,
   composerSettings: {
     title: "Ввод сообщений",
     plainText: "Обычный текст",
@@ -266,6 +268,13 @@ export const ru = {
       close: "Закрыть поиск",
       truncated: "Эта страница слишком длинная, чтобы выполнить поиск целиком.",
     },
+    zoom: {
+      label: "Масштаб",
+      zoomOut: "Уменьшить",
+      zoomIn: "Увеличить",
+      reset: "Сбросить",
+      announce: "Масштаб {percent} %",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -327,6 +336,14 @@ export const ru = {
       help: "Справка",
       logOut: "Выйти",
       shutdown: "Выключить",
+    },
+    commandPalette: {
+      placeholder: "Введите команду или запрос...",
+      noResults: "Ничего не найдено.",
+      navigation: "Навигация",
+      actions: "Действия",
+      chat: "Чат",
+      searchChats: "Поиск по чатам...",
     },
     notFound: {
       title: "Страница не найдена",
@@ -603,6 +620,10 @@ export const ru = {
         openKeyboardShortcuts: {
           label: "Сочетания клавиш",
           description: "Открыть этот список сочетаний",
+        },
+        openCommandPalette: {
+          label: "Палитра команд",
+          description: "Открыть палитру команд",
         },
         searchChats: {
           label: "Поиск по чатам",
@@ -1444,20 +1465,13 @@ export const ru = {
           wide: "Широкая",
           full: "Полная ширина",
         },
-        composerAttachments: {
-          label: "Вложения в поле ввода",
-          description:
-            "Крупные карточки, увеличивающие поле ввода, или компактный ряд плиток.",
-          cards: "Крупные карточки",
-          compact: "Компактные плитки",
-        },
         sentAttachments: {
           label: "Вложения в отправленных сообщениях",
           description:
-            "Список с типом каждого файла или небольшие метки. В автоматическом режиме при более чем шести файлах используются метки.",
+            "Стандартный вид показывает тип каждого файла, компактный помещает больше файлов в строку. В автоматическом режиме при более чем шести файлах используется компактный вид.",
           auto: "Авто",
-          list: "Список",
-          chips: "Метки",
+          list: "Стандартный",
+          chips: "Компактный",
         },
         reset: "Сбросить",
         resetAll: "Сбросить настройки оформления",
@@ -1922,9 +1936,6 @@ export const ru = {
         "Вставленный текст длиной от {count} символов становится вложением .txt. Более короткий текст остаётся в поле сообщения.",
       pastedTextOffDescription:
         "Весь вставленный текст остаётся в поле сообщения независимо от длины.",
-      projectsSection: "Показывать раздел «Проекты»",
-      projectsSectionDescription:
-        "Группирует чаты проектов под заголовком «Проекты». Отключите, чтобы они отображались в «Недавних».",
       title: "Чат",
       description: "Настройка поведения чата на этом устройстве.",
       modelSelection: {
@@ -1961,6 +1972,11 @@ export const ru = {
       autoScrollManual: "Вручную",
       autoScrollKeywords:
         "прокрутка автопрокрутка следовать вниз низ поток генерация зафиксировать scroll autoscroll follow",
+      scrollToBottomButton: "Кнопка «Прокрутить вниз»",
+      scrollToBottomButtonDescription:
+        "Показывать кнопку для возврата к последнему сообщению после прокрутки вверх.",
+      scrollToBottomButtonKeywords:
+        "прокрутка вниз последнее стрелка кнопка скрыть scroll bottom button",
       showResponseModel: "Показывать модель в ответах",
       showResponseModelDescription:
         "Показывать метаданные модели в ответах ассистента.",
@@ -2332,11 +2348,13 @@ export const ru = {
       revoking: "Отзыв...",
       decisionApi: {
         title: "API решений",
-        description: "Отвечайте на вопросы «да/нет», с выбором и с оценкой о тексте с помощью локальной модели Laya. Работает с SDK TypeSafe.",
+        description: "Отвечайте на вопросы «да/нет», с выбором и с оценкой о тексте с помощью модели на этом компьютере или модели решений из подключений. Работает с SDK TypeSafe.",
         enable: "Обрабатывать запросы",
         enableDescription: "Обслуживает /v1/systemone. При включении модель скачивается.",
+        enableRemoteDescription: "Обслуживает /v1/systemone.",
         lockedByEnv: "Задано переменной {name}.",
         model: "Модель",
+        thisMachine: "Этот компьютер",
         modelMultilingual: "Многоязычная",
         modelEnglish: "Английская",
         modelTypedDecisions: "Типизированные решения",
@@ -2361,6 +2379,10 @@ export const ru = {
         downloadFailed: "Не удалось начать скачивание.",
         saveFailed: "Не удалось сохранить настройку API решений.",
         loadError: "Не удалось загрузить настройки API решений.",
+        sendsTo: "Запросы отправляются в {provider}.",
+        connectionMissing: "Этого подключения больше нет или в нём нет моделей решений. Выберите другую модель.",
+        addConnection: "Чтобы использовать облачную модель решений, добавьте TypeSafe, Liquid AI или OpenRouter в разделе «Подключения».",
+        openConnections: "Открыть подключения",
       },
       usageNoModel:
         "Загрузите или скачайте модель, чтобы увидеть готовые к запуску примеры. На этом сервере пока нет модели, которую можно подставить в примеры.",

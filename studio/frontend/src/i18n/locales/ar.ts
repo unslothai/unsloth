@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import type { en } from "./en";
+import { en } from "./en.ts";
 
 export const ar = {
   benchmark: {
@@ -127,6 +127,8 @@ export const ar = {
       step3: "راجع النتائج",
     },
   },
+  // English fallback until this experimental feature is translated.
+  managedEngines: en.managedEngines,
   composerSettings: {
     title: "كتابة الرسائل",
     plainText: "محرر نص عادي",
@@ -264,6 +266,13 @@ export const ar = {
       close: "إغلاق البحث",
       truncated: "هذه الصفحة أطول من أن يتم البحث فيها بالكامل.",
     },
+    zoom: {
+      label: "التكبير",
+      zoomOut: "تصغير",
+      zoomIn: "تكبير",
+      reset: "إعادة تعيين",
+      announce: "التكبير {percent}%",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -325,6 +334,14 @@ export const ar = {
       help: "مساعدة",
       logOut: "تسجيل الخروج",
       shutdown: "إيقاف التشغيل",
+    },
+    commandPalette: {
+      placeholder: "اكتب أمرًا أو ابحث...",
+      noResults: "لم يُعثر على أي نتائج.",
+      navigation: "التنقل",
+      actions: "الإجراءات",
+      chat: "الدردشة",
+      searchChats: "ابحث في الدردشات...",
     },
     notFound: {
       title: "الصفحة غير موجودة",
@@ -601,6 +618,10 @@ export const ar = {
         openKeyboardShortcuts: {
           label: "اختصارات لوحة المفاتيح",
           description: "فتح قائمة الاختصارات هذه",
+        },
+        openCommandPalette: {
+          label: "لوحة الأوامر",
+          description: "فتح لوحة الأوامر",
         },
         searchChats: {
           label: "بحث في المحادثات",
@@ -1439,20 +1460,13 @@ export const ar = {
           wide: "واسع",
           full: "العرض الكامل",
         },
-        composerAttachments: {
-          label: "المرفقات في حقل الكتابة",
-          description:
-            "بطاقات كبيرة تُوسّع حقل الكتابة، أو صف مضغوط من المربعات الصغيرة.",
-          cards: "بطاقات كبيرة",
-          compact: "مربعات مضغوطة",
-        },
         sentAttachments: {
           label: "المرفقات في الرسائل المرسلة",
           description:
-            "قائمة تعرض نوع كل ملف، أو شارات صغيرة. يتحوّل الوضع التلقائي إلى الشارات عند تجاوز ستة ملفات.",
+            "يعرض الوضع القياسي نوع كل ملف، ويعرض الوضع المضغوط ملفات أكثر في كل سطر. يتحوّل الوضع التلقائي إلى المضغوط عند تجاوز ستة ملفات.",
           auto: "تلقائي",
-          list: "قائمة",
-          chips: "شارات",
+          list: "قياسي",
+          chips: "مضغوط",
         },
         reset: "إعادة تعيين",
         resetAll: "إعادة تعيين التخصيص",
@@ -1910,9 +1924,6 @@ export const ar = {
         "يصبح النص الملصق الذي يبلغ {count} حرفًا أو أكثر مرفقًا بصيغة .txt. يبقى النص الأقصر في مربع الرسالة.",
       pastedTextOffDescription:
         "يبقى كل النص الملصق في مربع الرسالة، مهما كان طوله.",
-      projectsSection: "إظهار قسم المشاريع",
-      projectsSectionDescription:
-        "يجمع محادثات المشروع تحت عنوان المشاريع. أوقف هذا الخيار لعرضها ضمن الأخيرة بدلاً من ذلك.",
       title: "المحادثة",
       description: "خصّص طريقة عمل المحادثة على هذا الجهاز.",
       modelSelection: {
@@ -1949,6 +1960,11 @@ export const ar = {
       autoScrollManual: "يدوي",
       autoScrollKeywords:
         "تمرير تلقائي متابعة أسفل قفز بث إنشاء تثبيت scroll autoscroll follow",
+      scrollToBottomButton: "زر التمرير إلى الأسفل",
+      scrollToBottomButtonDescription:
+        "إظهار زر للعودة إلى أحدث رسالة بعد التمرير لأعلى.",
+      scrollToBottomButtonKeywords:
+        "تمرير أسفل أحدث سهم زر إخفاء scroll bottom button",
       showResponseModel: "إظهار نموذج الاستجابة",
       showResponseModelDescription:
         "إظهار البيانات الوصفية للنموذج في ردود المساعد.",
@@ -2320,11 +2336,13 @@ export const ar = {
       revoking: "جارٍ الإلغاء...",
       decisionApi: {
         title: "واجهة القرارات البرمجية",
-        description: "أجب عن أسئلة نعم/لا والاختيار من متعدد والتقييم حول النص باستخدام نموذج Laya محلي. يعمل مع حزمة TypeSafe.",
+        description: "أجب عن أسئلة نعم/لا والاختيار من متعدد والتقييم حول النص باستخدام نموذج على هذا الجهاز أو نموذج قرارات من الاتصالات. يعمل مع حزمة TypeSafe.",
         enable: "خدمة الطلبات",
         enableDescription: "يقدّم /v1/systemone. عند التشغيل يُنزَّل النموذج.",
+        enableRemoteDescription: "يقدّم /v1/systemone.",
         lockedByEnv: "مضبوط بواسطة {name}.",
         model: "النموذج",
+        thisMachine: "هذا الجهاز",
         modelMultilingual: "متعدد اللغات",
         modelEnglish: "إنجليزي",
         modelTypedDecisions: "قرارات مُصنَّفة",
@@ -2349,6 +2367,10 @@ export const ar = {
         downloadFailed: "تعذّر بدء التنزيل.",
         saveFailed: "تعذّر حفظ إعداد واجهة القرارات.",
         loadError: "تعذّر تحميل إعدادات واجهة القرارات.",
+        sendsTo: "تُرسَل الطلبات إلى {provider}.",
+        connectionMissing: "هذا الاتصال لم يعد موجودًا أو لا يحتوي على نماذج قرارات. اختر نموذجًا آخر.",
+        addConnection: "لاستخدام نموذج قرارات مستضاف، أضف TypeSafe أو Liquid AI أو OpenRouter في الاتصالات.",
+        openConnections: "فتح الاتصالات",
       },
       usageNoModel:
         "حمّل نموذجًا أو نزّله لعرض أمثلة قابلة للتشغيل. لا يوجد في هذا الخادم أي نموذج يمكن استخدامه في الأمثلة بعد.",
