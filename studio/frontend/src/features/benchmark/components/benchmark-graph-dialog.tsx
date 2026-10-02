@@ -134,7 +134,12 @@ export function GraphDialog({
     return metrics;
   }, [selectedRuns, t]);
 
-  const [selectedMetric, setSelectedMetric] = useState("__accuracy__");
+  const [pickedMetric, setSelectedMetric] = useState("__accuracy__");
+  // The dialog stays mounted across selections; a metric the current runs lack
+  // would chart every bar as 0, so fall back to accuracy.
+  const selectedMetric = availableMetrics.some((m) => m.value === pickedMetric)
+    ? pickedMetric
+    : "__accuracy__";
 
   const moveUp = useCallback((index: number) => {
     setOrderedIds((prev) => {

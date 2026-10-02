@@ -4,6 +4,7 @@
 import json
 import sqlite3
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 
@@ -249,3 +250,113 @@ def test_run_from_an_executor_records_the_requesting_account(monkeypatch):
 
     asyncio.run(arun_as(alice, route_like()))
     assert backend._result_account == alice
+
+
+GROUP_RESULTS = {
+    "results": {
+        "mmlu_anatomy": {"alias": "anatomy", "acc,none": 0.0, "acc_stderr,none": "N/A"},
+        "mmlu_astronomy": {"alias": "astronomy", "acc,none": 1.0, "acc_stderr,none": "N/A"},
+    },
+    "groups": {
+        "mmlu": {
+            "alias": "mmlu",
+            "acc,none": 0.5,
+            "acc_stderr,none": 0.1,
+            "sample_count": {"acc,none": 2},
+        }
+    },
+    "group_subtasks": {"mmlu": ["mmlu_stem"], "mmlu_stem": ["mmlu_anatomy", "mmlu_astronomy"]},
+    "configs": {"mmlu_anatomy": {"metadata": {"model": "m.gguf"}}, "mmlu_astronomy": {}},
+    "n-shot": {"mmlu_anatomy": 0, "mmlu_astronomy": 0},
+    "n-samples": {
+        "mmlu_anatomy": {"original": 135, "effective": 1},
+        "mmlu_astronomy": {"original": 152, "effective": 1},
+    },
+    "samples": {
+        "mmlu_anatomy": [
+            {
+                "doc_id": 0,
+                "doc": {"question": "q1"},
+                "target": 0,
+                "filtered_resps": [[-1.0, False]],
+                "acc": 0.0,
+            }
+        ],
+        "mmlu_astronomy": [
+            {
+                "doc_id": 0,
+                "doc": {"question": "q2"},
+                "target": 1,
+                "filtered_resps": [[-0.1, True]],
+                "acc": 1.0,
+            }
+        ],
+    },
+}
+
+
+def test_group_task_stores_the_group_score_and_every_subtask_sample():
+    summary = parse_run_summary("benchmark_mmlu_20261002_120000", GROUP_RESULTS, task = "mmlu")
+    assert (summary["task"], summary["model"], summary["n_samples"]) == ("mmlu", "m.gguf", 2)
+    assert summary["metrics"] == [{"name": "acc,none", "score": 0.5, "stderr": "0.1"}]
+    samples = extract_samples(GROUP_RESULTS, "mmlu")
+    assert [s["question"] for s in samples] == ["q1", "q2"]
+    assert len({s["doc_id"] for s in samples}) == 2
+
+
+def test_samples_without_a_question_show_the_prompt():
+    data = {
+        "results": {"hellaswag": {"acc,none": 1.0}},
+        "samples": {
+            "hellaswag": [
+                {
+                    "doc_id": 0,
+                    "doc": {"ctx": "A man is on a roof. He"},
+                    "target": 3,
+                    "arguments": [
+                        ["A man is on a roof. He", " jumps."],
+                        ["A man is on a roof. He", " sits."],
+                    ],
+                    "filtered_resps": [[-2.0, False], [-1.0, True]],
+                    "acc": 1.0,
+                }
+            ]
+        },
+    }
+    assert extract_samples(data, "hellaswag")[0]["question"] == "A man is on a roof. He"
+
+
+def test_stop_wins_over_a_run_that_finishes_in_the_same_poll(monkeypatch):
+    release = threading.Event()
+    backend = _orchestrator(
+        monkeypatch, lambda params: (release.wait(5), {"results": {"t": {}}})[1]
+    )
+    result = {}
+    worker = threading.Thread(target = lambda: result.setdefault("r", backend.run({})))
+    worker.start()
+    while not backend.is_active():
+        pass
+    time.sleep(0.1)  # the run loop is now blocked waiting on the result
+    assert backend.cancel()
+    release.set()  # lm_eval finishes before the run loop polls again
+    worker.join(5)
+    assert result["r"] == {}
+    assert backend.get_last_op_status() == "cancelled"
+
+
+def test_saved_results_and_api_key_views_drop_secrets_and_paths(monkeypatch):
+    saved = benchmark_routes._without_api_keys(
+        {
+            "config": {"model_args": {"api_key": "sk-unsloth-x", "base_url": "u"}},
+            "configs": [{"metadata": {"api_key": "k"}}],
+        }
+    )
+    assert "sk-unsloth-x" not in json.dumps(saved) and '"k"' not in json.dumps(saved)
+    run = {
+        "model": "/home/me/models/m.gguf",
+        "output_path": "/home/me/.unsloth/studio/outputs/evals/benchmark_copa_x",
+    }
+    assert benchmark_routes._redact_eval_run(run, via_api_key = False) == run
+    redacted = benchmark_routes._redact_eval_run(run, via_api_key = True)
+    assert "/home/me" not in json.dumps(redacted)
+    assert redacted["output_path"] == "benchmark_copa_x"

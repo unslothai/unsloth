@@ -124,7 +124,7 @@ export function BenchmarkPage({ evals }: { evals: EvalsModel }) {
     const curated = new Set([
       "mmlu", "mmlu_pro", "gpqa_main_cot_zeroshot", "hellaswag",
       "arc_challenge", "winogrande", "gsm8k", "hendrycks_math",
-      "ifeval", "humaneval", "truthfulqa_mc1", "longbench",
+      "ifeval", "truthfulqa_mc1", "longbench",
       "bbh", "bbh_fewshot", "bbh_zeroshot",
     ]);
     const curatedIds: string[] = [];

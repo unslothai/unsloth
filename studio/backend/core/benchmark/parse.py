@@ -54,9 +54,30 @@ def pick_default_metric(metrics: list) -> str:
     return ""
 
 
-def parse_run_summary(dir_name: str, data: dict) -> Optional[dict]:
-    """Extract a summary dict from a parsed results.json."""
+def _leaf_tasks(data: dict, task_name: str) -> list[str]:
+    """The scored subtasks under a group (mmlu -> mmlu_stem -> mmlu_anatomy ...), or the task itself."""
+    group_subtasks = data.get("group_subtasks") or {}
+    if task_name not in group_subtasks:
+        return [task_name]
+    leaves: list[str] = []
+    for sub in group_subtasks[task_name]:
+        leaves.extend(_leaf_tasks(data, sub))
+    return leaves
+
+
+def parse_run_summary(
+    dir_name: str,
+    data: dict,
+    task: Optional[str] = None,
+) -> Optional[dict]:
+    """Extract a summary dict from a parsed results.json.
+
+    ``task`` is the task that was requested. For a group (mmlu, bbh, ...) its
+    aggregate lives under ``groups`` while ``results`` lists every subtask, so
+    the first ``results`` entry would be one subtask, not the score asked for.
+    """
     results = data.get("results", {})
+    groups = data.get("groups") or {}
     configs = data.get("configs", {})
     n_shot_map = data.get("n-shot", {})
     n_samples_map = data.get("n-samples", {})
@@ -64,9 +85,10 @@ def parse_run_summary(dir_name: str, data: dict) -> Optional[dict]:
     if not results:
         return None
 
-    task_name = next(iter(results))
-    task_results = results[task_name]
-    task_config = configs.get(task_name, {})
+    task_name = task if task in groups or task in results else next(iter(results))
+    task_results = groups.get(task_name) or results[task_name]
+    leaves = _leaf_tasks(data, task_name)
+    task_config = configs.get(task_name) or configs.get(leaves[0], {})
     metadata = task_config.get("metadata", {}) if isinstance(task_config, dict) else {}
 
     model = metadata.get("model", "unknown") if isinstance(metadata, dict) else "unknown"
@@ -113,16 +135,19 @@ def parse_run_summary(dir_name: str, data: dict) -> Optional[dict]:
                 pass
 
     n_shot = None
-    n_shot_raw = n_shot_map.get(task_name) if isinstance(n_shot_map, dict) else None
+    n_shot_raw = None
+    if isinstance(n_shot_map, dict):
+        n_shot_raw = n_shot_map.get(task_name, n_shot_map.get(leaves[0]))
     if n_shot_raw is not None:
         n_shot = int(n_shot_raw) if isinstance(n_shot_raw, (int, float)) else None
 
     n_samples = 0
-    ns_raw = n_samples_map.get(task_name) if isinstance(n_samples_map, dict) else None
-    if isinstance(ns_raw, dict):
-        n_samples = int(ns_raw.get("effective", ns_raw.get("original", 0)))
-    elif isinstance(ns_raw, (int, float)):
-        n_samples = int(ns_raw)
+    for leaf in leaves:
+        ns_raw = n_samples_map.get(leaf) if isinstance(n_samples_map, dict) else None
+        if isinstance(ns_raw, dict):
+            n_samples += int(ns_raw.get("effective", ns_raw.get("original", 0)))
+        elif isinstance(ns_raw, (int, float)):
+            n_samples += int(ns_raw)
 
     return {
         "id": dir_name,
@@ -175,11 +200,25 @@ def extract_samples(data: dict, task_name: str) -> list[dict]:
     """Extract per-sample results from lm_eval output."""
     samples = []
     raw_samples = data.get("samples", {})
-    task_samples = raw_samples.get(task_name, []) if isinstance(raw_samples, dict) else []
+    task_samples = []
+    leaves = _leaf_tasks(data, task_name)
+    if isinstance(raw_samples, dict):
+        for leaf in leaves:
+            task_samples.extend(raw_samples.get(leaf, []))
+    # doc_ids restart in every subtask of a group, and eval_samples is keyed
+    # on (run_id, doc_id): number a group's samples in order instead.
+    renumber = len(leaves) > 1
 
-    for s in task_samples:
+    for index, s in enumerate(task_samples):
         doc = s.get("doc", {})
         question = doc.get("question", "") if isinstance(doc, dict) else ""
+        if not question:
+            # Tasks like hellaswag have no "question" field; the rendered
+            # prompt is the context of the first request.
+            args = s.get("arguments") or []
+            first = args[0] if args else None
+            if isinstance(first, (list, tuple)) and first and isinstance(first[0], str):
+                question = first[0]
         target = s.get("target", "")
         filtered = s.get("filtered_resps", [])
         # Generation tasks have one text response; loglikelihood tasks have one
@@ -195,7 +234,7 @@ def extract_samples(data: dict, task_name: str) -> list[dict]:
 
         samples.append(
             {
-                "doc_id": s.get("doc_id", 0),
+                "doc_id": index if renumber else s.get("doc_id", 0),
                 "question": _as_text(question),
                 "target": _as_text(target),
                 "response": _as_text(response),

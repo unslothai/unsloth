@@ -287,7 +287,10 @@ class BenchmarkOrchestrator:
         self._last_op_status = None
         self._cancel_requested = False
         self._last_error = None
-        self._cancel_event.clear()
+        # A fresh event per run: clearing a shared one would let a Run issued
+        # right after Stop un-cancel the run being stopped.
+        cancel_event = self._cancel_event = threading.Event()
+        my_seq = self._op_seq
         clear_progress()
 
         self._append_log("stdout", "Starting benchmark run...")
@@ -297,16 +300,22 @@ class BenchmarkOrchestrator:
         result: Any = None
         error: Optional[str] = None
         while True:
-            if self._cancel_event.is_set():
+            # Checked again after a result arrives: Stop wins over a run that
+            # happened to finish inside the same poll.
+            if cancel_event.is_set():
                 # Best-effort cancel: stop waiting on the worker thread,
-                # which finishes in the background and is discarded.
-                self._cancel_requested = True
-                self._last_op_status = "cancelled"
-                self._active = False
+                # which finishes in the background and is discarded. A newer
+                # run may already own the shared state; leave it alone then.
+                if self._op_seq == my_seq:
+                    self._cancel_requested = True
+                    self._last_op_status = "cancelled"
+                    self._active = False
                 return {}
             try:
                 result = future.result(timeout = 0.5)
-                break
+                if not cancel_event.is_set():
+                    break
+                continue
             except FuturesTimeoutError:
                 continue
             except Exception as e:
@@ -316,9 +325,10 @@ class BenchmarkOrchestrator:
         if error is None and result is None:
             error = "Benchmark returned no result"
         if error:
-            self._last_error = error
-            self._last_op_status = "error"
-            self._active = False
+            if self._op_seq == my_seq:
+                self._last_error = error
+                self._last_op_status = "error"
+                self._active = False
             raise RuntimeError(error)
 
         self._last_error = None

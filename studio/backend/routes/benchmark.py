@@ -24,7 +24,8 @@ backend_path = Path(__file__).parent.parent.parent
 if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
-from auth.authentication import get_current_subject
+from auth.authentication import authenticated_via_api_key, get_current_subject
+from hub.utils.host_paths import host_paths_visible, redact_host_paths
 from core.training.account_jobs import _has_managed_accounts
 from utils.account_context import AccountContext, current_account
 from utils.host_policy import LOOPBACK_FALLBACK_HOST, dial_host
@@ -106,12 +107,6 @@ _CURATED_TASKS: list[BenchmarkTaskInfo] = [
         id = "ifeval",
         name = "IFEval",
         description = "Instruction Following Evaluation",
-        task_type = "generation",
-    ),
-    BenchmarkTaskInfo(
-        id = "humaneval",
-        name = "HumanEval",
-        description = "HumanEval (code generation)",
         task_type = "generation",
     ),
     BenchmarkTaskInfo(
@@ -285,6 +280,30 @@ _LM_EVAL_INSTALL_HINT = (
 )
 
 
+def _without_api_keys(value: Any) -> Any:
+    """lm_eval copies model_args (with the run's key) into its results; keep it off disk."""
+    if isinstance(value, dict):
+        return {
+            k: ("<redacted>" if k == "api_key" else _without_api_keys(v)) for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [_without_api_keys(v) for v in value]
+    return value
+
+
+def _redact_eval_run(run: dict, *, via_api_key: bool) -> dict:
+    """``model`` and ``output_path`` are absolute host paths; API-key callers get
+    the same redaction the sweep runs route applies (routes/benchmarks._redact_run)."""
+    if host_paths_visible(via_api_key):
+        return run
+    ids = redact_host_paths({"active_model": run.get("model")}, via_api_key = via_api_key)
+    out = dict(run)
+    out["model"] = ids["active_model"]
+    if out.get("output_path"):
+        out["output_path"] = os.path.basename(str(out["output_path"]))
+    return out
+
+
 def _run_hidden_from(backend, viewer: AccountContext) -> bool:
     """True when the current/last eval belongs to another account (multi-account
     installs only): its log, outcome and Stop are then not this viewer's."""
@@ -422,7 +441,7 @@ async def run_benchmark(
                 os.makedirs(output_path, exist_ok = True)
                 results_path = os.path.join(output_path, "results.json")
                 with open(results_path, "w") as f:
-                    json.dump(results, f, indent = 2, default = str)
+                    json.dump(_without_api_keys(results), f, indent = 2, default = str)
                 backend._append_log("stdout", f"Results saved to {results_path}")
             except Exception as e:
                 logger.warning(f"Failed to save benchmark results: {e}")
@@ -435,6 +454,7 @@ async def run_benchmark(
             run_summary = parse_run_summary(
                 os.path.basename(output_path) if output_path else f"benchmark_{request.task}",
                 results,
+                task = request.task,
             )
             if run_summary is not None:
                 insert_benchmark_run(
@@ -667,12 +687,17 @@ async def stream_benchmark_logs(
 
 
 @router.get("/runs", response_model = BenchmarkRunListResponse)
-async def list_benchmark_runs(current_subject: str = Depends(get_current_subject)):
+async def list_benchmark_runs(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
     """List past benchmark runs, newest first."""
     try:
         from storage.studio_db import list_benchmark_runs as db_list_runs
         runs = db_list_runs()
-        return BenchmarkRunListResponse(runs = [BenchmarkRunSummary(**r) for r in runs])
+        return BenchmarkRunListResponse(
+            runs = [BenchmarkRunSummary(**_redact_eval_run(r, via_api_key = via_api_key)) for r in runs]
+        )
     except Exception as e:
         logger.error(f"Error listing benchmark runs: {e}", exc_info = True)
         raise HTTPException(status_code = 500, detail = "Failed to list benchmark runs")
@@ -680,7 +705,9 @@ async def list_benchmark_runs(current_subject: str = Depends(get_current_subject
 
 @router.get("/runs/{run_id}", response_model = Optional[BenchmarkRunDetail])
 async def get_benchmark_run_detail(
-    run_id: str, current_subject: str = Depends(get_current_subject)
+    run_id: str,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """Get full detail for a single benchmark run, including per-sample results."""
     try:
@@ -689,7 +716,7 @@ async def get_benchmark_run_detail(
         detail = db_get_detail(run_id)
         if detail is None:
             raise HTTPException(status_code = 404, detail = "Benchmark run not found")
-        return BenchmarkRunDetail(**detail)
+        return BenchmarkRunDetail(**_redact_eval_run(detail, via_api_key = via_api_key))
     except HTTPException:
         raise
     except Exception as e:
@@ -825,7 +852,9 @@ async def generate_benchmark_graph(
 
 @router.post("/export")
 async def export_benchmark_runs(
-    request: BenchmarkExportRequest, current_subject: str = Depends(get_current_subject)
+    request: BenchmarkExportRequest,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """Export benchmark runs as JSON with metadata and results.json contents."""
     from fastapi.responses import Response
@@ -854,7 +883,7 @@ async def export_benchmark_runs(
                 if os.path.isfile(results_path):
                     try:
                         with open(results_path, "r") as f:
-                            results_json = json.load(f)
+                            results_json = _without_api_keys(json.load(f))
                     except Exception as e:
                         logger.warning(f"Failed to read results.json for {run_id}: {e}")
 
@@ -872,6 +901,10 @@ async def export_benchmark_runs(
                 "samples": run.get("samples", []),
                 "results": results_json,
             }
+            if not host_paths_visible(via_api_key):
+                # results.json repeats the model path throughout its configs.
+                entry = _redact_eval_run(entry, via_api_key = via_api_key)
+                entry["results"] = None
             exported.append(entry)
 
         payload = json.dumps(exported, indent = 2, default = str)
