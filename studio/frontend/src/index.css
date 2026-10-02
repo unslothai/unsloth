@@ -16,6 +16,30 @@
 @custom-variant dark (&:is(.dark *));
 
 @layer components {
+	/* The custom Windows/Linux titlebar stays above modal backdrops so native
+	   window actions remain usable. Repeat the standard backdrop over the surface
+	   and page navigation. Window controls paint above it, keeping their glyphs
+	   and hover feedback sharp without changing hit testing.
+	   Only viewport backdrops participate; a panel-local dialog or a menu must
+	   not dim the window chrome. :has also keeps stacked modals correct without
+	   a separate counter or document-wide MutationObserver. */
+	[data-slot="window-titlebar"]::after {
+		content: "";
+		position: absolute;
+		inset: 0;
+		z-index: 90;
+		pointer-events: none;
+		background: rgb(0 0 0 / 30%);
+		-webkit-backdrop-filter: blur(2px);
+		backdrop-filter: blur(2px);
+		opacity: 0;
+		transition: opacity 100ms;
+	}
+	body:has(> [data-viewport-backdrop="true"][data-state="open"])
+		[data-slot="window-titlebar"]::after {
+		opacity: 1;
+	}
+
 	/* The surface the sidebar panel actually paints. The collapsed icon rail
 	   repaints it, so gradients fading into the panel must read this rather
 	   than --sidebar, or they render as a block instead of a fade. */
@@ -830,7 +854,7 @@
 	--th-chart-5: #b08cff;
 }
 
-/* Cherry Cola */
+/* Cherry */
 :root[data-palette="cherry"]:not(.dark) {
 	--th-bg: #fdf6f6;
 	--th-surface: #f9ebeb;
@@ -1631,6 +1655,8 @@
 	--border: var(--border-base);
 	--input: var(--input-base);
 	--sidebar-border: var(--sidebar-border-base);
+	--sidebar-edge: color-mix(in srgb, var(--foreground-base) calc(12% * var(--contrast-seam-gain, 1)), var(--sidebar));
+	--panel-edge: color-mix(in srgb, var(--foreground-base) calc(12% * clamp(0.85, var(--contrast-edge-gain, 1), 1.1)), var(--background));
 	/* Slider fill and thumb, the one panel control that takes neither. */
 	--panel-slider-fg: var(--panel-slider-fg-base);
 	/* Ink: body copy, headings, menu and sidebar labels. */
@@ -1957,6 +1983,8 @@ html[data-chat-font] .aui-root {
 	--color-verified: var(--verified);
 	--color-sidebar-ring: var(--ring-soft);
 	--color-sidebar-border: var(--sidebar-border);
+	--color-sidebar-edge: var(--sidebar-edge);
+	--color-panel-edge: var(--panel-edge);
 	--color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
 	--color-sidebar-accent: var(--sidebar-accent);
 	--color-tabs-line-indicator: var(--tabs-line-indicator);
@@ -4870,6 +4898,52 @@ html.force-reduced-motion .sidebar-section-drop-line {
 .image-prompt-box::-webkit-scrollbar-thumb {
 	border: 4px solid transparent;
 	background-clip: padding-box;
+}
+
+/* Rounded boxes that scroll themselves: dialogs, and inline logs and lists. Their scrollbar runs
+   the box's full length, over the corners in Chromium and WebKit, and Firefox drops the radius on
+   that side altogether, background and ring included. --scroll-radius is the box's own radius,
+   set below from its rounded-* class; an arbitrary radius sets it alongside. */
+.scroll-rounded.rounded-sm { --scroll-radius: var(--radius-sm); }
+.scroll-rounded.rounded-md { --scroll-radius: var(--radius-md); }
+.scroll-rounded.rounded-lg { --scroll-radius: var(--radius-lg); }
+.scroll-rounded.rounded-xl { --scroll-radius: var(--radius-xl); }
+.scroll-rounded.rounded-2xl { --scroll-radius: var(--radius-2xl); }
+.scroll-rounded.rounded-3xl { --scroll-radius: var(--radius-3xl); }
+.scroll-rounded.rounded-4xl { --scroll-radius: var(--radius-4xl); }
+/* Model card READMEs: markdown, so their wide code blocks take it from here. */
+.hub-readme-prose pre { --scroll-radius: 12px; }
+
+/* Dialogs go square or 2xl on phones. */
+@media (width < 40rem) {
+	.scroll-rounded.max-sm\:rounded-none { --scroll-radius: 0px; }
+	.scroll-rounded.max-sm\:rounded-2xl { --scroll-radius: var(--radius-2xl); }
+}
+
+/* Chromium and WebKit: start and end the track where the corners do. Same reset as the prompt
+   box above, since the thin standard scrollbar has no track to inset. */
+@supports selector(::-webkit-scrollbar) {
+	:is(.scroll-rounded, .hub-readme-prose pre) {
+		scrollbar-width: auto;
+		scrollbar-color: auto;
+	}
+}
+
+:is(.scroll-rounded, .hub-readme-prose pre)::-webkit-scrollbar-track:vertical {
+	margin-block: var(--scroll-radius, 0px);
+}
+
+:is(.scroll-rounded, .hub-readme-prose pre)::-webkit-scrollbar-track:horizontal {
+	margin-inline: var(--scroll-radius, 0px);
+}
+
+/* Firefox has no track to inset, so clip the box back to its radius. 1px out keeps a ring-1.
+   The clip also cuts an outer shadow: dialogs, which carry one, are watched and clipped only while
+   they overflow (lib/scroll-overflow.ts), and shadowed menus and panels scroll an inner viewport. */
+@supports (-moz-appearance: none) {
+	:is(.scroll-rounded:not([data-overflow-watched]), .scroll-rounded[data-overflowing], .hub-readme-prose pre) {
+		clip-path: inset(-1px round calc(var(--scroll-radius, 0px) + 1px));
+	}
 }
 
 /* Attachment card page previews: drop the viewer's gray backdrop, padding and

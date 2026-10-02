@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal, TYPE_CHECKING
 
+from .cells import typed_csv_columns
+
 if TYPE_CHECKING:
     from datasets import Dataset
 
@@ -62,6 +64,12 @@ def _string_columns(dataset: Dataset) -> list[str]:
         if dtype in {"string", "large_string"}:
             string_cols.append(col)
     return string_cols
+
+
+def _pick_text_column(dataset: Dataset, string_cols: list[str]) -> str:
+    # Every column of an uploaded CSV is text; skip one pandas would have typed, like an id.
+    typed = typed_csv_columns(dataset)
+    return next((col for col in string_cols if col not in typed), string_cols[0])
 
 
 def _split_scope(split_name: str | None) -> str:
@@ -139,7 +147,7 @@ def prepare_raw_text_dataset(
                 f"was found in {split_scope} (columns: {col_names})."
             )
 
-        renamed_col = string_cols[0]
+        renamed_col = _pick_text_column(dataset, string_cols)
         if len(string_cols) > 1:
             notices.append(
                 RawTextNotice(

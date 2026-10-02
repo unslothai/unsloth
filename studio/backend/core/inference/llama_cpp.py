@@ -396,6 +396,8 @@ def _fit_with_instruction_pins(
         )
     except Exception:  # noqa: BLE001 -- a protection heuristic must never break a chat
         pins = set()
+    from core.inference.context_window import keep_date_note
+
     fitted, truncation = _fit_context(
         messages, protected_message_ids = (anchors | pins) or None, **kwargs
     )
@@ -409,7 +411,19 @@ def _fit_with_instruction_pins(
         and not truncation.get("fits")
         and not int(truncation.get("dropped_messages") or 0)
     ):
-        return _fit_context(messages, protected_message_ids = anchors or None, **kwargs)
+        fitted, truncation = _fit_context(messages, protected_message_ids = anchors or None, **kwargs)
+    moved = keep_date_note(messages, fitted)
+    if moved is not None and truncation:
+        message, before = moved
+        try:
+            tokens = kwargs["count_tokens"](fitted)
+        except Exception:  # noqa: BLE001 -- an unpriced note is dropped, never a failed chat
+            tokens = None
+        target = prompt_budget(kwargs.get("context_length") or 0, kwargs.get("max_tokens") or 0)
+        if tokens is None or tokens > target:
+            message["content"] = before
+        else:
+            truncation = {**truncation, "prompt_tokens_after": tokens}
     return fitted, truncation
 
 
@@ -738,11 +752,20 @@ _LOG_VERBOSITY_FLAGS = frozenset(
 )
 # Past this, the active llama-server log keeps only warnings and errors.
 _LLAMA_LOG_FULL_BYTES = 64 * 1024 * 1024
-_LOG_LEVEL_TOKEN_RE = re.compile(r"^\S+ ([A-Z]) ")
+# llama.cpp's prefix (stamp optional, colours allowed); a mid-line "x W " is record text.
+_ANSI = r"(?:\x1b\[[0-9;]*m)*"
+_LOG_LEVEL_TOKEN_RE = re.compile(rf"^{_ANSI}(?:\d+\.\d+\.\d+\.\d+{_ANSI} )?{_ANSI}([A-Z]) ")
 # The startup head is never trimmed: its load lines are read for the server's whole life.
 _STDOUT_TRIM_AT = 20000
 _STDOUT_TAIL_KEEP = 5000
 _STDOUT_HEAD_MAX = 5000
+
+
+def _llama_line_is_warning_or_error(line: str, line_lower: str) -> bool:
+    level = _LOG_LEVEL_TOKEN_RE.match(line)
+    if level is not None:
+        return level.group(1) in "WE"
+    return "error" in line_lower or "fail" in line_lower or "warn" in line_lower
 
 
 def _trace_verbosity_args(caps: dict, extra_args: Optional[Iterable[str]], environ) -> list[str]:
@@ -2132,7 +2155,11 @@ _RESPAWN_REAP_GRACE_S = 1.0
 
 
 def _finalize_reasoning_only_cumulative(
-    cumulative: str, reasoning_text: str, finish_reason: Optional[str], promote_reasoning_only: bool
+    cumulative: str,
+    reasoning_text: str,
+    finish_reason: Optional[str],
+    promote_reasoning_only: bool,
+    resumed_reasoning: str = "",
 ) -> str:
     """Close a live thinking block and promote it only after a clean stop.
 
@@ -2143,9 +2170,13 @@ def _finalize_reasoning_only_cumulative(
     promotion and let the client surface the ``length`` terminal state. Raw
     consumers that do not split reasoning from visible content can disable the
     fallback to avoid returning the same reasoning twice.
+
+    Include ``resumed_reasoning`` in the promoted reply; the stream contains only the new tail.
     """
     visible_fallback = (
-        reasoning_text if promote_reasoning_only and finish_reason != "length" else ""
+        resumed_reasoning + reasoning_text
+        if promote_reasoning_only and finish_reason != "length"
+        else ""
     )
     return cumulative + "</think>" + visible_fallback
 
@@ -7422,8 +7453,8 @@ def _extra_args_have_tensor_split(
 
 
 @functools.lru_cache(maxsize = 1)
-def _count_ssl_context() -> ssl.SSLContext:
-    # httpx loads the CA bundle per Client (~15 ms); admission counts once per chat request.
+def _local_ssl_context() -> ssl.SSLContext:
+    # httpx loads CA certificates even for loopback HTTP. Share that setup, not streaming sockets.
     return ssl.create_default_context()
 
 
@@ -7675,6 +7706,7 @@ class LlamaCppBackend:
         self._vocab_size: Optional[int] = None
         # Set from reserves_micro_batch_outputs() by the callers that know the binary.
         self._reserves_micro_batch_outputs: bool = False
+        self._resumes_thoughts: bool = True
         # Architecture-aware KV fields for 5-path estimation
         self._kv_key_length: Optional[int] = None
         self._kv_value_length: Optional[int] = None
@@ -9302,6 +9334,20 @@ class LlamaCppBackend:
         except Exception:
             return False
         return build is not None and build < cls._OUTPUT_ROWS_CAPPED_BUILD
+
+    # ggml-org/llama.cpp#23089 added continuation inside an unfinished reasoning block.
+    _THOUGHT_CONTINUATION_BUILD = 9200
+
+    @classmethod
+    def resumes_thoughts(cls, binary: Optional[str] = None) -> bool:
+        """Whether this llama-server continues a trailing turn that holds only reasoning.
+
+        Unknown builds are treated as current, matching Studio's prebuilts."""
+        try:
+            build = cls.probe_build_number(binary)
+        except Exception:
+            return True
+        return build is None or build >= cls._THOUGHT_CONTINUATION_BUILD
 
     _ADVERTISED_DEFAULT_RE = re.compile(r"\(default:\s*(-?\d+)")
 
@@ -17777,6 +17823,7 @@ class LlamaCppBackend:
         """
         startup_len: Optional[int] = None
         log_bytes = 0
+        levelled = to_info = False
         try:
             for line in self._process.stdout:
                 line = line.rstrip()
@@ -17791,23 +17838,33 @@ class LlamaCppBackend:
                     # Two forms across llama.cpp builds. Only readiness lines wake the
                     # probe: waking on every tensor-load log spins startup.
                     line_lower = line.lower()
-                    if "server is listening" in line_lower or "model loaded" in line_lower:
+                    ready = "server is listening" in line_lower or "model loaded" in line_lower
+                    if ready:
                         if startup_len is None:
                             startup_len = len(self._stdout_lines)
                         health_probe_event = getattr(self, "_health_probe_event", None)
                         if health_probe_event is not None:
                             health_probe_event.set()
-                    logger.debug(f"[llama-server] {line}")
+                    # Unprefixed lines continue the previous record (e.g. a request dump).
+                    level = _LOG_LEVEL_TOKEN_RE.match(line)
+                    if level is not None:
+                        levelled = True
+                        to_info = level.group(1) in "WE" or (ready and level.group(1) == "I")
+                    elif not levelled:
+                        to_info = ready or _llama_line_is_warning_or_error(line, line_lower)
+                    try:
+                        if to_info:
+                            logger.info(f"[llama-server] {line}")
+                        else:
+                            logger.debug(f"[llama-server] {line}")
+                    except Exception:
+                        # A closed stdout must not stop the drain and stall the server.
+                        pass
                     fh = getattr(self, "_llama_log_fh", None)
                     if fh is not None:
                         try:
                             if log_bytes >= _LLAMA_LOG_FULL_BYTES:
-                                level = _LOG_LEVEL_TOKEN_RE.match(line)
-                                if not (
-                                    level.group(1) in "WE"
-                                    if level is not None
-                                    else ("error" in line_lower or "fail" in line_lower)
-                                ):
+                                if not _llama_line_is_warning_or_error(line, line_lower):
                                     continue
                             elif log_bytes + len(line) + 1 >= _LLAMA_LOG_FULL_BYTES:
                                 fh.write(
@@ -17816,9 +17873,19 @@ class LlamaCppBackend:
                             log_bytes += len(line) + 1
                             fh.write(line + "\n")
                             fh.flush()
-                        except (ValueError, OSError):
-                            # Log file closed under us; tee silently.
+                        except ValueError:
+                            # Closed under us by the kill path.
                             pass
+                        except OSError as e:
+                            if not getattr(self, "_llama_log_tee_failed", False):
+                                self._llama_log_tee_failed = True
+                                try:
+                                    logger.warning(
+                                        f"Could not write llama-server log "
+                                        f"{getattr(self, '_llama_log_path', None)}: {e}"
+                                    )
+                                except Exception:
+                                    pass
         except Exception:
             # Never let the drain thread die: a full stdout pipe can deadlock
             # llama-server (Windows). Pipe-closed on exit is the common case.
@@ -23195,7 +23262,7 @@ class LlamaCppBackend:
             logger.info(f"llama-server stdout/stderr -> {self._llama_log_path}")
         except (OSError, UnicodeDecodeError) as e:
             # Best-effort; never block the load on logging.
-            logger.debug(f"Could not open llama-server log file: {e}")
+            logger.warning(f"Could not open llama-server log file: {e}")
             self._llama_log_path = None
 
         # Log the argv per attempt (the text-only mmproj retry re-enters here
@@ -24135,6 +24202,7 @@ class LlamaCppBackend:
 
             server_caps = _launch_caps(binary)
             self._reserves_micro_batch_outputs = self.reserves_micro_batch_outputs(binary)
+            self._resumes_thoughts = self.resumes_thoughts(binary)
 
             # Outside ``self._lock`` so /unload, /cancel, /status aren't
             # blocked. ``unload_model`` also records the kill, so the
@@ -29752,7 +29820,7 @@ class LlamaCppBackend:
                             logger.info(f"llama-server stdout/stderr -> {self._llama_log_path}")
                         except (OSError, UnicodeDecodeError) as e:
                             # Best-effort; never block the load on logging.
-                            logger.debug(f"Could not open llama-server log file: {e}")
+                            logger.warning(f"Could not open llama-server log file: {e}")
                             self._llama_log_path = None
                         _last_spawn_cmd = list(run_cmd)
                         # Read off the argv actually spawned rather than the intent, so
@@ -32765,20 +32833,44 @@ class LlamaCppBackend:
             self._healthy = True
             return True
 
-    def _close_attempt_log(self) -> None:
+    def _close_attempt_log(
+        self,
+        *,
+        reason: str = "closed",
+        exit_code: "Optional[int]" = None,
+    ) -> None:
         """Close the per-attempt tee log opened just before a spawn.
 
         A refusal publishes no process and _kill_process returns early when there is
         none, so nothing else closes it: the next attempt leaks the descriptor and,
         on Windows, holds the file lock an update needs.
         """
+        self._llama_log_tee_failed = False
         fh = getattr(self, "_llama_log_fh", None)
-        if fh is not None:
+        if fh is None:
+            return
+        if exit_code is None:
             try:
-                fh.close()
+                exit_code = self._process.poll()
             except Exception:
                 pass
-            self._llama_log_fh = None
+        try:
+            fh.write(f"[studio] attempt end reason={reason} exit_code={exit_code}\n")
+        except Exception:
+            pass
+        try:
+            fh.close()
+        except Exception:
+            pass
+        self._llama_log_fh = None
+        try:
+            logger.info(
+                f"attempt log closed reason={reason} exit_code={exit_code} "
+                f"path={getattr(self, '_llama_log_path', None)}"
+            )
+        except Exception:
+            # The logger raises once stdout is closed; teardown must not.
+            pass
 
     def _begin_server_lifecycle(self) -> None:
         """Clear shutdown state so a restarted server can launch again.
@@ -32870,6 +32962,7 @@ class LlamaCppBackend:
         _pid = getattr(self._process, "pid", None)
         _pgid = self._leading_process_group(_pid)
         _descendants, _descendants_known = self._collect_descendants(_pid)
+        _exited_first = getattr(self._process, "poll", lambda: None)() is not None
         if teardown:
             # Before the signal, and as the process itself: the reference stays set
             # across the waits below, and only identity says which child a teardown
@@ -32907,7 +33000,8 @@ class LlamaCppBackend:
             # next startup sweep cannot reap it. The record stores a start-time
             # identity, so a recycled pid is never signalled either way.
             _killed_pid = getattr(self._process, "pid", None)
-            _exited = getattr(self._process, "poll", lambda: None)() is not None
+            _exit_code = getattr(self._process, "poll", lambda: None)()
+            _exited = _exit_code is not None
             # The tree kill below tells the reaper the owner is known, which waives the
             # "cannot prove this pid is still our child" refusal. That waiver is only
             # true while we hold the handle that spawned the pid, so it is spent on a
@@ -32992,13 +33086,9 @@ class LlamaCppBackend:
             if stdout_thread is not None:
                 stdout_thread.join(timeout = 2)
                 self._stdout_thread = None
-            fh = getattr(self, "_llama_log_fh", None)
-            if fh is not None:
-                try:
-                    fh.close()
-                except Exception:
-                    pass
-                self._llama_log_fh = None
+            self._close_attempt_log(
+                reason = "exited" if _exited_first else "killed", exit_code = _exit_code
+            )
 
     @staticmethod
     def _server_pidfile_path() -> Optional[Path]:
@@ -34909,6 +34999,7 @@ class LlamaCppBackend:
             timeout = stream_timeout,
             limits = httpx.Limits(max_keepalive_connections = 0),
             trust_env = False,
+            verify = _local_ssl_context(),
         ) as client:
             first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
             with self._stream_with_retry(
@@ -35439,12 +35530,16 @@ class LlamaCppBackend:
 
         from core.inference.chat_template_helpers import (
             neutralize_control_markup_in_messages,
-            trailing_assistant_text,
+            trailing_assistant_resume_kind,
         )
 
         openai_messages = self._build_openai_messages(messages, image_b64)
-        continue_final_message = continue_final_message and bool(
-            trailing_assistant_text(openai_messages)
+        _resume_kind = (
+            trailing_assistant_resume_kind(openai_messages) if continue_final_message else None
+        )
+        continue_final_message = _resume_kind is not None
+        resumed_reasoning = (
+            openai_messages[-1]["reasoning_content"] if _resume_kind == "reasoning_content" else ""
         )
 
         payload = {
@@ -35644,6 +35739,7 @@ class LlamaCppBackend:
                                         reasoning_text,
                                         _metadata_finish_reason,
                                         promote_reasoning_only,
+                                        resumed_reasoning,
                                     )
                                     _prov_entry = None
                                     yield cumulative
@@ -35862,6 +35958,7 @@ class LlamaCppBackend:
         on_conversation_grew: Optional[Callable[[list], None]] = None,
         on_decode_slot: Optional[Callable[[str, int], None]] = None,
         thinking_budget_tokens: Optional[int] = None,
+        mcp_image = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -35888,6 +35985,7 @@ class LlamaCppBackend:
             has_text_only_provisional_card,
             is_always_safe_tool,
             is_high_risk_tool_call,
+            mcp_image_share,
             never_needs_approval,
         )
 
@@ -35965,7 +36063,11 @@ class LlamaCppBackend:
         # retrieval call would actually prompt (ask mode); auto never gates the
         # safe search_knowledge_base tool, so retrieval must still run there.
         # off never prompts either, so it also keeps first-pass retrieval.
-        from core.inference.chat_template_helpers import forced_tool_name, trailing_assistant_text
+        from core.inference.chat_template_helpers import (
+            forced_tool_name,
+            trailing_assistant_resume_kind,
+            trailing_assistant_text,
+        )
 
         initial_forced_name = forced_tool_name(tool_choice)
         if initial_forced_name and initial_forced_name not in _gguf_active_tool_names(tools):
@@ -35982,7 +36084,9 @@ class LlamaCppBackend:
                 and not bypass_permissions
                 and permission_mode not in ("auto", "off")
             )
-        ) or bool(continue_final_message and trailing_assistant_text(conversation))
+        ) or bool(
+            continue_final_message and trailing_assistant_resume_kind(conversation) is not None
+        )
         _auto = None if _skip_autoinject else build_rag_autoinject(conversation, rag_scope)
         if _auto:
             for _ev in _auto["events"]:
@@ -36483,7 +36587,8 @@ class LlamaCppBackend:
                             strict = True,
                             chat_template_kwargs = _reasoning_kw,
                             continue_final_message = bool(
-                                continue_final_message and trailing_assistant_text(fitted)
+                                continue_final_message
+                                and trailing_assistant_resume_kind(fitted) is not None
                             ),
                             should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                         ),
@@ -36608,9 +36713,15 @@ class LlamaCppBackend:
                 payload["thinking_budget_tokens"] = thinking_budget_tokens
             # Re-checked per iteration: once a tool result is appended the partial is
             # no longer trailing, so later turns are normal.
-            if continue_final_message and trailing_assistant_text(conversation):
+            _resume_kind = (
+                trailing_assistant_resume_kind(conversation) if continue_final_message else None
+            )
+            if _resume_kind is not None:
                 payload["continue_final_message"] = True
                 payload["add_generation_prompt"] = False
+            _resumed_reasoning = (
+                conversation[-1]["reasoning_content"] if _resume_kind == "reasoning_content" else ""
+            )
             payload["max_tokens"] = (
                 max_tokens
                 if max_tokens is not None
@@ -36659,7 +36770,8 @@ class LlamaCppBackend:
                             strict = True,
                             chat_template_kwargs = _reasoning_kw,
                             continue_final_message = bool(
-                                continue_final_message and trailing_assistant_text(fitted)
+                                continue_final_message
+                                and trailing_assistant_resume_kind(fitted) is not None
                             ),
                             should_abort = lambda: bool(cancel_event and cancel_event.is_set()),
                         ),
@@ -36865,6 +36977,7 @@ class LlamaCppBackend:
                                             reasoning_accum,
                                             _iter_finish_reason,
                                             promote_reasoning_only,
+                                            _resumed_reasoning,
                                         )
                                         _prov_entry = None
                                         if not _suppress_visible_output:
@@ -37437,6 +37550,7 @@ class LlamaCppBackend:
                                 reasoning_accum,
                                 _iter_finish_reason,
                                 promote_reasoning_only,
+                                _resumed_reasoning,
                             )
                             _prov_entry = None
                             if not _suppress_visible_output:
@@ -37640,10 +37754,15 @@ class LlamaCppBackend:
                                 _cand_l,
                                 {
                                     "role": "assistant",
-                                    "content": _unfinished_thought_progress(reasoning_accum),
+                                    # The stream holds only the resumed thought's tail.
+                                    "content": _unfinished_thought_progress(
+                                        _resumed_reasoning + reasoning_accum
+                                    ),
                                 },
                                 continue_final_message = continue_final_message,
                             )
+                            if _resumed_reasoning:
+                                _cand_l[-1].pop("reasoning_content", None)
                             _cand_l.append(
                                 {
                                     "role": "user",
@@ -38126,6 +38245,9 @@ class LlamaCppBackend:
                         needs_confirm = is_high_risk_tool_call(
                             decision.tool_name, decision.arguments
                         )
+                    # Sending the user's image always asks, whatever the permission mode.
+                    image_share = mcp_image_share(decision.tool_name, decision.arguments, mcp_image)
+                    needs_confirm = needs_confirm or image_share is not None
                     approval_id = new_approval_id() if needs_confirm else ""
                     decision_slot = (
                         begin_tool_decision(session_id, approval_id) if needs_confirm else None
@@ -38133,6 +38255,8 @@ class LlamaCppBackend:
                     start_event = decision.tool_start_event()
                     start_event["approval_id"] = approval_id
                     start_event["awaiting_confirmation"] = needs_confirm
+                    if image_share is not None:
+                        start_event["image_disclosure"] = image_share["disclosure"]
 
                     try:
                         # Gated calls are not running yet; a "Running ..." badge
@@ -38765,6 +38889,8 @@ class LlamaCppBackend:
                             if accepts_output_callback(execute_tool):
                                 kwargs["output_callback"] = _output_callback
                             kwargs.update(search_images_kwargs(execute_tool, _decision.tool_name))
+                            if image_share is not None:
+                                kwargs["mcp_image"] = image_share["image"]
                             return execute_tool(
                                 _decision.tool_name,
                                 _decision.arguments,
@@ -38997,11 +39123,12 @@ class LlamaCppBackend:
                     # the field above so a whitespace-only split never appends an
                     # empty assistant message.
                     if not assistant_appended and (
-                        content_text or assistant_msg.get("reasoning_content")
+                        content_text or assistant_msg.get("reasoning_content") or _resumed_reasoning
                     ):
-                        if assistant_msg.get("reasoning_content"):
+                        if assistant_msg.get("reasoning_content") or _resumed_reasoning:
+                            # Whole thought: the nudge below hides the original's field.
                             assistant_msg["content"] = neutralize_control_markup(
-                                reasoning_accum,
+                                _resumed_reasoning + reasoning_accum,
                                 self.markup_profile,
                             )
                             _continued_partial = (
@@ -39013,12 +39140,14 @@ class LlamaCppBackend:
                                 assistant_msg["content"] = f"\n{assistant_msg['content']}"
                             if content_text:
                                 assistant_msg["content"] += f"\n{content_text}"
-                            del assistant_msg["reasoning_content"]
+                            assistant_msg.pop("reasoning_content", None)
                         append_assistant_turn(
                             conversation,
                             assistant_msg,
                             continue_final_message = _merge_into_partial,
                         )
+                        if _resumed_reasoning:
+                            conversation[-1].pop("reasoning_content", None)
                         assistant_appended = True
                     append_deferred_nudges(conversation, deferred_noop_msgs)
                 if _final_over_cap:
@@ -40079,7 +40208,7 @@ class LlamaCppBackend:
                 timeout = 10,
                 headers = self._auth_headers,
                 trust_env = False,
-                verify = _count_ssl_context(),
+                verify = _local_ssl_context(),
             ) as client:
 
                 def _tokenize(text: str) -> int:
@@ -40415,6 +40544,7 @@ class LlamaCppBackend:
             timeout = httpx.Timeout(read_timeout, connect = 10),
             headers = self._auth_headers,
             trust_env = False,
+            verify = _local_ssl_context(),
         ) as client:
             finished = threading.Event()
             watcher: Optional[threading.Thread] = None

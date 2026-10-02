@@ -10,6 +10,7 @@ the full pipeline."""
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
@@ -119,6 +120,8 @@ class DiffusionFamily:
     # True for families whose activations overflow float16 (-> black image); the backend promotes a resolved float16
     # to float32.
     fp16_incompatible: bool = False
+    # diffusion_fp16_guard recipe keeping an fp16_incompatible family in float16 on fp16-only cards; None = promote.
+    fp16_guard: Optional[str] = None
     # false only for a family whose denoiser block does not compile cleanly with regional torch.compile
     supports_torch_compile: bool = True
     # Optional pre-quantized transformer checkpoints as (scheme, repo_id): fetched instead of the dense bf16 (lower
@@ -334,6 +337,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             "qwenimageedit",
         ),
         edit = True,
+        # same DiT as qwen-image
+        fp16_incompatible = True,
     ),
     DiffusionFamily(
         name = "qwen-image",
@@ -358,6 +363,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-FP8"),),
         cfg_kwarg = "true_cfg_scale",
         aliases = ("qwen_image", "qwenimage"),
+        # fp16 overflows to NaN latents (black images)
+        fp16_incompatible = True,
         trainable = True,
         train_base_repos = ("unsloth/Qwen-Image-2512-unsloth-bnb-4bit", "Qwen/Qwen-Image"),
         img2img_pipeline_class = "QwenImageImg2ImgPipeline",
@@ -508,6 +515,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         img2img_pipeline_class = "ZImageImg2ImgPipeline",
         inpaint_pipeline_class = "ZImageInpaintPipeline",
         fp16_incompatible = True,
+        # The attention / FFN branches overflow float16 before their post-norm.
+        fp16_guard = "rescale_post_norm",
         # Byte-identical mirror of Comfy-Org/z_image_turbo (AE + Qwen3-4B).
         sd_cpp_vae = ("unsloth/Z-Image-Turbo-ComfyUI", "split_files/vae/ae.safetensors"),
         sd_cpp_text_encoders = (
@@ -1257,6 +1266,7 @@ def family_prequant_filename(
 # the release where diffusers' own requires-python went ">= 3.10.0", making 0.36.0 the newest a supported Python 3.9
 # host can resolve
 _DIFFUSERS_DROPPED_PY39 = "0.37.0"
+_MAX_PIPELINE_MANIFEST_BYTES = 1 << 20
 
 # First diffusers release exporting each pipeline class, read off ``src/diffusers/__init__.py`` at the upstream tags
 # and cross-checked against each release's requires-python on PyPI. An unlisted class gets a version-free "a newer
@@ -1324,6 +1334,172 @@ def pipeline_class_requirement(pipeline_class: str) -> tuple[Optional[str], bool
     if minimum is None:
         return None, False
     return minimum, _version_tuple(minimum) >= _version_tuple(_DIFFUSERS_DROPPED_PY39)
+
+
+def _json_dict(path: Path, max_bytes: int = _MAX_PIPELINE_MANIFEST_BYTES) -> Optional[dict]:
+    try:
+        if not path.is_file() or path.stat().st_size > max_bytes:
+            return None
+        # PowerShell writes JSON with a UTF-8 BOM; match pipeline_class_from_index.
+        payload = json.loads(path.read_text(encoding = "utf-8-sig"))
+    except (OSError, ValueError, RecursionError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+_CALLER_SUPPLIED_COMPONENTS = {"HiDreamImagePipeline": frozenset({"text_encoder_4", "tokenizer_4"})}
+# safetensors first, default variant only: the load uses variant=None, which cannot open *.fp16.safetensors.
+_LOCAL_PIPELINE_WEIGHT_FORMATS = (
+    (("diffusion_pytorch_model", "model"), "safetensors"),
+    (("diffusion_pytorch_model", "pytorch_model"), "bin"),
+)
+_MAX_PIPELINE_WEIGHT_INDEX_BYTES = 64 * 1024 * 1024
+_LOCAL_PIPELINE_METADATA_CONFIGS = (
+    (("tokenizer",), ("tokenizer_config.json",)),
+    (("scheduler",), ("scheduler_config.json",)),
+    (("guider", "guidance"), ("guider_config.json",)),
+    (("featureextractor", "imageprocessor"), ("preprocessor_config.json",)),
+    (("processor",), ("processor_config.json", "preprocessor_config.json")),
+)
+_SELF_CONTAINED_TOKENIZER_ASSETS = (
+    "tokenizer.json",
+    "vocab.txt",
+    "spiece.model",
+    "tokenizer.model",
+    "sentencepiece.bpe.model",
+)
+
+
+def _nonempty_file(path: Path) -> bool:
+    return path.is_file() and path.stat().st_size > 0
+
+
+def _safe_relative_parts(text: str) -> Optional[tuple[str, ...]]:
+    # Manifest paths are POSIX-relative: reject other separators and drive prefixes, or ..\\ / C: escape on Windows.
+    relative = PurePosixPath(text)
+    if "\\" in text or ":" in text or relative.is_absolute() or ".." in relative.parts:
+        return None
+    return relative.parts
+
+
+def _local_weights_are_complete(component: Path, library_name: str) -> bool:
+    # The first format with any weights present decides: a leftover .bin index cannot veto safetensors.
+    for stems, ext in _LOCAL_PIPELINE_WEIGHT_FORMATS:
+        # Transformers never reads diffusion_pytorch_model* (LTX-2's text_encoder ships both shard sets).
+        if library_name == "transformers":
+            stems = tuple(s for s in stems if s != "diffusion_pytorch_model")
+            # Transformers opens a single checkpoint before a shard index (_get_resolved_checkpoint_files).
+            if any(_nonempty_file(component / f"{s}.{ext}") for s in stems):
+                return True
+        index = next(
+            (p for s in stems if (p := component / f"{s}.{ext}.index.json").exists()), None
+        )
+        if index is not None:
+            weight_map = (_json_dict(index, _MAX_PIPELINE_WEIGHT_INDEX_BYTES) or {}).get(
+                "weight_map"
+            )
+            shards = (
+                {str(v) for v in weight_map.values() if v} if isinstance(weight_map, dict) else ()
+            )
+            parts = [_safe_relative_parts(shard) for shard in shards]
+            return bool(parts) and all(
+                p is not None and _nonempty_file(component.joinpath(*p)) for p in parts
+            )
+        sizes = [w.stat().st_size for s in stems if (w := component / f"{s}.{ext}").is_file()]
+        if sizes:
+            return any(sizes)
+    return False
+
+
+def _local_pipeline_component_is_complete(
+    component: Path, library_name: str, class_name: str, config_only_model_components: bool
+) -> bool:
+    if not component.is_dir():
+        return False
+    if library_name not in {"diffusers", "transformers"}:
+        return any(_nonempty_file(child) for child in component.iterdir())
+    identity = class_name.replace("_", "").lower()
+    for tokens, config_names in _LOCAL_PIPELINE_METADATA_CONFIGS:
+        if not any(token in identity for token in tokens):
+            continue
+        # Configs can exceed the manifest cap: LTX-2's Gemma3 tokenizer_config.json is 1.1 MB.
+        if not any(
+            _json_dict(component / name, _MAX_PIPELINE_WEIGHT_INDEX_BYTES) is not None
+            for name in config_names
+        ):
+            return False
+        if tokens[0] not in ("tokenizer", "processor") or "byt5tokenizer" in identity:
+            return True
+        return any(_nonempty_file(component / a) for a in _SELF_CONTAINED_TOKENIZER_ASSETS) or all(
+            _nonempty_file(component / a) for a in ("vocab.json", "merges.txt")
+        )
+    return _json_dict(component / "config.json") is not None and (
+        config_only_model_components or _local_weights_are_complete(component, library_name)
+    )
+
+
+def local_pipeline_components_are_complete(
+    root: Path | str,
+    filename: str,
+    *,
+    excluded_components: Sequence[str] = (),
+    config_only_model_components: bool = False,
+) -> bool:
+    """Check local component presence and known Diffusers/Transformers serialization layouts."""
+    if filename not in {"model_index.json", "modular_model_index.json"}:
+        return False
+    base = Path(root).expanduser()
+    payload = _json_dict(base / filename) or {}
+    class_name = payload.get("_class_name")
+    if not isinstance(class_name, str) or not class_name.strip():
+        return False
+    caller_supplied = _CALLER_SUPPLIED_COMPONENTS.get(class_name, frozenset())
+    declared = False
+    try:
+        for name, spec in payload.items():
+            if (
+                name.startswith("_")
+                or not isinstance(spec, (list, tuple))
+                or len(spec) < 2
+                or not (isinstance(spec[0], str) and isinstance(spec[1], str))
+            ):
+                continue
+            if name in {"", ".."} or "\\" in name or Path(name).name != name:
+                return False
+            if name in excluded_components or (
+                name in caller_supplied and not (base / name).exists()
+            ):
+                continue
+            declared = True
+            component = base / name
+            source = spec[2] if filename == "modular_model_index.json" and len(spec) >= 3 else None
+            source = source if isinstance(source, dict) else {}
+            repo = source.get("pretrained_model_name_or_path") or source.get("repo")
+            if isinstance(repo, str) and repo.strip():
+                # A modular spec may load the component from another repo or folder instead.
+                repo = repo.strip()
+                subfolder = source.get("subfolder")
+                parts = (
+                    _safe_relative_parts((subfolder or "").strip())
+                    if subfolder is None or isinstance(subfolder, str)
+                    else None
+                )
+                if parts is None:
+                    return False
+                rooted = Path(repo).expanduser()
+                rooted = rooted if rooted.is_absolute() else base / rooted
+                if not rooted.exists():
+                    if repo.startswith(("/", "\\", "~", ".")) or "\\" in repo or ":" in repo:
+                        return False
+                    continue
+                component = rooted.joinpath(*parts)
+            if not _local_pipeline_component_is_complete(
+                component, spec[0], spec[1], config_only_model_components
+            ):
+                return False
+    except OSError:
+        return False
+    return declared
 
 
 # Minimums that name a release which does not EXIST yet. ``pip install -U 'diffusers>=0.41.0'`` has
@@ -1638,6 +1814,29 @@ def family_pipeline_available(fam: Optional[DiffusionFamily]) -> bool:
     if installed is None:
         return True
     return _installed_at_least(installed, minimum)
+
+
+def _family_override_resolved(family_override: Optional[str], fam) -> tuple:
+    reason = "detected from the model" if family_override is None else "requested"
+    return (family_override, fam.name, reason)
+
+
+def family_selectable(fam) -> bool:
+    """Whether a Family selector may offer ``fam``: diffusers installed and new enough.
+
+    Import-free: a pipeline-class probe from a status poll raced the loader's own diffusers import;
+    the load path keeps the strict class gate."""
+    module = sys.modules.get("diffusers", False)
+    if module is False:
+        try:
+            module = importlib.util.find_spec("diffusers")
+        except (ImportError, ValueError):
+            module = None
+    return module is not None and family_pipeline_available(fam)
+
+
+def pipeline_available_family_names() -> tuple[str, ...]:
+    return tuple(fam.name for fam in _FAMILIES if family_selectable(fam))
 
 
 def family_gguf_loadable(fam: DiffusionFamily) -> bool:

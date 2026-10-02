@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import math
+import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -103,6 +104,7 @@ def estimate_h3_diffusers_vram_gb(
     transformer_gb: Optional[float] = None,
     transformer_pinned: bool = False,
     transformer_streamed: bool = False,
+    text_encoder_streamed: bool = False,
 ) -> float:
     """Measured available-VRAM floor for an H3 Diffusers generation.
 
@@ -111,6 +113,20 @@ def estimate_h3_diffusers_vram_gb(
     keeps the released-bfloat16 floor this shipped with.
     ``transformer_streamed``: no two large components are ever resident together."""
     volume_mpixel_frames = width * height * num_frames / 1_000_000
+    if text_encoder_streamed:
+        from .video_minimax_h3_te import H3_TE_STREAMED_GB
+        text_encoder_gb = H3_TE_STREAMED_GB
+        if transformer_streamed:
+            # Nothing big is resident: the largest phase plus the top-level group.
+            from .video_minimax_h3_residency import H3_TOP_LEVEL_GB, h3_phase_need_gb
+            return h3_phase_need_gb(
+                width,
+                height,
+                num_frames,
+                te_streamed_gb = H3_TE_STREAMED_GB,
+                fragmentation = False,
+                top_gb = H3_TOP_LEVEL_GB,
+            )
     if transformer_streamed:
         text_encoder = (
             H3_TEXT_ENCODER_BF16_GB if text_encoder_gb is None else float(text_encoder_gb)
@@ -141,12 +157,53 @@ H3_DIFFUSERS_HOST_RAM_HIGH_VRAM_GB = 85.0
 H3_DIFFUSERS_HOST_RAM_HEADROOM_GB = 5.9
 
 
+# Kill switch for the held-memory accounting below; "0" restores MemAvailable + whole RSS.
+H3_HOST_GUARD_HELD_ENV = "UNSLOTH_H3_HOST_GUARD_HELD"
+
+
+def _proc_status_kb(fields: tuple[str, ...]) -> Optional[dict[str, int]]:
+    """``/proc/self/status`` fields in kB, or None off Linux / when unreadable."""
+    try:
+        with open("/proc/self/status", encoding = "utf-8") as handle:
+            found = {}
+            for line in handle:
+                key, _, value = line.partition(":")
+                if key in fields:
+                    found[key] = int(value.split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+    return found if len(found) == len(fields) else None
+
+
+def h3_process_held_host_bytes() -> int:
+    """Host bytes this process holds that a render reuses: RssAnon + RssShmem (pinned copies are shmem). File-backed
+    pages are left out: MemAvailable already counts them as reclaimable. Off Linux, the whole RSS."""
+    import psutil
+
+    fields = _proc_status_kb(("RssAnon", "RssShmem"))
+    if fields is None or str(os.environ.get(H3_HOST_GUARD_HELD_ENV, "1")).strip() == "0":
+        return int(psutil.Process().memory_info().rss)
+    return (fields["RssAnon"] + fields["RssShmem"]) * 1024
+
+
+def h3_host_capacity_bytes() -> int:
+    """What the system can still hand out plus what this process already holds and the render reuses."""
+    import psutil
+    return int(psutil.virtual_memory().available) + h3_process_held_host_bytes()
+
+
+# Host floor while the int8 conditioner streams too: measured ~66 GB process peak on a Colab G4 (12 / 16 / 24 GB
+# budgets), above the 64.5 GB component sum; 70 keeps ~4 GB of margin.
+H3_DIFFUSERS_HOST_RAM_STREAMED_SET_GB = 70.0
+
+
 def estimate_h3_diffusers_host_ram_gb(
     available_vram_gb: float,
     *,
     text_encoder_gb: Optional[float] = None,
     transformer_gb: Optional[float] = None,
     transformer_streamed: bool = False,
+    text_encoder_streamed: bool = False,
 ) -> float:
     """Host-RAM floor for the offload tier selected at the available VRAM.
 
@@ -162,7 +219,8 @@ def estimate_h3_diffusers_host_ram_gb(
     A pinned denoiser is still counted here. It lives on the device during the generation, but it
     was built on the host to get there, and keeping it in the sum errs toward refusing a load that
     would have fitted rather than admitting one that will not.
-    A streamed denoiser counts twice (pinned staging copy; measured 80.2 GB peak vs 64.5 GB single count)."""
+    ``transformer_streamed``: the streamed denoiser keeps a pageable source beside its pinned copy and counts twice
+    (80.2 GB measured peak). A slab-arena pin holds one copy and passes False."""
     # A streamed load keeps its staging copy even when free VRAM later climbs past the tier.
     if available_vram_gb >= H3_DIFFUSERS_HOST_RAM_TIER_VRAM_GB and not transformer_streamed:
         return H3_DIFFUSERS_HOST_RAM_HIGH_VRAM_GB
@@ -170,7 +228,107 @@ def estimate_h3_diffusers_host_ram_gb(
     transformer = H3_TRANSFORMER_BF16_GB if transformer_gb is None else float(transformer_gb)
     if transformer_streamed:
         transformer *= 2
-    return text_encoder + transformer + H3_VAE_RESIDENT_GB + H3_DIFFUSERS_HOST_RAM_HEADROOM_GB
+    total = text_encoder + transformer + H3_VAE_RESIDENT_GB + H3_DIFFUSERS_HOST_RAM_HEADROOM_GB
+    if text_encoder_streamed:
+        total = max(total, H3_DIFFUSERS_HOST_RAM_STREAMED_SET_GB)
+    return total
+
+
+def h3_host_ram_shortfall(
+    available_vram_gb: float,
+    *,
+    text_encoder_gb: Optional[float] = None,
+    transformer_gb: Optional[float] = None,
+    transformer_streamed: bool = False,
+    text_encoder_streamed: bool = False,
+) -> Optional[str]:
+    """The refusal message when the host-RAM floor exceeds ``h3_host_capacity_bytes`` (free + already held), else
+    None."""
+    required_host_gb = estimate_h3_diffusers_host_ram_gb(
+        available_vram_gb,
+        text_encoder_gb = text_encoder_gb,
+        transformer_gb = transformer_gb,
+        transformer_streamed = transformer_streamed,
+        text_encoder_streamed = text_encoder_streamed,
+    )
+    host_capacity_gb = h3_host_capacity_bytes() / 1_000_000_000
+    if host_capacity_gb + 0.5 < required_host_gb:
+        return (
+            f"MiniMax-H3 needs about {required_host_gb:.0f} GB available "
+            f"system RAM at this VRAM tier; {host_capacity_gb:.1f} GB is "
+            "available. Load the GGUF artifact instead."
+        )
+    return None
+
+
+# Extra picker tiers for the H3 Diffusers row, published on /api/system and unioned with the catalog's (widen only).
+# Picker units: total VRAM GiB, available RAM GiB. Each follows the kill switch of the behaviour it relies on:
+#   - VRAM (UNSLOTH_H3_TE_STREAM): the generate guard's floor for the page's default request, so the selected row
+#     renders it; 960x544 still renders on 12 GB when chosen. Without it, the catalog's 30.
+#   - RAM (UNSLOTH_DIFFUSION_PIN_ARENA): the single-copy host floor (64.5 GB, or 70 GB with the conditioner streamed).
+#     Without it, the catalog's 80.
+H3_DIFFUSERS_FIT_TIERS_ENV = "UNSLOTH_H3_DIFFUSERS_WIDE_TIERS"
+H3_DIFFUSERS_CATALOG_TIER_GPU_GIB = 30.0
+H3_DIFFUSERS_CATALOG_TIER_RAM_GIB = 80.0
+
+
+def _h3_streamed_default_request_gpu_gib() -> float:
+    from .video_families import detect_video_family
+
+    fam = detect_video_family("MiniMaxAI/MiniMax-H3")
+    width, height = fam.resolution_presets[0]
+    floor_gb = estimate_h3_diffusers_vram_gb(
+        width,
+        height,
+        fam.default_num_frames,
+        transformer_streamed = True,
+        text_encoder_streamed = True,
+    )
+    # Total VRAM in GiB, rounded up to half a GiB.
+    return math.ceil(floor_gb * 1e9 / 2**30 * 2) / 2
+
+
+def _h3_streamed_host_floor_gib(
+    single_host_copy: bool, text_encoder_streamed: bool = False
+) -> float:
+    from .video_minimax_h3_te import H3_TE_QUANT_RESIDENT_GB
+    floor_gb = estimate_h3_diffusers_host_ram_gb(
+        0.0,
+        text_encoder_gb = H3_TE_QUANT_RESIDENT_GB["int8"],
+        transformer_gb = H3_TRANSFORMER_PREQUANT_GB["int8"],
+        transformer_streamed = not single_host_copy,
+        text_encoder_streamed = text_encoder_streamed,
+    )
+    # The picker reads available RAM in GiB; round up to the next whole GiB.
+    return float(math.ceil(floor_gb * 1e9 / 2**30))
+
+
+def h3_diffusers_fit_tiers() -> list[dict]:
+    """The extra picker tiers this backend admits for the H3 Diffusers row, or [] when
+    ``UNSLOTH_H3_DIFFUSERS_WIDE_TIERS=0`` turns them off, or when neither widening behaviour is
+    active (the picker then keeps the catalog's own tiers, i.e. today's routing). Torch-free: read
+    on the polled /api/system route."""
+    import os
+
+    flag = os.environ.get(H3_DIFFUSERS_FIT_TIERS_ENV, "1").strip().lower()
+    if flag in ("0", "false", "no", "off"):
+        return []
+    from .diffusion_pinned_arena import pin_arena_enabled
+    from .video_minimax_h3_te import h3_te_stream_enabled
+
+    te_streamed = h3_te_stream_enabled()
+    single_copy = pin_arena_enabled()
+    if not te_streamed and not single_copy:
+        return []
+    gpu_gib = (
+        _h3_streamed_default_request_gpu_gib() if te_streamed else H3_DIFFUSERS_CATALOG_TIER_GPU_GIB
+    )
+    ram_gib = (
+        _h3_streamed_host_floor_gib(True, text_encoder_streamed = te_streamed)
+        if single_copy
+        else H3_DIFFUSERS_CATALOG_TIER_RAM_GIB
+    )
+    return [{"gpu_gb": gpu_gib, "system_ram_gb": ram_gib, "requires_quantised_streaming": True}]
 
 
 # torch.autocast casts the weight and bias of these module types to the autocast dtype on entry. Norms sit on
@@ -1102,6 +1260,48 @@ def h3_component_metadata_repo(repo_id: str) -> str:
     return H3_COMPONENT_REPO if repo_id == H3_LEGACY_COMPONENT_REPO else repo_id
 
 
+# Resident peak is the four files plus ~1 GiB (sd.cpp frees the text encoder before the denoiser's compute buffer);
+# the estimate still adds that buffer on top of every file, plus a margin.
+H3_NATIVE_RESIDENT_ENV = "UNSLOTH_H3_NATIVE_RESIDENT"
+# Unsloth sd.cpp fork: quantized matmuls with >= this many rows run BF16 cuBLAS instead of int8 MMQ. Unset/0 = MMQ.
+H3_QUANT_CUBLAS_ENV = "GGML_CUDA_QUANT_CUBLAS_MIN_BATCH"
+H3_QUANT_CUBLAS_MIN_BATCH = "1024"
+# Denoiser compute buffer at 960x544x124, from sd-cli's log; scaled by pixel volume.
+H3_NATIVE_DIT_COMPUTE_BYTES_H1 = int(5.4 * 1024**3)
+H3_NATIVE_H1_PIXEL_VOLUME = 960 * 544 * 124
+H3_NATIVE_RESIDENT_MARGIN_BYTES = 2 * 1024**3
+_H3_STREAM_ONLY_FLAGS = ("--offload-to-cpu", "--stream-layers")
+
+
+def h3_native_resident_bytes(file_bytes: int, width: int, height: int, frames: int) -> int:
+    volume = max(1, int(width)) * max(1, int(height)) * max(1, int(frames))
+    compute = math.ceil(
+        H3_NATIVE_DIT_COMPUTE_BYTES_H1 * max(1.0, volume / H3_NATIVE_H1_PIXEL_VOLUME)
+    )
+    return int(file_bytes) + compute + H3_NATIVE_RESIDENT_MARGIN_BYTES
+
+
+def h3_native_render_flags(
+    offload_flags: "tuple[str, ...] | list[str]",
+    *,
+    memory_mode: Optional[str],
+    free_bytes: Optional[int],
+    need_bytes: Optional[int],
+    env: Optional[dict] = None,
+) -> tuple[list[str], bool]:
+    """Flags for one render and whether it runs resident: only memory auto, only when the live free VRAM covers
+    the estimate; anything unknown keeps the committed flags."""
+    flags = list(offload_flags)
+    environ = env if env is not None else os.environ
+    if str(environ.get(H3_NATIVE_RESIDENT_ENV, "")).strip().lower() in ("0", "false", "no", "off"):
+        return flags, False
+    if (memory_mode or "auto") != "auto" or "--offload-to-cpu" not in flags:
+        return flags, False
+    if free_bytes is None or need_bytes is None or int(free_bytes) < int(need_bytes):
+        return flags, False
+    return [f for f in flags if f not in _H3_STREAM_ONLY_FLAGS], True
+
+
 def h3_native_hub_files(transformer_filename: str) -> tuple[tuple[str, str], ...]:
     validate_h3_transformer_filename(transformer_filename)
     return (
@@ -1125,6 +1325,7 @@ class MiniMaxH3NativeRuntime:
     binary_identity: Optional[tuple[int, int]] = None
     # The card the load resolved, kept for failure records: re-resolving at failure time can read None.
     selected_card: Optional[str] = None
+    env: tuple[tuple[str, str], ...] = ()
 
 
 def transcode_video_to_mp4(source: Path, *, fps: int) -> bytes:

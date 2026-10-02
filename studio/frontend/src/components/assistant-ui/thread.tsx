@@ -60,7 +60,9 @@ import {
   composerSubmitIntent,
   composerFollowUpBehavior,
   composerShortcutLabels,
+  composerKeyEventForImeSubmit,
   effectiveSendShortcut,
+  imeKeydownBlocksComposerSubmit,
   followUpSubmitIntent,
   steeringInsertionIndex,
   cancelPreStreamRunForThreadIds,
@@ -87,6 +89,7 @@ import {
   useChatAudioUpload,
   useInComparePane,
   refreshSkillsCatalog,
+  stopRecoveredRun,
 } from "@/features/chat";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
@@ -148,6 +151,7 @@ import {
   attachLibraryChatFiles,
   useLibraryChatHandoffStore,
 } from "@/features/library/chat-handoff-store";
+import { resumesThought } from "@/features/model-picker";
 import { cancelResearchRun } from "@/features/chat/api/research-api";
 import {
   ingestResearchUpdate,
@@ -163,11 +167,13 @@ import { replySourceMarkdown } from "@/features/chat/utils/reply-source-markdown
 import { toolResultModelText } from "@/features/chat/api/chat-adapter";
 import {
   CONTINUATION_RUN_CONFIG_KEY,
+  type ContinuationRequest,
   incompleteLabel,
   incompleteRemedy,
   isContinuableContent,
   isProviderReportedReason,
   modeAllowsContinuation,
+  readContinuationSource,
   readIncompleteInfo,
   readTextThoughtSignature,
   claimAutoContinue,
@@ -337,6 +343,7 @@ import {
   Image03Icon,
   McpServerIcon,
   PencilRulerIcon,
+  PlayIcon,
   Scroll01Icon,
   Telescope02Icon,
   VolumeMute02Icon,
@@ -2443,17 +2450,24 @@ const ThreadScrollToBottom: FC = () => {
   // MutationObserver as a content change.
   const isAtBottom = useIsThreadAtBottom();
   const scrollToBottom = useScrollThreadToBottom();
+  const enabled = useChatPreferencesStore(
+    (state) => state.showScrollToBottomButton,
+  );
   return (
     <TooltipIconButton
       tooltip="Scroll to bottom"
       variant="outline"
       onClick={() => scrollToBottom("auto")}
       className={cn(
-        "aui-thread-scroll-to-bottom pointer-events-auto rounded-full p-4 bg-background hover:bg-accent dark:bg-background dark:hover:bg-accent",
-        isAtBottom && "invisible pointer-events-none",
+        // Muted in dark mode: the page background made it disappear.
+        "aui-thread-scroll-to-bottom pointer-events-auto rounded-full p-0 size-[calc(28px*var(--ui-space-scale,1))] bg-background hover:bg-accent dark:bg-muted dark:hover:bg-accent",
+        (isAtBottom || !enabled) && "invisible pointer-events-none",
       )}
     >
-      <ArrowDownIcon strokeWidth={1.75} className="size-icon" />
+      <ArrowDownIcon
+        strokeWidth={1.75}
+        className="size-[calc(var(--ui-icon-size)*1.125)]"
+      />
     </TooltipIconButton>
   );
 };
@@ -5624,6 +5638,8 @@ function useImeComposerInputHandlers({
 } = {}) {
   const aui = useAui();
   const composingRef = useRef(false);
+  const imeSessionOpenRef = useRef(false);
+  const compositionEndedAtRef = useRef(-Infinity);
   const [isComposing, setIsComposing] = useState(false);
   const stuckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -5706,6 +5722,7 @@ function useImeComposerInputHandlers({
     if (justSentRef) {
       justSentRef.current = markSentTextGuardUserInput(justSentRef.current);
     }
+    imeSessionOpenRef.current = true;
     setCompositionState(true);
   }, [justSentRef, setCompositionState]);
 
@@ -5715,6 +5732,8 @@ function useImeComposerInputHandlers({
 
   const onCompositionEnd = useCallback(
     (e: CompositionEvent<HTMLTextAreaElement>) => {
+      imeSessionOpenRef.current = false;
+      compositionEndedAtRef.current = e.timeStamp;
       setCompositionState(false);
       if (!setComposerText(e.currentTarget.value, e.nativeEvent)) {
         e.preventDefault();
@@ -5742,13 +5761,25 @@ function useImeComposerInputHandlers({
   // forever and block Send again.
   const onKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
-      if (e.nativeEvent.isComposing || e.keyCode === 229) {
-        // Deliberately NOT user input: picking a candidate in a composition the
-        // send left open is that composition continuing. One begun after the
-        // send is marked by compositionstart instead.
-        composingRef.current = true;
-        refreshStuckTimer();
-        return;
+      const msSinceCompositionEnd = e.timeStamp - compositionEndedAtRef.current;
+      compositionEndedAtRef.current = -Infinity;
+      const imeKey = e.nativeEvent.isComposing || e.keyCode === 229;
+      if (imeKey) {
+        if (
+          imeKeydownBlocksComposerSubmit(
+            e,
+            imeSessionOpenRef.current,
+            msSinceCompositionEnd,
+          )
+        ) {
+          // Deliberately NOT user input: picking a candidate in a composition the
+          // send left open is that composition continuing. One begun after the
+          // send is marked by compositionstart instead.
+          composingRef.current = true;
+          refreshStuckTimer();
+          return;
+        }
+        setCompositionState(false);
       }
       if (justSentRef && isGuardRetiringKey(e)) {
         justSentRef.current = markSentTextGuardUserInput(justSentRef.current);
@@ -5770,7 +5801,11 @@ function useImeComposerInputHandlers({
         setCompositionState(false);
       }
       if (submitOnEnter && !skipEnterRef?.current) {
-        const intent = composerSubmitIntent(e, sendShortcut, e.currentTarget?.value);
+        const intent = composerSubmitIntent(
+          imeKey ? composerKeyEventForImeSubmit(e) : e,
+          sendShortcut,
+          e.currentTarget?.value,
+        );
         if (intent) {
           e.preventDefault();
           if (onSubmitKey) onSubmitKey(e, intent);
@@ -5795,6 +5830,7 @@ function useImeComposerInputHandlers({
   // commits or cancels any in-progress composition before surrendering focus,
   // so blur is a safe unconditional reset point.
   const onBlur = useCallback(() => {
+    imeSessionOpenRef.current = false;
     setCompositionState(false);
   }, [setCompositionState]);
 
@@ -6775,6 +6811,9 @@ const ComposerRightControls: FC<{
   );
   const isQueueRunning = Boolean(queueEntry);
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
+  const threadRemoteId = useAuiState(
+    ({ threadListItem }) => threadListItem.remoteId,
+  );
   // Id and status, not the run: run identity changes on every streamed research delta.
   const activeResearchRunId = useResearchRunStore((state) =>
     activeThreadId ? state.latestRunByThreadId[activeThreadId] : undefined,
@@ -6832,6 +6871,8 @@ const ComposerRightControls: FC<{
       return;
     }
     if (isQueueRunning) onStopClick?.();
+    // A reply replayed after a reload has no adapter run for Cancel to abort.
+    stopRecoveredRun(threadRemoteId);
   };
   return (
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
@@ -7051,49 +7092,16 @@ const CancelledIndicator: FC = () => {
   );
 };
 
-/** Text of an assistant turn: what a continuation resumes from.
- *
- * Text parts only: a continuation resumes the visible answer, not its private reasoning.
- * Joined with nothing, like the backend's `trailing_assistant_text`: a turn split around
- * a reasoning part never had a newline between its halves, and inventing one moves the
- * boundary. */
-function assistantMessageText(content: readonly unknown[] | undefined): string {
-  if (!content) {
-    return "";
-  }
-  return content
-    .filter(
-      (part): part is { type: "text"; text: string } =>
-        (part as { type?: string })?.type === "text" &&
-        typeof (part as { text?: unknown })?.text === "string",
-    )
-    .map((part) => part.text)
-    .join("");
+function readThoughtDuration(metadata: unknown): number | undefined {
+  const custom = (metadata as { custom?: Record<string, unknown> } | undefined)
+    ?.custom;
+  const durations = custom?.reasoningDurations;
+  const value = Array.isArray(durations) ? durations[0] : custom?.reasoningDuration;
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-/**
- * Resume a response that stopped early instead of regenerating it. Shown under the last
- * assistant turn when Max Tokens ran out, Stop was pressed, or the stream dropped.
- * Retry keeps its old meaning: drop the partial and start over.
- */
-const ContinueMessageBar: FC = () => {
-  // One subscription, not ten, on every message that is not the newest.
-  //
-  // The bar mounts under every assistant message and returns null unless it is the last, but the
-  // ten `useAuiState` calls below ran first, each a subscription whose selector re-runs on EVERY
-  // store update -- one per character typed (220 messages, 300K characters: 10,193 subscriptions,
-  // 10,258 selector runs per keystroke).
-  //
-  // `isLast` is the same condition the body below already gates on, asked before the work rather
-  // than after it, so nothing that used to render stops rendering.
-  const isLast = useAuiState(({ message }) => message.isLast);
-  if (!isLast) {
-    return null;
-  }
-  return <ContinueMessageBarForLastMessage />;
-};
-
-const ContinueMessageBarForLastMessage: FC = () => {
+/** Shared eligibility and run setup for Resume and Continue response. */
+function useContinuation() {
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
   const isLast = useAuiState(({ message }) => message.isLast);
@@ -7102,13 +7110,25 @@ const ContinueMessageBarForLastMessage: FC = () => {
   const researchActive = useThreadResearchActive();
   const status = useAuiState(({ message }) => message.status);
   const metadata = useAuiState(({ message }) => message.metadata);
-  const partial = useAuiState(({ message }) =>
-    assistantMessageText(message.content),
+  const thoughtResumable = useChatRuntimeStore((s) =>
+    resumesThought({
+      loadedIsGguf: s.loadedIsGguf,
+      loadedIsMlx: s.loadedIsMlx,
+      activeGgufVariant: s.activeGgufVariant,
+      activeNativePathToken: s.activeNativePathToken,
+      checkpoint: s.params.checkpoint,
+    }),
+  );
+  const partial = useAuiState(
+    ({ message }) => readContinuationSource(message.content).partial,
+  );
+  const reasoning = useAuiState(
+    ({ message }) => readContinuationSource(message.content).reasoning,
   );
   // A tool-calling turn cannot be resumed: the continuation runs as a sibling, so the
   // call and its result would be missing from the outbound history.
   const continuable = useAuiState(({ message }) =>
-    isContinuableContent(message.content),
+    isContinuableContent(message.content, { thought: thoughtResumable }),
   );
   // Gemini signs its text parts, and the resumed turn is replayed from this branch,
   // so the signature travels with the partial.
@@ -7135,11 +7155,9 @@ const ContinueMessageBarForLastMessage: FC = () => {
     cancelled && !isProviderReportedReason(stamped?.reason)
       ? ("cancelled" as const)
       : stamped?.reason;
+  const carriedReasoning = thoughtResumable ? reasoning : "";
 
-  // Every gate the bar itself answers to. Resuming without asking has to clear the same
-  // ones, or it would resume a turn the bar would have refused to offer.
-  const resumable =
-    Boolean(reason) &&
+  const canResume =
     isLast &&
     !isRunning &&
     !researchRunId &&
@@ -7149,7 +7167,56 @@ const ContinueMessageBarForLastMessage: FC = () => {
       fromAudioInput,
       audioOutputModel,
     }) &&
-    Boolean(partial.trim());
+    Boolean(partial.trim() || carriedReasoning.trim());
+
+  const reasoningDuration = readThoughtDuration(metadata);
+  // Hands the started run back, untyped: the only handle identified with THIS run.
+  const startContinuation = useCallback((): unknown => {
+    const messages = aui.thread().getState().messages;
+    const index = messages.findIndex((message) => message.id === messageId);
+    if (index < 0) {
+      return undefined;
+    }
+    // Sibling of the resumed turn, so the branch picker can still reach the original.
+    const parent = index > 0 ? messages[index - 1].id : null;
+    const request: ContinuationRequest = {
+      partial,
+      ...(carriedReasoning ? { reasoning: carriedReasoning, reasoningDuration } : {}),
+      ...(thoughtSignature ? { thoughtSignature } : {}),
+    };
+    return aui.thread().startRun({
+      parentId: parent,
+      runConfig: {
+        custom: { [CONTINUATION_RUN_CONFIG_KEY]: request },
+      },
+    });
+  }, [aui, messageId, partial, carriedReasoning, reasoningDuration, thoughtSignature]);
+
+  return {
+    messageId,
+    reason,
+    completed: status?.type === "complete",
+    canResume,
+    resumedChars: partial.length + carriedReasoning.length,
+    startContinuation,
+  };
+}
+
+const ContinueMessageBar: FC = () => {
+  // Mount the full subscriptions only for the newest message to keep typing responsive.
+  const isLast = useAuiState(({ message }) => message.isLast);
+  if (!isLast) {
+    return null;
+  }
+  return <ContinueMessageBarForLastMessage />;
+};
+
+const ContinueMessageBarForLastMessage: FC = () => {
+  const aui = useAui();
+  const { messageId, reason, canResume, resumedChars, startContinuation } =
+    useContinuation();
+
+  const resumable = Boolean(reason) && canResume;
 
   // A cut with a remedy is one resuming cannot undo, so the way out replaces the button.
   const remedy = reason ? incompleteRemedy(reason) : null;
@@ -7160,25 +7227,6 @@ const ContinueMessageBarForLastMessage: FC = () => {
     const index = thread.messages.findIndex((m) => m.id === message.id);
     return index > 0 ? thread.messages[index - 1].id : null;
   });
-
-  // Hands the started run back, untyped: the only handle identified with THIS run.
-  const startContinuation = useCallback((): unknown => {
-    const messages = aui.thread().getState().messages;
-    const index = messages.findIndex((message) => message.id === messageId);
-    if (index < 0) {
-      return undefined;
-    }
-    // Sibling of the truncated turn, so the branch picker can still reach the partial.
-    const parent = index > 0 ? messages[index - 1].id : null;
-    return aui.thread().startRun({
-      parentId: parent,
-      runConfig: {
-        custom: {
-          [CONTINUATION_RUN_CONFIG_KEY]: { partial, thoughtSignature },
-        },
-      },
-    });
-  }, [aui, messageId, partial, thoughtSignature]);
 
   // The resumed turn's own fit. Resuming replays the partial as the final assistant turn,
   // which the fit protects, so a partial too big to sit beside the system turn makes the
@@ -7224,7 +7272,7 @@ const ContinueMessageBarForLastMessage: FC = () => {
       fits: truncation?.fits,
       // The same cheap estimator the backend fit uses, which is all that is needed to
       // spot a partial that has already eaten the whole budget.
-      partialTokens: Math.ceil(partial.length / 4),
+      partialTokens: Math.ceil(resumedChars / 4),
       promptTarget: truncation?.prompt_target,
     });
   useEffect(() => {
@@ -7326,24 +7374,6 @@ const ContinueMessageBarForLastMessage: FC = () => {
     );
   }
 
-  const handleContinue = () => {
-    const messages = aui.thread().getState().messages;
-    const index = messages.findIndex((message) => message.id === messageId);
-    if (index < 0) {
-      return;
-    }
-    // Sibling of the truncated turn, so the branch picker can still reach the partial.
-    const parentId = index > 0 ? messages[index - 1].id : null;
-    aui.thread().startRun({
-      parentId,
-      runConfig: {
-        custom: {
-          [CONTINUATION_RUN_CONFIG_KEY]: { partial, thoughtSignature },
-        },
-      },
-    });
-  };
-
   return (
     <div className="aui-continue-bar mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-border/70 bg-muted/50 p-2.5 text-sm">
       <span className="min-w-0 flex-1 text-muted-foreground">
@@ -7355,7 +7385,9 @@ const ContinueMessageBarForLastMessage: FC = () => {
           size="sm"
           variant="secondary"
           className="h-7 shrink-0 gap-1.5 text-xs"
-          onClick={handleContinue}
+          onClick={() => {
+            startContinuation();
+          }}
         >
           <QueueResumeIcon className="size-3.5" />
           Resume
@@ -8037,6 +8069,38 @@ const EditAssistantMessageButton: FC = () => {
   );
 };
 
+/** Continue the newest finished reply; incomplete replies use the Resume bar. */
+const ContinueResponseButton: FC = () => {
+  const isLast = useAuiState(({ message }) => message.isLast);
+  if (!isLast) {
+    return null;
+  }
+  return <ContinueResponseButtonForLastMessage />;
+};
+
+const ContinueResponseButtonForLastMessage: FC = () => {
+  const { messageId, reason, completed, canResume, startContinuation } =
+    useContinuation();
+  const editing = useChatRuntimeStore((s) => s.editingMessageId === messageId);
+  // The sibling carries no citations, and a continuation restarts their [N] numbering.
+  const cited = useAuiState(({ message }) =>
+    message.content.some((part) => part.type === "source"),
+  );
+  if (!completed || reason || !canResume || editing || cited) {
+    return null;
+  }
+  return (
+    <TooltipIconButton
+      tooltip="Continue response"
+      onClick={() => {
+        startContinuation();
+      }}
+    >
+      <HugeiconsIcon icon={PlayIcon} strokeWidth={1.75} className="size-icon" />
+    </TooltipIconButton>
+  );
+};
+
 // The More menu's Edit response, shown when the button is not pinned to the bar.
 const EditAssistantMessageMenuItem: FC = () => {
   const messageId = useAuiState(({ message }) => message.id);
@@ -8117,6 +8181,7 @@ const AssistantActionBar: FC = () => {
       >
         <CopyButton />
         {inlineEdit && <EditAssistantMessageButton />}
+        <ContinueResponseButton />
         {!researchRunId && !researchActive && (
           <ActionBarPrimitive.Reload asChild={true}>
             <TooltipIconButton tooltip="Refresh">
@@ -8166,100 +8231,104 @@ const AssistantActionBar: FC = () => {
             align="start"
             collisionPadding={moreMenuCollisionPadding}
             onCloseAutoFocus={(e) => e.preventDefault()}
-            className="aui-action-bar-more-content z-50 min-w-32 max-h-(--radix-dropdown-menu-content-available-height) overflow-x-hidden overflow-y-auto rounded-[21px] bg-popover px-[calc(9px*var(--ui-space-scale,1))] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-[0_8px_28px_-6px_var(--background)]"
+            className="aui-action-bar-more-content z-50 min-w-32 max-h-(--radix-dropdown-menu-content-available-height) flex flex-col overflow-hidden rounded-[21px] bg-popover px-[calc(9px*var(--ui-space-scale,1))] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-[0_8px_28px_-6px_var(--background)]"
           >
-            {/* Prevent an outside dismissal from triggering Delete. */}
-            <MenuDismissGuard triggerRef={moreMenuTriggerRef} />
-            <MessageMenuTime onShowDetails={() => setDetailsOpen(true)} />
-            {!inlineReadAloud && ttsEnabled && (
-              <MessagePrimitive.If speaking={false}>
-                <ActionBarPrimitive.Speak asChild={true}>
-                  <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50">
-                    <HugeiconsIcon
-                      icon={Volume02Icon}
-                      strokeWidth={1.75}
-                      className="size-icon"
-                    />
-                    Read aloud
-                  </ActionBarMorePrimitive.Item>
-                </ActionBarPrimitive.Speak>
-              </MessagePrimitive.If>
-            )}
-            {!inlineEdit && <EditAssistantMessageMenuItem />}
-            <ActionBarMorePrimitive.Item
-              disabled={forkDisabled}
-              onSelect={() => void forkMessage()}
-              className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
-            >
-              <GitBranchIcon strokeWidth={1.75} className="size-icon" />
-              Fork in new chat
-            </ActionBarMorePrimitive.Item>
-            <ActionBarPrimitive.ExportMarkdown
-              asChild={true}
-              onExport={exportMessageMarkdown}
-            >
-              <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
-                <HugeiconsIcon
-                  icon={Download01Icon}
-                  strokeWidth={1.75}
-                  className="size-icon"
-                />
-                Export as markdown
-              </ActionBarMorePrimitive.Item>
-            </ActionBarPrimitive.ExportMarkdown>
-            {activeProjectId && (
+            {/* Scroll an inner viewport: a scrollbar on the rounded surface squares its corners.
+                The surface padding insets it clear of the curve. */}
+            <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
+              {/* Prevent an outside dismissal from triggering Delete. */}
+              <MenuDismissGuard triggerRef={moreMenuTriggerRef} />
+              <MessageMenuTime onShowDetails={() => setDetailsOpen(true)} />
+              {!inlineReadAloud && ttsEnabled && (
+                <MessagePrimitive.If speaking={false}>
+                  <ActionBarPrimitive.Speak asChild={true}>
+                    <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50">
+                      <HugeiconsIcon
+                        icon={Volume02Icon}
+                        strokeWidth={1.75}
+                        className="size-icon"
+                      />
+                      Read aloud
+                    </ActionBarMorePrimitive.Item>
+                  </ActionBarPrimitive.Speak>
+                </MessagePrimitive.If>
+              )}
+              {!inlineEdit && <EditAssistantMessageMenuItem />}
               <ActionBarMorePrimitive.Item
-                onSelect={() => {
-                  // Not getCopyText: it joins text parts alone, so a reply's
-                  // reasoning, tool calls and citations would be dropped and a
-                  // tool-only reply would read as empty. Same conversion the
-                  // whole-chat save runs.
-                  // Stripped: a project source is retrieved back into context, so
-                  // saved tokens would teach the model ids that resolve to nothing.
-                  const text = stripSearchImageTokens(
-                    replySourceMarkdown(
-                      aui.message().getState().content,
-                      toolResultModelText,
-                    ),
-                  );
-                  if (!text.trim()) {
-                    toast.info("No content to save.");
-                    return;
-                  }
-                  const state = aui.threadListItem().getState();
-                  // The list item's title belongs to the whole chat, so mark the
-                  // reply apart or saving both lists two identical names.
-                  const title = state.title ? `${state.title} - reply` : "reply";
-                  // activeProjectId can lag a thread switch while the stored
-                  // thread loads; resolve the destination from this thread.
-                  const remoteId =
-                    state.remoteId ||
-                    useChatRuntimeStore.getState().activeThreadId;
-                  void (async () => {
-                    const thread = remoteId
-                      ? await getStoredChatThread(remoteId).catch(() => null)
-                      : null;
-                    if (!thread?.projectId) {
-                      toast.info("This chat isn't in a project.");
+                disabled={forkDisabled}
+                onSelect={() => void forkMessage()}
+                className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+              >
+                <GitBranchIcon strokeWidth={1.75} className="size-icon" />
+                Fork in new chat
+              </ActionBarMorePrimitive.Item>
+              <ActionBarPrimitive.ExportMarkdown
+                asChild={true}
+                onExport={exportMessageMarkdown}
+              >
+                <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
+                  <HugeiconsIcon
+                    icon={Download01Icon}
+                    strokeWidth={1.75}
+                    className="size-icon"
+                  />
+                  Export as markdown
+                </ActionBarMorePrimitive.Item>
+              </ActionBarPrimitive.ExportMarkdown>
+              {activeProjectId && (
+                <ActionBarMorePrimitive.Item
+                  onSelect={() => {
+                    // Not getCopyText: it joins text parts alone, so a reply's
+                    // reasoning, tool calls and citations would be dropped and a
+                    // tool-only reply would read as empty. Same conversion the
+                    // whole-chat save runs.
+                    // Stripped: a project source is retrieved back into context, so
+                    // saved tokens would teach the model ids that resolve to nothing.
+                    const text = stripSearchImageTokens(
+                      replySourceMarkdown(
+                        aui.message().getState().content,
+                        toolResultModelText,
+                      ),
+                    );
+                    if (!text.trim()) {
+                      toast.info("No content to save.");
                       return;
                     }
-                    await saveMarkdownAsProjectSource(
-                      thread.projectId,
-                      text,
-                      title,
-                    );
-                  })();
-                }}
-                className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
-              >
-                <HugeiconsIcon
-                  icon={FolderAttachmentIcon}
-                  strokeWidth={1.75}
-                  className="size-icon"
-                />
-                Save to project sources
-              </ActionBarMorePrimitive.Item>
-            )}
+                    const state = aui.threadListItem().getState();
+                    // The list item's title belongs to the whole chat, so mark the
+                    // reply apart or saving both lists two identical names.
+                    const title = state.title ? `${state.title} - reply` : "reply";
+                    // activeProjectId can lag a thread switch while the stored
+                    // thread loads; resolve the destination from this thread.
+                    const remoteId =
+                      state.remoteId ||
+                      useChatRuntimeStore.getState().activeThreadId;
+                    void (async () => {
+                      const thread = remoteId
+                        ? await getStoredChatThread(remoteId).catch(() => null)
+                        : null;
+                      if (!thread?.projectId) {
+                        toast.info("This chat isn't in a project.");
+                        return;
+                      }
+                      await saveMarkdownAsProjectSource(
+                        thread.projectId,
+                        text,
+                        title,
+                      );
+                    })();
+                  }}
+                  className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
+                >
+                  <HugeiconsIcon
+                    icon={FolderAttachmentIcon}
+                    strokeWidth={1.75}
+                    className="size-icon"
+                  />
+                  Save to project sources
+                </ActionBarMorePrimitive.Item>
+              )}
+            </div>
           </ActionBarMorePrimitive.Content>
         </ActionBarMorePrimitive.Root>
         <MessageTiming side="top" className="h-8 px-2" />
@@ -8392,7 +8461,7 @@ const EditComposer: FC = () => {
           submitEdit();
         }}
       >
-        <ComposerAttachments className="mb-0 px-3 pt-3 [&_.aui-pasted-text-chip:not(:hover)]:bg-background" />
+        <ComposerAttachments className="mb-0 px-3 pt-3" />
         <ComposerPrimitive.Input
           submitMode={
             effectiveSendShortcut(sendShortcut, editMultiline ? "\n" : "") === "mod-enter"

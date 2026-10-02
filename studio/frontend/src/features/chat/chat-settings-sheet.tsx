@@ -1869,9 +1869,7 @@ export function ChatSettingsPanel({
       data-slot="chat-settings-panel"
       className={cn(
         "relative z-50 shrink-0 bg-panel-surface text-panel-surface-fg font-heading",
-        open
-          ? "w-(--chat-settings-width) border-l border-sidebar-border"
-          : "w-0 overflow-hidden",
+        open ? "w-(--chat-settings-width)" : "w-0 overflow-hidden",
       )}
       style={
         {
@@ -1905,7 +1903,14 @@ export function ChatSettingsPanel({
         dataSlot="chat-settings-resize-handle"
       />
       ) : null}
-      <div className="h-full w-full overflow-hidden">{settingsContent}</div>
+      <div
+        className={cn(
+          "h-full w-full overflow-hidden",
+          open && "border-l border-panel-edge",
+        )}
+      >
+        {settingsContent}
+      </div>
     </aside>
   );
 }

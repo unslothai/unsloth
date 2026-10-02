@@ -17,6 +17,8 @@ import { useChatPreferencesStore } from "./stores/chat-preferences-store";
 import {
   composerSubmitIntent,
   composerShortcutLabels,
+  composerKeyEventForImeSubmit,
+  imeKeydownBlocksComposerSubmit,
 } from "./utils/composer-preferences";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
@@ -686,6 +688,8 @@ export function SharedComposer({
     window.setTimeout(() => textareaRef.current?.focus(), 0);
   }, [pendingFixPrompt, setCurrentText]);
   const composingRef = useRef(false);
+  const imeSessionOpenRef = useRef(false);
+  const compositionEndedAtRef = useRef(-Infinity);
   const stuckImeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
@@ -2111,13 +2115,25 @@ export function SharedComposer({
   const busy = running || comparing;
 
   function onKeyDown(e: KeyboardEvent) {
+    const msSinceCompositionEnd = e.timeStamp - compositionEndedAtRef.current;
+    compositionEndedAtRef.current = -Infinity;
     // IME composition (JP/CN/KR): Enter commits the candidate, so do not hijack it (#5318). Re-pin
     // composingRef in case the stuck watchdog (#5546) cleared it during a long candidate-window pause,
     // and re-arm the watchdog on the same path, or the WSL+Chrome no-compositionend case pins it forever.
-    if (e.nativeEvent.isComposing || e.keyCode === 229) {
-      composingRef.current = true;
-      refreshStuckImeTimer();
-      return;
+    const imeKey = e.nativeEvent.isComposing || e.keyCode === 229;
+    if (imeKey) {
+      if (
+        imeKeydownBlocksComposerSubmit(
+          e,
+          imeSessionOpenRef.current,
+          msSinceCompositionEnd,
+        )
+      ) {
+        composingRef.current = true;
+        refreshStuckImeTimer();
+        return;
+      }
+      setCompositionState(false);
     }
     // Non-IME key while composingRef is stuck; mirrors the fix in thread.tsx. On macOS, switching
     // input methods without composing can leave composingRef pinned.
@@ -2132,7 +2148,13 @@ export function SharedComposer({
       }
       setCompositionState(false);
     }
-    if (composerSubmitIntent(e, sendShortcut, text)) {
+    if (
+      composerSubmitIntent(
+        imeKey ? composerKeyEventForImeSubmit(e) : e,
+        sendShortcut,
+        text,
+      )
+    ) {
       e.preventDefault();
       if (!busy && !isDictating) {
         send();
@@ -2561,12 +2583,15 @@ export function SharedComposer({
           );
         }}
         onCompositionStart={() => {
+          imeSessionOpenRef.current = true;
           setCompositionState(true);
         }}
         onCompositionUpdate={() => {
           refreshStuckImeTimer();
         }}
         onCompositionEnd={(e: CompositionEvent<HTMLTextAreaElement>) => {
+          imeSessionOpenRef.current = false;
+          compositionEndedAtRef.current = e.timeStamp;
           setCompositionState(false);
           setCurrentText(e.currentTarget.value);
         }}
@@ -2577,6 +2602,7 @@ export function SharedComposer({
         onBlur={() => {
           // Mac: switching input methods can fire compositionstart without a matching compositionend,
           // leaving composingRef pinned. The OS always commits or cancels before focus is lost.
+          imeSessionOpenRef.current = false;
           setCompositionState(false);
 
           skillMentions.close();
