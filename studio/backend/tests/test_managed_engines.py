@@ -215,6 +215,30 @@ def test_shared_engine_never_sees_studio_flashinfer(tmp_path):
     assert out.stdout.strip() == "None None ['studio_only']"
 
 
+def test_shared_engine_keeps_its_own_nvidia_tree_first(tmp_path):
+    # Colab's site has a regular nvidia package, which hid the engine's crt headers from
+    # FlashInfer's JIT ("'__cudaLaunch' was not declared").
+    import subprocess
+    import sys
+
+    studio, engine = tmp_path / "studio", tmp_path / "engine"
+    (studio / "nvidia" / "studio_only").mkdir(parents = True)
+    (studio / "nvidia" / "__init__.py").write_text("")
+    (studio / "nvidia" / "studio_only" / "__init__.py").write_text("")
+    (engine / "nvidia" / "engine_only").mkdir(parents = True)
+    (engine / "nvidia" / "engine_only" / "__init__.py").write_text("")
+    (engine / f"{install._BASE_MODULE}.py").write_text(
+        install._STUDIO_BASE_SOURCE.format(paths = [str(studio)])
+    )
+    probe = (
+        f"import sys; sys.path.insert(0, {str(engine)!r}); import {install._BASE_MODULE}; "
+        "import nvidia, nvidia.engine_only, nvidia.studio_only; print(list(nvidia.__path__))"
+    )
+    out = subprocess.run([sys.executable, "-I", "-S", "-c", probe], capture_output = True, text = True)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == str([str(engine / "nvidia"), str(studio / "nvidia")])
+
+
 def test_engine_cuda_home_is_the_locked_pip_nvcc(tmp_path, monkeypatch):
     import os
 
@@ -1478,6 +1502,27 @@ def test_multi_gpu_preflight_checks_every_device(engine, monkeypatch):
     )
     with pytest.raises(ValueError, match = "GPU 0: Unsupported"):
         managed_engine.validate_load(engine, request)
+
+
+@pytest.mark.parametrize(("version", "refused"), [("0.5.20", True), ("0.5.17", False)])
+def test_sglang_integer_precision_is_refused_before_unloading(monkeypatch, version, refused):
+    # Checked in validate_load, which runs before the resident model is torn down.
+    from core.inference import managed_engine
+    from models.inference import LoadRequest
+
+    info = {"path": "/env", "version": version, "profile_digest": install.profile_digest("sglang")}
+    monkeypatch.setattr(managed_engine, "installed", lambda _: info)
+    monkeypatch.setattr(managed_engine, "support_reason", lambda *a: None)
+    monkeypatch.setattr(managed_engine, "resolve_requested_gpu_ids", lambda ids: [0])
+    for precision in ("int8", "int4"):
+        request = LoadRequest(model_path = "m", engine = "sglang", engine_precision = precision)
+        if refused:
+            with pytest.raises(ValueError, match = "Choose FP8"):
+                managed_engine.validate_load("sglang", request)
+        else:
+            managed_engine.validate_load("sglang", request)
+    request = LoadRequest(model_path = "m", engine = "sglang", engine_precision = "fp8")
+    managed_engine.validate_load("sglang", request)
 
 
 def test_engine_gpus_stay_inside_studios_visible_gpus(monkeypatch):

@@ -89,7 +89,12 @@ class _Hidden:
     def find_spec(self, name, target = None):
         if name.partition(".")[0] in _HIDDEN:
             return None
-        return self._finder.find_spec(name, target)
+        spec = self._finder.find_spec(name, target)
+        # A regular nvidia package here (Colab ships nvidia/__init__.py) would hide the engine's
+        # own nvidia/ tree; as a namespace portion both are found, the engine's first.
+        if name == "nvidia" and spec is not None and spec.submodule_search_locations:
+            spec.loader = None
+        return spec
 
     def invalidate_caches(self):
         self._finder.invalidate_caches()

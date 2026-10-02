@@ -17,11 +17,11 @@ router = APIRouter(dependencies = [Depends(get_current_subject)])
 
 def _reap_crashed_engine() -> None:
     """A crashed engine holds its lease until reaped, blocking repair and removal."""
-    from routes.inference import _peek_inference_backend
+    from routes.inference import _peek_inference_backend, reap_dead_managed_engine
 
     backend = _peek_inference_backend()
     if getattr(backend, "_managed_engine", None) is not None:
-        backend.reap_dead_managed_engine()
+        reap_dead_managed_engine(backend)
 
 
 @router.get("")
