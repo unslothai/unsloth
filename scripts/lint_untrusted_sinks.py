@@ -1066,6 +1066,28 @@ class _FileFacts:
             if isinstance(value, ast.Constant) and value.value is True:
                 self.module_true_names.update(names)
             self._note_constant_map(names, value)
+            # `LOADERS = {"dynamic": importlib.import_module}`: a dispatch table of sinks,
+            # called later as `LOADERS[kind](...)`.
+            if isinstance(value, (ast.Dict, ast.List, ast.Tuple)):
+                elements = value.values if isinstance(value, ast.Dict) else value.elts
+                for element in elements:
+                    spelling = (
+                        _call_name(element)
+                        if isinstance(element, (ast.Name, ast.Attribute))
+                        else ""
+                    )
+                    if not spelling:
+                        continue
+                    direct = _matches_any(self.canonicals(spelling), SINKS)
+                    held = (
+                        [direct] if direct else list(self.module_sink_aliases.get(spelling) or ())
+                    )
+                    for name in names:
+                        for candidate in held:
+                            self.module_sink_aliases[name] = _with(
+                                self.module_sink_aliases.get(name), candidate
+                            )
+                continue
             if isinstance(value, ast.Lambda):
                 for name in names:
                     self._index_lambda(name, value)
@@ -2196,6 +2218,7 @@ class _TaintPass(ast.NodeVisitor):
                 "Path",
                 "os.path.basename",
                 "os.path.normpath",
+                "os.path.splitext",
             },
         ):
             for argument in node.args:
@@ -2478,6 +2501,16 @@ class _TaintPass(ast.NodeVisitor):
         self._note_source_alias(node)
         self._note_instance_alias(node)
         self._note_callable_alias(node)
+        # A dispatch table of sinks, called later as `loaders[kind](...)`.
+        if isinstance(node.value, (ast.Dict, ast.List, ast.Tuple)):
+            elements = node.value.values if isinstance(node.value, ast.Dict) else node.value.elts
+            for element in elements:
+                for sink in self._sink_identities(element):
+                    for target in node.targets:
+                        if isinstance(target, ast.Name):
+                            self.sink_aliases[target.id] = _with(
+                                self.sink_aliases.get(target.id), sink
+                            )
         # `loader = importlib.import_module if enabled else safe_loader` can bind
         # either branch, so every branch is recorded as a possible alias.
         pending = [node.value]
@@ -3519,6 +3552,9 @@ class _TaintPass(ast.NodeVisitor):
             # getattr is not in SINKS; it has its own check because it needs the holder
             # inspected, so an alias of it has to go there rather than into this table.
             held = tuple(self.sink_aliases.get(_call_name(node.func)) or ())
+            if isinstance(node.func, ast.Subscript):
+                # `LOADERS[kind](parsed)`: an entry of a dispatch table of sinks.
+                held = tuple(self.sink_aliases.get(_call_name(node.func.value)) or ())
             if isinstance(node.func, ast.Attribute):
                 # Stored on an attribute by another method, so the local table knows
                 # nothing about it.

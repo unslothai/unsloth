@@ -5520,3 +5520,36 @@ def test_a_construction_chosen_by_a_conditional_expression_resolves(tmp_path):
         "    return runner.execute(json.loads(blob)['command'])\n",
     )
     assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_path_split_into_stem_and_suffix_stays_tainted(tmp_path):
+    """`os.path.splitext(parsed)[0]` is still the untrusted name."""
+    findings = _scan(
+        tmp_path,
+        "import importlib, json, os\n"
+        "def go(blob):\n"
+        "    return importlib.import_module(os.path.splitext(json.loads(blob)['module'])[0])\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_dispatch_table_of_sinks_is_followed(tmp_path):
+    """`LOADERS[kind](parsed)` with a sink in the table, at module and local scope."""
+    module = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "LOADERS = {'dynamic': importlib.import_module}\n"
+        "def go(blob, kind):\n"
+        "    return LOADERS[kind](json.loads(blob)['module'])\n",
+        name = "module.py",
+    )
+    local = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def go(blob, kind):\n"
+        "    runners = [subprocess.run, print]\n"
+        "    return runners[kind](json.loads(blob)['command'])\n",
+        name = "local.py",
+    )
+    assert "importlib.import_module" in _sinks(module)
+    assert "subprocess.run" in _sinks(local)
