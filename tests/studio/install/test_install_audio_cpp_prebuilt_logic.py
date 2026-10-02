@@ -975,6 +975,12 @@ def test_record_notes_a_static_espeak_build(monkeypatch, tmp_path, pins):
     release = _release(tmp_path, CPU_ZIP, extra = [("bin/espeak-ng-data.bin", b"data")])
     _install(monkeypatch, tmp_path, release, pins)
     assert json.loads((tmp_path / "audio.cpp" / M.INSTALL_RECORD).read_text())["espeak"] is True
+    target = tmp_path / "audio.cpp"
+    record = json.loads((target / M.INSTALL_RECORD).read_text())
+    assert M._intact_install(target, record) is not None
+    # Quarantined phonemizer data makes the install incomplete, so the next update repairs it.
+    next(target.rglob("espeak-ng-data.bin")).unlink()
+    assert M._intact_install(target, record) is None
 
 
 def test_a_dir_holding_only_the_old_child_home_is_adopted(monkeypatch, tmp_path, pins):

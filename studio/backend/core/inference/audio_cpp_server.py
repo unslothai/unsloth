@@ -180,8 +180,8 @@ def binary_has_espeak(binary: Optional[str]) -> bool:
     """
     if not binary:
         return False
-    if read_install_record(binary).get("espeak") is True:
-        return True
+    # The data itself, not the install record: an install whose data was removed or quarantined
+    # would pass preflight and fail only at launch.
     bin_dir = Path(binary).parent
     return any((bin_dir / name).exists() for name in _ESPEAK_DATA_NAMES)
 

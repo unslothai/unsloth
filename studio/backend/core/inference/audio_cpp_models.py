@@ -751,7 +751,9 @@ def read_remote_header(
                 return header
         return header
 
-    return _cached_header(("remote", repo_id.lower(), filename, size), compute)
+    # Per credential, as resolve() is: a gated file an anonymous probe could not read is not missing.
+    token_id = hashlib.sha256(hf_token.encode()).hexdigest()[:16] if hf_token else ""
+    return _cached_header(("remote", repo_id.lower(), filename, size, token_id), compute)
 
 
 # ---------------------------------------------------------------------------

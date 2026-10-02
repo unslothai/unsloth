@@ -663,6 +663,9 @@ def _intact_install(target: Path, record: dict) -> Optional[Path]:
             return None
     except OSError:
         return None
+    # Removed or quarantined phonemizer data: reinstall rather than keep a bundle Kokoro cannot use.
+    if record.get("espeak") is True and not (server.parent / "espeak-ng-data.bin").is_file():
+        return None
     # A Windows CUDA install that leaned on torch's runtime is broken once torch moves lines.
     return server if _cuda_runtime_satisfied(record) else None
 

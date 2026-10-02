@@ -1170,6 +1170,10 @@ def test_espeak_models_need_an_espeak_build(tmp_path, monkeypatch):
     assert srv.model_runtime_problem(CANARY, str(binary)) is None
     (tmp_path / "espeak-ng-data.bin").write_bytes(b"x")
     assert srv.model_runtime_problem(kokoro, str(binary)) is None
+    # A record that says eSpeak is not enough once the data was removed or quarantined.
+    monkeypatch.setattr(srv, "read_install_record", lambda _binary: {"espeak": True})
+    (tmp_path / "espeak-ng-data.bin").unlink()
+    assert "eSpeak-ng" in srv.model_runtime_problem(kokoro, str(binary))
     monkeypatch.setattr(srv, "find_audio_cpp_server_binary", lambda: None)
     assert "not installed" in srv.model_runtime_problem(kokoro)
 
@@ -1782,3 +1786,18 @@ def test_a_dictation_server_training_moved_to_cpu_returns_to_the_gpu_after(hub, 
         assert started == [True, False] and side.device == "cuda"
     finally:
         side.unload()
+
+
+def test_a_remote_header_miss_without_a_token_is_not_served_to_one_with_it(monkeypatch):
+    from core.inference import diffusion_compat
+
+    seen = []
+
+    def read(repo, filename, token, **kw):
+        seen.append(token)
+        return _gguf_bytes(family = "canary_asr") if token else None
+
+    monkeypatch.setattr(diffusion_compat, "_read_gguf_header", read)
+    assert acm.read_remote_header("someone/Gated-GGUF", "a.gguf", None, size = 64) is None
+    header = acm.read_remote_header("someone/Gated-GGUF", "a.gguf", "hf_secret", size = 64)
+    assert header is not None and header.family == "canary_asr" and seen == [None, "hf_secret"]
