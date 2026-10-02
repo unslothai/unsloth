@@ -113,6 +113,7 @@ def _uninstall_tqdm_progress_patch() -> None:
     if not _TQDM_PATCHED:
         return
     import tqdm as _tqdm_mod
+
     _tqdm_mod.tqdm.update = _ORIG_TQDM_UPDATE
     _TQDM_PATCHED = False
     _ORIG_TQDM_UPDATE = None
@@ -128,6 +129,7 @@ def _run_benchmark_task(params: dict) -> dict:
     kwargs = {k: v for k, v in params.items() if not k.startswith("_")}
 
     import lm_eval as _lm_eval
+
     # Registers the Studio-aware ``gguf`` model name used by build_gguf_kwargs.
     from core.benchmark import gguf_client  # noqa: F401
 
@@ -135,7 +137,8 @@ def _run_benchmark_task(params: dict) -> dict:
     try:
         logger.info(
             "Starting lm_eval with tasks=%s, model=%s",
-            kwargs.get("tasks"), kwargs.get("model"),
+            kwargs.get("tasks"),
+            kwargs.get("model"),
         )
         results = _lm_eval.simple_evaluate(**kwargs)
         logger.info("lm_eval completed")
@@ -149,7 +152,7 @@ class BenchmarkOrchestrator:
         self._lock = threading.Lock()
 
         # Log ring buffer (powers the logs SSE endpoint)
-        self._log_buffer: deque[dict] = deque(maxlen=_LOG_BUFFER_MAXLEN)
+        self._log_buffer: deque[dict] = deque(maxlen = _LOG_BUFFER_MAXLEN)
         self._log_seq: int = 0
         self._run_start_seq: int = 0
 
@@ -178,15 +181,22 @@ class BenchmarkOrchestrator:
 
     # ── Log helpers ──────────────────────────────────────
 
-    def _append_log(self, stream: str, line: str, ts: Optional[float] = None) -> None:
+    def _append_log(
+        self,
+        stream: str,
+        line: str,
+        ts: Optional[float] = None,
+    ) -> None:
         with self._lock:
             self._log_seq += 1
-            self._log_buffer.append({
-                "seq": self._log_seq,
-                "stream": stream,
-                "line": line,
-                "ts": ts or time.time(),
-            })
+            self._log_buffer.append(
+                {
+                    "seq": self._log_seq,
+                    "stream": stream,
+                    "line": line,
+                    "ts": ts or time.time(),
+                }
+            )
 
     def clear_logs(self) -> None:
         with self._lock:
@@ -256,7 +266,11 @@ class BenchmarkOrchestrator:
         self._last_op_status = "error" if error else "success"
         self._active = False
 
-    def run(self, params: dict, account = None) -> dict:
+    def run(
+        self,
+        params: dict,
+        account = None,
+    ) -> dict:
         """Run a benchmark in a worker thread.
 
         Blocks (responsively) until the run completes or is cancelled, then

@@ -70,11 +70,17 @@ def resolve_model_details(
     identifier = checkpoint_path.strip()
     # The route passes the address Studio actually bound; 8888 is only the
     # last resort when it is unknown (e.g. called outside a running server).
-    base_url = (server_url or os.environ.get("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888")).rstrip("/")
+    base_url = (server_url or os.environ.get("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888")).rstrip(
+        "/"
+    )
 
     lm_eval_kwargs = build_gguf_kwargs(
-        identifier, base_url, task, batch_size,
-        max_tokens = max_tokens, num_fewshot = num_fewshot,
+        identifier,
+        base_url,
+        task,
+        batch_size,
+        max_tokens = max_tokens,
+        num_fewshot = num_fewshot,
     )
 
     return [], lm_eval_kwargs

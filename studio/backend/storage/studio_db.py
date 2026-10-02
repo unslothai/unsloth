@@ -951,9 +951,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         ) WITHOUT ROWID
         """
     )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_eval_runs_created_at ON eval_runs(created_at)"
-    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_eval_runs_created_at ON eval_runs(created_at)")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS research_plan_steps (
@@ -5456,9 +5454,7 @@ def list_benchmark_runs() -> list[dict]:
     """List benchmark runs, newest first."""
     conn = get_connection()
     try:
-        rows = conn.execute(
-            "SELECT * FROM eval_runs ORDER BY created_at DESC"
-        ).fetchall()
+        rows = conn.execute("SELECT * FROM eval_runs ORDER BY created_at DESC").fetchall()
         return [_benchmark_run_from_row(r) for r in rows]
     finally:
         conn.close()
@@ -5468,9 +5464,7 @@ def get_benchmark_run(run_id: str) -> Optional[dict]:
     """Get a single benchmark run by id."""
     conn = get_connection()
     try:
-        row = conn.execute(
-            "SELECT * FROM eval_runs WHERE id = ?", (run_id,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM eval_runs WHERE id = ?", (run_id,)).fetchone()
         if row is None:
             return None
         return _benchmark_run_from_row(row)

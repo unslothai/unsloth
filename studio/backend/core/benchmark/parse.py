@@ -9,15 +9,17 @@ from typing import Optional
 
 # lm_eval mixes real metrics with bookkeeping keys in the per-task results dict.
 # These are not scores and must never surface in the metrics list.
-_NON_METRIC_KEYS = frozenset({
-    "alias",
-    "name",
-    "sample_len",       # token/sample count, not a score
-    "num_samples",
-    "n_samples",
-    "effective_samples",
-    "bootstrap_iters",
-})
+_NON_METRIC_KEYS = frozenset(
+    {
+        "alias",
+        "name",
+        "sample_len",  # token/sample count, not a score
+        "num_samples",
+        "n_samples",
+        "effective_samples",
+        "bootstrap_iters",
+    }
+)
 _NON_METRIC_KEYS_LOWER = frozenset(k.lower() for k in _NON_METRIC_KEYS)
 
 # Priority list for selecting the default metric from lm_eval results.
@@ -87,20 +89,26 @@ def parse_run_summary(dir_name: str, data: dict) -> Optional[dict]:
             continue
         if isinstance(val, (int, float)) and not isinstance(val, bool):
             stderr_key = f"{metric}_stderr{sep}{filt}"
-            stderr_val = str(task_results.get(stderr_key, "")) if stderr_key in task_results else None
-            metrics.append({
-                "name": key,
-                "score": round(float(val), 4),
-                "stderr": stderr_val,
-            })
+            stderr_val = (
+                str(task_results.get(stderr_key, "")) if stderr_key in task_results else None
+            )
+            metrics.append(
+                {
+                    "name": key,
+                    "score": round(float(val), 4),
+                    "stderr": stderr_val,
+                }
+            )
         elif isinstance(val, str):
             try:
                 fv = float(val)
-                metrics.append({
-                    "name": key,
-                    "score": round(fv, 4),
-                    "stderr": None,
-                })
+                metrics.append(
+                    {
+                        "name": key,
+                        "score": round(fv, 4),
+                        "stderr": None,
+                    }
+                )
             except (ValueError, TypeError):
                 pass
 
@@ -185,12 +193,14 @@ def extract_samples(data: dict, task_name: str) -> list[dict]:
 
         correct = _sample_correct(s)
 
-        samples.append({
-            "doc_id": s.get("doc_id", 0),
-            "question": _as_text(question),
-            "target": _as_text(target),
-            "response": _as_text(response),
-            "raw_response": _as_text(raw_response),
-            "correct": correct,
-        })
+        samples.append(
+            {
+                "doc_id": s.get("doc_id", 0),
+                "question": _as_text(question),
+                "target": _as_text(target),
+                "response": _as_text(response),
+                "raw_response": _as_text(raw_response),
+                "correct": correct,
+            }
+        )
     return samples

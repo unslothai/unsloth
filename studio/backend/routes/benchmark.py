@@ -54,21 +54,96 @@ from core.benchmark import (
 
 # ── Curated benchmark tasks ──────────────────────────
 _CURATED_TASKS: list[BenchmarkTaskInfo] = [
-    BenchmarkTaskInfo(id = "mmlu",             name = "MMLU",             description = "Massive Multitask Language Understanding",             task_type = "log_likelihood"),
-    BenchmarkTaskInfo(id = "mmlu_pro",          name = "MMLU-Pro",         description = "MMLU-Pro (more challenging MMLU variant)",               task_type = "log_likelihood"),
-    BenchmarkTaskInfo(id = "gpqa_main_cot_zeroshot", name = "GPQA",        description = "Google Proof Q&A (PhD-level science, CoT zero-shot)",     task_type = "generation"),
-    BenchmarkTaskInfo(id = "hellaswag",         name = "HellaSwag",        description = "Commonsense reasoning (sentence completion)",            task_type = "log_likelihood"),
-    BenchmarkTaskInfo(id = "arc_challenge",     name = "ARC-Challenge",    description = "AI2 Reasoning Challenge (challenge split)",              task_type = "log_likelihood"),
-    BenchmarkTaskInfo(id = "winogrande",        name = "WinoGrande",       description = "Winograd schema coreference",                            task_type = "log_likelihood"),
-    BenchmarkTaskInfo(id = "gsm8k",             name = "GSM8K",            description = "Grade-school math (5-shot, chain-of-thought)",            task_type = "generation"),
-    BenchmarkTaskInfo(id = "hendrycks_math",    name = "MATH",             description = "Hendrycks MATH (mathematical reasoning)",                task_type = "generation"),
-    BenchmarkTaskInfo(id = "ifeval",            name = "IFEval",           description = "Instruction Following Evaluation",                       task_type = "generation"),
-    BenchmarkTaskInfo(id = "humaneval",         name = "HumanEval",        description = "HumanEval (code generation)",                            task_type = "generation"),
-    BenchmarkTaskInfo(id = "truthfulqa_mc1",    name = "TruthfulQA MC1",  description = "Truthfulness & safety (single-true)",                    task_type = "log_likelihood"),
-    BenchmarkTaskInfo(id = "longbench",          name = "LongBench",        description = "Long-context understanding (multi-task)",                 task_type = "generation"),
-    BenchmarkTaskInfo(id = "bbh",               name = "BBH",              description = "Big Bench Hard (chain-of-thought few-shot)",              task_type = "log_likelihood"),
-    BenchmarkTaskInfo(id = "bbh_fewshot",       name = "BBH (few-shot)",   description = "Big Bench Hard (few-shot, no CoT)",                       task_type = "log_likelihood"),
-    BenchmarkTaskInfo(id = "bbh_zeroshot",      name = "BBH (zero-shot)",  description = "Big Bench Hard (zero-shot, no CoT)",                      task_type = "log_likelihood"),
+    BenchmarkTaskInfo(
+        id = "mmlu",
+        name = "MMLU",
+        description = "Massive Multitask Language Understanding",
+        task_type = "log_likelihood",
+    ),
+    BenchmarkTaskInfo(
+        id = "mmlu_pro",
+        name = "MMLU-Pro",
+        description = "MMLU-Pro (more challenging MMLU variant)",
+        task_type = "log_likelihood",
+    ),
+    BenchmarkTaskInfo(
+        id = "gpqa_main_cot_zeroshot",
+        name = "GPQA",
+        description = "Google Proof Q&A (PhD-level science, CoT zero-shot)",
+        task_type = "generation",
+    ),
+    BenchmarkTaskInfo(
+        id = "hellaswag",
+        name = "HellaSwag",
+        description = "Commonsense reasoning (sentence completion)",
+        task_type = "log_likelihood",
+    ),
+    BenchmarkTaskInfo(
+        id = "arc_challenge",
+        name = "ARC-Challenge",
+        description = "AI2 Reasoning Challenge (challenge split)",
+        task_type = "log_likelihood",
+    ),
+    BenchmarkTaskInfo(
+        id = "winogrande",
+        name = "WinoGrande",
+        description = "Winograd schema coreference",
+        task_type = "log_likelihood",
+    ),
+    BenchmarkTaskInfo(
+        id = "gsm8k",
+        name = "GSM8K",
+        description = "Grade-school math (5-shot, chain-of-thought)",
+        task_type = "generation",
+    ),
+    BenchmarkTaskInfo(
+        id = "hendrycks_math",
+        name = "MATH",
+        description = "Hendrycks MATH (mathematical reasoning)",
+        task_type = "generation",
+    ),
+    BenchmarkTaskInfo(
+        id = "ifeval",
+        name = "IFEval",
+        description = "Instruction Following Evaluation",
+        task_type = "generation",
+    ),
+    BenchmarkTaskInfo(
+        id = "humaneval",
+        name = "HumanEval",
+        description = "HumanEval (code generation)",
+        task_type = "generation",
+    ),
+    BenchmarkTaskInfo(
+        id = "truthfulqa_mc1",
+        name = "TruthfulQA MC1",
+        description = "Truthfulness & safety (single-true)",
+        task_type = "log_likelihood",
+    ),
+    BenchmarkTaskInfo(
+        id = "longbench",
+        name = "LongBench",
+        description = "Long-context understanding (multi-task)",
+        task_type = "generation",
+    ),
+    BenchmarkTaskInfo(
+        id = "bbh",
+        name = "BBH",
+        description = "Big Bench Hard (chain-of-thought few-shot)",
+        task_type = "log_likelihood",
+    ),
+    BenchmarkTaskInfo(
+        id = "bbh_fewshot",
+        name = "BBH (few-shot)",
+        description = "Big Bench Hard (few-shot, no CoT)",
+        task_type = "log_likelihood",
+    ),
+    BenchmarkTaskInfo(
+        id = "bbh_zeroshot",
+        name = "BBH (zero-shot)",
+        description = "Big Bench Hard (zero-shot, no CoT)",
+        task_type = "log_likelihood",
+    ),
 ]
 
 _task_cache: list[BenchmarkTaskInfo] | None = None
@@ -98,7 +173,8 @@ def _build_task_cache() -> list[BenchmarkTaskInfo]:
                     break
             if parent is not None:
                 curated_map[name] = BenchmarkTaskInfo(
-                    id = name, name = name,
+                    id = name,
+                    name = name,
                     description = parent.description,
                     task_type = parent.task_type,
                 )
@@ -125,6 +201,7 @@ def _get_task_cache() -> list[BenchmarkTaskInfo]:
 
 
 _task_mgr_cache = None
+
 
 def _get_task_manager():
     global _task_mgr_cache
@@ -163,10 +240,7 @@ async def list_benchmark_tasks(current_subject: str = Depends(get_current_subjec
 
 
 @router.get("/task/{task_id}/config", response_model = BenchmarkTaskConfigResponse)
-async def get_task_config(
-    task_id: str,
-    current_subject: str = Depends(get_current_subject),
-):
+async def get_task_config(task_id: str, current_subject: str = Depends(get_current_subject)):
     """Load a single task's YAML config and return its metadata (num_fewshot, etc.)."""
     if not _lm_eval_available:
         return BenchmarkTaskConfigResponse(task_id = task_id, num_fewshot = None)
@@ -201,6 +275,7 @@ async def get_task_config(
     except Exception as e:
         logger.warning(f"Failed to load config for task '{task_id}': {e}")
         return BenchmarkTaskConfigResponse(task_id = task_id, num_fewshot = None)
+
 
 # lm_eval with the gguf backend is not on PyPI yet (EleutherAI/lm-evaluation-harness#4012).
 _LM_EVAL_INSTALL_HINT = (
@@ -292,9 +367,13 @@ async def run_benchmark(
 
         if lm_eval_kwargs is None:
             error_lines = [l for l in model_lines if l.startswith("ERROR:")]
-            detail = "; ".join(error_lines) if error_lines else (
-                "Could not resolve model path for benchmarking. "
-                "Ensure the model is downloaded and accessible."
+            detail = (
+                "; ".join(error_lines)
+                if error_lines
+                else (
+                    "Could not resolve model path for benchmarking. "
+                    "Ensure the model is downloaded and accessible."
+                )
             )
             raise HTTPException(
                 status_code = 400,
@@ -305,7 +384,7 @@ async def run_benchmark(
             from datetime import datetime, timedelta, timezone
             from auth.storage import create_api_key
 
-            expires_at = (datetime.now(timezone.utc) + timedelta(days=3)).isoformat()
+            expires_at = (datetime.now(timezone.utc) + timedelta(days = 3)).isoformat()
             raw_key, row = create_api_key(
                 username = current_subject,
                 name = "benchmark-run",
@@ -586,6 +665,7 @@ async def stream_benchmark_logs(
 
 # ── Past eval runs ─────────────────────────────
 
+
 @router.get("/runs", response_model = BenchmarkRunListResponse)
 async def list_benchmark_runs(current_subject: str = Depends(get_current_subject)):
     """List past benchmark runs, newest first."""
@@ -600,12 +680,12 @@ async def list_benchmark_runs(current_subject: str = Depends(get_current_subject
 
 @router.get("/runs/{run_id}", response_model = Optional[BenchmarkRunDetail])
 async def get_benchmark_run_detail(
-    run_id: str,
-    current_subject: str = Depends(get_current_subject),
+    run_id: str, current_subject: str = Depends(get_current_subject)
 ):
     """Get full detail for a single benchmark run, including per-sample results."""
     try:
         from storage.studio_db import get_benchmark_run_detail as db_get_detail
+
         detail = db_get_detail(run_id)
         if detail is None:
             raise HTTPException(status_code = 404, detail = "Benchmark run not found")
@@ -618,13 +698,9 @@ async def get_benchmark_run_detail(
 
 
 @router.delete("/runs/{run_id}", response_model = BenchmarkOperationResponse)
-async def delete_benchmark_run(
-    run_id: str,
-    current_subject: str = Depends(get_current_subject),
-):
+async def delete_benchmark_run(run_id: str, current_subject: str = Depends(get_current_subject)):
     """Delete a benchmark run and its per-sample data."""
     import shutil
-
     try:
         from storage.studio_db import get_benchmark_run as db_get_run
         from storage.studio_db import delete_benchmark_run as db_delete_run
@@ -670,8 +746,7 @@ def _format_sse(
 
 @router.post("/graph")
 async def generate_benchmark_graph(
-    request: BenchmarkGraphRequest,
-    current_subject: str = Depends(get_current_subject),
+    request: BenchmarkGraphRequest, current_subject: str = Depends(get_current_subject)
 ):
     """Generate a benchmark comparison chart as a PNG image."""
     from fastapi.responses import Response
@@ -691,8 +766,15 @@ async def generate_benchmark_graph(
             )
 
         _VALID_THEMES = {
-            "light", "dark", "unsloth-dark", "ggplot", "fivethirtyeight",
-            "bmh", "grayscale", "seaborn-v0_8", "seaborn-v0_8-darkgrid",
+            "light",
+            "dark",
+            "unsloth-dark",
+            "ggplot",
+            "fivethirtyeight",
+            "bmh",
+            "grayscale",
+            "seaborn-v0_8",
+            "seaborn-v0_8-darkgrid",
         }
         if request.theme not in _VALID_THEMES:
             import matplotlib.style
@@ -743,8 +825,7 @@ async def generate_benchmark_graph(
 
 @router.post("/export")
 async def export_benchmark_runs(
-    request: BenchmarkExportRequest,
-    current_subject: str = Depends(get_current_subject),
+    request: BenchmarkExportRequest, current_subject: str = Depends(get_current_subject)
 ):
     """Export benchmark runs as JSON with metadata and results.json contents."""
     from fastapi.responses import Response

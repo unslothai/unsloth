@@ -7,6 +7,7 @@ import io
 from typing import Any
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
@@ -55,12 +56,28 @@ _LIGHT_THEMES = {"light"}
 
 # Color palettes for bars/lines (used when theme doesn't set prop_cycle)
 _DARK_PALETTE = [
-    "#22c55e", "#3b82f6", "#f59e0b", "#ef4444", "#a855f7",
-    "#06b6d4", "#f97316", "#ec4899", "#14b8a6", "#8b5cf6",
+    "#22c55e",
+    "#3b82f6",
+    "#f59e0b",
+    "#ef4444",
+    "#a855f7",
+    "#06b6d4",
+    "#f97316",
+    "#ec4899",
+    "#14b8a6",
+    "#8b5cf6",
 ]
 _LIGHT_PALETTE = [
-    "#16a34a", "#2563eb", "#d97706", "#dc2626", "#9333ea",
-    "#0891b2", "#ea580c", "#db2777", "#0d9488", "#7c3aed",
+    "#16a34a",
+    "#2563eb",
+    "#d97706",
+    "#dc2626",
+    "#9333ea",
+    "#0891b2",
+    "#ea580c",
+    "#db2777",
+    "#0d9488",
+    "#7c3aed",
 ]
 
 
@@ -151,12 +168,7 @@ def _resolve_theme_context(theme: str):
 
 
 def _render_chart(
-    fn,
-    runs: list[dict[str, Any]],
-    metric_name: str,
-    width: float,
-    height: float,
-    theme: str,
+    fn, runs: list[dict[str, Any]], metric_name: str, width: float, height: float, theme: str
 ) -> bytes:
     """Apply a theme and render a chart to PNG bytes."""
     ctx = _resolve_theme_context(theme)
@@ -164,44 +176,40 @@ def _render_chart(
         fig, result = fn(runs, metric_name, width, height, theme)
 
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+    fig.savefig(buf, format = "png", dpi = 150, bbox_inches = "tight")
     plt.close(fig)
     buf.seek(0)
     return buf.read()
 
 
 def _bar_chart_inner(
-    runs: list[dict[str, Any]],
-    metric_name: str,
-    width: float,
-    height: float,
-    theme: str,
+    runs: list[dict[str, Any]], metric_name: str, width: float, height: float, theme: str
 ) -> tuple[Any, Any]:
-    fig, ax = plt.subplots(figsize=(width, height))
+    fig, ax = plt.subplots(figsize = (width, height))
 
     labels = [_make_label(r) for r in runs]
     scores = [_get_score_for_metric(r, metric_name) for r in runs]
     colors = _resolve_palette(theme, len(runs))
 
     x = np.arange(len(labels))
-    bars = ax.bar(x, scores, color=colors, width=0.6, edgecolor="none", zorder=3)
+    bars = ax.bar(x, scores, color = colors, width = 0.6, edgecolor = "none", zorder = 3)
 
     for bar, score in zip(bars, scores):
         ax.text(
             bar.get_x() + bar.get_width() / 2,
             bar.get_height() + 0.5,
             f"{score:.1f}%",
-            ha="center",
-            va="bottom",
-            fontsize=9,
-            fontweight="bold",
+            ha = "center",
+            va = "bottom",
+            fontsize = 9,
+            fontweight = "bold",
         )
 
     ax.set_xticks(x)
-    ax.set_xticklabels(labels, fontsize=8, ha="center")
-    ax.set_ylabel("Score (%)", fontsize=10)
+    ax.set_xticklabels(labels, fontsize = 8, ha = "center")
+    ax.set_ylabel("Score (%)", fontsize = 10)
     title = "Accuracy" if metric_name == "__accuracy__" else metric_name
-    ax.set_title(f"Benchmark Comparison — {title}", fontsize=12, fontweight="bold", pad=12)
+    ax.set_title(f"Benchmark Comparison — {title}", fontsize = 12, fontweight = "bold", pad = 12)
     ax.set_ylim(0, max(max(scores) * 1.15, 10) if scores else 10)
     ax.yaxis.set_major_formatter(mticker.PercentFormatter())
     fig.tight_layout()
@@ -209,60 +217,50 @@ def _bar_chart_inner(
 
 
 def generate_bar_chart(
-    runs: list[dict[str, Any]],
-    metric_name: str,
-    width: float,
-    height: float,
-    theme: str,
+    runs: list[dict[str, Any]], metric_name: str, width: float, height: float, theme: str
 ) -> bytes:
     """Generate a bar chart comparing runs."""
     return _render_chart(_bar_chart_inner, runs, metric_name, width, height, theme)
 
 
 def _line_chart_inner(
-    runs: list[dict[str, Any]],
-    metric_name: str,
-    width: float,
-    height: float,
-    theme: str,
+    runs: list[dict[str, Any]], metric_name: str, width: float, height: float, theme: str
 ) -> tuple[Any, Any]:
-    fig, ax = plt.subplots(figsize=(width, height))
+    fig, ax = plt.subplots(figsize = (width, height))
 
     labels = [_make_label(r) for r in runs]
     scores = [_get_score_for_metric(r, metric_name) for r in runs]
     colors = _resolve_palette(theme, len(runs))
 
     x = np.arange(len(labels))
-    ax.plot(x, scores, marker="o", color=colors[0], linewidth=2, markersize=8, zorder=3)
+    ax.plot(x, scores, marker = "o", color = colors[0], linewidth = 2, markersize = 8, zorder = 3)
 
     for i, score in enumerate(scores):
         ax.annotate(
             f"{score:.1f}%",
             (x[i], score),
-            textcoords="offset points",
-            xytext=(0, 10),
-            ha="center",
-            fontsize=9,
-            fontweight="bold",
+            textcoords = "offset points",
+            xytext = (0, 10),
+            ha = "center",
+            fontsize = 9,
+            fontweight = "bold",
         )
 
     ax.set_xticks(x)
-    ax.set_xticklabels(labels, fontsize=8, ha="center")
-    ax.set_ylabel("Score (%)", fontsize=10)
+    ax.set_xticklabels(labels, fontsize = 8, ha = "center")
+    ax.set_ylabel("Score (%)", fontsize = 10)
     title = "Accuracy" if metric_name == "__accuracy__" else metric_name
-    ax.set_title(f"Benchmark Trend — {title}", fontsize=12, fontweight="bold", pad=12)
-    ax.set_ylim(min(min(scores) * 0.9, 0) if scores else 0, max(max(scores) * 1.15, 10) if scores else 10)
+    ax.set_title(f"Benchmark Trend — {title}", fontsize = 12, fontweight = "bold", pad = 12)
+    ax.set_ylim(
+        min(min(scores) * 0.9, 0) if scores else 0, max(max(scores) * 1.15, 10) if scores else 10
+    )
     ax.yaxis.set_major_formatter(mticker.PercentFormatter())
     fig.tight_layout()
     return fig, ax
 
 
 def generate_line_chart(
-    runs: list[dict[str, Any]],
-    metric_name: str,
-    width: float,
-    height: float,
-    theme: str,
+    runs: list[dict[str, Any]], metric_name: str, width: float, height: float, theme: str
 ) -> bytes:
     """Generate a line chart comparing runs."""
     return _render_chart(_line_chart_inner, runs, metric_name, width, height, theme)
@@ -275,14 +273,10 @@ def _short_model(model: str) -> str:
 
 
 def _grouped_bar_chart_inner(
-    runs: list[dict[str, Any]],
-    metric_name: str,
-    width: float,
-    height: float,
-    theme: str,
+    runs: list[dict[str, Any]], metric_name: str, width: float, height: float, theme: str
 ) -> tuple[Any, Any]:
     """Grouped bar: tasks on x-axis, models as grouped bars within each task."""
-    fig, ax = plt.subplots(figsize=(width, height))
+    fig, ax = plt.subplots(figsize = (width, height))
 
     # Build task → model → score mapping
     task_model: dict[str, dict[str, float]] = {}
@@ -304,35 +298,35 @@ def _grouped_bar_chart_inner(
     for j, model in enumerate(models):
         scores = [task_model[t].get(model, 0.0) for t in tasks]
         offset = (j - n_models / 2 + 0.5) * bar_width
-        ax.bar(x + offset, scores, width=bar_width, color=colors[j], label=model, edgecolor="none", zorder=3)
+        ax.bar(
+            x + offset,
+            scores,
+            width = bar_width,
+            color = colors[j],
+            label = model,
+            edgecolor = "none",
+            zorder = 3,
+        )
 
     ax.set_xticks(x)
-    ax.set_xticklabels(tasks, fontsize=8, ha="center")
-    ax.set_ylabel("Score (%)", fontsize=10)
-    ax.set_title("Benchmark Comparison — All Metrics", fontsize=12, fontweight="bold", pad=12)
+    ax.set_xticklabels(tasks, fontsize = 8, ha = "center")
+    ax.set_ylabel("Score (%)", fontsize = 10)
+    ax.set_title("Benchmark Comparison — All Metrics", fontsize = 12, fontweight = "bold", pad = 12)
     ax.yaxis.set_major_formatter(mticker.PercentFormatter())
-    ax.legend(fontsize=7, loc="upper right", framealpha=0.8)
+    ax.legend(fontsize = 7, loc = "upper right", framealpha = 0.8)
     fig.tight_layout()
     return fig, ax
 
 
 def generate_grouped_bar_chart(
-    runs: list[dict[str, Any]],
-    metric_name: str,
-    width: float,
-    height: float,
-    theme: str,
+    runs: list[dict[str, Any]], metric_name: str, width: float, height: float, theme: str
 ) -> bytes:
     """Generate a grouped bar chart with all metrics per run."""
     return _render_chart(_grouped_bar_chart_inner, runs, metric_name, width, height, theme)
 
 
 def _radar_chart_inner(
-    runs: list[dict[str, Any]],
-    metric_name: str,
-    width: float,
-    height: float,
-    theme: str,
+    runs: list[dict[str, Any]], metric_name: str, width: float, height: float, theme: str
 ) -> tuple[Any, Any]:
     """Radar: tasks as axes, each model as its own ring."""
     # Build task → model → score mapping
@@ -352,10 +346,10 @@ def _radar_chart_inner(
             "Use a bar or grouped_bar chart for fewer tasks."
         )
 
-    fig, ax = plt.subplots(figsize=(width, height), subplot_kw={"polar": True})
+    fig, ax = plt.subplots(figsize = (width, height), subplot_kw = {"polar": True})
 
     n = len(tasks)
-    angles = np.linspace(0, 2 * np.pi, n, endpoint=False).tolist()
+    angles = np.linspace(0, 2 * np.pi, n, endpoint = False).tolist()
     angles += angles[:1]
 
     colors = _resolve_palette(theme, len(models))
@@ -363,24 +357,20 @@ def _radar_chart_inner(
         scores = [task_model[t].get(model, 0.0) for t in tasks]
         scores += scores[:1]
         color = colors[i % len(colors)]
-        ax.plot(angles, scores, marker="o", linewidth=2, label=model, color=color)
-        ax.fill(angles, scores, alpha=0.1, color=color)
+        ax.plot(angles, scores, marker = "o", linewidth = 2, label = model, color = color)
+        ax.fill(angles, scores, alpha = 0.1, color = color)
 
     ax.set_xticks(angles[:-1])
-    ax.set_xticklabels(tasks, fontsize=7)
-    ax.set_title("Benchmark Radar Comparison", fontsize=12, fontweight="bold", pad=20)
+    ax.set_xticklabels(tasks, fontsize = 7)
+    ax.set_title("Benchmark Radar Comparison", fontsize = 12, fontweight = "bold", pad = 20)
     ax.yaxis.set_major_formatter(mticker.PercentFormatter())
-    ax.legend(fontsize=7, loc="upper right", bbox_to_anchor=(1.3, 1.1), framealpha=0.8)
+    ax.legend(fontsize = 7, loc = "upper right", bbox_to_anchor = (1.3, 1.1), framealpha = 0.8)
     fig.tight_layout()
     return fig, ax
 
 
 def generate_radar_chart(
-    runs: list[dict[str, Any]],
-    metric_name: str,
-    width: float,
-    height: float,
-    theme: str,
+    runs: list[dict[str, Any]], metric_name: str, width: float, height: float, theme: str
 ) -> bytes:
     """Generate a radar/spider chart comparing runs across all metrics."""
     return _render_chart(_radar_chart_inner, runs, metric_name, width, height, theme)

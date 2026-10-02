@@ -15,7 +15,9 @@ class BenchmarkTaskInfo(BaseModel):
     id: str = Field(..., description = "Task identifier (e.g. 'mmlu')")
     name: str = Field(..., description = "Display name (e.g. 'MMLU')")
     description: Optional[str] = Field(None, description = "Short description")
-    task_type: Optional[str] = Field(None, description = "Task type: 'log_likelihood' or 'generation'")
+    task_type: Optional[str] = Field(
+        None, description = "Task type: 'log_likelihood' or 'generation'"
+    )
 
 
 class BenchmarkTasksResponse(BaseModel):
@@ -41,9 +43,15 @@ class BenchmarkRunRequest(BaseModel):
         description = "Hugging Face token for accessing gated models",
     )
     task: str = Field("mmlu", description = "Benchmark task to run (e.g. 'mmlu', 'hellaswag')")
-    batch_size: str = Field("auto", description = "Concurrency for lm_eval (integer or 'auto' = server slot count)")
-    num_fewshot: Optional[int] = Field(None, description = "Number of few-shot examples (None = task default)")
-    max_tokens: Optional[int] = Field(None, description = "Maximum tokens to generate per sample (None = 32768)")
+    batch_size: str = Field(
+        "auto", description = "Concurrency for lm_eval (integer or 'auto' = server slot count)"
+    )
+    num_fewshot: Optional[int] = Field(
+        None, description = "Number of few-shot examples (None = task default)"
+    )
+    max_tokens: Optional[int] = Field(
+        None, description = "Maximum tokens to generate per sample (None = 32768)"
+    )
 
 
 class BenchmarkStatusResponse(BaseModel):
@@ -88,7 +96,9 @@ class BenchmarkTaskConfigResponse(BaseModel):
     model_config = ConfigDict(populate_by_name = True)
 
     task_id: str = Field(..., description = "Task identifier")
-    num_fewshot: Optional[int] = Field(None, description = "Default few-shot count (null = unknown, 0 = not supported)")
+    num_fewshot: Optional[int] = Field(
+        None, description = "Default few-shot count (null = unknown, 0 = not supported)"
+    )
 
 
 class BenchmarkRunMetric(BaseModel):
@@ -110,7 +120,9 @@ class BenchmarkRunSummary(BaseModel):
     task: str = Field(..., description = "Benchmark task name")
     model: str = Field(..., description = "Model identifier")
     metrics: list[BenchmarkRunMetric] = Field(..., description = "All metric values")
-    default_metric: str = Field("", description = "Key of the primary metric (e.g. 'exact_match,strict-match')")
+    default_metric: str = Field(
+        "", description = "Key of the primary metric (e.g. 'exact_match,strict-match')"
+    )
     n_samples: int = Field(0, description = "Number of samples evaluated")
     num_fewshot: Optional[int] = Field(None, description = "Few-shot count")
     created_at: str = Field(..., description = "ISO timestamp of the run")
@@ -151,7 +163,9 @@ class BenchmarkRunDetail(BaseModel):
     num_fewshot: Optional[int] = Field(None, description = "Few-shot count")
     created_at: str = Field(..., description = "ISO timestamp of the run")
     output_path: str = Field(..., description = "Absolute path to results directory")
-    samples: list[BenchmarkSampleResult] = Field(default_factory = list, description = "Per-sample results")
+    samples: list[BenchmarkSampleResult] = Field(
+        default_factory = list, description = "Per-sample results"
+    )
     correct_count: int = Field(0, description = "Number of correct samples")
     total_count: int = Field(0, description = "Total number of samples")
 
@@ -169,7 +183,10 @@ class BenchmarkGraphRequest(BaseModel):
     metric: str = Field(..., description = "Metric name to plot (e.g. 'exact_match,strict-match')")
     width: float = Field(10.0, description = "Chart width in inches", ge = 4, le = 20)
     height: float = Field(6.0, description = "Chart height in inches", ge = 3, le = 14)
-    theme: str = Field("unsloth-dark", description = "Chart theme: 'unsloth-dark', 'dark', 'light', a built-in matplotlib style, or a custom style name")
+    theme: str = Field(
+        "unsloth-dark",
+        description = "Chart theme: 'unsloth-dark', 'dark', 'light', a built-in matplotlib style, or a custom style name",
+    )
 
 
 class BenchmarkExportRequest(BaseModel):

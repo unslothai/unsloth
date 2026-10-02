@@ -18,10 +18,7 @@ def test_priority_prefers_normalized_then_strict():
 
 def test_priority_order_across_families():
     # acc_norm wins over exact_match even when the latter is listed first.
-    assert (
-        pick_default_metric(_m("exact_match,strict-match", "acc_norm"))
-        == "acc_norm"
-    )
+    assert pick_default_metric(_m("exact_match,strict-match", "acc_norm")) == "acc_norm"
     # The list is a strict rank: exact_match beats pass@1, which beats f1.
     assert pick_default_metric(_m("f1", "pass@1", "exact_match")) == "exact_match"
     assert pick_default_metric(_m("f1", "pass@1")) == "pass@1"
