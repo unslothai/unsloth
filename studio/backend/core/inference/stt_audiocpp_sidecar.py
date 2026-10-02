@@ -441,6 +441,8 @@ class AudioCppSttSidecar:
         # save) is reported back as that key, so their string comparisons keep matching.
         self._loaded_as: Optional[str] = None
         self._forced_cpu = False
+        # Where the server actually runs: training also puts it on the CPU, without the user asking.
+        self._launched_cpu = False
         self._idle_timer: Optional[threading.Timer] = None
         self._idle_generation = 0
         self._keep_alive_seconds = keep_alive_seconds
@@ -544,6 +546,7 @@ class AudioCppSttSidecar:
         self._model = None
         self._loaded_as = None
         self._forced_cpu = False
+        self._launched_cpu = False
         if server is not None:
             server.stop()
 
@@ -663,7 +666,13 @@ class AudioCppSttSidecar:
                 if device is None and self._server_alive()
                 else audio_device_forces_cpu(device)
             )
-            if self._server_alive() and self._model == entry and self._forced_cpu == force_cpu:
+            if (
+                self._server_alive()
+                and self._model == entry
+                and self._forced_cpu == force_cpu
+                # A server training moved to the CPU goes back to the GPU once training ends.
+                and self._launched_cpu == (force_cpu or _training_active())
+            ):
                 self._loaded_as = _reported_name(model, entry)
                 self._schedule_idle_unload_locked()
                 return
@@ -705,6 +714,7 @@ class AudioCppSttSidecar:
                 self._model = entry
                 self._loaded_as = _reported_name(model, entry)
                 self._forced_cpu = force_cpu
+                self._launched_cpu = run_on_cpu
                 self._schedule_idle_unload_locked()
             finally:
                 with self._load_state_lock:

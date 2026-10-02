@@ -1740,3 +1740,45 @@ def test_deleting_from_an_inactive_cache_prunes_that_caches_farm(monkeypatch, tm
     )
     asyncio.run(deletion.delete_cached_model_response("audio-cpp/Yue2-3B-GGUF"))
     assert old in pruned
+
+
+def test_a_dictation_server_training_moved_to_cpu_returns_to_the_gpu_after(hub, monkeypatch):
+    from core.inference import stt_audiocpp_sidecar as s
+
+    _put(_snapshot(hub), CANARY.gguf_file, _gguf_bytes(family = "canary_asr"))
+    started = []
+
+    class _Server:
+        def __init__(self, cpu):
+            self.backend = "cpu" if cpu else "cuda"
+
+        def alive(self):
+            return True
+
+        def stop(self):
+            pass
+
+    def start(
+        model,
+        path,
+        force_cpu = False,
+        **kwargs,
+    ):
+        started.append(force_cpu)
+        return _Server(force_cpu)
+
+    training = [True]
+    monkeypatch.setattr(s, "ensure_engine_available", lambda: "audiocpp_server")
+    monkeypatch.setattr(s, "_training_active", lambda: training[0])
+    monkeypatch.setattr(s.AudioCppServer, "start", start)
+    side = s.AudioCppSttSidecar()
+    model = f"{AUDIO_CPP_REPO}/Canary-180M-Flash-GGUF"
+    try:
+        side.load(model, device = "gpu")
+        side.load(model, device = "gpu")  # still training: kept on the CPU, no restart
+        assert started == [True]
+        training[0] = False
+        side.load(model, device = "gpu")
+        assert started == [True, False] and side.device == "cuda"
+    finally:
+        side.unload()
