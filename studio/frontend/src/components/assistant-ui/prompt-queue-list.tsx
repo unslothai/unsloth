@@ -397,6 +397,8 @@ export function PromptQueueList({
                       className="w-56 rounded-2xl border border-border/60 p-1.5 shadow-lg"
                       // Opening the menu must not select an item on pointer release.
                       onPointerUpCapture={(event) => event.preventDefault()}
+                      // A queued send focuses the composer; that alone must not dismiss the menu.
+                      onFocusOutside={(event) => event.preventDefault()}
                       onCloseAutoFocus={(event) => {
                         if (!editFromMenuRef.current) return;
                         event.preventDefault();
