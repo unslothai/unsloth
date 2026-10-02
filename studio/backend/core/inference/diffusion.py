@@ -163,6 +163,7 @@ from .diffusion_speed import (
     fp16_compile_explicit_only,
     fp16_unet_offloaded,
     fresh_compile_count,
+    int8_gemm_live,
     normalize_speed_mode,
     resolve_speed_mode,
     restore_backend_flags,
@@ -3027,6 +3028,12 @@ class DiffusionBackend:
         # load_pipeline and nothing before it, so the prefetch that moves the bytes ran unrestricted. READ, not
         # popped: load_pipeline takes it too.
         local_files_only = bool(kwargs.get("local_files_only"))
+        # Before any download: unsloth_zoo enters the dynamo cycle from the inductor side, racing the warm.
+        try:
+            from utils.torch_warmup import gate_torch_stack_import
+            gate_torch_stack_import("image load", logger)
+        except Exception as exc:  # noqa: BLE001 - a safety net, never a new failure
+            logger.debug("dynamo import gate skipped: %r", exc)
         try:
             # Resolve the base repo and estimate sizes here (both network) so begin_load returns instantly.
             fam = detect_family_for_pick(
@@ -5166,8 +5173,8 @@ class DiffusionBackend:
         apply_diffusion_device_ordinal(target)
         device, dtype = target.device, target.dtype
 
-        # Before the first `import diffusers` below, which is the earliest dynamo consumer on this
-        # path and therefore the only position that dominates the rest of them. Importing
+        # Before the first `import diffusers` below, the earliest dynamo consumer in load_pipeline
+        # (_run_load's downloads are gated earlier). Importing
         # diffusers alone pulls in torch._dynamo (every module in diffusers.hooks evaluates
         # @torch.compiler.disable() at class-body time), and so do the hook-based paths that
         # follow: the FP8 text-encoder cast (diffusion_precision), the step cache
@@ -9637,6 +9644,7 @@ class DiffusionBackend:
         resolved, speed_optims = cuda_graph.live_status(
             state.resolved, state.speed_optims, getattr(state, "cuda_graphs", ())
         )
+        speed_optims = int8_gemm_live(state.pipe, speed_optims)
         return {
             "loaded": True,
             "repo_id": state.repo_id,

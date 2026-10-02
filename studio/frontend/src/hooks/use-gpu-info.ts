@@ -4,6 +4,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { normalizeDenseQuantSchemes } from "@/lib/dense-quant-schemes";
 import {
+  type ReportedOffloadFitTier,
+  normalizeReportedOffloadFitTiers,
+} from "@/lib/offload-fit-tiers";
+import {
   type GpuIndexKind,
   type PinnableGpuContext,
   type ReconciledGpuSelection,
@@ -56,6 +60,10 @@ export interface GpuInfo {
   nvfp4Diffusion: boolean;
   /** Group offload can stream torchao weights. Absent or false until resolved and on older backends. */
   quantisedStreaming?: boolean;
+  /** Backend-reported extra Diffusers offload tiers per lower-cased repo id. Empty on older backends. */
+  extraOffloadFitTiers?: Readonly<
+    Record<string, readonly ReportedOffloadFitTier[]>
+  >;
   name: string;
   memoryTotalGb: number;
   memorySharedGb: number;
@@ -124,6 +132,9 @@ function toGpuInfo(
     denseQuantSchemes: normalizeDenseQuantSchemes(data?.dense_quant_schemes),
     nvfp4Diffusion: data?.nvfp4_diffusion === true,
     quantisedStreaming: data?.quantised_streaming === true,
+    extraOffloadFitTiers: normalizeReportedOffloadFitTiers(
+      data?.diffusers_offload_tiers,
+    ),
     cpuCore: data?.cpu?.physical_count ?? 0,
     cpuThread: data?.cpu?.logical_count ?? 0,
     systemRamAvailableGb: data?.memory?.available_gb ?? 0,

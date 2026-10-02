@@ -51,6 +51,18 @@ test("desktop branding clears the titlebar actions", async () => {
   );
 });
 
+test("custom titlebar branding centers on the chat header's model picker", async () => {
+  const header = APP_SIDEBAR.split("<SidebarHeader")[1].split("</SidebarHeader>")[0];
+  assert.match(
+    header,
+    /usesCustomTitlebar\s*\?\s*"shrink-0 p-0 pt-\[calc\(var\(--studio-content-top-inset,0px\)\+var\(--studio-chat-header-padding-top,11px\)\)\]"/,
+  );
+  assert.match(
+    header,
+    /usesCustomTitlebar && "h-\[var\(--studio-chat-control-height,34px\)\]"/,
+  );
+});
+
 test("desktop branding keeps an 11px gap above New chat", async () => {
   const source = APP_SIDEBAR;
   assert.match(source, /usesDesktopTitlebar \? "pt-\[11px\]" : "pt-\[7px\]"/);

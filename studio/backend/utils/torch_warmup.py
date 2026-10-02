@@ -246,19 +246,73 @@ def _prime_nvlink_topology() -> Optional[threading.Thread]:
 _dynamo_lock = threading.Lock()
 _dynamo_done = False
 
+# Kill switch for the request-side gates only; the gates in front of `import diffusers` stay on.
+DYNAMO_GATE_DISABLE_ENV_VAR = "UNSLOTH_STUDIO_DISABLE_DYNAMO_IMPORT_GATE"
+DYNAMO_GATE_TIMEOUT_ENV_VAR = "UNSLOTH_STUDIO_DYNAMO_IMPORT_GATE_TIMEOUT"
+_DEFAULT_DYNAMO_GATE_TIMEOUT_S = 600.0
 
-def ensure_dynamo_imported() -> bool:
+
+def _dynamo_gate_timeout() -> float:
+    try:
+        value = float(os.environ.get(DYNAMO_GATE_TIMEOUT_ENV_VAR, _DEFAULT_DYNAMO_GATE_TIMEOUT_S))
+    except ValueError:
+        return _DEFAULT_DYNAMO_GATE_TIMEOUT_S
+    return value if value > 0 else _DEFAULT_DYNAMO_GATE_TIMEOUT_S
+
+
+def gate_torch_stack_import(reason: str, log = None) -> bool:
+    """Finish ``import torch._dynamo`` before ``reason`` imports anything that reaches it. True iff imported.
+
+    ``unsloth_zoo``, ``torchao`` and ``diffusers`` enter the dynamo / inductor import cycle at
+    ``torch._inductor``; racing the warm inside ``import torch._dynamo`` takes the two package locks
+    in opposite order, and CPython's deadlock detector leaves a half-built module in sys.modules."""
+    if _dynamo_done:
+        return True
+    if os.environ.get(DYNAMO_GATE_DISABLE_ENV_VAR) == "1":
+        return False
+    return ensure_dynamo_imported(log = log or logger, reason = reason, timeout = _dynamo_gate_timeout())
+
+
+def ensure_dynamo_imported(
+    log = None,
+    reason: Optional[str] = None,
+    timeout: Optional[float] = None,
+) -> bool:
     """Finish ``import torch._dynamo`` on ONE thread. True iff dynamo is importable.
 
     ``_dynamo`` is a LAZY submodule, so ``torch._dynamo.X`` hands back a still-initialising
     module: ``.config`` binds early and ``.utils`` late, and a read in between raises
     ``partially initialized module ... has no attribute 'utils'`` (#10350, #10963). Ordinary
     loads open that window, not torch.compile: ``diffusers.hooks`` evaluates
-    ``@torch.compiler.disable()`` at class-body time. Wins only by getting there first."""
+    ``@torch.compiler.disable()`` at class-body time. Wins only by getting there first.
+
+    ``timeout`` (seconds, None = forever) bounds a wait on another importer; False on expiry."""
     global _dynamo_done
     if _dynamo_done:
         return True
-    with _dynamo_lock:
+    if not _dynamo_lock.acquire(blocking = False):
+        waited = time.perf_counter()
+        if log is not None:
+            log.info(
+                "%s: waiting for another thread to finish importing torch._dynamo",
+                reason or "torch import",
+            )
+        if not _dynamo_lock.acquire(timeout = -1 if timeout is None else timeout):
+            (log or logger).warning(
+                "%s: gave up waiting for the torch._dynamo import after %.0fs; continuing "
+                "without it (set %s=1 to skip this wait)",
+                reason or "torch import",
+                time.perf_counter() - waited,
+                DYNAMO_GATE_DISABLE_ENV_VAR,
+            )
+            return False
+        if log is not None:
+            log.info(
+                "%s: torch._dynamo ready after waiting %.1fs",
+                reason or "torch import",
+                time.perf_counter() - waited,
+            )
+    try:
         if _dynamo_done:
             return True
         try:
@@ -276,6 +330,8 @@ def ensure_dynamo_imported() -> bool:
             return False
         _dynamo_done = True
         return True
+    finally:
+        _dynamo_lock.release()
 
 
 def close_dynamo_import_window(log) -> bool:
@@ -284,7 +340,7 @@ def close_dynamo_import_window(log) -> bool:
     `import diffusers` is itself a dynamo importer, so every media load path owes this call in
     front of its first one. A warning, not a retry: a process that lost the race does not
     recover. Wrap the IMPORT of this module too, since it reaches a private CPython name."""
-    if ensure_dynamo_imported():
+    if ensure_dynamo_imported(log = log, reason = "diffusers import"):
         return True
     log.warning(
         "torch._dynamo is not importable in this process; "

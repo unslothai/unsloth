@@ -86,7 +86,7 @@ function getServerModalBlock(): boolean {
   return false;
 }
 
-// Default to instant open (no hover delay): icon labels, nav labels and the token calculators
+// Default to instant open (no hover delay): icon labels and the token calculators
 // should feel snappy. Consumers that want a delay pass an explicit `delayDuration`.
 function TooltipProvider({
   delayDuration = 0,
@@ -300,7 +300,7 @@ function TooltipContent({
         sideOffset={sideOffset}
         collisionPadding={collisionPadding}
         className={cn(
-          "z-[999999] w-fit max-w-xs",
+          "z-[999999] w-fit max-w-xs origin-(--radix-tooltip-content-transform-origin) data-[state=delayed-open]:animate-in data-[state=delayed-open]:fade-in-0 data-[state=delayed-open]:zoom-in-95 data-[state=delayed-open]:ease-out",
           variant === "default" && "tooltip-compact",
           variant === "rich" && "tooltip-rich",
           className,

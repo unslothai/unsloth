@@ -2092,7 +2092,23 @@ def stream_prequantized_module(
                     tensor_payload_bytes(t) for t in chain(module.parameters(), module.buffers())
                 ) // (1024 * 1024)
                 kwargs["low_cpu_mem_usage"] = not _streamed_pin_plan(payload_mib, 0, logger)[0]
-        apply_group_offloading(module, **kwargs)
+        # A full up-front pin goes through one slab arena: per-tensor pin_memory() rounds every weight up to a power
+        # of two (19.45 GB of H3 int8 weights held 33.8 GB pinned) and kept the pageable source alive beside it.
+        from .diffusion_pinned_arena import pinned_arena_for_group_offload
+
+        with pinned_arena_for_group_offload(
+            enabled = None if use_stream and not kwargs.get("low_cpu_mem_usage") else False
+        ) as arena:
+            apply_group_offloading(module, **kwargs)
+        if arena is not None and arena.payload_bytes:
+            module._unsloth_pin_arena_bytes = (arena.payload_bytes, arena.reserved_bytes)
+            if logger is not None:
+                logger.info(
+                    "diffusion.prequant: %s pinned once in %.2f GB of slabs (%.2f GB of weights)",
+                    label,
+                    arena.reserved_bytes / 1e9,
+                    arena.payload_bytes / 1e9,
+                )
         _move_groups_outside_inference_mode(module)
         module.register_forward_pre_hook(_evict_rotation_hook(manager, onload))
     except Exception as exc:
