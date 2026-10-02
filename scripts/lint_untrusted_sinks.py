@@ -526,6 +526,9 @@ def _module_statements(tree: ast.Module):
             children.extend(getattr(current, field, None) or [])
         for handler in getattr(current, "handlers", None) or []:
             children.extend(handler.body)
+        # `match`: each case keeps its statements under its own body.
+        for case in getattr(current, "cases", None) or []:
+            children.extend(case.body)
         pending.extend(reversed([child for child in children if isinstance(child, ast.stmt)]))
 
 
@@ -912,6 +915,14 @@ class _FileFacts:
                 name = _call_name(node.func.value)
                 if name in self.constant_maps:
                     voided.add(name)
+        # Bound to another name: the alias reaches the same dict, so a mutation through
+        # it rewrites the table, and following identities through aliases is more than
+        # this needs. Voided conservatively instead.
+        for node in ast.walk(self.tree):
+            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+                value = node.value
+                if isinstance(value, ast.Name) and value.id in self.constant_maps:
+                    voided.add(value.id)
         # A second binding anywhere, including `global MAP; MAP = json.load(...)` in a
         # function, means the literal is not the only value the name can hold.
         voided |= {name for name in self.constant_maps if self._bindings_of(name) > 1}
@@ -1812,6 +1823,50 @@ class _TaintPass(ast.NodeVisitor):
                         self.alias_offsets.pop(node.id, None)
             return
 
+    def _always_true(
+        self,
+        name: str,
+        visiting: frozenset = frozenset(),
+    ) -> bool:
+        """Whether every binding of `name` visible here is True.
+
+        The function's own bindings when it binds the name, else the module's. Each
+        binding must assign a literal True or another name that is itself always True;
+        any other binding, a parameter, a loop target or an augmented assignment
+        included, means the value is not proven.
+        """
+        if name in visiting:
+            return False
+        visiting = visiting | {name}
+        own = self.facts.functions.get(self.qualname)
+        if own is not None and name in _scope_locals(own):
+            if name in _param_names(own):
+                return False
+            nodes = list(ast.walk(own))
+        else:
+            nodes = list(ast.walk(self.facts.tree))
+        accepted: set = set()
+        for node in nodes:
+            if not isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                if not (isinstance(target, ast.Name) and target.id == name):
+                    continue
+                value = node.value
+                if (isinstance(value, ast.Constant) and value.value is True) or (
+                    isinstance(value, ast.Name) and self._always_true(value.id, visiting)
+                ):
+                    accepted.add(id(target))
+                else:
+                    return False
+        stores = [
+            node
+            for node in nodes
+            if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Store)
+        ]
+        return bool(stores) and all(id(node) in accepted for node in stores)
+
     def _loader_aliases(self) -> dict:
         """Names bound to a remote-code loader, in this body and at module scope.
 
@@ -2668,6 +2723,16 @@ class _TaintPass(ast.NodeVisitor):
         reason = self.tainted(node.value)
         if reason:
             self._assign(node.target, reason)
+        # The same alias and construction bookkeeping an assignment gets: `if (loader
+        # := importlib.import_module): loader(parsed)` bound a sink that nothing
+        # recorded, so the call matched neither table.
+        synthetic = ast.copy_location(ast.Assign(targets = [node.target], value = node.value), node)
+        self._note_true(synthetic)
+        self._note_construction(synthetic)
+        self._note_sink_alias(synthetic)
+        self._note_source_alias(synthetic)
+        self._note_instance_alias(synthetic)
+        self._note_callable_alias(synthetic)
         self.generic_visit(node)
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
@@ -2951,7 +3016,47 @@ class _TaintPass(ast.NodeVisitor):
             reason = self.tainted(argument)
             if reason:
                 self._assign(node.func.value, reason)
+                # `alias = MAP` then `alias.update(parsed)` rewrites MAP as well, since
+                # both names hold the same object, and only the receiver was tainted.
+                # One plain name-to-name hop per binding, followed transitively.
+                if isinstance(node.func.value, ast.Name):
+                    for original in self._container_originals(node.func.value.id):
+                        self._assign(ast.Name(id = original, ctx = ast.Store()), reason)
                 return
+
+    def _container_originals(self, name: str) -> list:
+        """Names `name` was bound to by a plain `name = other`, transitively."""
+        cache = self.facts.__dict__.setdefault("_container_alias_cache", {})
+        table = cache.get(self.qualname)
+        if table is None:
+            table = {}
+            own = self.facts.functions.get(self.qualname)
+            scopes = [list(_module_statements(self.facts.tree))]
+            if own is not None and isinstance(own.body, list):
+                scopes.append([n for n in ast.walk(own) if isinstance(n, ast.stmt)])
+            for statements in scopes:
+                for statement in statements:
+                    if isinstance(statement, (ast.Assign, ast.AnnAssign)) and isinstance(
+                        statement.value, ast.Name
+                    ):
+                        targets = (
+                            statement.targets
+                            if isinstance(statement, ast.Assign)
+                            else [statement.target]
+                        )
+                        for target in targets:
+                            if isinstance(target, ast.Name) and target.id != statement.value.id:
+                                table.setdefault(target.id, set()).add(statement.value.id)
+            cache[self.qualname] = table
+        found: list = []
+        pending = [name]
+        while pending:
+            current = pending.pop()
+            for original in sorted(table.get(current, ())):
+                if original not in found and original != name:
+                    found.append(original)
+                    pending.append(original)
+        return found
 
     def _propagate_into_callee(self, node: ast.Call) -> None:
         """Taint the callee's parameters, which is how a chain crosses a file."""
@@ -3255,9 +3360,11 @@ class _TaintPass(ast.NodeVisitor):
         value = weights_only.value if weights_only is not None else ast.Constant(value = None)
         if isinstance(value, ast.Constant) and value.value is True:
             return
-        if isinstance(value, ast.Name) and value.id in self.true_names:
-            return
-        if isinstance(value, ast.Name) and value.id in self.facts.module_true_names:
+        # A name is proof only if every binding of it in scope is True. `true_names` is
+        # "ever bound True", which is the fail-closed reading for enabling remote code
+        # but the wrong one for proving safety: `safe = True; safe = False` then
+        # `weights_only = safe` was accepted although the load runs unrestricted.
+        if isinstance(value, ast.Name) and self._always_true(value.id):
             return
         for argument in list(node.args[:1]) + [
             keyword.value for keyword in node.keywords if keyword.arg == "f"
@@ -3422,9 +3529,13 @@ def _remote_code_defaults(facts: _FileFacts) -> list[dict]:
     true_by_owner: dict[str, set] = {}
     assignments: dict[str, list] = {}
     for node in ast.walk(facts.tree):
-        if isinstance(node, ast.Assign) and isinstance(node.value, (ast.Constant, ast.Name)):
+        # Annotated bindings too: `enabled: bool = True` is the same flag.
+        if isinstance(node, (ast.Assign, ast.AnnAssign)) and isinstance(
+            node.value, (ast.Constant, ast.Name)
+        ):
             owner = owners.get(id(node), "<module>")
-            for target in node.targets:
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
                 if isinstance(target, ast.Name):
                     assignments.setdefault(owner, []).append((target.id, node.value))
     for owner, pairs in assignments.items():

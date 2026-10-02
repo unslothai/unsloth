@@ -4779,3 +4779,127 @@ def test_an_aliased_loader_still_gates_remote_code(tmp_path):
     for findings in (local, at_module):
         assert any(f["sink"].startswith("trust_remote_code = True") for f in findings)
     assert not any(f["sink"].startswith("trust_remote_code = True") for f in quiet)
+
+
+def test_a_flag_rebound_away_from_true_does_not_prove_weights_only(tmp_path):
+    """`safe = True; safe = False` then `weights_only = safe`, and other non-proofs.
+
+    "Ever bound True" is the fail-closed reading for enabling remote code and the wrong
+    one for proving a load safe, so a name proves `weights_only` only when every binding
+    of it in scope is True. A parameter or a loop target is not proof either.
+    """
+    head = "import torch\nfrom huggingface_hub import hf_hub_download\n"
+    tail = "    return torch.load(hf_hub_download(repo, 'w.bin'), weights_only = safe)\n"
+    shapes = {
+        "rebound": "def load(repo):\n    safe = True\n    safe = False\n",
+        "loop": "def load(repo):\n    safe = True\n    for safe in (False,):\n        pass\n",
+        "parameter": "def load(repo, safe = True):\n",
+    }
+    for label, middle in shapes.items():
+        findings = _scan(tmp_path, head + middle + tail, name = "sample_%s.py" % label)
+        assert "torch.load(weights_only = False)" in _sinks(findings), label
+
+
+def test_a_flag_that_is_always_true_still_proves_weights_only(tmp_path):
+    """The guards: a single True binding, a chain of them, and a module-level one."""
+    head = "import torch\nfrom huggingface_hub import hf_hub_download\n"
+    tail = "    return torch.load(hf_hub_download(repo, 'w.bin'), weights_only = safe)\n"
+    shapes = {
+        "single": "def load(repo):\n    safe = True\n",
+        "chained": "def load(repo):\n    flag = True\n    safe = flag\n",
+        "module": "safe = True\ndef load(repo):\n",
+    }
+    for label, middle in shapes.items():
+        findings = _scan(tmp_path, head + middle + tail, name = "sample_%s.py" % label)
+        assert _sinks(findings) == set(), label
+
+
+def test_ever_true_still_enables_remote_code(tmp_path):
+    """And the remote-code side keeps its fail-closed reading: a branch that sets True."""
+    findings = _scan(
+        tmp_path,
+        "from transformers import AutoModel\n"
+        "def load(name, cond):\n"
+        "    enabled = False\n"
+        "    if cond:\n"
+        "        enabled = True\n"
+        "    return AutoModel.from_pretrained(name, trust_remote_code = enabled)\n",
+    )
+    assert any(f["sink"].startswith("trust_remote_code = True") for f in findings)
+
+
+def test_a_mutation_through_an_alias_reaches_the_original_table(tmp_path):
+    """`alias = MAP` then `alias.update(parsed)`, and the import reads `MAP`.
+
+    Both names hold one object, but only the receiver was tainted, so the original
+    table read clean, and it also kept its literal-table exemption.
+    """
+    for label, head in (
+        ("module", "MAP = {'safe': 'torch'}\ndef load(blob):\n"),
+        ("local", "def load(blob):\n    MAP = {'safe': 'torch'}\n"),
+    ):
+        findings = _scan(
+            tmp_path,
+            "import json, importlib\n" + head + "    alias = MAP\n"
+            "    alias.update(json.loads(blob))\n"
+            "    return importlib.import_module(MAP['safe'])\n",
+            name = "sample_%s.py" % label,
+        )
+        assert "importlib.import_module" in _sinks(findings), label
+
+
+def test_a_mutated_copy_leaves_the_original_table_clean(tmp_path):
+    """The guard: `dict(table)` is a new object, so its mutation is not the original's."""
+    findings = _scan(
+        tmp_path,
+        "import json, importlib\n"
+        "def load(blob):\n"
+        "    table = {'safe': 'torch'}\n"
+        "    other = dict(table)\n"
+        "    other.update(json.loads(blob))\n"
+        "    return importlib.import_module(table['safe'])\n",
+    )
+    assert _sinks(findings) == set()
+
+
+def test_a_module_alias_bound_in_a_match_case_counts(tmp_path):
+    """Module-level `match`: each case keeps its statements under its own body."""
+    findings = _scan(
+        tmp_path,
+        "import json, importlib\n"
+        "match 1:\n"
+        "    case 1:\n"
+        "        loader = importlib.import_module\n"
+        "def load(blob):\n"
+        "    return loader(json.loads(blob)['module'])\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_walrus_binding_records_its_alias(tmp_path):
+    """`if (loader := importlib.import_module): loader(parsed)`.
+
+    The walrus carried only taint, so the sink it bound was never recorded and the call
+    matched neither table.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, importlib\n"
+        "def load(blob):\n"
+        "    if (loader := importlib.import_module):\n"
+        "        return loader(json.loads(blob)['module'])\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_an_annotated_true_flag_inside_kwargs_enables_remote_code(tmp_path):
+    """`enabled: bool = True` then `{"trust_remote_code": enabled}` splatted."""
+    findings = _scan(
+        tmp_path,
+        "from transformers import AutoModel\n"
+        "def load(name):\n"
+        "    enabled: bool = True\n"
+        "    kwargs = {'trust_remote_code': enabled}\n"
+        "    return AutoModel.from_pretrained(name, **kwargs)\n",
+    )
+    assert any(f["sink"].startswith("trust_remote_code = True") for f in findings)
