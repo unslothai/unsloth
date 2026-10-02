@@ -1158,6 +1158,19 @@ class _FileFacts:
             local = self._local_function(name, scope)
             if local is not None:
                 return [(self.path, local)]
+        # `self.runner.execute(...)` on an instance held by an attribute. BEFORE the
+        # `self.`/`cls.` branch below, which returns early on anything with that head
+        # and so swallowed this shape: the longest dotted prefix that names a tracked
+        # instance is the real receiver.
+        if tail and instances and "." in name:
+            prefix, _, attribute = name.rpartition(".")
+            held = []
+            for constructed in instances.get(prefix) or ():
+                for target in self._methods_on(constructed, attribute):
+                    if target not in held:
+                        held.append(target)
+            if held:
+                return held
         # `self.method(...)` and `cls.method(...)`. Without this an instance method is
         # outside the analysis entirely: taint neither enters it nor returns from it, so
         # a class that parses an untrusted config in one method and dynamically imports
@@ -1312,6 +1325,18 @@ class _TaintPass(ast.NodeVisitor):
         # method of a nested class resolved to nothing. Read off the recorded method set,
         # which knows whether the immediately enclosing scope is a class.
         self.class_name = qualname.rpartition(".")[0] if qualname in facts.methods else ""
+        # Instances this class holds on attributes, so `self.runner.execute(...)` in one
+        # method resolves against what `__init__` stored in another.
+        if self.class_name:
+            prefix = f"{facts.relative}::{self.class_name}."
+            for key, types in sorted(state.attr_instances.items()):
+                if not key.startswith(prefix):
+                    continue
+                spelling = f"self.{key[len(prefix) :]}"
+                for candidate in types:
+                    self.instance_types[spelling] = _with(
+                        self.instance_types.get(spelling), candidate
+                    )
 
     # -- taint queries -----------------------------------------------------------------
 
@@ -1759,6 +1784,18 @@ class _TaintPass(ast.NodeVisitor):
             for target in node.targets:
                 if isinstance(target, ast.Name):
                     self.sink_aliases[target.id] = _with(self.sink_aliases.get(target.id), held)
+            # The arguments a partial pre-binds reach the sink whenever the wrapper is
+            # called, and recording only the sink's identity discarded them: a later
+            # `loader()` leaves the sink check nothing to look at. Checked here against
+            # the partial's own call, with the wrapped callee dropped off the front so
+            # the positions line up with the sink's.
+            bound = ast.Call(
+                func = node.value.args[0],
+                args = list(node.value.args[1:]),
+                keywords = list(node.value.keywords),
+            )
+            ast.copy_location(bound, node.value)
+            self._check_one_sink(bound, held)
             return
         referenced = _call_name(node.value)
         if not referenced:
@@ -1813,8 +1850,15 @@ class _TaintPass(ast.NodeVisitor):
                 self._bind(self.local_reasons, parameter.arg, reason)
 
     def _note_true(self, node: ast.Assign) -> None:
-        """`enabled = True`, in either the plain or the annotated spelling."""
-        if not (isinstance(node.value, ast.Constant) and node.value.value is True):
+        """`enabled = True`, in either the plain or the annotated spelling.
+
+        An alias of a known-true name counts as well: `enabled = True` then
+        `remote = enabled` reaches the loader as True, and one ordinary assignment was
+        enough to walk past the gate.
+        """
+        literal = isinstance(node.value, ast.Constant) and node.value.value is True
+        aliased = isinstance(node.value, ast.Name) and node.value.id in self.true_names
+        if not (literal or aliased):
             return
         for target in node.targets:
             if isinstance(target, ast.Name):
@@ -1881,9 +1925,27 @@ class _TaintPass(ast.NodeVisitor):
         if not constructed:
             return
         for target in node.targets:
+            # `self.runner = Runner()` is how composition is written, and only plain
+            # locals were recorded, so `self.runner.execute(parsed)` resolved to nothing.
+            # Keyed by the dotted text, which is what the call site spells.
             if isinstance(target, ast.Name):
                 self.instance_types[target.id] = _with(
                     self.instance_types.get(target.id), constructed
+                )
+                continue
+            if not isinstance(target, ast.Attribute):
+                continue
+            # `self.runner = Runner()` is how composition is written. Recorded in shared
+            # state under the same key the attribute reads use, because the constructor
+            # stores it and another method calls through it.
+            spelling = _call_name(target)
+            if spelling:
+                self.instance_types[spelling] = _with(
+                    self.instance_types.get(spelling), constructed
+                )
+            for key in self._attr_keys(target):
+                self.state.attr_instances[key] = _with(
+                    self.state.attr_instances.get(key), constructed
                 )
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
@@ -1950,6 +2012,7 @@ class _TaintPass(ast.NodeVisitor):
             dict(self.sink_aliases),
             dict(self.callable_aliases),
             dict(self.source_aliases),
+            set(self.true_names),
         )
         # The nested body's `return` is the nested function's output, not this one's.
         # Leaving it set made an outer function that returns a fixed literal carry a
@@ -1981,6 +2044,9 @@ class _TaintPass(ast.NodeVisitor):
         # OUTER function's own safe `decode` read as a deserialiser, so a benign call
         # was reported even when the nested helper is never invoked.
         self.source_aliases = saved[4]
+        # And the true-flag set: a nested `enabled = True` leaked outward and made an
+        # outer loader call that always receives False report a gated finding.
+        self.true_names = saved[5]
 
     def visit_ListComp(self, node: ast.ListComp) -> None:
         self._visit_comprehension(node)
@@ -2387,6 +2453,10 @@ class _State:
         self.pending_params: dict[tuple[Path, str], dict[str, str]] = {}
         self.named_params: dict[tuple[Path, str], set[str]] = {}
         self.tainted_attrs: dict[str, str] = {}
+        # `relative::Class.attr` -> the classes an instance held there was built from.
+        # Shared rather than per-function, because `__init__` stores the object and a
+        # different method calls through it, so a per-pass local map lost the binding.
+        self.attr_instances: dict[str, tuple] = {}
         self.pending_attrs: dict[str, str] = {}
         self.tainted_globals: dict[str, str] = {}
         self.returns_tainted: dict[tuple[Path, str], str] = {}
@@ -2409,6 +2479,9 @@ class _State:
                     for name, reason in names.items()
                 ),
                 "attrs": sorted(f"{key}={reason}" for key, reason in self.tainted_attrs.items()),
+                "held": sorted(
+                    f"{key}={','.join(types)}" for key, types in self.attr_instances.items()
+                ),
                 "globals": sorted(
                     f"{key}={reason}" for key, reason in self.tainted_globals.items()
                 ),
@@ -2532,6 +2605,27 @@ def _remote_code_defaults(facts: _FileFacts) -> list[dict]:
                 ):
                     record(node, "dict item", _short(node))
     return findings
+
+
+def _queue_class_bodies(node: ast.ClassDef, prefix: str, queue: list) -> None:
+    """`(qualname, statements)` for this class body and every class nested in it.
+
+    The methods are left out: they are indexed and analysed under their own qualnames.
+    """
+    name = f"{prefix}.{node.name}" if prefix else node.name
+    queue.append(
+        (
+            f"<class {name}>",
+            [
+                inner
+                for inner in ast.iter_child_nodes(node)
+                if not isinstance(inner, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            ],
+        )
+    )
+    for inner in ast.iter_child_nodes(node):
+        if isinstance(inner, ast.ClassDef):
+            _queue_class_bodies(inner, name, queue)
 
 
 def _unpinned_code_fetches(facts: _FileFacts, reached: frozenset) -> list[dict]:
@@ -2867,18 +2961,11 @@ def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
                 # merged one class's attributes with another's and with the real globals,
                 # so a safe `command` in one class failed on a parsed one in a different
                 # class entirely.
-                class_bodies.append(
-                    (
-                        f"<class {child.name}>",
-                        [
-                            inner
-                            for inner in ast.iter_child_nodes(child)
-                            if not isinstance(
-                                inner, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-                            )
-                        ],
-                    )
-                )
+                # Recursively, because Python runs a nested class body while defining
+                # its parent and the nested node was filtered out of the only worklist,
+                # so an import-time sink inside `class Outer: class Inner:` was never
+                # visited at all. Each body keeps its own namespace.
+                _queue_class_bodies(child, "", class_bodies)
                 continue
             body.append(child)
         for qualname, statements in class_bodies:

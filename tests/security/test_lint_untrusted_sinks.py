@@ -2976,3 +2976,125 @@ def test_a_sink_wrapped_in_functools_partial_is_still_a_sink(tmp_path):
         "    return loader(json.loads(blob)['module'])\n",
     )
     assert "importlib.import_module" in _sinks(findings)
+
+
+def test_an_argument_bound_into_a_partial_is_checked(tmp_path):
+    """`functools.partial(import_module, parsed)` then `loader()`.
+
+    Recording only the wrapped sink's identity discarded the bound values, and the later
+    zero-argument call leaves the sink check nothing to look at. The bound arguments are
+    checked at the partial itself, with the wrapped callee dropped off the front so the
+    positions line up with the sink's.
+    """
+    findings = _scan(
+        tmp_path,
+        "import functools, importlib, json\n"
+        "def load(blob):\n"
+        "    loader = functools.partial(importlib.import_module, json.loads(blob)['module'])\n"
+        "    return loader()\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_keyword_bound_into_a_partial_is_checked(tmp_path):
+    """The named spelling, onto a sink that watches a keyword rather than a position."""
+    findings = _scan(
+        tmp_path,
+        "import functools, json, subprocess\n"
+        "def load(blob):\n"
+        "    runner = functools.partial(subprocess.run, executable = json.loads(blob)['exe'])\n"
+        "    return runner()\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_sink_in_a_nested_class_body_is_scanned(tmp_path):
+    """Python runs a nested class body while defining its parent.
+
+    The nested node was filtered out of the only worklist and never queued on its own,
+    so an import-time sink inside `class Outer: class Inner:` was not visited at all.
+    """
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "from pathlib import Path\n"
+        "class Outer:\n"
+        "    class Inner:\n"
+        "        module = importlib.import_module(\n"
+        "            json.loads(Path('downloaded.json').read_text())['module']\n"
+        "        )\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_nested_true_flag_does_not_leak_outward(tmp_path):
+    """A nested `enabled = True` must not make the outer `enabled` read as true.
+
+    The saved-state tuple omitted this set, so an outer loader call that always receives
+    False reported a gated finding.
+    """
+    findings = _scan(
+        tmp_path,
+        "from transformers import AutoModel\n"
+        "def load(name):\n"
+        "    enabled = False\n"
+        "    def helper():\n"
+        "        enabled = True\n"
+        "        return enabled\n"
+        "    return AutoModel.from_pretrained(name, trust_remote_code = enabled)\n",
+    )
+    assert not any(f["sink"].startswith("trust_remote_code = True") for f in findings)
+
+
+def test_an_instance_held_on_an_attribute_resolves(tmp_path):
+    """`self.runner = Runner()` in the constructor, called from another method.
+
+    Only plain locals were recorded, and a per-function map could not carry the binding
+    from `__init__` to the method that calls through it, so the instance type is kept in
+    shared state under the same key an attribute read uses.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "class Runner:\n"
+        "    def execute(self, command):\n"
+        "        return subprocess.run(command)\n"
+        "class Holder:\n"
+        "    def __init__(self):\n"
+        "        self.runner = Runner()\n"
+        "    def go(self, blob):\n"
+        "        return self.runner.execute(json.loads(blob)['command'])\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_plain_self_call_still_resolves(tmp_path):
+    """The guard for the branch order.
+
+    The attribute-held receiver has to be tried before the `self.`/`cls.` branch, which
+    returns early on anything with that head. Putting it after swallowed the new shape;
+    putting it before must not swallow the ordinary one.
+    """
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "class Holder:\n"
+        "    def helper(self, command):\n"
+        "        return subprocess.run(command)\n"
+        "    def go(self, blob):\n"
+        "        return self.helper(json.loads(blob)['command'])\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
+
+
+def test_a_true_flag_reached_through_an_alias_is_found(tmp_path):
+    """`enabled = True` then `remote = enabled`: one assignment walked past the gate."""
+    findings = _scan(
+        tmp_path,
+        "from transformers import AutoModel\n"
+        "def load(name):\n"
+        "    enabled = True\n"
+        "    remote = enabled\n"
+        "    return AutoModel.from_pretrained(name, trust_remote_code = remote)\n",
+    )
+    assert any(f["sink"].startswith("trust_remote_code = True") for f in findings)
