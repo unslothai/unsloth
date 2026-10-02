@@ -1176,7 +1176,6 @@ class MiniMaxH3NativeRuntime:
 
 # 0 / false / off: every render on a fresh one-shot sd-cli.
 H3_NATIVE_SERVER_ENV = "UNSLOTH_H3_NATIVE_SERVER"
-# Idle seconds before the server is stopped; 0 stops it after every render.
 H3_NATIVE_SERVER_IDLE_ENV = "UNSLOTH_H3_NATIVE_SERVER_IDLE_S"
 # Covers watching a clip and editing the next prompt; an absent user gets the memory back within 3 minutes.
 H3_NATIVE_SERVER_IDLE_DEFAULT_S = 180.0
@@ -1292,7 +1291,7 @@ class H3NativeServerSlot:
         _LIVE_SLOTS.add(self)
 
     def is_alive(self) -> bool:
-        # A server mid-stop still runs out of the managed tree: installs must keep waiting for it.
+        # A server mid-stop still runs out of the managed tree.
         return any(s is not None and s.is_alive() for s in (self._server, self._stopping))
 
     @property

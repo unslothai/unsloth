@@ -1312,7 +1312,7 @@ def _h3_native_server_pressure(device: Optional[str], ordinal: Optional[int]) ->
     vram_free, vram_total = _h3_card_memory_bytes(device, ordinal)
     try:
         host_total_mib = _system_memory_mib()[0]
-        # The available reading is capped by an enforcing cgroup, so the reserve must be a share of the same limit.
+        # Available RAM is cgroup-capped, so the reserve must be a share of the same limit.
         cgroup_limit_mib = _cgroup_memory_limit_mib()
         if cgroup_limit_mib and (host_total_mib is None or cgroup_limit_mib < host_total_mib):
             host_total_mib = cgroup_limit_mib
