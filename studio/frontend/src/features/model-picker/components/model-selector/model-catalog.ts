@@ -1141,6 +1141,21 @@ export interface DeviceBudget {
   denseQuantSchemes?: readonly string[];
   /** Group offload can stream torchao weights; absent = unknown, so streamed tiers are not offered. */
   quantisedStreaming?: boolean;
+  /** Backend-reported extra offload tiers per lower-cased repo id (`/api/system.diffusers_offload_tiers`).
+   *  Unioned with an artifact's own `offloadFitTiers`, so they can only widen; ignored for artifacts
+   *  without catalog tiers, whose size rule they must not replace. */
+  extraOffloadFitTiers?: Readonly<Record<string, readonly OffloadFitTier[]>>;
+}
+
+/** The artifact's catalog tiers plus any the backend reports for it. Empty when the catalog has none. */
+function artifactOffloadTiers(
+  artifact: ModelArtifact,
+  budget: DeviceBudget,
+): readonly OffloadFitTier[] {
+  const own = artifact.offloadFitTiers ?? [];
+  if (!own.length) return own;
+  const extra = budget.extraOffloadFitTiers?.[artifact.repoId.trim().toLowerCase()];
+  return extra?.length ? [...own, ...extra] : own;
 }
 
 /** GGUF fit, delegated to the one formula the Hub badge already uses. Its old private rule
@@ -1333,7 +1348,7 @@ function fitsArtifactBudget(
   budget: DeviceBudget,
 ): boolean {
   if (artifact.offloadFitTiers?.length) {
-    return artifact.offloadFitTiers.some(
+    return artifactOffloadTiers(artifact, budget).some(
       (tier) => offloadTierMet(tier, budget),
     );
   }
@@ -1454,7 +1469,7 @@ export function catalogGroupFitsDevice(
     // matching pickDefaultArtifact.
     if (a.format === "gguf") return true;
     if (a.offloadFitTiers?.length) {
-      return a.offloadFitTiers.some(
+      return artifactOffloadTiers(a, budget).some(
         (tier) => offloadTierMet(tier, budget),
       );
     }

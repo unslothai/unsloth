@@ -722,6 +722,34 @@ _unsloth_uninstall_main() {
     _is_wsl=0
     [ "$_os" = "Linux" ] && grep -qi microsoft /proc/version 2>/dev/null && _is_wsl=1
 
+    # Before the kill sweep, or Restart=on-failure brings the server back mid-removal.
+    _remove_systemd_user_service() {
+        _sd_dir="$(_xdg_dir "${XDG_CONFIG_HOME:-}" "$HOME/.config")/systemd/user"
+        _sd_unit="$_sd_dir/unsloth-studio.service"
+        if [ ! -f "$_sd_unit" ] && command -v systemctl >/dev/null 2>&1; then
+            # HOME redirected: ask the manager where the unit it loaded lives.
+            _sd_frag=$(systemctl --user show -p FragmentPath --value unsloth-studio.service 2>/dev/null || true)
+            case "$_sd_frag" in */unsloth-studio.service) _sd_unit="$_sd_frag"; _sd_dir="${_sd_frag%/*}" ;; esac
+        fi
+        if [ ! -f "$_sd_unit" ] && command -v getent >/dev/null 2>&1; then
+            # No manager to ask: its HOME is the passwd one.
+            _sd_pw=$(getent passwd "$(id -un 2>/dev/null)" 2>/dev/null | cut -d: -f6)
+            case "$_sd_pw" in /*) _sd_dir="$_sd_pw/.config/systemd/user"; _sd_unit="$_sd_dir/unsloth-studio.service" ;; esac
+        fi
+        [ -f "$_sd_unit" ] || return 0
+        [ "$(head -n 1 "$_sd_unit" 2>/dev/null)" = "# unsloth-studio-managed-systemd" ] || return 0
+        _sd_stopped=0
+        if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+            systemctl --user disable --now unsloth-studio.service 2>/dev/null && _sd_stopped=1
+        fi
+        _remove_path "$_sd_dir/default.target.wants/unsloth-studio.service"
+        _remove_path "$_sd_unit"
+        [ "$_sd_stopped" = 1 ] && { systemctl --user daemon-reload 2>/dev/null || true; }
+        echo "Removed systemd user service (unsloth-studio.service)."
+        [ "$_sd_stopped" = 1 ] || echo "  could not reach the systemd user manager to stop it; it will not start again after the next login or reboot" >&2
+    }
+    _remove_systemd_user_service
+
     echo "Stopping any running Unsloth Studio servers..."
     _pkill_studio
 
