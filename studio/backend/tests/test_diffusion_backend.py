@@ -14239,3 +14239,26 @@ def test_guidance_scale_families_get_no_injected_negative(fake_runtime, tmp_path
     backend = _loaded_backend(tmp_path)  # z-image: guidance_scale, its own CFG handling
     backend.generate(prompt = "a sloth", steps = 4, guidance = 4.0)
     assert backend._state.pipe.last_kwargs["negative_prompt"] is None
+
+
+class _IdeogramScheduleFakePipe(_FakePipe):
+    def __call__(self, *, prompt = None, mu = 0.0, std = 1.5, guidance_schedule = "card", **kwargs):
+        return super().__call__(
+            prompt = prompt, mu = mu, std = std, guidance_schedule = guidance_schedule, **kwargs
+        )
+
+
+def test_generate_ideogram_constant_guidance_uses_comfy_schedule(fake_runtime, tmp_path):
+    """Constant guidance runs ComfyUI's Ideogram 4 schedule (mu 0.5, std 1.75); the 48 / 7 card taper
+    keeps the pipeline's own."""
+    backend = DiffusionBackend()
+    _load_ideogram(backend, tmp_path)
+    pipe = _IdeogramScheduleFakePipe()
+    object.__setattr__(backend._state, "pipe", pipe)
+    backend.generate(prompt = "a sloth", steps = 20, guidance = 7.0)
+    call = pipe.last_kwargs
+    assert call["guidance_scale"] == 7.0 and call["guidance_schedule"] is None
+    assert (call["mu"], call["std"]) == (0.5, 1.75)
+    backend.generate(prompt = "a sloth", steps = 48, guidance = 7.0)
+    call = pipe.last_kwargs
+    assert call["guidance_schedule"] == "card" and (call["mu"], call["std"]) == (0.0, 1.5)

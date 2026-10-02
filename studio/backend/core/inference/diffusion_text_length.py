@@ -20,6 +20,11 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Optional
 
+# ComfyUI's Ideogram 4 scheduler defaults (its official template): logit-normal mean and spread before the resolution
+# term, which both implementations add the same way.
+IDEOGRAM4_COMFY_MU = 0.5
+IDEOGRAM4_COMFY_STD = 1.75
+
 # FLUX.1 families on a FluxPipeline-style ``max_sequence_length`` whose ComfyUI tokenizer is the FLUX T5 one.
 FLUX_T5_FAMILIES = frozenset({"flux.1", "flux.1-kontext"})
 FLUX_T5_MIN_TOKENS = 256

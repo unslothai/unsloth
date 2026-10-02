@@ -1164,9 +1164,9 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("hidream-i1-dev", 28, 0.0),
     ("hidream-i1-fast", 16, 0.0),
     ("hidream", 50, 5.0),
-    # Ideogram 4 card: 48 steps, guidance 7 (its schedule tapers the last 3 steps; the loader keeps that taper at
-    # these defaults).
-    ("ideogram", 48, 7.0),
+    # Ideogram 4: 20 steps at constant guidance 7 with the logit-normal schedule at mu 0.5 / std 1.75, as ComfyUI. An
+    # explicit 48 steps at 7 still runs the card's tapered schedule.
+    ("ideogram", 20, 7.0),
     # SDXL: Turbo distilled; base wants ~30 steps + CFG ~7. "sdxl-turbo" precedes "sdxl".
     ("sdxl-turbo", 3, 0.0),
     ("stable-diffusion-xl", 25, 7.0),

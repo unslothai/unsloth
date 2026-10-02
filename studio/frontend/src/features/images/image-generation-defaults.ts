@@ -33,7 +33,7 @@ const MODEL_DEFAULTS: Array<{
   { match: "qwen-image-2512", steps: 50, guidance: 4 },
   { match: "qwen-image", steps: 20, guidance: 4 },
   { match: "z-image", steps: 25, guidance: 3 },
-  { match: "ideogram", steps: 48, guidance: 7 },
+  { match: "ideogram", steps: 20, guidance: 7 },
   { match: "lumina", steps: 50, guidance: 4 },
   { match: "hunyuanimage", steps: 50, guidance: 3.25 },
   { match: "hidream-i1-dev", steps: 28, guidance: 0 },

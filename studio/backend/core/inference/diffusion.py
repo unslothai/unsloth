@@ -226,7 +226,12 @@ from .diffusion_precision import (
     torchao_quantize_importable,
 )
 from .diffusion_te_prequant import te_prequant_pipe_kwargs
-from .diffusion_text_length import flux_t5_kwarg, true_cfg_needs_empty_negative
+from .diffusion_text_length import (
+    IDEOGRAM4_COMFY_MU,
+    IDEOGRAM4_COMFY_STD,
+    flux_t5_kwarg,
+    true_cfg_needs_empty_negative,
+)
 from .diffusion_denoiser_prequant import (
     DENOISER_COMPONENT,
     PIPELINE_SEED_DECLINED,
@@ -8866,6 +8871,12 @@ class DiffusionBackend:
                         kwargs.pop(state.family.cfg_kwarg, None)
                     else:
                         kwargs["guidance_schedule"] = None
+                        # Constant guidance runs ComfyUI's Ideogram 4 schedule (mu 0.5, std 1.75); the card taper
+                        # above keeps the pipeline's own (mu 0, std 1.5).
+                        if "mu" in call_params:
+                            kwargs["mu"] = IDEOGRAM4_COMFY_MU
+                        if "std" in call_params:
+                            kwargs["std"] = IDEOGRAM4_COMFY_STD
                 if state.family.name == LUMINA2_FAMILY_NAME and "cfg_trunc_ratio" in call_params:
                     # Lumina 2's card recipe truncates the CFG double-forward to the first quarter
                     # (cfg_trunc_ratio=0.25); the 1.0 default oversaturates.
