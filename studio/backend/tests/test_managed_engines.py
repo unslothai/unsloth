@@ -40,8 +40,8 @@ def isolated(monkeypatch, tmp_path):
 # Studio starts a local engine process only on a Linux host (Windows runs it in WSL, macOS is
 # refused), and these lean on POSIX process timing.
 _LOCAL_ENGINE_HOST = pytest.mark.skipif(sys.platform != "linux", reason = "local engine host is Linux only")
-# Engine leases and copy-on-write clones use fcntl, which Windows does not have.
-_POSIX_ENGINE_LOCKS = pytest.mark.skipif(sys.platform == "win32", reason = "engine locks use fcntl")
+# The copy-on-write clone probe uses a Linux ioctl; Windows installs run inside the WSL guest.
+_POSIX_ENGINE_LOCKS = pytest.mark.skipif(sys.platform == "win32", reason = "clone probe uses fcntl")
 
 def active(
     root,
@@ -552,7 +552,6 @@ def test_explicit_rollback_allows_old_profile_until_replaced(isolated, monkeypat
     assert install.status(engine)["restored"] is False
 
 
-@_POSIX_ENGINE_LOCKS
 def test_runtime_lease_blocks_removal(isolated):
     marker = active(isolated)
     with install.engine_lease("vllm"):
@@ -564,7 +563,6 @@ def test_runtime_lease_blocks_removal(isolated):
     assert not marker.exists()
 
 
-@_POSIX_ENGINE_LOCKS
 def test_removal_keeps_shared_models_and_cache(isolated):
     active(isolated)
     shared = isolated / "shared-model.safetensors"
@@ -792,7 +790,6 @@ def test_install_routes_require_owner(isolated, monkeypatch):
     assert called == []
 
 
-@_POSIX_ENGINE_LOCKS
 def test_engine_routes_reap_a_crashed_engine_before_reporting(isolated, monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
@@ -975,7 +972,6 @@ def test_validate_rejects_engine_settings_before_the_picker_unloads(monkeypatch,
     assert "already quantized" in raised.value.detail
 
 
-@_POSIX_ENGINE_LOCKS
 def test_busy_install_does_not_overwrite_another_job(isolated):
     job = {"state": "running", "phase": "installing", "message": "Downloading"}
     (isolated / "vllm.job.json").write_text(json.dumps(job))
@@ -985,7 +981,6 @@ def test_busy_install_does_not_overwrite_another_job(isolated):
         assert install.status("vllm")["job"] == job
 
 
-@_POSIX_ENGINE_LOCKS
 def test_another_instance_can_request_install_cancellation(isolated):
     (isolated / "vllm.job.json").write_text(json.dumps({"state": "running"}))
     with install.engine_lease("vllm", exclusive = True):
@@ -993,7 +988,6 @@ def test_another_instance_can_request_install_cancellation(isolated):
     assert (isolated / "vllm.cancel").exists()
 
 
-@_POSIX_ENGINE_LOCKS
 def test_rollback_rejects_traversal(isolated):
     marker = active(isolated)
     info = json.loads(marker.read_text())
@@ -1972,7 +1966,6 @@ def test_non_base64_image_string_is_refused_before_the_engine(peer):
     assert requests == []
 
 
-@_POSIX_ENGINE_LOCKS
 def test_status_probe_does_not_fail_a_concurrent_engine_lease(isolated):
     import fcntl
     import time
