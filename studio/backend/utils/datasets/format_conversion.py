@@ -878,6 +878,7 @@ def convert_llava_to_vlm_format(dataset):
         """Convert one llava sample to standard VLM format."""
         messages = sample["messages"]
         images = sample.get("images", [])
+        unindexed_image_index = 0
 
         new_messages = []
         for msg in messages:
@@ -885,26 +886,16 @@ def convert_llava_to_vlm_format(dataset):
 
             for item in msg["content"]:
                 if item["type"] == "image":
-                    if "index" in item and item["index"] is not None:
-                        img_idx = item["index"]
-                        if img_idx < len(images):
-                            pil_image = images[img_idx]
-                            if isinstance(pil_image, str):
-                                pil_image = Image.open(pil_image).convert("RGB")
+                    img_idx = item.get("index")
+                    if img_idx is None:
+                        img_idx = unindexed_image_index
+                        unindexed_image_index += 1
+                    if img_idx < len(images):
+                        pil_image = images[img_idx]
+                        if isinstance(pil_image, str):
+                            pil_image = Image.open(pil_image).convert("RGB")
 
-                            new_content.append(
-                                {
-                                    "type": "image",
-                                    "image": pil_image,  # Actual PIL object
-                                }
-                            )
-                    else:
-                        if len(images) > 0:
-                            pil_image = images[0]
-                            if isinstance(pil_image, str):
-                                pil_image = Image.open(pil_image).convert("RGB")
-
-                            new_content.append({"type": "image", "image": pil_image})
+                        new_content.append({"type": "image", "image": pil_image})
 
                 elif item["type"] == "text":
                     new_content.append({"type": "text", "text": item.get("text", "")})

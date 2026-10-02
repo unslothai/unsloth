@@ -14,6 +14,7 @@ if str(_BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(_BACKEND_ROOT))
 
 from hub.utils import dataset_format  # noqa: E402
+from utils.datasets.format_conversion import convert_llava_to_vlm_format  # noqa: E402
 from utils.datasets import format_detection  # noqa: E402
 
 
@@ -119,6 +120,30 @@ def test_images_in_a_list_or_in_messages_are_detected(row, expected_vlm_format):
     assert vlm["detected_format"] == expected_vlm_format
     assert vlm["requires_manual_mapping"] is False
     assert format_detection.detect_multimodal_dataset(dataset)["is_image"] is True
+
+
+def test_unindexed_llava_images_are_consumed_in_order():
+    dataset = Dataset.from_list(
+        [
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [{"type": "image"}, {"type": "image"}],
+                    }
+                ],
+                "images": [
+                    Image.new("RGB", (8, 8), "red"),
+                    Image.new("RGB", (8, 8), "blue"),
+                ],
+            }
+        ]
+    )
+
+    converted = convert_llava_to_vlm_format(dataset)
+    images = [part["image"] for part in converted[0]["messages"][0]["content"]]
+
+    assert [image.getpixel((0, 0)) for image in images] == [(255, 0, 0), (0, 0, 255)]
 
 
 @pytest.mark.parametrize(
