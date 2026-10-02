@@ -434,6 +434,33 @@ def test_build_rag_autoinject_enabled_path_stays_unbudgeted(rag_conn, monkeypatc
     assert calls[0]["min_dense_score"] == inf_tools._autoinject_floor()
 
 
+def test_build_rag_autoinject_on_still_grounds_over_budget_doc_below_floor(rag_conn, monkeypatch):
+    from core.rag import embeddings
+
+    _add_doc(
+        rag_conn,
+        store.thread_scope("t1"),
+        "d1",
+        "big.pdf",
+        "h1",
+        ["OVER_BUDGET_PASSAGE"],
+        tokens = [50_000],
+    )
+    monkeypatch.setattr(
+        embeddings,
+        "encode",
+        lambda texts, *, model_name = None, normalize = True: [[1.0, 0.0, 0.0, 0.0] for _ in texts],
+    )
+    monkeypatch.setattr(embeddings, "dim", lambda model_name = None: len(_VEC))
+
+    result = inf_tools.build_rag_autoinject(
+        _convo("Summarize this document"),
+        {"thread_id": "t1", "autoinject": True, "autoinject_min_score": 0.7},
+    )
+    assert result is not None
+    assert "OVER_BUDGET_PASSAGE" in _injected_text(result)
+
+
 def test_build_rag_autoinject_off_does_not_inject_project_alone(rag_conn, monkeypatch):
     # The fallback exists to rescue the thread attachment. With auto-injection
     # off and nothing found in the thread, project context is not a substitute:
