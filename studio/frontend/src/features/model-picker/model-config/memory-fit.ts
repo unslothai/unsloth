@@ -526,8 +526,8 @@ export function resolveMemoryAdvisory(
       return {
         tone: "warn",
         text: estimate.floorCanOffload
-          ? "Exceeds GPU memory even at the shortest context the loader tries, so some layers will run on the CPU and generation will be slower. Setting a shorter context by hand may fit."
-          : "Exceeds GPU memory even at the shortest context the loader tries, and these settings keep layers from moving to the CPU, so loading may fail. Setting a shorter context by hand may fit.",
+          ? "Exceeds GPU memory even at the shortest context the loader tries, so some layers will run on the CPU and generation will be slower."
+          : "Exceeds GPU memory even at the shortest context the loader tries, and these settings keep layers from moving to the CPU, so loading may fail.",
       };
     }
     return {

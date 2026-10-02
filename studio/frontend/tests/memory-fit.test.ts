@@ -711,7 +711,7 @@ test("a floor over the card is a real overage, and the note does not send the us
   assert.equal(result.advisory?.tone, "warn");
   assert.equal(
     result.advisory?.text,
-    "Exceeds GPU memory even at the shortest context the loader tries, so some layers will run on the CPU and generation will be slower. Setting a shorter context by hand may fit.",
+    "Exceeds GPU memory even at the shortest context the loader tries, so some layers will run on the CPU and generation will be slower.",
   );
 });
 
@@ -791,7 +791,7 @@ test("a floor over the card says loading may fail where layers cannot move", () 
   assert.equal(result.gpuFit, "exceeds");
   assert.equal(
     result.advisory?.text,
-    "Exceeds GPU memory even at the shortest context the loader tries, and these settings keep layers from moving to the CPU, so loading may fail. Setting a shorter context by hand may fit.",
+    "Exceeds GPU memory even at the shortest context the loader tries, and these settings keep layers from moving to the CPU, so loading may fail.",
   );
 });
 
