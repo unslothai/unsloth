@@ -754,7 +754,7 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     assert downloaded_pins == [
         "isDownloaded"
     ], "the sole-quant row must carry the pin only after that quant is known complete"
-    block = re.search(r"onConfigure\(repoId, \{.*?\n\s*\}", picker, re.S)
+    block = re.search(r"const configMeta: ModelSelectorChangeMeta = \{.*?\n\s*\};", picker, re.S)
     assert block and "loadId," in block.group(0), "the GGUF gear drops the pin"
     # The variant click withholds it: a quant outside the pinned snapshot lands in a different one.
     block = re.search(r"onSelect\(repoId, \{.*?\n\s*\}", picker, re.S)
@@ -3584,11 +3584,10 @@ def test_run_settings_page_keeps_its_identifying_controls():
     # the button itself stayed untouched.
     reset = any(
         "DEFAULT_PER_MODEL_CONFIG" in el.group(0)
-        and ">\n          Reset\n        <" in el.group(0)
-        or ("DEFAULT_PER_MODEL_CONFIG" in el.group(0) and re.search(r">\s*Reset\s*<", el.group(0)))
+        and re.search(r">\s*Reset all\s*<", el.group(0))
         for el in re.finditer(r"<Button\b.*?</Button>", page, re.S)
     )
-    assert reset, "the Reset button's JSX is gone or no longer named Reset"
+    assert reset, "the Reset all button's JSX is gone or no longer named Reset all"
 
 
 def test_the_primary_action_keeps_its_four_labels():
