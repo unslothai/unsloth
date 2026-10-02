@@ -40,8 +40,9 @@ Stops running Unsloth Studio servers, then removes the install dir, launcher
 data, CLI shim, desktop and Start Menu shortcuts, the user PATH entry and the
 PathBackup registry key. In a default-mode install it also removes the shared
 prebuilts that sit beside the install dir:
-%USERPROFILE%\.unsloth\{llama.cpp,node,whisper.cpp,.cache}. The Hugging Face
-cache is left in place, as is anything else you keep under %USERPROFILE%\.unsloth.
+%USERPROFILE%\.unsloth\{llama.cpp,node,whisper.cpp,audio.cpp,.cache}. The Hugging
+Face cache is left in place (only audio.cpp's unsloth-audiocpp-links beside it
+goes), as is anything else you keep under %USERPROFILE%\.unsloth.
 
 Options:
   -Help, -h, --help, -?, /?  Print this message and exit without removing anything.
@@ -145,7 +146,7 @@ Environment:
     # The exact shape prebuilt_core.py leaves: a component lock name, ".stale.", and the pid it
     # moved aside. The leading dot alone also matched ".backup.install.lock.stale.copy", which in
     # a user-chosen master root is theirs. uninstall.sh applies the same shape.
-    $script:StaleLockPattern = '^\.(llama\.cpp|node|whisper\.cpp|sd\.cpp)\.install\.lock\.stale\.[0-9]+$'
+    $script:StaleLockPattern = '^\.(llama\.cpp|node|whisper\.cpp|audio\.cpp|sd\.cpp)\.install\.lock\.stale\.[0-9]+$'
 
     # An install lock, and only an install lock. prebuilt_core.install_lock creates these with
     # O_CREAT | O_EXCL, so a lock is always a regular file, while _RemovePath deletes recursively
@@ -874,7 +875,7 @@ Environment:
         param([string[]]$Roots)
         # Everything setup.ps1 / the prebuilt installers place inside an Unsloth home.
         $managed = @(
-            "unsloth_studio", "share", "bin", "llama.cpp", "whisper.cpp", "node",
+            "unsloth_studio", "share", "bin", "llama.cpp", "whisper.cpp", "audio.cpp", "node",
             "stable-diffusion.cpp", ".cache", ".venv_t5_510", ".venv_t5_530", ".venv_t5_550"
         )
         $out = @()
@@ -973,6 +974,8 @@ Environment:
     # Managed whisper.cpp dictation engine (setup.ps1 installs it at $UnslothHome\whisper.cpp), a
     # default-mode sibling of studio. No-op in env/custom mode and when absent.
     $defaultWhisperCpp = if ($defaultUnslothHome) { Join-Path $defaultUnslothHome "whisper.cpp" } else { $null }
+    # Managed audio.cpp engine (setup.ps1 installs it at $UnslothHome\audio.cpp), same rules.
+    $defaultAudioCpp = if ($defaultUnslothHome) { Join-Path $defaultUnslothHome "audio.cpp" } else { $null }
 
     # Build known-root list FIRST so the port-file kill can verify ownership.
     $customRoots = @(_CustomStudioRoots)
@@ -1089,7 +1092,7 @@ Environment:
     $masterRootToStop = _MasterRoot
     $masterChildrenToStop = @()
     if ($masterRootToStop -and -not (_IsUnsafeRoot $masterRootToStop)) {
-        foreach ($childName in @("llama.cpp", "node", "whisper.cpp", "stable-diffusion.cpp")) {
+        foreach ($childName in @("llama.cpp", "node", "whisper.cpp", "audio.cpp", "stable-diffusion.cpp")) {
             $childPath = Join-Path $masterRootToStop $childName
             # Only the trees this uninstall is going to delete, so an unmarked neighbour's
             # process is never killed.
@@ -1100,7 +1103,7 @@ Environment:
     }
     # $ownedRoots, not $knownRoots: see the note where the two lists are built. The master
     # children are already marker-gated above, so they carry their own proof of ownership.
-    $stopRoots = @($ownedRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultCache, $defaultNode, $defaultWhisperCpp) + @($defaultSdCppToStop | Where-Object { $_ }) + @($customSdCppToStop) + @($masterChildrenToStop)
+    $stopRoots = @($ownedRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultCache, $defaultNode, $defaultWhisperCpp, $defaultAudioCpp) + @($defaultSdCppToStop | Where-Object { $_ }) + @($customSdCppToStop) + @($masterChildrenToStop)
     # The reparse expansion turns one path into generic subdirectories of wherever it points
     # (node, bin, unsloth_studio), so it is gated for the same reason.
     _StopProcessesLockingRoots -Roots ($stopRoots + @(_ManagedPathsUnderReparseTargets $ownedRoots))
@@ -1177,7 +1180,7 @@ Environment:
         $masterRoot = $null
     }
     if ($masterRoot) {
-        foreach ($childName in @("llama.cpp", "node", "whisper.cpp", "stable-diffusion.cpp")) {
+        foreach ($childName in @("llama.cpp", "node", "whisper.cpp", "audio.cpp", "stable-diffusion.cpp")) {
             $childPath = Join-Path $masterRoot $childName
             if ((Test-Path -LiteralPath $childPath) -and
                 -not (Test-Path -LiteralPath (Join-Path $childPath ".unsloth-studio-owned") -PathType Leaf)) {
@@ -1187,7 +1190,7 @@ Environment:
             }
         }
         foreach ($lockName in @(".llama.cpp.install.lock", ".node.install.lock",
-                                ".whisper.cpp.install.lock", ".sd.cpp.install.lock")) {
+                                ".whisper.cpp.install.lock", ".audio.cpp.install.lock", ".sd.cpp.install.lock")) {
             _RemoveLockFile (Join-Path $masterRoot $lockName)
         }
         # The prebuilt installers SHARE <root>\.staging and prune it only when empty, so
@@ -1221,10 +1224,32 @@ Environment:
     # Managed whisper.cpp prebuilt, a sibling of studio under ~/.unsloth. Only present when one
     # matching the pinned llama.cpp build existed at install time, so many installs lack it.
     if ($defaultWhisperCpp) { _RemovePath $defaultWhisperCpp }
+    # The installer always marks its tree and refuses an unmarked one, so an unmarked one is the user's.
+    if ($defaultAudioCpp -and (Test-Path -LiteralPath $defaultAudioCpp) -and -not (Test-Path -LiteralPath (Join-Path $defaultAudioCpp ".unsloth-studio-owned") -PathType Leaf)) {
+        _Substep "keeping audio.cpp without Unsloth owner marker: $defaultAudioCpp" "Yellow"
+    } elseif ($defaultAudioCpp) {
+        _RemovePath $defaultAudioCpp
+    }
+    # audio.cpp lays its models out as links (copies across volumes) in unsloth-audiocpp-links beside
+    # the Hugging Face hub cache (audio_cpp_files.py). The cache itself stays, as the note below says.
+    $hfHub = if ($env:HF_HUB_CACHE) { $env:HF_HUB_CACHE }
+             elseif ($env:HUGGINGFACE_HUB_CACHE) { $env:HUGGINGFACE_HUB_CACHE }
+             elseif ($env:HF_HOME) { Join-Path $env:HF_HOME "hub" }
+             elseif ($env:XDG_CACHE_HOME) { Join-Path (Join-Path $env:XDG_CACHE_HOME "huggingface") "hub" }
+             elseif ($env:USERPROFILE) { Join-Path $env:USERPROFILE ".cache\huggingface\hub" }
+             else { $null }
+    $hfParent = if ($hfHub) { Split-Path -Parent $hfHub } else { $null }
+    if ($hfParent) { _RemovePath (Join-Path $hfParent "unsloth-audiocpp-links") }
+    # The audio.cpp server's scratch home when the Studio root was unusable (audio_cpp_server.py).
+    # %TEMP% is per user, and the name carries this user's, so no other account's is reached.
+    if ($env:USERNAME) {
+        $audioCppHome = Join-Path ([System.IO.Path]::GetTempPath()) "unsloth-audiocpp-home-$env:USERNAME"
+        if (Test-Path -LiteralPath $audioCppHome -PathType Container) { _RemovePath $audioCppHome }
+    }
     # Prebuilt install locks: every prebuilt serializes on <parent>\.<name>.install.lock
     # (prebuilt_core.py), and a stray lock keeps ~/.unsloth from being pruned below.
     if ($defaultUnslothHome) {
-        foreach ($lockName in @(".llama.cpp.install.lock", ".node.install.lock", ".whisper.cpp.install.lock")) {
+        foreach ($lockName in @(".llama.cpp.install.lock", ".node.install.lock", ".whisper.cpp.install.lock", ".audio.cpp.install.lock")) {
             _RemoveLockFile (Join-Path $defaultUnslothHome $lockName)
         }
         # Taking over an abandoned lock renames it to .stale.<pid> before unlinking; a crash

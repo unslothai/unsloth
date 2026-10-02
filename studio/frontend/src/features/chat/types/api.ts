@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+// eslint-disable-next-line no-restricted-imports -- Share the config wire types without expanding the picker UI barrel.
+import type {
+  LlamaCppConfig,
+  LlamaCppConfigSummary,
+} from "@/features/model-picker/model-config/llama-cpp-config";
 import type { TransformersUpgradeInfo } from "@/features/transformers-upgrade";
 
 export type CpuFallbackReason = "vulkan_startup_crash";
@@ -45,6 +50,9 @@ export interface ListLorasResponse {
 }
 
 export interface LoadModelRequest {
+  engine_parallelism?: "tensor" | "pipeline" | "data";
+  engine_precision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
+  engine?: "auto" | "vllm" | "sglang";
   model_path: string;
   /** Opaque client attempt ID used to cancel only this in-flight load. */
   load_request_id?: string | null;
@@ -101,6 +109,7 @@ export interface LoadModelRequest {
    *  flag. Omit/null inherits the stored per-model value; [] launches with none. GGUF only. */
   // biome-ignore lint/style/useNamingConvention: API schema
   llama_extra_args?: string[] | null;
+  llama_cpp_config?: LlamaCppConfig;
   /** Split the model across GPUs by tensor (--split-mode tensor) instead of by layer for GGUF models.
    *  Multi-GPU only. */
   tensor_parallel?: boolean | null;
@@ -127,6 +136,8 @@ export interface LoadModelRequest {
 }
 
 export interface ValidateModelResponse {
+  requested_llama_cpp_config?: LlamaCppConfig | null;
+  llama_cpp_config_summary?: LlamaCppConfigSummary | null;
   valid: boolean;
   message: string;
   identifier?: string | null;
@@ -218,6 +229,9 @@ export function isMultimodalResponse(
 }
 
 export interface LoadModelResponse {
+  engine_parallelism?: "tensor" | "pipeline" | "data";
+  engine_precision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
+  engine?: "auto" | "vllm" | "sglang";
   is_mlx?: boolean;
   is_npu?: boolean;
   status: string;
@@ -325,6 +339,8 @@ export interface LoadModelResponse {
   requested_cache_ram?: number | null;
   /** Pass-through llama-server arguments the running load was invoked with. */
   requested_llama_extra_args?: string[] | null;
+  requested_llama_cpp_config?: LlamaCppConfig | null;
+  llama_cpp_config_summary?: LlamaCppConfigSummary | null;
 }
 
 export interface UnloadModelRequest {
@@ -337,6 +353,9 @@ export interface UnloadModelRequest {
 }
 
 export interface InferenceStatusResponse {
+  engine_parallelism?: "tensor" | "pipeline" | "data";
+  engine_precision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
+  engine?: "auto" | "vllm" | "sglang";
   is_mlx?: boolean;
   is_npu?: boolean;
   active_model: string | null;
@@ -352,6 +371,11 @@ export interface InferenceStatusResponse {
   memory_warning?: string | null;
   is_audio?: boolean;
   audio_type?: string | null;
+  /** GGUF audio runtime family of the loaded speech or music model ("kokoro_tts", "yue2"). */
+  audio_family?: string | null;
+  /** The loaded GGUF audio model's generation options, as its spec declares them. Unknown-shaped
+   *  on purpose: the Audio page validates it with parseAudioOptions. */
+  audio_options?: unknown;
   has_audio_input?: boolean;
   has_video_input?: boolean;
   loading: string[];
@@ -441,6 +465,8 @@ export interface InferenceStatusResponse {
   requested_cache_ram?: number | null;
   /** Pass-through llama-server arguments the running load was invoked with. */
   requested_llama_extra_args?: string[] | null;
+  requested_llama_cpp_config?: LlamaCppConfig | null;
+  llama_cpp_config_summary?: LlamaCppConfigSummary | null;
   n_layers?: number | null;
   /** Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not MoE. */
   n_moe_layers?: number;
