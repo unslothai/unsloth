@@ -15,7 +15,9 @@ import {
   deleteBenchRun,
   getBenchRun,
   listBenchRuns,
+  releaseBenchLease,
   saveBenchRun,
+  takeBenchLease,
 } from "../api/bench-runs-api";
 import {
   type BenchConfig,
@@ -224,6 +226,17 @@ export const useBenchmarksStore = create<BenchmarksState>()(
           set({ error: "Switch on at least one setting to run." });
           return;
         }
+        const holder = `sweep-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+        try {
+          await takeBenchLease(holder);
+        } catch (err) {
+          set({ error: err instanceof Error ? err.message : String(err) });
+          return;
+        }
+        const renew = window.setInterval(
+          () => void takeBenchLease(holder).catch(() => undefined),
+          15_000,
+        );
         const effective: BenchConfig = {
           ...config,
           variants,
@@ -325,6 +338,8 @@ export const useBenchmarksStore = create<BenchmarksState>()(
           });
         } finally {
           controller = null;
+          window.clearInterval(renew);
+          void releaseBenchLease(holder);
         }
       },
       cancel: () => {

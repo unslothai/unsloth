@@ -4,9 +4,11 @@
 """Benchmark run storage, backed by studio.db. The frontend runs the sweep and posts
 the run here as it goes, so a run survives a reload and shows up on every device."""
 
+import threading
+import time
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
 from auth.authentication import authenticated_via_api_key, get_current_subject
@@ -17,6 +19,11 @@ router = APIRouter()
 
 MAX_RESULTS = 20_000
 MAX_RUNS_LISTED = 200
+# A runner renews well inside this, so a closed tab frees the GPU within a minute.
+LEASE_TTL_SECONDS = 45
+
+_lease_lock = threading.Lock()
+_lease: Optional[dict[str, Any]] = None
 
 
 def _redact_run(run: dict[str, Any], *, via_api_key: bool) -> dict[str, Any]:
@@ -117,3 +124,39 @@ def put_run(
 def remove_run(run_id: str, current_subject: str = Depends(get_current_subject)):
     if not delete_run(run_id):
         raise HTTPException(status_code = 404, detail = "Benchmark run not found")
+
+
+class BenchmarkLease(BaseModel):
+    holder: str = Field(min_length = 8, max_length = 64, pattern = r"^[A-Za-z0-9_-]+$")
+    kind: Literal["sweep", "llama-bench", "evals"] = "sweep"
+
+
+@router.post("/lease")
+def take_lease(lease: BenchmarkLease, current_subject: str = Depends(get_current_subject)):
+    """One benchmark at a time across tabs and devices: each reloads the one llama-server, so a
+    second runner would swap settings under the first and credit its rows to the wrong row."""
+    global _lease
+    now = time.monotonic()
+    with _lease_lock:
+        if _lease and _lease["holder"] != lease.holder and _lease["expires"] > now:
+            raise HTTPException(
+                status_code = 409,
+                detail = {
+                    "error": "benchmark_running",
+                    "kind": _lease["kind"],
+                    "message": "Another benchmark is running in another tab or on another device. "
+                    "Stop it or let it finish first.",
+                },
+            )
+        _lease = {"holder": lease.holder, "kind": lease.kind, "expires": now + LEASE_TTL_SECONDS}
+    return {"ttl": LEASE_TTL_SECONDS}
+
+
+@router.delete("/lease", status_code = 204)
+def release_lease(
+    holder: str = Query(max_length = 64), current_subject: str = Depends(get_current_subject)
+):
+    global _lease
+    with _lease_lock:
+        if _lease and _lease["holder"] == holder:
+            _lease = None
