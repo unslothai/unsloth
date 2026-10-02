@@ -3858,10 +3858,10 @@ def test_plan_memory_sizes_the_mirrored_companion_cache(monkeypatch, tmp_path):
 
 
 def test_zimage_is_fp16_incompatible():
-    # Only Z-Image-class families carry the guard (their activations overflow fp16).
+    # Only families whose activations overflow fp16 carry the guard: Z-Image, and Qwen-Image (NaN latents, black).
     assert detect_family("unsloth/Z-Image-Turbo-GGUF").fp16_incompatible is True
     assert detect_family("unsloth/Z-Image-GGUF").fp16_incompatible is True
-    assert detect_family("unsloth/Qwen-Image-2512-GGUF").fp16_incompatible is False
+    assert detect_family("unsloth/Qwen-Image-2512-GGUF").fp16_incompatible is True
     assert detect_family("unsloth/FLUX.1-schnell-GGUF").fp16_incompatible is False
     assert detect_family("unsloth/FLUX.2-klein-4B-GGUF").fp16_incompatible is False
 
@@ -3871,7 +3871,7 @@ def test_resolve_compute_dtype_promotes_fp16_for_zimage(fake_runtime, monkeypatc
 
     torch = sys.modules["torch"]
     z = detect_family("unsloth/Z-Image-GGUF")
-    q = detect_family("unsloth/Qwen-Image-GGUF")
+    q = detect_family("unsloth/FLUX.1-schnell-GGUF")
     monkeypatch.setattr(guard, "_recipe_supported", lambda fam, recipe: True)
     assert _resolve_diffusion_compute_dtype(z, torch.float16) is torch.float16
     # Kill switch: fp16 promotes to fp32; bf16 / fp32 unchanged.
@@ -3888,7 +3888,7 @@ def test_load_promotes_fp16_to_fp32_for_zimage_only(fake_runtime, monkeypatch, t
     from core.inference import diffusion_fp16_guard as guard
 
     torch = sys.modules["torch"]
-    # Pre-Ampere resolves fp16: Z-Image stays fp16 behind its guard; the kill switch promotes it (and only it) to fp32.
+    # Pre-Ampere resolves fp16: Z-Image stays fp16 behind its guard; the kill switch promotes it to fp32.
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True, raising = False)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda: (7, 5), raising = False)
     (tmp_path / "m.gguf").write_bytes(b"x")
@@ -3908,8 +3908,11 @@ def test_load_promotes_fp16_to_fp32_for_zimage_only(fake_runtime, monkeypatch, t
     # The promoted dtype reaches the transformer build (and thus the quant config).
     assert str(_FakeTransformer.last["torch_dtype"]) == "torch.float32"
 
+    diffusers = sys.modules["diffusers"]
+    monkeypatch.setattr(diffusers, "FluxPipeline", _FakePipeline, raising = False)
+    monkeypatch.setattr(diffusers, "FluxTransformer2DModel", _FakeTransformer, raising = False)
     q = DiffusionBackend().load_pipeline(
-        str(tmp_path), gguf_filename = "m.gguf", family_override = "qwen-image"
+        str(tmp_path), gguf_filename = "m.gguf", family_override = "flux.1"
     )
     assert q["dtype"] == "float16"  # fp16-compatible family keeps fp16 on pre-Ampere
 

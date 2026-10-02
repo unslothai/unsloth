@@ -337,6 +337,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             "qwenimageedit",
         ),
         edit = True,
+        # same DiT as qwen-image
+        fp16_incompatible = True,
     ),
     DiffusionFamily(
         name = "qwen-image",
@@ -361,6 +363,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         te_prequant_repos = (("fp8", "text_encoder", "unsloth/Qwen-Image-FP8"),),
         cfg_kwarg = "true_cfg_scale",
         aliases = ("qwen_image", "qwenimage"),
+        # fp16 overflows to NaN latents (black images)
+        fp16_incompatible = True,
         trainable = True,
         train_base_repos = ("unsloth/Qwen-Image-2512-unsloth-bnb-4bit", "Qwen/Qwen-Image"),
         img2img_pipeline_class = "QwenImageImg2ImgPipeline",
