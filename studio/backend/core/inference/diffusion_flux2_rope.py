@@ -3,17 +3,9 @@
 
 """FLUX.2 RoPE as one Triton kernel on fp16 GPUs (T4 and other pre-Ampere cards).
 
-Stock ``apply_rotary_emb`` (``use_real``, interleaved pairs) runs ~8 elementwise kernels per call with fp32
-intermediates: upcast, negate, stack, upcast, two products, a sum and the downcast. On a T4 that chain is ~0.25 s of
-a ~2.3 s klein-4B 1024px step (the card is power-capped, so the extra DRAM traffic costs clocks too). The kernel reads
-the fp16 input once and writes the fp16 output once, doing the SAME fp32 arithmetic in the same order with FMA
-contraction disabled (``x * cos`` and ``rotated * sin`` rounded separately, then summed, then rounded to fp16), so the
-output is bit-identical to stock.
-
-Scope: only the module-global ``apply_rotary_emb`` that ``transformer_flux2`` imported, so no other family is touched;
-installed only for an fp16 load (bf16 GPUs keep stock), and every call outside the measured shape (grad, compile,
-non-fp16, non-CUDA, other layouts) falls through to the stock function. Kill switch:
-``UNSLOTH_DIFFUSION_FLUX2_FUSED_ROPE=0``.
+Same fp32 arithmetic and rounding order as stock ``apply_rotary_emb`` (FMA contraction off), so the output is
+bit-identical. Patches only ``transformer_flux2``'s global for fp16 CUDA loads; any other call falls through to stock.
+Kill switch: ``UNSLOTH_DIFFUSION_FLUX2_FUSED_ROPE=0``.
 """
 
 from __future__ import annotations
@@ -42,7 +34,6 @@ def disabled() -> bool:
 
 
 def wanted(dtype: Any, device: Any = "cuda") -> bool:
-    """Install only for an fp16 CUDA (non-ROCm) load: bf16 GPUs keep the stock path untouched."""
     if disabled():
         return False
     try:
@@ -58,7 +49,7 @@ def wanted(dtype: Any, device: Any = "cuda") -> bool:
 
 @functools.lru_cache(maxsize = 1)
 def _kernel() -> Optional[Callable]:
-    """Build the Triton kernel once; None when Triton is unavailable (the stock path then stays)."""
+    """None when Triton is unavailable."""
     try:
         import triton
         import triton.language as tl
@@ -84,7 +75,6 @@ def _kernel() -> Optional[Callable]:
         HALF: tl.constexpr,
         BLOCK: tl.constexpr,
     ):
-        # One program per (batch, position): all heads x all pairs of that row.
         row = tl.program_id(0)
         b = row // S
         s = row - b * S
@@ -169,7 +159,6 @@ def _eligible(
             return False
         if f.dtype not in (torch.float32, torch.float16):
             return False
-    # Stock upcasts x, so an fp16 table also multiplies in fp32 (exact widening); the kernel loads both as fp32.
     return True
 
 
@@ -212,8 +201,7 @@ def install(
     device: Any = "cuda",
     logger: Any = None,
 ) -> bool:
-    """Point ``transformer_flux2.apply_rotary_emb`` at the fused kernel for an fp16 load. Idempotent; False (and
-    nothing patched) when not wanted, disabled, or the diffusers module is not the shape this was built for."""
+    """Idempotent; False (nothing patched) when not wanted or diffusers' symbol is not the expected one."""
     if not wanted(dtype, device):
         uninstall()
         return False
@@ -246,7 +234,7 @@ def install_for_pipe(
     device: Any = "cuda",
     logger: Any = None,
 ) -> bool:
-    """Per-load entry: install for an fp16 FLUX.2 denoiser, otherwise make sure the stock function is back."""
+    """Install for an fp16 FLUX.2 denoiser, otherwise restore stock."""
     transformer = getattr(pipe, "transformer", None)
     if transformer is None or type(transformer).__module__ != _MODULE:
         uninstall()
@@ -255,7 +243,6 @@ def install_for_pipe(
 
 
 def uninstall() -> None:
-    """Restore the stock function (idempotent)."""
     import sys
     with _LOCK:
         stock = _STOCK.pop(_ATTR, None)

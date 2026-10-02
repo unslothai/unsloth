@@ -49,7 +49,6 @@ def fake_kernel(monkeypatch):
 
 
 def test_stock_symbol_is_the_one_flux2_calls():
-    # The patch swaps the module-global name the FLUX.2 processors look up; it must be the shared stock function.
     assert fmod.apply_rotary_emb is stock_rope
     src = Path(fmod.__file__).read_text(encoding = "utf-8")
     assert "apply_rotary_emb(query, image_rotary_emb, sequence_dim=1)" in src
@@ -63,7 +62,6 @@ def test_fp16_flux2_load_installs(fake_kernel):
 
 @pytest.mark.parametrize("dtype", ["bfloat16", "float32"])
 def test_bf16_and_fp32_loads_keep_stock(fake_kernel, dtype):
-    # bf16 GPUs (Ampere+) and fp32 fallbacks must be untouched.
     assert not fr.install_for_pipe(_Flux2Like(), getattr(torch, dtype), "cuda")
     assert not fr.is_installed()
     assert fmod.apply_rotary_emb is stock_rope
@@ -128,7 +126,6 @@ def test_cpu_tensors_fall_through_to_stock(fake_kernel):
 
 
 def test_teardown_and_load_wiring():
-    # The load installs per pipe (so a non-fp16 / non-FLUX.2 load restores stock) and the shared teardown uninstalls.
     src = (Path(__file__).resolve().parents[1] / "core" / "inference" / "diffusion.py").read_text(
         encoding = "utf-8"
     )

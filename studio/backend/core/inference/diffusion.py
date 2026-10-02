@@ -6702,7 +6702,6 @@ class DiffusionBackend:
                     install_q21_fast_step(pipe, logger)
                     from .diffusion_flux2_rope import install_for_pipe as install_flux2_rope
 
-                    # fp16 GPUs only (T4 and other pre-Ampere cards): one bit-identical RoPE kernel; bf16 keeps stock.
                     install_flux2_rope(pipe, dtype, device, logger)
 
                     self._raise_if_load_cancelled(_load_token)
