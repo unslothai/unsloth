@@ -102,6 +102,7 @@ from .diffusion_hidream import (
 )
 from .diffusion_krea2 import KREA2_FAMILY_NAME, load_krea2_pipeline
 from .diffusion_small_host import (
+    INT8_DENOISER_NAMES,
     decide_small_host,
     engaged_on as small_host_engaged_on,
     host_ram_mib,
@@ -7911,7 +7912,7 @@ class DiffusionBackend:
             elif name.startswith("text_encoder"):
                 mib = prepare_streamed_encoder_(module, dtype)
                 info["components"][name] = f"memory-mapped, layerwise cast ({mib} MiB)"
-            elif name not in ("transformer", "transformer_2", "unconditional_transformer"):
+            elif name not in INT8_DENOISER_NAMES:
                 cast_resident_(module, "cpu", dtype)
                 info["components"][name] = "converted"
             else:

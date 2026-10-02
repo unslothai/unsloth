@@ -28,7 +28,8 @@ _HOST_RESERVE_FRACTION = 0.10
 # fp16 T5 keeps ``wo`` in fp32 (``_keep_in_fp32_modules``): 9.5 GB stored, 11.0 GB loaded.
 _CONVERT_MARGIN = 1.15
 _INT8_MIN_ELEMENTS = 1 << 22
-_DENOISER_NAMES = ("transformer", "transformer_2", "unconditional_transformer", "unet")
+# DiT denoisers the route stores as int8; a UNet (mostly convs) converts dense like any other non-encoder component
+INT8_DENOISER_NAMES = ("transformer", "transformer_2", "unconditional_transformer")
 
 
 def _env(name: str) -> str:
@@ -188,8 +189,15 @@ def decide_small_host(
         sum(c.mib * _itemsize(compute) / _itemsize(c.dtype) for c in converted.values())
         * _CONVERT_MARGIN
     )
-    # encoders stay memory-mapped; a denoiser may land on the host as int8 (half its bf16 bytes)
-    route = sum(c.mib // 2 for n, c in converted.items() if n in _DENOISER_NAMES)
+    # encoders stay memory-mapped; a DiT may land on the host as int8 (half its bf16 bytes)
+    route = sum(
+        c.mib // 2
+        if n in INT8_DENOISER_NAMES
+        else 0
+        if n.startswith("text_encoder")
+        else c.mib * _itemsize(compute) // _itemsize(c.dtype)
+        for n, c in converted.items()
+    )
     reserve = host_reserve_mib(host_total_mib)
     storage = {name: comp.dtype for name, comp in converted.items()}
     forced = small_host_forced()

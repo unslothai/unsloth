@@ -67,6 +67,23 @@ def test_flux1_on_a_31gb_fp16_host_takes_the_route():
     assert d.route_host_mib == 22700 // 2
 
 
+def test_unet_and_large_vae_are_budgeted_at_their_converted_size():
+    comps = {
+        "unet": sh.StoredComponent("unet", 4900, "bfloat16"),
+        "vae": sh.StoredComponent("vae", 600, "bfloat16"),
+        "text_encoder_2": sh.StoredComponent("text_encoder_2", 1300, "bfloat16"),
+    }
+    d = _decide(comps, total = 8 * 1024, available = 6000)
+    assert d.engaged
+    # only a DiT is stored as int8; the UNet and VAE convert dense on the host, the encoder stays memory-mapped
+    assert d.route_host_mib == 4900 + 600
+    assert d.refuse is not None
+    assert (
+        d.route_host_mib
+        == _decide(comps, dtype = torch.float32, total = 8 * 1024, available = 6000).route_host_mib // 2
+    )
+
+
 def test_qwen_image_fp32_promoted_takes_the_route():
     d = _decide(QWEN, dtype = torch.float32)
     assert d.engaged and d.refuse is None
