@@ -880,6 +880,15 @@ def _openai_stream_error_chunk(exc) -> dict:
     ride in the SSE body. An upstream context-window overflow is mapped to
     code=context_length_exceeded so client compaction/trim loops can detect it
     (a code-less error hides it)."""
+    from core.inference.engine_transport import EngineHTTPError
+
+    if isinstance(exc, EngineHTTPError):
+        error = _openai_passthrough_error(exc.status_code, exc.body)
+        return (
+            error.detail
+            if isinstance(error.detail, dict)
+            else openai_error_body(str(error.detail), status = error.status_code)
+        )
     _cls = _classify_llama_generation_error(exc)
     if _cls:
         return openai_error_body(
@@ -4344,6 +4353,14 @@ def _detect_safetensors_features(
     match across backends. gpt-oss is overridden: Harmony routes reasoning and
     tools through tokenizer channels, not template markup."""
     model_id = getattr(backend, "active_model_name", None)
+    if (getattr(backend, "models", {}).get(model_id) or {}).get("engine") in ("vllm", "sglang"):
+        return {
+            "supports_tools": bool(backend.models[model_id].get("supports_tools")),
+            "supports_reasoning": False,
+            "reasoning_style": "enable_thinking",
+            "reasoning_always_on": False,
+            "supports_preserve_thinking": False,
+        }
     feature_template = chat_template
     try:
         from core.inference.chat_template_helpers import _selected_template_strings_from_value
@@ -8042,6 +8059,9 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         if hasattr(llama_backend, name) or hasattr(llama_backend, f"_{name}")
     }
     fields.update(
+        engine = "auto",
+        engine_parallelism = "tensor",
+        engine_precision = "auto",
         # Not MLX, so the MLX runtime fields report as absent.
         is_mlx = False,
         is_npu = False,
@@ -8078,6 +8098,8 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         # running with no extras would come back carrying the arguments of the load
         # that just failed. None stays for "nothing was ever set", which is the only
         # case where inheriting is the right answer.
+        requested_llama_cpp_config = getattr(llama_backend, "requested_llama_cpp_config", None),
+        llama_cpp_config_summary = getattr(llama_backend, "llama_cpp_config_summary", None),
         requested_llama_extra_args = (
             None
             if llama_backend.is_diffusion
@@ -8139,9 +8161,15 @@ def _gguf_load_response(
         is_lora = False,
         is_gguf = True,
         is_local_model = is_local_model,
-        inference = load_inference_config(
-            inference_identifier or llama_backend.model_identifier or model
-        ),
+        # A custom INI's sampling seeds the chat controls like a model recommendation.
+        inference = {
+            **load_inference_config(
+                inference_identifier or llama_backend.model_identifier or model
+            ),
+            **(getattr(llama_backend, "llama_cpp_config_summary", None) or {}).get(
+                "request_defaults", {}
+            ),
+        },
         # Advisory, and None on nearly every load. Recorded by load_model when the
         # weights outgrow fast memory, so the client can say why generation is slow.
         # getattr: older/custom backend doubles predate this additive field.
@@ -9236,6 +9264,15 @@ def _local_target_may_take_several_images(load_path: Optional[str]) -> bool:
         return bool(model_type) and model_type not in SINGLE_IMAGE_ONLY_MODELS
     except BaseException:
         return False
+
+
+def _override_selects_managed_engine(target_id, override_id, variant) -> bool:
+    """A saved vLLM/SGLang choice: the managed branch inlines remote URLs and takes several images."""
+    from utils.openai_auto_switch_settings import resolve_override_for_load
+    return resolve_override_for_load(target_id, override_id, variant)[1].get("engine") in (
+        "vllm",
+        "sglang",
+    )
 
 
 async def _preflight_image_for_switch(
@@ -10942,6 +10979,10 @@ async def _maybe_auto_switch_model(
             image_preflight is not None
             and resolved is not None
             and (target_is_gguf or not require_audio_input)
+            and not (
+                not target_is_gguf
+                and _override_selects_managed_engine(target_id, override_id, variant)
+            )
         ):
             await _preflight_image_for_switch(
                 image_preflight,
@@ -11298,11 +11339,21 @@ def release_chat_gpu_claim() -> bool:
         if llama.is_active or chat_load_active():
             return False
         backend = _peek_inference_backend()
+        # A managed engine whose stop failed keeps its VRAM with no model name left.
+        if getattr(backend, "_managed_engine", None) is not None:
+            return False
         return not getattr(backend, "active_model_name", None) and not tuple(
             getattr(backend, "loading_models", ()) or ()
         )
 
     return release_if(CHAT, chat_idle)
+
+
+def reap_dead_managed_engine(backend) -> None:
+    """A crashed engine leaves nothing resident, so its claim and sharers go with it."""
+    from core.inference.gpu_arbiter import CHAT, current_owner
+    if backend.reap_dead_managed_engine() and (release_chat_gpu_claim() or current_owner() != CHAT):
+        account_access.clear_resident("chat")
 
 
 def _preview_same_checkpoint(loaded: str, requested: str) -> bool:
@@ -15215,6 +15266,8 @@ async def _prepare_load_placement(
     request: LoadRequest | ValidateModelRequest,
     extra_args: Optional[list[str]],
 ) -> _LoadPlacement:
+    if _custom_llama_config(request):
+        return _LoadPlacement(None, None, False, _classify_diffusion_gguf(config))
     requested = request.gpu_ids or None
     if not config.is_gguf:
         return _LoadPlacement(requested, None, False, False)
@@ -15586,6 +15639,12 @@ def _guard_chat_load_against_training(
         logger.warning("Could not check training state for chat-load guard: %s", e)
         llm_active = False
 
+    if llm_active and getattr(request, "engine", "auto") != "auto":
+        raise HTTPException(
+            status_code = 409,
+            detail = "Wait for training to finish before loading an optional inference engine.",
+        )
+
     if not llm_active:
         # An SDXL LoRA trainer runs in its own subprocess and cannot be cheaply fit-checked, so refuse the chat load while one is active.
         if _diffusion_training_active():
@@ -15598,6 +15657,12 @@ def _guard_chat_load_against_training(
                 ),
             )
         return
+
+    if _custom_llama_config(request):
+        raise HTTPException(
+            status_code = 409,
+            detail = "Custom llama.cpp placement cannot be verified beside active training. Stop training before loading this configuration.",
+        )
 
     from core.inference.llama_cpp import _diffusion_manual_ngl, _scale_diffusion_required_gb
 
@@ -15822,6 +15887,61 @@ def _guard_chat_load_against_training(
     raise HTTPException(status_code = 409, detail = detail)
 
 
+def _custom_llama_config(request) -> bool:
+    source = getattr(request, "llama_cpp_config", None)
+    return isinstance(source, dict) and source.get("mode") == "custom"
+
+
+def _resolve_llama_cpp_config(
+    request,
+    config = None,
+    model_identifier = None,
+):
+    """Request's own source, else this model row's saved override, else the resident same-model load's."""
+    from core.inference.llama_custom_config import parse_config_source
+    from utils.openai_auto_switch_settings import resolve_override_for_load
+
+    source = getattr(request, "llama_cpp_config", None)
+    identifier = model_identifier or request.model_path
+    variant = getattr(request, "gguf_variant", None) or getattr(config, "gguf_variant", None)
+    if source is None:
+        _, override = resolve_override_for_load(
+            identifier, getattr(config, "identifier", None), variant
+        )
+        source = override.get("llama_cpp_config")
+    if source is None:
+        resident = get_llama_cpp_backend()
+        intent = getattr(resident, "last_load_intent", None)
+        if (
+            intent is not None
+            and _same_loaded_identifier(getattr(intent, "model_identifier", None), identifier)
+            and (getattr(intent, "hf_variant", None) or "").casefold() == (variant or "").casefold()
+        ):
+            source = getattr(intent, "llama_cpp_config", None)
+    if source is None:
+        return request
+    source = parse_config_source(source)
+    return request.model_copy(update = {"llama_cpp_config": source.to_wire()})
+
+
+async def _preflight_custom_llama_config(request, config):
+    """Compile a custom config before any backend or GPU owner can be evicted."""
+    if not _custom_llama_config(request):
+        return None
+    if not config.is_gguf or _classify_diffusion_gguf(config) is True:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Custom llama.cpp configuration needs a GGUF chat model.",
+        )
+    intent = GgufLoadIntent(
+        model_identifier = config.identifier, llama_cpp_config = request.llama_cpp_config
+    )
+    try:
+        return await asyncio.to_thread(get_llama_cpp_backend().prepare_custom_config, intent)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc))) from exc
+
+
 def _resolve_inherited_extra_args(
     request,
     config: ModelConfig,
@@ -15832,6 +15952,8 @@ def _resolve_inherited_extra_args(
     """Effective pass-through extras for a GGUF request that omitted the field:
     the previous same-model load's extras, shadow-stripped, so a settings-Apply
     reload (which does not round-trip the extras field) keeps them (#5401)."""
+    if _custom_llama_config(request):
+        return []
     if getattr(request, "llama_extra_args", None) is not None:
         return extra_llama_args
     if not getattr(config, "is_gguf", False):
@@ -16359,9 +16481,10 @@ def _inherit_resident_load_in_4bit(backend, request, model_identifier: str) -> N
         return
     if not _same_loaded_identifier(backend.active_model_name, model_identifier):
         return
-    resident = (backend.models.get(backend.active_model_name, {}) or {}).get(
-        "load_in_4bit_requested"
-    )
+    entry = backend.models.get(backend.active_model_name, {}) or {}
+    if entry.get("engine", "auto") != getattr(request, "engine", "auto"):
+        return
+    resident = entry.get("load_in_4bit_requested")
     if resident is not None:
         request.load_in_4bit = bool(resident)
 
@@ -16374,10 +16497,22 @@ def _non_gguf_runtime_settings_match(backend, request) -> bool:
     max_seq_length 0 means "model default", so a `--context-length 0` reset is honoured
     on GGUF but not here.
     """
+    if getattr(request, "engine", "auto") != "auto" and (
+        backend.models.get(backend.active_model_name) or {}
+    ).get("engine_precision", "auto") != getattr(request, "engine_precision", "auto"):
+        return False
+
     if getattr(request, "force_reload", False):
         return False
     fields_set = getattr(request, "model_fields_set", set()) or set()
     entry = backend.models.get(backend.active_model_name, {}) or {}
+    if entry.get("engine") in ("vllm", "sglang"):
+        if entry.get("engine_parallelism", "tensor") != getattr(
+            request, "engine_parallelism", "tensor"
+        ):
+            return False
+        if list(request.gpu_ids or [0]) != list(entry.get("gpu_ids_requested") or [0]):
+            return False
     if "max_seq_length" in fields_set and int(request.max_seq_length or 0) > 0:
         resident = entry.get("max_seq_length_requested")
         if resident is not None and int(resident) != int(request.max_seq_length):
@@ -16896,6 +17031,71 @@ def _require_resolved_base_access(config) -> None:
         account_access.require_model_access(base.strip())
 
 
+async def _managed_engine_request(request):
+    """Normalize an optional-engine request; /validate and /load must judge the same one."""
+    from core.inference.managed_engine import validate_load
+
+    precision = request.engine_precision
+    if (
+        "engine_precision" not in request.model_fields_set
+        and "load_in_4bit" in request.model_fields_set
+        and request.load_in_4bit
+    ):
+        precision = "int4"
+    # Validate the precision the engine will be started with, before anything is unloaded.
+    request = request.model_copy(update = {"load_in_4bit": False, "engine_precision": precision})
+    try:
+        gpu_ids = await asyncio.to_thread(validate_load, request.engine, request)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    return request.model_copy(update = {"gpu_ids": gpu_ids})
+
+
+def _managed_engine_unsupported_controls(payload) -> bool:
+    """A spelled-out ``{"type": "text"}`` response_format is the default, not structured output."""
+    return bool(
+        payload.use_adapter is not None
+        or _response_format_constrains_decoding(payload)
+        or payload.continue_final_message
+        or payload.enable_thinking
+        or payload.preserve_thinking
+        or payload.reasoning_effort not in (None, "none")
+    )
+
+
+def _reject_unsupported_managed_kind(request, config) -> None:
+    if not (config.is_gguf or config.is_lora or config.is_audio):
+        return
+    detected_kind = (
+        "GGUF" if config.is_gguf else "a LoRA adapter" if config.is_lora else "an audio model"
+    )
+    raise HTTPException(
+        status_code = 400,
+        detail = (
+            f"This model was detected as {detected_kind}. "
+            f"The Studio {request.engine} integration currently supports text and vision checkpoints. "
+            "Choose Default for this model, or select a supported text checkpoint."
+        ),
+    )
+
+
+async def _managed_engine_options(request, config, hf_token) -> dict:
+    """Metadata checks that must reject before the resident model is released."""
+    from core.inference.managed_engine import validate_model
+    try:
+        return await asyncio.to_thread(
+            validate_model,
+            config,
+            hf_token,
+            request.gpu_ids,
+            request.engine,
+            request.engine_precision,
+            request.engine_parallelism,
+        )
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+
+
 def _npu_load_response(resident, status: str) -> LoadResponse:
     model = resident.model
     return LoadResponse(
@@ -17031,6 +17231,10 @@ async def _load_model_impl(
             on_reload_confirmed = on_reload_confirmed,
             load_cancel_event = load_cancel_event,
         )
+
+    engine_options = None
+    if request.engine != "auto":
+        request = await _managed_engine_request(request)
     native_access_deferred = _defers_access_to_native_grant(request)
     if account_access.managed_account() and not native_access_deferred:
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
@@ -17083,17 +17287,27 @@ async def _load_model_impl(
     gguf_load_stack = ExitStack()
     token_rejections = gguf_load_stack.enter_context(collecting_hub_token_rejections())
     try:
+        requested_llama_cpp_config = request.llama_cpp_config
+
         # Validate user pass-through args up front so a managed-flag collision
-        # returns 400 before any model work.
-        try:
-            extra_llama_args = validate_extra_args(request.llama_extra_args)
-        except ValueError as exc:
-            # Keep the curated validation message (names the flag); just strip paths.
-            logger.warning("inference.validate_extra_args_failed: %s", exc)
-            raise HTTPException(
-                status_code = 400,
-                detail = redact_native_paths(str(exc)),
-            )
+        # returns 400 before any model work. Custom mode launches without them.
+        def _validated_extra_args(req):
+            if _custom_llama_config(req):
+                return []
+            try:
+                return validate_extra_args(req.llama_extra_args)
+            except ValueError as exc:
+                # Keep the curated validation message (names the flag); just strip paths.
+                logger.warning("inference.validate_extra_args_failed: %s", exc)
+                raise HTTPException(
+                    status_code = 400,
+                    detail = redact_native_paths(str(exc)),
+                )
+
+        extra_llama_args = _validated_extra_args(request)
+        request = _resolve_llama_cpp_config(request)
+        if _custom_llama_config(request):
+            extra_llama_args = []
         # Re-narrow []-from-None back to None so the inheritance path below can
         # tell "caller omitted" from "caller explicit []".
         extra_llama_args: Optional[list[str]] = (
@@ -17277,7 +17491,12 @@ async def _load_model_impl(
             )
 
         is_direct_gguf_request = model_identifier.lower().endswith(".gguf")
-        if llama_backend.is_loaded and (request.gguf_variant or is_direct_gguf_request):
+        if (
+            llama_backend.is_loaded
+            and (request.gguf_variant or is_direct_gguf_request)
+            and getattr(request, "llama_cpp_config", None) is None
+            and getattr(llama_backend, "requested_llama_cpp_config", None) is None
+        ):
             reused = _reuse_loaded_gguf(
                 _active_gguf_intent(
                     request,
@@ -17295,10 +17514,14 @@ async def _load_model_impl(
                 if not llama_backend.holds_no_vram:
                     await asyncio.to_thread(acquire_for_request, CHAT)
                 return reused
-        if not (request.gguf_variant or is_direct_gguf_request):
+        if not (request.gguf_variant or is_direct_gguf_request) and not _custom_llama_config(
+            request
+        ):
             _inherit_resident_load_in_4bit(backend, request, model_identifier)
             if (
                 _same_loaded_identifier(backend.active_model_name, model_identifier)
+                and (backend.models.get(backend.active_model_name) or {}).get("engine", "auto")
+                == request.engine
                 and _mlx_runtime_settings_match(backend, request)
                 and _non_gguf_runtime_settings_match(backend, request)
                 and _resident_context_satisfies(
@@ -17333,6 +17556,12 @@ async def _load_model_impl(
                     await asyncio.to_thread(acquire_for_request, CHAT)
                 account_access.join_resident("chat")
                 return LoadResponse(
+                    engine = request.engine,
+                    engine_parallelism = request.engine_parallelism,
+                    engine_precision = request.engine_precision,
+                    gpu_ids = _model_info.get("gpu_ids"),
+                    requested_gpu_ids = _model_info.get("gpu_ids_requested"),
+                    tensor_parallel = bool(_model_info.get("tensor_parallel", False)),
                     status = "already_loaded",
                     model = model_log_label if native_grant_backed else backend.active_model_name,
                     display_name = model_log_label
@@ -17413,6 +17642,17 @@ async def _load_model_impl(
             )
         await asyncio.to_thread(_require_resolved_base_access, config)
 
+        request = _resolve_llama_cpp_config(
+            request.model_copy(update = {"llama_cpp_config": requested_llama_cpp_config}),
+            config,
+            public_model_identifier,
+        )
+        extra_llama_args = _validated_extra_args(request)
+        custom_compiled = await _preflight_custom_llama_config(request, config)
+        if custom_compiled is not None:
+            _n_parallel = custom_compiled.n_parallel or _n_parallel
+            effective_chat_template_override = None
+
         # Resolve inherited extras once before command-dependent preflights.
         extra_llama_args = _resolve_inherited_extra_args(
             request,
@@ -17472,6 +17712,8 @@ async def _load_model_impl(
                     raise HTTPException(status_code = 400, detail = str(exc)) from exc
         gguf_intent: Optional[GgufLoadIntent] = None
         _tensor_intent_overall = False
+        if request.engine != "auto":
+            _reject_unsupported_managed_kind(request, config)
         if config.is_gguf:
             gguf_intent = _resolve_gguf_load_intent(
                 config,
@@ -17520,6 +17762,11 @@ async def _load_model_impl(
             )
             if reused is not None:
                 return reused
+
+        if request.engine != "auto":
+            engine_options = await _managed_engine_options(
+                request, config, False if anonymous_hf_access else request.hf_token
+            )
 
         # Config-resolved dedupe must run first: a duplicate must not refuse/cancel active chats.
         # Refusal is non-destructive; defer forced cancellation past every remaining rejection.
@@ -17652,6 +17899,8 @@ async def _load_model_impl(
                 request.speculative_type,
             )
         )
+        if custom_compiled is not None:
+            chat_load_needs_gpu = not custom_compiled.cpu_only
         # Ahead of the arbiter: acquire_for evicts a resident Images/Video pipeline and the
         # confirmation below cancels the running generations, both before load_model's own
         # copy of this check runs. A header-sized read spares them. Fails open into that copy.
@@ -17858,13 +18107,18 @@ async def _load_model_impl(
             # loading; the response reports the backend's actual tensor_parallel
             # state so the UI toggle reflects the fallback.
             try:
-                success = await load_with_tensor_fallback(
-                    _attempt_gguf_load,
-                    requested_tensor = request.tensor_parallel,
-                    extra_args = extra_llama_args,
-                    label = config.identifier,
-                    cancelled = lambda: _gguf_load_cancelled(llama_backend, load_cancel_event),
-                )
+                if custom_compiled is not None:
+                    success = await _run_gguf_load_attempt(
+                        llama_backend, load_intent, load_cancel_event
+                    )
+                else:
+                    success = await load_with_tensor_fallback(
+                        _attempt_gguf_load,
+                        requested_tensor = request.tensor_parallel,
+                        extra_args = extra_llama_args,
+                        label = config.identifier,
+                        cancelled = lambda: _gguf_load_cancelled(llama_backend, load_cancel_event),
+                    )
             except Exception:
                 # A GGUF load can raise before tearing down the old llama-server (e.g. an
                 # update-in-progress guard fires before _kill_process), leaving the prior
@@ -18026,6 +18280,11 @@ async def _load_model_impl(
         try:
             success = await asyncio.to_thread(
                 backend.load_model,
+                **(
+                    {"engine": request.engine, "engine_options": engine_options}
+                    if request.engine != "auto"
+                    else {}
+                ),
                 config = config,
                 max_seq_length = request.max_seq_length,
                 load_in_4bit = load_in_4bit,
@@ -18052,6 +18311,9 @@ async def _load_model_impl(
         except Exception:
             _restore_marker_if_prior_preview_still_resident()
             _restore_alias_if_failed_load_left_the_prior_model(backend, _prior_alias, _prior_active)
+            if request.engine != "auto":
+                # Cancelled managed startup raises; report the scoped-cancel 409.
+                _raise_if_scoped_load_cancelled()
             raise
 
         if not success:
@@ -18158,6 +18420,12 @@ async def _load_model_impl(
             pass
 
         return LoadResponse(
+            engine = request.engine,
+            engine_parallelism = request.engine_parallelism,
+            engine_precision = request.engine_precision,
+            gpu_ids = _model_info.get("gpu_ids"),
+            requested_gpu_ids = _model_info.get("gpu_ids_requested"),
+            tensor_parallel = bool(_model_info.get("tensor_parallel", False)),
             status = "loaded",
             model = model_log_label if native_grant_backed else config.identifier,
             display_name = model_log_label if native_grant_backed else config.display_name,
@@ -18439,6 +18707,8 @@ async def validate_model(
         request = request.model_copy(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
+    if request.engine != "auto":
+        request = await _managed_engine_request(request)
     native_access_deferred = _defers_access_to_native_grant(request)
     if account_access.managed_account() and not native_access_deferred:
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
@@ -18503,6 +18773,15 @@ async def validate_model(
                 status_code = 400,
                 detail = f"Invalid model identifier: {model_log_label}",
             )
+        if request.engine != "auto":
+            # The picker unloads the resident once this passes, so /load's engine checks run here too.
+            _reject_unsupported_managed_kind(request, config)
+            await _managed_engine_options(request, config, request.hf_token)
+
+        request = _resolve_llama_cpp_config(
+            request, config, _public_model_identifier(request.model_path, model_identifier)
+        )
+        custom_compiled = await _preflight_custom_llama_config(request, config)
 
         # The caller's own list when it sent one, or the resolver hands back this
         # fourth argument unchanged and a --ctx-size the load is about to use would
@@ -18805,6 +19084,9 @@ async def validate_model(
         return restore_inventory_handles(
             ValidateModelResponse(
                 valid = True,
+                llama_cpp_config_summary = custom_compiled.summary()
+                if custom_compiled is not None
+                else None,
                 message = " ".join(
                     ["Model identifier is valid."] + _hub_access_warnings(token_rejections)
                 ),
@@ -19502,6 +19784,9 @@ async def estimate_memory(
     from core.inference.llama_cpp import _args_place_tensors_on_cpu
     from core.inference.llama_server_args import _effective_tensor_parallel
 
+    request = _resolve_llama_cpp_config(request)
+    if _custom_llama_config(request):
+        return EstimateMemoryResponse(available = False, reason = "unsizable")
     if is_ollama_manifest_ref(request.model_path):
         # Resolving one writes a .gguf link to disk; that belongs to the load path.
         return EstimateMemoryResponse(available = False, reason = "unsupported_source")
@@ -19938,9 +20223,13 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
                 await _drain_and_recancel_before_teardown(
                     force = request.force_cancel_active, action = "Unloading the model"
                 )
-            await asyncio.to_thread(
+            managed = getattr(backend, "_managed_engine", None) is not None
+            stopped = await asyncio.to_thread(
                 backend.unload_model, _resident_standard_model_name(backend, request.model_path)
             )
+            # A live engine still holds its VRAM, so keep the chat claim, as training does.
+            if managed and stopped is False:
+                raise HTTPException(status_code = 500, detail = "The inference engine did not stop.")
             note_model_unloaded()
             account_access.clear_resident("chat")
             await asyncio.to_thread(release_chat_gpu_claim)
@@ -20508,6 +20797,9 @@ async def get_status(current_subject: str):
     Get current inference backend status.
     Reports whichever backend (Unsloth or llama-server) is active.
     """
+    backend = _peek_inference_backend()
+    if getattr(backend, "_managed_engine", None) is not None:
+        await asyncio.to_thread(reap_dead_managed_engine, backend)
     if account_access.resident_hidden("chat"):
         return account_access.hidden_chat_status_response()
     try:
@@ -20685,6 +20977,11 @@ async def get_status(current_subject: str):
             _loading_models.append(_tracked_loading_id)
 
         return InferenceStatusResponse(
+            engine = model_info.get("engine", "auto"),
+            engine_parallelism = model_info.get("engine_parallelism", "tensor"),
+            engine_precision = model_info.get("engine_precision", "auto"),
+            gpu_ids = model_info.get("gpu_ids"),
+            tensor_parallel = bool(model_info.get("tensor_parallel", False)),
             active_model = backend.active_model_name,
             model_identifier = backend.active_model_name,
             is_vision = is_vision,
@@ -20789,6 +21086,10 @@ async def get_load_progress(current_subject: str = Depends(get_current_subject))
     if account_access.resident_hidden("chat"):
         return account_access.hidden_resident_response()
     try:
+        backend = _peek_inference_backend()
+        managed = getattr(backend, "_managed_engine", None)
+        if managed is not None and backend.loading_models:
+            return LoadProgressResponse(phase = managed.phase)
         llama_backend = get_llama_cpp_backend()
         progress = llama_backend.load_progress()
         if progress is None:
@@ -26305,6 +26606,19 @@ async def delete_openai_container(
         await client.close()
 
 
+def _custom_request_defaults(model_id) -> dict:
+    backend = get_llama_cpp_backend()
+    summary = getattr(backend, "llama_cpp_config_summary", None)
+    if not isinstance(summary, dict) or not _same_loaded_identifier(
+        getattr(backend, "model_identifier", None), model_id
+    ):
+        return {}
+    defaults = dict(summary.get("request_defaults") or {})
+    if "repeat_penalty" in defaults:
+        defaults["repetition_penalty"] = defaults.pop("repeat_penalty")
+    return defaults
+
+
 _REASONING_EFFORT_VALUES = {"none", "minimal", "low", "medium", "high", "max", "xhigh"}
 
 
@@ -26415,7 +26729,9 @@ def _fill_recommended_sampling_openai(payload, model_id) -> None:
         f: (getattr(payload, f) if f in payload.model_fields_set else None)
         for f in SAMPLING_FIELD_NAMES
     }
-    effective = resolve_effective_sampling(model_id, explicit)
+    effective = resolve_effective_sampling(
+        model_id, explicit, preset_defaults = _custom_request_defaults(model_id)
+    )
     for field, value in effective.items():
         setattr(payload, field, value)
 
@@ -26440,7 +26756,9 @@ def _fill_recommended_sampling_completions(body: dict, model_id) -> None:
     from utils.inference.inference_config import resolve_effective_sampling, SAMPLING_FIELD_NAMES
 
     explicit = {f: body.get(_COMPLETIONS_SAMPLING_BODY_KEY.get(f, f)) for f in SAMPLING_FIELD_NAMES}
-    effective = resolve_effective_sampling(model_id, explicit, fill_defaults = False)
+    effective = resolve_effective_sampling(
+        model_id, explicit, fill_defaults = False, preset_defaults = _custom_request_defaults(model_id)
+    )
     for field, value in effective.items():
         body[_COMPLETIONS_SAMPLING_BODY_KEY.get(field, field)] = value
 
@@ -29489,7 +29807,11 @@ async def produce_openai_chat_completions(
     # Re-derived, not reused from the pre-switch parse: an auto-switch may have changed models.
     served_images: list[str] = []
     images: list = []
-    if _serves_several_images(backend):
+    _managed_images = backend.models.get(backend.active_model_name, {}).get("engine") in (
+        "vllm",
+        "sglang",
+    )
+    if _serves_several_images(backend) and not _managed_images:
         _, _msgs, _payloads = _extract_content_parts(
             payload.messages, structured = True, keep_tool_images = True
         )
@@ -29520,7 +29842,54 @@ async def produce_openai_chat_completions(
     # undecodable image is left alone, since it is not a multi-image call.
     images_on_turn = _images_in_last_user_message(payload.messages)
 
-    if image_b64 or images_on_turn > 1:
+    _managed_promoted_parts: list = []
+    if _managed_images:
+        # Fetch remote image URLs here: the engine's own fetch has no SSRF guard.
+        if _messages_have_remote_image(payload.messages):
+            try:
+                await asyncio.to_thread(_inline_request_remote_images, payload)
+            except HTTPException as exc:
+                raise _reject(exc.status_code, exc.detail)
+        chat_messages = [
+            message
+            for message in await _promote_mcp_history_images_async(
+                _openai_messages_for_passthrough(
+                    payload, normalize_images = False, promote_mcp_images = False
+                ),
+                vision = bool(backend.models.get(backend.active_model_name, {}).get("is_vision")),
+                promoted_out = _managed_promoted_parts,
+            )
+            if message.get("role") not in ("system", "developer")
+        ]
+        # Rebuilt from the payload, so the date note added to the original messages is gone.
+        chat_messages = _append_current_date_note(
+            chat_messages,
+            request,
+            thread_id = getattr(payload, "thread_id", None),
+            system_prompt = system_prompt,
+        )
+        if any(
+            isinstance(message.get("content"), list)
+            and any(part.get("type") == "image_url" for part in message["content"])
+            for message in chat_messages
+        ) and not backend.models.get(backend.active_model_name, {}).get("is_vision"):
+            raise _reject(
+                400, "Image provided but current model is text-only. Load a vision model."
+            )
+        _managed_image_count = sum(
+            part.get("type") == "image_url"
+            for message in chat_messages
+            if isinstance(message.get("content"), list)
+            for part in message["content"]
+        )
+        if _managed_image_count > _MAX_SERVED_IMAGES:
+            raise _reject(
+                400,
+                f"This request carries {_managed_image_count} images; at most "
+                f"{_MAX_SERVED_IMAGES} are served per request. Send fewer, or split the conversation.",
+            )
+
+    if not _managed_images and (image_b64 or images_on_turn > 1):
         try:
             model_info = backend.models.get(backend.active_model_name, {})
             if not model_info.get("is_vision"):
@@ -29574,6 +29943,25 @@ async def produce_openai_chat_completions(
 
     # Classify capability flags from the loaded template.
     _sf_model_info = backend.models.get(backend.active_model_name, {})
+    if _sf_model_info.get("engine") in ("vllm", "sglang"):
+        if _managed_engine_unsupported_controls(payload):
+            raise _reject(
+                400,
+                "This engine integration does not support adapters, structured output, continuation or reasoning controls.",
+            )
+        from routes.managed_engine_chat import managed_tool_chat
+
+        response = await managed_tool_chat(
+            payload,
+            request,
+            backend,
+            chat_messages,
+            system_prompt,
+            monitor_id,
+            promoted_image_parts = tuple(_managed_promoted_parts),
+        )
+        if response is not None:
+            return response
     # Strips for a text-only model, rebuilds the picture as a marker turn for one
     # that reads images; either way no envelope reaches the template.
     # One request's decodes, shared with the client-tool rebuild below, which promotes
@@ -30881,12 +31269,13 @@ async def produce_openai_chat_completions(
                 logger.error(f"Error during OpenAI streaming: {e}", exc_info = True)
                 _msg = _friendly_error(e)
                 api_monitor.fail(monitor_id, _msg)
-                error_chunk = {
-                    "error": {
-                        "message": _msg,
-                        "type": "server_error",
-                    },
-                }
+                from core.inference.engine_transport import EngineHTTPError
+
+                error_chunk = (
+                    _openai_stream_error_chunk(e)
+                    if isinstance(e, EngineHTTPError)
+                    else {"error": {"message": _msg, "type": "server_error"}}
+                )
                 yield _openai_stream_error_sse(error_chunk)
             finally:
                 await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
@@ -31261,6 +31650,10 @@ async def produce_openai_chat_completions(
             backend.reset_generation_state(cancel_event)
             logger.error(f"Error during OpenAI completion: {e}", exc_info = True)
             api_monitor.fail(monitor_id, _friendly_error(e))
+            from core.inference.engine_transport import EngineHTTPError
+
+            if isinstance(e, EngineHTTPError):
+                raise _openai_passthrough_error(e.status_code, e.body)
             raise HTTPException(status_code = 500, detail = safe_error_detail(e))
         finally:
             # Nested under the except arms too: reset_generation_state() can throw, and a leaked entry 409s swaps.
@@ -36382,7 +36775,7 @@ async def _resident_model_reads_images() -> bool:
 
 
 async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONResponse]:
-    """Count with the resident MLX model's tokenizer, or None if MLX is not serving one.
+    """Count with a resident MLX or managed engine tokenizer, otherwise return None.
 
     This has to answer the question the safetensors completion answers -- which of its two
     paths claims the request, and what each renders -- because a count that decides any of
@@ -36403,8 +36796,25 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
     # Audio is routed off the chat path, so a text render prices nothing that is sent.
     # Vision is not: it serves text turns through the same render, and an image anywhere
     # in the request was declined above.
-    if not entry.get("is_mlx") or entry.get("is_audio"):
+    managed = entry.get("engine") in ("vllm", "sglang")
+    if not (entry.get("is_mlx") or managed) or entry.get("is_audio"):
         return None
+    if entry.get("engine") == "sglang":
+        raise HTTPException(
+            status_code = 503,
+            detail = "Exact prompt token counting is unavailable for SGLang.",
+        )
+    if managed and (
+        payload.tools
+        or any(m.role == "tool" or m.tool_calls for m in payload.messages)
+        or payload.enable_thinking
+        or payload.preserve_thinking
+        or payload.reasoning_effort not in (None, "none")
+    ):
+        raise HTTPException(
+            status_code = 503,
+            detail = "Exact token counting with tools or reasoning controls is unavailable for this engine profile.",
+        )
 
     # The completion's own helper: rebuilding it here is how a count prices a prompt
     # nobody sends.
@@ -37434,6 +37844,9 @@ async def anthropic_messages(
             "repetition_penalty": payload.repetition_penalty,
             "presence_penalty": payload.presence_penalty,
         },
+        preset_defaults = _custom_request_defaults(
+            getattr(llama_backend, "model_identifier", None) or model_name
+        ),
     )
     temperature = _anthropic_sampling["temperature"]
     top_p = _anthropic_sampling["top_p"]
