@@ -824,7 +824,8 @@ function docxMathText(element: Element, w: string): string {
   if (OMML_NAMESPACES.has(ns) && name === "t") return element.textContent ?? "";
   const children = (key: string) => childElements(element, ns, key);
   const join = (nodes: Element[], sep = "") => nodes.map((node) => docxMathText(node, w)).join(sep);
-  const arg = (key: string) => join(children(key).slice(0, 1));
+  const arg = (key: string) =>
+    ["0", "false", "off"].includes(prop(`${key}Hide`, "off")) ? join(children(key).slice(0, 1)) : "";
   const prop = (key: string, fallback: string) => {
     const node = children(`${name}Pr`).flatMap((pr) => childElements(pr, ns, key))[0];
     return node ? (node.getAttributeNS(ns, "val") ?? "") : fallback;

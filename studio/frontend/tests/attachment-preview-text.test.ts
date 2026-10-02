@@ -1302,6 +1302,11 @@ const OMML_CASES: [string, string][] = [
     "{n \\atop k}",
   ],
   ["<m:acc><m:e>{θ}</m:e></m:acc><m:rad><m:deg>{3}</m:deg><m:e>{y}</m:e></m:rad>", "θ̂\\sqrt[3]{y}"],
+  [
+    '<m:rad><m:radPr><m:degHide m:val="1"/></m:radPr><m:deg>{3}</m:deg><m:e>{x}</m:e></m:rad>' +
+      '<m:nary><m:naryPr><m:chr m:val="∑"/><m:subHide m:val="0"/><m:supHide/></m:naryPr><m:sub>{k}</m:sub><m:sup>{n}</m:sup><m:e>{a}</m:e></m:nary>',
+    "\\sqrt{x}∑_{k}a",
+  ],
   ["<m:func><m:fName>{sin}</m:fName><m:e>{x}</m:e></m:func>", "sin x"],
   [
     "<m:m><m:mr><m:e>{a}</m:e><m:e>{b}</m:e></m:mr><m:mr><m:e>{c}</m:e><m:e>{d}</m:e></m:mr></m:m>",

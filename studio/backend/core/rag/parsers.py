@@ -550,7 +550,9 @@ def _docx_math_text(element) -> str:
 
     def arg(key):
         child = element.find(_M + key)
-        return "" if child is None else _docx_math_text(child)
+        if child is None or prop(f"{key}Hide", "off") not in ("0", "false", "off"):
+            return ""
+        return _docx_math_text(child)
 
     def prop(key, default):
         node = element.find(f"{_M}{name}Pr/{_M}{key}")
