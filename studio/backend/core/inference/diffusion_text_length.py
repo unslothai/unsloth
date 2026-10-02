@@ -11,9 +11,9 @@ our baseline, pads the same T5 prompt only up to 256 tokens and otherwise uses i
 (again with no mask). Both the embeddings and the text tokens the DiT attends over therefore differ,
 and 512 costs 256 extra joint-attention tokens per step for a short prompt.
 
-``flux_t5_sequence_length`` reproduces the ComfyUI length: the T5 token count of the longest
-prompt in the call (EOS included), floored at 256 and capped at the pipeline's 512, so a prompt past
-512 tokens truncates exactly as before.
+``flux_t5_sequence_length`` reproduces the ComfyUI length (256) for every prompt of at most 256 T5
+tokens (EOS included). Longer prompts pad to 512 as before (bucketed, see the function), and a prompt
+past 512 tokens truncates exactly as before.
 """
 
 from __future__ import annotations
@@ -107,7 +107,11 @@ def flux_t5_sequence_length(
         longest = max(t5_token_count(tokenizer, t) for t in texts)
     except Exception:  # noqa: BLE001 - an odd tokenizer only keeps the pipeline default
         return None
-    return max(int(floor), min(int(cap), int(longest)))
+    # Bucketed, a deliberate deviation from ComfyUI's exact length: every distinct text length is a new denoiser shape,
+    # and on the compiled default path the first one past 256 measured a 14 s recompile, each further one a CUDA graph
+    # recapture (0.4 to 1 s) until the 4-graph cap made later shapes run eager. So a prompt past 256 tokens pads to the
+    # cap (exactly the old behaviour); T5 runs unmasked, so that padding shifts the embeddings of those prompts only.
+    return int(floor) if longest <= int(floor) else int(cap)
 
 
 def flux_t5_kwarg(

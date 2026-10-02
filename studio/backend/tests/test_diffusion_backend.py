@@ -14206,7 +14206,7 @@ def test_generate_passes_flux1_t5_length_like_comfy(fake_runtime, tmp_path, monk
     backend.generate(prompt = "a sloth on a branch", steps = 4, guidance = 0.0)
     assert pipe.last_kwargs["max_sequence_length"] == 256
     backend.generate(prompt = " ".join(["w"] * 320), steps = 4, guidance = 0.0)
-    assert pipe.last_kwargs["max_sequence_length"] == 321
+    assert pipe.last_kwargs["max_sequence_length"] == 512  # past 256 tokens: the 512 bucket
 
 
 def test_generate_leaves_t5_length_alone_off_flux1(fake_runtime, tmp_path):

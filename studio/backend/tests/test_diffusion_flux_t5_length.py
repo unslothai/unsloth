@@ -30,14 +30,15 @@ def _words(n):
 
 @pytest.mark.parametrize(
     "words, expected",
-    [(3, 256), (255, 256), (256, 257), (300, 301), (511, 512), (700, 512)],
+    [(3, 256), (255, 256), (256, 512), (300, 512), (511, 512), (700, 512)],
 )
-def test_length_is_floored_at_256_and_capped_at_512(words, expected):
+def test_length_is_256_up_to_256_tokens_else_the_512_bucket(words, expected):
     assert flux_t5_sequence_length(_WordTokenizer(), [_words(words)]) == expected
 
 
 def test_longest_prompt_of_a_list_sets_the_length():
-    assert flux_t5_sequence_length(_WordTokenizer(), [["a", _words(400)]]) == 401
+    assert flux_t5_sequence_length(_WordTokenizer(), [["a", _words(200)]]) == 256
+    assert flux_t5_sequence_length(_WordTokenizer(), [["a", _words(400)]]) == 512
 
 
 def test_no_tokenizer_keeps_the_pipeline_default():
@@ -60,9 +61,9 @@ def test_negative_counts_only_under_true_cfg():
     params = {"max_sequence_length": None}
     kw = {"prompt": "a", "negative_prompt": _words(300)}
     assert flux_t5_kwarg("flux.1", pipe, params, kw) == 256
-    assert flux_t5_kwarg("flux.1", pipe, params, {**kw, "true_cfg_scale": 4.0}) == 301
+    assert flux_t5_kwarg("flux.1", pipe, params, {**kw, "true_cfg_scale": 4.0}) == 512
     # prompt_2 is what FLUX.1 feeds T5 when given.
-    assert flux_t5_kwarg("flux.1", pipe, params, {"prompt": "a", "prompt_2": _words(280)}) == 281
+    assert flux_t5_kwarg("flux.1", pipe, params, {"prompt": "a", "prompt_2": _words(280)}) == 512
 
 
 def test_ideogram4_comfy_guidance_switches_where_sigma_falls_to_0_3():

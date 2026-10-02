@@ -9123,8 +9123,8 @@ class DiffusionBackend:
                                 chunk_kwargs["negative_prompt"] = [
                                     chunk_kwargs["negative_prompt"]
                                 ] * len(chunk)
-                        # FLUX.1 T5 length as ComfyUI tokenises it: the prompt's real length, floored at 256, capped at
-                        # 512 (diffusers pads every prompt to 512). Per chunk, since a prompts list varies by chunk.
+                        # FLUX.1 T5 length as ComfyUI pads it: 256 for prompts up to 256 tokens (diffusers pads every
+                        # prompt to 512); longer prompts keep the 512 bucket. Per chunk, since a prompts list varies.
                         t5_len = flux_t5_kwarg(state.family.name, pipe, call_params, chunk_kwargs)
                         if t5_len is not None:
                             chunk_kwargs["max_sequence_length"] = t5_len
