@@ -131,7 +131,12 @@ def _flux_like_block():
     return block, (x, shift, scale)
 
 
-def _run_counting_reduction_autotunes(monkeypatch, tmp_path, *, force_r0_block = None):
+def _run_counting_reduction_autotunes(
+    monkeypatch,
+    tmp_path,
+    *,
+    force_r0_block = None,
+):
     """Compile + run the block in a fresh inductor cache. Returns (R0_BLOCK sets benchmarked at runtime, output sha).
     ``force_r0_block`` makes a two-launcher reduction take that block size instead of benchmarking."""
     from torch._inductor.runtime import triton_heuristics
@@ -146,11 +151,15 @@ def _run_counting_reduction_autotunes(monkeypatch, tmp_path, *, force_r0_block =
     real = triton_heuristics.CachingAutotuner.autotune_to_one_config
 
     def autotune(self, *args, **kwargs):
-        blocks = sorted({launcher.config.kwargs.get("R0_BLOCK") for launcher in self.launchers} - {None})
+        blocks = sorted(
+            {launcher.config.kwargs.get("R0_BLOCK") for launcher in self.launchers} - {None}
+        )
         if blocks:
             seen.append(blocks)
             if force_r0_block in blocks:
-                self.launchers = [l for l in self.launchers if l.config.kwargs.get("R0_BLOCK") == force_r0_block]
+                self.launchers = [
+                    l for l in self.launchers if l.config.kwargs.get("R0_BLOCK") == force_r0_block
+                ]
                 return None
         return real(self, *args, **kwargs)
 
@@ -182,12 +191,18 @@ def test_pinned_reduction_has_one_block_size_and_the_default_has_two(monkeypatch
     _INDUCTOR.dynamic_scale_rblock = True
     default_seen, _ = _run_counting_reduction_autotunes(monkeypatch, tmp_path / "default")
     if not default_seen:
-        pytest.skip("this GPU does not give the fused norm kernel a second R0_BLOCK (register budget not exceeded)")
+        pytest.skip(
+            "this GPU does not give the fused norm kernel a second R0_BLOCK (register budget not exceeded)"
+        )
     # The second launcher is the same tile with half the reduction block.
     assert any(len(b) == 2 and b[1] == 2 * b[0] for b in default_seen), default_seen
     small, large = next(b for b in default_seen if len(b) == 2)
-    _, sha_small = _run_counting_reduction_autotunes(monkeypatch, tmp_path / "small", force_r0_block = small)
-    _, sha_large = _run_counting_reduction_autotunes(monkeypatch, tmp_path / "large", force_r0_block = large)
+    _, sha_small = _run_counting_reduction_autotunes(
+        monkeypatch, tmp_path / "small", force_r0_block = small
+    )
+    _, sha_large = _run_counting_reduction_autotunes(
+        monkeypatch, tmp_path / "large", force_r0_block = large
+    )
     # Which one wins the per-process benchmark changes the bits: that is the cross-server drift.
     assert sha_small != sha_large
     _compile()
