@@ -1568,6 +1568,15 @@ class _FileFacts:
             local = self._local_function(name, scope)
             if local is not None:
                 return [(self.path, local)]
+            # `runner = Runner()` then `runner(parsed)` calls `Runner.__call__`.
+            if instances and instances.get(name):
+                called = []
+                for constructed in instances.get(name) or ():
+                    for target in self._methods_on(constructed, "__call__"):
+                        if target not in called:
+                            called.append(target)
+                if called:
+                    return called
         # `self.runner.execute(...)` on an instance held by an attribute. BEFORE the
         # `self.`/`cls.` branch below, which returns early on anything with that head
         # and so swallowed this shape: the longest dotted prefix that names a tracked
@@ -3393,6 +3402,12 @@ class _TaintPass(ast.NodeVisitor):
             "." in spelling and self.instance_types.get(spelling.rpartition(".")[0])
             for spelling in self.callable_aliases.get(node.func.id) or ()
         )
+        # `runner(parsed)` on an instance: Python supplies the instance as `self`.
+        bound_alias = bound_alias or (
+            isinstance(node.func, ast.Name)
+            and target[1].endswith(".__call__")
+            and bool(self.instance_types.get(node.func.id))
+        )
         # A partial that pre-bound arguments shifts the rest left by that much, so the
         # helper's second parameter is the wrapper's first.
         partial_offset = (
@@ -4278,6 +4293,18 @@ def _unpinned_code_fetches(facts: _FileFacts, reached: frozenset) -> list[dict]:
     for qualname, node in sorted(facts.functions.items()):
         if not reached:
             continue
+        # Parameters defaulting to None: `def load(repo, revision = None)` forwarding
+        # `revision = revision` fetches the branch tip whenever the caller omits it.
+        arguments = node.args
+        positional = list(arguments.posonlyargs) + list(arguments.args)
+        unpinned_params = {
+            argument.arg
+            for argument, default in list(
+                zip(positional[len(positional) - len(arguments.defaults) :], arguments.defaults)
+            )
+            + list(zip(arguments.kwonlyargs, arguments.kw_defaults))
+            if isinstance(default, ast.Constant) and default.value is None
+        }
         fetches: list[ast.Call] = []
         for child in ast.walk(node):
             if not isinstance(child, ast.Call):
@@ -4293,6 +4320,9 @@ def _unpinned_code_fetches(facts: _FileFacts, reached: frozenset) -> list[dict]:
             if any(
                 keyword.arg == "revision"
                 and not (isinstance(keyword.value, ast.Constant) and keyword.value.value is None)
+                and not (
+                    isinstance(keyword.value, ast.Name) and keyword.value.id in unpinned_params
+                )
                 for keyword in child.keywords
             ):
                 continue

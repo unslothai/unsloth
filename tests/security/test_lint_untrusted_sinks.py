@@ -5591,3 +5591,41 @@ def test_a_remote_code_default_bound_to_a_true_name_is_reported(tmp_path):
     )
     assert any(f["sink"].startswith("trust_remote_code = True") for f in findings)
     assert not any(f["sink"].startswith("trust_remote_code = True") for f in quiet)
+
+
+def test_a_revision_forwarded_from_a_none_default_is_unpinned(tmp_path):
+    """`def load(repo, revision = None)` passing `revision = revision` fetches the tip."""
+    findings = _scan(
+        tmp_path,
+        "import sys\n"
+        "from huggingface_hub import snapshot_download\n"
+        "def load(repo, revision = None):\n"
+        "    path = snapshot_download(repo, revision = revision)\n"
+        "    sys.path.insert(0, path)\n",
+    )
+    pinned = _scan(
+        tmp_path,
+        "import sys\n"
+        "from huggingface_hub import snapshot_download\n"
+        "def load(repo, revision):\n"
+        "    path = snapshot_download(repo, revision = revision)\n"
+        "    sys.path.insert(0, path)\n",
+        name = "pinned.py",
+    )
+    assert "unpinned code fetch" in _sinks(findings)
+    assert "unpinned code fetch" not in _sinks(pinned)
+
+
+def test_calling_an_instance_enters_its_call_method(tmp_path):
+    """`runner = Runner()` then `runner(parsed)` runs `Runner.__call__`."""
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "class Runner:\n"
+        "    def __call__(self, command):\n"
+        "        return subprocess.run(command)\n"
+        "def go(blob):\n"
+        "    runner = Runner()\n"
+        "    return runner(json.loads(blob)['command'])\n",
+    )
+    assert "subprocess.run" in _sinks(findings)
