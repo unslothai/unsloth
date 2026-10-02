@@ -543,7 +543,10 @@ def install(
     # Weights not on the GPU yet: arch gate now (status never claims a stock arch), probe + swap at the first forward.
     try:
         import torch
+
         if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+            return 0
+        if not _triton_version_ok() or _kernels() is None:
             return 0
         if arch_config(torch.cuda.get_device_capability(torch.cuda.current_device())) is None:
             return 0
@@ -556,6 +559,15 @@ def install(
 
 
 def _finalize(transformer: Any, logger: Any = None) -> int:
+    count = _swap(transformer, logger)
+    try:
+        transformer._unsloth_int8_gemm = count  # the deferred install recorded the candidate count
+    except Exception:  # noqa: BLE001
+        pass
+    return count
+
+
+def _swap(transformer: Any, logger: Any = None) -> int:
     global _OP_HANDLE
     from .diffusion_int8_fused import resident_cuda_device
 
@@ -589,10 +601,6 @@ def _finalize(transformer: Any, logger: Any = None) -> int:
             module.__dict__[_MARK] = module.__dict__.get("forward", _NO_PREV)
             module.forward = types.MethodType(_linear_forward, module)
             count += 1
-    try:
-        transformer._unsloth_int8_gemm = count
-    except Exception:  # noqa: BLE001
-        pass
     if logger is not None and count:
         logger.info(
             "diffusion.int8_gemm: %d int8 Linear(s) run the fused-dequant GEMM (bf16 out) on sm_%d%d",
