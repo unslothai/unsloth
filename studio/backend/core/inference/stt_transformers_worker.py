@@ -153,7 +153,9 @@ def transcribe_window(
         generated = model.generate(features, **kwargs)
     consumed = len(segment)
     if kwargs.get("return_timestamps"):
-        tokens, end = _complete_segments([int(token) for token in generated[0]], model.generation_config)
+        tokens, end = _complete_segments(
+            [int(token) for token in generated[0]], model.generation_config
+        )
         generated = [tokens]
         if end:
             consumed = end * _TARGET_SAMPLE_RATE // _TIMESTAMPS_PER_SECOND
