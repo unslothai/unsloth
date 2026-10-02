@@ -215,7 +215,7 @@ const GHOST_DROPPED_ATTRS = [
   "data-thread-type",
 ] as const;
 
-interface RowGhost {
+export interface RowGhost {
   element: HTMLElement;
   /** Where on the row the press landed, so the copy does not jump when it lifts. */
   grab: number;
@@ -231,16 +231,33 @@ interface RowGhost {
 function liftRow(row: HTMLElement, pressY: number, view: Element): RowGhost | null {
   const face = row.querySelector<HTMLElement>(ROW_FACE_SELECTOR);
   if (!face) return null;
+  const ghost = liftCopy(face, pressY, view, ROW_GHOST_CLASS, GHOST_DROPPED_ATTRS);
+  // The icon size is the sidebar's own variable, which the copy leaves behind on the body.
+  const iconSize = getComputedStyle(face).getPropertyValue("--icon-size");
+  if (iconSize) ghost.element.style.setProperty("--icon-size", iconSize);
+  return ghost;
+}
+
+/** A copy of `face` on a pill over where it sits. Also used by the model picker. */
+export function liftCopy(
+  face: HTMLElement,
+  pressY: number,
+  view: Element,
+  className: string,
+  dropped: readonly string[],
+): RowGhost {
   const rect = face.getBoundingClientRect();
   const style = getComputedStyle(face);
   const copy = face.cloneNode(true) as HTMLElement;
   for (const node of [copy, ...copy.querySelectorAll<HTMLElement>("*")]) {
-    for (const name of GHOST_DROPPED_ATTRS) node.removeAttribute(name);
+    for (const name of dropped) node.removeAttribute(name);
   }
   copy.tabIndex = -1;
   const element = document.createElement("div");
   element.setAttribute("aria-hidden", "true");
-  element.className = ROW_GHOST_CLASS;
+  // A picture, not controls.
+  element.inert = true;
+  element.className = className;
   element.append(copy);
   // Lifted where the row is, so a frame drawn before its first transform lands shows it there,
   // not at the top of the window.
@@ -253,16 +270,13 @@ function liftRow(row: HTMLElement, pressY: number, view: Element): RowGhost | nu
     fontFamily: style.fontFamily,
     color: style.color,
   });
-  // The icon size is the sidebar's own variable, which the copy leaves behind on the body.
-  const iconSize = style.getPropertyValue("--icon-size");
-  if (iconSize) element.style.setProperty("--icon-size", iconSize);
   dragLayer().append(element);
   return { element, grab: pressY - rect.top, view, top: rect.top, cues: [] };
 }
 
 /** Draws each cue painted under the copy again over it: its border only, since the tint under
  *  the copy would otherwise double where the two meet. Clipped to the list, as the cue is. */
-function placeCue(ghost: RowGhost) {
+export function placeCue(ghost: RowGhost) {
   const view = ghost.view.getBoundingClientRect();
   let shown = 0;
   for (const cue of document.querySelectorAll<HTMLElement>(`.${DROP_CUE_CLASS}`)) {
@@ -303,7 +317,7 @@ function placeCue(ghost: RowGhost) {
 }
 
 /** Keeps the copy under the pointer, inside the list it came from. */
-function placeGhost(ghost: RowGhost, y: number) {
+export function placeGhost(ghost: RowGhost, y: number) {
   const view = ghost.view.getBoundingClientRect();
   const height = ghost.element.offsetHeight;
   const top = Math.min(Math.max(y - ghost.grab, view.top), view.bottom - height);
