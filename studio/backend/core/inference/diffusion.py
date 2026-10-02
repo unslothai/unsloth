@@ -7062,16 +7062,20 @@ class DiffusionBackend:
 
                     # Opt-in (UNSLOTH_DIFFUSION_BG_COMPILE=1): a dense default-tier load compiles its denoiser in the
                     # background while the first renders run eager; off by default so the same seed twice repeats.
-                    bg_module = None if not bg_compile.load_time_enabled() else _bg_compile_module(
-                        pipe,
-                        speed_optims = tuple(k for k, v in speed_applied.items() if v),
-                        speed_mode = effective_speed,
-                        transformer_quant = transformer_quant_engaged,
-                        gguf_transformer = gguf_transformer,
-                        offload_policy = effective_policy,
-                        transformer_cache = cache_engaged,
-                        cache_auto = cache_may_toggle,
-                        target = target,
+                    bg_module = (
+                        None
+                        if not bg_compile.load_time_enabled()
+                        else _bg_compile_module(
+                            pipe,
+                            speed_optims = tuple(k for k, v in speed_applied.items() if v),
+                            speed_mode = effective_speed,
+                            transformer_quant = transformer_quant_engaged,
+                            gguf_transformer = gguf_transformer,
+                            offload_policy = effective_policy,
+                            transformer_cache = cache_engaged,
+                            cache_auto = cache_may_toggle,
+                            target = target,
+                        )
                     )
                     load_bg_compile = (
                         bg_compile.arm(bg_module, logger = logger) if bg_module is not None else None

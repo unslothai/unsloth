@@ -170,7 +170,13 @@ def test_kill_switch_disables_arming(monkeypatch):
 
 @pytest.mark.parametrize(
     "raw, deferred, at_load",
-    [(None, True, False), ("", True, False), ("1", True, True), ("on", True, True), ("0", False, False)],
+    [
+        (None, True, False),
+        ("", True, False),
+        ("1", True, True),
+        ("on", True, True),
+        ("0", False, False),
+    ],
 )
 def test_load_time_background_compile_is_opt_in(monkeypatch, raw, deferred, at_load):
     # Render 1 eager + render 2 compiled would break "same seed twice repeats", so only the deferred profile (which
@@ -205,6 +211,42 @@ def test_a_render_waits_for_an_in_flight_compile_and_cancel_releases_it():
     assert job.wait() >= 0.2
     assert job.state == "done" and not job.compiling()
     job.close()
+
+
+def test_the_background_compile_sees_the_recorded_compile_knobs():
+    from core.inference import diffusion_compile_config as compile_config
+
+    seen = {}
+
+    class _Probe(torch.nn.Module):
+        def forward(self, x):
+            if threading.current_thread().name == "unsloth-diffusion-bg-compile":
+                seen["emulate"] = torch._inductor.config.emulate_precision_casts
+            return x
+
+    module, attr = "torch._inductor.config", "emulate_precision_casts"
+    before = compile_config.get_knob(module, attr)
+    was_recorded = compile_config.is_recorded(module, attr)
+    assert compile_config.set_knob(module, attr, True)
+    try:
+        job = bg.BackgroundCompile(_Probe())
+        assert job.install()
+        with torch.no_grad(), bg.force_eager():
+            job.module(torch.zeros(1))
+        job.kick()
+        job._thread.join(30)
+        assert job.state == "done", job.error
+        assert (
+            seen.get("emulate") is True
+        ), "the background compile ran without the recorded inductor knobs"
+        job.close()
+    finally:
+        if was_recorded:
+            compile_config.set_knob(module, attr, before)
+        else:
+            with compile_config._LOCK:
+                compile_config._KNOBS.pop((module, attr), None)
+            torch._inductor.config.emulate_precision_casts = before
 
 
 def test_a_failing_warm_forward_ends_the_attempt_without_raising():
