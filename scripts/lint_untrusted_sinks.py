@@ -64,6 +64,7 @@ import argparse
 import ast
 import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -351,6 +352,10 @@ MODULE_ISH_NAMES = frozenset(
 
 # Loaders that take a `trust_remote_code`. A True literal here, or a default of True on a
 # first-party function that forwards into one, is consent the user did not give.
+# `sys.path[:] = [downloaded] + sys.path` and friends: the same import-path injection
+# as `sys.path.insert`, written as an assignment so no call reaches the sink table.
+SYS_PATH_ASSIGN_SINK = "sys.path (assignment)"
+
 REMOTE_CODE_LOADERS = (
     "from_pretrained",
     "from_config",
@@ -2225,6 +2230,9 @@ class _TaintPass(ast.NodeVisitor):
                 "os.fspath",
                 "str",
                 "Path",
+                "PurePath",
+                "PurePosixPath",
+                "PureWindowsPath",
                 "os.path.basename",
                 "os.path.normpath",
                 "os.path.splitext",
@@ -2510,6 +2518,24 @@ class _TaintPass(ast.NodeVisitor):
         self._note_source_alias(node)
         self._note_instance_alias(node)
         self._note_callable_alias(node)
+        self._check_sys_path_write(node.targets, node.value, node)
+        # `loader, fallback = (importlib.import_module, print)`: each name is an alias
+        # of the element in its position.
+        for target in node.targets:
+            if (
+                isinstance(target, (ast.Tuple, ast.List))
+                and isinstance(node.value, (ast.Tuple, ast.List))
+                and len(target.elts) == len(node.value.elts)
+                and not any(isinstance(e, ast.Starred) for e in target.elts)
+            ):
+                for element_target, element_value in zip(target.elts, node.value.elts):
+                    pair = ast.copy_location(
+                        ast.Assign(targets = [element_target], value = element_value), node
+                    )
+                    self._note_sink_alias(pair)
+                    self._note_source_alias(pair)
+                    self._note_callable_alias(pair)
+                    self._note_construction(pair)
         # A dispatch table of sinks, called later as `loaders[kind](...)`.
         if isinstance(node.value, (ast.Dict, ast.List, ast.Tuple)):
             elements = node.value.values if isinstance(node.value, ast.Dict) else node.value.elts
@@ -2955,6 +2981,7 @@ class _TaintPass(ast.NodeVisitor):
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         if node.value is not None:
+            self._check_sys_path_write([node.target], node.value, node)
             reason = self.tainted(node.value)
             if reason:
                 self._assign(node.target, reason, node.value)
@@ -2997,7 +3024,19 @@ class _TaintPass(ast.NodeVisitor):
         reason = self.tainted(node.value)
         if reason:
             self._assign(node.target, reason)
+        self._check_sys_path_write([node.target], node.value, node)
         self.generic_visit(node)
+
+    def _check_sys_path_write(self, targets: list, value: ast.AST, node: ast.AST) -> None:
+        """`sys.path = ...`, `sys.path[:] = ...`, `sys.path[0] = ...`, `sys.path += ...`."""
+        for target in targets:
+            written = target.value if isinstance(target, ast.Subscript) else target
+            if _matches_any(self.facts.canonicals(_call_name(written)), {"sys.path"}) is None:
+                continue
+            reason = self.tainted(value)
+            if reason:
+                self._record(node, SYS_PATH_ASSIGN_SINK, reason, _short(value))
+            return
 
     def visit_For(self, node: ast.For) -> None:
         reason = self.tainted(node.iter)
@@ -4317,9 +4356,18 @@ def _unpinned_code_fetches(facts: _FileFacts, reached: frozenset) -> list[dict]:
                 continue
             # `revision = None` reaches the library as the same unpinned default as an
             # omitted keyword, so a presence-only test let the explicit spelling through.
+            # A literal pins only when it is a commit: `revision = "main"` is a branch
+            # and moves exactly like the default does.
             if any(
                 keyword.arg == "revision"
                 and not (isinstance(keyword.value, ast.Constant) and keyword.value.value is None)
+                and not (
+                    isinstance(keyword.value, ast.Constant)
+                    and not (
+                        isinstance(keyword.value.value, str)
+                        and re.fullmatch(r"[0-9a-f]{40}", keyword.value.value)
+                    )
+                )
                 and not (
                     isinstance(keyword.value, ast.Name) and keyword.value.id in unpinned_params
                 )
@@ -4596,6 +4644,8 @@ def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
         {
             "sys.path.insert",
             "sys.path.append",
+            "sys.path.extend",
+            SYS_PATH_ASSIGN_SINK,
             "path.insert",
             "path.append",
             "importlib.import_module",

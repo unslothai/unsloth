@@ -2929,13 +2929,13 @@ def test_an_explicit_null_revision_is_unpinned(tmp_path):
 
 
 def test_a_pinned_revision_is_still_quiet(tmp_path):
-    """The half that must keep working: a real revision pins the code that runs."""
+    """The half that must keep working: a commit revision pins the code that runs."""
     findings = _scan(
         tmp_path,
         "import sys\n"
         "from huggingface_hub import snapshot_download\n"
         "def load(repo):\n"
-        "    sys.path.insert(0, snapshot_download(repo, revision = 'abc123'))\n",
+        "    sys.path.insert(0, snapshot_download(repo, revision = '" + "ab12" * 10 + "'))\n",
     )
     assert "unpinned code fetch" not in _sinks(findings)
 
@@ -5629,3 +5629,70 @@ def test_calling_an_instance_enters_its_call_method(tmp_path):
         "    return runner(json.loads(blob)['command'])\n",
     )
     assert "subprocess.run" in _sinks(findings)
+
+
+def test_pure_path_constructors_keep_taint(tmp_path):
+    """`PurePath(snapshot_download(repo)).parent` still names the download."""
+    findings = _scan(
+        tmp_path,
+        "import sys\n"
+        "from pathlib import PurePath\n"
+        "from huggingface_hub import snapshot_download\n"
+        "def add(repo):\n"
+        "    sys.path.append(str(PurePath(snapshot_download(repo, revision = 'a' * 40)).parent))\n",
+    )
+    assert "sys.path.append" in _sinks(findings)
+
+
+def test_aliases_unpacked_from_a_tuple_are_followed(tmp_path):
+    """`loader, fallback = (importlib.import_module, print)`."""
+    findings = _scan(
+        tmp_path,
+        "import importlib, json\n"
+        "def go(blob):\n"
+        "    loader, fallback = (importlib.import_module, print)\n"
+        "    return loader(json.loads(blob)['module'])\n",
+    )
+    assert "importlib.import_module" in _sinks(findings)
+
+
+def test_a_branch_name_revision_is_not_a_pin(tmp_path):
+    """`revision = "main"` moves like the default; a 40 hex commit pins."""
+    branch = _scan(
+        tmp_path,
+        "import sys\n"
+        "from huggingface_hub import snapshot_download\n"
+        "def load(repo):\n"
+        "    sys.path.insert(0, snapshot_download(repo, revision = 'main'))\n",
+        name = "branch.py",
+    )
+    commit = _scan(
+        tmp_path,
+        "import sys\n"
+        "from huggingface_hub import snapshot_download\n"
+        "def load(repo):\n"
+        "    sys.path.insert(0, snapshot_download(repo, revision = '0123456789abcdef0123456789abcdef01234567'))\n",
+        name = "commit.py",
+    )
+    assert "unpinned code fetch" in _sinks(branch)
+    assert "unpinned code fetch" not in _sinks(commit)
+
+
+def test_assigning_to_sys_path_is_an_import_path_sink(tmp_path):
+    """Slice, index, plain and augmented writes to `sys.path`."""
+    findings = _scan(
+        tmp_path,
+        "import sys\n"
+        "from huggingface_hub import snapshot_download\n"
+        "def a(repo):\n"
+        "    sys.path[:] = [snapshot_download(repo)] + sys.path\n"
+        "def b(repo):\n"
+        "    sys.path += [snapshot_download(repo)]\n",
+    )
+    quiet = _scan(
+        tmp_path,
+        "import sys\ndef a(kept):\n    old = list(sys.path)\n    sys.path[:] = old\n",
+        name = "quiet.py",
+    )
+    assert sum(f["sink"] == "sys.path (assignment)" for f in findings if f["tier"] == "A") == 2
+    assert "sys.path (assignment)" not in _sinks(quiet)
