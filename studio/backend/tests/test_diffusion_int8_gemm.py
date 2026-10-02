@@ -208,6 +208,48 @@ def test_small_m_and_misaligned_keep_stock(forced):
     assert g8.call_count() == before
 
 
+@needs_cuda
+def test_fused_mlp_down_projection_traces_without_breaks(forced, monkeypatch):
+    """The fused MLP's down projection reaches the GEMM through ``linear_from_q`` inside the compiled block: no host
+    sync, no graph break, and the same bits as the fused MLP's own stock epilogue (kill switch), eager and compiled."""
+    from torch._dynamo.utils import counters
+
+    from core.inference import diffusion_int8_fused as f8
+
+    attention = pytest.importorskip("diffusers.models.attention")
+    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+
+    torch.manual_seed(0)
+    ff = attention.FeedForward(1024, dim_out = 1024, mult = 4, activation_fn = "gelu-approximate")
+    ff = ff.cuda().to(torch.bfloat16)
+    quantize_(ff, Int8DynamicActivationInt8WeightConfig(version = 2, set_inductor_config = False))
+    fused = torch.nn.Sequential(ff)
+    if not f8.install(fused):
+        pytest.skip("int8 fused MLP probe refused this device")
+    g8.install(fused)  # as diffusion_speed does: sets the op handle linear_from_q calls
+    x = torch.randn(2, 300, 1024, device = "cuda", dtype = torch.bfloat16)
+
+    def run(mode):
+        monkeypatch.setenv(g8.INT8_GEMM_ENV, mode)
+        before = g8.call_count()
+        eager = fused(x)
+        counters.clear()
+        torch._dynamo.reset()
+        with torch._inductor.config.patch(emulate_precision_casts = True):
+            compiled = torch.compile(fused, fullgraph = True)(x)
+        assert not counters["graph_break"]
+        return eager, compiled, g8.call_count() - before
+
+    with torch.inference_mode():
+        eager, compiled, calls = run("1")
+        ref_eager, ref_compiled, ref_calls = run("0")
+    assert calls == 2 and ref_calls == 0
+    assert torch.equal(eager, ref_eager)
+    assert torch.equal(compiled, ref_compiled)
+    g8.uninstall(fused)
+    f8.uninstall(fused)
+
+
 # ----------------------------------------------------------------------------------------------- ConvRot (MiniMax-H3)
 
 
