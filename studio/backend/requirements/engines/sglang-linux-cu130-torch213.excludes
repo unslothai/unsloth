@@ -7,3 +7,6 @@ outlines-core
 flashinfer-cubin
 # SGLang 0.5.18+ pins cuda-tile 1.6.0rc5, which ships only an sdist, and never imports it.
 cuda-tile
+# cutlass-dsl loads the newest CUDA flavour the driver runs; the engines need driver 580 (CUDA 13),
+# so the cu12 libraries are never loaded.
+nvidia-cutlass-dsl-libs-cu12

@@ -38,7 +38,8 @@ PROFILES = {
         "cuda": "cu130",
         "driver": 580,
         # FlashInfer fetches the trtllm kernels it uses on demand rather than the whole cubin wheel.
-        "omit": ("flashinfer-cubin",),
+        # CUTLASS DSL loads its newest flavour the driver runs, and driver 580 runs CUDA 13.
+        "omit": ("flashinfer-cubin", "nvidia-cutlass-dsl-libs-cu12"),
         # Newest first; each release pins one torch build (vLLM 0.27+ needs torch 2.13, 0.20-0.26 torch 2.11).
         "releases": (
             {"version": "0.30.0", "torch": "2.13.0", "lock": "vllm-linux-cu130-torch213"},
@@ -50,14 +51,20 @@ PROFILES = {
         "cuda": "cu130",
         "driver": 580,
         # Excluded: outlines-core 0.1.26 has no py3.13 wheel; only --grammar-backend outlines needs it.
-        "omit": ("outlines", "outlines-core", "flashinfer-cubin"),
+        "omit": ("outlines", "outlines-core", "flashinfer-cubin", "nvidia-cutlass-dsl-libs-cu12"),
         "releases": (
             {
                 "version": "0.5.20",
                 "torch": "2.13.0",
                 "lock": "sglang-linux-cu130-torch213",
                 # cuda-tile 1.6.0rc5 is sdist-only and SGLang never imports it.
-                "omit": ("outlines", "outlines-core", "flashinfer-cubin", "cuda-tile"),
+                "omit": (
+                    "outlines",
+                    "outlines-core",
+                    "flashinfer-cubin",
+                    "nvidia-cutlass-dsl-libs-cu12",
+                    "cuda-tile",
+                ),
             },
             {"version": "0.5.17", "torch": "2.11.0", "lock": "sglang-linux-cu130"},
         ),
