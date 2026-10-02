@@ -255,9 +255,13 @@ def _token_file_token(env) -> str | None:
     home = env.get("HF_HOME") or os.path.join(
         env.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache"), "huggingface"
     )
-    path = env.get("HF_TOKEN_PATH") or os.path.join(os.path.expandvars(os.path.expanduser(home)), "token")
+    path = env.get("HF_TOKEN_PATH") or os.path.join(
+        os.path.expandvars(os.path.expanduser(home)), "token"
+    )
     try:
-        token = Path(os.path.expandvars(os.path.expanduser(path))).read_text(encoding = "utf-8").strip()
+        token = (
+            Path(os.path.expandvars(os.path.expanduser(path))).read_text(encoding = "utf-8").strip()
+        )
     except (OSError, UnicodeDecodeError):
         return None
     return token or None
