@@ -34,8 +34,10 @@ On the rotated Linears the rotation and the activation quant then run as ONE ker
 activation once and writes the int8 rows and their bf16 scale, where the stock path writes the rotated bf16 activation
 and reads it back to quantize. The rotation is the same GEMM in the same K order with the same bf16 rounding,
 then torchao's per-row quant with every bf16 rounding kept, so codes and scales are bit-identical to the two steps;
-a per-device probe checks that before it is used. Group 256 (H3) only, sm120 only until measured elsewhere (G4: 2x
-faster than the compiled rotation GEMM + quant at every H3 shape). Kill switch ``UNSLOTH_DIFFUSION_INT8_ROTQUANT=0``.
+a per-device probe checks that before it is used (and a census of a full H3 render on G4 and B200 found 0 code or scale
+differences in 5.9e11 elements). Group 256 (H3) only, sm120 only until measured elsewhere (G4: 2x faster than the
+compiled rotation GEMM + quant at every H3 shape). MiniMax-H3 960x544x124, 20 steps, G4 resident: 2.764 -> 2.695
+s/step (5 and 3 processes), nsys denoiser step 2776 -> 2719 ms. Kill switch ``UNSLOTH_DIFFUSION_INT8_ROTQUANT=0``.
 
 A block-streamed denoiser (group offload, MiniMax-H3 on a 40 GB card) installs against its onload device
 (``install(..., device = ...)``): diffusers moves torchao weights with ``swap_tensors``, which keeps each Parameter's
