@@ -3701,16 +3701,24 @@ def test_require_studio_warns_when_a_flag_drops_an_inherited_pin(monkeypatch, ca
     assert "UNSLOTH_SAMPLING_TOP_P" not in err
 
 
-@pytest.mark.parametrize("reasoning", ["on", "off", "auto"])
+@pytest.mark.parametrize(
+    "reasoning, carried",
+    [
+        ("on", frozenset()),
+        ("off", frozenset()),
+        ("auto", frozenset()),
+        ("auto", start._ALL_REQUEST_FIELDS),
+    ],
+)
 def test_require_studio_warns_on_explicit_reasoning_when_reusing_server(
-    monkeypatch, capsys, reasoning
+    monkeypatch, capsys, reasoning, carried
 ):
     monkeypatch.setattr(start, "find_studio_server", lambda: BASE)
     base, server = start._require_studio(
         "unsloth/M-GGUF",
         start.LoadOptions(),
         serve = True,
-        server_options = start.ServerOptions(reasoning = reasoning),
+        server_options = start.ServerOptions(reasoning = reasoning, carried = carried),
     )
     assert base == BASE and server is None
     err = capsys.readouterr().err

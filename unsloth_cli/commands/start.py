@@ -689,9 +689,11 @@ class ServerOptions(NamedTuple):
     unpinned: frozenset = frozenset()
 
     def sent_by_agent(self) -> frozenset:
-        if self.reasoning_effort in _STUDIO_REASONING_EFFORTS:
-            return self.carried
-        return self.carried - {"reasoning_effort"}
+        # A request cannot ask for the template default back, so auto stays a server setting.
+        unsent = {"reasoning"} if self.reasoning == "auto" else set()
+        if self.reasoning_effort not in _STUDIO_REASONING_EFFORTS:
+            unsent.add("reasoning_effort")
+        return self.carried - unsent
 
     def request_body(self) -> dict:
         sent = self.sent_by_agent()
