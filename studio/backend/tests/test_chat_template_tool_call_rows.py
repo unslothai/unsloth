@@ -8,6 +8,7 @@ import pytest
 from datasets import Dataset
 
 from utils.datasets import apply_chat_template_to_dataset
+from utils.datasets.chat_templates import keep_renderable_chat_template
 
 _GEMMA4_TEMPLATE = (
     Path(__file__).resolve().parent.parent / "assets" / "chat_templates" / "gemma-4.jinja"
@@ -20,11 +21,9 @@ _QWEN35_TEMPLATE = """
 {%- for tool_call in message.tool_calls %}
 {%- if tool_call.function is defined %}{%- set tool_call = tool_call.function %}{%- endif %}
 {{- '<tool_call>\\n<function=' + tool_call.name + '>\\n' }}
-{%- if tool_call.arguments is mapping %}
-{%- for args_name in tool_call.arguments %}
-{{- '<parameter=' + args_name + '>\\n' + tool_call.arguments[args_name] | string + '\\n</parameter>\\n' }}
+{%- for args_name, args_value in tool_call.arguments | items %}
+{{- '<parameter=' + args_name + '>\\n' + args_value | string + '\\n</parameter>\\n' }}
 {%- endfor %}
-{%- endif %}
 {{- '</function>\\n</tool_call>' }}
 {%- endfor %}
 {%- endif %}
@@ -144,10 +143,6 @@ def test_gemma4_learns_its_own_tool_call_format():
 
 def test_tool_call_dataset_with_null_filled_keys_renders_on_llama3():
     rows = [_plain_row(), _tool_call_row('{"city": "Paris"}')]
-    for row in rows:
-        for message in row:
-            message.setdefault("tool_calls", None)
-            message.setdefault("tool_call_id", None)
 
     result = _format(rows, _LLAMA3_TEMPLATE)
 
@@ -187,3 +182,42 @@ def test_tool_call_turn_with_null_content_and_string_arguments_still_renders():
     assert result["success"] is True, result["errors"]
     assert len(result["dataset"]) == 2
     assert '<call>get_weather\n{"city": "Paris"}</call>' in result["dataset"][0]["text"]
+
+
+def test_null_content_is_dropped_before_the_row_as_loaded_is_tried():
+    template = (
+        "{%- for message in messages %}"
+        "{%- if message.content is defined %}[{{ message.content }}]{%- else %}-{%- endif %}"
+        "{%- endfor %}"
+    )
+    null_content = _tool_call_row('{"city": "Paris"}')
+    null_content[1]["content"] = None
+
+    result = _format([null_content, _tool_call_row('{"city": "Paris"}')], template)
+
+    assert result["dataset"]["text"] == [
+        "[Weather in Paris?]-[21C][It is 21C in Paris.]",
+        "[Weather in Paris?][][21C][It is 21C in Paris.]",
+    ]
+
+
+def test_dropped_row_reports_the_template_error_of_the_cleaned_row():
+    parallel = _tool_call_row('{"city": "Paris"}')
+    parallel[1]["tool_calls"].append({**parallel[1]["tool_calls"][0], "id": "call_1"})
+
+    result = _format([_plain_row(), parallel], _LLAMA3_TEMPLATE)
+
+    assert result["success"] is True
+    assert "one tool call per message" in result["dropped_rows_warning"]
+
+
+def test_template_probe_counts_rows_after_cleaning():
+    tokenizer = _JinjaTokenizer(_LLAMA3_TEMPLATE)
+    dataset = Dataset.from_list(
+        [{"messages": _plain_row()}, {"messages": _tool_call_row('{"city": "Paris"}')}]
+    )
+
+    note = keep_renderable_chat_template(tokenizer, dataset, "messages", _QWEN35_TEMPLATE)
+
+    assert note is None
+    assert tokenizer.chat_template == _LLAMA3_TEMPLATE

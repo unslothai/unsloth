@@ -164,6 +164,8 @@ def _set_chat_template(tokenizer, chat_template):
 
 
 def _drop_none_values(value):
+    # A loaded dict cannot tell an explicit null from a key another row added, so dict-typed
+    # arguments lose their nulls; JSON-string arguments keep them.
     if isinstance(value, dict):
         return {key: _drop_none_values(item) for key, item in value.items() if item is not None}
     if isinstance(value, list):
@@ -179,14 +181,18 @@ def _render_conversation(tokenizer, conversation):
         for attempt in (_normalize_tool_call_arguments(messages), messages):
             if not any(attempt is seen for seen in attempts):
                 attempts.append(attempt)
-    for attempt in attempts[:-1]:
+    first_error = None
+    for attempt in attempts:
         try:
             return tokenizer.apply_chat_template(
                 attempt, tokenize = False, add_generation_prompt = False
             )
-        except Exception:
-            pass
-    return tokenizer.apply_chat_template(attempts[-1], tokenize = False, add_generation_prompt = False)
+        except Exception as error:
+            # The row as loaded is kept for templates that need a None content (DeepSeek V3), but its
+            # error is usually a key the loader filled with None, so report the cleaned row's.
+            if first_error is None:
+                first_error = error
+    raise first_error
 
 
 def _count_renderable(tokenizer, conversations):
