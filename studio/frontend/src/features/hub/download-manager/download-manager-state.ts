@@ -350,7 +350,6 @@ export const useDownloadManagerStore = create<DownloadManagerState>()(
 export const setState = useDownloadManagerStore.setState;
 export const getState = useDownloadManagerStore.getState;
 
-/** Whether a Hub download is in flight, for the desktop quit warning (see downloads-activity). */
 export function hasActiveDownloadJob(
   jobs: Record<string, ManagedDownload>,
 ): boolean {

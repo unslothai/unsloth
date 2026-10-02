@@ -29,7 +29,6 @@ export interface NpuCatalog {
   listError: string | null;
   enabling: boolean;
   downloads: Record<string, number | null>;
-  /** Downloads waiting for the backend to answer again; still active. */
   reconnecting: Record<string, true>;
   enable: () => Promise<void>;
   download: (model: NpuModel) => Promise<boolean>;
@@ -52,7 +51,6 @@ export function useNpuCatalog(
   useEffect(() => {
     if (!ready) return;
     void refreshNpuModels();
-    // A pull outlives the page that started it; show any still running.
     listNpuDownloads().then(
       (running) => {
         for (const { model, percent } of running) {

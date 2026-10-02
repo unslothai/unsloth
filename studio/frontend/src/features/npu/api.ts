@@ -53,7 +53,6 @@ export interface NpuModel {
   supports_reasoning: boolean;
   supports_tools: boolean;
   max_context_length: number | null;
-  /** Percent an interrupted download left on disk; the next download continues from it. */
   resume_percent: number | null;
 }
 
@@ -185,7 +184,6 @@ export async function downloadNpuModel(
   await readDownloadStream(response.body, onProgress);
 }
 
-/** Follow a pull already running on the backend; resolves at once when none is. */
 export async function followNpuModelDownload(
   id: string,
   onProgress: (event: NpuDownloadEvent) => void,
@@ -202,7 +200,6 @@ export async function followNpuModelDownload(
   await readDownloadStream(response.body, onProgress);
 }
 
-/** The backend reported the download itself failed, as opposed to its progress stream breaking. */
 export class NpuDownloadError extends Error {}
 
 async function readDownloadStream(

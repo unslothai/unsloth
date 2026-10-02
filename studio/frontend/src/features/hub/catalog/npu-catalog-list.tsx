@@ -26,7 +26,6 @@ export function NpuCatalogList({
 }: {
   source: NpuPickerSource;
   query: string;
-  /** On Device tab: downloaded models only. */
   onDevice: boolean;
   onRun: (model: NpuModel) => void;
 }) {

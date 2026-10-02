@@ -170,7 +170,6 @@ export function followNpuDownload(
           }
         }
         await refreshNpuModels();
-        // The pull may have finished while its stream was broken.
         if (listedDownloaded(id)) return true;
         return fail(error instanceof Error ? error.message : String(error));
       }

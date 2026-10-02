@@ -99,7 +99,6 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   /** Opens the curated "Fine-tune ready" channel (discover only). Exposed as a
    *  format-dropdown option rather than a standalone feed section. */
   onOpenFineTune: () => void;
-  /** This machine has a supported NPU, so its models get a format of their own. */
   npuAvailable?: boolean;
 }) {
   // Recent searches surface while the empty search field is focused, only on
