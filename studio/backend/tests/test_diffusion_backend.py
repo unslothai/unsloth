@@ -14179,8 +14179,6 @@ def test_candidate_overrides_price_the_encoder_the_load_opens(monkeypatch):
     )
 
 
-# ---------------------------------------------------------------- GGUF pick under an offloading plan (diffusion_gguf_route)
-
 _Q4 = "m-Q4_K_M.gguf"
 
 
@@ -14220,7 +14218,6 @@ def _gguf_offload_swap_setup(
         kind = "repo", location = "unsloth/Z-FP8", filename = "Z-INT8.safetensors"
     )
     monkeypatch.setattr(dmod, "resolve_prequant_source", lambda *a, **k: source)
-    # The planner's own streamed-torchao rule is covered in test_diffusion_gguf_offload_route; here it accepts.
     monkeypatch.setattr(dmod, "torchao_offload_plan", lambda plan, s, **k: plan)
     orig_plan = DiffusionBackend._plan_memory
 
@@ -14255,9 +14252,7 @@ def test_offloading_gguf_pick_loads_the_cached_int8_checkpoint(fake_runtime, tmp
     backend, calls = _gguf_offload_swap_setup(monkeypatch, tmp_path)
     status = _load_gguf(backend, tmp_path)
     assert len(calls) == 1
-    # Prequant only: a dense bf16 fallback would land the whole denoiser on a card the plan says it does not fit.
     assert calls[0]["allow_dense_fallback"] is False
-    # The seed is told the placement it will run under, so it materialises on the host.
     assert calls[0]["seed_plan"].offload_policy == "model"
     assert status["transformer_quant"] == "int8"
     assert status["offload_policy"] == "model"
@@ -14390,7 +14385,7 @@ def test_gguf_route_prequant_seed_lands_on_the_host_when_the_plan_offloads(
 
 
 def test_diffusion_status_response_keeps_the_gguf_a_swap_replaced():
-    # Pydantic drops undeclared keys: without the field no API client could see that the GGUF it picked did not run.
+    # Pydantic drops undeclared keys.
     from models.inference import DiffusionStatusResponse
 
     rec = {

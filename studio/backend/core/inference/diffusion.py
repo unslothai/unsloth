@@ -5436,8 +5436,7 @@ class DiffusionBackend:
                 # repo's transformer/ shards, since the fallback would pull them HERE, inside the load lock, after
                 # eviction, where unload cannot preempt it and progress already reported 100%.
                 dense_fallback_allowed = bool(_transformer_prefetched)
-                # A GGUF pick whose plan offloads may still load the pre-quantised checkpoint under that offload (see
-                # diffusion_gguf_route); set when it does, so placement, seeding and status follow.
+                # Set when an offloading GGUF pick loads the pre-quantised checkpoint instead (diffusion_gguf_route).
                 gguf_offload_placement: Optional[Any] = None
                 gguf_offload_scheme: Optional[str] = None
                 gguf_offload_swap = False
@@ -5632,8 +5631,7 @@ class DiffusionBackend:
                                 transformer_quant_decline = _torchao_offload_decline(
                                     "the quantised build still needs", replanned
                                 )
-                                # The pipeline route's rule: the hosted checkpoint survives any placement
-                                # torchao_offload_plan accepts. Held until the resident retry below had its turn.
+                                # Held until the resident retry below had its turn.
                                 gguf_offload_placement, gguf_offload_reason = (
                                     self._gguf_offload_prequant_placement(
                                         replanned,
@@ -5712,8 +5710,7 @@ class DiffusionBackend:
                             quant_plan = gguf_offload_placement
                             gguf_offload_swap = True
                             transformer_quant_decline = None
-                            # Under offload only the pre-quantised checkpoint may load: a dense bf16 fallback would
-                            # land the whole denoiser on the card the plan just said it does not fit.
+                            # A dense bf16 fallback would land the whole denoiser on a card it does not fit.
                             dense_fallback_allowed = False
                     else:
                         # This materialises the dense bf16 transformer, so re-check the fit rather than OOMing after
@@ -6074,7 +6071,6 @@ class DiffusionBackend:
                                 fetch_base = fetch_base,
                                 local_files_only = local_files_only,
                                 _load_token = _load_token,
-                                # The placement this build runs under, so an offloaded seed lands on the host.
                                 seed_plan = quant_plan if quant_plan is not None else plan,
                             )
                             transformer_quant_artifact = self._gguf_route_artifact(
@@ -7079,7 +7075,6 @@ class DiffusionBackend:
                         # Beside ``source``, never in it: the frontend branches on "auto"/"explicit".
                         resolved["transformer_quant"]["artifact"] = transformer_quant_artifact
                     if gguf_offload_swap and transformer_quant_engaged is not None:
-                        # The picked GGUF did not run: say what did, and keep the GGUF it replaced beside it.
                         from .diffusion_gguf_route import gguf_offload_swap_reason
                         resolved["transformer_quant"]["reason"] = gguf_offload_swap_reason(
                             transformer_quant_engaged,
@@ -7184,8 +7179,7 @@ class DiffusionBackend:
         base: Optional[str],
         prequant_path: Optional[str],
     ) -> Optional[str]:
-        """``prequant:<repo>/<file>`` when the GGUF route's build loaded a pre-quantized checkpoint, None for a
-        runtime quantise (the loader stamps ``_unsloth_prequant_path`` on a checkpoint it loaded)."""
+        """``prequant:<repo>/<file>`` when the build loaded a pre-quantized checkpoint, else None."""
         try:
             transformer = getattr(pipe, "transformer", None)
             if scheme is None or getattr(transformer, "_unsloth_prequant_path", None) is None:
@@ -7211,8 +7205,7 @@ class DiffusionBackend:
         base: Optional[str],
         prequant_path: Optional[str],
     ) -> tuple[Optional[Any], Optional[str]]:
-        """Placement under which a GGUF pick loads ``candidate``'s pre-quantised checkpoint although ``replanned``
-        offloads the denoiser (``diffusion_gguf_route``), plus a decline reason of that rule."""
+        """``diffusion_gguf_route.gguf_offload_prequant_placement`` with the cache state resolved."""
         from .diffusion_gguf_route import gguf_offload_prequant_placement
 
         scheme = getattr(candidate, "scheme", None)
@@ -7262,9 +7255,8 @@ class DiffusionBackend:
     ) -> tuple[Any, str]:
         """Build the opt-in fast pipeline and return ``(pipe, engaged_scheme)``.
 
-        ``seed_plan``: the placement the build will run under. When it offloads the denoiser, a pre-quantized
-        checkpoint is materialised on the host and the pipeline is left there for placement to page in
-        (``prequant_seed_device``), rather than landing the whole denoiser and its encoders on the GPU first.
+        ``seed_plan``: the placement the build runs under; an offloading one seeds a pre-quantized checkpoint on the
+        host (``prequant_seed_device``).
 
         Two ways to get the quantized transformer, in order: (1) Pre-quantized, when a checkpoint is
         configured for the chosen scheme (an explicit ``prequant_path`` or the family's hosted
@@ -7311,7 +7303,7 @@ class DiffusionBackend:
             )
             check_cancelled()
             if source is not None:
-                # Host when the plan pages the denoiser in (8 GB Qwen-Image-2.1 OOMed in the streaming hooks).
+                # A GPU seed under offload OOMed 8 GB Qwen-Image-2.1 in the streaming hooks.
                 seed_device = (
                     prequant_seed_device(seed_plan, device, scheme)
                     if seed_plan is not None
@@ -7351,7 +7343,6 @@ class DiffusionBackend:
                         transformer,
                         dtype,
                         hf_token,
-                        # A host seed leaves the whole pipeline on the host: placement pages it in.
                         seed_device,
                         base_local_dir,
                         fam = fam,

@@ -23,7 +23,7 @@ export interface DiffusionResolvedControl {
   reason: string;
   // "prequant:<repo>/<file>" when a hosted checkpoint was seeded; absent on a runtime quantise.
   artifact?: string | null;
-  // "gguf:<file>" when a GGUF pick that had to offload ran the hosted checkpoint in `artifact` instead.
+  // "gguf:<file>" the `artifact` replaced.
   replaced?: string | null;
 }
 

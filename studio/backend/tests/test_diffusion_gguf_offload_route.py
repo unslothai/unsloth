@@ -164,6 +164,5 @@ def test_swap_reason_names_what_ran_and_how_to_keep_the_gguf():
 
 
 def test_resident_plans_are_not_this_rules_business():
-    # A resident plan never reaches the rule (the caller keeps it), but the planner answers it unchanged.
     placement, _ = _decide(_plan(OFFLOAD_NONE))
     assert placement.offload_policy == OFFLOAD_NONE
