@@ -153,6 +153,14 @@ test("an interrupted NPU download says how much it kept", () => {
   assert.equal(api.npuResumeLabel(model(null)), null);
 });
 
+test("a download waiting for the backend says it is reconnecting", () => {
+  const { api } = client(() => new Response(null));
+  assert.equal(api.npuDownloadLabel(40), "Downloading 40%");
+  assert.equal(api.npuDownloadLabel(40, true), "Reconnecting 40%");
+  assert.equal(api.npuDownloadLabel(null), "Downloading");
+  assert.equal(api.npuDownloadLabel(null, true), "Reconnecting");
+});
+
 test("the picker's NPU format holds no Hub repo", () => {
   for (const [id, gguf] of [
     ["unsloth/Qwen3-0.6B-GGUF", true],

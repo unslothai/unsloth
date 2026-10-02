@@ -29,6 +29,8 @@ export interface NpuCatalog {
   listError: string | null;
   enabling: boolean;
   downloads: Record<string, number | null>;
+  /** Downloads waiting for the backend to answer again; still active. */
+  reconnecting: Record<string, true>;
   enable: () => Promise<void>;
   download: (model: NpuModel) => Promise<boolean>;
   remove: (model: NpuModel) => Promise<void>;
@@ -40,6 +42,7 @@ export function useNpuCatalog(
   const models = useNpuCatalogStore((state) => state.models);
   const listError = useNpuCatalogStore((state) => state.listError);
   const downloads = useNpuCatalogStore((state) => state.progress);
+  const reconnecting = useNpuCatalogStore((state) => state.reconnecting);
   const [enabling, setEnabling] = useState(false);
   const status = source?.status;
   const onStatusChange = source?.onStatusChange;
@@ -96,6 +99,7 @@ export function useNpuCatalog(
     listError,
     enabling,
     downloads,
+    reconnecting,
     enable,
     download,
     remove,

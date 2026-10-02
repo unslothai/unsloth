@@ -89,8 +89,12 @@ export function npuResumeLabel(model: NpuModel): string | null {
     : `${model.resume_percent}% downloaded`;
 }
 
-export function npuDownloadLabel(percent: number | null | undefined): string {
-  return `Downloading${percent == null ? "" : ` ${Math.round(percent)}%`}`;
+export function npuDownloadLabel(
+  percent: number | null | undefined,
+  reconnecting = false,
+): string {
+  const done = percent == null ? "" : ` ${Math.round(percent)}%`;
+  return reconnecting ? `Reconnecting${done}` : `Downloading${done}`;
 }
 
 export interface NpuDownloadEvent {

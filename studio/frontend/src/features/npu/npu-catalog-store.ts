@@ -18,6 +18,8 @@ interface NpuCatalogState {
   listError: string | null;
   /** Model id to percent; null until the pull reports one. */
   progress: Record<string, number | null>;
+  /** Pulls whose progress stream lost the backend and are waiting for it to answer again. */
+  reconnecting: Record<string, true>;
 }
 
 // Outside the picker, which unmounts on close, so a pull's progress outlives it.
@@ -25,6 +27,7 @@ export const useNpuCatalogStore = create<NpuCatalogState>(() => ({
   models: null,
   listError: null,
   progress: {},
+  reconnecting: {},
 }));
 
 // Quitting the desktop app stops the backend and its pulls, so it warns while one runs.
@@ -51,6 +54,19 @@ export async function refreshNpuModels(): Promise<void> {
   }
 }
 
+function setReconnecting(id: string, reconnecting: boolean): void {
+  useNpuCatalogStore.setState((state) => {
+    if (reconnecting === id in state.reconnecting) return state;
+    const next = { ...state.reconnecting };
+    if (reconnecting) {
+      next[id] = true;
+    } else {
+      delete next[id];
+    }
+    return { reconnecting: next };
+  });
+}
+
 function setProgress(id: string, percent: number | null): void {
   useNpuCatalogStore.setState((state) =>
     state.progress[id] === percent
@@ -60,9 +76,8 @@ function setProgress(id: string, percent: number | null): void {
 }
 
 const following = new Map<string, Promise<boolean>>();
-// A broken stream is followed again for as long as the backend lists the pull. Checks that cannot
-// reach the backend this many times in a row mean Studio itself stopped, and the pull with it.
-const MAX_UNREACHABLE = 5;
+// Only the backend ends a follow: a broken stream is followed again for as long as it lists the
+// pull, and while it cannot be reached at all the pull shows as reconnecting.
 // A reconnect waits RECONNECT_DELAY_MS times one more than the reconnects in a row whose stream
 // brought no new percent, up to MAX_BACKOFF times.
 const RECONNECT_DELAY_MS = 1000;
@@ -120,11 +135,17 @@ export function followNpuDownload(
     };
     let streamed = false;
     const onProgress = (event: { event: string; percent?: number }) => {
+      setReconnecting(id, false);
       completed ||= event.event === "complete";
       if (advance(event.percent)) streamed = true;
     };
+    const fail = (description: string): false => {
+      toast.error(`Could not download ${id}`, { description });
+      return false;
+    };
     let stalledReconnects = 0;
-    let unreachable = 0;
+    let reconnected = false;
+    let wasUnreachable = false;
     for (;;) {
       streamed = false;
       try {
@@ -135,17 +156,25 @@ export function followNpuDownload(
         // Listed before the progress clears, so the row never reads as not downloaded.
         await refreshNpuModels();
         // A followed pull can end, either way, before its stream opens; the list says how.
-        return completed || listedDownloaded(id);
+        if (completed || listedDownloaded(id)) return true;
+        // One this page lost contact with failed unseen; one joined on mount may predate it.
+        if (reconnected) fail("The download ended without finishing.");
+        return false;
       } catch (error) {
         if (!(error instanceof NpuDownloadError)) {
           const running = await runningPull(id);
-          unreachable = running === undefined ? unreachable + 1 : 0;
-          // Still running, or the backend could not be asked yet: follow it again.
-          if (running !== null && unreachable < MAX_UNREACHABLE) {
+          // Still running, or the backend could not be asked: follow it again.
+          if (running !== null) {
+            const unreachable = running === undefined;
+            setReconnecting(id, unreachable);
             advance(running?.percent);
-            // Backs off from a backend that answers while its stream keeps breaking.
+            // Full speed again once the backend answers after an outage.
             stalledReconnects =
-              streamed || !running ? 0 : stalledReconnects + 1;
+              streamed || (wasUnreachable && !unreachable)
+                ? 0
+                : stalledReconnects + 1;
+            wasUnreachable = unreachable;
+            reconnected = true;
             joined = true;
             const backoff = Math.min(stalledReconnects + 1, MAX_BACKOFF);
             await new Promise((resolve) =>
@@ -158,10 +187,7 @@ export function followNpuDownload(
         await refreshNpuModels();
         // The pull may have finished while its stream was broken.
         if (listedDownloaded(id)) return true;
-        toast.error(`Could not download ${id}`, {
-          description: error instanceof Error ? error.message : String(error),
-        });
-        return false;
+        return fail(error instanceof Error ? error.message : String(error));
       }
     }
   };
@@ -170,8 +196,10 @@ export function followNpuDownload(
     following.delete(id);
     useNpuCatalogStore.setState((state) => {
       const progress = { ...state.progress };
+      const reconnecting = { ...state.reconnecting };
       delete progress[id];
-      return { progress };
+      delete reconnecting[id];
+      return { progress, reconnecting };
     });
   });
   following.set(id, job);

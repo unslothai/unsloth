@@ -58,6 +58,7 @@ export function NpuCatalogList({
         model={model}
         progress={catalog.downloads[model.id]}
         downloading={model.id in catalog.downloads}
+        reconnecting={model.id in catalog.reconnecting}
         onDownload={() => void catalog.download(model)}
         onRun={() => onRun(model)}
         onRemove={() => catalog.remove(model)}
@@ -79,6 +80,7 @@ function NpuCatalogRow({
   model,
   progress,
   downloading,
+  reconnecting,
   onDownload,
   onRun,
   onRemove,
@@ -86,6 +88,7 @@ function NpuCatalogRow({
   model: NpuModel;
   progress: number | null | undefined;
   downloading: boolean;
+  reconnecting: boolean;
   onDownload: () => void;
   onRun: () => void;
   onRemove: () => Promise<void>;
@@ -136,7 +139,7 @@ function NpuCatalogRow({
       </div>
       {downloading ? (
         <span className="shrink-0 text-ui-12 tabular-nums text-muted-foreground">
-          {npuDownloadLabel(progress)}
+          {npuDownloadLabel(progress, reconnecting)}
         </span>
       ) : model.downloaded ? (
         <>

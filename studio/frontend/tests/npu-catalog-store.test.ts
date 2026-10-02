@@ -191,37 +191,66 @@ test("a pull stalled on the backend is still followed, at most every 5 s", async
   assert.deepEqual(toasts, []);
 });
 
-test("an answer from the backend resets the unreachable count", async (t) => {
+test("an unreachable backend leaves the pull active and reconnecting until it answers", async (t) => {
   const clock = mockedClock(t);
-  const { store, pulls, toasts, activity, running, backend } = harness();
-  const id = "llama3.2-3b-FLM";
-  running.push({ model: id, percent: 10 });
-  void store.followNpuDownload(id);
-  for (let i = 0; i < 9; i++) {
-    // Unreachable four times, answered once, then unreachable four times again.
-    backend.reachable = i !== 4;
+  const { store, pulls, listings, toasts, activity, running, backend } =
+    harness();
+  const id = "qwen3-it-4b-FLM";
+  running.push({ model: id, percent: 40 });
+  const job = store.followNpuDownload(id);
+  pulls[0].onProgress({ event: "progress", percent: 40 });
+  // The connection drops: the stream and every check fail, many times over.
+  backend.reachable = false;
+  for (let i = 0; i < 8; i++) {
     await until(() => pulls.length === i + 1, clock);
     pulls[i].finish(new TypeError("Failed to fetch"));
+    await settle();
+    const state = store.useNpuCatalogStore.getState();
+    assert.equal(state.progress[id], 40);
+    assert.equal(id in state.reconnecting, true);
+    assert.equal(activity.at(-1), true);
   }
-  await until(() => pulls.length === 10, clock);
   assert.deepEqual(toasts, []);
-  assert.equal(activity.at(-1), true);
+  // Connectivity returns while the backend is still downloading; the first stream breaks again
+  // before any event, so the listing alone has to end the reconnecting state.
+  backend.reachable = true;
+  running[0].percent = 70;
+  await until(() => pulls.length === 9, clock);
+  pulls[8].finish(new Error("network error"));
+  await settle();
+  assert.equal(id in store.useNpuCatalogStore.getState().reconnecting, false);
+  assert.equal(store.useNpuCatalogStore.getState().progress[id], 70);
+  await until(() => pulls.length === 10, clock);
+  pulls[9].onProgress({ event: "progress", percent: 72 });
+  assert.equal(id in store.useNpuCatalogStore.getState().reconnecting, false);
+  assert.equal(store.useNpuCatalogStore.getState().progress[id], 72);
+  pulls[9].onProgress({ event: "complete", percent: 100 });
+  pulls[9].finish();
+  await until(() => listings.length === 1, clock);
+  listings[0].resolve([]);
+  assert.equal(await job, true);
+  assert.equal(activity.at(-1), false);
+  assert.deepEqual(store.useNpuCatalogStore.getState().reconnecting, {});
 });
 
-test("a backend that stays unreachable ends the follow", async (t) => {
+test("a pull lost while the backend was unreachable is reported when it answers", async (t) => {
   const clock = mockedClock(t);
   const { store, pulls, listings, toasts, activity, backend } = harness();
-  const job = store.followNpuDownload("qwen3-it-4b-FLM");
+  const id = "deepseek-r1-8b-FLM";
+  const job = store.followNpuDownload(id);
   backend.reachable = false;
-  for (let i = 0; i < 5; i++) {
-    await until(() => pulls.length === i + 1, clock);
-    pulls[i].finish(new TypeError("Failed to fetch"));
-  }
-  // The catalog cannot be listed either, so nothing says the model finished.
+  pulls[0].finish(new TypeError("Failed to fetch"));
+  await until(() => pulls.length === 2, clock);
+  // Studio restarted meanwhile: the follow finds no pull (a 404 resolves the stream).
+  backend.reachable = true;
+  pulls[1].finish();
+  await until(() => listings.length === 1, clock);
+  listings[0].resolve([{ id, downloaded: false }] as never);
   assert.equal(await job, false);
-  assert.equal(listings.length, 0);
-  assert.equal(pulls.length, 5);
-  assert.deepEqual(toasts, ["Could not download qwen3-it-4b-FLM"]);
+  assert.deepEqual(toasts, [`Could not download ${id}`]);
+  const state = store.useNpuCatalogStore.getState();
+  assert.deepEqual(state.progress, {});
+  assert.deepEqual(state.reconnecting, {});
   assert.equal(activity.at(-1), false);
 });
 
