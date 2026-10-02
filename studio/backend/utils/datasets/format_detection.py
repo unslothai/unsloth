@@ -693,28 +693,32 @@ def detect_vlm_dataset_structure(dataset):
             if isinstance(part, dict) and part.get("type") == "image"
         ]
         if image_parts:
-            has_image = any(part.get("image") is not None for part in image_parts)
-            if has_image:
-                return {
-                    "format": "vlm_messages",
-                    "needs_conversion": False,
-                    "messages_column": "messages",
-                    "image_column": None,
-                    "text_column": None,
-                }
-            images = sample.get("images")
-            if (
-                isinstance(images, list)
-                and images
-                and all(_is_image_list_item(image) for image in images)
-            ):
-                return {
-                    "format": "vlm_messages_llava",
-                    "needs_conversion": True,
-                    "messages_column": "messages",
-                    "image_column": "images",
-                    "text_column": None,
-                }
+            embedded_images = [
+                part.get("image") for part in image_parts if part.get("image") is not None
+            ]
+            if embedded_images:
+                if all(_is_image_list_item(image) for image in embedded_images):
+                    return {
+                        "format": "vlm_messages",
+                        "needs_conversion": False,
+                        "messages_column": "messages",
+                        "image_column": None,
+                        "text_column": None,
+                    }
+            else:
+                images = sample.get("images")
+                if (
+                    isinstance(images, list)
+                    and images
+                    and all(_is_image_list_item(image) for image in images)
+                ):
+                    return {
+                        "format": "vlm_messages_llava",
+                        "needs_conversion": True,
+                        "messages_column": "messages",
+                        "image_column": "images",
+                        "text_column": None,
+                    }
 
     # ShareGPT/ChatML conversations with an <image> placeholder plus a companion image column, e.g. Lin-Chen/ShareGPT4V and LLaVA-style datasets.
     for chat_col in ("conversations", "messages"):

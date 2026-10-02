@@ -879,6 +879,17 @@ def convert_llava_to_vlm_format(dataset):
         messages = sample["messages"]
         images = sample.get("images", [])
         unindexed_image_index = 0
+        explicit_image_indices = set()
+        for message in messages:
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            for item in content:
+                if not isinstance(item, dict) or item.get("type") != "image":
+                    continue
+                image_index = item.get("index")
+                if isinstance(image_index, int) and not isinstance(image_index, bool):
+                    explicit_image_indices.add(image_index)
 
         new_messages = []
         for msg in messages:
@@ -898,6 +909,8 @@ def convert_llava_to_vlm_format(dataset):
                 if item["type"] == "image":
                     img_idx = item.get("index")
                     if img_idx is None:
+                        while unindexed_image_index in explicit_image_indices:
+                            unindexed_image_index += 1
                         img_idx = unindexed_image_index
                         unindexed_image_index += 1
                     if not isinstance(img_idx, int) or isinstance(img_idx, bool):

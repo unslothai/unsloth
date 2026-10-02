@@ -146,6 +146,28 @@ def test_unindexed_llava_images_are_consumed_in_order():
     assert [image.getpixel((0, 0)) for image in images] == [(255, 0, 0), (0, 0, 255)]
 
 
+def test_unindexed_llava_images_skip_explicit_indices():
+    dataset = [
+        {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{"type": "image", "index": 0}, {"type": "image"}],
+                }
+            ],
+            "images": [
+                Image.new("RGB", (8, 8), "red"),
+                Image.new("RGB", (8, 8), "blue"),
+            ],
+        }
+    ]
+
+    converted = convert_llava_to_vlm_format(dataset)
+    images = [part["image"] for part in converted[0]["messages"][0]["content"]]
+
+    assert [image.getpixel((0, 0)) for image in images] == [(255, 0, 0), (0, 0, 255)]
+
+
 def test_llava_conversion_rejects_missing_unindexed_image():
     dataset = [
         {
@@ -252,3 +274,14 @@ def test_llava_placeholders_require_convertible_images(detector):
     result = detector.detect_vlm_dataset_structure(dataset)
 
     assert result["format"] != "vlm_messages_llava"
+
+
+@pytest.mark.parametrize("detector", [dataset_format, format_detection])
+def test_embedded_images_require_convertible_values(detector):
+    row = _image_part_row()
+    row["messages"][0]["content"][0]["image"] = _encoded_image_row()["media"][0]
+    dataset = Dataset.from_list([row])
+
+    result = detector.detect_vlm_dataset_structure(dataset)
+
+    assert result["format"] != "vlm_messages"
