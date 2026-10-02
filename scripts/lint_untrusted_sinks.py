@@ -1821,6 +1821,29 @@ class _TaintPass(ast.NodeVisitor):
                 values = values or spread
         return (keys, values)
 
+    def drop_shadowed_module_seeds(self) -> None:
+        """A name the function binds itself hides the module alias of the same name.
+
+        Python makes every reference to it local, so seeding the module's
+        `loader = importlib.import_module` reported a function whose own `loader` is a
+        safe helper. The function's own assignment still records whatever it binds.
+        """
+        own = self.facts.functions.get(self.qualname)
+        if own is None:
+            return
+        local = _scope_locals(own)
+        for table in (
+            self.instance_types,
+            self.sink_aliases,
+            self.callable_aliases,
+            self.source_aliases,
+            self.alias_offsets,
+        ):
+            # Called straight after construction, so every entry here is a seed.
+            for name in [name for name in table if name in local]:
+                table.pop(name, None)
+        self.unsafe_torch_partials -= local
+
     def drop_class_seeds(self) -> None:
         """A class body's own bindings start empty rather than from the module's.
 
@@ -2005,6 +2028,18 @@ class _TaintPass(ast.NodeVisitor):
             # `parsed["module"].removeprefix("plugins.")` reached an import clean.
             "removeprefix",
             "removesuffix",
+            # `pathlib` transforms return the same location in another form, so a
+            # downloaded directory stays attacker-chosen through them:
+            # `Path(snapshot_download(repo)).resolve()` reached `sys.path.insert` clean.
+            "resolve",
+            "absolute",
+            "expanduser",
+            "as_posix",
+            "joinpath",
+            "with_name",
+            "with_suffix",
+            "with_stem",
+            "relative_to",
             "lstrip",
             "rstrip",
             "lower",
@@ -2431,10 +2466,20 @@ class _TaintPass(ast.NodeVisitor):
                     self.facts.canonicals(inner), TORCH_LOAD_NAMES
                 ) is not None or TORCH_LOAD_ALIAS in (self.sink_aliases.get(inner) or ()):
                     self._check_torch_load(bound, assume_torch = True)
+                    # The same proof the call check applies, so `safe = True` then
+                    # `partial(torch.load, weights_only = safe)` is a safe wrapper.
                     pinned = any(
                         keyword.arg == "weights_only"
-                        and isinstance(keyword.value, ast.Constant)
-                        and keyword.value.value is True
+                        and (
+                            (
+                                isinstance(keyword.value, ast.Constant)
+                                and keyword.value.value is True
+                            )
+                            or (
+                                isinstance(keyword.value, ast.Name)
+                                and self._always_true(keyword.value.id)
+                            )
+                        )
                         for keyword in node.value.keywords
                     )
                     if not pinned:
@@ -2591,6 +2636,20 @@ class _TaintPass(ast.NodeVisitor):
             reason = self.tainted(default)
             if reason:
                 self._bind(self.local_reasons, parameter.arg, reason)
+            # `def load(blob, loader = importlib.import_module)` runs the sink whenever
+            # the argument is omitted, so the default is an alias just like an assignment
+            # would be. Recorded through the same bookkeeping.
+            if isinstance(default, (ast.Name, ast.Attribute)):
+                synthetic = ast.copy_location(
+                    ast.Assign(
+                        targets = [ast.Name(id = parameter.arg, ctx = ast.Store())],
+                        value = default,
+                    ),
+                    default,
+                )
+                self._note_sink_alias(synthetic)
+                self._note_source_alias(synthetic)
+                self._note_callable_alias(synthetic)
 
     def _note_true(self, node: ast.Assign) -> None:
         """`enabled = True`, in either the plain or the annotated spelling.
@@ -3698,6 +3757,30 @@ def _remote_code_defaults(facts: _FileFacts) -> list[dict]:
                     and is_true(value, node)
                 ):
                     record(node, "dict", _short(node))
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in ("update", "setdefault")
+        ):
+            # `kwargs.update(trust_remote_code = True)` and
+            # `kwargs.setdefault("trust_remote_code", True)` write the key into a mapping
+            # that is splatted into a loader later, which neither the literal nor the
+            # `dict(...)` spelling covered.
+            if node.func.attr == "update":
+                if any(
+                    keyword.arg == "trust_remote_code" and is_true(keyword.value, node)
+                    for keyword in node.keywords
+                ):
+                    record(node, "dict update", _short(node))
+                # `update({"trust_remote_code": True})` is already reported by the dict
+                # literal branch, wherever the literal sits.
+            elif (
+                len(node.args) >= 2
+                and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value == "trust_remote_code"
+                and is_true(node.args[1], node)
+            ):
+                record(node, "dict setdefault", _short(node))
         elif isinstance(node, ast.Call) and _call_name(node.func).rpartition(".")[2] == "dict":
             # `kwargs = dict(trust_remote_code = True)` is the same thing as the literal
             # and splats into a loader the same way, but it is a Call rather than a Dict,
@@ -3979,6 +4062,7 @@ def _settle(facts: _FileFacts, qualname: str, nodes: list, state: "_State"):
     for _ in range(_LOCAL_BOUND):
         visitor = _TaintPass(facts, qualname, state)
         visitor.drop_class_seeds()
+        visitor.drop_shadowed_module_seeds()
         visitor.local_reasons.update(reasons)
         visitor.instance_types.update(instances)
         visitor.sink_aliases.update(aliases)

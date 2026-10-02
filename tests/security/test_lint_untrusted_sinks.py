@@ -5001,3 +5001,142 @@ def test_a_class_body_binding_inside_a_loop_is_published(tmp_path):
         "    return importlib.import_module(Config.module)\n",
     )
     assert "importlib.import_module" in _sinks(findings)
+
+
+def test_pathlib_transforms_keep_a_download_tainted(tmp_path):
+    """`Path(snapshot_download(repo)).resolve()` then `sys.path.insert`.
+
+    `resolve`, `absolute`, `expanduser`, `as_posix` and `joinpath` return the same
+    attacker-chosen location in another form, and each one laundered the download
+    before it reached the import path.
+    """
+    head = (
+        "import sys\nfrom pathlib import Path\n"
+        "from huggingface_hub import snapshot_download\n"
+        "def load(repo):\n"
+    )
+    for method in ("resolve()", "absolute()", "expanduser()", "as_posix()", "joinpath('src')"):
+        findings = _scan(
+            tmp_path,
+            head
+            + "    p = Path(snapshot_download(repo)).%s\n" % method
+            + "    sys.path.insert(0, str(p))\n",
+            name = "sample_%s.py" % method.split("(")[0],
+        )
+        assert "sys.path.insert" in _sinks(findings), method
+
+
+def test_a_resolved_fixed_path_is_quiet(tmp_path):
+    """The guard: the transform carries taint, it does not create it."""
+    findings = _scan(
+        tmp_path,
+        "import sys\nfrom pathlib import Path\n"
+        "def load():\n"
+        "    sys.path.insert(0, str(Path('/opt/fixed').resolve()))\n",
+    )
+    assert _sinks(findings) == set()
+
+
+def test_a_callable_default_is_an_alias(tmp_path):
+    """`def load(blob, loader = importlib.import_module)` runs the default when omitted."""
+    sink = _scan(
+        tmp_path,
+        "import json, importlib\n"
+        "def load(blob, loader = importlib.import_module):\n"
+        "    return loader(json.loads(blob)['module'])\n",
+        name = "sink.py",
+    )
+    helper = _scan(
+        tmp_path,
+        "import json, subprocess\n"
+        "def execute(c):\n"
+        "    return subprocess.run(c)\n"
+        "def load(blob, runner = execute):\n"
+        "    return runner(json.loads(blob)['c'])\n",
+        name = "helper.py",
+    )
+    literal = _scan(
+        tmp_path,
+        "import importlib\n"
+        "def load(loader = importlib.import_module):\n"
+        "    return loader('torch')\n",
+        name = "literal.py",
+    )
+    assert "importlib.import_module" in _sinks(sink)
+    assert "subprocess.run" in _sinks(helper)
+    assert _sinks(literal) == set()
+
+
+def test_remote_code_written_by_a_mapping_method_is_reported(tmp_path):
+    """`kwargs.update(trust_remote_code = True)` and `kwargs.setdefault(...)`.
+
+    Both write the key into a mapping that is splatted into a loader later, which
+    neither the literal nor the `dict(...)` spelling covered.
+    """
+    shapes = {
+        "update": "    kwargs.update(trust_remote_code = True)\n",
+        "setdefault": "    kwargs.setdefault('trust_remote_code', True)\n",
+    }
+    for label, middle in shapes.items():
+        findings = _scan(
+            tmp_path,
+            "from transformers import AutoModel\n"
+            "def load(name):\n"
+            "    kwargs = {}\n" + middle + "    return AutoModel.from_pretrained(name, **kwargs)\n",
+            name = "sample_%s.py" % label,
+        )
+        assert any(f["sink"].startswith("trust_remote_code = True") for f in findings), label
+    quiet = _scan(
+        tmp_path,
+        "from transformers import AutoModel\n"
+        "def load(name):\n"
+        "    kwargs = {}\n"
+        "    kwargs.update(trust_remote_code = False)\n"
+        "    return AutoModel.from_pretrained(name, **kwargs)\n",
+        name = "sample_false.py",
+    )
+    assert not any(f["sink"].startswith("trust_remote_code = True") for f in quiet)
+
+
+def test_a_local_binding_hides_the_module_alias_of_its_name(tmp_path):
+    """Module `loader = importlib.import_module`, function `loader = len`.
+
+    Every reference to `loader` in that function is local, so seeding the module alias
+    reported a call to a safe helper as a dynamic import.
+    """
+    shadowed = _scan(
+        tmp_path,
+        "import json, importlib\n"
+        "loader = importlib.import_module\n"
+        "def load(blob):\n"
+        "    loader = len\n"
+        "    return loader(json.loads(blob)['module'])\n",
+        name = "shadowed.py",
+    )
+    plain = _scan(
+        tmp_path,
+        "import json, importlib\n"
+        "loader = importlib.import_module\n"
+        "def load(blob):\n"
+        "    return loader(json.loads(blob)['module'])\n",
+        name = "plain.py",
+    )
+    assert _sinks(shadowed) == set()
+    assert "importlib.import_module" in _sinks(plain)
+
+
+def test_a_torch_load_partial_pinned_by_a_proven_name_is_quiet(tmp_path):
+    """`safe = True; partial(torch.load, weights_only = safe)` is a safe wrapper.
+
+    The creation check accepted the proven name but the wrapper was still marked
+    unsafe, so every call through it was reported as explicitly unsafe.
+    """
+    findings = _scan(
+        tmp_path,
+        "import torch, functools\nfrom huggingface_hub import hf_hub_download\n"
+        "def load(repo):\n"
+        "    safe = True\n"
+        "    loader = functools.partial(torch.load, weights_only = safe)\n"
+        "    return loader(hf_hub_download(repo, 'w.bin'))\n",
+    )
+    assert _sinks(findings) == set()
