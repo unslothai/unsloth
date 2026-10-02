@@ -114,6 +114,19 @@ for gate in unreachable capped open; do
 done
 UNSLOTH_TORCH_UPGRADE=1; _run_block true "2.11.0+cu130"; unset UNSLOTH_TORCH_UPGRADE
 assert_eq "UNSLOTH_TORCH_UPGRADE=1 moves an existing home to 2.13" "torch>=2.13.0,<2.14.0" "$TORCH_CONSTRAINT"
+for gate in unreachable capped; do
+    case "$gate" in
+        unreachable) export UNSLOTH_PYPI_JSON_URL="http://127.0.0.1:9/unreachable" ;;
+        capped) _pypi_fixture "torch<2.13.0,>=2.4.0" ;;
+    esac
+    UNSLOTH_TORCH_UPGRADE=1
+    _run_block true "2.13.0+cu130"
+    assert_eq "upgrade with PyPI $gate keeps a resident 2.13" "torch==2.13.0" "$TORCH_CONSTRAINT"
+    _run_block true "2.10.0+cu128"
+    assert_eq "upgrade with PyPI $gate still moves 2.10 to the default" "torch>=2.4,<2.12.0" "$TORCH_CONSTRAINT"
+    unset UNSLOTH_TORCH_UPGRADE
+done
+_pypi_fixture "torch<2.15.0,>=2.4.0"
 _stub_python 3.12
 _run_block false ""
 assert_eq "Python 3.12 keeps the old window" "torch>=2.4,<2.12.0" "$_PRESERVE_TORCH_CONSTRAINT"
