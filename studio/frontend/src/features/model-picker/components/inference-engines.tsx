@@ -24,6 +24,7 @@ import {
   convertsToInteger,
   precisionAfterEngineSwitch,
   isEngineReady,
+  wslNoticeKey,
 } from "../api/engines";
 import { useEngines } from "../hooks/use-engines";
 
@@ -42,7 +43,11 @@ function EngineInstall({
   const isOwner = useIsAccountOwner();
   const useAfterInstall = useRef(false);
   useEffect(() => {
-    if (engine.job.state === "error" || engine.job.state === "cancelled") {
+    if (
+      engine.job.state === "error" ||
+      engine.job.state === "cancelled" ||
+      engine.job.state === "waiting"
+    ) {
       useAfterInstall.current = false;
     }
     if (
@@ -175,6 +180,9 @@ function EngineInstall({
                   version: engine.version,
                 })}
           </p>
+          {wslNoticeKey(engine) && (
+            <p>{t(wslNoticeKey(engine)!, { engine: names[engine.engine] })}</p>
+          )}
           <p>{t("managedEngines.background")}</p>
           <div className="flex gap-2">
             <Button
@@ -207,6 +215,9 @@ function EngineInstall({
       )}
       {engine.job.state === "cancelled" && (
         <output>{t("managedEngines.cancelled")}</output>
+      )}
+      {engine.job.state === "waiting" && (
+        <output className="whitespace-pre-wrap">{engine.job.message}</output>
       )}
     </div>
   );

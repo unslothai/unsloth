@@ -66,3 +66,13 @@ async def rollback(engine: Engine):
         return await asyncio.to_thread(engine_install.rollback, engine)
     except RuntimeError as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
+
+
+@router.delete("/wsl/environment", dependencies = [Depends(policy.require_owner)])
+async def remove_wsl_environment():
+    """Windows only: delete Studio's private WSL distro with every engine inside it."""
+    try:
+        await asyncio.to_thread(_reap_crashed_engine)
+        return await asyncio.to_thread(engine_install.remove_wsl_environment)
+    except (RuntimeError, OSError) as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
