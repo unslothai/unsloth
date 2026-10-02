@@ -539,7 +539,7 @@ def _load(checkpoint: Checkpoint) -> None:
         agent, device = _load_checkpoint(checkpoint)
     except Exception as exc:
         message = f"Could not load {checkpoint.name}: {type(exc).__name__}: {exc}"
-        logger.warning("System One load failed: %s", message)
+        logger.warning("System One load failed: %s", message, exc_info = True)
         with _state_lock:
             _failure = (checkpoint, message, time.monotonic() + FAILURE_BACKOFF_S)
             _loading = None

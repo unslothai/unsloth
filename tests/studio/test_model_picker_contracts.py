@@ -512,9 +512,15 @@ def test_active_model_config_round_trips_gpu_fields():
         "loadedLlamaExtraArgs",
     ):
         assert field in src, field
+    # Only GGUF carries the offload knobs; an optional engine keeps just its GPU pick.
+    flat = " ".join(src.split())
+    assert "if (!isGguf) {" in flat and ": base; }" in flat
+    assert (
+        'engine === "vllm" || engine === "sglang" ? { ...base, selectedGpuIds, selectedGpuIndexKind }'
+        in flat
+    )
     assert "loadedLlamaExtraArgs != null" in src
     assert "llamaExtraArgs: [...loadedLlamaExtraArgs]" in src
-    assert "if (!isGguf)" in src and "return base" in src
     assert "useActiveModelConfig(" in _read("features/chat/chat-page.tsx")
     # Live config sync is in the shared draft store; instance keys still remount on signature.
     shared = _read("features/model-picker/model-config/config-signature.ts")
@@ -1552,7 +1558,10 @@ def test_forget_settings_is_not_locked_by_unloadable_extra_args():
     """Forget only deletes, so invalid saved llama args must not lock it: the args gates
     apply to a save only."""
     gate = " ".join(_save_button_gate().split())
-    assert "(remember && ((!extraArgsLoadable && !sharedExtraArgsCleared) ||" in gate, gate
+    assert re.search(
+        r"\(remember && \((?:\([^()]*\) \|\| )?\(!extraArgsLoadable && !sharedExtraArgsCleared\) \|\|",
+        gate,
+    ), gate
     assert "sharedExtraArgsRefused || extraArgsHydrating))" in gate, gate
 
 
