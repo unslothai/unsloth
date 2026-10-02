@@ -216,6 +216,12 @@ def _torch_runtime() -> set[str]:
     return names
 
 
+# nvcc compiles against its own crt, nvvm and cccl headers, so a Studio copy of another release
+# breaks FlashInfer's JIT (Colab: crt 13.4.59 with nvcc 13.0.88, "'__cudaLaunch' was not declared").
+# Only torch's process loads the rest of the runtime; these are shared only at the locked version.
+_TOOLCHAIN = frozenset({"nvidia-cuda-nvcc", "nvidia-cuda-crt", "nvidia-nvvm", "nvidia-cuda-cccl"})
+
+
 def _same_build(installed: str | None, locked: str | None, cuda: str) -> bool:
     """PyTorch's index labels its wheels (2.11.0+cu130); the PyPI lock names the same build unlabelled."""
     return installed is not None and installed in (locked, f"{locked}+{cuda}")
@@ -273,7 +279,7 @@ def _reusable(
     compat = _compat(engine)
     if not compat:
         return {}
-    hidden = {"flashinfer-python", "flashinfer-jit-cache", "flashinfer-cubin"}
+    hidden = {"flashinfer-python", "flashinfer-jit-cache", "flashinfer-cubin", *_TOOLCHAIN}
     reuse = {
         name: studio[name]
         for name in lock
@@ -327,6 +333,7 @@ def install_plan(engine: str) -> dict:
         specs = compat.get(name)
         return bool(
             name != "torch"
+            and name not in _TOOLCHAIN
             and name in lock
             and name in studio
             and specs
@@ -337,7 +344,7 @@ def install_plan(engine: str) -> dict:
         sys.implementation.name == "cpython"
         and sys.version_info[:2] == PYTHON
         and "torch" in studio
-        and all(fits(name) for name in runtime)
+        and all(fits(name) for name in runtime - _TOOLCHAIN)
     )
     provided = {
         name: studio[name]
