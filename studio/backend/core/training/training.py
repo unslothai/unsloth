@@ -3196,6 +3196,7 @@ class TrainingBackend:
                         "epoch": event.get("epoch"),
                         "num_tokens": event.get("num_tokens"),
                         "elapsed_seconds": event.get("elapsed_seconds"),
+                        "rl": event.get("rl_metrics") if step > 0 else None,
                     }
                 )
 

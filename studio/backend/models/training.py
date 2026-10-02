@@ -884,6 +884,8 @@ class TrainingRunMetrics(BaseModel):
     grad_norm_step_history: List[int] = Field(default_factory = list)
     eval_loss_history: List[float] = Field(default_factory = list)
     eval_step_history: List[int] = Field(default_factory = list)
+    # DPO/ORPO/GRPO only: [{"step": n, "<TRL log key>": value, ...}], as /status metric_history.rl.
+    rl_history: List[Dict[str, float]] = Field(default_factory = list)
     final_epoch: Optional[float] = None
     final_num_tokens: Optional[int] = None
 
