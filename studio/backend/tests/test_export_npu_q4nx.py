@@ -38,11 +38,18 @@ class _Model:
         out = Path(model_save_path)
         out.mkdir(parents = True)
         (out / "config.json").write_text('{"model_type": "qwen3"}')
-        quants = quantization_method if isinstance(quantization_method, list) else [quantization_method]
+        quants = (
+            quantization_method if isinstance(quantization_method, list) else [quantization_method]
+        )
         return {"gguf_files": [str(_gguf(out / f"Model.{q.upper()}.gguf")) for q in quants]}
 
 
-def _fake_converter(export_mod, monkeypatch, calls, fail = False):
+def _fake_converter(
+    export_mod,
+    monkeypatch,
+    calls,
+    fail = False,
+):
     def convert(gguf_path, out_dir):
         if fail:
             raise RuntimeError("unsupported architecture")

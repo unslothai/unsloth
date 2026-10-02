@@ -128,7 +128,11 @@ def install(
             payload = scripts[0].parent
             (payload / MARKER_NAME).write_text(
                 json.dumps(
-                    {"repo": pins["repo"], "commit": pins["commit"], "sha256": pins["archive_sha256"]},
+                    {
+                        "repo": pins["repo"],
+                        "commit": pins["commit"],
+                        "sha256": pins["archive_sha256"],
+                    },
                     indent = 2,
                 )
                 + "\n",
