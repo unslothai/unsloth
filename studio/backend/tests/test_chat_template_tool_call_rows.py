@@ -46,6 +46,19 @@ _LLAMA3_TEMPLATE = """
 {%- endfor %}
 """
 
+_DEEPSEEK_TEMPLATE = """
+{%- for message in messages %}
+{%- if message['role'] == 'user' %}{{- '<User>' + message['content'] }}{%- endif %}
+{%- if message['role'] == 'assistant' and message['content'] is none %}
+{%- for tool in message['tool_calls'] %}
+{{- '<call>' + tool['function']['name'] + '\\n' + tool['function']['arguments'] + '</call>' }}
+{%- endfor %}
+{%- endif %}
+{%- if message['role'] == 'assistant' and message['content'] is not none %}{{- '<Assistant>' + message['content'] }}{%- endif %}
+{%- if message['role'] == 'tool' %}{{- '<output>' + message['content'] }}{%- endif %}
+{%- endfor %}
+"""
+
 
 class _JinjaTokenizer:
     eos_token = ""
@@ -163,3 +176,14 @@ def test_non_json_tool_arguments_are_kept_verbatim():
 
     assert result["success"] is True
     assert '"parameters": "not json"' in result["dataset"][0]["text"]
+
+
+def test_tool_call_turn_with_null_content_and_string_arguments_still_renders():
+    row = _tool_call_row('{"city": "Paris"}')
+    row[1]["content"] = None
+
+    result = _format([row, _plain_row()], _DEEPSEEK_TEMPLATE)
+
+    assert result["success"] is True, result["errors"]
+    assert len(result["dataset"]) == 2
+    assert '<call>get_weather\n{"city": "Paris"}</call>' in result["dataset"][0]["text"]
