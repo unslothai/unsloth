@@ -210,9 +210,10 @@ def test_modulation_kernels_index_past_two_gib_of_temb():
     if torch.cuda.mem_get_info()[0] < 8 << 30:
         pytest.skip("needs ~8 GiB free on the GPU")
     g = torch.Generator(device = "cuda").manual_seed(5)
-    x = torch.randn(B, L, D, device = "cuda", generator = g).half()
-    a = torch.randn(B, L, D, device = "cuda", generator = g).half()
-    t = (torch.randn(B, L, 6, D, device = "cuda", generator = g) * 0.5).half()
+    # fp16 straight from randn (and scaled in place): an fp32 temb here alone would be 8 GiB, twice over with "* 0.5"
+    x = torch.randn(B, L, D, device = "cuda", dtype = torch.half, generator = g)
+    a = torch.randn(B, L, D, device = "cuda", dtype = torch.half, generator = g)
+    t = torch.randn(B, L, 6, D, device = "cuda", dtype = torch.half, generator = g).mul_(0.5)
     tbl = torch.randn(1, 6, D, device = "cuda", generator = g) / D**0.5
     k = wf._kernels()
     mean, rstd = wf._stats(x, 1e-6)
