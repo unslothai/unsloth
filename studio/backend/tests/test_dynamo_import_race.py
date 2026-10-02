@@ -199,7 +199,7 @@ def test_load_threads_gate_before_their_first_download():
         ("core/inference/diffusion.py", "self._prefetch_files("),
         ("core/inference/video.py", "_assert_pick_is_not_speech("),
     ):
-        src = (_BACKEND / rel).read_text()
+        src = (_BACKEND / rel).read_text(encoding = "utf-8")
         start = src.index("    def _run_load(self, **kwargs: Any) -> None:")
         gate = src.index("gate_torch_stack_import(", start)
         assert gate < src.index(first_download, start), rel
