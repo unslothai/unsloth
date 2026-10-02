@@ -1204,7 +1204,7 @@ export function footerLines(run: BenchRun): string[] {
   ].filter(Boolean);
   const build = [
     m.llamaTag ? `llama.cpp ${m.llamaTag}` : "",
-    m.studioVersion ? `Unsloth Studio ${m.studioVersion}` : "",
+    m.studioVersion ? `Unsloth ${m.studioVersion}` : "",
     new Date(run.createdAt).toISOString().slice(0, 10),
   ].filter(Boolean);
   return [
