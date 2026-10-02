@@ -349,11 +349,13 @@ def test_streamed_kill_switch(forced, monkeypatch):
 @pytest.mark.parametrize(
     "cap, on",
     [
-        ((8, 0), False),
-        ((8, 9), False),
+        ((8, 0), True),  # A100: measured end to end (streamed H3)
+        ((8, 6), False),
+        ((8, 9), False),  # L4: H3 Diffusers does not load there (host RAM floor), never measured
+        ((9, 0), False),
         ((10, 0), False),
         ((12, 0), True),
-    ],  # only the measured arch (G4) is on
+    ],  # only the arches measured end to end (G4, A100) are on
 )
 def test_rotquant_arch_gate(cap, on):
     assert (g8.rotquant_config(cap, "auto") is not None) is on
@@ -365,8 +367,10 @@ def test_rotquant_kill_switch_and_force(monkeypatch):
     )  # the fused GEMM's own kill switch also turns it off
     assert g8.rotquant_config((10, 0), "force") is not None
     assert g8.rotquant_config((7, 5), "force") is None
+    assert g8.rotquant_config((8, 0), "off") is None
     monkeypatch.setenv(g8.INT8_ROTQUANT_ENV, "0")
     assert g8.rotquant_config((12, 0), "auto") is None
+    assert g8.rotquant_config((8, 0), "auto") is None
     assert g8.rotquant_config((10, 0), "force") is None
 
 

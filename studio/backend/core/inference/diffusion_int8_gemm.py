@@ -35,9 +35,12 @@ activation once and writes the int8 rows and their bf16 scale, where the stock p
 and reads it back to quantize. The rotation is the same GEMM in the same K order with the same bf16 rounding,
 then torchao's per-row quant with every bf16 rounding kept, so codes and scales are bit-identical to the two steps;
 a per-device probe checks that before it is used (and a census of a full H3 render on G4 and B200 found 0 code or scale
-differences in 5.9e11 elements). Group 256 (H3) only, sm120 only until measured elsewhere (G4: 2x faster than the
-compiled rotation GEMM + quant at every H3 shape). MiniMax-H3 960x544x124, 20 steps, G4 resident: 2.764 -> 2.695
-s/step (5 and 3 processes), nsys denoiser step 2776 -> 2719 ms. Kill switch ``UNSLOTH_DIFFUSION_INT8_ROTQUANT=0``.
+differences in 5.9e11 elements). Group 256 (H3) only, on sm120 and sm80, the arches measured end to end (G4: 2x faster
+than the compiled rotation GEMM + quant at every H3 shape). MiniMax-H3 960x544x124, 20 steps, G4 resident: 2.764 ->
+2.695 s/step (5 and 3 processes), nsys denoiser step 2776 -> 2719 ms; A100 40 GB streamed: 4.813 -> 4.761 s/step (3
+processes each, alternating), 0 code or scale differences in 7.9e11 elements. L4 stays off: Studio's host RAM floor
+refuses the H3 Diffusers load on a 53 GB Colab L4, so it was never measured end to end there.
+Kill switch ``UNSLOTH_DIFFUSION_INT8_ROTQUANT=0``.
 
 A block-streamed denoiser (group offload, MiniMax-H3 on a 40 GB card) installs against its onload device
 (``install(..., device = ...)``): diffusers moves torchao weights with ``swap_tensors``, which keeps each Parameter's
@@ -94,9 +97,11 @@ _FALLBACK_CONFIG = (128, 128, 64, 8, 4, 4)
 # BLOCK_M rows of the [M * K / G, G] group view by the full group width G, and holds whole activation rows only, so
 # the per-row amax closes inside the tile. Measured on G4 (RTX PRO 6000) at H3's shapes (M = 19303, G = 256), vs the
 # compiled stock rotation GEMM + act quant: K 5376 0.506 -> 0.243 ms, K 7168 0.669 -> 0.340, K 14336 1.328 -> 0.648.
-# An arch absent here keeps the stock rotation even where the fused GEMM runs.
+# A100 (M = 19303): K 5376 0.71-0.82 -> 0.49 ms, K 7168 0.88-1.00 -> 0.69, K 14336 1.65 -> 1.34 (stock arm A/A spread
+# shown as a range). An arch absent here keeps the stock rotation even where the fused GEMM runs.
 _ROTQ_CONFIG = {
-    (12, 0): (128, 32, 8, 4),
+    (8, 0): (128, 32, 8, 3),  # A100 40 GB, streamed H3: 4.813 -> 4.761 s/step
+    (12, 0): (128, 32, 8, 4),  # RTX PRO 6000, resident H3: 2.764 -> 2.695 s/step
 }
 _ROTQ_FALLBACK = (128, 32, 8, 3)
 # Group sizes the fused rotation takes (the [BLOCK_M, G] accumulator and the G x G Hadamard tile are sized for these).
