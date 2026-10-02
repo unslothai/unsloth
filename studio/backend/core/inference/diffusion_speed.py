@@ -43,6 +43,7 @@ from functools import lru_cache
 from typing import Any, Iterator, Optional
 
 from . import diffusion_compile_config as compile_config
+from .diffusion_bg_compile import eager_forced as _bg_eager_forced
 from . import diffusion_gguf_compile as gguf_compile
 
 SPEED_OFF = "off"
@@ -450,6 +451,7 @@ def apply_speed_optims(
         "rocm_query_chunks": False,
         "compiled_vae_decode": False,
         "cuda_graph": False,
+        "int8_gemm": False,
     }
     mode = normalize_speed_mode(speed_mode)
     # TF32 (max) and cudnn.benchmark (any non-off CUDA load) are process-global; the caller restores them so a later
@@ -505,6 +507,7 @@ def apply_speed_optims(
                 max_autotune = False,
                 cache_active = cache_active,
                 offload_active = offload_active,
+                denoiser_offloaded = denoiser_offloaded,
             )
     elif (
         mode == SPEED_MAX
@@ -517,6 +520,12 @@ def apply_speed_optims(
             max_autotune = True,
             cache_active = cache_active,
             offload_active = offload_active,
+            denoiser_offloaded = denoiser_offloaded,
+        )
+
+    if applied["compiled"]:
+        applied["int8_gemm"] = any(
+            bool(getattr(t, "_unsloth_int8_gemm", 0)) for t in _denoiser_dits(pipe)
         )
 
     if applied["compiled"] and _vae_decode_compile_allowed(pipe, mode):
@@ -745,6 +754,16 @@ def _denoiser_dits(pipe: Any) -> list:
     return dits
 
 
+def int8_gemm_live(pipe: Any, optims: Any) -> list:
+    """``speed_optims`` with ``int8_gemm`` dropped once a deferred install's first-forward probe swapped nothing."""
+    optims = list(optims or ())
+    if "int8_gemm" in optims and not any(
+        bool(getattr(t, "_unsloth_int8_gemm", 0)) for t in _denoiser_dits(pipe)
+    ):
+        optims.remove("int8_gemm")
+    return optims
+
+
 # Blocks MEASURED to raise inductor CantSplit under dynamic = True; measure before adding.
 _STREAM_MERGING_BLOCKS: frozenset[str] = frozenset({"FluxSingleTransformerBlock"})
 
@@ -810,6 +829,7 @@ def _compile_repeated_blocks(
     max_autotune: bool = False,
     cache_active: bool = False,
     offload_active: bool = False,
+    denoiser_offloaded: Optional[bool] = None,
 ) -> bool:
     dits = [
         t for t in _denoiser_dits(pipe) if callable(getattr(t, "compile_repeated_blocks", None))
@@ -866,6 +886,12 @@ def _compile_repeated_blocks(
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "compile_repeated_blocks", exc)
         return False
+    # A block whose attention runs inside sdpa_kernel would otherwise bypass AOTAutogradCache on every start.
+    try:
+        from . import diffusion_aot_cache
+        diffusion_aot_cache.install(logger)
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, "sdpa aot cache", exc)
     if unet is not None:
         # Whole-module static compile for the U-Net classes above. fullgraph mirrors the regional decision; dynamic is
         # ALWAYS False, so each new (height, width, batch) pays its own compile. ``Module.compile`` keeps the module
@@ -906,6 +932,20 @@ def _compile_repeated_blocks(
             install_int8_fused(transformer, logger, offload_active = offload_active)
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "int8 fused mlp", exc)
+        # After the fused MLP (its down projection calls the same GEMM), before the compile traces the Linears.
+        try:
+            from .diffusion_int8_gemm import install as install_int8_gemm
+
+            # Keyed on the DENOISER's placement: a group plan that streams only the encoders keeps it resident.
+            transformer._unsloth_int8_gemm = install_int8_gemm(
+                transformer,
+                logger,
+                offload_active = offload_active
+                if denoiser_offloaded is None
+                else bool(denoiser_offloaded),
+            )
+        except Exception as exc:  # noqa: BLE001 - optimisation only
+            _warn(logger, "int8 fused-dequant gemm", exc)
         if type(transformer).__name__ == "QwenImageTransformer2DModel":
             try:
                 from .diffusion_qwenimage_rope import install as install_qwen_real_rope
@@ -1062,7 +1102,8 @@ class _CompileGuard:
         guard = self
 
         def guarded(*args: Any, **kwargs: Any) -> Any:
-            if guard.error is None:
+            # Compile still in flight in the background: entering it here would compile inline.
+            if guard.error is None and not _bg_eager_forced():
                 compile_config.apply()
                 try:
                     return compiled(*args, **kwargs)
