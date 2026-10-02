@@ -246,3 +246,29 @@ def test_gpu_runs_cap_host_threads_unless_the_user_set_a_budget(fake_binary, tmp
     srv.AudioCppServer.start(KOKORO, str(tmp_path / "m.gguf")).stop()
     assert "--threads" not in seen[0]
     assert seen[1][-2:] == ["--threads", "8"] and seen[2][-2:] == ["--threads", "32"]
+
+
+def test_a_custom_build_launches_on_a_backend_it_was_compiled_with(tmp_path, monkeypatch):
+    """No install record: a CPU or Vulkan build on an NVIDIA host must not be asked for CUDA."""
+    if sys.platform == "win32":
+        pytest.skip("shell-script stand-in for the binary")
+    from core.inference import audio_cpp_server as srv
+
+    monkeypatch.delenv("UNSLOTH_AUDIO_CPP_BACKEND", raising = False)
+    monkeypatch.setattr(srv.sys, "platform", "linux")
+    monkeypatch.setattr(
+        srv.shutil, "which", lambda name: "/usr/bin/nvidia-smi" if name == "nvidia-smi" else None
+    )
+
+    def build(name, backends):
+        binary = tmp_path / name / "audiocpp_server"
+        binary.parent.mkdir()
+        binary.write_text(f"#!/bin/sh\necho 'audio.cpp custom'\necho 'backends: {backends}'\n")
+        binary.chmod(0o755)
+        return str(binary)
+
+    assert srv.select_backend(build("cpu", "cpu"), False) == "cpu"
+    assert srv.select_backend(build("vulkan", "cpu,vulkan"), False) == "vulkan"
+    assert srv.select_backend(build("cuda", "cpu,cuda"), False) == "cuda"
+    # A build too old to report keeps the host guess.
+    assert srv.select_backend(build("silent", ""), False) == "cuda"

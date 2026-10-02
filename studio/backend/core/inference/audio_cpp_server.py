@@ -216,12 +216,47 @@ def select_backend(binary: str, force_cpu: bool) -> str:
     recorded = str(read_install_record(binary).get("backend") or "").strip().lower()
     if recorded in ("cpu", "cuda", "vulkan", "metal", "hip"):
         return recorded
+    # A custom build with no record: what it was compiled with, preferring the host's GPU.
+    built = compiled_backends(binary)
     if sys.platform == "darwin":
-        return "metal"
-    # A custom build with no record: CUDA when an NVIDIA driver is present, since that is audio.cpp's optimized path.
-    if shutil.which("nvidia-smi"):
+        return "metal" if built is None or "metal" in built else "cpu"
+    if shutil.which("nvidia-smi") and (built is None or "cuda" in built):
         return "cuda"
+    if built and "vulkan" in built:
+        return "vulkan"
     return "cpu"
+
+
+_compiled_cache: dict[tuple[str, float], Optional[frozenset[str]]] = {}
+
+
+def compiled_backends(binary: str) -> Optional[frozenset[str]]:
+    """Backends the binary reports in ``--version`` (``backends: cpu,cuda``), or None when it cannot say."""
+    try:
+        key = (str(Path(binary).resolve()), os.path.getmtime(binary))
+    except OSError:
+        return None
+    if key in _compiled_cache:
+        return _compiled_cache[key]
+    found: Optional[frozenset[str]] = None
+    try:
+        out = subprocess.run(
+            [binary, "--version"],
+            capture_output = True,
+            text = True,
+            timeout = 15,
+            env = child_env(binary),
+            check = False,
+        ).stdout
+        for line in out.splitlines():
+            name, _, value = line.partition(":")
+            if name.strip().lower() == "backends":
+                found = frozenset(b.strip().lower() for b in value.split(",") if b.strip()) or None
+                break
+    except (OSError, subprocess.SubprocessError):
+        found = None
+    _compiled_cache[key] = found
+    return found
 
 
 def runtime_runs_on_cpu() -> bool:
