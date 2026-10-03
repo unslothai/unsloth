@@ -982,6 +982,11 @@ def test_active_generations_for_a_model_lists_only_its_chats(backends):
         assert get("?model=org/B-GGUF") == ["chat-on-B"]
         assert get("?model=org/A-GGUF") == ["chat-on-A"]
         assert sorted(get("")) == ["chat-on-A", "chat-on-B"]
+        # A name nothing serves (a row just evicted): its unload stops nothing.
+        assert get("?model=org/gone-GGUF") == []
+        extra.llama.effective_parallel_slots = 4
+        slots = client.get("/api/inference/active-generations?model=org/B-GGUF").json()
+        assert slots["parallel_slots"] == 4
 
 
 def test_an_integrated_gpu_keeps_its_free_memory_next_to_a_loaded_model():

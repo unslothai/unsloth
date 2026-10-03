@@ -16645,15 +16645,17 @@ async def get_active_generations(
     """
     scope = account_access.account_scope()
     # ``model``: only the chats an unload of that model stops, the same split its scoped 409 uses.
-    exclude, only = (), None
+    exclude, only, llama = (), None, None
     if model and model_slots.slots:
         slot = await asyncio.to_thread(
             model_slots.serving_slot, model, model_slots.visible(), _loaded_satisfies
         )
         if slot is not None:
-            only = set(slot.generations)
-        else:
+            only, llama = set(slot.generations), slot.llama
+        elif await asyncio.to_thread(model_slots.in_slot, None, lambda: _loaded_satisfies(model)):
             exclude = model_slots.all_generations()
+        else:
+            only = set()  # no loaded model by that name: its unload stops nothing
     entries = active_generations.snapshot(scope, exclude, only)
     # A tracker's model can be a native local path (the legacy stream records active_model_name
     # verbatim); redact here, the one place that serialises it.
@@ -16662,7 +16664,7 @@ async def get_active_generations(
             _entry["model"] = redact_native_paths(_entry["model"])
     slots = 1
     try:
-        slots = _openai_llama_admission_capacity(fastapi_request, get_llama_cpp_backend())
+        slots = _openai_llama_admission_capacity(fastapi_request, llama or get_llama_cpp_backend())
     except Exception:
         slots = int(getattr(fastapi_request.app.state, "llama_parallel_slots", 1) or 1)
     return {
