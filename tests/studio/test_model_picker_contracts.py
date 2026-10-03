@@ -3597,8 +3597,7 @@ def test_run_settings_page_keeps_its_identifying_controls():
     # pinned the handler body exactly, so #8702 broke it by reflowing that call across lines while
     # the button itself stayed untouched.
     reset = any(
-        "DEFAULT_PER_MODEL_CONFIG" in el.group(0)
-        and re.search(r">\s*Reset all\s*<", el.group(0))
+        "DEFAULT_PER_MODEL_CONFIG" in el.group(0) and re.search(r">\s*Reset all\s*<", el.group(0))
         for el in re.finditer(r"<Button\b.*?</Button>", page, re.S)
     )
     assert reset, "the Reset all button's JSX is gone or no longer named Reset all"
