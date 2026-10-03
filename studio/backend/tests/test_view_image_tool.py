@@ -314,3 +314,12 @@ def test_directory_errors_do_not_leak_file_descriptors(workdir):
     for _ in range(20):
         assert view_image(".", str(workdir)).startswith("Error:")
     assert len(os.listdir("/proc/self/fd")) == before
+
+
+def test_viewing_an_image_does_not_license_rerunning_a_write(workdir):
+    controller = ToolLoopController(tools = [VIEW_IMAGE_TOOL, tools.PYTHON_TOOL])
+    write = {"id": "p", "function": {"name": "python", "arguments": '{"code":"append()"}'}}
+    view = {"id": "v", "function": {"name": "view_image", "arguments": '{"path":"image.png"}'}}
+    controller.record_result(controller.prepare_call(write), "Appended.")
+    controller.record_result(controller.prepare_call(view), view_image("image.png", str(workdir)))
+    assert controller.prepare_call(write).action == "duplicate"

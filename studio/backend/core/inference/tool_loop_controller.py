@@ -976,7 +976,9 @@ _MCP_TOOL_PREFIX = "mcp__"
 # than the card the user is looking at.
 _IMAGE_SENTINEL_TOOLS = _SANDBOX_TOOLS | {"code_execution"}
 _SOURCE_MAP_TOOLS = frozenset({"search_knowledge_base", "search_conversation"})
-_WORKSPACE_TOOLS = _SANDBOX_TOOLS | {"edit_file", "view_image"}
+# Invalidated by workspace writes, but reading an image is not new work that licenses a rerun.
+_WORKSPACE_READ_TOOLS = frozenset({"view_image"})
+_WORKSPACE_TOOLS = _SANDBOX_TOOLS | {"edit_file"} | _WORKSPACE_READ_TOOLS
 
 
 # `sk-unsloth-` + 32 hex (auth/storage.py), cached in the clear so the CLI can reuse it. Masked on
@@ -1259,7 +1261,10 @@ class ToolLoopController:
         # otherwise apply the edit twice. Here as well as in the prefilters, which a
         # structured batch skips. A failed command can still have written, so it counts too.
         if decision.tool_name in _WORKSPACE_TOOLS:
-            if decision.key not in self._workspace_ran:
+            if (
+                decision.tool_name not in _WORKSPACE_READ_TOOLS
+                and decision.key not in self._workspace_ran
+            ):
                 self._workspace_ran.add(decision.key)
                 self._workspace_novel += 1
             stale = {

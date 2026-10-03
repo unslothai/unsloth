@@ -28413,7 +28413,7 @@ async def produce_openai_chat_completions(
             set_mcp_listing_context_tokens(getattr(llama_backend, "context_length", None))
             tools_to_use = await _select_request_tools(
                 payload,
-                supports_vision = bool(llama_backend.is_vision),
+                supports_vision = bool(getattr(llama_backend, "is_vision", False)),
                 tools_on = _tools_on,
                 mcp_allowed = _mcp_allowed,
                 # Only this branch runs the checkpoint fit. The process-wide policy says a
@@ -37665,7 +37665,7 @@ async def chat_count_tokens(
             payload,
             tools_on = _tools_on,
             mcp_allowed = _mcp_allowed,
-            supports_vision = bool(llama_backend.is_vision),
+            supports_vision = bool(getattr(llama_backend, "is_vision", False)),
         )
         # Appended in the position _select_request_tools would have used, so the order matches.
         tools_to_use = tools_to_use + _mcp_tools
@@ -37883,7 +37883,7 @@ async def anthropic_count_tokens(
                 _ANTHROPIC_COUNT_TOOLS,
                 _count_studio_tools,
                 payload.enabled_tools,
-                supports_vision = bool(llama_backend.is_vision),
+                supports_vision = bool(getattr(llama_backend, "is_vision", False)),
             )
         )
         _count_server_tools = bool(_count_selected_server_tools)
