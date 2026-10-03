@@ -36,6 +36,9 @@ class _Tokenizer:
 
 
 class _Model:
+    # Like Phi-4-mini: the chat-turn stop id is only in generation_config.
+    generation_config = type("G", (), {"eos_token_id": [7, 9]})()
+
     def __init__(self):
         self.calls = 0
 
@@ -90,7 +93,7 @@ def test_q4nx_folder_matches_the_flm_layout(monkeypatch, tmp_path):
     ]
     assert json.loads((q4nx / "tokenizer.json").read_text()) == _HF_TOKENIZER
     tokenizer_config = json.loads((q4nx / "tokenizer_config.json").read_text())
-    assert tokenizer_config["eos_token_id"] == [7]
+    assert tokenizer_config["eos_token_id"] == [7, 9]
     assert output_path == str(save_dir.resolve())
 
 

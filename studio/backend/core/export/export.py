@@ -1752,7 +1752,13 @@ class ExportBackend:
                 # The converter rebuilds tokenizer.json from the GGUF; the HF one is what FLM ships.
                 if (Path(scratch) / name).is_file():
                     shutil.copyfile(Path(scratch) / name, q4nx_dir / name)
-        q4nx.write_flm_tokenizer_config(q4nx_dir, json.loads(config) if config else None)
+        # generation_config holds stop ids config.json lacks (Phi-4-mini's <|end|>, 200020).
+        generation = getattr(self.current_model, "generation_config", None)
+        q4nx.write_flm_tokenizer_config(
+            q4nx_dir,
+            json.loads(config) if config else None,
+            {"eos_token_id": getattr(generation, "eos_token_id", None)},
+        )
 
     def _save_mlx_adapter(
         self,
