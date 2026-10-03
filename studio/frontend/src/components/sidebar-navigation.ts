@@ -4,13 +4,9 @@
 // Import-free so it is testable: app-sidebar.tsx pulls in the whole shell.
 
 /**
- * Sidebar clicks, last click wins at once, one history entry per burst.
- *
- * A click on where the router already is, or is already heading, is dropped. A click while
- * another sidebar navigation is still loading goes out immediately as a replace: the router
- * cancels the stale load, and the entry it pushed (a page never shown) is overwritten rather
- * than stacked. Never wait for the in-flight load: a slow route chunk would hold every later
- * click until it lands.
+ * Sidebar clicks: drop one on where the router is or is heading; send one made during a
+ * sidebar load at once as a replace, so the router cancels the stale load and a burst leaves
+ * one history entry. Never queue behind the in-flight load: a slow chunk would stall the click.
  */
 export function createNavigationCoalescer<T>({
   navigate,
