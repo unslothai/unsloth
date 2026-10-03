@@ -308,3 +308,11 @@ def test_a_long_sentence_splits_after_its_last_comma():
         "memory and care.",
     ]
     assert segments[1]["start"] == words[9]["start"]
+
+
+def test_korean_aligned_words_keep_their_spaces():
+    words = [
+        {"start": 0.0, "end": 0.4, "word": "안녕하세요"},
+        {"start": 0.5, "end": 0.9, "word": "반갑습니다"},
+    ]
+    assert stt_details.group_words(words)[0]["text"] == "안녕하세요 반갑습니다"

@@ -325,6 +325,19 @@ def test_another_engine_gets_the_prepared_bytes(stub):
     assert stub.loads == [("small", "transformers", None)]
 
 
+def test_a_prepared_source_is_not_held_to_the_encoded_upload_cap(stub, monkeypatch):
+    # 30 minutes of 16 kHz PCM is ~58 MB, past the 25 MB cap for encoded uploads.
+    monkeypatch.setattr(inference, "_MAX_AUDIO_RAW_BYTES", 1024)
+    input_id = _input(ALICE)
+    with _client(ALICE) as client:
+        response = _post(
+            client, model = "small", engine = "transformers", source = {"input_id": input_id}
+        )
+        assert response.status_code == 200, response.text
+        assert _events(response)[-1]["text"] == "plain words"
+    assert len(stub.bytes[0]) > 1024
+
+
 @pytest.mark.parametrize(
     "model,engine,flag",
     [

@@ -47,12 +47,12 @@ def _clean_lines(text: str) -> str:
 
 
 def _is_cjk(char: str) -> bool:
+    # Han and kana run together; Hangul is left out because Korean puts spaces between words.
     code = ord(char)
     return (
         0x3000 <= code <= 0x30FF
         or 0x3400 <= code <= 0x4DBF
         or 0x4E00 <= code <= 0x9FFF
-        or 0xAC00 <= code <= 0xD7AF
         or 0xF900 <= code <= 0xFAFF
         or 0xFF00 <= code <= 0xFFEF
     )
