@@ -470,8 +470,7 @@ def test_gemma3_text_only_loads_real_language_weights_from_vlm_checkpoint(tmp_pa
 
 
 def test_gemma3_text_only_save_reloads_as_the_decoder(tmp_path):
-    # #12554: transformers 5 reverses the load's key_mapping in save_pretrained, so unless the loader
-    # drops the mapping it added, the save holds the wrapper's names and reloads random weights.
+    # #12554: tf 5 save_pretrained reverses the load's key_mapping unless the loader drops it.
     transformers = pytest.importorskip("transformers")
     torch = pytest.importorskip("torch")
     if int(transformers.__version__.split(".")[0]) < 5:
@@ -479,7 +478,6 @@ def test_gemma3_text_only_save_reloads_as_the_decoder(tmp_path):
             reason = "#12554: transformers 4 strips the wrapper prefix itself, so no key_mapping is added or dropped"
         )
     ns = _load_text_only_namespace()
-    # The parent-conversion carry has its own tests in test_text_only_parent_conversions.py.
     ns["_parent_conversions_for_text_only"] = lambda model_type: []
 
     real_dir, full_config = _write_published_gemma3_checkpoint(tmp_path, 0.1234)
