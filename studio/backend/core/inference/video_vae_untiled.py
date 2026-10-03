@@ -84,7 +84,7 @@ def install_untiled_decode(
     if getattr(decode, "_unsloth_untiled_decode", False):
         return True
     stats = {"untiled": 0, "tiled": 0, "oom_fallback": 0}
-    # Smallest estimate that has run out of memory; larger ones go straight to tiled instead of repeating the OOM.
+    # Smallest estimate that ran out of memory; never retried untiled.
     oom_need: list = []
 
     def gated(z: Any, *args: Any, **kwargs: Any) -> Any:
@@ -119,7 +119,7 @@ def install_untiled_decode(
             out = decode(z, *args, **kwargs)
             stats["untiled"] += 1
             return out
-        except Exception as exc:  # noqa: BLE001 -- only an OOM (incl. wrapped / backend-specific) falls back
+        except Exception as exc:  # noqa: BLE001
             if not is_oom_error(exc):
                 raise
         finally:
