@@ -32,6 +32,12 @@ def _clean(monkeypatch):
     assert WanTransformerBlock.forward is stock
 
 
+def _fake_kernels(monkeypatch):
+    # install logic without a GPU; on ROCm torch wanted() refuses HIP, so pretend a CUDA build too
+    monkeypatch.setattr(wf, "_kernels", lambda: {"modnorm": None})
+    monkeypatch.setattr(torch.version, "hip", None)
+
+
 def test_stock_block_matches_the_fingerprint():
     from core.inference.diffusion_qwenimage21_rope import _digest
     assert _digest(WanTransformerBlock.forward) in wf._FINGERPRINTS
@@ -60,14 +66,14 @@ def test_kill_switch(monkeypatch, value):
 
 def test_changed_diffusers_block_keeps_the_stock_forward(monkeypatch):
     monkeypatch.setattr(wf, "_FINGERPRINTS", frozenset({"not-this-block"}))
-    monkeypatch.setattr(wf, "_kernels", lambda: {"modnorm": None})
+    _fake_kernels(monkeypatch)
     stock = WanTransformerBlock.forward
     assert wf.install(torch.float16, "cuda") is False
     assert WanTransformerBlock.forward is stock
 
 
 def test_install_is_idempotent_and_uninstall_restores(monkeypatch):
-    monkeypatch.setattr(wf, "_kernels", lambda: {"modnorm": None})
+    _fake_kernels(monkeypatch)
     stock = WanTransformerBlock.forward
     assert wf.install(torch.float16, "cuda") is True
     patched = WanTransformerBlock.forward
@@ -82,7 +88,7 @@ def test_install_is_idempotent_and_uninstall_restores(monkeypatch):
 def test_install_for_pipe_scopes_to_wan(monkeypatch):
     import types
 
-    monkeypatch.setattr(wf, "_kernels", lambda: {"modnorm": None})
+    _fake_kernels(monkeypatch)
     stock = WanTransformerBlock.forward
     other = types.SimpleNamespace(transformer = torch.nn.Linear(2, 2))
     assert wf.install_for_pipe(other, torch.float16, "cuda") is False
@@ -101,7 +107,7 @@ def test_install_for_pipe_scopes_to_wan(monkeypatch):
 
 
 def test_cpu_tensors_take_the_stock_path(monkeypatch):
-    monkeypatch.setattr(wf, "_kernels", lambda: {"modnorm": None})
+    _fake_kernels(monkeypatch)
     blk = _block(dim = 32, ffn = 64, heads = 2, device = "cpu", dtype = torch.float32)
     x, enc, temb, rot = _inputs(blk, 1, 8, 32, "cpu", torch.float32)
     with torch.no_grad():
@@ -480,7 +486,7 @@ def test_self_attention_rotary_is_bit_identical_and_scoped(monkeypatch):
 
 def test_changed_attention_processor_keeps_the_stock_rotary(monkeypatch):
     monkeypatch.setattr(wf, "_ATTN_FINGERPRINTS", frozenset({"not-this-processor"}))
-    monkeypatch.setattr(wf, "_kernels", lambda: {"modnorm": None})
+    _fake_kernels(monkeypatch)
     assert wf.install(torch.float16, "cuda") is True
     assert "attn_call" not in wf._STATE
 
@@ -496,7 +502,7 @@ def test_regional_compile_traces_the_stock_block_without_recompiles(monkeypatch)
     the recompile limit and dropped the Wan regional compile to eager)."""
     import torch._dynamo as dynamo
 
-    monkeypatch.setattr(wf, "_kernels", lambda: {"modnorm": None})
+    _fake_kernels(monkeypatch)
     blk = _block(dim = 32, ffn = 64, heads = 2, device = "cpu", dtype = torch.float32)
     x, enc, temb, rot = _inputs(blk, 1, 8, 32, "cpu", torch.float32)
     dynamo.reset()
