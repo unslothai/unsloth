@@ -1081,6 +1081,12 @@ class TestLoadHubDownloadExclusion:
             # Constant None: llama-server never clones a voice or needs a description.
             "audio_reference_text",
             "audio_required_inputs",
+            # Constant None: nor converts one.
+            "audio_options_by_workflow",
+            "audio_workflow_tasks",
+            "audio_server_task",
+            "audio_convert",
+            "audio_convert_route",
         }
         unresolved = sorted(
             name

@@ -107,6 +107,45 @@ class CloneSpec:
 
 
 @dataclass(frozen = True)
+class ConvertSpec:
+    """How a family converts a recording to another voice on /v1/tasks/run (the PR 6 VC spike)."""
+
+    # ``(mode, server task)`` pairs, Speech first; a mode on another task reloads the model.
+    modes: tuple[tuple[str, str], ...] = (("speech", "vc"),)
+    # ``(id, label)`` of the packaged voices it converts to (RVC); empty when the target is a clip.
+    builtin_voices: tuple[tuple[str, str], ...] = ()
+    # ``(mode, auto offered)`` for the modes where the pitch can be set; any other mode hides it.
+    pitch: tuple[tuple[str, bool], ...] = ()
+    # Vevo2 can take the target's speaking style, given the source transcript.
+    style: bool = False
+    # Request fields: ``audio`` (``audio`` + ``voice_ref``) or ``source_target`` (``source_audio`` +
+    # ``target_voice``, which Vevo2 needs for its target timbre).
+    fields: str = "audio"
+    # Whether the runtime takes ``seed`` (RVC refuses it as an unknown option).
+    seed: bool = True
+    source_rate: int = 16000
+    target_rate: Optional[int] = 16000
+    # How a set pitch is sent: ``semitone`` (``semitone_shift``, Auto as ``auto_f0_adjust``) or
+    # ``shift_steps`` (Vevo2: ``use_pitch_shift`` + ``source_shift_steps``; Auto leaves both out).
+    pitch_options: str = "semitone"
+    # Speech engines (Seed-VC routes), the default first. A session keeps the route it first ran, so
+    # another one loads the model again.
+    routes: tuple[str, ...] = ()
+    # Request options the spec does not declare but the family reads, in the option schema's shape.
+    tool_options: tuple[dict, ...] = field(default = (), hash = False)
+    # Spec options Studio never offers: the page drives them, or they would only confuse.
+    hidden_options: tuple[str, ...] = ()
+
+    @property
+    def target(self) -> str:
+        return "builtin" if self.builtin_voices else "audio"
+
+    @property
+    def server_tasks(self) -> dict[str, str]:
+        return dict(self.modes)
+
+
+@dataclass(frozen = True)
 class CompanionModel:
     """A second model a family loads beside its own (MioTTS's MioCodec), by session option."""
 
@@ -137,6 +176,15 @@ def _bindings_for(
         if clone is not None:
             bindings["clone"] = WorkflowBinding(
                 server_task or "tts", "speech", None, _CLONE_INPUTS, clone.input_rate
+            )
+        convert = getattr(family, "convert", None)
+        if convert is not None:
+            bindings["convert"] = WorkflowBinding(
+                convert.modes[0][1],
+                "tasks",
+                None,
+                ("source", "target", "source_text"),
+                convert.source_rate,
             )
         return bindings
     if task == "music":
@@ -176,6 +224,8 @@ class AudioCppFamily:
     clone: Optional[CloneSpec] = None
     # Models it loads beside its own GGUF.
     companions: tuple[CompanionModel, ...] = ()
+    # How it converts a recording to another voice, when it does.
+    convert: Optional[ConvertSpec] = None
 
     @property
     def default_server_task(self) -> str:
@@ -296,6 +346,24 @@ _CLONE_FAMILIES: tuple[AudioCppFamily, ...] = (
                 ),
             ),
         ),
+        # A clon session refuses a conversion ("prepare requires text input"), so Convert loads vc.
+        convert = ConvertSpec(
+            source_rate = 16000,
+            target_rate = 24000,
+            tool_options = (
+                _tool(
+                    "s3gen_cfg_rate",
+                    "float",
+                    "Classifier-free guidance of the voice decoder.",
+                    min = 0.0,
+                    max = 3.0,
+                    default = 0.7,
+                ),
+                _tool(
+                    "num_inference_steps", "int", "Decoder steps.", min = 1, max = 100, default = 10
+                ),
+            ),
+        ),
     ),
     AudioCppFamily("f5_tts", "tts", speaks = False, clone = CloneSpec("required", speed = True)),
     AudioCppFamily(
@@ -343,8 +411,34 @@ _CLONE_FAMILIES: tuple[AudioCppFamily, ...] = (
     AudioCppFamily("fireredtts3", "tts", speaks = False, clone = CloneSpec("optional")),
     # "FireRedAce": under tts it defaults to tts_clone, which needs reference audio.
     AudioCppFamily("firered_audio", "tts", speaks = False, clone = CloneSpec("optional")),
-    # Vevo2 reads a sent transcript as text to speak, so it never gets one.
-    AudioCppFamily("vevo2", "tts", speaks = False, clone = CloneSpec("unused")),
+    # Vevo2 reads a sent transcript as text to speak, so it never gets one. It converts under vc
+    # (Speech) and svc (Singing), and takes the target as target_voice: with voice_ref alone the
+    # output kept the source's pitch.
+    AudioCppFamily(
+        "vevo2",
+        "tts",
+        speaks = False,
+        clone = CloneSpec("unused"),
+        convert = ConvertSpec(
+            modes = (("speech", "vc"), ("singing", "svc")),
+            pitch = (("speech", True), ("singing", True)),
+            style = True,
+            fields = "source_target",
+            pitch_options = "shift_steps",
+            source_rate = 24000,
+            target_rate = 24000,
+            tool_options = (
+                _tool(
+                    "num_inference_steps",
+                    "int",
+                    "Flow matching steps.",
+                    min = 1,
+                    max = 100,
+                    default = 32,
+                ),
+            ),
+        ),
+    ),
     # Needs voice audio too, and MioCodec beside it: the sibling-folder default never matches the
     # umbrella's folder name, so the codec path goes in by session option.
     AudioCppFamily(
@@ -361,6 +455,56 @@ _CLONE_FAMILIES: tuple[AudioCppFamily, ...] = (
 )
 
 
+# Voice conversion families (the PR 6 VC spike). Each loads as a conversion session and offers
+# Convert alone; chatterbox and vevo2 above convert beside cloning.
+_CONVERT_FAMILIES: tuple[AudioCppFamily, ...] = (
+    # Converts to its packaged voices, picked by options.voice_id; strict, so no seed.
+    AudioCppFamily(
+        "rvc",
+        "tts",
+        server_task = "vc",
+        speaks = False,
+        convert = ConvertSpec(
+            builtin_voices = (
+                ("default", "Default"),
+                ("manthos", "Manthos"),
+                ("chocola", "Chocola"),
+                ("fraise", "Fraise"),
+            ),
+            pitch = (("speech", False),),
+            seed = False,
+            source_rate = 16000,
+            target_rate = None,
+            # audio_pad_duration_sec reads as a file option to the run route.
+            hidden_options = ("audio_pad_duration_sec", "speaker_id", "pitch_extractor"),
+        ),
+    ),
+    # Pitch works on the singing route only (v1_svc); the speech routes ignore semitone_shift and
+    # the V1 speech F0 path fails ("RMVPE is not initialized").
+    AudioCppFamily(
+        "seed_vc",
+        "tts",
+        server_task = "vc",
+        speaks = False,
+        convert = ConvertSpec(
+            modes = (("speech", "vc"), ("singing", "svc")),
+            pitch = (("singing", True),),
+            source_rate = 44100,
+            target_rate = 44100,
+            routes = ("v2_vc", "v1_whisper_bigvgan_vc", "v1_xlsr_hift_vc"),
+            hidden_options = ("f0_condition",),
+        ),
+    ),
+    AudioCppFamily(
+        "meanvc2",
+        "tts",
+        server_task = "vc",
+        speaks = False,
+        convert = ConvertSpec(source_rate = 16000, target_rate = 16000),
+    ),
+)
+
+
 _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
     # Text to speech. Kokoro, KittenTTS, Piper and Inflect phonemize with eSpeak-ng, which the Unsloth
     # bundles link statically (GPL-3.0-or-later) with its data file beside the server.
@@ -372,6 +516,7 @@ _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
     AudioCppFamily("supertonic", "tts", request_defaults = {"voice": "F1"}),
     AudioCppFamily("qwen3_tts", "tts"),
     *_CLONE_FAMILIES,
+    *_CONVERT_FAMILIES,
     *(
         AudioCppFamily(name, "tts")
         for name in (
@@ -545,7 +690,6 @@ _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
             (("htdemucs", "bs_roformer", "mel_band_roformer"), "Source separation"),
             (("pulsevad", "silero_vad", "marblenet_vad"), "Voice activity detection"),
             (("muscriptor", "sheetsage2"), "Music transcription"),
-            (("meanvc2", "rvc", "seed_vc"), "Voice conversion"),
             (("apollo", "audiosr", "universr", "personaplex"), "Speech-to-speech"),
         )
         for name in names
@@ -1331,6 +1475,19 @@ _STUDIO_DRIVEN_OPTIONS = frozenset(
 _MUSIC_DRIVEN_OPTIONS = frozenset(
     {"lyrics", "style", "caption", "prompt", "tags", "duration", "duration_sec", "duration_seconds"}
 )
+# The Convert page fills these from its voice, pitch and style controls.
+CONVERT_DRIVEN_OPTIONS = frozenset(
+    {
+        "voice_id",
+        "semitone_shift",
+        "auto_f0_adjust",
+        "use_pitch_shift",
+        "source_shift_steps",
+        "prosody_shift_steps",
+        "target_text",
+        "style_ref_text",
+    }
+)
 _RENDERABLE_TYPES = frozenset({"bool", "int", "float", "string", "enum"})
 _MAX_STRING_OPTION = 4000
 
@@ -1451,6 +1608,8 @@ def option_schema(
             source = embedded
     raw = ((source or {}).get("options") or {}).get("request") or []
     driven = _MUSIC_DRIVEN_OPTIONS if policy.task == "music" else frozenset()
+    if policy.convert is not None:
+        driven = driven | frozenset(policy.convert.hidden_options)
     out = []
     names = set()
     for item in raw:
@@ -1552,6 +1711,7 @@ class AudioCppModel:
     companions: tuple[CompanionModel, ...] = ()
     # Request fields the spec marks required that Studio sends as request fields (Maya1's instruct).
     required_inputs: tuple[str, ...] = ()
+    convert: Optional[ConvertSpec] = None
 
     @property
     def is_package(self) -> bool:
@@ -1592,6 +1752,15 @@ class AudioCppModel:
             return self.options
         names = {o["name"] for o in self.options}
         return (*self.options, *(o for o in self.clone.tool_options if o["name"] not in names))
+
+    @property
+    def convert_options(self) -> tuple[dict, ...]:
+        """The spec's options the Convert page does not drive, plus the convert tool options."""
+        if self.convert is None:
+            return ()
+        own = tuple(o for o in self.options if o["name"] not in CONVERT_DRIVEN_OPTIONS)
+        names = {o["name"] for o in own}
+        return (*own, *(o for o in self.convert.tool_options if o["name"] not in names))
 
     @property
     def key(self) -> str:
@@ -1900,6 +2069,7 @@ def _resolve_uncached(
         clone = policy.clone,
         companions = policy.companions,
         required_inputs = _required_inputs(spec, embedded, policy),
+        convert = policy.convert,
     )
     return model.with_variant(chosen)
 

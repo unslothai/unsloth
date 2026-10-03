@@ -390,6 +390,12 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
         "audio_reference_text": model_info.get("audio_reference_text"),
         "audio_required_inputs": model_info.get("audio_required_inputs"),
         "audio_clone": model_info.get("audio_clone"),
+        "audio_options_by_workflow": model_info.get("audio_options_by_workflow"),
+        "audio_workflow_tasks": model_info.get("audio_workflow_tasks"),
+        "audio_server_task": model_info.get("audio_server_task"),
+        "audio_convert": model_info.get("audio_convert"),
+        "audio_convert_route": model_info.get("audio_convert_route"),
+        "audio_convert_rules": model_info.get("audio_convert_rules"),
     }
 
 
@@ -3349,10 +3355,11 @@ class InferenceOrchestrator:
         audio_inputs: Optional[dict[str, str]] = None,
         reference_text: Optional[str] = None,
         speed: Optional[float] = None,
+        convert: Optional[dict] = None,
     ) -> Tuple[bytes, int]:
         """Generate TTS audio. Returns (wav_bytes, sample_rate). Blocking: sends the command and
-        waits for the full audio response. ``audio_inputs`` maps a role (reference, emotion) to a
-        server-local WAV path; audio bytes never cross the queue."""
+        waits for the full audio response. ``audio_inputs`` maps a role (reference, emotion,
+        source, target) to a server-local WAV path; audio bytes never cross the queue."""
         if not self._ensure_subprocess_alive():
             raise RuntimeError("Inference subprocess is not running")
         if not self.active_model_name:
@@ -3429,6 +3436,8 @@ class InferenceOrchestrator:
                     cmd["reference_text"] = reference_text
                 if speed is not None:
                     cmd["speed"] = float(speed)
+                if convert is not None:
+                    cmd["convert"] = dict(convert)
 
                 # Same shared-queue hazard as _generate_inner: see _direct_reader.
                 read_one, _drain, release_mailbox = self._direct_reader(request_id, cancel_event)
@@ -3484,6 +3493,15 @@ class InferenceOrchestrator:
                             self._mark_worker_started(cancel_event)
                             worker_started = True
                             continue
+
+                        if rtype in ("audio_done", "audio_error") and isinstance(
+                            resp.get("audio_runtime"), dict
+                        ):
+                            # A Convert or Clone run can reload the audio.cpp server under
+                            # another task.
+                            entry = self.models.get(expected_model)
+                            if entry is not None:
+                                entry.update(resp["audio_runtime"])
 
                         if rtype == "audio_done":
                             if cancel_event is not None and cancel_event.is_set():

@@ -794,6 +794,12 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "audio_reference_text",
                         "audio_required_inputs",
                         "audio_clone",
+                        "audio_options_by_workflow",
+                        "audio_workflow_tasks",
+                        "audio_server_task",
+                        "audio_convert",
+                        "audio_convert_route",
+                        "audio_convert_rules",
                     )
                     if k in _entry
                 }
@@ -1594,6 +1600,19 @@ def _handle_share_object(backend, cmd: dict, resp_queue: Any) -> None:
         )
 
 
+def _audio_runtime(backend) -> dict:
+    """The task the audio.cpp server runs now, which a Convert or Clone run can change, for the
+    parent's status mirror; empty for other backends."""
+    fields = getattr(backend, "runtime_fields", None)
+    if not callable(fields):
+        return {}
+    try:
+        return {"audio_runtime": dict(fields())}
+    except Exception as exc:  # noqa: BLE001 - status detail, never fails the request
+        logger.debug("audio runtime fields unavailable: %s", exc)
+        return {}
+
+
 def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
     """Handle TTS audio generation — returns WAV bytes + sample_rate."""
     request_id = cmd.get("request_id", "")
@@ -1601,8 +1620,8 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
         logger.info("Starting audio generation for request_id=%s", request_id)
         # Only audio.cpp models take per-model options; other backends never see the keyword.
         extra = {"audio_options": cmd["audio_options"]} if cmd.get("audio_options") else {}
-        # Clone requests carry server-local reference paths the route resolved for the account.
-        for key in ("workflow", "audio_inputs", "reference_text", "speed"):
+        # Clone and convert requests carry server-local paths the route resolved for the account.
+        for key in ("workflow", "audio_inputs", "reference_text", "speed", "convert"):
             if cmd.get(key) is not None:
                 extra[key] = cmd[key]
         wav_bytes, sample_rate = backend.generate_audio_response(
@@ -1629,6 +1648,7 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
                 "request_id": request_id,
                 "wav_base64": base64.b64encode(wav_bytes).decode("ascii"),
                 "sample_rate": sample_rate,
+                **_audio_runtime(backend),
             },
         )
         logger.info("Finished audio generation for request_id=%s", request_id)
@@ -1645,6 +1665,7 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
             # is what AudioGenerationCancelledError exists to avoid.
             "cancelled": bool(cancel_event is not None and cancel_event.is_set()),
             "stack": traceback.format_exc(limit = 20),
+            **_audio_runtime(backend),
         }
         if isinstance(exc, AudioRuntimeError):
             # The runtime said why it failed; the parent re-raises it typed so the route can show it.

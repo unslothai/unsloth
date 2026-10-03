@@ -130,6 +130,12 @@ def test_audio_cpp_workflow_fields_cross_the_worker_and_the_parent(monkeypatch):
             "reference_text_waived": [],
             "emotion_audio": False,
         },
+        "audio_options_by_workflow": {"convert": [{"name": "length_adjust", "type": "float"}]},
+        "audio_workflow_tasks": {"clone": "clon", "convert": "vc", "convert:singing": "svc"},
+        "audio_server_task": "clon",
+        "audio_convert": {"modes": ["speech"], "target": "audio", "source_max_seconds": 300},
+        "audio_convert_route": "v2_vc",
+        "audio_convert_rules": {"source_rate": 16000, "target_rate": 24000},
     }
     backend = SimpleNamespace(
         device = "cuda",
@@ -158,5 +164,5 @@ def test_audio_cpp_workflow_fields_cross_the_worker_and_the_parent(monkeypatch):
     for key, value in fields.items():
         assert info[key] == value, key
     entry = _mirrored_model_entry(info, mc.identifier)
-    for key in ("audio_workflows", "audio_reference_text", "audio_required_inputs", "audio_clone"):
-        assert entry[key] == fields[key], key
+    for key, value in fields.items():
+        assert entry[key] == value, key

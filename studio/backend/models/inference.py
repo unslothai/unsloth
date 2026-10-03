@@ -1356,6 +1356,33 @@ class _InferenceRuntimeFields(BaseModel):
             "description sent as instructions)."
         ),
     )
+    audio_options_by_workflow: Optional[Dict[str, List[Dict[str, Any]]]] = Field(
+        None,
+        description = (
+            "Options per Audio page workflow where they differ from audio_options (convert)."
+        ),
+    )
+    audio_workflow_tasks: Optional[Dict[str, str]] = Field(
+        None,
+        description = (
+            "audio.cpp server task each workflow runs under, e.g. {'clone': 'clon', 'convert': "
+            "'vc', 'convert:singing': 'svc'}; a task other than audio_server_task reloads."
+        ),
+    )
+    audio_server_task: Optional[str] = Field(
+        None, description = "audio.cpp server task the running server was started with."
+    )
+    audio_convert: Optional[Dict[str, Any]] = Field(
+        None,
+        description = (
+            "What the model offers on Convert: {modes, target (audio|builtin), builtin_voices, "
+            "pitch per mode, style, route_reloads, source_max_seconds}; None when it does not "
+            "convert."
+        ),
+    )
+    audio_convert_route: Optional[str] = Field(
+        None, description = "Seed-VC route the running server was started with."
+    )
 
     @model_validator(mode = "after")
     def derive_audio_workflows(self):
@@ -5095,7 +5122,7 @@ class AudioGalleryItem(BaseModel):
     pinned: bool = Field(False, description = "Pinned to the top of history")
     archived: bool = Field(False, description = "Moved to the archived shelf, hidden from history")
     workflow: Optional[str] = Field(
-        None, description = "Audio page workflow that made the clip: speak, clone or music"
+        None, description = "Audio page workflow that made the clip: speak, clone, convert or music"
     )
     order_at: Optional[float] = Field(
         None,
@@ -5111,6 +5138,18 @@ class AudioGalleryItem(BaseModel):
         None, description = "Language, options, speed and whether a transcript was used"
     )
     reference_name: Optional[str] = Field(None, description = "Name of the reference clip or voice")
+    source_input_id: Optional[str] = Field(
+        None, description = "Uploaded input a conversion took its recording from"
+    )
+    source_name: Optional[str] = Field(None, description = "Name of the recording a run converted")
+    target_builtin: Optional[str] = Field(
+        None, description = "Built-in voice a conversion converted to"
+    )
+    source_saved: bool = Field(
+        False,
+        description = "A conversion kept a copy of the upload it converted, served at "
+        "/audio/gallery/{id}/source/file",
+    )
 
 
 _AUDIO_ID_PATTERN = r"^[A-Za-z0-9_-]{1,128}$"
@@ -5120,7 +5159,24 @@ _AUDIO_FILE_OPTION_WORDS = frozenset(
 )
 
 
+# Request fields that carry a file, refused by name even where no word above gives them away.
+_AUDIO_FILE_OPTION_NAMES = frozenset(
+    {
+        "target_voice",
+        "source_audio",
+        "style_ref",
+        "prosody_ref",
+        "voice_model_path",
+        "retrieval_index_path",
+        "pitch_path",
+        "noise_path",
+    }
+)
+
+
 def _names_a_file(name: str) -> bool:
+    if name.lower() in _AUDIO_FILE_OPTION_NAMES:
+        return True
     return any(word in _AUDIO_FILE_OPTION_WORDS for word in re.split(r"[^a-z0-9]+", name.lower()))
 
 
@@ -5161,6 +5217,23 @@ class AudioRunInputs(BaseModel):
     reference: Optional[AudioSourceRef] = None
     reference_text: Optional[str] = Field(None, max_length = 4000)
     emotion: Optional[AudioSourceRef] = None
+    # Convert: the recording, the voice to convert it to, and the recording's transcript.
+    source: Optional[AudioSourceRef] = None
+    target: Optional[AudioSourceRef] = None
+    source_text: Optional[str] = Field(None, max_length = 4000)
+
+
+class AudioConvertParams(BaseModel):
+    """Convert's controls. The model's caps (status ``audio_convert``) say which apply."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    mode: Literal["speech", "singing"] = "speech"
+    # Semitones; None leaves the pitch alone (or to Auto).
+    pitch: Optional[int] = Field(None, ge = -12, le = 12)
+    pitch_auto: bool = False
+    style: Literal["source", "target"] = "source"
+    voice: Optional[Literal["default", "manthos", "chocola", "fraise"]] = None
 
 
 class AudioRunRequest(BaseModel):
@@ -5168,8 +5241,9 @@ class AudioRunRequest(BaseModel):
 
     model_config = ConfigDict(extra = "forbid")
 
-    workflow: Literal["clone", "speak"]
-    text: str = Field(..., min_length = 1)
+    workflow: Literal["clone", "speak", "convert"]
+    # Required to speak or clone; a conversion takes none.
+    text: Optional[str] = Field(None, min_length = 1)
     language: Optional[str] = Field(None, max_length = 64)
     instructions: Optional[str] = Field(None, max_length = 4000)
     inputs: AudioRunInputs = Field(default_factory = AudioRunInputs)
@@ -5179,6 +5253,26 @@ class AudioRunRequest(BaseModel):
     speed: Optional[float] = Field(None, ge = 0.25, le = 4.0)
     seed: Optional[int] = Field(None, ge = -(2**63), le = 2**64 - 1)
     max_tokens: Optional[int] = Field(None, ge = 1)
+    convert: Optional[AudioConvertParams] = None
+
+    @model_validator(mode = "after")
+    def _fields_of_the_workflow(self):
+        inputs = self.inputs
+        if self.workflow == "convert":
+            if self.text is not None:
+                raise ValueError("A conversion takes no text.")
+            if inputs.reference is not None or inputs.emotion is not None:
+                raise ValueError("A conversion takes inputs.source and inputs.target.")
+            if self.convert is None:
+                self.convert = AudioConvertParams()
+            return self
+        if self.text is None:
+            raise ValueError("text is required.")
+        if self.convert is not None or any(
+            v is not None for v in (inputs.source, inputs.target, inputs.source_text)
+        ):
+            raise ValueError("convert and the source and target inputs are for workflow convert.")
+        return self
 
     @field_validator("options")
     @classmethod

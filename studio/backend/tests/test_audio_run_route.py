@@ -592,3 +592,343 @@ def test_speak_in_a_saved_voice_on_a_speak_and_clone_model(stub, tmp_path):
         )
     )
     assert meta["voice_id"] == voice["id"] and meta["workflow"] == "speak"
+
+
+# Convert
+
+
+def _convert_info(family, folder):
+    """The status fields a loaded voice-conversion model reports, from its real family policy."""
+    from core.inference import audio_cpp_backend as acb
+    from core.inference import audio_cpp_models as acm
+
+    policy = acm.FAMILIES[family]
+    variant = acm.AudioCppVariant("Q8_0", (acm.RepoFile("m.gguf", 1),), "m.gguf")
+    model = acm.AudioCppModel(
+        id = f"audio-cpp/audio.cpp-gguf/{folder}",
+        repo_id = acm.AUDIO_CPP_REPO,
+        folder = folder,
+        display_name = folder,
+        family = family,
+        task = policy.task,
+        server_task = policy.default_server_task,
+        variant = variant,
+        variants = (variant,),
+        default_variant = "Q8_0",
+        speaks = policy.speaks,
+        clone = policy.clone,
+        convert = policy.convert,
+    )
+    return f"audio-cpp/audio.cpp-gguf/{folder}", {
+        "is_audio": True,
+        "audio_type": "audiocpp_tts",
+        **acb.model_info_fields(model),
+    }
+
+
+def _use(stub, family, folder):
+    return stub["use"](*_convert_info(family, folder))
+
+
+def _convert(client, **body):
+    return client.post("/api/inference/audio/run", json = {"workflow": "convert", **body})
+
+
+def _meta(tmp_path, account, clip_id):
+    return json.loads(
+        (tmp_path / "accounts" / account.account_id / "audio" / f"{clip_id}.json").read_text(
+            encoding = "utf-8"
+        )
+    )
+
+
+def test_an_rvc_run_converts_an_upload_to_a_builtin_voice(stub, tmp_path):
+    backend = _use(stub, "rvc", "RVC-GGUF")
+    input_id = _input(ALICE, seconds = 2.0)
+    with _client(ALICE) as client:
+        response = _convert(
+            client,
+            inputs = {"source": {"input_id": input_id}},
+            convert = {"voice": "manthos", "pitch": 3},
+            options = {"retrieval_blend": 0.5},
+            seed = 7,
+        )
+    assert response.status_code == 200, response.text
+    (call,) = backend.calls
+    inputs_root = tmp_path / "accounts" / ALICE.account_id / "audio" / "inputs"
+    source = Path(call["audio_inputs"]["source"])
+    assert set(call["audio_inputs"]) == {"source"}
+    # A 16 kHz mono copy inside ALICE's inputs, capped at five minutes.
+    assert source.parent == inputs_root and source.name == f"{input_id}.16000.mono.m300.wav"
+    info = audio_inputs.wav_info(source)
+    assert (info["sample_rate"], info["channels"]) == (16000, 1)
+    assert call["workflow"] == "convert" and call["seed"] == 7
+    assert call["convert"] == {
+        "mode": "speech",
+        "pitch": 3,
+        "pitch_auto": False,
+        "style": "source",
+        "voice": "manthos",
+        "source_text": None,
+    }
+    assert call["audio_options"] == {"retrieval_blend": 0.5}
+    assert "reference_text" not in call and "speed" not in call
+    (clip,) = response.json()["clips"]
+    assert clip["workflow"] == "convert" and clip["role"] == "output"
+    meta = _meta(tmp_path, ALICE, clip["id"])
+    assert meta["workflow"] == "convert" and meta["prompt"] == "me.webm → Manthos"
+    assert (meta["source_input_id"], meta["source_name"]) == (input_id, "me.webm")
+    assert (meta["reference_name"], meta["target_builtin"]) == ("Manthos", "manthos")
+    assert meta["settings"] == {
+        "mode": "speech",
+        "pitch": 3,
+        "pitch_auto": False,
+        "style": "source",
+        "options": {"retrieval_blend": 0.5},
+    }
+    assert "voice_id" not in meta and "source_clip_id" not in meta
+    sidecar = json.dumps(meta)
+    assert str(tmp_path) not in sidecar and "inputs" not in sidecar
+    # The upload expires, so the clip keeps the 16 kHz copy the model heard beside it.
+    assert meta["source_saved"] is True
+    kept = tmp_path / "accounts" / ALICE.account_id / "audio" / f"{clip['id']}.source.wav"
+    assert kept.read_bytes() == source.read_bytes()
+    source_url = f"/api/inference/audio/gallery/{clip['id']}/source/file"
+    with _client(BOB) as client:
+        assert client.get(source_url).status_code == 404
+    with _client(ALICE) as client:
+        served = client.get(source_url)
+        assert served.status_code == 200 and served.content == kept.read_bytes()
+        listed = client.get("/api/inference/audio/gallery").json()["audio"]
+        assert [c["id"] for c in listed] == [clip["id"]] and listed[0]["source_saved"] is True
+        assert client.delete(f"/api/inference/audio/gallery/{clip['id']}").status_code == 200
+        assert client.get(source_url).status_code == 404
+    assert not kept.exists()
+
+
+def test_a_seed_vc_run_takes_a_history_clip_and_a_saved_voice_at_its_rates(stub, tmp_path):
+    backend = _use(stub, "seed_vc", "SeedVC-MLX-GGUF")
+    sources = _alice_sources()
+    with _client(ALICE) as client:
+        response = _convert(
+            client,
+            inputs = {
+                "source": {"clip_id": sources["clip_id"]},
+                "target": {"voice_id": sources["voice_id"]},
+            },
+            convert = {"mode": "singing", "pitch_auto": True},
+        )
+    assert response.status_code == 200, response.text
+    (call,) = backend.calls
+    source, target = Path(call["audio_inputs"]["source"]), Path(call["audio_inputs"]["target"])
+    assert source.name == f"c-{sources['clip_id']}.44100.mono.m300.wav"
+    assert target.name == f"v-{sources['voice_id']}.44100.mono.m30.wav"
+    assert audio_inputs.wav_info(target)["sample_rate"] == 44100
+    assert call["convert"]["mode"] == "singing" and call["convert"]["pitch_auto"] is True
+    meta = _meta(tmp_path, ALICE, response.json()["clips"][0]["id"])
+    assert meta["prompt"] == "alice said → Alice"
+    assert (meta["source_clip_id"], meta["voice_id"]) == (sources["clip_id"], sources["voice_id"])
+    assert meta["reference_name"] == "Alice" and "target_builtin" not in meta
+    # A history clip stays in history: no copy, and no source file to serve.
+    assert "source_saved" not in meta
+    clip_id = response.json()["clips"][0]["id"]
+    audio_dir = tmp_path / "accounts" / ALICE.account_id / "audio"
+    assert not (audio_dir / f"{clip_id}.source.wav").exists()
+    with _client(ALICE) as client:
+        assert client.get(f"/api/inference/audio/gallery/{clip_id}/source/file").status_code == 404
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"inputs": {"source": {"path": "/etc/passwd"}}},
+        {"inputs": {"source": {"input_id": "a" * 32}, "target": {"url": "http://x"}}},
+        {"options": {"voice_model_path": "/x.pth"}},
+        {"options": {"target_voice": "/etc/passwd"}},
+        {"options": {"source_audio": "/etc/passwd"}},
+        {"options": {"noise_path": "/x"}},
+        {"options": {"style_ref": "/x"}},
+        {"options": {"retrieval_index_path": "/x"}},
+        {"text": "hello"},
+        {"convert": {"engine": "v2"}},
+        {"convert": {"pitch": 13}},
+        {"convert": {"mode": "rap"}},
+        {"convert": {"voice": "nope"}},
+        {"inputs": {"source": {"input_id": "a" * 32}, "reference": {"input_id": "a" * 32}}},
+        {"source_audio": "/etc/passwd"},
+    ],
+)
+def test_convert_client_paths_and_unknown_fields_are_422(stub, body):
+    _use(stub, "seed_vc", "SeedVC-MLX-GGUF")
+    with _client(ALICE) as client:
+        response = _convert(client, **body)
+    assert response.status_code == 422, response.text
+    assert stub["backend"].calls == []
+
+
+def test_convert_fields_on_clone_and_speak_are_422(stub):
+    with _client(ALICE) as client:
+        assert _run(client, convert = {"mode": "speech"}).status_code == 422
+        assert _run(client, inputs = {"source": {"input_id": "a" * 32}}).status_code == 422
+        assert _run(client, workflow = "speak", text = None).status_code == 422
+    assert stub["backend"].calls == []
+
+
+@pytest.mark.parametrize(
+    "family, folder, body, detail",
+    [
+        (None, None, {"target": True}, "Load a model that can convert a voice."),
+        ("seed_vc", "SeedVC-MLX-GGUF", {"source": False}, "Add the recording to convert."),
+        ("meanvc2", "MeanVC2-GGUF", {}, "Add the target voice."),
+        (
+            "rvc",
+            "RVC-GGUF",
+            {"target": True},
+            "RVC converts to its built-in voices; pick one under Built-in.",
+        ),
+        (
+            "meanvc2",
+            "MeanVC2-GGUF",
+            {"target": True, "convert": {"mode": "singing"}},
+            "MeanVC2 does not convert singing.",
+        ),
+        (
+            "vevo2",
+            "Vevo2-GGUF",
+            {"target": True, "convert": {"style": "target"}},
+            "Type what's said in the recording, or press Transcribe.",
+        ),
+    ],
+)
+def test_convert_problems_are_400s_in_words(stub, family, folder, body, detail):
+    if family is not None:
+        _use(stub, family, folder)
+    input_id = _input(ALICE)
+    inputs = {} if body.get("source") is False else {"source": {"input_id": input_id}}
+    if body.get("target"):
+        inputs["target"] = {"input_id": input_id}
+    with _client(ALICE) as client:
+        response = _convert(client, inputs = inputs, convert = body.get("convert") or {})
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == detail
+    assert stub["backend"].calls == []
+
+
+def test_vevo2_takes_the_target_style_with_a_transcript_and_clone_still_works(stub):
+    backend = _use(stub, "vevo2", "Vevo2-GGUF")
+    input_id = _input(ALICE)
+    with _client(ALICE) as client:
+        converted = _convert(
+            client,
+            inputs = {
+                "source": {"input_id": input_id},
+                "target": {"input_id": input_id},
+                "source_text": "  Okay, I'm Cemo. ",
+            },
+            convert = {"style": "target"},
+        )
+        cloned = _run(client, inputs = {"reference": {"input_id": input_id}})
+    assert converted.status_code == 200 and cloned.status_code == 200, cloned.text
+    convert_call, clone_call = backend.calls
+    assert convert_call["convert"]["source_text"] == "Okay, I'm Cemo."
+    assert {Path(p).name.split(".")[1] for p in convert_call["audio_inputs"].values()} == {"24000"}
+    assert clone_call["workflow"] == "clone" and "convert" not in clone_call
+
+
+def test_a_convert_only_model_refuses_plain_speech(stub):
+    _use(stub, "rvc", "RVC-GGUF")
+    with _client(ALICE) as client:
+        generate = client.post(
+            "/api/inference/audio/generate", json = {"messages": [{"role": "user", "content": "hi"}]}
+        )
+        speak = _run(client, workflow = "speak")
+    for response in (generate, speak):
+        assert response.status_code == 400
+        assert response.json()["detail"] == "RVC converts recordings. Open Convert and add one."
+    assert stub["backend"].calls == []
+
+
+@pytest.mark.parametrize("role", ["source", "target"])
+@pytest.mark.parametrize("kind", ["input_id", "clip_id", "voice_id"])
+def test_another_accounts_ids_are_404_on_convert(stub, role, kind):
+    _use(stub, "seed_vc", "SeedVC-MLX-GGUF")
+    sources = _alice_sources()
+    own = _input(BOB)
+    inputs = {"source": {"input_id": own}, "target": {"input_id": own}}
+    inputs[role] = {kind: sources[kind]}
+    with _client(BOB) as client:
+        response = _convert(client, inputs = inputs)
+    assert response.status_code == 404, response.text
+    assert stub["backend"].calls == []
+
+
+def test_the_worker_and_orchestrator_carry_convert_and_the_running_task(monkeypatch):
+    from core.inference.orchestrator import InferenceOrchestrator
+    from core.inference.worker import _handle_generate_audio
+
+    seen = []
+
+    class _Backend:
+        def generate_audio_response(self, **kwargs):
+            seen.append(kwargs)
+            return _wav(), 24000
+
+        def runtime_fields(self):
+            return {"audio_server_task": "vc", "audio_convert_route": None}
+
+    responses: queue.Queue = queue.Queue()
+    convert = {"mode": "speech", "pitch": None, "pitch_auto": False, "style": "source"}
+    _handle_generate_audio(
+        _Backend(),
+        {
+            "request_id": "r1",
+            "text": "x",
+            "workflow": "convert",
+            "audio_inputs": {"source": "/abs/s.wav", "target": "/abs/t.wav"},
+            "convert": convert,
+        },
+        responses,
+        threading.Event(),
+    )
+    assert seen[0]["convert"] == convert and seen[0]["workflow"] == "convert"
+    done = responses.get_nowait()
+    assert done["audio_runtime"] == {"audio_server_task": "vc", "audio_convert_route": None}
+
+    orchestrator = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    sent = []
+
+    def read_one(*, timeout):
+        return {**done, "request_id": sent[0]["request_id"]}
+
+    class _Null:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    for name, value in {
+        "_ensure_subprocess_alive": lambda: True,
+        "_send_cmd": lambda cmd: sent.append(cmd),
+        "_direct_reader": lambda _rid, _cancel = None: (read_one, lambda **_k: None, lambda: None),
+        "_reserve_worker": lambda _why: _Null(),
+        "_wait_worker_idle": lambda **_k: True,
+        "_claim_worker": lambda _cancel: None,
+        "_release_worker": lambda *_a, **_k: None,
+    }.items():
+        monkeypatch.setattr(orchestrator, name, value, raising = False)
+    orchestrator.active_model_name = "m"
+    orchestrator.models = {"m": {"audio_server_task": "clon"}}
+    orchestrator._gen_lock = threading.Lock()
+    orchestrator._send_order_lock = threading.Lock()
+    orchestrator._unload_pending = False
+    orchestrator.generate_audio_response(
+        "x",
+        workflow = "convert",
+        audio_inputs = {"source": "/abs/s.wav"},
+        convert = convert,
+    )
+    (cmd,) = sent
+    assert cmd["convert"] == convert and cmd["audio_inputs"] == {"source": "/abs/s.wav"}
+    # The status mirror follows the server the run left running.
+    assert orchestrator.models["m"]["audio_server_task"] == "vc"
