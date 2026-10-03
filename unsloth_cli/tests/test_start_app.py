@@ -466,7 +466,6 @@ def test_codex_app_owner_without_psutil(monkeypatch):
     monkeypatch.setitem(sys.modules, "psutil", None)
     owner = start._codex_app_owner()
     assert owner == {"pid": os.getpid(), "started": None}
-    # A live --app session must stay recognisable, or a second run would switch it back.
     assert start._codex_app_owner_alive(owner) is True
 
 
@@ -497,7 +496,6 @@ def test_hermes_app_adds_unsloth_to_the_active_profile(studio):
     assert config.read_text().startswith(original)
     assert not (root / "config.yaml").exists()
     assert ("POST", f"{BASE}/api/auth/api-keys", {"name": "Hermes app"}) in studio["calls"]
-    # 32,768 is below the floor the provider claims, so the user is told how to avoid overflow.
     assert "--max-seq-length 65536" in result.output
 
 
@@ -562,7 +560,6 @@ def test_codex_app_switches_back_a_config_rewritten_with_crlf(studio):
     [("openclaw", ["--temperature", "0.3"]), ("codex", ["--reasoning-effort", "high"])],
 )
 def test_app_leaves_request_flags_to_the_server(studio, monkeypatch, agent, flags):
-    # The app never sees these flags, so they must stay on the server rather than be dropped.
     seen = {}
     real_connect = start._connect
 
