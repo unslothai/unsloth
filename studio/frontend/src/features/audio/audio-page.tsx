@@ -621,12 +621,26 @@ export function AudioPage({
     () => handleClearGallery(ttsWorkflow),
     [handleClearGallery, ttsWorkflow],
   );
+  const handleSendToConvert = useCallback(
+    (clip: AudioGalleryClip) => {
+      if (!transitionWorkflow("convert")) return;
+      useAudioConvertStore.getState().setSource({
+        kind: "clip",
+        id: clip.id,
+        name: clip.prompt,
+        durationS: clip.duration_s ?? null,
+      });
+    },
+    [transitionWorkflow],
+  );
   // Send to: only pages that can take a finished clip today. Bytes first, so a failed fetch leaves the page.
   const sendHandlersFor = useCallback(
     (clip: AudioGalleryClip): ClipSendHandlers => ({
       clone: () => {
-        if (transitionWorkflow("clone")) adoptReference(clipReference(clip));
+        if (transitionWorkflow("clone"))
+          adoptReference(clipReference(clip, clipWorkflow(clip)));
       },
+      convert: () => handleSendToConvert(clip),
       transcribe: () => {
         // Switching mid-run stops the run, and the stopped run still holds the page busy, so the
         // transcription would be refused and the clip silently dropped.
@@ -652,7 +666,7 @@ export function AudioPage({
         })();
       },
     }),
-    [transitionWorkflow, handleTranscribeFile, busyRef],
+    [transitionWorkflow, handleTranscribeFile, busyRef, handleSendToConvert],
   );
   const handleUseTextAgain = useCallback(
     (clip: AudioGalleryClip) => {
@@ -663,18 +677,6 @@ export function AudioPage({
       else setPrompt(clip.prompt);
     },
     [transitionWorkflow, setPrompt],
-  );
-  const handleSendToConvert = useCallback(
-    (clip: AudioGalleryClip) => {
-      if (!transitionWorkflow("convert")) return;
-      useAudioConvertStore.getState().setSource({
-        kind: "clip",
-        id: clip.id,
-        name: clip.prompt,
-        durationS: clip.duration_s ?? null,
-      });
-    },
-    [transitionWorkflow],
   );
 
   const pageModelLoaded =
@@ -1353,7 +1355,6 @@ export function AudioPage({
                   handleArchiveClip,
                   handleDownloadClipById,
                   onUseTextAgain: handleUseTextAgain,
-                  onSendToConvert: handleSendToConvert,
                   handleCopyPrompt,
                   freshClipId,
                   onFreshClipFocused: clearFreshClip,

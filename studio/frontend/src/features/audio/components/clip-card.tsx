@@ -89,7 +89,11 @@ export function ClipCard({
 }) {
   const focusPlay = (element: HTMLDivElement | null) => {
     if (!(element && focusOnMount && src)) return;
-    element.querySelector<HTMLButtonElement>("button")?.focus();
+    // A custom player (Convert's Source/Converted compare) leads with its tabs: focus its audio.
+    (
+      element.querySelector<HTMLElement>("audio[controls]") ??
+      element.querySelector<HTMLButtonElement>("button")
+    )?.focus();
     onFocused?.();
   };
   return (

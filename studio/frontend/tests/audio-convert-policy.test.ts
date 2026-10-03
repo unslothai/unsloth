@@ -342,3 +342,20 @@ test("Use again re-uploads a conversion's kept source instead of its expiring up
     /\/source\/file`,\s*\)\s*\.then\(\(blob\) => uploadAudioInput\(blob, name\)\)/,
   );
 });
+
+const SEND_TO_HAS_CONVERT = /convert: \(\) => handleSendToConvert\(clip\),/;
+const SEND_TO_CLONE_KEEPS_LABELS_OUT =
+  /adoptReference\(clipReference\(clip, clipWorkflow\(clip\)\)\)/;
+const CARD_FOCUSES_CUSTOM_AUDIO =
+  /element\.querySelector<HTMLElement>\("audio\[controls\]"\) \?\?\s*element\.querySelector<HTMLButtonElement>\("button"\)/;
+
+test("Send to offers Convert, and a Convert clip sent to Clone brings no label as its transcript", () => {
+  const page = readSrc("features/audio/audio-page.tsx");
+  assert.match(page, SEND_TO_HAS_CONVERT);
+  assert.match(page, SEND_TO_CLONE_KEEPS_LABELS_OUT);
+});
+
+test("a fresh Convert clip focuses its player, not the Source tab", () => {
+  const card = readSrc("features/audio/components/clip-card.tsx");
+  assert.match(card, CARD_FOCUSES_CUSTOM_AUDIO);
+});
