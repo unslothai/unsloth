@@ -498,6 +498,39 @@ def test_build_rag_autoinject_lexical_mode_still_grounds_generic_request(
     assert "OVER_BUDGET_PASSAGE" in _injected_text(result)
 
 
+def test_build_rag_autoinject_on_grounds_attachment_beside_project_hits(rag_conn, monkeypatch):
+    from core.rag import embeddings
+
+    _add_doc(
+        rag_conn,
+        store.thread_scope("t1"),
+        "d1",
+        "big.pdf",
+        "h1",
+        ["OVER_BUDGET_PASSAGE"],
+        tokens = [50_000],
+    )
+    pscope = store.project_scope("p1")
+    store.create_document(
+        rag_conn, scope = pscope, filename = "notes.md", sha256 = "h2", document_id = "d2"
+    )
+    store.add_chunks(rag_conn, pscope, "d2", [_chunk("PROJECT_PASSAGE")], [[1.0, 0.0, 0.0, 0.0]])
+    store.set_document_status(rag_conn, "d2", "completed", num_chunks = 1)
+    monkeypatch.setattr(
+        embeddings,
+        "encode",
+        lambda texts, *, model_name = None, normalize = True: [[1.0, 0.0, 0.0, 0.0] for _ in texts],
+    )
+    monkeypatch.setattr(embeddings, "dim", lambda model_name = None: len(_VEC))
+
+    result = inf_tools.build_rag_autoinject(
+        _convo("Summarize this document"),
+        {"thread_id": "t1", "project_id": "p1", "autoinject": True, "autoinject_min_score": 0.7},
+    )
+    injected = _injected_text(result)
+    assert injected.index("OVER_BUDGET_PASSAGE") < injected.index("PROJECT_PASSAGE")
+
+
 def test_build_rag_autoinject_off_does_not_inject_project_alone(rag_conn, monkeypatch):
     # The fallback exists to rescue the thread attachment. With auto-injection
     # off and nothing found in the thread, project context is not a substitute:

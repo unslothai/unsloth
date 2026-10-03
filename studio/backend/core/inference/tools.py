@@ -14819,7 +14819,7 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     # An oversized thread attachment is mandatory grounding: with auto-injection off, search it alone, without the
     # optional-auto relevance floor, then add project context if the combination still fits. The budget binds on that
     # path only: with auto-injection on this stays the single combined unbudgeted search, so a small context cannot
-    # silently switch RAG off, and the thread is searched again without the floor only when nothing cleared it.
+    # silently switch RAG off, and the thread is searched again without the floor when none of it cleared.
     if text is None and (enabled or whole_doc_requested):
         try:
             if whole_doc_requested and not enabled:
@@ -14850,8 +14850,17 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
                     min_dense_score = floor,
                     **_scope_retrieval_kwargs(rag_scope),
                 )
-                if not found and whole_doc_requested:
-                    found = retrieve_thread_unfloored()
+                # Project hits clearing the floor must not crowd out the attachment: without one of its passages,
+                # it goes first.
+                if whole_doc_requested and (not found or rag_scope.get("project_id")):
+                    thread_found = retrieve_thread_unfloored()
+                    if thread_found and found:
+                        thread_docs = {s.get("documentId") for s in thread_found[1]}
+                        if not any(s.get("documentId") in thread_docs for s in found[1]):
+                            merged = thread_found[1] + found[1]
+                            found = (render_sources(merged), merged)
+                    elif thread_found:
+                        found = thread_found
         except Exception as exc:  # noqa: BLE001
             logger.warning("RAG auto-inject retrieval failed: %s", exc)
             return None
