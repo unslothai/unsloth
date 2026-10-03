@@ -2223,6 +2223,8 @@ export const ko = {
       usageTools: "도구",
       exampleCurlTools: "curl + 도구",
       examplePythonTools: "Python + 도구",
+      exampleCurlTraining: "curl + 학습",
+      examplePythonTraining: "Python + 학습",
       exampleJavaScriptTools: "JavaScript + 도구",
       exampleCurlAdvanced: "curl + 고급",
       examplePythonAdvanced: "Python + 고급",

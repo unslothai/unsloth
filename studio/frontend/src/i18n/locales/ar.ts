@@ -2230,6 +2230,8 @@ export const ar = {
       usageTools: "الأدوات",
       exampleCurlTools: "curl + أدوات",
       examplePythonTools: "Python + أدوات",
+      exampleCurlTraining: "curl + تدريب",
+      examplePythonTraining: "Python + تدريب",
       exampleJavaScriptTools: "JavaScript + أدوات",
       exampleCurlAdvanced: "curl + متقدم",
       examplePythonAdvanced: "Python + متقدم",

@@ -2236,6 +2236,8 @@ export const hi = {
       usageTools: "टूल",
       exampleCurlTools: "curl + टूल",
       examplePythonTools: "Python + टूल",
+      exampleCurlTraining: "curl + ट्रेनिंग",
+      examplePythonTraining: "Python + ट्रेनिंग",
       exampleJavaScriptTools: "JavaScript + टूल",
       exampleCurlAdvanced: "curl + उन्नत",
       examplePythonAdvanced: "Python + उन्नत",

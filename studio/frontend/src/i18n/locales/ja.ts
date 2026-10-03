@@ -2203,6 +2203,8 @@ export const ja = {
       usageTools: "ツール",
       exampleCurlTools: "curl + ツール",
       examplePythonTools: "Python + ツール",
+      exampleCurlTraining: "curl + 学習",
+      examplePythonTraining: "Python + 学習",
       exampleJavaScriptTools: "JavaScript + ツール",
       exampleCurlAdvanced: "curl + 高度な設定",
       examplePythonAdvanced: "Python + 高度な設定",

@@ -2273,6 +2273,8 @@ export const de = {
       usageTools: "Tools",
       exampleCurlTools: "curl + Tools",
       examplePythonTools: "Python + Tools",
+      exampleCurlTraining: "curl + Training",
+      examplePythonTraining: "Python + Training",
       exampleJavaScriptTools: "JavaScript + Tools",
       exampleCurlAdvanced: "curl + erweitert",
       examplePythonAdvanced: "Python + erweitert",

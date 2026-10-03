@@ -66,7 +66,9 @@ type ExampleType =
   | "javascriptTools"
   | "curlAdvanced"
   | "pythonAdvanced"
-  | "javascriptAdvanced";
+  | "javascriptAdvanced"
+  | "curlTraining"
+  | "pythonTraining";
 type Os = "unix" | "windows";
 type Variant = "plain" | "tools" | "advanced";
 
@@ -80,6 +82,8 @@ const TYPE_TABS: { id: ExampleType; label: string }[] = [
   { id: "curlAdvanced", label: "curl + advanced" },
   { id: "pythonAdvanced", label: "Python + advanced" },
   { id: "javascriptAdvanced", label: "JavaScript + advanced" },
+  { id: "curlTraining", label: "curl + training" },
+  { id: "pythonTraining", label: "Python + training" },
 ];
 
 // guards a restored tab against a snippet type dropped in a later release.
@@ -92,6 +96,8 @@ const TYPE_LABEL_KEY: Partial<Record<ExampleType, TranslationKey>> = {
   curlAdvanced: "settings.apiKeys.exampleCurlAdvanced",
   pythonAdvanced: "settings.apiKeys.examplePythonAdvanced",
   javascriptAdvanced: "settings.apiKeys.exampleJavaScriptAdvanced",
+  curlTraining: "settings.apiKeys.exampleCurlTraining",
+  pythonTraining: "settings.apiKeys.examplePythonTraining",
 };
 
 const OS_AWARE: Record<ExampleType, boolean> = {
@@ -104,9 +110,20 @@ const OS_AWARE: Record<ExampleType, boolean> = {
   curlAdvanced: true,
   pythonAdvanced: false,
   javascriptAdvanced: false,
+  curlTraining: true,
+  pythonTraining: false,
 };
 
-const CURL_TYPES = new Set<ExampleType>(["curl", "curlTools", "curlAdvanced"]);
+const CURL_TYPES = new Set<ExampleType>([
+  "curl",
+  "curlTools",
+  "curlAdvanced",
+  "curlTraining",
+]);
+// Training needs no loaded chat model, so these render even when /v1 has nothing to serve.
+type TrainingType = "curlTraining" | "pythonTraining";
+const isTrainingType = (t: ExampleType): t is TrainingType =>
+  t === "curlTraining" || t === "pythonTraining";
 const JAVASCRIPT_TYPES = new Set<ExampleType>([
   "javascript",
   "javascriptTools",
@@ -123,6 +140,16 @@ const ADV = {
   min_p: 0.05,
   repetition_penalty: 1.1,
   max_tokens: 1024,
+} as const;
+
+const TRAIN = {
+  model: "unsloth/Llama-3.2-1B-Instruct",
+  dataset: "mlabonne/FineTome-100k",
+  maxSteps: 60,
+  imageBase: "stabilityai/stable-diffusion-xl-base-1.0",
+  imageData: "my-images",
+  imageOut: "my-images-lora",
+  imageSteps: 500,
 } as const;
 
 const DOC_LINKS = [
@@ -343,6 +370,140 @@ for await (const chunk of response) {
 }`;
 }
 
+const trainBody = {
+  model_name: TRAIN.model,
+  training_type: "LoRA/QLoRA",
+  hf_dataset: TRAIN.dataset,
+  format_type: "auto",
+  max_steps: TRAIN.maxSteps,
+};
+const imageTrainBody = {
+  base_model: TRAIN.imageBase,
+  data_dir: TRAIN.imageData,
+  output_dir: TRAIN.imageOut,
+  train_steps: TRAIN.imageSteps,
+};
+
+function curlTrainingUnix(base: string, key: string): string {
+  const auth = `-H "Authorization: Bearer ${key}"`;
+  return `# LLM LoRA fine-tune. Returns a job_id.
+curl ${base}/api/train/start \\
+  ${auth} \\
+  -H "Content-Type: application/json" \\
+  -d '${shSingle(JSON.stringify(trainBody, null, 2))}'
+
+# Poll: phase goes loading_model -> training -> completed (or error / stopped).
+curl ${base}/api/train/status ${auth}
+
+# Stop early and save a checkpoint.
+curl ${base}/api/train/stop \\
+  ${auth} \\
+  -H "Content-Type: application/json" \\
+  -d '{"expected_job_id": "JOB_ID", "save": true}'
+
+# Image (SDXL) LoRA: upload images (+ optional .txt captions), then train.
+curl ${base}/api/train/diffusion/dataset \\
+  ${auth} \\
+  -F "name=${TRAIN.imageData}" -F "files=@cat1.png" -F "files=@cat2.png"
+curl ${base}/api/train/diffusion/start \\
+  ${auth} \\
+  -H "Content-Type: application/json" \\
+  -d '${shSingle(JSON.stringify(imageTrainBody, null, 2))}'
+curl ${base}/api/train/diffusion/status ${auth}`;
+}
+
+function curlTrainingWindows(base: string, key: string): string {
+  const auth = `-H "Authorization: Bearer ${key}"`;
+  return `# LLM LoRA fine-tune. Returns a job_id.
+$body = '${psSingle(JSON.stringify(trainBody, null, 2))}'
+Set-Content -Path train.json -Value $body -Encoding ascii
+curl.exe ${base}/api/train/start \`
+  ${auth} \`
+  -H "Content-Type: application/json" \`
+  -d "@train.json"
+
+# Poll: phase goes loading_model -> training -> completed (or error / stopped).
+curl.exe ${base}/api/train/status ${auth}
+
+# Stop early and save a checkpoint.
+Set-Content -Path stop.json -Value '{"expected_job_id": "JOB_ID", "save": true}' -Encoding ascii
+curl.exe ${base}/api/train/stop \`
+  ${auth} \`
+  -H "Content-Type: application/json" \`
+  -d "@stop.json"
+
+# Image (SDXL) LoRA: upload images (+ optional .txt captions), then train.
+curl.exe ${base}/api/train/diffusion/dataset \`
+  ${auth} \`
+  -F "name=${TRAIN.imageData}" -F "files=@cat1.png" -F "files=@cat2.png"
+$body = '${psSingle(JSON.stringify(imageTrainBody, null, 2))}'
+Set-Content -Path image-train.json -Value $body -Encoding ascii
+curl.exe ${base}/api/train/diffusion/start \`
+  ${auth} \`
+  -H "Content-Type: application/json" \`
+  -d "@image-train.json"
+curl.exe ${base}/api/train/diffusion/status ${auth}`;
+}
+
+function pythonTrainingSnippet(base: string, key: string): string {
+  return `import time
+import requests
+
+BASE = ${j(base)}
+HEADERS = {"Authorization": ${j(`Bearer ${key}`)}}
+
+# LLM LoRA fine-tune
+r = requests.post(f"{BASE}/api/train/start", headers=HEADERS, json={
+    "model_name": ${j(TRAIN.model)},
+    "training_type": "LoRA/QLoRA",
+    "hf_dataset": ${j(TRAIN.dataset)},
+    "format_type": "auto",
+    "max_steps": ${TRAIN.maxSteps},
+})
+r.raise_for_status()
+job_id = r.json()["job_id"]
+
+while True:
+    status = requests.get(f"{BASE}/api/train/status", headers=HEADERS).json()
+    print(status["phase"], status["message"])
+    if status["job_id"] == job_id and status["phase"] in ("completed", "error", "stopped"):
+        break
+    time.sleep(10)
+
+# Stop early and save a checkpoint:
+# requests.post(f"{BASE}/api/train/stop", headers=HEADERS,
+#               json={"expected_job_id": job_id, "save": True})
+
+# Image (SDXL) LoRA: upload images (+ optional .txt captions), then train
+files = [("files", open(p, "rb")) for p in ["cat1.png", "cat2.png"]]
+requests.post(f"{BASE}/api/train/diffusion/dataset", headers=HEADERS,
+              data={"name": ${j(TRAIN.imageData)}}, files=files).raise_for_status()
+requests.post(f"{BASE}/api/train/diffusion/start", headers=HEADERS, json={
+    "base_model": ${j(TRAIN.imageBase)},
+    "data_dir": ${j(TRAIN.imageData)},
+    "output_dir": ${j(TRAIN.imageOut)},
+    "train_steps": ${TRAIN.imageSteps},
+}).raise_for_status()
+
+while (s := requests.get(f"{BASE}/api/train/diffusion/status", headers=HEADERS).json())["active"]:
+    print(s["step"], "/", s["total_steps"], s["loss"])
+    time.sleep(10)`;
+}
+
+function buildTrainingSnippets(
+  base: string,
+  key: string,
+  os: Os,
+): Record<TrainingType, string> {
+  return {
+    curlTraining:
+      os === "windows"
+        ? curlTrainingWindows(base, key)
+        : curlTrainingUnix(base, key),
+    pythonTraining: pythonTrainingSnippet(base, key),
+  };
+}
+
 // every variant but "plain" asks for the server-side tools, so it needs its own key
 function buildSnippets(
   base: string,
@@ -350,7 +511,7 @@ function buildSnippets(
   toolsKey: string,
   model: string,
   os: Os,
-): Record<ExampleType, string> {
+): Record<Exclude<ExampleType, TrainingType>, string> {
   const curl = os === "windows" ? curlWindows : curlUnix;
   return {
     curl: curl(base, key, model, "plain"),
@@ -808,6 +969,8 @@ export function UsageExamples({
   const toolsKey =
     apiKey ||
     (keylessBase && keylessTools ? KEYLESS_KEY_PLACEHOLDER : KEY_PLACEHOLDER);
+  // keyless "inference" scope never reaches /api/train, so always name a real key
+  const trainKey = apiKey || KEY_PLACEHOLDER;
   // agent tools are client-side schemas sent through the admitted inference routes.
   const agentKey =
     apiKey || (keylessBase ? KEYLESS_KEY_PLACEHOLDER : KEY_PLACEHOLDER);
@@ -817,6 +980,13 @@ export function UsageExamples({
     () => (model ? buildSnippets(base, key, toolsKey, model, os) : null),
     [base, key, toolsKey, model, os],
   );
+  const trainingSnippets = useMemo(
+    () => buildTrainingSnippets(base, trainKey, os),
+    [base, trainKey, os],
+  );
+  const snippet = isTrainingType(lang)
+    ? trainingSnippets[lang]
+    : (snippets?.[lang] ?? null);
   // Agent command must target the server the panel shows, not the :8888 default.
   const agentCommand = useMemo(
     () => buildAgentCommand(base, agentKey, os, agent),
@@ -833,8 +1003,8 @@ export function UsageExamples({
       : "python";
 
   const handleCopy = async () => {
-    if (!snippets) return;
-    if (await copyToClipboard(snippets[lang])) {
+    if (!snippet) return;
+    if (await copyToClipboard(snippet)) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1800);
     }
@@ -986,7 +1156,7 @@ export function UsageExamples({
             </button>
           </div>
         ) : null}
-        {snippets ? (
+        {snippet ? (
           <div className="relative min-w-0">
             <button
               type="button"
@@ -1003,8 +1173,8 @@ export function UsageExamples({
                 : t("settings.apiKeys.copy")}
             </button>
             <HighlightedCode
-              key={snippets[lang]}
-              code={snippets[lang]}
+              key={snippet}
+              code={snippet}
               language={shikiLang}
               redactFromReload={Boolean(apiKey)}
             />
