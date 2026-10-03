@@ -86,6 +86,7 @@ import {
   clipWorkflow,
   loadedModelRunsWorkflow,
   slotForWorkflow,
+  workflowForLoadedModel,
 } from "./workflows";
 
 const MODELS_BY_MODE: Record<CreateMode, ModelOption[]> = {
@@ -532,15 +533,15 @@ export function AudioPage({
   useEffect(() => {
     if (adoptedLoadedModel.current || status === null) return;
     adoptedLoadedModel.current = true;
-    if (modeRef.current === "speak" && ttsLoaded && musicGeneration) {
-      useAudioWorkspaceStore.getState().adoptWorkflow("music");
-    } else if (
-      modeRef.current === "speak" &&
-      ttsLoaded &&
-      status.audio_workflows?.includes("separate")
-    ) {
-      useAudioWorkspaceStore.getState().adoptWorkflow("separate");
-    }
+    if (modeRef.current !== "speak" || !ttsLoaded) return;
+    // A model already resident on mount (reload, another client) opens the page it runs on.
+    const store = useAudioWorkspaceStore.getState();
+    const next = workflowForLoadedModel({
+      current: store.workflow,
+      audioWorkflows: status.audio_workflows,
+      music: musicGeneration,
+    });
+    if (next !== "speak" && next !== store.workflow) store.adoptWorkflow(next);
   }, [status, ttsLoaded, musicGeneration]);
 
   const {

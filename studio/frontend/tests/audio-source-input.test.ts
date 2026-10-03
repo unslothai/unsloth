@@ -269,3 +269,16 @@ test("picking a new source clears an earlier error", () => {
     /seenKey\.current = valueKey;\s*if \(valueKey && phase === "error"\) dispatch\(\{ type: "reset" \}\);/,
   );
 });
+
+test("a long history prompt or voice name truncates and keeps the duration visible", () => {
+  // Grid items default to min-width: auto; without a minmax(0, 1fr) column one long prompt
+  // made its row thousands of pixels wide and pushed the duration off the card.
+  const historyList = card.slice(card.indexOf('tab === "history"'));
+  assert.match(historyList, /<ul className="[^"]*\bmin-w-0\b[^"]*grid-cols-\[minmax\(0,1fr\)\]/);
+  assert.match(historyList, /<li key=\{clip\.id\} className="min-w-0">/);
+  assert.match(historyList, /"min-w-0 flex-1 truncate"/);
+  assert.match(historyList, /"shrink-0 font-mono[^"]*"/);
+  const voices = readSrc("features/audio/components/voice-picker.tsx");
+  assert.match(voices, /<ul className="[^"]*\bmin-w-0\b[^"]*grid-cols-\[minmax\(0,1fr\)\]/);
+  assert.match(voices, /"group flex min-w-0 items-center/);
+});
