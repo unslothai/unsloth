@@ -95,9 +95,7 @@ test("a pinned Audio row lists its workflows and hands picks to the page as requ
     /useAudioWorkspaceStore\.getState\(\)\.requestWorkflow\(workflowId\);/,
   );
   assert.match(pick, /navigate\(\{ to: "\/audio" \}\);/);
-  // Like an Images pick, choosing closes the mobile sheet.
   assert.match(pick, /closeMobileIfOpen\(\);/);
-  // Only the Audio page commits the workflow.
   assert.doesNotMatch(SIDEBAR, /commitWorkflow/);
 });
 

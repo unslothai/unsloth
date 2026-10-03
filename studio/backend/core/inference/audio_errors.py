@@ -15,10 +15,8 @@ import re
 
 # Tagged on the worker's audio_error payload so the parent recognises the case without matching on prose.
 AUDIO_UNSUPPORTED_CODE = "audio_unsupported_backend"
-# Tagged the same way for a request the audio runtime answered with an error of its own.
 AUDIO_RUNTIME_ERROR_CODE = "audio_runtime_error"
 
-# Long enough for a runtime sentence ("CosyVoice3 requires reference audio"), short enough for a toast.
 _MAX_RUNTIME_DETAIL_CHARS = 300
 # An absolute POSIX, drive-letter or UNC path. Not after a word character, ':' or '/', so a URL's
 # "//host" and a "family:name" pair stay as written.
@@ -62,12 +60,7 @@ class AudioRuntimeError(RuntimeError):
     through ``audio_runtime_http_error``.
     """
 
-    def __init__(
-        self,
-        detail: str,
-        *,
-        status: int | None = None,
-    ):
+    def __init__(self, detail: str, *, status: int | None = None):
         self.detail = detail
         self.status = status
         super().__init__(detail)

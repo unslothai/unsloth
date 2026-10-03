@@ -40,8 +40,6 @@ import { useReferenceTranscribe } from "./use-reference-transcribe";
 export const CLONE_TEXT_FIELD_ID = "clone-text";
 export const CLONE_REFERENCE_TEXT_FIELD_ID = "clone-reference-text";
 
-/** Selects what a /audio/run produced, the way a /audio/generate result is selected: the saved
- *  clip once the gallery lists it, else its bytes, so an expensive run is never dropped. */
 export async function showRunResult({
   response,
   text,
@@ -75,9 +73,7 @@ export async function showRunResult({
         model: response.model,
         saved: true,
       });
-    } catch {
-      // The id is still selected below; the next refresh shows it.
-    }
+    } catch {}
     selectClip(clip.id, true);
     return;
   }
@@ -93,8 +89,7 @@ export async function showRunResult({
   }
 }
 
-/** Clone: its draft (kept in the clone store), the model's tools, what holds Generate back, and
- *  the run. Mirrors useSpeechGeneration's flow so Stop, phases and errors behave the same. */
+/** Mirrors useSpeechGeneration's flow so Stop, phases and errors behave the same. */
 export function useCloneGeneration({
   status,
   busyRef,
@@ -133,10 +128,8 @@ export function useCloneGeneration({
     "refreshGallery" | "selectClip" | "setFallbackClip" | "setSelectedId"
   > &
   Pick<AudioModelSlot, "pendingTranscribeRelease" | "replayQueuedTtsPick"> & {
-    /** The loaded model's Advanced schema and values, shared with Speak (useSpeechGeneration). */
     audioOptionSpecs: AudioOptionSpec[];
     audioOptionValues: AudioOptionValues;
-    /** Transcribe's selected or last speech-to-text repo, for the Transcribe button. */
     sttRepo: string | null;
   }) {
   const reference = useAudioCloneStore((state) => state.reference);
@@ -146,20 +139,18 @@ export function useCloneGeneration({
   const storedToolValues = useAudioCloneStore((state) => state.toolValues);
   const model = status?.active_model ?? null;
   const [generationError, setGenerationError] = useState<string | null>(null);
-  // What the reference card is doing, reported by the card itself.
   const [referenceStatus, setReferenceStatus] = useState<AudioSourceStatus>({
     phase: "idle",
   });
   const referenceHandle = useRef<AudioSourceInputHandle | null>(null);
-  // An upload a run found gone, by id, so picking another one clears it.
   const [expiredReferenceId, setExpiredReferenceId] = useState<string | null>(
     null,
   );
 
   const transcriber = useReferenceTranscribe({
     sttRepo,
-    language,
-    onText: (next) => useAudioCloneStore.getState().setReferenceText(next),
+    onText: (next, source) =>
+      useAudioCloneStore.getState().applyTranscript(source, next),
   });
 
   const toolContext = useMemo(
@@ -219,7 +210,6 @@ export function useCloneGeneration({
   );
   const transcriptField = referenceTextField(toolContext, toolRequest.patch);
 
-  // An upload can pass its keep-until time while the page sits open.
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (reference?.kind !== "input" || !reference.expiresAt) return;
@@ -230,13 +220,6 @@ export function useCloneGeneration({
     referenceStatus.phase === "expired" ||
     selectionExpired(reference, now) ||
     (reference !== null && reference.id === expiredReferenceId);
-
-  const focusReference = useCallback(() => {
-    referenceHandle.current?.focus();
-  }, []);
-  const focusField = useCallback((id: string) => {
-    document.getElementById(id)?.focus();
-  }, []);
 
   const inputBlocker = cloneBlocker({
     reference,
@@ -251,44 +234,37 @@ export function useCloneGeneration({
     text,
     panelError: toolRequest.error,
   });
-  /** What holds Generate back on this page, with the fix as an action. Model blockers (none
-   *  loaded, cannot clone) are the host's and come first. */
+  const focusField = (id: string) => () => document.getElementById(id)?.focus();
+  const addReference = {
+    label: "Add reference audio",
+    onClick: () => referenceHandle.current?.focus(),
+  };
+  // Model blockers (none loaded, cannot clone) are the host's and come first.
+  const blockerActions: Record<string, GenerateBlocker["actions"]> = {
+    reference: [addReference],
+    "reference-error": [addReference],
+    "reference-expired": [
+      {
+        label: "Add it again",
+        onClick: () => {
+          useAudioCloneStore.getState().setReference(null);
+          referenceHandle.current?.browse();
+        },
+      },
+    ],
+    "reference-text": [
+      {
+        label: "Transcribe it",
+        onClick: () => void transcriber.transcribe(reference),
+      },
+      { label: "type it", onClick: focusField(CLONE_REFERENCE_TEXT_FIELD_ID) },
+    ],
+    text: [{ label: "Write it", onClick: focusField(CLONE_TEXT_FIELD_ID) }],
+  };
   const blocker: GenerateBlocker | null = inputBlocker
     ? {
         reason: inputBlocker.reason,
-        actions:
-          inputBlocker.kind === "reference" ||
-          inputBlocker.kind === "reference-error"
-            ? [{ label: "Add reference audio", onClick: focusReference }]
-            : inputBlocker.kind === "reference-expired"
-              ? [
-                  {
-                    label: "Add it again",
-                    onClick: () => {
-                      useAudioCloneStore.getState().setReference(null);
-                      referenceHandle.current?.browse();
-                    },
-                  },
-                ]
-              : inputBlocker.kind === "reference-text"
-                ? [
-                    {
-                      label: "Transcribe it",
-                      onClick: () => void transcriber.transcribe(reference),
-                    },
-                    {
-                      label: "type it",
-                      onClick: () => focusField(CLONE_REFERENCE_TEXT_FIELD_ID),
-                    },
-                  ]
-                : inputBlocker.kind === "text"
-                  ? [
-                      {
-                        label: "Write it",
-                        onClick: () => focusField(CLONE_TEXT_FIELD_ID),
-                      },
-                    ]
-                  : undefined,
+        actions: blockerActions[inputBlocker.kind],
       }
     : null;
 
@@ -363,7 +339,9 @@ export function useCloneGeneration({
         const expired =
           error instanceof AudioApiError &&
           error.status === 404 &&
-          state.reference.kind === "input";
+          state.reference.kind === "input" &&
+          // With an emotion clip too, the 404 may be that clip's: keep the server's message.
+          !patch.inputs?.emotion;
         if (expired) {
           setExpiredReferenceId(state.reference.id);
           referenceHandle.current?.markExpired();
@@ -373,8 +351,7 @@ export function useCloneGeneration({
           : error instanceof Error
             ? error.message
             : "Voice cloning failed.";
-        // Kept under Generate too, so the reason outlives the toast. An expired reference is
-        // already marked on its card and under Generate.
+        // Kept under Generate so the reason outlives the toast; expiry is already on the card.
         setGenerationError(message);
         if (!expired) toast.error(message);
         await refreshStatus();
@@ -410,7 +387,6 @@ export function useCloneGeneration({
     replayQueuedTtsPick,
   ]);
 
-  // A new reference clears a failure that was about the old one.
   useEffect(() => {
     if (reference) setGenerationError(null);
   }, [reference]);
@@ -433,7 +409,6 @@ export function useCloneGeneration({
     claimedOptions,
     advancedOptionSpecs,
     blocker,
-    /** Whether the page inputs are complete; the host still checks the model. */
     inputsReady: inputBlocker === null,
     handleGenerate,
     generationError,

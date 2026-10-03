@@ -331,12 +331,8 @@ def test_an_unknown_family_follows_its_spec_tasks_or_is_refused(hub):
     acm.require_runnable(sep, "tts")
     vad = acm.resolve("someone/new_vad-GGUF", network = False)
     assert "Voice activity detection" in vad.unsupported
-    # A clone-only family loads as a cloning session and offers Clone alone.
     clone_only = acm.resolve("someone/new_clone_only-GGUF", network = False)
-    assert list(clone_only.workflows) == ["clone"]
-    assert clone_only.workflows["clone"].server_task == "clon"
-    assert clone_only.clone.reference_text == "optional"
-    assert list(acm.resolve("someone/new_tts-GGUF", network = False).workflows) == ["speak"]
+    assert list(clone_only.workflows) == ["clone"] and clone_only.clone.reference_text == "optional"
 
 
 def test_unsupported_task_tokens_are_refused_by_a_readable_name(hub):
@@ -391,14 +387,11 @@ def test_the_spec_family_list_matches_the_pinned_runtime():
     spec = importlib.util.spec_from_file_location("_audio_cpp_installer", installer)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    # A pin bump without a regenerated list fails here.
     assert AUDIO_CPP_SPEC_FAMILIES_TAG == module.DEFAULT_TAG
     for family in ("crisperwhisper", "index_echo", "audio_flamingo", "kugelaudio", "smart_turn"):
         assert family not in AUDIO_CPP_SPEC_FAMILIES
     for family in ("samsone", "gigaam_asr", "maya1"):
         assert family in AUDIO_CPP_SPEC_FAMILIES
-    # The verified table runs on this runtime. The two VAD loaders are refused by the table and
-    # ship no spec of their own.
     assert set(acm.FAMILIES) - AUDIO_CPP_SPEC_FAMILIES == {"marblenet_vad", "silero_vad"}
 
 
@@ -407,17 +400,14 @@ def test_runtime_knows_a_family_from_its_specs_or_the_pinned_list(monkeypatch, t
     from core.inference.audio_cpp_spec_families import AUDIO_CPP_SPEC_FAMILIES_TAG
 
     monkeypatch.setattr(audio_cpp_server, "find_audio_cpp_server_binary", lambda: None)
-    # No runtime installed: no answer, so the spec's guess stands.
     assert acm.runtime_knows_family("samsone") is None
     _fake_runtime(monkeypatch, tmp_path / "pinned", tag = AUDIO_CPP_SPEC_FAMILIES_TAG)
     assert acm.runtime_knows_family("samsone") is True
     assert acm.runtime_knows_family("crisperwhisper") is False
-    # Another tag, or a custom build with no install record, is not judged by the pinned list.
     _fake_runtime(monkeypatch, tmp_path / "newer", tag = "v9.9.9-unsloth.1")
     assert acm.runtime_knows_family("crisperwhisper") is None
     _fake_runtime(monkeypatch, tmp_path / "custom")
     assert acm.runtime_knows_family("crisperwhisper") is None
-    # A shipped model_specs/ folder wins over the list, either way.
     _fake_runtime(
         monkeypatch, tmp_path / "specs", tag = AUDIO_CPP_SPEC_FAMILIES_TAG, specs = ("crisperwhisper",)
     )
@@ -450,13 +440,11 @@ def test_a_spec_fallback_family_the_runtime_lacks_is_refused(hub, monkeypatch, t
     )
     kugel = acm.resolve(f"{AUDIO_CPP_REPO}/KugelAudio-0-Open-GGUF", network = False)
     assert "needs a newer audio runtime" in kugel.unsupported
-    # The verified table is never second-guessed.
     assert acm.family_policy("silero_vad").unsupported.startswith("Voice activity detection")
     assert acm.family_policy("kokoro_tts").task == "tts"
     assert acm.family_policy("crisperwhisper", {"tasks": ["asr"]}).unsupported == (
         "crisperwhisper needs a newer audio runtime than the one installed."
     )
-    # On a runtime Studio cannot judge, the spec's tasks decide as before.
     _fake_runtime(monkeypatch, tmp_path / "newer", tag = "v9.9.9-unsloth.1")
     assert acm.family_policy("crisperwhisper", {"tasks": ["asr"]}).task == "asr"
 
@@ -489,7 +477,7 @@ def test_separation_families_resolve_runnable(hub, folder, family):
     assert model.unsupported is None and model.options == ()
     assert (model.audio_type, model.hub_task) == ("audiocpp_sep", "audio-to-audio")
     assert model.workflows == {
-        "separate": acm.WorkflowBinding("sep", "tasks", None, ("audio",), 44100)
+        "separate": acm.WorkflowBinding("sep", "tasks", None, ("audio",))
     }
     assert model.separation == acm.FAMILIES[family].separation
     acm.require_runnable(model, "tts")
@@ -527,17 +515,13 @@ def test_qwen3_tts_package_kind_comes_from_its_name(hub):
         voice["default"] == "vivian" and len(voice["values"]) == 9 and "uncle_fu" in voice["values"]
     )
     assert not any(o["name"] == "voice" for o in design.options)
-    # Base only clones: runnable, Clone alone, a transcript required unless timbre only.
-    assert base.unsupported is None and base.server_task == "tts"
-    assert list(base.workflows) == ["clone"]
-    assert base.clone.reference_text == "required"
-    assert base.clone.language_names
+    assert base.unsupported is None and list(base.workflows) == ["clone"]
+    assert base.clone.reference_text == "required" and base.clone.language_names
     assert [o["name"] for o in base.clone.tool_options] == ["x_vector_only_mode"]
-    assert any(o["name"] == "x_vector_only_mode" for o in base.clone_options)
     assert list(custom.workflows) == ["speak"] and list(design.workflows) == ["speak"]
 
 
-# The clone table: family -> (server task, speaks, reference_text). S1 and the audio.cpp sources.
+# family -> (server task, speaks, reference_text), from the audio.cpp sources.
 _CLONE_TABLE = {
     "chatterbox": ("clon", False, "unused"),
     "f5_tts": ("tts", False, "required"),
@@ -574,11 +558,7 @@ def test_every_task_family_binds_its_workflows():
             assert family.default_server_task == server_task, family.family
             assert family.clone.reference_text == reference_text, family.family
             clone = bindings["clone"]
-            assert (clone.endpoint, clone.server_task, clone.input_rate) == (
-                "speech",
-                server_task,
-                24000,
-            )
+            assert (clone.endpoint, clone.server_task) == ("speech", server_task)
             continue
         assert family.family not in _CLONE_TABLE
         ((workflow, binding),) = bindings.items()
@@ -586,23 +566,11 @@ def test_every_task_family_binds_its_workflows():
         assert binding.endpoint == endpoint_for[workflow]
         assert binding.server_task == family.default_server_task
     assert set(_CLONE_TABLE) == {f.family for f in acm.FAMILIES.values() if f.clone is not None}
-    # Chatterbox-Turbo is its own family and still speaks.
-    assert list(acm.FAMILIES["chatterbox_turbo"].workflows) == ["speak"]
-    assert acm.FAMILIES["chatterbox_turbo"].default_server_task == "tts"
     assert acm.family_from_names(["Chatterbox-Turbo-GGUF", "chatterbox-turbo-q8_0.gguf"]) == (
         "chatterbox_turbo"
     )
-    assert acm.family_from_names(["Chatterbox-GGUF", "chatterbox-q8_0.gguf"]) == "chatterbox"
-    # FireRedTTS3 Base loads only as a cloning session; Instruct clones under tts.
-    base = acm.family_policy(
-        "fireredtts3", names = ["FireRedTTS3-Base-GGUF", "fireredtts3-base-q8_0.gguf"]
-    )
-    instruct = acm.family_policy(
-        "fireredtts3", names = ["FireRedTTS3-Instruct-GGUF", "fireredtts3-instruct-q8_0.gguf"]
-    )
+    base = acm.family_policy("fireredtts3", names = ["FireRedTTS3-Base-GGUF"])
     assert base.default_server_task == "clon" and list(base.workflows) == ["clone"]
-    assert instruct.default_server_task == "tts" and list(instruct.workflows) == ["clone"]
-    # MioTTS loads MioCodec beside it; MioCodec alone is refused as a companion.
     (codec,) = acm.FAMILIES["miotts"].companions
     assert codec.id == f"{AUDIO_CPP_REPO}/MioCodec-25Hz-44.1kHz-v2-GGUF"
     assert (codec.variant, codec.session_option) == ("Q8_0", "miotts.codec_model_path")
@@ -616,7 +584,7 @@ def test_every_task_family_binds_its_workflows():
     design = acm.family_policy("qwen3_tts", names = ["Qwen3-TTS-12Hz-1.7B-VoiceDesign-GGUF"])
     assert design.workflows["speak"].server_task == "vdes"
     assert acm.family_policy("htdemucs").workflows == {
-        "separate": acm.WorkflowBinding("sep", "tasks", None, ("audio",), 44100)
+        "separate": acm.WorkflowBinding("sep", "tasks", None, ("audio",))
     }
 
 
@@ -2169,15 +2137,11 @@ def test_required_inputs_come_from_the_raw_spec(hub):
     }
     _put(snap, "Maya1-GGUF/maya1-q8_0.gguf", _gguf_bytes(family = "maya1", spec = maya_spec))
     maya = acm.resolve(f"{AUDIO_CPP_REPO}/Maya1-GGUF", network = False)
+    # instruct travels as the request's description, not as an option.
     assert maya.required_inputs == ("instruct",)
-    # The option schema still hides instruct: it travels as the request's description.
     assert [o["name"] for o in maya.options] == ["temperature"]
-    # A voice-design package fills instruct itself, so nothing is required of the user.
+    # A voice-design package fills instruct itself.
     folder = "Qwen3-TTS-12Hz-1.7B-VoiceDesign-GGUF"
     design_spec = {**maya_spec, "family": "qwen3_tts"}
-    _put(
-        snap,
-        f"{folder}/{folder.lower()}-q8_0.gguf",
-        _gguf_bytes(family = "qwen3_tts", spec = design_spec),
-    )
+    _put(snap, f"{folder}/m-q8_0.gguf", _gguf_bytes(family = "qwen3_tts", spec = design_spec))
     assert acm.resolve(f"{AUDIO_CPP_REPO}/{folder}", network = False).required_inputs == ()

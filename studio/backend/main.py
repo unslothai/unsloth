@@ -1361,8 +1361,7 @@ _VIDEO_MULTIPART_UPLOAD_PATHS = (
     "/api/inference/videos",
 )
 _LIBRARY_UPLOAD_PATH = "/api/library/uploads"
-# A raw audio body the route streams to disk and caps itself; buffering it here would hold
-# up to 200 MiB in memory before the route ran.
+# Streamed to disk and capped by the route itself; buffering here would hold 200 MiB in memory.
 _AUDIO_INPUT_UPLOAD_PATH = "/api/inference/audio/inputs"
 _BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
     *_DATASET_UPLOAD_PASSTHROUGH_PREFIXES,

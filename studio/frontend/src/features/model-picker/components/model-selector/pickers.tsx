@@ -2898,7 +2898,6 @@ function localModelMatchesFormat(
   );
 }
 
-/** A downloaded row as a task page's `rowFilter` sees it. */
 export type ModelPickerRowFilter = (row: {
   id: string;
   task?: string | null;
@@ -2964,8 +2963,6 @@ export function HubModelPicker({
   communityModelPolicy?: CommunityModelPolicy;
   opaqueKind?: "diffusers_pipeline" | "diffusers_modular_pipeline";
   npu?: NpuPickerSource;
-  /** Narrows the downloaded Hub rows (cached GGUF and cached repos) further than `task` can, as
-   *  the Audio pages do to split speech from music. Undefined keeps every row. */
   rowFilter?: ModelPickerRowFilter;
 }) {
   const gpu = useGpuInfo();
@@ -3727,6 +3724,8 @@ export function HubModelPicker({
 
   // Recommended suggests GGUF anywhere, plus MLX and safetensors on Mac; the "Fits on device"
   // tick also drops models too big for the device. Downloaded models stay visible.
+  const hubRowAllowed = (r: HfModelResult) =>
+    !rowFilter || rowFilter({ id: r.id, task: r.pipelineTag });
   const recommendedRows = useMemo(() => {
     const catalogSeedIds = new Set(
       catalogSeedRows.map((row) => row.id.toLowerCase()),
@@ -3735,6 +3734,7 @@ export function HubModelPicker({
       const isCatalogSeed = catalogSeedIds.has(r.id.toLowerCase());
       return (
         !isMobileVariant(r.id) &&
+        hubRowAllowed(r) &&
         taskPickerRowMatches({
           isCatalogSeed,
           isHidden: isHiddenModelId(r.id),
@@ -3809,6 +3809,7 @@ export function HubModelPicker({
       .filter((r) => !deviceFiltered || fits(r));
     return [...unslothRows, ...communityRows];
   }, [
+    rowFilter,
     budgetFraction,
     diffusionLoad,
     recommendedSearch.results,
@@ -4287,7 +4288,16 @@ export function HubModelPicker({
               m,
             ) &&
             localModelMatchesFormat(m, formatFilter) &&
-            matchesLocalQuery(m),
+            matchesLocalQuery(m) &&
+            // A task page's own filter (the Audio page lists only its workflow's models) applies to local
+            // and LM Studio rows too, not just the cached Hub rows above.
+            (!rowFilter ||
+              rowFilter({
+                id: m.model_id ?? m.id,
+                task: m.task,
+                audioType: m.audio_type,
+                audioWorkflows: m.audio_workflows,
+              })),
         ),
         downloadedSort,
         loadTimes,
@@ -4302,6 +4312,7 @@ export function HubModelPicker({
       task,
       catalog,
       activeCatalogArtifactIds,
+      rowFilter,
     ],
   );
   // Local ./models entries. Chat-only Unsloth runs GGUF anywhere and MLX on Mac, so raw
@@ -4338,7 +4349,16 @@ export function HubModelPicker({
               localModelIsGguf(m) ||
               (isMac && localModelIsMlx(m))) &&
             localModelMatchesFormat(m, formatFilter) &&
-            matchesLocalQuery(m),
+            matchesLocalQuery(m) &&
+            // A task page's own filter (the Audio page lists only its workflow's models) applies to local
+            // and LM Studio rows too, not just the cached Hub rows above.
+            (!rowFilter ||
+              rowFilter({
+                id: m.model_id ?? m.id,
+                task: m.task,
+                audioType: m.audio_type,
+                audioWorkflows: m.audio_workflows,
+              })),
         ),
         downloadedSort,
         loadTimes,
@@ -4355,6 +4375,7 @@ export function HubModelPicker({
       task,
       catalog,
       activeCatalogArtifactIds,
+      rowFilter,
     ],
   );
   const sortedCustomFolderModels = useMemo(
@@ -4384,7 +4405,16 @@ export function HubModelPicker({
               m,
             ) &&
             localModelMatchesFormat(m, formatFilter) &&
-            matchesLocalQuery(m),
+            matchesLocalQuery(m) &&
+            // A task page's own filter (the Audio page lists only its workflow's models) applies to local
+            // and LM Studio rows too, not just the cached Hub rows above.
+            (!rowFilter ||
+              rowFilter({
+                id: m.model_id ?? m.id,
+                task: m.task,
+                audioType: m.audio_type,
+                audioWorkflows: m.audio_workflows,
+              })),
         ),
         customSort,
         loadTimes,
@@ -4399,6 +4429,7 @@ export function HubModelPicker({
       task,
       catalog,
       activeCatalogArtifactIds,
+      rowFilter,
     ],
   );
 
@@ -4490,7 +4521,6 @@ export function HubModelPicker({
                     task: pickedTask ?? undefined,
                     audioType: meta.audioType ?? undefined,
                     loadId: meta.loadId ?? undefined,
-                    // The page opens on this workflow; a music model tagged text-to-speech lands on Music.
                     workflow:
                       audioWorkflowForPick({
                         id,
@@ -5085,6 +5115,7 @@ export function HubModelPicker({
       rows
         .filter(isChatSupported)
         .filter(isTaskRuntimeSupported)
+        .filter((r) => !rowFilter || rowFilter({ id: r.id, task: r.pipelineTag }))
         .filter(
           (r) =>
             !fitOnDeviceOnly ||
@@ -5120,6 +5151,7 @@ export function HubModelPicker({
       searchRowFits,
       isMac,
       curatedOfferable,
+      rowFilter,
     ],
   );
 
@@ -5839,7 +5871,6 @@ export function HubModelPicker({
       <div
         key={key}
         {...drag.rowProps(key)}
-        // DROP_CUE_CLASS: the drag redraws the line above the carried copy.
         className={cn("relative", edge && [DROP_CUE_CLASS, PINNED_DROP_CUE[edge]])}
         style={drag.draggingKey === key ? { opacity: 0.4 } : undefined}
       >
@@ -6582,12 +6613,12 @@ export function HubModelPicker({
       npuSizeLabel(model.size_gb),
       npuResumeLabel(model),
     ].filter(Boolean);
-    const pick = () =>
-      onSelect(model.model_path, {
-        source: "local",
-        isLora: false,
-        isDownloaded: true,
-      });
+    const meta = {
+      source: "local",
+      isLora: false,
+      isDownloaded: true,
+    } as const;
+    const pick = () => onSelect(model.model_path, meta);
     const row = (
       <ModelRow
         label={model.id}
@@ -6628,19 +6659,38 @@ export function HubModelPicker({
         className={onDevice ? downloadedRowButtonClassName : undefined}
       />
     );
-    if (!onDevice) return <div key={model.id}>{row}</div>;
+    // Downloads do not load the model, so show settings only after download.
+    const settings =
+      onConfigure && model.downloaded && !downloading ? (
+        <ModelLoadSettingsAction
+          ariaLabel={`Inference settings for ${model.id}`}
+          onConfigure={() =>
+            onConfigure(model.model_path, {
+              ...meta,
+              contextLength: model.max_context_length,
+            })
+          }
+        />
+      ) : null;
+    if (!onDevice && !onConfigure) return <div key={model.id}>{row}</div>;
     return (
       <div key={model.id} className={downloadedRowShellClassName(isSelected)}>
         <div className="min-w-0 flex-1">{row}</div>
-        <span className={cn(ROW_ACTIONS_CLASS, "h-6")}>
-          <ModelDeleteAction
-            ariaLabel={`Delete ${model.id}`}
-            title={`Delete ${model.id}?`}
-            description="This removes the model's NPU files from this device."
-            successMessage={`Deleted ${model.id}`}
-            disabled={isLoaded}
-            onConfirm={() => npuCatalog.remove(model)}
-          />
+        <span
+          className={cn(ROW_ACTIONS_CLASS, onDevice && "h-6")}
+          aria-hidden={settings || onDevice ? undefined : true}
+        >
+          {settings}
+          {onDevice && (
+            <ModelDeleteAction
+              ariaLabel={`Delete ${model.id}`}
+              title={`Delete ${model.id}?`}
+              description="This removes the model's NPU files from this device."
+              successMessage={`Deleted ${model.id}`}
+              disabled={isLoaded}
+              onConfirm={() => npuCatalog.remove(model)}
+            />
+          )}
         </span>
       </div>
     );

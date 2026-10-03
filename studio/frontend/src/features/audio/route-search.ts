@@ -20,7 +20,6 @@ const NATIVE_AUDIO_TYPES = new Set([
   ...AUDIO_CPP_AUDIO_TYPES,
 ]);
 
-/** The pipeline tags other pages hand to Audio as `?task=`. */
 const AUDIO_ROUTE_TASKS: ReadonlySet<string> = new Set([
   "text-to-speech",
   "automatic-speech-recognition",
@@ -38,8 +37,6 @@ export interface AudioRouteSearch {
   workflow?: AudioWorkflowId;
 }
 
-/** `/audio` search params. An audio pick made from the chat picker arrives as ?model= (+ ?quant=,
- *  ?ggufQuant=, task and workflow); Settings and the sidebar send a bare task or workflow. */
 export function validateAudioSearch(
   search: Record<string, unknown>,
 ): AudioRouteSearch {
@@ -66,7 +63,6 @@ export function validateAudioSearch(
   };
 }
 
-/** The workflow a deep link asks for: an explicit ?workflow= wins over the one ?task= implies. */
 export function audioRouteIntent(search: {
   task?: string | null;
   workflow?: string | null;
@@ -77,8 +73,6 @@ export function audioRouteIntent(search: {
   return audioWorkflowForTask(search.task);
 }
 
-/** The workflow a chat-picker pick opens on. A speech-tagged music model (MiniMax Music 3, an
- *  audio.cpp music package) goes to Music, told apart by its audio type or catalog entry. */
 export function audioWorkflowForPick(pick: {
   id: string;
   task?: string | null;

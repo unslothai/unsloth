@@ -130,3 +130,17 @@ test("the chat picker forwards the workflow and still routes no text-to-audio ro
   assert.ok(tasks);
   assert.doesNotMatch(tasks[1], /text-to-audio/);
 });
+
+test("a chat picker handoff opens its page before the load, not only after it succeeds", () => {
+  const handoff = readSrc("features/audio/hooks/use-audio-handoff.ts");
+  // The workflow is part of the dedupe key, so the same model sent for another page is handled again.
+  assert.match(
+    handoff,
+    /const key = `\$\{wanted\}\|[^`]*\|\$\{routeSearch\.workflow \?\? ""\}`;/,
+  );
+  // Switch, then mark handled, then load: a refused switch leaves the handoff in the URL to retry.
+  assert.match(
+    handoff,
+    /if \(busyRef\.current !== null\) return;[\s\S]*?if \(\s*isAudioWorkflowId\(routedWorkflow\) &&\s*!transitionWorkflow\(routedWorkflow\)\s*\) \{\s*return;\s*\}\s*handledRouteModel\.current = key;\s*handleModelSelect\(wanted,/,
+  );
+});

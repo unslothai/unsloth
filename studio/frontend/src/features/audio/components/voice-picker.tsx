@@ -19,26 +19,24 @@ import {
   Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { type AudioVoice, fetchAudioBlob } from "../api";
 import { useAudioVoicesStore } from "../stores/audio-voices-store";
 import { SaveVoiceDialog } from "./save-voice-dialog";
 import { formatSeconds } from "./waveform-peaks";
 
-// Voice clips fetched for playback, by voice id, for the session.
 const voiceUrls = new Map<string, string>();
 
-/** The account's saved voices: play one, pick one, rename or delete it. Space on a focused row
- *  plays it; Enter picks it. */
 export function VoicePicker({
   selectedId,
   onSelect,
+  onDeselect,
   disabled,
   className,
 }: {
   selectedId?: string | null;
-  /** Without it the list only manages voices. */
   onSelect?: (voice: AudioVoice) => void;
+  onDeselect?: () => void;
   disabled?: boolean;
   className?: string;
 }) {
@@ -64,51 +62,46 @@ export function VoicePicker({
     [],
   );
 
-  const togglePlay = useCallback(
-    async (voice: AudioVoice) => {
-      const audio = audioRef.current;
-      if (!audio) return;
-      if (playingId === voice.id) {
-        audio.pause();
-        setPlayingId(null);
-        return;
+  const togglePlay = async (voice: AudioVoice) => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (playingId === voice.id) {
+      audio.pause();
+      setPlayingId(null);
+      return;
+    }
+    try {
+      let url = voiceUrls.get(voice.id);
+      if (!url) {
+        url = URL.createObjectURL(await fetchAudioBlob(voice.url));
+        voiceUrls.set(voice.id, url);
       }
-      try {
-        let url = voiceUrls.get(voice.id);
-        if (!url) {
-          url = URL.createObjectURL(await fetchAudioBlob(voice.url));
-          voiceUrls.set(voice.id, url);
-        }
-        audio.src = url;
-        await audio.play();
-        setPlayingId(voice.id);
-      } catch {
-        setPlayingId(null);
-        toast.error(`Could not play ${voice.name}.`);
-      }
-    },
-    [playingId],
-  );
+      audio.src = url;
+      await audio.play();
+      setPlayingId(voice.id);
+    } catch {
+      setPlayingId(null);
+      toast.error(`Could not play ${voice.name}.`);
+    }
+  };
 
-  const handleDelete = useCallback(
-    async (voice: AudioVoice) => {
-      if (playingId === voice.id) {
-        audioRef.current?.pause();
-        setPlayingId(null);
-      }
-      try {
-        await remove(voice.id);
-        toast.success(`Deleted ${voice.name}.`);
-      } catch (reason) {
-        toast.error(
-          reason instanceof Error
-            ? reason.message
-            : "Could not delete the voice.",
-        );
-      }
-    },
-    [playingId, remove],
-  );
+  const handleDelete = async (voice: AudioVoice) => {
+    if (playingId === voice.id) {
+      audioRef.current?.pause();
+      setPlayingId(null);
+    }
+    try {
+      await remove(voice.id);
+      if (voice.id === selectedId) onDeselect?.();
+      toast.success(`Deleted ${voice.name}.`);
+    } catch (reason) {
+      toast.error(
+        reason instanceof Error
+          ? reason.message
+          : "Could not delete the voice.",
+      );
+    }
+  };
 
   return (
     <div className={cn("grid gap-1", className)}>

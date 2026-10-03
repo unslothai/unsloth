@@ -679,7 +679,6 @@ def _scan_cached_gguf(
                         )
                         if row_task == "audio-to-audio" and row_audio_type != "audiocpp_sep":
                             row_audio_type = None
-                        # An audio.cpp family names its workflows: a clone-only one is not Speak.
                         if row_audio_type in ("audiocpp_tts", "audiocpp_sep"):
                             row_audio_workflows = catalog_classification._gguf_path_audio_workflows(
                                 gguf_identity.load_snapshot

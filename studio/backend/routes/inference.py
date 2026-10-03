@@ -875,9 +875,7 @@ def _is_prefill_progress_only(data) -> bool:
 
 
 class _ProgressKeepalive:
-    """Dropped ``prompt_progress`` still needs a stand-in frame: the relay's idle timer, and the
-    durable-run lease (which ignores plain ``: keep-alive``). Emit ``: prefill-progress`` on the
-    same cadence."""
+    """Dropped progress still resets the relay's idle timer, so stand in for the keepalive it starved."""
 
     def __init__(self, interval_s: Optional[float]):
         self._interval_s = interval_s
@@ -1914,10 +1912,6 @@ _OPENAI_ADMISSION_SSE_WAIT = ": admission-wait\n\n"
 _OPENAI_ADMISSION_SSE_DONE = ": admission-done\n\n"
 # A server-side tool still running, unlike a stall keep-alive: durable runs renew their lease on it.
 _OPENAI_TOOL_HEARTBEAT_SSE = ": tool-heartbeat\n\n"
-# Prefill still advancing with nothing to stream: ``prompt_progress`` dropped for a client that did
-# not ask for it, or a native GGUF generator still in prefill. Same lease contract as the tool
-# heartbeat: not a stall keep-alive.
-_OPENAI_PREFILL_PROGRESS_SSE = ": prefill-progress\n\n"
 _OPENAI_LLAMA_ADMISSION_POLL_S = 0.25
 # Cap on waiting for a cancelled teardown task. Request.is_disconnected() can swallow
 # cancel() (#7617), so teardown abandons the task rather than hold the response, and
@@ -7102,45 +7096,6 @@ def _monitor_perf_callback(monitor_id: Optional[str], context_length):
 
     _callback.needs_phase = True
     return _callback
-
-
-class _PrefillProgressSignal:
-    """Wrap a GGUF perf callback to count advancing ``prompt_progress`` from the backend thread.
-
-    The native GGUF generators consume progress themselves and yield nothing until the first
-    token, so the route's stall loop would only ever send ``: keep-alive``, which the durable
-    lease ignores. The stall loop polls ``advanced()`` to send ``: prefill-progress`` instead."""
-
-    def __init__(self, inner):
-        self._inner = inner
-        self._last_processed = None
-        self._advances = 0
-        self._seen = 0
-        # Only ask llama-server for per-token timings when a monitor actually consumes them.
-        self.wants_timings = inner is not None
-
-    @property
-    def needs_phase(self) -> bool:
-        return self._inner is not None and getattr(self._inner, "needs_phase", True)
-
-    def __call__(self, sample: dict) -> None:
-        progress = sample.get("prompt_progress")
-        if isinstance(progress, dict):
-            processed = progress.get("processed")
-            # Any change counts, so a new prefill round (lower count) renews too; a repeat does not.
-            if processed is not None and processed != self._last_processed:
-                self._last_processed = processed
-                self._advances += 1
-        if self._inner is not None:
-            self._inner(sample)
-
-    def advanced(self) -> bool:
-        """True once per stall tick when prefill moved since the previous call."""
-        advances = self._advances
-        if advances == self._seen:
-            return False
-        self._seen = advances
-        return True
 
 
 def _monitor_call_text(name: Any, arguments: Any = None) -> str:
@@ -18632,8 +18587,6 @@ async def _load_model_impl(
             has_video_input = _model_info.get("has_video_input", False),
             audio_family = _model_info.get("audio_family"),
             audio_options = _model_info.get("audio_options"),
-            # audio.cpp names its workflows (a clone-only model offers no Speak); others derive
-            # them.
             audio_workflows = _model_info.get("audio_workflows"),
             audio_reference_text = _model_info.get("audio_reference_text"),
             audio_required_inputs = _model_info.get("audio_required_inputs"),
@@ -21357,12 +21310,6 @@ def _audio_model_label(model_name: Optional[str]) -> str:
     return label or "This model"
 
 
-def _audio_option_text(value: Any) -> str:
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    return str(value).strip().lower()
-
-
 def _audio_request_problem(
     model_info: dict,
     model_name: Optional[str],
@@ -21370,10 +21317,7 @@ def _audio_request_problem(
     payload: ChatCompletionRequest,
     run_inputs: Optional[dict],
 ) -> Optional[str]:
-    """Why the loaded model cannot serve this request as asked, in words for the user; else None.
-
-    Checked before generation so a missing transcript or description is a 400 naming it, not a
-    runtime failure, and a clone-only model is never sent a request with no voice to clone."""
+    """Why the loaded model cannot serve this request, in words for the user; else None."""
     workflows = model_info.get("audio_workflows")
     label = _audio_model_label(model_name)
     inputs = (run_inputs or {}).get("audio_inputs") or {}
@@ -21390,12 +21334,8 @@ def _audio_request_problem(
             rules.get("reference_text") == "required"
             and not str((run_inputs or {}).get("reference_text") or "").strip()
         ):
-            options = payload.audio_options or {}
-            waived = any(
-                name in options and _audio_option_text(options[name]) in values
-                for name, values in rules.get("reference_text_waived") or []
-            )
-            if not waived:
+            from core.inference.audio_cpp_models import option_matches
+            if not option_matches(rules.get("reference_text_waived") or [], payload.audio_options):
                 return "Type what's said in the reference clip."
     elif (
         workflows is not None
@@ -21421,12 +21361,11 @@ async def _generate_tts_wav(
     speech_api_default_max_tokens: bool = False,
     requested_model: str = _RELOAD_ONLY_MODEL,
     run_inputs: Optional[dict] = None,
+    stats_holder: Optional[dict] = None,
 ) -> tuple[bytes, int, str, Optional[str]]:
     """Shared core of /audio/generate, /audio/speech and /audio/run. Returns
-    (wav_bytes, sample_rate, model_name, audio_type).
-
-    ``run_inputs`` (/audio/run only) carries ``workflow``, ``audio_inputs`` (role -> server-local
-    WAV path the route resolved in the caller's account), ``reference_text`` and ``speed``."""
+    (wav_bytes, sample_rate, model_name, audio_type). ``run_inputs`` is /audio/run's ``workflow``,
+    ``audio_inputs`` (role -> server-local WAV path), ``reference_text`` and ``speed``."""
     # A named target must be budgeted against its own context after preflight.
     if requested_model == _RELOAD_ONLY_MODEL:
         _raise_if_prompt_leaves_no_speech_budget(text)
@@ -21486,6 +21425,7 @@ async def _generate_tts_wav(
             ),
             repetition_penalty = payload.repetition_penalty,
             cancel_event = _audio_cancel,
+            stats_holder = stats_holder,
         )
     else:
         backend = await asyncio.to_thread(get_inference_backend)
@@ -21524,6 +21464,7 @@ async def _generate_tts_wav(
                 if key in ("workflow", "audio_inputs", "reference_text", "speed")
                 and value is not None
             },
+            stats_holder = stats_holder,
         )
 
     if audio_type == "audiocpp_sep":
@@ -21594,7 +21535,6 @@ async def _generate_tts_wav(
             if isinstance(e, AudioBackendUnsupportedError):
                 logger.info("Audio generation unsupported on this backend: %s", e.detail)
                 raise HTTPException(status_code = 501, detail = e.message)
-            # The runtime said why ("CosyVoice3 requires reference audio"): show that, sanitized.
             if isinstance(e, AudioRuntimeError):
                 status_code, detail = audio_runtime_http_error(e)
                 logger.warning("Audio generation refused by the runtime: %s", e)
@@ -21633,8 +21573,7 @@ def _persist_tts_clip(
     workflow: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
     """Best-effort gallery save: persistence never fails the request that produced
-    the audio. Blocking, so callers run it off the event loop. ``extra_meta`` adds run
-    fields (role, voice_id, settings); it never carries a server path."""
+    the audio. Blocking, so callers run it off the event loop."""
     from core.inference import audio_gallery
     from core.inference.audio_workflows import workflow_for_audio_type
 
@@ -21725,6 +21664,7 @@ async def generate_audio(
         raise HTTPException(status_code = 400, detail = "No user message found.")
     text = last_user_msg["content"]
 
+    tts_stats: dict = {}
     wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
         text,
         payload,
@@ -21734,7 +21674,9 @@ async def generate_audio(
         # request model, and without this it stops the hook at its falsey check before
         # the idle-stash restore, failing a request the sibling route serves.
         requested_model = _switch_model_for_payload(payload) or _RELOAD_ONLY_MODEL,
+        stats_holder = tts_stats,
     )
+    truncated = bool((tts_stats.get("stats") or {}).get("truncated"))
     persisted_clip = await asyncio.to_thread(
         _persist_tts_clip, wav_bytes, sample_rate, text, model_name, audio_type
     )
@@ -21754,7 +21696,7 @@ async def generate_audio(
                         "role": "assistant",
                         "content": text,
                     },
-                    "finish_reason": "stop",
+                    "finish_reason": "length" if truncated else "stop",
                 }
             ],
         }
@@ -21766,7 +21708,7 @@ def _audio_source_error(exc) -> HTTPException:
 
 
 def _audio_run_settings(body: AudioRunRequest, reference_text_used: bool) -> dict[str, Any]:
-    """The run's recipe for history: scalar options only, never a file or server path."""
+    """The run's recipe for history: scalar options only."""
     options = {
         str(name): value
         for name, value in (body.options or {}).items()
@@ -21787,38 +21729,31 @@ async def run_audio_workflow(
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
-    """Run one Audio page workflow (Clone, or Speak in a saved voice) and save the clip to history.
-
-    Audio is named by id (an upload, a history clip or a saved voice) and resolved here, in the
-    caller's account, to a prepared 24 kHz mono copy; the worker receives that path, never bytes
-    and never a path the client chose."""
+    """Clone, Speak in a saved voice, or Separate, and save the result to history. Audio is named
+    by id and resolved here in the caller's account; the worker gets a prepared copy's path, never
+    bytes."""
     if body.workflow == "separate":
         return await _run_separation(body, request, current_subject)
     import base64
 
     from core.inference import audio_inputs
 
-    reference_ref = body.inputs.reference
-    if body.workflow == "clone" and reference_ref is None:
+    if body.workflow == "clone" and body.inputs.reference is None:
         raise HTTPException(status_code = 400, detail = "Add a reference clip to clone.")
-    paths: dict[str, str] = {}
-    reference_source = None
+    prepared = {}
     try:
-        if reference_ref is not None:
-            reference_source, reference_path = await asyncio.to_thread(
-                audio_inputs.prepare_reference, reference_ref.model_dump(exclude_none = True)
-            )
-            paths["reference"] = str(reference_path)
-        if body.inputs.emotion is not None:
-            _emotion_source, emotion_path = await asyncio.to_thread(
-                audio_inputs.prepare_reference, body.inputs.emotion.model_dump(exclude_none = True)
-            )
-            paths["emotion"] = str(emotion_path)
+        for role in ("reference", "emotion"):
+            ref = getattr(body.inputs, role)
+            if ref is not None:
+                prepared[role] = await asyncio.to_thread(
+                    audio_inputs.prepare_reference, ref.model_dump(exclude_none = True)
+                )
     except audio_inputs.AudioInputError as exc:
         raise _audio_source_error(exc) from None
+    paths = {role: str(path) for role, (_source, path) in prepared.items()}
+    reference_source = prepared["reference"][0] if "reference" in prepared else None
     reference_text = (body.inputs.reference_text or "").strip() or None
     if reference_text is None and reference_source is not None and reference_source.kind == "voice":
-        # A saved voice carries its own transcript.
         from core.inference import audio_voices
         voice = await asyncio.to_thread(audio_voices.get, reference_source.id)
         reference_text = ((voice or {}).get("transcript") or "").strip() or None
@@ -21864,28 +21799,10 @@ async def run_audio_workflow(
         body.workflow,
     )
     if record is None:
-        return AudioRunResponse(
-            clips = [],
-            model = model_name,
-            audio = {
-                "data": base64.b64encode(wav_bytes).decode("ascii"),
-                "format": "wav",
-                "sample_rate": sample_rate,
-            },
-        )
-    return AudioRunResponse(
-        clips = [
-            {
-                "id": record["id"],
-                "role": "output",
-                "url": record["url"],
-                "sample_rate": record["sample_rate"],
-                "duration_s": record["duration_s"],
-                "workflow": record["workflow"],
-            }
-        ],
-        model = model_name,
-    )
+        audio = {"data": base64.b64encode(wav_bytes).decode("ascii"), "sample_rate": sample_rate}
+        return AudioRunResponse(model = model_name, audio = audio)
+    clip = {k: record[k] for k in ("id", "url", "sample_rate", "duration_s", "workflow")}
+    return AudioRunResponse(clips = [clip], model = model_name)
 
 
 # Stems in the order the Separate page lists them; ids a runtime adds follow in its own order.
@@ -21921,28 +21838,25 @@ def _clock(seconds: float) -> str:
 
 
 def _prepare_separation_source(ref: dict[str, Any]):
-    """``(source, prepared 44.1 kHz path)``, after the 10-minute cap on the trimmed length."""
+    """``(source, prepared 44.1 kHz path)``, after the 10-minute cap; stereo stays stereo."""
+    import wave
+
     from core.inference import audio_inputs
 
     source = audio_inputs.resolve_source(ref)
     try:
-        info = audio_inputs.wav_info(source.path)
+        with wave.open(str(source.path), "rb") as wav:
+            channels = wav.getnchannels()
+            seconds = wav.getnframes() / wav.getframerate()
     except Exception:  # noqa: BLE001 - a stored input is always a WAV; anything else is gone
         raise audio_inputs.AudioInputError(400, "This track could not be read. Add it again.")
-    trim = ref.get("trim") or {}
-    start = float(trim.get("start_s") or 0.0)
-    end = trim.get("end_s")
-    end = min(float(end), info["duration_s"]) if end is not None else info["duration_s"]
-    if end - start <= 0:
-        raise audio_inputs.AudioInputError(400, "The trim range is empty.")
-    if end - start > _SEPARATE_MAX_SECONDS:
+    if seconds > _SEPARATE_MAX_SECONDS:
         raise HTTPException(
             status_code = 400,
             detail = "Separate tracks up to 10 minutes long. This one is "
-            f"{_clock(end - start)}. Trim it first.",
+            f"{_clock(seconds)}. Pick a shorter track.",
         )
-    layout = "stereo" if info["channels"] == 2 else "mono"
-    return source, audio_inputs.prepared_path(source, _SEPARATE_RATE, layout, trim or None)
+    return source, audio_inputs.prepared_path(source, _SEPARATE_RATE, mono = channels != 2)
 
 
 def _stem_rank(ids: list[str]):
@@ -22105,7 +22019,6 @@ async def _run_separation(
             for record in records
         ],
         group_id = group_id,
-        text = None,
         model = model_name,
     )
 
@@ -28802,14 +28715,11 @@ async def produce_openai_chat_completions(
                 )
             )
 
-        _gguf_monitor_callback = (
+        _gguf_perf_callback = (
             _monitor_perf_callback(monitor_id, llama_backend.context_length)
             if not _wants_multiple_choices(payload)
             else None
         )
-        # Only a stream has a stall loop to feed; elsewhere the monitor callback (or None) stands.
-        _gguf_prefill_signal = _PrefillProgressSignal(_gguf_monitor_callback)
-        _gguf_perf_callback = _gguf_prefill_signal if payload.stream else _gguf_monitor_callback
 
         def _gguf_chat_delta_line(delta: ChoiceDelta, finish_reason = None) -> str:
             if delta.reasoning_content is not None and delta.content is None:
@@ -29298,12 +29208,7 @@ async def produce_openai_chat_completions(
                                 )
                                 if done_tasks:
                                     break
-                                # Advancing prefill renews the durable lease; a bare keep-alive does not.
-                                yield (
-                                    _OPENAI_PREFILL_PROGRESS_SSE
-                                    if _gguf_prefill_signal.advanced()
-                                    else _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
-                                )
+                                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                                 approval_flush_pending = False
                                 wait_timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S
                             event = next_task.result()
@@ -29998,12 +29903,7 @@ async def produce_openai_chat_completions(
                                 )
                                 if done_tasks:
                                     break
-                                # Advancing prefill renews the durable lease; a bare keep-alive does not.
-                                yield (
-                                    _OPENAI_PREFILL_PROGRESS_SSE
-                                    if _gguf_prefill_signal.advanced()
-                                    else _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
-                                )
+                                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                             cumulative = next_task.result()
                         finally:
                             if next_task.done():
@@ -33912,8 +33812,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                             )
                         ):
                             if progress_keepalive.due():
-                                # Distinct from stall keep-alive: durable runs renew their lease on it.
-                                yield _OPENAI_PREFILL_PROGRESS_SSE.encode()
+                                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE.encode()
                             continue
                         out = _cmpl_stream_event_out(event, _include_usage)
                         if out is not None:
@@ -42340,8 +42239,7 @@ async def _openai_passthrough_stream_admitted(
                     if not client_wants_progress and _is_prefill_progress_only(chunk_data):
                         _monitor_openai_sse_line(monitor_id, raw_line, llama_backend.context_length)
                         if progress_keepalive.due():
-                            # Distinct from stall keep-alive: durable runs renew their lease on it.
-                            yield _OPENAI_PREFILL_PROGRESS_SSE
+                            yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                         continue
                     # With healing active, a content-bearing line may be replaced by
                     # held/promoted chunks; otherwise the single (already
@@ -44222,7 +44120,6 @@ async def clear_gallery_audio(
     from core.inference.gallery_flags import FlagsUnavailable
 
     try:
-        # A workflow scopes the clear to that page's clips.
         removed = await asyncio.to_thread(audio_gallery.clear, workflow = workflow)
     except FlagsUnavailable as exc:
         logger.warning("audio_gallery.clear_blocked: %s", exc)
@@ -44234,9 +44131,6 @@ async def clear_gallery_audio(
     return {"removed": removed}
 
 
-# Audio inputs: clips the user gives the Audio page, named by id, kept for a day.
-
-
 @studio_router.post("/audio/inputs", status_code = 201, response_model = AudioInputRecord)
 async def upload_audio_input(
     request: Request,
@@ -44244,10 +44138,8 @@ async def upload_audio_input(
     name: str = Query("audio", max_length = 255),
     current_subject: str = Depends(get_current_subject),
 ):
-    """Store a raw audio body (any container) for the Audio page, decoded once to WAV.
-
-    The body is streamed to disk and refused with 413 the moment it passes the cap; the same audio
-    uploaded again returns the existing record with 200."""
+    """Store a raw audio body (any container), decoded once to WAV; a re-upload of the same audio
+    returns the existing record with 200."""
     from core.inference import audio_inputs
     from utils.upload_limits import AUDIO_INPUT_MAX_BYTES
 
@@ -44296,11 +44188,8 @@ async def transcribe_audio_input(
     voice_id: Optional[str] = Query(None, max_length = 128),
     current_subject: str = Depends(get_current_subject),
 ):
-    """What is said in an input (or, with the path id ``source``, a history clip or saved voice).
-
-    Runs on the dictation sidecar and saves nothing: unlike /audio/transcribe/raw?stream=true no
-    transcript lands in history. A clone reference is cut to its first 30 s, so the transcript
-    covers what is cloned."""
+    """What is said in an input (or, with the path id ``source``, a history clip or saved voice),
+    over the first 30 s a clone uses. Saves nothing to the transcript history."""
     from core.inference import audio_inputs
 
     ref = {
@@ -44314,7 +44203,7 @@ async def transcribe_audio_input(
     def _prepare() -> bytes:
         source = audio_inputs.resolve_source(ref)
         cap = None if source.kind == "voice" else audio_inputs.REFERENCE_MAX_SECONDS
-        path = audio_inputs.prepared_path(source, 16000, "mono", None, max_seconds = cap)
+        path = audio_inputs.prepared_path(source, 16000, max_seconds = cap)
         return path.read_bytes()
 
     try:
@@ -44331,9 +44220,6 @@ async def transcribe_audio_input(
     )
 
 
-# Saved voices: a reference clip and its transcript, kept until deleted.
-
-
 @studio_router.get("/audio/voices", response_model = AudioVoiceListResponse)
 async def list_audio_voices(current_subject: str = Depends(get_current_subject)):
     from core.inference import audio_voices
@@ -44347,11 +44233,9 @@ async def create_audio_voice(
     from core.inference import audio_inputs, audio_voices
     def _create() -> dict:
         source = audio_inputs.resolve_source(body.source.model_dump(exclude_none = True))
-        trim = body.source.trim.model_dump() if body.source.trim else None
         return audio_voices.create(
             source.path,
             {"name": body.name, "transcript": body.transcript, "language": body.language},
-            trim,
         )
 
     try:

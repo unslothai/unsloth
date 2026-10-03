@@ -32,16 +32,13 @@ import {
   sttRepoIdForSidecarKey,
   sttSidecarKeyFor,
 } from "../catalog";
-import { useAudioWorkspaceStore } from "../stores/audio-workspace-store";
 import type { AudioHostState } from "./audio-host-state";
 
-/** Transcribe's model: the STT sidecar pick, its residency and the load that prepares it. */
 export function useSttSidecar({
   setBusy,
   activeRef,
 }: Pick<AudioHostState, "setBusy" | "activeRef">) {
   const [lastSttRepo, setLastSttRepoChoice] = usePersistedChoice("unsloth:audio:last-stt-model", "");
-  // The quant a package pick (Moonshine tiny or small) asked for, so a restart reloads that one, not the default.
   const [lastSttVariant, setLastSttVariant] = usePersistedChoice("unsloth:audio:last-stt-variant", "");
   const [selectedSttRepo, setSelectedSttRepo] = useState<string | null>(null);
   const [sttLoadedModel, setSttLoadedModel] = useState<string | null>(null);
@@ -54,10 +51,8 @@ export function useSttSidecar({
   const selectedSttRepoRef = useRef<string | null>(selectedSttRepo);
   selectedSttRepoRef.current = selectedSttRepo;
   const sttStatusRefreshGeneration = useRef(0);
-  // What the installed GGUF audio runtime can run, from the STT status poll. Null until it answers.
   const audioCppRuntime = useRef<AudioCppRuntimeStatus | null>(null);
   const sttLoadGeneration = useRef(0);
-  /** The GGUF quant each picked STT repo asked for, by lowercased repo id. */
   const sttGgufVariants = useRef(
     new Map<string, string>(
       lastSttRepo && lastSttVariant ? [[lastSttRepo.toLowerCase(), lastSttVariant]] : [],
@@ -71,10 +66,7 @@ export function useSttSidecar({
     [setLastSttRepoChoice, setLastSttVariant],
   );
   const sttLoadingGeneration = useRef<number | null>(null);
-  // Residency is not ownership: the activation resync adopts whatever a sidecar already holds, including a model
-  // chat dictation loaded. The identity, not a boolean, since another surface can replace the sidecar's model
-  // while Audio is inactive and a bare flag would claim that too. Keyed on the model alone, since a "gguf" pick
-  // without whisper-server comes back resident under the Transformers fallback.
+  // Residency is not ownership: track the owned model identity, since other surfaces can swap the sidecar.
   const sttLoadedByThisPage = useRef<string | null>(null);
   const sttLoadAbort = useRef<AbortController | null>(null);
   const deferredSttLoad = useRef<{
@@ -158,7 +150,6 @@ export function useSttSidecar({
     sttLoadedEngine,
   );
 
-  /** Forget the Transcribe pick, releasing its sidecar when this page owns it. */
   const releaseTranscribeSelection = useCallback(async () => {
     const selected = selectedSttRepoRef.current;
     const claim = sttLoadedByThisPage.current;
@@ -178,9 +169,7 @@ export function useSttSidecar({
       forget();
       return;
     }
-    // Forget only once the sidecar is actually released: clearing first left a failed unload with the model in
-    // VRAM and no Eject to retry with. Scoped to the model this page claimed, since another surface can switch the
-    // same engine before the request lands.
+    // Forget only once released, else a failed unload leaves the model in VRAM with no Eject.
     await unloadSttModel(sttEngineForRepoId(selected), claim);
     forget();
     await refreshSttStatus();
@@ -202,11 +191,8 @@ export function useSttSidecar({
         selectedSttRepoRef.current === repoId;
 
       setBusy("loading");
-      // Ownership is claimed only once the requested model is actually resident: claiming it up front meant a
-      // cancelled download left the flag set while the backend kept the previous model, so leaving Transcribe
-      // unloaded another surface's model.
+      // Claim ownership only once resident: a cancelled download would otherwise unload another surface's model.
       const toastId = toast.loading(`Preparing ${audioModelLabel(sidecarKey)}…`);
-      // The quant picked for this repo (Moonshine tiny or small), sent to the audio runtime's sidecar.
       const ggufVariant =
         engine === "audiocpp"
           ? (sttGgufVariants.current.get(repoId.toLowerCase()) ?? null)
@@ -230,22 +216,15 @@ export function useSttSidecar({
             engine,
             ggufVariant,
           );
-          // STT owns its specialized transfer, but the existing mirror gives it the same global Downloads
-          // row, progress and Cancel as every other model download. Do not reset an adopted row.
           if (!isTrackingSttDownload(sidecarKey, engine)) {
             trackSttDownload(sidecarKey, {
-              // Audio owns the final load through its active/selection generation guards, so the
-              // Voice-settings mirror must not warm a stale sidecar behind those guards.
               warmSelectedVoiceModelOnComplete: false,
               engine,
               repoId,
             });
           }
-          // The shared Downloads panel now owns transfer progress; keep this toast for the short model-load
-          // phase after the bytes land.
           toast.dismiss(toastId);
-          // A completed download may outlive this page or selection, so re-check ownership around every
-          // await or an old pick could replace a newer sidecar.
+          // Re-check ownership around every await: an old pick could replace a newer sidecar.
           for (;;) {
             await new Promise((resolve) => setTimeout(resolve, 1000));
             if (!isCurrent()) return;
@@ -256,8 +235,7 @@ export function useSttSidecar({
             if (!isCurrent()) return;
             const block = sttEngineStatusFor(stt, sidecarKey, engine);
             const download = block?.download;
-            // Cancel comes from the shared Downloads row. It is terminal for this preparation attempt, not
-            // permission to load a partial checkpoint.
+            // Cancel is terminal: never load a partial checkpoint.
             if (download?.cancelled) return;
             if (download?.error) throw new Error(download.error);
             if (!download?.downloading) break;
@@ -277,7 +255,6 @@ export function useSttSidecar({
         }
         if (isCurrent()) {
           setLastSttRepo(repoId);
-          useAudioWorkspaceStore.getState().rememberModel("transcribe", repoId);
           toast.success("Transcription model ready", { id: toastId });
           return true;
         }

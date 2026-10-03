@@ -11,7 +11,6 @@ export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/audio",
   staticData: { title: "Audio" },
-  // An audio pick made from the chat picker arrives here as ?model= (+ ?quant=, ?ggufQuant=, task and workflow), which the page loads and then clears.
   validateSearch: validateAudioSearch,
   beforeLoad: () => requireAuth(),
   component: () => null,

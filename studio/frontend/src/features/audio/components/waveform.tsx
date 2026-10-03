@@ -16,10 +16,7 @@ import { WAVEFORM_BARS, formatSeconds } from "./waveform-peaks";
 
 const SEEK_STEP_SECONDS = 5;
 
-/** A clip as neutral bars with a play button. The played part is in the text colour, the rest
- *  muted; the position is also spoken, so colour never carries it alone. Focus the bars and
- *  press Space to play or pause, arrows to seek. Nothing animates, so reduced motion needs no
- *  separate state. */
+/** The position is also spoken, so colour never carries it alone. */
 export function Waveform({
   peaks,
   durationS,
@@ -27,10 +24,9 @@ export function Waveform({
   label,
   className,
 }: {
-  /** Bar heights 0..1; null draws a flat placeholder while the audio decodes. */
+  /** 0..1; null draws a flat placeholder while decoding. */
   peaks: readonly number[] | null;
   durationS: number | null;
-  /** Where to play it from; without one the bars are drawn but cannot play. */
   src: string | null;
   label: string;
   className?: string;
@@ -43,7 +39,6 @@ export function Waveform({
     durationS && durationS > 0 ? durationS : (mediaDuration ?? 0);
   const fraction = duration > 0 ? Math.min(1, position / duration) : 0;
 
-  // A new source starts from the top, stopped.
   useEffect(() => {
     setPlaying(false);
     setPosition(0);

@@ -4,6 +4,7 @@
 import asyncio
 import base64
 import importlib
+import json
 import queue
 import sys
 import threading
@@ -765,3 +766,170 @@ def test_backend_tts_generation_uses_cancel_stopping_criteria(monkeypatch):
 
     assert backend.generate_audio_response("hello", cancel_event = cancel) == (b"RIFFfake", 24000)
     assert captured["stopping_criteria"] is criteria
+
+
+@pytest.mark.parametrize(("stop_type", "finish_reason"), (("limit", "length"), ("eos", "stop")))
+def test_gguf_speech_cut_at_max_tokens_is_reported(monkeypatch, stop_type, finish_reason):
+    import core.inference.llama_cpp as llama_cpp
+
+    sent = {}
+
+    class _Resp:
+        status_code = 200
+
+        def json(self):
+            return {"content": "<custom_token_10>", "stop_type": stop_type}
+
+    class _Client:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def post(
+            self,
+            url,
+            json = None,
+            **_kwargs,
+        ):
+            sent.update(json)
+            return _Resp()
+
+    class _Llama(llama_cpp.LlamaCppBackend):
+        is_loaded = True
+        _is_audio = True
+        _audio_type = "snac"
+        model_identifier = "unsloth/orpheus-3b-0.1-ft-GGUF"
+        base_url = "http://127.0.0.1:8080"
+        _auth_headers: dict = {}
+
+    async def _noop_switch(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(llama_cpp.httpx, "Client", _Client)
+    monkeypatch.setattr(
+        llama_cpp.LlamaCppBackend,
+        "_codec_mgr",
+        types.SimpleNamespace(decode = lambda *_args, **_kwargs: (b"RIFFfake", 24000)),
+    )
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _Llama.__new__(_Llama))
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _noop_switch)
+    monkeypatch.setattr(inference_route, "_persist_tts_clip", lambda *_args: None)
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "A long paragraph."}],
+        max_tokens = 2048,
+    )
+
+    response = asyncio.run(
+        inference_route.generate_audio(payload, request = None, current_subject = "t")
+    )
+
+    assert sent["n_predict"] == 2048
+    assert json.loads(response.body)["choices"][0]["finish_reason"] == finish_reason
+
+
+@pytest.mark.parametrize(("last_token", "truncated"), ((4242, True), (128258, False)))
+def test_snac_speech_cut_at_max_tokens_is_reported(monkeypatch, last_token, truncated):
+    pytest.importorskip("peft")
+    import torch
+    from core.inference.inference import InferenceBackend
+
+    class _Tokenizer:
+        def __call__(self, text, return_tensors):
+            return types.SimpleNamespace(input_ids = torch.tensor([[1, 2, 3]]))
+
+    class _Model:
+        device = torch.device("cpu")
+
+        def generate(self, input_ids, max_new_tokens, **_kwargs):
+            codes = [4242] * (max_new_tokens - 1) + [last_token]
+            return torch.cat([input_ids, torch.tensor([codes])], dim = 1)
+
+    backend = InferenceBackend.__new__(InferenceBackend)
+    backend.active_model_name = "tts"
+    backend._generation_lock = threading.Lock()
+    backend.models = {"tts": {"audio_type": "snac", "model": _Model(), "tokenizer": _Tokenizer()}}
+    backend._audio_codec_manager = types.SimpleNamespace(
+        decode_snac = lambda *_args: (b"RIFFfake", 24000)
+    )
+
+    worker_responses = queue.Queue()
+    _handle_generate_audio(
+        backend,
+        {"request_id": "audio-1", "text": "A long paragraph.", "max_new_tokens": 14},
+        worker_responses,
+        threading.Event(),
+    )
+    done = worker_responses.get_nowait()
+
+    orchestrator = _bare_orchestrator()
+    monkeypatch.setattr(orchestrator, "_ensure_subprocess_alive", lambda: True)
+    monkeypatch.setattr(orchestrator, "_send_cmd", lambda cmd: None)
+
+    def direct_reader(request_id, cancel_event = None):
+        return (
+            lambda *, timeout: {**done, "request_id": request_id},
+            lambda **_kwargs: None,
+            lambda: None,
+        )
+
+    monkeypatch.setattr(orchestrator, "_direct_reader", direct_reader)
+    holder = {}
+    orchestrator.generate_audio_response("A long paragraph.", stats_holder = holder)
+
+    assert holder["stats"]["truncated"] is truncated
+
+
+@pytest.mark.parametrize("audio_type", ("bicodec", "dac"))
+@pytest.mark.parametrize(("last_token", "truncated"), ((4242, True), (7, False)))
+def test_token_codec_speech_cut_at_max_tokens_is_reported(audio_type, last_token, truncated):
+    pytest.importorskip("peft")
+    import torch
+    from core.inference.inference import InferenceBackend
+
+    class _Inputs(dict):
+        def __init__(self):
+            super().__init__(input_ids = torch.tensor([[1, 2, 3]]))
+            self.input_ids = self["input_ids"]
+
+        def to(self, _device):
+            return self
+
+    class _Tokenizer:
+        eos_token_id = 7
+        pad_token_id = 0
+
+        def __call__(self, texts, return_tensors):
+            return _Inputs()
+
+        def batch_decode(self, tokens, skip_special_tokens):
+            return [""]
+
+    class _Model:
+        device = torch.device("cpu")
+        dtype = torch.float32
+        generation_config = types.SimpleNamespace(eos_token_id = 7)
+
+        def generate(self, input_ids, max_new_tokens, **_kwargs):
+            codes = [4242] * (max_new_tokens - 1) + [last_token]
+            return torch.cat([input_ids, torch.tensor([codes])], dim = 1)
+
+    backend = InferenceBackend.__new__(InferenceBackend)
+    backend.active_model_name = "tts"
+    backend._generation_lock = threading.Lock()
+    backend.models = {
+        "tts": {"audio_type": audio_type, "model": _Model(), "tokenizer": _Tokenizer()}
+    }
+    backend._audio_codec_manager = types.SimpleNamespace(
+        decode_bicodec = lambda *_args: (b"RIFFfake", 16000),
+        decode_dac = lambda *_args: (b"RIFFfake", 24000),
+    )
+    backend._patch_repetition_penalty_processor = lambda: None
+
+    backend.generate_audio_response("A long paragraph.", max_new_tokens = 14)
+
+    assert backend.last_generation_stats["truncated"] is truncated

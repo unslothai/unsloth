@@ -259,13 +259,13 @@ test("progress copy names the separation phases", () => {
 test("a separate run sends the source and options only", () => {
   const body = buildAudioRunBody({
     workflow: "separate",
-    inputs: { source: { input_id: "abc", trim: { start_s: 1, end_s: 5 } } },
+    inputs: { source: { input_id: "abc" } },
     options: { num_overlap: 1 },
     seed: undefined,
   });
   assert.deepEqual(body, {
     workflow: "separate",
-    inputs: { source: { input_id: "abc", trim: { start_s: 1, end_s: 5 } } },
+    inputs: { source: { input_id: "abc" } },
     options: { num_overlap: 1 },
   });
   assert.equal("text" in body, false);

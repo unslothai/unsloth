@@ -2,9 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { NativeAudioInstructionsKind } from "../audio-page-policy";
+import {
+  InstructionsField,
+  MossLanguageField,
+} from "../components/instructions-fields";
 import type { AudioWorkflowId } from "../workflows";
 import { CLONE_TOOL_PANELS } from "./clone-panels";
-import { InstructionsField, MossLanguageField } from "./instructions-panels";
 import { instructionsKindFor, panelApplies } from "./select";
 import { SEPARATE_TOOL_PANELS } from "./separate-panels";
 import { SPEAK_TOOL_PANELS } from "./speak-panels";
@@ -14,7 +17,6 @@ import type {
   AudioToolPanel,
 } from "./types";
 
-/** The instruction text and language the rail keeps for whichever model is loaded. */
 export interface InstructionsValue {
   instructions: string;
   language: string;
@@ -23,10 +25,9 @@ export interface InstructionsValue {
 export const MUSIC_DESCRIPTION_REQUIRED =
   "Add a music description. This model needs one beside the lyrics.";
 
-export const VOICE_DESCRIPTION_REQUIRED =
+const VOICE_DESCRIPTION_REQUIRED =
   "Describe the voice. This model needs a voice description.";
 
-/** Maya1 and other models whose spec marks the voice description required. */
 function needsVoiceDescription(ctx: AudioModelContext): boolean {
   return ctx.requiredInputs?.includes("instruct") === true;
 }
@@ -84,8 +85,7 @@ function instructionsPanel(
   };
 }
 
-/** The instruction panels the rail always had, whose value is the page's instruction draft. */
-export const INSTRUCTION_PANELS: readonly AudioToolPanel<InstructionsValue>[] =
+const INSTRUCTION_PANELS: readonly AudioToolPanel<InstructionsValue>[] =
   [
     // Qwen3-TTS VoiceDesign and CustomVoice and VoxCPM2 read it; other GGUF speech models ignore it.
     instructionsPanel("voice-design", "voice", "Voice design", ["speak"]),
@@ -99,13 +99,10 @@ const INSTRUCTION_PANEL_IDS: ReadonlySet<string> = new Set(
   INSTRUCTION_PANELS.map((panel) => panel.id),
 );
 
-/** Whether a panel's value is the page's instruction draft rather than a kept tool value. */
 export function isInstructionPanel(id: string): boolean {
   return INSTRUCTION_PANEL_IDS.has(id);
 }
 
-/** Model tools, in rail order: the saved-voice choice first, then the instruction fields, then
- *  family tools. */
 export const AUDIO_TOOL_PANELS: readonly AnyAudioToolPanel[] = [
   SPEAK_TOOL_PANELS[0],
   ...INSTRUCTION_PANELS,

@@ -10,11 +10,11 @@ const modeStep: TourStep = {
   title: "Pick a page",
   body: (
     <>
-      Speak turns text into speech, Clone speaks in the voice from a short
-      recording, Music makes songs and sound effects, Separate splits a track
-      into vocals and instruments, and Transcribe turns a recording into text.
-      Each lists only the models that can do it, so the picker above follows the
-      page.
+      Open the page title to switch pages. Speak turns text into speech, Clone
+      speaks in the voice from a short recording, Music makes songs and sound
+      effects, Separate splits a track into vocals and instruments, and
+      Transcribe turns a recording into text. Each lists only the models that
+      can do it, so the picker above follows the page.
     </>
   ),
 };
@@ -52,7 +52,6 @@ const outputStep: TourStep = {
   ),
 };
 
-/** Each page has its own settings body, so each gets its own model and middle steps. */
 export function buildAudioTourSteps({
   workflow,
 }: {

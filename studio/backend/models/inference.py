@@ -5101,7 +5101,6 @@ class AudioGalleryItem(BaseModel):
         None,
         description = "Unpinned sort key (epoch-second scale): the manual key once dragged, else the file mtime",
     )
-    group_id: Optional[str] = Field(None, description = "Clips made by one run share this id")
     role: Optional[str] = Field(None, description = "The clip's part in its run, e.g. output")
     source_clip_id: Optional[str] = Field(
         None, description = "History clip the run took its reference from"
@@ -5124,19 +5123,6 @@ def _names_a_file(name: str) -> bool:
     return any(word in _AUDIO_FILE_OPTION_WORDS for word in re.split(r"[^a-z0-9]+", name.lower()))
 
 
-class AudioTrim(BaseModel):
-    model_config = ConfigDict(extra = "forbid")
-
-    start_s: float = Field(0.0, ge = 0, le = 24 * 3600)
-    end_s: Optional[float] = Field(None, gt = 0, le = 24 * 3600)
-
-    @model_validator(mode = "after")
-    def _ordered(self):
-        if self.end_s is not None and self.end_s <= self.start_s:
-            raise ValueError("trim.end_s must be after trim.start_s")
-        return self
-
-
 class AudioSourceRef(BaseModel):
     """Audio named by id: an uploaded input, a history clip or a saved voice. Exactly one."""
 
@@ -5145,7 +5131,6 @@ class AudioSourceRef(BaseModel):
     input_id: Optional[str] = Field(None, pattern = _AUDIO_ID_PATTERN)
     clip_id: Optional[str] = Field(None, pattern = _AUDIO_ID_PATTERN)
     voice_id: Optional[str] = Field(None, pattern = _AUDIO_ID_PATTERN)
-    trim: Optional[AudioTrim] = None
 
     @model_validator(mode = "after")
     def _exactly_one(self):
@@ -5218,8 +5203,8 @@ class AudioRunAudio(BaseModel):
 
 class AudioRunResponse(BaseModel):
     clips: List[AudioRunClip] = Field(default_factory = list)
+    # One separation's stems share it; None for a single clip.
     group_id: Optional[str] = None
-    text: Optional[str] = None
     model: str
     audio: Optional[AudioRunAudio] = Field(
         None, description = "The audio inline, only when saving it to history failed"
