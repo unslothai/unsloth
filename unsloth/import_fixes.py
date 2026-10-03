@@ -6663,8 +6663,7 @@ def _rocm_windows_broken_sdpa_backends():
     def attend(device, backend):
         g = torch.Generator(device = device).manual_seed(0)
         q, k, v = (
-            torch.randn(1, 2, 16, 64, device = device, dtype = torch.bfloat16, generator = g)
-            for _ in range(3)
+            torch.randn(1, 2, 16, 64, device = device, dtype = dtype, generator = g) for _ in range(3)
         )
         q.requires_grad_(True)
         with sdpa_kernel([backend]):
@@ -6677,6 +6676,13 @@ def _rocm_windows_broken_sdpa_backends():
 
     # Only this process's device: probing every visible GPU would open a HIP context on each.
     device = torch.device("cuda", torch.cuda.current_device())
+    try:
+        from .device_type import arch_lacks_bf16
+        arch = torch.cuda.get_device_properties(device).gcnArchName
+    except Exception:
+        arch_lacks_bf16, arch = (lambda _: True), None
+    # gfx10 claims bf16 it lacks (device_type.arch_lacks_bf16); fp16 is safe everywhere.
+    dtype = torch.float16 if arch_lacks_bf16(arch) else torch.bfloat16
     broken = []
     # An import under inference_mode would leave nothing to backpropagate through.
     with torch.inference_mode(False), torch.enable_grad():
