@@ -191,7 +191,7 @@ def _reset_gpu_query_cache():
 
 @pytest.fixture(autouse = True)
 def _reset_media_import_window(monkeypatch):
-    # A test that runs a load path claims the window for the process; later prewarm tests would skip.
+    # A load path claims the window for the process; later prewarm tests would skip.
     warm = sys.modules.get("utils.torch_warmup")
     if warm is not None and hasattr(warm, "_media_import_claimed"):
         monkeypatch.setattr(warm, "_media_import_claimed", False)

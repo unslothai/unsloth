@@ -341,7 +341,7 @@ def close_dynamo_import_window(log) -> bool:
     front of its first one. A warning, not a retry: a process that lost the race does not
     recover. Wrap the IMPORT of this module too, since it reaches a private CPython name."""
     imported = ensure_dynamo_imported(log = log, reason = "diffusers import")
-    # Never nested in the dynamo gate: the post-warm import it waits for itself reaches torch._dynamo.
+    # Not nested in the dynamo gate: the background import it waits on reaches torch._dynamo.
     claim_media_import_window(log)
     if imported:
         return True
@@ -352,25 +352,16 @@ def close_dynamo_import_window(log) -> bool:
     return False
 
 
-# The post-warm worker imports diffusers (and through diffusers.hooks, peft) for the streaming
-# probe and the prewarm, unprompted, ~4 s after boot. A load arriving in that window imports the
-# same packages on its own thread from a different entry point. Both are circular graphs, so the
-# two threads take the module locks in opposite orders and CPython's deadlock detector hands one
-# a half-built module: "cannot import name 'LoraLayer' from partially initialized module
-# 'peft.tuners.lora'", "deadlock detected by _ModuleLock('diffusers.utils')", or a diffusers
-# missing its model classes. The load then fails until a restart. This lock makes the two
-# mutually exclusive: background work imports only while holding it and only before any load has
-# claimed the window; a load waits for an import already in flight, then claims the window.
+# diffusers and peft are circular graphs: a load and the post-warm worker importing them from
+# different entry points get a half-built module ("partially initialized module 'peft.tuners.lora'").
 _media_import_lock = threading.Lock()
 _media_import_claimed = False
-# Thread ident inside background_media_import(), so a load path it reaches cannot wait on itself.
 _media_import_owner: Optional[int] = None
 
 
 @contextmanager
 def background_media_import():
-    """Hold the media import window for background work. Yields False once a load has claimed it:
-    skip the work then, the load imports the stack itself and a second importer is the race."""
+    """Hold the window for background work; yields False once a load has claimed it (skip then)."""
     global _media_import_owner
     with _media_import_lock:
         _media_import_owner = threading.get_ident()
@@ -381,8 +372,7 @@ def background_media_import():
 
 
 def claim_media_import_window(log = None) -> bool:
-    """Wait out a background diffusers / peft import in flight, then keep later ones off. True iff
-    claimed; False only when the wait timed out (the load then proceeds as before)."""
+    """Wait out a background media import in flight, then keep later ones off. False on timeout."""
     global _media_import_claimed
     if _media_import_claimed or _media_import_owner == threading.get_ident():
         return True
@@ -631,9 +621,8 @@ def prewarm_diffusers_if_image_models_exist() -> bool:
     training-only user never pays it. The gate itself is stdlib only.
 
     Called from the POST-warm worker, after ``join_background_warm()``, so it cannot delay a
-    warm stage or the socket bind. It imports inside the media import window, and skips once a
-    load has claimed it: diffusers and peft are circular graphs, so a load importing them at the
-    same time from another entry point can be handed a half-built module.
+    warm stage or the socket bind. Imports inside the media import window; skips once a load
+    has claimed it.
 
     Never fatal, and opt out with ``UNSLOTH_STUDIO_DISABLE_DIFFUSERS_PREWARM=1``."""
     global _diffusers_prewarmed
@@ -649,7 +638,6 @@ def prewarm_diffusers_if_image_models_exist() -> bool:
         if _diffusers_prewarmed:
             return False
         if not window_open:
-            # A load got there first and imports diffusers itself; a second importer is the race.
             logger.debug("diffusers prewarm skipped: a load is importing diffusers")
             return False
         try:
@@ -734,7 +722,7 @@ def prewarm_diffusers_if_image_models_exist() -> bool:
             "diffusers prewarmed in %.0fms; the first image load skips that import",
             (time.perf_counter() - started) * 1000,
         )
-    # Outside the media import window: a child-process probe under its own lock, not an import.
+    # Outside the window: a child-process probe, not an import.
     _prewarm_quant_probe()
     return True
 

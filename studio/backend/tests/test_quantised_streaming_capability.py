@@ -103,9 +103,8 @@ _STREAMING_MODULES = (
 
 @pytest.mark.parametrize("half_built", _STREAMING_MODULES)
 def test_the_poll_waits_until_a_loads_import_has_finished(monkeypatch, half_built):
-    """A load claiming the media window first leaves the bit to this reader, and sys.modules holds
-    diffusers from the moment that load starts importing it. Probing then made the load fail with
-    "Failed to import diffusers.loaders.peft", so a module still initialising defers the refresh."""
+    """Probing while a load still imports diffusers failed that load ("Failed to import
+    diffusers.loaders.peft"), so a module still initialising defers the refresh."""
     for name in _STREAMING_MODULES:
         module = types.ModuleType(name)
         module.__spec__ = types.SimpleNamespace(_initializing = name == half_built)

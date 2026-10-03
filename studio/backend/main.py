@@ -656,10 +656,7 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
     # _dense_quant_supported). Gated on torch being up rather than assumed, since
     # UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1 exists precisely to keep the ML stack cold.
     if "torch" in sys.modules:
-        # Both probes import part of the media stack (torchao; diffusers and, through it, peft), and a
-        # load importing the same packages from its own thread can be handed a half-built module. So
-        # they run inside the media import window, and not at all once a load has claimed it:
-        # /api/system then resolves both bits from the modules that load imported.
+        # Inside the media import window: skipped once a load claimed it; /api/system resolves both later.
         with background_media_import() as _window_open:
             if _window_open:
                 try:
@@ -2461,10 +2458,7 @@ def _probe_quantised_streaming(supported: Any) -> bool:
 def _quantised_streaming() -> bool:
     """The streaming bit for ``/api/system``. Resolved here only once a load has already loaded every
     module it reads, since a cold warm (UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1) never resolves it.
-
-    Initialised, not just present: sys.modules holds diffusers from the moment a load starts on it,
-    and probing then races that load the way the post-warm probe did (an early load leaves the bit
-    to this reader, since the post-warm probe stands down once a load claims the media window)."""
+    Initialised, not just present: probing mid-load races the load's own diffusers/peft import."""
     if _quantised_streaming_capability is None and all(
         (module := sys.modules.get(name)) is not None
         and not getattr(getattr(module, "__spec__", None), "_initializing", False)

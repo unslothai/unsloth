@@ -1,21 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A load arriving while the post-warm worker imports diffusers must not race that import.
-
-About 4 s after boot the post-warm worker imports diffusers (the quantised streaming probe and
-the diffusers prewarm), and ``diffusers.hooks`` imports peft. An image load posted in that window
-imports the same packages on its own thread from a different entry point (``diffusers.loaders``
--> ``peft.tuners``). peft and diffusers are both circular package graphs, so the two threads take
-the module locks in opposite orders and CPython's deadlock detector hands one of them a half-built
-module. The load then fails with ``cannot import name 'LoraLayer' from partially initialized
-module 'peft.tuners.lora'`` (or ``MixedModel``, or ``deadlock detected by
-_ModuleLock('diffusers.utils')``) and keeps failing until a restart.
-
-The fix is a media import window: background work imports only inside it and only until a load
-has claimed it; a load waits out an import already in flight, then claims it. These tests pin
-that contract without importing the real stack.
-"""
+"""A load must not race the post-warm worker's diffusers / peft import (half-built modules:
+"cannot import name 'LoraLayer' from partially initialized module 'peft.tuners.lora'")."""
 
 from __future__ import annotations
 
@@ -54,8 +41,7 @@ def warm(monkeypatch):
 
 
 def test_the_load_waits_for_a_background_import_in_flight(warm):
-    """The reported race: the post-warm worker is mid-import when the load reaches its first
-    diffusers import. The load must block in close_dynamo_import_window until that import ends."""
+    """The reported race: the load blocks in close_dynamo_import_window until the import ends."""
     in_window = threading.Event()
     release = threading.Event()
 
@@ -98,8 +84,7 @@ def test_background_work_runs_while_no_load_has_claimed_it(warm):
 
 
 def test_a_load_path_reached_from_background_work_does_not_wait_on_itself(warm):
-    """The window lock is not reentrant: a background probe that reaches a load helper calling
-    close_dynamo_import_window must pass straight through instead of deadlocking."""
+    """The window lock is not reentrant: a background probe reaching a load helper passes through."""
     result = []
 
     def _background():
@@ -125,8 +110,7 @@ def test_claiming_is_idempotent_and_cheap_once_claimed(warm):
 
 
 def test_the_prewarm_skips_once_a_load_claimed_the_window(warm, monkeypatch):
-    """The prewarm imports diffusers, diffusers.hooks (peft) and the model modules. After a load
-    claimed the window it must not even consult its gate, let alone import."""
+    """After a load claimed the window the prewarm must not even consult its gate."""
     called = []
     monkeypatch.setattr(
         warm, "_a_local_model_would_load_through_diffusers", lambda: called.append(1) or True
@@ -178,16 +162,13 @@ def _calls_inside_window(fn: ast.FunctionDef) -> set:
 
 
 def test_the_post_warm_probes_import_inside_the_window():
-    """Both post-warm probes import part of the media stack (torchao; diffusers -> peft). They
-    are what raced the load, so both must run inside the window."""
     inside = _calls_inside_window(_function("_post_warm_background_work"))
     assert "_refresh_quantised_streaming_capability" in inside
     assert "_refresh_dense_quant_capability" in inside
 
 
 def test_close_dynamo_import_window_claims_the_media_window():
-    """Every media load path already calls close_dynamo_import_window before its first diffusers
-    import (pinned by test_dynamo_import_window.py), so claiming there covers all of them."""
+    """Every media load path calls it first (pinned by test_dynamo_import_window.py)."""
     src = ast.get_source_segment(
         (_BACKEND / "utils" / "torch_warmup.py").read_text(encoding = "utf-8"),
         next(
