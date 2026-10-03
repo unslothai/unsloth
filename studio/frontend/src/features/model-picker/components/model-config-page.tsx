@@ -2779,7 +2779,6 @@ export function ModelConfigPage({
     platform.deviceType,
     platform.chatOnlyReason,
   );
-  // Store pins in customContextLength; null uses the backend default.
   const pinsContextLength = targetIsMlx || targetIsNpu;
   const atBaseline = perModelConfigsEqual(config, baseline, {
     followGlobal: true,
@@ -2921,7 +2920,6 @@ export function ModelConfigPage({
     mlxFittedWindow,
     mlxProspectiveWindow,
   );
-  // Show the loaded context, or the default capped at the model's limit.
   const npuServedWindow = targetIsNpu
     ? ((isActiveModel ? servedWindow(loadedContextLength) : null) ??
       Math.min(NPU_DEFAULT_CONTEXT_LENGTH, nativeMaxSeqLength))

@@ -7377,7 +7377,6 @@ def _fastflowlm_timings(usage: Any) -> Optional[dict[str, Any]]:
 
 def _with_fastflowlm_timings(line: str) -> str:
     """Add timings to FastFlowLM's final usage chunk."""
-    # Skip parsing chunks without timing fields.
     if '"decoding_duration"' not in line and '"prefill_duration_ttft"' not in line:
         return line
     if not line.startswith("data:"):
