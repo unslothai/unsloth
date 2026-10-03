@@ -8,8 +8,11 @@ Reuses the harness in test_export_gguf_discovery.py; the converter itself is stu
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 _TESTS_DIR = Path(__file__).resolve().parent
 if str(_TESTS_DIR) not in sys.path:
@@ -144,9 +147,10 @@ def test_converter_runs_in_this_interpreter(monkeypatch, tmp_path):
 
     ran = {}
 
-    def run(cmd, cwd, check):
-        ran.update(cmd = cmd, cwd = cwd, check = check)
+    def run(cmd, cwd, **_kw):
+        ran.update(cmd = cmd, cwd = cwd)
         (Path(cmd[-1]) / "model.q4nx").write_bytes(b"q4nx")
+        return subprocess.CompletedProcess(cmd, 0, stderr = "")
 
     monkeypatch.setattr(export_mod.q4nx, "_installer", lambda: _Installer)
     monkeypatch.setattr(export_mod.q4nx.subprocess, "run", run)
@@ -154,7 +158,43 @@ def test_converter_runs_in_this_interpreter(monkeypatch, tmp_path):
     export_mod.q4nx.convert_gguf_to_q4nx("/x/M.Q4_1.gguf", out)
 
     assert ran["cmd"] == [sys.executable, str(script), "-i", "/x/M.Q4_1.gguf", "-o", str(out)]
-    assert ran["cwd"] == str(script.parent) and ran["check"] is True
+    assert ran["cwd"] == str(script.parent)
+
+
+def test_converter_failure_names_its_last_stderr_line(monkeypatch, tmp_path):
+    export_mod, _b, _s, _c = _backend(monkeypatch, tmp_path, object())
+    script = tmp_path / "convert.py"
+
+    class _Installer:
+        @staticmethod
+        def install(root):
+            return script
+
+    def run(cmd, cwd, **_kw):
+        return subprocess.CompletedProcess(
+            cmd, 1, stderr = "Traceback ...\nValueError: Unsupported model architecture: mistral3\n"
+        )
+
+    monkeypatch.setattr(export_mod.q4nx, "_installer", lambda: _Installer)
+    monkeypatch.setattr(export_mod.q4nx.subprocess, "run", run)
+
+    with pytest.raises(RuntimeError, match = "Unsupported model architecture: mistral3"):
+        export_mod.q4nx.convert_gguf_to_q4nx("/x/M.Q4_1.gguf", tmp_path / "out")
+
+
+def test_missing_converter_deps_fail_before_installing(monkeypatch, tmp_path):
+    export_mod, _b, _s, _c = _backend(monkeypatch, tmp_path, object())
+    q4nx = export_mod.q4nx
+    real_find_spec = q4nx.importlib.util.find_spec
+    monkeypatch.setattr(
+        q4nx.importlib.util,
+        "find_spec",
+        lambda name, *a: None if name in ("torch", "einops") else real_find_spec(name, *a),
+    )
+    monkeypatch.setattr(q4nx, "_installer", lambda: pytest.fail("installer must not run"))
+
+    with pytest.raises(RuntimeError, match = "torch, einops"):
+        q4nx.convert_gguf_to_q4nx("/x/M.Q4_1.gguf", tmp_path / "out")
 
 
 def _base_folder(tmp_path, files):

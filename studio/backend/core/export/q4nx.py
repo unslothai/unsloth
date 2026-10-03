@@ -9,6 +9,7 @@ without loading a model into the export worker.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import shutil
@@ -26,6 +27,8 @@ SOURCE_QUANTS = ("q4_0", "q4_1", "q4_k_m")
 # What FLM loads next to model.q4nx; it hard-exits without tokenizer_config.json, and reads the
 # chat template from it or from chat_template.jinja, where transformers 5 saves it.
 TOKENIZER_FILES = ("tokenizer.json", "tokenizer_config.json", "chat_template.jinja")
+# Third-party imports of the pinned converter; it runs in this env.
+CONVERTER_MODULES = ("torch", "gguf", "einops", "safetensors", "numpy", "mpmath")
 
 
 def _installer():
@@ -48,18 +51,38 @@ def source_gguf(ggufs: List[str], quant_methods: List[str]) -> Optional[str]:
     return None
 
 
+def require_converter_deps() -> None:
+    """Raise before any download when this env cannot run the converter (e.g. --no-torch)."""
+    missing = [m for m in CONVERTER_MODULES if importlib.util.find_spec(m) is None]
+    if missing:
+        raise RuntimeError(
+            f"The Q4NX converter needs {', '.join(missing)}, which this Unsloth Studio install "
+            "lacks (a GGUF-only install has no torch)."
+        )
+
+
 def convert_gguf_to_q4nx(gguf_path: str, out_dir: Path) -> None:
     from utils.paths.storage_roots import studio_root
 
+    require_converter_deps()
     script = _installer().install(studio_root() / "q4nx_converter")
     out_dir.mkdir(parents = True, exist_ok = True)
     logger.info(f"Converting {os.path.basename(gguf_path)} to Q4NX for the AMD NPU in {out_dir}")
-    # Runs in this env: the converter only needs torch, gguf, einops and safetensors.
-    subprocess.run(
+    result = subprocess.run(
         [sys.executable, str(script), "-i", gguf_path, "-o", str(out_dir)],
         cwd = str(script.parent),
-        check = True,
+        stderr = subprocess.PIPE,
+        text = True,
+        encoding = "utf-8",
+        errors = "replace",
     )
+    if result.returncode != 0:
+        # The traceback's last line names the cause, e.g. an architecture the converter lacks.
+        tail = (result.stderr or "").strip().splitlines()
+        raise RuntimeError(
+            f"The Q4NX converter exited with code {result.returncode}"
+            + (f": {tail[-1]}" if tail else "")
+        )
     if not (out_dir / "model.q4nx").is_file():
         raise RuntimeError(f"The Q4NX converter wrote no model.q4nx to {out_dir}")
 

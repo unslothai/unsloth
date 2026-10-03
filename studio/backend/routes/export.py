@@ -5,6 +5,7 @@
 
 from core.training.account_jobs import (
     account_event_stream,
+    account_path,
     job_busy,
     job_is_foreign,
     require_job_owner,
@@ -522,6 +523,8 @@ async def convert_q4nx(
     Needs no loaded checkpoint or GPU, so it runs here rather than in the export worker.
     """
     validate_job_paths(request.model_dump())
+    # A managed account may only read a GGUF inside its own workspace.
+    account_path(request.gguf_path)
     if bool(request.gguf_path) == bool(request.repo_id and request.filename):
         raise HTTPException(
             status_code = 400,
@@ -533,6 +536,7 @@ async def convert_q4nx(
         from core.export import q4nx
         from utils.paths import resolve_export_write_dir
 
+        q4nx.require_converter_deps()
         if request.gguf_path:
             source = Path(request.gguf_path)
             if not source.is_file() or source.suffix.lower() != ".gguf":
