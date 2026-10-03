@@ -67,10 +67,12 @@ export function StemMixer({
     dispatch({ type: "reset" });
   }, [groupId]);
 
-  const gains = stems.map((stem) => effectiveGain(mix, stem.role));
+  // A stem that failed to load would hold the shared clock forever; the rest play without it.
+  const playable = useMemo(() => stems.filter((stem) => !stem.failed), [stems]);
+  const gains = playable.map((stem) => effectiveGain(mix, stem.role));
   const sources = useMemo(
-    () => stems.map((stem) => ({ id: stem.clipId, src: stem.src })),
-    [stems],
+    () => playable.map((stem) => ({ id: stem.clipId, src: stem.src })),
+    [playable],
   );
   const durationHint = Math.max(0, ...stems.map((stem) => stem.durationS || 0));
   const transport = useStemTransport({
@@ -81,7 +83,7 @@ export function StemMixer({
   });
   const { ready, playing, position, duration, toggle, seek } = transport;
   const fraction = duration > 0 ? Math.min(1, position / duration) : 0;
-  const loadingCount = stems.filter((stem) => !stem.src).length;
+  const loadingCount = playable.filter((stem) => !stem.src).length;
 
   const focusedGroup = useRef<string | null>(null);
   useEffect(() => {
@@ -159,7 +161,7 @@ export function StemMixer({
           type="button"
           variant="outline"
           size="sm"
-          disabled={loadingCount > 0}
+          disabled={stems.some((stem) => !stem.src)}
           onClick={onDownloadAll}
         >
           <HugeiconsIcon
@@ -228,10 +230,11 @@ export function StemMixer({
               </span>
               <div
                 data-stem-bars={true}
-                aria-busy={!stem.src}
+                aria-busy={!(stem.src || stem.failed)}
                 className={cn(
                   "col-span-2 row-start-2 flex min-w-0 @[30rem]:col-span-1 @[30rem]:col-start-2 @[30rem]:row-start-1",
-                  !stem.src && "animate-pulse motion-reduce:animate-none",
+                  !(stem.src || stem.failed) &&
+                    "animate-pulse motion-reduce:animate-none",
                   silent && "opacity-35",
                 )}
               >

@@ -342,4 +342,37 @@ test("the host renders Separate's rail, footer and output and the page reuses th
   // A failed stem fetch says so and retries instead of loading forever.
   assert.match(page, /sources\.failedIds\.length > 0/);
   assert.match(page, /setAttempt\(\(n\) => n \+ 1\)/);
+  // A stem that cannot load is marked so the mixer plays the others.
+  assert.match(page, /failed: sources\.failedIds\.includes\(clip\.id\)/);
+});
+
+test("a cut oldest run loads the next page itself, since a short list never scrolls", () => {
+  const page = readSrc("features/audio/pages/separate-page.tsx");
+  assert.match(
+    page,
+    /hasMore && groupSeparationClips\(clips\)\.length > groups\.length/,
+  );
+  assert.match(
+    page,
+    /if \(tailHidden\) void loadMore\(\);\s*\}, \[tailHidden, clips, loadMore\]\)/,
+  );
+  // The same clips as the page-boundary case: one run hidden only while more pages exist.
+  const clips = [
+    clip({
+      id: "a",
+      group_id: "g1",
+      role: "vocals",
+      settings: { stems: ["vocals"] },
+    }),
+    clip({
+      id: "b",
+      group_id: "g2",
+      role: "vocals",
+      settings: { stems: ["vocals", "drums"] },
+    }),
+  ];
+  assert.ok(
+    groupSeparationClips(clips).length >
+      groupSeparationClips(clips, true).length,
+  );
 });

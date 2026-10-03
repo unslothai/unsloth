@@ -94,3 +94,21 @@ test("the transport is one context with a gain per stem and a drift check", () =
   assert.match(transport, /if \(!active\) pause\(\)/);
   assert.match(transport, /context\?\.close\(\)/);
 });
+
+test("a stem that failed to load is left out of playback, so the rest still play", () => {
+  assert.match(
+    mixer,
+    /const playable = useMemo\(\s*\(\) => stems\.filter\(\(stem\) => !stem\.failed\)/,
+  );
+  assert.match(
+    mixer,
+    /playable\.map\(\(stem\) => \(\{ id: stem\.clipId, src: stem\.src \}\)\)/,
+  );
+  assert.match(
+    mixer,
+    /const loadingCount = playable\.filter\(\(stem\) => !stem\.src\)\.length/,
+  );
+  assert.match(mixer, /aria-busy=\{!\(stem\.src \|\| stem\.failed\)\}/);
+  // The zip needs every stem, so Download all waits for all of them.
+  assert.match(mixer, /disabled=\{stems\.some\(\(stem\) => !stem\.src\)\}/);
+});

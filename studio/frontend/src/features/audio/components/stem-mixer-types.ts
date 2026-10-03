@@ -12,6 +12,8 @@ export interface StemMixerStem {
   role: string;
   label: string;
   src: string | null;
+  /** Its audio could not be fetched: left out of playback instead of waiting on it. */
+  failed?: boolean;
   durationS: number;
   peaks: readonly number[] | null;
 }

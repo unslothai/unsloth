@@ -319,10 +319,11 @@ function SelectedSeparation({
         role: clip.role ?? clip.id,
         label: stemLabel(clip.role ?? ""),
         src: sources.srcById[clip.id] ?? null,
+        failed: sources.failedIds.includes(clip.id),
         durationS: clip.duration_s,
         peaks: sources.peaksById[clip.id] ?? null,
       })),
-    [group.stems, sources.srcById, sources.peaksById],
+    [group.stems, sources.srcById, sources.peaksById, sources.failedIds],
   );
   return (
     <>
@@ -422,6 +423,15 @@ export function SeparateOutput({
     () => groupSeparationClips(clips, hasMore),
     [clips, hasMore],
   );
+  // The hidden oldest run waits on the next page; a short list never scrolls, so fetch it here.
+  const tailHidden = useMemo(
+    () => hasMore && groupSeparationClips(clips).length > groups.length,
+    [clips, hasMore, groups],
+  );
+  // biome-ignore lint/correctness/useExhaustiveDependencies: each loaded page re-checks, in case the run is still cut.
+  useEffect(() => {
+    if (tailHidden) void loadMore();
+  }, [tailHidden, clips, loadMore]);
   const selected =
     groups.find((group) =>
       group.stems.some((clip) => clip.id === selectedId),
