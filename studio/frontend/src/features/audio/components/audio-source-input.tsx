@@ -90,6 +90,9 @@ export function AudioSourceInput({
   allowSavedVoice = true,
   handleRef,
   onStatusChange,
+  maxRecordSeconds,
+  expiredMessage = REFERENCE_EXPIRED_MESSAGE,
+  usesFirstSeconds = REFERENCE_MAX_SECONDS,
 }: {
   id: string;
   label: string;
@@ -102,8 +105,14 @@ export function AudioSourceInput({
   handleRef?: Ref<AudioSourceInputHandle>;
   /** Hears what the card is doing (uploading, failed, expired), for the page's Generate blocker. */
   onStatusChange?: (status: AudioSourceStatus) => void;
+  /** Longest recording this page accepts; references keep the 5 minute default. */
+  maxRecordSeconds?: number;
+  /** What the card says when the server no longer has the upload, in the page's own words. */
+  expiredMessage?: string;
+  /** How much of a long clip the page uses, said on the card; null when it uses all of it. */
+  usesFirstSeconds?: number | null;
 }) {
-  const source = useAudioSource({ value, onChange });
+  const source = useAudioSource({ value, onChange, maxRecordSeconds });
   const history = useContext(AudioHistoryContext);
   const [tab, setTab] = useState<SourceTab>("upload");
   const [dragging, setDragging] = useState(false);
@@ -239,7 +248,7 @@ export function AudioSourceInput({
               icon={Alert02Icon}
               className="mt-0.5 size-3.5 shrink-0 text-destructive"
             />
-            {REFERENCE_EXPIRED_MESSAGE}
+            {expiredMessage}
           </p>
           <Button
             type="button"
@@ -302,9 +311,11 @@ export function AudioSourceInput({
             <output className="text-ui-11p5 text-muted-foreground">
               Loading the clip…
             </output>
-          ) : durationS !== null && durationS > REFERENCE_MAX_SECONDS ? (
+          ) : usesFirstSeconds !== null &&
+            durationS !== null &&
+            durationS > usesFirstSeconds ? (
             <p className="text-ui-11p5 leading-snug text-muted-foreground">
-              Uses the first {REFERENCE_MAX_SECONDS} s.
+              Uses the first {usesFirstSeconds} s.
             </p>
           ) : null}
         </div>

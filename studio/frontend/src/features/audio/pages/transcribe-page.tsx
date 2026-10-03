@@ -3,248 +3,323 @@
 
 import { Button } from "@/components/ui/button";
 import {
-  Download01Icon,
-  Mic01Icon,
-  StopIcon,
-} from "@hugeicons/core-free-icons";
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import { StopIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Field } from "../components/field";
-import { TranscriptGallery } from "../transcript-gallery";
-import { TranscriptionProgress } from "../transcription-progress";
+import { Progress } from "@/components/ui/progress";
+import { type Ref, useEffect, useState } from "react";
+import type { AudioGalleryClip } from "../api";
+import { RECORDING_MAX_SECONDS } from "../audio-workspace-constants";
+import { formatClipDuration } from "../audio-workspace-utils";
+import {
+  AudioHistoryProvider,
+  AudioSourceInput,
+  type AudioSourceInputHandle,
+} from "../components/audio-source-input";
 import type { AudioHostState } from "../hooks/audio-host-state";
-import type { SttSidecar } from "../hooks/use-stt-sidecar";
-import type { Transcription } from "../hooks/use-transcription";
+import type { AudioSourceStatus } from "../hooks/audio-source-state";
+import { useAudioTranscribeStore } from "../stores/audio-transcribe-store";
+import {
+  SPEAKERS_MODEL_NAME,
+  type TranscribeSwitch,
+  type TranscribeSwitches,
+} from "../transcribe-capabilities";
+import type { TranscriptProgress } from "../transcript-stream";
+import { GenerateActions, type GenerateBlocker } from "./tts-workspace";
 
-/** Transcribe's rail: record from the microphone or pick a file. */
-export function TranscribeRail({
-  recordingSupported,
-  isRecording,
-  sttSelected,
-  lastSttRepo,
-  busy,
-  micRequestPending,
-  handleRecordToggle,
-  handleTranscribeFile,
-}: Pick<
-  Transcription,
-  | "recordingSupported"
-  | "isRecording"
-  | "micRequestPending"
-  | "handleRecordToggle"
-  | "handleTranscribeFile"
-> &
-  Pick<SttSidecar, "sttSelected" | "lastSttRepo"> &
-  Pick<AudioHostState, "busy">) {
+// Radix Select cannot hold an empty value, so "detect" travels as this.
+const AUTO = "__auto__";
+
+export const TRANSCRIBE_SOURCE_ID = "transcribe-source";
+
+function SwitchRow({
+  id,
+  label,
+  value,
+  onChange,
+  disabled,
+  onUseSpeakersModel,
+}: {
+  id: string;
+  label: string;
+  value: TranscribeSwitch;
+  onChange: (checked: boolean) => void;
+  disabled: boolean;
+  onUseSpeakersModel?: () => void;
+}) {
   return (
-    <>
-      <Field
-        label="Microphone"
-        htmlFor="audio-record"
-        hint={
-          recordingSupported
-            ? "Record a clip and it is transcribed when you stop."
-            : "This browser cannot record. Open Unsloth over https or on localhost, or upload a file below."
-        }
+    <div className="grid gap-1.5">
+      <label
+        htmlFor={id}
+        className="flex items-center justify-between gap-3 text-ui-13 font-medium text-foreground"
       >
-        <Button
-          data-tour="audio-record"
-          id="audio-record"
-          variant={isRecording ? "destructive" : "secondary"}
-          disabled={
-            !recordingSupported ||
-            (!isRecording && (!(sttSelected || lastSttRepo) || busy !== null)) ||
-            micRequestPending
-          }
-          onClick={handleRecordToggle}
-        >
-          <HugeiconsIcon
-            icon={isRecording ? StopIcon : Mic01Icon}
-            className="mr-2 size-4"
+        {label}
+        {value.always ? (
+          // A setting the model always applies is a fact, not a control.
+          <span
+            id={id}
+            className="text-ui-11p5 font-normal text-muted-foreground"
+          >
+            Always on
+          </span>
+        ) : (
+          <Switch
+            id={id}
+            checked={value.checked}
+            disabled={disabled || value.disabled}
+            onCheckedChange={onChange}
+            aria-describedby={`${id}-hint`}
           />
-          {isRecording
-            ? "Stop recording"
-            : micRequestPending
-              ? busy === "loading" ? "Loading model…" : "Waiting for microphone…"
-              : "Record"}
-        </Button>
-      </Field>
-      <Field
-        label="Audio file"
-        htmlFor="audio-file"
-        hint="Or transcribe an existing recording (wav, mp3, m4a, webm…)."
+        )}
+      </label>
+      <p
+        id={`${id}-hint`}
+        className="text-ui-11p5 leading-snug text-muted-foreground"
       >
-        <input
-          id="audio-file"
-          type="file"
-          accept="audio/*"
-          disabled={
-            !(sttSelected || lastSttRepo) ||
-            busy !== null ||
-            isRecording ||
-            micRequestPending
-          }
-          onChange={(event) => {
-            handleTranscribeFile(event.target.files?.[0]);
-            event.target.value = "";
-          }}
-          className="text-ui-13 file:mr-3 file:rounded-md file:border-0 file:bg-muted file:px-3 file:py-1.5 file:text-ui-13 file:font-medium"
-        />
-      </Field>
-      {sttSelected || lastSttRepo ? null : (
-        <p className="text-ui-11p5 leading-snug text-muted-foreground">
-          Pick a speech-to-text model (Whisper or Qwen3-ASR) from the
-          selector above to transcribe.
-        </p>
-      )}
-    </>
+        {value.hint}
+        {value.suggestSpeakersModel && onUseSpeakersModel ? (
+          <GenerateActions
+            actions={[
+              {
+                label: `Use ${SPEAKERS_MODEL_NAME}`,
+                onClick: onUseSpeakersModel,
+              },
+            ]}
+          />
+        ) : null}
+      </p>
+    </div>
   );
 }
 
-/** Transcribe's output: progress, the transcript and its actions, then saved transcripts. */
-export function TranscribeOutput({
-  transcriptionStartedAt,
-  transcriptionFinishedAt,
-  transcriptionStopping,
-  transcriptionProgress,
-  setTranscriptionStopping,
-  transcriptionAbort,
-  transcript,
-  handleCopyTranscript,
-  handleDownloadTranscript,
-  transcribedName,
-  transcriptModel,
-  transcriptRecord,
-  transcriptExported,
-  transcriptError,
-  busy,
-  active,
-  mode,
-  confirmTranscriptReplacement,
-  transcriptVersion,
-  setTranscript,
-  setTranscribedName,
-  setTranscriptModel,
-  setTranscriptRecord,
-  setTranscriptError,
-  setTranscriptExported,
-  setTranscriptionStartedAt,
-  clearTranscript,
-}: Pick<
-  Transcription,
-  | "transcriptionStartedAt"
-  | "transcriptionFinishedAt"
-  | "transcriptionStopping"
-  | "transcriptionProgress"
-  | "setTranscriptionStopping"
-  | "transcriptionAbort"
-  | "transcript"
-  | "handleCopyTranscript"
-  | "handleDownloadTranscript"
-  | "transcribedName"
-  | "transcriptModel"
-  | "transcriptRecord"
-  | "transcriptExported"
-  | "transcriptError"
-  | "confirmTranscriptReplacement"
-  | "transcriptVersion"
-  | "setTranscript"
-  | "setTranscribedName"
-  | "setTranscriptModel"
-  | "setTranscriptRecord"
-  | "setTranscriptError"
-  | "setTranscriptExported"
-  | "setTranscriptionStartedAt"
-  | "clearTranscript"
-> &
-  Pick<AudioHostState, "busy" | "active" | "mode">) {
+/** Transcribe's rail: the audio, its language, and what to add beyond the text. */
+export function TranscribeRail({
+  historyClips,
+  disabled,
+  sourceHandle,
+  onSourceStatusChange,
+  switches,
+  languages,
+  onUseSpeakersModel,
+}: {
+  historyClips: readonly AudioGalleryClip[];
+  disabled: boolean;
+  sourceHandle: Ref<AudioSourceInputHandle>;
+  onSourceStatusChange: (status: AudioSourceStatus) => void;
+  switches: TranscribeSwitches;
+  /** The languages the picked model takes; only Auto means it detects on its own. */
+  languages: readonly { code: string; name: string }[];
+  /** Picks (or offers to download) the model that adds timestamps and speakers. */
+  onUseSpeakersModel?: () => void;
+}) {
+  const source = useAudioTranscribeStore((state) => state.source);
+  const setSource = useAudioTranscribeStore((state) => state.setSource);
+  const language = useAudioTranscribeStore((state) => state.language);
+  const setLanguage = useAudioTranscribeStore((state) => state.setLanguage);
+  const setTimestamps = useAudioTranscribeStore((state) => state.setTimestamps);
+  const setSpeakers = useAudioTranscribeStore((state) => state.setSpeakers);
+  // A saved language the model no longer lists falls back to Auto rather than vanishing.
+  const languageValue =
+    language && languages.some((entry) => entry.code === language)
+      ? language
+      : AUTO;
   return (
-    <>
-      <div className="hover-scrollbar flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
-        {transcriptionStartedAt !== null && (
-          <TranscriptionProgress
-            startedAt={transcriptionStartedAt}
-            finishedAt={transcriptionFinishedAt}
-            stopping={transcriptionStopping}
-            progress={transcriptionProgress}
-            onCancel={() => {
-              setTranscriptionStopping(true);
-              transcriptionAbort.current?.abort();
-            }}
-          />
-        )}
-        {transcript ? (
-          <>
-            <div className="flex items-center gap-2">
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={handleCopyTranscript}
-              >
-                Copy
-              </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={handleDownloadTranscript}
-              >
-                <HugeiconsIcon icon={Download01Icon} className="mr-2 size-3.5" />
-                Download .txt
-              </Button>
-            </div>
-            <div className="flex items-center gap-2 text-ui-11p5 text-muted-foreground">
-              <span className="truncate">{transcribedName}</span>
-              <span>·</span>
-              <span className="truncate">{transcriptModel}</span>
-              {!transcriptRecord && !transcriptExported && (
-                <span>· Not saved</span>
-              )}
-            </div>
-            <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">
-              {transcript}
-            </p>
-          </>
-        ) : transcriptError ? (
-          <div className="flex flex-col gap-1" role="alert">
-            <p className="text-ui-13 font-medium text-destructive">
-              Could not transcribe {transcribedName ?? "that audio"}.
-            </p>
-            <p className="text-ui-13 text-muted-foreground">{transcriptError}</p>
-          </div>
-        ) : busy !== "transcribing" ? (
-          <p className="text-ui-13 text-muted-foreground">
-            Record or upload audio to transcribe. Completed transcripts are saved
-            to history.
-          </p>
-        ) : null}
-      </div>
-      <div className="shrink-0 pt-4">
-        <TranscriptGallery
-          autoSelect={!transcript && !transcribedName && busy === null}
-          active={active && mode === "transcribe"}
-          currentId={transcriptRecord?.id ?? null}
-          latest={transcriptRecord}
-          canSelect={confirmTranscriptReplacement}
-          onSelect={(record) => {
-            transcriptVersion.current += 1;
-            setTranscript(record.text);
-            setTranscribedName(record.title);
-            setTranscriptModel(record.model);
-            setTranscriptRecord(record);
-            setTranscriptError(null);
-            setTranscriptExported(false);
-            setTranscriptionStartedAt(null);
-          }}
-          onDelete={(ids) => {
-            if (
-              transcriptRecord &&
-              (ids === null
-                ? !transcriptRecord.archived
-                : ids.includes(transcriptRecord.id))
-            )
-              clearTranscript();
-          }}
+    <AudioHistoryProvider value={historyClips}>
+      <div data-tour="audio-record">
+        <AudioSourceInput
+          id={TRANSCRIBE_SOURCE_ID}
+          label="Audio"
+          hint="Up to 30 minutes. Drop a file, record, or reuse a clip."
+          value={source}
+          onChange={setSource}
+          disabled={disabled}
+          handleRef={sourceHandle}
+          onStatusChange={onSourceStatusChange}
+          maxRecordSeconds={RECORDING_MAX_SECONDS}
+          expiredMessage="This upload expired. Add it again."
+          usesFirstSeconds={null}
         />
       </div>
-    </>
+
+      {languages.length > 1 ? (
+        <div className="grid gap-1.5">
+          <label
+            className="text-ui-13 font-medium text-foreground"
+            htmlFor="transcribe-language"
+          >
+            Language
+          </label>
+          <Select
+            value={languageValue}
+            onValueChange={(next) => setLanguage(next === AUTO ? "" : next)}
+            disabled={disabled}
+          >
+            <SelectTrigger
+              id="transcribe-language"
+              size="sm"
+              className="w-full"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {languages.map((entry) => (
+                <SelectItem key={entry.code || AUTO} value={entry.code || AUTO}>
+                  {entry.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="text-ui-11p5 leading-snug text-muted-foreground">
+            Picking the spoken language helps with short or noisy clips.
+          </p>
+        </div>
+      ) : null}
+
+      <SwitchRow
+        id="transcribe-timestamps"
+        label="Timestamps"
+        value={switches.timestamps}
+        onChange={setTimestamps}
+        disabled={disabled}
+        onUseSpeakersModel={onUseSpeakersModel}
+      />
+      <SwitchRow
+        id="transcribe-speakers"
+        label="Speakers"
+        value={switches.speakers}
+        onChange={setSpeakers}
+        disabled={disabled}
+        onUseSpeakersModel={
+          switches.timestamps.suggestSpeakersModel
+            ? undefined
+            : onUseSpeakersModel
+        }
+      />
+    </AudioHistoryProvider>
+  );
+}
+
+/** Transcribe's footer: one Transcribe button, Stop while it runs, and why it is off when it is. */
+export function TranscribeFooter({
+  busy,
+  blocker,
+  notice,
+  shortcutLabel,
+  stopping,
+  onTranscribe,
+  onStop,
+  modelName,
+  progress,
+}: Pick<AudioHostState, "busy"> & {
+  /** Why Transcribe is off, said under it, with the fix when there is one. */
+  blocker: GenerateBlocker | null;
+  /** Said before a run that costs more than usual (a download, a reload, CPU only). */
+  notice: string | null;
+  /** Mod+Enter, as the platform spells it. */
+  shortcutLabel: string;
+  stopping: boolean;
+  onTranscribe: () => void;
+  onStop: () => void;
+  /** The picked model's short name, for "Loading …". */
+  modelName: string;
+  /** The server's latest step, for runtimes that report no numbers. */
+  progress: TranscriptProgress | null;
+}) {
+  const running = busy === "transcribing";
+  const working = running || busy === "loading";
+  // Elapsed time for the whole run, model load included.
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!working) {
+      setStartedAt(null);
+      return;
+    }
+    setStartedAt((value) => value ?? Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [working]);
+  const elapsed =
+    startedAt === null ? 0 : Math.max(0, Math.floor((now - startedAt) / 1000));
+  const status =
+    busy === "loading" || progress?.phase === "loading"
+      ? `Loading ${modelName || "the model"}…`
+      : progress?.phase === "downloading_aligner"
+        ? "Downloading the timing aligner…"
+        : stopping
+          ? "Stopping…"
+          : "Transcribing…";
+  return (
+    <div className="flex w-full max-w-sm flex-col gap-2">
+      {working ? (
+        <>
+          <output
+            aria-live="polite"
+            aria-atomic="true"
+            className="text-center text-ui-12 text-muted-foreground"
+          >
+            {status}
+            <span className="ml-1.5 font-mono tabular-nums">
+              {formatClipDuration(elapsed)}
+            </span>
+          </output>
+          <Progress
+            indeterminate
+            aria-label="Transcription in progress"
+            className="h-1.5"
+          />
+        </>
+      ) : null}
+      <div className="flex flex-wrap items-center justify-center gap-2">
+        <Button
+          className="relative z-10 mx-auto h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+          onClick={running ? onStop : onTranscribe}
+          disabled={running ? stopping : busy !== null || blocker !== null}
+          variant={running ? "destructive" : "default"}
+          aria-describedby={
+            blocker
+              ? "transcribe-blocker"
+              : notice
+                ? "transcribe-notice"
+                : undefined
+          }
+          aria-keyshortcuts="Control+Enter Meta+Enter"
+          title={running ? undefined : `Transcribe (${shortcutLabel})`}
+        >
+          {running ? (
+            <>
+              <HugeiconsIcon icon={StopIcon} className="mr-2 size-4" />
+              {stopping ? "Stopping…" : "Stop"}
+            </>
+          ) : busy === "loading" ? (
+            "Loading model…"
+          ) : (
+            "Transcribe"
+          )}
+        </Button>
+      </div>
+      {blocker && !running ? (
+        <p
+          id="transcribe-blocker"
+          className="text-center text-ui-11p5 leading-snug text-muted-foreground"
+        >
+          {blocker.reason}
+          <GenerateActions actions={blocker.actions} />
+        </p>
+      ) : notice && !running ? (
+        <p
+          id="transcribe-notice"
+          className="text-center text-ui-11p5 leading-snug text-muted-foreground"
+        >
+          {notice}
+        </p>
+      ) : null}
+    </div>
   );
 }

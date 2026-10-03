@@ -32,6 +32,7 @@ import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useIsMobileShell } from "@/hooks/use-mobile";
+import { useShallow } from "zustand/react/shallow";
 
 import type { AudioGalleryClip } from "./api";
 import {
@@ -57,7 +58,20 @@ import {
 import { MusicOutput, MusicRail, musicPageModels } from "./pages/music-page";
 import { SpeakOutput, SpeakRail, speakPageModels } from "./pages/speak-page";
 import { type GenerateBlocker, TtsFooter } from "./pages/tts-workspace";
-import { TranscribeOutput, TranscribeRail } from "./pages/transcribe-page";
+import { TranscribeOutput } from "./pages/transcribe-output";
+import {
+  TRANSCRIBE_SOURCE_ID,
+  TranscribeFooter,
+  TranscribeRail,
+} from "./pages/transcribe-page";
+import { AUDIO_CPP_REPO, audioCppModelFor } from "./audio-cpp-catalog";
+import { selectionExpired } from "./audio-run-request";
+import type { AudioSourceInputHandle } from "./components/audio-source-input";
+import type { AudioSourceStatus } from "./hooks/audio-source-state";
+import { useTranscribeCapabilities } from "./hooks/use-transcribe-capabilities";
+import { useAudioTranscribeStore } from "./stores/audio-transcribe-store";
+import { SPEAKERS_MODEL_NAME, transcribeSwitches } from "./transcribe-capabilities";
+import { transcribeLanguagesFor } from "./transcribe-languages";
 import { type AudioPickerRow, audioRowMatchesWorkflow } from "./picker-filter";
 import { useAudioCloneStore } from "./stores/audio-clone-store";
 import { useAudioWorkspaceStore } from "./stores/audio-workspace-store";
@@ -201,37 +215,28 @@ export function AudioPage({
 
   const {
     transcript,
-    setTranscript,
     transcribedName,
-    setTranscribedName,
     transcriptModel,
-    setTranscriptModel,
     transcriptRecord,
-    setTranscriptRecord,
     transcriptExported,
-    setTranscriptExported,
     transcriptVersion,
     transcriptionStartedAt,
-    setTranscriptionStartedAt,
     transcriptionFinishedAt,
     transcriptionStopping,
     setTranscriptionStopping,
     transcriptionProgress,
     transcriptError,
-    setTranscriptError,
-    isRecording,
-    micRequestPending,
-    recordingSupported,
+    transcriptDetails,
+    speakerNames,
     transcriptionAbort,
-    stopAndDiscardRecording,
     clearTranscript,
     confirmTranscriptReplacement,
-    handleRecordToggle,
-    handleTranscribeFile,
+    runTranscription,
+    selectRecord,
+    renameSpeaker,
+    markExported,
     handleCopyTranscript,
-    handleDownloadTranscript,
   } = useTranscription({
-    active,
     activeRef,
     busyRef,
     setBusy,
@@ -340,8 +345,6 @@ export function AudioPage({
     audioDevice,
     isMac,
     status,
-    isRecording,
-    stopAndDiscardRecording,
     releaseTranscribeSelection,
     ensureSttLoaded,
     sttGgufVariants,
@@ -681,6 +684,181 @@ export function AudioPage({
     );
     return () => window.clearInterval(timer);
   }, [busy]);
+  // Transcribe: the picked audio, what the model can add, and why the button is off.
+  const transcribeSource = useAudioTranscribeStore((state) => state.source);
+  const transcribePrefs = useAudioTranscribeStore(
+    useShallow((state) => ({
+      language: state.language,
+      timestamps: state.timestamps,
+      speakers: state.speakers,
+    })),
+  );
+  const transcribeSourceHandle = useRef<AudioSourceInputHandle | null>(null);
+  const [transcribeSourceStatus, setTranscribeSourceStatus] =
+    useState<AudioSourceStatus>({ phase: "idle" });
+  const [expiredTranscribeSourceId, setExpiredTranscribeSourceId] = useState<
+    string | null
+  >(null);
+  // The persisted pick is "" when there is none.
+  const transcribeRepo = (selectedSttRepo ?? lastSttRepo) || null;
+  const transcribeCaps = useTranscribeCapabilities(transcribeRepo);
+  const transcribeOptions = transcribeSwitches(
+    transcribeCaps.caps,
+    transcribePrefs,
+    { loading: transcribeCaps.loading, hasModel: transcribeRepo !== null },
+  );
+  const transcribeModelName = transcribeRepo
+    ? (transcribeRepo.split("/").pop() ?? transcribeRepo)
+    : "";
+  // Said before the run: loading first is the slow part, and the reason the button waits.
+  const transcribeLoadsFirst = Boolean(
+    transcribeRepo && !(sttSelected && sttReady),
+  );
+  const transcribeNotice =
+    transcribeLoadsFirst &&
+    transcribeOptions.request.timestamps &&
+    transcribeCaps.caps?.aligner?.downloaded
+      ? // One sentence for both: the load brings the aligner with it.
+        `Loads ${transcribeModelName} with its timing aligner first.`
+      : [
+          transcribeLoadsFirst ? `Loads ${transcribeModelName} first.` : null,
+          transcribeOptions.notice,
+        ]
+          .filter(Boolean)
+          .join(" ") || null;
+  const transcribeLanguages = transcribeLanguagesFor(
+    audioCppModelFor(transcribeRepo)?.languages,
+  );
+  const transcribeSourceExpired =
+    transcribeSourceStatus.phase === "expired" ||
+    selectionExpired(transcribeSource, Date.now()) ||
+    (transcribeSource !== null &&
+      transcribeSource.id === expiredTranscribeSourceId);
+  const focusTranscribeSource = useCallback(
+    () => transcribeSourceHandle.current?.focus(),
+    [],
+  );
+  const recommendedSttActions = [
+    { id: `${AUDIO_CPP_REPO}/Qwen3-ASR-0.6B-GGUF`, name: "Qwen3-ASR 0.6B" },
+    {
+      id: `${AUDIO_CPP_REPO}/MOSS-Transcribe-Diarize-GGUF`,
+      name: SPEAKERS_MODEL_NAME,
+    },
+  ].map((model) => ({
+    label: `use ${model.name}`,
+    onClick: () => handlePickRecommended(model.id),
+  }));
+  const useSpeakersModel = useCallback(
+    () =>
+      handlePickRecommended(`${AUDIO_CPP_REPO}/MOSS-Transcribe-Diarize-GGUF`),
+    [handlePickRecommended],
+  );
+  const transcribeBlocker: GenerateBlocker | null =
+    busy === "loading"
+      ? { reason: "Waiting for the model to finish loading." }
+      : busy !== null
+        ? null
+        : !transcribeRepo
+          ? {
+              reason: "Pick a speech-to-text model to transcribe.",
+              actions: [chooseModelAction, ...recommendedSttActions],
+            }
+          : !transcribeSource
+            ? transcribeSourceStatus.phase === "recording"
+              ? { reason: "Stop recording to transcribe it." }
+              : transcribeSourceStatus.phase === "uploading"
+                ? { reason: "Wait for the upload to finish." }
+                : transcribeSourceStatus.phase === "error"
+                  ? {
+                      reason: transcribeSourceStatus.message,
+                      actions: [
+                        { label: "Add audio", onClick: focusTranscribeSource },
+                      ],
+                    }
+                  : {
+                      reason: "Add audio to transcribe.",
+                      actions: [
+                        { label: "Add audio", onClick: focusTranscribeSource },
+                      ],
+                    }
+            : transcribeSourceExpired
+              ? {
+                  reason: "This upload expired.",
+                  actions: [
+                    {
+                      label: "Add it again",
+                      onClick: () => {
+                        useAudioTranscribeStore.getState().setSource(null);
+                        transcribeSourceHandle.current?.browse();
+                      },
+                    },
+                  ],
+                }
+              : transcribeSourceStatus.phase === "uploading" ||
+                  transcribeSourceStatus.phase === "loading"
+                ? { reason: "Wait for the upload to finish." }
+                : null;
+  const canTranscribe =
+    mode === "transcribe" && busy === null && transcribeBlocker === null;
+  const refreshTranscribeCaps = transcribeCaps.refresh;
+  const transcribeWithTimestamps = transcribeOptions.request.timestamps;
+  const transcribeWithSpeakers = transcribeOptions.request.speakers;
+  const handleTranscribe = useCallback(() => {
+    const source = useAudioTranscribeStore.getState().source;
+    if (!source) return;
+    void runTranscription(
+      source,
+      {
+        language: transcribePrefs.language,
+        timestamps: transcribeWithTimestamps,
+        speakers: transcribeWithSpeakers,
+      },
+      () => {
+        setExpiredTranscribeSourceId(source.id);
+        transcribeSourceHandle.current?.markExpired();
+      },
+    ).then(() => {
+      // A timestamped run may have downloaded the aligner.
+      if (transcribeWithTimestamps) refreshTranscribeCaps();
+    });
+  }, [
+    runTranscription,
+    transcribePrefs.language,
+    transcribeWithTimestamps,
+    transcribeWithSpeakers,
+    refreshTranscribeCaps,
+  ]);
+  // A finished run moves focus to its transcript and is announced either way.
+  const [transcribeAnnouncement, setTranscribeAnnouncement] = useState("");
+  const lastTranscribeFinish = useRef<number | null>(transcriptionFinishedAt);
+  useEffect(() => {
+    if (
+      transcriptionFinishedAt === null ||
+      transcriptionFinishedAt === lastTranscribeFinish.current
+    )
+      return;
+    lastTranscribeFinish.current = transcriptionFinishedAt;
+    if (transcriptError) {
+      setTranscribeAnnouncement(`Transcription failed. ${transcriptError}`);
+      return;
+    }
+    if (transcribeSourceExpired) {
+      setTranscribeAnnouncement("This upload expired. Add it again.");
+      return;
+    }
+    setTranscribeAnnouncement(
+      transcript ? "Transcript ready." : "No speech was heard in that audio.",
+    );
+    if (transcript && activeRef.current)
+      document.getElementById("transcribe-result")?.focus();
+  }, [
+    transcriptionFinishedAt,
+    transcriptError,
+    transcript,
+    activeRef,
+    transcribeSourceExpired,
+  ]);
+
   const canGenerate =
     mode === "speak" &&
     busy === null &&
@@ -694,7 +872,8 @@ export function AudioPage({
   const handlePageGenerate =
     ttsWorkflow === "clone" ? clone.handleGenerate : handleGenerate;
   generateShortcut.current = () => {
-    if (canGenerate) void handlePageGenerate();
+    if (canTranscribe) handleTranscribe();
+    else if (canGenerate) void handlePageGenerate();
   };
   useEffect(() => {
     if (!active) return;
@@ -761,7 +940,7 @@ export function AudioPage({
       ? showLastPageModel
         ? lastPageModel
         : (status?.active_model ?? undefined)
-      : (selectedSttRepo ?? undefined);
+      : (transcribeRepo ?? undefined);
 
   const capabilityLine =
     mode === "speak"
@@ -789,7 +968,9 @@ export function AudioPage({
               : "No TTS model loaded."
       : sttSelected
         ? audioCapabilityLine("stt", sttReady ? "ready" : "loading")
-        : "No transcription model selected.";
+        : transcribeRepo
+          ? `${transcribeModelName} is not loaded. It loads when you transcribe.`
+          : "No transcription model selected.";
 
   return (
     <div
@@ -982,7 +1163,6 @@ export function AudioPage({
                   ),
                   audioDevice,
                   busy,
-                  isRecording,
                   status,
                   setAudioDeviceState,
                   ttsLoaded,
@@ -1018,14 +1198,13 @@ export function AudioPage({
               })()
             ) : (
               <TranscribeRail
-                recordingSupported={recordingSupported}
-                isRecording={isRecording}
-                sttSelected={sttSelected}
-                lastSttRepo={lastSttRepo}
-                busy={busy}
-                micRequestPending={micRequestPending}
-                handleRecordToggle={handleRecordToggle}
-                handleTranscribeFile={handleTranscribeFile}
+                historyClips={clips}
+                disabled={busy === "transcribing"}
+                sourceHandle={transcribeSourceHandle}
+                onSourceStatusChange={setTranscribeSourceStatus}
+                switches={transcribeOptions}
+                languages={transcribeLanguages}
+                onUseSpeakersModel={useSpeakersModel}
               />
             )}
           </div>
@@ -1062,7 +1241,24 @@ export function AudioPage({
                 />
               )}
             </div>
-          ) : null}
+          ) : (
+            <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4">
+              <TranscribeFooter
+                busy={busy}
+                blocker={transcribeBlocker}
+                notice={transcribeNotice}
+                modelName={transcribeModelName}
+                progress={transcriptionProgress}
+                shortcutLabel={shortcutLabel}
+                stopping={transcriptionStopping}
+                onTranscribe={handleTranscribe}
+                onStop={() => {
+                  setTranscriptionStopping(true);
+                  transcriptionAbort.current?.abort();
+                }}
+              />
+            </div>
+          )}
         </div>
 
         <div
@@ -1085,7 +1281,6 @@ export function AudioPage({
                 transcriptionAbort={transcriptionAbort}
                 transcript={transcript}
                 handleCopyTranscript={handleCopyTranscript}
-                handleDownloadTranscript={handleDownloadTranscript}
                 transcribedName={transcribedName}
                 transcriptModel={transcriptModel}
                 transcriptRecord={transcriptRecord}
@@ -1096,15 +1291,16 @@ export function AudioPage({
                 mode={mode}
                 confirmTranscriptReplacement={confirmTranscriptReplacement}
                 transcriptVersion={transcriptVersion}
-                setTranscript={setTranscript}
-                setTranscribedName={setTranscribedName}
-                setTranscriptModel={setTranscriptModel}
-                setTranscriptRecord={setTranscriptRecord}
-                setTranscriptError={setTranscriptError}
-                setTranscriptExported={setTranscriptExported}
-                setTranscriptionStartedAt={setTranscriptionStartedAt}
                 clearTranscript={clearTranscript}
+                transcriptDetails={transcriptDetails}
+                speakerNames={speakerNames}
+                renameSpeaker={renameSpeaker}
+                selectRecord={selectRecord}
+                markExported={markExported}
               />
+              <output aria-live="polite" aria-atomic="true" className="sr-only">
+                {transcribeAnnouncement}
+              </output>
             </div>
           ) : (
             <div className="flex min-h-0 flex-1 flex-col gap-4 p-6 px-10 @[50rem]:pt-[calc(60px*var(--ui-space-scale,1))]">

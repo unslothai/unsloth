@@ -5,10 +5,23 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { PauseIcon, PlayIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  type Ref,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from "react";
 import { WAVEFORM_BARS, formatSeconds } from "./waveform-peaks";
 
 const SEEK_STEP_SECONDS = 5;
+
+/** Lets a page drive the player, e.g. a transcript timestamp that plays from its start. */
+export interface WaveformControl {
+  seek: (seconds: number, play?: boolean) => void;
+  toggle: () => void;
+}
 
 /** A clip as neutral bars with a play button. The played part is in the text colour, the rest
  *  muted; the position is also spoken, so colour never carries it alone. Focus the bars and
@@ -20,6 +33,8 @@ export function Waveform({
   src,
   label,
   className,
+  controlRef,
+  onPositionChange,
 }: {
   /** Bar heights 0..1; null draws a flat placeholder while the audio decodes. */
   peaks: readonly number[] | null;
@@ -29,6 +44,9 @@ export function Waveform({
   /** What the clip is, for screen readers. */
   label: string;
   className?: string;
+  controlRef?: Ref<WaveformControl>;
+  /** Hears the play position, for following along in a transcript. */
+  onPositionChange?: (seconds: number, playing: boolean) => void;
 }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [playing, setPlaying] = useState(false);
@@ -68,6 +86,27 @@ export function Waveform({
     },
     [src, duration],
   );
+
+  useImperativeHandle(
+    controlRef,
+    () => ({
+      seek: (seconds: number, play = false) => {
+        const audio = audioRef.current;
+        if (!(audio && src)) return;
+        const limit = duration > 0 ? duration : Number.POSITIVE_INFINITY;
+        const next = Math.min(limit, Math.max(0, seconds));
+        audio.currentTime = next;
+        setPosition(next);
+        if (play && audio.paused) audio.play().catch(() => setPlaying(false));
+      },
+      toggle,
+    }),
+    [src, duration, toggle],
+  );
+
+  useEffect(() => {
+    onPositionChange?.(position, playing);
+  }, [onPositionChange, position, playing]);
 
   return (
     <div className={cn("flex items-center gap-2", className)}>

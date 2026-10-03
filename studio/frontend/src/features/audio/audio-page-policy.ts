@@ -612,13 +612,3 @@ export function reconcileSttSelection({
   }
   return preservePending ? selectedRepo : null;
 }
-
-/** Permission prompts cannot be aborted, so freshness is checked immediately after
- *  getUserMedia resolves and stale streams are stopped before recording. */
-export function micStreamRequestIsCurrent(
-  requestGeneration: number,
-  currentGeneration: number,
-  active: boolean,
-): boolean {
-  return active && requestGeneration === currentGeneration;
-}

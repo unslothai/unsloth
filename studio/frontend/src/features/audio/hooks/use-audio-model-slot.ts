@@ -70,7 +70,6 @@ import {
 } from "../workflows";
 import type { AudioHostState } from "./audio-host-state";
 import type { SttSidecar } from "./use-stt-sidecar";
-import type { Transcription } from "./use-transcription";
 
 /** The main inference slot Speak and Music share: picks, loads, staged downloads, mode switches and eject. */
 export function useAudioModelSlot({
@@ -88,8 +87,6 @@ export function useAudioModelSlot({
   audioDevice,
   isMac,
   status,
-  isRecording,
-  stopAndDiscardRecording,
   releaseTranscribeSelection,
   ensureSttLoaded,
   sttGgufVariants,
@@ -120,7 +117,6 @@ export function useAudioModelSlot({
   | "isMac"
   | "status"
 > &
-  Pick<Transcription, "isRecording" | "stopAndDiscardRecording"> &
   Pick<
     SttSidecar,
     | "releaseTranscribeSelection"
@@ -429,7 +425,6 @@ export function useAudioModelSlot({
 
       if (nextMode === "transcribe") invalidatePendingTtsSelection();
       if (busyRef.current === "generating") handleStopGeneration();
-      stopAndDiscardRecording();
       setMode(nextMode);
       // Held through Generate, the sidecar keeps a dictation model in VRAM beside the speech one.
       if (mode === "transcribe") {
@@ -464,7 +459,6 @@ export function useAudioModelSlot({
       handleStopGeneration,
       mode,
       releaseTranscribeSelection,
-      stopAndDiscardRecording,
     ],
   );
   /** Switch pages. Speak and Music share the main slot, so moving between them loads and releases
@@ -799,9 +793,6 @@ export function useAudioModelSlot({
           return;
         }
       }
-      // Selecting a different artifact while recording is a lifecycle change even in Transcribe mode;
-      // never let the old capture submit against a sidecar this pick is replacing.
-      stopAndDiscardRecording();
       deferredSttLoad.current = null;
       if (task === "stt") {
         // An STT pick owns Transcribe: it runs on the sidecar, not the main slot.
@@ -919,20 +910,15 @@ export function useAudioModelSlot({
       ensureSttLoaded,
       isMac,
       loadOrStageTtsModel,
-      stopAndDiscardRecording,
       transitionMode,
     ],
   );
 
   const handleEject = useCallback(() => {
-    if (busy !== null || isRecording) {
+    if (busy !== null) {
       toast.info("Stop the active audio task before ejecting its model.");
       return;
     }
-
-    // Eject also owns unresolved permission requests. Invalidating here makes their eventual streams
-    // self-discard instead of recording for an old STT pick.
-    stopAndDiscardRecording();
 
     if (mode === "transcribe") {
       if (!selectedSttRepo) return;
@@ -1022,7 +1008,6 @@ export function useAudioModelSlot({
     })();
   }, [
     busy,
-    isRecording,
     mode,
     refreshStatus,
     releaseTranscribeSelection,
@@ -1031,7 +1016,6 @@ export function useAudioModelSlot({
     stageTtsDownload,
     status?.active_model,
     sttReady,
-    stopAndDiscardRecording,
   ]);
 
   // Trained TTS checkpoints. A scan row carries no modality until the backend tags it, so without

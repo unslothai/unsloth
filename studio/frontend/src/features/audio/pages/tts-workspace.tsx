@@ -55,7 +55,7 @@ export interface GenerateBlocker {
   actions?: GenerateAction[];
 }
 
-function GenerateActions({ actions }: { actions?: GenerateAction[] }) {
+export function GenerateActions({ actions }: { actions?: GenerateAction[] }) {
   if (!actions?.length) return null;
   return (
     <>
@@ -84,7 +84,6 @@ export function TtsRailFields({
   toolPanels,
   audioDevice,
   busy,
-  isRecording,
   status,
   setAudioDeviceState,
   ttsLoaded,
@@ -138,7 +137,6 @@ export function TtsRailFields({
     /** Music copy and controls, for the Music page. */
     musicGeneration: boolean;
     toolPanels: ReactNode;
-    isRecording: boolean;
     setAudioDeviceState: (next: string) => void;
     advancedOpen: boolean;
     /** The page's own inputs in place of the Text field (Clone's reference, transcript and text). */
@@ -186,7 +184,7 @@ export function TtsRailFields({
           ariaLabel="Load model into"
           value={audioDevice === "cpu" ? "cpu" : "auto"}
           // The eject below applies the change and cannot interrupt a load.
-          disabled={busy !== null || isRecording}
+          disabled={busy !== null}
           onValueChange={(value) => {
             const next = value === "cpu" ? "cpu" : "auto";
             if (next === audioDevice) return;

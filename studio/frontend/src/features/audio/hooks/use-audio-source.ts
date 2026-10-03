@@ -22,11 +22,11 @@ import {
 // Decoding a long file holds every sample in memory; past this only the duration is read.
 const DECODE_MAX_BYTES = 60 * 1024 * 1024;
 // A reference only needs seconds; a long take is still usable, the server keeps the first 30 s.
-const RECORDING_MAX_SECONDS = 5 * 60;
+const DEFAULT_RECORD_MAX_SECONDS = 5 * 60;
 const RECORDING_CHUNK_MS = 1000;
 
 /** Bar heights and length, read in the browser so the card draws before the upload finishes. */
-async function decodePeaks(
+export async function decodePeaks(
   blob: Blob,
 ): Promise<{ peaks: number[] | null; durationS: number | null }> {
   if (blob.size > DECODE_MAX_BYTES) {
@@ -88,9 +88,12 @@ export function recordingSupported(): boolean {
 export function useAudioSource({
   value,
   onChange,
+  maxRecordSeconds = DEFAULT_RECORD_MAX_SECONDS,
 }: {
   value: AudioSourceSelection | null;
   onChange: (next: AudioSourceSelection | null) => void;
+  /** Longest take before recording stops on its own. */
+  maxRecordSeconds?: number;
 }) {
   const [state, dispatch] = useReducer(
     audioSourceReducer,
@@ -104,6 +107,7 @@ export function useAudioSource({
   const recorderRef = useRef<SegmentRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const discardRecording = useRef(false);
+  const unmounted = useRef(false);
   // Every object URL this card made, revoked when replaced or unmounted.
   const objectUrl = useRef<string | null>(null);
   const setObjectUrl = useCallback((blob: Blob | null) => {
@@ -252,11 +256,18 @@ export function useAudioSource({
         audio: { echoCancellation: true, noiseSuppression: true },
       });
     } catch {
+      if (unmounted.current) return;
       dispatch({
         type: "fail",
         message:
           "Could not use the microphone. Allow access, or upload a file instead.",
       });
+      return;
+    }
+    // A permission prompt cannot be cancelled: if the card went away while it was open, release
+    // the microphone instead of recording for a page that is gone.
+    if (unmounted.current) {
+      for (const track of stream.getTracks()) track.stop();
       return;
     }
     streamRef.current = stream;
@@ -275,7 +286,7 @@ export function useAudioSource({
     const chunks: Blob[] = [];
     const limit = window.setTimeout(() => {
       if (recorder.state !== "inactive") recorder.stop();
-    }, RECORDING_MAX_SECONDS * 1000);
+    }, maxRecordSeconds * 1000);
     recorder.addEventListener("dataavailable", (event) => {
       if (event.data.size > 0) chunks.push(event.data);
     });
@@ -303,7 +314,7 @@ export function useAudioSource({
     discardRecording.current = false;
     recorder.start(RECORDING_CHUNK_MS);
     dispatch({ type: "record-start", now: Date.now() });
-  }, [pickFile, stopStream]);
+  }, [pickFile, stopStream, maxRecordSeconds]);
 
   const stopRecording = useCallback(() => {
     const recorder = recorderRef.current;
@@ -345,8 +356,11 @@ export function useAudioSource({
   }, [setObjectUrl]);
 
   // Unmount: release the mic and every URL.
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    // Set again on mount, so a development remount does not leave the card thinking it is gone.
+    unmounted.current = false;
+    return () => {
+      unmounted.current = true;
       uploadAbort.current?.abort();
       loadAbort.current?.abort();
       if (recorderRef.current) {
@@ -355,9 +369,8 @@ export function useAudioSource({
       }
       for (const track of streamRef.current?.getTracks() ?? []) track.stop();
       if (objectUrl.current) URL.revokeObjectURL(objectUrl.current);
-    },
-    [],
-  );
+    };
+  }, []);
 
   const fail = useCallback(
     (message: string) => dispatch({ type: "fail", message }),

@@ -65,29 +65,8 @@ function callback(name: string, scope: Record<string, unknown>) {
   );
 }
 
-test("declining replacement prevents recording setup", async () => {
-  const events: string[] = [];
-  const start = callback("handleRecordToggle", {
-    isRecording: false,
-    micPendingGeneration: { current: null },
-    busyRef: { current: null },
-    micRequestGeneration: { current: 0 },
-    transcriptVersion: { current: 7 },
-    setMicRequestPending: () => {},
-    confirmTranscriptReplacement: () => {
-      events.push("confirm");
-      return false;
-    },
-    prepareTranscriptionModel: async () => {
-      events.push("prepare");
-      return null;
-    },
-  });
-  await start();
-  assert.deepEqual(events, ["confirm"]);
-});
-
-test("recording approval applies once and only to the transcript it covered", async () => {
+test("a run applies a confirmation once and only to the transcript it covered", async () => {
+  // Version 7 is the transcript on screen; an approval for an older one, or none, asks again.
   for (const approvedVersion of [7, 6, undefined]) {
     const events: string[] = [];
     const run = callback("runTranscription", {
@@ -106,18 +85,15 @@ test("recording approval applies once and only to the transcript it covered", as
       setBusy: () => {},
       AbortController,
     });
-    await run(new Blob(["recording"]), "Recording", approvedVersion);
+    await run(
+      { kind: "input", id: "i1", name: "Interview.wav", durationS: 3 },
+      { language: "", timestamps: false, speakers: false },
+      undefined,
+      approvedVersion,
+    );
+    // Declining stops the run before a model loads.
     assert.deepEqual(events, approvedVersion === 7 ? ["prepare"] : ["confirm"]);
   }
-  const recording = section(
-    "const handleRecordToggle",
-    "// Release the microphone",
-  );
-  assert.match(recording, /const confirmedVersion = transcriptVersion.current/);
-  assert.match(
-    recording,
-    /runTranscription\(blob, "Recording", confirmedVersion\)/,
-  );
 });
 
 test("changing model residency preserves the transcript and its recorded origin", () => {
@@ -134,7 +110,7 @@ test("changing model residency preserves the transcript and its recorded origin"
 });
 
 test("the previous result is replaced only after its replacement model is ready", () => {
-  const run = section("const runTranscription", "const handleRecordToggle");
+  const run = section("const runTranscription", "const selectRecord");
   assert.match(run, /confirmTranscriptReplacement\(\)/);
   assert.ok(
     run.indexOf("await prepareTranscriptionModel()") <
@@ -142,26 +118,27 @@ test("the previous result is replaced only after its replacement model is ready"
   );
   assert.ok(
     run.indexOf("clearTranscript()") <
-      run.indexOf("await transcribeWithProgress"),
+      run.indexOf("await transcribeSourceWithProgress"),
   );
 });
 
-test("leaving the page stops microphone capture while transcription can finish into history", () => {
-  const lifecycle = section(
-    "// Release the microphone",
-    "const handleTranscribeFile",
-  );
+test("leaving the page lets a transcription finish into history; the input card owns the microphone", () => {
+  // The hook no longer records: the shared input card does, and it releases the microphone when
+  // it unmounts, including a permission prompt that resolves after the page is gone.
+  assert.doesNotMatch(source, /getUserMedia|stopAndDiscardRecording/);
+  const card = readSrc("features/audio/hooks/use-audio-source.ts");
   assert.match(
-    lifecycle,
-    /if \(!active\) \{\s*stopAndDiscardRecording\(\);\s*\}/,
+    card,
+    /if \(unmounted\.current\) \{\s*for \(const track of stream\.getTracks\(\)\) track\.stop\(\);\s*return;\s*\}/,
   );
+  assert.match(card, /unmounted\.current = true;[\s\S]*?track\.stop\(\)/);
   assert.match(
-    lifecycle,
+    source,
     /useEffect\(\(\) => \(\) => transcriptionAbort.current\?\.abort\(\), \[\]\)/,
   );
-  const run = section("const runTranscription", "const handleRecordToggle");
+  const run = section("const runTranscription", "const selectRecord");
   assert.doesNotMatch(
-    run.slice(run.indexOf("await transcribeWithProgress")),
+    run.slice(run.indexOf("await transcribeSourceWithProgress")),
     /!activeRef.current/,
   );
 });
@@ -209,6 +186,15 @@ test("logout checks unsaved transcripts before revoking the session or navigatin
       ...Object.values(scope),
     );
   };
+  // Timing and speaker names ride along in the recovery copy.
+  const draftDetails = {
+    segments: [{ start: 0, end: 1.5, text: "unsaved text", speaker: "S01" }],
+    words: [],
+    speakers: [{ id: "S01", label: "Speaker 1" }],
+    source: { kind: "input", id: "in-1", name: "speech.wav" },
+    language: "en",
+    duration: 1.5,
+  };
   for (const handler of handlers) {
     for (const scenario of ["decline", "accept", "saved", "exported", "unmounted"]) {
       const events: string[] = [];
@@ -235,6 +221,8 @@ test("logout checks unsaved transcripts before revoking the session or navigatin
         draftKey: "test-draft",
         transcribedName: "speech.wav",
         transcriptModel: "tiny",
+        transcriptDetails: draftDetails,
+        speakerNames: { S01: "Ada" },
         writeTranscriptDraft,
         isTauri: false,
         window,
@@ -267,7 +255,13 @@ test("logout checks unsaved transcripts before revoking the session or navigatin
       assert.deepEqual(
         readTranscriptDraft("test-draft"),
         scenario === "decline" || scenario === "unmounted"
-          ? { text: "unsaved text", title: "speech.wav", model: "tiny" }
+          ? {
+              text: "unsaved text",
+              title: "speech.wav",
+              model: "tiny",
+              details: draftDetails,
+              speakerNames: { S01: "Ada" },
+            }
           : null,
       );
     }
@@ -298,4 +292,54 @@ test("remounting audio restores the unsaved transcript and its origin", () => {
   };
   const restored = new Function(...Object.keys(scope), outputText)(...Object.values(scope));
   assert.deepEqual(restored, draft);
+});
+
+test("a draft restores with or without timing details", () => {
+  const drafts = new Map<string, string>();
+  Object.defineProperty(globalThis, "sessionStorage", {
+    configurable: true,
+    value: {
+      getItem: (key: string) => drafts.get(key) ?? null,
+      setItem: (key: string, value: string) => drafts.set(key, value),
+      removeItem: (key: string) => drafts.delete(key),
+    },
+  });
+  // Written before timestamps existed: restores exactly as it was.
+  drafts.set("old-draft", JSON.stringify({ text: "hello", title: "a.wav", model: "tiny" }));
+  assert.deepEqual(readTranscriptDraft("old-draft"), { text: "hello", title: "a.wav", model: "tiny" });
+
+  drafts.set(
+    "new-draft",
+    JSON.stringify({
+      text: "hi there",
+      title: "b.wav",
+      model: "moss",
+      details: {
+        segments: [
+          { start: 0, end: 1, text: "hi", speaker: "S01" },
+          { start: 2, end: 1, text: "backwards" },
+        ],
+        words: "not a list",
+        speakers: [{ id: "S01", label: "Speaker 1" }],
+        source: { kind: "clip", id: "c1", name: "b.wav" },
+        language: "en",
+        duration: 1.5,
+      },
+      speakerNames: { S01: "  Ada  ", S99: "ghost", S02: 4 },
+    }),
+  );
+  assert.deepEqual(readTranscriptDraft("new-draft"), {
+    text: "hi there",
+    title: "b.wav",
+    model: "moss",
+    details: {
+      segments: [{ start: 0, end: 1, text: "hi", speaker: "S01" }],
+      words: [],
+      speakers: [{ id: "S01", label: "Speaker 1" }],
+      source: { kind: "clip", id: "c1", name: "b.wav" },
+      language: "en",
+      duration: 1.5,
+    },
+    speakerNames: { S01: "Ada" },
+  });
 });
