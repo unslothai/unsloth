@@ -108,32 +108,22 @@ class CloneSpec:
 
 @dataclass(frozen = True)
 class ConvertSpec:
-    """How a family converts a recording to another voice on /v1/tasks/run (the PR 6 VC spike)."""
+    """How a family converts a recording to another voice on /v1/tasks/run."""
 
-    # ``(mode, server task)`` pairs, Speech first; a mode on another task reloads the model.
     modes: tuple[tuple[str, str], ...] = (("speech", "vc"),)
-    # ``(id, label)`` of the packaged voices it converts to (RVC); empty when the target is a clip.
     builtin_voices: tuple[tuple[str, str], ...] = ()
-    # ``(mode, auto offered)`` for the modes where the pitch can be set; any other mode hides it.
     pitch: tuple[tuple[str, bool], ...] = ()
-    # Vevo2 can take the target's speaking style, given the source transcript.
     style: bool = False
-    # Request fields: ``audio`` (``audio`` + ``voice_ref``) or ``source_target`` (``source_audio`` +
-    # ``target_voice``, which Vevo2 needs for its target timbre).
+    # "audio" (audio + voice_ref) or "source_target" (source_audio + target_voice).
     fields: str = "audio"
-    # Whether the runtime takes ``seed`` (RVC refuses it as an unknown option).
+    # RVC refuses seed as an unknown option.
     seed: bool = True
     source_rate: int = 16000
     target_rate: Optional[int] = 16000
-    # How a set pitch is sent: ``semitone`` (``semitone_shift``, Auto as ``auto_f0_adjust``) or
-    # ``shift_steps`` (Vevo2: ``use_pitch_shift`` + ``source_shift_steps``; Auto leaves both out).
     pitch_options: str = "semitone"
-    # Speech engines (Seed-VC routes), the default first. A session keeps the route it first ran, so
-    # another one loads the model again.
+    # Seed-VC speech routes, default first: a session keeps the route it first ran.
     routes: tuple[str, ...] = ()
-    # Request options the spec does not declare but the family reads, in the option schema's shape.
     tool_options: tuple[dict, ...] = field(default = (), hash = False)
-    # Spec options Studio never offers: the page drives them, or they would only confuse.
     hidden_options: tuple[str, ...] = ()
 
     @property
@@ -224,7 +214,6 @@ class AudioCppFamily:
     clone: Optional[CloneSpec] = None
     # Models it loads beside its own GGUF.
     companions: tuple[CompanionModel, ...] = ()
-    # How it converts a recording to another voice, when it does.
     convert: Optional[ConvertSpec] = None
 
     @property
@@ -409,9 +398,8 @@ _CLONE_FAMILIES: tuple[AudioCppFamily, ...] = (
     AudioCppFamily("fireredtts3", "tts", speaks = False, clone = CloneSpec("optional")),
     # "FireRedAce": under tts it defaults to tts_clone, which needs reference audio.
     AudioCppFamily("firered_audio", "tts", speaks = False, clone = CloneSpec("optional")),
-    # Vevo2 reads a sent transcript as text to speak, so it never gets one. It converts under vc
-    # (Speech) and svc (Singing), and takes the target as target_voice: with voice_ref alone the
-    # output kept the source's pitch.
+    # Vevo2 reads a sent transcript as text to speak, so it never gets one. With voice_ref alone
+    # a conversion kept the source's pitch, hence target_voice.
     AudioCppFamily(
         "vevo2",
         "tts",
@@ -453,10 +441,7 @@ _CLONE_FAMILIES: tuple[AudioCppFamily, ...] = (
 )
 
 
-# Voice conversion families (the PR 6 VC spike). Each loads as a conversion session and offers
-# Convert alone; chatterbox and vevo2 above convert beside cloning.
 _CONVERT_FAMILIES: tuple[AudioCppFamily, ...] = (
-    # Converts to its packaged voices, picked by options.voice_id; strict, so no seed.
     AudioCppFamily(
         "rvc",
         "tts",
@@ -477,8 +462,7 @@ _CONVERT_FAMILIES: tuple[AudioCppFamily, ...] = (
             hidden_options = ("audio_pad_duration_sec", "speaker_id", "pitch_extractor"),
         ),
     ),
-    # Pitch works on the singing route only (v1_svc); the speech routes ignore semitone_shift and
-    # the V1 speech F0 path fails ("RMVPE is not initialized").
+    # Speech routes ignore semitone_shift; the V1 speech F0 path fails ("RMVPE is not initialized").
     AudioCppFamily(
         "seed_vc",
         "tts",
@@ -1473,7 +1457,6 @@ _STUDIO_DRIVEN_OPTIONS = frozenset(
 _MUSIC_DRIVEN_OPTIONS = frozenset(
     {"lyrics", "style", "caption", "prompt", "tags", "duration", "duration_sec", "duration_seconds"}
 )
-# The Convert page fills these from its voice, pitch and style controls.
 CONVERT_DRIVEN_OPTIONS = frozenset(
     {
         "voice_id",
@@ -1753,7 +1736,6 @@ class AudioCppModel:
 
     @property
     def convert_options(self) -> tuple[dict, ...]:
-        """The spec's options the Convert page does not drive, plus the convert tool options."""
         if self.convert is None:
             return ()
         own = tuple(o for o in self.options if o["name"] not in CONVERT_DRIVEN_OPTIONS)

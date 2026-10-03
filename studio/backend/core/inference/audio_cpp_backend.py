@@ -115,7 +115,6 @@ def model_info_fields(model: AudioCppModel) -> dict[str, Any]:
         ),
         "audio_workflow_tasks": audio_cpp_convert.workflow_tasks(model),
         "audio_convert": audio_cpp_convert.convert_caps(model),
-        # Internal: the rates the /audio/run route prepares a conversion's source and target at.
         "audio_convert_rules": model.convert
         and {"source_rate": model.convert.source_rate, "target_rate": model.convert.target_rate},
         **server_runtime_fields(model, None),
@@ -123,10 +122,7 @@ def model_info_fields(model: AudioCppModel) -> dict[str, Any]:
 
 
 def server_runtime_fields(model: AudioCppModel, running: Optional[AudioCppModel]) -> dict[str, Any]:
-    """The task (and Seed-VC route) of the server running now; ``model``'s own with none running.
-
-    A Convert run reloads a cloning or speech session under vc or svc, so the page reads these to
-    tell whether its next run reloads."""
+    """Task and Seed-VC route of the running server (``model``'s own when none runs)."""
     served = running or model
     return {
         "audio_server_task": served.server_task,
@@ -453,7 +449,6 @@ class AudioCppBackend:
         return wav, _wav_sample_rate(wav)
 
     def runtime_fields(self) -> dict[str, Any]:
-        """Status fields that follow the running server (see ``server_runtime_fields``)."""
         model = self._model
         if model is None:
             return {}

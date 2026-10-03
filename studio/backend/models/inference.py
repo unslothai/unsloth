@@ -5187,19 +5187,15 @@ class AudioRunInputs(BaseModel):
     reference: Optional[AudioSourceRef] = None
     reference_text: Optional[str] = Field(None, max_length = 4000)
     emotion: Optional[AudioSourceRef] = None
-    # Convert: the recording, the voice to convert it to, and the recording's transcript.
     source: Optional[AudioSourceRef] = None
     target: Optional[AudioSourceRef] = None
     source_text: Optional[str] = Field(None, max_length = 4000)
 
 
 class AudioConvertParams(BaseModel):
-    """Convert's controls. The model's caps (status ``audio_convert``) say which apply."""
-
     model_config = ConfigDict(extra = "forbid")
 
     mode: Literal["speech", "singing"] = "speech"
-    # Semitones; None leaves the pitch alone (or to Auto).
     pitch: Optional[int] = Field(None, ge = -12, le = 12)
     pitch_auto: bool = False
     style: Literal["source", "target"] = "source"
@@ -5212,7 +5208,6 @@ class AudioRunRequest(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
     workflow: Literal["clone", "speak", "convert"]
-    # Required to speak or clone; a conversion takes none.
     text: Optional[str] = Field(None, min_length = 1)
     language: Optional[str] = Field(None, max_length = 64)
     instructions: Optional[str] = Field(None, max_length = 4000)

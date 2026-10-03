@@ -5,9 +5,8 @@
 
 Each clip is a pair under ``workspace_root()/audio``: ``{id}.wav`` holds the bytes and
 ``{id}.json`` the recipe (a WAV has no portable text chunk). A lone file is not a
-valid record. A conversion of an upload also keeps the audio it converted as
-``{id}.source.wav``, which lives and goes with its clip. Dumb storage: the route owns the
-schema, this reads, writes and sorts.
+valid record. A converted upload is kept as ``{id}.source.wav`` and goes with its clip.
+Dumb storage: the route owns the schema, this reads, writes and sorts.
 """
 
 from __future__ import annotations
@@ -51,8 +50,6 @@ def save(
 
     Staged then renamed in, wav first: the sidecar is the pair's commit marker. On any
     failure every artifact is removed, so no invisible orphan wav is left behind.
-    ``source_wav`` (a conversion's upload, which expires) is copied in beside the clip and
-    the record says ``source_saved``.
     """
     audio_id = uuid.uuid4().hex
     directory = gallery_dir()
@@ -262,7 +259,6 @@ def _remove_source(audio_id: str) -> None:
 
 
 def _clip_wavs(directory: Path) -> list[Path]:
-    """The clip WAVs in ``directory``; a conversion's ``{id}.source.wav`` is not a clip."""
     return [p for p in directory.glob("*.wav") if _ID_RE.match(p.stem)]
 
 
@@ -304,7 +300,6 @@ def owned_audio_path(audio_id: str) -> Optional[Path]:
 
 
 def owned_source_path(audio_id: str) -> Optional[Path]:
-    """The audio an owned conversion clip converted, when it kept a copy; else None."""
     if owned_audio_path(audio_id) is None:
         return None
     path = _source_path(audio_id)

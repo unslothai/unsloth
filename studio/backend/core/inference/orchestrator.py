@@ -3497,8 +3497,6 @@ class InferenceOrchestrator:
                         if rtype in ("audio_done", "audio_error") and isinstance(
                             resp.get("audio_runtime"), dict
                         ):
-                            # A Convert or Clone run can reload the audio.cpp server under
-                            # another task.
                             entry = self.models.get(expected_model)
                             if entry is not None:
                                 entry.update(resp["audio_runtime"])

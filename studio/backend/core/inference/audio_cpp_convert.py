@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Voice conversion on audio.cpp: the session a Convert run needs and the request it sends.
-
-Pure, no I/O. Every family converts through ``/v1/tasks/run`` with server-local WAV paths the
-route prepared in the caller's account. What differs per family (the PR 6 VC spike):
-
-- the server task: Speech runs under ``vc``, Singing under ``svc``. Chatterbox loads as a cloning
-  session and Vevo2 as a speech one, so their Convert runs reload the same weights under ``vc``.
-- the fields: ``audio`` + ``voice_ref``, or Vevo2's ``source_audio`` + ``target_voice``.
-- the target: a clip, or one of RVC's packaged voices by ``options.voice_id``.
-- the pitch: RVC and Seed-VC Singing take ``semitone_shift`` (Seed-VC Auto as ``auto_f0_adjust``);
-  Vevo2 takes ``use_pitch_shift`` + ``source_shift_steps`` and estimates it itself when left out.
-- Seed-VC keeps the route its session first ran, so an engine goes in the model entry's
-  ``default_request_options`` and another one starts the server again.
-"""
+"""Voice conversion on audio.cpp: the session a Convert run needs and its /v1/tasks/run request."""
 
 from __future__ import annotations
 
@@ -23,24 +10,19 @@ from typing import Any, Optional
 
 from core.inference.audio_cpp_models import AudioCppModel
 
-# The Convert page converts the first five minutes of a recording.
 CONVERT_SOURCE_MAX_SECONDS = 300
-# Like a clone reference; Seed-VC trims its target to 25 s itself.
 CONVERT_TARGET_MAX_SECONDS = 30
 
 CONVERT_MODES = ("speech", "singing")
 
-# Vevo2 "Take target style": the target's prosody, read through the source's transcript.
 _STYLE_ROUTES = {"vc": "style_converted_vc"}
 
 
 class ConvertRequestError(ValueError):
-    """The run asks for something the loaded model cannot convert with, in words for the user."""
+    """A user-facing reason the loaded model cannot run this conversion."""
 
 
 def convert_caps(model: AudioCppModel) -> Optional[dict[str, Any]]:
-    """What the Convert page shows for ``model`` (status ``audio_convert``); None when it does not
-    convert."""
     convert = model.convert
     if convert is None:
         return None
@@ -56,7 +38,6 @@ def convert_caps(model: AudioCppModel) -> Optional[dict[str, Any]]:
 
 
 def workflow_tasks(model: AudioCppModel) -> dict[str, str]:
-    """The server task each workflow runs under; Convert's other modes as ``convert:<mode>``."""
     tasks = {workflow: binding.server_task for workflow, binding in model.workflows.items()}
     if model.convert is not None:
         for mode, task in model.convert.modes[1:]:
@@ -65,8 +46,6 @@ def workflow_tasks(model: AudioCppModel) -> dict[str, str]:
 
 
 def served_route(model: AudioCppModel) -> Optional[str]:
-    """The Seed-VC route a server loaded with ``model`` runs; None for a family without routes or a
-    task that converts nothing."""
     convert = model.convert
     if convert is None or not convert.routes:
         return None
@@ -75,17 +54,13 @@ def served_route(model: AudioCppModel) -> Optional[str]:
         return str(configured)
     if model.server_task == convert.modes[0][1]:
         return convert.routes[0]
-    # Singing (svc) runs the route the runtime defaults that task to.
     return "v1_svc" if model.server_task == "svc" else None
 
 
 def served_model(
     model: AudioCppModel, mode: str, options: dict[str, Any]
 ) -> tuple[AudioCppModel, dict[str, Any]]:
-    """``(model as the server must load it for this run, options left for the request)``.
-
-    The server restarts whenever the model it runs differs, so a Convert run on a cloning session
-    reloads under ``vc`` and a later Clone run reloads it back."""
+    """``(model as the server must load it for this run, options left for the request)``."""
     convert = model.convert
     if convert is None:
         raise ConvertRequestError(f"{model.display_name} cannot convert a voice.")
@@ -120,10 +95,6 @@ def convert_request(
     options: Optional[dict[str, str]] = None,
     seed: Optional[int] = None,
 ) -> dict[str, Any]:
-    """The ``request`` object of a ``/v1/tasks/run`` conversion.
-
-    ``source`` and ``target`` are server-local WAV paths; ``options`` are already validated
-    against ``model.convert_options`` and rendered as strings, with any route taken out."""
     convert = model.convert
     if convert is None:
         raise ConvertRequestError(f"{model.display_name} cannot convert a voice.")

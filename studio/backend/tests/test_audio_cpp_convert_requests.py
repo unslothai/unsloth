@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The exact requests audio.cpp receives for a voice conversion, per family (the PR 6 VC spike).
-
-A fake server records every ``post_json`` and every start; no runtime runs. Source and target are
-server-local paths the route prepared; every family converts on /v1/tasks/run with the nested
-``{"model", "request"}`` body, and a conversion that needs another task or Seed-VC route starts
-the server again.
-"""
+"""The exact requests audio.cpp receives for a voice conversion, per family, on a fake server."""
 
 from __future__ import annotations
 
@@ -129,7 +123,6 @@ class _Server:
 
 @pytest.fixture
 def started(monkeypatch):
-    """Every server the backend starts, in order; each records the requests it serves."""
     servers: list[_Server] = []
 
     def start(served, path, **_kwargs):
@@ -187,7 +180,6 @@ def test_rvc_converts_to_a_builtin_voice_by_options_voice_id(started):
         "audio": SOURCE,
         "options": {"retrieval_blend": "0.6", "voice_id": "manthos", "semitone_shift": "3"},
     }
-    # No voice picked: the default voice; no pitch set: no shift.
     assert _convert(backend, inputs = {"source": SOURCE}) == {
         "audio": SOURCE,
         "options": {"voice_id": "default"},
@@ -244,7 +236,6 @@ def test_seed_vc_speech_sends_no_pitch_and_its_route_by_model_entry(started):
     assert server.model.server_task == "vc"
     assert server.model.model_options["default_request_options"] == {"route": "v1_xlsr_hift_vc"}
     assert backend.models[model.id]["audio_convert_route"] == "v1_xlsr_hift_vc"
-    # The same engine again reuses it; back to V2 reloads.
     _convert(backend, options = {"route": "v1_xlsr_hift_vc"})
     assert len(started) == 1
     _convert(backend)
@@ -343,7 +334,6 @@ def test_vevo2_takes_the_target_style_through_the_source_transcript():
     }
     with pytest.raises(acc.ConvertRequestError, match = "Type what's said in the recording"):
         acc.convert_request(model, mode = "speech", source = SOURCE, target = TARGET, style = "target")
-    # Singing keeps the source style.
     singing = acc.convert_request(
         model, mode = "singing", source = SOURCE, target = TARGET, style = "target"
     )

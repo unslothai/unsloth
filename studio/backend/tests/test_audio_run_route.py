@@ -594,11 +594,7 @@ def test_speak_in_a_saved_voice_on_a_speak_and_clone_model(stub, tmp_path):
     assert meta["voice_id"] == voice["id"] and meta["workflow"] == "speak"
 
 
-# Convert
-
-
 def _convert_info(family, folder):
-    """The status fields a loaded voice-conversion model reports, from its real family policy."""
     from core.inference import audio_cpp_backend as acb
     from core.inference import audio_cpp_models as acm
 
@@ -658,7 +654,6 @@ def test_an_rvc_run_converts_an_upload_to_a_builtin_voice(stub, tmp_path):
     inputs_root = tmp_path / "accounts" / ALICE.account_id / "audio" / "inputs"
     source = Path(call["audio_inputs"]["source"])
     assert set(call["audio_inputs"]) == {"source"}
-    # A 16 kHz mono copy inside ALICE's inputs, capped at five minutes.
     assert source.parent == inputs_root and source.name == f"{input_id}.16000.mono.m300.wav"
     info = audio_inputs.wav_info(source)
     assert (info["sample_rate"], info["channels"]) == (16000, 1)

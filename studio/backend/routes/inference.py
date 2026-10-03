@@ -21441,7 +21441,6 @@ def _audio_request_problem(
 
 
 def _audio_convert_problem(model_info: dict, label: str, run_inputs: dict) -> Optional[str]:
-    """Why the loaded model cannot run this conversion, in words for the user; else None."""
     caps = model_info.get("audio_convert")
     if "convert" not in (model_info.get("audio_workflows") or []) or not caps:
         return "Load a model that can convert a voice."
@@ -21482,9 +21481,7 @@ async def _generate_tts_wav(
 
     ``run_inputs`` (/audio/run only) carries ``workflow``, ``audio_inputs`` (role -> server-local
     WAV path the route resolved in the caller's account), ``reference_text``, ``speed`` and
-    ``convert``. A conversion prepares its inputs at the loaded model's rates, so it names the
-    roles it was given in ``convert_inputs`` and fills ``audio_inputs`` through
-    ``prepare_audio_inputs(model_info)`` once the request is known to fit the model."""
+    ``convert``; a conversion fills ``audio_inputs`` via ``prepare_audio_inputs(model_info)``."""
     # A named target must be budgeted against its own context after preflight.
     if requested_model == _RELOAD_ONLY_MODEL:
         _raise_if_prompt_leaves_no_speech_budget(text)
@@ -21692,8 +21689,7 @@ def _persist_tts_clip(
 ) -> Optional[dict[str, Any]]:
     """Best-effort gallery save: persistence never fails the request that produced
     the audio. Blocking, so callers run it off the event loop. ``extra_meta`` adds run
-    fields (role, voice_id, settings); it never carries a server path. ``source_wav`` is a
-    conversion's prepared upload, kept beside the clip because the upload expires."""
+    fields (role, voice_id, settings); it never carries a server path."""
     from core.inference import audio_gallery
     from core.inference.audio_workflows import workflow_for_audio_type
 
@@ -21874,9 +21870,6 @@ def _audio_run_response(
 async def _run_audio_convert(
     body: AudioRunRequest, request: Request, current_subject: str
 ) -> AudioRunResponse:
-    """Convert: the recording in ``inputs.source`` to the voice of ``inputs.target`` (or one of the
-    model's built-in voices). Both are resolved here in the caller's account; once the loaded
-    model is known they are prepared at its rates, the source capped at five minutes."""
     from core.inference import audio_inputs
     from core.inference.audio_cpp_convert import (
         CONVERT_SOURCE_MAX_SECONDS,
@@ -21972,8 +21965,7 @@ async def _run_audio_convert(
         audio_type,
         extra_meta,
         "convert",
-        # An upload expires within a day; keep what the model heard so the result can still be
-        # compared with it. A history clip stays in history, so it is named by id alone.
+        # An upload expires within a day; a history clip does not.
         (seen.get("paths") or {}).get("source") if source.kind == "input" else None,
     )
     return _audio_run_response(record, wav_bytes, sample_rate, model_name)
@@ -44095,8 +44087,7 @@ async def get_gallery_audio_file(
 async def get_gallery_audio_source_file(
     audio_id: str, current_subject: str = Depends(get_current_subject)
 ):
-    """The recording a conversion clip converted, when the clip kept a copy (its source was an
-    upload); 404 otherwise."""
+    """The upload a conversion clip converted, when it kept a copy."""
     from core.inference import audio_gallery
 
     path = await asyncio.to_thread(audio_gallery.owned_source_path, audio_id)

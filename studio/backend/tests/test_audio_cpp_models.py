@@ -511,8 +511,7 @@ _CLONE_TABLE = {
 }
 
 
-# The convert table: family -> (load task, mode -> server task, target, source rate). The PR 6 VC
-# spike.
+# family -> (load task, mode -> server task, target, source rate)
 _CONVERT_TABLE = {
     "rvc": ("vc", {"speech": "vc"}, "builtin", 16000),
     "seed_vc": ("vc", {"speech": "vc", "singing": "svc"}, "audio", 44100),
