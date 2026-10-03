@@ -38,7 +38,11 @@ import {
 } from "./audio-page-policy";
 import { clipReference } from "./audio-run-request";
 import { type CreateMode, deviceSizeBytes } from "./audio-workspace-utils";
-import { audioCapabilityLine, audioModelsForTask } from "./catalog";
+import {
+  audioCapabilityLine,
+  audioModelsForTask,
+  isMusicGenerationModel,
+} from "./catalog";
 import type { ClipSendHandlers } from "./components/clip-card";
 import { WorkflowTitleMenu } from "./components/workflow-title-menu";
 import { galleryCache, useAudioGallery, useWorkflowHistory } from "./hooks/use-audio-gallery";
@@ -838,9 +842,13 @@ export function AudioPage({
               additionalOnDeviceModels={
                 mode === "transcribe"
                   ? sttOnDeviceModels
-                  : ttsWorkflow === "speak"
-                    ? trainedTtsModels
-                    : []
+                  : ttsWorkflow === "clone"
+                    ? []
+                    : trainedTtsModels.filter(
+                        (model) =>
+                          isMusicGenerationModel(model.id, model.audioType) ===
+                          (ttsWorkflow === "music"),
+                      )
               }
               rowFilter={selectorRowFilter}
               loadedModelIdOverride={

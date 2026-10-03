@@ -197,3 +197,10 @@ test("switching between Speak and Music disowns a pending pick", () => {
     /if \(busyRef\.current === "generating"\) handleStopGeneration\(\);\s*invalidatePendingTtsSelection\(\);\s*\} else if \(!transitionMode/,
   );
 });
+
+test("trained checkpoints are split between Speak and Music like the catalog", () => {
+  assert.match(
+    host,
+    /trainedTtsModels\.filter\(\s*\(model\) =>\s*isMusicGenerationModel\(model\.id, model\.audioType\) ===\s*\(ttsWorkflow === "music"\),\s*\)/,
+  );
+});
