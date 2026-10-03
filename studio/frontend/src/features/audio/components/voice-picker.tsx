@@ -133,7 +133,7 @@ export function VoicePicker({
           )}
         </p>
       ) : (
-        <ul className="hover-scrollbar grid max-h-[calc(196px*var(--ui-space-scale,1))] gap-0.5 overflow-y-auto">
+        <ul className="hover-scrollbar grid min-w-0 max-h-[calc(196px*var(--ui-space-scale,1))] grid-cols-[minmax(0,1fr)] gap-0.5 overflow-y-auto">
           {voices.map((voice) => {
             const selected = voice.id === selectedId;
             const playing = voice.id === playingId;
@@ -141,7 +141,7 @@ export function VoicePicker({
               <li
                 key={voice.id}
                 className={cn(
-                  "group flex items-center gap-1 rounded-full pr-1 transition-colors hover:bg-accent",
+                  "group flex min-w-0 items-center gap-1 rounded-full pr-1 transition-colors hover:bg-accent",
                   selected && "bg-muted",
                 )}
               >

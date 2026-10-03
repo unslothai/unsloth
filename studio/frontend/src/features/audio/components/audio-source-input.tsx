@@ -403,9 +403,9 @@ export function AudioSourceInput({
                 Clips you generate on Speak, Clone or Music show up here.
               </p>
             ) : (
-              <ul className="hover-scrollbar grid max-h-[calc(196px*var(--ui-space-scale,1))] gap-0.5 overflow-y-auto">
+              <ul className="hover-scrollbar grid min-w-0 max-h-[calc(196px*var(--ui-space-scale,1))] grid-cols-[minmax(0,1fr)] gap-0.5 overflow-y-auto">
                 {history.map((clip) => (
-                  <li key={clip.id}>
+                  <li key={clip.id} className="min-w-0">
                     <button
                       type="button"
                       disabled={disabled}
