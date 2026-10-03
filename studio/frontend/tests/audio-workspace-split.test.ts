@@ -99,7 +99,12 @@ test("Generate says why it is off and runs from Mod+Enter anywhere on the page",
     host,
     /const handlePageGenerate =\s*ttsWorkflow === "clone" \? clone\.handleGenerate : handleGenerate;/,
   );
-  assert.match(host, /if \(canGenerate\) void handlePageGenerate\(\);/);
+  // Edit runs through its own hook too, picked on a line of its own.
+  assert.match(
+    host,
+    /const handleWorkflowGenerate =\s*ttsWorkflow === "edit" \? edit\.handleGenerate : handlePageGenerate;/,
+  );
+  assert.match(host, /if \(canGenerate\) void handleWorkflowGenerate\(\);/);
 });
 
 test("each page tours its own model and settings", () => {

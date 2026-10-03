@@ -23,6 +23,7 @@ const MODEL_STEP_BODY: Record<AudioWorkflowId, string> = {
     "Text-to-speech models, including voices you fine-tuned under On Device.",
   clone:
     "Models that can speak in the voice of a short recording you give them.",
+  edit: "Models that can change words in a recording and keep the voice.",
   music: "Music models. Loading one replaces the model in the main slot.",
   transcribe:
     "Speech recognition models. They run beside your chat model, not in its place.",
@@ -105,6 +106,47 @@ export function buildAudioTourSteps({
         target: "audio-clone-text",
         title: "Text to speak",
         body: <>What the cloned voice should say.</>,
+      },
+      outputStep,
+    ];
+  }
+
+  if (workflow === "edit") {
+    return [
+      modeStep,
+      modelStep(workflow),
+      {
+        id: "recording",
+        target: "audio-edit-recording",
+        title: "Recording",
+        body: (
+          <>
+            Upload, record or pick up to 30 seconds of one voice from your
+            history.
+          </>
+        ),
+      },
+      {
+        id: "transcript",
+        target: "audio-edit-transcript",
+        title: "Check the transcript",
+        body: (
+          <>
+            It fills in by itself. Fix any word the recognizer got wrong so it
+            matches what's said.
+          </>
+        ),
+      },
+      {
+        id: "changes",
+        target: "audio-edit-changes",
+        title: "Make your changes",
+        body: (
+          <>
+            Change, add or remove words. The voice stays the same, and the
+            result plays against the original.
+          </>
+        ),
       },
       outputStep,
     ];

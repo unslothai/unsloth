@@ -462,6 +462,7 @@ export function TtsOutput({
   onFreshClipFocused,
   announcement,
   clipBadge,
+  selectedPlayer,
 }: Pick<
   AudioGallery,
   | "srcById"
@@ -495,12 +496,28 @@ export function TtsOutput({
     announcement: string;
     /** A short tag after a clip's text, such as the voice a clone used. */
     clipBadge?: (clip: AudioGalleryClip) => string | null;
+    /** Plays the selected clip instead of the plain player (Edit's Original | Edited compare).
+     *  `focusRef` goes on its first control so a fresh clip takes focus as the player would. */
+    selectedPlayer?: (
+      clip: AudioGalleryClip,
+      src: string,
+      focusRef: ((element: HTMLElement | null) => void) | undefined,
+    ) => ReactNode;
   }) {
-  const focusFreshClip = (element: HTMLAudioElement | null) => {
+  const focusFreshClip = (element: HTMLElement | null) => {
     if (!element) return;
     element.focus();
     onFreshClipFocused();
   };
+  // Null when the page has no player of its own for this clip; the plain one plays it then.
+  const customPlayer =
+    selectedClip && selectedClipSrc && selectedPlayer
+      ? selectedPlayer(
+          selectedClip,
+          selectedClipSrc,
+          selectedClip.id === freshClipId ? focusFreshClip : undefined,
+        )
+      : null;
   return (
     <>
       <output aria-live="polite" aria-atomic="true" className="sr-only">
@@ -514,7 +531,9 @@ export function TtsOutput({
             </p>
             {/* Auth-protected bytes, so mount a fresh player only once this clip's object URL exists: reusing
                 one media element while src is changing left History switches showing broken controls. */}
-            {selectedClipSrc ? (
+            {customPlayer ? (
+              customPlayer
+            ) : selectedClipSrc ? (
               <audio
                 key={selectedClip.id}
                 ref={selectedClip.id === freshClipId ? focusFreshClip : undefined}

@@ -20,13 +20,15 @@ const {
   workflowForLoadedModel,
 } = await import("../src/features/audio/workflows.ts");
 
-test("the Audio page offers Speak, Clone, Music and Transcribe in that order", () => {
+test("the Audio page offers Speak, Clone, Edit, Music and Transcribe in that order", () => {
   assert.deepEqual(
     AUDIO_WORKFLOWS.map((tab) => tab.id),
-    ["speak", "clone", "music", "transcribe"],
+    ["speak", "clone", "edit", "music", "transcribe"],
   );
   assert.equal(audioWorkflowTab("speak").heading, "Text to speech");
   assert.equal(audioWorkflowTab("clone").heading, "Clone a voice");
+  assert.equal(audioWorkflowTab("edit").heading, "Edit speech");
+  assert.equal(audioWorkflowTab("edit").label, "Edit");
   assert.equal(audioWorkflowTab("music").heading, "Create music");
   assert.equal(audioWorkflowTab("transcribe").heading, "Transcribe");
 });
@@ -34,6 +36,7 @@ test("the Audio page offers Speak, Clone, Music and Transcribe in that order", (
 test("Speak, Clone and Music share the main slot; only Transcribe uses the sidecar", () => {
   assert.equal(slotForWorkflow("speak"), "speak");
   assert.equal(slotForWorkflow("clone"), "speak");
+  assert.equal(slotForWorkflow("edit"), "speak");
   assert.equal(slotForWorkflow("music"), "speak");
   assert.equal(slotForWorkflow("transcribe"), "transcribe");
 });
@@ -41,6 +44,7 @@ test("Speak, Clone and Music share the main slot; only Transcribe uses the sidec
 test("Create|Train is offered on Speak, Clone and Transcribe, not Music", () => {
   assert.equal(audioWorkflowTab("speak").createTrain, true);
   assert.equal(audioWorkflowTab("clone").createTrain, true);
+  assert.equal(audioWorkflowTab("edit").createTrain, false);
   assert.equal(audioWorkflowTab("music").createTrain, false);
   assert.equal(audioWorkflowTab("transcribe").createTrain, true);
 });
@@ -62,8 +66,9 @@ test("a clip without a workflow falls back to its audio type", () => {
   assert.equal(clipWorkflow({ audio_type: "snac" }), "speak");
   assert.equal(clipWorkflow({ workflow: "music", audio_type: "snac" }), "music");
   assert.equal(clipWorkflow({ workflow: "clone", audio_type: "audiocpp_tts" }), "clone");
+  assert.equal(clipWorkflow({ workflow: "edit", audio_type: "audiocpp_tts" }), "edit");
   // An unknown stored value is not trusted over the audio type.
-  assert.equal(clipWorkflow({ workflow: "edit", audio_type: "audiocpp_music" }), "music");
+  assert.equal(clipWorkflow({ workflow: "separate", audio_type: "audiocpp_music" }), "music");
   assert.equal(audioWorkflowForAudioType(null), "speak");
 });
 

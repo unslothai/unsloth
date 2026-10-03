@@ -416,7 +416,7 @@ export function useAudioGallery({
   );
 
   /** With a workflow, clears only that page's clips and leaves the other page's history alone. */
-  const handleClearGallery = useCallback(async (workflow?: "speak" | "clone" | "music") => {
+  const handleClearGallery = useCallback(async (workflow?: "speak" | "clone" | "edit" | "music") => {
     try {
       await clearAudioGallery(workflow);
       if (workflow) {
@@ -553,7 +553,7 @@ export function useWorkflowHistory({
   loadMore,
   loadingMoreRef,
   selectClip,
-}: { workflow: "speak" | "clone" | "music"; enabled: boolean } & Pick<
+}: { workflow: "speak" | "clone" | "edit" | "music"; enabled: boolean } & Pick<
   AudioGallery,
   | "clips"
   | "hasMore"
@@ -565,7 +565,9 @@ export function useWorkflowHistory({
   | "selectClip"
 >) {
   const visibleClips = useMemo(
-    () => clips.filter((clip) => clipWorkflow(clip) === workflow),
+    () =>
+      // An edit's original is kept for its Original | Edited compare, not listed beside it.
+      clips.filter((clip) => clipWorkflow(clip) === workflow).filter((clip) => clip.role !== "source"),
     [clips, workflow],
   );
   const selectedClip =

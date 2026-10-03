@@ -53,7 +53,7 @@ test("the params the route accepted before pass through unchanged", () => {
 });
 
 test("a workflow param is kept when it names a workflow", () => {
-  for (const workflow of ["speak", "clone", "music", "transcribe"]) {
+  for (const workflow of ["speak", "clone", "edit", "music", "transcribe"]) {
     assert.deepEqual(validateAudioSearch({ workflow }), { workflow });
   }
 });

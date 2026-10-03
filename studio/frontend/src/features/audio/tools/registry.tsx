@@ -4,6 +4,7 @@
 import type { NativeAudioInstructionsKind } from "../audio-page-policy";
 import type { AudioWorkflowId } from "../workflows";
 import { CLONE_TOOL_PANELS } from "./clone-panels";
+import { EDIT_TOOL_PANELS } from "./edit-panels";
 import { InstructionsField, MossLanguageField } from "./instructions-panels";
 import { instructionsKindFor, panelApplies } from "./select";
 import { SPEAK_TOOL_PANELS } from "./speak-panels";
@@ -110,6 +111,7 @@ export const AUDIO_TOOL_PANELS: readonly AnyAudioToolPanel[] = [
   ...INSTRUCTION_PANELS,
   ...SPEAK_TOOL_PANELS.slice(1),
   ...CLONE_TOOL_PANELS,
+  ...EDIT_TOOL_PANELS,
 ];
 
 export function audioToolPanelsFor(

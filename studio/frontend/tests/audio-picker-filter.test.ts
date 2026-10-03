@@ -18,8 +18,8 @@ const { audioCppModelSpeaks } = await import(
   "../src/features/audio/audio-cpp-catalog.ts"
 );
 
-type Workflow = "speak" | "clone" | "music" | "transcribe";
-const WORKFLOWS: Workflow[] = ["speak", "clone", "music", "transcribe"];
+type Workflow = "speak" | "clone" | "edit" | "music" | "transcribe";
+const WORKFLOWS: Workflow[] = ["speak", "clone", "edit", "music", "transcribe"];
 
 function workflowsFor(row: Parameters<typeof audioRowMatchesWorkflow>[0]) {
   return WORKFLOWS.filter((workflow) => audioRowMatchesWorkflow(row, workflow));
@@ -155,4 +155,33 @@ test("an undefined rowFilter leaves the picker rows untouched", () => {
     "features/model-picker/components/model-selector.tsx",
   );
   assert.match(selector, /rowFilter=\{rowFilter\}/);
+});
+
+test("a speech editing model lists on Edit beside its other pages", () => {
+  assert.deepEqual(
+    workflowsFor({
+      id: "audio-cpp/audio.cpp-gguf/DotTTS-Edit-GGUF",
+      task: "text-to-speech",
+      audioWorkflows: ["speak", "edit"],
+    }),
+    ["speak", "edit"],
+  );
+  // DotTTS's other packages do not edit.
+  assert.deepEqual(
+    workflowsFor({
+      id: "audio-cpp/audio.cpp-gguf/DotTTS-MF-GGUF",
+      task: "text-to-speech",
+      audioWorkflows: ["speak"],
+    }),
+    ["speak"],
+  );
+  // Without the backend's list, the catalog seed decides.
+  assert.deepEqual(
+    workflowsFor({
+      id: "audio-cpp/audio.cpp-gguf/Vevo2-GGUF",
+      task: "text-to-speech",
+      audioType: "audiocpp_tts",
+    }),
+    ["clone", "edit"],
+  );
 });

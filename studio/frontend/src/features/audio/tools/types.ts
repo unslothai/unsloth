@@ -45,6 +45,23 @@ export interface CoreInputs {
   referenceText?: string;
   /** Clone: whether a reference clip is picked. */
   hasReference?: boolean;
+  /** Edit: the checked transcript, the changed copy and the chosen mode. */
+  edit?: EditCoreInputs;
+}
+
+/** What the Edit page passes its tool panels so they can check and preview the changes. */
+export interface EditCoreInputs {
+  /** ① What the recording says, as the user corrected it. */
+  transcript: string;
+  /** ② The transcript with the user's changes. */
+  edited: string;
+  mode: "words" | "delivery";
+  /** Delivery: playback speed, 1 = unchanged. */
+  speed: number;
+  /** Delivery: how many steps to raise the pitch, 0 = unchanged. */
+  pitchSteps: number;
+  /** Advanced options the run will send, for the request preview. */
+  advanced?: AudioOptionValues;
 }
 
 export interface AudioToolPanelProps<V> {

@@ -129,3 +129,52 @@ test("api.ts sends run and voice bodies only through the builders", () => {
   assert.match(api, /body: blob,/);
   assert.doesNotMatch(api, /voice_ref/);
 });
+
+test("an edit run sends the source by id and only the edit part's allowed keys", () => {
+  const body = buildAudioRunBody({
+    workflow: "edit",
+    text: "A robot voice.",
+    inputs: {
+      source: {
+        input_id: "in_1",
+        trim: { start_s: 0, end_s: 4 },
+        path: "/tmp/x.wav",
+      } as never,
+      reference_text: " A human voice. ",
+    },
+    edit: {
+      mode: "words",
+      markup: 'A <sub targ="robot">human</sub> voice.',
+      instructions: ["", 3 as never],
+      speed: Number.NaN,
+      pitch_steps: 1.5,
+      path: "/tmp/y.wav",
+    } as never,
+  });
+  assert.deepEqual(body, {
+    workflow: "edit",
+    text: "A robot voice.",
+    inputs: {
+      source: { input_id: "in_1", trim: { start_s: 0, end_s: 4 } },
+      reference_text: "A human voice.",
+    },
+    edit: { mode: "words", markup: 'A <sub targ="robot">human</sub> voice.' },
+  });
+  assert.doesNotMatch(JSON.stringify(body), PATHLIKE);
+  assert.equal(
+    buildAudioRunBody({
+      workflow: "edit",
+      text: "x",
+      edit: { mode: "bogus" } as never,
+    }).edit,
+    undefined,
+  );
+  assert.deepEqual(
+    buildAudioRunBody({
+      workflow: "edit",
+      text: "x",
+      edit: { mode: "delivery", speed: 1.5, pitch_steps: 3 },
+    }).edit,
+    { mode: "delivery", speed: 1.5, pitch_steps: 3 },
+  );
+});
