@@ -29,7 +29,6 @@ import {
 } from "@/features/chat";
 import {
   chatModelLoaded,
-  DROP_CUE_CLASS,
   isExternalModelId,
   modelCatalogVersion,
   parseExternalModelId,
@@ -5803,8 +5802,7 @@ export function HubModelPicker({
       <div
         key={key}
         {...drag.rowProps(key)}
-        // DROP_CUE_CLASS: the drag redraws the line above the carried copy.
-        className={cn("relative", edge && [DROP_CUE_CLASS, PINNED_DROP_CUE[edge]])}
+        className={cn("relative", edge && PINNED_DROP_CUE[edge])}
         style={drag.draggingKey === key ? { opacity: 0.4 } : undefined}
       >
         {row}
@@ -8297,11 +8295,7 @@ function FineTunedRows({
               : tag;
         return (
           <div key={adapter.id}>
-            <div
-              className={downloadedRowShellClassName(value === adapter.id)}
-              // The pill a Pinned drag lifts, not this wrapper (use-pinned-row-drag.ts).
-              data-pinned-row-face=""
-            >
+            <div className={downloadedRowShellClassName(value === adapter.id)}>
               <div className="min-w-0 flex-1">
                 <ModelRow
                   label={adapter.name}
