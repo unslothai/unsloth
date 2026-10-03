@@ -4,7 +4,7 @@
 import { type Ref, useEffect, useState } from "react";
 import { fetchAudioBlob } from "../api";
 import { sourceFileUrl } from "../audio-run-request";
-import { decodePeaks } from "../hooks/use-audio-source";
+import { decodePeaks } from "./waveform-decode";
 import type { TranscriptDetails } from "../transcript-model";
 import { Waveform, type WaveformControl } from "./waveform";
 

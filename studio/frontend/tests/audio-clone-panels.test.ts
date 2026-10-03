@@ -432,3 +432,10 @@ test("reference transcription sends no language hint", () => {
   const hook = readSrc("features/audio/hooks/use-reference-transcribe.ts");
   assert.doesNotMatch(hook, /\blanguage\s*[:,}]/);
 });
+
+test("a run's inline fallback clip stays on the page that started it", () => {
+  const clone = readSrc("features/audio/hooks/use-clone-generation.ts");
+  const body = clone.slice(clone.indexOf("export async function showRunResult("));
+  assert.doesNotMatch(body.slice(0, body.indexOf("\n}\n")), /workflow: "clone"/);
+  assert.match(readSrc("features/audio/hooks/use-speech-generation.ts"), /showRunResult\(\{[^}]*workflow: "speak"/);
+});

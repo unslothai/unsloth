@@ -5,7 +5,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { readAudioWorkspaceSource } from "./helpers/audio-workspace.ts";
-import { readSrc } from "./helpers/kit.ts";
 
 const source = readAudioWorkspaceSource();
 
@@ -166,12 +165,4 @@ test("the response fallback is dropped once its gallery record arrives", () => {
     source,
     /fallbackClipRef\.current\?\.saved &&\s*galleryCache\.selectedId &&\s*merged\.some\(\(c\) => c\.id === galleryCache\.selectedId\)\s*\)\s*\{\s*setFallbackClip\(null\);/,
   );
-});
-
-test("a Clone fallback clip stays on the Clone page", () => {
-  // The gallery shows a fallback only on the page whose workflow it names.
-  const clone = readSrc("features/audio/hooks/use-clone-generation.ts");
-  const fallbacks = clone.match(/setFallbackClip\(\{[\s\S]*?\}\);/g) ?? [];
-  assert.equal(fallbacks.length, 2);
-  for (const call of fallbacks) assert.match(call, /workflow: "clone",/);
 });
