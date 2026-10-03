@@ -1553,7 +1553,7 @@ def _build_browse_allowlist(
     _add(Path.home())
     if media_roots is None:
         media_roots = [
-            *external_media.linux_run_media_mount_roots(),
+            *external_media.linux_external_mount_roots(),
             *external_media.macos_volume_roots(),
         ]
     if drive_roots is None:
@@ -1839,7 +1839,7 @@ def browse_folders(
         []
         if managed
         else [
-            *external_media.linux_run_media_mount_roots(),
+            *external_media.linux_external_mount_roots(),
             *external_media.macos_volume_roots(),
         ]
     )
@@ -2260,9 +2260,12 @@ async def get_model_config(
     """Get configuration for a specific model (wraps load_model_defaults)."""
     # An API-key caller is shown a filesystem-backed row under an opaque `ref:` handle and hands
     # it back here, where it would otherwise read as a Hugging Face id.
+    from core.inference.npu_backend import is_npu_model_path
     from models.inference import resolve_inventory_handle
 
     model_name = resolve_inventory_handle(model_name)
+    if is_npu_model_path(model_name):
+        return ModelDetails(id = model_name, model_name = model_name, model_type = "text")
     if local_path:
         local_path = resolve_inventory_handle(local_path)
     if local_path:

@@ -23,6 +23,8 @@ export interface DiffusionResolvedControl {
   reason: string;
   // "prequant:<repo>/<file>" when a hosted checkpoint was seeded; absent on a runtime quantise.
   artifact?: string | null;
+  // "gguf:<file>" the `artifact` replaced.
+  replaced?: string | null;
 }
 
 export interface DiffusionStatus {
@@ -176,7 +178,7 @@ export interface DiffusionGenerateRequest {
   allow_oversized?: boolean;
   // Additional images after init_image, in order, for the reference and edit workflows.
   reference_images?: string[];
-  workflow?: "edit" | "reference";
+  workflow?: "edit" | "reference" | "outpaint";
   reference_resolution?: number;
   // Unified edit only: annotate/paint composite onto the source, mask is sent as Image 2.
   localized_edit?: { mode: LocalizedEditMode; image: string };
@@ -251,6 +253,11 @@ export interface GalleryImage {
   text_encoder_quant?: string | null;
   memory_mode?: string | null;
   offload_policy?: string | null;
+  speed_mode?: string | null;
+  attention_backend?: string | null;
+  transformer_cache?: string | null;
+  cpu_offload?: boolean | null;
+  schema_version?: number | null;
   baked_loras?: string[];
   loras?: string[];
   controlnet?: string | null;

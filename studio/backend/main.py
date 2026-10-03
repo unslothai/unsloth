@@ -348,6 +348,7 @@ from routes import (
     youtube_router,
 )
 from routes.llama import router as llama_router
+from routes.engines import router as engines_router
 from routes.llama_compat import is_engine_probe_path, router as llama_compat_router
 from routes.whisper import router as whisper_router
 from routes.npu import router as npu_router
@@ -716,7 +717,8 @@ def banner_autofill_available(app_state, environ) -> bool:
     api_only = getattr(app_state, "api_only", None)
     if api_only is None:
         api_only = environ.get("UNSLOTH_API_ONLY") == "1"
-    return not api_only
+    # Desktop-owned api-only still serves the UI (and the autofill) to a loopback browser.
+    return not api_only or _desktop_owner() is not None
 
 
 def bootstrap_banner_lines(
@@ -1065,6 +1067,8 @@ from starlette.datastructures import MutableHeaders  # noqa: E402
 
 _CSP_SCRIPT_NONCE_HEADER = "x-internal-script-nonce"
 _ARTIFACT_PREVIEW_FRAME_PATH = "/api/inference/artifact-preview-frame"
+# Framed shells: their own CSP frame-ancestors governs embedding, so no X-Frame-Options DENY.
+_FRAME_SHELL_PATHS = frozenset({_ARTIFACT_PREVIEW_FRAME_PATH, "/api/inference/mcp-app-frame"})
 _DOCS_FONT_CSS = "https://fonts.googleapis.com"
 _DOCS_FONT_FILES = "https://fonts.gstatic.com"
 _DOCS_PATHS = frozenset({"/docs", "/docs/oauth2-redirect", "/redoc"})
@@ -1208,7 +1212,7 @@ class SecurityHeadersMiddleware:
                     _build_csp(nonce, docs = path in _DOCS_PATHS),
                 )
                 # Omit X-Frame-Options in Colab: DENY would block serve_kernel_port_as_iframe regardless of CSP.
-                if not _IS_COLAB and path != _ARTIFACT_PREVIEW_FRAME_PATH:
+                if not _IS_COLAB and path not in _FRAME_SHELL_PATHS:
                     headers.setdefault("X-Frame-Options", "DENY")
                 headers.setdefault("X-Content-Type-Options", "nosniff")
                 headers.setdefault("Referrer-Policy", "no-referrer")
@@ -1702,6 +1706,7 @@ app.include_router(profile_stats_router, prefix = "/api/profile", tags = ["profi
 app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
 app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
 app.include_router(llama_router, prefix = "/api/llama", tags = ["llama"])
+app.include_router(engines_router, prefix = "/api/engines", tags = ["engines"])
 app.include_router(whisper_router, prefix = "/api/whisper", tags = ["whisper"])
 app.include_router(npu_router, prefix = "/api/npu", tags = ["npu"])
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])
@@ -2457,6 +2462,17 @@ def _quantised_streaming() -> bool:
     return bool(_quantised_streaming_capability)
 
 
+def _diffusers_offload_tiers() -> dict:
+    """Extra picker fit tiers per curated Diffusers repo (lower-cased id), in the picker's GiB units.
+    Torch-free; the picker unions them with the catalog's own tiers, so they can only widen."""
+    try:
+        from core.inference.video_minimax_h3 import h3_diffusers_fit_tiers
+        tiers = h3_diffusers_fit_tiers()
+    except Exception:  # noqa: BLE001 -- a picker hint must never break the polled route
+        return {}
+    return {"minimaxai/minimax-h3": tiers} if tiers else {}
+
+
 def _nvfp4_diffusion_enabled() -> bool:
     """Whether image and video generation may offer NVFP4 (``UNSLOTH_NVFP4_DIFFUSION``)."""
     try:
@@ -2574,6 +2590,8 @@ def get_system_info(
         "dense_quant_schemes": _dense_quant_schemes(),
         # The streamed MiniMax-H3 tier needs group offload that swaps torchao weights.
         "quantised_streaming": _quantised_streaming(),
+        # Backend-measured offload tiers the picker unions with the catalog's. Additive key.
+        "diffusers_offload_tiers": _diffusers_offload_tiers(),
         # Torch-free env read, safe on this polled route.
         "nvfp4_diffusion": _nvfp4_diffusion_enabled(),
     }
@@ -3040,12 +3058,24 @@ def _is_live_cloudflare_frontend_request(scope, app_state) -> bool:
     return bool(expected_host) and request_host == expected_host
 
 
+def _is_direct_loopback_frontend_request(scope) -> bool:
+    # Loopback is a browser secure context (mic dictation needs it, #10786); same gate as bootstrap injection.
+    server = scope.get("server")
+    if not server or not _is_loopback_ip(server[0]):
+        return False
+    return _is_local_bootstrap_request(Request(scope))
+
+
 def _is_remote_frontend_request(scope, app_state) -> bool:
-    """True for a request the desktop backend may answer with its packaged web UI: Cloudflare's own edge, or one
-    of the sockets the runtime LAN listener bound, both identified by the connection itself rather than a
-    client header the caller controls."""
+    """True for a request the desktop backend may answer with its packaged web UI: Cloudflare's own edge, one
+    of the sockets the runtime LAN listener bound (both keyed on the connection, not a client header), or a
+    direct unproxied browser on the loopback listener."""
     from lan_access import request_on_lan_listener
-    return _is_live_cloudflare_frontend_request(scope, app_state) or request_on_lan_listener(scope)
+    return (
+        _is_live_cloudflare_frontend_request(scope, app_state)
+        or request_on_lan_listener(scope)
+        or _is_direct_loopback_frontend_request(scope)
+    )
 
 
 class _TunnelOnlyFrontend:
@@ -3066,8 +3096,8 @@ def setup_frontend(
     *,
     tunnel_only: bool = False,
 ):
-    """Mount frontend static files (optional). ``tunnel_only`` restricts the mount to remote callers:
-    the Cloudflare edge, or a socket the runtime LAN listener bound."""
+    """Mount frontend static files (optional). ``tunnel_only`` restricts the mount to the callers
+    `_is_remote_frontend_request` admits."""
     if not build_path.exists():
         return False
 

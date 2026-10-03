@@ -74,6 +74,15 @@ def _gpu_present() -> bool:
     return False
 
 
+def _gate_torch_stack(reason: str) -> None:
+    """Let the torch warm finish ``import torch._dynamo`` before an ``unsloth_zoo`` import (never fatal)."""
+    try:
+        from utils.torch_warmup import gate_torch_stack_import
+        gate_torch_stack_import(reason)
+    except Exception:  # noqa: BLE001, S110 - the gate is a safety net, never a new failure
+        pass
+
+
 def _load_shared() -> bool:
     """Import ``unsloth_zoo.hf_xet_fallback`` on demand; return True if available. Deferred so
     importing this module at worker startup does not pull transformers in before the sidecar is
@@ -81,6 +90,8 @@ def _load_shared() -> bool:
     global _shared, _shared_available, _shared_import_error
     if _shared_available is not None:
         return _shared_available
+    # Outside _load_lock: a thread waiting on the warm must not hold up the env-var bookkeeping.
+    _gate_torch_stack("unsloth_zoo.hf_xet_fallback import")
     with _load_lock:
         if _shared_available is not None:
             return _shared_available
@@ -176,6 +187,7 @@ def _load_optional(module_name: str) -> Any:
     if cached is not _UNTRIED:
         return cached
 
+    _gate_torch_stack(f"{module_name} import")
     try:
         module = importlib.import_module(module_name)
         _optional_modules[module_name] = module

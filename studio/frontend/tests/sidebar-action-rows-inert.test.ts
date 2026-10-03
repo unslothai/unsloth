@@ -51,6 +51,18 @@ test("desktop branding clears the titlebar actions", async () => {
   );
 });
 
+test("custom titlebar branding centers on the chat header's model picker", async () => {
+  const header = APP_SIDEBAR.split("<SidebarHeader")[1].split("</SidebarHeader>")[0];
+  assert.match(
+    header,
+    /usesCustomTitlebar\s*\?\s*"shrink-0 p-0 pt-\[calc\(var\(--studio-content-top-inset,0px\)\+var\(--studio-chat-header-padding-top,11px\)\)\]"/,
+  );
+  assert.match(
+    header,
+    /usesCustomTitlebar && "h-\[var\(--studio-chat-control-height,34px\)\]"/,
+  );
+});
+
 test("desktop branding keeps an 11px gap above New chat", async () => {
   const source = APP_SIDEBAR;
   assert.match(source, /usesDesktopTitlebar \? "pt-\[11px\]" : "pt-\[7px\]"/);
@@ -123,10 +135,15 @@ test("the sidebar list measures its scroll rail", async () => {
   // appearing shrinks the content box.
   assert.match(
     source,
-    /const observer = new ResizeObserver\(\(\) => measureScrollRail\(el\)\);\s*observer\.observe\(el\);\s*railObserverRef\.current = observer;/,
+    /const observer = new ResizeObserver\(\(\) => \{\s*measureScrollRail\(el\);\s*syncFade\(el\);\s*\}\);\s*observer\.observe\(el\);/,
   );
-  // Writes a variable, never state: that pairing is what looped.
+  // Writes the DOM, never state: that pairing is what looped.
   assert.equal(/new ResizeObserver\([^)]*set[A-Z]/.test(source), false);
+  assert.match(source, /if \(fade\.dataset\.visible !== visible\) fade\.dataset\.visible = visible;/);
+  assert.equal(/setCanScrollDown/.test(source), false);
+  // The sections too, so the fade follows content that grows without rendering AppSidebar.
+  assert.match(source, /for \(const section of el\.children\) observer\.observe\(section\);/);
+  assert.match(source, /sections\.observe\(el, \{ childList: true \}\);/);
   // And only on a change, so it cannot re-trigger itself.
   assert.match(source, /if \(rail === railWidthRef\.current\) return;/);
   // The fade stops at the rail too: the thumb ends its travel in that band.

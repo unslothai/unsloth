@@ -31,6 +31,7 @@ from core.inference.llama_server_args import (
 from core.inference.runtime_context import MAX_REQUESTABLE_CONTEXT
 from core.inference.video_families import MAX_VIDEO_NUM_FRAMES
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
+from models.llama_custom_config import LlamaCppConfigFields
 from utils.reasoning_budget import validate_reasoning_budget_message
 
 
@@ -51,9 +52,16 @@ def resolve_inventory_handle(value: str) -> str:
     return resolved
 
 
-class LoadRequest(BaseModel):
+class LoadRequest(LlamaCppConfigFields):
     """Request to load a model for inference"""
 
+    engine_parallelism: Literal["tensor", "pipeline", "data"] = "tensor"
+    engine_precision: Literal["auto", "bf16", "fp16", "int4", "int8", "fp8"] = "auto"
+    engine: Literal["auto", "vllm", "sglang"] = Field(
+        "auto",
+        description = "Inference engine to use. 'auto' selects Studio's default backend; "
+        "'vllm' and 'sglang' require an installed optional engine.",
+    )
     model_path: str = Field(..., description = "Model identifier or local path")
     _gguf_companion_roots: tuple[str, ...] = PrivateAttr(default = ())
     # `()` is both the default and auto-switch's deliberate "do not widen", so only this
@@ -480,7 +488,8 @@ class TranscribeRequest(BaseModel):
     )
     engine: Optional[str] = Field(
         None,
-        description = "STT engine: 'transformers' (default) or 'gguf' (whisper.cpp)",
+        description = "STT engine: 'transformers' (default), 'gguf' (whisper.cpp), 'mtmd' (llama.cpp) "
+        "or 'audiocpp' (audio.cpp)",
     )
     device: Optional[Literal["auto", "cpu", "gpu"]] = Field(
         None,
@@ -498,7 +507,8 @@ class SttLoadRequest(BaseModel):
     model: Optional[str] = Field(None, description = "STT model id; defaults server-side")
     engine: Optional[str] = Field(
         None,
-        description = "STT engine: 'transformers' (default) or 'gguf' (whisper.cpp)",
+        description = "STT engine: 'transformers' (default), 'gguf' (whisper.cpp), 'mtmd' (llama.cpp) "
+        "or 'audiocpp' (audio.cpp)",
     )
     device: Optional[Literal["auto", "cpu", "gpu"]] = Field(
         None,
@@ -507,11 +517,40 @@ class SttLoadRequest(BaseModel):
             "'gpu' prefers the accelerator, 'auto' (default) detects."
         ),
     )
+    gguf_variant: Optional[str] = Field(
+        None,
+        description = (
+            "Variant of an audio GGUF dictation model (engine 'audiocpp'): a quant or a named "
+            "sub-variant such as 'tiny'. Omitted picks the model's default."
+        ),
+    )
+
+    @model_validator(mode = "after")
+    def _fold_audio_gguf_variant(self):
+        # The audio.cpp sidecar takes ``id:variant``, so every route that resolves, downloads,
+        # loads or compares the model sees the same string.
+        engine = (self.engine or "").strip().lower()
+        model = (self.model or "").strip()
+        variant = (self.gguf_variant or "").strip()
+        if (
+            variant
+            and model
+            and ":" not in model
+            and (
+                engine in ("audiocpp", "audio_cpp", "audio.cpp")
+                or model.lower().startswith(("audio-cpp/", "audiocpp-"))
+            )
+        ):
+            self.model = f"{model}:{variant}"
+        return self
 
 
-class ValidateModelRequest(BaseModel):
+class ValidateModelRequest(LlamaCppConfigFields):
     """Check whether an identifier resolves to a ModelConfig; does NOT load weights."""
 
+    engine_parallelism: Literal["tensor", "pipeline", "data"] = "tensor"
+    engine_precision: Literal["auto", "bf16", "fp16", "int4", "int8", "fp8"] = "auto"
+    engine: Literal["auto", "vllm", "sglang"] = "auto"
     model_path: str = Field(..., description = "Model identifier or local path")
     # The same inventory handle the picker was shown; see `resolve_inventory_handle`.
     _resolve_the_handle = field_validator("model_path")(resolve_inventory_handle)
@@ -794,6 +833,7 @@ class ValidateModelResponse(BaseModel):
     """
 
     valid: bool = Field(..., description = "Whether the model identifier looks valid")
+    llama_cpp_config_summary: Optional[Dict[str, Any]] = None
     message: str = Field(..., description = "Human-readable validation message")
     identifier: Optional[str] = Field(None, description = "Resolved model identifier")
     resident: bool = Field(
@@ -1254,6 +1294,16 @@ class GenerateRequest(BaseModel):
 class _InferenceRuntimeFields(BaseModel):
     """Runtime fields shared by load and status responses."""
 
+    engine_parallelism: Literal["tensor", "pipeline", "data"] = "tensor"
+    engine_precision: Literal["auto", "bf16", "fp16", "int4", "int8", "fp8"] = "auto"
+    engine: Literal["auto", "vllm", "sglang"] = Field(
+        "auto",
+        description = "Active inference engine. 'auto' denotes Studio's default backend; "
+        "'vllm' and 'sglang' denote optional managed engines.",
+    )
+    requested_llama_cpp_config: Optional[Dict[str, Any]] = None
+    llama_cpp_config_summary: Optional[Dict[str, Any]] = None
+
     is_vision: bool = Field(False, description = "Whether model is a vision model")
     is_diffusion: bool = Field(
         False, description = "Whether model is a block-diffusion model (DiffusionGemma)"
@@ -1271,6 +1321,16 @@ class _InferenceRuntimeFields(BaseModel):
         description = "Audio codec or native generation architecture.",
     )
     has_audio_input: bool = Field(False, description = "Whether model accepts audio input (ASR)")
+    audio_family: Optional[str] = Field(
+        None, description = "Loader family of an audio GGUF model (e.g. kokoro_tts, minimax_music3)."
+    )
+    audio_options: Optional[List[Dict[str, Any]]] = Field(
+        None,
+        description = (
+            "Request options an audio GGUF model accepts: {name, type (bool|int|float|string|enum), "
+            "description, default, min, max, values, required}. Send chosen values as audio_options."
+        ),
+    )
     has_video_input: bool = Field(
         False,
         description = (
@@ -2421,6 +2481,13 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Target-language hint for native audio models that support it.",
     )
+    audio_options: Optional[Dict[str, Any]] = Field(
+        None,
+        description = (
+            "[x-unsloth] Per-model request options ({name: value}) for audio GGUF models, as listed "
+            "in the loaded model's audio_options. Unknown names are dropped."
+        ),
+    )
     video_base64: Optional[str] = Field(
         None,
         description = (
@@ -2483,6 +2550,14 @@ class ChatCompletionRequest(BaseModel):
     mcp_enabled: Optional[bool] = Field(
         None,
         description = "[x-unsloth] When true, append tools from every enabled MCP server to this request's tool list.",
+    )
+    mcp_image: Optional[str] = Field(
+        None,
+        max_length = 15 * 1024 * 1024,
+        description = (
+            "[x-unsloth] PNG, JPEG or WebP data URL that MCP tools with a mapped image field can "
+            "receive after the user approves each call. Never shown to the model."
+        ),
     )
     deep_research_armed: Optional[bool] = Field(
         None,
@@ -4339,11 +4414,12 @@ class DiffusionGenerateRequest(BaseModel):
         "after init_image and in this order. The loaded family bounds the total including "
         "init_image (FLUX.2: 4, Qwen-Image-2.1: 10); more is refused, never truncated.",
     )
-    workflow: Optional[Literal["edit", "reference"]] = Field(
+    workflow: Optional[Literal["edit", "reference", "outpaint"]] = Field(
         None,
         description = "Explicit image-conditioned workflow. edit: follow the prompt as an "
         "instruction over init_image (and reference_images); reference: generate a new image "
-        "guided by them. Omitted keeps the workflow implied by the other fields.",
+        "guided by them; outpaint: runs as inpaint over the padded init_image + mask_image and "
+        "is recorded as outpaint. Omitted keeps the workflow implied by the other fields.",
     )
     reference_resolution: Optional[int] = Field(
         None,
@@ -4477,6 +4553,30 @@ class GalleryImage(BaseModel):
         None,
         description = "Offload policy actually engaged: none | group | model | sequential. Part of "
         "the build: an offloaded pipeline declines the torchao text-encoder modes.",
+    )
+    speed_mode: Optional[str] = Field(
+        None,
+        description = "Speed profile engaged for this generation (eager | default | max | off), after "
+        "any deferred compile. Absent on records written before this existed.",
+    )
+    attention_backend: Optional[str] = Field(
+        None,
+        description = "Attention backend engaged for this generation, or null for default SDPA. "
+        "Absent on records written before this existed.",
+    )
+    transformer_cache: Optional[str] = Field(
+        None,
+        description = "Step cache engaged for this generation (fbcache | static), or null when off. "
+        "Absent on records written before this existed.",
+    )
+    cpu_offload: Optional[bool] = Field(
+        None,
+        description = "Whether CPU offload was active for this generation. Absent on records written "
+        "before this existed.",
+    )
+    schema_version: Optional[int] = Field(
+        None,
+        description = "Recipe format version embedded in the PNG unsloth chunk. Absent on older images.",
     )
     baked_loras: list[str] = Field(
         default_factory = list,
@@ -4628,6 +4728,11 @@ class DiffusionResolvedControl(BaseModel):
         '"prequant:<repo>/<file>", when a pre-quantized checkpoint was seeded rather than the '
         "weights being quantised in memory. Declared here or pydantic drops it and no API client "
         "ever sees the provenance. Null on every other control and on a runtime quantise.",
+    )
+    replaced: Optional[str] = Field(
+        None,
+        description = 'The picked checkpoint that did NOT run, as "gguf:<file>", when a GGUF pick whose memory plan '
+        "offloads loaded the hosted pre-quantized checkpoint (``artifact``) instead. Null otherwise.",
     )
 
 
@@ -4912,6 +5017,13 @@ class AudioSpeechRequest(BaseModel):
         ge = 1,
         description = (
             "Maximum generated audio tokens/frames; MiniMax Music 3 uses 25 frames per second."
+        ),
+    )
+    audio_options: Optional[Dict[str, Any]] = Field(
+        None,
+        description = (
+            "[x-unsloth] Per-model request options ({name: value}) for audio GGUF models, as listed "
+            "in the loaded model's audio_options. Unknown names are dropped."
         ),
     )
     provider_id: Optional[str] = Field(

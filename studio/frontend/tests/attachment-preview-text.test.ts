@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { DOMParser as XmlDomParser, XMLSerializer as XmlSerializer } from "@xmldom/xmldom";
 import {
   Unzip,
   UnzipInflate,
@@ -28,6 +29,8 @@ const {
   getPdfAttachmentTextError,
   isAudioAttachment,
   isTextAttachment,
+  linearizeDocxMath,
+  markDocxNotes,
   parseAttachmentText,
   readAttachmentText,
   repackDocxAttachmentArchive,
@@ -1165,6 +1168,265 @@ test("repackDocxAttachmentArchive refuses an archive that unpacks past the ceili
     () => repackDocxAttachmentArchive("wide.docx", archive),
     /DOCX file is too large: wide\.docx/,
   );
+});
+
+test("markDocxNotes numbers the references extractRawText keeps and marks the body", async () => {
+  const w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+  const note = (kind: string, id: number, text: string) =>
+    `<w:${kind} w:id="${id}"><w:p><w:r><w:${kind}Ref/></w:r><w:r><w:t xml:space="preserve"> ${text}</w:t></w:r></w:p></w:${kind}>`;
+  const notes = (kind: string, body: string) =>
+    strToU8(
+      `<w:${kind}s ${w}>` +
+        `<w:${kind} w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:${kind}>` +
+        `<w:${kind} w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:${kind}>` +
+        body +
+        `</w:${kind}s>`,
+    );
+  const ref = (kind: string, id: number) =>
+    kind === "endnote"
+      ? `<w:r><w:${kind}Reference w:id="${id}">\n</w:${kind}Reference >\n</w:r>`
+      : `<w:r><w:${kind}Reference w:id="${id}"/></w:r>`;
+  const archive = repackDocxAttachmentArchive(
+    "paper.docx",
+    zipSync({
+      "[Content_Types].xml": strToU8("<Types/>"),
+      "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+      "word/document.xml": strToU8(
+        `<w:document ${w}><w:body><w:p><w:del w:id="9">${ref("footnote", 4)}</w:del>` +
+          `<w:r><w:t>First.</w:t></w:r>${ref("footnote", 2)}` +
+          `<w:r><w:t> Second.</w:t></w:r>${ref("footnote", 1)}${ref("endnote", 1)}` +
+          `<w:r><w:t xml:space="preserve"> \uE0007\uE001</w:t></w:r>` +
+          `<w:r><x:footnoteReference xmlns:x="http://schemas.openxmlformats.org/wordprocessingml/2006/main" x:id="3"/></w:r>` +
+          `</w:p></w:body></w:document>`,
+      ),
+      "word/_rels/document.xml.rels": relationships([
+        ["footnotes", "notes/foot.xml"],
+        ["endnotes", "endnotes.xml"],
+      ]),
+      "word/notes/foot.xml": notes(
+        "footnote",
+        note("footnote", 1, "Source: LATER") +
+          note("footnote", 2, "Source: EARLIER") +
+          note("footnote", 3, "Source: LOCALLY DECLARED") +
+          note("footnote", 4, "Source: DELETED"),
+      ),
+      "word/endnotes.xml": notes("endnote", note("endnote", 1, "Source: ENDNOTEBODY")),
+    }),
+  );
+  const original = (globalThis as { DOMParser?: unknown }).DOMParser;
+  (globalThis as { DOMParser?: unknown }).DOMParser = XmlDomParser;
+  try {
+    const marked = markDocxNotes(archive);
+    const { default: mammoth } = await import("mammoth");
+    const { value } = await mammoth.extractRawText({
+      buffer: Buffer.from(marked.archive),
+    });
+    assert.equal(
+      marked.label(value),
+      "First.[1] Second.[2][i] \uE0007\uE001[3]\n\n" +
+        "Footnotes\n[1] Source: EARLIER\n[2] Source: LATER\n[3] Source: LOCALLY DECLARED\n\n" +
+        "Endnotes\n[i] Source: ENDNOTEBODY",
+    );
+  } finally {
+    (globalThis as { DOMParser?: unknown }).DOMParser = original;
+  }
+});
+
+test("linearizeDocxMath keeps equations in the body, tables and notes", async () => {
+  const ns =
+    'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ' +
+    'xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"';
+  const run = (text: string) => `<w:r><w:t xml:space="preserve">${text}</w:t></w:r>`;
+  const m = (text: string) => `<m:r><m:t>${text}</m:t></m:r>`;
+  const half = `<m:f><m:num>${m("1")}</m:num><m:den>${m("2")}</m:den></m:f>`;
+  const squared = `<m:sSup><m:e>${m("v")}</m:e><m:sup>${m("2")}</m:sup></m:sSup>`;
+  const mean = `<m:bar><m:barPr><m:pos m:val="top"/></m:barPr><m:e>${m("x")}</m:e></m:bar>`;
+  const root = `<m:rad><m:radPr><m:degHide m:val="1"/></m:radPr><m:deg/><m:e>${m("n")}</m:e></m:rad>`;
+  const archive = repackDocxAttachmentArchive(
+    "physics.docx",
+    zipSync({
+      "[Content_Types].xml": strToU8("<Types/>"),
+      "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+      "word/document.xml": strToU8(
+        `<w:document ${ns}><w:body>` +
+          `<w:p>${run("The kinetic energy is ")}<m:oMath>${m("E=")}${half}${m("m")}${squared}</m:oMath>${run(" joules.")}` +
+          `<w:r><w:footnoteReference w:id="1"/></w:r></w:p>` +
+          `<w:p><m:oMathPara><m:oMath>${m("F=ma")}</m:oMath><m:oMath>${m("p=mv")}</m:oMath></m:oMathPara></w:p>` +
+          `<w:tbl><w:tr><w:tc><w:p>${run("Error")}</w:p></w:tc><w:tc><w:p><m:oMath>` +
+          `<m:d><m:e>${m("a+b")}</m:e></m:d><w:del w:id="2" w:author="a">${m("+c")}</w:del>${root}` +
+          `</m:oMath></w:p></w:tc></w:tr></w:tbl>` +
+          `<w:p><w:del w:id="3" w:author="a"><m:oMath>${m("gone")}</m:oMath></w:del></w:p>` +
+          `</w:body></w:document>`,
+      ),
+      "word/_rels/document.xml.rels": relationships([["footnotes", "footnotes.xml"]]),
+      "word/footnotes.xml": strToU8(
+        `<w:footnotes ${ns}><w:footnote w:id="1"><w:p>${run("Where ")}<m:oMath>${mean}</m:oMath>${run(" is the mean.")}</w:p></w:footnote></w:footnotes>`,
+      ),
+    }),
+  );
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const marked = markDocxNotes(linearizeDocxMath(archive));
+    const { default: mammoth } = await import("mammoth");
+    const { value } = await mammoth.extractRawText({ buffer: Buffer.from(marked.archive) });
+    assert.equal(
+      marked.label(value),
+      "The kinetic energy is E=\\frac{1}{2}mv^{2} joules.[1]\n\nF=ma\np=mv\n\nError\n\n(a+b)\\sqrt{n}\n\n\n\n" +
+        "Footnotes\n[1] Where \\overline{x} is the mean.",
+    );
+  } finally {
+    Object.assign(globals, original);
+  }
+});
+
+// Same cases and expected text as the backend reader's test_docx_equation_structures.
+const OMML_CASES: [string, string][] = [
+  [
+    '<m:nary><m:naryPr><m:chr m:val="∑"/></m:naryPr><m:sub>{i=1}</m:sub><m:sup>{n}</m:sup><m:e>{i}</m:e></m:nary>',
+    "∑_{i=1}^{n}i",
+  ],
+  ["<m:nary><m:sub>{0}</m:sub><m:sup>{1}</m:sup><m:e>{x}</m:e></m:nary>", "∫_{0}^{1}x"],
+  [
+    "<m:sSubSup><m:e>{x}</m:e><m:sub>{i}</m:sub><m:sup>{2}</m:sup></m:sSubSup><m:sSub><m:e>{a}</m:e><m:sub>{0}</m:sub></m:sSub>",
+    "x_{i}^{2}a_{0}",
+  ],
+  ["<m:sPre><m:sub>{6}</m:sub><m:sup>{14}</m:sup><m:e>{C}</m:e></m:sPre>", "{}_{6}^{14}C"],
+  ["<m:limUpp><m:e>{x}</m:e><m:lim>{def}</m:lim></m:limUpp>", "x^{def}"],
+  ["<m:limLow><m:e>{lim}</m:e><m:lim>{n→∞}</m:lim></m:limLow>", "lim_{n→∞}"],
+  [
+    '<m:f><m:fPr><m:type m:val="noBar"/></m:fPr><m:num>{n}</m:num><m:den>{k}</m:den></m:f>' +
+      '<m:phant><m:phantPr><m:show m:val="off"/></m:phantPr><m:e>{xyz}</m:e></m:phant>',
+    "{n \\atop k}",
+  ],
+  ["<m:acc><m:e>{θ}</m:e></m:acc><m:rad><m:deg>{3}</m:deg><m:e>{y}</m:e></m:rad>", "θ̂\\sqrt[3]{y}"],
+  [
+    '<m:rad><m:radPr><m:degHide m:val="1"/></m:radPr><m:deg>{3}</m:deg><m:e>{x}</m:e></m:rad>' +
+      '<m:nary><m:naryPr><m:chr m:val="∑"/><m:subHide m:val="0"/><m:supHide/></m:naryPr><m:sub>{k}</m:sub><m:sup>{n}</m:sup><m:e>{a}</m:e></m:nary>',
+    "\\sqrt{x}∑_{k}a",
+  ],
+  ["<m:func><m:fName>{sin}</m:fName><m:e>{x}</m:e></m:func>", "sin x"],
+  [
+    "<m:m><m:mr><m:e>{a}</m:e><m:e>{b}</m:e></m:mr><m:mr><m:e>{c}</m:e><m:e>{d}</m:e></m:mr></m:m>",
+    "a & b \\\\ c & d",
+  ],
+  ["<m:eqArr><m:e>{x=1}</m:e><m:e>{y=2}</m:e></m:eqArr>", "x=1\ny=2"],
+  [
+    '<m:d><m:e>{a}</m:e><m:e>{b}</m:e></m:d><m:d><m:dPr><m:begChr m:val="["/><m:endChr m:val=""/></m:dPr><m:e>{c}</m:e></m:d>',
+    "(a|b)[c",
+  ],
+  [
+    '<m:bar><m:e>{x}</m:e></m:bar><m:groupChr><m:groupChrPr><m:chr m:val="⏞"/><m:pos m:val="top"/></m:groupChrPr><m:e>{y}</m:e></m:groupChr>' +
+      '<m:groupChr><m:groupChrPr><m:chr m:val="←"/></m:groupChrPr><m:e>{z}</m:e></m:groupChr>',
+    "\\underline{x}\\overbrace{y}\\underset{←}{z}",
+  ],
+  [
+    '{a}<w:r><w:t xml:space="preserve"> if </w:t></w:r>' +
+      "<w:sdt><w:sdtPr><w:showingPlcHdr/></w:sdtPr><w:sdtContent>{prompt}</w:sdtContent></w:sdt>{b}",
+    "a if b",
+  ],
+];
+
+test("linearizeDocxMath writes equations as the backend does and leaves other parts untouched", () => {
+  const ns =
+    'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ' +
+    'xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"';
+  const archive = (body: string) =>
+    zipSync({ "word/document.xml": strToU8(`<w:document ${ns}><w:body>${body}</w:body></w:document>`) });
+  const globals = globalThis as { DOMParser?: unknown; XMLSerializer?: unknown };
+  const original = { DOMParser: globals.DOMParser, XMLSerializer: globals.XMLSerializer };
+  globals.DOMParser = XmlDomParser;
+  globals.XMLSerializer = XmlSerializer;
+  try {
+    const plain = archive('<w:p><w:r><w:t>oMath is only a word here</w:t></w:r></w:p>');
+    assert.equal(linearizeDocxMath(plain), plain);
+    // How Chromium's DOMParser returns a part cut short at an XML error.
+    const truncated = archive(
+      '<parsererror xmlns="http://www.w3.org/1999/xhtml"/><w:p><m:oMath><m:r><m:t>x</m:t></m:r></m:oMath></w:p>',
+    );
+    assert.equal(linearizeDocxMath(truncated), truncated);
+    const strict = zipSync({
+      "word/document.xml": strToU8(
+        '<w:document xmlns:w="http://purl.oclc.org/ooxml/wordprocessingml/main" xmlns:m="http://purl.oclc.org/ooxml/officeDocument/math">' +
+          "<w:body><w:p><m:oMath><m:sSup><m:e><m:r><m:t>x</m:t></m:r></m:e><m:sup><m:r><m:t>2</m:t></m:r></m:sup></m:sSup></m:oMath></w:p></w:body></w:document>",
+      ),
+    });
+    assert.ok(strFromU8(unzipSync(linearizeDocxMath(strict))["word/document.xml"]).includes(">x^{2}<"));
+    for (const [omml, expected] of OMML_CASES) {
+      const filled = omml.replace(/\{([^{}]*)\}/g, (_, text: string) => `<m:r><m:t>${text}</m:t></m:r>`);
+      const xml = strFromU8(unzipSync(linearizeDocxMath(archive(`<w:p><m:oMath>${filled}</m:oMath></w:p>`)))["word/document.xml"]);
+      const doc = new XmlDomParser().parseFromString(xml, "application/xml");
+      assert.equal(doc.getElementsByTagNameNS("http://schemas.openxmlformats.org/wordprocessingml/2006/main", "t")[0]?.textContent, expected);
+    }
+  } finally {
+    Object.assign(globals, original);
+  }
+});
+
+test("markDocxNotes reads Strict OOXML notes and skips unfilled content controls", () => {
+  const w = 'xmlns:w="http://purl.oclc.org/ooxml/wordprocessingml/main"';
+  const run = (text: string) => `<w:r><w:t xml:space="preserve">${text}</w:t></w:r>`;
+  const archive = repackDocxAttachmentArchive(
+    "strict.docx",
+    zipSync({
+      "[Content_Types].xml": strToU8("<Types/>"),
+      "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+      "word/document.xml": strToU8(`<w:document ${w}><w:body/></w:document>`),
+      "word/footnotes.xml": strToU8(
+        `<w:footnotes ${w}><w:footnote w:id="1"><w:p>` +
+          run("Keep") +
+          `<w:sdt><w:sdtPr><w:showingPlcHdr/></w:sdtPr><w:sdtContent>${run(" Click or tap here to enter text.")}</w:sdtContent></w:sdt>` +
+          `<w:sdt><w:sdtPr><w:showingPlcHdr w:val="0"/></w:sdtPr><w:sdtContent>${run(" FILLED")}</w:sdtContent></w:sdt>` +
+          "</w:p></w:footnote></w:footnotes>",
+      ),
+    }),
+  );
+  const original = (globalThis as { DOMParser?: unknown }).DOMParser;
+  (globalThis as { DOMParser?: unknown }).DOMParser = XmlDomParser;
+  try {
+    assert.equal(markDocxNotes(archive).label(""), "Footnotes\n[1] Keep FILLED");
+  } finally {
+    (globalThis as { DOMParser?: unknown }).DOMParser = original;
+  }
+});
+
+test("markDocxNotes skips move sources, deletions and text box fallbacks", () => {
+  const w = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"';
+  const mc = 'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"';
+  const run = (text: string) => `<w:r><w:t xml:space="preserve">${text}</w:t></w:r>`;
+  const box = `<w:txbxContent><w:p>${run("BOX")}</w:p></w:txbxContent>`;
+  const archive = repackDocxAttachmentArchive(
+    "moved.docx",
+    zipSync({
+      "[Content_Types].xml": strToU8("<Types/>"),
+      "_rels/.rels": relationships([["officeDocument", "word/document.xml"]]),
+      "word/document.xml": strToU8(`<w:document ${w}><w:body/></w:document>`),
+      "word/_rels/document.xml.rels": relationships([["footnotes", "footnotes.xml"]]),
+      "word/footnotes.xml": strToU8(
+        `<w:footnotes ${w} ${mc}><w:footnote w:id="1"><w:p>` +
+          run("Keep") +
+          `<w:moveFrom w:id="7">${run(" MOVED")}</w:moveFrom>` +
+          `<w:del w:id="8"><w:r><w:delText> GONE</w:delText></w:r></w:del>` +
+          run(" COVID") + "<w:r><w:noBreakHyphen/></w:r>" + run("19") +
+          `<w:moveTo w:id="9">${run(" MOVED")}</w:moveTo>` +
+          `<w:r><mc:AlternateContent><mc:Choice Requires="wps">${box}</mc:Choice>` +
+          `<mc:Fallback>${box}</mc:Fallback></mc:AlternateContent></w:r>` +
+          "</w:p></w:footnote></w:footnotes>",
+      ),
+    }),
+  );
+  const original = (globalThis as { DOMParser?: unknown }).DOMParser;
+  (globalThis as { DOMParser?: unknown }).DOMParser = XmlDomParser;
+  try {
+    assert.equal(
+      markDocxNotes(archive).label(""),
+      "Footnotes\n[1] Keep COVID-19 MOVED BOX",
+    );
+  } finally {
+    (globalThis as { DOMParser?: unknown }).DOMParser = original;
+  }
 });
 
 /** A preview only colours what the filename says is source; extracted document text is prose whatever the file was called. */

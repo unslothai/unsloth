@@ -32,6 +32,7 @@
     "src",
     "smoke-ansi-main.tsx",
     "smoke-composer-icons-main.tsx",
+    "smoke-titlebar-blur-main.tsx",
     "smoke-find-in-page-main.tsx",
     "smoke-autoscroll-main.tsx",
     "smoke-research-main.tsx",
