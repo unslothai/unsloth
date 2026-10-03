@@ -19,30 +19,16 @@ sm100: Triton int8 is slower than cuBLAS. ROCm (weight-only int8 there) and CPU 
 
 Kill switch: ``UNSLOTH_DIFFUSION_INT8_GEMM=0``; ``=1`` also enables it on an unmeasured arch (still probe-gated).
 
-ConvRot Linears (``diffusion_convrot.ConvRotLinear``, MiniMax-H3's pre-quantized denoiser and its fused QKV) take the
-same kernel: the block-Hadamard rotation runs first, with the exact ops of ``ConvRotLinear.forward``, then torchao's
-activation quant and the fused GEMM, so the Linear output stays bit-identical to the stock rotated Linear in eager.
-MiniMax-H3 960x544x124, 20 steps, torch 2.11 (Colab, vs the same tree with the lever off): RTX PRO 6000 resident
-2.89 -> 2.75 s/step (2824 -> 2717 ms per denoiser call), A100 40 GB streamed 5.33 -> 4.87 s/step (5323 -> 4840 ms;
-int8 GEMM family 1835 -> 1610 ms), LPIPS vs the stock path inside the stock path's own cross-process spread.
-Own kill switch: ``UNSLOTH_DIFFUSION_INT8_GEMM_CONVROT=0`` keeps rotated Linears on the stock path.
+ConvRot Linears (MiniMax-H3) run ``ConvRotLinear.forward``'s own rotation first, so eager output stays bit-identical;
+kill switch ``UNSLOTH_DIFFUSION_INT8_GEMM_CONVROT=0``.
 
-On the rotated Linears the rotation and the activation quant then run as ONE kernel (``rotq_i8``): it reads the bf16
-activation once and writes the int8 rows and their bf16 scale, where the stock path writes the rotated bf16 activation
-and reads it back to quantize. The rotation is the same GEMM in the same K order with the same bf16 rounding,
-then torchao's per-row quant with every bf16 rounding kept, so codes and scales are bit-identical to the two steps;
-a per-device probe checks that before it is used (and a census of a full H3 render on G4 and B200 found 0 code or scale
-differences in 5.9e11 elements). Group 256 (H3) only, on sm120 and sm80, the arches measured end to end (G4: 2x faster
-than the compiled rotation GEMM + quant at every H3 shape). MiniMax-H3 960x544x124, 20 steps, G4 resident: 2.764 ->
-2.695 s/step (5 and 3 processes), nsys denoiser step 2776 -> 2719 ms; A100 40 GB streamed: 4.813 -> 4.761 s/step (3
-processes each, alternating), 0 code or scale differences in 7.9e11 elements. L4 stays off: Studio's host RAM floor
-refuses the H3 Diffusers load on a 53 GB Colab L4, so it was never measured end to end there.
-Kill switch ``UNSLOTH_DIFFUSION_INT8_ROTQUANT=0``.
+Rotated Linears on sm120 / sm80 (group 256) run the rotation and the act quant as ONE kernel (``rotq_i8``): the same
+rotation GEMM in the same K order, then torchao's per-row quant with every bf16 rounding kept, so codes and scales are
+bit-identical (probed per device). Kill switch ``UNSLOTH_DIFFUSION_INT8_ROTQUANT=0``.
 
-A block-streamed denoiser (group offload, MiniMax-H3 on a 40 GB card) installs against its onload device
-(``install(..., device = ...)``): diffusers moves torchao weights with ``swap_tensors``, which keeps each Parameter's
-identity, and the forward reads the int8 payload off the live Parameter, so every call sees the onloaded copy (a weight
-still on the host keeps the stock path). Kill switch ``UNSLOTH_DIFFUSION_INT8_GEMM_STREAMED=0``.
+A block-streamed denoiser installs against its onload device (``install(..., device = ...)``): group offload's
+``swap_tensors`` keeps each Parameter's identity and the forward reads the payload off the live Parameter, so every
+call sees the onloaded copy. Kill switch ``UNSLOTH_DIFFUSION_INT8_GEMM_STREAMED=0``.
 """
 
 from __future__ import annotations
@@ -115,13 +101,11 @@ def int8_gemm_mode() -> str:
 
 
 def convrot_enabled() -> bool:
-    """Rotated (ConvRot) Linears take the fused GEMM unless ``UNSLOTH_DIFFUSION_INT8_GEMM_CONVROT=0``."""
     raw = (os.environ.get(INT8_GEMM_CONVROT_ENV) or "").strip().lower()
     return raw not in ("0", "off", "false", "no")
 
 
 def streamed_enabled() -> bool:
-    """A streamed denoiser installs against its onload device unless ``UNSLOTH_DIFFUSION_INT8_GEMM_STREAMED=0``."""
     raw = (os.environ.get(INT8_GEMM_STREAMED_ENV) or "").strip().lower()
     return raw not in ("0", "off", "false", "no")
 
@@ -832,13 +816,9 @@ def _linear_forward(self: Any, x: Any) -> Any:
         and _ROTQ_HANDLE is not None
         and rotquant_supported(x.reshape(-1, x.shape[-1]), group, _ROTQ_DEVICE.get(x.device.index))
     ):
-        # Rotation + activation quant in one kernel: reads x once, writes int8 + the bf16 row scale. Bit-identical to
-        # the two steps below (probed per device).
         xq, xs = _ROTQ_HANDLE(x.reshape(-1, x.shape[-1]), group, kind == "v2")
     else:
         if group is not None:
-            # ConvRotLinear.forward's own rotation, same ops and dtype, so the GEMM sees the input the stock path
-            # quantizes.
             from .diffusion_convrot import build_convrot_hadamard, rotate_convrot_activation
             x = rotate_convrot_activation(
                 x, build_convrot_hadamard(group, device = x.device, dtype = x.dtype), group
@@ -876,7 +856,7 @@ def linear_from_q(q: Any, xs: Any, weight: Any, bias: Any) -> Optional[Any]:
 
 
 def _rotation_group(module: Any) -> Optional[int]:
-    """The ConvRot group of a rotated Linear whose input the forward above can rotate, else None."""
+    """The ConvRot group the forward above can reproduce, else None."""
     try:
         from .diffusion_convrot import convrot_linear_class, is_power_of_four
 
@@ -896,8 +876,7 @@ def _eligible(module: Any) -> Optional[tuple]:
 
     group = None
     if type(module) is not nn.Linear:
-        # The one subclass taken is ConvRotLinear, whose input rotation _linear_forward reproduces; any other subclass
-        # transforms its input in a way this forward would skip.
+        # any other subclass transforms its input in a way this forward would skip
         group = _rotation_group(module) if convrot_enabled() else None
         if group is None:
             return None

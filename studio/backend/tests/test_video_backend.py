@@ -9482,8 +9482,7 @@ def test_every_rebuilt_speed_target_carries_the_backend():
 
 
 def test_h3_speed_optims_get_the_denoisers_own_placement():
-    """H3's offload policy covers the conditioner and VAEs; a denoiser pinned resident under it must not read as
-    offloaded, or the fused int8 GEMM (which needs its weights on the card) stays off on a 40 GB card."""
+    """A denoiser pinned under H3's offload policy must not read as offloaded."""
     import ast
     from pathlib import Path
 
@@ -9521,7 +9520,6 @@ def test_h3_speed_optims_get_the_denoisers_own_placement():
             {"denoiser_pinned": pinned, "denoiser_streamed": streamed},
         )
         assert bool(got) is offloaded, (expr, pinned, streamed)
-    # A block-streamed denoiser installs the fused GEMM against the onload device itself.
     installs = [
         n
         for n in ast.walk(h3)

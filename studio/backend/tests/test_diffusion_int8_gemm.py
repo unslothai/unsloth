@@ -268,9 +268,6 @@ def test_status_drops_int8_gemm_once_the_deferred_probe_swapped_nothing():
     assert int8_gemm_live(pipe, ("compiled",)) == ["compiled"]
 
 
-# ----------------------------------------------------------------------------------------------- ConvRot (MiniMax-H3)
-
-
 def _convrot(lin, group = 256):
     from core.inference.diffusion_convrot import _install_rotation
     _install_rotation(lin, group)
@@ -284,7 +281,6 @@ def test_convrot_linear_is_eligible_with_its_group(monkeypatch):
     lin = _convrot(torch.nn.Linear(512, 256, bias = False))
     rec = g8._eligible(lin)
     assert rec is not None and rec[:2] == ("v1", 256) and rec[3] is lin.weight
-    # its own kill switch keeps the rotated Linears stock without touching plain ones
     monkeypatch.setenv(g8.INT8_GEMM_CONVROT_ENV, "0")
     assert g8._eligible(lin) is None
     assert g8._eligible(torch.nn.Linear(512, 256, bias = False))[:2] == ("v1", None)
@@ -354,9 +350,7 @@ def test_convrot_kill_switch_keeps_rotated_linears_stock(forced, monkeypatch):
 def test_block_streamed_denoiser_installs_against_its_onload_device(
     forced, monkeypatch, use_stream, version
 ):
-    """MiniMax-H3 on a 40 GB card streams its int8 blocks with diffusers group offloading: the weights sit on the host
-    at install time, swap_tensors brings each block onto the card for its forward, and the fused GEMM must follow.
-    Pinned (stream) copies need Int8Tensor weights: Studio rebuilds v1 weights as Int8Tensor before streaming."""
+    """Group-offloaded int8 blocks (H3 on 40 GB): installed while on the host, the fused GEMM follows each onload."""
     hooks = pytest.importorskip("diffusers.hooks")
     monkeypatch.delenv(g8.INT8_GEMM_CONVROT_ENV, raising = False)
     monkeypatch.delenv(g8.INT8_GEMM_STREAMED_ENV, raising = False)
