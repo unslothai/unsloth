@@ -23,7 +23,7 @@ import uuid
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable, Generator, Mapping, Optional, Sequence, Tuple, Union
-from core.inference.audio_device import audio_device_forces_cpu
+from core.inference.audio_device import audio_device_forces_cpu, audio_load_runs_on_cpu
 from core.inference.context_refusal import ContextBudgetExceeded
 from core.inference.native_audio import NATIVE_AUDIO_TYPES, is_native_audio_model
 from core.inference.audio_errors import (
@@ -380,6 +380,10 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
         "context_length_fitted": model_info.get("context_length_fitted"),
         "context_unbounded_when_batched": model_info.get("context_unbounded_when_batched"),
         "mlx_context_budget": model_info.get("mlx_context_budget"),
+        # audio.cpp GGUFs: the loader family, its per-model request options and the variant loaded.
+        "audio_family": model_info.get("audio_family"),
+        "audio_options": model_info.get("audio_options"),
+        "gguf_variant": model_info.get("gguf_variant"),
     }
 
 
@@ -2055,7 +2059,17 @@ class InferenceOrchestrator:
                 sub_config["anonymous_hf_access"] = True
             if audio_codec_path is not None:
                 sub_config["audio_codec_path"] = audio_codec_path
-            if audio_device_forces_cpu(audio_device) and is_native_audio_model(model_name):
+            audio_cpp_model = getattr(config, "audio_cpp", None) is not None
+            if audio_cpp_model:
+                # The worker picks its backend from this: a Hub id alone does not say audio.cpp.
+                sub_config["audio_cpp"] = True
+                if audio_load_runs_on_cpu(getattr(config, "audio_type", None), audio_device):
+                    # A CPU-only runtime runs Auto on the CPU too: say so, so no card is chosen and the worker hides them.
+                    audio_device = "cpu"
+                    sub_config["audio_device"] = audio_device
+            if audio_device_forces_cpu(audio_device) and (
+                audio_cpp_model or is_native_audio_model(model_name)
+            ):
                 # Choosing a card for a load that takes none harms it twice: several GPUs are rejected as unsupported
                 # sharding, and required_gb becomes expected_free_gb, so the settle wait raises on a busy card.
                 resolved_gpu_ids, gpu_selection = None, {"selection_mode": "cpu_audio"}
@@ -2267,9 +2281,11 @@ class InferenceOrchestrator:
                         # Lets the already-loaded shortcut tell a CPU request from the GPU
                         # model it would otherwise report as satisfied. Native audio only:
                         # marking anything else tells training a GPU model holds no VRAM.
-                        self.models[self.active_model_name]["audio_cpu"] = model_info.get(
-                            "audio_type"
-                        ) in NATIVE_AUDIO_TYPES and audio_device_forces_cpu(audio_device)
+                        _audio_type = model_info.get("audio_type")
+                        self.models[self.active_model_name]["audio_cpu"] = (
+                            _audio_type in NATIVE_AUDIO_TYPES
+                            and audio_load_runs_on_cpu(_audio_type, audio_device)
+                        )
                         self.models[self.active_model_name].update(
                             _mlx_runtime_mirror_fields(model_info)
                         )
@@ -3322,6 +3338,8 @@ class InferenceOrchestrator:
         instructions: Optional[str] = None,
         language: Optional[str] = None,
         seed: Optional[int] = None,
+        audio_options: Optional[dict] = None,
+        stats_holder: Optional[dict] = None,
     ) -> Tuple[bytes, int]:
         """Generate TTS audio. Returns (wav_bytes, sample_rate). Blocking: sends the command and
         waits for the full audio response."""
@@ -3391,6 +3409,8 @@ class InferenceOrchestrator:
                     cmd["language"] = language
                 if seed is not None:
                     cmd["seed"] = int(seed)
+                if audio_options:
+                    cmd["audio_options"] = dict(audio_options)
 
                 # Same shared-queue hazard as _generate_inner: see _direct_reader.
                 read_one, _drain, release_mailbox = self._direct_reader(request_id, cancel_event)
@@ -3452,6 +3472,8 @@ class InferenceOrchestrator:
                                 raise AudioGenerationCancelledError("Audio generation cancelled")
                             wav_bytes = base64.b64decode(resp["wav_base64"])
                             sample_rate = resp["sample_rate"]
+                            if stats_holder is not None:
+                                stats_holder["stats"] = resp.get("stats")
                             return wav_bytes, sample_rate
 
                         if rtype == "audio_error":

@@ -42,6 +42,7 @@ from .export import (
     ExportGGUFRequest,
     ConvertQ4NXRequest,
     ExportLoRAAdapterRequest,
+    LlmCompressorExportProbeResponse,
 )
 from .users import Token
 from .inference import (
@@ -100,6 +101,7 @@ __all__ = [
     "ExportGGUFRequest",
     "ConvertQ4NXRequest",
     "ExportLoRAAdapterRequest",
+    "LlmCompressorExportProbeResponse",
     "Token",
     "LoadRequest",
     "UnloadRequest",
