@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""POST /audio/transcribe/source: audio named by id, prepared inside the account, streamed back.
-
-A stub STT registry and sidecar stand in for the engines and record what the route hands them;
-the account boundary and the audio inputs store are the real ones (ALICE and BOB as in
-test_account_media_isolation).
-"""
+"""POST /audio/transcribe/source with stub engines; the account boundary is real."""
 
 from __future__ import annotations
 
@@ -53,7 +48,6 @@ def isolated(monkeypatch, tmp_path):
     monkeypatch.setattr(auth_storage, "DB_PATH", tmp_path / "auth.db")
     monkeypatch.setattr(auth_storage, "_BOOTSTRAP_PW_PATH", tmp_path / ".bootstrap_password")
     monkeypatch.setattr(auth_storage, "_bootstrap_password", None)
-    # An empty model cache: capabilities come from the model names.
     hub = tmp_path / "hub"
     hub.mkdir()
     monkeypatch.setattr(acm, "_hub_cache", lambda: hub)

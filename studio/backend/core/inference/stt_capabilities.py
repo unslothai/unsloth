@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""What a speech-to-text model can add to a transcript: timestamps, speakers, and where it runs.
-
-Answered offline, from the HF cache when the model is downloaded and from its name when it is
-not, so the Transcribe page can say why a switch is off before anything loads. Never raises: a
-model Studio cannot place reads as plain text only.
-"""
+"""STT model capabilities, answered offline (cache, else name); never raises."""
 
 from __future__ import annotations
 
@@ -16,15 +11,12 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# Only audio.cpp returns spans. Qwen3-ASR does on request (with its aligner); these always do.
-# Parakeet-TDT and Kroko time every word on their own. Nemotron also answers with spans, but
-# split into sub-word pieces ("fel lo w"), so it stays plain text.
+# Nemotron's spans are sub-word pieces ("fel lo w"), so it stays plain text.
 _ALWAYS_TIMESTAMPED = frozenset(
     {"moss_transcribe_diarize", "vibevoice_asr", "parakeet_tdt", "kroko_asr"}
 )
 _ON_REQUEST_TIMESTAMPS = frozenset({"qwen3_asr"})
 _SPEAKER_FAMILIES = frozenset({"moss_transcribe_diarize", "vibevoice_asr"})
-# Qwen3-ForcedAligner-0.6B Q8_0, for the download hint before the Hub has been asked.
 _ALIGNER_SIZE_BYTES = 1_129_966_496
 
 _ENGINE_ALIASES = {
@@ -121,11 +113,7 @@ def _aligner_state() -> dict:
 
 
 def capabilities_for(model: Optional[str], engine: Optional[str]) -> dict:
-    """``{engine, family, timestamps, speakers, aligner, cpu_only}`` for ``model`` on ``engine``.
-
-    ``timestamps`` is "on_request" (Qwen3-ASR on audio.cpp), "always" (MOSS-Transcribe-Diarize,
-    VibeVoice-ASR) or "unsupported"; ``aligner`` is set only for "on_request".
-    """
+    """``timestamps``: "on_request" | "always" | "unsupported"; ``aligner`` only for "on_request"."""
     model = str(model or "").strip()
     result = {
         "engine": None,

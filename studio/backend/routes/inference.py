@@ -23153,7 +23153,6 @@ async def _transcribe_audio_result(
 
 
 def _labeled_speakers(result: dict) -> dict:
-    """The sidecar's raw speaker ids as ``[{id, label}]``, "Speaker 1" first to speak."""
     speakers = result.get("speakers") if isinstance(result, dict) else None
     if isinstance(speakers, list) and all(isinstance(s, str) for s in speakers):
         from core.inference.stt_capabilities import label_speakers
@@ -23251,10 +23250,7 @@ def _source_transcript(
     speakers: bool,
     timed: bool = True,
 ) -> dict:
-    """The stream's complete payload: speakers only when asked for, the source by id and name.
-
-    ``timed`` is False for a model whose spans Studio does not trust (Nemotron's are sub-word
-    pieces); those are dropped so history never shows them."""
+    """``timed`` False drops untrusted spans (Nemotron's sub-word pieces) from history."""
     out = dict(result)
     if not timed:
         for key in ("segments", "words", "speakers"):
@@ -23274,11 +23270,7 @@ def _source_transcript(
 async def transcribe_audio_source(
     body: TranscribeSourceRequest, current_subject: str = Depends(get_current_subject)
 ):
-    """Transcribe Audio page audio named by id, streamed as NDJSON and saved to history.
-
-    The id is resolved in the caller's account to a prepared mono WAV (24 kHz for VibeVoice, else
-    16 kHz). audio.cpp reads that file in place and can add timestamps and speakers; any other
-    engine gets its bytes, as /audio/transcribe/raw does."""
+    """Transcribe Audio page audio named by id, streamed as NDJSON and saved to history."""
     from core.inference import audio_inputs, stt_capabilities, stt_details
     from core.inference.transcript_stream import stream_transcript
 

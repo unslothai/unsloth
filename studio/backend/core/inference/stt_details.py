@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Timestamps and speakers from an audio.cpp ``/v1/audio/transcriptions/details`` answer.
-
-The runtime reports spans as sample offsets: ``words`` (Qwen3-ASR with its forced aligner),
-``segments`` and ``speaker_turns`` (MOSS-Transcribe-Diarize, VibeVoice-ASR). This turns them into
-seconds, gives each segment the speaker it overlaps most, and cleans the text, so a caller never
-sees a sample count or a ``[12.5][S01]`` marker. Pure: no I/O.
-"""
+"""audio.cpp ``/details`` answers (sample offsets, markers) -> seconds, speakers, clean text."""
 
 from __future__ import annotations
 
@@ -22,7 +16,6 @@ FIXED_SPAN_RATES = {"vibevoice_asr": 24000, "vibevoice_asr_streaming": 24000}
 _MARKED_TEXT_FAMILIES = frozenset({"moss_transcribe_diarize"})
 _MARKER_RE = re.compile(r"\[\d+(?:\.\d+)?\]|\[S\d+\]")
 
-# Grouping aligned words into segments: a pause, a long run, or the end of a sentence.
 _SEGMENT_GAP_SECONDS = 0.6
 _SEGMENT_MAX_SECONDS = 10.0
 _SENTENCE_END = tuple(".?!。？！")
@@ -37,7 +30,6 @@ def _number(value: Any) -> Optional[float]:
 
 
 def _span(item: dict, rate: int) -> Optional[tuple[float, float]]:
-    """``(start, end)`` in seconds, from sample offsets (or seconds when only those are given)."""
     start, end = _number(item.get("start_sample")), _number(item.get("end_sample"))
     if start is not None and end is not None:
         start, end = start / rate, end / rate
@@ -67,7 +59,6 @@ def _is_cjk(char: str) -> bool:
 
 
 def _join_words(words: list[str]) -> str:
-    """Words joined by spaces, except between two CJK characters, which run together."""
     out = ""
     for word in words:
         if out and not (_is_cjk(out[-1]) and _is_cjk(word[0])):
@@ -119,7 +110,6 @@ def _turns(raw: Any, rate: int) -> list[tuple[float, float, str]]:
 
 
 def _assign_speakers(segments: list[dict], turns: list[tuple[float, float, str]]) -> None:
-    """Each segment takes the speaker whose turns overlap it most; none when nothing overlaps."""
     for segment in segments:
         overlap: dict[str, float] = {}
         for start, end, speaker in turns:
@@ -136,20 +126,13 @@ def _letters(text: str) -> str:
 
 
 def _respell(token: str, word: str) -> str:
-    """``token``'s punctuation around ``word``'s letters: a chunk can restart mid-sentence with a
-    capital ("Work"), while the aligned word keeps the case the sentence needs."""
+    """Keeps ``word``'s case: a chunk can restart mid-sentence with a capital ("Work")."""
     letters = iter(ch for ch in word if ch.isalnum())
     return "".join(next(letters, ch) if ch.isalnum() else ch for ch in token)
 
 
 def punctuate_words(words: list[dict], text: str) -> list[dict]:
-    """The aligned words spelled as in the punctuated text ("Friends," not "Friends").
-
-    The aligner drops punctuation, and Qwen3-ASR's punctuated text repeats the overlap between
-    its fixed chunks, so the two are aligned on their letters and only matching tokens are
-    used: a repeated phrase is skipped, and a word with no match (CJK text has no spaces to
-    split on) keeps its bare form. Punctuation-only tokens ("—") join the word before.
-    """
+    """Aligned on letters, matches only: the text repeats chunk overlaps, CJK has no spaces."""
     tokens = text.split()
     if not words or not tokens:
         return words
@@ -162,7 +145,6 @@ def punctuate_words(words: list[dict], text: str) -> list[dict]:
         for offset in range(block.size):
             index = block.b + offset
             shown = _respell(tokens[index], spelled[block.a + offset]["word"])
-            # Trailing punctuation-only tokens belong to this word.
             following = index + 1
             while following < len(tokens) and not letters[following]:
                 shown += tokens[following]
@@ -172,7 +154,6 @@ def punctuate_words(words: list[dict], text: str) -> list[dict]:
 
 
 def group_words(words: list[dict]) -> list[dict]:
-    """Aligned words grouped into segments: split on a pause, a long run or a sentence end."""
     segments: list[dict] = []
     current: list[dict] = []
 
@@ -212,12 +193,7 @@ def group_words(words: list[dict]) -> list[dict]:
 
 
 def normalize(payload: dict, family: str, sent_rate: int) -> dict:
-    """``{text, language, segments?, words?, speaker_ids?}`` from a ``/details`` answer.
-
-    ``sent_rate`` is the rate of the WAV the runtime read, used when the answer names none.
-    Seconds are rounded to milliseconds; ``speaker_ids`` are the runtime's own ids (``S01``,
-    ``0``) in the order they first speak. Keys are present only when the model produced them.
-    """
+    """``sent_rate`` (the WAV's rate) applies only when the answer names none."""
     payload = payload if isinstance(payload, dict) else {}
     rate = FIXED_SPAN_RATES.get(family)
     if rate is None:
@@ -231,7 +207,6 @@ def normalize(payload: dict, family: str, sent_rate: int) -> dict:
     segments = _segments(payload.get("segments"), rate)
     turns = _turns(payload.get("speaker_turns"), rate)
     if not segments and turns:
-        # A diarizer that reports turns only: each turn is a segment in its own words.
         segments = _segments(payload.get("speaker_turns"), rate)
     native_segments = bool(segments)
     if turns:
@@ -239,9 +214,7 @@ def normalize(payload: dict, family: str, sent_rate: int) -> dict:
     raw_text = payload.get("text")
     text = raw_text if isinstance(raw_text, str) else ""
     if not segments and words:
-        # Segment text reads like the transcript, punctuation included, and splits on sentences.
-        # The words are the de-duplicated transcript (the runtime's punctuated text repeats each
-        # chunk's overlap), so the text is rebuilt from them.
+        # Text rebuilt from words: the runtime's punctuated text repeats each chunk's overlap.
         words = punctuate_words(words, _clean_lines(text))
         segments = group_words(words)
         text = _join_words([w["word"] for w in words])

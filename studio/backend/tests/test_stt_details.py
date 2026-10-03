@@ -113,7 +113,6 @@ def test_vibevoice_spans_are_always_24k():
         {"start": 0.0, "end": 3.5, "text": "Concord returned.", "speaker": "0"}
     ]
     assert result["speaker_ids"] == ["0"]
-    # Clean prose stays as the model wrote it.
     assert result["text"] == payload["text"] and result["language"] == "en"
     assert (
         stt_details.normalize(payload, "vibevoice_asr_streaming", 16000)["segments"][0]["end"]
@@ -143,7 +142,6 @@ def test_word_grouping_splits_on_a_pause_a_long_run_and_a_sentence_end():
         {"start": 0.0, "end": 0.4, "word": "One"},
         {"start": 0.5, "end": 0.9, "word": "two."},
         {"start": 1.0, "end": 1.4, "word": "Three"},
-        # A 0.6 s pause.
         {"start": 2.0, "end": 2.4, "word": "four"},
     ]
     groups = stt_details.group_words(words)
@@ -213,8 +211,6 @@ def test_a_segment_with_no_overlapping_turn_has_no_speaker():
 
 
 def test_aligned_words_take_the_punctuation_of_the_text():
-    # The runtime keeps punctuation in `text` (preserve_punctuation) but its aligned words have
-    # none; segments are built from the words, so they would read without a comma or full stop.
     words = [
         {"start": 0.0, "end": 0.4, "word": "Friends"},
         {"start": 0.4, "end": 0.9, "word": "neighbors"},
@@ -269,8 +265,6 @@ def test_words_without_a_match_in_the_text_are_kept_bare():
 
 
 def test_chunk_overlap_repeated_in_the_text_is_skipped():
-    # Qwen3-ASR's punctuated text repeats the overlap between fixed chunks; the aligned words
-    # do not, and the transcript is rebuilt from them.
     bare = "the great work of a people is still done by patience courage and care"
     words = [
         {"start": float(i), "end": float(i) + 0.5, "word": w} for i, w in enumerate(bare.split())

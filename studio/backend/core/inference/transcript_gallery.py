@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Account-scoped transcript history, stored independently of model residency.
-
-A record holds the text and, when the model produced them, its segments, words and speakers,
-the names the user gave those speakers, and the Audio page source it was made from (by id, never
-a path). Those optional keys are checked on every read, so a hand-edited or truncated file loses
-only what is malformed, and a record from before they existed reads exactly as it did.
-"""
+"""Account-scoped transcript history; optional keys are validated on every read."""
 
 from __future__ import annotations
 
@@ -121,7 +115,6 @@ def _sanitize_details(record: dict) -> dict:
 
 
 def summary(record: dict) -> dict:
-    """A list row: the base keys, how many segments, whether there are words, and the speakers."""
     row = {key: record.get(key) for key in _BASE_KEYS}
     row["segment_count"] = len(record.get("segments") or ())
     row["has_words"] = bool(record.get("words"))
@@ -234,10 +227,7 @@ def set_archived(transcript_id: str, archived: bool) -> dict | None:
 
 
 def set_speaker_names(transcript_id: str, names: dict) -> dict | None:
-    """Name (or, with None or "", unname) speakers of a saved transcript; the full record back.
-
-    Raises ``TranscriptPatchError`` for an id the transcript has no speaker for, or a name over
-    the length cap. None when there is no such transcript."""
+    """None or "" unnames; raises ``TranscriptPatchError`` on unknown ids or overlong names."""
     directory = gallery_dir()
     with gallery_flags.exclusive(directory):
         record = _read(directory, transcript_id)

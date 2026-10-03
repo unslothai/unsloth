@@ -561,8 +561,7 @@ _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
 
 FAMILIES: dict[str, AudioCppFamily] = {f.family: f for f in _FAMILY_LIST}
 
-# Families whose session refuses any backend but the CPU ("Niagara ASR CPU variants require
-# --backend cpu"), so Studio starts them there whatever the device preference says.
+# Sessions refuse any backend but CPU ("Niagara ASR CPU variants require --backend cpu").
 CPU_ONLY_FAMILIES: frozenset[str] = frozenset({"niagara_asr"})
 
 # Spec task names that are not runtime task tokens.

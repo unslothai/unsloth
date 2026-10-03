@@ -78,16 +78,14 @@ logger = get_logger(__name__)
 _TRANSCRIBE_TIMEOUT_SECONDS = 600.0
 _DETAILS_PATH = "/v1/audio/transcriptions/details"
 
-# Word timestamps for Qwen3-ASR come from this aligner, loaded beside it by session option. Fixed
-# chunking keeps the runtime off its Silero VAD, which Studio does not ship.
+# Fixed chunking keeps the runtime off its Silero VAD, which Studio does not ship.
 QWEN3_ALIGNER = CompanionModel(
     f"{AUDIO_CPP_REPO}/Qwen3-ForcedAligner-0.6B-GGUF",
     "Q8_0",
     "qwen3_asr.forced_aligner_model_path",
 )
 _ALIGNED_FAMILIES = frozenset({"qwen3_asr"})
-# Without preserve_punctuation the runtime rebuilds the text from the aligned words, which drops
-# every comma and full stop.
+# Without preserve_punctuation the runtime rebuilds text from aligned words, losing punctuation.
 _TIMESTAMP_OPTIONS = {
     "return_timestamps": "true",
     "audio_chunk_mode": "fixed",
@@ -505,7 +503,6 @@ def cancel_model_download() -> bool:
 
 
 def _launches_on_cpu(entry: AudioCppModel, force_cpu: bool) -> bool:
-    """Where a launch of ``entry`` runs: the user's CPU choice, training, or a CPU-only family."""
     return force_cpu or _training_active() or entry.family in CPU_ONLY_FAMILIES
 
 
@@ -524,8 +521,7 @@ class AudioCppSttSidecar:
         self._forced_cpu = False
         # Where the server actually runs: training also puts it on the CPU, without the user asking.
         self._launched_cpu = False
-        # Whether the server was started with the timestamp aligner; ``model_options`` is not part
-        # of AudioCppModel equality, so this is tracked beside it.
+        # Tracked separately: ``model_options`` is not part of AudioCppModel equality.
         self._aligned = False
         self._idle_timer: Optional[threading.Timer] = None
         self._idle_generation = 0
@@ -733,7 +729,6 @@ class AudioCppSttSidecar:
         entry: AudioCppModel,
         on_phase: Optional[Callable[[str], None]] = None,
     ) -> None:
-        """Download the timestamp aligner when it is not in the cache yet (about 1.1 GB, once)."""
         from core.inference import audio_cpp_backend
 
         try:
@@ -756,7 +751,6 @@ class AudioCppSttSidecar:
         forget(QWEN3_ALIGNER.id)
 
     def _with_aligner(self, entry: AudioCppModel) -> AudioCppModel:
-        """``entry`` with the downloaded aligner's served path in its session options."""
         from core.inference import audio_cpp_backend
 
         try:
@@ -780,7 +774,6 @@ class AudioCppSttSidecar:
         return replace(entry, model_options = {**options, "session_options": session})
 
     def needs_reload_for(self, model: Optional[str], timestamps: bool) -> bool:
-        """Whether serving ``model`` (with ``timestamps``) starts the server. For progress text."""
         if not self._server_alive():
             return True
         try:
@@ -800,11 +793,7 @@ class AudioCppSttSidecar:
         timestamps: bool = False,
         on_phase: Optional[Callable[[str], None]] = None,
     ) -> None:
-        """Start (or switch) audiocpp_server for the requested audio.cpp ASR model.
-
-        ``timestamps`` starts Qwen3-ASR with its forced aligner. A server that already has the
-        aligner keeps it for requests without timestamps rather than restarting.
-        """
+        """A server already holding the aligner keeps it for untimestamped requests (no restart)."""
         from core.inference.audio_device import audio_device_forces_cpu
 
         if request_cancel_event is not None and request_cancel_event.is_set():
@@ -895,7 +884,6 @@ class AudioCppSttSidecar:
         fast: bool = False,
         cancel_event: Optional[threading.Event] = None,
     ) -> dict:
-        """Transcribe encoded audio bytes via audiocpp_server; see ``transcribe_path``."""
         del fast  # audio.cpp ASR families decode greedily; there is no beam knob to trade.
         self._raise_if_update_in_progress()
         ensure_engine_available()
@@ -917,8 +905,7 @@ class AudioCppSttSidecar:
         model: Optional[str],
         on_phase: Optional[Callable[[str], None]] = None,
     ) -> None:
-        """Download ``model``'s timestamp aligner if it has one and it is missing. Called before
-        the load, so a first 1.1 GB download holds neither the load lock nor dictation."""
+        """Runs before the load so a 1.1 GB download holds neither the load lock nor dictation."""
         entry = resolve_audio_cpp_stt_model(self.keep_loaded_variant(model))
         if entry.family in _ALIGNED_FAMILIES:
             self._ensure_aligner_downloaded(entry, on_phase)
@@ -933,12 +920,7 @@ class AudioCppSttSidecar:
         cancel_event: Optional[threading.Event] = None,
         on_phase: Optional[Callable[[str], None]] = None,
     ) -> dict:
-        """Transcribe a server-local 16/24 kHz mono WAV in place.
-
-        ``timestamps`` asks Qwen3-ASR for word timestamps through its aligner; other families
-        return whatever spans they always produce. Returns {text, language, duration, model,
-        segments?, words?, speakers?}; speakers are the runtime's ids in first-spoken order.
-        """
+        """Transcribe a server-local 16/24 kHz mono WAV in place."""
         self._raise_if_update_in_progress()
         ensure_engine_available()
         target = self.keep_loaded_variant(model)
@@ -993,7 +975,6 @@ class AudioCppSttSidecar:
     def _post_transcription(
         self, wav_bytes: bytes, lang: Optional[str], cancel_event: Optional[threading.Event]
     ) -> str:
-        """The text of ``wav_bytes``, through a temp file and ``/details``."""
         server = self._server
         if server is None:
             raise SttEngineUnavailableError("The audio runtime is not running.")
@@ -1008,7 +989,6 @@ class AudioCppSttSidecar:
         cancel_event: Optional[threading.Event],
         options: dict,
     ) -> dict:
-        """POST ``/v1/audio/transcriptions/details`` naming ``path``; the parsed answer."""
         server = self._server
         if server is None:
             raise SttEngineUnavailableError("The audio runtime is not running.")

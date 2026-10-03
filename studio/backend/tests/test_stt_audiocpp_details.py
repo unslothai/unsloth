@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The audio.cpp dictation sidecar against a fake ``audiocpp_server`` child that records requests.
-
-JSON ``/v1/audio/transcriptions/details`` naming a server-local WAV (never multipart), temp files
-removed however a request ends, the Qwen3-ASR timestamp aligner loaded only when asked, and
-Niagara kept on the CPU."""
+"""The audio.cpp STT sidecar against a fake ``audiocpp_server`` that records requests."""
 
 import io
 import json

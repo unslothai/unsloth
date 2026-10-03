@@ -65,7 +65,6 @@ def load(
     downloaded must not cost the user the engine they were already using.
     """
     others = [name for name in STT_ENGINES if name != engine]
-    # Only audio.cpp takes ``timestamps`` (Qwen3-ASR starts with its aligner).
     options = {"timestamps": True} if timestamps else {}
     with _load_lock:
         # Release the other engines BEFORE allocating, but only once the checkpoint is known to be on disk. Holding
