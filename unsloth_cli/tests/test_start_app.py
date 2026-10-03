@@ -39,6 +39,7 @@ def studio(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("LOCALAPPDATA", str(home / "AppData" / "Local"))
     monkeypatch.delenv("CODEX_HOME", raising = False)
     monkeypatch.delenv("UNSLOTH_API_KEY", raising = False)
     server = {"calls": [], "keys": {CLI_KEY, APP_KEY}, "minted": 0}
@@ -471,7 +472,7 @@ def test_codex_app_owner_without_psutil(monkeypatch):
 
 def test_hermes_app_adds_unsloth_to_the_active_profile(studio):
     yaml = pytest.importorskip("yaml")
-    root = studio["home"] / ".hermes"
+    root = start._hermes_app_target().path.parent
     (root / "profiles" / "work").mkdir(parents = True)
     (root / "active_profile").write_text("work\n")
     config = root / "profiles" / "work" / "config.yaml"
