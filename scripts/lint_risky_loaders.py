@@ -222,6 +222,15 @@ def _unsafe_deserialize(call: ast.Call, qualified: str):
     return None
 
 
+def _true_field_default(value: ast.AST) -> bool:
+    """`Field(True, ...)` / `field(default = True)`: the schema default Studio's request models use."""
+    if not (
+        isinstance(value, ast.Call) and _dotted(value.func).split(".")[-1] in ("Field", "field")
+    ):
+        return False
+    return (bool(value.args) and _is_true(value.args[0])) or _is_true(_keyword(value, "default"))
+
+
 def _trust_remote_code(node: ast.AST):
     """`trust_remote_code` turned on by the code itself."""
     if isinstance(node, ast.Call):
@@ -251,7 +260,7 @@ def _trust_remote_code(node: ast.AST):
     elif (
         isinstance(node, (ast.Assign, ast.AnnAssign))
         and node.value is not None
-        and _is_true(node.value)
+        and (_is_true(node.value) or _true_field_default(node.value))
     ):
         targets = node.targets if isinstance(node, ast.Assign) else [node.target]
         for target in targets:
@@ -381,7 +390,8 @@ def scan_file(path: Path, relative: str) -> list:
             stack.append((child, owner))
 
     table = _imports(ast.Module(body = imports, type_ignores = []))
-    for owner in calls_by_owner.keys() | git_by_owner.keys():
+    # Insertion order, so findings print in the same order on every run.
+    for owner in list(calls_by_owner) + [o for o in git_by_owner if o not in calls_by_owner]:
         calls = [(call, _qualified(call.func, table)) for call in calls_by_owner.get(owner, ())]
         for call, qualified in calls:
             sink = _dynamic_import(call, qualified)
@@ -397,6 +407,7 @@ def scan_file(path: Path, relative: str) -> list:
 
 def collect(targets: list) -> list:
     found = []
+    seen = set()
     for target in targets:
         root = REPO_ROOT / target
         if root.is_file() and root.suffix == ".py":
@@ -412,8 +423,10 @@ def collect(targets: list) -> list:
             if not path.is_file() or path.resolve() == Path(__file__).resolve():
                 continue
             relative = _relative(path)
-            if EXCLUDED_PARTS & set(Path(relative).parts):
+            # Overlapping targets must not count one file's calls twice.
+            if relative in seen or EXCLUDED_PARTS & set(Path(relative).parts):
                 continue
+            seen.add(relative)
             found.extend(scan_file(path, relative))
     return found
 
@@ -554,6 +567,8 @@ def load(name, trust_remote_code = True):
     kwargs["trust_remote_code"] = True
     kwargs.setdefault("trust_remote_code", True)
     return {"trust_remote_code": True}
+class Request(BaseModel):
+    trust_remote_code: bool = Field(True, description = "x")
 """,
     "unpinned-code-fetch": """
 import sys, subprocess
@@ -585,7 +600,7 @@ def f(path, flag):
 }
 _BAD_COUNTS = {
     "dynamic-import": 7,
-    "trust-remote-code": 6,
+    "trust-remote-code": 7,
     "unpinned-code-fetch": 5,
     "unsafe-deserialize": 7,
 }

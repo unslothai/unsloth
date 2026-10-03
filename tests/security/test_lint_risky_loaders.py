@@ -69,6 +69,10 @@ REPORTED = {
         "def f(n):\n    AutoModel.from_pretrained(n, trust_remote_code = True)\n",
         ("trust-remote-code", "keyword"),
     ),
+    "trust_remote_code schema default": (
+        "class R(BaseModel):\n    trust_remote_code: bool = Field(True, description = 'x')\n",
+        ("trust-remote-code", "assignment"),
+    ),
     "trust_remote_code dict item": (
         "def f(kw):\n    kw['trust_remote_code'] = True\n",
         ("trust-remote-code", "item"),
@@ -134,6 +138,7 @@ QUIET = {
         "def f(n, trust_remote_code = False):\n"
         "    AutoModel.from_pretrained(n, trust_remote_code = trust_remote_code)\n"
     ),
+    "a schema default of False": "class R(BaseModel):\n    trust_remote_code: bool = Field(False)\n",
     "a pinned URL": "URL = 'https://raw.githubusercontent.com/org/repo/v1.2/tool.py'\n",
     "a pinned download put on sys.path": (
         "import sys\nfrom huggingface_hub import snapshot_download\n"
@@ -245,6 +250,13 @@ def test_a_root_scope_keeps_every_entry(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(sys, "argv", ["lint_risky_loaders.py", "--paths", "."])
     assert module.main() == 0
+
+
+def test_overlapping_paths_scan_a_file_once():
+    module = _module()
+    target = "unsloth_zoo" if (module.REPO_ROOT / "unsloth_zoo").is_dir() else "unsloth/models"
+    once = module.collect([target])
+    assert module.collect([target, target]) == once
 
 
 def test_every_baseline_entry_is_reviewed():
