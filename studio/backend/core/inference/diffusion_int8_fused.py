@@ -293,10 +293,30 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         FP32_SCALE: tl.constexpr,
     ):
         g = _pre(
-            crow + g0, xs, ws_ptr + g0, b_ptr + g0, offs, m, HAS_BIAS, WS_FP32, EVICT, True, FP32_SCALE
+            crow + g0,
+            xs,
+            ws_ptr + g0,
+            b_ptr + g0,
+            offs,
+            m,
+            HAS_BIAS,
+            WS_FP32,
+            EVICT,
+            True,
+            FP32_SCALE,
         )
         v = _pre(
-            crow + v0, xs, ws_ptr + v0, b_ptr + v0, offs, m, HAS_BIAS, WS_FP32, EVICT, True, FP32_SCALE
+            crow + v0,
+            xs,
+            ws_ptr + v0,
+            b_ptr + v0,
+            offs,
+            m,
+            HAS_BIAS,
+            WS_FP32,
+            EVICT,
+            True,
+            FP32_SCALE,
         )
         return _rbf16(_rbf16(_silu(g)) * v)
 
@@ -332,7 +352,18 @@ def _kernels() -> Optional[types.SimpleNamespace]:
             offs = k + base
             m = offs < N
             h = _swiglu_val(
-                crow, xs, ws_ptr, b_ptr, G0, V0, offs, m, HAS_BIAS, WS_FP32, "evict_first", FP32_SCALE
+                crow,
+                xs,
+                ws_ptr,
+                b_ptr,
+                G0,
+                V0,
+                offs,
+                m,
+                HAS_BIAS,
+                WS_FP32,
+                "evict_first",
+                FP32_SCALE,
             )
             tl.store(hrow + offs, h.to(tl.bfloat16), mask = m, eviction_policy = "evict_last")
             acc = tl.maximum(acc, tl.where(m, tl.abs(h), 0.0))
@@ -386,7 +417,17 @@ def _kernels() -> Optional[types.SimpleNamespace]:
             offs = k + base
             m = offs < N
             y = _pre(
-                c_ptr + row * N, xs, ws_ptr, b_ptr, offs, m, HAS_BIAS, WS_FP32, "evict_first", True, FP32_SCALE
+                c_ptr + row * N,
+                xs,
+                ws_ptr,
+                b_ptr,
+                offs,
+                m,
+                HAS_BIAS,
+                WS_FP32,
+                "evict_first",
+                True,
+                FP32_SCALE,
             )
             tl.store(o_ptr + row * N + offs, y.to(tl.bfloat16), mask = m)
 
@@ -608,7 +649,11 @@ def _device_ok(index: int) -> bool:
                     return False
         # The mirrors' act quant must still be this torchao's own (its scale dtype, reciprocal and product roundings),
         # and the GELU must round every finite bf16 input as ATen's does.
-        return _act_quant_contract_ok(dev) and _gelu_matches_aten(dev) and _epilogue_matches_torchao(dev)
+        return (
+            _act_quant_contract_ok(dev)
+            and _gelu_matches_aten(dev)
+            and _epilogue_matches_torchao(dev)
+        )
     except Exception:  # noqa: BLE001 - any build / launch failure keeps the stock path
         return False
 
@@ -636,7 +681,11 @@ def _bf16_tie_ints(shape: tuple, generator: Any) -> Any:
     return ((mid + off) * sign).to(torch.int32).reshape(shape)
 
 
-def _epilogue_matches_torchao(dev: Any, m: int = 1031, n: int = 2056) -> bool:
+def _epilogue_matches_torchao(
+    dev: Any,
+    m: int = 1031,
+    n: int = 2056,
+) -> bool:
     """The kernels' dequant epilogue equals torchao's ``bf16(bf16(c * xs) * ws + bias)`` on every element, for both
     activation-scale dtypes and an fp32 weight scale + bias (the case an FMA contraction would round once)."""
     import torch

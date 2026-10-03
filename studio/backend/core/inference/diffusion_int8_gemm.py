@@ -351,7 +351,11 @@ def _probe(index: int, cfg: tuple) -> bool:
         return False
 
 
-def tie_operands(device: Any, rows: int = 32, k: int = 4096) -> tuple:
+def tie_operands(
+    device: Any,
+    rows: int = 32,
+    k: int = 4096,
+) -> tuple:
     """int8 (a [rows, k], w [64, k]) whose products are int32 accumulators in [2^24, 2^26) one or two units off a
     bf16 rounding midpoint (both signs): a row of 127s then 1s, each weight row hitting its own target exactly."""
     import torch

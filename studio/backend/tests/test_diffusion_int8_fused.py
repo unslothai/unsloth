@@ -39,7 +39,9 @@ def _cuda_int8_toolchain() -> bool:
     return fused._triton_version_ok() and fused._triton_jit_toolchain_ok()
 
 
-@pytest.mark.skipif(not _cuda_int8_toolchain(), reason = "needs CUDA (not ROCm), Triton >= 3.2, torchao")
+@pytest.mark.skipif(
+    not _cuda_int8_toolchain(), reason = "needs CUDA (not ROCm), Triton >= 3.2, torchao"
+)
 def test_device_probe_accepts_this_torchao():
     # The probe compares both kernels to their eager mirrors for both activation-scale dtypes (with int32 ties above
     # 2^24) and the mirrors' act quant to torchao's own. On main the kernels held torchao 0.18's fp32 contract only.
@@ -380,7 +382,9 @@ def test_gelu_rounds_every_bf16_input_like_aten():
 def test_epilogue_rounds_scale_product_and_bias_separately():
     # fp32 weight scale + bias: nothing rounds between ``* ws`` and ``+ bias``, and on B200 ptxas fused the packed
     # f32x2 mul + add into an FMA (one rounding) despite fp fusion off; ~1 in 1e5 outputs moved one bf16 step.
-    assert fused._epilogue_matches_torchao(torch.device("cuda", torch.cuda.current_device()), 4101, 3000)
+    assert fused._epilogue_matches_torchao(
+        torch.device("cuda", torch.cuda.current_device()), 4101, 3000
+    )
 
 
 @needs_cuda

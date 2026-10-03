@@ -177,7 +177,9 @@ def test_epilogue_rounds_large_accumulators_twice_like_torch(cfg, ws32):
     # epilogue math is arch-independent: every tile config is launched directly, past the arch gate.
     a, w, targets = _tie_operands()
     assert torch.equal(torch._int_mm(a, w.t())[0].cpu(), targets)
-    assert int((_one_rounding_bf16(targets) != targets.float().to(torch.bfloat16).float()).sum()) >= 8
+    assert (
+        int((_one_rounding_bf16(targets) != targets.float().to(torch.bfloat16).float()).sum()) >= 8
+    )
     xs = torch.ones(a.shape[0], device = "cuda", dtype = torch.bfloat16)
     ws = torch.ones(w.shape[0], device = "cuda", dtype = torch.float32 if ws32 else torch.bfloat16)
     try:
