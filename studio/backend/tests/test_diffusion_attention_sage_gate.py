@@ -331,3 +331,43 @@ def test_auto_never_selects_sage_on_nvidia(monkeypatch):
         monkeypatch.setattr(att, "_cuda_capability", lambda cap = cap: cap)
         for speed in (True, False):
             assert select_attention_backend(_target(), "auto", speed_active = speed) != "sage"
+
+
+# --- Sage stays inside a fullgraph compile --------------------------------------------------------------------
+# Upstream sageattn() reads the GPU arch through Python torch.cuda calls, which Dynamo rejects ("torch.* op returned
+# non-Tensor"): Studio's fullgraph compile then failed and the whole load ran eager. The guard calls it through an
+# opaque custom op instead.
+
+
+def _arch_reading_sage(query, key, value, attn_mask = None, is_causal = False, scale = None, return_lse = False,
+                       _parallel_config = None):
+    torch._dynamo.graph_break()  # stands in for sageattn's get_cuda_arch_versions(): Python Dynamo cannot trace
+    return _native(query.float(), key.float(), value.float()).to(query.dtype)
+
+
+@pytest.mark.parametrize("head_dim", [64, 128])
+def test_sage_call_compiles_fullgraph_through_the_guard(monkeypatch, head_dim):
+    backends = dispatch._AttentionBackendRegistry._backends
+    backends[dispatch.AttentionBackendName.SAGE] = _arch_reading_sage
+    assert att._install_sage_dispatch_guard() is True
+    monkeypatch.setattr(att, "_sage_reroute_reason", lambda *a: None)
+    guarded = backends[dispatch.AttentionBackendName.SAGE]
+    q, k, v = _qkv(head_dim = head_dim, dtype = torch.bfloat16)
+
+    def block(q, k, v):
+        return guarded(query = q * 1.0, key = k, value = v).sum(-1)
+
+    torch._dynamo.reset()
+    compiled = torch.compile(block, backend = "aot_eager", fullgraph = True)
+    torch.testing.assert_close(compiled(q, k, v), _native(q.float(), k.float(), v.float()).to(q.dtype).sum(-1))
+    torch._dynamo.reset()
+
+
+def test_unguarded_sage_call_breaks_a_fullgraph_compile():
+    """Negative control: the same function called directly cannot be traced."""
+    q, k, v = _qkv(head_dim = 64, dtype = torch.bfloat16)
+    torch._dynamo.reset()
+    compiled = torch.compile(lambda q, k, v: _arch_reading_sage(q, k, v), backend = "aot_eager", fullgraph = True)
+    with pytest.raises(Exception):
+        compiled(q, k, v)
+    torch._dynamo.reset()

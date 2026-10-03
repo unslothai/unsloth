@@ -455,6 +455,55 @@ def _note_sage_reroute(reason: str) -> None:
         )
 
 
+# sageattn() reads the GPU arch through torch.cuda calls Dynamo cannot trace ("torch.* op returned non-Tensor"), so a
+# compiled DiT that reaches it fails its fullgraph compile and the whole load runs eager (measured on A100: Qwen-Image-2.1
+# 0.20 -> 0.38 s/step). Calling it through an opaque custom op keeps the rest of the block compiled.
+_SAGE_OP_NAME = "unsloth_studio::sage_attention_nhd"
+_SAGE_OP: dict[str, Any] = {}
+_SAGE_OP_LOCK = threading.Lock()
+
+
+def _sage_custom_op(sage_fn: Any) -> Optional[Any]:
+    """An opaque ``torch.library`` op around diffusers' sage function (NHD in, NHD out), or None when unavailable."""
+    with _SAGE_OP_LOCK:
+        if "op" in _SAGE_OP:
+            _SAGE_OP["fn"] = sage_fn
+            return _SAGE_OP["op"]
+        try:
+            import torch
+
+            _SAGE_OP["fn"] = sage_fn
+
+            def _impl(query, key, value, is_causal, scale):
+                out = _SAGE_OP["fn"](
+                    query = query, key = key, value = value, is_causal = is_causal, scale = scale
+                )
+                # A fresh contiguous tensor, so the fake below describes it exactly (head dims under 64 come back as
+                # a padded slice).
+                return out.contiguous()
+
+            # Real objects, not the strings this module's `from __future__ import annotations` would leave: custom_op
+            # infers the schema from them.
+            _impl.__annotations__ = {
+                "query": torch.Tensor,
+                "key": torch.Tensor,
+                "value": torch.Tensor,
+                "is_causal": bool,
+                "scale": Optional[float],
+                "return": torch.Tensor,
+            }
+            _op = torch.library.custom_op(_SAGE_OP_NAME, mutates_args = ())(_impl)
+
+            @_op.register_fake
+            def _(query, key, value, is_causal, scale):
+                return query.new_empty((*query.shape[:-1], value.shape[-1]))
+
+            _SAGE_OP["op"] = _op
+        except Exception:  # noqa: BLE001 - old torch or a re-registered name: call the function directly
+            _SAGE_OP["op"] = None
+        return _SAGE_OP["op"]
+
+
 def _install_sage_dispatch_guard() -> bool:
     """Wrap diffusers' registered ``sage`` backend so calls Sage cannot take run native. Idempotent.
 
@@ -476,6 +525,9 @@ def _install_sage_dispatch_guard() -> bool:
     if not callable(sage_fn) or not callable(native_fn):
         return False
 
+    # Built here, eagerly: the guard body runs inside compiled graphs, where taking the registration lock cannot trace.
+    op = _sage_custom_op(sage_fn)
+
     def _guarded_sage(*args: Any, **kwargs: Any) -> Any:
         names = ("query", "key", "value", "attn_mask")
         bound = dict(zip(names, args))
@@ -484,6 +536,22 @@ def _install_sage_dispatch_guard() -> bool:
             bound.get("query"), bound.get("key"), bound.get("value"), bound.get("attn_mask")
         )
         if reason is None:
+            extra = {k: v for k, v in kwargs.items() if k not in names}
+            plain = (
+                op is not None
+                and len(args) <= 4
+                and not extra.get("return_lse", False)
+                and extra.get("_parallel_config") is None
+                and set(extra) <= {"is_causal", "scale", "return_lse", "_parallel_config"}
+            )
+            if plain:
+                return op(
+                    bound["query"],
+                    bound["key"],
+                    bound["value"],
+                    bool(extra.get("is_causal", False)),
+                    extra.get("scale"),
+                )
             return sage_fn(*args, **kwargs)
         _note_sage_reroute(reason)
         return native_fn(*args, **kwargs)
