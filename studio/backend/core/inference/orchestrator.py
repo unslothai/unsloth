@@ -3330,6 +3330,27 @@ class InferenceOrchestrator:
         except RuntimeError:
             self._teardown_not_sent()
 
+    def separate_audio_response(
+        self,
+        source_path: str,
+        output_dir: str,
+        audio_options: Optional[dict] = None,
+        cancel_event = None,
+    ) -> list[dict]:
+        """Split the prepared 44.1 kHz WAV at ``source_path`` into stems the worker writes under
+        ``output_dir``; returns ``[{id, path, sample_rate, channels, duration_s}]``. The full token
+        budget gives the watchdog its hour, the same bound the runtime request has."""
+        outputs, _sample_rate = self.generate_audio_response(
+            text = "",
+            max_new_tokens = AUDIO_GENERATION_MAX_TOKENS,
+            cancel_event = cancel_event,
+            audio_options = audio_options,
+            workflow = "separate",
+            audio_inputs = {"source": source_path},
+            output_dir = output_dir,
+        )
+        return outputs
+
     def generate_audio_response(
         self,
         text: str,
@@ -3349,10 +3370,12 @@ class InferenceOrchestrator:
         audio_inputs: Optional[dict[str, str]] = None,
         reference_text: Optional[str] = None,
         speed: Optional[float] = None,
+        output_dir: Optional[str] = None,
     ) -> Tuple[bytes, int]:
         """Generate TTS audio. Returns (wav_bytes, sample_rate). Blocking: sends the command and
-        waits for the full audio response. ``audio_inputs`` maps a role (reference, emotion) to a
-        server-local WAV path; audio bytes never cross the queue."""
+        waits for the full audio response. ``audio_inputs`` maps a role (reference, emotion,
+        source) to a server-local WAV path; audio bytes never cross the queue. A separation
+        (``output_dir`` set) returns (outputs, sample_rate) instead, see ``separate_audio_response``."""
         if not self._ensure_subprocess_alive():
             raise RuntimeError("Inference subprocess is not running")
         if not self.active_model_name:
@@ -3429,6 +3452,8 @@ class InferenceOrchestrator:
                     cmd["reference_text"] = reference_text
                 if speed is not None:
                     cmd["speed"] = float(speed)
+                if output_dir is not None:
+                    cmd["output_dir"] = str(output_dir)
 
                 # Same shared-queue hazard as _generate_inner: see _direct_reader.
                 read_one, _drain, release_mailbox = self._direct_reader(request_id, cancel_event)
@@ -3488,6 +3513,8 @@ class InferenceOrchestrator:
                         if rtype == "audio_done":
                             if cancel_event is not None and cancel_event.is_set():
                                 raise AudioGenerationCancelledError("Audio generation cancelled")
+                            if resp.get("outputs") is not None:
+                                return resp["outputs"], int(resp.get("sample_rate") or 0)
                             wav_bytes = base64.b64decode(resp["wav_base64"])
                             sample_rate = resp["sample_rate"]
                             return wav_bytes, sample_rate

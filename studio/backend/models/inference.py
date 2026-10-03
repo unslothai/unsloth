@@ -5095,7 +5095,7 @@ class AudioGalleryItem(BaseModel):
     pinned: bool = Field(False, description = "Pinned to the top of history")
     archived: bool = Field(False, description = "Moved to the archived shelf, hidden from history")
     workflow: Optional[str] = Field(
-        None, description = "Audio page workflow that made the clip: speak, clone or music"
+        None, description = "Audio page workflow that made the clip: speak, clone, music or separate"
     )
     order_at: Optional[float] = Field(
         None,
@@ -5159,6 +5159,7 @@ class AudioRunInputs(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
     reference: Optional[AudioSourceRef] = None
+    source: Optional[AudioSourceRef] = None
     reference_text: Optional[str] = Field(None, max_length = 4000)
     emotion: Optional[AudioSourceRef] = None
 
@@ -5168,8 +5169,9 @@ class AudioRunRequest(BaseModel):
 
     model_config = ConfigDict(extra = "forbid")
 
-    workflow: Literal["clone", "speak"]
-    text: str = Field(..., min_length = 1)
+    workflow: Literal["clone", "speak", "separate"]
+    # Required to clone or speak; a separation takes none (the route answers that with a 400).
+    text: Optional[str] = Field(None, min_length = 1)
     language: Optional[str] = Field(None, max_length = 64)
     instructions: Optional[str] = Field(None, max_length = 4000)
     inputs: AudioRunInputs = Field(default_factory = AudioRunInputs)
@@ -5191,6 +5193,12 @@ class AudioRunRequest(BaseModel):
             if isinstance(option, (dict, list)):
                 raise ValueError(f"Option '{name}' must be a single value.")
         return value
+
+    @model_validator(mode = "after")
+    def _text_for_speech(self):
+        if self.workflow in ("clone", "speak") and self.text is None:
+            raise ValueError("text is required to clone or speak.")
+        return self
 
 
 class AudioRunClip(BaseModel):

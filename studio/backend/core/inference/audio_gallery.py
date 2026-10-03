@@ -10,9 +10,11 @@ valid record. Dumb storage: the route owns the schema, this reads, writes and so
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
+import shutil
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -64,6 +66,46 @@ def save(wav_bytes: bytes, meta: dict[str, Any]) -> dict[str, Any]:
                 pass
         raise
     _prune_to_cap()
+    return _record(audio_id, meta)
+
+
+def save_file(
+    src: Path,
+    meta: dict[str, Any],
+    *,
+    prune: bool = True,
+) -> dict[str, Any]:
+    """Persist a WAV already on disk (a separated stem) plus its sidecar; return the record.
+
+    The file is moved in (copied when ``src`` is on another filesystem) and committed by the
+    sidecar like ``save``; on any failure every artifact is removed. A run saving several files
+    passes ``prune=False`` and prunes once after the last one, so a cap never takes part of it.
+    """
+    audio_id = uuid.uuid4().hex
+    directory = gallery_dir()
+    wav_path = directory / f"{audio_id}.wav"
+    wav_tmp = directory / f".{audio_id}.wav.tmp"
+    sidecar = directory / f"{audio_id}.json"
+    sidecar_tmp = directory / f".{audio_id}.json.tmp"
+    try:
+        try:
+            os.replace(src, wav_path)
+        except OSError as exc:
+            if exc.errno != errno.EXDEV:
+                raise
+            shutil.copyfile(src, wav_tmp)
+            os.replace(wav_tmp, wav_path)
+        sidecar_tmp.write_text(json.dumps(meta), encoding = "utf-8")
+        os.replace(sidecar_tmp, sidecar)
+    except BaseException:
+        for path in (wav_tmp, sidecar_tmp, wav_path, sidecar):
+            try:
+                path.unlink(missing_ok = True)
+            except OSError:
+                pass
+        raise
+    if prune:
+        _prune_to_cap()
     return _record(audio_id, meta)
 
 
@@ -208,7 +250,7 @@ def _record(
 
 def _workflow(meta: dict[str, Any]) -> str:
     workflow = meta.get("workflow")
-    if workflow in ("speak", "clone", "music"):
+    if workflow in ("speak", "clone", "music", "separate"):
         return workflow
     return workflow_for_audio_type(meta.get("audio_type"))
 
@@ -431,8 +473,8 @@ def clear(include_archived: bool = False, workflow: Optional[str] = None) -> int
     orphan WAVs are preserved, since list_audio already hides them.
 
     Archived clips are spared unless ``include_archived``, and sparing them raises
-    FlagsUnavailable when the flag store cannot be read. A ``workflow`` (speak, clone or music)
-    spares the other workflows' clips."""
+    FlagsUnavailable when the flag store cannot be read. A ``workflow`` (speak, clone, music or
+    separate) spares the other workflows' clips."""
     removed = 0
     directory = gallery_dir()
     with gallery_flags.exclusive(directory, require_file_lock = not include_archived):

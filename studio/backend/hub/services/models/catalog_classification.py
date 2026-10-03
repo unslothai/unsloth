@@ -202,6 +202,7 @@ def _audio_cpp_classification(
     audio_type = {
         "tts": acm.AUDIO_CPP_TTS_AUDIO_TYPE,
         "music": acm.AUDIO_CPP_MUSIC_AUDIO_TYPE,
+        "sep": acm.AUDIO_CPP_SEP_AUDIO_TYPE,
     }.get(policy.task)
     return task, audio_type
 

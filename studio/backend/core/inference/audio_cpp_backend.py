@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Worker backend for audio.cpp speech and music models in the main audio slot.
+"""Worker backend for audio.cpp speech, music and separation models in the main audio slot.
 
 Selected by the inference worker in place of ``NativeAudioBackend`` when the model
 is an audio.cpp TTS or music GGUF, so loading, auto-switching, idle eviction,
@@ -23,6 +23,7 @@ import re
 import threading
 import wave
 from dataclasses import replace
+from pathlib import Path
 from typing import Any, Optional, Tuple
 
 from core.inference import audio_cpp_files
@@ -179,6 +180,9 @@ class AudioCppBackend:
         self._model: Optional[AudioCppModel] = None
         self._server: Optional[AudioCppServer] = None
         self._server_lock = threading.RLock()
+        # The session options the running server was started with. ``model_options`` is not part of
+        # the model's equality, so a changed separation overlap is only seen here.
+        self._served_session: dict = {}
 
     # Loading
 
@@ -288,6 +292,7 @@ class AudioCppBackend:
             except AudioCppStartCancelledError as exc:
                 _raise_if_cancelled(cancel_event)
                 raise RuntimeError(str(exc)) from exc
+            self._served_session = dict((served.model_options or {}).get("session_options") or {})
             self.device = "cpu" if self._server.backend == "cpu" else self._server.backend
 
     def _stop_server_locked(self) -> None:
@@ -332,6 +337,8 @@ class AudioCppBackend:
         if model is None:
             raise RuntimeError("No active audio model")
         _raise_if_cancelled(cancel_event)
+        if model.task == "sep":
+            raise RuntimeError(f"{model.display_name} separates audio; open Separate.")
         cloning = workflow == "clone" or bool(audio_inputs)
         if cloning and model.clone is None:
             raise RuntimeError(f"{model.display_name} cannot clone a voice.")
@@ -382,6 +389,75 @@ class AudioCppBackend:
             ) from exc
         _raise_if_cancelled(cancel_event)
         return wav, _wav_sample_rate(wav)
+
+    def separate_audio(
+        self,
+        source_path: str,
+        output_dir: str,
+        options: Optional[dict] = None,
+        cancel_event = None,
+    ) -> list[dict[str, Any]]:
+        """Split the 44.1 kHz WAV at ``source_path`` into stems written under ``output_dir``.
+
+        Returns ``[{id, path, sample_rate, channels, duration_s}]`` in the runtime's order, or an
+        empty list when the runtime answered without a stem Studio can decode. The answer is
+        streamed to disk and decoded from there; nothing of it crosses back but paths."""
+        from core.inference.audio_cpp_outputs import SeparationOutputError, extract_named_outputs
+
+        if not self.active_model_name or self.active_model_name not in self.models:
+            raise RuntimeError("No active audio model")
+        model = self._model
+        if model is None:
+            raise RuntimeError("No active audio model")
+        spec = model.separation
+        if spec is None:
+            raise RuntimeError(f"{model.display_name} cannot separate audio.")
+        _raise_if_cancelled(cancel_event)
+        session = dict((model.model_options or {}).get("session_options") or {})
+        overlap = (options or {}).get("num_overlap")
+        if spec.overlap_option and overlap is not None:
+            session[spec.overlap_option] = str(max(1, min(8, int(overlap))))
+        with self._server_lock:
+            if self._server is None or not self._server.alive() or self._served_session != session:
+                logger.info("audio.cpp: (re)starting the server for %s with %s", model.id, session)
+                self._start_server(
+                    replace(
+                        model, model_options = {**model.model_options, "session_options": session}
+                    ),
+                    cancel_event,
+                )
+            server = self._server
+        response_path = Path(output_dir) / ".response.json"
+        try:
+            # Exactly the model and the track: the separation families refuse any other key (S3).
+            server.post_json_to_file(
+                "/v1/tasks/run",
+                {"model": server.model_id, "audio": str(source_path)},
+                response_path,
+                timeout = _GENERATE_TIMEOUT_SECONDS,
+                cancel_event = cancel_event,
+            )
+            _raise_if_cancelled(cancel_event)
+            outputs = extract_named_outputs(response_path, output_dir)
+        except AudioCppRequestCancelledError:
+            self._restart_after_cancel()
+            _raise_if_cancelled(cancel_event)
+            raise
+        except AudioCppRequestError as exc:
+            from core.inference.audio_errors import AudioRuntimeError
+            raise AudioRuntimeError(
+                f"The audio runtime could not separate the track: {exc.detail}", status = exc.status
+            ) from exc
+        except SeparationOutputError as exc:
+            logger.warning("audio.cpp: %s answered without decodable stems: %s", model.id, exc)
+            return []
+        finally:
+            try:
+                response_path.unlink(missing_ok = True)
+            except OSError:
+                pass
+        _raise_if_cancelled(cancel_event)
+        return outputs
 
     def _restart_after_cancel(self) -> None:
         # The server keeps computing the abandoned request; stopping it frees the GPU now and the next

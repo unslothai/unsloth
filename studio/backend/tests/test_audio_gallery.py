@@ -815,3 +815,93 @@ def test_the_inputs_and_voices_folders_never_list_as_clips():
     assert len(gallery.list_audio()) == 1
     assert gallery.clear() == 1
     assert (gallery.gallery_dir() / "inputs" / "abc.wav").is_file()
+
+
+def _stem_meta(**over):
+    return _meta(
+        audio_type = "audiocpp_sep",
+        workflow = "separate",
+        sample_rate = 44100,
+        role = "vocals",
+        group_id = "g" * 32,
+        settings = {"stems": ["vocals", "instrumental"], "num_overlap": None},
+        **over,
+    )
+
+
+def test_save_file_moves_a_stem_in_and_keeps_its_workflow(tmp_path):
+    src = tmp_path / "staging" / "vocals.wav"
+    src.parent.mkdir()
+    src.write_bytes(_wav())
+    record = gallery.save_file(src, _stem_meta())
+    assert not src.exists()
+    assert (gallery.gallery_dir() / f"{record['id']}.wav").read_bytes() == _wav()
+    assert record["workflow"] == "separate" and record["role"] == "vocals"
+    (listed,) = gallery.list_audio()
+    assert listed["workflow"] == "separate" and listed["group_id"] == "g" * 32
+
+
+def test_save_file_copies_across_filesystems(tmp_path, monkeypatch):
+    import errno
+
+    src = tmp_path / "vocals.wav"
+    src.write_bytes(_wav())
+    real_replace = os.replace
+
+    def cross_device(a, b):
+        if Path(a) == src:
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+        return real_replace(a, b)
+
+    monkeypatch.setattr(gallery.os, "replace", cross_device)
+    record = gallery.save_file(src, _stem_meta())
+    assert gallery.audio_path(record["id"]).read_bytes() == _wav()
+    assert not list(gallery.gallery_dir().glob(".*.tmp"))
+
+
+def test_save_file_rolls_back_when_the_sidecar_fails(tmp_path, monkeypatch):
+    src = tmp_path / "vocals.wav"
+    src.write_bytes(_wav())
+    gallery.gallery_dir()
+
+    def broken(self, *_args, **_kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(Path, "write_text", broken)
+    with pytest.raises(OSError):
+        gallery.save_file(src, _stem_meta())
+    monkeypatch.undo()
+    monkeypatch.setattr(gallery, "studio_root", lambda: tmp_path)
+    assert gallery.list_audio() == []
+    assert not [p for p in gallery.gallery_dir().iterdir() if p.suffix in (".wav", ".json", ".tmp")]
+
+
+def test_save_file_prunes_only_when_asked(tmp_path, monkeypatch):
+    pruned = []
+    monkeypatch.setattr(gallery, "_prune_to_cap", lambda: pruned.append(1) or 0)
+    for prune in (False, True):
+        src = tmp_path / f"{prune}.wav"
+        src.write_bytes(_wav())
+        gallery.save_file(src, _stem_meta(), prune = prune)
+    assert pruned == [1]
+
+
+def test_a_separate_scoped_clear_spares_speak_and_clone():
+    speech = gallery.save(_wav(), _meta())
+    clone = gallery.save(_wav(), _meta(audio_type = "audiocpp_tts", workflow = "clone"))
+    stem = gallery.save(_wav(), _stem_meta())
+    assert gallery._workflow(_stem_meta()) == "separate"
+    assert gallery.clear(workflow = "separate") == 1
+    assert gallery.audio_path(stem["id"]) is None
+    assert {r["id"] for r in gallery.list_audio()} == {speech["id"], clone["id"]}
+
+
+def test_the_clear_route_accepts_the_separate_scope():
+    from routes.inference import clear_gallery_audio
+
+    gallery.save(_wav(), _meta())
+    gallery.save(_wav(), _stem_meta())
+    assert asyncio.run(clear_gallery_audio(workflow = "separate", current_subject = "tester")) == {
+        "removed": 1
+    }
+    assert [r["workflow"] for r in gallery.list_audio()] == ["speak"]

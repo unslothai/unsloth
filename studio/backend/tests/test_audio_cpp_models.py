@@ -318,7 +318,8 @@ def test_an_unknown_family_follows_its_spec_tasks_or_is_refused(hub):
         ("new_clone_music", ["clone", "music"], "music", "gen"),
         ("new_clone_asr", ["clone", "asr"], "asr", "asr"),
         ("new_clone_only", ["clone"], "tts", "clon"),
-        ("new_sep", ["sep"], "", ""),
+        ("new_sep", ["sep"], "sep", "sep"),
+        ("new_vad", ["vad"], "", ""),
     ):
         repo = f"someone/{family}-GGUF"
         _put(_snapshot(hub, repo), "m-q8_0.gguf", _gguf_bytes(family = family, spec = {"tasks": tasks}))
@@ -326,7 +327,10 @@ def test_an_unknown_family_follows_its_spec_tasks_or_is_refused(hub):
         assert (model.task, model.server_task) == (task, server)
         assert (model.unsupported is None) == bool(task)
     sep = acm.resolve("someone/new_sep-GGUF", network = False)
-    assert "Source separation" in sep.unsupported
+    assert list(sep.workflows) == ["separate"] and sep.separation is not None
+    acm.require_runnable(sep, "tts")
+    vad = acm.resolve("someone/new_vad-GGUF", network = False)
+    assert "Voice activity detection" in vad.unsupported
     # A clone-only family loads as a cloning session and offers Clone alone.
     clone_only = acm.resolve("someone/new_clone_only-GGUF", network = False)
     assert list(clone_only.workflows) == ["clone"]
@@ -458,11 +462,53 @@ def test_a_spec_fallback_family_the_runtime_lacks_is_refused(hub, monkeypatch, t
 
 
 def test_known_task_families_are_refused_with_a_reason(hub):
-    _put(_snapshot(hub), "HTDemucs-GGUF/htdemucs-q8_0.gguf", _gguf_bytes(family = "htdemucs"))
-    model = acm.resolve(f"{AUDIO_CPP_REPO}/HTDemucs-GGUF", network = False)
-    assert "Source separation" in model.unsupported
+    _put(
+        _snapshot(hub),
+        "Sortformer-Diar-GGUF/sortformer-diar-q8_0.gguf",
+        _gguf_bytes(family = "sortformer_diar"),
+    )
+    model = acm.resolve(f"{AUDIO_CPP_REPO}/Sortformer-Diar-GGUF", network = False)
+    assert "Speaker diarization" in model.unsupported
     with pytest.raises(acm.AudioCppModelError):
         acm.require_runnable(model, "tts")
+
+
+@pytest.mark.parametrize(
+    "folder, family",
+    [
+        ("HTDemucs-GGUF", "htdemucs"),
+        ("HTDemucs-6stems-GGUF", "htdemucs_6stems"),
+        ("BS-RoFormer-ep368-GGUF", "bs_roformer"),
+        ("Mel-Band-RoFormer-GGUF", "mel_band_roformer"),
+    ],
+)
+def test_separation_families_resolve_runnable(hub, folder, family):
+    _put(_snapshot(hub), f"{folder}/{folder.lower()}-q8_0.gguf", _gguf_bytes(family = family))
+    model = acm.resolve(f"{AUDIO_CPP_REPO}/{folder}", network = False)
+    assert (model.family, model.task, model.server_task) == (family, "sep", "sep")
+    assert model.unsupported is None and model.options == ()
+    assert (model.audio_type, model.hub_task) == ("audiocpp_sep", "audio-to-audio")
+    assert model.workflows == {
+        "separate": acm.WorkflowBinding("sep", "tasks", None, ("audio",), 44100)
+    }
+    assert model.separation == acm.FAMILIES[family].separation
+    acm.require_runnable(model, "tts")
+    with pytest.raises(acm.AudioCppModelError, match = "not a speech-to-text model"):
+        acm.require_runnable(model, "asr")
+    # The family also comes from the names alone.
+    assert acm.family_from_names([folder]) == family
+
+
+def test_separation_specs_name_stems_and_the_overlap_option():
+    assert acm.family_from_names(["HTDemucs-6stems-GGUF"]) == "htdemucs_6stems"
+    assert acm.FAMILIES["htdemucs"].separation.stems == ("drums", "bass", "other", "vocals")
+    assert len(acm.FAMILIES["htdemucs_6stems"].separation.stems) == 6
+    assert acm.FAMILIES["htdemucs"].separation.overlap_option is None
+    assert acm.FAMILIES["htdemucs_6stems"].separation.overlap_option is None
+    assert acm.FAMILIES["bs_roformer"].separation.overlap_option == "num_overlap"
+    assert acm.FAMILIES["mel_band_roformer"].separation.overlap_option == "num_overlap"
+    assert acm.HUB_TASKS["sep"] == "audio-to-audio"
+    assert "audiocpp_sep" in acm.AUDIO_CPP_AUDIO_TYPES
 
 
 def test_qwen3_tts_package_kind_comes_from_its_name(hub):
@@ -512,8 +558,13 @@ _CLONE_TABLE = {
 
 
 def test_every_task_family_binds_its_workflows():
-    workflow_for = {"tts": "speak", "music": "music", "asr": "transcribe"}
-    endpoint_for = {"speak": "speech", "music": "tasks", "transcribe": "transcriptions"}
+    workflow_for = {"tts": "speak", "music": "music", "asr": "transcribe", "sep": "separate"}
+    endpoint_for = {
+        "speak": "speech",
+        "music": "tasks",
+        "transcribe": "transcriptions",
+        "separate": "tasks",
+    }
     for family in acm.FAMILIES.values():
         bindings = family.workflows
         if not family.task:
@@ -567,7 +618,9 @@ def test_every_task_family_binds_its_workflows():
     assert acm.FAMILIES["moonshine_asr"].workflows["transcribe"].inputs == ("audio",)
     design = acm.family_policy("qwen3_tts", names = ["Qwen3-TTS-12Hz-1.7B-VoiceDesign-GGUF"])
     assert design.workflows["speak"].server_task == "vdes"
-    assert acm.family_policy("htdemucs").workflows == {}
+    assert acm.family_policy("htdemucs").workflows == {
+        "separate": acm.WorkflowBinding("sep", "tasks", None, ("audio",), 44100)
+    }
 
 
 def test_a_resolved_model_carries_its_workflow_binding(hub):
@@ -577,7 +630,9 @@ def test_a_resolved_model_carries_its_workflow_binding(hub):
     model = acm.resolve(f"{AUDIO_CPP_REPO}/{folder}", network = False)
     assert list(model.workflows) == ["speak"] and model.workflows["speak"].server_task == "vdes"
     _put(snap, "HTDemucs-GGUF/htdemucs-q8_0.gguf", _gguf_bytes(family = "htdemucs"))
-    assert acm.resolve(f"{AUDIO_CPP_REPO}/HTDemucs-GGUF", network = False).workflows == {}
+    assert list(acm.resolve(f"{AUDIO_CPP_REPO}/HTDemucs-GGUF", network = False).workflows) == [
+        "separate"
+    ]
 
 
 def test_sub_folders_and_same_quant_files_become_named_variants(hub):
@@ -769,12 +824,12 @@ def test_windows_refuses_a_model_path_the_server_cannot_open(hub, monkeypatch):
 def test_an_unsupported_model_is_a_runtime_problem(hub):
     from core.inference import audio_cpp_server as srv
     refused = _model(
-        "HTDemucs-GGUF",
-        "htdemucs",
+        "Silero-VAD-GGUF",
+        "silero_vad",
         "",
-        unsupported = "Source separation models are not supported in Studio yet.",
+        unsupported = "Voice activity detection models are not supported in Studio yet.",
     )
-    assert "Source separation" in srv.model_runtime_problem(refused, "x")
+    assert "Voice activity detection" in srv.model_runtime_problem(refused, "x")
 
 
 def test_files_split_across_snapshots_are_found_in_the_one_that_holds_them(hub):
@@ -943,6 +998,21 @@ def test_materialize_refuses_a_repo_file_name_that_climbs_out_of_the_farm(
     with pytest.raises(AudioCppUnavailableError, match = "Refusing"):
         audio_cpp_files.materialize(model, hub_cache = hub)
     assert not victim.exists()
+
+
+def test_v1_models_lists_speech_but_not_separation_models(hub, monkeypatch):
+    from core.inference import audio_cpp_server
+    from routes import inference as ri
+
+    snap = _kokoro(hub)
+    _put(snap, "HTDemucs-GGUF/htdemucs-q8_0.gguf", _gguf_bytes(family = "htdemucs"))
+    assert {m.id: m.task for m in acm.downloaded_models()}[
+        f"{AUDIO_CPP_REPO}/HTDemucs-GGUF"
+    ] == "sep"
+    monkeypatch.setattr(audio_cpp_server, "find_audio_cpp_server_binary", lambda: "audiocpp_server")
+    monkeypatch.setattr(audio_cpp_server, "model_runtime_problem", lambda model, binary = None: None)
+    listed = [o["id"] for o in ri._audio_cpp_speech_model_objects(0)]
+    assert listed == [f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF"]
 
 
 def test_downloaded_models_are_found_by_header(hub):
@@ -1235,6 +1305,10 @@ def test_model_config_answers_umbrella_ids_without_the_hub(hub, monkeypatch):
     # A dictation model is not a main-slot model.
     with pytest.raises(ValueError, match = "speech-to-text"):
         model_config.ModelConfig.from_identifier("audiocpp-canary-180m-flash")
+    # A separation model is: it loads into the main audio slot.
+    _put(snap, "HTDemucs-GGUF/htdemucs-q8_0.gguf", _gguf_bytes(family = "htdemucs"))
+    sep = model_config.ModelConfig.from_identifier(f"{AUDIO_CPP_REPO}/HTDemucs-GGUF")
+    assert sep.is_audio and sep.audio_type == "audiocpp_sep" and sep.audio_cpp.task == "sep"
 
 
 def test_model_config_routes_a_hub_repo_by_its_gguf_header(hub, monkeypatch):
@@ -1303,6 +1377,8 @@ def test_audio_cpp_ggufs_are_classified_off_chat(hub):
     assert cc._gguf_path_audio_type(music) == "audiocpp_music"
     assert cc._gguf_path_task(asr) == "automatic-speech-recognition"
     assert cc._gguf_path_task(sep) == "audio-to-audio"
+    assert cc._gguf_path_audio_type(sep) == "audiocpp_sep"
+    assert cc._gguf_path_audio_workflows(sep) == ["separate"]
     # Architecture alone (a remote prefix): the family comes from the names.
     assert cc._arch_to_task("audiocpp", ("audio-cpp/MiniMax-Music3-GGUF",)) == "text-to-audio"
     assert cc._arch_to_audio_type("audiocpp", ("Kokoro-82M-GGUF",)) == "audiocpp_tts"

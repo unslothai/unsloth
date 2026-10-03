@@ -11,7 +11,11 @@ from pathlib import Path
 import pytest
 
 from core.inference import audio_workflows as aw
-from core.inference.audio_cpp_models import AUDIO_CPP_MUSIC_AUDIO_TYPE, AUDIO_CPP_TTS_AUDIO_TYPE
+from core.inference.audio_cpp_models import (
+    AUDIO_CPP_MUSIC_AUDIO_TYPE,
+    AUDIO_CPP_SEP_AUDIO_TYPE,
+    AUDIO_CPP_TTS_AUDIO_TYPE,
+)
 from hub.schemas.inventory import CachedGgufRepo, CachedModelRepo, LocalModelInfo
 from models.inference import InferenceStatusResponse, LoadResponse
 
@@ -45,6 +49,7 @@ def test_a_status_reports_no_workflows_for_a_model_that_is_not_audio():
         ("snac", ["speak"]),
         ("higgs_tts2", ["speak"]),
         ("whisper", ["transcribe"]),
+        (AUDIO_CPP_SEP_AUDIO_TYPE, ["separate"]),
         (None, ["speak"]),
     ],
 )
@@ -78,6 +83,9 @@ def test_a_load_response_derives_workflows_and_keeps_an_explicit_value():
         ("text-to-speech", "minimax_music3", ["music"]),
         ("text-to-speech", AUDIO_CPP_MUSIC_AUDIO_TYPE, ["music"]),
         ("text-to-speech", None, ["speak"]),
+        # Separation shares audio-to-audio with the kinds Studio has no page for.
+        ("audio-to-audio", AUDIO_CPP_SEP_AUDIO_TYPE, ["separate"]),
+        ("audio-to-audio", None, None),
         ("text-generation", None, None),
         (None, None, None),
     ],
@@ -99,7 +107,7 @@ def test_workflow_for_audio_type_is_speak_or_music():
     assert aw.workflow_for_audio_type("snac") == "speak"
     assert aw.workflow_for_audio_type("unknown") == "speak"
     assert aw.workflow_for_audio_type(None) == "speak"
-    assert aw.AUDIO_WORKFLOW_IDS == ("speak", "clone", "music", "transcribe")
+    assert aw.AUDIO_WORKFLOW_IDS == ("speak", "clone", "music", "separate", "transcribe")
 
 
 def test_workflow_ids_match_the_frontend_order():
