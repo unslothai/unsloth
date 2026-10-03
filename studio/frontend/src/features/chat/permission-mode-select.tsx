@@ -213,6 +213,11 @@ export function FullAccessConfirmContent({
     <AlertDialogContent
       className="gap-5 p-7 ring-0 data-[size=default]:sm:max-w-[calc(480px*var(--ui-space-scale,1))]"
       onOverlayClick={onClose}
+      // Focus the card, not Cancel, so Cancel shows no focus border until tabbed to.
+      onOpenAutoFocus={(event) => {
+        event.preventDefault();
+        (event.currentTarget as HTMLElement).focus();
+      }}
     >
       <AlertDialogHeader className="gap-2">
         <AlertDialogTitle className="flex items-center gap-2.5">
@@ -221,12 +226,12 @@ export function FullAccessConfirmContent({
         </AlertDialogTitle>
         {/* text-pretty: balance splits this sentence into two short lines. */}
         <AlertDialogDescription className="text-pretty leading-relaxed">
-          Tools will run without asking and outside the sandbox. This includes:
+          Tools will run without asking and outside the sandbox, including:
         </AlertDialogDescription>
       </AlertDialogHeader>
-      <ul className="flex flex-col rounded-2xl bg-muted/50 px-4 py-1.5">
+      <ul className="flex flex-col rounded-2xl bg-muted/50 px-5 py-1.5">
         {FULL_ACCESS_SCOPES.map((scope) => (
-          <li key={scope.title} className="flex items-center gap-3.5 py-3">
+          <li key={scope.title} className="flex items-center gap-4 py-3">
             <HugeiconsIcon
               icon={scope.icon}
               strokeWidth={1.75}
