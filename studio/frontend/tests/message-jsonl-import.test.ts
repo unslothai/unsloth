@@ -356,6 +356,19 @@ test("JSONL exports keep parallel tool calls in one assistant turn", () => {
   ]);
 });
 
+test("JSONL exports keep a call without a result in the turn of the text after it", () => {
+  const { result: _omitted, ...unanswered } = toolCallPart("a", "first", "");
+  const exported = structuredClone(
+    messageToOpenAI({
+      role: "assistant",
+      content: [unanswered, { type: "text", text: "Answer." }],
+    }),
+  );
+  assert.deepEqual(exported, [
+    { role: "assistant", content: "Answer.", tool_calls: [webSearchCall("a", "first")] },
+  ]);
+});
+
 test("imports without message send times mark their ordering timestamps as estimated", () => {
   for (const [filename, source] of [
     ["messages.jsonl", '{"messages":[{"role":"user","content":"Hello"}]}'],

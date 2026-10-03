@@ -359,7 +359,8 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
     };
     const pushText = (text: string) => {
       if (!text.trim()) return;
-      if (toolCalls.length > 0) flush();
+      // A call with no result (stopped, provider-native) stays with this text: splitting would leave tool_calls unanswered.
+      if (toolResults.length > 0) flush();
       textParts.push(text);
     };
 
