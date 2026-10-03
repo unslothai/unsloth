@@ -1179,6 +1179,8 @@ def test_update_drains_and_marks_each_kept_model_before_swapping(monkeypatch, tm
             break
         time.sleep(0.05)
     assert seen == {"lock_free": True, "flag": True}
+    # A slot the teardown kept (a non-GGUF model) is usable again once the update ends.
+    assert kept._llama_update_in_progress is False
 
 
 def test_update_stops_when_a_kept_model_would_not_unload(monkeypatch, tmp_path):

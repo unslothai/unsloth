@@ -638,6 +638,7 @@ def _run_llama_phase(
 ) -> dict:
     """The llama phase of a chained update: put the backend into a maintenance state, run the installer for the latest prebuilt, then refresh caches so the next load uses the new build. Returns {to_tag, reload_required, message}; raises on failure. pin_release_tag pins the installer to that exact published release instead of letting it re-resolve "latest" (see start_update)."""
     backend = None
+    marked = []
     model_was_active = False
     mtmd_guard = ExitStack()
     # The installer exits 0 for a transient failure it answered by keeping the tree, so success no longer implies a new release. Read as the post-install check reads it.
@@ -668,6 +669,7 @@ def _run_llama_phase(
         for slot in list(model_slots.slots):
             with slot.llama._serial_load_lock:
                 slot.llama._llama_update_in_progress = True
+            marked.append(slot.llama)
         try:
             if model_slots.unload_llama_slots(strict = True):
                 model_was_active = True
@@ -842,11 +844,14 @@ def _run_llama_phase(
         raise
     finally:
         mtmd_guard.close()
-        if backend is not None:
-            try:
-                backend._llama_update_in_progress = False
-            except Exception:  # pragma: no cover - defensive
-                pass
+        # A kept slot serving a non-GGUF model stays loaded through the update; its llama backend
+        # must not stay refused once the update is done.
+        for llama in (backend, *marked):
+            if llama is not None:
+                try:
+                    llama._llama_update_in_progress = False
+                except Exception:  # pragma: no cover - defensive
+                    pass
 
 
 def _block_mtmd_sidecar(stack: ExitStack) -> bool:
