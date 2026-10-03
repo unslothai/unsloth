@@ -16,6 +16,7 @@ interface AudioCloneState {
   toolValues: Record<string, unknown>;
   setReference: (reference: AudioSourceSelection | null) => void;
   setReferenceText: (referenceText: string) => void;
+  applyTranscript: (source: AudioSourceSelection, text: string) => void;
   setText: (text: string) => void;
   setLanguage: (language: string) => void;
   setToolValue: (key: string, value: unknown) => void;
@@ -33,6 +34,18 @@ export const useAudioCloneStore = create<AudioCloneState>()(
       toolValues: {},
       setReference: (reference) => set({ reference }),
       setReferenceText: (referenceText) => set({ referenceText }),
+      // Kept on the source too, so a new pick replaces it like the clip's own; a result for a clip
+      // no longer picked is dropped.
+      applyTranscript: (source, text) =>
+        set((state) =>
+          state.reference?.kind === source.kind &&
+          state.reference.id === source.id
+            ? {
+                reference: { ...state.reference, transcript: text },
+                referenceText: text,
+              }
+            : {},
+        ),
       setText: (text) => set({ text }),
       setLanguage: (language) => set({ language }),
       setToolValue: (key, value) =>
