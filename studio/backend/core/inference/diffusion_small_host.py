@@ -309,9 +309,7 @@ def _int8_linear_class():
         def forward(self, x):
             scale = self.scale
             if scale.dtype == x.dtype:
-                # One elementwise pass: int8 * float promotes to the float dtype, so the cast and the per-row scale
-                # run in a single kernel. Same op math as cast-then-multiply (int8 -> fp16/fp32 is exact), so the
-                # weight is bit-identical; the separate multiply was a second full pass over the weight.
+                # int8 * float promotes: cast + scale in one pass, bit-identical (int8 -> fp16/fp32 is exact).
                 w = torch.mul(self.qweight, scale)
             else:
                 w = self.qweight.to(x.dtype) * scale.to(x.dtype)
@@ -488,14 +486,12 @@ def engaged_on(pipe: Any) -> Optional[dict]:
     return getattr(pipe, SMALL_HOST_ATTR, None)
 
 
-# ------------------------------------------------------------------------------------ streamed-encoder prefetch
 ENCODER_PREFETCH_ENV = "UNSLOTH_DIFFUSION_SMALL_HOST_PREFETCH"
 ENCODER_PREFETCH_ATTR = "_unsloth_encoder_prefetch"
-# Pinned staging ring: the only host bytes this adds (diffusers pins a fresh copy of every tensor per onload instead).
+# Pinned staging ring: the only host bytes this adds.
 _STAGE_SLOT_BYTES = 32 * _MIB
 _STAGE_SLOTS = 4
-# Device bytes copied ahead of the encoder's forward: a few groups (a T5-XXL MLP weight is 80 MiB, a Qwen2.5-VL one
-# 130 MiB) keep the copy ahead of the compute.
+# Device bytes copied ahead: a few groups (T5-XXL MLP weight 80 MiB, Qwen2.5-VL 130 MiB).
 _PREFETCH_MAX_BYTES = 384 * _MIB
 _PREFETCH_MIN_BYTES = 128 * _MIB
 
@@ -523,15 +519,9 @@ def _group_tensors(group: Any) -> list:
 
 
 class _EncoderPrefetcher:
-    """Streams a memory-mapped text encoder's offload groups ahead of its forward.
-
-    diffusers' leaf-level stream pins a fresh host copy of every weight inside each group's ``onload_`` (a
-    single-threaded page-fault-and-copy on the calling thread) and then waits for that one copy, so the encoder
-    runs at the host's copy speed with the GPU and the PCIe link mostly idle. Here a worker thread copies the groups,
-    in the order the previous forward ran them, through a small reusable pinned ring into device tensors on a side
-    stream, up to a bounded number of bytes ahead; each group's ``onload_`` only makes the compute stream wait for its
-    copy. Bytes, dtypes and ops are unchanged, so the encoder output is bit-identical. A group the order did not
-    predict, or any worker error, falls back to a synchronous copy of that group."""
+    """Copies a memory-mapped encoder's offload groups ahead of its forward, in the previous forward's order, on a
+    worker thread through a pinned ring (diffusers pins each group on the calling thread). Off-order groups and worker
+    errors fall back to a synchronous copy."""
 
     def __init__(self, module: Any, groups: list, device: Any):
         import threading
@@ -563,7 +553,6 @@ class _EncoderPrefetcher:
         self.stats = {"prefetched": 0, "sync": 0, "passes": 0}
         self.by_id = {id(g): g for g in groups}
 
-    # -- copies ------------------------------------------------------------------------------------------------------
     def _side_stream(self) -> Any:
         import torch
         if self.stream is None:
@@ -573,8 +562,7 @@ class _EncoderPrefetcher:
     def _ensure_stage(self) -> None:
         import torch
         if not self.stage:
-            # Out of inference mode: Studio renders under torch.inference_mode(), which is thread-local, and the worker
-            # cannot write into inference tensors created on the forward thread.
+            # inference_mode is thread-local: the worker cannot write inference tensors made on the forward thread.
             with torch.inference_mode(False):
                 self.stage = [
                     torch.empty(_STAGE_SLOT_BYTES, dtype = torch.uint8, pin_memory = True)
@@ -595,7 +583,6 @@ class _EncoderPrefetcher:
             for _t, src in _group_tensors(group):
                 n = int(src.numel()) * int(src.element_size())
                 if src.device.type != "cpu" or n == 0 or not src.is_contiguous() or src.is_pinned():
-                    # Device-resident, empty, strided or already pinned: a plain copy on the compute stream.
                     with torch.cuda.stream(compute):
                         moved.append(
                             src.to(
@@ -605,9 +592,8 @@ class _EncoderPrefetcher:
                         )
                     continue
                 nbytes += n
-                # Allocated from the compute stream's pool (a side-stream block would stay cached where the denoise
-                # cannot reuse it); the copy waits for everything already queued there, which covers whatever last used
-                # a freed block it receives.
+                # Compute-stream pool (a side-stream block stays cached away from the denoise); the copy waits for
+                # work queued there, covering the last user of a freed block.
                 with torch.cuda.stream(compute):
                     dst = torch.empty(src.shape, dtype = src.dtype, device = self.device)
                     queued = torch.cuda.Event()
@@ -630,8 +616,7 @@ class _EncoderPrefetcher:
                     ev.record(stream)
                     self.stage_events[i] = ev
                     off += k
-                # A dropped entry (halt, exception mid-forward) frees dst before the copy lands; keep the block
-                # out of the compute pool until the side stream is done with it.
+                # A dropped entry (halt, exception) frees dst before the copy lands.
                 dst.record_stream(stream)
                 moved.append(dst)
             done = torch.cuda.Event()
@@ -644,14 +629,12 @@ class _EncoderPrefetcher:
         cur = torch.cuda.current_stream(self.device)
         cur.wait_event(done)
         if getattr(group, "stream", None) is not None:
-            # diffusers fences a group it prefetched on its own stream only in the next group's onload_, which this
-            # replaces (a resident group handed back by release_resident_groups); wait for those copies here.
+            # diffusers fences its own-stream prefetch only in the next group's onload_, which this replaces.
             cur.wait_stream(group.stream)
         for (t, _src), dev in zip(_group_tensors(group), moved):
             t.data = dev
             dev.record_stream(cur)
 
-    # -- worker ------------------------------------------------------------------------------------------------------
     def _run(self, order: list) -> None:
         import torch
         try:
@@ -692,7 +675,6 @@ class _EncoderPrefetcher:
             self.ready.clear()
             self.inflight = 0
 
-    # -- hooks -------------------------------------------------------------------------------------------------------
     def begin(self) -> None:
         import threading
 
