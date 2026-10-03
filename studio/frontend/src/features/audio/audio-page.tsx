@@ -533,12 +533,11 @@ export function AudioPage({
     () => handleClearGallery(ttsWorkflow),
     [handleClearGallery, ttsWorkflow],
   );
-  // Send to: only pages that can take a finished clip today. Bytes first, so a failed fetch leaves the page.
+  // Send to: only pages that can take a finished clip today.
   const sendHandlersFor = useCallback(
     (clip: AudioGalleryClip): ClipSendHandlers => ({
       transcribe: () => {
-        // Switching mid-run stops the run, and the stopped run still holds the page busy, so the
-        // transcription would be refused and the clip silently dropped.
+        // Switching mid-run would stop the run in progress; wait for it instead.
         if (busyRef.current !== null) {
           toast.info("Wait for the current audio task to finish, then send the clip.");
           return;
