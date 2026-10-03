@@ -72,6 +72,7 @@ export async function showRunResult({
         prompt: text,
         model: response.model,
         saved: true,
+        workflow: "clone",
       });
     } catch {}
     selectClip(clip.id, true);
@@ -85,6 +86,7 @@ export async function showRunResult({
       prompt: text,
       model: response.model,
       saved: false,
+      workflow: "clone",
     });
   }
 }
