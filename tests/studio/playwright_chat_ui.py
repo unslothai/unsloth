@@ -499,8 +499,9 @@ def exercise_permission_mode_controls(page, shoot):
     choose("Full access")
     expect(dialog).to_be_visible()
     dialog.locator(FULL_ACCESS_CONFIRM).click()
+    # expect_mode reads the pill's data-pill-label. #12630 dropped the pill's danger styling for Full
+    # access on purpose, so there is no data-variant left to check.
     expect_mode("Full access")
-    expect(pill).to_have_attribute("data-variant", "danger")
     active_icon = pill.locator(".composer-pill-glyph > :first-child")
     pill.hover()
     # Read the opacity once the hover transition has finished, not at a fixed delay into it.

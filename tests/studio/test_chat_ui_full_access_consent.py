@@ -9,7 +9,8 @@ button up by their old English names, so Chat UI went red on main. The step now 
 Cancel and confirm through the data-slot attributes the shared AlertDialog parts render. These
 checks run in the fast shard and pin both halves of that contract: the step names no dialog copy,
 and the dialog still renders those slots with a title naming the mode and a body warning about the
-sandbox.
+sandbox. The same PR also dropped the pill's data-variant="danger", which the step still asserted, so
+the attributes the step reads off the pill are pinned to the ones the pill renders.
 """
 
 from __future__ import annotations
@@ -120,3 +121,39 @@ def test_the_dialog_still_says_what_it_asks_consent_for():
         1
     ), "the consent title no longer names Full access"
     assert "sandbox" in dialog, "the consent dialog no longer warns that the sandbox is turned off"
+
+
+def _pill_source() -> str:
+    """The JSX of the composer pill trigger: the button that carries the step's aria-label."""
+    source = _read(_PERMISSION_SELECT)
+    start = source.find("export function PermissionModeComposerPill")
+    assert start != -1, f"{_PERMISSION_SELECT.name} no longer defines PermissionModeComposerPill"
+    label = source.find('aria-label="Permission level for tool calls"', start)
+    assert label != -1, "the composer pill lost the aria-label the step finds it by"
+    return source[source.rfind("<button", start, label) : source.find(">", label)]
+
+
+def test_every_attribute_the_step_reads_off_the_pill_is_rendered():
+    read = set()
+    for node in ast.walk(_step()):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+            continue
+        if node.func.attr not in ("to_have_attribute", "not_to_have_attribute") or not node.args:
+            continue
+        target = node.func.value
+        if not (isinstance(target, ast.Call) and getattr(target.func, "id", None) == "expect"):
+            continue
+        subject = target.args[0] if target.args else None
+        if (
+            isinstance(subject, ast.Name)
+            and subject.id == "pill"
+            and isinstance(node.args[0], ast.Constant)
+        ):
+            read.add(node.args[0].value)
+    assert read, f"{_STEP} no longer checks any attribute of the pill; this test lost its subject"
+    pill = _pill_source()
+    missing = sorted(name for name in read if f"{name}=" not in pill)
+    assert not missing, (
+        f"{_STEP} asserts pill attributes the composer pill no longer renders: {missing}. The check "
+        "can only fail in the Playwright job; drop it or check what the pill renders now."
+    )
