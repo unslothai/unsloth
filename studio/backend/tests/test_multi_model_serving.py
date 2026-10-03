@@ -530,6 +530,25 @@ def test_a_failed_slot_load_drops_the_slot_but_keeps_the_primarys_claim(backends
     assert primary.is_active and gpu_arbiter.current_owner() == gpu_arbiter.CHAT
 
 
+def test_a_failed_slot_load_ends_its_attempt_even_when_the_slot_will_not_stop(
+    backends, monkeypatch
+):
+    async def failing_load(*args, **kwargs):
+        raise RuntimeError("no such repo")
+
+    def refuse(slot):
+        raise RuntimeError("llama-server ignored SIGKILL")
+
+    monkeypatch.setattr(inf, "_run_tracked_load_model_impl", failing_load)
+    monkeypatch.setattr(model_slots, "drop", refuse)
+    request = LoadRequest(model_path = "org/missing-GGUF", alongside = True, load_request_id = "r1")
+    with pytest.raises(RuntimeError):
+        asyncio.run(inf.load_model_gated(request, None, "s"))
+    # Not left loading in /status, and the same request id can be retried.
+    assert inf._pending_load_attempts == {}
+    assert not any(key[1] == "r1" for key in inf._scoped_load_attempts)
+
+
 def test_a_generation_is_tracked_on_the_slot_serving_it(backends):
     _, extra = backends
     event = threading.Event()

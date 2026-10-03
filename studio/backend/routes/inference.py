@@ -17309,14 +17309,17 @@ async def load_model_gated(
             response.evicted = evicted
         return response
     finally:
-        if extra is not None:
-            model_slots.loading = None
-            if extra not in model_slots.slots or not model_slots.in_use(extra):
-                await asyncio.to_thread(model_slots.drop, extra)
-                await asyncio.to_thread(release_chat_gpu_claim)
-        with _scoped_load_attempts_lock:
-            _pending_load_attempts.pop(attempt.token, None)
-        _finish_load_attempt(attempt)
+        try:
+            if extra is not None:
+                model_slots.loading = None
+                if extra not in model_slots.slots or not model_slots.in_use(extra):
+                    await asyncio.to_thread(model_slots.drop, extra)
+                    await asyncio.to_thread(release_chat_gpu_claim)
+        finally:
+            # A slot that would not stop stays stuck, but this attempt is over either way.
+            with _scoped_load_attempts_lock:
+                _pending_load_attempts.pop(attempt.token, None)
+            _finish_load_attempt(attempt)
 
 
 def _ran_out_of_memory(exc: HTTPException) -> bool:
