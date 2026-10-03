@@ -3681,6 +3681,9 @@ def _apply_group_offload(
                 _pin_vision_embedding_device(module)
                 if te_room > 0:
                     te_room -= _keep_groups_resident(module, te_room, onload, logger)
+                if getattr(pipe, "_unsloth_small_host", None):
+                    from .diffusion_small_host import install_encoder_prefetch
+                    install_encoder_prefetch(module, onload, logger)
             except Exception as exc:  # noqa: BLE001 -- degrade this encoder, never fail the load
                 if not stream_transformer and installed == 0:
                     # Resident encoder here would OOM; fall back to model offload, which rejects partial hooks.
