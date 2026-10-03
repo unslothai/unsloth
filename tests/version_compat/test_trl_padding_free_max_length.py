@@ -115,10 +115,16 @@ def _load_plain(model_max_seq_length = _MODEL_MAX_SEQ_LENGTH):
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     try:
+        # No dtype kwarg: `dtype=` fails at the 4.52.4 floor, `torch_dtype=` is deprecated from 4.57.6. Cast after.
         tok = AutoTokenizer.from_pretrained(_MODEL)
-        model = AutoModelForCausalLM.from_pretrained(_MODEL, dtype = torch.float32)
+        model = AutoModelForCausalLM.from_pretrained(_MODEL).to(torch.float32)
     except OSError as e:
         pytest.skip(f"could not fetch {_MODEL} (network/hub): {str(e)[:150]}")
+    got = next(model.parameters()).dtype
+    assert got == torch.float32, (
+        f"the cast after load left the model in {got}, not float32. These tests compare "
+        f"losses, so a silent dtype change is a silent change of what they measure."
+    )
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
     model.max_seq_length = model_max_seq_length
@@ -699,9 +705,12 @@ def test_pristine_trl_config_without_max_seq_length_still_truncates(tmp_path, tr
     from datasets import Dataset
 
     config_cls = _pristine_sft_config_cls()
-    assert not hasattr(
-        config_cls(output_dir = str(tmp_path)), "max_seq_length"
-    ), "this TRL declares max_seq_length, so the regression cannot be reproduced here"
+    # Precondition: only a TRL that dropped max_seq_length has the regression.
+    if hasattr(config_cls(output_dir = str(tmp_path)), "max_seq_length"):
+        pytest.skip(
+            "this TRL still declares max_seq_length, so the regression it guards cannot "
+            "exist here; the cap-copy path is covered by the max_length tests above"
+        )
 
     model, tok = _load_plain()
     text = "The quick brown fox. " * 200
