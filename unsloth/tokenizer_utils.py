@@ -490,8 +490,8 @@ def convert_to_fast_tokenizer(slow_tokenizer, temporary_location = "_unsloth_sen
             return slow_tokenizer
 
     name = slow_tokenizer.name_or_path.replace("/", "_")
-    if not os.path.exists(temporary_location):
-        os.makedirs(temporary_location)
+    # exist_ok: a check-then-create races when two processes share a working directory.
+    os.makedirs(temporary_location, exist_ok = True)
     new_location = f"{temporary_location}/{name}"
     slow_tokenizer.save_pretrained(new_location)
     fast_tokenizer.save_pretrained(new_location)
@@ -655,8 +655,8 @@ def fix_sentencepiece_tokenizer(
             # This will only work for older SentencePiece versions <= 3.20.3
             from transformers.utils import sentencepiece_model_pb2
 
-    if not os.path.exists(temporary_location):
-        os.makedirs(temporary_location)
+    # exist_ok: a check-then-create races when two processes share a working directory.
+    os.makedirs(temporary_location, exist_ok = True)
 
     # Fresh per-call subdir so concurrent or repeated calls cannot clobber each other's tokenizer.model or leak stale files, without deleting anything the caller owns.
     temporary_location = tempfile.mkdtemp(prefix = "tokenizer_", dir = temporary_location)

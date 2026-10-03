@@ -82,11 +82,17 @@ configure_amdgpu_asic_id_table_path()
 patch_torch_missing_attribute_error()
 # Must precede `import unsloth_zoo` below, which imports bnb on ROCm.
 fix_bitsandbytes_rocm_arch_detection()
+# Torch-only, so it can run first; torchao 0.18 on torch < 2.10 needs it before any torchao import.
+fix_torchao_torch_symbol_skew()
+# Before unsloth_zoo and transformers (and vllm, below): real torchao on a torch without torch.distributed.
+from ._torchao_nodist import fix_torchao_without_torch_distributed
+
+fix_torchao_without_torch_distributed()
+del fix_torchao_without_torch_distributed
 disable_broken_causal_conv1d()
 disable_broken_vllm()
 fix_message_factory_issue()
 fix_torch_check_is_size()
-fix_torchao_torch_symbol_skew()
 # The above fixes THIS process only; vLLM's model-architecture inspector is a subprocess that
 # imports torchao itself and hits the same ImportError.
 propagate_torchao_fix_to_subprocesses()
@@ -264,6 +270,7 @@ from .import_fixes import (
     fix_transformers_config_only_remote_code,
     fix_transformers_remote_rope_scaling_none,
     fix_transformers_is_torch_fx_available,
+    fix_transformers5_remote_code_model_api,
     fix_xformers_performance_issue,
     fix_flash_attn_4_namespace_shadow,
     fix_vllm_aimv2_issue,
@@ -274,6 +281,7 @@ from .import_fixes import (
     check_vllm_torch_sm100_compatibility,
     fix_vllm_guided_decoding_params,
     fix_vllm_pdl_blackwell,
+    fix_cudnn_sdpa_d256_masked_backward,
     fix_triton_compiled_kernel_missing_attrs,
     fix_dynamo_config_thread_visibility,
     patch_trunc_normal_precision_issue,
@@ -296,6 +304,7 @@ from .import_fixes import (
     fix_peft_transformers_tensor_parallel_import_compat,
     fix_peft_transformers_weight_conversion_import,
     patch_peft_weight_converter_compatibility,
+    patch_peft_float8_adapter_upcast,
     fix_peft_stale_torchao_import_error,
     fix_peft_torchao_missing_tensor_subclass,
     patch_accelerate_recursively_apply,
@@ -339,6 +348,7 @@ fix_transformers_is_torch_fx_available()
 # modules are imported and patched when a checkpoint's own modeling file runs,
 # not on every `import unsloth`.
 fix_transformers5_image_processing_reexports()
+fix_transformers5_remote_code_model_api()
 fix_xformers_performance_issue()
 # Must run AFTER fix_xformers_performance_issue (it rewrites xformers' cutlass.py on disk) and
 # BEFORE models/_utils.py imports xformers.ops.
@@ -355,6 +365,7 @@ check_vllm_torch_sm100_compatibility()
 fix_vllm_guided_decoding_params()
 fix_trl_vllm_ascend()
 fix_vllm_pdl_blackwell()
+fix_cudnn_sdpa_d256_masked_backward()
 fix_triton_compiled_kernel_missing_attrs()
 # Must run before unsloth_zoo's patch_torch_compile and the gpt-oss patches raise the dynamo
 # recompile limits, so those settings reach the autograd worker threads on torch >= 2.12.
@@ -383,6 +394,7 @@ fix_accelerate_dtensor_check_without_torch_distributed()
 fix_peft_transformers_tensor_parallel_import_compat()
 fix_peft_transformers_weight_conversion_import()
 patch_peft_weight_converter_compatibility()
+patch_peft_float8_adapter_upcast()
 # After peft is importable, so the already-bound is_torchao_available in peft.tuners.lora.torchao is
 # replaced too, not just import_utils'.
 fix_peft_stale_torchao_import_error()
@@ -400,6 +412,7 @@ del fix_transformers_validate_rope_ignore_keys
 del fix_transformers_longcat_lsa_config
 del fix_transformers_remote_rope_scaling_none
 del fix_transformers_is_torch_fx_available
+del fix_transformers5_remote_code_model_api
 del fix_xformers_performance_issue
 del fix_flash_attn_4_namespace_shadow
 del fix_vllm_aimv2_issue
@@ -411,6 +424,7 @@ del check_vllm_torch_sm100_compatibility
 del fix_vllm_guided_decoding_params
 del fix_trl_vllm_ascend
 del fix_vllm_pdl_blackwell
+del fix_cudnn_sdpa_d256_masked_backward
 del fix_triton_compiled_kernel_missing_attrs
 del fix_dynamo_config_thread_visibility
 del patch_trunc_normal_precision_issue
@@ -432,6 +446,7 @@ del fix_accelerate_dtensor_check_without_torch_distributed
 del fix_peft_transformers_tensor_parallel_import_compat
 del fix_peft_transformers_weight_conversion_import
 del patch_peft_weight_converter_compatibility
+del patch_peft_float8_adapter_upcast
 del fix_peft_stale_torchao_import_error
 del fix_peft_torchao_missing_tensor_subclass
 del patch_accelerate_recursively_apply

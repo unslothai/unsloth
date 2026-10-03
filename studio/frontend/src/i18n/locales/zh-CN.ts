@@ -2,9 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import type { en } from "./en";
+import { en } from "./en.ts";
 
 export const zhCN = {
+  // English fallback until this experimental feature is translated.
+  managedEngines: en.managedEngines,
   composerSettings: {
     title: "消息输入",
     plainText: "纯文本输入",
@@ -140,6 +142,13 @@ export const zhCN = {
       close: "关闭查找",
       truncated: "此页面过长，无法搜索全部内容。",
     },
+    zoom: {
+      label: "缩放",
+      zoomOut: "缩小",
+      zoomIn: "放大",
+      reset: "重置",
+      announce: "缩放 {percent}%",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -200,6 +209,14 @@ export const zhCN = {
       help: "帮助",
       logOut: "退出登录",
       shutdown: "关闭服务",
+    },
+    commandPalette: {
+      placeholder: "输入命令或搜索...",
+      noResults: "未找到结果。",
+      navigation: "导航",
+      actions: "操作",
+      chat: "聊天",
+      searchChats: "搜索聊天...",
     },
     notFound: {
       title: "页面未找到",
@@ -477,6 +494,10 @@ export const zhCN = {
           label: "键盘快捷键",
           description: "打开该快捷键列表",
         },
+        openCommandPalette: {
+          label: "命令面板",
+          description: "打开命令面板",
+        },
         searchChats: {
           label: "搜索聊天",
           description: "打开聊天搜索对话框",
@@ -714,6 +735,7 @@ export const zhCN = {
       disabled: "文件日志已关闭 (UNSLOTH_STUDIO_NO_FILE_LOG=1)。",
       missing: "未找到日志文件。",
       unreadable: "无法读取日志文件。",
+      viewLogs: "查看日志",
       timeout: "日志请求超时。服务器可能无法访问。",
       droppedNotice: "已跳过部分行：日志的写入速度超过了读取速度。",
       morePending: "仍在读取更多行，它们将在下次刷新时显示。",
@@ -1065,6 +1087,9 @@ export const zhCN = {
         source: "模型来源",
         sourceDescription: "模型中心搜索和下载的来源。如果你的网络无法访问 Hugging Face 或速度很慢，请选择 ModelScope。",
         sourceFallback: "无法启动 ModelScope，当前使用 Hugging Face。请查看 Unsloth 日志。",
+        autoSourceTitle: "模型来源已切换为 ModelScope",
+        autoSourceDescription: "Hugging Face 在你所在的地区经常较慢或无法访问，因此 Unsloth 现在从 ModelScope 下载模型。",
+        autoSourceAction: "打开模型来源设置",
         sectionTitle: "模型中心",
         endpoint: "Hugging Face 端点",
         endpointDescription: "模型和数据集的下载来源。留空则使用 huggingface.co，或填写镜像地址，例如 https://hf-mirror.com。",
@@ -1295,20 +1320,13 @@ export const zhCN = {
           wide: "宽",
           full: "全宽",
         },
-        composerAttachments: {
-          label: "输入框中的附件",
-          description:
-            "使用会撑大输入框的大卡片，或紧凑的一行小图块。",
-          cards: "大卡片",
-          compact: "紧凑图块",
-        },
         sentAttachments: {
           label: "已发送消息中的附件",
           description:
-            "显示各文件类型的列表，或小标签。超过六个文件时，“自动”会切换为小标签。",
+            "标准会显示每个文件及其类型，紧凑会在每行显示更多文件。超过六个文件时，“自动”会切换为紧凑。",
           auto: "自动",
-          list: "列表",
-          chips: "小标签",
+          list: "标准",
+          chips: "紧凑",
         },
         reset: "重置",
         resetAll: "重置自定义",
@@ -1518,6 +1536,7 @@ export const zhCN = {
         noRamReserveDescription: "减少模型权重占用的内存。",
         noRamReserveHint: "当模型完全卸载到 GPU 时，在受支持的 Windows 版本上跳过内存映射加载，使其页面不再常驻；否则保持内存映射加载。必要的 CPU 缓冲区仍可能占用内存。移除 --no-mmap 和 --mlock。",
         mlockVetoed: "--mlock 保持关闭：锁定模型会为其全部内容预留内存。空闲自动卸载仍处于禁用状态。",
+        mlockNotApplicable: "已完全位于 GPU 上：系统内存中没有需要锁定的内容。空闲自动卸载保持关闭。",
         memlockCapped: "本系统将锁定内存限制为 {limit}。更大的模型无法被完全锁定；请使用 ulimit -l 提高上限。",
         reloadRequired: "重新加载模型以应用新的内存选项。",
         loadError: "加载模型内存设置失败",
@@ -1743,9 +1762,6 @@ export const zhCN = {
         "粘贴的文本达到 {count} 个字符时会转为 .txt 附件，较短的文本则保留在消息输入框中。",
       pastedTextOffDescription:
         "无论长度如何，粘贴的文本都会保留在消息输入框中。",
-      projectsSection: "显示项目分区",
-      projectsSectionDescription:
-        "将项目对话归到「项目」标题下。关闭后改为显示在「最近」中。",
       title: "聊天",
       description: "自定义此设备上的聊天行为。",
       modelSelection: {
@@ -1782,6 +1798,11 @@ export const zhCN = {
       autoScrollManual: "手动",
       autoScrollKeywords:
         "滚动 自动滚动 跟随 底部 跳转 流式 生成 锁定 scroll autoscroll follow",
+      scrollToBottomButton: "滚动到底部按钮",
+      scrollToBottomButtonDescription:
+        "向上滚动后显示一个按钮，用于跳回最新消息。",
+      scrollToBottomButtonKeywords:
+        "滚动 底部 跳转 最新 箭头 按钮 隐藏 scroll bottom button",
       showResponseModel: "显示回复模型",
       showResponseModelDescription: "在助手回复中显示模型元数据。",
       inlineReadAloud: "在回复上显示朗读",
@@ -1853,6 +1874,22 @@ export const zhCN = {
           "在“设置 → 聊天”中开启“{setting}”以允许 Canvas 加载外部资源，或仅对此 Canvas 允许。",
         blockedSettingsAction: "打开设置",
         blockedDismiss: "关闭",
+        errorTitle: "此 Canvas 出现了一个错误",
+        errorTitlePlural: "此 Canvas 出现了 {count} 个错误",
+        errorHint: "“用模型修复”只会把错误放进消息框。在你发送之前不会发送任何内容。",
+        errorBannerAction: "用模型修复",
+        errorConsoleAction: "打开控制台",
+        errorConsoleHideAction: "隐藏控制台",
+        errorLocation: "第 {line} 行，第 {column} 列",
+        errorLine: "第 {line} 行",
+        consoleTitle: "控制台",
+        reloadCanvas: "重新运行",
+        consoleMessageCount: "{count} 条消息",
+        consoleMessageCountPlural: "{count} 条消息",
+        consoleClear: "清空控制台",
+        consoleClose: "关闭控制台",
+        consoleEmpty: "暂无控制台输出。",
+        consoleCapped: "仅保留最近 {count} 条，更早的输出已丢弃。",
       },
       data: "数据",
       exportHistory: "导出聊天记录",
@@ -2126,11 +2163,13 @@ export const zhCN = {
       revoking: "撤销中...",
       decisionApi: {
         title: "决策 API",
-        description: "使用本地 Laya 模型回答关于文本的是/否、选择和评分问题。可配合 TypeSafe SDK 使用。",
+        description: "使用本机模型或连接中的决策模型回答关于文本的是/否、选择和评分问题。可配合 TypeSafe SDK 使用。",
         enable: "处理请求",
         enableDescription: "提供 /v1/systemone。开启后会下载模型。",
+        enableRemoteDescription: "提供 /v1/systemone。",
         lockedByEnv: "由 {name} 设置。",
         model: "模型",
+        thisMachine: "本机",
         modelMultilingual: "多语言",
         modelEnglish: "英语",
         modelTypedDecisions: "类型化决策",
@@ -2147,11 +2186,18 @@ export const zhCN = {
         loading: "正在加载…",
         loadedOn: "已加载到 {device}",
         download: "下载",
+        downloadConfirmTitle: "下载 Laya {model}？",
+        downloadConfirmBody:
+          "决策 API 需要此模型来响应请求。约 {size}，只需下载一次到你的 Hugging Face 缓存。",
         unload: "卸载",
         downloadBusy: "已有一个决策 API 模型正在下载。",
         downloadFailed: "无法开始下载。",
         saveFailed: "无法保存决策 API 设置。",
         loadError: "无法加载决策 API 设置。",
+        sendsTo: "请求将发送到 {provider}。",
+        connectionMissing: "此连接已不存在或没有决策模型。请选择其他模型。",
+        addConnection: "要使用托管的决策模型，请在连接中添加 TypeSafe、Liquid AI 或 OpenRouter。",
+        openConnections: "打开连接",
       },
       usageNoModel:
         "加载或下载一个模型后即可看到可运行的示例。此服务器目前还没有可指定的模型。",

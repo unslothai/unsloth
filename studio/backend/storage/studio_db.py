@@ -36,6 +36,7 @@ from utils.paths import (
     studio_db_path,
 )
 from utils.paths.external_media import is_linux_run_media_path, is_local_filesystem_root
+from utils.paths import path_utils as _path_utils
 from utils.paths.path_utils import macos_volume_ignores_case
 from utils.paths.scan_folder_health import is_readable_dir
 from utils.paths.sensitive import (
@@ -78,6 +79,23 @@ def _denied_path_prefixes() -> list[str]:
     return []
 
 
+_WSL_WINDOWS_SYSTEM_DIRS = ("windows", "program files", "program files (x86)")
+
+
+def _is_wsl_windows_system_path(path: str) -> bool:
+    """``/mnt/<drive>/Windows`` and ``Program Files`` under WSL: the native-Windows denylist, case-folded like DrvFs."""
+    root = _path_utils._WSL_AUTOMOUNT_ROOT
+    if not _path_utils._IS_WSL or not path.startswith(root):
+        return False
+    parts = path[len(root) :].split("/")
+    return (
+        len(parts) >= 2
+        and len(parts[0]) == 1
+        and parts[0].isalpha()
+        and parts[1].casefold() in _WSL_WINDOWS_SYSTEM_DIRS
+    )
+
+
 def is_denied_system_path(path: str) -> bool:
     """True if *path* is, or descends from, a denied system directory.
 
@@ -108,7 +126,7 @@ def is_denied_system_path(path: str) -> bool:
             if prefix == "/run" and is_linux_run_media_path(check):
                 continue
             return True
-    return False
+    return system == "Linux" and _is_wsl_windows_system_path(path)
 
 
 def _contains_sensitive_path_component(path: str) -> bool:
@@ -766,6 +784,42 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_prompt_lists_created_at ON prompt_lists(created_at)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS data_recipes (
+            id TEXT NOT NULL PRIMARY KEY,
+            name TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            learning_recipe_id TEXT,
+            learning_recipe_title TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """
+    )
+    # Deleted ids stay here so a stale tab or a re-run legacy import cannot bring them back.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS data_recipe_tombstones (
+            id TEXT NOT NULL PRIMARY KEY,
+            deleted_at INTEGER NOT NULL
+        ) WITHOUT ROWID
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS data_recipe_executions (
+            id TEXT NOT NULL PRIMARY KEY,
+            recipe_id TEXT NOT NULL REFERENCES data_recipes(id) ON DELETE CASCADE,
+            created_at INTEGER NOT NULL,
+            record_json TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_data_recipe_executions_recipe"
+        " ON data_recipe_executions(recipe_id, created_at)"
     )
     conn.execute(
         """
@@ -4894,17 +4948,30 @@ def get_app_settings(keys: list[str]) -> dict[str, Any]:
         conn.close()
 
 
-def compare_and_set_app_setting(key: str, expected: Any, value: Any) -> bool:
-    """Write ``value`` to ``key`` only while it still holds ``expected``. A read-then-upsert cannot
-    express "clear this flag": another save committing in the gap is silently reverted by the write
-    that follows it. Comparing inside one immediate transaction makes a losing update a no-op
-    instead. Returns whether the write happened."""
+def compare_and_set_app_setting(
+    key: str,
+    expected: Any,
+    value: Any,
+    *,
+    absent: tuple[str, ...] = (),
+) -> bool:
+    """Write ``value`` to ``key`` only while it still holds ``expected`` and no key in ``absent``
+    is set. A read-then-upsert cannot express "clear this flag": another save committing in the
+    gap is silently reverted by the write that follows it. Comparing inside one immediate
+    transaction makes a losing update a no-op instead. Returns whether the write happened."""
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute("SELECT value_json FROM app_settings WHERE key = ?", (key,)).fetchone()
         current = _json_loads(row["value_json"], None) if row is not None else None
-        if current != expected:
+        present = (
+            absent
+            and conn.execute(
+                f"SELECT 1 FROM app_settings WHERE key IN ({', '.join('?' * len(absent))}) LIMIT 1",
+                absent,
+            ).fetchone()
+        )
+        if current != expected or present:
             conn.rollback()
             return False
         conn.execute(

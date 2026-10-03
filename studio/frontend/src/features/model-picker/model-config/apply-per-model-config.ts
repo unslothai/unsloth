@@ -45,8 +45,16 @@ export function applyPerModelConfigToRuntime(
     normalizeMaxSeqLength(config.maxSeqLength) ??
     defaultInferenceParams.maxSeqLength;
   const store = useChatRuntimeStore.getState();
-  if (maxSeqLength !== store.params.maxSeqLength) {
-    store.setParams({ ...store.params, maxSeqLength });
+  const engine = config.engine ?? "auto";
+  const engineParallelism = config.engineParallelism ?? "tensor";
+  const enginePrecision = config.enginePrecision ?? "auto";
+  if (
+    maxSeqLength !== store.params.maxSeqLength ||
+    engine !== (store.params.engine ?? "auto") ||
+    enginePrecision !== (store.params.enginePrecision ?? "auto") ||
+    engineParallelism !== (store.params.engineParallelism ?? "tensor")
+  ) {
+    store.setParams({ ...store.params, maxSeqLength, engine, enginePrecision, engineParallelism });
   }
   const gpuSelection =
     config.selectedGpuIds !== undefined
@@ -57,6 +65,11 @@ export function applyPerModelConfigToRuntime(
         )
       : { ids: null, indexKind: null };
   useChatRuntimeStore.setState({
+    // Explicit managed on diffusion: an omitted field inherits the stored custom config.
+    llamaCppConfig:
+      options.isDiffusion && config.llamaCppConfig !== undefined
+        ? { version: 1, mode: "managed" }
+        : config.llamaCppConfig,
     customContextLength: config.customContextLength ?? null,
     mlxKvQuant: config.mlxKvQuant ?? null,
     kvCacheDtype: config.kvCacheDtype ?? null,
@@ -118,6 +131,10 @@ export function currentRuntimePerModelConfig(
 ): PerModelConfig {
   const s = useChatRuntimeStore.getState();
   return {
+    engine: s.params.engine ?? "auto",
+    enginePrecision: s.params.enginePrecision ?? "auto",
+    engineParallelism: s.params.engineParallelism ?? "tensor",
+    llamaCppConfig: s.llamaCppConfig,
     customContextLength: s.customContextLength ?? null,
     maxSeqLength: options.includeMaxSeqLength
       ? normalizeMaxSeqLength(s.params.maxSeqLength)
@@ -155,18 +172,33 @@ export function currentRuntimePerModelConfig(
   };
 }
 
+function customOnly(config: PerModelConfig["llamaCppConfig"]) {
+  return config?.mode === "custom" ? config : undefined;
+}
+
+/** `followGlobal`: only against the running config, which holds the mode a null one resolved to.
+ *  Stored configs and presets keep null distinct from an explicit mode equal to today's global. */
 export function perModelConfigsEqual(
   a: PerModelConfig,
   b: PerModelConfig,
+  { followGlobal = false }: { followGlobal?: boolean } = {},
 ): boolean {
+  const speculative = followGlobal
+    ? resolvedSpeculativeType
+    : normalizeSpeculativeType;
   return (
+    (a.engine ?? "auto") === (b.engine ?? "auto") &&
+    (a.enginePrecision ?? "auto") === (b.enginePrecision ?? "auto") &&
+    (a.engineParallelism ?? "tensor") === (b.engineParallelism ?? "tensor") &&
+    // Unset and managed load the same engine.
+    JSON.stringify(customOnly(a.llamaCppConfig)) ===
+      JSON.stringify(customOnly(b.llamaCppConfig)) &&
     (a.customContextLength ?? null) === (b.customContextLength ?? null) &&
     normalizeMaxSeqLength(a.maxSeqLength) ===
       normalizeMaxSeqLength(b.maxSeqLength) &&
     (a.kvCacheDtype ?? null) === (b.kvCacheDtype ?? null) &&
     (a.mlxKvQuant ?? null) === (b.mlxKvQuant ?? null) &&
-    normalizeSpeculativeType(a.speculativeType) ===
-      normalizeSpeculativeType(b.speculativeType) &&
+    speculative(a.speculativeType) === speculative(b.speculativeType) &&
     (a.specDraftNMax ?? null) === (b.specDraftNMax ?? null) &&
     (a.specDraftCacheDtype ?? null) === (b.specDraftCacheDtype ?? null) &&
     (a.nParallel ?? null) === (b.nParallel ?? null) &&
@@ -184,6 +216,10 @@ export function perModelConfigsEqual(
     extraArgsSignature(a.llamaExtraArgs) === extraArgsSignature(b.llamaExtraArgs) &&
     gpuFieldsEqual(a, b)
   );
+}
+
+function resolvedSpeculativeType(value: string | null | undefined): string {
+  return normalizeSpeculativeType(value) ?? readPersistedSpeculativeType();
 }
 
 /** Compare on the launched command, so "not loaded" and "cleared" are equal here. They differ

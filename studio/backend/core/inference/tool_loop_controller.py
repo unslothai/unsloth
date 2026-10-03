@@ -668,9 +668,20 @@ def _declared_properties(tool_name: str, tool_schemas) -> Any:
         function = tool.get("function") if isinstance(tool, Mapping) else None
         if not isinstance(function, Mapping) or function.get("name") != tool_name:
             continue
-        parameters = function.get("parameters")
+        parameters = _mcp_full_parameters(tool_name) or function.get("parameters")
         return parameters.get("properties") if isinstance(parameters, Mapping) else None
     return None
+
+
+def _mcp_full_parameters(tool_name: str) -> Any:
+    # A large MCP tool is listed with only its top-level parameters; type its arguments by the full schema.
+    if not tool_name.startswith("mcp__"):
+        return None
+    try:
+        from core.inference.tools import mcp_tool_input_schema  # noqa: PLC0415 -- cycle at import time
+        return mcp_tool_input_schema(tool_name)
+    except Exception:  # noqa: BLE001 -- typing must never break a chat
+        return None
 
 
 def coerce_tool_arguments(
@@ -833,6 +844,25 @@ def is_tool_error(result: str) -> bool:
     return isinstance(result, str) and result.lstrip().startswith(TOOL_ERROR_PREFIXES)
 
 
+def _strip_mcp_ui_suffix(result: str) -> str:
+    """The payload is one JSON line, so the scan stops there; images may follow."""
+    marker = "\n__MCP_UI__:"
+    start = result.rfind(marker)
+    if start == -1:
+        return result
+    payload_start = start + len(marker)
+    end = result.find("\n", payload_start)
+    if end == -1:
+        end = len(result)
+    try:
+        payload = json.loads(result[payload_start:end])
+    except (ValueError, RecursionError):
+        return result
+    if not isinstance(payload, dict) or not isinstance(payload.get("resourceUri"), str):
+        return result
+    return (result[:start] + result[end:]).rstrip()
+
+
 def _strip_files_sentinel(result: str) -> str:
     """Drop a trailing ``__FILES__`` envelope, and only that.
 
@@ -933,6 +963,9 @@ def _strip_rag_sources_sentinel(result: str) -> str:
 # well-formed __FILES__ line is content, not an envelope, and stripping it would take that line away from the model.
 _SANDBOX_TOOLS = frozenset({"python", "terminal"})
 
+# Only an MCP result can carry the UI envelope; mcp_client defuses tool-written ones.
+_MCP_TOOL_PREFIX = "mcp__"
+
 # Same rule for the other two envelopes. The image one is emitted by the sandbox tools
 # through `_created_file_sentinels` and by Gemini's hosted code_execution through the
 # provider; the source map by the retrieval tools that append `RAG_SOURCES_SENTINEL`. A
@@ -987,6 +1020,9 @@ def strip_result_for_model(
     # never be shown them as text. Provenance decides whether they become IMAGE
     # input, which is a separate question answered in mcp_images._promote.
     result = split_mcp_images(result)[0]
+    # After the image strip, which leaves the UI envelope as the tail.
+    if tool_name is None or tool_name.startswith(_MCP_TOOL_PREFIX):
+        result = _strip_mcp_ui_suffix(result)
     if tool_name is None or tool_name in _SANDBOX_TOOLS:
         result = _strip_files_sentinel(result)
     if tool_name is None or tool_name in _IMAGE_SENTINEL_TOOLS:
@@ -1165,7 +1201,11 @@ class ToolLoopController:
             tool_name = tool_name,
             tool_schemas = self._tools,
         )
-        key = canonical_tool_call_key(tool_name, coerced.arguments)
+        arguments = coerced.arguments
+        if tool_name == "web_search" and UNPARSED_ARGUMENTS_KEY not in arguments:
+            from core.inference.tools import canonicalize_web_search_arguments
+            arguments = canonicalize_web_search_arguments(arguments)
+        key = canonical_tool_call_key(tool_name, arguments)
         mcp = mcp_display_parts(tool_name)
         provenance = tool_event_provenance(
             healed = coerced.healed,
@@ -1192,12 +1232,12 @@ class ToolLoopController:
         return ToolCallDecision(
             action = action,
             tool_name = tool_name,
-            arguments = coerced.arguments,
+            arguments = arguments,
             tool_call_id = str(tool_call.get("id") or ""),
             card_call_id = str(tool_call.get("card_id") or ""),
             key = key,
             provenance = provenance,
-            status_text = status_for_tool(tool_name, coerced.arguments),
+            status_text = status_for_tool(tool_name, arguments),
             noop_result = noop,
         )
 
