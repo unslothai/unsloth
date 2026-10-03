@@ -5803,7 +5803,6 @@ export function HubModelPicker({
       <div
         key={key}
         {...drag.rowProps(key)}
-        // DROP_CUE_CLASS: the drag redraws the line above the carried copy.
         className={cn("relative", edge && [DROP_CUE_CLASS, PINNED_DROP_CUE[edge]])}
         style={drag.draggingKey === key ? { opacity: 0.4 } : undefined}
       >

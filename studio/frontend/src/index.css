@@ -4774,7 +4774,6 @@ html[data-chat-font] .aui-root {
 	will-change: transform;
 }
 
-/* A carried row or header: faintly frosted, a shade darker than its list, on a hairline. */
 :is(.sidebar-row-ghost, .sidebar-section-ghost, .model-picker-row-ghost) {
 	background: color-mix(in oklab, color-mix(in oklab, var(--row-ghost-surface), black 4%) 62%, transparent);
 	-webkit-backdrop-filter: blur(0.5px) saturate(1.05);
@@ -4796,7 +4795,6 @@ html[data-chat-font] .aui-root {
 	pointer-events: none;
 }
 
-/* A Pinned row carried in the model picker (use-pinned-row-drag.ts). */
 .model-picker-row-ghost {
 	--row-ghost-surface: var(--popover);
 	position: fixed;
@@ -4812,8 +4810,7 @@ html[data-chat-font] .aui-root {
 	pointer-events: none;
 }
 
-/* The row fills the pill, which paints the tint. Its margin stays behind: the pill was sized
-   without it, so a Connected row's ml-4 would push the copy off its own pill. */
+/* Margin dropped: the pill was sized without it, so a Connected row's ml-4 would offset the copy. */
 .model-picker-row-ghost > * {
 	width: 100%;
 	height: 100%;
