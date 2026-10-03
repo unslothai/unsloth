@@ -1159,9 +1159,15 @@ export const en = {
       },
       permissions: {
         sectionTitle: "Permissions",
+        names: {
+          ask: "Ask for approval",
+          auto: "Approve for me",
+          off: "Run automatically",
+          full: "Full access",
+        },
         details: {
           ask:
-            "Asks before every tool call, including terminal and Python code, web searches, file edits and MCP tools. Best when you want to review each step.",
+            "Asks before every tool call, including terminal and Python code, web searches, file edits and MCP tools. Tools run by an external provider are not paused. Best when you want to review each step.",
           auto:
             "Runs routine tool calls on its own and only asks when an action looks risky, such as reading credentials, escalating privileges or running destructive commands.",
           off:

@@ -4,7 +4,7 @@
 import { ChevronDown, Hand, ShieldCheck } from "lucide-react";
 import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui";
 import type { ComponentType } from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useFullAccessAllowed } from "@/features/auth/account-session";
 import { useSettingsDialogStore } from "@/features/settings";
 
@@ -106,7 +106,7 @@ export function permissionModeOption(mode: PermissionMode) {
 }
 
 /** Menu heading. `learnMore` links to the fuller explanation in Settings. */
-function PermissionMenuLabel({ learnMore }: { learnMore: boolean }) {
+export function PermissionMenuLabel({ learnMore }: { learnMore: boolean }) {
   const openSettings = useSettingsDialogStore((s) => s.openDialog);
   return (
     <DropdownMenuLabel className="flex items-center justify-between gap-3">
@@ -199,6 +199,20 @@ export function useActivePermissionMode() {
   return permissionModeOption(useAccountPermissionMode().permissionMode);
 }
 
+/** The focused element, or for a closing menu its trigger (menus label themselves by it). */
+function lastFocusOutsideMenus(): HTMLElement | null {
+  let element = document.activeElement;
+  for (
+    let menu = element?.closest('[role="menu"]');
+    menu;
+    menu = element?.closest('[role="menu"]')
+  ) {
+    const triggerId = menu.getAttribute("aria-labelledby");
+    element = triggerId ? document.getElementById(triggerId) : null;
+  }
+  return element instanceof HTMLElement && element !== document.body ? element : null;
+}
+
 /** Full access confirmation body, shared by both dialogs that ask for it. */
 export function FullAccessConfirmContent({
   onConfirm,
@@ -208,6 +222,8 @@ export function FullAccessConfirmContent({
   onClose: () => void;
 }) {
   const openSettings = useSettingsDialogStore((s) => s.openDialog);
+  // Focus before the dialog opened, so Settings can return there and not to a removed button.
+  const returnFocusRef = useRef<HTMLElement | null>(null);
   return (
     // Backdrop click cancels; no ring.
     <AlertDialogContent
@@ -216,6 +232,7 @@ export function FullAccessConfirmContent({
       // Focus the card, not Cancel, so Cancel shows no focus border until tabbed to.
       onOpenAutoFocus={(event) => {
         event.preventDefault();
+        returnFocusRef.current = lastFocusOutsideMenus();
         (event.currentTarget as HTMLElement).focus();
       }}
     >
@@ -254,7 +271,10 @@ export function FullAccessConfirmContent({
           className="cursor-pointer text-foreground underline underline-offset-2"
           onClick={() => {
             onClose();
-            openSettings("general", { scrollTarget: "general-permissions" });
+            openSettings("general", {
+              scrollTarget: "general-permissions",
+              opener: returnFocusRef.current,
+            });
           }}
         >
           Learn more

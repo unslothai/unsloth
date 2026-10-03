@@ -21,7 +21,7 @@ test("Learn more opens the Permissions section of Settings", () => {
 });
 
 test("Settings explains only the selected level and drops its own Learn more", () => {
-  assert.match(GENERAL, /label=\{activePermission\.label\}/);
+  assert.match(GENERAL, /label=\{t\(`settings\.general\.permissions\.names\.\$\{activePermission\.value\}`\)\}/);
   assert.match(GENERAL, /t\(`settings\.general\.permissions\.details\.\$\{activePermission\.value\}`\)/);
   assert.match(GENERAL, /<PermissionModeDropdown learnMore=\{false\} \/>/);
   assert.doesNotMatch(GENERAL, /permissions\.bypass(Label|Description)/);
@@ -46,4 +46,25 @@ test("Full access looks like every other level and asks in a short, neutral conf
   assert.match(MENU, /onOpenAutoFocus=\{\(event\) => \{\s*event\.preventDefault\(\);/);
   assert.match(MENU, /<AlertDialogDescription className="text-pretty leading-relaxed">/);
   assert.equal([...MENU.matchAll(/title: "/g)].length, 3);
+});
+
+const DICTATION = await readFile(
+  new URL("../src/features/chat/bypass-permissions-menu-item.tsx", import.meta.url),
+  "utf8",
+);
+const EN = await readFile(new URL("../src/i18n/locales/en.ts", import.meta.url), "utf8");
+
+test("the dictation submenu has the heading and Learn more too", () => {
+  assert.match(DICTATION, /<PermissionMenuLabel learnMore \/>\s*<PermissionModeMenuItems/);
+});
+
+test("confirmation Learn more hands Settings the focus from before the dialog", () => {
+  assert.match(MENU, /returnFocusRef\.current = lastFocusOutsideMenus\(\);/);
+  // A closing menu resolves to its trigger, which outlives it.
+  assert.match(MENU, /menu\.getAttribute\("aria-labelledby"\)/);
+  assert.match(MENU, /scrollTarget: "general-permissions",\s*opener: returnFocusRef\.current,/);
+});
+
+test("Ask says provider-hosted tools are not paused", () => {
+  assert.match(EN, /Tools run by an external provider are not paused\./);
 });

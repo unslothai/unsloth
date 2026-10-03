@@ -1275,9 +1275,15 @@ export const fr = {
       },
       permissions: {
         sectionTitle: "Autorisations",
+        names: {
+          ask: "Demander l'accord",
+          auto: "Approuver pour moi",
+          off: "Exécuter automatiquement",
+          full: "Accès complet",
+        },
         details: {
           ask:
-            "Demande votre accord avant chaque appel d'outil, y compris le code terminal et Python, les recherches web, les modifications de fichiers et les outils MCP. Idéal pour vérifier chaque étape.",
+            "Demande votre accord avant chaque appel d'outil, y compris le code terminal et Python, les recherches web, les modifications de fichiers et les outils MCP. Les outils exécutés par un fournisseur externe ne sont pas mis en pause. Idéal pour vérifier chaque étape.",
           auto:
             "Exécute seul les appels d'outils courants et ne demande votre accord que lorsqu'une action semble risquée, comme lire des identifiants, élever des privilèges ou lancer des commandes destructrices.",
           off:

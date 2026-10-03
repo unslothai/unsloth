@@ -1102,9 +1102,15 @@ export const it = {
       },
       permissions: {
         sectionTitle: "Autorizzazioni",
+        names: {
+          ask: "Chiedi conferma",
+          auto: "Approva per me",
+          off: "Esegui automaticamente",
+          full: "Accesso completo",
+        },
         details: {
           ask:
-            "Chiede conferma prima di ogni chiamata agli strumenti, compresi codice da terminale e Python, ricerche web, modifiche ai file e strumenti MCP. Ideale se vuoi controllare ogni passaggio.",
+            "Chiede conferma prima di ogni chiamata agli strumenti, compresi codice da terminale e Python, ricerche web, modifiche ai file e strumenti MCP. Gli strumenti eseguiti da un provider esterno non vengono messi in pausa. Ideale se vuoi controllare ogni passaggio.",
           auto:
             "Esegue da solo le chiamate abituali e chiede conferma solo quando un'azione sembra rischiosa, come leggere credenziali, aumentare i privilegi o eseguire comandi distruttivi.",
           off:

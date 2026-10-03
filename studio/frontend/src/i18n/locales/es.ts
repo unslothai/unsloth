@@ -1272,9 +1272,15 @@ export const es = {
       },
       permissions: {
         sectionTitle: "Permisos",
+        names: {
+          ask: "Pedir aprobación",
+          auto: "Aprobar por mí",
+          off: "Ejecutar automáticamente",
+          full: "Acceso total",
+        },
         details: {
           ask:
-            "Pide aprobación antes de cada llamada a herramientas, incluido el código de terminal y Python, las búsquedas web, la edición de archivos y las herramientas MCP. Ideal si quieres revisar cada paso.",
+            "Pide aprobación antes de cada llamada a herramientas, incluido el código de terminal y Python, las búsquedas web, la edición de archivos y las herramientas MCP. Las herramientas que ejecuta un proveedor externo no se detienen. Ideal si quieres revisar cada paso.",
           auto:
             "Ejecuta por sí solo las llamadas habituales y solo pregunta cuando una acción parece arriesgada, como leer credenciales, elevar privilegios o ejecutar comandos destructivos.",
           off:

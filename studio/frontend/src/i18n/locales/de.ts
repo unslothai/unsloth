@@ -1277,9 +1277,15 @@ export const de = {
       },
       permissions: {
         sectionTitle: "Berechtigungen",
+        names: {
+          ask: "Zustimmung einholen",
+          auto: "Für mich freigeben",
+          off: "Automatisch ausführen",
+          full: "Vollzugriff",
+        },
         details: {
           ask:
-            "Fragt vor jedem Tool-Aufruf nach, auch bei Terminal- und Python-Code, Websuchen, Dateiänderungen und MCP-Tools. Ideal, wenn du jeden Schritt prüfen möchtest.",
+            "Fragt vor jedem Tool-Aufruf nach, auch bei Terminal- und Python-Code, Websuchen, Dateiänderungen und MCP-Tools. Tools, die ein externer Anbieter ausführt, werden nicht angehalten. Ideal, wenn du jeden Schritt prüfen möchtest.",
           auto:
             "Führt gewöhnliche Tool-Aufrufe selbst aus und fragt nur nach, wenn eine Aktion riskant wirkt, etwa beim Lesen von Zugangsdaten, beim Erhöhen von Rechten oder bei zerstörerischen Befehlen.",
           off:

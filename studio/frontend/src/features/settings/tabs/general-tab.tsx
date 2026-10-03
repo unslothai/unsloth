@@ -570,7 +570,7 @@ export function GeneralTab() {
       >
         {/* The selected level, explained in full. */}
         <SettingsRow
-          label={activePermission.label}
+          label={t(`settings.general.permissions.names.${activePermission.value}`)}
           description={t(`settings.general.permissions.details.${activePermission.value}`)}
         >
           <PermissionModeDropdown learnMore={false} />

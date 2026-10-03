@@ -13,6 +13,7 @@ import {
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import {
   FullAccessConfirmContent,
+  PermissionMenuLabel,
   PermissionModeMenuItems,
 } from "./permission-mode-select";
 
@@ -30,6 +31,7 @@ export function BypassPermissionsMenuItem() {
         Tool permissions
       </DropdownMenuSubTrigger>
       <DropdownMenuSubContent className="unsloth-plus-menu w-[calc(330px*var(--ui-space-scale,1))]">
+        <PermissionMenuLabel learnMore />
         <PermissionModeMenuItems
           // Defer past Radix's menu-close focus restoration, or the dropdown grabs focus back
           // and breaks the dialog's focus trap.

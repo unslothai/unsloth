@@ -1264,9 +1264,15 @@ export const ptBR = {
       },
       permissions: {
         sectionTitle: "Permissões",
+        names: {
+          ask: "Pedir aprovação",
+          auto: "Aprovar por mim",
+          off: "Executar automaticamente",
+          full: "Acesso total",
+        },
         details: {
           ask:
-            "Pede aprovação antes de cada chamada de ferramenta, incluindo código de terminal e Python, buscas na web, edição de arquivos e ferramentas MCP. Ideal quando você quer revisar cada etapa.",
+            "Pede aprovação antes de cada chamada de ferramenta, incluindo código de terminal e Python, buscas na web, edição de arquivos e ferramentas MCP. Ferramentas executadas por um provedor externo não são pausadas. Ideal quando você quer revisar cada etapa.",
           auto:
             "Executa sozinho as chamadas comuns e só pergunta quando uma ação parece arriscada, como ler credenciais, elevar privilégios ou executar comandos destrutivos.",
           off:
