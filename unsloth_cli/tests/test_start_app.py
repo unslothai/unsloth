@@ -236,6 +236,21 @@ def test_codex_app_creates_and_removes_a_missing_config(studio):
     assert not config.with_name("unsloth-model-catalog.json").exists()
 
 
+def test_codex_app_keeps_a_created_config_the_app_wrote_to_without_a_toml_parser(
+    studio, monkeypatch
+):
+    config = studio["home"] / ".codex" / "config.toml"
+    monkeypatch.setitem(sys.modules, "tomllib", None)
+    monkeypatch.setitem(sys.modules, "tomli", None)
+    studio["while_running"] = lambda: config.write_text(
+        config.read_text() + '\n[projects."/work/repo"]\ntrust_level = "trusted"\n'
+    )
+
+    assert CliRunner().invoke(start.start_app, ["codex", "--app"]).exit_code == 0
+
+    assert config.read_text().strip() == '[projects."/work/repo"]\ntrust_level = "trusted"'
+
+
 @pytest.mark.skipif(os.name == "nt", reason = "creating a symlink needs admin rights on Windows")
 def test_codex_app_refuses_a_symlinked_config(studio, tmp_path):
     target = tmp_path / "dotfiles" / "codex.toml"

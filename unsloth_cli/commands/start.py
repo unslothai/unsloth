@@ -5487,9 +5487,12 @@ def _load_app_config(path: Path, text: Optional[str]) -> Optional[dict]:
         return {}
     if path.suffix == ".toml":
         try:
-            import tomllib
+            import tomllib  # novermin
         except ImportError:
-            return None
+            try:
+                import tomli as tomllib
+            except ImportError:
+                return None
         data = tomllib.loads(text)
     elif path.suffix == ".yaml":
         import yaml
@@ -5775,7 +5778,7 @@ def _switch_codex_app_back(state_path: Path, state: dict) -> list:
         original = _read_app_file(backup) if backup else None
         if original is not None and _same_app_config(path, new_text, original):
             new_text = original
-        if state.get("created") and not _load_app_config(path, new_text):
+        if state.get("created") and _same_app_config(path, new_text, ""):
             path.unlink()
         elif new_text != text:
             _write_app_file(path, new_text)
