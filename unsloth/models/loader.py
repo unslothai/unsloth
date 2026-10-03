@@ -27,6 +27,8 @@ from .llama import FastLlamaModel, logger, _vllm_will_load_weights, restore_tran
 from .mistral import FastMistralModel
 from .qwen2 import FastQwen2Model
 from .qwen3 import FastQwen3Model
+from .qwen3_tts import FastQwen3TTSModel
+from .voxtral import FastVoxtralModel
 from .qwen3_moe import FastQwen3MoeModel
 from .cohere import FastCohereModel
 from transformers import AutoConfig
@@ -95,6 +97,7 @@ SUPPORTS_QWEN3_MOE = transformers_version >= Version("4.50.3")
 SUPPORTS_FALCON_H1 = transformers_version >= Version("4.53.0")
 SUPPORTS_GEMMA3N = transformers_version >= Version("4.53.0")
 SUPPORTS_GPTOSS = transformers_version >= Version("4.55.0")
+SUPPORTS_VOXTRAL = transformers_version >= Version("4.55.0")
 SUPPORTS_GEMMA4 = transformers_version >= Version("5.5.0")
 # Transformers v5 meta-device loading corrupts non-persistent buffers (inv_freq); see _fix_rope_inv_freq() below.
 _NEEDS_ROPE_FIX = transformers_version >= Version("5.0.0")
@@ -1389,6 +1392,17 @@ class FastLanguageModel(FastLlamaModel):
                     f"to obtain the latest transformers build, then restart this session."
                 )
             dispatch_model = FastQwen3Model if model_type == "qwen3" else FastQwen3MoeModel
+        elif model_type == "qwen3_tts":
+            dispatch_model = FastQwen3TTSModel
+        elif model_type == "voxtral":
+            if not SUPPORTS_VOXTRAL:
+                raise ImportError(
+                    f"Unsloth: Your transformers version of {transformers_version} does not support Voxtral.\n"
+                    f"The minimum required version is 4.55.0\n"
+                    f'Try `pip install --upgrade "transformers>=4.55.0"`\n'
+                    f"to obtain the latest transformers build, then restart this session."
+                )
+            dispatch_model = FastVoxtralModel
         # Optimized Cohere and Granite paths are disabled until their errors match.
         else:
             delegated, tokenizer = FastModel.from_pretrained(
