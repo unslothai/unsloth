@@ -144,28 +144,6 @@ export function TtsRailFields({
   }) {
   return (
     <>
-      <Field
-        label={musicGeneration ? "Lyrics" : "Text"}
-        htmlFor="audio-prompt"
-        hint={
-          musicGeneration
-            ? "Lyrics may use sections such as [verse] and [chorus]. The completed song lands in the gallery."
-            : "What the model should say. Generation runs on the loaded TTS model and lands in the gallery."
-        }
-      >
-        <Textarea
-          id="audio-prompt"
-          value={prompt}
-          onChange={(event) => setPrompt(event.target.value)}
-          placeholder={
-            musicGeneration
-              ? "[verse]\nMorning light through the pines…\n\n[chorus]\n…"
-              : "Type the sentence to speak…"
-          }
-          className="min-h-28"
-        />
-      </Field>
-      {toolPanels}
       {/* Field inlined: its label needs a form control to point
           at, and PillTabs is a tablist with its own name. */}
       <div className="grid gap-1.5">
@@ -205,6 +183,28 @@ export function TtsRailFields({
             : "New loads use the GPU when there is one, and the CPU otherwise."}
         </p>
       </div>
+      <Field
+        label={musicGeneration ? "Lyrics" : "Text"}
+        htmlFor="audio-prompt"
+        hint={
+          musicGeneration
+            ? "Lyrics may use sections such as [verse] and [chorus]. The completed song lands in the gallery."
+            : "What the model should say. Generation runs on the loaded TTS model and lands in the gallery."
+        }
+      >
+        <Textarea
+          id="audio-prompt"
+          value={prompt}
+          onChange={(event) => setPrompt(event.target.value)}
+          placeholder={
+            musicGeneration
+              ? "[verse]\nMorning light through the pines…\n\n[chorus]\n…"
+              : "Type the sentence to speak…"
+          }
+          className="min-h-28"
+        />
+      </Field>
+      {toolPanels}
       {musicGeneration || samplingControls || audioOptionSpecs.length > 0 ? (
         <AdvancedDisclosure
           open={advancedOpen}
