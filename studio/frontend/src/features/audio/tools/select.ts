@@ -91,7 +91,6 @@ export function audioModelContextFor(
   };
 }
 
-/** The Convert caps when the status has a usable shape; a model without modes cannot convert. */
 function convertCapsOf(value: unknown): AudioConvertCaps | null {
   if (!isPlainObject(value)) return null;
   const caps = value as Partial<AudioConvertCaps>;

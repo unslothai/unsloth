@@ -383,16 +383,11 @@ export interface InferenceStatusResponse {
   /** Clone: whether the model needs the reference clip's transcript ("required"), can use it
    *  ("optional") or ignores it ("unused"); null when the model does not clone. */
   audio_reference_text?: "required" | "optional" | "unused" | null;
-  /** Options per Audio page workflow, when they differ from audio_options (Convert reads "convert"). */
   audio_options_by_workflow?: Record<string, unknown> | null;
-  /** The audio.cpp server task each workflow runs under ({"clone": "clon", "convert": "vc",
-   *  "convert:singing": "svc"}); a workflow whose task differs from audio_server_task reloads the model. */
+  /** e.g. {"clone": "clon", "convert": "vc", "convert:singing": "svc"}; a task other than audio_server_task reloads. */
   audio_workflow_tasks?: Record<string, string> | null;
-  /** The audio.cpp server task the model is loaded with right now. */
   audio_server_task?: string | null;
-  /** Seed-VC: the engine route the running server was started with; another engine reloads it. */
   audio_convert_route?: string | null;
-  /** Convert: what the loaded model offers on the Convert page; null when it does not convert. */
   audio_convert?: AudioConvertCaps | null;
   /** Request inputs the loaded model's spec marks required (Maya1: "instruct", its voice description). */
   audio_required_inputs?: string[] | null;
@@ -830,19 +825,12 @@ export interface OpenAIChatChunk {
   };
 }
 
-/** What a voice-conversion model offers on the Convert page (mirrors audio_convert in the load status). */
 export interface AudioConvertCaps {
-  /** Speech, Singing or both; Singing reloads the model under the svc task. */
   modes: ("speech" | "singing")[];
-  /** "audio": the target is a recording; "builtin": the model converts to its packaged voices (RVC). */
   target: "audio" | "builtin";
   builtin_voices: { id: string; label: string }[];
-  /** Per mode, whether pitch can be set and whether Auto is offered; a missing mode hides pitch. */
   pitch: Partial<Record<"speech" | "singing", { auto: boolean }>>;
-  /** Vevo2: Keep source style | Take target style (Speech only; Take needs the source transcript). */
   style: boolean;
-  /** Seed-VC: picking another engine reloads the model. */
   route_reloads: boolean;
-  /** Longest source the page converts, in seconds. */
   source_max_seconds: number;
 }

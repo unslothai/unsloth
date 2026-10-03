@@ -122,7 +122,6 @@ test("a convert run to a built-in voice has no target, and Auto sends no pitch",
       voice: "manthos",
     },
   });
-  // Out of range clamps to the contract's -12..12.
   const low = buildAudioRunBody({
     workflow: "convert",
     inputs: { source: { input_id: "i1" } },
@@ -154,7 +153,6 @@ test("whatever a caller spreads into a convert run, no path or unknown key reach
   const body = buildAudioRunBody(sneaky);
   assert.deepEqual(body, {
     workflow: "convert",
-    // Two ids at once is not one ref, so the target is dropped.
     inputs: { source: { input_id: "i1" } },
     convert: { mode: "speech", pitch: null, pitch_auto: false },
     options: { retrieval_blend: 0.5 },

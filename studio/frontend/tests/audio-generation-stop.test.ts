@@ -26,7 +26,6 @@ test("a run that reloads the model first can be stopped while it switches", () =
       canStop: true,
     },
   );
-  // The detail only names a switch; other phases keep their own words.
   assert.equal(
     audioGenerationPresentation("generating", "Switching…")?.status,
     "Generating audio…",

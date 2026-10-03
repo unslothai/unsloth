@@ -54,7 +54,6 @@ test("each converting family gets its one titled panel, only on Convert", () => 
     assert.deepEqual(shown(family, "clone"), [], family);
     assert.deepEqual(shown(family, "speak"), [], family);
   }
-  // Chatterbox keeps its Clone panel on Clone, and it never shows on Convert.
   const cloneOnConvert = CLONE_PANEL_LOGIC.filter((panel) =>
     panelApplies(panel, "convert", ctx({ audioFamily: "chatterbox" })),
   );
@@ -76,12 +75,10 @@ test("each converting family gets its one titled panel, only on Convert", () => 
   ]) {
     assert.ok(jsx.includes(label), label);
   }
-  // No runtime option name shows as a label.
   assert.doesNotMatch(jsx, /label="[a-z]+_[a-z_]+"/);
 });
 
 test("claims name the runtime's own options, so Advanced leaves them out", () => {
-  // Seed-VC's spec options (audio.cpp model_specs/seed_vc.json), less the path and load-time ones.
   assert.deepEqual([...seedVcLogic.claims].sort(), [
     "auto_f0_adjust",
     "f0_condition",
@@ -216,7 +213,6 @@ test("collectToolRequest merges each panel's convert part with its options", () 
   assert.equal(error, null);
   assert.deepEqual(patch.convert, { route: "v2_vc", style: "target" });
   assert.equal(patch.options?.route, "v2_vc");
-  // A value kept by an older build still gets every field.
   assert.equal(
     panelValue(seedVcLogic, { "seed-vc": { engine: "v1_xlsr_hift_vc" } }, [])
       .steps,
@@ -247,7 +243,6 @@ test("the tool context reads the Convert caps from the status", () => {
   );
   assert.deepEqual(context.convert?.modes, ["speech", "singing"]);
   assert.equal(context.convert?.style, true);
-  // A model that does not convert, or an older server, has no caps.
   const none = audioModelContextFor(
     { audio_family: "kokoro", audio_convert: null },
     {

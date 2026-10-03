@@ -111,15 +111,12 @@ export interface AudioGalleryClip {
   source_clip_id?: string | null;
   voice_id?: string | null;
   settings?: Record<string, unknown> | null;
-  /** The reference clip's name, for clones; the target voice's name or built-in label, for conversions. */
+  /** The reference clip's name, for clones. */
   reference_name?: string | null;
-  /** Convert: the upload that was converted, when the source was not a history clip. */
   source_input_id?: string | null;
-  /** Convert: the server kept a copy of the uploaded source with this clip. */
+  /** Served at /audio/gallery/{id}/source/file. */
   source_saved?: boolean;
-  /** Convert: the converted recording's name. */
   source_name?: string | null;
-  /** Convert: the built-in voice the recording was converted to (RVC). */
   target_builtin?: string | null;
 }
 

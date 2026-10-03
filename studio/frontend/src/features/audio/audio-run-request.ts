@@ -87,30 +87,23 @@ export function selectionExpired(
 
 export type AudioOptionScalar = boolean | number | string;
 
-/** Convert: Speech or Singing (Singing reloads models that offer it under another task). */
 export type ConvertMode = "speech" | "singing";
 
-/** Vevo2: keep the recording's own delivery, or take the target's (needs the recording's words). */
 export type ConvertStyle = "source" | "target";
 
-/** The Convert settings the route maps onto each family's own request fields. */
 export interface AudioConvertParams {
   mode: ConvertMode;
-  /** Semitones, -12..12; null when pitch is Auto or the model has no pitch control. */
   pitch: number | null;
   pitch_auto: boolean;
   style?: ConvertStyle;
-  /** RVC: the built-in voice to convert to. */
   voice?: string | null;
 }
 
-/** POST /audio/run for Convert: a recording and a target voice instead of text. */
 export interface AudioConvertRunRequest {
   workflow: "convert";
   inputs: {
     source: AudioSourceRef & { trim?: AudioTrim };
     target?: AudioSourceRef | null;
-    /** What's said in the recording, for Take target style. */
     source_text?: string | null;
   };
   convert: AudioConvertParams;
@@ -161,7 +154,6 @@ function cleanRef(
   return out;
 }
 
-/** Scalar options only, by name; whatever else a caller passed is left out. */
 function cleanOptions(
   options: Record<string, AudioOptionScalar> | undefined,
 ): Record<string, AudioOptionScalar> {
@@ -178,8 +170,7 @@ function cleanOptions(
 
 const CONVERT_MODES: ReadonlySet<string> = new Set(["speech", "singing"]);
 
-/** Convert's body: the source and target by id, the typed convert settings, and nothing that
- *  names a file. The route resolves the ids to its own files in the caller's account. */
+/** Ids only, never a path: the route resolves them in the caller's account. */
 function buildConvertRunBody(
   request: AudioConvertRunRequest,
 ): Record<string, unknown> {

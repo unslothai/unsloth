@@ -37,7 +37,6 @@ const base: AudioConvertCaps = {
   source_max_seconds: 300,
 };
 
-// What the backend reports per family (PLAN-ADDENDUM pitch matrix).
 const CAPS: Record<string, AudioConvertCaps> = {
   rvc: {
     ...base,
@@ -154,7 +153,6 @@ test("blockers come in rail order and explain themselves", () => {
 test("RVC needs a built-in voice, not a target recording", () => {
   const rvc = { ...ready, caps: CAPS.rvc, target: null };
   assert.equal(convertBlocker(rvc), null);
-  // An expired target upload left over from another model does not block RVC.
   assert.equal(convertBlocker({ ...rvc, targetExpired: true }), null);
   assert.deepEqual(convertBlocker({ ...rvc, builtinVoice: "" }), {
     kind: "target",
@@ -171,7 +169,6 @@ test("Take target style needs the transcript only in Speech", () => {
   assert.equal(convertBlocker(vevo)?.kind, "source-text");
   assert.equal(convertBlocker({ ...vevo, sourceText: "Hello." }), null);
   assert.equal(convertBlocker({ ...vevo, mode: "singing" }), null);
-  // Models without the style choice never ask for it.
   assert.equal(convertBlocker({ ...ready, style: "target" }), null);
 });
 
@@ -189,7 +186,6 @@ test("pitch shows per family, mode and style", () => {
     [CAPS.seed_vc, "singing", "source", true, true],
     [CAPS.vevo2, "speech", "source", true, true],
     [CAPS.vevo2, "speech", "target", false, false],
-    // Singing forces Keep source style, so pitch comes back.
     [CAPS.vevo2, "singing", "target", true, true],
     [CAPS.meanvc2, "speech", "source", false, false],
     [CAPS.chatterbox, "speech", "source", false, false],

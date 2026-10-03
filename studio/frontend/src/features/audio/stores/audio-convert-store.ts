@@ -9,20 +9,14 @@ export const AUDIO_CONVERT_STORAGE_KEY = "unsloth_audio_convert_v1";
 
 type ConvertCompareSide = "source" | "converted";
 
-/** Convert's draft, kept across page switches and reloads. Tool panel values live in
- *  useAudioCloneStore.toolValues under toolValueKey(model, "convert", panelId). */
+// Tool panel values live in useAudioCloneStore.toolValues, keyed by toolValueKey(model, "convert", id).
 interface AudioConvertState {
-  /** The recording to convert. */
   source: AudioSourceSelection | null;
-  /** The voice to convert it to, for models that take a recording. */
   target: AudioSourceSelection | null;
-  /** The packaged voice, for models that convert to built-in voices (RVC). */
   builtinVoice: string;
   mode: ConvertMode;
   pitchAuto: boolean;
-  /** Semitones, -12..12. */
   pitch: number;
-  /** What's said in the recording, for Take target style. */
   sourceText: string;
   compareSide: ConvertCompareSide;
   setSource: (source: AudioSourceSelection | null) => void;

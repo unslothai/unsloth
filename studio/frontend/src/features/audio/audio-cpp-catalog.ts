@@ -59,7 +59,6 @@ export const AUDIO_CPP_MODELS: readonly AudioCppModel[] = [
   { id: folder("CosyVoice3-GGUF"), task: "tts", workflows: ["clone"] },
   { id: folder("Qwen3-TTS-12Hz-1.7B-CustomVoice-GGUF"), task: "tts" },
   { id: folder("Qwen3-TTS-12Hz-1.7B-VoiceDesign-GGUF"), task: "tts" },
-  // Voice conversion: a recording in, the same words in another voice out.
   { id: folder("Vevo2-GGUF"), task: "tts", workflows: ["clone", "convert"] },
   { id: folder("SeedVC-MLX-GGUF"), task: "tts", workflows: ["convert"] },
   { id: folder("RVC-GGUF"), task: "tts", workflows: ["convert"] },

@@ -56,8 +56,6 @@ function sourceBusy(status: AudioSourceStatus): boolean {
   return status.phase === "uploading" || status.phase === "recording";
 }
 
-/** Convert: its draft (kept in the convert store), the model's tools, what holds Generate back,
- *  whether the run reloads the model, and the run. Mirrors useCloneGeneration. */
 export function useConvertGeneration({
   status,
   busyRef,
@@ -96,10 +94,8 @@ export function useConvertGeneration({
     "refreshGallery" | "selectClip" | "setFallbackClip" | "setSelectedId"
   > &
   Pick<AudioModelSlot, "pendingTranscribeRelease" | "replayQueuedTtsPick"> & {
-    /** The loaded model's Advanced schema and values, shared with Speak. */
     audioOptionSpecs: AudioOptionSpec[];
     audioOptionValues: AudioOptionValues;
-    /** Transcribe's selected or last speech-to-text repo, for the Transcribe button. */
     sttRepo: string | null;
   }) {
   const source = useAudioConvertStore((state) => state.source);
@@ -116,11 +112,9 @@ export function useConvertGeneration({
   const [targetStatus, setTargetStatus] = useState<AudioSourceStatus>(IDLE);
   const sourceHandle = useRef<AudioSourceInputHandle | null>(null);
   const targetHandle = useRef<AudioSourceInputHandle | null>(null);
-  // Uploads a run found gone, by id, so picking another one clears them.
   const [expiredIds, setExpiredIds] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
-  // What the running run reloads, so the footer can say it while the request is out.
   const [runningNotice, setRunningNotice] = useState<string | null>(null);
 
   const transcriber = useReferenceTranscribe({
@@ -139,7 +133,6 @@ export function useConvertGeneration({
     [status],
   );
   const caps = convertCaps(toolContext);
-  // A mode the model lost (Singing on a speech-only model) falls back to what it offers.
   const mode =
     caps && !caps.modes.includes(storedMode)
       ? (caps.modes[0] ?? "speech")
@@ -163,7 +156,6 @@ export function useConvertGeneration({
         .setToolValue(toolValueKey(model, "convert", panelId), value),
     [model],
   );
-  // Convert's own Advanced schema, when the model reports one for this page.
   const convertOptionSpecs = useMemo(() => {
     const byWorkflow = status?.audio_options_by_workflow?.convert;
     return byWorkflow === undefined
@@ -205,7 +197,6 @@ export function useConvertGeneration({
     [convertOptionSpecs, claimedOptions],
   );
 
-  // Before a run that reloads the model, say so: another task (Clone's, or Singing) or another engine.
   const nextTask = convertServerTask(caps, status?.audio_workflow_tasks, mode);
   const loadedTask = status?.audio_server_task ?? null;
   const loadedRoute =
@@ -315,7 +306,6 @@ export function useConvertGeneration({
         return undefined;
     }
   };
-  /** What holds Generate back on this page, with the fix as an action. The model blockers are the host's. */
   const blocker: GenerateBlocker | null = inputBlocker
     ? {
         reason: inputBlocker.reason,
@@ -395,12 +385,11 @@ export function useConvertGeneration({
         setFallbackClip,
         setSelectedId,
       });
-      // The run may have reloaded the model under another task or engine.
       if (switchNotice) await refreshStatus();
     } catch (error) {
       if (!controller.signal.aborted) {
         updateGenerationPhase("finishing");
-        // A 404 means an upload the server no longer holds; history clips and voices stay.
+        // 404: an upload expired; history clips and voices do not.
         const gone =
           error instanceof AudioApiError && error.status === 404
             ? [sourceSelection, targetSelection].filter(
@@ -467,7 +456,6 @@ export function useConvertGeneration({
     replayQueuedTtsPick,
   ]);
 
-  // New inputs clear a failure that was about the old ones.
   useEffect(() => {
     if (source || target) setGenerationError(null);
   }, [source, target]);

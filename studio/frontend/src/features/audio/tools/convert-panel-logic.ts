@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// What each Convert model tool sends, without its controls. Free of JSX so the node test runner
-// can load it; convert-panels.tsx adds the Components. Seed-VC and RVC refuse options they do not
-// declare, so each panel sends only what the chosen engine reads.
+// Seed-VC and RVC refuse undeclared options, so each panel sends only what its engine reads.
 
 import type { AudioOptionSpec } from "../audio-options";
 import type { ConvertStyle } from "../audio-run-request";
@@ -13,7 +11,6 @@ import type { AudioModelContext } from "./types";
 const clamp = (value: number, min: number, max: number) =>
   Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : min;
 
-/** A float or int option's default from the model's schema, else the given one. */
 function specDefault(
   specs: readonly AudioOptionSpec[],
   name: string,
@@ -26,14 +23,11 @@ function specDefault(
 const isSinging = (ctx: AudioModelContext | undefined) =>
   ctx?.convertMode === "singing";
 
-// ---- Seed-VC: engine and its settings ---------------------------------------------------------
-
 export type SeedVcEngine =
   | "v2_vc"
   | "v1_whisper_bigvgan_vc"
   | "v1_xlsr_hift_vc";
 
-/** Speech engines in the order the Engine select lists them. Singing always runs v1_svc. */
 export const SEED_VC_ENGINES: readonly {
   value: SeedVcEngine;
   label: string;
@@ -47,18 +41,12 @@ export const SEED_VC_SINGING_ROUTE = "v1_svc";
 
 export interface SeedVcValue {
   engine: SeedVcEngine;
-  /** V2: how closely the output follows the target voice. */
   similarity: number;
-  /** V2: how clearly the words come through. */
   intelligibility: number;
-  /** V1: classifier-free guidance. */
   guidance: number;
-  /** Output length relative to the recording, 0.5..2. */
   length: number;
   steps: number;
-  /** V2: replaces the voice with an unrecognisable one. */
   anonymize: boolean;
-  /** Whether Length, Steps and Anonymize are unfolded. */
   more?: boolean;
 }
 
@@ -66,7 +54,6 @@ export const SEED_VC_LENGTH_RANGE = { min: 0.5, max: 2 } as const;
 export const SEED_VC_STEPS_RANGE = { min: 1, max: 100 } as const;
 export const SEED_VC_GUIDANCE_RANGE = { min: 0, max: 2 } as const;
 
-/** The engine a run uses: the chosen one for speech, the singing engine for singing. */
 export function seedVcRoute(
   value: SeedVcValue,
   ctx?: AudioModelContext,
@@ -82,7 +69,7 @@ export const seedVcLogic: AudioToolPanelLogic<SeedVcValue> = {
   families: ["seed_vc"],
   workflows: ["convert"],
   title: "Seed-VC",
-  // Pitch is the page's own control; f0 conditioning fails on speech engines, so it never shows.
+  // f0_condition fails on the speech engines, so it is claimed and never shown.
   claims: [
     "route",
     "similarity_guidance_scale",
@@ -132,14 +119,9 @@ export const seedVcLogic: AudioToolPanelLogic<SeedVcValue> = {
   },
 };
 
-// ---- RVC: index blend, consonants, volume -----------------------------------------------------
-
 export interface RvcValue {
-  /** How much of the voice's feature index is mixed in, 0..1. */
   blend: number;
-  /** Keeps breathy consonants from the recording, 0..0.5 (0.5 turns it off). */
   protect: number;
-  /** 0 keeps the recording's loudness envelope, 1 the converted voice's own. */
   rms: number;
 }
 
@@ -148,7 +130,6 @@ export const rvcLogic: AudioToolPanelLogic<RvcValue> = {
   families: ["rvc"],
   workflows: ["convert"],
   title: "RVC",
-  // The built-in voice and the pitch shift are the page's own controls.
   claims: [
     "retrieval_blend",
     "unvoiced_protection",
@@ -170,12 +151,9 @@ export const rvcLogic: AudioToolPanelLogic<RvcValue> = {
   }),
 };
 
-// ---- Chatterbox: guidance and steps for conversion --------------------------------------------
-
 export interface ChatterboxConvertValue {
   guidance: number;
   steps: number;
-  /** Whether Steps is unfolded. */
   more?: boolean;
 }
 
@@ -206,8 +184,6 @@ export const chatterboxConvertLogic: AudioToolPanelLogic<ChatterboxConvertValue>
     }),
   };
 
-// ---- Vevo2: keep or take the delivery ---------------------------------------------------------
-
 export interface Vevo2StyleValue {
   style: ConvertStyle;
 }
@@ -217,10 +193,8 @@ export const vevo2StyleLogic: AudioToolPanelLogic<Vevo2StyleValue> = {
   families: ["vevo2"],
   workflows: ["convert"],
   title: "Vevo2",
-  // The style is a convert field, not an option.
   claims: [],
   initial: () => ({ style: "source" }),
-  // Singing keeps the recording's style: a sung transcript is lyrics, which STT gets wrong.
   toRequest: (value, ctx) => ({
     convert: {
       style: !isSinging(ctx) && value.style === "target" ? "target" : "source",
@@ -228,7 +202,6 @@ export const vevo2StyleLogic: AudioToolPanelLogic<Vevo2StyleValue> = {
   }),
 };
 
-/** Convert's panel logic in rail order, mirroring CONVERT_TOOL_PANELS. */
 export const CONVERT_PANEL_LOGIC = [
   seedVcLogic,
   rvcLogic,

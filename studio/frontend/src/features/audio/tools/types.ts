@@ -28,9 +28,7 @@ export interface AudioModelContext {
   requiredInputs?: readonly string[];
   /** Status `audio_reference_text`: null when the model does not clone. */
   referenceTextMode?: AudioReferenceTextMode | null;
-  /** Status `audio_convert`: null when the model does not convert. */
   convert?: AudioConvertCaps | null;
-  /** Convert: the Speech or Singing tab the page has selected. */
   convertMode?: ConvertMode;
 }
 
@@ -46,8 +44,7 @@ export interface AudioRunPatch {
   speed?: number;
   /** A panel that changes whether the transcript is used, over what the model reports. */
   referenceTextMode?: "required" | "optional" | "hidden";
-  /** Convert: Vevo2's style, and the Seed-VC engine (also sent as options.route) so the page can
-   *  tell that a run reloads the model. */
+  /** `route` mirrors options.route so the page can tell a run reloads the model. */
   convert?: { style?: ConvertStyle; route?: string };
 }
 
@@ -82,7 +79,6 @@ export interface AudioToolPanel<V> {
   appliesTo?: (ctx: AudioModelContext) => boolean;
   initial: (specs: AudioOptionSpec[]) => V;
   Component: ComponentType<AudioToolPanelProps<V>>;
-  /** `ctx` is the same context the panel applies on (Convert reads its Speech or Singing mode). */
   toRequest: (value: V, ctx?: AudioModelContext) => AudioRunPatch;
   validate?: (
     value: V,

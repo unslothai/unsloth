@@ -119,7 +119,6 @@ test("a convert-only model opens Convert and runs nothing else", () => {
     workflowForLoadedModel({ current: "speak", audioWorkflows: ["convert"], music: false }),
     "convert",
   );
-  // Chatterbox clones and converts: either page keeps it.
   assert.equal(
     workflowForLoadedModel({ current: "convert", audioWorkflows: ["clone", "convert"], music: false }),
     "convert",

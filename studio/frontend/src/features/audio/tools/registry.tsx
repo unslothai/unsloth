@@ -105,7 +105,7 @@ export function isInstructionPanel(id: string): boolean {
 }
 
 /** Model tools, in rail order: the saved-voice choice first, then the instruction fields, then
- *  family tools. Convert's panels show on Convert only. */
+ *  family tools. */
 export const AUDIO_TOOL_PANELS: readonly AnyAudioToolPanel[] = [
   SPEAK_TOOL_PANELS[0],
   ...INSTRUCTION_PANELS,

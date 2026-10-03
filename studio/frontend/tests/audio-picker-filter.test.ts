@@ -100,7 +100,6 @@ test("voice conversion models list on Convert only; Chatterbox and Vevo2 on Clon
     );
     assert.equal(audioCppModelSpeaks(id), false, name);
   }
-  // The backend's list wins once it arrives.
   assert.deepEqual(
     workflowsFor({
       id: "audio-cpp/audio.cpp-gguf/RVC-GGUF",
@@ -109,7 +108,6 @@ test("voice conversion models list on Convert only; Chatterbox and Vevo2 on Clon
     }),
     ["convert"],
   );
-  // A speech model never lists on Convert.
   assert.deepEqual(
     workflowsFor({
       id: "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF",

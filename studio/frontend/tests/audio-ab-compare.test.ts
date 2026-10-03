@@ -26,7 +26,6 @@ test("switching sides keeps the moment and play state, clamped to the new side",
       resume,
     });
   }
-  // Past the end of a shorter side: parked just before its end, not resumed.
   const past = nextPlayback({ time: 9, playing: true, duration: 10 }, 6);
   assert.ok(past.seek < 6 && past.seek > 5.9, String(past.seek));
   assert.equal(past.resume, false);
@@ -40,7 +39,6 @@ test("one player, swapped by a Tab-reachable toggle", () => {
   const tabs = readSrc(
     "features/model-picker/components/model-selector/pill-tabs.tsx",
   );
-  // Roving tabindex: the selected tab is always in the Tab order.
   assert.match(tabs, /tabIndex=\{value === tab\.value \? 0 : -1\}/);
   assert.match(tabs, /disabled=\{disabled \|\| tab\.disabled\}/);
 });
