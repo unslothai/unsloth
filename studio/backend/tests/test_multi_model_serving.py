@@ -1154,3 +1154,38 @@ def test_an_api_key_status_does_not_leak_a_local_path_through_serving():
     assert local not in redacted["active_model"] and local not in redacted["loaded"]
     assert local not in redacted["serving"] and "org/B-GGUF" in redacted["serving"]
     assert redact_host_paths(status, via_api_key = False).serving == [local, "org/B-GGUF"]
+
+
+def test_a_managed_engine_load_never_lands_in_a_kept_slot(backends):
+    _, extra = backends
+    kept = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0", engine = "vllm")
+    assert _selected(kept) is None
+    assert _selected(kept.model_copy(update = {"alongside": True})) is None
+
+
+def test_a_managed_engine_load_refuses_while_a_kept_model_generates(backends, monkeypatch):
+    _, extra = backends
+    _gated_load_fakes(monkeypatch, short_fits = [])
+    generating = threading.Event()
+    extra.generations.add(generating)
+    request = LoadRequest(model_path = "org/C", engine = "vllm")
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inf.load_model_gated(request, None, "s"))
+    assert excinfo.value.status_code == 409 and model_slots.slots == [extra]
+    assert not generating.is_set()
+    forced = request.model_copy(update = {"force_cancel_active": True})
+    assert asyncio.run(inf.load_model_gated(forced, None, "s")) == "loaded"
+    assert generating.is_set() and model_slots.slots == []
+
+
+def test_a_gpu_handoff_stops_on_a_kept_model_that_would_not_unload(backends, monkeypatch):
+    _, extra = backends
+
+    def stuck():
+        raise RuntimeError("llama-server ignored SIGKILL")
+
+    monkeypatch.setattr(extra.llama, "unload_model", stuck)
+    assert model_slots.unload_extra_models() == 1
+    model_slots.slots.append(extra)
+    with pytest.raises(RuntimeError, match = "kept alongside"):
+        model_slots.unload_extra_models(strict = True)

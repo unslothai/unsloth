@@ -205,18 +205,28 @@ def stop_orchestrator_workers() -> None:
         )
 
 
-def _drop_where(predicate) -> int:
+def _drop_where(predicate, strict: bool = False) -> int:
+    """``strict`` raises once every slot was tried if any teardown failed: a GPU handoff must not
+    proceed past a server that may still hold VRAM."""
     filling = loading[0] if loading else None
     doomed = [slot for slot in list(slots) if predicate(slot, slot is filling)]
+    failed = []
     for slot in doomed:
         try:
             drop(slot)
         except Exception as exc:
             logger.warning("Could not unload an extra model: %s", exc)
+            failed.append(exc)
+    if strict and failed:
+        raise RuntimeError(f"Could not unload {len(failed)} model(s) kept alongside") from failed[0]
     return len(doomed)
 
 
-def unload_extra_models(keep = None, spare_filling: bool = False) -> int:
+def unload_extra_models(
+    keep = None,
+    spare_filling: bool = False,
+    strict: bool = False,
+) -> int:
     """Drop every slot, or with ``keep`` only the loaded ones it does not spare. Returns how many."""
 
     def doomed(slot, filling):
@@ -225,7 +235,7 @@ def unload_extra_models(keep = None, spare_filling: bool = False) -> int:
             keep is None or bool(loaded and not keep(slot.llama))
         )
 
-    return _drop_where(doomed)
+    return _drop_where(doomed, strict)
 
 
 def unload_llama_slots() -> int:

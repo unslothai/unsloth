@@ -17189,6 +17189,10 @@ async def load_model_gated(
             async with nullcontext() if new_slot else inference_lifecycle_gate():
                 _raise_if_sidecar_swap_in_progress()
                 if extra is None and request.engine != "auto" and model_slots.slots:
+                    for slot in list(model_slots.slots):
+                        _raise_or_cancel_slot_generations(
+                            slot, force = request.force_cancel_active, action = "Loading a model"
+                        )
                     await asyncio.to_thread(model_slots.unload_extra_models)
                 # The 409 gate runs inside _load_model_impl, under the lifecycle gate, atomic with teardown.
                 if new_slot:
@@ -17296,8 +17300,9 @@ async def _select_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
     """The extra slot already serving the model, or a new one for ``alongside``. None is the primary."""
     from core.inference.npu_backend import is_npu_model_path
 
-    # The NPU backend is one per process and replaces the primary, so it never takes a slot.
-    if is_npu_model_path(request.model_path):
+    # The NPU backend is one per process and replaces the primary, so it never takes a slot. vLLM
+    # and SGLang reserve a fixed share of the GPU up front, so neither shares it with a kept model.
+    if is_npu_model_path(request.model_path) or request.engine != "auto":
         routed_slot.set(None)
         return None
     requested = _model_key(request)
@@ -17315,8 +17320,7 @@ async def _select_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
     if not await asyncio.to_thread(get_multi_model_enabled):
         return None
     orchestrator = _peek_inference_backend()
-    # vLLM and SGLang reserve a fixed share of the GPU up front, so neither shares it with a kept model.
-    if request.engine != "auto" or getattr(orchestrator, "_managed_engine", None) is not None:
+    if getattr(orchestrator, "_managed_engine", None) is not None:
         return None
     occupied = _llama_cpp_backend.is_active or getattr(orchestrator, "active_model_name", None)
     if not occupied or await asyncio.to_thread(_loaded_satisfies, requested):
