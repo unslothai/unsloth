@@ -40924,6 +40924,10 @@ def _build_openai_passthrough_body(
         if llama_backend is not None
         else None
     )
+    response_format = _response_format_for_llama_server(_extract_response_format(payload))
+    if tools and tool_choice != "none" and _response_format_constrains_decoding(payload):
+        logger.warning("Ignoring response_format: callable tools cannot run under a schema")
+        response_format = None
     body = _build_passthrough_payload(
         messages,
         tools,
@@ -40940,7 +40944,7 @@ def _build_openai_passthrough_body(
         frequency_penalty = payload.frequency_penalty,
         logit_bias = payload.logit_bias,
         tool_choice = tool_choice,
-        response_format = _response_format_for_llama_server(_extract_response_format(payload)),
+        response_format = response_format,
         chat_template_kwargs = tpl_kwargs,
         backend_ctx = backend_ctx,
         seed = payload.seed,
