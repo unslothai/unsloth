@@ -21288,6 +21288,7 @@ async def _generate_tts_wav(
     *,
     speech_api_default_max_tokens: bool = False,
     requested_model: str = _RELOAD_ONLY_MODEL,
+    stats_holder: Optional[dict] = None,
 ) -> tuple[bytes, int, str, Optional[str]]:
     """Shared core of /audio/generate and /audio/speech. Returns
     (wav_bytes, sample_rate, model_name, audio_type)."""
@@ -21349,6 +21350,7 @@ async def _generate_tts_wav(
             ),
             repetition_penalty = payload.repetition_penalty,
             cancel_event = _audio_cancel,
+            stats_holder = stats_holder,
         )
     else:
         backend = await asyncio.to_thread(get_inference_backend)
@@ -21381,6 +21383,7 @@ async def _generate_tts_wav(
             language = payload.audio_language,
             seed = payload.seed,
             **({"audio_options": payload.audio_options} if payload.audio_options else {}),
+            stats_holder = stats_holder,
         )
 
     if audio_type not in supported_audio_types:
@@ -21558,6 +21561,7 @@ async def generate_audio(
         raise HTTPException(status_code = 400, detail = "No user message found.")
     text = last_user_msg["content"]
 
+    tts_stats: dict = {}
     wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
         text,
         payload,
@@ -21567,7 +21571,9 @@ async def generate_audio(
         # request model, and without this it stops the hook at its falsey check before
         # the idle-stash restore, failing a request the sibling route serves.
         requested_model = _switch_model_for_payload(payload) or _RELOAD_ONLY_MODEL,
+        stats_holder = tts_stats,
     )
+    truncated = bool((tts_stats.get("stats") or {}).get("truncated"))
     persisted_clip = await asyncio.to_thread(
         _persist_tts_clip, wav_bytes, sample_rate, text, model_name, audio_type
     )
@@ -21587,7 +21593,7 @@ async def generate_audio(
                         "role": "assistant",
                         "content": text,
                     },
-                    "finish_reason": "stop",
+                    "finish_reason": "length" if truncated else "stop",
                 }
             ],
         }

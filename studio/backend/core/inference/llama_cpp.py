@@ -40850,6 +40850,7 @@ class LlamaCppBackend:
         max_new_tokens: int = 2048,
         repetition_penalty: float = 1.1,
         cancel_event: Optional[threading.Event] = None,
+        stats_holder: Optional[dict] = None,
     ) -> tuple:
         """
         Generate TTS audio via llama-server /completion + codec decode.
@@ -40934,6 +40935,8 @@ class LlamaCppBackend:
             raise RuntimeError("Audio generation cancelled")
 
         data = resp.json()
+        if stats_holder is not None:
+            stats_holder["stats"] = {"truncated": data.get("stop_type") == "limit"}
         token_ids = (
             [p["id"] for p in data.get("completion_probabilities", []) if "id" in p]
             if need_ids

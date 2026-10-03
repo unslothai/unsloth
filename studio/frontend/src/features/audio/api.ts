@@ -21,6 +21,7 @@ export interface GenerateAudioResponse {
   model: string;
   audio: GeneratedAudio;
   clip_id?: string | null;
+  choices: { finish_reason: string }[];
 }
 
 export interface GenerateAudioOptions {
