@@ -12466,7 +12466,6 @@ def test_cudnn_benchmark_opt_out_families():
 
 
 def test_hunyuanvideo15_load_keeps_cudnn_benchmark_off(fake_runtime, monkeypatch):
-    # Two servers decoded identical HV1.5 latents to different frames with the benchmark on; off they match.
     from core.inference import video as video_mod, video_ltx2
 
     seen = []

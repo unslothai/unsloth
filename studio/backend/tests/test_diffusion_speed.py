@@ -566,8 +566,6 @@ def test_speed_default_skips_cudnn_benchmark_on_rocm(monkeypatch, hip, version):
 
 
 def test_speed_default_respects_family_cudnn_benchmark_opt_out(monkeypatch):
-    # cudnn.benchmark picks conv algorithms by timing, per process, so two servers can render the same request to
-    # different pixels. A family that opts out keeps it off; one that does not still gets it.
     torch = _stub_torch(monkeypatch)
     family = types.SimpleNamespace(supports_torch_compile = True, cudnn_benchmark = False)
     applied = apply_speed_optims(
@@ -583,8 +581,7 @@ def test_speed_default_respects_family_cudnn_benchmark_opt_out(monkeypatch):
 
 
 def test_cudnn_benchmark_opt_out_image_families():
-    # Renders differed across servers with the benchmark on (VAE decode, or SDXL's compiled UNet); ComfyUI leaves it
-    # off by default. Unmeasured families keep it.
+    # Unmeasured families keep the benchmark.
     from core.inference.diffusion_families import _FAMILIES
     off = {fam.name for fam in _FAMILIES if not fam.cudnn_benchmark}
     assert off == {"qwen-image", "flux.1", "z-image", "sdxl"}

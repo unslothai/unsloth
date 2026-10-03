@@ -480,7 +480,6 @@ def apply_speed_optims(
     if on_cuda:
         applied["vae_fused"] = _install_fused_vae(pipe, logger)
 
-    # A family can opt out (DiffusionFamily / VideoFamily.cudnn_benchmark): the per-process conv pick changes pixels.
     if (
         on_cuda
         and getattr(family, "cudnn_benchmark", True)
