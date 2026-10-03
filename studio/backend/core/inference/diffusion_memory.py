@@ -3494,15 +3494,8 @@ def _pin_top_level_group(
 
 
 def _skip_top_level_copy_back(module: Any, logger: Any = None) -> bool:
-    """The fallback when ``_pin_top_level_group`` cannot pin: keep the top-level group's existing host tensors and
-    re-point to them on offload instead of copying the weights back.
-
-    diffusers' streamless top-level group uploads it from pageable memory on every forward (unchanged here) and, on
-    offload, copies every tensor back to a fresh host buffer on the compute stream. Inference never changes those
-    weights, so the copy back is pure cost: on a T4, Wan2.2-TI2V-5B's condition embedder (113 / 38 / 25 / 19 MB) went
-    device to host twice per step, 0.29 s/step at ~1.3 GB/s pageable. VRAM and host RAM are unchanged (the host tensors
-    already exist; the device copy is released on offload exactly as before). Same scope and kill switches as the
-    pinned path."""
+    """Fallback when ``_pin_top_level_group`` cannot pin: offload re-points to the group's existing host tensors
+    instead of copying the (inference-constant) weights back on the compute stream. Same kill switch as the pinned path."""
     if (os.environ.get(PIN_TOP_GROUP_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
         return False
     try:

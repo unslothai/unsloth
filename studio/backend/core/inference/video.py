@@ -6253,9 +6253,7 @@ class VideoBackend:
                 "(quantized transformer must be compiled; eager is ~30x slower)"
             )
             effective_speed = SPEED_DEFAULT
-        # Wan on fp16 GPUs (T4): fused norm / modulation / gated-residual / rotary kernels, bit-identical to stock
-        # (self-checked on first use). Before the step cache and apply_memory_plan: their hooks capture the block forward
-        # when they attach.
+        # Before the step cache and apply_memory_plan: their hooks capture the block forward when they attach.
         from . import video_wan_fused
 
         wan_fused_engaged = False

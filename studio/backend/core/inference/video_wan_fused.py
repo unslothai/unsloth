@@ -1,31 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Wan transformer block modulation as fused Triton kernels on fp16 GPUs (T4 and other pre-Ampere cards).
+"""Fused fp16 Triton kernels for diffusers' ``WanTransformerBlock`` (T4 and other fp16-only GPUs).
 
-diffusers' ``WanTransformerBlock.forward`` keeps the norm, AdaLN modulation and gated residual math in float32:
-``scale_shift_table + temb.float()`` materialises a float32 ``[B, L, 6, D]`` tensor per block (Wan2.2-TI2V-5B
-modulates per token: 454 MB per block at 1280x704x25), and every norm / modulation / residual step round-trips through
-float32 tensors with casts on both sides. On a T4 that is ~2.3 s of a ~11 s denoise step and ~3,700 kernel launches.
-
-This runs the same arithmetic per element without the float32 intermediates in memory:
-
-* LayerNorm statistics come from PyTorch's own kernel run on the fp16 input. Its vectorised kernel reads 4 elements per
-  thread for every dtype ("that would lead to different results between float and low-p types"), so the per-row mean
-  and rstd are bit-identical to the stock ``layer_norm(x.float())``.
-* One Triton kernel then applies ``rstd * (x - mean)``, the ``1 + (table + temb)`` scale and ``table + temb`` shift
-  (read straight from the fp16 ``temb`` and the fp32 table), each product and sum rounded in float32 exactly where the
-  stock op chain rounds (FMA contraction disabled), and rounds to fp16 once, where ``type_as`` does.
-* The gated residuals ``x.float() + branch * (table + temb)`` and the affine ``norm2`` are fused the same way.
-* Self-attention's rotary (``WanAttnProcessor``'s inline ``apply_rotary_emb``: fp16 q / k times the float32 cos / sin
-  tables, ~10 strided elementwise kernels with float32 temporaries per call) is one kernel per q / k with the same
-  rounding; the rest of the processor runs as stock (same projections, norms, attention dispatch and backend).
-
-So the fp16 block output is bit-identical to stock; a self-check against the stock forward runs once per device and
-shape class before the fused path is trusted. Scope: only ``WanTransformerBlock`` (class-level forward, fingerprinted),
-only fp16 CUDA (non-ROCm) tensors without grad, outside ``torch.compile``; everything else calls the stock forward.
-Installed only for an fp16 Wan load (bf16 GPUs keep stock). Kill switch: ``UNSLOTH_DIFFUSION_WAN_FUSED_ADALN=0``
-(everything), ``UNSLOTH_DIFFUSION_WAN_FUSED_ROPE=0`` (the rotary only).
+Stock keeps norm / AdaLN modulation / gated residuals / rotary in float32 tensors (a float32 ``[B, L, 6, D]`` table per
+block for TI2V-5B). The kernels do the same per-element math, rounding in float32 exactly where the stock op chain does
+and to fp16 once, so the output is bit-identical (self-checked once per device before use). LayerNorm stats come from
+``native_layer_norm`` on the fp16 rows, bit-identical to ``layer_norm(x.float())`` (4-wide vectorised loads either way).
+Scope: fingerprinted block, fp16 CUDA (non-ROCm), no grad, not compiling. Kill switches
+``UNSLOTH_DIFFUSION_WAN_FUSED_ADALN=0`` (all), ``UNSLOTH_DIFFUSION_WAN_FUSED_ROPE=0`` (rotary only).
 """
 
 from __future__ import annotations
