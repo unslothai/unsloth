@@ -30,8 +30,9 @@ import {
 } from "../src/features/audio/audio-page-policy.ts";
 
 import { readSrc } from "./helpers/kit.ts";
+import { readAudioWorkspaceSource } from "./helpers/audio-workspace.ts";
 
-const audioPageSource = readSrc("features/audio/audio-page.tsx");
+const audioPageSource = readAudioWorkspaceSource();
 const chatApiSource = readSrc("features/chat/api/chat-api.ts");
 
 test("mode transitions cancel generation but wait for non-cancellable work", () => {

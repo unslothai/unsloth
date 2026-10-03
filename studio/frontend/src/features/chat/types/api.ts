@@ -376,6 +376,8 @@ export interface InferenceStatusResponse {
   /** The loaded GGUF audio model's generation options, as its spec declares them. Unknown-shaped
    *  on purpose: the Audio page validates it with parseAudioOptions. */
   audio_options?: unknown;
+  /** Audio page workflows the loaded model can run ("speak", "music", "transcribe"); empty when it is not an audio model. */
+  audio_workflows?: string[] | null;
   has_audio_input?: boolean;
   has_video_input?: boolean;
   loading: string[];

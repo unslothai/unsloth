@@ -5,10 +5,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
+import { readAudioWorkspaceSource } from "./helpers/audio-workspace.ts";
 
 const source = readSrc("features/settings/tabs/voice-tab.tsx");
 const en = readSrc("i18n/locales/en.ts");
-const audioSource = readSrc("features/audio/audio-page.tsx");
+const audioSource = readAudioWorkspaceSource();
 
 test("the studio TTS row offers the Audio page it tells the user to use", () => {
   // Settings is a modal, so it must close or Audio opens behind it.

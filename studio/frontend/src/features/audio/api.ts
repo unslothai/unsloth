@@ -91,6 +91,8 @@ export interface AudioGalleryClip {
   archived?: boolean;
   /** The server's unpinned sort key: the drag key, else the file mtime. */
   order_at?: number | null;
+  /** The Audio workflow that made the clip. Older servers omit it; read it through clipWorkflow. */
+  workflow?: string | null;
 }
 
 export interface AudioGalleryListResponse {
@@ -194,8 +196,12 @@ export async function deleteAudioClip(id: string): Promise<void> {
   if (!response.ok) throw new Error(await readFastApiError(response));
 }
 
-export async function clearAudioGallery(): Promise<number> {
-  const response = await authFetch("/api/inference/audio/gallery", {
+/** Deletes the clips that are not archived; with a workflow, only that workflow's clips. */
+export async function clearAudioGallery(
+  workflow?: "speak" | "music",
+): Promise<number> {
+  const query = workflow ? `?workflow=${workflow}` : "";
+  const response = await authFetch(`/api/inference/audio/gallery${query}`, {
     method: "DELETE",
   });
   const body = await parseJson<{ removed: number }>(response);

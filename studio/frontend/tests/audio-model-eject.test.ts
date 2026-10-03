@@ -5,8 +5,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
+import { readAudioWorkspaceSource } from "./helpers/audio-workspace.ts";
 
-const source = readSrc("features/audio/audio-page.tsx");
+const source = readAudioWorkspaceSource();
 const adapterSource = readSrc("features/chat/adapters/studio-model-dictation-adapter.ts");
 
 test("Audio exposes the shared picker eject action only while idle", () => {
