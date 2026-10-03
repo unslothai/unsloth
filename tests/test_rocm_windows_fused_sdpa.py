@@ -17,11 +17,11 @@ torch = pytest.importorskip("torch")
 
 
 def _on_windows_rocm():
-    return (
-        sys.platform == "win32"
-        and bool(getattr(torch.version, "hip", None))
-        and torch.cuda.is_available()
-    )
+    if sys.platform != "win32" or not torch.cuda.is_available():
+        return False
+    # Same detection as the fix: some AMD wheels tag only the torch version.
+    from unsloth.import_fixes import _is_rocm_torch_build
+    return bool(getattr(torch.version, "hip", None)) or _is_rocm_torch_build()
 
 
 def _run(code, *args):
@@ -110,7 +110,8 @@ _ATTENTION = textwrap.dedent(
     from torch.nn.attention import SDPBackend, sdpa_kernel
 
     g = torch.Generator(device = "cuda").manual_seed(0)
-    q, k, v = (torch.randn(2, 4, 24, 64, device = "cuda", dtype = torch.bfloat16, generator = g)
+    # fp16: gfx10 claims bf16 it lacks, and fp16 exercises the same fused kernels.
+    q, k, v = (torch.randn(2, 4, 24, 64, device = "cuda", dtype = torch.float16, generator = g)
                for _ in range(3))
     mask = torch.ones(24, 24, device = "cuda", dtype = torch.bool).tril()
     out = {}

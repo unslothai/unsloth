@@ -6722,11 +6722,11 @@ def fix_rocm_windows_fused_sdpa():
     except Exception as e:
         logger.info(f"Unsloth: Skipping the Windows ROCm SDPA fix ({e})")
         return
+    names = " or ".join("flash" if b == "flash" else "memory-efficient" for b in broken)
+    fallback = "the math kernel" if len(broken) == 2 else "the remaining kernels"
     logger.warning(
-        "Unsloth: this Windows ROCm torch cannot run "
-        + " or ".join("flash" if b == "flash" else "memory-efficient" for b in broken)
-        + " attention; using the math kernel instead "
-        "(set UNSLOTH_ALLOW_ROCM_FUSED_SDPA=1 to keep them)."
+        f"Unsloth: this Windows ROCm torch cannot run {names} attention; using {fallback} "
+        "instead (set UNSLOTH_ALLOW_ROCM_FUSED_SDPA=1 to keep them)."
     )
 
 
