@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import * as contextUsageRestore from "../src/features/chat/utils/context-usage-restore.ts";
 import * as messageOrder from "../src/features/chat/utils/message-order.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
@@ -38,6 +39,7 @@ test("a prompt setting change clears local usage even during a run", async () =>
         useChatRuntimeStore: { getState: () => state },
       },
       "./message-order": messageOrder,
+      "./context-usage-restore": contextUsageRestore,
       "./chat-history-storage": {},
     },
   );
@@ -74,6 +76,7 @@ test("a prompt setting change leaves external usage intact", async () => {
         useChatRuntimeStore: { getState: () => state },
       },
       "./message-order": messageOrder,
+      "./context-usage-restore": contextUsageRestore,
       "./chat-history-storage": {},
     },
   );
