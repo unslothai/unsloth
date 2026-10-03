@@ -15,7 +15,7 @@ import type { CapabilityKey } from "@/features/hub";
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 // eslint-disable-next-line no-restricted-imports -- The settings barrel imports this feature back.
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
-import { useNpuStatus } from "@/features/npu";
+import { isNpuModelId, NPU_MODEL_PREFIX, useNpuStatus } from "@/features/npu";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
@@ -502,7 +502,11 @@ function ModelSelectorContent({
   }
 
   const openConfigPage = (id: string, meta: ModelSelectorChangeMeta) => {
-    setConfigTarget(modelConfigTarget(id, meta));
+    // Match the row label by omitting the routing prefix.
+    const displayName = isNpuModelId(id)
+      ? id.slice(NPU_MODEL_PREFIX.length)
+      : undefined;
+    setConfigTarget(modelConfigTarget(id, meta, displayName));
   };
   const requestedConfigTarget = useMemo(
     () =>
