@@ -47,6 +47,7 @@ from core.rag.config import (
     effective_gguf_repo_for_embedding_model,
 )
 from loggers import get_logger
+from models.llama_custom_config import LlamaCppConfigFields
 from utils.utils import safe_curated_detail, safe_error_detail, log_and_http_error
 from utils.personalization_settings import (
     MAX_AVATAR_DATA_URL_BYTES,
@@ -917,7 +918,7 @@ MAX_GGUF_VARIANT_KEY_LEN = 4096
 MAX_GPU_IDS = MAX_GPU_ID + 1
 
 
-class ModelOverridePayload(BaseModel):
+class ModelOverridePayload(LlamaCppConfigFields):
     """One model's saved launch config, applied when the API loads that model.
 
     Everything past ``model_id`` is optional and omitted means "app default", so a
@@ -928,6 +929,9 @@ class ModelOverridePayload(BaseModel):
     """
 
     model_id: str = Field(..., min_length = 1, max_length = MAX_MODEL_OVERRIDE_KEY_LEN)
+    engine_parallelism: Optional[Literal["tensor", "pipeline", "data"]] = None
+    engine_precision: Optional[Literal["auto", "bf16", "fp16", "int4", "int8", "fp8"]] = None
+    engine: Optional[Literal["auto", "vllm", "sglang"]] = None
     # None leaves the stored value alone (the UI has no control for flags); [] clears them.
     llama_extra_args: Optional[list[str]] = None
     # ge=1: the setter drops a falsy value, so reject 0 here instead of discarding it silently.
@@ -2303,7 +2307,8 @@ def update_openai_auto_switch_override(
         _carried_fields = (() if payload.mirrors_server_tuning else _tuning_fields) + (
             () if payload.mirrors_reasoning_budget else _reasoning_fields
         )
-        if _carried_fields and not is_removal:
+        _stored_row = None
+        if not is_removal and (_carried_fields or payload.llama_cpp_config is None):
             # The same spellings the extra-args carry-over walks: a cached repo is not an ordinary folded match,
             # so a save under the repo id would find nothing and retire the alias with its tuning.
             _alias_ids = [payload.model_id]
@@ -2320,15 +2325,15 @@ def update_openai_auto_switch_override(
             # Taken as a unit from the first row that exists, not field by field down the list: a load stops at the
             # first non-empty row rather than merging, so filling a gap in the winner from a loser would switch
             # dormant tuning on.
-            for _alias_id in _alias_ids:
-                _stored_tuning = get_model_override(_alias_id)
-                if not _stored_tuning:
-                    continue
-                for name in _carried_fields:
-                    if _kept_tuning[name] is None:
-                        _kept_tuning[name] = _stored_tuning.get(name)
-                break
+            _stored_row = next((row for row in map(get_model_override, _alias_ids) if row), None)
+        if _stored_row:
+            for name in _carried_fields:
+                if _kept_tuning[name] is None:
+                    _kept_tuning[name] = _stored_row.get(name)
         removed_keys: list[str] = []
+        kept_custom_config = payload.llama_cpp_config
+        if kept_custom_config is None and _stored_row:
+            kept_custom_config = _stored_row.get("llama_cpp_config")
         if payload.remove is True:
             # An explicit remove wins over any other field. Remove the key a load resolves to, not the literal one sent
             # (the browser normalizes casing), and every spelling: clearing one of two leaves the survivor as the sole
@@ -2409,7 +2414,17 @@ def update_openai_auto_switch_override(
             set_model_override(
                 target_id,
                 llama_extra_args = extra_args,
+                llama_cpp_config = kept_custom_config,
                 keep_empty_extra_args = keep_empty,
+                engine_parallelism = payload.engine_parallelism
+                if payload.engine_parallelism is not None or is_removal
+                else get_model_override(target_id).get("engine_parallelism"),
+                engine_precision = payload.engine_precision
+                if payload.engine_precision is not None or is_removal
+                else get_model_override(target_id).get("engine_precision"),
+                engine = payload.engine
+                if payload.engine is not None or is_removal
+                else get_model_override(target_id).get("engine"),
                 max_seq_length = max_seq_length,
                 custom_context_length = custom_context_length,
                 kv_cache_dtype = payload.kv_cache_dtype,
