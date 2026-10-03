@@ -3859,6 +3859,102 @@ def test_a_cancelled_siblings_resume_survives_the_local_listing(monkeypatch, tmp
     assert {v.quant for v in response.variants if v.partial} == {"Q8_0"}
 
 
+def test_prefer_local_cache_falls_back_to_the_hub_when_nothing_is_on_disk(monkeypatch, tmp_path):
+    """prefer_local_cache orders the disk first; it is not disk-only. The Images and Video pickers
+    resolve an undownloaded quant through it, so an empty cache still reaches the Hub listing."""
+    from hub.utils.gguf import GgufVariantInfo
+
+    active = tmp_path / "active"
+    active.mkdir(parents = True)
+    _pin_cache_roots(monkeypatch, active, tmp_path)
+    listed = []
+
+    def _remote(repo_id, *args, **kwargs):
+        listed.append(repo_id)
+        return (
+            [GgufVariantInfo(filename = "m-Q4_K_M.gguf", quant = "Q4_K_M", size_bytes = 1)],
+            False,
+            ["m-Q4_K_M.gguf"],
+        )
+
+    monkeypatch.setattr(GV, "list_gguf_variants", _remote)
+
+    response = asyncio.run(GV.get_gguf_variants_response("Org/NoCache", prefer_local_cache = True))
+    assert listed == ["Org/NoCache"]
+    assert [(v.quant, v.downloaded) for v in response.variants] == [("Q4_K_M", False)]
+
+
+def test_prefer_local_cache_still_probes_an_api_key_token(monkeypatch, tmp_path):
+    """Disk first is not offline: an API-key token is still checked against the Hub, so one the
+    Hub authorizes reads the cached copy instead of an empty list."""
+    from hub.utils import hf_tokens
+
+    hf_tokens.reset_repo_access_cache()
+    active = tmp_path / "active"
+    repo_dir = active / "models--Org--Quant"
+    snapshot = repo_dir / "snapshots" / ("d" * 40)
+    snapshot.mkdir(parents = True)
+    (snapshot / "Model-Q4_K_M.gguf").write_bytes(b"\0" * 256)
+    (repo_dir / "refs").mkdir(parents = True)
+    (repo_dir / "refs" / "main").write_text("d" * 40, encoding = "utf-8")
+    _pin_cache_roots(monkeypatch, active, tmp_path)
+    probes = []
+
+    def _probe(repo_id, *args, **kwargs):
+        probes.append(repo_id)
+        return True
+
+    monkeypatch.setattr(hf_tokens, "_probe_repo_access", _probe)
+    monkeypatch.setattr(hf_tokens, "_hub_offline", lambda: False)
+    # The host holds a different credential, so only the Hub can vouch for the caller's token.
+    monkeypatch.setattr(hf_tokens, "_host_hf_credentials", lambda: (True, ["hf_operator_saved"]))
+
+    def _no_remote(*args, **kwargs):
+        raise AssertionError("remote listing attempted")
+
+    monkeypatch.setattr(GV, "list_gguf_variants", _no_remote)
+
+    response = asyncio.run(
+        GV.get_gguf_variants_response(
+            "Org/Quant", prefer_local_cache = True, hf_token = "hf_caller_token"
+        )
+    )
+    assert probes == ["Org/Quant"]
+    assert [(v.quant, v.downloaded) for v in response.variants] == [("Q4_K_M", True)]
+
+
+@pytest.mark.parametrize("hf_token", [False, "hf_denied_token"])
+def test_prefer_local_cache_tells_a_refused_caller_nothing_about_the_cache(
+    monkeypatch, tmp_path, hf_token
+):
+    """A caller the cache gate refuses must not learn that the operator's cache holds a private
+    repo, not even from an empty quant folder an interrupted split download left behind."""
+    from hub.utils import hf_tokens
+
+    hf_tokens.reset_repo_access_cache()
+    active = tmp_path / "active"
+    (active / "models--acme--private" / "snapshots" / ("a" * 40) / "Q4_K_M").mkdir(parents = True)
+    _pin_cache_roots(monkeypatch, active, tmp_path)
+    monkeypatch.setattr(hf_tokens, "_hub_offline", lambda: False)
+    monkeypatch.setattr(hf_tokens, "_probe_repo_access", lambda *args, **kwargs: False)
+    monkeypatch.setattr(hf_tokens, "_host_hf_credentials", lambda: (True, ["hf_operator_saved"]))
+
+    def _private(*args, **kwargs):
+        raise RuntimeError("401 private repo")
+
+    monkeypatch.setattr(GV, "list_gguf_variants", _private)
+
+    from fastapi import HTTPException
+
+    try:
+        answer = asyncio.run(
+            GV.get_gguf_variants_answer("acme/private", prefer_local_cache = True, hf_token = hf_token)
+        )
+    except HTTPException:
+        return  # Refused outright: nothing about the cache crossed.
+    assert answer.response.variants == []
+
+
 def test_a_cancelled_sibling_survives_a_failed_remote_listing(monkeypatch, tmp_path):
     """The expander asks the remote-first route. When the Hub cannot answer, offline or a private
     repo, the fallback reads the cache, which cannot see a sibling cancelled before any file
