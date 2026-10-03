@@ -225,8 +225,9 @@ _SCRIPT = textwrap.dedent(
         model = FluxTransformer2DModel(patch_size = 1, in_channels = 64, num_layers = 2, num_single_layers = 2,
                                        attention_head_dim = 64, num_attention_heads = 2, joint_attention_dim = 128,
                                        pooled_projection_dim = 128, axes_dims_rope = (16, 24, 24)).cuda().to(torch.bfloat16)
+        # Studio's int8 layers (not the adaLN projections of the [1, D] timestep embedding: torch._int_mm needs M > 16).
         quantize_(model, Int8DynamicActivationInt8WeightConfig(),
-                  filter_fn = lambda m, fqn: isinstance(m, torch.nn.Linear) and "blocks" in fqn)
+                  filter_fn = lambda m, fqn: isinstance(m, torch.nn.Linear) and "blocks" in fqn and ".norm" not in fqn)
         ids = torch.zeros(256, 3, device = "cuda")
         ids[:, 1], ids[:, 2] = torch.arange(256) // 16, torch.arange(256) % 16
         inputs = dict(hidden_states = torch.randn(1, 256, 64, device = "cuda", dtype = torch.bfloat16),
