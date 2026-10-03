@@ -397,8 +397,7 @@ export function PromptQueueList({
                       className="w-56 rounded-2xl border border-border/60 p-1.5 shadow-lg"
                       // Opening the menu must not select an item on pointer release.
                       onPointerUpCapture={(event) => event.preventDefault()}
-                      // A queued send focuses the composer; that alone must not dismiss the menu.
-                      // Focus goes back too, or Escape and the arrow keys land in the composer.
+                      // A queued send focuses the composer: stay open and take focus back, or Escape lands there.
                       onFocusOutside={(event) => {
                         event.preventDefault();
                         const from = event.detail.originalEvent.relatedTarget;
