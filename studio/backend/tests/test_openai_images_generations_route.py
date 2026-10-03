@@ -43,6 +43,8 @@ from utils.api_errors import install_api_error_handlers
         ("unsloth/FLUX.2-klein-4B-GGUF", (4, 1.0)),
         ("unsloth/Qwen-Image-2512-GGUF", (50, 4.0)),
         ("Qwen/Qwen-Image-Edit-2511", (40, 4.0)),
+        ("Qwen/Qwen-Image-Edit-2509", (20, 4.0)),
+        ("unsloth/Qwen-Image-Edit-2509-GGUF", (20, 4.0)),
         ("black-forest-labs/FLUX.1-Kontext-dev", (20, 2.5)),
         ("black-forest-labs/FLUX.2-dev", (20, 4.0)),
         ("stabilityai/stable-diffusion-xl-base-1.0", (25, 7.0)),

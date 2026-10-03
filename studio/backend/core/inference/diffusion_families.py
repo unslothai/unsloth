@@ -1161,6 +1161,8 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("qwen-image-21", 25, 1.0),
     ("qwen_image_21", 25, 1.0),
     ("qwenimage21", 25, 1.0),
+    # 2509 template: 20 / 4; the generic key is the 2511 recipe (the family base).
+    ("qwen-image-edit-2509", 20, 4.0),
     ("qwen-image-edit", 40, 4.0),
     ("qwen-image-2512", 50, 4.0),
     ("qwen-image", 20, 4.0),
