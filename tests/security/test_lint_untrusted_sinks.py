@@ -6362,3 +6362,82 @@ def test_callback_sinks_and_scope_local_proofs(tmp_path):
     assert any(q == "c" and s.startswith("yaml.unsafe_load") for q, s in sinks)
     assert any(q == "d" and s.startswith("torch.load") for q, s in sinks)
     assert not [f for f in findings if f["qualname"] == "e" and f["tier"] == "A"]
+
+
+def test_archive_keywords_dumps_yaml_aliases_and_numpy_positional(tmp_path):
+    """`ZipFile(file = ...)`, `json.dumps`, `loader = yaml.UnsafeLoader`, `np.load(p, None, True)`."""
+    findings = _scan(
+        tmp_path,
+        "import json, subprocess, sys, zipfile, yaml, numpy as np\n"
+        "from pathlib import Path\n"
+        "import requests, runpy\n"
+        "from huggingface_hub import hf_hub_download\n"
+        "def a(repo):\n"
+        "    target = 'plugins'\n"
+        "    zipfile.ZipFile(file = hf_hub_download(repo, 'p.zip')).extractall(target)\n"
+        "    sys.path.insert(0, target)\n"
+        "def b(blob):\n"
+        "    subprocess.run(json.dumps(json.loads(blob)['command']), shell = True)\n"
+        "def c(repo):\n"
+        "    loader = yaml.UnsafeLoader\n"
+        "    return yaml.load(open(hf_hub_download(repo, 'x.yaml')), Loader = loader)\n"
+        "def d(repo):\n"
+        "    return np.load(hf_hub_download(repo, 'x.npy'), None, True)\n"
+        "def e(url):\n"
+        "    plugin = 'plugin.py'\n"
+        "    Path(plugin).write_bytes(requests.get(url).content)\n"
+        "    runpy.run_path(plugin)\n",
+    )
+    sinks = {(f["qualname"], f["sink"]) for f in findings}
+    assert {
+        ("a", "sys.path.insert"),
+        ("b", "subprocess.run"),
+        ("c", "yaml.load(unsafe loader)"),
+        ("d", "numpy.load(allow_pickle = True)"),
+        ("e", "runpy.run_path"),
+    } <= sinks
+
+
+def test_named_thread_args_client_attributes_env_and_loader_scope(tmp_path):
+    """Named `args`, `self._client`, parsed `env`, and nested loader aliases staying local."""
+    findings = _scan(
+        tmp_path,
+        "import httpx, json, pickle, subprocess, threading\n"
+        "from transformers import AutoModel\n"
+        "def run(command):\n"
+        "    subprocess.run(command, shell = True)\n"
+        "def a(blob):\n"
+        "    args = (json.loads(blob)['command'],)\n"
+        "    threading.Thread(target = run, args = args).start()\n"
+        "class Server:\n"
+        "    def __init__(self):\n"
+        "        self._client = httpx.Client()\n"
+        "    def fetch(self, url):\n"
+        "        return pickle.loads(self._client.get(url).content)\n"
+        "def b(blob):\n"
+        "    subprocess.run(['/usr/bin/python'], env = json.loads(blob)['env'])\n"
+        "def c(name, loader):\n"
+        "    def inner():\n"
+        "        loader = AutoModel.from_pretrained\n"
+        "        return loader\n"
+        "    return loader(name, trust_remote_code = True)\n",
+    )
+    sinks = {(f["qualname"], f["sink"]) for f in findings}
+    assert ("run", "subprocess.run") in sinks
+    assert ("Server.fetch", "pickle.loads") in sinks
+    assert ("b", "child process env (untrusted mapping)") in sinks
+    assert not [s for q, s in sinks if q == "c" and s.startswith("trust_remote_code")]
+
+
+def test_repo_root_selects_that_checkouts_baseline(tmp_path, monkeypatch):
+    """`--repo-root B` reads and writes B's baseline, not the one beside the script."""
+    import importlib.util as util
+
+    spec = util.spec_from_file_location("lint_copy", L.__file__)
+    module = util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    (tmp_path / "scripts").mkdir()
+    monkeypatch.setattr(module, "scan", lambda *a, **k: [])
+    module.main(["--repo-root", str(tmp_path), "--update"])
+    assert module.BASELINE_PATH == tmp_path / "scripts" / L.BASELINE_PATH.name
+    assert module.BASELINE_PATH.exists()

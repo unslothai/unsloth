@@ -403,6 +403,22 @@ MODULE_ISH_NAMES = frozenset(
 # Loaders that take a `trust_remote_code`. A True literal here, or a default of True on a
 # first-party function that forwards into one, is consent the user did not give.
 # Sources whose result is a mapping with attacker-chosen keys.
+_PATH_WRAPPERS = frozenset(
+    {"Path", "pathlib.Path", "PurePath", "pathlib.PurePath", "str", "os.fspath"}
+)
+
+_ENV_LAUNCHERS = frozenset(
+    {
+        "subprocess.run",
+        "subprocess.Popen",
+        "subprocess.call",
+        "subprocess.check_call",
+        "subprocess.check_output",
+        "asyncio.create_subprocess_exec",
+        "asyncio.create_subprocess_shell",
+    }
+)
+
 _DECOMPRESSORS = frozenset(
     {
         "gzip.GzipFile",
@@ -2144,7 +2160,7 @@ class _TaintPass(ast.NodeVisitor):
         scopes = [list(_module_statements(self.facts.tree))]
         own = self.facts.functions.get(self.qualname)
         if own is not None and isinstance(own.body, list):
-            scopes.append([node for node in ast.walk(own) if isinstance(node, ast.stmt)])
+            scopes.append([node for node in _scope_nodes(own) if isinstance(node, ast.stmt)])
         pairs: list = []
         for statements in scopes:
             for statement in statements:
@@ -2230,8 +2246,7 @@ class _TaintPass(ast.NodeVisitor):
             and isinstance(node.func, ast.Attribute)
             and node.func.attr
             in ("get", "post", "put", "patch", "delete", "request", "send", "stream")
-            and isinstance(node.func.value, ast.Name)
-            and node.func.value.id in self._http_sessions()
+            and self._is_http_client(node.func.value)
         ):
             source = f"session.{node.func.attr}"
         if source:
@@ -2426,13 +2441,21 @@ class _TaintPass(ast.NodeVisitor):
                 "os.path.normpath",
                 "os.path.normcase",
                 "os.path.splitext",
-                # An archive opened on downloaded bytes, so its extraction can be followed.
-                "zipfile.ZipFile",
-                "tarfile.open",
-                "tarfile.TarFile",
+                # Serialising a value keeps its content, shell metacharacters included.
+                "json.dumps",
             },
         ):
             for argument in node.args:
+                reason = self.tainted(argument)
+                if reason:
+                    return reason
+            return None
+        # An archive opened on downloaded bytes, so its extraction can be followed.
+        # Keywords too: `ZipFile(file = ...)`, `TarFile(name = ...)`, `open(fileobj = ...)`.
+        if _matches_any(names, {"zipfile.ZipFile", "tarfile.open", "tarfile.TarFile"}):
+            for argument in node.args[:1] + [
+                k.value for k in node.keywords if k.arg in ("file", "name", "fileobj")
+            ]:
                 reason = self.tainted(argument)
                 if reason:
                     return reason
@@ -2659,6 +2682,13 @@ class _TaintPass(ast.NodeVisitor):
         Only one check needs it, and it needs the expression rather than the reason: a
         dict whose keys alone are untrusted is tainted, yet its `.values()` is not.
         """
+        # `Path(plugin).write_bytes(body)` fills the file named by `plugin`.
+        while (
+            isinstance(target, ast.Call)
+            and target.args
+            and _matches_any(self.facts.canonicals(_call_name(target.func)), _PATH_WRAPPERS)
+        ):
+            target = target.args[0]
         if isinstance(target, ast.Name):
             # Flow-insensitive, and the strongest reason wins: a name tainted by a real
             # read stays tier A even if it is also assigned from a named parameter.
@@ -3535,6 +3565,7 @@ class _TaintPass(ast.NodeVisitor):
         self._check_sink(node)
         self._check_torch_load(node)
         self._check_numpy_load(node)
+        self._check_child_env(node)
         self._check_remote_code(node)
         self.generic_visit(node)
 
@@ -3563,6 +3594,9 @@ class _TaintPass(ast.NodeVisitor):
             loader = next((k.value for k in node.keywords if k.arg == "Loader"), None)
             if loader is None and len(node.args) > 1:
                 loader = node.args[1]
+            # `loader = yaml.UnsafeLoader` then `Loader = loader`.
+            if isinstance(loader, ast.Name):
+                loader = self._local_binding(loader.id) or loader
             # Through the import table, so `from yaml import UnsafeLoader as Danger` counts.
             if loader is not None and any(
                 candidate.rpartition(".")[2] in self._UNSAFE_YAML_LOADERS
@@ -3586,6 +3620,43 @@ class _TaintPass(ast.NodeVisitor):
     _HTTP_SESSIONS = frozenset(
         {"requests.Session", "requests.session", "httpx.Client", "httpx.AsyncClient"}
     )
+
+    def _is_http_client(self, receiver: ast.AST) -> bool:
+        """A local session, `self.<attr>` bound to one, or a constructor called inline."""
+        if isinstance(receiver, ast.Name):
+            return receiver.id in self._http_sessions()
+        if isinstance(receiver, ast.Call):
+            return (
+                _matches_any(self.facts.canonicals(_call_name(receiver.func)), self._HTTP_SESSIONS)
+                is not None
+            )
+        if (
+            isinstance(receiver, ast.Attribute)
+            and isinstance(receiver.value, ast.Name)
+            and receiver.value.id == "self"
+        ):
+            cached = self.facts.__dict__.get("_http_client_attributes")
+            if cached is None:
+                cached = set()
+                for node in ast.walk(self.facts.tree):
+                    if (
+                        isinstance(node, (ast.Assign, ast.AnnAssign))
+                        and isinstance(node.value, ast.Call)
+                        and _matches_any(
+                            self.facts.canonicals(_call_name(node.value.func)), self._HTTP_SESSIONS
+                        )
+                    ):
+                        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                        cached.update(
+                            t.attr
+                            for t in targets
+                            if isinstance(t, ast.Attribute)
+                            and isinstance(t.value, ast.Name)
+                            and t.value.id == "self"
+                        )
+                self.facts.__dict__["_http_client_attributes"] = cached
+            return receiver.attr in cached
+        return False
 
     def _http_sessions(self) -> frozenset:
         """Names this scope binds to an HTTP session, by assignment or `with ... as`."""
@@ -3657,6 +3728,8 @@ class _TaintPass(ast.NodeVisitor):
         if _matches_any(self.facts.canonicals(_call_name(node.func)), {"numpy.load"}) is None:
             return
         allow = _keyword(node, "allow_pickle")
+        if allow is None and len(node.args) > 2:
+            allow = node.args[2]
         if allow is None or (isinstance(allow, ast.Constant) and not allow.value):
             return
         path = node.args[0] if node.args else _keyword(node, "file")
@@ -4250,6 +4323,32 @@ class _TaintPass(ast.NodeVisitor):
                 held = held + tuple(self.state.attr_sink_aliases.get(key) or ())
         return held
 
+    def _local_binding(self, name: str) -> ast.AST | None:
+        """The value of the single plain assignment to `name` in this scope, if any."""
+        own = self.facts.functions.get(self.qualname)
+        values = [
+            node.value
+            for node in _scope_nodes(own if own is not None else self.facts.tree)
+            if isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == name for t in node.targets)
+        ]
+        return values[0] if len(values) == 1 else None
+
+    def _check_child_env(self, node: ast.Call) -> None:
+        """`subprocess.run(cmd, env = parsed["env"])`: the document picks the variables.
+
+        Only a mapping that IS parsed data, so its keys are attacker-chosen
+        (`LD_PRELOAD`, `PATH`); an env built key by key keeps code-chosen keys.
+        """
+        if _matches_any(self.facts.canonicals(_call_name(node.func)), _ENV_LAUNCHERS) is None:
+            return
+        env = _keyword(node, "env")
+        if env is None:
+            return
+        reason = self._parsed_mapping(env) or self._parsed_value(env)
+        if reason:
+            self._record(node, "child process env (untrusted mapping)", reason, _short(env))
+
     def _check_callback_sinks(self, invoked: ast.Call) -> None:
         """Every sink check, on a call a thread, executor or `map` makes on our behalf."""
         self._check_yaml_load(invoked)
@@ -4269,9 +4368,13 @@ class _TaintPass(ast.NodeVisitor):
         if _matches_any(names, {"threading.Thread", "multiprocessing.Process"}):
             callee = _keyword(node, "target")
             packed = _keyword(node, "args")
+            if isinstance(packed, ast.Name):
+                packed = self._local_binding(packed.id)
             if isinstance(packed, (ast.Tuple, ast.List)):
                 args = list(packed.elts)
             named = _keyword(node, "kwargs")
+            if isinstance(named, ast.Name):
+                named = self._local_binding(named.id)
             if isinstance(named, ast.Dict):
                 keywords = [
                     ast.keyword(arg = key.value, value = value)
@@ -5782,9 +5885,11 @@ def main(argv: list[str] | None = None) -> int:
     if arguments.self_test:
         return _self_test()
 
-    global REPO_ROOT
+    global REPO_ROOT, BASELINE_PATH
     if arguments.repo_root:
         REPO_ROOT = Path(arguments.repo_root).resolve()
+        # The allowances belong to the checkout being scanned, not to this script's.
+        BASELINE_PATH = REPO_ROOT / "scripts" / BASELINE_PATH.name
 
     if arguments.paths:
         targets = [Path(p).resolve() for p in arguments.paths]
