@@ -303,6 +303,10 @@ def owned_source_path(audio_id: str) -> Optional[Path]:
     if owned_audio_path(audio_id) is None:
         return None
     path = _source_path(audio_id)
+    try:
+        path.resolve().relative_to(gallery_dir().resolve())
+    except ValueError:
+        return None
     return path if path.is_file() else None
 
 

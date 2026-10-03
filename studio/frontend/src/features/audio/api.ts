@@ -118,6 +118,8 @@ export interface AudioGalleryClip {
   source_saved?: boolean;
   source_name?: string | null;
   target_builtin?: string | null;
+  target_clip_id?: string | null;
+  target_input_id?: string | null;
 }
 
 export interface AudioGalleryListResponse {

@@ -251,3 +251,15 @@ test("changing the recording cancels a transcription of the previous one", () =>
     /useEffect\(\(\) => cancelTranscribe\(\), \[sourceKey, cancelTranscribe\]\)/,
   );
 });
+
+test("Use again restores an upload or history clip target, not only a saved voice", () => {
+  const page = readSrc("features/audio/audio-page.tsx");
+  assert.match(
+    page,
+    /clip\.target_clip_id\s*\?\s*\{ kind: "clip" as const, id: clip\.target_clip_id \}/,
+  );
+  assert.match(
+    page,
+    /clip\.target_input_id\s*\?\s*\{ kind: "input" as const, id: clip\.target_input_id \}/,
+  );
+});

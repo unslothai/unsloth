@@ -805,7 +805,7 @@ def test_convert_problems_are_400s_in_words(stub, family, folder, body, detail):
     assert stub["backend"].calls == []
 
 
-def test_vevo2_takes_the_target_style_with_a_transcript_and_clone_still_works(stub):
+def test_vevo2_takes_the_target_style_with_a_transcript_and_clone_still_works(stub, tmp_path):
     backend = _use(stub, "vevo2", "Vevo2-GGUF")
     input_id = _input(ALICE)
     with _client(ALICE) as client:

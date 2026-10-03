@@ -21954,8 +21954,10 @@ async def _run_audio_convert(
         extra_meta["source_clip_id"] = source.id
     elif source.kind == "input":
         extra_meta["source_input_id"] = source.id
-    if target is not None and target.kind == "voice":
-        extra_meta["voice_id"] = target.id
+    if target is not None:
+        key = {"voice": "voice_id", "clip": "target_clip_id", "input": "target_input_id"}
+        if target.kind in key:
+            extra_meta[key[target.kind]] = target.id
     record = await asyncio.to_thread(
         _persist_tts_clip,
         wav_bytes,

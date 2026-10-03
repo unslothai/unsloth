@@ -5133,6 +5133,12 @@ class AudioGalleryItem(BaseModel):
     target_builtin: Optional[str] = Field(
         None, description = "Built-in voice a conversion converted to"
     )
+    target_clip_id: Optional[str] = Field(
+        None, description = "History clip a conversion took its target voice from"
+    )
+    target_input_id: Optional[str] = Field(
+        None, description = "Uploaded input a conversion took its target voice from"
+    )
     source_saved: bool = Field(False, description = "Served at /audio/gallery/{id}/source/file")
 
 

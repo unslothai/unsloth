@@ -102,11 +102,17 @@ function reuseConvertInputs(clip: AudioGalleryClip) {
       durationS: null,
     });
   }
-  if (clip.voice_id) {
+  const target = clip.voice_id
+    ? { kind: "voice" as const, id: clip.voice_id }
+    : clip.target_clip_id
+      ? { kind: "clip" as const, id: clip.target_clip_id }
+      : clip.target_input_id
+        ? { kind: "input" as const, id: clip.target_input_id }
+        : null;
+  if (target) {
     store.setTarget({
-      kind: "voice",
-      id: clip.voice_id,
-      name: clip.reference_name ?? "Saved voice",
+      ...target,
+      name: clip.reference_name ?? "Target voice",
       durationS: null,
     });
   } else if (clip.target_builtin) {
