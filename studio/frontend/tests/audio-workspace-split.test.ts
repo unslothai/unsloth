@@ -186,3 +186,10 @@ test("Send to waits for a running task instead of stopping it and dropping the c
     /transcribe: \(\) => \{[\s\S]*?if \(busyRef\.current !== null\) \{\s*toast\.info\([^)]*\);\s*return;\s*\}\s*void \(async \(\) => \{/,
   );
 });
+
+test("switching between Speak and Music disowns a pending pick", () => {
+  assert.match(
+    slot,
+    /if \(busyRef\.current === "generating"\) handleStopGeneration\(\);\s*invalidatePendingTtsSelection\(\);\s*\} else if \(!transitionMode/,
+  );
+});
