@@ -59,6 +59,7 @@ from .diffusion_families import (
     _is_local_path,
     canonical_base,
     cache_holds_files,
+    comfy_flow_shift_for,
     default_generation_params,
     detect_family_for_pick,
     excluded_model_reason,
@@ -6997,7 +6998,9 @@ class DiffusionBackend:
 
                     self._raise_if_load_cancelled(_load_token)
                     # Before from_pipe copies the scheduler.
-                    apply_comfy_flow_shift(pipe, getattr(fam, "comfy_flow_shift", None), logger)
+                    apply_comfy_flow_shift(
+                        pipe, comfy_flow_shift_for(fam, gguf_filename, repo_id, base), logger
+                    )
                     # Before the speed optims so their decode compile lands inside the non-finite check; `off` keeps fp32.
                     vae_fp16 = str(
                         speed_mode or ""

@@ -18,7 +18,7 @@ import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import NamedTuple, Optional, Sequence
+from typing import Any, NamedTuple, Optional, Sequence
 from utils.paths.path_utils import is_appledouble_metadata
 
 from .diffusion_nvfp4_flag import nvfp4_blocked
@@ -115,6 +115,8 @@ class DiffusionFamily:
     reference_resolutions: tuple[int, ...] = field(default_factory = tuple)
     # ComfyUI's static sigma shift; None = keep the shipped scheduler.
     comfy_flow_shift: Optional[float] = None
+    # (lowercased id substring, shift) for checkpoints whose template differs; first match wins.
+    comfy_flow_shift_variants: tuple[tuple[str, float], ...] = field(default_factory = tuple)
     # Activation-guard cost of one condition pixel relative to one output pixel.
     condition_pixel_weight: float = 1.0
     # Extra lowercased substrings (besides ``name``) that map a repo id here.
@@ -328,6 +330,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # detect_family prefers this over "qwen-image".
         name = "qwen-image-edit",
         comfy_flow_shift = 3.1,  # ComfyUI ModelSamplingAuraFlow 3.1 (Qwen-Image-Edit 2511 template)
+        # The 2509 template samples at ModelSamplingAuraFlow 3.
+        comfy_flow_shift_variants = (("qwen-image-edit-2509", 3.0),),
         pipeline_class = "QwenImageEditPlusPipeline",
         transformer_class = "QwenImageTransformer2DModel",
         base_repo = "Qwen/Qwen-Image-Edit-2511",
@@ -1180,6 +1184,17 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
 )
 # Unrecognised model: distilled few-step / no-CFG shape, matching the UI fallback.
 _GENERATION_DEFAULT_FALLBACK = (9, 0.0)
+
+
+def comfy_flow_shift_for(fam: Any, *identifiers: Optional[str]) -> Optional[float]:
+    """ComfyUI's static shift for the loaded checkpoint: the first family variant whose key is in
+    an identifier (repo id, GGUF file, base repo), else the family default."""
+    for identifier in identifiers:
+        needle = (identifier or "").lower()
+        for key, shift in getattr(fam, "comfy_flow_shift_variants", ()) or ():
+            if key in needle:
+                return shift
+    return getattr(fam, "comfy_flow_shift", None)
 
 
 def default_generation_params(*identifiers: Optional[str]) -> tuple[int, float]:
