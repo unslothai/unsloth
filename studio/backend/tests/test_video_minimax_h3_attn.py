@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3 attention fast path: fused int8 QKV, strided SDPA layout, per-arch kernel pick.
-
-A tiny real ``MiniMaxH3Transformer3DModel`` (diffusers) is rotated and int8-quantized the way the hosted
-pre-quantized denoiser is (ConvRot online rotation + torchao per-row dynamic int8), then every lever is checked for
-bit-identity against the stock module on CPU, for its kill switch, and for refusing layouts it does not cover. The
-cuDNN / flash arms of the strided processor run only where CUDA is present.
-"""
+"""MiniMax-H3 attention levers on a tiny real H3 transformer quantized like the hosted one: bit-identity vs stock,
+kill switches, refusals."""
 
 from __future__ import annotations
 
@@ -27,10 +22,7 @@ GROUP = 16
 
 @pytest.fixture(autouse = True)
 def _restore_process_flags():
-    # Process-wide state these tests touch: diffusers' ModelMixin.set_attention_backend also sets the registry's
-    # ACTIVE backend (every later dispatch_attention_fn call without an explicit backend uses it), and torchao's
-    # quantize_ applies its recommended inductor config (float32 matmul precision "high", coordinate-descent tuning).
-    # Restore both so later test files see what they were written against.
+    # set_attention_backend also sets diffusers' process-wide ACTIVE backend, and quantize_ sets inductor globals.
     import torch._inductor.config as inductor_config
     from diffusers.models.attention_dispatch import _AttentionBackendRegistry
 
@@ -97,12 +89,9 @@ def _quantize(
             ("transformer_blocks.", "token_refiner.")
         )
 
-    # version 1 = the v1 LinearActivationQuantizedTensor the hosted .pt pickles (resident path on torchao 0.17);
-    # version 2 = Int8Tensor (torchao >= 0.18, and what the streamed path rebuilds v1 into).
     try:
         config = Int8DynamicActivationInt8WeightConfig(version = version)
     except (TypeError, ValueError):
-        # torchao < 0.15 has no ``version``; torchao >= 0.18 removed version 1
         if version != 1 or not hasattr(
             Int8DynamicActivationInt8WeightConfig, "__dataclass_fields__"
         ):
@@ -160,7 +149,6 @@ def _equal(a, b) -> bool:
 def test_fused_qkv_matches_the_three_projections_bit_for_bit(quantized):
     stock = copy.deepcopy(quantized)
     n = A.fuse_h3_qkv_(quantized)
-    # two blocks + one refiner block
     assert n == 3
     assert A.fused_qkv_count(quantized) == 3
     assert _equal(_run(stock), _run(quantized))
@@ -176,7 +164,6 @@ def test_fused_module_keeps_the_rotation_and_a_per_row_int8_weight(quantized):
     assert is_rotated_linear(attn.to_qkv) and attn.to_qkv.convrot_groupsize == GROUP
     assert type(attn.to_qkv.weight) is kind and A._per_token_int8(attn.to_qkv.weight)
     assert tuple(attn.to_qkv.weight.shape) == (3 * 64, 64)
-    # The refiner's projections were never rotated: fused, and left unrotated.
     refiner_attn = quantized.token_refiner.refiner_blocks[0].attn
     assert refiner_attn.fused_projections is True and not is_rotated_linear(refiner_attn.to_qkv)
 
@@ -220,7 +207,6 @@ def test_strided_processor_matches_stock_bit_for_bit(quantized, fuse):
     stock = copy.deepcopy(quantized)
     n = A.install_strided_attention(quantized)
     assert n == 3 and A.strided_attention_count(quantized) == 3
-    # the backend the dispatcher set survives the swap
     assert (
         A._backend_value(quantized.transformer_blocks[0].attn.processor._attention_backend)
         == "_native_math"
@@ -287,8 +273,6 @@ def test_strided_processor_on_cuda_matches_the_stock_backend(backend):
     with torch.no_grad():
         assert _equal(stock(**kw), model(**kw))
 
-
-# ── fused q/k RMSNorm + RoPE (video_minimax_h3_qknorm) ─────────────────────────────────────────────────────────
 
 from core.inference import video_minimax_h3_qknorm as Q  # noqa: E402
 
@@ -360,8 +344,7 @@ def test_qk_kernel_matches_the_compiled_stock_math(dtype, strided, seq):
     finally:
         ic.emulate_precision_casts = prev
     assert ours.is_contiguous() and ours.shape == x.shape
-    # Only the 128-term sum-of-squares order is free: a handful of rows may land one rounding step away (more often
-    # in float16, whose finer mantissa resolves a last-bit rstd difference that bfloat16 rounds away).
+    # Only the sum-of-squares order is free: a few rows may land one rounding step away.
     budget = ours.numel() // (100000 if dtype == torch.bfloat16 else 20000)
     for ref in (eager, compiled):
         diff = (ours.float() - ref.float()).abs()
@@ -384,8 +367,7 @@ def _graph_breaks(model) -> int:
 
 @pytest.mark.parametrize("qk_rope", ["1", "0"])
 def test_strided_processor_adds_no_graph_break(monkeypatch, qk_rope):
-    # A break inside every attention call splits each compiled block in two and runs the tail outside the region
-    # (measured: 2x slower steps). The fused q/k op must be reached through ``torch.ops``, not a cached Python wrapper.
+    # A break here splits every compiled block in two (2x slower steps).
     monkeypatch.setenv(Q.QK_ROPE_ENV, qk_rope)
     model = _tiny_model()
     model.set_attention_backend("_native_math")
