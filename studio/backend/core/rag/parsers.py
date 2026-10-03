@@ -823,9 +823,21 @@ def _decode_text(data: bytes, *, html: bool = False) -> str:
             "cp1255",
             "cp1256",
         ]
-        match = from_bytes(data, cp_isolation = legacy).best()
+        results = from_bytes(data, cp_isolation = legacy)
+        match = results.best()
         if match is not None:
-            return str(match)
+            guess = str(match)
+            # A tie means the bytes cannot tell the code pages apart ("ÜÖÄ" is also Cyrillic);
+            # a CJK guess that paired no bytes is just half-width katakana ("° ± µ").
+            tied = any(
+                other is not match
+                and (other.chaos, other.coherence) == (match.chaos, match.coherence)
+                for other in results
+            )
+            paired = len(guess) - len(guess.encode("ascii", "ignore")) < high
+            single_byte = match.encoding in ("cp1252", "cp1251", "cp1253", "cp1255", "cp1256")
+            if not tied and (single_byte or paired):
+                return guess
     return data.decode("cp1252", errors = "replace")
 
 
