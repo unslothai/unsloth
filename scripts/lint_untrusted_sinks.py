@@ -266,6 +266,8 @@ SINKS: dict[str, tuple[tuple[int, ...], frozenset[str]]] = {
     # `path` is the keyword this takes, and an empty set meant the named spelling was
     # inspected neither positionally nor by keyword.
     "pydoc.locate": ((0,), frozenset({"path"})),
+    # Imports the package part of "pkg.mod:attr" before resolving the attribute.
+    "pkgutil.resolve_name": ((0,), frozenset({"name"})),
     # Resolving a dotted path out of a string, in both libraries that offer it.
     "import_from_string": ((0,), frozenset()),
     "get_class_from_dynamic_module": (
@@ -292,6 +294,8 @@ SINKS: dict[str, tuple[tuple[int, ...], frozenset[str]]] = {
     "builtins.eval": ((0,), frozenset()),
     # Shell. A tainted argv[0] or a tainted command string is execution.
     "os.system": ((0,), frozenset()),
+    # Forks and execs argv[0].
+    "pty.spawn": ((0,), frozenset({"argv"})),
     # Windows: opens the path through its file association, so an executable runs.
     "os.startfile": ((0,), frozenset({"path"})),
     "os.popen": ((0,), frozenset()),
@@ -451,6 +455,11 @@ _ENV_LAUNCHERS = {
     "os.spawnvpe": 3,
     "os.posix_spawn": 2,
     "os.posix_spawnp": 2,
+    # The list forms take the environment as their last positional argument.
+    "os.execle": -1,
+    "os.execlpe": -1,
+    "os.spawnle": -1,
+    "os.spawnlpe": -1,
 }
 
 # Launchers whose `cwd` decides which file a relative program path names.
@@ -2283,6 +2292,14 @@ class _TaintPass(ast.NodeVisitor):
                 if reason:
                     return reason
         source = _matches_any(names, UNTRUSTED_CALLS)
+        # A first-party `def load_file()` is not the library function of that name.
+        if (
+            source is not None
+            and isinstance(node.func, ast.Name)
+            and node.func.id in self.facts.functions
+            and node.func.id not in self.facts.imports
+        ):
+            source = None
         if source is None:
             # `decode = json.loads` then `decode(blob)`. Sink aliases were followed and
             # source aliases were not, so a deserialiser behind an ordinary local name
@@ -2384,6 +2401,7 @@ class _TaintPass(ast.NodeVisitor):
             "casefold",
             "replace",
             "rsplit",
+            "splitlines",
             "partition",
             "setdefault",
             # Container views. Without these a dict comprehension over `cfg.items()`
@@ -2437,6 +2455,9 @@ class _TaintPass(ast.NodeVisitor):
                 "enumerate",
                 "copy.copy",
                 "copy.deepcopy",
+                # Namespaces copy their keyword values onto attributes unchanged.
+                "types.SimpleNamespace",
+                "argparse.Namespace",
                 # Byte buffers re-wrap the same bytes: `pickle.loads(bytes(body))`.
                 "bytes",
                 "bytearray",
@@ -3747,27 +3768,35 @@ class _TaintPass(ast.NodeVisitor):
             and isinstance(receiver.value, ast.Name)
             and receiver.value.id == "self"
         ):
+            # Per class: `self.client` in one class says nothing about another's.
             cached = self.facts.__dict__.get("_http_client_attributes")
             if cached is None:
                 cached = set()
-                for node in ast.walk(self.facts.tree):
-                    if (
-                        isinstance(node, (ast.Assign, ast.AnnAssign))
-                        and isinstance(node.value, ast.Call)
-                        and _matches_any(
-                            self.facts.canonicals(_call_name(node.value.func)), self._HTTP_SESSIONS
-                        )
-                    ):
-                        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-                        cached.update(
-                            t.attr
-                            for t in targets
-                            if isinstance(t, ast.Attribute)
-                            and isinstance(t.value, ast.Name)
-                            and t.value.id == "self"
-                        )
+                for klass in ast.walk(self.facts.tree):
+                    if not isinstance(klass, ast.ClassDef):
+                        continue
+                    for node in ast.walk(klass):
+                        if (
+                            isinstance(node, (ast.Assign, ast.AnnAssign))
+                            and isinstance(node.value, ast.Call)
+                            and _matches_any(
+                                self.facts.canonicals(_call_name(node.value.func)),
+                                self._HTTP_SESSIONS,
+                            )
+                        ):
+                            targets = (
+                                node.targets if isinstance(node, ast.Assign) else [node.target]
+                            )
+                            cached.update(
+                                (klass.name, t.attr)
+                                for t in targets
+                                if isinstance(t, ast.Attribute)
+                                and isinstance(t.value, ast.Name)
+                                and t.value.id == "self"
+                            )
                 self.facts.__dict__["_http_client_attributes"] = cached
-            return receiver.attr in cached
+            klass = self.qualname.rsplit(".", 1)[0].rsplit(".", 1)[-1]
+            return (klass, receiver.attr) in cached
         return False
 
     def _http_sessions(self) -> frozenset:
@@ -3917,6 +3946,7 @@ class _TaintPass(ast.NodeVisitor):
             "shutil.copy",
             "shutil.copy2",
             "shutil.copyfile",
+            "shutil.copytree",
         }
     )
 
@@ -3977,6 +4007,21 @@ class _TaintPass(ast.NodeVisitor):
                 self._assign(target, reason)
             return
         # `with plugin.open("wb") as out: out.write(body)` fills the file at `plugin`.
+        # `open(plugin, "wb").write(body)` and `Path(p).open("wb").write(body)`.
+        receiver = node.func.value
+        if node.func.attr in ("write", "writelines") and isinstance(receiver, ast.Call):
+            path = None
+            if isinstance(receiver.func, ast.Attribute) and receiver.func.attr == "open":
+                path = receiver.func.value
+            elif _matches_any(
+                self.facts.canonicals(_call_name(receiver.func)), {"open", "io.open"}
+            ):
+                path = receiver.args[0] if receiver.args else _keyword(receiver, "file")
+            for argument in node.args[:1]:
+                reason = self.tainted(argument)
+                if reason and path is not None:
+                    self._assign(path, reason)
+            return
         if node.func.attr in ("write", "writelines") and isinstance(node.func.value, ast.Name):
             path = self._file_handles().get(node.func.value.id)
             for argument in node.args[:1]:
@@ -4019,7 +4064,7 @@ class _TaintPass(ast.NodeVisitor):
             own = self.facts.functions.get(self.qualname)
             scopes = [list(_module_statements(self.facts.tree))]
             if own is not None and isinstance(own.body, list):
-                scopes.append([n for n in ast.walk(own) if isinstance(n, ast.stmt)])
+                scopes.append([n for n in _scope_nodes(own) if isinstance(n, ast.stmt)])
             for statements in scopes:
                 for statement in statements:
                     if isinstance(statement, (ast.Assign, ast.AnnAssign)) and isinstance(
@@ -4471,7 +4516,9 @@ class _TaintPass(ast.NodeVisitor):
             return
         position = _ENV_LAUNCHERS[launcher]
         env = _keyword(node, "env")
-        if env is None and position is not None and len(node.args) > position:
+        if env is None and position == -1 and len(node.args) > 2:
+            env = node.args[-1]
+        elif env is None and position is not None and position >= 0 and len(node.args) > position:
             env = node.args[position]
         if env is None:
             return
@@ -4506,7 +4553,10 @@ class _TaintPass(ast.NodeVisitor):
 
     def _check_relative_cwd(self, node: ast.Call) -> None:
         """`subprocess.run(["./setup"], cwd = snapshot_download(repo))` runs a downloaded file."""
-        if _matches_any(self.facts.canonicals(_call_name(node.func)), _CWD_LAUNCHERS) is None:
+        called = _call_name(node.func)
+        if _matches_any(self.facts.canonicals(called), _CWD_LAUNCHERS) is None and not any(
+            held in _CWD_LAUNCHERS for held in self._held_sinks(called, node)
+        ):
             return
         cwd = _keyword(node, "cwd")
         program = node.args[0] if node.args else _keyword(node, "args")
@@ -4516,7 +4566,11 @@ class _TaintPass(ast.NodeVisitor):
             cwd is None
             or not isinstance(program, ast.Constant)
             or not isinstance(program.value, str)
-            or not program.value.startswith(("./", ".\\", "../", "..\\"))
+            # Relative and containing a separator: `./setup` and `bin/setup` alike
+            # resolve under cwd, while a bare `python` is looked up on PATH.
+            or not ("/" in program.value or "\\" in program.value)
+            or program.value.startswith(("/", "\\"))
+            or (len(program.value) > 1 and program.value[1] == ":")
         ):
             return
         reason = self.tainted(cwd)
@@ -4557,6 +4611,9 @@ class _TaintPass(ast.NodeVisitor):
                     for key, value in zip(named.keys, named.values)
                     if isinstance(key, ast.Constant) and isinstance(key.value, str)
                 ]
+            elif named is not None:
+                # `kwargs = json.loads(blob)`: the document supplies every keyword.
+                keywords = [ast.keyword(arg = None, value = _keyword(node, "kwargs"))]
         elif _matches_any(names, {"asyncio.to_thread"}) or (
             isinstance(node.func, ast.Attribute) and node.func.attr == "submit"
         ):
@@ -5036,6 +5093,9 @@ def _remote_code_defaults(facts: _FileFacts) -> list[dict]:
                     assignments.setdefault(owner, []).append((target.id, node.value))
     for owner, pairs in assignments.items():
         known = set(facts.module_true_names)
+        # A function that binds the name itself does not see the module's value.
+        if owner in facts.functions:
+            known -= _scope_locals(facts.functions[owner])
         changed = True
         while changed:
             changed = False

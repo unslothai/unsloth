@@ -86,6 +86,12 @@
     "studio/install_llama_prebuilt.py::run_capture::subprocess.run::d6e8200ef599b7ba::562998c9c03473d8": 1,
     "studio/install_llama_prebuilt.py::validate_quantize::subprocess.run::8f81ba3c6591d7fc::c7aef3f9e84b9186": 1,
     "studio/install_node_prebuilt.py::_run_node::subprocess.run::e52e63113c7032fe::4f8da0b0ea678d50": 1,
+    "studio/install_python_stack.py::_ensure_xpu_triton::subprocess.run::3fc4f7185c32c43c::032c9606380117b8": 1,
+    "studio/install_python_stack.py::_git_remote_commit::subprocess.run::688c7ba9479f5b47::de4e97942e41f5a3": 1,
+    "studio/install_python_stack.py::_pip_install_once::subprocess.run::9c93936494a130c9::8f0a4958f53cbb8a": 1,
+    "studio/install_python_stack.py::_prefetch_diffusers_main::subprocess.run::5a31f5dbea46f7d9::8bfd7d7c181cbca9": 1,
+    "studio/install_python_stack.py::pip_install_try::subprocess.run::978c6cd793126959::fb77170f2328f563": 1,
+    "studio/install_python_stack.py::run::subprocess.run::6108e46d8b6c7d13::eef8f9c0f8d24e4b": 1,
     "unsloth/models/_utils.py::_requested_float32::getattr(module, ...)::f2e8efae287d3fd6::9bcdda7471442a44": 1,
     "unsloth/models/_utils.py::_resolve_remote_model_class::get_class_from_dynamic_module::1bf1ae2e2285284f::e1a660b88479f807": 1,
     "unsloth/models/_utils.py::_resolve_remote_model_class::importlib.import_module::ed81224ea9382685::e1a660b88479f807": 1,
@@ -120,6 +126,7 @@
     "unsloth_cli/commands/start.py::_launch::subprocess.run::eb772eb74b7f9cc9::6c1fd4a887382b2a": 1,
     "unsloth_cli/commands/start.py::_opencode_subagent_inline_config::subprocess.run::e489c1e0981571b7::6a8163dc630e7063": 1,
     "unsloth_cli/commands/start.py::_opencode_supports_native_auto::subprocess.check_output::c3a04e6d40cfd2de::9aeae95e837215dd": 1,
-    "unsloth_cli/commands/start.py::_start_studio_server::subprocess.Popen::664080759b53253e::e8b2d7f43febf1cf": 1
+    "unsloth_cli/commands/start.py::_start_studio_server::subprocess.Popen::664080759b53253e::e8b2d7f43febf1cf": 1,
+    "unsloth_cli/commands/studio.py::_signal_stop::subprocess.run::4dbb27f29cb81c90::37a8f62908c5456c": 1
   }
 }

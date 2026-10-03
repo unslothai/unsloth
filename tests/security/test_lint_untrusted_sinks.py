@@ -6595,3 +6595,90 @@ def test_restoring_a_module_attribute_from_its_own_copy_is_quiet(tmp_path):
         "        sys.path[:] = saved\n",
     )
     assert {f["sink"] for f in findings if f["qualname"] == "swap"} == {"sys.path.insert"}
+
+
+def test_resolve_name_pty_copytree_splitlines_namespaces_and_exec_envs(tmp_path):
+    """New sinks and pass-throughs, list-form exec envs, and cwd-relative programs."""
+    findings = _scan(
+        tmp_path,
+        "import json, os, pkgutil, pty, requests, shutil, subprocess, sys, threading, types\n"
+        "from importlib import import_module\n"
+        "from huggingface_hub import snapshot_download\n"
+        "def a(blob):\n"
+        "    return pkgutil.resolve_name(json.loads(blob)['plugin'])\n"
+        "def b(blob):\n"
+        "    pty.spawn(json.loads(blob)['argv'])\n"
+        "def c(repo):\n"
+        "    shutil.copytree(snapshot_download(repo), 'plugins')\n"
+        "    sys.path.insert(0, 'plugins')\n"
+        "def d(url):\n"
+        "    return import_module(requests.get(url).text.splitlines()[0])\n"
+        "def e(blob):\n"
+        "    cfg = types.SimpleNamespace(**json.loads(blob))\n"
+        "    return import_module(cfg.module)\n"
+        "def f(url):\n"
+        "    os.execle('/usr/bin/id', 'id', {'LD_PRELOAD': requests.get(url).text})\n"
+        "def g(repo):\n"
+        "    subprocess.run(['bin/setup'], cwd = snapshot_download(repo))\n"
+        "def h(repo):\n"
+        "    launch = subprocess.run\n"
+        "    launch(['./setup'], cwd = snapshot_download(repo))\n"
+        "def i(blob):\n"
+        "    threading.Thread(target = subprocess.run, kwargs = json.loads(blob)).start()\n"
+        "def j(url):\n"
+        "    plugin = 'plugin.py'\n"
+        "    open(plugin, 'wb').write(requests.get(url).content)\n"
+        "    import runpy\n"
+        "    runpy.run_path(plugin)\n",
+    )
+    sinks = {(f["qualname"], f["sink"]) for f in findings}
+    assert {
+        ("a", "pkgutil.resolve_name"),
+        ("b", "pty.spawn"),
+        ("c", "sys.path.insert"),
+        ("d", "importlib.import_module"),
+        ("e", "importlib.import_module"),
+        ("f", "child process env (untrusted mapping)"),
+        ("g", "relative program (untrusted cwd)"),
+        ("h", "relative program (untrusted cwd)"),
+        ("i", "subprocess.run"),
+        ("j", "runpy.run_path"),
+    } <= sinks
+
+
+def test_local_helpers_shadowed_flags_class_clients_and_nested_aliases_are_quiet(tmp_path):
+    """False positives: a local `load_file`, a shadowed True flag, another class's
+    client attribute, and a container alias bound only in a nested function."""
+    findings = _scan(
+        tmp_path,
+        "import httpx, json\n"
+        "from importlib import import_module\n"
+        "from transformers import AutoModel\n"
+        "ENABLED = True\n"
+        "def load_file():\n"
+        "    return 'safe.module'\n"
+        "def a():\n"
+        "    return import_module(load_file())\n"
+        "def b(name):\n"
+        "    ENABLED = False\n"
+        "    kwargs = {'trust_remote_code': ENABLED}\n"
+        "    return AutoModel.from_pretrained(name, **kwargs)\n"
+        "class Remote:\n"
+        "    def __init__(self):\n"
+        "        self.client = httpx.Client()\n"
+        "class Local:\n"
+        "    def __init__(self, client):\n"
+        "        self.client = client\n"
+        "    def load(self):\n"
+        "        return import_module(self.client.get('module'))\n"
+        "ORIGINAL = {}\n"
+        "def c(alias, blob):\n"
+        "    def inner():\n"
+        "        alias = ORIGINAL\n"
+        "        return alias\n"
+        "    alias.update(json.loads(blob))\n"
+        "def d():\n"
+        "    return import_module(ORIGINAL['module'])\n",
+    )
+    flagged = {f["qualname"] for f in findings if f["tier"] == "A"}
+    assert not flagged & {"a", "b", "Local.load", "d"}
