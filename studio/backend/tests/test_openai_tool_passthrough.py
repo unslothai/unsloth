@@ -4383,6 +4383,7 @@ class TestGgufVisionMessages:
             "role": "tool",
             "content": "[1 image returned]",
             "name": "mcp__fs__read_media_file",
+            "tool_call_id": "call_0",
         }
 
     def test_a_replayed_envelope_alone_does_not_demand_a_vision_model(self):

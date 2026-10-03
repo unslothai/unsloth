@@ -24393,6 +24393,8 @@ def _extract_content_parts(
             # A reasoning-only turn has no visible content, but still needs a
             # message for templates that consume reasoning_content.
             combined_text = ""
+        elif msg.role == "assistant" and msg.tool_calls:
+            combined_text = ""
 
         if combined_text is None:
             continue
@@ -24407,9 +24409,7 @@ def _extract_content_parts(
         # Carried through: promote_history reads it to decide whether an envelope
         # came from an MCP server, and dropping it here made an unnamed tool
         # message that bypasses the check entirely. Resolved from the call when the
-        # result itself is unnamed: this rebuild drops tool_call_id and the calls,
-        # so the correlation has to happen here or the local path cannot run the
-        # provenance gate at all.
+        # result itself is unnamed.
         if msg.name:
             chat_message["name"] = msg.name
         if msg.role == "tool":
@@ -24418,13 +24418,22 @@ def _extract_content_parts(
                 chat_message["name"] = _tool_name
         if msg.role == "assistant" and msg.reasoning_content:
             chat_message["reasoning_content"] = msg.reasoning_content
+        if msg.tool_calls:
+            chat_message["tool_calls"] = msg.tool_calls
+        if msg.tool_call_id:
+            chat_message["tool_call_id"] = msg.tool_call_id
         chat_messages.append(chat_message)
+
+    # Gated so a history without tool calls renders exactly as before.
+    if any(m.get("tool_calls") for m in chat_messages):
+        chat_messages = _strip_provider_synthetic_tool_history(chat_messages)
 
     # A user's own attachment outranks an assistant-generated one, as the frontend's
     # legacy image_base64 field does. An assistant-only history still falls back.
     return (
         "\n\n".join(p for p in system_parts if p),
-        chat_messages,
+        # Mappings, not JSON strings: Qwen3.5's template renders string arguments as nothing.
+        _structured_tool_history_for_local_template(chat_messages),
         served_images if structured else (latest_user_image_b64 or latest_image_b64),
     )
 
@@ -40829,7 +40838,7 @@ def _structured_tool_history_for_local_template(messages: list[dict]) -> list[di
                 if isinstance(args, str):
                     try:
                         parsed = json.loads(args)
-                    except ValueError:
+                    except (ValueError, RecursionError):
                         parsed = None
                     if isinstance(parsed, dict):
                         tc = {**tc, "function": {**fn, "arguments": parsed}}
