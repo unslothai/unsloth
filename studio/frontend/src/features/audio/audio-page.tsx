@@ -461,6 +461,7 @@ export function AudioPage({
     selectedClip,
     selectedClipSrc,
     loadMoreVisible,
+    fallbackClip: pageFallbackClip,
   } = useWorkflowHistory({
     workflow: ttsWorkflow,
     enabled: active && mode === "speak",
@@ -980,7 +981,7 @@ export function AudioPage({
                   srcById,
                   handleDownloadClip,
                   handleDeleteClip,
-                  fallbackClip,
+                  fallbackClip: pageFallbackClip,
                   handleDownloadFallbackClip,
                   handleClearGallery: handleClearWorkflowGallery,
                   historyReorder,

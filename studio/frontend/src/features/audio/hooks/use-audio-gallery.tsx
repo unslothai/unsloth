@@ -65,6 +65,7 @@ export function useAudioGallery({
     prompt: string;
     model: string;
     saved: boolean;
+    workflow: "speak" | "music";
   } | null>(null);
   const fallbackClipRef = useRef(fallbackClip);
   fallbackClipRef.current = fallbackClip;
@@ -568,12 +569,14 @@ export function useWorkflowHistory({
   const selectedClip =
     visibleClips.find((clip) => clip.id === selectedId) ?? null;
   const selectedClipSrc = selectedClip ? srcById[selectedClip.id] : undefined;
+  const pageFallbackClip =
+    fallbackClip?.workflow === workflow ? fallbackClip : null;
 
   useEffect(() => {
-    if (!enabled || selectedClip || fallbackClip) return;
+    if (!enabled || selectedClip || pageFallbackClip) return;
     const first = visibleClips[0];
     if (first) selectClip(first.id);
-  }, [enabled, selectedClip, fallbackClip, visibleClips, selectClip]);
+  }, [enabled, selectedClip, pageFallbackClip, visibleClips, selectClip]);
 
   useEffect(() => {
     if (
@@ -614,5 +617,11 @@ export function useWorkflowHistory({
     }
   }, [workflow, loadMore, loadingMoreRef]);
 
-  return { visibleClips, selectedClip, selectedClipSrc, loadMoreVisible };
+  return {
+    visibleClips,
+    selectedClip,
+    selectedClipSrc,
+    loadMoreVisible,
+    fallbackClip: pageFallbackClip,
+  };
 }

@@ -34,7 +34,7 @@ test("only the page commits a workflow; the sidebar's request goes through the s
   );
   assert.match(
     slot,
-    /const transitionWorkflow = useCallback\(\s*\(next: AudioWorkflowId\) => \{\s*if \(!transitionMode\(slotForWorkflow\(next\)\)\) return false;\s*useAudioWorkspaceStore\.getState\(\)\.commitWorkflow\(next\);/,
+    /\} else if \(!transitionMode\(slotForWorkflow\(next\)\)\) \{\s*return false;\s*\}\s*store\.commitWorkflow\(next\);/,
   );
   assert.match(host, /mode === "transcribe" \? "transcribe" : musicGeneration \? "music" : "speak"/);
 });
@@ -149,5 +149,20 @@ test("Send to lists the other Audio pages from the shared workflow list", () => 
   assert.match(
     host,
     /const blob = await fetchClipBlob\(clip\.url\);\s*if \(!transitionWorkflow\("transcribe"\)\) return;/,
+  );
+});
+
+test("an unlisted clip stays on the page that made it", () => {
+  assert.equal((generation.match(/saved: (?:true|false),\s*workflow,/g) ?? []).length, 2);
+  assert.match(gallery, /const pageFallbackClip =\s*fallbackClip\?\.workflow === workflow \? fallbackClip : null;/);
+  assert.match(gallery, /if \(!enabled \|\| selectedClip \|\| pageFallbackClip\) return;/);
+  assert.match(host, /fallbackClip: pageFallbackClip,\s*\} = useWorkflowHistory\(/);
+  assert.match(host, /handleDeleteClip,\s*fallbackClip: pageFallbackClip,/);
+});
+
+test("switching between Speak and Music passes the same busy gate as a mode switch", () => {
+  assert.match(
+    slot,
+    /next !== store\.workflow &&\s*mode === "speak" &&\s*slotForWorkflow\(next\) === "speak"\s*\) \{\s*if \(\s*!canTransitionAudioMode\(busyRef\.current, generationPhaseRef\.current\)\s*\) \{[\s\S]{0,200}?return false;\s*\}\s*if \(busyRef\.current === "generating"\) handleStopGeneration\(\);/,
   );
 });
