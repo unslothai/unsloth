@@ -1528,8 +1528,9 @@ def _load_transformer_config(
 _FLOAT8_TENSOR_CLASS = "Float8Tensor"
 
 
-def _fp8_activation_floor_present(state_dict: Any, logger: Any) -> bool:
-    """True unless the first Float8Tensor has no activation lower bound (by class: NVFP4Tensor lacks one too)."""
+def _fp8_activation_floor_present(state_dict: Any, logger: Any, *, warn: bool = True) -> bool:
+    """True unless the first Float8Tensor has no activation lower bound (by class: NVFP4Tensor lacks one too).
+    ``warn = False`` only answers, without recording a load failure."""
     from .diffusion_transformer_quant import TQ_FP8
 
     try:
@@ -1542,6 +1543,8 @@ def _fp8_activation_floor_present(state_dict: Any, logger: Any) -> bool:
                 continue
             if getattr(kwargs, "hp_value_lb", None):
                 return True
+            if not warn:
+                return False
             _warn(
                 logger,
                 TQ_FP8,
@@ -1887,8 +1890,9 @@ def _validate_checkpoint(
     # An artifact built before the floor existed is not lost, though: the floor is a runtime knob on each tensor, not
     # weight data, so ``_repair_legacy_checkpoint`` writes the runtime value in and the load proceeds. Refused only
     # when the kwargs differs from the runtime config in more than the floor.
-    if holds_fp8 and not _fp8_activation_floor_present(ckpt.get("state_dict"), logger):
+    if holds_fp8 and not _fp8_activation_floor_present(ckpt.get("state_dict"), logger, warn = False):
         if not _fp8_activation_floor_restorable(ckpt.get("state_dict")):
+            _fp8_activation_floor_present(ckpt.get("state_dict"), logger)  # records the refusal
             return False
         if logger is not None:
             logger.info(

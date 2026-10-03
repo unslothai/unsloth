@@ -2259,6 +2259,8 @@ def test_an_fp8_checkpoint_without_the_floor_loads_with_the_runtime_floor(monkey
     ckpt["state_dict"] = {"a.weight": first, "b.weight": second, "c.weight": floored, "d.bias": object()}
     out = _load(monkeypatch, tmp_path, ckpt, scheme = "fp8")
     assert out is not None
+    # a repaired load is not a failure: nothing for the status line to report
+    assert pq.last_prequant_failure() is None
     assert first.act_quant_kwargs.hp_value_lb == FP8_ACTIVATION_VALUE_LB
     assert second.act_quant_kwargs.hp_value_lb == FP8_ACTIVATION_VALUE_LB
     assert first.act_quant_kwargs is not second.act_quant_kwargs
@@ -2272,6 +2274,7 @@ def test_an_fp8_checkpoint_differing_in_more_than_the_floor_stays_refused(monkey
     capped.act_quant_kwargs.hp_value_ub = 1e4
     ckpt["state_dict"] = {"a.weight": capped}
     assert _load(monkeypatch, tmp_path, ckpt, scheme = "fp8") is None
+    assert "no activation scale floor" in (pq.last_prequant_failure() or "")
     no_field = Float8Tensor()
     no_field.act_quant_kwargs = types.SimpleNamespace()
     assert pq._fp8_activation_floor_restorable({"a.weight": no_field}) is False
