@@ -6821,7 +6821,7 @@ def _forward_reads_checkpoint_function(cls):
     try:
         return "_gradient_checkpointing_func" in inspect.getsource(cls.forward)
     except Exception:
-        return False
+        return True  # cannot read it: assume it does, as _forward_calls_checkpointing does
 
 
 def _calls_checkpoint_function(module):
@@ -6869,6 +6869,12 @@ def arm_gradient_checkpointing(model):
             f"Unsloth: could not turn on gradient checkpointing ({e}); training without it."
         )
         return False
+    # As the load path does: a layer handed a cache skips checkpointing (_checkpointed_layer_forward).
+    try:
+        from unsloth_zoo.training_utils import disable_use_cache
+    except ImportError:
+        return True
+    disable_use_cache(model)
     return True
 
 

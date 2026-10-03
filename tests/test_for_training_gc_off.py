@@ -195,3 +195,25 @@ def test_fastmodel_default_keeps_the_diffusion_adapter_choice(recorded):
     assert model.enabled == int(recorded)
     FastModel.for_training(model, use_gradient_checkpointing = True)
     assert model.enabled == int(recorded) + 1
+
+
+@pytest.mark.parametrize("which", [0, 1])
+def test_late_enable_turns_the_cache_off_and_inference_restores_it(which):
+    fast = _fast_classes()[which]
+    model = _tiny_qwen3()
+    model._unsloth_gradient_checkpointing = False
+    assert model.config.use_cache
+    fast.for_training(model, use_gradient_checkpointing = True)
+    assert model.config.use_cache is False
+    fast.for_inference(model)
+    assert model.config.use_cache is True
+
+
+def test_unreadable_forward_counts_as_checkpointing():
+    from unsloth.models._utils import _forward_reads_checkpoint_function
+
+    class _NoSource(torch.nn.Module):
+        gradient_checkpointing = False
+
+    _NoSource.forward = eval("lambda self, x: x")
+    assert _forward_reads_checkpoint_function(_NoSource) is True
