@@ -2722,10 +2722,33 @@ _COLOURS_THAT_MUST_KEEP_THEIR_GAIN = ((IMAGES_PAGE, "border", "--foreground", "1
 # follows `--spacing`, so a fixed `right` or `padding-right` drifts away from it at any
 # setting other than the default, and the reach arithmetic that decides whether the pin can
 # overlap the title is done against a number the UI no longer renders.
-_CSS_DECLARATIONS_THAT_MUST_KEEP_THE_SCALE = (
-    ("right", "1.875rem", 1),
-    ("padding-right", "0.125rem", 1),
-)
+# They are read from the pin's rule by property, not pinned to a length: a design nudge that
+# moves the pin (#12563 took `right` from 1.875rem to 1.6875rem) keeps the scale and must not
+# turn this red, while one that drops the scale wrapper still must.
+_PIN_SELECTOR = ".sidebar-row-action.is-unpin-action"
+_CSS_DECLARATIONS_THAT_MUST_KEEP_THE_SCALE = ("right", "padding-right")
+
+
+def _css_rule_body(source: str, selector: str) -> str:
+    """The declarations of the one top-level `selector { ... }` rule, nested braces included."""
+    starts = [m.end() for m in re.finditer(rf"(?<![\w.-]){re.escape(selector)}\s*\{{", source)]
+    assert len(starts) == 1, f"index.css states `{selector} {{` {len(starts)} times, not once"
+    depth, i = 1, starts[0]
+    while depth:
+        depth += {"{": 1, "}": -1}.get(source[i], 0)
+        i += 1
+    return source[starts[0] : i - 1]
+
+
+def _declared_values(body: str, prop: str) -> list[str]:
+    """Values of `prop` declared directly in a rule body, ignoring comments and nested rules."""
+    body = re.sub(r"/\*.*?\*/", "", body, flags = re.S)
+    while True:
+        nested = re.sub(r"\{[^{}]*\}", "", body)
+        if nested == body:
+            break
+        body = nested
+    return re.findall(rf"(?<![\w-]){re.escape(prop)}:\s*([^;]+);", body)
 
 
 # The chat header geometry is stated once per platform chrome, and the contracts that do
@@ -2762,21 +2785,16 @@ def test_every_platform_chat_header_geometry_still_follows_the_ui_scale():
 
 
 def test_the_sidebar_action_geometry_still_follows_the_ui_scale():
-    source = INDEX_CSS.read_text(encoding = "utf-8")
-    for prop, length, expected in _CSS_DECLARATIONS_THAT_MUST_KEEP_THE_SCALE:
-        scaled = len(
-            re.findall(
-                rf"(?<![\w-]){re.escape(prop)}:\s*"
-                rf"calc\(\s*{re.escape(length)}\s*\*\s*var\(\s*--ui-space-scale\s*,\s*1\s*\)\s*\);",
-                source,
-            )
-        )
+    body = _css_rule_body(INDEX_CSS.read_text(encoding = "utf-8"), _PIN_SELECTOR)
+    for prop in _CSS_DECLARATIONS_THAT_MUST_KEEP_THE_SCALE:
+        values = _declared_values(body, prop)
         assert (
-            scaled == expected
-        ), f"index.css states {scaled} scaled `{prop}: {length}`, not {expected}"
-        assert not re.search(
-            rf"(?<![\w-]){re.escape(prop)}:\s*{re.escape(length)}\s*;", source
-        ), f"index.css has a bare `{prop}: {length}`, which stays put while the gutter scales"
+            len(values) == 1
+        ), f"`{_PIN_SELECTOR}` declares `{prop}` {len(values)} times, not once"
+        assert re.fullmatch(
+            r"calc\(\s*[\d.]+rem\s*\*\s*var\(\s*--ui-space-scale\s*,\s*1\s*\)\s*\)",
+            values[0].strip(),
+        ), f"`{_PIN_SELECTOR}` states `{prop}: {values[0].strip()}`, which stays put while the gutter scales"
 
 
 def test_the_colours_these_contracts_read_still_carry_their_gain():

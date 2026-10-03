@@ -63,6 +63,29 @@ export function isThreadIncognito(threadId: string): boolean {
   return incognitoThreadIds.has(threadId);
 }
 
+// Read live: initialize() clears newThreadId before persisting the thread.
+const newThreadIdSources = new Set<() => string | null | undefined>();
+// Settings can start a row write while the runtime still considers the thread new.
+const writtenThreadIds = new Set<string>();
+
+/** Returns the unregister function. */
+export function registerNewThreadIdSource(
+  source: () => string | null | undefined,
+): () => void {
+  newThreadIdSources.add(source);
+  return () => {
+    newThreadIdSources.delete(source);
+  };
+}
+
+function isPendingNewThread(threadId: string): boolean {
+  if (writtenThreadIds.has(threadId)) return false;
+  for (const source of newThreadIdSources) {
+    if (source() === threadId) return true;
+  }
+  return false;
+}
+
 type ThreadListArgs = {
   modelType?: ModelType;
   pairId?: string;
@@ -404,6 +427,7 @@ async function saveLegacyChatThread(
 }
 
 function writeChatThreadRecord(thread: ThreadRecord): Promise<ThreadRecord> {
+  writtenThreadIds.add(thread.id);
   return threadRecordWrites.write(thread.id, () => saveChatThread(thread));
 }
 
@@ -632,6 +656,9 @@ export async function getStoredChatThreadReadResult(
   if (isChatThreadDeleted(threadId)) {
     return { thread: undefined, cacheable: true };
   }
+  if (isPendingNewThread(threadId)) {
+    return { thread: undefined, cacheable: true };
+  }
   const legacyThread = await readLegacyStore(
     () => db.threads.get(threadId),
     undefined,
@@ -817,6 +844,7 @@ export async function readStoredChatMessages(
 ): Promise<{ messages: MessageRecord[]; fromBackend: boolean }> {
   if (isThreadIncognito(threadId)) return { messages: [], fromBackend: false };
   if (isChatThreadDeleted(threadId)) return { messages: [], fromBackend: false };
+  if (isPendingNewThread(threadId)) return { messages: [], fromBackend: false };
   const legacyMessages = await readLegacyStore(
     () => db.messages.where("threadId").equals(threadId).toArray(),
     [] as MessageRecord[],
