@@ -4643,6 +4643,7 @@ def write_openclaw_config(
     workspace_path: Optional[str] = None,
     embedding_model: Optional[str] = None,
     request_body: Optional[dict] = None,
+    max_tokens: Optional[int] = None,
 ) -> None:
     config = _read_json_object(path)
     if config is None:
@@ -4657,7 +4658,12 @@ def write_openclaw_config(
     provider_model = {"id": model["id"], "name": model["id"]}
     window = model.get("context_length") or model.get("max_context_length")
     if window:
-        provider_model["contextWindow"] = int(window)
+        window = int(window)
+        provider_model["contextWindow"] = window
+        # Unset, OpenClaw caps every reply at 8192 (DEFAULT_MODEL_MAX_TOKENS) whatever the window.
+        provider_model["maxTokens"] = _agent_output_limit(window, max_tokens)
+    elif max_tokens:
+        provider_model["maxTokens"] = max_tokens
     models = _subdict(config, "models")
     models.setdefault("mode", "merge")
     _subdict(models, "providers")["unsloth"] = {
@@ -5619,6 +5625,7 @@ def openclaw(
     launch: bool = _LAUNCH_OPTION,
     gguf_variant: Optional[str] = _GGUF_VARIANT_OPTION,
     max_seq_length: int = _CONTEXT_OPTION,
+    max_tokens: Optional[int] = _MAX_TOKENS_OPTION,
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
     gpu_memory_mode: Optional[Literal["auto", "manual"]] = _GPU_MEMORY_MODE_OPTION,
@@ -5688,6 +5695,7 @@ def openclaw(
             workspace_path = "${OPENCLAW_WORKSPACE_DIR}",
             embedding_model = _studio_embedding_model(base, key),
             request_body = server_options.request_body(),
+            max_tokens = max_tokens,
         )
         # Scope both config and state so OpenClaw never touches the user's ~/.openclaw.
         # Off, else OpenClaw re-imports any provider key it cannot see from a login shell.

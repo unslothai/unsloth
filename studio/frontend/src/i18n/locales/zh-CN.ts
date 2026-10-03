@@ -2398,6 +2398,7 @@ export const zhCN = {
       context: "上下文",
       lr: "LR",
       hardware: "硬件",
+      vram: "VRAM",
       noGpu: "未检测到 GPU",
       hfToken: "HF token",
       saved: "已保存",

@@ -3,6 +3,7 @@
 
 import { isExternalModelId, useChatRuntimeStore } from "@/features/chat";
 import { usePlatformStore } from "@/config/env";
+import { isNpuModelId } from "@/features/npu";
 import { useMemo } from "react";
 import {
   type PerModelConfig,
@@ -103,7 +104,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       // A self-sizing backend carries no pin here, exactly as the GGUF path does: this
       // is the runtime's resolved length, and reading it back as the user's choice would
       // pin every reload to whatever the first load happened to get.
-      maxSeqLength: isGguf || isMlx ? null : maxSeqLength,
+      maxSeqLength: isGguf || isMlx || isNpuModelId(checkpoint) ? null : maxSeqLength,
       kvCacheDtype: kvCacheDtype ?? null,
       mlxKvQuant: effectiveMlxKvQuant,
       speculativeType: speculativeType ?? "auto",
