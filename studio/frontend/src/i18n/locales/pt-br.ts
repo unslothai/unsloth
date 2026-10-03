@@ -240,7 +240,6 @@ export const ptBR = {
       generateVideo: "Gerar um vídeo",
       untitledChat: "Chat sem título",
       compare: "Comparar",
-      fineTuned: "Fine-tune",
       loading: "Carregando...",
       empty: {
         all: "Nada para buscar ainda.",

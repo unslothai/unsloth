@@ -122,3 +122,19 @@ test("an action that becomes unavailable leaves the selection keys too", () => {
   assert.match(DIALOG, /available\[action\.id\] &&\s*haystackMatches\(/);
   assert.doesNotMatch(DIALOG.slice(DIALOG.indexOf("function ActionItem(")), /useShortcutAvailable|return null/);
 });
+
+test("Enter on a stale auto-highlight runs what the caught-up list shows first", () => {
+  assert.match(DIALOG, /if \(moved\) return;\n\s*const first = groupsFor\(live, queryTokens\(query\)\.length > 0\)/);
+  assert.match(DIALOG, /else if \(showActions\) go\(\(\) => void triggerShortcut\(visibleActions\[0\]\.id\)\)\(\);/);
+});
+
+test("the compact height counts every kind, not only chats", () => {
+  assert.match(DIALOG, /isCompactChatSearchList\(true, otherRows \|\| chatSearchIndexHasRows\(\)\)/);
+  assert.match(DIALOG, /isCompactChatSearchList\(compactList, otherRows \|\| items\.length > 0\)/);
+});
+
+test("model rows are searchable by the labels they show", () => {
+  assert.equal(DIALOG.match(/FORMAT_LABELS\[row\.modelFormat\] \?\? "",/g)?.length, 2);
+  assert.match(DIALOG, /t\(modelLabelKey\(entry\.item\) \?\? "library\.modelKind\.model"\)/);
+  assert.doesNotMatch(DIALOG, /shell\.search\.fineTuned/);
+});

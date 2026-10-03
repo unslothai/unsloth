@@ -238,7 +238,6 @@ export const ko = {
       generateVideo: "동영상 생성",
       untitledChat: "제목 없는 채팅",
       compare: "비교",
-      fineTuned: "파인튜닝됨",
       loading: "로딩 중...",
       empty: {
         all: "아직 검색할 항목이 없습니다.",

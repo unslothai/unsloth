@@ -241,7 +241,6 @@ export const fr = {
       generateVideo: "Générer une vidéo",
       untitledChat: "Discussion sans titre",
       compare: "Comparaison",
-      fineTuned: "Affiné",
       loading: "Chargement...",
       empty: {
         all: "Rien à rechercher pour l’instant.",

@@ -240,7 +240,6 @@ export const es = {
       generateVideo: "Generar un vídeo",
       untitledChat: "Chat sin título",
       compare: "Comparar",
-      fineTuned: "Ajustado",
       loading: "Cargando...",
       empty: {
         all: "Aún no hay nada que buscar.",

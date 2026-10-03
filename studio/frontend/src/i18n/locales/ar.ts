@@ -238,7 +238,6 @@ export const ar = {
       generateVideo: "إنشاء فيديو",
       untitledChat: "محادثة بلا عنوان",
       compare: "مقارنة",
-      fineTuned: "مضبوط",
       loading: "جارٍ التحميل...",
       empty: {
         all: "لا يوجد شيء للبحث فيه بعد.",

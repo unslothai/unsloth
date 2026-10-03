@@ -282,7 +282,6 @@ export const en = {
       generateVideo: "Generate a video",
       untitledChat: "Untitled chat",
       compare: "Compare",
-      fineTuned: "Fine-tuned",
       loading: "Loading…",
       empty: {
         all: "Nothing to search yet.",

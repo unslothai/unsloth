@@ -240,7 +240,6 @@ export const ja = {
       generateVideo: "動画を生成",
       untitledChat: "無題のチャット",
       compare: "比較",
-      fineTuned: "ファインチューン済み",
       loading: "読み込み中...",
       empty: {
         all: "まだ検索できるものはありません。",

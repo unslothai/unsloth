@@ -241,7 +241,6 @@ export const hi = {
       generateVideo: "वीडियो बनाएँ",
       untitledChat: "बिना शीर्षक वाली चैट",
       compare: "तुलना",
-      fineTuned: "फ़ाइन-ट्यून किया गया",
       loading: "लोड हो रहा है...",
       empty: {
         all: "अभी खोजने के लिए कुछ नहीं है।",

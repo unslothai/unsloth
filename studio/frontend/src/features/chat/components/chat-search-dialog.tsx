@@ -47,6 +47,7 @@ import {
   type ModelInventoryFormat,
   useHubInventory,
 } from "@/features/hub";
+import { modelLabelKey } from "@/features/library";
 import { useChatProjects } from "../hooks/use-chat-projects";
 import {
   type ChatSearchItem,
@@ -190,6 +191,24 @@ export function ChatSearchDialog() {
     isCompactChatSearchList(true, chatSearchIndexHasRows()),
   );
 
+  // One call per action (hooks cannot run in a loop). Availability can change while open, so it
+  // gates the selection keys too, not just the rendered rows.
+  const available: Record<ActionId, boolean> = {
+    newChat: useShortcutAvailable("newChat", false),
+    newTemporaryChat: useShortcutAvailable("newTemporaryChat", false),
+    switchToTrain: useShortcutAvailable("switchToTrain", false),
+    switchToImages: useShortcutAvailable("switchToImages", false),
+    switchToVideo: useShortcutAvailable("switchToVideo", false),
+  };
+  // Compact only while no kind has rows: projects, Library, downloads and actions fill the list too.
+  const otherRows =
+    projects.length > 0 ||
+    sources.files.length > 0 ||
+    sources.fineTunes.length > 0 ||
+    cachedRows.length > 0 ||
+    localRows.length > 0 ||
+    Object.values(available).some(Boolean);
+
   // Reset in the opening render, not an effect: Radix mounts the portal as this render commits, so
   // an effect would trim rows only after the previous set was in the DOM. Resetting on close
   // instead would tear rows down inside the exit animation.
@@ -202,10 +221,13 @@ export function ChatSearchDialog() {
       setMoved(false);
       setSelected("");
       setRowLimit(INITIAL_ROW_COUNT);
-      setCompactList(isCompactChatSearchList(true, chatSearchIndexHasRows()));
+      setCompactList(
+        isCompactChatSearchList(true, otherRows || chatSearchIndexHasRows()),
+      );
     }
   } else if (
-    compactList !== isCompactChatSearchList(compactList, items.length > 0)
+    compactList !==
+    isCompactChatSearchList(compactList, otherRows || items.length > 0)
   ) {
     // Backstop for an open with no hint at all: the fixed height is taken when the first build lands.
     setCompactList(false);
@@ -251,10 +273,12 @@ export function ChatSearchDialog() {
       // Hub downloads plus Library fine-tunes.
       models: [
         ...downloadedModelRows(cachedRows, localRows, navigate),
-        ...sources.fineTunes.map((entry) => ({
-          ...libraryRow(entry, "models", navigate),
-          meta: t("shell.search.fineTuned"),
-        })),
+        ...sources.fineTunes.map((entry) => {
+          const row = libraryRow(entry, "models", navigate);
+          // How it was made, as the Library labels it (LoRA, GGUF export, ...).
+          const label = t(modelLabelKey(entry.item) ?? "library.modelKind.model");
+          return { ...row, meta: label, haystack: `${row.haystack} ${label.toLowerCase()}` };
+        }),
       ].sort((a, b) => b.time - a.time),
     }),
     [projects, sources, cachedRows, localRows, navigate, t],
@@ -274,15 +298,6 @@ export function ChatSearchDialog() {
   const matched = useMemo(() => matchAll(activeQuery), [matchAll, activeQuery]);
 
   const hasQuery = queryTokens(activeQuery).length > 0;
-  // One call per action (hooks cannot run in a loop). Availability can change while open, so it
-  // gates the selection keys too, not just the rendered rows.
-  const available: Record<ActionId, boolean> = {
-    newChat: useShortcutAvailable("newChat", false),
-    newTemporaryChat: useShortcutAvailable("newTemporaryChat", false),
-    switchToTrain: useShortcutAvailable("switchToTrain", false),
-    switchToImages: useShortcutAvailable("switchToImages", false),
-    switchToVideo: useShortcutAvailable("switchToVideo", false),
-  };
   // Live query, not the deferred one: Enter must never run an action the input no longer matches.
   const visibleActions = ACTIONS.filter(
     (action) =>
@@ -291,15 +306,19 @@ export function ChatSearchDialog() {
   );
 
   // All: one headed group per kind. A kind's tab: one list.
-  const groups: { heading?: string; rows: Row[] }[] =
+  const groupsFor = (
+    rows: Record<ChatSearchKind, Row[]>,
+    queried: boolean,
+  ): { heading?: string; rows: Row[] }[] =>
     tab !== "all"
-      ? [{ rows: matched[tab].slice(0, rowLimit) }]
-      : hasQuery
+      ? [{ rows: rows[tab].slice(0, rowLimit) }]
+      : queried
         ? KINDS.map((kind) => ({
             heading: t(`shell.search.tabs.${kind}`),
-            rows: matched[kind].slice(0, ALL_TAB_GROUP_LIMIT),
+            rows: rows[kind].slice(0, ALL_TAB_GROUP_LIMIT),
           }))
-        : [{ heading: t("shell.search.recents"), rows: recentRows(matched) }];
+        : [{ heading: t("shell.search.recents"), rows: recentRows(rows) }];
+  const groups = groupsFor(matched, hasQuery);
   const showActions = tab === "all" && visibleActions.length > 0;
   const rowCount = groups.reduce((sum, group) => sum + group.rows.length, 0);
   const firstKey =
@@ -312,13 +331,16 @@ export function ChatSearchDialog() {
 
   const activate = (row: Row) => {
     // The list can trail the input by a render; only open rows the live query still matches.
-    if (
-      query !== activeQuery &&
-      !matchAll(query)[row.kind].some((live) => live.key === row.key)
-    ) {
-      return;
-    }
-    go(row.open)();
+    if (query === activeQuery) return go(row.open)();
+    const live = matchAll(query);
+    if (live[row.kind].some((match) => match.key === row.key)) return go(row.open)();
+    // A stale auto-highlight: run what the caught-up list will show first.
+    if (moved) return;
+    const first = groupsFor(live, queryTokens(query).length > 0).find(
+      (group) => group.rows.length > 0,
+    )?.rows[0];
+    if (first) go(first.open)();
+    else if (showActions) go(() => void triggerShortcut(visibleActions[0].id))();
   };
 
   const switchTab = (next: ChatSearchTab) => {
@@ -529,7 +551,12 @@ function downloadedModelRows(
         kind: "models",
         title: row.repoId,
         time: row.lastModified ?? 0,
-        haystack: [row.repoId, row.formatVariant ?? "", row.modelFormat]
+        haystack: [
+          row.repoId,
+          row.formatVariant ?? "",
+          row.modelFormat,
+          FORMAT_LABELS[row.modelFormat] ?? "",
+        ]
           .join(" ")
           .toLowerCase(),
         icon: DashboardCircleIcon,
@@ -546,7 +573,14 @@ function downloadedModelRows(
         kind: "models",
         title,
         time: row.updatedAt ?? 0,
-        haystack: [title, row.repoId ?? "", row.sourceLabel, row.path, row.modelFormat]
+        haystack: [
+          title,
+          row.repoId ?? "",
+          row.sourceLabel,
+          row.path,
+          row.modelFormat,
+          FORMAT_LABELS[row.modelFormat] ?? "",
+        ]
           .join(" ")
           .toLowerCase(),
         icon: DashboardCircleIcon,

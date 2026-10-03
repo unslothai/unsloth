@@ -240,7 +240,6 @@ export const ru = {
       generateVideo: "Создать видео",
       untitledChat: "Чат без названия",
       compare: "Сравнение",
-      fineTuned: "Дообученная",
       loading: "Загрузка…",
       empty: {
         all: "Пока нечего искать.",

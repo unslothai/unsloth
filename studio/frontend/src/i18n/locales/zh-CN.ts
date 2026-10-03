@@ -236,7 +236,6 @@ export const zhCN = {
       generateVideo: "生成视频",
       untitledChat: "未命名聊天",
       compare: "对比",
-      fineTuned: "已微调",
       loading: "加载中...",
       empty: {
         all: "暂无可搜索的内容。",

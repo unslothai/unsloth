@@ -241,7 +241,6 @@ export const de = {
       generateVideo: "Video generieren",
       untitledChat: "Unbenannter Chat",
       compare: "Vergleich",
-      fineTuned: "Feinabgestimmt",
       loading: "Wird geladen…",
       empty: {
         all: "Noch nichts zu durchsuchen.",
