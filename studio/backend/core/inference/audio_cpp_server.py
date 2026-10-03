@@ -639,7 +639,11 @@ class AudioCppServer:
                 process.wait(timeout = 10)
             except subprocess.TimeoutExpired:
                 process.kill()
-                process.wait(timeout = 10)
+                try:
+                    # A killed server can sit in GPU teardown well past 10 s on a busy card.
+                    process.wait(timeout = 120)
+                except subprocess.TimeoutExpired:
+                    logger.warning("audiocpp_server %s did not exit after SIGKILL", process.pid)
         forget_pid(process.pid)
         shutil.rmtree(self._config_dir, ignore_errors = True)
 
