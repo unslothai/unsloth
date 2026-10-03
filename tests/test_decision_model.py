@@ -492,6 +492,21 @@ def test_trainer_uses_one_gpu_and_the_set_batch_on_a_multi_gpu_machine(checkpoin
     assert trainer._wrap_model(model) is model
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "measures GPU memory")
+def test_lora_save_does_not_copy_the_encoder_on_the_gpu(checkpoint, tmp_path):
+    model, tokenizer = FastDecisionModel.from_pretrained(
+        str(checkpoint), use_gradient_checkpointing = False
+    )
+    model = FastDecisionModel.get_peft_model(model, r = 8, lora_alpha = 16)
+    torch.cuda.synchronize()
+    before = torch.cuda.memory_allocated()
+    torch.cuda.reset_peak_memory_stats()
+    model.save_pretrained_merged(tmp_path / "out", tokenizer)
+    torch.cuda.synchronize()
+    assert torch.cuda.max_memory_allocated() <= before
+    assert next(model.encoder.parameters()).is_cuda and hasattr(model.encoder, "peft_config")
+
+
 def test_save_refuses_weights_float16_cannot_hold(checkpoint, tmp_path):
     model, _ = FastDecisionModel.from_pretrained(
         str(checkpoint), full_finetuning = True, use_gradient_checkpointing = False

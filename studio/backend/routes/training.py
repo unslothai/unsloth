@@ -1077,10 +1077,15 @@ def _reject_untrainable_model_request(
                         "Retry before starting training."
                     ),
                 )
-            remote_format = _remote_untrainable_model_format(
-                request.model_name,
-                hf_token,
-                is_embedding = bool(getattr(request, "is_embedding", False)),
+            # A decision checkpoint is checked at its subfolder below, whatever the repo root holds.
+            remote_format = (
+                None
+                if request.is_decision
+                else _remote_untrainable_model_format(
+                    request.model_name,
+                    hf_token,
+                    is_embedding = bool(getattr(request, "is_embedding", False)),
+                )
             )
         except HTTPException as error:
             metadata_error = error

@@ -332,6 +332,21 @@ def test_a_hub_repo_must_be_a_decision_model(route, files, subfolder, accepted):
     assert refused.value.detail["code"] == "training_remote_model_not_decision"
 
 
+@pytest.mark.parametrize("root_format", ["adapter", "gguf"])
+def test_a_hub_subfolder_checkpoint_is_not_judged_by_the_repo_root(route, root_format):
+    from utils.models import model_config
+
+    files = ["adapter_config.json", "v2/rl_agent_config.json", "v2/model.safetensors"]
+    info = SimpleNamespace(siblings = [SimpleNamespace(rfilename = name) for name in files])
+    with (
+        patch.object(route, "_remote_untrainable_model_format", return_value = root_format),
+        patch.object(model_config, "_hub_model_info", return_value = info),
+    ):
+        route._reject_untrainable_model_request(
+            _request(model_name = "org/model", model_subfolder = "v2")
+        )
+
+
 def test_a_local_checkpoint_is_checked_at_its_subfolder(route, tmp_path):
     root = tmp_path / "laya"
     _laya_folder(root / "multilingual")

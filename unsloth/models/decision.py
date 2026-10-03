@@ -492,8 +492,13 @@ def save_pretrained_merged(
     tokenizer = self._saved_temp_tokenizer if tokenizer is None else tokenizer
     encoder = self.encoder
     if hasattr(encoder, "merge_and_unload"):
-        # Merged on a copy, so the model keeps its adapters and can keep training.
-        encoder = copy.deepcopy(encoder).merge_and_unload()
+        # Merged on a CPU copy: the model keeps its adapters and the GPU never holds a second encoder.
+        device = next(encoder.parameters()).device
+        encoder.to("cpu")
+        try:
+            encoder = copy.deepcopy(encoder).merge_and_unload()
+        finally:
+            self.encoder.to(device)
     state = {f"encoder.{k}": v for k, v in encoder.state_dict().items()}
     state.update((k, v) for k, v in self.state_dict().items() if not k.startswith("encoder."))
     weights = {}
