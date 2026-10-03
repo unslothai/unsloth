@@ -56,7 +56,12 @@ def _isolated(monkeypatch):
     backends[dispatch.AttentionBackendName.SAGE] = saved
 
 
-def _qkv(head_dim = 64, dtype = None, heads = 2, tokens = 16):
+def _qkv(
+    head_dim = 64,
+    dtype = None,
+    heads = 2,
+    tokens = 16,
+):
     gen = torch.Generator().manual_seed(0)
     return tuple(
         torch.randn((1, tokens, heads, head_dim), generator = gen, dtype = dtype or torch.float32)
@@ -64,13 +69,23 @@ def _qkv(head_dim = 64, dtype = None, heads = 2, tokens = 16):
     )
 
 
-def _native(q, k, v, mask = None):
+def _native(
+    q,
+    k,
+    v,
+    mask = None,
+):
     return F.scaled_dot_product_attention(
         q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), attn_mask = mask
     ).transpose(1, 2)
 
 
-def _dispatch_sage(q, k, v, mask = None):
+def _dispatch_sage(
+    q,
+    k,
+    v,
+    mask = None,
+):
     return dispatch.dispatch_attention_fn(
         q, k, v, attn_mask = mask, backend = dispatch.AttentionBackendName.SAGE
     )
@@ -117,8 +132,16 @@ def test_servable_call_reaches_the_sage_kernel(monkeypatch):
     backends = dispatch._AttentionBackendRegistry._backends
     calls: list = []
 
-    def _fake_sage(query, key, value, attn_mask = None, is_causal = False, scale = None, return_lse = False,
-                   _parallel_config = None):
+    def _fake_sage(
+        query,
+        key,
+        value,
+        attn_mask = None,
+        is_causal = False,
+        scale = None,
+        return_lse = False,
+        _parallel_config = None,
+    ):
         calls.append(tuple(query.shape))
         return torch.full_like(query, 7.0)
 
@@ -160,7 +183,10 @@ def test_rerouted_calls_are_counted_and_logged_once(monkeypatch, caplog):
         _dispatch_sage(q, k, v, mask)
         _dispatch_sage(q, k, v, mask)
     assert att._SAGE_ROUTED == {"attn_mask": 2}
-    assert sum("cannot take this attention call (attn_mask)" in r.getMessage() for r in caplog.records) == 1
+    assert (
+        sum("cannot take this attention call (attn_mask)" in r.getMessage() for r in caplog.records)
+        == 1
+    )
 
 
 def test_guarded_masked_call_traces_without_a_graph_break(monkeypatch):
@@ -173,7 +199,9 @@ def test_guarded_masked_call_traces_without_a_graph_break(monkeypatch):
     guarded = dispatch._AttentionBackendRegistry._backends[dispatch.AttentionBackendName.SAGE]
     torch._dynamo.reset()
     compiled = torch.compile(
-        lambda q, k, v, m: guarded(query = q, key = k, value = v, attn_mask = m), backend = "eager", fullgraph = True
+        lambda q, k, v, m: guarded(query = q, key = k, value = v, attn_mask = m),
+        backend = "eager",
+        fullgraph = True,
     )
     torch.testing.assert_close(compiled(q, k, v, mask), _native(q, k, v, mask))
     torch._dynamo.reset()
@@ -236,7 +264,11 @@ def test_probe_runs_at_the_dit_head_dims(monkeypatch):
 def test_missing_package_falls_back_with_a_reason_and_is_not_cached(monkeypatch):
     calls: list = []
 
-    def _probe(d, dt, hd = 128):
+    def _probe(
+        d,
+        dt,
+        hd = 128,
+    ):
         calls.append(hd)
         raise ImportError("No module named 'sageattention'")
 
@@ -261,7 +293,12 @@ def _fake_sage(monkeypatch, fn):
     monkeypatch.setitem(sys.modules, "sageattention", types.SimpleNamespace(sageattn = fn))
 
 
-def _exact_sageattn(q, k, v, tensor_layout = "NHD"):
+def _exact_sageattn(
+    q,
+    k,
+    v,
+    tensor_layout = "NHD",
+):
     assert tensor_layout == "NHD"
     return _native(q.float(), k.float(), v.float()).to(q.dtype)
 
@@ -312,7 +349,9 @@ def test_probe_head_dims_ignore_dims_sage_cannot_serve():
 # are CUDA-only, so a ROCm target keeps the default backend.
 
 
-@pytest.mark.parametrize("hip, version", [("7.2.1", "2.9.1+rocm7.2.1"), (None, "2.10.0a0+rocm7.10.0a20251116")])
+@pytest.mark.parametrize(
+    "hip, version", [("7.2.1", "2.9.1+rocm7.2.1"), (None, "2.10.0a0+rocm7.10.0a20251116")]
+)
 def test_sage_is_never_selected_on_rocm(monkeypatch, hip, version):
     from core.inference.diffusion_attention import select_attention_backend
 
@@ -326,7 +365,6 @@ def test_sage_is_never_selected_on_rocm(monkeypatch, hip, version):
 
 def test_auto_never_selects_sage_on_nvidia(monkeypatch):
     from core.inference.diffusion_attention import select_attention_backend
-
     monkeypatch.setattr(att, "_is_cuda_nvidia", lambda target: True)
     for cap in ((7, 5), (8, 0), (8, 9), (9, 0), (10, 0), (12, 0)):
         monkeypatch.setattr(att, "_cuda_capability", lambda cap = cap: cap)
@@ -340,8 +378,16 @@ def test_auto_never_selects_sage_on_nvidia(monkeypatch):
 # opaque custom op instead.
 
 
-def _arch_reading_sage(query, key, value, attn_mask = None, is_causal = False, scale = None, return_lse = False,
-                       _parallel_config = None):
+def _arch_reading_sage(
+    query,
+    key,
+    value,
+    attn_mask = None,
+    is_causal = False,
+    scale = None,
+    return_lse = False,
+    _parallel_config = None,
+):
     torch._dynamo.graph_break()  # stands in for sageattn's get_cuda_arch_versions(): Python Dynamo cannot trace
     return _native(query.float(), key.float(), value.float()).to(query.dtype)
 
@@ -360,7 +406,9 @@ def test_sage_call_compiles_fullgraph_through_the_guard(monkeypatch, head_dim):
 
     torch._dynamo.reset()
     compiled = torch.compile(block, backend = "aot_eager", fullgraph = True)
-    torch.testing.assert_close(compiled(q, k, v), _native(q.float(), k.float(), v.float()).to(q.dtype).sum(-1))
+    torch.testing.assert_close(
+        compiled(q, k, v), _native(q.float(), k.float(), v.float()).to(q.dtype).sum(-1)
+    )
     torch._dynamo.reset()
 
 
@@ -368,7 +416,9 @@ def test_unguarded_sage_call_breaks_a_fullgraph_compile():
     """Negative control: the same function called directly cannot be traced."""
     q, k, v = _qkv(head_dim = 64, dtype = torch.bfloat16)
     torch._dynamo.reset()
-    compiled = torch.compile(lambda q, k, v: _arch_reading_sage(q, k, v), backend = "aot_eager", fullgraph = True)
+    compiled = torch.compile(
+        lambda q, k, v: _arch_reading_sage(q, k, v), backend = "aot_eager", fullgraph = True
+    )
     with pytest.raises(Exception):
         compiled(q, k, v)
     torch._dynamo.reset()
@@ -384,7 +434,11 @@ def test_engaged_backend_is_tagged_on_every_dit(monkeypatch):
     assert apply_attention_backend(pipe, "sage", target = _target()) == "sage"
     assert t._unsloth_attention_backend == "sage" and t2._unsloth_attention_backend == "sage"
     # A later load on the same modules that falls back clears the tag.
-    monkeypatch.setattr(att, "_run_sage_probe", lambda d, dt, hd = 128: "ValueError: Unsupported CUDA architecture: sm100")
+    monkeypatch.setattr(
+        att,
+        "_run_sage_probe",
+        lambda d, dt, hd = 128: "ValueError: Unsupported CUDA architecture: sm100",
+    )
     monkeypatch.setattr(att, "_SAGE_PROBE_CACHE", {})
     assert apply_attention_backend(pipe, "sage", target = _target()) is None
     assert t._unsloth_attention_backend is None and t2._unsloth_attention_backend is None

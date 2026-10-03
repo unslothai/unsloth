@@ -295,7 +295,11 @@ _SAGE_MIN_COSINE = 0.99
 _SAGE_MAX_REL_L1 = 0.08
 
 
-def _run_sage_probe(device: str, dtype: Any, head_dim: int = 128) -> str:
+def _run_sage_probe(
+    device: str,
+    dtype: Any,
+    head_dim: int = 128,
+) -> str:
     """Empty when ``sageattn`` on ``device`` matches an fp32 reference at ``head_dim``, else why not.
 
     Raises when unaskable (import, device, OOM). Random inputs with a per-channel K offset, as real keys have one: a
@@ -361,7 +365,11 @@ def _sage_probe_head_dims(head_dims: Any) -> tuple[int, ...]:
     return tuple(dims) or (_SAGE_MAX_HEAD_DIM,)
 
 
-def _sage_kernel_runs(target: Any, logger: Any = None, head_dims: Any = None) -> Optional[bool]:
+def _sage_kernel_runs(
+    target: Any,
+    logger: Any = None,
+    head_dims: Any = None,
+) -> Optional[bool]:
     """True when ``sageattn`` passed its self-check on this card at every head dim it would serve.
 
     False when the kernel raised, failed the self-check, or the package cannot be imported (not cached: an install
@@ -419,7 +427,11 @@ def _sage_reroute_reason(query: Any, key: Any, value: Any, attn_mask: Any) -> Op
         return "attn_mask"
     if not all(isinstance(t, torch.Tensor) for t in (query, key, value)):
         return "inputs"
-    if query.dtype not in (torch.float16, torch.bfloat16) or key.dtype != query.dtype or value.dtype != query.dtype:
+    if (
+        query.dtype not in (torch.float16, torch.bfloat16)
+        or key.dtype != query.dtype
+        or value.dtype != query.dtype
+    ):
         return "dtype"
     if query.dim() != 4 or key.dim() != 4 or value.dim() != 4:
         return "rank"
@@ -438,7 +450,6 @@ def _note_sage_reroute(reason: str) -> None:
     count would be a traced side effect, and the routing itself is already decided by the specialised graph."""
     try:
         import torch
-
         if torch.compiler.is_compiling():
             return
     except Exception:  # noqa: BLE001
@@ -447,7 +458,6 @@ def _note_sage_reroute(reason: str) -> None:
     if reason not in _SAGE_ROUTED_LOGGED:
         _SAGE_ROUTED_LOGGED.add(reason)
         import logging
-
         logging.getLogger(__name__).warning(
             "diffusion.attention: SageAttention cannot take this attention call (%s); running it on the default "
             "backend instead",
@@ -565,7 +575,11 @@ def _install_sage_dispatch_guard() -> bool:
     return True
 
 
-def _sage_usable(pipe: Any, target: Any, logger: Any = None) -> bool:
+def _sage_usable(
+    pipe: Any,
+    target: Any,
+    logger: Any = None,
+) -> bool:
     """Whether an explicit ``sage`` request may engage: never on a float32 pipeline, never on a card whose kernel failed
     its self-check at the DiT's head dims, and only with the per-call guard in place. Each refusal is logged."""
     if target is not None and _runs_in_float32(target):
