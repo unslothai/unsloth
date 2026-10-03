@@ -95,7 +95,9 @@ def _script(prompt: str) -> str:
             + "data: [DONE]\n\n"
         )
     if "TIMED" in prompt:
-        return _chunk({"content": "The moon."}) + _chunk({}, "stop", _FLM_USAGE) + "data: [DONE]\n\n"
+        return (
+            _chunk({"content": "The moon."}) + _chunk({}, "stop", _FLM_USAGE) + "data: [DONE]\n\n"
+        )
     if "THINK" in prompt:
         return (
             _chunk({"reasoning_content": "Let me add."})
