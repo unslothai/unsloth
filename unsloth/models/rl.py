@@ -3593,23 +3593,18 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
 
 
 # TRL 1.10+ rejects the list train_dataset the vision notebooks pass; Dataset.from_list is no fix (re-encodes images).
-# GRPO / RLOO only stream datasets' IterableDataset, so torch datasets (possibly iterable) stay rejected there.
-_LIST_TRAIN_DATASET_TYPES = {
-    "sft_trainer": "list, tuple, torch.utils.data.Dataset",
-    "grpo_trainer": "list, tuple",
-    "rloo_trainer": "list, tuple",
-}
+# Only list / tuple: a torch IterableDataset would skip TRL's streaming handling (dispatch_batches, RepeatSampler).
+_LIST_TRAIN_DATASET_TRAINERS = frozenset(("sft_trainer", "grpo_trainer", "rloo_trainer"))
 _TRL_TRAIN_DATASET_TYPE_CHECK = re.compile(
     r"(elif\s+not\s+isinstance\(\s*train_dataset\s*,\s*)\(?\s*(Dataset(?:\s*,\s*IterableDataset)?)\s*\)?(\s*\)\s*:)"
 )
 
 
 def _allow_list_train_dataset(function, source, trainer_file):
-    extra_types = _LIST_TRAIN_DATASET_TYPES.get(trainer_file)
-    if extra_types is None:
+    if trainer_file not in _LIST_TRAIN_DATASET_TRAINERS:
         return source
     if function == "__init__":
-        return _TRL_TRAIN_DATASET_TYPE_CHECK.sub(rf"\1(\2, {extra_types})\3", source)
+        return _TRL_TRAIN_DATASET_TYPE_CHECK.sub(r"\1(\2, list, tuple)\3", source)
     if function == "_reject_skip_prepare_without_labels":
         return source.replace(
             "cols = get_dataset_column_names(dataset)",

@@ -36,7 +36,7 @@ def _lift(path, names, namespace):
 
 _rl = _lift(
     MODELS / "rl.py",
-    ("_LIST_TRAIN_DATASET_TYPES", "_TRL_TRAIN_DATASET_TYPE_CHECK", "_allow_list_train_dataset"),
+    ("_LIST_TRAIN_DATASET_TRAINERS", "_TRL_TRAIN_DATASET_TYPE_CHECK", "_allow_list_train_dataset"),
     {"re": re},
 )
 allow_list = _rl["_allow_list_train_dataset"]
@@ -100,23 +100,19 @@ BAD = ({"train": []}, "text", 3)  # a DatasetDict is a dict
 
 
 @pytest.mark.parametrize(
-    "trainer_file, init, accepted, rejected",
-    [
-        ("sft_trainer", SFT_INIT, (*LIST_ROWS, TorchDataset(), TorchStream()), BAD),
-        ("grpo_trainer", GRPO_INIT, LIST_ROWS, (*BAD, TorchDataset(), TorchStream())),
-        ("rloo_trainer", GRPO_INIT, LIST_ROWS, (*BAD, TorchDataset(), TorchStream())),
-    ],
+    "trainer_file, init",
+    [("sft_trainer", SFT_INIT), ("grpo_trainer", GRPO_INIT), ("rloo_trainer", GRPO_INIT)],
     ids = ["sft", "grpo", "rloo"],
 )
-def test_list_like_datasets_are_accepted(trainer_file, init, accepted, rejected):
+def test_list_like_datasets_are_accepted(trainer_file, init):
     with pytest.raises(TypeError):
         _build(init)(None, LIST_ROWS[0])
     patched = allow_list("__init__", init, trainer_file)
     assert allow_list("__init__", patched, trainer_file) == patched
     fn = _build(patched)
-    for good in (*accepted, Dataset(), IterableDataset()):
+    for good in (*LIST_ROWS, Dataset(), IterableDataset()):
         assert fn(None, good) == "ok"
-    for bad in rejected:
+    for bad in (*BAD, TorchDataset(), TorchStream()):
         with pytest.raises(TypeError, match = "must be a `Dataset`"):
             fn(None, bad)
 
@@ -181,7 +177,7 @@ def test_matches_installed_trl():
         text = Path(spec.origin).read_text(encoding = "utf-8")
         if "must be a `Dataset` or `IterableDataset`" not in text:
             continue
-        widened = f"{_rl['_LIST_TRAIN_DATASET_TYPES'][trainer_file]})"
+        widened = "list, tuple)"
         assert widened in allow_list("__init__", text, trainer_file), name
         checked += 1
         # tests/conftest.py imports unsloth, which swaps in the compiled trainers.
