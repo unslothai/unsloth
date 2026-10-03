@@ -11924,11 +11924,9 @@ def _estimate_context_floor(
     gpu_layers: Optional[int],
     breakdown: Any,
 ) -> Optional[_EstimateContextFloor]:
-    """Return the loader's Auto context floor, or None for a pinned context.
+    """The loader's Auto context floor, or None for a pinned context.
 
-    Auto placement uses its platform floor, the layer floor even in tensor mode, since
-    the launch can fall back to a layer split. Manual Auto layers use --fit-ctx.
-    Fixed GPU layers can still allow context reduction (common/fit.cpp).
+    Manual with Auto layers floors at --fit-ctx; fixed layers can still shrink context (common/fit.cpp).
     """
     from core.inference.llama_cpp import (
         _FIT_FLOOR_MIN_CTX,
@@ -19688,12 +19686,7 @@ async def estimate_memory(
         # Price the files on this disk, not the repository they came from.
         config = _localized_estimate_config(config, gguf_path)
 
-        # A pin names cards for a launch that puts something on them. At an effective
-        # layer count of zero the launch is CPU-only and the loader drops the split flags,
-        # so charging the pinned count added per-device pipeline overhead and replicated
-        # the context-linear compute term for buffers no card allocates: on a two-card pin,
-        # 1039 -> 2105 MiB at 4k and 1417 -> 5129 MiB at 262k. Asked of the same function
-        # the panel prices placement with, so the two cannot disagree.
+        # A CPU-only launch drops the split flags, so a pin charges no per-device buffers.
         pinned_gpu_ids = (
             None
             if _gguf_offloaded_layer_fraction(
@@ -19706,10 +19699,7 @@ async def estimate_memory(
             == 0.0
             else request.selected_gpu_ids or None
         )
-        # Same resolution the breakdown prices with: an extras --split-mode decides the
-        # mode, not the toggle alone, and one card cannot split. Manual mode also drops
-        # tensor for a fixed layer count, where a tensor count would size per-device
-        # buffers for a CPU layer split.
+        # Resolved as the breakdown does: extras --split-mode wins, Manual fixed layers drop tensor.
         tensor_split = (
             _effective_tensor_parallel(request.llama_extra_args, bool(request.tensor_parallel))
             and _tensor_split_possible(request.selected_gpu_ids or None)
@@ -19719,16 +19709,10 @@ async def estimate_memory(
                 request.llama_extra_args,
             )
         )
-        # A layer split across pinned cards replicates the context-linear compute term and
-        # adds per-device pipeline overhead, so the count matters there too, not just in
-        # tensor mode. Automatic placement stays at one: _guard_device_count makes the same
-        # call. Tensor mode replicates its buffers over the whole pool, and on a Vulkan
-        # build _effective_gpu_count sees none of it. The probed inventory is the pool;
-        # None falls through to the CUDA count.
+        # The probed inventory is the pool: a Vulkan build's _effective_gpu_count sees none of it.
         device_count = _guard_device_count(
             pinned_gpu_ids, _cached_inference_devices(), tensor_parallel = tensor_split
         )
-        # Price both contexts with the same load settings.
         price = functools.partial(
             _gguf_memory_breakdown,
             config,
@@ -19756,7 +19740,6 @@ async def estimate_memory(
         breakdown = price(n_ctx = request.n_ctx or 0)
         if breakdown is None:
             return EstimateMemoryResponse(available = False, reason = "unsizable")
-        # Price the loader's context floor for the Auto verdict.
         context_floor = _estimate_context_floor(
             request.n_ctx,
             request.llama_extra_args,
@@ -19767,15 +19750,13 @@ async def estimate_memory(
         floor = None
         if context_floor is not None and breakdown.n_ctx > context_floor.ctx:
             floor = price(n_ctx = context_floor.ctx)
-            # A tensor launch can fall back to a layer split at the same context, and that
-            # replicates compute buffers per device where tensor mode does not, so the
-            # floor holds whichever placement needs more. The fallback keeps every card
-            # the tensor launch had (preserve_multi_gpu_on_layer), so it keeps the count.
+            # A tensor launch can fall back to a layer split on the same cards
+            # (preserve_multi_gpu_on_layer), which replicates compute buffers: take the larger.
             if floor is not None and tensor_split:
                 layer = price(
                     n_ctx = context_floor.ctx,
                     tensor_parallel = False,
-                    # The same extras the real fallback relaunches with (tensor_fallback.py).
+                    # As tensor_fallback.py relaunches.
                     llama_extra_args = [
                         *(strip_split_mode_only(request.llama_extra_args) or []),
                         "--split-mode",
