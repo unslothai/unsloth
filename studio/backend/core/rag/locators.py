@@ -88,8 +88,10 @@ def _locate(page_words: list, needle: list[str]) -> list[int] | None:
     return ambiguous_first
 
 
-def _rects_from_words(page_words: list, indices: list[int], pw: float, ph: float):
-    """Union matched words per (block, line) into normalized page rectangles."""
+def _rects_from_words(page_words: list, indices: list[int], pw: float, ph: float, rotation_matrix):
+    """Union matched words per line into normalized, displayed-page rectangles."""
+    import pymupdf
+
     lines: dict[tuple, list[float]] = {}
     for j in indices:
         w = page_words[j]
@@ -103,7 +105,10 @@ def _rects_from_words(page_words: list, indices: list[int], pw: float, ph: float
             box[2], box[3] = max(box[2], x1), max(box[3], y1)
 
     out: list[dict[str, Any]] = []
-    for x0, y0, x1, y1 in lines.values():
+    for box in lines.values():
+        # Text extraction uses unrotated coordinates; the preview and page.rect
+        # follow the PDF's rotation. Transform each line before normalizing.
+        x0, y0, x1, y1 = pymupdf.Rect(box) * rotation_matrix
         w = x1 - x0
         h = y1 - y0
         if w <= 0 or h <= 0:
@@ -137,7 +142,7 @@ def _regions_for_match(doc: Any, page_text: str, match: LocatorMatch) -> list[di
         ph = float(page.rect.height)
         if pw <= 0 or ph <= 0:
             return []
-        rects = _rects_from_words(page_words, indices, pw, ph)
+        rects = _rects_from_words(page_words, indices, pw, ph, page.rotation_matrix)
         for r in rects:
             r["pageIndex"] = match.page_index
             r["pageNumber"] = match.page_number
