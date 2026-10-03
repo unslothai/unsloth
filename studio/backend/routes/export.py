@@ -49,6 +49,7 @@ from models import (
     ExportBaseModelRequest,
     ExportGGUFRequest,
     ExportLoRAAdapterRequest,
+    LlmCompressorExportProbeResponse,
 )
 
 router = APIRouter()
@@ -382,6 +383,7 @@ async def export_merged_model(
             ),
             private = request.private,
             compressed_method = request.compressed_method,
+            install_missing_dependencies = request.install_missing_dependencies,
         )
 
         if not success:
@@ -404,6 +406,15 @@ async def export_merged_model(
             status_code = 500,
             detail = "Failed to export merged model",
         )
+
+
+@router.get("/llm-compressor-probe", response_model = LlmCompressorExportProbeResponse)
+async def probe_llm_compressor_export(current_subject: str = Depends(get_current_subject)):
+    del current_subject
+    from utils.llm_compressor_export import probe_llm_compressor_for_compressed_export
+    return LlmCompressorExportProbeResponse(
+        **probe_llm_compressor_for_compressed_export(),
+    )
 
 
 @router.post("/export/base", response_model = ExportOperationResponse)

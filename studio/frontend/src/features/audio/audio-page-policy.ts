@@ -655,3 +655,27 @@ export function micStreamRequestIsCurrent(
 ): boolean {
   return active && requestGeneration === currentGeneration;
 }
+
+/**
+ * The line said above Generate when the run will load or switch the model first, so the wait is
+ * expected: "Loads Kokoro for Speak, about 5 s". Null when nothing will load.
+ */
+export function modelLoadNote({
+  model,
+  page,
+  seconds,
+}: {
+  model: string | null;
+  page: string;
+  seconds?: number | null;
+}): string | null {
+  if (!model) return null;
+  const about =
+    seconds !== null &&
+    seconds !== undefined &&
+    Number.isFinite(seconds) &&
+    seconds > 0
+      ? `, about ${Math.max(1, Math.round(seconds))} s`
+      : "";
+  return `Loads ${model} for ${page}${about}`;
+}

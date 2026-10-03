@@ -265,7 +265,11 @@ def test_model_config_page_floors_the_context_ceiling():
     rounded up (rounding up can offer/persist a length above the model's real
     ceiling and break loading)."""
     src = _read("features/model-picker/components/model-config-page.tsx")
-    assert "floorMaxSeqLength(modelMaxPosition.maxPositionEmbeddings)" in src
+    assert re.search(
+        r"floorMaxSeqLength\(\s*targetIsNpu\s*\? target\.meta\.contextLength\s*"
+        r": modelMaxPosition\.maxPositionEmbeddings,\s*\)",
+        src,
+    )
     assert "normalizeMaxSeqLength(modelMaxPosition.maxPositionEmbeddings)" not in src
 
 
@@ -1157,9 +1161,10 @@ def test_reset_persists_null_max_length_and_substitutes_only_for_load():
     # Load-only substitution of the resolved value (recomputed from any committed
     # same-click Max Seq Length draft, so it is never dropped).
     assert "maxSeqLength: effectiveMaxSeqLengthValue" in src
-    # MLX pins via customContextLength, so substituting the shown default would turn
-    # "Auto" into a request for that number.
-    assert "      : targetIsMlx\n        ? effectiveRuntimeConfig" in src
+    # MLX and NPU pin via customContextLength, so substituting the shown default would
+    # turn "Auto" into a request for that number.
+    assert "const pinsContextLength = targetIsMlx || targetIsNpu;" in src
+    assert "target.isGguf || pinsContextLength\n        ? effectiveRuntimeConfig" in src
     assert "const effectiveLoadConfig" in src
     # The persisted record is saved from effectiveRuntimeConfig; the load request
     # carries effectiveLoadConfig (with any committed context input).
@@ -1228,7 +1233,8 @@ def test_same_click_commit_covers_all_numeric_inputs():
     assert "maxSeqLength: effectiveMaxSeqLengthValue" in page
     # The committed draft lands in this target's pin field.
     assert (
-        "Object.assign(pendingPatch, contextPinPatch(committedMaxSeqLength, targetIsMlx));" in page
+        "Object.assign(pendingPatch, contextPinPatch(committedMaxSeqLength, pinsContextLength));"
+        in page
     )
 
 
@@ -1328,7 +1334,10 @@ def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
     assert 'const label = isMlx ? "Context Length" : "Max Seq Length";' in page
     # A number, not a word: the placeholder is only for a window nobody has read.
     assert 'displayValue={isMlx && windowUnknown ? "—" : undefined}' in page
-    assert "savedContextPin(config) == null && mlxServedWindow == null\n" in page
+    assert (
+        "savedContextPin(config) == null &&\n                mlxServedWindow == null &&\n"
+        "                npuServedWindow == null\n" in page
+    )
     assert "const mlxServedWindow = resolveMlxServedWindow(" in page
     assert "targetIsMlx && isActiveModel ? servedWindow(loadedContextLength) : null,\n" in page
     assert "? servedWindow(modelMaxPosition.maxPositionEmbeddings)" in page
@@ -1354,14 +1363,14 @@ def test_an_mlx_target_is_offered_a_context_length_not_a_sequence_length():
     assert "final !== value || displayValue != null || derived;" in numeric
     assert "if (isEdit(final)) {\n      onChange(final);\n    }\n    return final;" in numeric
     assert "lastBlurCommittedRef.current = isEdit(final) ? final : null;" in numeric
-    assert "update(contextPinPatch(value, targetIsMlx))" in page
+    assert "update(contextPinPatch(value, pinsContextLength))" in page
     # The platform answers which backend serves: "anything not GGUF" relabels CUDA.
     assert (
         "isServedByMlx(\n    target.isGguf,\n    platform.deviceType,\n    platform.chatOnlyReason,\n  )"
         in page
     )
     # Both props are optional, so dropping either typechecks and mislabels the control.
-    assert "isMlx={targetIsMlx}" in page
+    assert "isMlx={pinsContextLength}" in page
     assert "windowUnknown={" in page
 
 

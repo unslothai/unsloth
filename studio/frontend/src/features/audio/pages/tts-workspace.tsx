@@ -151,30 +151,6 @@ export function TtsRailFields({
     : allAudioOptionSpecs;
   return (
     <>
-      {inputs ?? (
-        <Field
-          label={musicGeneration ? "Lyrics" : "Text"}
-          htmlFor="audio-prompt"
-          hint={
-            musicGeneration
-              ? "Lyrics may use sections such as [verse] and [chorus]. The completed song lands in the gallery."
-              : "What the model should say. Generation runs on the loaded TTS model and lands in the gallery."
-          }
-        >
-          <Textarea
-            id="audio-prompt"
-            value={prompt}
-            onChange={(event) => setPrompt(event.target.value)}
-            placeholder={
-              musicGeneration
-                ? "[verse]\nMorning light through the pines…\n\n[chorus]\n…"
-                : "Type the sentence to speak…"
-            }
-            className="min-h-28"
-          />
-        </Field>
-      )}
-      {toolPanels}
       {/* Field inlined: its label needs a form control to point
           at, and PillTabs is a tablist with its own name. */}
       <div className="grid gap-1.5">
@@ -214,6 +190,30 @@ export function TtsRailFields({
             : "New loads use the GPU when there is one, and the CPU otherwise."}
         </p>
       </div>
+      {inputs ?? (
+        <Field
+          label={musicGeneration ? "Lyrics" : "Text"}
+          htmlFor="audio-prompt"
+          hint={
+            musicGeneration
+              ? "Lyrics may use sections such as [verse] and [chorus]. The completed song lands in the gallery."
+              : "What the model should say. Generation runs on the loaded TTS model and lands in the gallery."
+          }
+        >
+          <Textarea
+            id="audio-prompt"
+            value={prompt}
+            onChange={(event) => setPrompt(event.target.value)}
+            placeholder={
+              musicGeneration
+                ? "[verse]\nMorning light through the pines…\n\n[chorus]\n…"
+                : "Type the sentence to speak…"
+            }
+            className="min-h-28"
+          />
+        </Field>
+      )}
+      {toolPanels}
       {musicGeneration || samplingControls || audioOptionSpecs.length > 0 ? (
         <AdvancedDisclosure
           open={advancedOpen}
@@ -651,7 +651,7 @@ export function TtsOutput({
                   />
                   <span className="min-w-0 flex-1 truncate">{clip.prompt}</span>
                   <ClipBadge text={clipBadge?.(clip)} />
-                  <span className="hidden shrink-0 truncate text-ui-11p5 text-muted-foreground @[30rem]:inline">
+                  <span className="hidden min-w-0 max-w-[45%] shrink truncate text-ui-11p5 text-muted-foreground @[30rem]:block">
                     {audioModelLabel(clip.model)} ·{" "}
                     {formatRelativeShort(clip.created_at)}
                   </span>

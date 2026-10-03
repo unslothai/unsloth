@@ -169,3 +169,11 @@ test("an undefined rowFilter leaves the picker rows untouched", () => {
   );
   assert.match(selector, /rowFilter=\{rowFilter\}/);
 });
+
+test("typed Hub search results are scoped to the page too", () => {
+  const pickers = readSrc("features/model-picker/components/model-selector/pickers.tsx");
+  const body = pickers.slice(pickers.indexOf("const searchIdsFrom = useCallback("));
+  const block = body.slice(0, body.indexOf("\n    ],") + 1);
+  assert.match(block, /\.filter\(\(r\) => !rowFilter \|\| rowFilter\(\{ id: r\.id, task: r\.pipelineTag \}\)\)/);
+  assert.match(block, /\n\s+rowFilter,\n/);
+});
