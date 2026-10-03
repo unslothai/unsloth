@@ -158,7 +158,7 @@ def test_an_old_record_reads_exactly_as_before():
     }
     (gallery.gallery_dir() / f"{record['id']}.json").write_text(json.dumps(record))
     assert gallery.get(record["id"]) == record
-    assert gallery.get_full(record["id"]) == record
+    assert gallery.get(record["id"]) == record
     (row,) = gallery.list_transcripts()["transcripts"]
     assert row == {**record, "segment_count": 0, "has_words": False}
 
@@ -167,7 +167,7 @@ def test_details_round_trip_and_the_list_carries_counts_only():
     record = save_details()
     for key, value in DETAILS.items():
         assert record[key] == value
-    assert gallery.get_full(record["id"]) == record
+    assert gallery.get(record["id"]) == record
     (row,) = gallery.list_transcripts()["transcripts"]
     assert "segments" not in row and "words" not in row
     assert row["segment_count"] == 2 and row["has_words"] is True
@@ -235,8 +235,8 @@ def test_speaker_names_are_validated_cleared_and_written_atomically(monkeypatch)
 def test_unknown_and_unsafe_ids_have_no_speakers_to_name(tmp_path):
     assert gallery.set_speaker_names("../private", {"S01": "x"}) is None
     assert gallery.set_speaker_names("e" * 32, {"S01": "x"}) is None
-    assert gallery.get_full("../private") is None
+    assert gallery.get("../private") is None
     foreign = gallery.gallery_dir() / ("f" * 32 + ".json")
     foreign.write_text(json.dumps({"text": "foreign"}))
-    assert gallery.get_full("f" * 32) is None
+    assert gallery.get("f" * 32) is None
     assert gallery.set_speaker_names("f" * 32, {"S01": "x"}) is None

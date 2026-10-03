@@ -83,9 +83,13 @@ class _Sidecar:
         self.result = result
         self.paths: list[dict] = []
         self.bytes: list[bytes] = []
+        self.events: list[tuple] = []
 
     def needs_reload_for(self, model, timestamps):
         return True
+
+    def ensure_aligner(self, model, on_phase):
+        self.events.append(("aligner", model))
 
     def transcribe_path(self, path, model, language, *, timestamps, cancel_event, on_phase):
         on_phase("transcribing")
@@ -144,8 +148,10 @@ def stub(monkeypatch):
         engine,
         cancel_event = None,
         device = None,
+        timestamps = False,
     ):
         loads.append((model, engine, device))
+        sidecar.events.append(("load", timestamps))
 
     monkeypatch.setattr(inference, "_stt_lifecycle", lambda: (load, lambda *a, **k: []))
     monkeypatch.setattr(inference, "_stt_sidecar_for", lambda engine: sidecar)
@@ -303,6 +309,8 @@ def test_qwen3_timestamps_are_asked_of_the_sidecar(stub):
             _post(client, model = QWEN3, source = {"input_id": input_id}, timestamps = True)
         )[-1]
     assert stub.paths[0]["timestamps"] is True
+    # The aligner is fetched first and the server starts with it: one load, not two.
+    assert stub.events == [("aligner", QWEN3), ("load", True)]
     assert complete["timestamps"] is False and "segments" not in complete
 
 

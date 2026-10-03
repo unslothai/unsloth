@@ -63,7 +63,7 @@ def test_phases_pass_through_and_details_are_saved(monkeypatch, tmp_path):
     assert phases == ["loading", "transcribing"]
     complete = events[-1]
     assert complete["type"] == "complete" and complete["segments"] == segments
-    saved = transcript_gallery.get_full(complete["record"]["id"])
+    saved = transcript_gallery.get(complete["record"]["id"])
     assert saved["segments"] == segments and saved["source"]["kind"] == "clip"
     assert saved["speakers"] == [{"id": "S01", "label": "Speaker 1"}]
     assert saved["timestamps"] is True

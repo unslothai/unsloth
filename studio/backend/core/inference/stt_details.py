@@ -17,7 +17,7 @@ import re
 from typing import Any, Optional
 
 # VibeVoice-ASR counts its spans at 24 kHz whatever rate it was fed (and reports the input's rate).
-_FIXED_SPAN_RATES = {"vibevoice_asr": 24000, "vibevoice_asr_streaming": 24000}
+FIXED_SPAN_RATES = {"vibevoice_asr": 24000, "vibevoice_asr_streaming": 24000}
 # MOSS-Transcribe-Diarize embeds "[0.12][S01]" markers in its text; its segments carry the prose.
 _MARKED_TEXT_FAMILIES = frozenset({"moss_transcribe_diarize"})
 _MARKER_RE = re.compile(r"\[\d+(?:\.\d+)?\]|\[S\d+\]")
@@ -219,7 +219,7 @@ def normalize(payload: dict, family: str, sent_rate: int) -> dict:
     ``0``) in the order they first speak. Keys are present only when the model produced them.
     """
     payload = payload if isinstance(payload, dict) else {}
-    rate = _FIXED_SPAN_RATES.get(family)
+    rate = FIXED_SPAN_RATES.get(family)
     if rate is None:
         reported = payload.get("sample_rate")
         rate = (

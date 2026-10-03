@@ -193,11 +193,6 @@ def get(transcript_id: str) -> dict | None:
     return record
 
 
-def get_full(transcript_id: str) -> dict | None:
-    """The whole record, segments and words included; None for an unknown or unsafe id."""
-    return get(transcript_id)
-
-
 def list_transcripts(
     limit: int = 50,
     before: str | None = None,

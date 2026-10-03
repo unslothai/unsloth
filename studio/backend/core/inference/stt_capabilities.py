@@ -58,16 +58,13 @@ def _is_mtmd(model: str) -> bool:
 
 def _engine_for(model: str, engine: Optional[str]) -> Optional[str]:
     """The engine that would serve ``model``: the one asked for, else the one its id requires."""
+    # The llama.cpp Qwen3-ASR repos are not audio.cpp models, whatever engine was named.
+    if model and _is_mtmd(model):
+        return "mtmd"
     if engine is not None and str(engine).strip():
-        normalized = _ENGINE_ALIASES.get(str(engine).strip().lower())
-        if normalized is None:
-            return None
-        # The llama.cpp Qwen3-ASR repos are not audio.cpp models, whatever engine was named.
-        return "mtmd" if model and _is_mtmd(model) else normalized
+        return _ENGINE_ALIASES.get(str(engine).strip().lower())
     if not model:
         return "transformers"
-    if _is_mtmd(model):
-        return "mtmd"
     from core.inference.audio_cpp_models import looks_like_audio_cpp, resolve
 
     if looks_like_audio_cpp(model):
@@ -158,10 +155,5 @@ def capabilities_for(model: Optional[str], engine: Optional[str]) -> dict:
             result["aligner"] = _aligner_state()
     except Exception as exc:  # noqa: BLE001 - a capability probe never fails the page
         logger.info("STT capabilities for %r unavailable (%s)", model, type(exc).__name__)
-        return {
-            **result,
-            "timestamps": "unsupported",
-            "speakers": False,
-            "aligner": None,
-        }
+        result.update(timestamps = "unsupported", speakers = False, aligner = None)
     return result

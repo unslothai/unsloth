@@ -149,16 +149,6 @@ def _notify(on_phase: Optional[Callable[[str], None]], phase: str) -> None:
         logger.debug("audio.cpp: phase callback failed", exc_info = True)
 
 
-def _with_details(result: dict, details: dict) -> dict:
-    """``result`` plus the segments, words and raw speaker ids ``stt_details`` found, if any."""
-    for key in ("segments", "words"):
-        if details.get(key):
-            result[key] = details[key]
-    if details.get("speaker_ids"):
-        result["speakers"] = list(details["speaker_ids"])
-    return result
-
-
 # Rows the dictation picker recommends, in order; any other audio.cpp ASR GGUF works too.
 AUDIO_CPP_STT_MODELS: tuple[str, ...] = RECOMMENDED_STT_MODELS
 
@@ -905,16 +895,11 @@ class AudioCppSttSidecar:
         fast: bool = False,
         cancel_event: Optional[threading.Event] = None,
     ) -> dict:
-        """Transcribe encoded audio bytes via audiocpp_server.
-
-        Returns {text, language, duration, model}, plus segments, words and speakers when the
-        model produces them (MOSS-Transcribe-Diarize, VibeVoice-ASR)."""
+        """Transcribe encoded audio bytes via audiocpp_server; see ``transcribe_path``."""
         del fast  # audio.cpp ASR families decode greedily; there is no beam knob to trade.
         self._raise_if_update_in_progress()
         ensure_engine_available()
-        target = self.keep_loaded_variant(model)
-        entry = resolve_audio_cpp_stt_model(target)
-        lang = normalize_whisper_language(language)
+        entry = resolve_audio_cpp_stt_model(self.keep_loaded_variant(model))
         if cancel_event is not None and cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
         # A missing model fails before decoding so a long clip does not burn CPU only to 409. The
@@ -924,34 +909,19 @@ class AudioCppSttSidecar:
         decoded_audio = _decode_audio_bounded(audio, cancel_event)
         if cancel_event is not None and cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
-        wav_bytes = _pcm_to_wav_bytes(decoded_audio)
-        with _temp_wav(wav_bytes) as path, self._lock:
-            try:
-                # The caller's own name, so a legacy key stays the name status reports.
-                if cancel_event is None:
-                    self.load(target)
-                else:
-                    self.load(target, request_cancel_event = cancel_event)
-                payload = self._post_details(path, lang, cancel_event, {})
-                if cancel_event is not None and cancel_event.is_set():
-                    raise SttTranscriptionCancelledError("Transcription cancelled.")
-            except Exception:
-                if cancel_event is not None and cancel_event.is_set():
-                    raise SttTranscriptionCancelledError("Transcription cancelled.")
-                raise
-            finally:
-                self._schedule_idle_unload_locked()
-        details = stt_details.normalize(payload, entry.family, _TARGET_SAMPLE_RATE)
-        duration = (len(decoded_audio) / _TARGET_SAMPLE_RATE) if len(decoded_audio) else None
-        return _with_details(
-            {
-                "text": details["text"],
-                "language": lang,
-                "duration": duration,
-                "model": _reported_name(model, entry),
-            },
-            details,
-        )
+        with _temp_wav(_pcm_to_wav_bytes(decoded_audio)) as path:
+            return self.transcribe_path(path, model, language, cancel_event = cancel_event)
+
+    def ensure_aligner(
+        self,
+        model: Optional[str],
+        on_phase: Optional[Callable[[str], None]] = None,
+    ) -> None:
+        """Download ``model``'s timestamp aligner if it has one and it is missing. Called before
+        the load, so a first 1.1 GB download holds neither the load lock nor dictation."""
+        entry = resolve_audio_cpp_stt_model(self.keep_loaded_variant(model))
+        if entry.family in _ALIGNED_FAMILIES:
+            self._ensure_aligner_downloaded(entry, on_phase)
 
     def transcribe_path(
         self,
@@ -963,33 +933,26 @@ class AudioCppSttSidecar:
         cancel_event: Optional[threading.Event] = None,
         on_phase: Optional[Callable[[str], None]] = None,
     ) -> dict:
-        """Transcribe a server-local WAV (a prepared Audio page source) without copying it.
+        """Transcribe a server-local 16/24 kHz mono WAV in place.
 
-        ``timestamps`` asks Qwen3-ASR for word timestamps, loading its aligner (downloaded on first
-        use); MOSS-Transcribe-Diarize and VibeVoice-ASR always return segments and speakers.
-        Returns {text, language, duration, model, segments?, words?, speakers?}, where speakers
-        are the runtime's ids in the order they first speak. ``on_phase`` hears "loading",
-        "downloading_aligner" and "transcribing".
+        ``timestamps`` asks Qwen3-ASR for word timestamps through its aligner; other families
+        return whatever spans they always produce. Returns {text, language, duration, model,
+        segments?, words?, speakers?}; speakers are the runtime's ids in first-spoken order.
         """
         self._raise_if_update_in_progress()
         ensure_engine_available()
         target = self.keep_loaded_variant(model)
         entry = resolve_audio_cpp_stt_model(target)
         lang = normalize_whisper_language(language)
-        if cancel_event is not None and cancel_event.is_set():
-            raise SttTranscriptionCancelledError("Transcription cancelled.")
         if not audio_cpp_files.is_downloaded(entry):
             self._ensure_model_downloaded(entry)
-        path = Path(path)
-        rate, duration = _wav_rate_and_duration(path)
+        rate, duration = _wav_rate_and_duration(Path(path))
         aligned = bool(timestamps) and entry.family in _ALIGNED_FAMILIES
-        if aligned:
-            # Before the lock: a first download is long, and dictation should not queue behind it.
-            self._ensure_aligner_downloaded(entry, on_phase)
         if cancel_event is not None and cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
         with self._lock:
             try:
+                # The caller's own name, so a legacy key stays the name status reports.
                 self.load(
                     target,
                     request_cancel_event = cancel_event,
@@ -1009,15 +972,18 @@ class AudioCppSttSidecar:
             finally:
                 self._schedule_idle_unload_locked()
         details = stt_details.normalize(payload, entry.family, rate)
-        return _with_details(
-            {
-                "text": details["text"],
-                "language": lang or details["language"],
-                "duration": duration,
-                "model": _reported_name(model, entry),
-            },
-            details,
-        )
+        result = {
+            "text": details["text"],
+            "language": lang or details["language"],
+            "duration": duration,
+            "model": _reported_name(model, entry),
+        }
+        for key in ("segments", "words"):
+            if details.get(key):
+                result[key] = details[key]
+        if details.get("speaker_ids"):
+            result["speakers"] = list(details["speaker_ids"])
+        return result
 
     def cancel_transcription(self, cancel_event: threading.Event) -> bool:
         already_cancelled = cancel_event.is_set()

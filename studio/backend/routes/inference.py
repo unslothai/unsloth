@@ -23062,12 +23062,19 @@ async def _transcribe_audio_result(
             if on_progress is not None and source_path is not None
             else None
         )
+        load_options = {}
+        if source_path is not None and timestamps:
+            await asyncio.to_thread(sidecar.ensure_aligner, model, on_phase)
+            # Started with its aligner now, or transcribe_path would restart it.
+            load_options["timestamps"] = True
         if on_phase is not None and await asyncio.to_thread(
             sidecar.needs_reload_for, model, timestamps
         ):
             on_phase("loading")
         await asyncio.to_thread(
-            functools.partial(load_stt, model, serving_engine, cancel_event, device = device)
+            functools.partial(
+                load_stt, model, serving_engine, cancel_event, device = device, **load_options
+            )
         )
         loaded = getattr(sidecar, "loaded_model", None)
         if loaded is not None and loaded == _stt_resolved_model_id(model, serving_engine):
@@ -23229,8 +23236,6 @@ async def transcribe_audio_raw(
     )
 
 
-# Families fed 24 kHz: VibeVoice counts its spans at 24 kHz whatever it is given.
-_TRANSCRIBE_24K_FAMILIES = frozenset({"vibevoice_asr", "vibevoice_asr_streaming"})
 _NO_TIMESTAMPS_DETAIL = (
     "This model cannot add timestamps. Pick Qwen3-ASR (audio.cpp), Parakeet-TDT, "
     "MOSS-Transcribe-Diarize or VibeVoice-ASR."
@@ -23274,7 +23279,7 @@ async def transcribe_audio_source(
     The id is resolved in the caller's account to a prepared mono WAV (24 kHz for VibeVoice, else
     16 kHz). audio.cpp reads that file in place and can add timestamps and speakers; any other
     engine gets its bytes, as /audio/transcribe/raw does."""
-    from core.inference import audio_inputs, stt_capabilities
+    from core.inference import audio_inputs, stt_capabilities, stt_details
     from core.inference.transcript_stream import stream_transcript
 
     engine = body.engine or await asyncio.to_thread(_stt_engine_for_model, body.model)
@@ -23284,7 +23289,7 @@ async def transcribe_audio_source(
         raise HTTPException(status_code = 422, detail = _NO_TIMESTAMPS_DETAIL)
     if body.speakers and not caps["speakers"]:
         raise HTTPException(status_code = 422, detail = _NO_SPEAKERS_DETAIL)
-    rate = 24000 if caps["family"] in _TRANSCRIBE_24K_FAMILIES else 16000
+    rate = stt_details.FIXED_SPAN_RATES.get(caps["family"], 16000)
 
     def _prepare():
         source = audio_inputs.resolve_source(body.source.model_dump(exclude_none = True))
@@ -44333,7 +44338,7 @@ async def get_gallery_transcript(
     """One transcript in full: its segments, words and speakers included."""
     from core.inference import transcript_gallery
 
-    record = await asyncio.to_thread(transcript_gallery.get_full, transcript_id)
+    record = await asyncio.to_thread(transcript_gallery.get, transcript_id)
     if record is None:
         raise HTTPException(status_code = 404, detail = "Transcript not found.")
     return record
