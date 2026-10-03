@@ -67,6 +67,29 @@ class _StrictTemplateTokenizer:
         return "RENDERED"
 
 
+class _StrictToolOrderTokenizer:
+    """Rejects tool results unless the preceding message can supply their call."""
+
+    def __init__(self):
+        self.seen_messages = []
+
+    def apply_chat_template(
+        self,
+        messages,
+        *,
+        tokenize = False,
+        add_generation_prompt = True,
+        **kw,
+    ):
+        self.seen_messages.append(messages)
+        for index, message in enumerate(messages):
+            if message.get("role") == "tool":
+                previous = messages[index - 1] if index else {}
+                if previous.get("role") not in ("assistant", "tool"):
+                    raise ValueError("A tool message must follow an assistant or tool message.")
+        return "RENDERED"
+
+
 def test_string_arguments_are_parsed_to_dict():
     out = _normalize_tool_call_arguments(_conv('{"query": "sweden"}'))
     args = out[1]["tool_calls"][0]["function"]["arguments"]
@@ -87,6 +110,31 @@ def test_render_succeeds_on_strict_template_with_string_arguments():
     # Regression: strict template + string args used to raise.
     result = apply_chat_template_for_generation(_StrictTemplateTokenizer(), _conv('{"query": "x"}'))
     assert result == "RENDERED"
+
+
+def test_render_repairs_orphan_tool_result_after_native_template_failure():
+    tok = _StrictToolOrderTokenizer()
+    messages = [
+        {"role": "user", "content": "weather?"},
+        {"role": "tool", "name": "web_search", "content": "21C sunny"},
+    ]
+
+    assert apply_chat_template_for_generation(tok, messages) == "RENDERED"
+    repaired = tok.seen_messages[-1]
+    assert [message["role"] for message in repaired] == ["user", "assistant", "tool"]
+    assert repaired[1]["tool_calls"][0]["id"] == "replayed_tool_1"
+    assert repaired[2]["tool_call_id"] == "replayed_tool_1"
+
+
+def test_render_keeps_valid_tool_result_history_unchanged():
+    tok = _StrictToolOrderTokenizer()
+    messages = [
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "21C sunny"},
+    ]
+
+    assert apply_chat_template_for_generation(tok, messages) == "RENDERED"
+    assert tok.seen_messages == [messages]
 
 
 class _RecordingTokenizer:
