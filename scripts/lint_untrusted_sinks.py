@@ -159,12 +159,16 @@ UNTRUSTED_CALLS = frozenset(
         "requests.patch",
         "requests.request",
         "requests.delete",
+        "requests.head",
+        "requests.options",
         "httpx.get",
         "httpx.post",
         "httpx.put",
         "httpx.patch",
         "httpx.request",
         "httpx.delete",
+        "httpx.head",
+        "httpx.options",
         "httpx.stream",
         "urlopen",
         "urlretrieve",
@@ -403,6 +407,26 @@ MODULE_ISH_NAMES = frozenset(
 # Loaders that take a `trust_remote_code`. A True literal here, or a default of True on a
 # first-party function that forwards into one, is consent the user did not give.
 # Sources whose result is a mapping with attacker-chosen keys.
+# Key prefix for literal file paths in a scope's taint table; never a valid identifier.
+_LITERAL_PATH = "\0path:"
+
+# Variables that make the loader or interpreter run code chosen by their value.
+_EXEC_ENV_KEYS = frozenset(
+    {
+        "LD_PRELOAD",
+        "LD_LIBRARY_PATH",
+        "DYLD_INSERT_LIBRARIES",
+        "DYLD_LIBRARY_PATH",
+        "PATH",
+        "PYTHONPATH",
+        "PYTHONSTARTUP",
+        "PYTHONHOME",
+        "NODE_OPTIONS",
+        "BASH_ENV",
+        "ENV",
+    }
+)
+
 _PATH_WRAPPERS = frozenset(
     {"Path", "pathlib.Path", "PurePath", "pathlib.PurePath", "str", "os.fspath"}
 )
@@ -1929,6 +1953,10 @@ class _TaintPass(ast.NodeVisitor):
 
     def tainted(self, node: ast.AST) -> str | None:
         """Why `node` is tainted, or None. The reason is carried into the finding."""
+        if isinstance(node, ast.Constant):
+            if isinstance(node.value, str):
+                return self.local_reasons.get(_LITERAL_PATH + node.value)
+            return None
         if isinstance(node, ast.Name):
             reason = self.local_reasons.get(node.id)
             if reason:
@@ -2245,7 +2273,18 @@ class _TaintPass(ast.NodeVisitor):
             source is None
             and isinstance(node.func, ast.Attribute)
             and node.func.attr
-            in ("get", "post", "put", "patch", "delete", "request", "send", "stream")
+            in (
+                "get",
+                "post",
+                "put",
+                "patch",
+                "delete",
+                "head",
+                "options",
+                "request",
+                "send",
+                "stream",
+            )
             and self._is_http_client(node.func.value)
         ):
             source = f"session.{node.func.attr}"
@@ -2436,6 +2475,16 @@ class _TaintPass(ast.NodeVisitor):
                 "base64.b64decode",
                 "base64.urlsafe_b64decode",
                 "base64.decodebytes",
+                "base64.standard_b64decode",
+                "base64.b32decode",
+                "base64.b16decode",
+                "base64.a85decode",
+                "base64.b85decode",
+                "binascii.unhexlify",
+                "binascii.a2b_hex",
+                "binascii.a2b_base64",
+                "bytes.fromhex",
+                "bytearray.fromhex",
                 "io.StringIO",
                 "os.path.basename",
                 "os.path.normpath",
@@ -2446,6 +2495,16 @@ class _TaintPass(ast.NodeVisitor):
             },
         ):
             for argument in node.args:
+                reason = self.tainted(argument)
+                if reason:
+                    return reason
+            return None
+        # `shutil.which(name, path = dirs)` resolves whatever program was named, from
+        # wherever the caller pointed it.
+        if _matches_any(names, {"shutil.which"}):
+            for argument in list(node.args) + [
+                k.value for k in node.keywords if k.arg in ("cmd", "path")
+            ]:
                 reason = self.tainted(argument)
                 if reason:
                     return reason
@@ -2689,6 +2748,13 @@ class _TaintPass(ast.NodeVisitor):
             and _matches_any(self.facts.canonicals(_call_name(target.func)), _PATH_WRAPPERS)
         ):
             target = target.args[0]
+        # `shutil.copyfile(downloaded, "/tmp/plugin.py")`: the literal path now names
+        # untrusted contents within this scope, wherever the same literal is used.
+        if isinstance(target, ast.Constant) and isinstance(target.value, str):
+            key = _LITERAL_PATH + target.value
+            if self.local_reasons.get(key, NAMED_PARAM_REASON) == NAMED_PARAM_REASON:
+                self.local_reasons[key] = reason
+            return
         if isinstance(target, ast.Name):
             # Flow-insensitive, and the strongest reason wins: a name tainted by a real
             # read stays tier A even if it is also assigned from a named parameter.
@@ -3829,6 +3895,12 @@ class _TaintPass(ast.NodeVisitor):
                 if path is not None:
                     self._assign(path, reason)
             return
+        # `urlretrieve(url, plugin)` writes the response to `plugin`.
+        if _matches_any(names, {"urlretrieve", "urllib.request.urlretrieve"}):
+            target = node.args[1] if len(node.args) > 1 else _keyword(node, "filename")
+            if target is not None:
+                self._assign(target, f"urlretrieve()@{self.facts.relative}:{node.lineno}")
+            return
         # Moving or copying a file keeps its contents: `os.replace(downloaded, final)`.
         if _matches_any(names, self._FILE_MOVES):
             source = node.args[0] if node.args else _keyword(node, "src")
@@ -3862,16 +3934,18 @@ class _TaintPass(ast.NodeVisitor):
         # `with plugin.open("wb") as out: out.write(body)` fills the file at `plugin`.
         if node.func.attr in ("write", "writelines") and isinstance(node.func.value, ast.Name):
             path = self._file_handles().get(node.func.value.id)
-            if path is not None:
-                for argument in node.args[:1]:
-                    reason = self.tainted(argument)
-                    if reason:
-                        self._assign(path, reason)
+            for argument in node.args[:1]:
+                reason = self.tainted(argument)
+                if reason:
+                    # A handle onto a path fills that file; any other stream, such as
+                    # `io.BytesIO()`, now holds the bytes itself.
+                    self._assign(path if path is not None else node.func.value, reason)
             return
         # `plugin.write_bytes(response.content)` fills the file at that path, so a
         # later `runpy.run_path(plugin)` executes the untrusted bytes.
         if node.func.attr in ("write_bytes", "write_text"):
-            for argument in node.args[:1]:
+            data = node.args[:1] or [k.value for k in node.keywords if k.arg == "data"]
+            for argument in data:
                 reason = self.tainted(argument)
                 if reason:
                     self._assign(node.func.value, reason)
@@ -4348,6 +4422,21 @@ class _TaintPass(ast.NodeVisitor):
         reason = self._parsed_mapping(env) or self._parsed_value(env)
         if reason:
             self._record(node, "child process env (untrusted mapping)", reason, _short(env))
+            return
+        # Built key by key: an untrusted key picks the variable, and an untrusted value
+        # under a loader or interpreter variable picks the code that runs.
+        literal = self._local_binding(env.id) if isinstance(env, ast.Name) else env
+        if not isinstance(literal, ast.Dict):
+            return
+        for key, value in zip(literal.keys, literal.values):
+            if key is None:
+                continue
+            reason = self.tainted(key)
+            if not reason and isinstance(key, ast.Constant) and key.value in _EXEC_ENV_KEYS:
+                reason = self.tainted(value)
+            if reason:
+                self._record(node, "child process env (untrusted mapping)", reason, _short(env))
+                return
 
     def _check_callback_sinks(self, invoked: ast.Call) -> None:
         """Every sink check, on a call a thread, executor or `map` makes on our behalf."""
@@ -4540,9 +4629,29 @@ class _TaintPass(ast.NodeVisitor):
                     reason = self._parsed_mapping(child.value, seen)
                     if reason:
                         return reason
+                # `kwargs.update(parsed)` merges the document's keys into `kwargs`.
+                if (
+                    isinstance(child, ast.Call)
+                    and isinstance(child.func, ast.Attribute)
+                    and child.func.attr == "update"
+                    and isinstance(child.func.value, ast.Name)
+                    and child.func.value.id == value.id
+                    and child.args
+                ):
+                    reason = self._parsed_mapping(child.args[0], seen)
+                    if reason:
+                        return reason
             return None
         if isinstance(value, ast.Subscript):
             return self._parsed_mapping(value.value, seen)
+        # `{**parsed, "x": 1}` keeps every key the document chose.
+        if isinstance(value, ast.Dict):
+            for key, item in zip(value.keys, value.values):
+                if key is None:
+                    reason = self._parsed_mapping(item, seen)
+                    if reason:
+                        return reason
+            return None
         if isinstance(value, ast.Call):
             source = _matches_any(self.facts.canonicals(_call_name(value.func)), _DESERIALIZERS)
             if source:

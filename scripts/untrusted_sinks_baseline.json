@@ -62,8 +62,10 @@
     "studio/backend/core/training/worker.py::run_training_process::trust_remote_code = True (dict item)::64be60c61f04074b::830a81a832bdb19c": 1,
     "studio/backend/hub/services/download_lifecycle.py::spawn_worker::subprocess.Popen::75047d3e18141205::d26569b47f91715d": 1,
     "studio/backend/routes/training.py::start_training::trust_remote_code = True (dict item)::81b2dbc83d544567::d531a94028ad7cd1": 1,
+    "studio/backend/utils/coding_agents.py::is_deepseek_harness_executable::subprocess.run::4a515966b7be4bdb::a41b268a4b628f3a": 1,
     "studio/backend/utils/hardware/gpu_query.py::run_nvidia_smi::subprocess.run::f5a70e565f93aa0c::d1b4592b1a86b9ac": 1,
     "studio/backend/utils/models/model_config.py::_is_vision_model_subprocess::subprocess.run::3076f9d91a3f52b3::a63b248e924f4ca1": 1,
+    "studio/backend/utils/node_runtime.py::_probe_version::subprocess.run::6b8f8bb6e94d382b::cc408d9840effbf7": 1,
     "studio/backend/utils/prebuilt/update_flow.py::resolve_prebuilt_for_host::subprocess.run::580102e53ad216eb::0081a0daaa1cafb0": 1,
     "studio/backend/utils/prebuilt/update_flow.py::stream_installer::subprocess.Popen::f10b64a5173f479f::cf1332f037e8efde": 1,
     "studio/backend/utils/process_lifetime.py::_group_member_pids::subprocess.run::0c59519f7e970257::3b26c0fa5b883128": 1,
@@ -83,6 +85,7 @@
     "studio/install_audio_cpp_prebuilt.py::_run_staged::subprocess.run::c71314122e4a63bd::fb139b9e421cc3b4": 1,
     "studio/install_llama_prebuilt.py::run_capture::subprocess.run::d6e8200ef599b7ba::562998c9c03473d8": 1,
     "studio/install_llama_prebuilt.py::validate_quantize::subprocess.run::8f81ba3c6591d7fc::c7aef3f9e84b9186": 1,
+    "studio/install_node_prebuilt.py::_run_node::subprocess.run::e52e63113c7032fe::4f8da0b0ea678d50": 1,
     "unsloth/models/_utils.py::_requested_float32::getattr(module, ...)::f2e8efae287d3fd6::9bcdda7471442a44": 1,
     "unsloth/models/_utils.py::_resolve_remote_model_class::get_class_from_dynamic_module::1bf1ae2e2285284f::e1a660b88479f807": 1,
     "unsloth/models/_utils.py::_resolve_remote_model_class::importlib.import_module::ed81224ea9382685::e1a660b88479f807": 1,
@@ -111,8 +114,12 @@
     "unsloth_cli/_studio_deps.py::_venv_site_packages::subprocess.check_output::2f063ff51a6531cd::83388fb5335364a5": 1,
     "unsloth_cli/claude_subagent_mcp.py::run_local_agent::subprocess.Popen::11a73c0e3ba20623::f20339521068fe3f": 1,
     "unsloth_cli/codex_subagent_mcp.py::run_local_agent::subprocess.Popen::09b49293346c6e61::6f880f37d6d1d934": 1,
+    "unsloth_cli/commands/start.py::_claude_version::subprocess.run::b411eacddc2dc7b1::52582b68a5428e4c": 1,
+    "unsloth_cli/commands/start.py::_codex_executable_version::subprocess.check_output::c3a04e6d40cfd2de::599c8edf90c116c3": 1,
     "unsloth_cli/commands/start.py::_install_agent::subprocess.run::b2cbfb6c7744e309::66eca467520bc819": 1,
     "unsloth_cli/commands/start.py::_launch::subprocess.run::eb772eb74b7f9cc9::6c1fd4a887382b2a": 1,
+    "unsloth_cli/commands/start.py::_opencode_subagent_inline_config::subprocess.run::e489c1e0981571b7::6a8163dc630e7063": 1,
+    "unsloth_cli/commands/start.py::_opencode_supports_native_auto::subprocess.check_output::c3a04e6d40cfd2de::9aeae95e837215dd": 1,
     "unsloth_cli/commands/start.py::_start_studio_server::subprocess.Popen::664080759b53253e::e8b2d7f43febf1cf": 1
   }
 }

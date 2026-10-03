@@ -6441,3 +6441,79 @@ def test_repo_root_selects_that_checkouts_baseline(tmp_path, monkeypatch):
     module.main(["--repo-root", str(tmp_path), "--update"])
     assert module.BASELINE_PATH == tmp_path / "scripts" / L.BASELINE_PATH.name
     assert module.BASELINE_PATH.exists()
+
+
+def test_which_streams_hex_head_and_literal_destinations(tmp_path):
+    """`shutil.which`, `BytesIO.write`, `bytes.fromhex`, HEAD, literal copy targets."""
+    findings = _scan(
+        tmp_path,
+        "import io, pickle, requests, runpy, shutil, subprocess\n"
+        "from importlib import import_module\n"
+        "from urllib.request import urlretrieve\n"
+        "from pathlib import Path\n"
+        "from huggingface_hub import hf_hub_download\n"
+        "def a(url):\n"
+        "    subprocess.run([shutil.which(requests.get(url).text)])\n"
+        "def b(url):\n"
+        "    buf = io.BytesIO()\n"
+        "    buf.write(requests.get(url).content)\n"
+        "    buf.seek(0)\n"
+        "    return pickle.load(buf)\n"
+        "def c(url):\n"
+        "    return pickle.loads(bytes.fromhex(requests.get(url).text))\n"
+        "def d(url):\n"
+        "    return import_module(requests.head(url).headers['X-Plugin'])\n"
+        "def e(repo):\n"
+        "    shutil.copyfile(hf_hub_download(repo, 'plugin.py'), '/tmp/plugin.py')\n"
+        "    runpy.run_path('/tmp/plugin.py')\n"
+        "def f(url):\n"
+        "    plugin = 'plugin.py'\n"
+        "    urlretrieve(url, plugin)\n"
+        "    runpy.run_path(plugin)\n"
+        "def g(url):\n"
+        "    plugin = 'plugin.py'\n"
+        "    Path(plugin).write_bytes(data = requests.get(url).content)\n"
+        "    runpy.run_path(plugin)\n"
+        "def h():\n"
+        "    runpy.run_path('/tmp/plugin.py')\n",
+    )
+    sinks = {(f["qualname"], f["sink"]) for f in findings}
+    assert {
+        ("a", "subprocess.run"),
+        ("b", "pickle.load"),
+        ("c", "pickle.loads"),
+        ("d", "importlib.import_module"),
+        ("e", "runpy.run_path"),
+        ("f", "runpy.run_path"),
+        ("g", "runpy.run_path"),
+    } <= sinks
+    assert not [q for q, _ in sinks if q == "h"]
+
+
+def test_merged_mappings_and_constructed_child_envs(tmp_path):
+    """`kwargs.update(parsed)`, `{**parsed}`, and env dicts with untrusted keys or loader values."""
+    findings = _scan(
+        tmp_path,
+        "import json, requests, subprocess\n"
+        "from transformers import AutoModel\n"
+        "def a(model, url):\n"
+        "    kwargs = {'local_files_only': True}\n"
+        "    kwargs.update(json.loads(requests.get(url).text))\n"
+        "    return AutoModel.from_pretrained(model, **kwargs)\n"
+        "def b(model, blob):\n"
+        "    return AutoModel.from_pretrained(model, **{**json.loads(blob), 'x': 1})\n"
+        "def c(blob):\n"
+        "    cfg = json.loads(blob)\n"
+        "    subprocess.run(['/usr/bin/python'], env = {cfg['name']: cfg['value']})\n"
+        "def d(url):\n"
+        "    env = {'LD_PRELOAD': requests.get(url).text}\n"
+        "    subprocess.run(['/usr/bin/id'], env = env)\n"
+        "def e(url):\n"
+        "    subprocess.run(['/usr/bin/id'], env = {'HF_HOME': requests.get(url).text})\n",
+    )
+    sinks = {(f["qualname"], f["sink"]) for f in findings}
+    assert ("a", "trust_remote_code (untrusted **kwargs)") in sinks
+    assert ("b", "trust_remote_code (untrusted **kwargs)") in sinks
+    assert ("c", "child process env (untrusted mapping)") in sinks
+    assert ("d", "child process env (untrusted mapping)") in sinks
+    assert ("e", "child process env (untrusted mapping)") not in sinks
