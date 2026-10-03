@@ -11963,7 +11963,10 @@ def _estimate_context_floor(
         return None
     if gpu_memory_mode != "manual":
         # The launch's own --fit on precedes the extras, so only they can turn it off.
-        fitter_runs = fit_is_effectively_on(["--fit", "on", *extras], os.environ)
+        try:
+            fitter_runs = fit_is_effectively_on(["--fit", "on", *extras], os.environ)
+        except ValueError:
+            return None
         # Arguments beat the environment; only auto/-1 let the fitter move layers.
         layers_fixed = _env_fixes_gpu_layers(
             os.environ if layer_arg is None else {"LLAMA_ARG_N_GPU_LAYERS": layer_arg}
@@ -11981,7 +11984,10 @@ def _estimate_context_floor(
         return None
     # Manual clears inherited fit/layer settings. Use argv, then the launcher's
     # 8192 when supported, then llama.cpp's 4096.
-    fit_ctx = fit_ctx_in(extras)
+    try:
+        fit_ctx = fit_ctx_in(extras)
+    except ValueError:
+        return None
     if fit_ctx is None and LlamaCppBackend.probe_server_capabilities().get("supports_fit_ctx"):
         fit_ctx = _FIT_MIN_CTX
     if fit_ctx is None:

@@ -3216,6 +3216,21 @@ class TestAnAutoContextIsMarkedShrinkable:
         assert resp.context_is_pinned is False
         assert resp.floor_can_offload is can_offload, (request_fields, env)
 
+    @pytest.mark.parametrize(
+        "request_fields",
+        [
+            {"llama_extra_args": ["--fit"]},
+            {"gpu_memory_mode": "manual", "llama_extra_args": ["--fit-ctx"]},
+            {"gpu_memory_mode": "manual", "llama_extra_args": ["-fitc="]},
+        ],
+    )
+    def test_a_half_typed_fit_flag_still_prices(self, wide, request_fields):
+        # The panel prices every keystroke of the extras field.
+        resp = _estimate(model_path = wide, **request_fields)
+        assert resp.available is True
+        assert resp.context_is_pinned is True
+        assert resp.gpu_floor_bytes is None
+
     def test_a_zero_fit_ctx_can_land_on_the_native_length(self, wide):
         # The fitter may settle on n_ctx 0, which llama.cpp reads as native.
         resp = _estimate(model_path = wide, gpu_memory_mode = "manual", llama_extra_args = ["-fitc", "0"])
