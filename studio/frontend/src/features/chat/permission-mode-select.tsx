@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { ChevronDown, CircleAlert, Hand, ShieldCheck } from "lucide-react";
+import { ChevronDown, Hand, ShieldCheck } from "lucide-react";
+import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui";
 import type { ComponentType } from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useFullAccessAllowed } from "@/features/auth/account-session";
+import { useSettingsDialogStore } from "@/features/settings";
 
 import {
   AlertDialog,
@@ -25,9 +27,15 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { ShieldAlertGlyph } from "@/lib/shield-alert-icon";
 import { SparklesGlyph } from "@/lib/sparkles-icon";
 import { MenuTickIcon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
+import {
+  ComputerTerminal01Icon,
+  Folder01Icon,
+  InternetIcon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type PermissionMode,
@@ -45,34 +53,48 @@ export const PERMISSION_MODE_OPTIONS: readonly {
   {
     value: "ask",
     label: "Ask for approval",
-    description:
-      "Always ask before tool calls, editing files or using the internet",
+    description: "Ask before using tools or the internet",
     icon: Hand,
   },
   {
     value: "auto",
     label: "Approve for me",
-    description:
-      "Run tool calls, but ask before high-risk actions like credential access, privilege escalation, or destructive commands",
+    description: "Only ask for actions that look risky",
     icon: ShieldCheck,
   },
   {
     value: "off",
     label: "Run automatically",
-    description: "Run tool calls without approval prompts inside the sandbox",
+    description: "Never ask, but keep code in the sandbox",
     icon: SparklesGlyph,
   },
   {
     value: "full",
     label: "Full access",
-    description:
-      "Unrestricted: no approval prompts and the code sandbox is disabled",
-    icon: CircleAlert,
+    description: "Full access to your computer",
+    icon: ShieldAlertGlyph,
   },
 ] as const;
 
-export const FULL_ACCESS_WARNING =
-  "Full access lets tool calls run without approval prompts or the code sandbox. They can modify or delete files, run commands, and make network requests. Enable it only when you trust the current task.";
+/** What Full access opens up, listed in its confirmation. */
+const FULL_ACCESS_SCOPES = [
+  {
+    icon: Folder01Icon,
+    title: "Files",
+    description: "Read, change or delete any file you can access",
+  },
+  {
+    icon: ComputerTerminal01Icon,
+    title: "Commands",
+    description: "Run terminal and Python code, install packages",
+  },
+  {
+    // The app's own internet glyph, as on Web search.
+    icon: InternetIcon,
+    title: "Internet",
+    description: "Browse, send data and use MCP tools",
+  },
+] as const;
 
 export function permissionModeOption(mode: PermissionMode) {
   return (
@@ -80,6 +102,31 @@ export function permissionModeOption(mode: PermissionMode) {
     // Unknown values fall back to the default ("Approve for me"), not row 0 ("Ask").
     PERMISSION_MODE_OPTIONS.find((option) => option.value === "auto") ??
     PERMISSION_MODE_OPTIONS[0]
+  );
+}
+
+/** Menu heading. `learnMore` links to the fuller explanation in Settings. */
+export function PermissionMenuLabel({ learnMore }: { learnMore: boolean }) {
+  const openSettings = useSettingsDialogStore((s) => s.openDialog);
+  return (
+    <DropdownMenuLabel className="flex items-center justify-between gap-3">
+      <span>Tool call permissions</span>
+      {learnMore ? (
+        // A menu item, so arrow keys reach it and selecting closes the menu.
+        <DropdownMenuPrimitive.Item
+          className="shrink-0 cursor-pointer rounded-sm underline underline-offset-2 outline-hidden hover:text-foreground focus-visible:text-foreground data-[highlighted]:text-foreground"
+          // Deferred past the menu's focus restore.
+          onSelect={() =>
+            setTimeout(
+              () => openSettings("general", { scrollTarget: "general-permissions" }),
+              0,
+            )
+          }
+        >
+          Learn more
+        </DropdownMenuPrimitive.Item>
+      ) : null}
+    </DropdownMenuLabel>
   );
 }
 
@@ -124,9 +171,6 @@ export function PermissionModeMenuItems({
           className={cn(
             "items-start gap-2 py-2",
             permissionMode === option.value && "font-medium",
-            option.value === "full" &&
-              permissionMode === "full" &&
-              "text-bypass",
           )}
         >
           <option.icon className="mt-0.5 size-4 shrink-0" strokeWidth={2} />
@@ -140,12 +184,110 @@ export function PermissionModeMenuItems({
             <HugeiconsIcon
               icon={MenuTickIcon}
               strokeWidth={2}
-              className="ml-auto mt-0.5 size-4 shrink-0"
+              // Centred on both lines; sized in index.css.
+              className="permission-mode-tick ml-auto size-4 shrink-0 self-center"
             />
           ) : null}
         </DropdownMenuItem>
       ))}
     </>
+  );
+}
+
+/** The level in effect, for Settings to spell out. */
+export function useActivePermissionMode() {
+  return permissionModeOption(useAccountPermissionMode().permissionMode);
+}
+
+/** The focused element, or for a closing menu its trigger (menus label themselves by it). */
+function lastFocusOutsideMenus(): HTMLElement | null {
+  let element = document.activeElement;
+  for (
+    let menu = element?.closest('[role="menu"]');
+    menu;
+    menu = element?.closest('[role="menu"]')
+  ) {
+    const triggerId = menu.getAttribute("aria-labelledby");
+    element = triggerId ? document.getElementById(triggerId) : null;
+  }
+  return element instanceof HTMLElement && element !== document.body ? element : null;
+}
+
+/** Full access confirmation body, shared by both dialogs that ask for it. */
+export function FullAccessConfirmContent({
+  onConfirm,
+  onClose,
+}: {
+  onConfirm: () => void;
+  onClose: () => void;
+}) {
+  const openSettings = useSettingsDialogStore((s) => s.openDialog);
+  // Focus before the dialog opened, so Settings can return there and not to a removed button.
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+  return (
+    // Backdrop click cancels; no ring.
+    <AlertDialogContent
+      className="gap-5 p-7 ring-0 data-[size=default]:sm:max-w-[calc(500px*var(--ui-space-scale,1))]"
+      onOverlayClick={onClose}
+      // Focus the card, not Cancel, so Cancel shows no focus border until tabbed to.
+      onOpenAutoFocus={(event) => {
+        event.preventDefault();
+        returnFocusRef.current = lastFocusOutsideMenus();
+        (event.currentTarget as HTMLElement).focus();
+      }}
+    >
+      <AlertDialogHeader className="gap-2">
+        <AlertDialogTitle className="flex items-center gap-2.5">
+          <ShieldAlertGlyph className="size-5 shrink-0" strokeWidth={2} />
+          Turn on Full access?
+        </AlertDialogTitle>
+        {/* text-pretty: balance splits this sentence into two short lines. */}
+        <AlertDialogDescription className="text-pretty leading-relaxed">
+          Tools will run without asking and outside the sandbox, including:
+        </AlertDialogDescription>
+      </AlertDialogHeader>
+      <ul className="flex flex-col rounded-2xl bg-muted/50 px-5 py-1.5">
+        {FULL_ACCESS_SCOPES.map((scope) => (
+          <li key={scope.title} className="flex items-center gap-4 py-3">
+            <HugeiconsIcon
+              icon={scope.icon}
+              strokeWidth={1.75}
+              className="size-5 shrink-0 text-muted-foreground"
+            />
+            <span className="flex min-w-0 flex-col gap-0.5">
+              <span className="text-sm font-medium">{scope.title}</span>
+              <span className="text-xs leading-relaxed text-muted-foreground">
+                {scope.description}
+              </span>
+            </span>
+          </li>
+        ))}
+      </ul>
+      <p className="text-pretty text-xs leading-relaxed text-muted-foreground">
+        Risks include data loss or exposure and prompt injection. You can turn this off
+        anytime.{" "}
+        <button
+          type="button"
+          className="cursor-pointer text-foreground underline underline-offset-2"
+          onClick={() => {
+            onClose();
+            openSettings("general", {
+              scrollTarget: "general-permissions",
+              opener: returnFocusRef.current,
+            });
+          }}
+        >
+          Learn more
+        </button>
+      </p>
+      <AlertDialogFooter className="mt-1">
+        {/* Muted, not outline: outline keeps a border in light mode. */}
+        <AlertDialogCancel variant="muted">Cancel</AlertDialogCancel>
+        <AlertDialogAction variant="destructive" onClick={onConfirm}>
+          Turn on
+        </AlertDialogAction>
+      </AlertDialogFooter>
+    </AlertDialogContent>
   );
 }
 
@@ -164,27 +306,13 @@ export function FullAccessConfirmDialog({
 
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
-      <AlertDialogContent size="sm">
-        <AlertDialogHeader>
-          <AlertDialogTitle>Enable Full access?</AlertDialogTitle>
-          <AlertDialogDescription>
-            {FULL_ACCESS_WARNING}
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            variant="destructive"
-            className="!bg-destructive !text-destructive-foreground hover:!bg-destructive/90"
-            onClick={() => {
-              setPermissionMode("full");
-              onOpenChange(false);
-            }}
-          >
-            I understand
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
+      <FullAccessConfirmContent
+        onConfirm={() => {
+          setPermissionMode("full");
+          onOpenChange(false);
+        }}
+        onClose={() => onOpenChange(false)}
+      />
     </AlertDialog>
   );
 }
@@ -195,10 +323,13 @@ export function PermissionModeDropdown({
   side = "bottom",
   align = "end",
   triggerClassName,
+  learnMore = true,
 }: {
   side?: "top" | "bottom";
   align?: "start" | "end";
   triggerClassName?: string;
+  /** Off in Settings, which already shows the full explanation. */
+  learnMore?: boolean;
 } = {}) {
   const { permissionMode, fullAccessAllowed } = useAccountPermissionMode();
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -212,13 +343,7 @@ export function PermissionModeDropdown({
           <Button
             variant="outline"
             size="sm"
-            className={cn(
-              "gap-1.5",
-              triggerClassName,
-              // Last so a text color in triggerClassName cannot override it.
-              permissionMode === "full" &&
-                "text-bypass hover:text-bypass border-bypass/50",
-            )}
+            className={cn("gap-1.5", triggerClassName)}
             aria-label="Permission level for tool calls"
           >
             <ActiveIcon className="size-3.5 shrink-0" strokeWidth={2} />
@@ -231,12 +356,10 @@ export function PermissionModeDropdown({
         <DropdownMenuContent
           side={side}
           align={align}
-          className="w-[calc(300px*var(--ui-space-scale,1))]"
+          className="w-[calc(330px*var(--ui-space-scale,1))]"
           avoidCollisions={true}
         >
-          <DropdownMenuLabel>
-            How should tool calls be approved?
-          </DropdownMenuLabel>
+          <PermissionMenuLabel learnMore={learnMore} />
           <PermissionModeMenuItems
             // Defer past the menu-close focus restoration so the dialog's focus trap is not broken by the
             // dropdown grabbing focus back.
@@ -255,9 +378,8 @@ export function PermissionModeDropdown({
 }
 
 /** Composer pill showing the current permission level in the chat box; clicking opens the level
- *  dropdown. Danger-styled while Full access is on. The Full access pick routes through the
- *  store-driven confirm dialog mounted at the chat-page root, so the warning survives this
- *  menu unmounting. */
+ *  dropdown. The Full access pick routes through the store-driven confirm dialog mounted at the
+ *  chat-page root, so the warning survives this menu unmounting. */
 export function PermissionModeComposerPill({
   side = "bottom",
 }: {
@@ -269,7 +391,6 @@ export function PermissionModeComposerPill({
   );
   const active = permissionModeOption(permissionMode);
   const ActiveIcon = active.icon;
-  const fullAccess = permissionMode === "full";
 
   return (
     <DropdownMenu>
@@ -278,8 +399,6 @@ export function PermissionModeComposerPill({
           type="button"
           className="composer-pill-btn composer-pill-permissions"
           data-pill-label={active.label}
-          data-active={fullAccess ? "true" : "false"}
-          data-variant={fullAccess ? "danger" : undefined}
           aria-label="Permission level for tool calls"
           title={`${active.label}: ${active.description}`}
         >
@@ -299,11 +418,9 @@ export function PermissionModeComposerPill({
         align="start"
         sideOffset={0}
         avoidCollisions={true}
-        className="unsloth-plus-menu w-[calc(300px*var(--ui-space-scale,1))]"
+        className="unsloth-plus-menu w-[calc(330px*var(--ui-space-scale,1))]"
       >
-        <DropdownMenuLabel>
-          How should tool calls be approved?
-        </DropdownMenuLabel>
+        <PermissionMenuLabel learnMore={true} />
         <PermissionModeMenuItems
           // Defer past the menu-close focus restoration (see PermissionModeDropdown).
           onRequestFullAccess={() =>

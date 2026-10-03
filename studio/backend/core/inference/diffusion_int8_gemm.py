@@ -9,7 +9,8 @@ writes bf16, so every int8 Linear writes half the bytes and its consumer (norm, 
 
 NUMERICS: the Linear output is bit-identical to torchao's epilogue, eager and compiled under Studio's
 ``emulate_precision_casts``: ``bf16(bf16(r(c) * xs) * ws)`` (+ bias as a bf16 add), where ``r`` rounds the int32
-accumulator to bf16 when the activation scale is bf16 (int32 * bf16 promotes to bf16) and is exact when it is fp32.
+accumulator to bf16 when the activation scale is bf16 (int32 * bf16 promotes to bf16, via fp32: two roundings) and to
+fp32 when it is fp32.
 The activation quant is torchao's own math, so Inductor still fuses it into the producer. A compiled block is NOT
 bit-identical end to end: the consumer reductions (LayerNorm / RMSNorm Welford) that used to fuse the epilogue now
 read bf16 and Inductor re-tiles them, a rounding-order change smaller than compiled-vs-eager (LPIPS-gated).
@@ -166,15 +167,18 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         # torchao epilogue, every rounding kept: (int32 * xs) -> xs dtype, * ws -> ws dtype, -> bf16, + bias.
         xs = tl.load(xs_ptr + rm).to(tl.float32)
         ws = tl.load(ws_ptr + rn).to(tl.float32)
-        y = acc.to(tl.float32)
-        if not XS_FP32:
-            y = _rbf16(y)
+        if XS_FP32:
+            y = acc.to(tl.float32)
+        else:
+            # int32 -> fp32 -> bf16 rounds twice; Triton folds ``acc.to(fp32).to(bf16)`` into one rounding.
+            y = _rbf16(tl.extra.cuda.libdevice.int2float_rn(acc))
         y = _rbf16(y * xs[:, None])
-        y = y * ws[None, :]
+        # *_rn: ptxas fuses packed f32x2 mul + add into an FMA on sm_100 even with fp fusion off.
+        y = tl.extra.cuda.libdevice.mul_rn(y, ws[None, :])
         if not WS_FP32:
             y = _rbf16(y)
         if HAS_BIAS:
-            y = y + tl.load(b_ptr + rn).to(tl.float32)[None, :]
+            y = tl.extra.cuda.libdevice.add_rn(y, tl.load(b_ptr + rn).to(tl.float32)[None, :])
         c_ptrs = c_ptr + offs_m[:, None] * stride_cm + offs_n[None, :]
         mask = (offs_m[:, None] < M) & (offs_n[None, :] < N)
         tl.store(c_ptrs, y.to(tl.bfloat16), mask = mask)
@@ -241,12 +245,25 @@ def _launch(a: Any, w: Any, xs: Any, ws: Any, bias: Any, cfg: tuple) -> Any:
     return out
 
 
+def _aligned(a: Any, w: Any) -> bool:
+    """K, N, both row strides and both int8 base pointers on 16 bytes. Triton specialises on these, and an off-16 variant
+    spills; the driver then reserves that local memory device-wide for the process, outside PyTorch's allocator."""
+    return (
+        a.shape[1] % 16 == 0
+        and w.shape[0] % 16 == 0
+        and a.stride(0) % 16 == 0
+        and w.stride(0) % 16 == 0
+        and a.data_ptr() % 16 == 0
+        and w.data_ptr() % 16 == 0
+    )
+
+
 def _run(a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
-    """Op body: the probed tile for this device, the stock epilogue if the launch fails."""
+    """Op body: the probed tile for this device, else (launch failure, ``_aligned`` false) the stock epilogue."""
     _CALLS[0] += 1
     a = a if a.stride(-1) == 1 else a.contiguous()
     cfg = _DEVICE_CFG.get(a.device.index)
-    if cfg is not None:
+    if cfg is not None and w.stride(-1) == 1 and _aligned(a, w):
         try:
             return _launch(a, w, xs, ws, bias, cfg)
         except Exception:  # noqa: BLE001 - a failed launch keeps the stock math
@@ -311,17 +328,21 @@ def device_config(index: int) -> Optional[tuple]:
     return cfg
 
 
+# (M, N, K, bias, fp32 scales). Ragged N / K stay on 16: an off-16 probe compiles the spilling variant (see ``_aligned``).
+_PROBE_SHAPES = (
+    (257, 384, 512, False, False),
+    (33, 208, 144, True, True),
+    (300, 528, 1040, True, False),
+)
+
+
 def _probe(index: int, cfg: tuple) -> bool:
     import torch
 
     dev = torch.device("cuda", index)
     g = torch.Generator(device = "cpu").manual_seed(0)
     try:
-        for m, n, k, bias, xs32 in (
-            (257, 384, 512, False, False),
-            (33, 200, 136, True, True),
-            (300, 520, 1000, True, False),
-        ):
+        for m, n, k, bias, xs32 in _PROBE_SHAPES:
             a = torch.randint(-127, 128, (m, k), generator = g, dtype = torch.int8).to(dev)
             w = torch.randint(-127, 128, (n, k), generator = g, dtype = torch.int8).to(dev)
             xs = (torch.rand(m, generator = g) * 0.02 + 1e-4).to(torch.bfloat16)
@@ -333,10 +354,45 @@ def _probe(index: int, cfg: tuple) -> bool:
             b = (torch.randn(n, generator = g) * 0.1).to(torch.bfloat16).to(dev) if bias else None
             if not torch.equal(_launch(a, w, xs, ws, b, cfg), reference(a, w, xs, ws, b)):
                 return False
+        a, w = tie_operands(dev)
+        xs = torch.ones(a.shape[0], device = dev, dtype = torch.bfloat16)
+        ws = torch.ones(w.shape[0], device = dev, dtype = torch.bfloat16)
+        if not torch.equal(_launch(a, w, xs, ws, None, cfg), reference(a, w, xs, ws, None)):
+            return False
         torch.cuda.synchronize(dev)
         return True
     except Exception:  # noqa: BLE001 - out of shared memory, compile failure, ...
         return False
+
+
+def tie_operands(
+    device: Any,
+    rows: int = 32,
+    k: int = 4096,
+) -> tuple:
+    """int8 (a, w) whose int32 products sit one or two units off a bf16 midpoint in [2^24, 2^26), both signs."""
+    import torch
+
+    k2 = 128
+    k1 = k - k2
+    targets = []
+    for e in (24, 25):
+        for mult in (0, 3, 50, 100):
+            mid = (1 << e) + mult * (1 << (e - 7)) + (1 << (e - 8))
+            for d in (-1, 1, -2, 2):
+                targets += [mid + d, -(mid + d)]
+    w = torch.zeros(len(targets), k, dtype = torch.int8)
+    for j, t in enumerate(targets):
+        s1, s2 = divmod(abs(t), 127)
+        full, rem = divmod(s1, 127)
+        sign = 1 if t >= 0 else -1
+        w[j, :full] = 127 * sign
+        if rem:
+            w[j, full] = rem * sign
+        w[j, k1] = s2 * sign
+    a = torch.ones(rows, k, dtype = torch.int8)
+    a[:, :k1] = 127
+    return a.to(device), w.to(device)
 
 
 def _v1_parts(w: Any) -> Optional[tuple]:

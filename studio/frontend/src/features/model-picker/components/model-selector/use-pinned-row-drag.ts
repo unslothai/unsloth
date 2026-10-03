@@ -3,7 +3,6 @@
 
 // Drag to reorder a Pinned group in the model selector, like pinned chats in the sidebar.
 // Pointer events, not HTML5 drag: the desktop webview never forwards dragover or drop.
-// The carried row lifts as a copy that follows the pointer, as in the sidebar.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -28,7 +27,6 @@ const KEY_ATTR = "data-pinned-drop-key";
 const NO_DRAG_SELECTOR =
   "button:not([data-model-picker-option]), a[href], [role='menuitem']";
 
-/** The raised copy of a carried row. */
 const ROW_GHOST_CLASS = "model-picker-row-ghost";
 
 /** Attributes the copy drops, so nothing finds it as an option or drop target. */
@@ -43,7 +41,6 @@ const GHOST_DROPPED_ATTRS = [
   "data-slot",
 ] as const;
 
-/** How long a dropped row takes to slide into its slot. */
 const SETTLE_MS = 180;
 
 /** How far outside a row the pointer still aims at it. */
@@ -84,13 +81,11 @@ function viewOf(row: HTMLElement): Element {
 /** Marks a row's pill when it is not the wrapper's first child (a fine-tuned row nests it). */
 const ROW_FACE_ATTR = "data-pinned-row-face";
 
-/** The row itself, inside the wrapper that holds the drop marks. */
 const faceOf = (row: Element): HTMLElement =>
   row.querySelector<HTMLElement>(`[${ROW_FACE_ATTR}]`) ??
   (row.firstElementChild as HTMLElement | null) ??
   (row as HTMLElement);
 
-/** Slides a dropped row from where it was let go into its slot. */
 function settleRow(scope: string, key: string, from: number) {
   // Two frames: measured after the drop re-renders the list.
   requestAnimationFrame(() =>

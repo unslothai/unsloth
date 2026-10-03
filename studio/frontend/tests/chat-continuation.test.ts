@@ -25,6 +25,7 @@ const {
   budgetImpliesTruncation,
   hasRenderableContent,
   incompleteLabel,
+  incompleteReasonAfterError,
   incompleteRemedy,
   isContinuableContent,
   isProviderReportedReason,
@@ -2943,4 +2944,34 @@ test("a merger with repair off is the identity, streaming or final", () => {
   const full = `${partial}${REASONING}`;
   assert.equal(merge(full), full);
   assert.equal(merge(full, { final: true }), full);
+});
+
+const ERROR_PATH_REASON =
+  /incompleteReasonAfterError\(\s*incompleteReason,\s*err instanceof GenerationLengthError\s*\?\s*lengthIncompleteReason\(err\.stopCause\)/;
+
+test("a length error refines the length the terminal chunk latched", () => {
+  // The terminal chunk latches length before GenerationLengthError identifies the cause.
+  assert.equal(
+    incompleteReasonAfterError("length", "context_window"),
+    "context_window",
+  );
+  assert.equal(incompleteReasonAfterError("length", "length"), "length");
+  // An explicit Stop still outranks whatever the error says.
+  assert.equal(
+    incompleteReasonAfterError("cancelled", "context_window"),
+    "cancelled",
+  );
+  // Nothing latched: the error decides, as before.
+  assert.equal(
+    incompleteReasonAfterError(null, "context_window"),
+    "context_window",
+  );
+  assert.equal(incompleteReasonAfterError(null, "interrupted"), "interrupted");
+  // A latched reason is not overridden by an unrelated error.
+  assert.equal(incompleteReasonAfterError("length", "interrupted"), "length");
+});
+
+test("the adapter's error path asks the length error which limit it was", () => {
+  // Check the wiring without initializing the adapter's stores.
+  assert.match(CHAT_ADAPTER, ERROR_PATH_REASON);
 });

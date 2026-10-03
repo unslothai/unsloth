@@ -384,6 +384,7 @@ import utils.hardware.hardware as _hw_module
 
 from utils.torch_warmup import (
     DISABLE_ENV_VAR,
+    background_media_import,
     join_background_warm,
     prewarm_diffusers_if_image_models_exist,
     reset_background_warm,
@@ -655,18 +656,23 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
     # _dense_quant_supported). Gated on torch being up rather than assumed, since
     # UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1 exists precisely to keep the ML stack cold.
     if "torch" in sys.modules:
-        try:
-            _refresh_dense_quant_capability()
-        except Exception as _dq_exc:  # noqa: BLE001 -- a picker label must never break the warm
-            import structlog as _structlog
-            _structlog.get_logger(__name__).debug("dense quant capability skipped: %s", _dq_exc)
-        try:
-            _refresh_quantised_streaming_capability()
-        except Exception as _qs_exc:  # noqa: BLE001 -- a picker tier must never break the warm
-            import structlog as _structlog
-            _structlog.get_logger(__name__).debug(
-                "quantised streaming capability skipped: %s", _qs_exc
-            )
+        # Inside the media import window: skipped once a load claimed it; /api/system resolves both later.
+        with background_media_import() as _window_open:
+            if _window_open:
+                try:
+                    _refresh_dense_quant_capability()
+                except Exception as _dq_exc:  # noqa: BLE001 -- a picker label must never break the warm
+                    import structlog as _structlog
+                    _structlog.get_logger(__name__).debug(
+                        "dense quant capability skipped: %s", _dq_exc
+                    )
+                try:
+                    _refresh_quantised_streaming_capability()
+                except Exception as _qs_exc:  # noqa: BLE001 -- a picker tier must never break the warm
+                    import structlog as _structlog
+                    _structlog.get_logger(__name__).debug(
+                        "quantised streaming capability skipped: %s", _qs_exc
+                    )
 
     if _post_warm_retired(generation):
         return
@@ -2451,9 +2457,18 @@ def _probe_quantised_streaming(supported: Any) -> bool:
 
 def _quantised_streaming() -> bool:
     """The streaming bit for ``/api/system``. Resolved here only once a load has already loaded every
-    module it reads, since a cold warm (UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1) never resolves it."""
+    module it reads, since a cold warm (UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1) never resolves it.
+    Needs each module initialised (probing mid-load races the load), not core.inference.video (image loads skip it)."""
     if _quantised_streaming_capability is None and all(
-        name in sys.modules for name in ("torch", "diffusers", "torchao", "core.inference.video")
+        (module := sys.modules.get(name)) is not None
+        and not getattr(getattr(module, "__spec__", None), "_initializing", False)
+        for name in (
+            "torch",
+            "torchao",
+            "diffusers",
+            "diffusers.hooks",
+            "diffusers.hooks.group_offloading",
+        )
     ):
         try:
             return _refresh_quantised_streaming_capability()
