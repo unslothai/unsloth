@@ -565,6 +565,28 @@ def test_speed_default_skips_cudnn_benchmark_on_rocm(monkeypatch, hip, version):
     assert torch.backends.cudnn.benchmark is False
 
 
+def test_speed_default_respects_family_cudnn_benchmark_opt_out(monkeypatch):
+    torch = _stub_torch(monkeypatch)
+    family = types.SimpleNamespace(supports_torch_compile = True, cudnn_benchmark = False)
+    applied = apply_speed_optims(
+        _Pipe(with_compile = True), _target(), is_gguf = False, family = family, speed_mode = SPEED_DEFAULT
+    )
+    assert applied["cudnn_benchmark"] is False
+    assert torch.backends.cudnn.benchmark is False
+    family = types.SimpleNamespace(supports_torch_compile = True, cudnn_benchmark = True)
+    applied = apply_speed_optims(
+        _Pipe(with_compile = True), _target(), is_gguf = False, family = family, speed_mode = SPEED_DEFAULT
+    )
+    assert applied["cudnn_benchmark"] is True and torch.backends.cudnn.benchmark is True
+
+
+def test_cudnn_benchmark_opt_out_image_families():
+    # Unmeasured families keep the benchmark.
+    from core.inference.diffusion_families import _FAMILIES
+    off = {fam.name for fam in _FAMILIES if not fam.cudnn_benchmark}
+    assert off == {"qwen-image", "flux.1", "z-image", "sdxl"}
+
+
 def test_speed_max_enables_tf32_and_fused_qkv(monkeypatch):
     torch = _stub_torch(monkeypatch)
     pipe = _Pipe(with_compile = True, with_fuse = True)

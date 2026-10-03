@@ -12615,6 +12615,65 @@ def test_ltx2_load_turns_cudnn_benchmark_back_off(fake_runtime, tmp_path, monkey
     assert "cudnn_benchmark" not in backend.status()["speed_optims"]
 
 
+def test_wan_load_turns_cudnn_benchmark_back_off(fake_runtime, monkeypatch):
+    # cudnn.benchmark's per-process conv pick made two servers decode the same Wan latents differently.
+    from core.inference import video as video_mod, video_ltx2
+
+    monkeypatch.setattr(
+        video_mod,
+        "apply_speed_optims",
+        lambda *a, **k: {"cudnn_benchmark": True, "compiled": False},
+    )
+    calls = []
+    monkeypatch.setattr(video_ltx2, "disable_cudnn_benchmark", lambda: calls.append(1) or True)
+    backend = VideoBackend()
+    status = backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
+    assert status["family"] == "wan2.2-ti2v-5b"
+    assert calls == [1]
+    assert "cudnn_benchmark" not in backend.status()["speed_optims"]
+
+
+def test_cudnn_benchmark_opt_out_families():
+    # Every family on the Wan or HunyuanVideo-1.5 VAE opts out (reproducibility), LTX-2 keeps its re-tune opt-out.
+    from core.inference.video_families import _FAMILIES
+
+    off = {fam.name for fam in _FAMILIES if not fam.cudnn_benchmark}
+    assert {
+        "wan2.2-ti2v-5b",
+        "wan2.2-t2v-a14b",
+        "ltx-2",
+        "hunyuanvideo-1.5",
+        "hunyuanvideo-1.5-720p",
+    } <= off
+    assert all(
+        fam.vae_force_fp32 or fam.name == "ltx-2" or fam.name.startswith("hunyuanvideo-1.5")
+        for fam in _FAMILIES
+        if not fam.cudnn_benchmark
+    )
+
+
+def test_hunyuanvideo15_load_keeps_cudnn_benchmark_off(fake_runtime, monkeypatch):
+    from core.inference import video as video_mod, video_ltx2
+
+    seen = []
+
+    def fake_speed(view, target, **kw):
+        seen.append(getattr(kw.get("family"), "cudnn_benchmark", True))
+        return {"cudnn_benchmark": True, "compiled": False}
+
+    monkeypatch.setattr(video_mod, "apply_speed_optims", fake_speed)
+    calls = []
+    monkeypatch.setattr(video_ltx2, "disable_cudnn_benchmark", lambda: calls.append(1) or True)
+    backend = VideoBackend()
+    status = backend.load_pipeline(
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v", model_kind = "pipeline"
+    )
+    assert status["family"] == "hunyuanvideo-1.5"
+    assert seen and seen[0] is False
+    assert calls == [1]
+    assert "cudnn_benchmark" not in backend.status()["speed_optims"]
+
+
 @pytest.mark.parametrize(
     "plan_fields, filename, direct, te_direct",
     [

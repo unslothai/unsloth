@@ -2574,7 +2574,7 @@ class FastBaseModel:
             elif family_decoder:
                 auto_config = text_config
                 auto_model = AutoModelForCausalLM
-                _apply_text_only_key_mapping(kwargs, parent_config, text_config)
+                _text_key_mapping = _apply_text_only_key_mapping(kwargs, parent_config, text_config)
                 text_only_decoder = True
         elif text_only and auto_model in [
             AutoModelForVision2Seq,
