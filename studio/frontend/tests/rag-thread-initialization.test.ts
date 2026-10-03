@@ -15,6 +15,14 @@ const OUTGOING_ID = "__LOCALID_outgoing";
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 type Scope = { type: "thread"; threadId: string };
 
+// @/features/chat re-exports the class from @/features/chat/api/chat-api, so the
+// bar and the scope materializer it calls must share one stub or a tombstone
+// would fail the instanceof check in one and not the other.
+class ChatThreadDeletedErrorStub extends Error {}
+
+const isAssistantLocalThreadId = (id: string | null | undefined) =>
+  typeof id === "string" && id.startsWith("__LOCALID_");
+
 function harness(
   options: {
     propId?: string | null;
@@ -128,7 +136,7 @@ function harness(
       },
       "@/features/chat": {
         chatHistoryClearBoundary: { capture: () => 0 },
-        ChatThreadDeletedError: class extends Error {},
+        ChatThreadDeletedError: ChatThreadDeletedErrorStub,
         isThreadIncognito: () => incognito,
         getStoredChatThread: async () => undefined,
         ensureStoredChatThread: async (threadId: string) => {
@@ -138,6 +146,29 @@ function harness(
           return threadId === itemId ? { id: itemId } : undefined;
         },
       },
+      "@/features/chat/api/chat-api": {
+        ChatThreadDeletedError: ChatThreadDeletedErrorStub,
+      },
+      "@/features/chat/utils/thread-ids": { isAssistantLocalThreadId },
+      "@/features/chat/utils/chat-thread-tombstones": {
+        isChatThreadDeleted: () => false,
+      },
+      // The real materializer: the bar delegates to it, so stubbing it away
+      // would leave these tests asserting against code the bar never runs.
+      "../utils/materialize-thread-scope": loadWithStubs<{
+        materializeThreadScope: (m: unknown) => Promise<string>;
+      }>(
+        new URL(
+          "../src/features/rag/utils/materialize-thread-scope.ts",
+          import.meta.url,
+        ),
+        {
+          "@/features/chat/api/chat-api": {
+            ChatThreadDeletedError: ChatThreadDeletedErrorStub,
+          },
+          "@/features/chat/utils/thread-ids": { isAssistantLocalThreadId },
+        },
+      ),
       "@/features/native-intents": {
         useNativeAttachmentTargetKey: () => ID,
         useNativeIntentStore: nativeStore,
