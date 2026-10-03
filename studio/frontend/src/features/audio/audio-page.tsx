@@ -818,7 +818,6 @@ export function AudioPage({
                 <p className="text-ui-11p5 leading-snug text-muted-foreground">
                   {workflowTab.hint}
                 </p>
-                {/* The always-on capability line: which task the selected model actually does. */}
                 <p className="text-xs leading-snug text-muted-foreground">
                   {capabilityLine}
                 </p>

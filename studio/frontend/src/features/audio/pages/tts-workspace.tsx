@@ -321,7 +321,6 @@ export function TtsFooter({
     shortcutLabel: string;
     error: GenerateBlocker | null;
     elapsedSeconds: number | null;
-    /** Said before a run that will load or switch the model first, e.g. "Loads Kokoro for Speak, about 5 s". */
     loadNote?: string | null;
   }) {
   return (
@@ -467,9 +466,7 @@ export function TtsOutput({
     selectedClipSrc: string | undefined;
     handleClearGallery: () => Promise<void>;
     onUseTextAgain: (clip: AudioGalleryClip) => void;
-    /** The other pages a clip can go to. */
     sendHandlersFor: (clip: AudioGalleryClip) => ClipSendHandlers;
-    /** The run in progress, drawn where its clip will appear. */
     pending: {
       title: string;
       status: string;
@@ -527,13 +524,12 @@ export function TtsOutput({
           <PendingClipCard {...pending} />
         ) : selectedClip ? (
           <ClipCard
-            // A fresh card per clip: one player whose src changes mid-play showed the old clip's position.
+            // Keyed per clip: a reused player kept the old clip's position.
             key={selectedClip.id}
             title={selectedClip.prompt}
             model={selectedClip.model}
             createdAt={selectedClip.created_at}
             durationS={selectedClip.duration_s}
-            // Auth-protected bytes: the card plays once this clip's object URL exists.
             src={selectedClipSrc ?? null}
             peaks={peaksById.get(selectedClip.id) ?? null}
             onDownload={
