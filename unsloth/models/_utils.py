@@ -6825,8 +6825,7 @@ def _forward_reads_checkpoint_function(cls):
 
 
 def _calls_checkpoint_function(module):
-    """True for modules that call `self._gradient_checkpointing_func` once their flag is on: transformers'
-    checkpointing layers, and older / remote-code backbones whose own forward does it."""
+    """Calls `self._gradient_checkpointing_func` when its flag is on (also older / remote-code backbones)."""
     layer_class = _gradient_checkpointing_layer_class()
     if layer_class is not None and isinstance(module, layer_class):
         return True
@@ -6848,7 +6847,7 @@ def resolve_training_gradient_checkpointing(model, use_gradient_checkpointing):
         return use_gradient_checkpointing
     if hasattr(model, "_unsloth_gradient_checkpointing"):
         return model._unsloth_gradient_checkpointing
-    # Nothing recorded (no adapter, full finetuning): whether loading armed the layers is the choice.
+    # Nothing recorded (no adapter, full finetuning): loading's choice is whether it armed the layers.
     checkpointing = [m for m in model.modules() if _calls_checkpoint_function(m)]
     if checkpointing:
         return any(not _is_unarmed(m) for m in checkpointing)
@@ -6856,12 +6855,10 @@ def resolve_training_gradient_checkpointing(model, use_gradient_checkpointing):
 
 
 def arm_gradient_checkpointing(model):
-    """A model loaded with checkpointing off has no checkpoint function on its layers; asking
-    for_training to turn checkpointing on installs it the way loading with it on does."""
+    """Install the checkpoint function a load with checkpointing off never gave the layers."""
     if not any(_is_unarmed(m) for m in model.modules()):
         return False
-    # The outer model may carry a per-model override (Gemma 3N / 4 reentrant, DeepSeek-V4.1 non-reentrant);
-    # a PEFT wrapper without one forwards the call to its base model.
+    # Outer model, not get_base_model(): Gemma 3N / 4 and DeepSeek-V4.1 install their override there.
     try:
         model.gradient_checkpointing_enable()
     except Exception as e:
@@ -6879,8 +6876,7 @@ def arm_gradient_checkpointing(model):
 
 
 def set_module_gradient_checkpointing(module, value):
-    """Set `module.gradient_checkpointing`, but never turn on a module that calls a checkpoint function
-    gradient_checkpointing_enable() never installed: its first training forward raises AttributeError."""
+    """Never turn on a module without its checkpoint function: its next training forward would raise."""
     if value and _is_unarmed(module):
         module.gradient_checkpointing = False
         return False

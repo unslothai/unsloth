@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""for_training() on a model loaded with use_gradient_checkpointing=False.
-
-The default used to be True, which flipped every transformers GradientCheckpointingLayer on even
-though gradient_checkpointing_enable() never gave it a `_gradient_checkpointing_func`, so the next
-training forward raised AttributeError.
-"""
+"""for_training() on a model loaded with use_gradient_checkpointing=False used to crash on the next forward."""
 
 import pytest
 import torch
