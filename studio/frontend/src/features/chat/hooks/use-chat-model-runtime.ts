@@ -3902,7 +3902,8 @@ export function useChatModelRuntime() {
       "unload",
     );
     if (!decision.proceed) return false;
-    if (!selectedLocal) stopQueuedRuns(decision, false);
+    // Before any unload, so a queued send cannot hold a kept model or load one back.
+    stopQueuedRuns(decision, false);
     // Others first: the selected model's eject refreshes, which would adopt one still loaded.
     const results = await Promise.allSettled(
       others.map((id) =>

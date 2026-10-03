@@ -2004,7 +2004,7 @@ test("ejects stop only the ejected model's chats; eject all asks once and unload
   assert.match(USE_CHAT_MODEL_RUNTIME, /stopQueuedRuns\(stopDecision, Boolean\(scope\)\);/);
   assert.match(
     USE_CHAT_MODEL_RUNTIME,
-    /"Unloading every model",\s*"unload",\s*\);\s*if \(!decision\.proceed\) return false;\s*if \(!selectedLocal\) stopQueuedRuns\(decision, false\);/,
+    /"Unloading every model",\s*"unload",\s*\);\s*if \(!decision\.proceed\) return false;\s*\/\/ Before any unload[^\n]*\n\s*stopQueuedRuns\(decision, false\);\s*\/\/ Others first/,
   );
   assert.match(
     USE_CHAT_MODEL_RUNTIME,
