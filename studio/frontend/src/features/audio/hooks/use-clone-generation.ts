@@ -74,6 +74,7 @@ export async function showRunResult({
         prompt: text,
         model: response.model,
         saved: true,
+        workflow: "clone",
       });
     } catch {
       // The id is still selected below; the next refresh shows it.
@@ -89,6 +90,7 @@ export async function showRunResult({
       prompt: text,
       model: response.model,
       saved: false,
+      workflow: "clone",
     });
   }
 }

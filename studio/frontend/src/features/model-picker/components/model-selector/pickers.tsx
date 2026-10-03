@@ -4284,7 +4284,16 @@ export function HubModelPicker({
               m,
             ) &&
             localModelMatchesFormat(m, formatFilter) &&
-            matchesLocalQuery(m),
+            matchesLocalQuery(m) &&
+            // A task page's own filter (the Audio page lists only its workflow's models) applies to local
+            // and LM Studio rows too, not just the cached Hub rows above.
+            (!rowFilter ||
+              rowFilter({
+                id: m.model_id ?? m.id,
+                task: m.task,
+                audioType: m.audio_type,
+                audioWorkflows: m.audio_workflows,
+              })),
         ),
         downloadedSort,
         loadTimes,
@@ -4299,6 +4308,7 @@ export function HubModelPicker({
       task,
       catalog,
       activeCatalogArtifactIds,
+      rowFilter,
     ],
   );
   // Local ./models entries. Chat-only Unsloth runs GGUF anywhere and MLX on Mac, so raw
@@ -4335,7 +4345,16 @@ export function HubModelPicker({
               localModelIsGguf(m) ||
               (isMac && localModelIsMlx(m))) &&
             localModelMatchesFormat(m, formatFilter) &&
-            matchesLocalQuery(m),
+            matchesLocalQuery(m) &&
+            // A task page's own filter (the Audio page lists only its workflow's models) applies to local
+            // and LM Studio rows too, not just the cached Hub rows above.
+            (!rowFilter ||
+              rowFilter({
+                id: m.model_id ?? m.id,
+                task: m.task,
+                audioType: m.audio_type,
+                audioWorkflows: m.audio_workflows,
+              })),
         ),
         downloadedSort,
         loadTimes,
@@ -4352,6 +4371,7 @@ export function HubModelPicker({
       task,
       catalog,
       activeCatalogArtifactIds,
+      rowFilter,
     ],
   );
   const sortedCustomFolderModels = useMemo(
@@ -4381,7 +4401,16 @@ export function HubModelPicker({
               m,
             ) &&
             localModelMatchesFormat(m, formatFilter) &&
-            matchesLocalQuery(m),
+            matchesLocalQuery(m) &&
+            // A task page's own filter (the Audio page lists only its workflow's models) applies to local
+            // and LM Studio rows too, not just the cached Hub rows above.
+            (!rowFilter ||
+              rowFilter({
+                id: m.model_id ?? m.id,
+                task: m.task,
+                audioType: m.audio_type,
+                audioWorkflows: m.audio_workflows,
+              })),
         ),
         customSort,
         loadTimes,
@@ -4396,6 +4425,7 @@ export function HubModelPicker({
       task,
       catalog,
       activeCatalogArtifactIds,
+      rowFilter,
     ],
   );
 

@@ -11,18 +11,16 @@ import { StripDropLine } from "@/components/gallery-strip-reorder";
 import { Button } from "@/components/ui/button";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { Progress } from "@/components/ui/progress";
+import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { ParamSlider } from "@/features/chat";
-import {
-  PillTabs,
-} from "@/features/model-picker/components/model-selector/pill-tabs";
+import { formatRelativeShort } from "@/features/hub/lib/format";
+import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   AudioWave01Icon,
   Copy01Icon,
-  Delete02Icon,
-  Download01Icon,
   SparklesIcon,
   StopIcon,
 } from "@hugeicons/core-free-icons";
@@ -38,11 +36,18 @@ import {
 } from "../audio-page-policy";
 import { TTS_MAX_TOKENS } from "../audio-workspace-constants";
 import { audioModelLabel, formatClipDuration } from "../audio-workspace-utils";
+import {
+  ClipCard,
+  type ClipSendHandlers,
+  ClipSendToMenu,
+  PendingClipCard,
+} from "../components/clip-card";
 import { Field } from "../components/field";
 import type { AudioHostState } from "../hooks/audio-host-state";
 import type { AudioGallery } from "../hooks/use-audio-gallery";
 import type { AudioModelSlot } from "../hooks/use-audio-model-slot";
 import type { SpeechGeneration } from "../hooks/use-speech-generation";
+import type { AudioWorkflowId } from "../workflows";
 
 export interface GenerateAction {
   label: string;
@@ -212,9 +217,7 @@ export function TtsRailFields({
             : "New loads use the GPU when there is one, and the CPU otherwise."}
         </p>
       </div>
-      {musicGeneration ||
-      samplingControls ||
-      audioOptionSpecs.length > 0 ? (
+      {musicGeneration || samplingControls || audioOptionSpecs.length > 0 ? (
         <AdvancedDisclosure
           open={advancedOpen}
           onOpenChange={setAdvancedOpen}
@@ -315,6 +318,7 @@ export function TtsFooter({
   error,
   elapsedSeconds,
   secondaryAction,
+  loadNote = null,
 }: Pick<
   SpeechGeneration,
   | "handleGenerate"
@@ -332,6 +336,8 @@ export function TtsFooter({
     elapsedSeconds: number | null;
     /** A quieter action beside Generate (Clone's Save voice…). */
     secondaryAction?: ReactNode;
+    /** Said before a run that will load or switch the model first, e.g. "Loads Kokoro for Speak, about 5 s". */
+    loadNote?: string | null;
   }) {
   return (
     <div className="flex w-full max-w-sm flex-col gap-2">
@@ -356,10 +362,19 @@ export function TtsFooter({
           />
         </>
       ) : null}
+      {loadNote && !generationPresentation ? (
+        <p className="text-center text-ui-11p5 leading-snug text-muted-foreground">
+          {loadNote}
+        </p>
+      ) : null}
       <div className="flex flex-wrap items-center justify-center gap-2">
         {secondaryAction}
         <Button
-          className="relative z-10 mx-auto h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+          className={cn(
+            "relative z-10 mx-auto h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100",
+            // Same Stop as Images: outline, neutral hover. Destructive is for deleting, not for stopping.
+            generationPresentation && "hover:bg-muted dark:hover:bg-muted",
+          )}
           onClick={
             generationPresentation?.canStop
               ? handleStopGeneration
@@ -374,7 +389,7 @@ export function TtsFooter({
                 (musicNeedsDescription && !audioInstructions.trim()) ||
                 blocker !== null
           }
-          variant={generationPresentation?.canStop ? "destructive" : "default"}
+          variant={generationPresentation ? "outline" : "default"}
           aria-describedby={blocker ? "audio-generate-blocker" : undefined}
           aria-keyshortcuts="Control+Enter Meta+Enter"
           title={
@@ -386,8 +401,13 @@ export function TtsFooter({
               <HugeiconsIcon icon={StopIcon} className="mr-2 size-4" />
               Stop
             </>
+          ) : generationPresentation ? (
+            <>
+              <Spinner className="mr-2 size-4" />
+              {generationPresentation.actionLabel}
+            </>
           ) : (
-            (generationPresentation?.actionLabel ?? "Generate")
+            "Generate"
           )}
         </Button>
       </div>
@@ -424,10 +444,12 @@ function ClipBadge({ text }: { text: string }) {
 }
 
 export function TtsOutput({
+  workflow,
   clips,
   selectedClip,
   selectedClipSrc,
   srcById,
+  peaksById,
   handleDownloadClip,
   handleDeleteClip,
   fallbackClip,
@@ -446,6 +468,8 @@ export function TtsOutput({
   handleDownloadClipById,
   onUseTextAgain,
   handleCopyPrompt,
+  sendHandlersFor,
+  pending,
   freshClipId,
   onFreshClipFocused,
   announcement,
@@ -453,6 +477,7 @@ export function TtsOutput({
 }: Pick<
   AudioGallery,
   | "srcById"
+  | "peaksById"
   | "handleDownloadClip"
   | "handleDeleteClip"
   | "fallbackClip"
@@ -468,11 +493,22 @@ export function TtsOutput({
   | "handleCopyPrompt"
 > &
   Pick<AudioHostState, "active"> & {
+    workflow: AudioWorkflowId;
     clips: AudioGalleryClip[];
     selectedClip: AudioGalleryClip | null;
     selectedClipSrc: string | undefined;
     handleClearGallery: () => Promise<void>;
     onUseTextAgain: (clip: AudioGalleryClip) => void;
+    /** The other pages a clip can go to. */
+    sendHandlersFor: (clip: AudioGalleryClip) => ClipSendHandlers;
+    /** The run in progress, drawn where its clip will appear. */
+    pending: {
+      title: string;
+      status: string;
+      elapsedSeconds: number | null;
+      canStop: boolean;
+      onStop: () => void;
+    } | null;
     emptyText: string;
     emptyActions?: ReactNode;
     freshClipId: string | null;
@@ -481,104 +517,84 @@ export function TtsOutput({
     /** A short tag after a clip's text, such as the voice a clone used. */
     clipBadge?: (clip: AudioGalleryClip) => string | null;
   }) {
-  const focusFreshClip = (element: HTMLAudioElement | null) => {
-    if (!element) return;
-    element.focus();
-    onFreshClipFocused();
-  };
+  const clipMenu = (clip: AudioGalleryClip, variant: "row" | "toolbar") => (
+    <GalleryItemMenu
+      variant={variant}
+      noun="clip"
+      active={active}
+      pinned={Boolean(clip.pinned)}
+      archived={false}
+      onTogglePin={() => void handleTogglePin(clip.id, !clip.pinned)}
+      onToggleArchive={() => void handleArchiveClip(clip.id)}
+      onDelete={() => void handleDeleteClip(clip.id)}
+      onDownload={() => void handleDownloadClipById(clip)}
+      onAddToProject={(projectId) => addAudioClipToProject(clip.id, projectId)}
+      leadingItems={
+        <>
+          <ClipSendToMenu current={workflow} handlers={sendHandlersFor(clip)} />
+          <DropdownMenuItem onClick={() => onUseTextAgain(clip)}>
+            <HugeiconsIcon
+              icon={SparklesIcon}
+              strokeWidth={1.75}
+              className="size-icon"
+            />
+            Use text again
+          </DropdownMenuItem>
+          <DropdownMenuItem onClick={() => void handleCopyPrompt(clip.prompt)}>
+            <HugeiconsIcon
+              icon={Copy01Icon}
+              strokeWidth={1.75}
+              className="size-icon"
+            />
+            Copy text
+          </DropdownMenuItem>
+        </>
+      }
+    />
+  );
   return (
     <>
       <output aria-live="polite" aria-atomic="true" className="sr-only">
         {announcement}
       </output>
       <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4">
-        {selectedClip ? (
-          <div className="flex w-full max-w-xl flex-col gap-3">
-            <p className="line-clamp-2 text-ui-13 text-muted-foreground">
-              {selectedClip.prompt}
-            </p>
-            {/* Auth-protected bytes, so mount a fresh player only once this clip's object URL exists: reusing
-                one media element while src is changing left History switches showing broken controls. */}
-            {selectedClipSrc ? (
-              <audio
-                key={selectedClip.id}
-                ref={selectedClip.id === freshClipId ? focusFreshClip : undefined}
-                controls={true}
-                src={selectedClipSrc}
-                className="w-full rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              />
-            ) : (
-              <div
-                role="status"
-                className="flex h-12 w-full items-center justify-center rounded-md border border-border text-ui-12 text-muted-foreground"
-              >
-                Loading audio…
-              </div>
-            )}
-            <div className="flex items-center gap-2 text-ui-11p5 text-muted-foreground">
-              <span title={selectedClip.model}>{audioModelLabel(selectedClip.model)}</span>
-              <span>·</span>
-              <span>{formatClipDuration(selectedClip.duration_s)}</span>
-              {clipBadge?.(selectedClip) ? (
-                <ClipBadge text={clipBadge(selectedClip) ?? ""} />
-              ) : null}
-              <span className="flex-1" />
-              <Button
-                variant="ghost"
-                size="sm"
-                aria-label="Download audio clip"
-                disabled={!srcById[selectedClip.id]}
-                onClick={() => handleDownloadClip(selectedClip)}
-              >
-                <HugeiconsIcon
-                  icon={Download01Icon}
-                  className="size-3.5"
-                />
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                aria-label="Delete audio clip"
-                onClick={() => void handleDeleteClip(selectedClip.id)}
-              >
-                <HugeiconsIcon
-                  icon={Delete02Icon}
-                  className="size-3.5"
-                />
-              </Button>
-            </div>
-          </div>
+        {pending ? (
+          <PendingClipCard {...pending} />
+        ) : selectedClip ? (
+          <ClipCard
+            // A fresh card per clip: one player whose src changes mid-play showed the old clip's position.
+            key={selectedClip.id}
+            title={selectedClip.prompt}
+            model={selectedClip.model}
+            createdAt={selectedClip.created_at}
+            durationS={selectedClip.duration_s}
+            // Auth-protected bytes: the card plays once this clip's object URL exists.
+            src={selectedClipSrc ?? null}
+            peaks={peaksById.get(selectedClip.id) ?? null}
+            onDownload={
+              srcById[selectedClip.id]
+                ? () => handleDownloadClip(selectedClip)
+                : null
+            }
+            menu={clipMenu(selectedClip, "row")}
+            status={clipBadge?.(selectedClip) ?? undefined}
+            focusOnMount={selectedClip.id === freshClipId}
+            onFocused={onFreshClipFocused}
+          />
         ) : fallbackClip ? (
-          <div className="flex w-full max-w-xl flex-col gap-3">
-            <p className="line-clamp-2 text-ui-13 text-muted-foreground">
-              {fallbackClip.prompt}
-            </p>
-            <audio
-              controls={true}
-              src={fallbackClip.url}
-              className="w-full"
-            />
-            <div className="flex items-center gap-2 text-ui-11p5 text-muted-foreground">
-              <span>
-                {audioModelLabel(fallbackClip.model)}
-                {fallbackClip.saved
-                  ? " · saved, waiting for the gallery"
-                  : " · not saved to the gallery"}
-              </span>
-              <span className="flex-1" />
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleDownloadFallbackClip}
-              >
-                <HugeiconsIcon
-                  icon={Download01Icon}
-                  className="size-3.5"
-                />
-                Download WAV
-              </Button>
-            </div>
-          </div>
+          <ClipCard
+            title={fallbackClip.prompt}
+            model={fallbackClip.model}
+            durationS={null}
+            src={fallbackClip.url}
+            peaks={null}
+            onDownload={handleDownloadFallbackClip}
+            status={
+              fallbackClip.saved
+                ? "saved, waiting for the gallery"
+                : "not saved to the gallery"
+            }
+          />
         ) : (
           <div className="grid justify-items-center gap-3">
             <p className="text-ui-13 text-muted-foreground">{emptyText}</p>
@@ -625,17 +641,12 @@ export function TtsOutput({
                 )}
               >
                 {historyReorder.cue?.id === clip.id && (
-                  <StripDropLine
-                    axis="y"
-                    edge={historyReorder.cue.edge}
-                  />
+                  <StripDropLine axis="y" edge={historyReorder.cue.edge} />
                 )}
                 <button
                   type="button"
                   onClick={() => selectClip(clip.id)}
-                  aria-current={
-                    clip.id === selectedId ? "true" : undefined
-                  }
+                  aria-current={clip.id === selectedId ? "true" : undefined}
                   className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-ui-13"
                 >
                   <HugeiconsIcon
@@ -646,7 +657,11 @@ export function TtsOutput({
                   {clipBadge?.(clip) ? (
                     <ClipBadge text={clipBadge(clip) ?? ""} />
                   ) : null}
-                  <span className="shrink-0 text-ui-11p5 text-muted-foreground">
+                  <span className="hidden shrink-0 truncate text-ui-11p5 text-muted-foreground @[30rem]:inline">
+                    {audioModelLabel(clip.model)} ·{" "}
+                    {formatRelativeShort(clip.created_at)}
+                  </span>
+                  <span className="shrink-0 font-mono text-ui-11p5 tabular-nums text-muted-foreground">
                     {formatClipDuration(clip.duration_s)}
                   </span>
                 </button>
@@ -657,46 +672,7 @@ export function TtsOutput({
                     onUnpin={() => void handleTogglePin(clip.id, false)}
                   />
                 )}
-                <GalleryItemMenu
-                  variant="row"
-                  noun="clip"
-                  active={active}
-                  pinned={Boolean(clip.pinned)}
-                  archived={false}
-                  onTogglePin={() =>
-                    void handleTogglePin(clip.id, !clip.pinned)
-                  }
-                  onToggleArchive={() => void handleArchiveClip(clip.id)}
-                  onDelete={() => void handleDeleteClip(clip.id)}
-                  onDownload={() => void handleDownloadClipById(clip)}
-                  onAddToProject={(projectId) =>
-                    addAudioClipToProject(clip.id, projectId)
-                  }
-                  leadingItems={
-                    <>
-                      <DropdownMenuItem
-                        onClick={() => onUseTextAgain(clip)}
-                      >
-                        <HugeiconsIcon
-                          icon={SparklesIcon}
-                          strokeWidth={1.75}
-                          className="size-icon"
-                        />
-                        Use text again
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        onClick={() => void handleCopyPrompt(clip.prompt)}
-                      >
-                        <HugeiconsIcon
-                          icon={Copy01Icon}
-                          strokeWidth={1.75}
-                          className="size-icon"
-                        />
-                        Copy text
-                      </DropdownMenuItem>
-                    </>
-                  }
-                />
+                {clipMenu(clip, "row")}
               </div>
             ))}
           </div>
