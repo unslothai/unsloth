@@ -60,7 +60,11 @@ def _stub_probe(
     result,
     seen = None,
 ):
-    def _probe(device, dtype, head_dim = 128):
+    def _probe(
+        device,
+        dtype,
+        head_dim = 128,
+    ):
         if seen is not None:
             seen.append((device, dtype))
         if isinstance(result, BaseException):
