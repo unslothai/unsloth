@@ -36,6 +36,7 @@ import {
   type AudioGenerationPhase,
   audioGenerationPresentation,
 } from "./audio-page-policy";
+import { clipReference } from "./audio-run-request";
 import { type CreateMode, deviceSizeBytes } from "./audio-workspace-utils";
 import { audioCapabilityLine, audioModelsForTask } from "./catalog";
 import type { ClipSendHandlers } from "./components/clip-card";
@@ -51,6 +52,7 @@ import {
   CloneFooter,
   CloneOutput,
   CloneRail,
+  adoptReference,
   clonePageModels,
 } from "./pages/clone-page";
 import { MusicOutput, MusicRail, musicPageModels } from "./pages/music-page";
@@ -527,6 +529,9 @@ export function AudioPage({
   // Send to: only pages that can take a finished clip today. Bytes first, so a failed fetch leaves the page.
   const sendHandlersFor = useCallback(
     (clip: AudioGalleryClip): ClipSendHandlers => ({
+      clone: () => {
+        if (transitionWorkflow("clone")) adoptReference(clipReference(clip));
+      },
       transcribe: () => {
         void (async () => {
           try {

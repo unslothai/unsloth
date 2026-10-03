@@ -12,47 +12,26 @@ import {
   selectionExpired,
   sourceFileUrl,
 } from "../audio-run-request";
-import { computePeaks } from "../components/waveform-peaks";
+import { decodePeaks } from "../components/waveform-decode";
 import {
   INITIAL_AUDIO_SOURCE_STATE,
   audioFileProblem,
   audioSourceReducer,
 } from "./audio-source-state";
 
-// Decoding a long file holds every sample in memory; past this only the duration is read.
-const DECODE_MAX_BYTES = 60 * 1024 * 1024;
 // A reference only needs seconds; a long take is still usable, the server keeps the first 30 s.
 const RECORDING_MAX_SECONDS = 5 * 60;
 const RECORDING_CHUNK_MS = 1000;
 
-/** Bar heights and length, read in the browser so the card draws before the upload finishes. */
-async function decodePeaks(
+/** Bar heights and length, read in the browser so the card draws before the upload finishes. Some
+ *  containers decode in a media element but not in Web Audio, so the length falls back to one. */
+async function readSource(
   blob: Blob,
 ): Promise<{ peaks: number[] | null; durationS: number | null }> {
-  if (blob.size > DECODE_MAX_BYTES) {
-    return { peaks: null, durationS: await mediaDuration(blob) };
-  }
-  const Offline =
-    window.OfflineAudioContext ||
-    (
-      window as unknown as {
-        webkitOfflineAudioContext?: typeof OfflineAudioContext;
-      }
-    ).webkitOfflineAudioContext;
-  if (!Offline) return { peaks: null, durationS: await mediaDuration(blob) };
-  try {
-    // decodeAudioData decodes at the context's rate; the rate only affects the sample count.
-    const context = new Offline(1, 1, 22050);
-    const buffer = await context.decodeAudioData(await blob.arrayBuffer());
-    const channels = Array.from(
-      { length: buffer.numberOfChannels },
-      (_, index) => buffer.getChannelData(index),
-    );
-    return { peaks: computePeaks(channels), durationS: buffer.duration };
-  } catch {
-    // Some containers decode in a media element but not in Web Audio.
-    return { peaks: null, durationS: await mediaDuration(blob) };
-  }
+  const decoded = await decodePeaks(blob);
+  return decoded.durationS === null
+    ? { peaks: null, durationS: await mediaDuration(blob) }
+    : decoded;
 }
 
 function mediaDuration(blob: Blob): Promise<number | null> {
@@ -116,7 +95,7 @@ export function useAudioSource({
     async (key: string, blob: Blob) => {
       const url = setObjectUrl(blob);
       dispatch({ type: "preview", key, peaks: null, durationS: null, url });
-      const { peaks, durationS } = await decodePeaks(blob);
+      const { peaks, durationS } = await readSource(blob);
       dispatch({ type: "preview", key, peaks, durationS, url });
     },
     [setObjectUrl],

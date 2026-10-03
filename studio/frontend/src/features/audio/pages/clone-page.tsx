@@ -76,7 +76,7 @@ type RailProps = Omit<
 /** Picking a source fills in what it already knows: a history clip's text, a voice's transcript
  *  and language. A transcript the user typed for another clip is replaced only when it came from
  *  the old source. */
-function adoptReference(next: AudioSourceSelection | null) {
+export function adoptReference(next: AudioSourceSelection | null) {
   const store = useAudioCloneStore.getState();
   const previous = store.reference;
   store.setReference(next);

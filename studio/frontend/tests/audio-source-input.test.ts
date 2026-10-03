@@ -212,5 +212,5 @@ test("the whole card is the drop target, with every way in", () => {
     hook.indexOf('void drawBlob("local", file)') <
       hook.indexOf("await uploadAudioInput("),
   );
-  assert.match(hook, /decodeAudioData/);
+  assert.match(hook, /await decodePeaks\(blob\)/);
 });

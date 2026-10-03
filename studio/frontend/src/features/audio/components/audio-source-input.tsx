@@ -32,6 +32,7 @@ import type { AudioGalleryClip } from "../api";
 import {
   type AudioSourceSelection,
   REFERENCE_MAX_SECONDS,
+  clipReference,
 } from "../audio-run-request";
 import {
   type AudioSourceStatus,
@@ -416,16 +417,7 @@ export function AudioSourceInput({
                     <button
                       type="button"
                       disabled={disabled}
-                      onClick={() =>
-                        onChange({
-                          kind: "clip",
-                          id: clip.id,
-                          name: clip.prompt || "Generated clip",
-                          durationS: clip.duration_s,
-                          transcript: clip.prompt || null,
-                          language: null,
-                        })
-                      }
+                      onClick={() => onChange(clipReference(clip))}
                       className="flex w-full min-w-0 items-center gap-2 rounded-full px-3 py-1.5 text-left text-ui-13 transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >
                       <span className="min-w-0 flex-1 truncate">
