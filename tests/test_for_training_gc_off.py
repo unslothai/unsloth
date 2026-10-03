@@ -172,3 +172,26 @@ def test_explicit_enable_goes_through_the_outer_override(which):
         layer._gradient_checkpointing_func.keywords == {"use_reentrant": True}
         for layer in _decoder_layers(model)
     )
+
+
+class _SlowDiffusion(torch.nn.Module):
+    _unsloth_slow_diffusion = True
+
+    def __init__(self, recorded):
+        super().__init__()
+        self._unsloth_gradient_checkpointing = recorded
+        self.enabled = 0
+
+    def gradient_checkpointing_enable(self):
+        self.enabled += 1
+
+
+@pytest.mark.parametrize("recorded", [True, False])
+def test_fastmodel_default_keeps_the_diffusion_adapter_choice(recorded):
+    from unsloth.models.loader import FastModel
+
+    model = _SlowDiffusion(recorded)
+    FastModel.for_training(model)
+    assert model.enabled == int(recorded)
+    FastModel.for_training(model, use_gradient_checkpointing = True)
+    assert model.enabled == int(recorded) + 1

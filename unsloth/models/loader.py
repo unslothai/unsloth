@@ -1666,7 +1666,9 @@ class FastModel(FastBaseModel):
     @staticmethod
     def for_training(model, use_gradient_checkpointing = None):
         if getattr(model, "_unsloth_slow_diffusion", False):
-            return FastDiffusionModel.for_training(model, use_gradient_checkpointing is not False)
+            if use_gradient_checkpointing is None:
+                use_gradient_checkpointing = getattr(model, "_unsloth_gradient_checkpointing", True)
+            return FastDiffusionModel.for_training(model, use_gradient_checkpointing)
         return FastBaseModel.for_training(model, use_gradient_checkpointing)
 
     @staticmethod
