@@ -201,3 +201,68 @@ for (const [name, file] of [
     assert.equal(press(false, 27), false);
   });
 }
+
+// A lost compositionend (#5546, macOS input-method switch) must not pin later idle Pinyin Enters.
+for (const reset of ["onFocus", "onBlur"] as const) {
+  test(`missing compositionend is cleared by ${reset}`, () => {
+    const state = newInputImeState();
+    const ime = inputImeHandlers(state);
+    ime.onCompositionStart();
+    assert.equal(state.open, true);
+    ime[reset]();
+    const enter = {
+      key: "Enter",
+      keyCode: 229,
+      metaKey: false,
+      ctrlKey: false,
+      shiftKey: false,
+      altKey: false,
+      timeStamp: 5000,
+      nativeEvent: { isComposing: false },
+    };
+    assert.equal(imeOwnsInputKeydown(enter, state), false);
+  });
+}
+
+test("every rename input resets IME state on focus and blur", () => {
+  for (const file of [
+    "components/app-sidebar.tsx",
+    "features/chat/thread-sidebar.tsx",
+  ]) {
+    const source = ts.createSourceFile(
+      file,
+      readSrc(file),
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TSX,
+    );
+    function visit(node: ts.Node) {
+      if (ts.isJsxAttributes(node)) {
+        const props = node.properties;
+        const spread = props.findIndex(
+          (p) =>
+            ts.isJsxSpreadAttribute(p) &&
+            p.expression.getText(source).startsWith("inputImeHandlers("),
+        );
+        if (spread >= 0) {
+          for (const name of ["onFocus", "onBlur"]) {
+            const override = props.findIndex(
+              (p, i) =>
+                i > spread &&
+                ts.isJsxAttribute(p) &&
+                p.name.getText(source) === name,
+            );
+            if (override >= 0)
+              assert.match(
+                props[override].getText(source),
+                /renameImeRef\.current\.open = false/,
+                `${file}: ${name} override drops the IME reset`,
+              );
+          }
+        }
+      }
+      ts.forEachChild(node, visit);
+    }
+    visit(source);
+  }
+});

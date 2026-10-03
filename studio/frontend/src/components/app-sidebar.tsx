@@ -4523,8 +4523,14 @@ export function AppSidebar() {
             onChange={(event) => setRenameDraft(event.target.value)}
             onKeyDown={handleInlineRenameKeyDown}
             {...inputImeHandlers(renameImeRef.current)}
-            onBlur={handleInlineRenameBlur}
-            onFocus={(event) => event.currentTarget.select()}
+            onBlur={() => {
+              renameImeRef.current.open = false;
+              handleInlineRenameBlur();
+            }}
+            onFocus={(event) => {
+              renameImeRef.current.open = false;
+              event.currentTarget.select();
+            }}
             maxLength={120}
             aria-label={translate("shell.dialog.renameChat.placeholder")}
             className={cn(

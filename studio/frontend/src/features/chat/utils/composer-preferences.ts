@@ -43,7 +43,14 @@ export function newInputImeState(): InputImeState {
 }
 
 export function inputImeHandlers(ime: InputImeState) {
+  // A compositionend can go missing (#5546, macOS input-method switch); focus
+  // changes always commit or cancel the composition, so they reset it, as the composers do.
+  const reset = () => {
+    ime.open = false;
+  };
   return {
+    onFocus: reset,
+    onBlur: reset,
     onCompositionStart: () => {
       ime.open = true;
     },
