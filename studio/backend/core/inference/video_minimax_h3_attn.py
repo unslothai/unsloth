@@ -300,6 +300,12 @@ def _fusable_parts(module: Any) -> Optional[tuple]:
     parts = tuple(getattr(module, name, None) for name in ("to_q", "to_k", "to_v"))
     if any(p is None for p in parts):
         return None
+    from torch import nn
+
+    # A wrapper (PadToMinM on the token refiner) carries a contract the fused nn.Linear would drop: unpadded, a short
+    # prompt's compiled refiner hits _int_mm's M > 16 assert.
+    if not all(isinstance(p, nn.Linear) for p in parts):
+        return None
     if not all(_per_token_int8(getattr(p, "weight", None)) for p in parts):
         return None
     if any(getattr(p, "bias", None) is not None for p in parts):
