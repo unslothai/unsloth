@@ -547,7 +547,6 @@ def _pinned_pipe(
     resident_flags,
     hf_hook = False,
 ):
-    """A pipe whose transformer carries one fake offload group per flag (True = pinned by the measured placement)."""
     torch = pytest.importorskip("torch")
     net = torch.nn.Linear(4, 4)
     if hf_hook:
@@ -558,14 +557,10 @@ def _pinned_pipe(
 
 
 def test_denoiser_residency_follows_the_final_placement(monkeypatch):
-    """16 GB Qwen-Image-2.1: the plan streams the DiT, the measured placement pins all 35 groups. Residency must read
-    the placement (every group pinned), not the plan's stream flag."""
+    """Residency reads the placement (16 GB: all 35 groups pinned), not the plan's stream flag."""
     assert dm.denoisers_pinned_resident(_pinned_pipe(monkeypatch, [True] * 35))
-    # 23 of 35 (the 12 GB partial keep): the rest streams every step
     assert not dm.denoisers_pinned_resident(_pinned_pipe(monkeypatch, [True] * 23 + [False] * 12))
-    # an accelerate hook (model / sequential offload) moves it whatever the groups say
     assert not dm.denoisers_pinned_resident(_pinned_pipe(monkeypatch, [True] * 35, hf_hook = True))
-    # no offload groups at all: nothing was pinned (a resident plan is already resident to the speed layer)
     assert not dm.denoisers_pinned_resident(_pinned_pipe(monkeypatch, []))
 
 
@@ -597,9 +592,7 @@ def test_pinned_denoiser_reads_real_group_offload_hooks(monkeypatch):
 
 
 def test_torchao_groups_stay_on_device_after_release_and_restore(monkeypatch):
-    """An oversized request streams the pinned groups of a torchao int8 DiT, then restore pins them again. The int8
-    wrapper can still report the onload device after a streamed offload while its data and scales sit on the host;
-    restore must judge it by the inner tensors, else the next request computes on a host weight."""
+    """Restore must check torchao inner tensors; the wrapper can report cuda while data sits on the host."""
     torch, _ = _cuda_offload_model()
     pytest.importorskip("torchao")
     from diffusers.hooks import apply_group_offloading
