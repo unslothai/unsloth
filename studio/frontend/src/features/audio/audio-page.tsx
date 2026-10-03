@@ -404,7 +404,6 @@ export function AudioPage({
     toolBlocker,
     claimedOptions,
   } = useSpeechGeneration({
-    // Clone keeps its own drafts and runs through its own hook; this one serves Speak and Music.
     workflow: ttsWorkflow === "music" ? "music" : "speak",
     status,
     busyRef,
@@ -424,8 +423,7 @@ export function AudioPage({
     replayQueuedTtsPick,
   });
 
-  // The clip's Transcribe button uses Transcribe's model, else one already on disk, so it works
-  // without a trip to Settings.
+  // Clone's Transcribe uses Transcribe's model, else one on disk, so it works without Settings.
   const lastSttDownloaded =
     lastSttRepo !== null &&
     downloadedSttArtifacts.some(
@@ -570,21 +568,16 @@ export function AudioPage({
       audioWorkflows: status?.audio_workflows,
       music: musicGeneration,
     });
-  // The model this page last loaded, shown in the picker as not loaded while another model holds the slot.
   const lastPageModel = useAudioWorkspaceStore(
     (state) => state.lastModelByWorkflow[pageWorkflow] ?? null,
   );
   const openSelector = useCallback(() => setSelectorOpen(true), []);
   const chooseModelAction = { label: "Choose a model", onClick: openSelector };
-  const handlePickRecommended = useCallback(
-    (id: string) => void pickRecommendedModel(id),
-    [pickRecommendedModel],
-  );
   const recommendedCloneActions = clonePageModels(MODELS_BY_MODE.speak, isMac)
     .slice(0, 2)
     .map((model) => ({
       label: `use ${model.name}`,
-      onClick: () => handlePickRecommended(model.id),
+      onClick: () => void pickRecommendedModel(model.id),
     }));
   const generateBlocker: GenerateBlocker | null =
     busy === "loading"
@@ -768,8 +761,7 @@ export function AudioPage({
         artifact.engine === sttLoadedEngine,
     } satisfies ModelOption;
   });
-  // Arriving on a page never loads anything: when the resident model cannot run it, the picker
-  // shows the page's last model, unloaded, so one pick brings it back.
+  // Arriving on a page never loads: the picker shows the page's last model, unloaded, to re-pick.
   const showLastPageModel =
     mode === "speak" && !pageModelLoaded && lastPageModel !== null;
   const selectorValue =
@@ -1159,7 +1151,7 @@ export function AudioPage({
                     {...outputProps}
                     modelReady={pageModelLoaded}
                     recommendedModels={selectorModels}
-                    onPickModel={handlePickRecommended}
+                    onPickModel={pickRecommendedModel}
                   />
                 ) : (
                   <SpeakOutput {...outputProps} modelReady={pageModelLoaded} />

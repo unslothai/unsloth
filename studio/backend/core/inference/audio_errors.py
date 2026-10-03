@@ -60,12 +60,7 @@ class AudioRuntimeError(RuntimeError):
     through ``audio_runtime_http_error``.
     """
 
-    def __init__(
-        self,
-        detail: str,
-        *,
-        status: int | None = None,
-    ):
+    def __init__(self, detail: str, *, status: int | None = None):
         self.detail = detail
         self.status = status
         super().__init__(detail)

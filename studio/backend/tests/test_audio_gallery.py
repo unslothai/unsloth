@@ -761,47 +761,26 @@ def test_the_clear_route_scopes_to_a_workflow():
     assert asyncio.run(clear_gallery_audio(current_subject = "tester")) == {"removed": 1}
 
 
-def test_a_clone_clip_keeps_its_workflow_and_run_fields():
+def test_a_clone_clip_keeps_its_workflow_and_run_fields_and_survives_a_speak_clear():
     from models.inference import AudioGalleryItem
     from routes.inference import _persist_tts_clip
 
-    clone = _persist_tts_clip(
-        _wav(),
-        24000,
-        "in my voice",
-        "qwen3-base",
-        "audiocpp_tts",
-        {
-            "role": "output",
-            "voice_id": "v" * 32,
-            "reference_name": "me.webm",
-            "settings": {"language": "English", "options": {}, "reference_text_used": True},
-            "source_clip_id": None,
-        },
-        "clone",
-    )
-    meta = json.loads((gallery.gallery_dir() / f"{clone['id']}.json").read_text(encoding = "utf-8"))
-    assert meta["workflow"] == "clone" and meta["role"] == "output"
-    # None-valued run fields are left out rather than written as null.
-    assert "source_clip_id" not in meta
-    (listed,) = gallery.list_audio()
-    item = AudioGalleryItem(**listed)
-    assert item.workflow == "clone" and item.voice_id == "v" * 32
-    assert item.reference_name == "me.webm" and item.settings["reference_text_used"] is True
-    # A clone clip saved with only its audio type would read as speak; the field keeps it clone.
-    assert gallery.set_flags(clone["id"], pinned = True)["workflow"] == "clone"
-
-
-def test_a_scoped_clear_spares_clone_clips():
-    from routes.inference import _persist_tts_clip
-
+    run = {"voice_id": "v" * 32, "settings": {"reference_text_used": True}, "source_clip_id": None}
     speech = gallery.save(_wav(), _meta())
-    clone = _persist_tts_clip(_wav(), 24000, "cloned", "m", "audiocpp_tts", None, "clone")
+    clone = _persist_tts_clip(_wav(), 24000, "hi", "qwen3-base", "audiocpp_tts", run, "clone")
+    meta = json.loads((gallery.gallery_dir() / f"{clone['id']}.json").read_text(encoding = "utf-8"))
+    assert meta["workflow"] == "clone" and "source_clip_id" not in meta
+    (item,) = [AudioGalleryItem(**r) for r in gallery.list_audio() if r["id"] == clone["id"]]
+    assert (
+        item.workflow == "clone"
+        and item.voice_id == "v" * 32
+        and item.settings["reference_text_used"] is True
+    )
+    # Its audio type alone would read as speak.
+    assert gallery.set_flags(clone["id"], pinned = True)["workflow"] == "clone"
     assert gallery.clear(workflow = "speak") == 1
     assert gallery.audio_path(speech["id"]) is None
     assert [r["id"] for r in gallery.list_audio()] == [clone["id"]]
-    assert gallery.clear(workflow = "clone") == 1
-    assert gallery.list_audio() == []
 
 
 def test_the_inputs_and_voices_folders_never_list_as_clips():

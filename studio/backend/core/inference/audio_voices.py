@@ -1,17 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Saved voices: a short reference clip plus its transcript, kept until the user deletes it.
-
-Each voice is a pair under the account's ``<gallery_dir>/voices``: ``{id}.wav`` (24 kHz mono, the
-first 30 s, as much as a clone run sends) and ``{id}.json``. As in the gallery, the sidecar is written last and is what makes
-a pair a voice, so a lone or hand-dropped WAV is never listed, served or deleted.
-"""
+"""Saved voices: ``{id}.wav`` (24 kHz mono, at most 30 s) plus ``{id}.json`` under the account's
+``<gallery_dir>/voices``, kept until deleted. As in the gallery the sidecar is written last and is
+what makes a pair a voice, so a lone WAV is never listed, served or deleted."""
 
 from __future__ import annotations
 
 import json
-import os
 import time
 import uuid
 from pathlib import Path
@@ -22,15 +18,16 @@ from core.inference.audio_inputs import (
     REFERENCE_MAX_SECONDS,
     REFERENCE_RATE,
     AudioInputError,
-    prepare_wav,
+    _valid_id,
+    _write_json,
+    inputs_dir,
+    transcode,
 )
 from loggers import get_logger
 
 logger = get_logger(__name__)
 
 MAX_VOICES = 200
-# A clone run sends at most this much of a reference, so a voice keeps no more.
-MAX_SECONDS = REFERENCE_MAX_SECONDS
 NAME_MAX = 80
 TRANSCRIPT_MAX = 4000
 LANGUAGE_MAX = 64
@@ -41,10 +38,6 @@ def voices_dir() -> Path:
     directory = audio_gallery.gallery_dir() / "voices"
     directory.mkdir(parents = True, exist_ok = True)
     return directory
-
-
-def _valid_id(voice_id: Optional[str]) -> bool:
-    return bool(voice_id) and bool(audio_gallery._ID_RE.match(str(voice_id)))
 
 
 def _sidecar(voice_id: str) -> Path:
@@ -76,16 +69,6 @@ def _record(voice_id: str, meta: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _write_json(path: Path, meta: dict[str, Any]) -> None:
-    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex[:8]}.tmp")
-    try:
-        tmp.write_text(json.dumps(meta), encoding = "utf-8")
-        os.replace(tmp, path)
-    except BaseException:
-        tmp.unlink(missing_ok = True)
-        raise
-
-
 def _clean_text(value: Optional[str], limit: int) -> Optional[str]:
     if value is None:
         return None
@@ -107,32 +90,23 @@ def _ids() -> list[str]:
         return []
 
 
-def create(
-    src_path: Path,
-    meta: dict[str, Any],
-    trim: Optional[dict[str, Any]] = None,
-) -> dict[str, Any]:
-    """Save the first 30 s of ``src_path`` (trimmed) as a 24 kHz mono voice; 400 past 200 voices."""
+def create(src_path: Path, meta: dict[str, Any]) -> dict[str, Any]:
+    """Save the first 30 s of ``src_path`` as a voice; 400 past 200 voices."""
     name = _clean_name(meta.get("name"))
     if len(_ids()) >= MAX_VOICES:
         raise AudioInputError(
             400, f"You have {MAX_VOICES} saved voices. Delete one to save another."
         )
-    start = float((trim or {}).get("start_s") or 0.0)
-    end = (trim or {}).get("end_s")
-    directory = voices_dir()
     voice_id = uuid.uuid4().hex
-    wav_path = directory / f"{voice_id}.wav"
-    staged = directory / f".{voice_id}.stage.wav"
+    wav_path = voices_dir() / f"{voice_id}.wav"
     try:
-        info = prepare_wav(
+        info = transcode(
             src_path,
-            staged,
+            wav_path,
             rate = REFERENCE_RATE,
-            layout = "mono",
-            start_s = start,
-            end_s = float(end) if end is not None else None,
-            max_seconds = MAX_SECONDS,
+            mono = True,
+            max_seconds = REFERENCE_MAX_SECONDS,
+            cut = True,
         )
         record_meta = {
             "name": name,
@@ -143,10 +117,8 @@ def create(
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "created_at_epoch": time.time(),
         }
-        os.replace(staged, wav_path)
         _write_json(_sidecar(voice_id), record_meta)
     except BaseException:
-        staged.unlink(missing_ok = True)
         wav_path.unlink(missing_ok = True)
         raise
     return _record(voice_id, record_meta)
@@ -213,9 +185,7 @@ def delete(voice_id: str) -> bool:
         _sidecar(voice_id).unlink(missing_ok = True)
     except OSError:
         pass
-    # Prepared copies of this voice in the inputs folder go with it.
     try:
-        from core.inference.audio_inputs import inputs_dir
         for copy in inputs_dir().glob(f"v-{voice_id}.*.wav"):
             copy.unlink(missing_ok = True)
     except OSError:

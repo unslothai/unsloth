@@ -143,12 +143,11 @@ export function TtsRailFields({
     isRecording: boolean;
     setAudioDeviceState: (next: string) => void;
     advancedOpen: boolean;
-    /** The page's own inputs in place of the Text field (Clone's reference, transcript and text). */
+    /** Replaces the Text field (Clone's reference, transcript and text). */
     inputs?: ReactNode;
-    /** Spec options a shown tool panel renders itself, which Advanced leaves out. */
     claimedOptions?: ReadonlySet<string>;
   }) {
-  // Advanced lists only what no shown tool panel renders itself.
+  // Advanced leaves out options a shown tool panel renders itself.
   const audioOptionSpecs = claimedOptions?.size
     ? allAudioOptionSpecs.filter((spec) => !claimedOptions.has(spec.name))
     : allAudioOptionSpecs;
@@ -334,7 +333,6 @@ export function TtsFooter({
     shortcutLabel: string;
     error: GenerateBlocker | null;
     elapsedSeconds: number | null;
-    /** A quieter action beside Generate (Clone's Save voice…). */
     secondaryAction?: ReactNode;
     /** Said before a run that will load or switch the model first, e.g. "Loads Kokoro for Speak, about 5 s". */
     loadNote?: string | null;
@@ -432,7 +430,8 @@ export function TtsFooter({
   );
 }
 
-function ClipBadge({ text }: { text: string }) {
+function ClipBadge({ text }: { text: string | null | undefined }) {
+  if (!text) return null;
   return (
     <span
       title={text}
@@ -514,7 +513,6 @@ export function TtsOutput({
     freshClipId: string | null;
     onFreshClipFocused: () => void;
     announcement: string;
-    /** A short tag after a clip's text, such as the voice a clone used. */
     clipBadge?: (clip: AudioGalleryClip) => string | null;
   }) {
   const clipMenu = (clip: AudioGalleryClip, variant: "row" | "toolbar") => (
@@ -654,9 +652,7 @@ export function TtsOutput({
                     className="size-3.5 shrink-0 text-muted-foreground"
                   />
                   <span className="min-w-0 flex-1 truncate">{clip.prompt}</span>
-                  {clipBadge?.(clip) ? (
-                    <ClipBadge text={clipBadge(clip) ?? ""} />
-                  ) : null}
+                  <ClipBadge text={clipBadge?.(clip)} />
                   <span className="hidden shrink-0 truncate text-ui-11p5 text-muted-foreground @[30rem]:inline">
                     {audioModelLabel(clip.model)} ·{" "}
                     {formatRelativeShort(clip.created_at)}

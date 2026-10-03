@@ -1035,8 +1035,7 @@ export function useAudioModelSlot({
     };
   }, [active, isMac]);
 
-  // A one-click pick from outside the picker (Clone's recommended models): resolve the quant the
-  // picker would, then take the same path, so an undownloaded model downloads first.
+  // Clone's recommended models: same path as the picker, so an undownloaded model downloads first.
   const pickRecommendedModel = useCallback(
     async (id: string) => {
       if (busyRef.current !== null) return;

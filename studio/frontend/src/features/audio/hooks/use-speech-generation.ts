@@ -221,8 +221,7 @@ export function useSpeechGeneration({
     ? "music"
     : nativeAudioInstructionsKind(status?.audio_type);
 
-  // The model tools this page shows for the loaded model. The instruction panels keep editing the
-  // page's instruction draft, as the rail always did; every other panel keeps its value per model.
+  // Instruction panels edit the page's instruction draft; other panels keep a value per model.
   const toolContext = useMemo(
     () =>
       audioModelContextFor(status, {
@@ -282,7 +281,6 @@ export function useSpeechGeneration({
       ),
     [toolPanels, toolValues, prompt, toolContext, audioOptionSpecs],
   );
-  /** Spec options a shown panel renders itself, which Advanced leaves out. */
   const claimedOptions = useMemo(
     () => claimedOptionNames(toolPanels),
     [toolPanels],
@@ -339,7 +337,7 @@ export function useSpeechGeneration({
       );
       return;
     }
-    // Advanced first, then what the shown panels set, which own their options.
+    // Panels own their options, so they override Advanced.
     const requestOptions = {
       ...audioOptionsForRequest(advancedOptionSpecs, audioOptionValues),
       ...toolRequest.patch.options,
@@ -536,7 +534,6 @@ export function useSpeechGeneration({
     toolPanels,
     toolValues,
     handleToolValueChange,
-    /** Why a shown panel holds Generate back, in words for the blocker line. */
     toolBlocker: toolRequest.error,
     claimedOptions,
     advancedOptionSpecs,

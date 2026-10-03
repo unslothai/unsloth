@@ -93,7 +93,6 @@ test("Generate says why it is off and runs from Mod+Enter anywhere on the page",
   assert.match(host, /\{ label: "Choose a music model", onClick: openSelector \}/);
   assert.match(host, /if \(busy === "generating"\) setGenerationError\(null\);/);
   assert.match(host, /!pageRootRef\.current\?\.contains\(event\.target\)/);
-  // Clone runs through its own hook; the shortcut follows the page.
   assert.match(
     host,
     /const handlePageGenerate =\s*ttsWorkflow === "clone" \? clone\.handleGenerate : handleGenerate;/,

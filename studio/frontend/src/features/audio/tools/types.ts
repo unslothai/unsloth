@@ -6,7 +6,6 @@ import type { AudioOptionSpec, AudioOptionValues } from "../audio-options";
 import type { AudioSourceRef } from "../audio-run-request";
 import type { AudioWorkflowId } from "../workflows";
 
-/** Whether a clone model needs the reference clip's transcript, as the status reports it. */
 export type AudioReferenceTextMode = "required" | "optional" | "unused";
 
 /** What a tool panel knows about the loaded model when deciding whether it applies. */
@@ -17,11 +16,8 @@ export interface AudioModelContext {
   cudaMusicGeneration: boolean;
   /** MiniMax Music 3 and YuE2 need a description beside the lyrics. */
   musicNeedsDescription: boolean;
-  /** The pages the loaded model runs on (status `audio_workflows`). Absent on older servers. */
   audioWorkflows?: readonly string[];
-  /** Request inputs the model's spec marks required (status `audio_required_inputs`). */
   requiredInputs?: readonly string[];
-  /** Status `audio_reference_text`: null when the model does not clone. */
   referenceTextMode?: AudioReferenceTextMode | null;
 }
 
@@ -33,17 +29,14 @@ export interface AudioRunPatch {
   inputs?: { reference?: AudioSourceRef; emotion?: AudioSourceRef };
   route?: string;
   text?: string;
-  /** Top-level speech speed (F5). */
   speed?: number;
-  /** A panel that changes whether the transcript is used, over what the model reports. */
+  /** Overrides the model's reported transcript use. */
   referenceTextMode?: "required" | "optional" | "hidden";
 }
 
 export interface CoreInputs {
   text: string;
-  /** Clone: the transcript typed for the reference clip. */
   referenceText?: string;
-  /** Clone: whether a reference clip is picked. */
   hasReference?: boolean;
 }
 
@@ -53,7 +46,6 @@ export interface AudioToolPanelProps<V> {
   specs: AudioOptionSpec[];
   disabled: boolean;
   ctx: AudioModelContext;
-  /** The page's own inputs, for panels that preview what they do to them. */
   core?: CoreInputs;
 }
 
@@ -78,6 +70,5 @@ export interface AudioToolPanel<V> {
   ) => string | null;
 }
 
-/** A panel of any value type, as the registry lists them. */
 // biome-ignore lint/suspicious/noExplicitAny: each panel owns its value shape; the host only passes it through.
 export type AnyAudioToolPanel = AudioToolPanel<any>;

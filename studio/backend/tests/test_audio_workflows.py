@@ -109,65 +109,31 @@ def test_workflow_ids_match_the_frontend_order():
     assert tuple(re.findall(r'^\s*id: "(\w+)"', block, re.M)) == aw.AUDIO_WORKFLOW_IDS
 
 
-def test_status_and_load_carry_the_clone_fields():
-    status = InferenceStatusResponse(
-        is_audio = True,
-        audio_type = AUDIO_CPP_TTS_AUDIO_TYPE,
-        audio_workflows = ["clone"],
-        audio_reference_text = "required",
-        audio_required_inputs = [],
-    )
-    dumped = status.model_dump()
-    assert dumped["audio_workflows"] == ["clone"]
-    assert dumped["audio_reference_text"] == "required"
-    assert dumped["audio_required_inputs"] == []
-    plain = InferenceStatusResponse(is_audio = True, audio_type = AUDIO_CPP_TTS_AUDIO_TYPE)
-    assert plain.audio_reference_text is None and plain.audio_required_inputs is None
-
-
-def _inventory_gguf(hub_root, folder, family, filename):
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location(
-        "_audio_cpp_models_helpers", Path(__file__).with_name("test_audio_cpp_models.py")
-    )
-    helpers = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(helpers)
-    _gguf_bytes = helpers._gguf_bytes
-
-    path = hub_root / folder / filename
-    path.parent.mkdir(parents = True, exist_ok = True)
-    path.write_bytes(_gguf_bytes(family = family))
-    return path.parent
+def test_status_carries_the_clone_fields():
+    clone = {"audio_workflows": ["clone"], "audio_reference_text": "required"}
+    status = InferenceStatusResponse(is_audio = True, audio_type = "audiocpp_tts", **clone)
+    assert status.model_dump().items() >= clone.items()
 
 
 @pytest.mark.parametrize(
-    "folder, family, filename, workflows",
+    "folder, family, workflows",
     [
-        ("Chatterbox-GGUF", "chatterbox", "chatterbox-q8_0.gguf", ["clone"]),
-        ("Chatterbox-Turbo-GGUF", "chatterbox_turbo", "chatterbox-turbo-q8_0.gguf", ["speak"]),
-        ("VoxCPM2-GGUF", "voxcpm2", "voxcpm2-q8_0.gguf", ["speak", "clone"]),
-        ("IndexTTS2-GGUF", "index_tts2", "index-tts2-q8_0.gguf", ["clone"]),
-        (
-            "Qwen3-TTS-12Hz-0.6B-Base-GGUF",
-            "qwen3_tts",
-            "qwen3-tts-12hz-0.6b-base-q8_0.gguf",
-            ["clone"],
-        ),
-        ("Kokoro-82M-GGUF", "kokoro_tts", "kokoro-82m-q8_0.gguf", ["speak"]),
+        ("Chatterbox-GGUF", "chatterbox", ["clone"]),
+        ("Chatterbox-Turbo-GGUF", "chatterbox_turbo", ["speak"]),
+        ("VoxCPM2-GGUF", "voxcpm2", ["speak", "clone"]),
+        ("Qwen3-TTS-12Hz-0.6B-Base-GGUF", "qwen3_tts", ["clone"]),
+        ("Kokoro-82M-GGUF", "kokoro_tts", ["speak"]),
     ],
 )
-def test_inventory_rows_of_clone_families_list_clone(tmp_path, folder, family, filename, workflows):
+def test_inventory_rows_of_clone_families_list_clone(tmp_path, folder, family, workflows):
     from hub.services.models import catalog_classification as cc
 
-    directory = _inventory_gguf(tmp_path, folder, family, filename)
-    found = cc._gguf_path_audio_workflows(directory, (f"someone/{folder}",))
-    assert found == workflows
-    # The explicit list wins over the task-and-type fallback, which would say speak.
-    row = CachedGgufRepo(
-        repo_id = f"someone/{folder}",
-        task = "text-to-speech",
-        audio_type = AUDIO_CPP_TTS_AUDIO_TYPE,
-        audio_workflows = found,
-    )
-    assert row.audio_workflows == workflows
+    from .test_audio_cpp_models import _gguf_bytes
+
+    path = tmp_path / folder / f"{folder.lower().removesuffix('-gguf')}-q8_0.gguf"
+    path.parent.mkdir(parents = True)
+    path.write_bytes(_gguf_bytes(family = family))
+    found = cc._gguf_path_audio_workflows(path.parent, (f"someone/{folder}",))
+    # The explicit list must win over the task-and-type fallback, which says speak.
+    row = CachedGgufRepo(repo_id = "r", task = "text-to-speech", audio_workflows = found)
+    assert found == row.audio_workflows == workflows

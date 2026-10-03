@@ -13,7 +13,7 @@ import { QWEN3_LANGUAGE_NAMES } from "../clone-policy";
 // Radix Select cannot hold an empty value, so "no language" travels as this.
 const AUTO = "__auto__";
 
-/** A language by name, or none (Auto). A saved value outside the list stays selectable. */
+// A saved value outside the list stays selectable.
 export function LanguageSelect({
   id,
   label,

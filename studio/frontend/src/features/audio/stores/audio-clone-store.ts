@@ -5,16 +5,14 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { AudioSourceSelection } from "../audio-run-request";
 
-export const AUDIO_CLONE_STORAGE_KEY = "unsloth_audio_clone_v1";
+const AUDIO_CLONE_STORAGE_KEY = "unsloth_audio_clone_v1";
 
-/** Clone's draft, and every page's model-tool values, kept across page switches and reloads. */
+/** Also holds every page's tool values, not just Clone's. */
 interface AudioCloneState {
   reference: AudioSourceSelection | null;
   referenceText: string;
   text: string;
-  /** Empty means Auto. */
   language: string;
-  /** Tool panel values by `${model}:${workflow}:${panelId}` (see toolValueKey). */
   toolValues: Record<string, unknown>;
   setReference: (reference: AudioSourceSelection | null) => void;
   setReferenceText: (referenceText: string) => void;
@@ -23,7 +21,7 @@ interface AudioCloneState {
   setToolValue: (key: string, value: unknown) => void;
 }
 
-/** Tool values kept at most; the oldest go first so a long history of models cannot grow storage forever. */
+/** Oldest evicted first so storage stays bounded. */
 const MAX_TOOL_VALUES = 200;
 
 export const useAudioCloneStore = create<AudioCloneState>()(
@@ -40,8 +38,9 @@ export const useAudioCloneStore = create<AudioCloneState>()(
       setLanguage: (language) => set({ language }),
       setToolValue: (key, value) =>
         set((state) => {
-          const { [key]: _previous, ...rest } = state.toolValues;
-          const entries = Object.entries(rest);
+          const entries = Object.entries(state.toolValues).filter(
+            ([existing]) => existing !== key,
+          );
           const kept =
             entries.length >= MAX_TOOL_VALUES
               ? entries.slice(entries.length - MAX_TOOL_VALUES + 1)

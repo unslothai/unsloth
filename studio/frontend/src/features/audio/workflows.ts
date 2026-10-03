@@ -116,8 +116,7 @@ export function clipWorkflow(clip: {
   return audioWorkflowForAudioType(clip.audio_type);
 }
 
-/** The page a just-loaded main-slot model opens: the current page when the model can run it, else
- *  the first page the backend lists for it, else Music or Speak by its audio type. */
+/** Current page if runnable, else the backend's first listed page, else Music/Speak by audio type. */
 export function workflowForLoadedModel({
   current,
   audioWorkflows,
@@ -136,8 +135,7 @@ export function workflowForLoadedModel({
   return music ? "music" : "speak";
 }
 
-/** Whether the loaded main-slot model can run this page. Older backends send no list, so the
- *  audio type decides between Music and Speak, and nothing older clones. */
+/** Older backends send no list: the audio type picks Music or Speak, and nothing clones. */
 export function loadedModelRunsWorkflow({
   workflow,
   audioWorkflows,

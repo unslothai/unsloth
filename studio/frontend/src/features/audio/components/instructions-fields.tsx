@@ -15,7 +15,6 @@ export function InstructionsField({
 }: {
   instructionsKind: NativeAudioInstructionsKind;
   musicNeedsDescription: boolean;
-  /** Maya1: the model cannot speak without a voice description. */
   voiceRequired?: boolean;
   audioInstructions: string;
   setAudioInstructions: (value: string) => void;

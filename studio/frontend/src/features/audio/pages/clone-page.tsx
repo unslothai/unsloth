@@ -29,7 +29,6 @@ import { useAudioVoicesStore } from "../stores/audio-voices-store";
 import { AudioToolPanels } from "../tools/tool-panel-host";
 import { TtsFooter, TtsOutput, TtsRailFields } from "./tts-workspace";
 
-// Downloaded first-choice clone models, in the order the picker offers them.
 const CLONE_MODEL_ORDER = [
   "Qwen3-TTS-12Hz-0.6B-Base-GGUF",
   "VoxCPM2-GGUF",
@@ -41,7 +40,6 @@ function cloneRank(id: string): number {
   return index === -1 ? CLONE_MODEL_ORDER.length : index;
 }
 
-/** Clone's picker rows: catalog models that can clone, the recommended ones first. */
 export function clonePageModels(
   models: ModelOption[],
   isMac: boolean,
@@ -55,12 +53,7 @@ export function clonePageModels(
         (!isMac || macTtsCatalogChoiceIsRunnable(model.id))
       );
     })
-    .map((model, index) => ({ model, index }))
-    .sort(
-      (a, b) =>
-        cloneRank(a.model.id) - cloneRank(b.model.id) || a.index - b.index,
-    )
-    .map(({ model }) => model);
+    .sort((a, b) => cloneRank(a.id) - cloneRank(b.id));
 }
 
 type RailProps = Omit<
@@ -73,9 +66,7 @@ type RailProps = Omit<
   | "claimedOptions"
 >;
 
-/** Picking a source fills in what it already knows: a history clip's text, a voice's transcript
- *  and language. A transcript the user typed for another clip is replaced only when it came from
- *  the old source. */
+// A transcript the user typed is replaced only when it came from the previous source.
 export function adoptReference(next: AudioSourceSelection | null) {
   const store = useAudioCloneStore.getState();
   const previous = store.reference;
@@ -84,15 +75,10 @@ export function adoptReference(next: AudioSourceSelection | null) {
   const typedForPrevious =
     store.referenceText.trim() !== "" &&
     store.referenceText !== (previous?.transcript ?? "");
-  if (next.transcript && !typedForPrevious) {
-    store.setReferenceText(next.transcript);
-  } else if (!next.transcript && !typedForPrevious) {
-    store.setReferenceText("");
-  }
+  if (!typedForPrevious) store.setReferenceText(next.transcript || "");
   if (next.language && !store.language) store.setLanguage(next.language);
 }
 
-/** Clone's own inputs: the reference, what it says, and the text to speak. */
 function CloneInputs({
   clone,
   historyClips,
@@ -236,14 +222,12 @@ function CloneInputs({
   );
 }
 
-/** Clone's rail: its inputs, then the model's tools, the device and Advanced, as on Speak. */
 export function CloneRail({
   clone,
   historyClips,
   ...props
 }: RailProps & {
   clone: CloneGeneration;
-  /** Gallery clips offered under From history. */
   historyClips: readonly AudioGalleryClip[];
 }) {
   const disabled = props.busy === "generating";
@@ -282,7 +266,6 @@ export function CloneRail({
   );
 }
 
-/** Generate, with Save voice… beside it for a reference worth keeping. */
 export function CloneFooter({
   clone,
   ...props
@@ -357,7 +340,6 @@ export function CloneFooter({
   );
 }
 
-/** Clone's output: the selected clip, then Clone's history with the voice each one used. */
 export function CloneOutput({
   modelReady,
   recommendedModels = [],
@@ -367,9 +349,7 @@ export function CloneOutput({
   ComponentProps<typeof TtsOutput>,
   "emptyText" | "clipBadge" | "emptyActions"
 > & {
-  /** Whether a clone model is loaded, so the empty copy asks only for what is missing. */
   modelReady: boolean;
-  /** Models offered as one-click picks while none that clones is loaded. */
   recommendedModels?: readonly ModelOption[];
   onPickModel?: (id: string) => void;
 }) {
