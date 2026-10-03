@@ -315,7 +315,7 @@ export function classifyFetchFailure(
     }
     return {
       kind: "network-opaque",
-      message: `The browser could not reach ${host}. A DNS or content filter, TLS-inspecting antivirus, a browser extension, or a CORS policy can all cause this, and the browser does not say which.`,
+      message: `Unable to reach ${host}. Check your network connection.`,
       origin,
       retryable: true,
     };

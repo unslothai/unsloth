@@ -2,9 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import type { en } from "./en";
+import { en } from "./en.ts";
 
 export const fr = {
+  // English fallback until this experimental feature is translated.
+  managedEngines: en.managedEngines,
   composerSettings: {
     title: "Saisie des messages",
     plainText: "Saisie en texte brut",
@@ -145,6 +147,13 @@ export const fr = {
       close: "Fermer la recherche",
       truncated: "Cette page est trop longue pour être parcourue en entier.",
     },
+    zoom: {
+      label: "Zoom",
+      zoomOut: "Zoom arrière",
+      zoomIn: "Zoom avant",
+      reset: "Réinitialiser",
+      announce: "Zoom {percent} %",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -205,6 +214,14 @@ export const fr = {
       help: "Aide",
       logOut: "Se déconnecter",
       shutdown: "Arrêter",
+    },
+    commandPalette: {
+      placeholder: "Saisissez une commande ou recherchez...",
+      noResults: "Aucun résultat trouvé.",
+      navigation: "Navigation",
+      actions: "Actions",
+      chat: "Chat",
+      searchChats: "Rechercher des chats...",
     },
     notFound: {
       title: "Page introuvable",
@@ -482,6 +499,10 @@ export const fr = {
         openKeyboardShortcuts: {
           label: "Raccourcis clavier",
           description: "Ouvrir cette liste de raccourcis",
+        },
+        openCommandPalette: {
+          label: "Palette de commandes",
+          description: "Ouvrir la palette de commandes",
         },
         searchChats: {
           label: "Rechercher dans les discussions",
@@ -1108,6 +1129,9 @@ export const fr = {
         source: "Source des modèles",
         sourceDescription: "Où le hub de modèles recherche et télécharge. Choisissez ModelScope si Hugging Face est bloqué ou lent sur votre réseau.",
         sourceFallback: "ModelScope n'a pas pu démarrer, Hugging Face est donc utilisé. Consultez les journaux d'Unsloth.",
+        autoSourceTitle: "Source des modèles basculée sur ModelScope",
+        autoSourceDescription: "Hugging Face est souvent lent ou bloqué dans votre région ; Unsloth télécharge donc désormais les modèles depuis ModelScope.",
+        autoSourceAction: "Ouvrir les paramètres de source des modèles",
         sectionTitle: "Hub de modèles",
         endpoint: "Point de terminaison Hugging Face",
         endpointDescription: "Source de téléchargement des modèles et jeux de données. Laissez vide pour huggingface.co, ou saisissez un miroir comme https://hf-mirror.com.",
@@ -1338,20 +1362,13 @@ export const fr = {
           wide: "Large",
           full: "Pleine largeur",
         },
-        composerAttachments: {
-          label: "Pièces jointes dans la zone de saisie",
-          description:
-            "De grandes cartes qui agrandissent la zone de saisie, ou une rangée compacte de vignettes.",
-          cards: "Grandes cartes",
-          compact: "Vignettes compactes",
-        },
         sentAttachments: {
           label: "Pièces jointes dans les messages envoyés",
           description:
-            "Une liste indiquant le type de chaque fichier, ou de petites étiquettes. Le mode automatique passe aux étiquettes au-delà de six fichiers.",
+            "Standard affiche chaque fichier avec son type, Compact en place davantage sur chaque ligne. Le mode automatique passe en compact au-delà de six fichiers.",
           auto: "Automatique",
-          list: "Liste",
-          chips: "Étiquettes",
+          list: "Standard",
+          chips: "Compact",
         },
         reset: "Réinitialiser",
         resetAll: "Réinitialiser la personnalisation",
@@ -1576,6 +1593,7 @@ export const fr = {
         noRamReserveDescription: "Réduit la RAM occupée par les poids du modèle.",
         noRamReserveHint: "Ignore le chargement mappé en mémoire sur les versions Windows compatibles lorsque le modèle est entièrement déchargé sur le GPU, afin que ses pages ne restent pas résidentes. Sinon, conserve le chargement mappé en mémoire. Les tampons CPU nécessaires peuvent toujours occuper de la RAM. Supprime --no-mmap et --mlock.",
         mlockVetoed: "--mlock reste désactivé : épingler le modèle réserverait de la RAM pour l'intégralité de celui-ci. Le déchargement automatique en veille reste désactivé.",
+        mlockNotApplicable: "Entièrement sur le GPU : rien à verrouiller en RAM système. Le déchargement automatique en veille reste désactivé.",
         memlockCapped: "Ce système limite la mémoire verrouillée à {limit}. Un modèle plus grand ne sera pas entièrement épinglé ; augmentez la limite avec ulimit -l.",
         reloadRequired: "Rechargez le modèle pour appliquer les nouvelles options de mémoire.",
         loadError: "Impossible de charger les paramètres de mémoire du modèle",
@@ -1818,9 +1836,6 @@ export const fr = {
         "Le texte collé de {count} caractères ou plus devient une pièce jointe .txt. Le texte plus court reste dans le champ de message.",
       pastedTextOffDescription:
         "Tout le texte collé reste dans le champ de message, quelle que soit sa longueur.",
-      projectsSection: "Afficher la section Projets",
-      projectsSectionDescription:
-        "Regroupe les discussions de projet sous un titre Projets. Désactivez cette option pour les lister dans Récents.",
       title: "Discussion",
       description: "Personnalisez le fonctionnement du chat sur cet appareil.",
       modelSelection: {
@@ -1857,6 +1872,11 @@ export const fr = {
       autoScrollManual: "Manuel",
       autoScrollKeywords:
         "défilement défiler automatique suivre bas sauter diffusion génération vue verrouiller scroll autoscroll follow",
+      scrollToBottomButton: "Bouton « Défiler vers le bas »",
+      scrollToBottomButtonDescription:
+        "Afficher un bouton pour revenir au dernier message après avoir fait défiler vers le haut.",
+      scrollToBottomButtonKeywords:
+        "défiler bas sauter dernier flèche bouton masquer scroll bottom button",
       showResponseModel: "Afficher le modèle de réponse",
       showResponseModelDescription:
         "Afficher les métadonnées du modèle dans les réponses de l’assistant.",
@@ -1929,6 +1949,22 @@ export const fr = {
           "Activez « {setting} » dans Paramètres → Chat pour que les Canvas chargent des ressources externes, ou autorisez-le uniquement pour ce Canvas.",
         blockedSettingsAction: "Ouvrir les paramètres",
         blockedDismiss: "Ignorer",
+        errorTitle: "Ce Canvas a rencontré une erreur",
+        errorTitlePlural: "Ce Canvas a rencontré {count} erreurs",
+        errorHint: "« Corriger avec le modèle » place l'erreur dans la zone de message. Rien n'est envoyé tant que vous n'envoyez pas.",
+        errorBannerAction: "Corriger avec le modèle",
+        errorConsoleAction: "Ouvrir la console",
+        errorConsoleHideAction: "Masquer la console",
+        errorLocation: "ligne {line}, colonne {column}",
+        errorLine: "ligne {line}",
+        consoleTitle: "Console",
+        reloadCanvas: "Relancer",
+        consoleMessageCount: "{count} message",
+        consoleMessageCountPlural: "{count} messages",
+        consoleClear: "Vider la console",
+        consoleClose: "Fermer la console",
+        consoleEmpty: "Aucune sortie console pour l'instant.",
+        consoleCapped: "Seules les {count} dernieres entrees sont conservees; la sortie precedente a ete abandonnee.",
       },
       data: "Données",
       exportHistory: "Exporter l'historique des discussions",
@@ -2222,11 +2258,13 @@ export const fr = {
       revoking: "Révocation...",
       decisionApi: {
         title: "API de décision",
-        description: "Répondez à des questions oui/non, à choix multiples et à score sur du texte avec un modèle Laya local. Compatible avec le SDK TypeSafe.",
+        description: "Répondez à des questions oui/non, à choix multiples et à score sur du texte avec un modèle sur cette machine ou un modèle de décision issu des Connexions. Compatible avec le SDK TypeSafe.",
         enable: "Répondre aux requêtes",
         enableDescription: "Sert /v1/systemone. L'activer télécharge le modèle.",
+        enableRemoteDescription: "Sert /v1/systemone.",
         lockedByEnv: "Défini par {name}.",
         model: "Modèle",
+        thisMachine: "Cette machine",
         modelMultilingual: "Multilingue",
         modelEnglish: "Anglais",
         modelTypedDecisions: "Décisions typées",
@@ -2243,11 +2281,18 @@ export const fr = {
         loading: "Chargement…",
         loadedOn: "Chargé sur {device}",
         download: "Télécharger",
+        downloadConfirmTitle: "Télécharger Laya {model} ?",
+        downloadConfirmBody:
+          "L'API de décision a besoin de ce modèle pour répondre aux requêtes. Environ {size}, téléchargé une seule fois dans votre cache Hugging Face.",
         unload: "Décharger",
         downloadBusy: "Un modèle de l'API de décision est déjà en cours de téléchargement.",
         downloadFailed: "Impossible de lancer le téléchargement.",
         saveFailed: "Impossible d'enregistrer le réglage de l'API de décision.",
         loadError: "Impossible de charger les réglages de l'API de décision.",
+        sendsTo: "Les requêtes sont envoyées à {provider}.",
+        connectionMissing: "Cette connexion n'existe plus ou n'a pas de modèle de décision. Choisissez un autre modèle.",
+        addConnection: "Pour utiliser un modèle de décision hébergé, ajoutez TypeSafe, Liquid AI ou OpenRouter dans Connexions.",
+        openConnections: "Ouvrir Connexions",
       },
       usageNoModel:
         "Chargez ou téléchargez un modèle pour voir des exemples exécutables. Aucun modèle n'est encore disponible sur ce serveur pour figurer dans les exemples.",

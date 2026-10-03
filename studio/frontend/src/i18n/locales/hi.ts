@@ -2,9 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import type { en } from "./en";
+import { en } from "./en.ts";
 
 export const hi = {
+  // English fallback until this experimental feature is translated.
+  managedEngines: en.managedEngines,
   composerSettings: {
     title: "संदेश लिखना",
     plainText: "सादा टेक्स्ट इनपुट",
@@ -145,6 +147,13 @@ export const hi = {
       close: "खोज बंद करें",
       truncated: "यह पेज पूरी तरह खोजने के लिए बहुत लंबा है।",
     },
+    zoom: {
+      label: "ज़ूम",
+      zoomOut: "ज़ूम आउट",
+      zoomIn: "ज़ूम इन",
+      reset: "रीसेट करें",
+      announce: "ज़ूम {percent}%",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -205,6 +214,14 @@ export const hi = {
       help: "सहायता",
       logOut: "लॉग आउट",
       shutdown: "शटडाउन",
+    },
+    commandPalette: {
+      placeholder: "कमांड टाइप करें या खोजें...",
+      noResults: "कोई परिणाम नहीं मिला।",
+      navigation: "नेविगेशन",
+      actions: "क्रियाएँ",
+      chat: "चैट",
+      searchChats: "चैट खोजें...",
     },
     notFound: {
       title: "पेज नहीं मिला",
@@ -481,6 +498,10 @@ export const hi = {
         openKeyboardShortcuts: {
           label: "कीबोर्ड शॉर्टकट",
           description: "यह शॉर्टकट सूची खोलें",
+        },
+        openCommandPalette: {
+          label: "कमांड पैलेट",
+          description: "कमांड पैलेट खोलें",
         },
         searchChats: {
           label: "चैट खोजें",
@@ -1089,6 +1110,9 @@ export const hi = {
         source: "मॉडल स्रोत",
         sourceDescription: "मॉडल हब कहाँ खोजता और डाउनलोड करता है। अगर आपके नेटवर्क पर Hugging Face ब्लॉक या धीमा है तो ModelScope चुनें।",
         sourceFallback: "ModelScope शुरू नहीं हो सका, इसलिए Hugging Face इस्तेमाल हो रहा है। Unsloth के लॉग देखें।",
+        autoSourceTitle: "मॉडल स्रोत ModelScope पर बदल दिया गया",
+        autoSourceDescription: "आपके क्षेत्र में Hugging Face अक्सर धीमा या ब्लॉक रहता है, इसलिए Unsloth अब ModelScope से मॉडल डाउनलोड करता है।",
+        autoSourceAction: "मॉडल स्रोत सेटिंग्स खोलें",
         sectionTitle: "मॉडल हब",
         endpoint: "Hugging Face एंडपॉइंट",
         endpointDescription: "मॉडल और डेटासेट यहीं से डाउनलोड होते हैं। huggingface.co के लिए खाली छोड़ें, या https://hf-mirror.com जैसा कोई मिरर डालें।",
@@ -1316,20 +1340,13 @@ export const hi = {
           wide: "चौड़ा",
           full: "पूरी चौड़ाई",
         },
-        composerAttachments: {
-          label: "इनपुट बॉक्स में अटैचमेंट",
-          description:
-            "बड़े कार्ड जो इनपुट बॉक्स को बड़ा करते हैं, या टाइलों की एक कॉम्पैक्ट पंक्ति।",
-          cards: "बड़े कार्ड",
-          compact: "कॉम्पैक्ट टाइलें",
-        },
         sentAttachments: {
           label: "भेजे गए संदेशों में अटैचमेंट",
           description:
-            "हर फ़ाइल के प्रकार के साथ एक सूची, या छोटे चिप्स। छह से ज़्यादा फ़ाइलें होने पर ऑटो चिप्स पर स्विच हो जाता है।",
+            "मानक हर फ़ाइल को उसके प्रकार के साथ दिखाता है, कॉम्पैक्ट हर पंक्ति में ज़्यादा फ़ाइलें दिखाता है। छह से ज़्यादा फ़ाइलें होने पर ऑटो कॉम्पैक्ट पर स्विच हो जाता है।",
           auto: "ऑटो",
-          list: "सूची",
-          chips: "चिप्स",
+          list: "मानक",
+          chips: "कॉम्पैक्ट",
         },
         reset: "रीसेट करें",
         resetAll: "कस्टमाइज़ेशन रीसेट करें",
@@ -1551,6 +1568,7 @@ export const hi = {
         noRamReserveDescription: "मॉडल वेट्स के लिए रखी गई RAM घटाता है।",
         noRamReserveHint: "जब मॉडल पूरी तरह GPU पर ऑफ़लोड हो, तो समर्थित Windows बिल्ड पर मेमोरी-मैप्ड लोडिंग छोड़ देता है, ताकि उसके पेज रेज़िडेंट न रहें। अन्यथा मेमोरी-मैप्ड लोडिंग बनाए रखता है। आवश्यक CPU बफ़र अब भी RAM ले सकते हैं। --no-mmap तथा --mlock हटा देता है।",
         mlockVetoed: "--mlock बंद ही रहता है: मॉडल को पिन करने से उसकी पूरी मात्रा के लिए RAM आरक्षित हो जाएगी। निष्क्रिय होने पर स्वतः अनलोड अब भी अक्षम है।",
+        mlockNotApplicable: "पूरी तरह GPU पर: सिस्टम RAM में लॉक करने के लिए कुछ नहीं। निष्क्रिय होने पर स्वतः अनलोड बंद रहता है।",
         memlockCapped: "यह सिस्टम लॉक की गई मेमोरी को {limit} तक सीमित करता है। इससे बड़ा मॉडल पूरी तरह पिन नहीं होगा; ulimit -l से सीमा बढ़ाएँ।",
         reloadRequired: "नई मेमोरी सेटिंग्स लागू करने के लिए मॉडल दोबारा लोड करें।",
         loadError: "मॉडल मेमोरी सेटिंग्स लोड नहीं हो सकीं",
@@ -1789,9 +1807,6 @@ export const hi = {
         "{count} या अधिक अक्षरों वाला पेस्ट किया गया टेक्स्ट .txt अटैचमेंट बन जाता है। छोटा टेक्स्ट संदेश बॉक्स में रहता है।",
       pastedTextOffDescription:
         "पेस्ट किया गया सारा टेक्स्ट संदेश बॉक्स में रहता है, चाहे उसकी लंबाई कितनी भी हो।",
-      projectsSection: "प्रोजेक्ट अनुभाग दिखाएँ",
-      projectsSectionDescription:
-        "प्रोजेक्ट चैट को प्रोजेक्ट शीर्षक के नीचे समूहित करता है। बंद करने पर वे हाल ही के अंतर्गत दिखती हैं।",
       title: "चैट",
       description: "इस डिवाइस पर चैट के व्यवहार को अपनी पसंद के अनुसार बदलें।",
       modelSelection: {
@@ -1828,6 +1843,11 @@ export const hi = {
       autoScrollManual: "मैन्युअल",
       autoScrollKeywords:
         "स्क्रॉल ऑटो-स्क्रॉल फ़ॉलो नीचे स्ट्रीमिंग जनरेट लॉक scroll autoscroll follow",
+      scrollToBottomButton: "नीचे स्क्रॉल करने का बटन",
+      scrollToBottomButtonDescription:
+        "ऊपर स्क्रॉल करने के बाद नवीनतम संदेश पर वापस जाने के लिए बटन दिखाएँ।",
+      scrollToBottomButtonKeywords:
+        "स्क्रॉल नीचे नवीनतम तीर बटन छिपाएँ scroll bottom button",
       showResponseModel: "जवाब देने वाला मॉडल दिखाएँ",
       showResponseModelDescription:
         "असिस्टेंट के जवाबों में मॉडल का मेटाडेटा दिखाएँ।",
@@ -1900,6 +1920,22 @@ export const hi = {
           "Canvas को बाहरी संसाधन लोड करने देने के लिए सेटिंग्स → चैट में “{setting}” चालू करें, या केवल इस Canvas के लिए अनुमति दें।",
         blockedSettingsAction: "सेटिंग्स खोलें",
         blockedDismiss: "खारिज करें",
+        errorTitle: "इस Canvas में एक त्रुटि आई",
+        errorTitlePlural: "इस Canvas में {count} त्रुटियाँ आईं",
+        errorHint: "“मॉडल से ठीक करें” त्रुटि को संदेश बॉक्स में रख देता है। जब तक आप न भेजें, कुछ नहीं भेजा जाता।",
+        errorBannerAction: "मॉडल से ठीक करें",
+        errorConsoleAction: "कंसोल खोलें",
+        errorConsoleHideAction: "कंसोल छिपाएँ",
+        errorLocation: "पंक्ति {line}, स्तंभ {column}",
+        errorLine: "पंक्ति {line}",
+        consoleTitle: "कंसोल",
+        reloadCanvas: "फिर से चलाएँ",
+        consoleMessageCount: "{count} संदेश",
+        consoleMessageCountPlural: "{count} संदेश",
+        consoleClear: "कंसोल साफ़ करें",
+        consoleClose: "कंसोल बंद करें",
+        consoleEmpty: "अभी कोई कंसोल आउटपुट नहीं।",
+        consoleCapped: "केवल अंतिम {count} प्रविष्टियाँ रखी जाती हैं; पुराना आउटपुट हटा दिया गया।",
       },
       data: "डेटा",
       exportHistory: "चैट इतिहास एक्सपोर्ट करें",
@@ -2183,11 +2219,13 @@ export const hi = {
       revoking: "रद्द किया जा रहा है...",
       decisionApi: {
         title: "निर्णय API",
-        description: "लोकल Laya मॉडल से टेक्स्ट पर हाँ/नहीं, बहुविकल्पी और स्कोर वाले सवालों के जवाब दें। TypeSafe SDK के साथ काम करता है।",
+        description: "इस मशीन के मॉडल या कनेक्शन के किसी निर्णय मॉडल से टेक्स्ट पर हाँ/नहीं, बहुविकल्पी और स्कोर वाले सवालों के जवाब दें। TypeSafe SDK के साथ काम करता है।",
         enable: "अनुरोधों का जवाब दें",
         enableDescription: "/v1/systemone चलाता है। चालू करने पर मॉडल डाउनलोड होता है।",
+        enableRemoteDescription: "/v1/systemone चलाता है।",
         lockedByEnv: "{name} द्वारा सेट।",
         model: "मॉडल",
+        thisMachine: "यह मशीन",
         modelMultilingual: "बहुभाषी",
         modelEnglish: "अंग्रेज़ी",
         modelTypedDecisions: "टाइप्ड निर्णय",
@@ -2204,11 +2242,18 @@ export const hi = {
         loading: "लोड हो रहा है…",
         loadedOn: "{device} पर लोड हुआ",
         download: "डाउनलोड करें",
+        downloadConfirmTitle: "Laya {model} डाउनलोड करें?",
+        downloadConfirmBody:
+          "Decision API को अनुरोधों का जवाब देने के लिए इस मॉडल की ज़रूरत है। लगभग {size}, आपके Hugging Face कैश में एक बार डाउनलोड होता है।",
         unload: "अनलोड करें",
         downloadBusy: "निर्णय API का एक मॉडल पहले से डाउनलोड हो रहा है।",
         downloadFailed: "डाउनलोड शुरू नहीं हो सका।",
         saveFailed: "निर्णय API की सेटिंग सेव नहीं हो सकी।",
         loadError: "निर्णय API की सेटिंग्स लोड नहीं हो सकीं।",
+        sendsTo: "अनुरोध {provider} को भेजे जाते हैं।",
+        connectionMissing: "यह कनेक्शन अब मौजूद नहीं है या इसमें कोई निर्णय मॉडल नहीं है। कोई दूसरा मॉडल चुनें।",
+        addConnection: "होस्ट किया गया निर्णय मॉडल इस्तेमाल करने के लिए कनेक्शन में TypeSafe, Liquid AI या OpenRouter जोड़ें।",
+        openConnections: "कनेक्शन खोलें",
       },
       usageNoModel:
         "चलाने योग्य उदाहरण देखने के लिए कोई मॉडल लोड या डाउनलोड करें। इस सर्वर के पास अभी बताने को कोई मॉडल नहीं है।",

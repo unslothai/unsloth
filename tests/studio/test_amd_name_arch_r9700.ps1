@@ -80,7 +80,7 @@ $otherNames = @(
     @{ N = "ATI Radeon 9700 PRO";          A = $null },
     @{ N = "ATI Radeon 9800 PRO";          A = $null },
     @{ N = "AMD Radeon R9 Fury X";         A = $null },
-    @{ N = "AMD Radeon RX 5700 XT";        A = $null },
+    @{ N = "AMD Radeon RX 5700 XT";        A = "gfx1010" },  # RDNA 1 routes on Windows since unslothai#11614
     @{ N = "AMD Radeon Pro WX 9100";       A = $null },
     @{ N = "AMD Instinct MI300X";          A = $null },
     @{ N = "NVIDIA GeForce RTX 4090";      A = $null },

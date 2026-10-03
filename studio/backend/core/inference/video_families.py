@@ -17,6 +17,7 @@ base repo, exactly like the image GGUF path.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Optional
@@ -84,6 +85,8 @@ class VideoFamily:
     supports_cuda_graph: bool = False
     # Video DiTs are bf16-native, so fp16 promotes to float32; defaults True.
     fp16_incompatible: bool = True
+    # "native" = measured accurate in plain float16 on fp16-only cards; None = promote (unmeasured).
+    fp16_guard: Optional[str] = None
     # Wan VAE decodes in float32 (bf16 causes banding / black frames), so the loader pins it back. Its size term is
     # already fp32.
     vae_force_fp32: bool = False
@@ -127,6 +130,9 @@ class VideoFamily:
     modular_workflow: Optional[str] = None
     # Released video and audio sigma shifts, when configurable.
     default_flow_shift: Optional[float] = None
+    # Static sigma shift ComfyUI samples this family with by default; the loader rebuilds the scheduler at it. None =
+    # keep the shipped scheduler. Distinct from default_flow_shift, which also exposes a user control.
+    comfy_flow_shift: Optional[float] = None
     default_audio_flow_shift: Optional[float] = None
     # First/last-frame conditioning: the request may carry keyframe images.
     supports_keyframes: bool = False
@@ -134,6 +140,17 @@ class VideoFamily:
     supports_references: bool = False
     # Guidance-distilled families expose neither CFG nor a negative prompt.
     supports_cfg: bool = True
+
+
+# MiniMax-H3 at ComfyUI's template default (ResolutionSelector 16:9, 0.4 MP, multiple 32 -> 864x480). Both sides are
+# multiples of 32 (VAE spatial compression 16 x patch 2), the only spatial rule the diffusers modular pipeline and
+# stable-diffusion.cpp (align_image_size, multiple = vae_scale_factor 16 * down_factor 2) enforce, and 864/480 = 1.8 sits
+# inside the trained 1:4..4:1 range. UNSLOTH_VIDEO_H3_480P=0 withdraws the pair.
+def _h3_480p_presets() -> tuple[tuple[int, int], ...]:
+    flag = os.environ.get("UNSLOTH_VIDEO_H3_480P", "1").strip().lower()
+    if flag in ("0", "false", "no", "off"):
+        return ()
+    return ((864, 480), (480, 864))  # fastest
 
 
 _FAMILIES: tuple[VideoFamily, ...] = (
@@ -165,7 +182,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             (768, 1344),
             (960, 544),  # faster
             (544, 960),  # faster
-        ),
+        )
+        + _h3_480p_presets(),
         duration_presets = (5.0, 10.0, 14.4),
         # Decimal GB resident estimates: transformer, Qwen3-VL conditioner, video+audio VAEs.
         bf16_components_gb = (66.3, 66.8, 11.1),
@@ -248,9 +266,10 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         prequant_variant_repos = (("lightricks/ltx-2.3", "fp8", "unsloth/LTX-2.3-FP8"),),
     ),
     # Wan2.2-TI2V-5B (diffusers >= 0.35, verified on 0.39): ~5B single-stream DiT (UMT5 encoder), no audio. Its VAE's
-    # temporal compression 4 gives valid frame counts 4k+1. Defaults 50 steps / CFG 5.
+    # temporal compression 4 gives valid frame counts 4k+1. Defaults 20 steps / CFG 5 (ComfyUI's template).
     VideoFamily(
         name = "wan2.2-ti2v-5b",
+        comfy_flow_shift = 8.0,  # ComfyUI ModelSamplingSD3 8 (TI2V-5B template)
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
         base_repo = "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
@@ -260,7 +279,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # "wan2.2-5b"/"wan-ti2v" are the picker/GGUF short ids; "wan2.2-ti2v" catches the repo stem
         aliases = ("wan2.2-5b", "wan-ti2v", "wan2.2-ti2v", "wan-ti2v-5b"),
         has_audio = False,
-        default_steps = 50,
+        default_steps = 20,
         default_guidance = 5.0,
         default_num_frames = 121,
         default_fps = 24,
@@ -273,6 +292,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # (11.4); VAE fp32 (2.8).
         bf16_components_gb = (10.0, 11.4, 2.8),
         vae_force_fp32 = True,
+        # UMT5 keeps its overflowing `wo` in fp32 itself; the VAE stays fp32 (vae_force_fp32).
+        fp16_guard = "native",
         # Byte-identical mirror of QuantStack/Wan2.2-TI2V-5B-GGUF (13 quants + companion VAE).
         gguf_repo = "unsloth/Wan2.2-TI2V-5B-GGUF",
     ),
@@ -281,6 +302,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     # transformer_2, so cfg2_kwarg is threaded only here.
     VideoFamily(
         name = "wan2.2-t2v-a14b",
+        comfy_flow_shift = 5.0,  # ComfyUI ModelSamplingSD3 5 (T2V-A14B template)
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
         base_repo = "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
@@ -298,8 +320,9 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         transformer2_class = "WanTransformer3DModel",
         is_moe = True,
         cfg2_kwarg = "guidance_scale_2",
-        default_steps = 50,
-        default_guidance = 5.0,
+        # ComfyUI's A14B template without the Lightning LoRA: 20 steps at CFG 3.5 on both experts.
+        default_steps = 20,
+        default_guidance = 3.5,
         # 81 frames at 16 fps ~5s (81 = 4*20 + 1), the A14B card's default clip.
         default_num_frames = 81,
         default_fps = 16,  # A14B runs at 16 fps (vs TI2V-5B's 24)
@@ -318,6 +341,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     # so only the community repacks load.
     VideoFamily(
         name = "hunyuanvideo-1.5",
+        comfy_flow_shift = 7.0,  # ComfyUI model default and template shift 7
         pipeline_class = "HunyuanVideo15Pipeline",
         transformer_class = "HunyuanVideo15Transformer3DModel",
         base_repo = "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
@@ -328,7 +352,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         aliases = ("hunyuanvideo-1-5", "hunyuanvideo1.5", "hunyuanvideo1-5", "hv15"),
         has_audio = False,
         guidance_via_guider = True,
-        default_steps = 50,
+        default_steps = 20,
         default_guidance = 6.0,
         default_num_frames = 121,
         default_fps = 24,
@@ -341,11 +365,13 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         resolution_presets = ((832, 480), (480, 832), (640, 640)),
         # DiT fp32 on disk (32.0 to 16.6 bf16); VAE 4.7 to 2.4; Qwen2.5-VL TE bf16 14.0 + ByT5 0.8
         bf16_components_gb = (16.6, 14.8, 2.4),
+        fp16_guard = "native",
     ),
     # The 720p t2v repack: same architecture and footprint as the 480p entry, only the trained resolution differs. Its
     # own family so a 720p load defaults to 720p sizes; the full-path alias outranks the generic token.
     VideoFamily(
         name = "hunyuanvideo-1.5-720p",
+        comfy_flow_shift = 7.0,  # ComfyUI model default and template shift 7
         pipeline_class = "HunyuanVideo15Pipeline",
         transformer_class = "HunyuanVideo15Transformer3DModel",
         base_repo = "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_t2v",
@@ -356,7 +382,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         aliases = ("hunyuanvideo-1.5-diffusers-720p_t2v", "hv15-720p"),
         has_audio = False,
         guidance_via_guider = True,
-        default_steps = 50,
+        default_steps = 20,
         default_guidance = 6.0,
         default_num_frames = 121,
         default_fps = 24,
@@ -365,6 +391,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # 720p-class presets: landscape, vertical, square (all /16).
         resolution_presets = ((1280, 720), (720, 1280), (960, 960)),
         bf16_components_gb = (16.6, 14.8, 2.4),
+        fp16_guard = "native",
     ),
 )
 
@@ -411,6 +438,15 @@ def detect_video_family(repo_id: str, override: Optional[str] = None) -> Optiona
 
 def supported_video_family_names() -> tuple[str, ...]:
     return tuple(fam.name for fam in _FAMILIES)
+
+
+def pipeline_available_video_families(*, device: Optional[str] = None) -> tuple[VideoFamily, ...]:
+    from .diffusion_families import family_selectable
+    return tuple(
+        fam
+        for fam in _FAMILIES
+        if family_selectable(fam) and not (device == "mps" and fam.modular_workflow)
+    )
 
 
 def resolve_video_base_repo(fam: VideoFamily, base_repo: Optional[str]) -> str:
@@ -781,10 +817,14 @@ def validate_video_reference_conditioning(
 _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("distilled", 8, 1.0),
     ("ltx", 40, 4.0),
-    # Wan2.2 pipelines default to 50 steps / CFG 5.0; both TI2V-5B and A14B share these.
-    ("wan", 50, 5.0),
-    # HunyuanVideo-1.5: 50 steps with the guider's shipped CFG 6.0.
-    ("hunyuanvideo", 50, 6.0),
+    # ComfyUI's templates for the same models (our baseline). Wan2.2-T2V-A14B: 20 steps at CFG 3.5 (Lightning LoRA
+    # off); before the generic Wan key.
+    ("a14b", 20, 3.5),
+    ("wan2.2-14b", 20, 3.5),
+    # Wan2.2-TI2V-5B: 20 steps at CFG 5.
+    ("wan", 20, 5.0),
+    # HunyuanVideo-1.5: 20 steps with the guider's shipped CFG 6.0.
+    ("hunyuanvideo", 20, 6.0),
 )
 
 

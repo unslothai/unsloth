@@ -4,7 +4,6 @@
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
-  DialogContent,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -12,6 +11,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { type ReactElement, useState } from "react";
 import { FieldLabel } from "./shared/field-label";
+import { RecipeDialogContent } from "./shared/recipe-dialog-content";
 
 type ImportDialogProps = {
   open: boolean;
@@ -48,12 +48,9 @@ export function ImportDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent
+      <RecipeDialogContent
         container={container}
-        position="absolute"
-        overlayPosition="absolute"
-        overlayClassName="bg-transparent"
-        className="corner-squircle max-h-[min(calc(650px*var(--ui-space-scale,1)),calc(100dvh-var(--studio-window-chrome-top,0px)-2rem))] overflow-auto sm:max-w-2xl shadow-border"
+        viewportClassName="overflow-auto"
       >
         <DialogHeader>
           <DialogTitle>Import recipe</DialogTitle>
@@ -82,7 +79,7 @@ export function ImportDialog({
             Import recipe
           </Button>
         </DialogFooter>
-      </DialogContent>
+      </RecipeDialogContent>
     </Dialog>
   );
 }
