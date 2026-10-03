@@ -11,6 +11,12 @@ import pytest
 from core.inference import diffusion_fast_load as fl
 
 
+@pytest.fixture(autouse = True)
+def _solid_state_disk(monkeypatch):
+    # CI disks can report rotational=1; the rotational skip has its own test below.
+    monkeypatch.setattr(fl, "_on_rotational_disk", lambda path: False)
+
+
 def _join_prefetch(handle, timeout = 30.0):
     assert handle is not None
     assert handle.join(timeout), "prefetch threads never finished"
@@ -95,6 +101,8 @@ def test_prefetch_declines_cached_small_or_ram_tight_loads(tmp_path, monkeypatch
     assert fl.start_prefetch([str(path)], min_bytes = 0) is None
     monkeypatch.delenv(fl.PREFETCH_ENV)
     _join_prefetch(fl.start_prefetch([str(path)], min_bytes = 0))
+    monkeypatch.setattr(fl, "_on_rotational_disk", lambda p: True)  # parallel slices would seek-thrash a disk
+    assert fl.start_prefetch([str(path)], min_bytes = 0) is None
 
 
 def _fake_snapshot(tmp_path):
@@ -292,3 +300,10 @@ def test_fast_upload_passes_tensor_subclasses_through(monkeypatch):
     with fl.fast_upload([module], "cuda"):
         module.to("cuda")
     assert module.weight.device.type == "cuda"
+
+
+def test_rotational_lookup_never_raises(tmp_path):
+    path = tmp_path / "w.safetensors"
+    path.write_bytes(b"z")
+    assert fl._on_rotational_disk(str(path)) in (True, False)
+    assert fl._on_rotational_disk(str(tmp_path / "missing")) is False

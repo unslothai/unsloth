@@ -95,6 +95,21 @@ def _available_host_mib() -> Optional[int]:
         return None
 
 
+def _on_rotational_disk(path: str) -> bool:
+    """True only when sysfs says the file's block device spins: parallel slice reads would seek-thrash it."""
+    try:
+        st = os.stat(path)
+        base = f"/sys/dev/block/{os.major(st.st_dev)}:{os.minor(st.st_dev)}"
+        for queue in (os.path.join(base, "queue"), os.path.join(base, "..", "queue")):
+            flag = os.path.join(queue, "rotational")
+            if os.path.isfile(flag):
+                with open(flag) as handle:
+                    return handle.read().strip() == "1"
+    except Exception:  # noqa: BLE001 - unknown (non-Linux, overlay, network): not rotational
+        pass
+    return False
+
+
 def _slices(size: int, parts: int) -> list[tuple[int, int]]:
     """``parts`` contiguous [start, end) ranges covering ``size``, aligned to 1 MiB."""
     align = 1 << 20
@@ -135,6 +150,10 @@ def start_prefetch(
                 pending.append(path)
                 need += missing
         if not pending or need < min_bytes:
+            return None
+        if any(_on_rotational_disk(path) for path in pending):
+            if logger is not None:
+                logger.info("diffusion.prefetch: skipped, the weights are on a rotational disk")
             return None
         available = _available_host_mib()
         if available is None or need > (int(available) << 20) // 2:
