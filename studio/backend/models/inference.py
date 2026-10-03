@@ -5165,8 +5165,8 @@ class AudioRunInputs(BaseModel):
 
 
 class AudioRunEdit(BaseModel):
-    """What an Edit speech run changes. Words: DotTTS markup or FireRedAudio instructions, rendered
-    by the client and checked against both transcripts. Delivery (FireRedAudio): numbers only."""
+    """Words: client-rendered DotTTS markup or FireRedAudio instructions, checked against both
+    transcripts. Delivery (FireRedAudio): numbers only."""
 
     model_config = ConfigDict(extra = "forbid")
 

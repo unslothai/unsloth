@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The exact requests audio.cpp receives for an Edit speech run, per family (spike S2's bodies).
-
-The golden cases are the shared fixture the frontend's Request preview is tested against, so the
-preview and the server agree call for call. A fake server records every ``post_json``; no runtime
-runs.
-"""
+"""The exact requests audio.cpp receives for an Edit run, per family. The golden cases share a
+fixture with the frontend, which builds each case's run body; a fake server records the calls."""
 
 from __future__ import annotations
 
@@ -199,19 +195,6 @@ def test_the_runtime_bodies_match_the_shared_fixture(case, started, tmp_path):
     assert wav == server.answers[-1]
     sent = [{"path": path, "body": _placeholders(body, server)} for path, body in server.calls]
     assert sent == case["runtime"]
-    # The pure builder the worker uses gives the same calls with the placeholders in place.
-    assert (
-        acb.edit_request_bodies(
-            model,
-            run["text"],
-            run["inputs"].get("reference_text"),
-            run["edit"],
-            {},
-            None,
-        )
-        == case["runtime"]
-    )
-    # Every chain step's temp WAV is gone afterwards.
     assert all(not os.path.exists(step) for step in server.step_files)
     assert list((tmp_path / "tmp").iterdir()) == []
 

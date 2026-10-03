@@ -108,18 +108,15 @@ class CloneSpec:
 
 @dataclass(frozen = True)
 class EditSpec:
-    """How a family edits the words or delivery of a recording (``/v1/tasks/run``, spike S2)."""
+    """How a family edits a recording through ``/v1/tasks/run``."""
 
-    # audiocpp_server task the edit runs under; one other than the model's own restarts the server.
     server_task: str
-    # ``markup`` (DotTTS ``<sub>``/``<del>``/``<ins>`` text), ``sentence`` (Vevo2: the whole new
-    # sentence) or ``instructions`` (FireRedAudio: one instruction per call, chained).
+    # markup (DotTTS <sub>/<del>/<ins>), sentence (Vevo2) or instructions (FireRedAudio, chained).
     style: str
-    # The request field that carries the recording.
     source_field: str = "source_audio"
     route: Optional[str] = None
     template: Optional[str] = None
-    # Template for speed and pitch changes; None when the family has no delivery control.
+    # Speed/pitch template; None = no delivery control.
     delivery_template: Optional[str] = None
     max_changes: Optional[int] = None
     input_rate: int = 24000
@@ -206,7 +203,6 @@ class AudioCppFamily:
     clone: Optional[CloneSpec] = None
     # Models it loads beside its own GGUF.
     companions: tuple[CompanionModel, ...] = ()
-    # How it edits a recording, when it does.
     edit: Optional[EditSpec] = None
 
     @property
@@ -374,9 +370,30 @@ _CLONE_FAMILIES: tuple[AudioCppFamily, ...] = (
     # name.
     AudioCppFamily("fireredtts3", "tts", speaks = False, clone = CloneSpec("optional")),
     # "FireRedAce": under tts it defaults to tts_clone, which needs reference audio.
-    AudioCppFamily("firered_audio", "tts", speaks = False, clone = CloneSpec("optional")),
-    # Vevo2 reads a sent transcript as text to speak, so it never gets one.
-    AudioCppFamily("vevo2", "tts", speaks = False, clone = CloneSpec("unused")),
+    AudioCppFamily(
+        "firered_audio",
+        "tts",
+        speaks = False,
+        clone = CloneSpec("optional"),
+        edit = EditSpec(
+            "tts",
+            "instructions",
+            source_field = "audio",
+            template = "semantic_edit",
+            delivery_template = "acoustic_edit",
+            max_changes = 5,
+            claims = ("template_name", "instruction"),
+        ),
+    ),
+    # Vevo2 reads a sent transcript as text to speak, so it never gets one. It edits only as an s2s
+    # session, so an edit after a Clone restarts the server.
+    AudioCppFamily(
+        "vevo2",
+        "tts",
+        speaks = False,
+        clone = CloneSpec("unused"),
+        edit = EditSpec("s2s", "sentence", route = "editing"),
+    ),
     # Needs voice audio too, and MioCodec beside it: the sibling-folder default never matches the
     # umbrella's folder name, so the codec path goes in by session option.
     AudioCppFamily(
@@ -586,31 +603,7 @@ _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
 
 FAMILIES: dict[str, AudioCppFamily] = {f.family: f for f in _FAMILY_LIST}
 
-# Speech editing (spike S2). Vevo2 edits only as a speech-to-speech session; FireRedAudio edits in
-# the tts session Clone loads, one instruction per call. DotTTS edits only as the Edit package,
-# picked by name in ``family_policy``.
-_EDIT_SPECS = {
-    "vevo2": EditSpec("s2s", "sentence", route = "editing"),
-    "firered_audio": EditSpec(
-        "tts",
-        "instructions",
-        source_field = "audio",
-        template = "semantic_edit",
-        delivery_template = "acoustic_edit",
-        max_changes = 5,
-        claims = ("template_name", "instruction"),
-    ),
-}
 _DOTS_EDIT = EditSpec("tts", "markup", template = "edit")
-
-
-def _with_edit_specs() -> None:
-    from dataclasses import replace
-    for name, spec in _EDIT_SPECS.items():
-        FAMILIES[name] = replace(FAMILIES[name], edit = spec)
-
-
-_with_edit_specs()
 
 # Spec task names that are not runtime task tokens.
 _SPEC_TO_SERVER_TASK = {
@@ -739,7 +732,7 @@ def family_policy(
         from dataclasses import replace
         return replace(policy, server_task = "clon")
     if family == "dots_tts" and re.search(r"(^|[-_ /])edit([-_ ./]|$)", " ".join(names).lower()):
-        # Only the Edit package edits; DotTTS-MF and SOAR speak.
+        # DotTTS-MF and SOAR only speak.
         from dataclasses import replace
         return replace(policy, edit = _DOTS_EDIT)
     return policy

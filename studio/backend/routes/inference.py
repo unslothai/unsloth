@@ -21377,7 +21377,7 @@ def _audio_request_problem(
     if (run_inputs or {}).get("workflow") == "edit":
         from core.inference import audio_edit
 
-        # The llama.cpp direct path reports no workflows, so it lands here too.
+        # The llama.cpp direct path reports no workflows.
         if not workflows or "edit" not in workflows or not model_info.get("audio_edit"):
             return "Load a model that can edit speech."
         if not inputs.get("source"):
@@ -21389,11 +21389,7 @@ def _audio_request_problem(
             run_inputs.get("reference_text"),
             label,
         )
-    cloning = (
-        bool(run_inputs)
-        and (run_inputs.get("workflow") == "clone" or bool(inputs))
-        and run_inputs.get("workflow") != "edit"
-    )
+    cloning = bool(run_inputs) and (run_inputs.get("workflow") == "clone" or bool(inputs))
     if cloning:
         if not workflows or "clone" not in workflows:
             return "Load a model that can clone a voice."
@@ -21793,7 +21789,7 @@ def _audio_run_settings(body: AudioRunRequest, reference_text_used: bool) -> dic
 
 
 def _audio_edit_settings(body: AudioRunRequest) -> dict[str, Any]:
-    """An edit's recipe for history: what changed and how, never a file or server path."""
+    """An edit's recipe for history; never a file or server path."""
     from core.inference import audio_edit
 
     edit = body.edit.model_dump(exclude_none = True) if body.edit is not None else {}
@@ -21821,13 +21817,40 @@ def _audio_run_clip(record: dict[str, Any], role: str) -> dict[str, Any]:
     }
 
 
+def _audio_run_response(
+    record: Optional[dict[str, Any]],
+    wav_bytes: bytes,
+    sample_rate: int,
+    model_name: str,
+    sources: list[dict[str, Any]] = (),
+    group_id: Optional[str] = None,
+) -> AudioRunResponse:
+    """The clips a run made; the WAV inline when history could not keep it."""
+    import base64
+
+    if record is None:
+        return AudioRunResponse(
+            clips = list(sources),
+            group_id = group_id,
+            model = model_name,
+            audio = {
+                "data": base64.b64encode(wav_bytes).decode("ascii"),
+                "format": "wav",
+                "sample_rate": sample_rate,
+            },
+        )
+    return AudioRunResponse(
+        clips = [_audio_run_clip(record, "output"), *sources],
+        group_id = group_id,
+        model = model_name,
+    )
+
+
 async def _run_audio_edit(
     body: AudioRunRequest, request: Request, current_subject: str
 ) -> AudioRunResponse:
-    """Edit speech: the recording is resolved in the caller's account and prepared as 24 kHz mono
-    (never cut: over 30 s is refused); an uploaded one is kept in history as the run's source."""
-    import base64
-
+    """Edit speech on a recording from the caller's account, prepared as 24 kHz mono. Over 30 s is
+    refused, never cut; an uploaded recording is kept in history as the run's source."""
     from core.inference import audio_edit, audio_inputs
 
     source_ref = body.inputs.source
@@ -21871,7 +21894,7 @@ async def _run_audio_edit(
             "audio_inputs": {"source": str(source_path)},
             "reference_text": reference_text,
             "edit": edit,
-            # Read by the request check only; the worker gets the text as the prompt.
+            # For the request check; the worker gets the text as the prompt.
             "text": body.text,
         },
     )
@@ -21905,23 +21928,7 @@ async def _run_audio_edit(
         "edit",
     )
     sources = [_audio_run_clip(source_record, "source")] if source_record is not None else []
-    if record is None:
-        return AudioRunResponse(
-            clips = sources,
-            group_id = group_id,
-            model = model_name,
-            audio = {
-                "data": base64.b64encode(wav_bytes).decode("ascii"),
-                "format": "wav",
-                "sample_rate": sample_rate,
-            },
-        )
-    # ``text`` stays None: FireRedAudio's answer text is not the edited transcript (S2).
-    return AudioRunResponse(
-        clips = [_audio_run_clip(record, "output"), *sources],
-        group_id = group_id,
-        model = model_name,
-    )
+    return _audio_run_response(record, wav_bytes, sample_rate, model_name, sources, group_id)
 
 
 @router.post("/audio/run", response_model = AudioRunResponse)
@@ -21935,8 +21942,6 @@ async def run_audio_workflow(
     Audio is named by id (an upload, a history clip or a saved voice) and resolved here, in the
     caller's account, to a prepared 24 kHz mono copy; the worker receives that path, never bytes
     and never a path the client chose."""
-    import base64
-
     from core.inference import audio_inputs
 
     if body.workflow == "edit":
@@ -22006,29 +22011,7 @@ async def run_audio_workflow(
         extra_meta,
         body.workflow,
     )
-    if record is None:
-        return AudioRunResponse(
-            clips = [],
-            model = model_name,
-            audio = {
-                "data": base64.b64encode(wav_bytes).decode("ascii"),
-                "format": "wav",
-                "sample_rate": sample_rate,
-            },
-        )
-    return AudioRunResponse(
-        clips = [
-            {
-                "id": record["id"],
-                "role": "output",
-                "url": record["url"],
-                "sample_rate": record["sample_rate"],
-                "duration_s": record["duration_s"],
-                "workflow": record["workflow"],
-            }
-        ],
-        model = model_name,
-    )
+    return _audio_run_response(record, wav_bytes, sample_rate, model_name)
 
 
 def _refuse_decision_connection(provider_type: Optional[str], api_type: Optional[str]) -> None:

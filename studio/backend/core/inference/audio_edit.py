@@ -3,9 +3,8 @@
 
 """Checks for an Edit speech request, and the source clip an edit keeps in history.
 
-The client computes the word diff and sends it rendered: DotTTS markup or FireRedAudio
-instructions. Nothing here re-diffs; each check holds the rendered changes against the two
-transcripts, so a malformed or injected value is refused before it reaches the runtime.
+The client renders the word diff (DotTTS markup or FireRedAudio instructions); each check holds it
+against both transcripts, so a malformed or injected value never reaches the runtime.
 """
 
 from __future__ import annotations
@@ -19,8 +18,7 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# The transcribe cap. A longer recording is refused, never cut: a cut one no longer matches its
-# transcript.
+# Refused, never cut: a cut recording no longer matches its transcript.
 EDIT_SOURCE_MAX_SECONDS = 30.0
 
 TOO_LONG = "Edit works on recordings up to 30 s. Record or upload a shorter take."
@@ -43,7 +41,6 @@ def _collapse(text: Optional[str]) -> str:
 
 
 def markup_tags(markup: str) -> int:
-    """How many ``<sub>``, ``<del>`` and ``<ins>`` tags ``markup`` holds."""
     return len(_MARKUP_TAG_RE.findall(markup or ""))
 
 
@@ -95,8 +92,8 @@ def check_instructions(
     max_changes: Optional[int],
     label: str = "FireRedAudio",
 ) -> Optional[str]:
-    """Why FireRedAudio ``instructions`` are refused; None when each is a verified form whose old
-    words (or anchor) are in ``original`` and whose new words are in ``edited``."""
+    """Why FireRedAudio ``instructions`` are refused; None when each is a known form whose old words
+    (or anchor) are in ``original`` and new words in ``edited``."""
     items = list(instructions or ())
     if not items:
         return NO_CHANGE
@@ -125,8 +122,7 @@ def check_instructions(
 
 
 def delivery_instructions(speed: Optional[float], pitch_steps: Optional[int]) -> list[str]:
-    """FireRedAudio acoustic_edit instructions, one per call: speed first, then pitch (S2's two
-    verified forms; pitch only rises)."""
+    """FireRedAudio acoustic_edit instructions, one per call; pitch only rises."""
     out: list[str] = []
     if speed is not None and float(speed) != 1.0:
         out.append(f"adjust the speed to {float(speed):g}x")
@@ -136,7 +132,6 @@ def delivery_instructions(speed: Optional[float], pitch_steps: Optional[int]) ->
 
 
 def change_count(edit: dict[str, Any]) -> int:
-    """The number of changes a request makes, for history."""
     if edit.get("mode") == "delivery":
         return len(delivery_instructions(edit.get("speed"), edit.get("pitch_steps")))
     if edit.get("markup"):
@@ -153,7 +148,7 @@ def request_problem(
     reference_text: Optional[str],
     label: str,
 ) -> Optional[str]:
-    """Why the loaded model's edit ``rules`` (status ``audio_edit``) refuse this edit; else None."""
+    """Why the loaded model's ``audio_edit`` rules refuse this edit; else None."""
     edit = edit or {}
     rules = rules or {}
     style = rules.get("style")
@@ -183,7 +178,7 @@ def request_problem(
 
 
 def source_seconds(path: Path, trim: Optional[dict[str, Any]]) -> Optional[float]:
-    """Length of ``path`` after ``trim``, from the WAV header; None when unreadable."""
+    """Length of ``path`` after ``trim`` from the WAV header; None when unreadable."""
     from core.inference.audio_inputs import wav_info
 
     try:
@@ -213,11 +208,8 @@ def save_source_clip(
     trim: Optional[dict[str, Any]],
     group_id: str,
 ) -> Optional[dict[str, Any]]:
-    """Keep an uploaded recording in history beside its edit, so A/B outlives the upload's day.
-
-    Returns the gallery record; an existing source clip of the same audio and trim is reused. None
-    for a source that is already in history (a clip) or has no upload record. The record never
-    carries a server path."""
+    """Keep an uploaded recording in history beside its edit, so A/B outlives the upload. Reuses a
+    source clip of the same audio and trim; None for a history clip or an upload with no record."""
     from core.inference import audio_gallery, audio_inputs
 
     if getattr(source, "kind", None) != "input":
