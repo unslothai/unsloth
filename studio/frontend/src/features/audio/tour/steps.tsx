@@ -2,31 +2,41 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { TourStep } from "@/features/tour";
+import type { AudioWorkflowId } from "../workflows";
 
 const modeStep: TourStep = {
   id: "mode",
   target: "audio-mode",
-  title: "Generate or Transcribe",
+  title: "Pick a page",
   body: (
     <>
-      Generate makes speech and music from text. Transcribe turns a recording
-      into text. They use different models, so the picker above follows the
-      mode.
+      Open the page title to switch pages. Speak turns text into speech, Clone
+      speaks in the voice from a short recording, Music makes songs and sound
+      effects, and Transcribe turns a recording into text. Each lists only the
+      models that can do it, so the picker above follows the page.
     </>
   ),
 };
 
-const modelStep: TourStep = {
-  id: "model",
-  target: "audio-model",
-  title: "Pick a model",
-  body: (
-    <>
-      TTS and music models for Generate, speech recognition for Transcribe.
-      Voices you fine-tuned show up under On Device.
-    </>
-  ),
+const MODEL_STEP_BODY: Record<AudioWorkflowId, string> = {
+  speak:
+    "Text-to-speech models, including voices you fine-tuned under On Device.",
+  clone:
+    "Models that can speak in the voice of a short recording you give them.",
+  edit: "Models that can change words in a recording and keep the voice.",
+  music: "Music models. Loading one replaces the model in the main slot.",
+  transcribe:
+    "Speech recognition models. They run beside your chat model, not in its place.",
 };
+
+function modelStep(workflow: AudioWorkflowId): TourStep {
+  return {
+    id: "model",
+    target: "audio-model",
+    title: "Pick a model",
+    body: <>{MODEL_STEP_BODY[workflow]}</>,
+  };
+}
 
 const outputStep: TourStep = {
   id: "output",
@@ -40,16 +50,15 @@ const outputStep: TourStep = {
   ),
 };
 
-/** The two modes swap the settings body and the footer, so each gets its own middle step. */
 export function buildAudioTourSteps({
-  mode,
+  workflow,
 }: {
-  mode: "speak" | "transcribe";
+  workflow: AudioWorkflowId;
 }): TourStep[] {
-  if (mode === "transcribe") {
+  if (workflow === "transcribe") {
     return [
       modeStep,
-      modelStep,
+      modelStep(workflow),
       {
         id: "record",
         target: "audio-record",
@@ -65,19 +74,102 @@ export function buildAudioTourSteps({
     ];
   }
 
+  if (workflow === "clone") {
+    return [
+      modeStep,
+      modelStep(workflow),
+      {
+        id: "reference",
+        target: "audio-clone-reference",
+        title: "Reference clip",
+        body: (
+          <>
+            Upload, record or pick a few seconds of the voice to copy. A saved
+            voice works too.
+          </>
+        ),
+      },
+      {
+        id: "transcript",
+        target: "audio-clone-transcript",
+        title: "What's said in the clip",
+        body: (
+          <>
+            Some models need the clip's words to match its voice. Type them or
+            press Transcribe.
+          </>
+        ),
+      },
+      {
+        id: "text",
+        target: "audio-clone-text",
+        title: "Text to speak",
+        body: <>What the cloned voice should say.</>,
+      },
+      outputStep,
+    ];
+  }
+
+  if (workflow === "edit") {
+    return [
+      modeStep,
+      modelStep(workflow),
+      {
+        id: "recording",
+        target: "audio-edit-recording",
+        title: "Recording",
+        body: (
+          <>
+            Upload, record or pick up to 30 seconds of one voice from your
+            history.
+          </>
+        ),
+      },
+      {
+        id: "transcript",
+        target: "audio-edit-transcript",
+        title: "Check the transcript",
+        body: (
+          <>
+            It fills in by itself. Fix any word the recognizer got wrong so it
+            matches what's said.
+          </>
+        ),
+      },
+      {
+        id: "changes",
+        target: "audio-edit-changes",
+        title: "Make your changes",
+        body: (
+          <>
+            Change, add or remove words. The voice stays the same, and the
+            result plays against the original.
+          </>
+        ),
+      },
+      outputStep,
+    ];
+  }
+
   return [
     modeStep,
-    modelStep,
+    modelStep(workflow),
     {
       id: "settings",
       target: "audio-settings",
       title: "Settings",
-      body: (
-        <>
-          Your text or lyrics, plus voice and style where the model supports
-          them. Length and temperature sit under Advanced.
-        </>
-      ),
+      body:
+        workflow === "music" ? (
+          <>
+            Lyrics, plus a description of the style where the model takes one.
+            Length sits under Advanced.
+          </>
+        ) : (
+          <>
+            Your text, plus voice and style where the model supports them.
+            Length and temperature sit under Advanced.
+          </>
+        ),
     },
     outputStep,
   ];

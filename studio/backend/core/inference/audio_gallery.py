@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from core.inference import gallery_flags
+from core.inference.audio_workflows import workflow_for_audio_type
 from loggers import get_logger
 from utils.account_context import is_owner_context
 from utils.paths import ensure_account_dir, studio_root
@@ -145,12 +146,16 @@ def _prune_to_cap() -> int:
             # parse, which here would drop the clips the shelf exists to keep. It also covers filesystems where the
             # cross-process lock degrades to a no-op.
             flags = gallery_flags.read_trusted(directory)
+            victims = [
+                record["id"]
+                for record, _cursor in entries[keep:]
+                if not gallery_flags.is_archived(flags, record["id"])
+                and gallery_flags.pin_rank(flags, record["id"]) == float("-inf")
+            ]
+            in_use = _sources_in_use(directory, set(victims))
             pruned: list[str] = []
-            for record, _cursor in entries[keep:]:
-                audio_id = record["id"]
-                if gallery_flags.is_archived(flags, audio_id) or gallery_flags.pin_rank(
-                    flags, audio_id
-                ) > float("-inf"):
+            for audio_id in victims:
+                if audio_id in in_use:
                     continue
                 path = audio_path(audio_id)
                 if path is None or _read_meta(_sidecar_path(audio_id)) is None:
@@ -193,6 +198,7 @@ def _record(
         flags = gallery_flags.read(gallery_dir())
     return {
         **meta,
+        "workflow": _workflow(meta),
         "id": audio_id,
         "url": f"/api/inference/audio/gallery/{audio_id}/file",
         **gallery_flags.flags_for(flags, audio_id),
@@ -201,6 +207,13 @@ def _record(
             flags, audio_id, _mtime(gallery_dir() / f"{audio_id}.wav")
         ),
     }
+
+
+def _workflow(meta: dict[str, Any]) -> str:
+    workflow = meta.get("workflow")
+    if workflow in ("speak", "clone", "edit", "music"):
+        return workflow
+    return workflow_for_audio_type(meta.get("audio_type"))
 
 
 def audio_path(audio_id: str) -> Optional[Path]:
@@ -217,6 +230,25 @@ def audio_path(audio_id: str) -> Optional[Path]:
 
 def _sidecar_path(audio_id: str) -> Path:
     return gallery_dir() / f"{audio_id}.json"
+
+
+def _sources_in_use(directory: Path, leaving: set[str]) -> set[str]:
+    """Hidden Edit sources that a clip staying in the gallery still plays as its Original."""
+    try:
+        paths = list(directory.glob("*.wav"))
+    except OSError:
+        return set()
+    sources: set[str] = set()
+    used: set[str] = set()
+    for path in paths:
+        meta = _read_meta(_sidecar_path(path.stem))
+        if meta is None:
+            continue
+        if meta.get("role") == "source":
+            sources.add(path.stem)
+        if path.stem not in leaving and meta.get("source_clip_id"):
+            used.add(str(meta["source_clip_id"]))
+    return used & sources
 
 
 # Key-presence ownership test: a hand-dropped wav with a partial sidecar is neither counted as ours nor destroyed.
@@ -416,12 +448,13 @@ def delete(audio_id: str) -> bool:
     return True
 
 
-def clear(include_archived: bool = False) -> int:
+def clear(include_archived: bool = False, workflow: Optional[str] = None) -> int:
     """Delete every Unsloth-owned pair (readable sidecar); return the count removed. Foreign and
     orphan WAVs are preserved, since list_audio already hides them.
 
     Archived clips are spared unless ``include_archived``, and sparing them raises
-    FlagsUnavailable when the flag store cannot be read."""
+    FlagsUnavailable when the flag store cannot be read. A ``workflow`` (speak, clone, edit or
+    music) spares the other workflows' clips."""
     removed = 0
     directory = gallery_dir()
     with gallery_flags.exclusive(directory, require_file_lock = not include_archived):
@@ -430,11 +463,20 @@ def clear(include_archived: bool = False) -> int:
             paths = list(directory.glob("*.wav"))
         except OSError:
             return 0
-        cleared: list[str] = []
+        doomed = []
         for path in paths:
-            if _read_meta(_sidecar_path(path.stem)) is None:
+            meta = _read_meta(_sidecar_path(path.stem))
+            if meta is None:
+                continue
+            if workflow is not None and _workflow(meta) != workflow:
                 continue
             if not include_archived and gallery_flags.is_archived(flags, path.stem):
+                continue
+            doomed.append(path)
+        in_use = _sources_in_use(directory, {path.stem for path in doomed})
+        cleared: list[str] = []
+        for path in doomed:
+            if path.stem in in_use:
                 continue
             try:
                 path.unlink()
@@ -446,7 +488,7 @@ def clear(include_archived: bool = False) -> int:
                 _sidecar_path(path.stem).unlink()
             except OSError:
                 pass
-        if include_archived and not gallery_flags.is_trusted(directory):
+        if include_archived and workflow is None and not gallery_flags.is_trusted(directory):
             gallery_flags.reset_locked(directory)
         else:
             gallery_flags.forget_locked(directory, cleared)

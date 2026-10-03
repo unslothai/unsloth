@@ -48,12 +48,17 @@ def _mlx_entry_for(mc):
     }
 
 
-def _drive_handle_load(monkeypatch, mc):
+def _drive_handle_load(
+    monkeypatch,
+    mc,
+    entry = None,
+    device = "mlx",
+):
     """Run _handle_load against a stub MLX backend, return the emitted model_info."""
     backend = SimpleNamespace(
-        device = "mlx",
+        device = device,
         active_model_name = mc.identifier,
-        models = {mc.identifier: _mlx_entry_for(mc)},
+        models = {mc.identifier: entry or _mlx_entry_for(mc)},
         load_model = lambda **kw: True,
     )
 
@@ -109,3 +114,22 @@ def test_whisper_classification_survives_the_mlx_post_load_mirror(monkeypatch):
 
     assert info["audio_type"] == "whisper"
     assert info["has_audio_input"] is True
+
+
+def test_audio_cpp_workflow_fields_cross_the_worker_and_the_parent(monkeypatch):
+    """Dropped at either hop, status falls back to "speak" from audio_type and offers
+    Speak for a clone-only model."""
+    from core.inference.orchestrator import _mirrored_model_entry
+
+    mc = _mc("audiocpp_tts", is_audio = True, has_audio_input = False)
+    fields = {
+        "audio_workflows": ["clone"],
+        "audio_reference_text": "required",
+        "audio_required_inputs": ["instruct"],
+        "audio_clone": {"reference_text": "required", "emotion_audio": False},
+        "audio_edit": {"style": "instructions", "delivery": True, "max_changes": 5},
+    }
+    entry = {"is_audio": True, "audio_type": "audiocpp_tts", "has_audio_input": False, **fields}
+    info = _drive_handle_load(monkeypatch, mc, entry, device = "cuda")
+    entry = _mirrored_model_entry(info, mc.identifier)
+    assert {k: info[k] for k in fields} == {k: entry[k] for k in fields} == fields

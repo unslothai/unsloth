@@ -272,3 +272,30 @@ def test_a_custom_build_launches_on_a_backend_it_was_compiled_with(tmp_path, mon
     assert srv.select_backend(build("cuda", "cpu,cuda"), False) == "cuda"
     # A build too old to report keeps the host guess.
     assert srv.select_backend(build("silent", ""), False) == "cuda"
+
+
+def test_stop_survives_a_server_slow_to_exit_after_sigkill(tmp_path):
+    # A server switching task mid-request (Vevo2 Clone <-> Edit) failed the request when the old
+    # process outlived the SIGKILL wait in GPU teardown.
+    class Stuck:
+        pid = 999999999
+        waits: list = []
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            pass
+
+        def kill(self):
+            pass
+
+        def wait(self, timeout):
+            self.waits.append(timeout)
+            raise srv.subprocess.TimeoutExpired("audiocpp_server", timeout)
+
+    server = object.__new__(srv.AudioCppServer)
+    server.process = Stuck()
+    server._config_dir = tmp_path / "cfg"
+    server.stop()
+    assert Stuck.waits == [10, 120]

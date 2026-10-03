@@ -1076,6 +1076,10 @@ class TestLoadHubDownloadExclusion:
             # Constant None: llama-server never serves an audio GGUF.
             "audio_family",
             "audio_options",
+            # None for the response validator to derive from is_audio and audio_type.
+            "audio_workflows",
+            "audio_reference_text",
+            "audio_required_inputs",
         }
         unresolved = sorted(
             name
