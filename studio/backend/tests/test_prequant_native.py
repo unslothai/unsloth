@@ -138,6 +138,21 @@ def test_mapped_read_is_the_same_tensors_as_a_copied_read(tmp_path):
         assert _same(_canon(mapped[key]), _canon(copied[key])), key
 
 
+def test_a_tensor_off_its_dtype_alignment_is_still_read(tmp_path):
+    a = torch.tensor([1, -2, 3], dtype = torch.int8)
+    b = torch.tensor([1.5, -0.25], dtype = torch.bfloat16)
+    header = {
+        "a": {"dtype": "I8", "shape": [3], "data_offsets": [0, 3]},
+        "b": {"dtype": "BF16", "shape": [2], "data_offsets": [3, 7]},
+    }
+    raw = json.dumps(header).encode()
+    raw += b" " * (-len(raw) % 8)
+    path = tmp_path / "odd.safetensors"
+    path.write_bytes(len(raw).to_bytes(8, "little") + raw + a.numpy().tobytes() + b.view(torch.int16).numpy().tobytes())
+    _, tensors = ps._mapped_tensors(str(path))
+    assert torch.equal(tensors["a"], a) and torch.equal(tensors["b"], b)
+
+
 def test_a_truncated_header_is_refused(tmp_path):
     path = tmp_path / "bad.safetensors"
     path.write_bytes((10_000).to_bytes(8, "little") + b"{}")

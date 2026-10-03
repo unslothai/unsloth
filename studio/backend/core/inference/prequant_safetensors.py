@@ -522,6 +522,9 @@ def _mapped_tensors(path: str) -> tuple:
             tensors[name] = torch.empty(shape, dtype = dtype)
             continue
         flat = torch.frombuffer(mapped, dtype = dtype, count = count, offset = base + start)
+        if (base + start) % itemsize:
+            # safetensors packs tensors back to back, so one can start off its dtype's alignment: copy that one.
+            flat = flat.clone()
         tensors[name] = flat.reshape(shape)
     return dict(metadata), tensors
 
