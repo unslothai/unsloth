@@ -14,7 +14,7 @@ const { claimedOptionNames, instructionsKindFor, panelApplies } = await import(
 );
 
 const registry = readSrc("features/audio/tools/registry.tsx");
-const panels = readSrc("features/audio/tools/instructions-panels.tsx");
+const panels = readSrc("features/audio/components/instructions-fields.tsx");
 
 const ctx = (
   overrides: Partial<AudioModelContext> = {},

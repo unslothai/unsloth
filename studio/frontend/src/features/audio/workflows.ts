@@ -14,10 +14,8 @@ import { AUDIO_CPP_MUSIC_AUDIO_TYPE } from "./audio-cpp-catalog";
 
 export type AudioWorkflowId = "speak" | "clone" | "music" | "transcribe";
 
-/** Which model slot a workflow runs in: Speak, Clone and Music share the main inference slot, Transcribe uses the STT sidecar. */
 export type AudioWorkflowSlot = "speak" | "transcribe";
 
-/** The Audio workflows, shared by the page, the sidebar list and the More-flyout submenu. */
 export const AUDIO_WORKFLOWS: ReadonlyArray<{
   id: AudioWorkflowId;
   label: string;
@@ -25,7 +23,6 @@ export const AUDIO_WORKFLOWS: ReadonlyArray<{
   icon: IconSvgElement;
   hint: string;
   slot: AudioWorkflowSlot;
-  /** Whether the header offers the Create|Train pill. */
   createTrain: boolean;
 }> = [
   {
@@ -84,7 +81,6 @@ export function slotForWorkflow(id: AudioWorkflowId): AudioWorkflowSlot {
   return audioWorkflowTab(id).slot;
 }
 
-/** The `?task=` pipeline tags other pages hand to Audio. */
 export function audioWorkflowForTask(
   task: string | null | undefined,
 ): AudioWorkflowId | null {
@@ -100,14 +96,12 @@ export function audioWorkflowForTask(
   }
 }
 
-/** Which generation workflow made a clip of this audio type. */
 export function audioWorkflowForAudioType(
   audioType: string | null | undefined,
 ): "speak" | "music" {
   return audioType && MUSIC_AUDIO_TYPES.has(audioType) ? "music" : "speak";
 }
 
-/** A gallery clip's workflow. Clips saved before the field existed fall back to their audio type. */
 export function clipWorkflow(clip: {
   workflow?: string | null;
   audio_type?: string | null;
@@ -122,8 +116,7 @@ export function clipWorkflow(clip: {
   return audioWorkflowForAudioType(clip.audio_type);
 }
 
-/** The page a just-loaded main-slot model opens: the current page when the model can run it, else
- *  the first page the backend lists for it, else Music or Speak by its audio type. */
+/** Current page if runnable, else the backend's first listed page, else Music/Speak by audio type. */
 export function workflowForLoadedModel({
   current,
   audioWorkflows,
@@ -142,8 +135,7 @@ export function workflowForLoadedModel({
   return music ? "music" : "speak";
 }
 
-/** Whether the loaded main-slot model can run this page. Older backends send no list, so the
- *  audio type decides between Music and Speak, and nothing older clones. */
+/** Older backends send no list: the audio type picks Music or Speak, and nothing clones. */
 export function loadedModelRunsWorkflow({
   workflow,
   audioWorkflows,

@@ -30,7 +30,7 @@ import re
 import struct
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, BinaryIO, Iterable, Optional, Sequence
 
@@ -77,31 +77,22 @@ class WorkflowBinding:
     endpoint: str
     route: Optional[str] = None
     inputs: tuple[str, ...] = ()
-    # Sample rate Studio resamples a reference clip to before the call; None when it sends none.
-    input_rate: Optional[int] = None
 
 
 @dataclass(frozen = True)
 class CloneSpec:
     """How a family clones a voice from a reference clip (``voice_ref``) on the speech endpoint."""
 
-    # Whether the request needs the clip's transcript: ``required``, ``optional`` or ``unused``.
+    # Transcript of the clip: ``required``, ``optional`` or ``unused``.
     reference_text: str = "optional"
-    # Request options the runtime spec does not declare but the family reads (S1-verified), in the
-    # option schema's shape; validated like spec options and sent as strings.
+    # Options the runtime spec omits but the family reads; validated like spec options.
     tool_options: tuple[dict, ...] = field(default = (), hash = False)
-    # ``(option, values)`` pairs under which a required transcript is not needed (Qwen3 timbre only,
-    # CosyVoice3 cross-lingual and instruct).
+    # ``(option, values)`` under which a required transcript is not needed; under ``dropped`` (a
+    # subset) a given one is not even sent.
     reference_text_waived: tuple[tuple[str, tuple[str, ...]], ...] = ()
-    # The subset under which a transcript is not sent even when given (Qwen3 timbre only, CosyVoice3
-    # cross-lingual); under the rest of the waivers it stays optional and is sent.
     reference_text_dropped: tuple[tuple[str, tuple[str, ...]], ...] = ()
-    # Takes a second clip for the emotion, sent to /v1/tasks/run as top-level ``audio``.
     emotion_audio: bool = False
-    input_rate: int = 24000
-    # The runtime wants full language names ("English"), not ISO codes.
     language_names: bool = False
-    # Reads a top-level ``speed`` (F5) and a top-level ``instructions`` (CosyVoice3 instruct).
     speed: bool = False
     instructions: bool = False
 
@@ -118,15 +109,24 @@ class CompanionModel:
 _CLONE_INPUTS = ("text", "reference", "reference_text", "language")
 
 
+def option_matches(pairs: Iterable[tuple[str, Iterable[str]]], options: Optional[dict]) -> bool:
+    """Whether ``options`` sets any ``(option, values)`` pair, bools read as ``true``/``false``."""
+    options = options or {}
+    for name, values in pairs:
+        if name in options:
+            value = options[name]
+            text = ("true" if value else "false") if isinstance(value, bool) else str(value)
+            if text.strip().lower() in values:
+                return True
+    return False
+
+
 def _bindings_for(
     task: str,
     server_task: Optional[str],
     family: Any = None,
 ) -> dict[str, WorkflowBinding]:
-    """The workflows a Studio task offers, keyed by workflow id; empty when Studio has none.
-
-    ``family`` (an ``AudioCppFamily`` or ``AudioCppModel``) says whether a speech model speaks
-    without a reference and whether it clones one."""
+    """The workflows a Studio task offers, keyed by workflow id; empty when Studio has none."""
     if task == "tts":
         bindings: dict[str, WorkflowBinding] = {}
         if getattr(family, "speaks", True):
@@ -135,9 +135,7 @@ def _bindings_for(
             )
         clone = getattr(family, "clone", None)
         if clone is not None:
-            bindings["clone"] = WorkflowBinding(
-                server_task or "tts", "speech", None, _CLONE_INPUTS, clone.input_rate
-            )
+            bindings["clone"] = WorkflowBinding(server_task or "tts", "speech", None, _CLONE_INPUTS)
         return bindings
     if task == "music":
         return {
@@ -170,11 +168,9 @@ class AudioCppFamily:
     voices: tuple[str, ...] = ()
     # Why Studio refuses this family, when it does.
     unsupported: Optional[str] = None
-    # A speech family that also speaks with no reference clip; False for clone-only families.
+    # False for clone-only families.
     speaks: bool = True
-    # How it clones a reference voice, when it does.
     clone: Optional[CloneSpec] = None
-    # Models it loads beside its own GGUF.
     companions: tuple[CompanionModel, ...] = ()
 
     @property
@@ -236,7 +232,7 @@ def _opt(name: str, type_: str, description: str, **kw) -> dict:
 
 
 def _tool(name: str, type_: str, description: str, **kw) -> dict:
-    """A clone tool option in the shape ``_clean_option`` gives spec options."""
+    """A clone tool option in ``_clean_option``'s shape."""
     return {
         "name": name,
         "type": type_,
@@ -251,8 +247,7 @@ def _tool(name: str, type_: str, description: str, **kw) -> dict:
 
 MIOCODEC_FOLDER = "MioCodec-25Hz-44.1kHz-v2-GGUF"
 
-# Clone families (S1 and the audio.cpp sources). Every one runs on the speech endpoint with a
-# server-side 24 kHz mono voice_ref; the ones that cannot speak without it do not offer Speak.
+# Clone families; those that cannot speak without a reference do not offer Speak.
 _QWEN3_BASE = AudioCppFamily(
     "qwen3_tts",
     "tts",
@@ -338,15 +333,13 @@ _CLONE_FAMILIES: tuple[AudioCppFamily, ...] = (
     AudioCppFamily(
         "confucius4_tts", "tts", server_task = "clon", speaks = False, clone = CloneSpec("unused")
     ),
-    # Instruct under tts defaults to instruct_tts, which needs reference audio; Base is picked by
-    # name.
+    # Instruct under tts defaults to instruct_tts, which needs reference audio.
     AudioCppFamily("fireredtts3", "tts", speaks = False, clone = CloneSpec("optional")),
     # "FireRedAce": under tts it defaults to tts_clone, which needs reference audio.
     AudioCppFamily("firered_audio", "tts", speaks = False, clone = CloneSpec("optional")),
     # Vevo2 reads a sent transcript as text to speak, so it never gets one.
     AudioCppFamily("vevo2", "tts", speaks = False, clone = CloneSpec("unused")),
-    # Needs voice audio too, and MioCodec beside it: the sibling-folder default never matches the
-    # umbrella's folder name, so the codec path goes in by session option.
+    # MioCodec's sibling-folder default never matches the umbrella layout: pass it by session option.
     AudioCppFamily(
         "miotts",
         "tts",
@@ -688,7 +681,6 @@ def family_policy(
             return _QWEN3_BASE
     if family == "fireredtts3" and re.search(r"(^|[-_ /])base([-_ ./]|$)", " ".join(names).lower()):
         # The Base package only loads as a cloning session.
-        from dataclasses import replace
         return replace(policy, server_task = "clon")
     return policy
 
@@ -1560,7 +1552,7 @@ class AudioCppModel:
     speaks: bool = True
     clone: Optional[CloneSpec] = None
     companions: tuple[CompanionModel, ...] = ()
-    # Request fields the spec marks required that Studio sends as request fields (Maya1's instruct).
+    # Spec-required request fields (Maya1's instruct).
     required_inputs: tuple[str, ...] = ()
 
     @property
@@ -1597,7 +1589,7 @@ class AudioCppModel:
 
     @property
     def clone_options(self) -> tuple[dict, ...]:
-        """The spec's options plus the clone tool options the spec does not declare."""
+        """Spec options plus the clone tool options the spec omits."""
         if self.clone is None or not self.clone.tool_options:
             return self.options
         names = {o["name"] for o in self.options}
@@ -1923,10 +1915,8 @@ def _required_inputs(
     embedded: Optional[dict],
     policy: Optional[AudioCppFamily] = None,
 ) -> tuple[str, ...]:
-    """Names in ``_REQUIRED_INPUT_NAMES`` the spec marks ``required`` (Maya1: ``("instruct",)``).
-
-    ``_clean_option`` hides these from the option schema, so the flag is read from the raw spec. A
-    name the family's own defaults fill (a voice-design package's instruct) is not required."""
+    """Names in ``_REQUIRED_INPUT_NAMES`` the raw spec marks ``required`` (``_clean_option`` hides
+    them), minus those the family's defaults fill."""
     defaulted = set(((policy.request_defaults if policy else {}) or {}).get("options") or {})
     source = spec
     if source is None or not ((source.get("options") or {}).get("request")):

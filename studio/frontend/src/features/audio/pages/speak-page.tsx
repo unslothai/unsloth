@@ -7,7 +7,6 @@ import { audioCppModelSpeaks } from "../audio-cpp-catalog";
 import { isMusicGenerationModel, macTtsCatalogChoiceIsRunnable } from "../catalog";
 import { TtsOutput, TtsRailFields } from "./tts-workspace";
 
-/** Speak's picker rows: the speech models, without the music ones Music lists or the clone-only ones Clone lists. */
 export function speakPageModels(
   models: ModelOption[],
   isMac: boolean,
@@ -31,7 +30,6 @@ export function SpeakOutput(
     modelReady,
     ...props
   }: Omit<ComponentProps<typeof TtsOutput>, "emptyText"> & {
-    /** Whether a model for this page is loaded, so the empty copy asks only for what is missing. */
     modelReady: boolean;
   },
 ) {

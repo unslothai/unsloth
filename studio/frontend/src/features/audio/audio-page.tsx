@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Audio page: Speak and Music (the main inference slot) and Transcribe (STT via the dictation sidecar).
-// It hosts the shared shell and state; the hooks own each concern and pages/ the rail and output of each
-// workflow. The page stays mounted across tab switches (see __root.tsx), so `active` gates polling, popovers
-// and the recorder rather than lifecycle.
+// Stays mounted across tab switches (__root.tsx), so `active` gates polling, popovers and the recorder.
 
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import { SparklesIcon } from "@hugeicons/core-free-icons";
@@ -111,8 +108,6 @@ export function AudioPage({
   const { pinned } = useSidebar();
   const [mode, setMode] = useState<CreateMode>("speak");
   const workflow = useAudioWorkspaceStore((state) => state.workflow);
-  // The page shown follows the slot: a release that fails puts `mode` back on Transcribe before the
-  // workflow catches up.
   const pageWorkflow: AudioWorkflowId =
     slotForWorkflow(workflow) === mode
       ? workflow
@@ -361,7 +356,6 @@ export function AudioPage({
     sttStatusRefreshGeneration,
   });
 
-  // The clip a run just made: its player takes focus once and screen readers hear it is ready.
   const [freshClipId, setFreshClipId] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState("");
   const selectGeneratedClip = useCallback(
@@ -411,7 +405,6 @@ export function AudioPage({
     toolBlocker,
     claimedOptions,
   } = useSpeechGeneration({
-    // Clone keeps its own drafts and runs through its own hook; this one serves Speak and Music.
     workflow: ttsWorkflow === "music" ? "music" : "speak",
     status,
     busyRef,
@@ -431,8 +424,7 @@ export function AudioPage({
     replayQueuedTtsPick,
   });
 
-  // The clip's Transcribe button uses Transcribe's model, else one already on disk, so it works
-  // without a trip to Settings.
+  // Clone's Transcribe uses Transcribe's model, else one on disk, so it works without Settings.
   const lastSttDownloaded =
     lastSttRepo !== null &&
     downloadedSttArtifacts.some(
@@ -481,8 +473,6 @@ export function AudioPage({
     selectClip,
   });
 
-  // The sidebar and the More flyout ask for a workflow; the page takes it through the same gate as
-  // its own tabs, and a refused switch is not retried.
   const requestedWorkflow = useAudioWorkspaceStore(
     (state) => state.requestedWorkflow,
   );
@@ -504,7 +494,6 @@ export function AudioPage({
     );
   }, [mode, musicGeneration]);
 
-  // Opening Audio with a music model already loaded lands on Music, as the one page used to adapt to it.
   const adoptedLoadedModel = useRef(false);
   useEffect(() => {
     if (adoptedLoadedModel.current || status === null) return;
@@ -544,7 +533,6 @@ export function AudioPage({
     [transitionWorkflow, setPrompt],
   );
 
-  // What the rail shows follows the page; generation still runs on what is actually loaded.
   const pageModelLoaded =
     ttsLoaded &&
     loadedModelRunsWorkflow({
@@ -552,23 +540,17 @@ export function AudioPage({
       audioWorkflows: status?.audio_workflows,
       music: musicGeneration,
     });
-  // The model this page last loaded, shown in the picker as not loaded while another model holds the slot.
   const lastPageModel = useAudioWorkspaceStore(
     (state) => state.lastModelByWorkflow[pageWorkflow] ?? null,
   );
   const openSelector = useCallback(() => setSelectorOpen(true), []);
   const chooseModelAction = { label: "Choose a model", onClick: openSelector };
-  const handlePickRecommended = useCallback(
-    (id: string) => void pickRecommendedModel(id),
-    [pickRecommendedModel],
-  );
   const recommendedCloneActions = clonePageModels(MODELS_BY_MODE.speak, isMac)
     .slice(0, 2)
     .map((model) => ({
       label: `use ${model.name}`,
-      onClick: () => handlePickRecommended(model.id),
+      onClick: () => void pickRecommendedModel(model.id),
     }));
-  // Why Generate is off, in words under the button, with the fix as an action where there is one.
   const generateBlocker: GenerateBlocker | null =
     busy === "loading"
       ? { reason: "Waiting for the model to finish loading." }
@@ -649,12 +631,10 @@ export function AudioPage({
                 : toolBlocker
                   ? { reason: toolBlocker }
                   : null;
-  // A failed run's reason stays under Generate with a way out, until the next run or a new model.
   const pageGenerationError =
     ttsWorkflow === "clone" ? clone.generationError : generationError;
   const generateFailure: GenerateBlocker | null = pageGenerationError
     ? {
-        // Runtime reasons often end without a stop, which would run into the action.
         reason: /[.!?]$/.test(pageGenerationError)
           ? pageGenerationError
           : `${pageGenerationError}.`,
@@ -670,7 +650,6 @@ export function AudioPage({
     if (busy === "generating") setGenerationError(null);
     if (busy === "generating") setCloneGenerationError(null);
   }, [busy, setGenerationError, setCloneGenerationError]);
-  // How long the current run has taken, shown beside its phase.
   const [elapsedSeconds, setElapsedSeconds] = useState<number | null>(null);
   useEffect(() => {
     if (busy !== "generating") {
@@ -741,11 +720,11 @@ export function AudioPage({
     { id: SPEAKERS_MODEL_REPO, name: SPEAKERS_MODEL_NAME },
   ].map((model) => ({
     label: `use ${model.name}`,
-    onClick: () => handlePickRecommended(model.id),
+    onClick: () => void pickRecommendedModel(model.id),
   }));
   const useSpeakersModel = useCallback(
-    () => handlePickRecommended(SPEAKERS_MODEL_REPO),
-    [handlePickRecommended],
+    () => void pickRecommendedModel(SPEAKERS_MODEL_REPO),
+    [pickRecommendedModel],
   );
   const transcribeBlocker: GenerateBlocker | null =
     busy === "loading"
@@ -855,7 +834,6 @@ export function AudioPage({
     pageModelLoaded &&
     generateBlocker === null;
   const shortcutLabel = isMac ? "⌘ Enter" : "Ctrl+Enter";
-  // Mod+Enter generates from anywhere on the page, as the button would.
   const pageRootRef = useRef<HTMLDivElement | null>(null);
   const generateShortcut = useRef<() => void>(() => {});
   const handlePageGenerate =
@@ -889,7 +867,6 @@ export function AudioPage({
           ? clonePageModels(MODELS_BY_MODE.speak, isMac)
           : speakPageModels(MODELS_BY_MODE.speak, isMac)
       : MODELS_BY_MODE[mode];
-  // Downloaded rows the picker adds from the cache are narrowed to this page's task the same way.
   const selectorRowFilter = useCallback(
     (row: AudioPickerRow) =>
       audioRowMatchesWorkflow(row, pageWorkflow),
@@ -920,8 +897,7 @@ export function AudioPage({
         artifact.engine === sttLoadedEngine,
     } satisfies ModelOption;
   });
-  // Arriving on a page never loads anything: when the resident model cannot run it, the picker
-  // shows the page's last model, unloaded, so one pick brings it back.
+  // Arriving on a page never loads: the picker shows the page's last model, unloaded, to re-pick.
   const showLastPageModel =
     mode === "speak" && !pageModelLoaded && lastPageModel !== null;
   const selectorValue =
@@ -1327,7 +1303,7 @@ export function AudioPage({
                       {...outputProps}
                       modelReady={pageModelLoaded}
                       recommendedModels={selectorModels}
-                      onPickModel={handlePickRecommended}
+                      onPickModel={pickRecommendedModel}
                     />
                   ) : (
                     <SpeakOutput {...outputProps} modelReady={pageModelLoaded} />

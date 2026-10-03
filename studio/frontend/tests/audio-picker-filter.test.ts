@@ -60,7 +60,6 @@ test("a clone-only speech model lists only on Clone", () => {
     }),
     ["clone"],
   );
-  // Before the backend row says so, the catalog entry does.
   assert.deepEqual(
     workflowsFor({
       id: "audio-cpp/audio.cpp-gguf/Qwen3-TTS-12Hz-0.6B-Base-GGUF",
@@ -149,7 +148,6 @@ test("an undefined rowFilter leaves the picker rows untouched", () => {
     "features/model-picker/components/model-selector/pickers.tsx",
   );
   const guards = pickers.match(/\(!rowFilter \|\|\s*rowFilter\(\{/g) ?? [];
-  // Cached GGUF and cached repos only; Hub search rows stay unfiltered.
   assert.equal(guards.length, 2);
   const selector = readSrc(
     "features/model-picker/components/model-selector.tsx",

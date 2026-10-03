@@ -1,17 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// What each Clone and Speak model tool sends and when it holds Generate back, without its
-// controls. Free of JSX so the node test runner can load it; clone-panels.tsx and
-// speak-panels.tsx add the Components.
+// JSX-free so the node test runner can load it; clone-panels.tsx / speak-panels.tsx add Components.
 
 import { type AudioSourceSelection, sourceRefOf } from "../audio-run-request";
 import { INDEX_TTS2_EMOTIONS, emotionVectorString } from "../clone-policy";
 import type { AudioRunPatch, AudioToolPanel } from "./types";
 
-export type AudioToolPanelLogic<V> = Omit<AudioToolPanel<V>, "Component">;
+type AudioToolPanelLogic<V> = Omit<AudioToolPanel<V>, "Component">;
 
-// ---- Qwen3-TTS Base: Timbre only -------------------------------------------------------------
+const clamp = (x: number, lo: number, hi: number) =>
+  Math.min(hi, Math.max(lo, x));
 
 export interface TimbreOnlyValue {
   timbreOnly: boolean;
@@ -33,16 +32,12 @@ export const qwen3TimbreLogic: AudioToolPanelLogic<TimbreOnlyValue> = {
       : {},
 };
 
-// ---- IndexTTS2: Emotion ----------------------------------------------------------------------
-
 export type EmotionMode = "text" | "audio" | "mixer";
 
 export interface EmotionValue {
   mode: EmotionMode;
   text: string;
-  /** Eight weights 0..1 in INDEX_TTS2_EMOTIONS order. */
   vector: number[];
-  /** How strongly the emotion applies, 0..1. */
   alpha: number;
   source: AudioSourceSelection | null;
 }
@@ -69,7 +64,7 @@ export const indexTts2EmotionLogic: AudioToolPanelLogic<EmotionValue> = {
     source: null,
   }),
   toRequest: (value): AudioRunPatch => {
-    const alpha = Math.min(1, Math.max(0, value.alpha));
+    const alpha = clamp(value.alpha, 0, 1);
     if (value.mode === "text") {
       const text = value.text.trim();
       return text
@@ -103,8 +98,6 @@ export const indexTts2EmotionLogic: AudioToolPanelLogic<EmotionValue> = {
     value.mode === "audio" && !value.source ? EMOTION_AUDIO_MISSING : null,
 };
 
-// ---- Chatterbox: Expressiveness --------------------------------------------------------------
-
 export interface ExpressivenessValue {
   exaggeration: number;
   guidance: number;
@@ -120,13 +113,11 @@ export const chatterboxExpressivenessLogic: AudioToolPanelLogic<ExpressivenessVa
     initial: () => ({ exaggeration: 0.5, guidance: 0.5 }),
     toRequest: (value) => ({
       options: {
-        exaggeration: Math.min(2, Math.max(0, value.exaggeration)),
-        guidance_scale: Math.min(5, Math.max(0, value.guidance)),
+        exaggeration: clamp(value.exaggeration, 0, 2),
+        guidance_scale: clamp(value.guidance, 0, 5),
       },
     }),
   };
-
-// ---- CosyVoice3: Mode ------------------------------------------------------------------------
 
 export type CosyVoiceMode = "zero_shot" | "cross_lingual" | "instruct";
 
@@ -147,7 +138,6 @@ export const cosyVoiceModeLogic: AudioToolPanelLogic<CosyVoiceModeValue> = {
   initial: () => ({ mode: "zero_shot", instruction: "" }),
   toRequest: (value) => {
     if (value.mode === "cross_lingual") {
-      // Cross-lingual reads only the voice, not the clip's words.
       return {
         options: { template_name: "cross_lingual" },
         referenceTextMode: "hidden",
@@ -169,14 +159,11 @@ export const cosyVoiceModeLogic: AudioToolPanelLogic<CosyVoiceModeValue> = {
       : null,
 };
 
-// ---- F5-TTS: Speed and dialect ---------------------------------------------------------------
-
 export interface SpeedDialectValue {
   speed: number;
   dialect: string;
 }
 
-/** Habibi's dialect tokens with their names; UNK lets the model decide. */
 export const F5_DIALECTS: readonly { value: string; label: string }[] = [
   { value: "UNK", label: "Auto" },
   { value: "MSA", label: "Modern Standard Arabic" },
@@ -202,15 +189,13 @@ export const f5SpeedDialectLogic: AudioToolPanelLogic<SpeedDialectValue> = {
   initial: () => ({ speed: 1, dialect: "UNK" }),
   toRequest: (value) => ({
     ...(Math.abs(value.speed - 1) > 1e-6
-      ? { speed: Math.min(2, Math.max(0.5, value.speed)) }
+      ? { speed: clamp(value.speed, 0.5, 2) }
       : {}),
     ...(value.dialect && value.dialect !== "UNK"
       ? { options: { dialect: value.dialect } }
       : {}),
   }),
 };
-
-// ---- Speak: saved voice, VibeVoice dialogue --------------------------------------------------
 
 export interface SpeakVoiceValue {
   source: "builtin" | "saved";
@@ -220,7 +205,6 @@ export interface SpeakVoiceValue {
 export const SAVED_VOICE_MISSING =
   "Pick a saved voice, or switch Voice to Built-in.";
 
-/** Models that both speak and clone (VoxCPM2) can read the text in a saved voice. */
 export const speakVoiceLogic: AudioToolPanelLogic<SpeakVoiceValue> = {
   id: "speak-voice",
   families: [],
@@ -241,7 +225,7 @@ export const speakVoiceLogic: AudioToolPanelLogic<SpeakVoiceValue> = {
     value.source === "saved" && !value.voiceId ? SAVED_VOICE_MISSING : null,
 };
 
-/** VibeVoice reads `Speaker N:` lines; the backend formats plain text, so nothing is sent. */
+// The backend formats plain text into `Speaker N:` lines, so nothing is sent.
 export const vibeVoiceDialogueLogic: AudioToolPanelLogic<null> = {
   id: "vibevoice-dialogue",
   families: ["vibevoice"],
@@ -252,7 +236,6 @@ export const vibeVoiceDialogueLogic: AudioToolPanelLogic<null> = {
   toRequest: () => ({}),
 };
 
-/** Every panel's logic in rail order, mirroring AUDIO_TOOL_PANELS without the instruction fields. */
 export const CLONE_PANEL_LOGIC = [
   qwen3TimbreLogic,
   indexTts2EmotionLogic,

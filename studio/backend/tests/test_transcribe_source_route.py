@@ -87,11 +87,12 @@ class _Sidecar:
 
     def transcribe_path(self, path, model, language, *, timestamps, cancel_event, on_phase):
         on_phase("transcribing")
-        info = audio_inputs.wav_info(path)
+        with wave.open(str(path)) as w:
+            rate = w.getframerate()
         self.paths.append(
             {
                 "path": Path(path),
-                "rate": info["sample_rate"],
+                "rate": rate,
                 "timestamps": timestamps,
                 "language": language,
             }
@@ -189,7 +190,7 @@ def _clip(account) -> dict:
         "duration_s": 1.0,
         "created_at": "2026-10-02T00:00:00Z",
     }
-    return run_as(account, audio_gallery.save, wav_bytes(24000, 1.0), meta)
+    return run_as(account, audio_gallery.save, wav_bytes(1.0, 24000), meta)
 
 
 def _events(response):

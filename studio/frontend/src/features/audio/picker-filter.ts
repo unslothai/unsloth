@@ -3,14 +3,13 @@
 
 // Free of app imports so the node test runner can load it directly.
 
-import { audioCppModelFor, audioCppWorkflowsFor } from "./audio-cpp-catalog";
+import { audioCppModelFor } from "./audio-cpp-catalog";
 import {
   type AudioWorkflowId,
   audioWorkflowForAudioType,
   audioWorkflowForTask,
 } from "./workflows";
 
-/** The fields of a downloaded picker row the Audio page splits its list on. */
 export interface AudioPickerRow {
   id?: string | null;
   task?: string | null;
@@ -18,9 +17,6 @@ export interface AudioPickerRow {
   audioWorkflows?: readonly string[] | null;
 }
 
-/** Whether a downloaded row belongs in this workflow's picker. The backend's `audio_workflows`
- *  answers when present; older rows fall back to the task, then the audio type (MiniMax Music 3
- *  is tagged text-to-speech) or the audio.cpp catalog entry. A row with nothing to go on stays. */
 export function audioRowMatchesWorkflow(
   row: AudioPickerRow,
   workflow: AudioWorkflowId,
@@ -34,7 +30,7 @@ export function audioRowMatchesWorkflow(
   }
   const catalogModel = audioCppModelFor(row.id);
   if (catalogModel?.workflows) {
-    return audioCppWorkflowsFor(catalogModel).includes(workflow);
+    return catalogModel.workflows.includes(workflow);
   }
   const catalogTask = catalogModel?.task;
   if (catalogTask === "music") {

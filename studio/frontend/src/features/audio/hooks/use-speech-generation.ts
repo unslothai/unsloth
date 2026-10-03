@@ -58,13 +58,12 @@ function ttsWorkflowOf(workflow: AudioWorkflowId): TtsWorkflow {
   return workflow === "music" ? "music" : "speak";
 }
 
-/** Where a page's draft is kept. Speak's text uses the key the single Audio page always used. */
+/** Speak's text keeps the pre-split key so existing drafts survive. */
 function ttsDraftKey(field: TtsDraftField, workflow: TtsWorkflow): string {
   const base = workflow === "music" ? "audio:music" : "audio";
   return field === "prompt" ? base : `${base}:instructions`;
 }
 
-/** Speak and Music generation: the text and settings, what the loaded model needs, and the generate request. */
 export function useSpeechGeneration({
   workflow,
   status,
@@ -98,8 +97,6 @@ export function useSpeechGeneration({
 > &
   Pick<AudioGallery, "refreshGallery" | "selectClip" | "setFallbackClip" | "setSelectedId"> &
   Pick<AudioModelSlot, "pendingTranscribeRelease" | "replayQueuedTtsPick">) {
-  // Speak and Music each keep their own draft of the text and the description, so switching pages
-  // never overwrites the other one, and both survive a reload. Speak's text key predates the split.
   const [drafts, setDrafts] = useState<Record<TtsDraftField, Record<TtsWorkflow, string>>>(
     () => ({
       prompt: {
@@ -115,7 +112,6 @@ export function useSpeechGeneration({
   const [generationError, setGenerationError] = useState<string | null>(null);
   const prompt = drafts.prompt[workflow];
   const audioInstructions = drafts.instructions[workflow];
-  // The page is read at call time, as on Images, so a stale closure cannot write the other page's draft.
   const setDraft = useCallback((field: TtsDraftField, next: string) => {
     const page = ttsWorkflowOf(useAudioWorkspaceStore.getState().workflow);
     saveLastPrompt(ttsDraftKey(field, page), next);
@@ -134,9 +130,7 @@ export function useSpeechGeneration({
   );
   const [audioLanguage, setAudioLanguage] = useState("");
   const [temperature, setTemperature] = useState(0.6);
-  // Sending temperature unconditionally puts it in the request's model_fields_set, which the backend reads as an
-  // explicit client override that beats the per-model recommendation (Spark-TTS wants 0.8, OuteTTS 0.4), so only
-  // send it once the user has moved the slider.
+  // Only send temperature once moved: model_fields_set makes it override the per-model recommendation.
   const [temperatureEdited, setTemperatureEdited] = useState(false);
   const handleTemperatureChange = useCallback((value: number) => {
     setTemperatureEdited(true);
@@ -178,8 +172,6 @@ export function useSpeechGeneration({
     status?.active_model,
     status?.audio_type,
   );
-  // Most GGUF music falls back to the lyrics as its prompt; MiniMax Music 3 and YuE2 need a
-  // description beside them.
   const musicNeedsDescription =
     cudaMusicGeneration ||
     musicModelNeedsDescription(status?.audio_type, status?.audio_family);
@@ -188,7 +180,6 @@ export function useSpeechGeneration({
     status?.audio_family,
   );
   const musicRange = musicDurationRange(cudaMusicGeneration);
-  // A length picked for the MiniMax pipeline can exceed what the GGUF runtime generates.
   const musicSeconds = Math.min(
     Math.max(minimaxMaxSeconds, musicRange.min),
     musicRange.max,
@@ -205,7 +196,6 @@ export function useSpeechGeneration({
   const [audioOptionValuesModel, setAudioOptionValuesModel] = useState(
     audioOptionsModel,
   );
-  // Each model keeps its own values, read back when it becomes the loaded one.
   if (audioOptionValuesModel !== audioOptionsModel) {
     setAudioOptionValuesModel(audioOptionsModel);
     setAudioOptionValues(readAudioOptionValues(audioOptionsModel));
@@ -231,8 +221,7 @@ export function useSpeechGeneration({
     ? "music"
     : nativeAudioInstructionsKind(status?.audio_type);
 
-  // The model tools this page shows for the loaded model. The instruction panels keep editing the
-  // page's instruction draft, as the rail always did; every other panel keeps its value per model.
+  // Instruction panels edit the page's instruction draft; other panels keep a value per model.
   const toolContext = useMemo(
     () =>
       audioModelContextFor(status, {
@@ -292,7 +281,6 @@ export function useSpeechGeneration({
       ),
     [toolPanels, toolValues, prompt, toolContext, audioOptionSpecs],
   );
-  /** Spec options a shown panel renders itself, which Advanced leaves out. */
   const claimedOptions = useMemo(
     () => claimedOptionNames(toolPanels),
     [toolPanels],
@@ -305,10 +293,7 @@ export function useSpeechGeneration({
   const handleGenerate = useCallback(async () => {
     const text = prompt.trim();
     if (!text && !lyricsOptional) return;
-    // Same gate the TTS load path uses: switching straight from Transcribe with a speech model already resident
-    // needs no load, so nothing else waits for the sidecar teardown, and generating beside a dictation model OOMs a
-    // device that fits either alone. Claimed before the await below, since the button only disables on `busy` and a
-    // slow release let several clicks each resume into their own generateAudio.
+    // Same sidecar gate as the TTS load path, claimed before the await: generating beside a dictation model OOMs.
     if (busyRef.current) return;
     busyRef.current = "generating";
     setBusy("generating");
@@ -352,7 +337,7 @@ export function useSpeechGeneration({
       );
       return;
     }
-    // Advanced first, then what the shown panels set, which own their options.
+    // Panels own their options, so they override Advanced.
     const requestOptions = {
       ...audioOptionsForRequest(advancedOptionSpecs, audioOptionValues),
       ...toolRequest.patch.options,
@@ -442,9 +427,7 @@ export function useSpeechGeneration({
         setFallbackClip(null);
         selectClip(generatedClip.id);
       } else if (generated.clip_id) {
-        // The server did persist it; only this refresh missed it. Select the id so a later refresh shows the real
-        // record, but keep the response audio too: selectedClip resolves against `clips`, so an id that is not there
-        // yet would render the empty state.
+        // Persisted but missed by this refresh: keep the response audio, or selectedClip renders empty.
         setFallbackClip({
           url: `data:audio/wav;base64,${generated.audio.data}`,
           prompt: text,
@@ -453,8 +436,6 @@ export function useSpeechGeneration({
         });
         selectClip(generated.clip_id, true);
       } else {
-        // Gallery persistence is best-effort server-side, so a full disk still returns the audio. Play it
-        // from the response rather than dropping an expensive generation.
         galleryCache.selectedId = null;
         setSelectedId(null);
         setFallbackClip({
@@ -467,7 +448,6 @@ export function useSpeechGeneration({
     } catch (error) {
       if (!controller.signal.aborted) {
         updateGenerationPhase("finishing");
-        // Kept under Generate too, so the reason outlives the toast.
         setGenerationError(
           error instanceof Error ? error.message : "Audio generation failed.",
         );
@@ -512,8 +492,7 @@ export function useSpeechGeneration({
     selectClip,
   ]);
 
-  // Only unmount aborts. RootLayout keeps this page mounted precisely so leaving the tab does not
-  // cancel synthesis, and the clip is persisted server-side.
+  // Only unmount aborts: RootLayout keeps this page mounted so leaving the tab does not cancel synthesis.
   useEffect(() => () => generateAbort.current?.abort(), []);
 
   return {
@@ -553,7 +532,6 @@ export function useSpeechGeneration({
     toolPanels,
     toolValues,
     handleToolValueChange,
-    /** Why a shown panel holds Generate back, in words for the blocker line. */
     toolBlocker: toolRequest.error,
     claimedOptions,
     advancedOptionSpecs,
