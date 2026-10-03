@@ -15,9 +15,9 @@ export type AudioSourceStatus =
   | { phase: "expired" };
 
 interface AudioSourcePreview {
-  /** Selection key drawn, or "local" for a file still uploading. */
+  /** Selection key drawn, or "local:<n>" for a file still uploading. */
   key: string | null;
-  /** "local" once that upload got an id, so a late local decode still lands. */
+  /** The local key of the upload that just got an id, so its late decode still lands. */
   localKey?: string | null;
   peaks: number[] | null;
   durationS: number | null;
@@ -32,7 +32,7 @@ interface AudioSourceState {
 type AudioSourceAction =
   | { type: "record-start"; now: number }
   | { type: "record-stop" }
-  | { type: "upload-start"; name: string }
+  | { type: "upload-start"; name: string; key: string }
   | { type: "upload-progress"; progress: number | null }
   | { type: "upload-done"; key: string }
   | { type: "load-start"; key: string }
@@ -80,7 +80,7 @@ export function audioSourceReducer(
     case "upload-start":
       return {
         status: { phase: "uploading", name: action.name, progress: 0 },
-        preview: { ...EMPTY_PREVIEW, key: "local" },
+        preview: { ...EMPTY_PREVIEW, key: action.key },
       };
     case "upload-progress":
       if (state.status.phase !== "uploading") return state;
@@ -100,7 +100,9 @@ export function audioSourceReducer(
         preview: {
           ...state.preview,
           key: action.key,
-          localKey: state.preview.key === "local" ? "local" : null,
+          localKey: state.preview.key?.startsWith("local:")
+            ? state.preview.key
+            : null,
         },
       };
     case "load-start":
@@ -115,7 +117,7 @@ export function audioSourceReducer(
     case "preview":
       if (
         state.preview.key !== action.key &&
-        !(action.key === "local" && state.preview.localKey === "local")
+        state.preview.localKey !== action.key
       )
         return state;
       return {
