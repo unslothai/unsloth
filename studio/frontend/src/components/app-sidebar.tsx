@@ -900,6 +900,7 @@ export function AppSidebar() {
       navigate: (options) => navigate(options),
       currentHref: () => router.latestLocation.href,
       hrefOf: (options) => router.buildLocation(options).href,
+      asReplace: (options) => ({ ...options, replace: true }),
     }),
   );
   const imagesPageMode = useImageWorkflowStore((s) => s.pageMode);
