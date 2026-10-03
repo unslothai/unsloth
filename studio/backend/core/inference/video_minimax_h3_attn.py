@@ -42,10 +42,19 @@ def _capability(device: Any = None) -> Optional[tuple[int, int]]:
 
 
 def h3_attention_backend(
-    selected: Optional[str], capability: Optional[tuple[int, int]] = None
+    selected: Optional[str],
+    capability: Optional[tuple[int, int]] = None,
+    requested: Optional[str] = None,
 ) -> Optional[str]:
-    """Moves only the automatic cuDNN pick, and only to flash on a measured-faster arch; anything else unchanged."""
+    """Moves only the automatic cuDNN pick (``requested`` auto / unset), and only to flash on a measured-faster arch;
+    anything else unchanged."""
     if selected != _CUDNN or not _enabled(ATTN_ARCH_ENV):
+        return selected
+    try:
+        from .diffusion_attention import ATTN_AUTO, normalize_attention_backend
+        if normalize_attention_backend(requested) != ATTN_AUTO:
+            return selected
+    except Exception:  # noqa: BLE001 -- unparseable request: leave it alone
         return selected
     cap = capability if capability is not None else _capability()
     if cap is None or tuple(cap) not in H3_FLASH_FASTER_ARCHS:

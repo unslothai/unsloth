@@ -7386,7 +7386,7 @@ class VideoBackend:
                 umem_target, attention_backend, speed_active = effective_speed != SPEED_OFF
             )
             try:
-                h3_attn_backend = h3_attention_backend(h3_attn_backend)
+                h3_attn_backend = h3_attention_backend(h3_attn_backend, requested = attention_backend)
             except Exception:  # noqa: BLE001 -- keep the generic pick
                 pass
             attention_engaged = apply_attention_backend(
@@ -7396,7 +7396,11 @@ class VideoBackend:
                 # The probe behind this must see the dtype the pipeline actually RUNS in.
                 target = types.SimpleNamespace(device = device, dtype = dtype),
             )
-            if attention_engaged in ("_native_cudnn", "_native_flash"):
+            # speed off stays bit-identical: the fused q/k norm + RoPE only matches stock within a rounding step
+            if effective_speed != SPEED_OFF and attention_engaged in (
+                "_native_cudnn",
+                "_native_flash",
+            ):
                 try:
                     if install_strided_attention(
                         getattr(pipe, denoiser_component, None), logger = logger

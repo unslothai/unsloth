@@ -267,6 +267,39 @@ def test_arch_pick_moves_only_the_automatic_cudnn_pick_on_measured_archs(selecte
     assert A.h3_attention_backend(selected, cap) == expected
 
 
+@pytest.mark.parametrize("requested", ["cudnn", "flash", "native"])
+def test_arch_pick_keeps_an_explicit_request(requested):
+    assert A.h3_attention_backend("_native_cudnn", (8, 0), requested = requested) == "_native_cudnn"
+    assert A.h3_attention_backend("_native_cudnn", (8, 0), requested = "auto") == "_native_flash"
+
+
+def test_h3_load_wires_the_request_and_the_speed_gate():
+    import ast
+    import inspect
+    import textwrap
+
+    from core.inference.video import VideoBackend
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(VideoBackend._load_h3_modular_pipeline)))
+    calls = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "h3_attention_backend"
+    ]
+    assert calls and all(any(k.arg == "requested" for k in c.keywords) for c in calls)
+    gates = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.If)
+        and any(
+            getattr(c.func, "id", "") == "install_strided_attention"
+            for c in ast.walk(n)
+            if isinstance(c, ast.Call)
+        )
+    ]
+    assert any("SPEED_OFF" in ast.unparse(g.test) for g in gates)
+
+
 def test_arch_pick_kill_switch(monkeypatch):
     monkeypatch.setenv(A.ATTN_ARCH_ENV, "0")
     assert A.h3_attention_backend("_native_cudnn", (8, 0)) == "_native_cudnn"
