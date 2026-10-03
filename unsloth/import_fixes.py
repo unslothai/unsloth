@@ -6639,6 +6639,152 @@ def fix_cudnn_sdpa_d256_masked_backward():
     )
 
 
+_SDPA_ROCM_WINDOWS_FLAG = "_unsloth_avoids_rocm_windows_fused_sdpa"
+_SDPA_ROCM_WINDOWS_WARNED = False
+
+
+def _rocm_windows_fused_sdpa_failures():
+    """Map device index -> the SDPA call kinds whose fused kernel fails there, on Windows ROCm.
+
+    The kinds are "grad" (any backward), "mask" (an explicit attn_mask) and "gqa" (enable_gqa).
+    On torch 2.11.0+rocm7.14.1, gfx1151, all three raise hipErrorInvalidValue while a plain
+    forward runs. Each kind is probed with a synchronize, and only kinds the math kernel then
+    serves are reported, so a device where nothing fails (or math fails too) maps to nothing.
+    """
+    if sys.platform != "win32":
+        return {}
+    try:
+        import torch
+        import torch.nn.functional as F
+        from torch.nn.attention import SDPBackend, sdpa_kernel
+
+        if not getattr(torch.version, "hip", None) or not torch.cuda.is_available():
+            return {}
+    except Exception:
+        return {}
+
+    def run(kind, device, math_only):
+        g = torch.Generator(device = device).manual_seed(0)
+        shape = (1, 2, 16, 64)
+        q = torch.randn(shape, device = device, dtype = torch.bfloat16, generator = g)
+        kv_shape = (1, 1, 16, 64) if kind == "gqa" else shape
+        k = torch.randn(kv_shape, device = device, dtype = torch.bfloat16, generator = g)
+        v = torch.randn(kv_shape, device = device, dtype = torch.bfloat16, generator = g)
+        kwargs = {"is_causal": kind != "mask"}
+        if kind == "grad":
+            q.requires_grad_(True)
+        elif kind == "gqa":
+            kwargs["enable_gqa"] = True
+        else:
+            kwargs["attn_mask"] = torch.ones(16, 16, device = device, dtype = torch.bool).tril()
+        with sdpa_kernel([SDPBackend.MATH]) if math_only else contextlib.nullcontext():
+            out = F.scaled_dot_product_attention(q, k, v, **kwargs)
+            if kind == "grad":
+                out.float().sum().backward()
+        torch.cuda.synchronize(device)
+
+    failures = {}
+    for index in range(torch.cuda.device_count()):
+        device = torch.device("cuda", index)
+        kinds = set()
+        for kind in ("grad", "mask", "gqa"):
+            try:
+                with torch.enable_grad():
+                    run(kind, device, math_only = False)
+                continue
+            except Exception:
+                pass
+            try:
+                # The launch error does not stick to the context, so the math check is meaningful.
+                with torch.enable_grad():
+                    run(kind, device, math_only = True)
+                kinds.add(kind)
+            except Exception:
+                pass
+        if kinds:
+            failures[index] = frozenset(kinds)
+    return failures
+
+
+def _sdpa_needs_rocm_windows_detour(failures, query, key, value, attn_mask, enable_gqa):
+    """True for calls of a kind whose fused kernel failed the probe on this query's device."""
+    import torch
+
+    if not isinstance(query, torch.Tensor) or not query.is_cuda:
+        return False
+    kinds = failures.get(query.device.index)
+    if not kinds:
+        return False
+    if "mask" in kinds and attn_mask is not None:
+        return True
+    if "gqa" in kinds and enable_gqa:
+        return True
+    if "grad" in kinds and torch.is_grad_enabled():
+        return any(isinstance(t, torch.Tensor) and t.requires_grad for t in (query, key, value))
+    return False
+
+
+def fix_rocm_windows_fused_sdpa():
+    """Route SDPA calls whose fused ROCm kernel fails on Windows to the math kernel.
+
+    On Windows ROCm (torch 2.11.0+rocm7.14.1, gfx1151) the flash and memory-efficient kernels
+    raise hipErrorInvalidValue on any backward, on an explicit mask and on enable_gqa, so LoRA
+    training of most models stops in the first attention layer. Plain forwards keep the fused
+    kernel. Probe-gated per device, so it turns itself off once the kernels work.
+    UNSLOTH_ALLOW_ROCM_FUSED_SDPA=1 opts out.
+    """
+    if os.environ.get("UNSLOTH_ALLOW_ROCM_FUSED_SDPA", "0") == "1":
+        return
+    failures = _rocm_windows_fused_sdpa_failures()
+    if not failures:
+        return
+    try:
+        import torch
+        import torch.nn.functional as F
+        from torch.nn.attention import SDPBackend, sdpa_kernel
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the Windows ROCm SDPA fix ({e})")
+        return
+    if getattr(F.scaled_dot_product_attention, _SDPA_ROCM_WINDOWS_FLAG, False):
+        return
+
+    original = F.scaled_dot_product_attention
+    backends = [SDPBackend.MATH]
+
+    @functools.wraps(original)
+    def scaled_dot_product_attention(
+        query,
+        key,
+        value,
+        attn_mask = None,
+        *args,
+        **kwargs,
+    ):
+        global _SDPA_ROCM_WINDOWS_WARNED
+        if _sdpa_needs_rocm_windows_detour(
+            failures, query, key, value, attn_mask, kwargs.get("enable_gqa", False)
+        ):
+            if not torch.compiler.is_compiling() and not _SDPA_ROCM_WINDOWS_WARNED:
+                _SDPA_ROCM_WINDOWS_WARNED = True
+                logger.warning(
+                    "Unsloth: this Windows ROCm torch cannot run fused attention for training, "
+                    "masks or grouped-query attention; using the math kernel for those calls "
+                    "(set UNSLOTH_ALLOW_ROCM_FUSED_SDPA=1 to keep the fused kernels)."
+                )
+            with sdpa_kernel(backends):
+                return original(query, key, value, attn_mask, *args, **kwargs)
+        return original(query, key, value, attn_mask, *args, **kwargs)
+
+    scaled_dot_product_attention.__wrapped__ = original
+    setattr(scaled_dot_product_attention, _SDPA_ROCM_WINDOWS_FLAG, True)
+    F.scaled_dot_product_attention = scaled_dot_product_attention
+    logger.info(
+        "Unsloth: Windows ROCm fused SDPA fails for "
+        + ", ".join(f"device {i}: {sorted(k)}" for i, k in sorted(failures.items()))
+        + "; those calls use the math kernel"
+    )
+
+
 def patch_openspiel_env_async():
     """Apply nest_asyncio for OpenEnv EnvClient async compatibility.
 
