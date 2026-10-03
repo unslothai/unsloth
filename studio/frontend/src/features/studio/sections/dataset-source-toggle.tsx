@@ -11,18 +11,18 @@ type DatasetSourceMode = "browse" | "s3";
 
 export function DatasetSourceToggle({
   datasetSource,
-  isMultimodalModel,
+  isVisionModel,
   restoreBrowseDatasetSource,
   selectS3Source,
 }: {
   datasetSource: DatasetSource;
-  isMultimodalModel: boolean;
+  isVisionModel: boolean;
   restoreBrowseDatasetSource: () => void;
   selectS3Source: () => void;
 }) {
   const t = useT();
 
-  if (isMultimodalModel) {
+  if (isVisionModel) {
     return null;
   }
 
@@ -57,7 +57,6 @@ export function DatasetSourceToggleAction() {
     selectS3Source,
     restoreBrowseDatasetSource,
     isVisionModel,
-    isAudioModel,
     modelType,
   } = useTrainingConfigStore(
     useShallow((state) => ({
@@ -65,7 +64,6 @@ export function DatasetSourceToggleAction() {
       selectS3Source: state.selectS3Source,
       restoreBrowseDatasetSource: state.restoreBrowseDatasetSource,
       isVisionModel: state.isVisionModel,
-      isAudioModel: state.isAudioModel,
       modelType: state.modelType,
     })),
   );
@@ -74,12 +72,8 @@ export function DatasetSourceToggleAction() {
   return (
     <DatasetSourceToggle
       datasetSource={datasetSource}
-      isMultimodalModel={
-        effectiveModelType === "vision" ||
-        effectiveModelType === "audio" ||
-        isVisionModel ||
-        isAudioModel
-      }
+      // Vision only: audio S3 datasets load since #4539 (audio downloaded beside its manifest).
+      isVisionModel={effectiveModelType === "vision" || isVisionModel}
       restoreBrowseDatasetSource={restoreBrowseDatasetSource}
       selectS3Source={selectS3Source}
     />
