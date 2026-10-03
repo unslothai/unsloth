@@ -4,6 +4,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { normalizeDenseQuantSchemes } from "@/lib/dense-quant-schemes";
 import {
+  type ReportedOffloadFitTier,
+  normalizeReportedOffloadFitTiers,
+} from "@/lib/offload-fit-tiers";
+import {
   type GpuIndexKind,
   type PinnableGpuContext,
   type ReconciledGpuSelection,
@@ -56,6 +60,10 @@ export interface GpuInfo {
   nvfp4Diffusion: boolean;
   /** Group offload can stream torchao weights. Absent or false until resolved and on older backends. */
   quantisedStreaming?: boolean;
+  /** Backend-reported extra Diffusers offload tiers per lower-cased repo id. Empty on older backends. */
+  extraOffloadFitTiers?: Readonly<
+    Record<string, readonly ReportedOffloadFitTier[]>
+  >;
   name: string;
   memoryTotalGb: number;
   memorySharedGb: number;
@@ -124,6 +132,9 @@ function toGpuInfo(
     denseQuantSchemes: normalizeDenseQuantSchemes(data?.dense_quant_schemes),
     nvfp4Diffusion: data?.nvfp4_diffusion === true,
     quantisedStreaming: data?.quantised_streaming === true,
+    extraOffloadFitTiers: normalizeReportedOffloadFitTiers(
+      data?.diffusers_offload_tiers,
+    ),
     cpuCore: data?.cpu?.physical_count ?? 0,
     cpuThread: data?.cpu?.logical_count ?? 0,
     systemRamAvailableGb: data?.memory?.available_gb ?? 0,
@@ -319,6 +330,16 @@ export function useGpuInfo(): GpuInfo {
 /** GGUF inference GPU info, including a separately installed Vulkan backend. */
 export function useInferenceGpuInfo(): GpuInfo {
   return useGpuInfoSource("inference_gpu");
+}
+
+export function isEngineGpuDevice(device: SystemGpuDevice): boolean {
+  return device.indexKind === "physical" && /nvidia/i.test(device.name);
+}
+
+/** Where the backend puts an optional engine given no GPUs: the first one Studio sees. */
+export function defaultEngineGpuIds(): number[] {
+  const first = toGpuDevices(getCachedSystemInfo()).find(isEngineGpuDevice);
+  return first ? [first.index] : [0];
 }
 
 /** All backend-visible GPUs (index, name, total VRAM); shares the same fetch. */

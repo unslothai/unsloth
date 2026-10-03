@@ -363,4 +363,5 @@ SKIPPED = {
     ),
     "routes.npu:DELETE:/models/{model_id}": _NPU_INSTALLATION_MODEL,
     "routes.npu:POST:/models/{model_id}/download": _NPU_INSTALLATION_MODEL,
+    "routes.npu:GET:/models/{model_id}/download": _NPU_INSTALLATION_MODEL,
 }

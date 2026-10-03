@@ -1041,14 +1041,28 @@ def test_an_unlockable_filesystem_is_not_waited_out(tmp_path, monkeypatch) -> No
         attempts.append(op)
         raise OSError(errno.ENOTSUP, "locking not supported")
 
+    import threading
+
     slept = []
+    real_sleep = _time.sleep
+    main_thread = threading.current_thread()
+
+    def record(seconds):
+        # The patch is process-wide, and the lock is waited on this thread. A background
+        # thread from an earlier test in the same worker sleeping 50 ms during the window
+        # landed in `slept` and failed the row for a wait the lock never made.
+        if threading.current_thread() is main_thread:
+            slept.append(seconds)
+        else:
+            real_sleep(seconds)
+
     monkeypatch.setattr(fcntl, "flock", unsupported)
-    monkeypatch.setattr(_time, "sleep", lambda s: slept.append(s))
-    monkeypatch.setattr(tv.time, "sleep", lambda s: slept.append(s))
+    monkeypatch.setattr(_time, "sleep", record)
+    monkeypatch.setattr(tv.time, "sleep", record)
     with tv._optional_top_up_lock(str(root)) as held:
         assert held is False
     assert len(attempts) == 1, f"asked {len(attempts)} times for an answer that cannot change"
-    assert not slept, "waited on a filesystem that cannot lock"
+    assert not slept, f"waited on a filesystem that cannot lock: {slept}"
 
 
 def test_an_interpreter_without_fcntl_does_not_break_activation(tmp_path, monkeypatch) -> None:

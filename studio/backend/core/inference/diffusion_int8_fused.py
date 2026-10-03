@@ -553,6 +553,11 @@ def _linear_from_q(q: Any, xs: Any, weight: Any, bias: Any, out_dtype: Any) -> A
     """torchao Int8Tensor linear on an already-quantized activation: same ops, same order, as the stock epilogue."""
     import torch
 
+    if out_dtype == torch.bfloat16:
+        from .diffusion_int8_gemm import linear_from_q
+        fused = linear_from_q(q, xs.reshape(-1).to(torch.float32), weight, bias)
+        if fused is not None:
+            return fused
     y = (_int_mm(q, weight) * xs.reshape(-1, 1).to(torch.float32)).to(out_dtype)
     y = y * weight.scale.flatten()
     if bias is not None:

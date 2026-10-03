@@ -141,9 +141,10 @@ test("native audio instruction fields match the runtime payload contract", () =>
 test("Audio sends model-specific duration and instruction payloads", () => {
   assert.match(
     audioPageSource,
-    /musicGeneration\s*\? minimaxMusicFramesForSeconds\(minimaxMaxSeconds\)/,
+    /musicGeneration\s*\? minimaxMusicFramesForSeconds\(musicSeconds\)/,
   );
-  assert.match(audioPageSource, /max=\{MINIMAX_MUSIC_MAX_SECONDS\}/);
+  // The range is per model: MiniMax Music 3 up to 360 s, audio.cpp up to its backend clamp.
+  assert.match(audioPageSource, /max=\{musicRange\.max\}/);
   assert.match(
     audioPageSource,
     /instructionsKind !== null && instructions[\s\S]*audio_instructions: instructions/,
