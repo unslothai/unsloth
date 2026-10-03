@@ -5435,7 +5435,9 @@ class _AppTarget(NamedTuple):
 
 def _app_state_path(agent: str, path: Optional[Path] = None) -> Path:
     # One state per settings file, so another profile or config dir keeps its own backup and key.
-    name = agent if path is None else f"{agent}-{hashlib.sha256(str(path).encode()).hexdigest()[:12]}"
+    name = (
+        agent if path is None else f"{agent}-{hashlib.sha256(str(path).encode()).hexdigest()[:12]}"
+    )
     return _agents_config_root() / "app" / f"{name}.json"
 
 
