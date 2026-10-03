@@ -108,6 +108,10 @@ test("a chat pick opens on the workflow its model runs in", () => {
     "music",
   );
   assert.equal(audioWorkflowForPick({ id: "x/y", task: null }), null);
+  const clone = (folder: string) =>
+    audioWorkflowForPick({ id: `audio-cpp/audio.cpp-gguf/${folder}`, task: "text-to-speech" });
+  assert.equal(clone("Qwen3-TTS-12Hz-0.6B-Base-GGUF"), "clone");
+  assert.equal(clone("VoxCPM2-GGUF"), "speak");
 });
 
 test("the route validates through the shared helper", () => {
@@ -126,4 +130,18 @@ test("the chat picker forwards the workflow and still routes no text-to-audio ro
   const tasks = pickers.match(/export const AUDIO_GEN_TASKS = \[([^\]]*)\]/);
   assert.ok(tasks);
   assert.doesNotMatch(tasks[1], /text-to-audio/);
+});
+
+test("a chat picker handoff opens its page before the load, not only after it succeeds", () => {
+  const handoff = readSrc("features/audio/hooks/use-audio-handoff.ts");
+  // The workflow is part of the dedupe key, so the same model sent for another page is handled again.
+  assert.match(
+    handoff,
+    /const key = `\$\{wanted\}\|[^`]*\|\$\{routeSearch\.workflow \?\? ""\}`;/,
+  );
+  // Switch, then mark handled, then load: a refused switch leaves the handoff in the URL to retry.
+  assert.match(
+    handoff,
+    /if \(busyRef\.current !== null\) return;[\s\S]*?if \(\s*isAudioWorkflowId\(routedWorkflow\) &&\s*!transitionWorkflow\(routedWorkflow\)\s*\) \{\s*return;\s*\}\s*handledRouteModel\.current = key;\s*handleModelSelect\(wanted,/,
+  );
 });

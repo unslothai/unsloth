@@ -97,7 +97,7 @@ test("TtsOutput groups history rows and offers Send to for music clips", () => {
   assert.match(source, /historyRows\(clips, openGroups\)/);
   assert.match(source, /<VariationChips/);
   assert.match(source, /<MusicSendToMenuItems clip=\{clip\} \/>/);
-  assert.match(source, /<MusicSendToButtons clip=\{selectedClip\} \/>/);
+  assert.match(source, /menu=\{clipMenu\(selectedClip, "row"\)\}/);
   const send = readSrc("features/audio/components/music-send-to.tsx");
   assert.match(send, /pushClipToEdit\(/);
   assert.match(send, /edit: "Edit"/);

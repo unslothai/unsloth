@@ -33,6 +33,7 @@ export interface GenerateAudioResponse {
   model: string;
   audio: GeneratedAudio;
   clip_id?: string | null;
+  choices: { finish_reason: string }[];
 }
 
 export interface GenerateAudioOptions {
@@ -107,11 +108,6 @@ export interface AudioGalleryClip {
   workflow?: string | null;
   /** Clips one run made together share a group. */
   group_id?: string | null;
-  role?: string | null;
-  source_clip_id?: string | null;
-  voice_id?: string | null;
-  settings?: Record<string, unknown> | null;
-  /** The reference clip's name, for clones. */
   reference_name?: string | null;
 }
 
@@ -216,7 +212,6 @@ export async function deleteAudioClip(id: string): Promise<void> {
   if (!response.ok) throw new Error(await readFastApiError(response));
 }
 
-/** Deletes the clips that are not archived; with a workflow, only that workflow's clips. */
 export async function clearAudioGallery(
   workflow?: "speak" | "clone" | "music",
 ): Promise<number> {
@@ -228,13 +223,17 @@ export async function clearAudioGallery(
   return body.removed;
 }
 
-export async function fetchClipObjectUrl(
-  url: string,
-): Promise<{ url: string; bytes: number }> {
+export async function fetchClipBlob(url: string): Promise<Blob> {
   const response = await authFetch(url);
   if (!response.ok) throw new Error(await readFastApiError(response));
-  const blob = await response.blob();
-  return { url: URL.createObjectURL(blob), bytes: blob.size };
+  return response.blob();
+}
+
+export async function fetchClipObjectUrl(
+  url: string,
+): Promise<{ url: string; bytes: number; blob: Blob }> {
+  const blob = await fetchClipBlob(url);
+  return { url: URL.createObjectURL(blob), bytes: blob.size, blob };
 }
 
 export async function transcribeWithProgress(
@@ -317,8 +316,7 @@ export async function deleteTranscript(id?: string): Promise<void> {
   );
 }
 
-/** A failed audio request, with the HTTP status so a caller can tell an expired upload (404)
- *  from a refusal. */
+/** Carries the status so callers can tell an expired upload (404) from a refusal. */
 export class AudioApiError extends Error {
   readonly status: number;
   constructor(message: string, status: number) {
@@ -335,8 +333,7 @@ async function parseAudioJson<T>(response: Response): Promise<T> {
   return (await response.json()) as T;
 }
 
-/** A stored upload, as POST /audio/inputs returns it. */
-export interface AudioInputRecord {
+interface AudioInputRecord {
   id: string;
   name: string;
   duration_s: number;
@@ -346,8 +343,7 @@ export interface AudioInputRecord {
   expires_at: string;
 }
 
-/** Sends the raw bytes with upload progress. XHR is the one browser API that reports it; a 401
- *  (an expired access token) is retried through authFetch, which refreshes the session. */
+/** XHR is the only browser API with upload progress; the caller retries a 401 via authFetch to refresh the token. */
 function uploadWithProgress(
   url: string,
   blob: Blob,
@@ -383,7 +379,6 @@ function uploadWithProgress(
   });
 }
 
-/** Uploads audio the page will use as an input. The server decodes and keeps it for a day. */
 export async function uploadAudioInput(
   blob: Blob,
   name: string,
@@ -417,7 +412,6 @@ export async function uploadAudioInput(
   return parseAudioJson<AudioInputRecord>(response);
 }
 
-/** Any audio the server serves to this account, as bytes. */
 export async function fetchAudioBlob(
   url: string,
   signal?: AbortSignal,
@@ -429,21 +423,12 @@ export async function fetchAudioBlob(
   return response.blob();
 }
 
-export async function deleteAudioInput(id: string): Promise<void> {
-  await parseAudioJson(
-    await authFetch(`/api/inference/audio/inputs/${encodeURIComponent(id)}`, {
-      method: "DELETE",
-    }),
-  );
-}
-
-export interface TranscribeInputResponse {
+interface TranscribeInputResponse {
   text: string;
   language: string | null;
   model: string;
 }
 
-/** Transcribes a reference without saving it to the transcript list. */
 export async function transcribeAudioInput(
   ref: AudioSourceRef,
   body: { model: string; engine?: string; device?: string; language?: string },
@@ -458,25 +443,19 @@ export async function transcribeAudioInput(
   return parseAudioJson<TranscribeInputResponse>(response);
 }
 
-export interface AudioRunClip {
-  id: string;
-  role: string;
-  url: string;
-  sample_rate: number;
-  duration_s: number;
-  workflow: string;
-}
-
 export interface AudioRunResponse {
-  clips: AudioRunClip[];
-  group_id: string | null;
-  text: string | null;
+  clips: {
+    id: string;
+    role: string;
+    url: string;
+    sample_rate: number;
+    duration_s: number;
+    workflow: string;
+  }[];
   model: string;
-  /** Only when the gallery could not save the result. */
   audio: GeneratedAudio | null;
 }
 
-/** Runs a workflow on its inputs (Clone, or Speak with a saved voice). */
 export async function runAudio(
   request: AudioRunRequest,
   signal?: AbortSignal,
@@ -499,10 +478,6 @@ export interface AudioVoice {
   sample_rate: number;
   created_at: string;
   url: string;
-}
-
-export function voiceFileUrl(id: string): string {
-  return `/api/inference/audio/voices/${encodeURIComponent(id)}/file`;
 }
 
 export async function listVoices(): Promise<AudioVoice[]> {

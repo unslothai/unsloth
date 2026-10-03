@@ -6,11 +6,13 @@ import { useSettingsDialogStore } from "@/features/settings";
 import { useStripReorder } from "@/hooks/use-strip-reorder";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { loadGalleryUntil } from "@/lib/gallery-deep-link";
 import {
   applyPin,
   moveGalleryItem,
   pinnedOrder,
   restorePinOrder,
+  scopedMoveAfterId,
   serializeById,
   sortGalleryItems,
   subscribeGalleryChanged,
@@ -27,12 +29,13 @@ import {
   moveAudioClip,
   setAudioClipFlags,
 } from "../api";
-import { mergeGalleryPage } from "../audio-page-policy";
+import { fetchGalleryWindow, mergeGalleryPage } from "../audio-page-policy";
 import {
   CLIP_BLOB_BUDGET_BYTES,
   MAX_PAGE_SIZE,
   PAGE_SIZE,
 } from "../audio-workspace-constants";
+import { decodePeaks } from "../components/waveform-decode";
 import { clipWorkflow } from "../workflows";
 import type { AudioHostState } from "./audio-host-state";
 
@@ -43,25 +46,25 @@ export const galleryCache: {
   nextCursor: AudioGalleryCursor | null;
   selectedId: string | null;
   srcById: BlobUrlCache;
+  peaksById: Map<string, number[] | null>;
 } = {
   clips: [],
   hasMore: false,
   nextCursor: null,
   selectedId: null,
   srcById: new BlobUrlCache(CLIP_BLOB_BUDGET_BYTES),
+  peaksById: new Map(),
 };
 
-/** Speak and Music output: the clip gallery, its playback bytes, selection, ordering and history actions. */
 export function useAudioGallery({
   active,
 }: Pick<AudioHostState, "active">) {
-  /** Audio the server produced that the gallery is not showing yet: either it could not be
-   *  persisted, or this refresh missed it. Kept so the generation is playable either way. */
   const [fallbackClip, setFallbackClip] = useState<{
     url: string;
     prompt: string;
     model: string;
     saved: boolean;
+    workflow: "speak" | "music" | "clone";
   } | null>(null);
   const fallbackClipRef = useRef(fallbackClip);
   fallbackClipRef.current = fallbackClip;
@@ -77,6 +80,9 @@ export function useAudioGallery({
   const [srcById, setSrcById] = useState<Record<string, string>>(
     galleryCache.srcById.toRecord(),
   );
+  const [peaksById, setPeaksById] = useState<
+    ReadonlyMap<string, number[] | null>
+  >(galleryCache.peaksById);
   const clipSrcLoads = useRef<Map<string, Promise<void>>>(new Map());
 
   const ensureClipSrc = useCallback(async (clip: AudioGalleryClip) => {
@@ -90,8 +96,7 @@ export function useAudioGallery({
     const load = (async () => {
       try {
         const fetched = await fetchClipObjectUrl(clip.url);
-        // A delete can finish while protected bytes are in flight. Do not revive its cache entry after
-        // the row is already gone.
+        // A delete can finish mid-fetch: do not revive its cache entry.
         if (!galleryCache.clips.some((candidate) => candidate.id === clip.id)) {
           URL.revokeObjectURL(fetched.url);
           return;
@@ -101,8 +106,13 @@ export function useAudioGallery({
           galleryCache.selectedId ? [galleryCache.selectedId] : [],
         );
         setSrcById(galleryCache.srcById.toRecord());
+        if (!galleryCache.peaksById.has(clip.id)) {
+          void decodePeaks(fetched.blob).then(({ peaks }) => {
+            galleryCache.peaksById.set(clip.id, peaks);
+            setPeaksById(new Map(galleryCache.peaksById));
+          });
+        }
       } catch {
-        // Clip may have been deleted server-side; the next gallery refresh drops it.
         toast.error("Could not load this audio clip. Try selecting it again.");
       }
     })();
@@ -124,38 +134,37 @@ export function useAudioGallery({
       const generation = ++galleryRefreshGeneration.current;
       const writeEpoch = orderWrites.current.epoch;
       const wanted = Math.max(PAGE_SIZE, windowSize);
-      const asked = Math.min(wanted, MAX_PAGE_SIZE);
       try {
-        const page = await listAudioGallery(0, asked);
+        // Capped pages: refetching only the first page shrank a topped-up history.
+        const page = await fetchGalleryWindow(
+          (limit, cursor) => listAudioGallery(0, limit, cursor),
+          audioGalleryCursor,
+          wanted,
+          MAX_PAGE_SIZE,
+          () => generation !== galleryRefreshGeneration.current,
+        );
         // The caller's own fetch: a generation whose clip persisted must not be told otherwise.
         if (generation !== galleryRefreshGeneration.current) return page.audio;
         if (orderWrites.current.inFlight > 0 || orderWrites.current.epoch !== writeEpoch) {
           orderWrites.current.deferred = true;
           return page.audio;
         }
-        // A window past the route's cap cannot be covered in one page, and stitching the old scrollback
-        // back on keeps a cursor that starts BELOW it, stranding whatever was restored.
-        const { clips: merged, stitched } =
-          wanted > asked
-            ? { clips: [...page.audio], stitched: false }
-            : mergeGalleryPage(
-                page.audio,
-                galleryCache.clips,
-                removedId,
-                page.has_more,
-              );
+        const { clips: merged, stitched } = mergeGalleryPage(
+          page.audio,
+          galleryCache.clips,
+          removedId,
+          page.has_more,
+        );
         galleryCache.clips = merged;
-        // A clip record carries no mtime, so kept scrollback has no cursor; keep the deeper one.
         if (!stitched) {
           galleryCache.hasMore = page.has_more;
           galleryCache.nextCursor = audioGalleryCursor(page);
         }
         setClips(merged);
         setHasMore(galleryCache.hasMore);
-        // The response audio was kept only until its record showed up: left mounted, deleting the
-        // now-visible clip made the "saved, waiting for the gallery" copy reappear.
+        // Only a saved fallback is the selected clip; an unsaved one is the only copy.
         if (
-          fallbackClipRef.current &&
+          fallbackClipRef.current?.saved &&
           galleryCache.selectedId &&
           merged.some((c) => c.id === galleryCache.selectedId)
         ) {
@@ -182,7 +191,6 @@ export function useAudioGallery({
         if (selected) void ensureClipSrc(selected);
         return merged;
       } catch {
-        // Same recoverable-poll stance as status.
         return galleryCache.clips;
       }
     },
@@ -190,8 +198,7 @@ export function useAudioGallery({
   );
 
   const loadMore = useCallback(async () => {
-    // Repeated scroll events near the bottom would otherwise each fire with the same offset and
-    // append the same page, duplicating clips and React keys.
+    // Dedupe: repeated near-bottom scrolls would append the same page twice.
     if (loadingMoreRef.current) return;
     loadingMoreRef.current = true;
     const refreshGeneration = galleryRefreshGeneration.current;
@@ -213,7 +220,6 @@ export function useAudioGallery({
       setClips(galleryCache.clips);
       setHasMore(page.has_more);
     } catch {
-      // Retry on the next scroll.
     } finally {
       loadingMoreRef.current = false;
     }
@@ -239,9 +245,6 @@ export function useAudioGallery({
     if (clip) void ensureClipSrc(clip);
   }, [clips, selectedId, ensureClipSrc]);
 
-  /** `keepFallback` is for the one case where the id is not in `clips` yet: the server persisted the
-   *  clip but this refresh missed it, so the response audio has to stay mounted or the player
-   *  falls through to the empty state. */
   const selectClip = useCallback(
     (id: string, keepFallback = false) => {
       galleryCache.selectedId = id;
@@ -256,8 +259,7 @@ export function useAudioGallery({
   const dropClip = useCallback((id: string) => {
     galleryCache.srcById.delete(id);
     setSrcById(galleryCache.srcById.toRecord());
-    // Drop the row now, as the clear-all path does: refreshGallery swallows a failed GET and returns
-    // the cache without setClips, leaving the row up against an already-revoked URL.
+    // Drop the row now: refreshGallery swallows a failed GET without setClips, leaving it on a revoked URL.
     galleryCache.clips = galleryCache.clips.filter((clip) => clip.id !== id);
     setClips(galleryCache.clips);
     if (galleryCache.selectedId === id) {
@@ -329,11 +331,9 @@ export function useAudioGallery({
   }, [refreshGallery]);
 
   const handleTogglePin = useCallback(async (id: string, pinned: boolean) => {
-    // The pinned order before the click, so a failed unpin goes back where it was.
     const orderBefore = pinnedOrder(galleryCache.clips);
     const attempt = (pinSeq.current += 1);
     pinAttempt.current.set(id, attempt);
-    // Optimistic. Records carry the server's sort key, so the local re-sort matches it.
     galleryCache.clips = applyPin(galleryCache.clips, id, pinned);
     setClips(galleryCache.clips);
     beginOrderWrite();
@@ -358,9 +358,17 @@ export function useAudioGallery({
     }
   }, [beginOrderWrite, endOrderWrite]);
 
-  // Drag to reorder: applied optimistically, then the server's record (key and pin) is adopted.
   const handleMoveClip = useCallback(
-    async (id: string, afterId: string | null) => {
+    async (id: string, viewAfterId: string | null) => {
+      const moving = galleryCache.clips.find((c) => c.id === id);
+      if (!moving) return;
+      const workflow = clipWorkflow(moving);
+      const afterId = scopedMoveAfterId(
+        galleryCache.clips,
+        (c) => clipWorkflow(c) === workflow,
+        id,
+        viewAfterId,
+      );
       const next = moveGalleryItem(galleryCache.clips, id, afterId);
       if (next === galleryCache.clips) return;
       const guessedPinned = Boolean(next.find((c) => c.id === id)?.pinned);
@@ -381,7 +389,6 @@ export function useAudioGallery({
             ? { ...c, pinned: record.pinned, order_at: record.order_at }
             : c,
         );
-        // Re-sort only if the local pin guess was wrong.
         galleryCache.clips =
           Boolean(record.pinned) === guessedPinned
             ? patched
@@ -392,7 +399,6 @@ export function useAudioGallery({
           error instanceof Error ? error.message : "Could not move the clip.",
         );
         if (pinAttempt.current.get(id) === attempt) pinAttempt.current.delete(id);
-        // Put the server's order back once no other write is in flight.
         orderWrites.current.deferred = true;
       } finally {
         endOrderWrite();
@@ -405,8 +411,7 @@ export function useAudioGallery({
     { axis: "y" },
   );
 
-  // This page stays mounted across route changes, so a restore from the Settings archive would not reach
-  // History until a reload. Refresh the loaded window, not just the first page: a clip re-enters at its own age.
+  // Stays mounted, so refresh the whole loaded window after a Settings archive restore.
   useEffect(
     () =>
       subscribeGalleryChanged("audio", () => {
@@ -415,7 +420,6 @@ export function useAudioGallery({
     [refreshGallery],
   );
 
-  /** With a workflow, clears only that page's clips and leaves the other page's history alone. */
   const handleClearGallery = useCallback(async (workflow?: "speak" | "clone" | "music") => {
     try {
       await clearAudioGallery(workflow);
@@ -440,11 +444,8 @@ export function useAudioGallery({
       }
       galleryCache.srcById.clear();
       galleryCache.selectedId = null;
-      // Drop the cached list first: refreshGallery merges the fetched page into it, so an empty page
-      // would leave every cleared row on screen.
+      // Drop the cached list and state first: refreshGallery merges into the cache and swallows a failed GET.
       galleryCache.clips = [];
-      // React state too, not just the cache: refreshGallery swallows a failed GET and returns the cache
-      // without calling setClips, which left cleared rows rendered against a revoked URL.
       setClips([]);
       setSrcById({});
       setSelectedId(null);
@@ -476,7 +477,6 @@ export function useAudioGallery({
     anchor.click();
   }, [fallbackClip]);
 
-  /** Download from a history row, whose bytes are only fetched once selected. */
   const handleDownloadClipById = useCallback(async (clip: AudioGalleryClip) => {
     let temporaryUrl: string | null = null;
     try {
@@ -493,8 +493,6 @@ export function useAudioGallery({
     } catch {
       toast.error("Could not download the clip.");
     } finally {
-      // A history-row download does not need to become resident playback state, so revoke it after the
-      // browser has consumed the synthetic click rather than bypassing the 64 MB cache budget.
       if (temporaryUrl) {
         const url = temporaryUrl;
         window.setTimeout(() => URL.revokeObjectURL(url), 0);
@@ -519,6 +517,7 @@ export function useAudioGallery({
     selectedId,
     setSelectedId,
     srcById,
+    peaksById,
     ensureClipSrc,
     refreshGallery,
     loadMore,
@@ -537,11 +536,8 @@ export function useAudioGallery({
 
 export type AudioGallery = ReturnType<typeof useAudioGallery>;
 
-/** Below this many clips, a page tops its history up from the next gallery page. */
 const HISTORY_MIN_VISIBLE = 8;
 
-/** One page's slice of the shared gallery: its clips, its selection, and enough of them loaded
- *  to fill the list when the other page made most of the recent ones. */
 export function useWorkflowHistory({
   workflow,
   enabled,
@@ -571,13 +567,15 @@ export function useWorkflowHistory({
   const selectedClip =
     visibleClips.find((clip) => clip.id === selectedId) ?? null;
   const selectedClipSrc = selectedClip ? srcById[selectedClip.id] : undefined;
+  const pageFallbackClip =
+    fallbackClip?.workflow === workflow ? fallbackClip : null;
 
-  // Arriving on a page whose clip is not the selected one selects its newest, as the gallery does on load.
   useEffect(() => {
-    if (!enabled || selectedClip || fallbackClip) return;
+    if (!enabled || selectedClip || pageFallbackClip) return;
     const first = visibleClips[0];
-    if (first) selectClip(first.id);
-  }, [enabled, selectedClip, fallbackClip, visibleClips, selectClip]);
+    // Keep another page's unsaved clip: it is the only copy.
+    if (first) selectClip(first.id, fallbackClip !== null);
+  }, [enabled, selectedClip, pageFallbackClip, fallbackClip, visibleClips, selectClip]);
 
   useEffect(() => {
     if (
@@ -590,5 +588,38 @@ export function useWorkflowHistory({
     void loadMore();
   }, [enabled, visibleClips, hasMore, loadMore, loadingMoreRef]);
 
-  return { visibleClips, selectedClip, selectedClipSrc };
+  // Load until this page gains a row: an all-other-page batch adds no height, so no scroll fires again.
+  const visibleLoad = useRef(false);
+  const current = useRef({ workflow, enabled });
+  current.current = { workflow, enabled };
+  const loadMoreVisible = useCallback(async () => {
+    if (visibleLoad.current) return;
+    visibleLoad.current = true;
+    const countVisible = () =>
+      galleryCache.clips.filter((clip) => clipWorkflow(clip) === workflow)
+        .length;
+    const before = countVisible();
+    try {
+      await loadGalleryUntil({
+        has: () => countVisible() > before,
+        count: () => galleryCache.clips.length,
+        hasMore: () => galleryCache.hasMore,
+        refresh: async () => {},
+        loadMore,
+        busy: () => loadingMoreRef.current,
+        cancelled: () =>
+          !current.current.enabled || current.current.workflow !== workflow,
+      });
+    } finally {
+      visibleLoad.current = false;
+    }
+  }, [workflow, loadMore, loadingMoreRef]);
+
+  return {
+    visibleClips,
+    selectedClip,
+    selectedClipSrc,
+    loadMoreVisible,
+    fallbackClip: pageFallbackClip,
+  };
 }

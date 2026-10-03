@@ -168,7 +168,7 @@ def _pdf_markdown(doc, pages: range | None = None) -> list[str] | None:
     except Exception:
         return None
     try:
-        kwargs = {"page_chunks": True, "show_progress": False}
+        kwargs = {"page_chunks": True, "show_progress": False, "ignore_images": True}
         if pages is not None:
             kwargs["pages"] = list(pages)
         chunks = pymupdf4llm.to_markdown(doc, **kwargs)

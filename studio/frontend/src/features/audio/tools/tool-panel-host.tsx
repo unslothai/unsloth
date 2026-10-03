@@ -7,8 +7,6 @@ import { audioToolPanelsFor } from "./registry";
 import { panelValue } from "./select";
 import type { AudioModelContext, CoreInputs } from "./types";
 
-/** Renders the loaded model's tools for this page, where the rail always showed them. Each panel
- *  gets its own value by id, or its defaults when nothing was kept for it yet. */
 export function AudioToolPanels({
   workflow,
   ctx,
@@ -24,7 +22,6 @@ export function AudioToolPanels({
   onChange: (panelId: string, value: unknown) => void;
   specs: AudioOptionSpec[];
   disabled: boolean;
-  /** The page's own inputs, for panels that preview their effect on them. */
   core?: CoreInputs;
 }) {
   return (

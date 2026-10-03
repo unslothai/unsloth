@@ -6,7 +6,6 @@ import type { InferenceStatusResponse } from "@/features/chat";
 import type { AudioBusy, AudioGenerationPhase } from "../audio-page-policy";
 import type { CreateMode } from "../audio-workspace-utils";
 
-/** The page-wide state the Audio page owns and hands to its hooks. */
 export interface AudioHostState {
   active: boolean;
   activeRef: RefObject<boolean>;

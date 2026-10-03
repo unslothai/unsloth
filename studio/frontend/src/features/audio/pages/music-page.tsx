@@ -37,7 +37,6 @@ export const MUSIC_DESCRIPTION_FIELD_ID = "music-description";
 export const MUSIC_LYRICS_FIELD_ID = "music-lyrics";
 export const MUSIC_SFX_FIELD_ID = "music-sfx-prompt";
 
-/** Music's picker rows: the music models from the main-slot catalog. */
 export function musicPageModels(
   models: ModelOption[],
   isMac: boolean,

@@ -43,24 +43,13 @@ import { VoicePicker } from "./voice-picker";
 import { Waveform } from "./waveform";
 import { formatSeconds } from "./waveform-peaks";
 
-/** The gallery clips an input card offers under From history. Provided by the page. */
 const AudioHistoryContext = createContext<readonly AudioGalleryClip[]>([]);
 export const AudioHistoryProvider = AudioHistoryContext.Provider;
 
 type SourceTab = "upload" | "record" | "history" | "voice";
 
-const AUDIO_ACCEPT = "audio/*,.wav,.mp3,.flac,.ogg,.oga,.opus,.m4a,.aac,.webm";
-const NATIVE_AUDIO_EXTS = [
-  "wav",
-  "mp3",
-  "flac",
-  "ogg",
-  "oga",
-  "opus",
-  "m4a",
-  "aac",
-  "webm",
-];
+const AUDIO_EXTS = "wav mp3 flac ogg oga opus m4a aac webm mp4".split(" ");
+const AUDIO_ACCEPT = `audio/*,${AUDIO_EXTS.map((ext) => `.${ext}`).join(",")}`;
 
 const SOURCE_LABEL: Record<AudioSourceSelection["kind"], string> = {
   input: "Upload",
@@ -76,17 +65,26 @@ export interface AudioSourcePreviewView {
 }
 
 export interface AudioSourceInputHandle {
-  /** Moves focus to the card, for "Add reference audio" actions. */
   focus: () => void;
-  /** Opens the file picker. */
   browse: () => void;
-  /** Shows the card's expired state, for an upload the server no longer has. */
   markExpired: () => void;
 }
 
-/** One audio input as the shared card: drop a file anywhere on it, pick one, record, reuse a
- *  history clip or a saved voice. A picked file shows its length and waveform as soon as it
- *  decodes, while it uploads. */
+function AlertLine({ children }: { children: ReactNode }) {
+  return (
+    <p
+      role="alert"
+      className="flex items-start gap-1.5 text-ui-12 leading-snug text-foreground"
+    >
+      <HugeiconsIcon
+        icon={Alert02Icon}
+        className="mt-0.5 size-3.5 shrink-0 text-destructive"
+      />
+      {children}
+    </p>
+  );
+}
+
 export function AudioSourceInput({
   id,
   label,
@@ -110,7 +108,6 @@ export function AudioSourceInput({
   allowHistory?: boolean;
   allowSavedVoice?: boolean;
   handleRef?: Ref<AudioSourceInputHandle>;
-  /** Hears what the card is doing (uploading, failed, expired), for the page's Generate blocker. */
   onStatusChange?: (status: AudioSourceStatus) => void;
   renderWaveform?: (preview: AudioSourcePreviewView) => ReactNode;
   maxSeconds?: number | null;
@@ -138,7 +135,7 @@ export function AudioSourceInput({
     markExpired: source.expire,
   }));
 
-  // Tauri hands drops over as paths; read them through the native side as the image picker does.
+  // Tauri hands drops over as paths.
   const nativeDropRef = useNativeDropTarget({
     enabled: !disabled,
     onDragOver: setDragging,
@@ -147,7 +144,7 @@ export function AudioSourceInput({
       const path = paths[0];
       if (!path) return;
       const extension = path.split(".").pop()?.toLowerCase() ?? "";
-      if (!NATIVE_AUDIO_EXTS.includes(extension)) {
+      if (!AUDIO_EXTS.includes(extension)) {
         source.fail(
           "This is not an audio file. Pick a WAV, MP3, FLAC, OGG or M4A file.",
         );
@@ -168,10 +165,7 @@ export function AudioSourceInput({
   ];
 
   const durationS = preview.durationS ?? value?.durationS ?? null;
-  const name =
-    uploading && status.phase === "uploading"
-      ? status.name
-      : (value?.name ?? "");
+  const name = status.phase === "uploading" ? status.name : (value?.name ?? "");
 
   return (
     // biome-ignore lint/a11y/noNoninteractiveTabindex: the card takes focus so "Add reference audio" can bring the user to it.
@@ -243,16 +237,7 @@ export function AudioSourceInput({
 
       {status.phase === "expired" ? (
         <div className="grid gap-2">
-          <p
-            role="alert"
-            className="flex items-start gap-1.5 text-ui-12 leading-snug text-foreground"
-          >
-            <HugeiconsIcon
-              icon={Alert02Icon}
-              className="mt-0.5 size-3.5 shrink-0 text-destructive"
-            />
-            {REFERENCE_EXPIRED_MESSAGE}
-          </p>
+          <AlertLine>{REFERENCE_EXPIRED_MESSAGE}</AlertLine>
           <Button
             type="button"
             variant="outline"
@@ -335,16 +320,7 @@ export function AudioSourceInput({
         <div className="grid gap-3">
           {status.phase === "error" ? (
             <div className="grid gap-2">
-              <p
-                role="alert"
-                className="flex items-start gap-1.5 text-ui-12 leading-snug text-foreground"
-              >
-                <HugeiconsIcon
-                  icon={Alert02Icon}
-                  className="mt-0.5 size-3.5 shrink-0 text-destructive"
-                />
-                {status.message}
-              </p>
+              <AlertLine>{status.message}</AlertLine>
               <div className="flex flex-wrap gap-2">
                 <Button
                   type="button"

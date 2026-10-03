@@ -15,7 +15,6 @@ import type { AudioHostState } from "../hooks/audio-host-state";
 import type { SttSidecar } from "../hooks/use-stt-sidecar";
 import type { Transcription } from "../hooks/use-transcription";
 
-/** Transcribe's rail: record from the microphone or pick a file. */
 export function TranscribeRail({
   recordingSupported,
   isRecording,
@@ -100,7 +99,6 @@ export function TranscribeRail({
   );
 }
 
-/** Transcribe's output: progress, the transcript and its actions, then saved transcripts. */
 export function TranscribeOutput({
   transcriptionStartedAt,
   transcriptionFinishedAt,

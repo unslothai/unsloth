@@ -22,7 +22,6 @@ export interface VoiceDetails {
   language: string;
 }
 
-/** Names a saved voice, or edits one: its name, what the clip says, and its language. */
 export function SaveVoiceDialog({
   open,
   onOpenChange,
@@ -34,7 +33,6 @@ export function SaveVoiceDialog({
   onOpenChange: (open: boolean) => void;
   mode: "create" | "edit";
   initial: VoiceDetails;
-  /** Rejects with the server's reason, which the dialog shows. */
   onSubmit: (details: VoiceDetails) => Promise<void>;
 }) {
   return (
@@ -78,11 +76,7 @@ function SaveVoiceForm({
     setSaving(true);
     setError(null);
     try {
-      await onSubmit({
-        name: clean,
-        transcript: transcript.trim(),
-        language,
-      });
+      await onSubmit({ name: clean, transcript: transcript.trim(), language });
     } catch (reason) {
       setError(
         reason instanceof Error ? reason.message : "Could not save the voice.",
