@@ -272,7 +272,12 @@ def test_convrot_linear_swap_is_bit_identical_eager_and_compiled(forced, monkeyp
         with torch._inductor.config.patch(emulate_precision_casts = True):
             out = torch.compile(fused, fullgraph = True)(x)
             assert not counters["graph_break"]
-            assert torch.equal(out, torch.compile(stock, fullgraph = True)(x))
+            if fused.__dict__[g8._REC][2]:
+                # rotation + act quant run as the opaque fused op, which is EAGER-exact; Inductor's own compiled act
+                # quant is not on every torch (torch 2.12: ~1.5e-5 of codes differ), so the bar is the eager Linear
+                assert torch.equal(out, stock(x))
+            else:
+                assert torch.equal(out, torch.compile(stock, fullgraph = True)(x))
     g8.uninstall(holder)
     assert not g8.is_installed(fused)
 
@@ -399,8 +404,30 @@ def test_rotquant_kernel_is_bit_exact_vs_rotation_then_torchao_quant(forced_rotq
     x = _act(m, k, m + k)
     q, s = g8._rotq_op()(x, 256, kind == "v2")
     rq, rs = g8.rotquant_reference(x, 256, kind)
-    assert q.dtype == torch.int8 and s.dtype == torch.bfloat16 and s.shape == (m,)
+    # torchao's own activation-scale dtype: bf16, except v2 on torchao >= 0.18 (fp32)
+    want = torch.float32 if kind == "v2" and g8._v2_act_scale_fp32() else torch.bfloat16
+    assert q.dtype == torch.int8 and s.dtype == want and s.shape == (m,)
     assert torch.equal(q, rq) and torch.equal(s, rs)
+
+
+@needs_cuda
+def test_rotquant_probe_accepts_this_torchao(forced):
+    # torchao 0.18's Int8Tensor keeps the activation scale in fp32 and quantizes with the fp32 reciprocal and an fp32
+    # product; a kernel holding 0.17's bf16 roundings differed by one code on ~4% of a Z-Image-sized activation, so
+    # the bit-exact probe refused every device on torch 2.12 (first seen on B200, where it read as an arch problem).
+    assert g8.rotquant_device_config(torch.cuda.current_device()) is not None
+
+
+@needs_cuda
+def test_rotquant_fake_op_matches_the_real_scale_dtype(forced_rotq):
+    from torch._subclasses.fake_tensor import FakeTensorMode
+
+    x = _act(40, 768, 9)
+    for v2 in (False, True):
+        _, s = g8._rotq_op()(x, 256, v2)
+        with FakeTensorMode() as mode:
+            _, fs = g8._rotq_op()(mode.from_tensor(x), 256, v2)
+        assert fs.dtype == s.dtype
 
 
 @needs_cuda
@@ -451,8 +478,8 @@ def test_convrot_linear_fuses_rotation_into_act_quant_eager_and_compiled(
             out2 = compiled(x2)
             assert not counters["graph_break"]
             assert counters["stats"]["unique_graphs"] == 1
-            ref = torch.compile(stock, fullgraph = True)
-            assert torch.equal(out, ref(x)) and torch.equal(out2, ref(x2))
+            # the fused op is eager-exact; Inductor's compiled act quant is not on every torch (see the swap test)
+            assert torch.equal(out, stock(x)) and torch.equal(out2, stock(x2))
     g8.uninstall(holder)
 
 

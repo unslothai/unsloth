@@ -276,6 +276,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         QMAX: tl.constexpr,
         DIV: tl.constexpr,
         EPS: tl.constexpr,
+        FP32_SCALE: tl.constexpr,
     ):
         # One program = ROWS whole activation rows = ROWS * NG rows of the [M * NG, G] group view (x contiguous).
         pid = tl.program_id(0)
@@ -298,17 +299,24 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         z = _rbf16(acc)
         # torchao's symmetric per-row quant on the bf16 rotated rows, every bf16 rounding kept:
         # s = bf16(max(bf16(amax / DIV), EPS)), q = clamp(rint(bf16(z * bf16(1 / s))), QMIN, QMAX).
+        # FP32_SCALE (torchao >= 0.18 Int8Tensor: scale_dtype float32): the same s, stored as fp32, and
+        # q = clamp(rint(z * (1 / s)), QMIN, QMAX) with the reciprocal and the product left in fp32.
         j = tl.arange(0, ROWS_P2)
         sel = lr[:, None] == j[None, :]
         amax = tl.max(tl.where(sel, tl.max(tl.abs(z), axis = 1)[:, None], 0.0), axis = 0)
         s = _rbf16(tl.maximum(_rbf16(libdevice.div_rn(amax, DIV)), EPS))
-        inv = _rbf16(libdevice.div_rn(tl.full((ROWS_P2,), 1.0, tl.float32), s))
+        inv = libdevice.div_rn(tl.full((ROWS_P2,), 1.0, tl.float32), s)
+        if not FP32_SCALE:
+            inv = _rbf16(inv)
         inv_t = tl.max(tl.where(sel, inv[None, :], 0.0), axis = 1)
-        p = libdevice.rint(_rbf16(z * inv_t[:, None]))
+        p = z * inv_t[:, None]
+        if not FP32_SCALE:
+            p = _rbf16(p)
+        p = libdevice.rint(p)
         p = tl.minimum(tl.maximum(p, QMIN), QMAX)
         tl.store(q_ptr + rg[:, None] * G + offs_n[None, :], p.to(tl.int8), mask = live[:, None])
         srow = pid.to(tl.int64) * ROWS + j
-        tl.store(s_ptr + srow, s.to(tl.bfloat16), mask = (j < ROWS) & (srow < M))
+        tl.store(s_ptr + srow, s.to(s_ptr.dtype.element_ty), mask = (j < ROWS) & (srow < M))
 
     return types.SimpleNamespace(i8mm_dq = i8mm_dq, rotq_i8 = rotq_i8)
 
@@ -473,8 +481,9 @@ def _probe(index: int, cfg: tuple) -> bool:
 # ------------------------------------------------------------------------------- fused ConvRot rotation + act quant
 
 # (QMIN, QMAX, DIV, EPS) of the two torchao activation quants the rotated Linears use: v1
-# ``_int8_symm_per_token_reduced_range_quant`` and v2 ``Int8Tensor.from_hp(PerRow, SYMMETRIC)``. Both keep a bf16
-# scale for a bf16 activation.
+# ``_int8_symm_per_token_reduced_range_quant`` and v2 ``Int8Tensor.from_hp(PerRow, SYMMETRIC)``. v1 keeps a bf16
+# scale for a bf16 activation; v2 does up to torchao 0.17, and from 0.18 (``scale_dtype = torch.float32``) returns the
+# same bf16-valued scale as fp32 and quantizes with the fp32 reciprocal and an fp32 product (``_rotq_scale_fp32``).
 _ROTQ_QPARAMS = {
     "v1": (-127.0, 127.0, 127.0, 1e-5),
     "v2": (-128.0, 127.0, 127.5, 1.1920928955078125e-07),
@@ -483,6 +492,25 @@ _ROTQ_QPARAMS = {
 _ROTQ_DEVICE: dict = {}
 _ROTQ_CALLS = [0]
 _ROTQ_HANDLE: Any = None
+
+
+@lru_cache(maxsize = 1)
+def _v2_act_scale_fp32() -> bool:
+    """Whether this torchao's ``Int8Tensor.from_hp`` hands back an fp32 activation scale (0.18+) rather than the
+    activation's bf16. Decides both the kernel's reciprocal / product rounding and the scale dtype it returns."""
+    try:
+        import torch
+        from torchao.quantization.granularity import PerRow
+        from torchao.quantization.quantize_.workflows.int8.int8_tensor import Int8Tensor
+
+        x = torch.ones(1, 16, dtype = torch.bfloat16)
+        return Int8Tensor.from_hp(x, PerRow()).scale.dtype == torch.float32
+    except Exception:  # noqa: BLE001 - unknown: the probe below still has to match bit for bit
+        return False
+
+
+def _rotq_scale_fp32(kind: str) -> bool:
+    return kind == "v2" and _v2_act_scale_fp32()
 
 
 def rotquant_reference(x2d: Any, group: int, kind: str) -> tuple:
@@ -501,6 +529,8 @@ def rotquant_reference(x2d: Any, group: int, kind: str) -> tuple:
 
         t = Int8Tensor.from_hp(xr, PerRow())
         q, scale = t.qdata, t.scale
+    if _rotq_scale_fp32(kind):
+        return q, scale.reshape(-1).to(torch.float32)
     return q, scale.reshape(-1).to(torch.bfloat16)
 
 
@@ -521,7 +551,8 @@ def _rotq_launch(x2d: Any, group: int, kind: str, cfg: tuple) -> tuple:
     qmin, qmax, div, eps = _ROTQ_QPARAMS[kind]
     h = build_convrot_hadamard(group, device = x2d.device, dtype = torch.bfloat16)
     q = torch.empty((m, k), device = x2d.device, dtype = torch.int8)
-    s = torch.empty((m,), device = x2d.device, dtype = torch.bfloat16)
+    fp32_scale = _rotq_scale_fp32(kind)
+    s = torch.empty((m,), device = x2d.device, dtype = torch.float32 if fp32_scale else torch.bfloat16)
     with torch.cuda.device(x2d.device):
         kern.rotq_i8[(triton.cdiv(m, rows),)](
             x2d,
@@ -539,6 +570,7 @@ def _rotq_launch(x2d: Any, group: int, kind: str, cfg: tuple) -> tuple:
             QMAX = qmax,
             DIV = div,
             EPS = eps,
+            FP32_SCALE = fp32_scale,
             num_warps = warps,
             num_stages = stages,
             enable_fp_fusion = False,
@@ -603,7 +635,10 @@ def _rotq_op() -> Any:
         def _(x, group, v2):
             return (
                 x.new_empty((x.shape[0], x.shape[1]), dtype = torch.int8),
-                x.new_empty((x.shape[0],), dtype = torch.bfloat16),
+                x.new_empty(
+                    (x.shape[0],),
+                    dtype = torch.float32 if _rotq_scale_fp32("v2" if v2 else "v1") else torch.bfloat16,
+                ),
             )
     except Exception:  # noqa: BLE001
         return None
