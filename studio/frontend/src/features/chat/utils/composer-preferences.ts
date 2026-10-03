@@ -42,12 +42,15 @@ export function newInputImeState(): InputImeState {
   return { open: false, endedAt: -Infinity };
 }
 
+export function resetInputIme(ime: InputImeState) {
+  ime.open = false;
+  ime.endedAt = -Infinity;
+}
+
 export function inputImeHandlers(ime: InputImeState) {
   // A compositionend can go missing (#5546, macOS input-method switch); focus
   // changes always commit or cancel the composition, so they reset it, as the composers do.
-  const reset = () => {
-    ime.open = false;
-  };
+  const reset = () => resetInputIme(ime);
   return {
     onFocus: reset,
     onBlur: reset,
@@ -72,7 +75,13 @@ export function imeOwnsInputKeydown(
   const msSinceCompositionEnd = event.timeStamp - ime.endedAt;
   ime.endedAt = -Infinity;
   if (event.nativeEvent.isComposing) return true;
-  if (event.keyCode !== 229) return false;
+  if (event.keyCode !== 229) {
+    // Candidate-confirming Enter can arrive as a plain keyCode 13 while the
+    // composition is open (as in the composers); swallow that one Enter only.
+    const confirmsCandidate = ime.open && event.key === "Enter";
+    ime.open = false;
+    return confirmsCandidate;
+  }
   return imeKeydownBlocksComposerSubmit(event, ime.open, msSinceCompositionEnd);
 }
 

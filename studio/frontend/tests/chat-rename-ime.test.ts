@@ -129,6 +129,8 @@ for (const [name, file, inline] of [
       f.key("Enter", isComposing, keyCode);
       assert.deepEqual(f.effects, []);
       assert.equal(f.skipRenameBlurRef.current, false);
+      // Chrome/Firefox order: compositionend follows the composing keydown.
+      if (isComposing) f.compose(false);
       f.key("Enter");
       assert.equal(f.effects.filter((effect) => effect === "save").length, 1);
       if (inline) assert.equal(f.skipRenameBlurRef.current, true);
@@ -224,6 +226,34 @@ for (const reset of ["onFocus", "onBlur"] as const) {
   });
 }
 
+const plainEnter = (keyCode: number, timeStamp: number) => ({
+  key: "Enter",
+  keyCode,
+  metaKey: false,
+  ctrlKey: false,
+  shiftKey: false,
+  altKey: false,
+  timeStamp,
+  nativeEvent: { isComposing: false },
+});
+
+test("focus change clears a recent compositionend so the next idle Pinyin Enter saves", () => {
+  const state = newInputImeState();
+  const ime = inputImeHandlers(state);
+  ime.onCompositionStart();
+  ime.onCompositionEnd({ timeStamp: 1000 });
+  ime.onBlur();
+  ime.onFocus();
+  assert.equal(imeOwnsInputKeydown(plainEnter(229, 1100), state), false);
+});
+
+test("a keyCode 13 candidate-confirming Enter inside an open composition is swallowed once", () => {
+  const state = newInputImeState();
+  inputImeHandlers(state).onCompositionStart();
+  assert.equal(imeOwnsInputKeydown(plainEnter(13, 2000), state), true);
+  assert.equal(imeOwnsInputKeydown(plainEnter(13, 5000), state), false);
+});
+
 test("every rename input resets IME state on focus and blur", () => {
   for (const file of [
     "components/app-sidebar.tsx",
@@ -255,7 +285,7 @@ test("every rename input resets IME state on focus and blur", () => {
             if (override >= 0)
               assert.match(
                 props[override].getText(source),
-                /renameImeRef\.current\.open = false/,
+                /resetInputIme\(renameImeRef\.current\)/,
                 `${file}: ${name} override drops the IME reset`,
               );
           }

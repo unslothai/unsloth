@@ -213,6 +213,7 @@ import {
   imeOwnsInputKeydown,
   inputImeHandlers,
   newInputImeState,
+  resetInputIme,
 } from "@/features/chat/utils/composer-preferences";
 import { sandboxSessionIdFor } from "@/components/assistant-ui/sandbox-files";
 import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
@@ -4524,11 +4525,11 @@ export function AppSidebar() {
             onKeyDown={handleInlineRenameKeyDown}
             {...inputImeHandlers(renameImeRef.current)}
             onBlur={() => {
-              renameImeRef.current.open = false;
+              resetInputIme(renameImeRef.current);
               handleInlineRenameBlur();
             }}
             onFocus={(event) => {
-              renameImeRef.current.open = false;
+              resetInputIme(renameImeRef.current);
               event.currentTarget.select();
             }}
             maxLength={120}
