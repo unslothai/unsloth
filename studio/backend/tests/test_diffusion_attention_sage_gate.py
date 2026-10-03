@@ -50,10 +50,14 @@ def _isolated(monkeypatch):
     monkeypatch.setattr(att, "_active_attention_backend", lambda: "native")
     monkeypatch.setattr(att, "warn_if_sdpa_math_only", lambda *a, **k: False)
     monkeypatch.setattr(att, "_indexed_cuda_device", lambda device: device)
+    monkeypatch.setattr(att, "_sage_version_too_old", lambda: None)
     backends = dispatch._AttentionBackendRegistry._backends
     saved = backends[dispatch.AttentionBackendName.SAGE]
+    saved_fa4 = backends[dispatch.AttentionBackendName.FLASH_4_HUB]
+    monkeypatch.setattr(att, "_FA4_PROBE_CACHE", {})
     yield
     backends[dispatch.AttentionBackendName.SAGE] = saved
+    backends[dispatch.AttentionBackendName.FLASH_4_HUB] = saved_fa4
 
 
 def _qkv(head_dim = 64, dtype = None, heads = 2, tokens = 16):
@@ -388,3 +392,131 @@ def test_engaged_backend_is_tagged_on_every_dit(monkeypatch):
     monkeypatch.setattr(att, "_SAGE_PROBE_CACHE", {})
     assert apply_attention_backend(pipe, "sage", target = _target()) is None
     assert t._unsloth_attention_backend is None and t2._unsloth_attention_backend is None
+
+
+# --- sageattention older than diffusers' floor (PyPI's 1.0.6) never engages --------------------------------------
+# 1.0.6 is the SageAttention 1 Triton kernel: diffusers refuses it, and on a B200 it is 4.7-6x slower than cuDNN.
+
+
+_REAL_SAGE_VERSION_TOO_OLD = att._sage_version_too_old
+
+
+@pytest.mark.parametrize("installed, refused", [("1.0.6", True), ("2.0.1", True), ("2.1.1", False), ("2.2.0", False)])
+def test_sage_version_floor(monkeypatch, installed, refused):
+    import importlib.metadata as md
+
+    real = md.version
+    monkeypatch.setattr(md, "version", lambda name: installed if name == "sageattention" else real(name))
+    monkeypatch.setattr(dispatch, "_REQUIRED_SAGE_VERSION", "2.1.1", raising = False)
+    reason = _REAL_SAGE_VERSION_TOO_OLD()
+    assert bool(reason) is refused
+    if refused:
+        assert f"sageattention {installed} is older than 2.1.1" in reason
+
+
+def test_old_sageattention_falls_back_with_a_reason(monkeypatch):
+    seen: list = []
+    monkeypatch.setattr(att, "_run_sage_probe", lambda d, dt, hd = 128: seen.append(hd) or "")
+    monkeypatch.setattr(att, "_sage_version_too_old", lambda: "sageattention 1.0.6 is older than 2.1.1, the "
+                        "SageAttention 2 release diffusers needs")
+    t, log = _Transformer(128), _Logger()
+    assert apply_attention_backend(types.SimpleNamespace(transformer = t), "sage", logger = log, target = _target()) is None
+    assert "sage" not in t.calls and seen == []
+    assert any("1.0.6 is older than 2.1.1" in w for w in log.warnings)
+
+
+def test_sm100_explicit_sage_falls_back_and_auto_never_picks_it(monkeypatch):
+    from core.inference.diffusion_attention import select_attention_backend
+
+    monkeypatch.setattr(att, "_is_cuda_nvidia", lambda target: True)
+    monkeypatch.setattr(att, "_cuda_capability", lambda: (10, 0))
+    for speed in (True, False):
+        assert select_attention_backend(_target(), "auto", speed_active = speed) == (
+            "_native_cudnn" if speed else None
+        )
+    # Every released SageAttention 2 raises on sm100; the load keeps the default backend and says why.
+    monkeypatch.setattr(att, "_run_sage_probe", lambda d, dt, hd = 128: "ValueError: Unsupported CUDA architecture: sm100")
+    t, log = _Transformer(128), _Logger()
+    assert apply_attention_backend(types.SimpleNamespace(transformer = t), "sage", logger = log, target = _target()) is None
+    assert any("sm100" in w for w in log.warnings)
+
+
+# --- FlashAttention 4 (flash_4_hub): per-call guard and first-use probe -------------------------------------------
+
+
+def _engage_fa4(monkeypatch, probe = ""):
+    monkeypatch.setattr(att, "_run_fa4_probe", lambda d, dt, hd = 128: probe)
+    t, log = _Transformer(128), _Logger()
+    engaged = apply_attention_backend(
+        types.SimpleNamespace(transformer = t), "flash_4_hub", logger = log, target = _target()
+    )
+    return engaged, t, log
+
+
+def test_fa4_masked_call_runs_native_instead_of_raising(monkeypatch):
+    engaged, t, _ = _engage_fa4(monkeypatch)
+    assert engaged == "flash_4_hub" and t.calls == ["flash_4_hub"]
+    q, k, v = _qkv(dtype = torch.bfloat16)
+    mask = torch.ones((1, 1, 1, q.shape[1]), dtype = torch.bool)
+    mask[..., -3:] = False
+    out = dispatch.dispatch_attention_fn(q, k, v, attn_mask = mask, backend = dispatch.AttentionBackendName.FLASH_4_HUB)
+    torch.testing.assert_close(out, _native(q, k, v, mask))
+    assert att._fa4_reroute_reason(q, k, v, mask) == "attn_mask"
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "ValueError: too many values to unpack (expected 2)",
+        "RuntimeError: CUDA error: no kernel image is available for execution on the device",
+        "self-check: cosine 0.10000, relative L1 0.9000 vs fp32 at head_dim 128",
+    ],
+)
+def test_fa4_failed_probe_unpins_and_logs(monkeypatch, error):
+    engaged, t, log = _engage_fa4(monkeypatch, error)
+    assert engaged is None
+    assert t.calls == ["flash_4_hub", "native"]
+    assert getattr(t, "_unsloth_attention_backend", "unset") is None
+    assert any("FlashAttention 4 does not run correctly" in w and error in w for w in log.warnings)
+
+
+def test_fa4_probe_runs_at_dit_head_dims_and_is_cached(monkeypatch):
+    seen: list = []
+    monkeypatch.setattr(att, "_run_fa4_probe", lambda d, dt, hd = 128: seen.append(hd) or "")
+    for _ in range(2):
+        t = _Transformer(64)
+        assert apply_attention_backend(types.SimpleNamespace(transformer = t), "flash_4_hub", target = _target()) == "flash_4_hub"
+    assert seen == [64]
+
+
+def test_fa4_unaskable_probe_keeps_the_request(monkeypatch):
+    def _oom(d, dt, hd = 128):
+        raise RuntimeError("CUDA out of memory")
+
+    monkeypatch.setattr(att, "_run_fa4_probe", _oom)
+    t = _Transformer(128)
+    assert apply_attention_backend(types.SimpleNamespace(transformer = t), "flash_4_hub", target = _target()) == "flash_4_hub"
+
+
+def test_fa4_real_probe_reports_an_api_mismatch(monkeypatch):
+    """The probe goes through diffusers' dispatch, so a kernel returning a shape the caller does not expect (the
+    torch 2.12.1 + flash-attn-4 4.0.0b33 class of break) is an answer, not a crash."""
+    def _five_values(query, key, value, attn_mask = None, scale = None, is_causal = False, return_lse = False,
+                     _parallel_config = None):
+        a, b = (query, key, value, None, None)  # noqa: F841 - unpacks 5 into 2, as torch's FA4 hook does
+        return a
+
+    dispatch._AttentionBackendRegistry._backends[dispatch.AttentionBackendName.FLASH_4_HUB] = _five_values
+    monkeypatch.setattr(dispatch, "_check_attention_backend_requirements", lambda *a, **k: None, raising = False)
+    error = att._run_fa4_probe("cpu", torch.bfloat16, 64)
+    assert error.startswith("ValueError") and "unpack" in error
+
+
+def test_fa4_real_probe_passes_an_exact_kernel(monkeypatch):
+    def _exact(query, key, value, attn_mask = None, scale = None, is_causal = False, return_lse = False,
+               _parallel_config = None):
+        return _native(query.float(), key.float(), value.float()).to(query.dtype)
+
+    dispatch._AttentionBackendRegistry._backends[dispatch.AttentionBackendName.FLASH_4_HUB] = _exact
+    monkeypatch.setattr(dispatch, "_check_attention_backend_requirements", lambda *a, **k: None, raising = False)
+    assert att._run_fa4_probe("cpu", torch.bfloat16, 128) == ""

@@ -72,7 +72,9 @@ def normalize_attention_backend(value: Optional[str]) -> Optional[str]:
 # (min, max-exclusive) capability range: FA3 is Hopper-SM90 only, FA4 is Blackwell+.
 _ARCH_CAPABILITY: dict[str, tuple[tuple[int, int], Optional[tuple[int, int]]]] = {
     "_flash_3_hub": ((9, 0), (10, 0)),  # Hopper (SM90) only
-    "flash_4_hub": ((10, 0), None),  # Blackwell (SM100)+
+    # Blackwell (SM100)+. SM100 is verified; sm110 / sm120 are not, so the first load on each card also runs the
+    # kernel (_fa4_kernel_runs) and keeps the default backend when it fails or is wrong.
+    "flash_4_hub": ((10, 0), None),
 }
 
 
@@ -433,8 +435,8 @@ def _sage_reroute_reason(query: Any, key: Any, value: Any, attn_mask: Any) -> Op
     return None
 
 
-def _note_sage_reroute(reason: str) -> None:
-    """Count (and log once per reason) a call that ran native instead of Sage. Eager only: under torch.compile the
+def _note_reroute(label: str, reason: str, counts: dict, logged: set) -> None:
+    """Count (and log once per reason) a call that ran native instead of ``label``. Eager only: under torch.compile the
     count would be a traced side effect, and the routing itself is already decided by the specialised graph."""
     try:
         import torch
@@ -443,16 +445,21 @@ def _note_sage_reroute(reason: str) -> None:
             return
     except Exception:  # noqa: BLE001
         pass
-    _SAGE_ROUTED[reason] = _SAGE_ROUTED.get(reason, 0) + 1
-    if reason not in _SAGE_ROUTED_LOGGED:
-        _SAGE_ROUTED_LOGGED.add(reason)
+    counts[reason] = counts.get(reason, 0) + 1
+    if reason not in logged:
+        logged.add(reason)
         import logging
 
         logging.getLogger(__name__).warning(
-            "diffusion.attention: SageAttention cannot take this attention call (%s); running it on the default "
+            "diffusion.attention: %s cannot take this attention call (%s); running it on the default "
             "backend instead",
+            label,
             reason,
         )
+
+
+def _note_sage_reroute(reason: str) -> None:
+    _note_reroute("SageAttention", reason, _SAGE_ROUTED, _SAGE_ROUTED_LOGGED)
 
 
 # sageattn() reads the GPU arch through torch.cuda calls Dynamo cannot trace ("torch.* op returned non-Tensor"), so a
@@ -504,11 +511,17 @@ def _sage_custom_op(sage_fn: Any) -> Optional[Any]:
         return _SAGE_OP["op"]
 
 
-def _install_sage_dispatch_guard() -> bool:
-    """Wrap diffusers' registered ``sage`` backend so calls Sage cannot take run native. Idempotent.
+def _install_dispatch_guard(
+    backend: str,
+    reroute_reason: Any,
+    note: Any,
+    make_op: Any = None,
+) -> bool:
+    """Wrap diffusers' registered ``backend`` so calls its kernel cannot take run native. Idempotent.
 
-    False when diffusers' registry is not where this expects it: the caller then does not engage Sage at all, since
-    without the guard a masked call would raise mid-generation."""
+    False when diffusers' registry is not where this expects it: the caller then does not engage the backend at all,
+    since without the guard a masked call would raise mid-generation. ``make_op(fn)`` optionally returns an opaque op
+    the guard calls for a plain (no lse, no context-parallel) call."""
     try:
         from diffusers.models.attention_dispatch import (
             AttentionBackendName,
@@ -516,23 +529,24 @@ def _install_sage_dispatch_guard() -> bool:
         )
 
         backends = _AttentionBackendRegistry._backends
-        sage_fn = backends[AttentionBackendName.SAGE]
+        name = AttentionBackendName(backend)
+        kernel_fn = backends[name]
         native_fn = backends[AttentionBackendName.NATIVE]
     except Exception:  # noqa: BLE001
         return False
-    if getattr(sage_fn, _SAGE_GUARD_ATTR, False):
+    if getattr(kernel_fn, _SAGE_GUARD_ATTR, False):
         return True
-    if not callable(sage_fn) or not callable(native_fn):
+    if not callable(kernel_fn) or not callable(native_fn):
         return False
 
-    # Built here, eagerly: the guard body runs inside compiled graphs, where taking the registration lock cannot trace.
-    op = _sage_custom_op(sage_fn)
+    # Built here, eagerly: the guard body runs inside compiled graphs, where taking a registration lock cannot trace.
+    op = make_op(kernel_fn) if make_op is not None else None
+    names = ("query", "key", "value", "attn_mask")
 
-    def _guarded_sage(*args: Any, **kwargs: Any) -> Any:
-        names = ("query", "key", "value", "attn_mask")
+    def _guarded(*args: Any, **kwargs: Any) -> Any:
         bound = dict(zip(names, args))
         bound.update({n: kwargs[n] for n in names if n in kwargs})
-        reason = _sage_reroute_reason(
+        reason = reroute_reason(
             bound.get("query"), bound.get("key"), bound.get("value"), bound.get("attn_mask")
         )
         if reason is None:
@@ -552,17 +566,158 @@ def _install_sage_dispatch_guard() -> bool:
                     bool(extra.get("is_causal", False)),
                     extra.get("scale"),
                 )
-            return sage_fn(*args, **kwargs)
-        _note_sage_reroute(reason)
+            return kernel_fn(*args, **kwargs)
+        note(reason)
         return native_fn(*args, **kwargs)
 
-    setattr(_guarded_sage, _SAGE_GUARD_ATTR, True)
-    _guarded_sage.__wrapped__ = sage_fn  # type: ignore[attr-defined]
+    setattr(_guarded, _SAGE_GUARD_ATTR, True)
+    _guarded.__wrapped__ = kernel_fn  # type: ignore[attr-defined]
     try:
-        backends[AttentionBackendName.SAGE] = _guarded_sage
+        backends[name] = _guarded
     except Exception:  # noqa: BLE001
         return False
     return True
+
+
+def _install_sage_dispatch_guard() -> bool:
+    """The per-call guard on diffusers' ``sage`` backend (mask, head_dim > 128, dtype), calling through the custom op."""
+    return _install_dispatch_guard(
+        "sage", lambda *a: _sage_reroute_reason(*a), _note_sage_reroute, _sage_custom_op
+    )
+
+
+# FlashAttention 4 from the HF kernels hub: diffusers' flash_4_hub raises on any attn_mask, like sage. Its head dims are
+# checked once per card at load (_fa4_kernel_runs), so the per-call test is only the mask, dtype and device.
+_FA4_ROUTED: dict[str, int] = {}
+_FA4_ROUTED_LOGGED: set[str] = set()
+
+
+def _fa4_reroute_reason(query: Any, key: Any, value: Any, attn_mask: Any) -> Optional[str]:
+    import torch
+
+    if attn_mask is not None:
+        return "attn_mask"
+    if not all(isinstance(t, torch.Tensor) for t in (query, key, value)):
+        return "inputs"
+    if query.dtype not in (torch.float16, torch.bfloat16) or key.dtype != query.dtype or value.dtype != query.dtype:
+        return "dtype"
+    if query.device.type != "cuda":
+        return "device"
+    return None
+
+
+def _note_fa4_reroute(reason: str) -> None:
+    _note_reroute("FlashAttention 4", reason, _FA4_ROUTED, _FA4_ROUTED_LOGGED)
+
+
+def _install_fa4_dispatch_guard() -> bool:
+    return _install_dispatch_guard("flash_4_hub", lambda *a: _fa4_reroute_reason(*a), _note_fa4_reroute)
+
+
+# The arch row above only admits SM100+; whether the hub FA4 build actually runs, and runs correctly, on this card and
+# torch is asked here once per (device, dtype, head_dim), through diffusers' own dispatch after the kernel is fetched.
+# It catches cards the build has no code for (sm110 / sm120 are unverified) and API drift between the kernel and its
+# callers (torch 2.12.1's own FA4 SDPA hook unpacks 2 values where flash-attn-4 4.0.0b33 returns 5). An exact kernel,
+# so the bound is tight.
+_FA4_PROBE_CACHE: dict[tuple[str, str, int], str] = {}
+_FA4_MIN_COSINE = 0.999
+_FA4_MAX_REL_L1 = 0.02
+
+
+def _run_fa4_probe(device: str, dtype: Any, head_dim: int = 128) -> str:
+    """Empty when diffusers' flash_4_hub matches fp32 SDPA at ``head_dim`` on ``device``, else why not. Raises on OOM."""
+    import torch
+    from diffusers.models.attention_dispatch import AttentionBackendName, dispatch_attention_fn
+
+    if dtype not in (torch.float16, torch.bfloat16):
+        dtype = torch.bfloat16
+    gen = torch.Generator(device = "cpu").manual_seed(0)
+    q, k, v = (torch.randn((1, 256, 2, int(head_dim)), generator = gen) for _ in range(3))
+    q, k, v = (t.to(device = device, dtype = dtype) for t in (q, k, v))
+    try:
+        out = dispatch_attention_fn(q, k, v, backend = AttentionBackendName.FLASH_4_HUB)
+        if str(device).startswith("cuda"):
+            torch.cuda.synchronize(device)
+        if isinstance(out, tuple):
+            out = out[0]
+        ref = torch.nn.functional.scaled_dot_product_attention(
+            *(t.float().transpose(1, 2) for t in (q, k, v))
+        ).transpose(1, 2)
+        got = out.float()
+        if tuple(got.shape) != tuple(ref.shape):
+            return f"self-check: output shape {tuple(got.shape)} != {tuple(ref.shape)}"
+        if not bool(torch.isfinite(got).all()):
+            return "self-check: non-finite output"
+        cos = float(torch.nn.functional.cosine_similarity(got.flatten(), ref.flatten(), dim = 0))
+        rel = float((got - ref).abs().mean() / ref.abs().mean().clamp_min(1e-12))
+    except torch.cuda.OutOfMemoryError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - "no kernel for this arch" or an API mismatch is the answer
+        return f"{type(exc).__name__}: {exc}"
+    if cos < _FA4_MIN_COSINE or rel > _FA4_MAX_REL_L1:
+        return f"self-check: cosine {cos:.5f}, relative L1 {rel:.4f} vs fp32 at head_dim {head_dim}"
+    return ""
+
+
+def _fa4_kernel_runs(target: Any, logger: Any = None, head_dims: Any = None) -> Optional[bool]:
+    """True when flash_4_hub passed its self-check at every DiT head dim; False with a logged reason; None unaskable."""
+    device = str(getattr(target, "torch_device", None) or getattr(target, "device", None) or "")
+    if not device.startswith("cuda"):
+        return None
+    device = _indexed_cuda_device(device)
+    dtype = getattr(target, "dtype", None)
+    dims = sorted({int(d) for d in (head_dims or ()) if isinstance(d, int) and not isinstance(d, bool) and d > 0})
+    error = ""
+    for head_dim in dims or [128]:
+        key = (device, str(dtype), head_dim)
+        error = _FA4_PROBE_CACHE.get(key)
+        if error is None:
+            try:
+                error = _run_fa4_probe(device, dtype, head_dim)
+            except Exception:  # noqa: BLE001 - OOM / no torch: no answer about the kernel
+                return None
+            error = _FA4_PROBE_CACHE.setdefault(key, error)
+        if error:
+            break
+    if error and logger is not None:
+        logger.warning(
+            "diffusion.attention: FlashAttention 4 does not run correctly on this GPU (%s); using the default backend",
+            error,
+        )
+    return not error
+
+
+def _version_tuple(text: str) -> tuple[int, ...]:
+    m = re.match(r"\s*(\d+(?:\.\d+)*)", str(text))
+    return tuple(int(x) for x in m.group(1).split(".")) if m else ()
+
+
+def _sage_version_too_old() -> Optional[str]:
+    """Why the installed sageattention cannot serve, when it is older than diffusers' floor; None otherwise.
+
+    PyPI's newest is 1.0.6, the SageAttention 1 Triton kernel: diffusers refuses it, and on a B200 it is 4.7 to 6x
+    slower than cuDNN attention. Not cached: an install later in this process may replace it. A missing package is the
+    probe's to report."""
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+
+        try:
+            installed = version("sageattention")
+        except PackageNotFoundError:
+            return None
+        floor = "2.1.1"
+        try:
+            from diffusers.models.attention_dispatch import _REQUIRED_SAGE_VERSION
+
+            if isinstance(_REQUIRED_SAGE_VERSION, str) and _REQUIRED_SAGE_VERSION.strip():
+                floor = _REQUIRED_SAGE_VERSION.strip()
+        except Exception:  # noqa: BLE001
+            pass
+        if _version_tuple(installed) and _version_tuple(installed) < _version_tuple(floor):
+            return f"sageattention {installed} is older than {floor}, the SageAttention 2 release diffusers needs"
+    except Exception:  # noqa: BLE001
+        return None
+    return None
 
 
 def _sage_usable(pipe: Any, target: Any, logger: Any = None) -> bool:
@@ -574,6 +729,11 @@ def _sage_usable(pipe: Any, target: Any, logger: Any = None) -> bool:
                 "diffusion.attention: SageAttention needs fp16 or bf16 and this pipeline runs in float32; "
                 "using the default backend"
             )
+        return False
+    too_old = _sage_version_too_old()
+    if too_old:
+        if logger is not None:
+            logger.warning("diffusion.attention: %s; using the default backend", too_old)
         return False
     head_dims = _dit_head_dims(pipe)
     if head_dims and min(head_dims) > _SAGE_MAX_HEAD_DIM:
@@ -1053,6 +1213,14 @@ def apply_attention_backend(
             and not _cudnn_serves_pipe(pipe, target, logger)
         ):
             backend = None
+        if backend == "flash_4_hub" and not _install_fa4_dispatch_guard():
+            if logger is not None:
+                logger.warning(
+                    "diffusion.attention: this diffusers build does not expose the flash_4_hub backend the way "
+                    "Unsloth expects, so masked attention calls could not be routed around it; using the default "
+                    "backend"
+                )
+            backend = None
     if backend is not None:
         engaged = False
         for fn in setters:
@@ -1061,6 +1229,19 @@ def apply_attention_backend(
                 engaged = True
             except Exception as exc:  # noqa: BLE001 - unavailable kernel -> restore native below
                 _warn(logger, backend, exc)
+        if (
+            engaged
+            and backend == "flash_4_hub"
+            and target is not None
+            and _fa4_kernel_runs(target, logger, _dit_head_dims(pipe)) is False
+        ):
+            # The kernel is fetched by set_attention_backend, so it is probed after; undo the per-DiT pin.
+            for fn in setters:
+                try:
+                    fn(ATTN_NATIVE)
+                except Exception as exc:  # noqa: BLE001
+                    _warn(logger, ATTN_NATIVE, exc)
+            engaged = False
         if engaged:
             _tag_dits(pipe, backend)
             # set_attention_backend also pins the backend process-wide. Each DiT's processors keep it locally, so reset

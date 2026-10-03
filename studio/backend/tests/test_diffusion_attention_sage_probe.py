@@ -50,6 +50,9 @@ def _isolated(monkeypatch):
     monkeypatch.setattr(att, "warn_if_sdpa_math_only", lambda *a, **k: False)
     monkeypatch.setattr(att, "_indexed_cuda_device", lambda device: device)
     monkeypatch.setattr(att, "_install_sage_dispatch_guard", lambda: True)
+    monkeypatch.setattr(att, "_sage_version_too_old", lambda: None)
+    monkeypatch.setattr(att, "_install_fa4_dispatch_guard", lambda: True)
+    monkeypatch.setattr(att, "_fa4_kernel_runs", lambda *a, **k: True)
 
 
 def _stub_probe(
