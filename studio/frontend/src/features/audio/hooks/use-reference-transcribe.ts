@@ -10,69 +10,69 @@ import { sttEngineForRepoId, sttSidecarKeyFor } from "../catalog";
 
 /** Fills "What's said in the clip" without adding it to the transcript list. */
 export function useReferenceTranscribe({
-	sttRepo,
-	language,
-	onText,
+  sttRepo,
+  language,
+  onText,
 }: {
-	sttRepo: string | null;
-	language: string;
-	onText: (text: string) => void;
+  sttRepo: string | null;
+  language: string;
+  onText: (text: string) => void;
 }) {
-	const [transcribing, setTranscribing] = useState(false);
-	const [error, setError] = useState<string | null>(null);
-	const abort = useRef<AbortController | null>(null);
-	const onTextRef = useRef(onText);
-	onTextRef.current = onText;
+  const [transcribing, setTranscribing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const abort = useRef<AbortController | null>(null);
+  const onTextRef = useRef(onText);
+  onTextRef.current = onText;
 
-	const transcribe = useCallback(
-		async (reference: AudioSourceSelection | null) => {
-			if (!reference) return;
-			// A newer clip wins: its result must never land on the clip picked after it.
-			abort.current?.abort();
-			const controller = new AbortController();
-			abort.current = controller;
-			setTranscribing(true);
-			setError(null);
-			try {
-				const voice = useVoiceSettingsStore.getState();
-				const model = sttRepo ? sttSidecarKeyFor(sttRepo) : voice.sttModel;
-				const result = await transcribeAudioInput(
-					sourceRefOf(reference),
-					{
-						model,
-						engine: sttRepo ? sttEngineForRepoId(sttRepo) : sttEngineFor(model),
-						device: voice.sttDevice,
-						...(language ? { language } : {}),
-					},
-					controller.signal,
-				);
-				if (controller.signal.aborted) return;
-				const text = result.text.trim();
-				if (text) {
-					onTextRef.current(text);
-				} else {
-					setError(
-						"No speech was heard in the clip. Type what's said instead.",
-					);
-				}
-			} catch (reason) {
-				if (controller.signal.aborted) return;
-				setError(
-					reason instanceof Error && reason.message
-						? reason.message
-						: "Could not transcribe the clip.",
-				);
-			} finally {
-				if (abort.current === controller) {
-					abort.current = null;
-					setTranscribing(false);
-				}
-			}
-		},
-		[sttRepo, language],
-	);
+  const transcribe = useCallback(
+    async (reference: AudioSourceSelection | null) => {
+      if (!reference) return;
+      // A newer clip wins: its result must never land on the clip picked after it.
+      abort.current?.abort();
+      const controller = new AbortController();
+      abort.current = controller;
+      setTranscribing(true);
+      setError(null);
+      try {
+        const voice = useVoiceSettingsStore.getState();
+        const model = sttRepo ? sttSidecarKeyFor(sttRepo) : voice.sttModel;
+        const result = await transcribeAudioInput(
+          sourceRefOf(reference),
+          {
+            model,
+            engine: sttRepo ? sttEngineForRepoId(sttRepo) : sttEngineFor(model),
+            device: voice.sttDevice,
+            ...(language ? { language } : {}),
+          },
+          controller.signal,
+        );
+        if (controller.signal.aborted) return;
+        const text = result.text.trim();
+        if (text) {
+          onTextRef.current(text);
+        } else {
+          setError(
+            "No speech was heard in the clip. Type what's said instead.",
+          );
+        }
+      } catch (reason) {
+        if (controller.signal.aborted) return;
+        setError(
+          reason instanceof Error && reason.message
+            ? reason.message
+            : "Could not transcribe the clip.",
+        );
+      } finally {
+        if (abort.current === controller) {
+          abort.current = null;
+          setTranscribing(false);
+        }
+      }
+    },
+    [sttRepo, language],
+  );
 
-	useEffect(() => () => abort.current?.abort(), []);
+  useEffect(() => () => abort.current?.abort(), []);
 
-	return { transcribe, transcribing, error };
+  return { transcribe, transcribing, error };
 }
