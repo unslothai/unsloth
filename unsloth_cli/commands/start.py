@@ -5662,15 +5662,23 @@ def _app_server_notice(base: str) -> None:
         typer.echo("Stop it with: unsloth studio stop")
 
 
+def _revoke_new_app_key(base: str, key_id: object, state: dict) -> None:
+    # A key minted for a setup that then failed would otherwise stay live and unreachable.
+    if key_id is not None and key_id != state.get("key_id"):
+        _revoke_app_key(base, key_id)
+
+
 def _add_app_provider(
     target: _AppTarget, base: str, explicit_key: Optional[str], entry: dict
 ) -> None:
+    state, key_id = {}, None
     try:
         state_path, state, text, key, key_id = _open_app_config(target, base, explicit_key)
         new_text = _set_app_values(
             text, target.path, target.updates(text, target.path, base, key, entry)
         )
     except BaseException:
+        _revoke_new_app_key(base, key_id, state)
         _shutdown_auto_served()
         raise
     new_state = {"path": str(target.path), "base": base, "key": key, "key_id": key_id}
@@ -5848,6 +5856,7 @@ def _hold_codex_app(base: str) -> None:
 def _codex_app_session(base: str, explicit_key: Optional[str], entry: dict) -> None:
     target = _codex_app_target()
     catalog = target.path.with_name(_CODEX_APP_CATALOG)
+    state, key_id = {}, None
     try:
         state_path, state, text, key, key_id = _open_app_config(target, base, explicit_key)
         new_text, previous = _codex_app_build(text, base, key, entry, None)
@@ -5867,6 +5876,7 @@ def _codex_app_session(base: str, explicit_key: Optional[str], entry: dict) -> N
         }
         _save_app_config(target, state_path, {}, new_state, text, new_text)
     except BaseException:
+        _revoke_new_app_key(base, key_id, state)
         _shutdown_auto_served()
         raise
     try:

@@ -509,3 +509,17 @@ def test_app_refuses_a_config_it_cannot_parse(studio):
     assert "Couldn't parse" in result.output
     assert config.read_text() == "{ // json5 comment\n  agents: {} }\n"
     assert studio["minted"] == 0
+
+
+def test_app_revokes_the_key_it_minted_when_setup_fails(studio):
+    config = studio["home"] / ".openclaw" / "openclaw.json"
+    config.parent.mkdir()
+    config.write_text('{"models": []}\n')
+
+    result = CliRunner().invoke(start.start_app, ["openclaw", "--app"])
+
+    assert result.exit_code == 1
+    assert "isn't a table" in result.output
+    assert config.read_text() == '{"models": []}\n'
+    assert studio["minted"] == 1
+    assert ("DELETE", f"{BASE}/api/auth/api-keys/7", None) in studio["calls"]
