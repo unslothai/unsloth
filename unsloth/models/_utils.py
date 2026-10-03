@@ -6814,18 +6814,24 @@ def resolve_training_gradient_checkpointing(model, use_gradient_checkpointing):
     return use_gradient_checkpointing
 
 
+@functools.lru_cache(maxsize = 1)
+def _gradient_checkpointing_layer_class():
+    try:
+        from transformers.modeling_layers import GradientCheckpointingLayer
+    except ImportError:
+        return None
+    return GradientCheckpointingLayer
+
+
 def set_module_gradient_checkpointing(module, value):
     """Set `module.gradient_checkpointing`, but never turn on a transformers checkpointing layer that
     gradient_checkpointing_enable() never armed: it has no `_gradient_checkpointing_func` and its
     first training forward raises AttributeError."""
     if value:
-        try:
-            from transformers.modeling_layers import GradientCheckpointingLayer
-        except ImportError:
-            GradientCheckpointingLayer = None
+        layer_class = _gradient_checkpointing_layer_class()
         if (
-            GradientCheckpointingLayer is not None
-            and isinstance(module, GradientCheckpointingLayer)
+            layer_class is not None
+            and isinstance(module, layer_class)
             and getattr(module, "_gradient_checkpointing_func", None) is None
         ):
             module.gradient_checkpointing = False

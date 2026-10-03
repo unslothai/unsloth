@@ -58,8 +58,14 @@ def _for_training(module, class_name):
         for node in utils.body
         if isinstance(node, ast.FunctionDef)
         and node.name
-        in ("resolve_training_gradient_checkpointing", "set_module_gradient_checkpointing")
+        in (
+            "resolve_training_gradient_checkpointing",
+            "_gradient_checkpointing_layer_class",
+            "set_module_gradient_checkpointing",
+        )
     ]
+    for node in shared:
+        node.decorator_list = []
     compiled = ast.Module(body = shared + _helpers_used_by(method, tree) + [method], type_ignores = [])
     namespace = _Namespace(os = os)
     exec(compile(ast.fix_missing_locations(compiled), str(path), "exec"), namespace)
