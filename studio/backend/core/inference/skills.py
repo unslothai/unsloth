@@ -285,7 +285,8 @@ def _split_skill_markdown(raw: bytes) -> tuple[dict, str]:
     if len(raw) > MAX_SKILL_MD_BYTES:
         raise SkillError("SKILL.md exceeds the 512 KB limit.")
     try:
-        text = raw.decode("utf-8")
+        # utf-8-sig: Notepad and other Windows editors save UTF-8 with a byte order mark.
+        text = raw.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
         raise SkillError("SKILL.md must be UTF-8 text.") from exc
     lines = text.splitlines(keepends = True)
