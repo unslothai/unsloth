@@ -344,6 +344,9 @@ def flattened_rgb(image):
         return image.convert("RGB")
     rgba = image if image.mode == "RGBA" else image.convert("RGBA")
     alpha = rgba.getchannel("A")
+    # Browser canvas exports are RGBA even when opaque; skip the composite (same pixels).
+    if alpha.getextrema()[0] == 255:
+        return rgba.convert("RGB")
     # Alpha-weighted: light ink (dark-mode logos, white text) goes onto black, not white.
     ink = ImageStat.Stat(ImageChops.multiply(rgba.convert("L"), alpha)).sum[0]
     light = 255 * ink > 128 * ImageStat.Stat(alpha).sum[0] > 0

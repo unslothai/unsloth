@@ -187,6 +187,74 @@ def test_op_is_bit_exact_vs_torchao_epilogue(forced, m, k, n, bias, xs32, ws32):
     assert torch.equal(out, g8.reference(a, w, xs, ws, b))
 
 
+def _tie_operands(k = 4096, rows = 32):
+    """int8 a, w whose int32 products sit one or two units off a bf16 midpoint in [2^24, 2^26), both signs."""
+    k1 = k - 128
+    targets = []
+    for e in (24, 25):
+        for mult in (0, 3, 50, 100):
+            mid = (1 << e) + mult * (1 << (e - 7)) + (1 << (e - 8))
+            for d in (-1, 1, -2, 2):
+                targets += [mid + d, -(mid + d)]
+    w = torch.zeros(len(targets), k, dtype = torch.int8)
+    for j, t in enumerate(targets):
+        s1, s2 = divmod(abs(t), 127)
+        full, rem = divmod(s1, 127)
+        sign = 1 if t >= 0 else -1
+        w[j, :full] = 127 * sign
+        w[j, full] = rem * sign
+        w[j, k1] = s2 * sign
+    a = torch.ones(rows, k, dtype = torch.int8)
+    a[:, :k1] = 127
+    return a.cuda(), w.cuda(), torch.tensor(targets, dtype = torch.int32)
+
+
+@needs_cuda
+@pytest.mark.parametrize("cfg", sorted({g8._FALLBACK_CONFIG, *g8._ARCH_CONFIG.values()}))
+@pytest.mark.parametrize("ws32", [False, True])
+def test_epilogue_rounds_large_accumulators_twice_like_torch(cfg, ws32):
+    # Arch-independent epilogue math: every tile config is launched directly, past the arch gate.
+    a, w, targets = _tie_operands()
+    assert torch.equal(torch._int_mm(a, w.t())[0].cpu(), targets)
+    assert (
+        int((_one_rounding_bf16(targets) != targets.float().to(torch.bfloat16).float()).sum()) >= 8
+    )
+    xs = torch.ones(a.shape[0], device = "cuda", dtype = torch.bfloat16)
+    ws = torch.ones(w.shape[0], device = "cuda", dtype = torch.float32 if ws32 else torch.bfloat16)
+    try:
+        out = g8._launch(a, w, xs, ws, None, cfg)
+    except Exception as exc:  # noqa: BLE001 - a tile this part's shared memory cannot hold
+        pytest.skip(f"tile {cfg} does not launch here: {exc}")
+    ref = g8.reference(a, w, xs, ws, None)
+    assert torch.equal(ref[0].float().cpu(), targets.float().to(torch.bfloat16).float())
+    assert torch.equal(out, ref)
+
+
+@needs_cuda
+def test_probe_covers_the_double_rounding():
+    a, w = g8.tie_operands(torch.device("cuda"))
+    c = torch._int_mm(a, w.t())[0].cpu()
+    assert int((_one_rounding_bf16(c) != c.float().to(torch.bfloat16).float()).sum()) >= 8
+    xs = torch.ones(a.shape[0], device = "cuda", dtype = torch.bfloat16)
+    ws = torch.ones(w.shape[0], device = "cuda", dtype = torch.bfloat16)
+    out = g8._launch(a, w, xs, ws, None, g8._FALLBACK_CONFIG)
+    assert torch.equal(out, g8.reference(a, w, xs, ws, None))
+
+
+def _one_rounding_bf16(c):
+    """int32 -> bf16 with ONE round-to-nearest-even (exact, in int64), as fp32 values."""
+    v = c.to(torch.int64)
+    a = v.abs()
+    e = torch.floor(torch.log2(a.double().clamp(min = 1))).to(torch.int64)
+    shift = (e - 7).clamp(min = 1)
+    q = torch.bitwise_right_shift(a, shift)
+    r = a - torch.bitwise_left_shift(q, shift)
+    half = torch.bitwise_left_shift(torch.ones_like(a), shift - 1)
+    q = q + ((r > half) | ((r == half) & (q % 2 == 1))).to(torch.int64)
+    out = (torch.bitwise_left_shift(q, shift) * v.sign()).double()
+    return torch.where(a < 256, v.double(), out).float()
+
+
 @needs_cuda
 @pytest.mark.parametrize("version", [None, 2])
 @pytest.mark.parametrize("bias", [False, True])
