@@ -1308,7 +1308,7 @@ def _held_head_leaves_the_hold(batch: "_ResidentBatch", held: list) -> bool:
 
 class _MLXIdleWarmth:
     def __init__(self):
-        self.enabled = os.environ.get("UNSLOTH_MLX_GPU_KEEP_WARM", "0").lower() in (
+        self.enabled = os.environ.get("UNSLOTH_MLX_GPU_KEEP_WARM", "1").lower() in (
             "1",
             "true",
             "yes",

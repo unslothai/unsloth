@@ -132,14 +132,20 @@ def test_every_mlx_command_gets_exactly_one_reply(monkeypatch, cmd_type):
     assert len(addressed) == 1, addressed
 
 
-@pytest.mark.parametrize("enabled", [False, True])
-def test_mlx_idle_warmth_is_opt_in_bounded_and_failure_safe(monkeypatch, enabled):
+@pytest.mark.parametrize(
+    "setting, enabled",
+    [(None, True), ("0", False), ("false", False), ("1", True), ("TRUE", True), ("yes", True)],
+)
+def test_mlx_idle_warmth_is_default_on_bounded_and_failure_safe(monkeypatch, setting, enabled):
     import sys
     from types import ModuleType
 
     now, ticks = [100.0], []
     monkeypatch.setattr(worker.time, "monotonic", lambda: now[0])
-    monkeypatch.setenv("UNSLOTH_MLX_GPU_KEEP_WARM", "1" if enabled else "0")
+    if setting is None:
+        monkeypatch.delenv("UNSLOTH_MLX_GPU_KEEP_WARM", raising = False)
+    else:
+        monkeypatch.setenv("UNSLOTH_MLX_GPU_KEEP_WARM", setting)
     core = ModuleType("mlx.core")
     core.float32 = object()
     core.zeros = lambda *a, **k: 0
