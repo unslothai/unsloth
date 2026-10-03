@@ -1449,6 +1449,34 @@ def test_training_sees_and_retries_a_kept_model_that_failed_to_unload(backends, 
     assert model_slots.stuck == [] and not extra.llama.is_active
 
 
+def test_a_kept_worker_that_outlives_its_kill_stays_tracked(backends, monkeypatch):
+    _, extra = backends
+    extra.orchestrator.active_model_name = "org/S"
+    alive = [True]
+    extra.orchestrator.is_worker_alive = lambda: alive[0]
+    extra.orchestrator._cleanup = lambda: setattr(extra.orchestrator, "active_model_name", None)
+    with pytest.raises(RuntimeError):
+        model_slots.unload_extra_models(strict = True)
+    # Still priced for VRAM and retried, though _cleanup cleared its model name.
+    assert model_slots.slots == [] and model_slots.stuck == [extra] and model_slots.holds_vram()
+    alive[0] = False
+    model_slots.unload_extra_models(strict = True)
+    assert model_slots.stuck == [] and not model_slots.holds_vram()
+
+
+def test_a_stuck_server_still_blocks_deleting_its_files(backends, monkeypatch):
+    _, extra = backends
+
+    def refuse():
+        raise RuntimeError("llama-server ignored SIGKILL")
+
+    monkeypatch.setattr(extra.llama, "unload_model", refuse)
+    with pytest.raises(RuntimeError):
+        model_slots.drop(extra)
+    assert model_slots.stuck == [extra]
+    assert deletion._llama_cpp_blocks_delete("org/B-GGUF", None)
+
+
 def test_a_partly_offloaded_model_plans_only_the_vram_its_cards_had():
     from core.inference.llama_cpp import _gpu_plan_mib
 

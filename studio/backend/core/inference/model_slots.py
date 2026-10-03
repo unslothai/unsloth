@@ -66,10 +66,21 @@ def busy() -> bool:
     return any_loading() or any(in_use(slot) for slot in list(slots))
 
 
+def resident() -> list[ExtraSlot]:
+    """Every kept slot that may still hold a model: the routed ones and the stuck ones."""
+    return [*slots, *stuck]
+
+
+def _worker_alive(orchestrator) -> bool:
+    worker_alive = getattr(orchestrator, "is_worker_alive", None)
+    return bool(callable(worker_alive) and worker_alive())
+
+
 def holds_vram() -> bool:
     """A kept model on the GPU or one loading; a llama-server started with no GPU layers is not."""
     return any_loading() or any(
         slot.orchestrator.active_model_name
+        or (slot in stuck and _worker_alive(slot.orchestrator))
         or (slot.llama.is_active and getattr(slot.llama, "_gpu_offload_active", None) is not False)
         for slot in [*slots, *stuck]
     )
@@ -203,26 +214,30 @@ def drop(slot: ExtraSlot) -> None:
             stuck.append(slot)
         slot.orchestrator._cleanup()
         raise
+    slot.orchestrator._cleanup()
+    # _cleanup does not report a worker that outlived its kill.
+    if _worker_alive(slot.orchestrator):
+        if slot not in stuck:
+            stuck.append(slot)
+        raise RuntimeError("An inference worker kept alongside is still alive")
     with suppress(ValueError):
         stuck.remove(slot)
     unregister_serving_backend(slot.llama)
     atexit.unregister(slot.llama._cleanup)
     atexit.unregister(slot.orchestrator._cleanup)
-    slot.orchestrator._cleanup()
 
 
 def stop_orchestrator_workers() -> None:
     """Drop every slot running an orchestrator worker, for the transformers sidecar swap. Raises
     when one survives: it would lazy-import from the swapped package tree."""
 
-    def alive(slot):
-        worker_alive = getattr(slot.orchestrator, "is_worker_alive", None)
-        return bool(callable(worker_alive) and worker_alive())
-
-    doomed = [s for s in list(slots) if s.orchestrator.active_model_name or alive(s)]
+    doomed = [
+        s for s in resident() if s.orchestrator.active_model_name or _worker_alive(s.orchestrator)
+    ]
     for slot in doomed:
-        drop(slot)
-    if any(alive(slot) for slot in doomed):
+        with suppress(Exception):
+            drop(slot)
+    if any(_worker_alive(slot.orchestrator) for slot in doomed):
         raise RuntimeError(
             "An inference worker kept alongside is still alive before the transformers swap"
         )

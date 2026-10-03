@@ -2773,7 +2773,7 @@ async def discard_remote_code_download(
 
         for llama_backend in (
             get_llama_cpp_backend(),
-            *(slot.llama for slot in list(model_slots.slots)),
+            *(slot.llama for slot in model_slots.resident()),
         ):
             if llama_backend.is_loaded and llama_backend.model_identifier:
                 if _loaded_id_matches_repo(llama_backend.model_identifier, model_name):
@@ -2786,7 +2786,7 @@ async def discard_remote_code_download(
         from core.inference import model_slots
         for inference_backend in (
             peek_inference_backend(),
-            *(slot.orchestrator for slot in list(model_slots.slots)),
+            *(slot.orchestrator for slot in model_slots.resident()),
         ):
             if inference_backend is not None and inference_backend.active_model_name:
                 if _loaded_id_matches_repo(inference_backend.active_model_name, model_name):
@@ -3322,7 +3322,7 @@ async def delete_finetuned_model(
         from core.inference import model_slots
         from routes.inference import get_llama_cpp_backend
 
-        kept = list(model_slots.slots)
+        kept = model_slots.resident()
         filling = model_slots.filling_model()
         if filling and _loaded_model_matches_deleted_path(filling, target_path):
             raise HTTPException(
