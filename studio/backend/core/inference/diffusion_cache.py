@@ -50,8 +50,8 @@ _TIER_MAX = "max"
 # speed tier default; LPIPS alex, mean / worst prompt):
 #   "default": every N on the default AND max tiers. Meets the default-on bar: mean LPIPS <= 0.05, worst prompt
 #              <= 0.10 above that prompt's own run-to-run floor (the no-skip render repeated in a fresh process).
-#   "max":     every N on the max tier only (mean LPIPS <= 0.10). Replaces FBCache there: on every listed model the
-#              static skip measured closer to the no-skip render than FBCache, and it keeps fullgraph and CUDA graphs.
+#   "max":     every N on the max tier only (mean LPIPS <= 0.10). Replaces FBCache there: wherever FBCache engaged,
+#              the static skip measured closer to the no-skip render, and it keeps fullgraph and CUDA graphs.
 # A model not listed keeps the previous behaviour (FBCache on max at 20+ steps). Keyed by the UPSTREAM repo id
 # (canonical_base maps the unsloth mirrors back), so a distilled sibling or an unmeasured finetune of the same family
 # (FLUX.1-schnell, klein 4-step, Z-Image-Turbo, Qwen-Image-2512 / Edit, klein-base-9B) never matches.
@@ -62,10 +62,12 @@ AUTO_STATIC_SKIP: dict = {
     "black-forest-labs/flux.1-krea-dev": {"default": 2, "max": 3},  # 0.030 (0.09) / 0.060
     "black-forest-labs/flux.2-klein-base-4b": {"default": 2, "max": 3},  # 0.038 (0.12, floor 0.35) / 0.058
     "wan-ai/wan2.2-ti2v-5b-diffusers": {"default": 2, "max": 3},  # 0.034 (0.064) / 0.057
-    "black-forest-labs/flux.1-dev": {"max": 2},  # 0.050 (0.29 on a dense-texture prompt, floor 0.06)
-    "hunyuanvideo-community/hunyuanimage-2.1-diffusers": {"max": 2},  # 0.064; every3 0.102
+    # every2 0.050 but 0.29 on a dense-texture prompt (floor 0.06), so not default; every3 0.083 on max, where
+    # FBCache measured 0.136 at the same speed
+    "black-forest-labs/flux.1-dev": {"max": 3},
+    "hunyuanvideo-community/hunyuanimage-2.1-diffusers": {"max": 2},  # 0.064 (floor 0.064); every3 0.102
     "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-480p_t2v": {"max": 2},  # 0.085; every3 0.120
-    "minimaxai/minimax-h3": {"max": 2},  # 0.063; every3 0.109
+    "minimaxai/minimax-h3": {"max": 2},  # 0.055 (0.058), deterministic so no floor; every3 0.114
 }
 
 # Auto static engages only from this many denoise steps, the shortest default schedule it was measured on; a user
