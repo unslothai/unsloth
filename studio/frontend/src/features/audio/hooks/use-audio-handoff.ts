@@ -64,9 +64,15 @@ export function useAudioHandoff({
         .commitWorkflow(audioWorkflowForTask(task) ?? intended);
       return;
     }
-    const key = `${wanted}|${routeSearch.quant ?? ""}|${routeSearch.ggufQuant ?? ""}|${routeSearch.task ?? ""}|${routeSearch.audioType ?? ""}|${routeSearch.loadId ?? ""}`;
+    const key = `${wanted}|${routeSearch.quant ?? ""}|${routeSearch.ggufQuant ?? ""}|${routeSearch.task ?? ""}|${routeSearch.audioType ?? ""}|${routeSearch.loadId ?? ""}|${routeSearch.workflow ?? ""}`;
     if (handledRouteModel.current === key) return;
     if (busyRef.current !== null) return;
+    // The picker names the page too. Open it first: only a successful load moved the page before, so
+    // a staged download or a failed load left the user on another page's form.
+    const routedWorkflow = routeSearch.workflow;
+    if (isAudioWorkflowId(routedWorkflow) && !transitionWorkflow(routedWorkflow)) {
+      return;
+    }
     handledRouteModel.current = key;
     handleModelSelect(wanted, {
       source: "hub",
