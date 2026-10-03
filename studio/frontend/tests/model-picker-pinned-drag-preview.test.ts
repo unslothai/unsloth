@@ -37,12 +37,20 @@ test("a carried Pinned row lifts a copy that follows the pointer", () => {
   assert.match(CSS, /\.model-picker-row-ghost \* \{\n\tpointer-events: none;/);
 });
 
-test("both copies are a translucent shade off the list they came from", () => {
-  const look = /:is\(\.sidebar-row-ghost, \.model-picker-row-ghost\) \{([^}]*)\}/.exec(CSS);
-  assert.ok(look, "shared ghost look");
-  assert.match(look[1], /background: color-mix\(in oklab, color-mix\(in oklab, var\(--row-ghost-surface\), var\(--foreground\) 5%\) 85%, transparent\);/);
-  assert.match(look[1], /backdrop-filter: blur\(8px\);/);
+test("every copy is a faintly frosted shade darker than the list it came from", () => {
+  const ghosts = String.raw`:is\(\.sidebar-row-ghost, \.sidebar-section-ghost, \.model-picker-row-ghost\)`;
+  const light = new RegExp(String.raw`\n${ghosts} \{([^}]*)\}`).exec(CSS);
+  const dark = new RegExp(String.raw`\.dark ${ghosts} \{([^}]*)\}`).exec(CSS);
+  assert.ok(light, "shared ghost look");
+  assert.ok(dark, "shared ghost look in dark mode");
+  assert.match(light[1], /background: color-mix\(in oklab, color-mix\(in oklab, var\(--row-ghost-surface\), black 4%\) 62%, transparent\);/);
+  assert.match(dark[1], /background: color-mix\(in oklab, color-mix\(in oklab, var\(--row-ghost-surface\), black 22%\) 62%, transparent\);/);
+  // Faint blur, so what is underneath stays readable.
+  assert.match(light[1], /\bbackdrop-filter: blur\(0\.5px\) saturate\(1\.05\);/);
+  assert.match(light[1], /0 0 0 1px rgb\(0 0 0 \/ 0\.06\)/);
+  assert.match(dark[1], /0 0 0 1px rgb\(255 255 255 \/ 0\.045\)/);
   assert.match(CSS, /\.sidebar-row-ghost \{\n\t--row-ghost-surface: var\(--sidebar\);/);
+  assert.match(CSS, /\.sidebar-section-ghost \{\n\t--row-ghost-surface: var\(--sidebar\);/);
   assert.match(CSS, /\.model-picker-row-ghost \{\n\t--row-ghost-surface: var\(--popover\);/);
 });
 
