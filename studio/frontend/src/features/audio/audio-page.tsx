@@ -647,6 +647,10 @@ export function AudioPage({
       label: `use ${model.name}`,
       onClick: () => handlePickRecommended(model.id),
     }));
+  // RVC, Seed-VC and MeanVC2 only convert; Speak must not send their users to Clone.
+  const loadedConvertsOnly =
+    !!status?.audio_workflows?.includes("convert") &&
+    !status.audio_workflows.includes("clone");
   // Why Generate is off, in words under the button, with the fix as an action where there is one.
   const generateBlocker: GenerateBlocker | null =
     busy === "loading"
@@ -705,6 +709,17 @@ export function AudioPage({
                     },
                   ],
                 }
+              : ttsWorkflow === "speak" && loadedConvertsOnly
+                ? {
+                    reason: "The loaded model converts recordings.",
+                    actions: [
+                      { label: "Choose a speech model", onClick: openSelector },
+                      {
+                        label: "open Convert",
+                        onClick: () => transitionWorkflow("convert"),
+                      },
+                    ],
+                  }
               : ttsWorkflow === "speak"
                 ? {
                     reason: "The loaded model needs a voice to clone.",
@@ -901,6 +916,8 @@ export function AudioPage({
               ? "The loaded model cannot convert a voice."
             : musicGeneration
             ? "The loaded model makes music. Pick a speech model."
+            : ttsWorkflow === "speak" && loadedConvertsOnly
+              ? "The loaded model converts recordings. Pick a speech model."
             : ttsWorkflow === "speak"
               ? "The loaded model needs a voice to clone. Pick a speech model."
               : "The loaded model is not a music model."

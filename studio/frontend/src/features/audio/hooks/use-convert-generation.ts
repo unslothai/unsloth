@@ -442,6 +442,9 @@ export function useConvertGeneration({
         setGenerationError(message);
         if (gone.length === 0) toast.error(message);
         await refreshStatus();
+      } else if (switchNotice) {
+        // Stopped while switching: the server may or may not run the new task now.
+        await refreshStatus();
       }
     } finally {
       generateAbort.current = null;
