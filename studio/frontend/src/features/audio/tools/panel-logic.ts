@@ -5,6 +5,7 @@
 
 import { type AudioSourceSelection, sourceRefOf } from "../audio-run-request";
 import { INDEX_TTS2_EMOTIONS, emotionVectorString } from "../clone-policy";
+import type { AudioSourceStatus } from "../hooks/audio-source-state";
 import type { AudioRunPatch, AudioToolPanel } from "./types";
 
 type AudioToolPanelLogic<V> = Omit<AudioToolPanel<V>, "Component">;
@@ -40,6 +41,17 @@ export interface EmotionValue {
   vector: number[];
   alpha: number;
   source: AudioSourceSelection | null;
+  /** Why the emotion clip cannot be sent yet (uploading, failed, expired); set by its input. */
+  sourceProblem?: string | null;
+}
+
+export function emotionSourceProblem(status: AudioSourceStatus): string | null {
+  if (status.phase === "uploading" || status.phase === "recording") {
+    return "Waiting for the emotion clip to finish uploading.";
+  }
+  if (status.phase === "error") return status.message;
+  if (status.phase === "expired") return "The emotion clip expired. Add it again.";
+  return null;
 }
 
 export const EMOTION_AUDIO_MISSING =
@@ -95,7 +107,9 @@ export const indexTts2EmotionLogic: AudioToolPanelLogic<EmotionValue> = {
       : {};
   },
   validate: (value) =>
-    value.mode === "audio" && !value.source ? EMOTION_AUDIO_MISSING : null,
+    value.mode !== "audio"
+      ? null
+      : (value.sourceProblem ?? (value.source ? null : EMOTION_AUDIO_MISSING)),
 };
 
 export interface ExpressivenessValue {

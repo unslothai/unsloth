@@ -22,6 +22,7 @@ const {
   SAVED_VOICE_MISSING,
   chatterboxExpressivenessLogic,
   cosyVoiceModeLogic,
+  emotionSourceProblem,
   f5SpeedDialectLogic,
   indexTts2EmotionLogic,
   qwen3TimbreLogic,
@@ -196,6 +197,20 @@ test("IndexTTS2 emotion from text and from audio", () => {
     ),
     EMOTION_AUDIO_MISSING,
   );
+  // A replacement still uploading, a failed one, or an expired clip blocks the run.
+  for (const status of [
+    { phase: "uploading" as const, name: "y", progress: 0.5 },
+    { phase: "error" as const, message: "Upload failed." },
+    { phase: "expired" as const },
+  ]) {
+    const sourceProblem = emotionSourceProblem(status);
+    assert.ok(sourceProblem);
+    assert.equal(
+      indexTts2EmotionLogic.validate?.({ ...base, mode: "audio", source, sourceProblem }, { text: "" }, ctx()),
+      sourceProblem,
+    );
+  }
+  assert.equal(emotionSourceProblem({ phase: "ready" }), null);
 });
 
 test("Qwen3 Timbre only sends x_vector_only_mode and drops the transcript requirement", () => {
@@ -224,6 +239,18 @@ test("Qwen3 Timbre only sends x_vector_only_mode and drops the transcript requir
     panelError: null,
   });
   assert.equal(blocked, null);
+  // A failed replacement hides the kept clip, so it blocks until dismissed.
+  const failed = cloneBlocker({
+    reference: { kind: "input", id: "i", name: "a.wav", durationS: 4 },
+    referenceBusy: false,
+    referenceExpired: false,
+    referenceError: "Upload failed.",
+    referenceText: "",
+    referenceTextField: referenceTextField(required, on),
+    text: "Hello",
+    panelError: null,
+  });
+  assert.equal(failed?.kind, "reference-error");
 });
 
 test("CosyVoice3 Cross-lingual needs no transcript; Instruct needs its instruction", () => {

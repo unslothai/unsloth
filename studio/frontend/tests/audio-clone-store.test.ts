@@ -106,3 +106,19 @@ test("a transcript lands only on the clip it was made from, and stays with it", 
   assert.equal(after.referenceText, "clip a words");
   assert.equal(after.reference?.transcript, "clip a words");
 });
+
+test("removing a clip drops its transcript but keeps typed words", () => {
+  const a = { kind: "input" as const, id: "a2", name: "a.wav", durationS: 3, transcript: "clip a words" };
+  const b = { kind: "input" as const, id: "b2", name: "b.wav", durationS: 3, transcript: "clip b words" };
+  const store = () => useAudioCloneStore.getState();
+  store().setReferenceText("");
+  store().adoptReference(a);
+  assert.equal(store().referenceText, "clip a words");
+  store().adoptReference(null);
+  store().adoptReference(b);
+  assert.equal(store().referenceText, "clip b words");
+  store().setReferenceText("my own words");
+  store().adoptReference(null);
+  store().adoptReference(a);
+  assert.equal(store().referenceText, "my own words");
+});
