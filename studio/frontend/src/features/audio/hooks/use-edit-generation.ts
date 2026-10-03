@@ -203,6 +203,12 @@ export function useEditGeneration({
   const sourceBusy =
     sourceStatus.phase === "uploading" || sourceStatus.phase === "recording";
 
+  // A new recording drops the old one's transcription and its error.
+  const cancelTranscribe = transcriber.cancel;
+  const sourceId = source?.id ?? null;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the recording id is the trigger.
+  useEffect(() => cancelTranscribe, [sourceId, cancelTranscribe]);
+
   // ① transcribes itself once per recording.
   const autoTranscribed = useRef<string | null>(null);
   const transcribe = transcriber.transcribe;

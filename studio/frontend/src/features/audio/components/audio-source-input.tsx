@@ -39,6 +39,7 @@ import {
   REFERENCE_EXPIRED_MESSAGE,
 } from "../hooks/audio-source-state";
 import { recordingSupported, useAudioSource } from "../hooks/use-audio-source";
+import { clipWorkflow } from "../workflows";
 import { VoicePicker } from "./voice-picker";
 import { Waveform } from "./waveform";
 import { formatSeconds } from "./waveform-peaks";
@@ -47,6 +48,14 @@ const AudioHistoryContext = createContext<readonly AudioGalleryClip[]>([]);
 export const AudioHistoryProvider = AudioHistoryContext.Provider;
 
 type SourceTab = "upload" | "record" | "history" | "voice";
+
+/** What a history clip says: not a Music description, nor the file name an untranscribed edit is titled by. */
+function spokenText(clip: AudioGalleryClip): string | null {
+  const speech = clipWorkflow(clip) !== "music";
+  return speech && clip.prompt && clip.prompt !== clip.reference_name
+    ? clip.prompt
+    : null;
+}
 
 const AUDIO_EXTS = "wav mp3 flac ogg oga opus m4a aac webm mp4".split(" ");
 const AUDIO_ACCEPT = `audio/*,${AUDIO_EXTS.map((ext) => `.${ext}`).join(",")}`;
@@ -87,6 +96,7 @@ export function AudioSourceInput({
   disabled = false,
   allowHistory = true,
   allowSavedVoice = true,
+  trimsLongClips = true,
   handleRef,
   onStatusChange,
 }: {
@@ -98,6 +108,8 @@ export function AudioSourceInput({
   disabled?: boolean;
   allowHistory?: boolean;
   allowSavedVoice?: boolean;
+  /** Off where a long clip is refused instead of cut. */
+  trimsLongClips?: boolean;
   handleRef?: Ref<AudioSourceInputHandle>;
   onStatusChange?: (status: AudioSourceStatus) => void;
 }) {
@@ -288,7 +300,9 @@ export function AudioSourceInput({
             <output className="text-ui-11p5 text-muted-foreground">
               Loading the clip…
             </output>
-          ) : durationS !== null && durationS > REFERENCE_MAX_SECONDS ? (
+          ) : trimsLongClips &&
+            durationS !== null &&
+            durationS > REFERENCE_MAX_SECONDS ? (
             <p className="text-ui-11p5 leading-snug text-muted-foreground">
               Uses the first {REFERENCE_MAX_SECONDS} s.
             </p>
@@ -399,7 +413,7 @@ export function AudioSourceInput({
                           id: clip.id,
                           name: clip.prompt || "Generated clip",
                           durationS: clip.duration_s,
-                          transcript: clip.prompt || null,
+                          transcript: spokenText(clip),
                           language: null,
                         })
                       }

@@ -111,6 +111,7 @@ function EditInputs({
           onChange={adoptEditSource}
           disabled={disabled}
           allowSavedVoice={false}
+          trimsLongClips={false}
           handleRef={edit.sourceHandle}
           onStatusChange={edit.setSourceStatus}
         />

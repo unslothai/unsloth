@@ -289,6 +289,31 @@ def test_the_same_upload_reuses_its_source_clip(stub):
     assert sum(c.get("role") == "source" for c in clips) == 1
 
 
+def test_the_cap_keeps_a_source_its_edits_still_play(stub, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_AUDIO_GALLERY_MAX_CLIPS", "2")
+    _dots(stub)
+    input_id = _input(ALICE)
+    with _client(ALICE) as client:
+        _edit(client, {"input_id": input_id})
+        source = _edit(client, {"input_id": input_id}).json()["clips"][1]
+        assert client.get(source["url"]).status_code == 200
+
+
+def test_clearing_edit_keeps_the_source_of_an_archived_edit(stub):
+    _dots(stub)
+    input_id = _input(ALICE)
+    with _client(ALICE) as client:
+        output, source = _edit(client, {"input_id": input_id}).json()["clips"]
+        r = client.patch(f"/api/inference/audio/gallery/{output['id']}", json = {"archived": True})
+        assert r.status_code == 200, r.text
+        assert client.delete("/api/inference/audio/gallery?workflow=edit").status_code == 200
+        assert client.get(source["url"]).status_code == 200
+        # Once nothing plays it, the source goes with the next clear.
+        client.patch(f"/api/inference/audio/gallery/{output['id']}", json = {"archived": False})
+        assert client.delete("/api/inference/audio/gallery?workflow=edit").status_code == 200
+        assert client.get(source["url"]).status_code == 404
+
+
 def test_a_history_clip_source_makes_no_copy(stub, tmp_path):
     _firered(stub)
     clip = run_as(

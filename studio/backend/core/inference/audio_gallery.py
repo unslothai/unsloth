@@ -146,12 +146,16 @@ def _prune_to_cap() -> int:
             # parse, which here would drop the clips the shelf exists to keep. It also covers filesystems where the
             # cross-process lock degrades to a no-op.
             flags = gallery_flags.read_trusted(directory)
+            victims = [
+                record["id"]
+                for record, _cursor in entries[keep:]
+                if not gallery_flags.is_archived(flags, record["id"])
+                and gallery_flags.pin_rank(flags, record["id"]) == float("-inf")
+            ]
+            in_use = _sources_in_use(directory, set(victims))
             pruned: list[str] = []
-            for record, _cursor in entries[keep:]:
-                audio_id = record["id"]
-                if gallery_flags.is_archived(flags, audio_id) or gallery_flags.pin_rank(
-                    flags, audio_id
-                ) > float("-inf"):
+            for audio_id in victims:
+                if audio_id in in_use:
                     continue
                 path = audio_path(audio_id)
                 if path is None or _read_meta(_sidecar_path(audio_id)) is None:
@@ -226,6 +230,22 @@ def audio_path(audio_id: str) -> Optional[Path]:
 
 def _sidecar_path(audio_id: str) -> Path:
     return gallery_dir() / f"{audio_id}.json"
+
+
+def _sources_in_use(directory: Path, leaving: set[str]) -> set[str]:
+    """Edit sources that a clip staying in the gallery still plays as its Original."""
+    try:
+        paths = list(directory.glob("*.wav"))
+    except OSError:
+        return set()
+    used: set[str] = set()
+    for path in paths:
+        if path.stem in leaving:
+            continue
+        meta = _read_meta(_sidecar_path(path.stem))
+        if meta is not None and meta.get("source_clip_id"):
+            used.add(str(meta["source_clip_id"]))
+    return used
 
 
 # Key-presence ownership test: a hand-dropped wav with a partial sidecar is neither counted as ours nor destroyed.
@@ -440,7 +460,7 @@ def clear(include_archived: bool = False, workflow: Optional[str] = None) -> int
             paths = list(directory.glob("*.wav"))
         except OSError:
             return 0
-        cleared: list[str] = []
+        doomed = []
         for path in paths:
             meta = _read_meta(_sidecar_path(path.stem))
             if meta is None:
@@ -448,6 +468,12 @@ def clear(include_archived: bool = False, workflow: Optional[str] = None) -> int
             if workflow is not None and _workflow(meta) != workflow:
                 continue
             if not include_archived and gallery_flags.is_archived(flags, path.stem):
+                continue
+            doomed.append(path)
+        in_use = _sources_in_use(directory, {path.stem for path in doomed})
+        cleared: list[str] = []
+        for path in doomed:
+            if path.stem in in_use:
                 continue
             try:
                 path.unlink()

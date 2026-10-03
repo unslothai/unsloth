@@ -117,12 +117,15 @@ export function ABCompare({
   const count = bars?.length ?? WAVEFORM_BARS;
   const src = current.src;
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the srcs are the trigger, not inputs.
+  // A new pair resets the player; the Original's object URL arriving late does not.
+  const originalKey = original.fileUrl ?? original.src;
+  const editedKey = edited.fileUrl ?? edited.src;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the clip keys are the trigger, not inputs.
   useEffect(() => {
     pendingRef.current = null;
     setAb(INITIAL_AB_STATE);
     setMediaDuration({});
-  }, [original.src, edited.src]);
+  }, [originalKey, editedKey]);
 
   const toggle = useCallback(() => {
     const audio = audioRef.current;

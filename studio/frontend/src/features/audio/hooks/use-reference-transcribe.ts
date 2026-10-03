@@ -70,7 +70,14 @@ export function useReferenceTranscribe({
     [sttRepo],
   );
 
+  const cancel = useCallback(() => {
+    abort.current?.abort();
+    abort.current = null;
+    setTranscribing(false);
+    setError(null);
+  }, []);
+
   useEffect(() => () => abort.current?.abort(), []);
 
-  return { transcribe, transcribing, error };
+  return { transcribe, cancel, transcribing, error };
 }
