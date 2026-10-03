@@ -2397,6 +2397,18 @@ def refine_plan_from_loaded_weights(
         return plan
 
 
+def _placed_on(tensor: Any, device_type: str, is_torchao: Callable[[Any], bool]) -> bool:
+    """torchao subclasses are judged by inner tensors: after a streamed offload the wrapper can report the wrong device."""
+    if is_torchao(tensor):
+        try:
+            names, _ = tensor.__tensor_flatten__()
+            inner = [getattr(tensor, n) for n in names]
+            return all(getattr(t, "device", tensor.device).type == device_type for t in inner)
+        except Exception:  # noqa: BLE001 - unflattenable: move it, the swap is idempotent
+            return False
+    return tensor.device.type == device_type
+
+
 def _keep_groups_resident(
     module: Any,
     room_mib: int,
@@ -2477,7 +2489,7 @@ def _keep_groups_resident(
                 continue
             cpu = getattr(group, "cpu_param_dict", None) or {}
             for t in tensors:
-                if t.device.type == onload.type:
+                if _placed_on(t, onload.type, is_torchao):
                     continue
                 moved = cpu.get(t, t).to(onload)
                 if is_torchao(t):
