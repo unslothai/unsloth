@@ -41,7 +41,7 @@ export function buildChatTourSteps({
       title: "Find a model",
       body: (
         <>
-          Recommended is Unsloth's curated list, On Device is your downloads and
+          Recommended is DeepTenLab's curated list, On Device is your downloads and
           finetunes. Search Hub reaches all of Hugging Face. An OOM tag means it
           will not fit in your VRAM.
         </>

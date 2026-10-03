@@ -52,7 +52,7 @@ export function buildHubTourSteps({
       body: (
         <>
           Search by name, or paste <span className="font-mono">org/model</span>{" "}
-          to jump straight to a repo. Unsloth's own quants rank first.
+          to jump straight to a repo. DeepTenLab's own quants rank first.
         </>
       ),
     },

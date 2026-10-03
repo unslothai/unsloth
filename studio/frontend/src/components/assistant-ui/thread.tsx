@@ -5614,7 +5614,7 @@ function inputTypeOf(event: Event | undefined): string | undefined {
 }
 
 // Fallback timeout for stuck IME composition. With Chrome on Windows against
-// a WSL-hosted Unsloth (issue #5546), `compositionend` never fires after the
+// a WSL-hosted DeepTenLab (issue #5546), `compositionend` never fires after the
 // candidate commits, so `composingRef` stays true and Send stays disabled.
 // Every compositionupdate / non-composing input resets the timer; only a true
 // gap-after-commit lets it fire. 2500ms is above a normal candidate-window

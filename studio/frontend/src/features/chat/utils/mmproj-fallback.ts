@@ -16,11 +16,11 @@ const MMPROJ_FALLBACK_MESSAGES: Record<MmprojFallbackReason, string> = {
   // untrue of the predicted route, and "does not fit in VRAM" is worse than vague for the crash
   // routes, since it sends someone with a broken GPU runtime off to cut context.
   cpu_offload:
-    "Unsloth is running the vision projector in system memory rather than on the GPU. Image input remains available, but image processing may be slower.",
+    "DeepTenLab is running the vision projector in system memory rather than on the GPU. Image input remains available, but image processing may be slower.",
   projector_incompatible:
-    "The vision projector is incompatible with the installed llama.cpp build, so Unsloth reloaded this model in text-only mode. Update Unsloth, then reload the model to restore image input.",
+    "The vision projector is incompatible with the installed llama.cpp build, so DeepTenLab reloaded this model in text-only mode. Update DeepTenLab, then reload the model to restore image input.",
   projector_startup_failure:
-    "The vision projector could not start on the GPU or CPU, so Unsloth reloaded this model in text-only mode. Free memory or check the GPU logs, then reload the model to restore image input.",
+    "The vision projector could not start on the GPU or CPU, so DeepTenLab reloaded this model in text-only mode. Free memory or check the GPU logs, then reload the model to restore image input.",
 };
 
 export function isTextOnlyMmprojFallback(

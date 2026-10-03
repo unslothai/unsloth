@@ -7,7 +7,7 @@ import { authFetch } from "@/features/auth";
 export type LlamaFlagCatalog = {
   /** Flag name -> its help text. Empty when the probe failed. */
   flags: Record<string, string>;
-  /** Flags Unsloth manages; the load refuses these outright. */
+  /** Flags DeepTenLab manages; the load refuses these outright. */
   managed: ReadonlySet<string>;
   /** Flags this build documents as taking no value ("--verbose", "--jinja"). */
   switches: ReadonlySet<string>;
@@ -94,7 +94,7 @@ export function invalidateLlamaFlagCatalog(): void {
   catalogGeneration += 1;
   // Dropped as well as cleared: a request already on the wire answers for the binary that has just been replaced.
   inFlightCatalog = null;
-  // The managed answer too. Its denylist is Unsloth's own, but it carries defaultParallelSlots,
+  // The managed answer too. Its denylist is DeepTenLab's own, but it carries defaultParallelSlots,
   // which is the EFFECTIVE count: a build without --kv-unified serves one slot however many
   // are configured. A tab that had already fetched it went on sizing the hydration check's
   // batch floor from the previous backend.
@@ -105,10 +105,10 @@ export function invalidateLlamaFlagCatalog(): void {
   }
 }
 
-/** Just the flags Unsloth refuses, without the `--help` probe behind the catalogue. The panel
+/** Just the flags DeepTenLab refuses, without the `--help` probe behind the catalogue. The panel
  *  sanitizes a stored list with this before making it an explicit request, and that must not
  *  wait on a cold probe (up to ten seconds). Cached for the session: unlike the flag map,
- *  it describes this build of Unsloth. */
+ *  it describes this build of DeepTenLab. */
 export function loadManagedLlamaFlags(): Promise<LlamaManagedFlags | null> {
   if (cachedManaged) {
     return Promise.resolve(cachedManaged);

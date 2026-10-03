@@ -734,7 +734,7 @@ function VramBudgetRow() {
         info={
           <div className="flex flex-col gap-1.5">
             <div>
-              Share of each GPU Unsloth will claim when it sizes the model and
+              Share of each GPU DeepTenLab will claim when it sizes the model and
               context. The rest is left for memory fragmentation, the per-device
               CUDA context on a multi-GPU split, and MoE routing.
             </div>
@@ -896,7 +896,7 @@ function GpuMemorySettings({
           <InfoHint>
             <div className="flex flex-col gap-1.5">
               <div>
-                <span className="font-medium">Default:</span> Unsloth fits the
+                <span className="font-medium">Default:</span> DeepTenLab fits the
                 model and context to your GPUs.
               </div>
               <div>
@@ -986,7 +986,7 @@ function GpuMemorySettings({
           <div className="flex min-w-0 items-center gap-1.5">
             <span className={LABEL_CLASS}>GPUs</span>
             <InfoHint>
-              Unsloth picks GPUs automatically. Checking them here limits it to
+              DeepTenLab picks GPUs automatically. Checking them here limits it to
               those.
               {!isDiffusion &&
                 " Their order here is the order the model gets them."}{" "}
@@ -1098,7 +1098,7 @@ function AdvancedSettingsToggle({
           Advanced settings
         </span>
         <InfoHint>
-          Extra options for how the model loads. Unsloth already picks the best
+          Extra options for how the model loads. DeepTenLab already picks the best
           settings for your device, so most setups don't need these.
         </InfoHint>
       </div>
@@ -1283,7 +1283,7 @@ function LoadModeRow({
           <span className={LABEL_CLASS}>Mmap/Mlock</span>
           <InfoHint>
             How the weights are read off disk (--load-mode). Auto is the
-            default and lets Unsloth pick. mmap maps the file, mlock keeps the
+            default and lets DeepTenLab pick. mmap maps the file, mlock keeps the
             model in RAM, DirectIO streams it, and None asks for no special
             mode.
             Model Memory, in Settings, overrides this when it is on.
@@ -1849,7 +1849,7 @@ function GgufAdvancedSettings({
 }
 
 /** Pass-through llama-server arguments for this model. llama-server documents 283 flags and
- *  Unsloth manages about 115, so the long tail is a text box rather than 168 more controls.
+ *  DeepTenLab manages about 115, so the long tail is a text box rather than 168 more controls.
  *  The boundary is `validate_extra_args`; this row shows that judgement early, plus a check
  *  against the flags THIS build documents. */
 function ExtraArgsRow({
@@ -1973,7 +1973,7 @@ function ExtraArgsRow({
             </div>
             <div>
               Quote values with spaces or backslashes. Nothing runs a shell, so
-              $HOME, ; and | are ordinary characters. Flags Unsloth owns, like
+              $HOME, ; and | are ordinary characters. Flags DeepTenLab owns, like
               the model and the port, are refused.
             </div>
           </div>
@@ -2450,7 +2450,7 @@ export function ModelConfigPage({
     const storedAtStart = resolveInitialConfig(configId, target.ggufVariant);
     const rememberAtStart = rememberRef.current;
     const localAtStart = configAtStart.llamaExtraArgs;
-    // The denylist, not the catalogue: sanitizing a stored list needs only the flags Unsloth
+    // The denylist, not the catalogue: sanitizing a stored list needs only the flags DeepTenLab
     // refuses, and that route answers without running `llama-server --help`. A last-resort
     // release, so a request that never settles cannot disable Load for good.
     const release = setTimeout(() => setExtraArgsHydrating(false), 15000);

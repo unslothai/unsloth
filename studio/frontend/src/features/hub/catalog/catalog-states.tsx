@@ -81,7 +81,7 @@ function describeFailure(
       }
     : {
         title: `Can't reach ${hub}`,
-        body: `Unsloth couldn't load ${resourceLabel} from ${hub}.`,
+        body: `DeepTenLab couldn't load ${resourceLabel} from ${hub}.`,
         offlineLike: false,
       };
 }

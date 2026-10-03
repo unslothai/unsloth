@@ -313,7 +313,7 @@ export function providerModelSupportsStudioTools(
   return typeof providerDefault === "boolean" ? providerDefault : null;
 }
 
-/** Whether the connection behind an `external::` model id runs Unsloth tools. Resolves the
+/** Whether the connection behind an `external::` model id runs DeepTenLab tools. Resolves the
  *  provider type from the saved connection, so callers holding only a checkpoint id can ask
  *  the capability question without risking an import cycle. */
 export function externalModelSupportsStudioTools(

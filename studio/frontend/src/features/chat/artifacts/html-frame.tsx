@@ -130,7 +130,7 @@ export function buildArtifactSrcDoc(code: string): string {
 }
 
 // Preview iframes intentionally omit allow-downloads: generated canvases can offer their own
-// UI, but downloads must go through Unsloth's explicit controls outside the sandbox.
+// UI, but downloads must go through DeepTenLab's explicit controls outside the sandbox.
 export function ArtifactHtmlFrame({
   code,
   title = "HTML canvas preview",

@@ -51,7 +51,7 @@ const TALLIED_PREPARATION_RE =
 
 function cleanPreparationTitle(label: string): string {
   return label
-    .replace(/^Unsloth:\s*/i, "")
+    .replace(/^DeepTenLab:\s*/i, "")
     .replace(/\s*\(num_proc\s*=\s*\d+\)$/i, "")
     .replace(/(?:\.\.\.|…)$/, "")
     .trim();

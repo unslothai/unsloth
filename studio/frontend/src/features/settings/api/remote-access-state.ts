@@ -122,7 +122,7 @@ export function remoteAccessBlockMessage(
 ): string | null {
   switch (reason) {
     case "server_starting":
-      return "Unsloth is still starting.";
+      return "DeepTenLab is still starting.";
     case "admin_password_change_required":
       return isDesktop
         ? "Set a remote password before exposing this server."

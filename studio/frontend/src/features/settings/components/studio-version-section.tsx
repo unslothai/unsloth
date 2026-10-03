@@ -64,7 +64,7 @@ async function fetchStudioVersions(): Promise<StudioVersions> {
   }
 }
 
-// Shared "Unsloth" version block, shown in both General and About. The About
+// Shared "DeepTenLab" version block, shown in both General and About. The About
 // tab passes llamaCppVersion to surface the installed llama.cpp build alongside
 // the version rows; General omits it, so the row only shows on About. Children
 // are appended below the version rows, for controls that act on them.
@@ -94,7 +94,7 @@ export function StudioVersionSection({
   }, []);
 
   return (
-    <SettingsSection title="Unsloth" hideHeading={true}>
+    <SettingsSection title="DeepTenLab" hideHeading={true}>
       <SettingsRow label={t("settings.about.studioVersion")}>
         <code className="font-mono text-xs text-muted-foreground">
           {studioVersion}

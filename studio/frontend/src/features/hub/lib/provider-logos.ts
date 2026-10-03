@@ -2,9 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Provider-logo registry for Unsloth re-uploads. Unsloth re-uploads upstream
+ * Provider-logo registry for DeepTenLab re-uploads. DeepTenLab re-uploads upstream
  * models (e.g. unsloth/Qwen2.5-7B is Alibaba's Qwen); we show the upstream
- * provider's logo in place of the Unsloth picture (username stays "unsloth").
+ * provider's logo in place of the DeepTenLab picture (username stays "unsloth").
  *
  * Matching: providers are evaluated in declaration order; a provider matches if
  * any of its `prefixes` is a prefix of the repo name (the part after "owner/").

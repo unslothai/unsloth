@@ -139,7 +139,7 @@ const EMPTY_CATALOG_HINTS: Record<string, { title: string; description: string }
 const SYSTEM_ONE_EMPTY_CATALOG_HINT = {
   title: "No decision models found on this server.",
   description:
-    "Type the model name in the box below. For another Unsloth server, type default.",
+    "Type the model name in the box below. For another DeepTenLab server, type default.",
 };
 
 function emptyCatalogHint(providerType: string): {
@@ -315,7 +315,7 @@ export function ChatProvidersSettings({
   // llama.cpp hides the key field. Ollama and vLLM show an optional key: Ollama cloud and
   // secured vLLM need one; local servers leave it empty.
   const showReasoningToggle = supportsProviderReasoningToggle(providerType);
-  // Unsloth runs Search, Code, MCP and RAG on this machine for any provider advertising the
+  // DeepTenLab runs Search, Code, MCP and RAG on this machine for any provider advertising the
   // capability, with no extra opt-in. Say so where the connection is created: tool results
   // also travel back to the provider as the next turn's input.
   const runsStudioToolsLocally =
@@ -1776,7 +1776,7 @@ export function ChatProvidersSettings({
               {runsStudioToolsLocally ? (
                 <div className="px-4 py-3">
                   <p className="text-xs text-muted-foreground">
-                    Models on this connection can use Unsloth&apos;s Search, Code,
+                    Models on this connection can use DeepTenLab&apos;s Search, Code,
                     MCP and Docs tools. Those run on this machine, and their
                     results are sent back to the provider as part of the next
                     message. Code and terminal calls still ask before anything

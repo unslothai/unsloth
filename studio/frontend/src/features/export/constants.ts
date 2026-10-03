@@ -223,7 +223,7 @@ export function mergedFormatPayload(value: string): {
 
 /**
  * llama.cpp effective bits-per-weight per quant; GGUF size ~= fp16_bytes * bpw / 16.
- * K-quant values are published average bit-rates (Q2_K_L = Unsloth Q2_K + Q8_0
+ * K-quant values are published average bit-rates (Q2_K_L = DeepTenLab Q2_K + Q8_0
  * embeddings). Approximate ("~"), not exact file sizes.
  */
 export const GGUF_BPW: Record<string, number> = {
@@ -367,7 +367,7 @@ export function adapterCompatibilityTip(
     return features?.non_uniform
       ? base +
           " Adapters with per-module ranks/alphas exported as MLX require " +
-          "Unsloth to load them; stock mlx-lm supports uniform adapters " +
+          "DeepTenLab to load them; stock mlx-lm supports uniform adapters " +
           "only — choose PEFT for maximum compatibility."
       : base;
   }
@@ -398,7 +398,7 @@ export function adapterCompatibilityTip(
   }
   return (
     base +
-    "loads in transformers, vLLM, and Unsloth on GPU machines, and " +
+    "loads in transformers, vLLM, and DeepTenLab on GPU machines, and " +
     "is required for GGUF adapter export."
   );
 }

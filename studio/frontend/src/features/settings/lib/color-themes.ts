@@ -48,7 +48,7 @@ export type ThemeModeColors = {
 };
 
 type ColorThemeMeta = {
-  /** Flavor themes only; Unsloth themes use i18n keys. */
+  /** Flavor themes only; DeepTenLab themes use i18n keys. */
   name?: string;
   light: ThemeModeColors;
   dark: ThemeModeColors;

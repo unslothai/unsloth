@@ -3,7 +3,7 @@
 
 /** Friendly default names for auto-created OpenAI shell containers, used by the chat-adapter's
  *  lazy-create path. Goal: a memorable label like "otter" instead of "chat-abc12345"; users can
- *  still rename via the Unsloth alias map. Curated to be unambiguous, non-offensive nouns from
+ *  still rename via the DeepTenLab alias map. Curated to be unambiguous, non-offensive nouns from
  *  natural categories, avoiding technical, political and brand words, and staying small (~1.5 KB).
  *  Collisions are tolerated: the real unique key is the `cntr_*` id. */
 

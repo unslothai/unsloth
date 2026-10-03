@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Hub fetch: the adapter and relays take the Unsloth session; a relay forwards the HF token in `X-HF-Authorization`. */
+/** Hub fetch: the adapter and relays take the DeepTenLab session; a relay forwards the HF token in `X-HF-Authorization`. */
 
 import {
   getHfDatasetsServerBase,
@@ -62,7 +62,7 @@ function withHubAuth(
 }
 
 /** The Hugging Face token this request would send the Hub, or null. ModelScope is excluded:
- * its relay takes the Unsloth session and drops the HF token. */
+ * its relay takes the DeepTenLab session and drops the HF token. */
 function sentHfToken(
   input: Parameters<typeof fetch>[0],
   init: RequestInit,

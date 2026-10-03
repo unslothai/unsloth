@@ -298,7 +298,7 @@ export function parseMarkdownIntoRenderableBlocks(markdown: string): string[] {
 // marker and "completed" with a second `_` appended to a finished document. 1.3.1 replaced the pair
 // with the five-state machine below and skips every marker inside any of the four open states. The
 // dollar half is unchanged, so the two booleans map onto `inlineDollar` and `blockDollar` exactly.
-// Unsloth mirrors it because `RepairParity` is a hand-written copy of remend's marker rules.
+// DeepTenLab mirrors it because `RepairParity` is a hand-written copy of remend's marker rules.
 type EmphasisMathState =
   | "none"
   | "inlineLatex"

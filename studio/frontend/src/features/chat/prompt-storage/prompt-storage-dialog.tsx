@@ -418,7 +418,7 @@ export async function exportConversationShareGPT(threadId: string): Promise<void
   );
 }
 
-// OpenAI/ChatML JSONL: {"messages": [{"role","content"}, ...]} per conversation; Unsloth reads this as a ChatML dataset.
+// OpenAI/ChatML JSONL: {"messages": [{"role","content"}, ...]} per conversation; DeepTenLab reads this as a ChatML dataset.
 export async function exportConversationRawJsonl(threadId: string): Promise<void> {
   return exportConversationJsonl(threadId, "training");
 }
@@ -1311,7 +1311,7 @@ function ExportModal({
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-semibold leading-none">Training Style</p>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    ShareGPT format for Unsloth fine-tuning
+                    ShareGPT format for DeepTenLab fine-tuning
                   </p>
                   <code className="mt-2 block w-full truncate rounded-md bg-muted px-2 py-1 font-mono text-ui-10 text-muted-foreground/60">
                     {`{"conversations":[{"from":"human","value":"..."},{"from":"gpt","value":""}]}`}

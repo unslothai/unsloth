@@ -921,7 +921,7 @@ export function SharedComposer({
     : isEffort
       ? reasoningLockedOn || (effectiveReasoningVisualEnabled && !reasoningDisabled)
       : reasoningLockedOn || (effectiveReasoningEnabled && !reasoningDisabled);
-  // Search can use Unsloth tools or provider web search independently of Code.
+  // Search can use DeepTenLab tools or provider web search independently of Code.
   // Code follows the provider's sandbox placement and never falls back to local
   // execution when a hosted model lacks code support.
   const supportsBuiltinCodeExecution = providerSupportsBuiltinCodeExecution(

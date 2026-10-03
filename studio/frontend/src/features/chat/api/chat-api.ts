@@ -1651,7 +1651,7 @@ export async function* streamChatCompletions(
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      // Opt into Unsloth's UI control frames (tool cards, statuses, reasoning timing). The
+      // Opt into DeepTenLab's UI control frames (tool cards, statuses, reasoning timing). The
       // endpoint defaults to a clean OpenAI stream for external clients.
       "X-Unsloth-Events": "1",
     },

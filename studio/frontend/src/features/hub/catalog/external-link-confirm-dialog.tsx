@@ -48,7 +48,7 @@ export function ExternalLinkConfirmDialog() {
           </AlertDialogMedia>
           <AlertDialogTitle>Open external link</AlertDialogTitle>
           <AlertDialogDescription>
-            You are about to leave Unsloth and open this page in your browser.
+            You are about to leave DeepTenLab and open this page in your browser.
             Only continue if you trust the destination.
           </AlertDialogDescription>
         </AlertDialogHeader>

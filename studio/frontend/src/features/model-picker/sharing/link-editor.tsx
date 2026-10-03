@@ -119,7 +119,7 @@ export function SharedRunConfigLinkEditor({
           <DialogTitle>Choose a GGUF model</DialogTitle>
           <DialogDescription>
             This link contains settings without a model. Enter a Hugging Face
-            GGUF model ID, a local GGUF path on the machine running Unsloth, or
+            GGUF model ID, a local GGUF path on the machine running DeepTenLab, or
             an Ollama reference to review the settings with that model.
           </DialogDescription>
         </DialogHeader>

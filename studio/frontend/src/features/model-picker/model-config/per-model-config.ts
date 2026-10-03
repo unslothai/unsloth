@@ -48,7 +48,7 @@ export interface PerModelConfig {
   /** Load a vision GGUF without its mmproj, freeing the projector's VRAM. */
   disableVision: boolean;
   chatTemplateOverride: string | null;
-  /** Pass-through llama-server argv tokens, appended after Unsloth's own flags. Three states: `undefined` means
+  /** Pass-through llama-server argv tokens, appended after DeepTenLab's own flags. Three states: `undefined` means
      *  this copy never read the stored value, so a save leaves the server's alone (this is what kept CLI-set flags
      *  alive); `null` means the user cleared the box and must be sent as an explicit `[]`; a non-empty list is what
      *  to launch with. */

@@ -164,7 +164,7 @@ const DESKTOP_STATUS_PATTERN = /^Download failed with status (\d{3})\./;
 // there is no status: the command returns this exact sentence (`LOGIN_REQUIRED`
 // in native_file_dialogs.rs). Keep the two in step.
 const DESKTOP_LOGIN_REQUIRED =
-  "Log export requires a signed-in Unsloth session.";
+  "Log export requires a signed-in DeepTenLab session.";
 
 function desktopExportError(error: unknown): LogExportError {
   const message =

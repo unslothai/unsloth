@@ -132,7 +132,7 @@ const DEFAULT_FONT_NAMES = {
   code: "JetBrains Mono",
 } as const;
 
-/** Fonts Unsloth already ships (bundled @font-face / fontsource). */
+/** Fonts DeepTenLab already ships (bundled @font-face / fontsource). */
 const BUNDLED_FONTS = [
   "Inter Variable",
   "Hellix",

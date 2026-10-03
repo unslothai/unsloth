@@ -446,7 +446,7 @@ export function LocalOnDeviceCard({
             className="mt-[1px] size-3.5 shrink-0"
           />
           <span>
-            This looks like an older Hub cache. It may use a format that Unsloth
+            This looks like an older Hub cache. It may use a format that DeepTenLab
             no longer loads (missing config or unsupported quantization). You
             can still keep it on disk, or delete it to free space.
           </span>

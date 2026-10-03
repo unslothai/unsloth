@@ -85,7 +85,7 @@ export function isSandboxToolResult(
     images?: unknown;
     files?: unknown;
   };
-  // images too: it is always in Unsloth's own wrapper, and a tool result that merely has text and
+  // images too: it is always in DeepTenLab's own wrapper, and a tool result that merely has text and
   // sessionId is someone else's, whose other fields would be dropped on export.
   return (
     typeof v.text === "string" &&

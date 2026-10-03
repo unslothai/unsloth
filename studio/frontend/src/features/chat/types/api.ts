@@ -104,7 +104,7 @@ export interface LoadModelRequest {
   ctx_checkpoints?: number | null;
   /** host prompt cache size in MiB (--cache-ram); omit/null = default 8192, 0 disables, -1 unlimited */
   cache_ram?: number | null;
-  /** Pass-through llama-server args, one argv token per entry, appended after Unsloth's own flags so
+  /** Pass-through llama-server args, one argv token per entry, appended after DeepTenLab's own flags so
    *  llama.cpp's last-wins parser takes these. Managed flags are refused with a 4xx naming the
    *  flag. Omit/null inherits the stored per-model value; [] launches with none. GGUF only. */
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -116,7 +116,7 @@ export interface LoadModelRequest {
   /** Load a vision-capable GGUF without its mmproj, freeing the VRAM the projector would occupy.
    *  Image input is unavailable for the session; text generation is unaffected. */
   disable_vision?: boolean | null;
-  /** GPU memory strategy for GGUF models. "auto" (default): Unsloth selects GPUs and caps context to
+  /** GPU memory strategy for GGUF models. "auto" (default): DeepTenLab selects GPUs and caps context to
    *  fit VRAM. "manual": you own the offload, with gpu_layers -1 handing sizing to llama.cpp's
    *  --fit and >= 0 pinning layers/n_cpu_moe. */
   gpu_memory_mode?: "auto" | "manual";
@@ -305,7 +305,7 @@ export interface LoadModelResponse {
   offload_overridden?: boolean | null;
   gpu_backend_unavailable?: boolean | null;
   cpu_fallback_reason?: CpuFallbackReason | null;
-  /** How Unsloth recovered after a multimodal projector failed at startup. */
+  /** How DeepTenLab recovered after a multimodal projector failed at startup. */
   mmproj_fallback_reason?: MmprojFallbackReason | null;
   n_cpu_moe?: number;
   tensor_split?: number[] | null;

@@ -138,7 +138,7 @@ export const de = {
       troubleshooting: "Fehlerbehebung",
       systemStatus: "Systemstatus",
       sendFeedback: "Feedback senden",
-      about: "Über Unsloth",
+      about: "Über DeepTenLab",
     },
     find: {
       label: "Auf der Seite suchen",
@@ -156,7 +156,7 @@ export const de = {
     },
     beta: "BETA",
     brand: "unsloth",
-    product: "Unsloth",
+    product: "DeepTenLab",
     accountMenu: "Kontomenü von {name}",
     updateAvailable: "Update verfügbar",
     resize: {
@@ -444,7 +444,7 @@ export const de = {
       showChatToolFilesDescription: "Dateien, die Code und Tools in Chats erstellt haben.",
       showGeneratedMedia: "Generierte Medien",
       showGeneratedMediaDescription: "Bilder, Videos und Audio von den Seiten Bilder, Video und Audio.",
-      showFineTunesDescription: "Modelle, die du in Unsloth trainiert oder exportiert hast.",
+      showFineTunesDescription: "Modelle, die du in DeepTenLab trainiert oder exportiert hast.",
       deletingSection: "Löschen",
       confirmDelete: "Vor dem Löschen bestätigen",
       confirmDeleteDescription: "Vor dem Löschen von Dateien und Ordnern aus der Bibliothek nachfragen.",
@@ -460,13 +460,13 @@ export const de = {
       storageHidden: "{size} in den Inhaltseinstellungen ausgeblendet",
       storageError: "Der Speicher der Bibliothek konnte nicht gelesen werden.",
       locationsSection: "Dateien auf dem Datenträger",
-      locationsDescription: "Wo Unsloth jede Dateiart speichert. Bibliotheksordner sind Beschriftungen in Unsloth, keine Ordner auf dem Datenträger. Feinabstimmungen und Exporte bleiben, wo sie sind, da Training und Chats sie über ihren Pfad finden.",
+      locationsDescription: "Wo DeepTenLab jede Dateiart speichert. Bibliotheksordner sind Beschriftungen in DeepTenLab, keine Ordner auf dem Datenträger. Feinabstimmungen und Exporte bleiben, wo sie sind, da Training und Chats sie über ihren Pfad finden.",
       locationUploads: "Bibliotheks-Uploads",
       locationExports: "Exporte",
       revealFailed: "Dateimanager konnte nicht geöffnet werden",
       locationReset: "Zurücksetzen",
       locationMoveTitle: "{name} in einen neuen Ordner verschieben",
-      locationMoveDescription: "Wähle einen beliebigen Ordner. Enthält er schon Dateien, legt Unsloth darin einen eigenen Ordner an. Alles, was schon hier liegt, wird mit verschoben.",
+      locationMoveDescription: "Wähle einen beliebigen Ordner. Enthält er schon Dateien, legt DeepTenLab darin einen eigenen Ordner an. Alles, was schon hier liegt, wird mit verschoben.",
       locationMoveAction: "Hierher verschieben",
       locationMoving: "{name} wird verschoben…",
       locationMoved: "{name} verschoben",
@@ -553,7 +553,7 @@ export const de = {
         },
         logOut: {
           label: "Abmelden",
-          description: "Von Unsloth abmelden",
+          description: "Von DeepTenLab abmelden",
         },
         approveToolRequest: {
           label: "Anfrage genehmigen",
@@ -1010,7 +1010,7 @@ export const de = {
     },
     general: {
       title: "Allgemein",
-      description: "Globale Einstellungen für Unsloth.",
+      description: "Globale Einstellungen für DeepTenLab.",
       account: "Konto",
       huggingFaceToken: "Hugging-Face-Token",
       huggingFaceTokenDescription:
@@ -1031,7 +1031,7 @@ export const de = {
         setTrigger: "Remote-Passwort festlegen",
         setTitle: "Remote-Passwort festlegen",
         setDescription:
-          "Wählen Sie das Passwort, mit dem sich entfernte Browser als unsloth anmelden (mindestens {minLength} Zeichen). Die Unsloth Desktop-App meldet sich weiterhin automatisch an.",
+          "Wählen Sie das Passwort, mit dem sich entfernte Browser als unsloth anmelden (mindestens {minLength} Zeichen). Die DeepTenLab Desktop-App meldet sich weiterhin automatisch an.",
         setSubmit: "Passwort festlegen",
         setting: "Wird festgelegt...",
         setDone: "Passwort festgelegt.",
@@ -1103,7 +1103,7 @@ export const de = {
           "Speichert den KV-Cache vor dem Entladen bei Inaktivität, damit der Verlauf bei fortgesetzten Chats nicht erneut eingelesen werden muss. Bis zu 10 GB auf der Festplatte.",
         apiOnly: "Nur über die API geladene Modelle entladen",
         apiOnlyDescription:
-          "Das automatische Entladen bei Inaktivität lässt ein von dir in Unsloth geladenes Modell im Speicher und gibt nur solche frei, die eine API-Anfrage geladen hat.",
+          "Das automatische Entladen bei Inaktivität lässt ein von dir in DeepTenLab geladenes Modell im Speicher und gibt nur solche frei, die eine API-Anfrage geladen hat.",
       },
       previewSharing: {
         sectionTitle: "Vorschau-Freigabe",
@@ -1152,13 +1152,13 @@ export const de = {
       },
       startup: {
         sectionTitle: "Autostart",
-        launchAtLogin: "Unsloth bei der Anmeldung starten",
+        launchAtLogin: "DeepTenLab bei der Anmeldung starten",
         launchAtLoginDescription:
-          "Startet Unsloth im Hintergrund, wenn Sie sich anmelden. Es bleibt in der Menüleiste bzw. im Infobereich, bis Sie es öffnen.",
+          "Startet DeepTenLab im Hintergrund, wenn Sie sich anmelden. Es bleibt in der Menüleiste bzw. im Infobereich, bis Sie es öffnen.",
 
         closeToTray: "In den Infobereich schließen",
         closeToTrayDescription:
-          "Unsloth und seinen Server im Hintergrund weiterlaufen lassen, wenn Sie das Hauptfenster schließen.",
+          "DeepTenLab und seinen Server im Hintergrund weiterlaufen lassen, wenn Sie das Hauptfenster schließen.",
         closeToTraySaveError:
           "Die Einstellung zum Schließen in den Infobereich konnte nicht aktualisiert werden.",
         loadError: "Die Autostart-Einstellung konnte nicht geladen werden.",
@@ -1170,7 +1170,7 @@ export const de = {
         sourceDescription: "Wo der Model-Hub sucht und herunterlädt. Wählen Sie ModelScope, wenn Hugging Face in Ihrem Netzwerk blockiert oder langsam ist.",
         sourceFallback: "ModelScope konnte nicht gestartet werden, daher wird Hugging Face verwendet. Prüfen Sie die Unsloth-Logs.",
         autoSourceTitle: "Modellquelle auf ModelScope umgestellt",
-        autoSourceDescription: "Hugging Face ist in Ihrer Region oft langsam oder gesperrt, daher lädt Unsloth Modelle jetzt von ModelScope.",
+        autoSourceDescription: "Hugging Face ist in Ihrer Region oft langsam oder gesperrt, daher lädt DeepTenLab Modelle jetzt von ModelScope.",
         autoSourceAction: "Einstellungen für die Modellquelle öffnen",
         sectionTitle: "Modell-Hub",
         endpoint: "Hugging-Face-Endpunkt",
@@ -1272,7 +1272,7 @@ export const de = {
         action: "Einstellungen zurücksetzen",
         confirmTitle: "Alle lokalen Einstellungen zurücksetzen?",
         confirmDescription:
-          "Löscht nur lokal gespeicherte Einstellungen und lädt Unsloth neu. Chats, API-Zugriff und in der DB gespeicherte Einstellungen bleiben erhalten.",
+          "Löscht nur lokal gespeicherte Einstellungen und lädt DeepTenLab neu. Chats, API-Zugriff und in der DB gespeicherte Einstellungen bleiben erhalten.",
         confirmAction: "Zurücksetzen und neu laden",
       },
       permissions: {
@@ -1297,10 +1297,10 @@ export const de = {
     },
     profile: {
       title: "Profil",
-      description: "Wie Ihr Profil in Unsloth angezeigt wird.",
+      description: "Wie Ihr Profil in DeepTenLab angezeigt wird.",
       changePicture: "Profilbild ändern",
       displayName: "Anzeigename",
-      nickname: "Wie soll Unsloth Sie nennen?",
+      nickname: "Wie soll DeepTenLab Sie nennen?",
       nicknamePlaceholder: "Spitzname",
       nicknameSaved: "Bevorzugter Name gespeichert",
       avatarShape: "Form des Profilbilds",
@@ -1327,10 +1327,10 @@ export const de = {
       stats: {
         title: "Ihre Statistiken",
         subtitle:
-          "Alles Folgende wird aus Ihrem eigenen Verlauf berechnet. Es wird nichts erfasst oder an Unsloth gesendet.",
+          "Alles Folgende wird aus Ihrem eigenen Verlauf berechnet. Es wird nichts erfasst oder an DeepTenLab gesendet.",
         retry: "Erneut versuchen",
         privacyNote:
-          "Die Statistiken werden aus dem lokalen Chat-, API-Nutzungs- und Trainingsverlauf Ihrer Unsloth-Installation berechnet. API-Eingaben, -Antworten und -Schlüssel werden dafür nie gespeichert. Nichts wird an Unsloth oder Dritte gesendet.",
+          "Die Statistiken werden aus dem lokalen Chat-, API-Nutzungs- und Trainingsverlauf Ihrer Unsloth-Installation berechnet. API-Eingaben, -Antworten und -Schlüssel werden dafür nie gespeichert. Nichts wird an DeepTenLab oder Dritte gesendet.",
         emptyChats:
           "Noch keine Chat- oder API-Nutzung. Starten Sie ein Gespräch oder senden Sie eine authentifizierte lokale API-Anfrage.",
         lifetimeTokens: "Tokens insgesamt",
@@ -1390,7 +1390,7 @@ export const de = {
     },
     appearance: {
       title: "Darstellung",
-      description: "Wie Unsloth auf diesem Gerät aussieht.",
+      description: "Wie DeepTenLab auf diesem Gerät aussieht.",
       theme: {
         title: "Visueller Stil",
         label: "Modus",
@@ -1401,7 +1401,7 @@ export const de = {
       },
       palette: {
         label: "Design",
-        description: "Farben, die in Unsloth im hellen und dunklen Modus verwendet werden.",
+        description: "Farben, die in DeepTenLab im hellen und dunklen Modus verwendet werden.",
         standard: "Standard",
         classic: "Klassisch",
         minimal: "Minimal",
@@ -1506,7 +1506,7 @@ export const de = {
       language: {
         title: "Sprache",
         label: "Anzeigesprache",
-        description: "Die von Unsloth verwendete Sprache.",
+        description: "Die von DeepTenLab verwendete Sprache.",
         autoDetect: "Automatisch erkennen",
       },
       layout: {
@@ -1603,7 +1603,7 @@ export const de = {
           description: "Verwende deinen eigenen llama-server-Build.",
           hint: "Wähle den llama.cpp-Ordner mit llama-server oder einen Build, in dem er unter build/bin liegt. Die benutzerdefinierte Laufzeit wird für GGUF-Chat, Einbettungen und unterstützte Sprachmodelle verwendet. Umgebungsvariablen haben weiterhin Vorrang.",
           automatic: "Automatisch (mitgeliefert)",
-          bundled: "Verwendet die von Unsloth installierte llama.cpp-Laufzeit.",
+          bundled: "Verwendet die von DeepTenLab installierte llama.cpp-Laufzeit.",
           active: "Dein eigener llama-server wird beim nächsten Laden eines Modells verwendet.",
           environmentManaged: "Wird durch die Umgebungsvariable {variable} verwaltet.",
           missingBinary: "llama-server ist in diesem Ordner nicht mehr verfügbar. Wähle einen anderen Ordner oder verwende die mitgelieferte Laufzeit.",
@@ -1625,8 +1625,8 @@ export const de = {
           metal: "Metal",
         },
         unsupported: {
-          notInstalled: "Es wurde keine von Unsloth verwaltete llama.cpp-Installation gefunden, daher gibt es kein Backend zum Wechseln.",
-          localLink: "llama.cpp ist ein selbst verknüpftes lokales Verzeichnis, das Unsloth nicht ersetzt.",
+          notInstalled: "Es wurde keine von DeepTenLab verwaltete llama.cpp-Installation gefunden, daher gibt es kein Backend zum Wechseln.",
+          localLink: "llama.cpp ist ein selbst verknüpftes lokales Verzeichnis, das DeepTenLab nicht ersetzt.",
           sourceBuild: "Dieses llama.cpp wurde aus dem Quellcode gebaut; sein Backend lässt sich hier nicht wechseln.",
           customPath: "Ein benutzerdefinierter llama.cpp-Ordner ist ausgewählt. Dessen Build bestimmt das Compute-Backend.",
           unresolved: "Die verfügbaren Backends konnten nicht geprüft werden. Prüfe deine Verbindung und versuche es erneut.",
@@ -1686,7 +1686,7 @@ export const de = {
           label: "Cache-Dateien",
           description:
             "{size} in Caches, davon können {reclaimable} jetzt geleert werden.",
-          hint: "Paket-Downloads, kompilierte Kernel und Übertragungs-Caches, die Unsloth bei Bedarf neu aufbaut. Heruntergeladene Modelle, Projekte, Chats, Einstellungen und Ihr Hugging Face-Token werden hier nie geleert.",
+          hint: "Paket-Downloads, kompilierte Kernel und Übertragungs-Caches, die DeepTenLab bei Bedarf neu aufbaut. Heruntergeladene Modelle, Projekte, Chats, Einstellungen und Ihr Hugging Face-Token werden hier nie geleert.",
           keywords:
             "Cache Caches leeren löschen bereinigen aufräumen Speicherplatz freigeben Festplatte temporär kompiliert cache caches purge prune clear clean free space disk uv pip npm bun triton inductor cuda numba matplotlib vllm compiled xet temporary",
           measuring: "Cache-Größen werden ermittelt...",
@@ -1702,7 +1702,7 @@ export const de = {
           confirmDescription: "Das gibt etwa {size} frei.",
           confirmOneTitle: "{name} leeren?",
           safety:
-            "Unsloth baut einen Cache beim nächsten Bedarf neu auf. Heruntergeladene Modelle, Projekte, Chats, Einstellungen und Ihr Hugging Face-Token bleiben unberührt.",
+            "DeepTenLab baut einen Cache beim nächsten Bedarf neu auf. Heruntergeladene Modelle, Projekte, Chats, Einstellungen und Ihr Hugging Face-Token bleiben unberührt.",
           hubCost:
             "Das ist der Modell-Cache. Wenn Sie ihn leeren, werden diese Modelle beim nächsten Verwenden erneut heruntergeladen.",
           datasetsCost:
@@ -1756,7 +1756,7 @@ export const de = {
       description:
         "Verbinden Sie Coding-Agenten wie Claude Code und Codex über unsloth start mit einem lokalen Modell.",
       intro:
-        "verbindet Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode und weitere Agenten mit einem lokal von Unsloth bereitgestellten Modell, vollständig offline. Es startet einen OpenAI-kompatiblen Server und verändert nie die Konfigurationsdateien Ihres Agenten.",
+        "verbindet Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode und weitere Agenten mit einem lokal von DeepTenLab bereitgestellten Modell, vollständig offline. Es startet einen OpenAI-kompatiblen Server und verändert nie die Konfigurationsdateien Ihres Agenten.",
       readDocs: "Dokumentation lesen",
       copy: "Kopieren",
       copied: "Kopiert",
@@ -1782,13 +1782,13 @@ export const de = {
       // English is the baseline until translated: the three-part sentence is assembled around an
       // inline link and needs restructuring first.
       automaticSettingsNote:
-        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
+        "DeepTenLab automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
         "You can also adjust any configuration. See further below or",
       configurationDocs: "docs",
       configurationFlagsSuffix: "for flags.",
       modelNote:
-        "Codex benötigt ein GGUF-Modell, das von llama-server bereitgestellt wird. Andere Agenten können auch Transformer-basierte Modelle verwenden; lassen Sie --model weg, um das bereits in Unsloth geladene Modell zu nutzen.",
+        "Codex benötigt ein GGUF-Modell, das von llama-server bereitgestellt wird. Andere Agenten können auch Transformer-basierte Modelle verwenden; lassen Sie --model weg, um das bereits in DeepTenLab geladene Modell zu nutzen.",
       subagent: {
         title: "Ein lokales Modell als Subagent verwenden",
         description:
@@ -1804,7 +1804,7 @@ export const de = {
       quickstart: {
         title: "Befehl zusammenstellen",
         description:
-          "Starten Sie einen Agenten mit dem aktuell in Unsloth geladenen Modell. Laden Sie zuerst ein Modell und ersetzen Sie dann claude durch einen der unten aufgeführten Agenten.",
+          "Starten Sie einen Agenten mit dem aktuell in DeepTenLab geladenen Modell. Laden Sie zuerst ein Modell und ersetzen Sie dann claude durch einen der unten aufgeführten Agenten.",
         noneDetected:
           "In Ihrem PATH wurden keine unterstützten Agent-CLIs gefunden.",
         installed: "Installiert",
@@ -1826,7 +1826,7 @@ export const de = {
         description:
           "Unsloth-Optionen werden zuerst ausgewertet; alles Unbekannte wird unverändert an den Agenten weitergereicht.",
         model:
-          "Wählt ein Modell aus. Ohne --model verwendet unsloth start das aktuell in Unsloth geladene Modell und bricht mit einem Fehler ab, wenn keines geladen ist.",
+          "Wählt ein Modell aus. Ohne --model verwendet unsloth start das aktuell in DeepTenLab geladene Modell und bricht mit einem Fehler ab, wenn keines geladen ist.",
         contextLength:
           "Legt die gewünschte Kontextlänge fest (Alias: --max-seq-length).",
         ggufVariant: "Wählt die GGUF-Quantisierungsvariante.",
@@ -1838,9 +1838,9 @@ export const de = {
         launch:
           "Startet den Agenten oder gibt nur Befehl und Umgebung aus.",
         persist:
-          "Behält die von Unsloth verwalteten Agent-Daten über Läufe hinweg bei.",
+          "Behält die von DeepTenLab verwalteten Agent-Daten über Läufe hinweg bei.",
         asSubagent:
-          "Belässt den übergeordneten Agenten bei seinem aktuellen Modell und registriert Unsloth als lokalen Subagenten (Claude Code, Codex und OpenCode).",
+          "Belässt den übergeordneten Agenten bei seinem aktuellen Modell und registriert DeepTenLab als lokalen Subagenten (Claude Code, Codex und OpenCode).",
         apiKey:
           "Übergibt Ihren Unsloth-API-Schlüssel (alternativ UNSLOTH_API_KEY setzen).",
         reasoning:
@@ -1851,9 +1851,9 @@ export const de = {
           "Überspringt Bestätigungsabfragen. Nur in vertrauenswürdigen Umgebungen verwenden.",
       },
       remote: {
-        title: "Mit einem entfernten Unsloth verbinden",
+        title: "Mit einem entfernten DeepTenLab verbinden",
         description:
-          "Richten Sie unsloth start auf ein anderswo laufendes Unsloth aus, indem Sie diese Variablen vor dem Aufruf setzen (oder --api-key direkt übergeben):",
+          "Richten Sie unsloth start auf ein anderswo laufendes DeepTenLab aus, indem Sie diese Variablen vor dem Aufruf setzen (oder --api-key direkt übergeben):",
       },
       passthrough: {
         title: "Argumente an den Agenten übergeben",
@@ -2246,11 +2246,11 @@ export const de = {
     remoteLan: {
       title: "Remote & LAN",
       description:
-        "Erreiche dieses Unsloth von deinen anderen Geräten über dein lokales Netzwerk oder eine temporäre öffentliche URL.",
+        "Erreiche dieses DeepTenLab von deinen anderen Geräten über dein lokales Netzwerk oder eine temporäre öffentliche URL.",
     },
     apiKeys: {
       title: "API",
-      description: "Zugriff auf Unsloth über die OpenAI-kompatible API.",
+      description: "Zugriff auf DeepTenLab über die OpenAI-kompatible API.",
       readDocs: "API-Dokumentation lesen",
       noAccess: "Noch kein API-Zugriff.",
       accessTokens: "Zugriffstoken",
@@ -2278,7 +2278,7 @@ export const de = {
       osWindows: "Windows",
       secureHttps: "Sicheres HTTPS",
       secureHttpsHint:
-        "Der 0.0.0.0-Port ist weiterhin global erreichbar. Für vollständige Sicherheit starten Sie Unsloth mit --secure, um nur diesen HTTPS-Link freizugeben.",
+        "Der 0.0.0.0-Port ist weiterhin global erreichbar. Für vollständige Sicherheit starten Sie DeepTenLab mit --secure, um nur diesen HTTPS-Link freizugeben.",
       copyTunnelUrl: "Tunnel-URL kopieren",
       copySnippet: "Snippet kopieren",
       copy: "Kopieren",
@@ -2370,27 +2370,27 @@ export const de = {
       reportIssue: "Problem melden",
       license: {
         sectionTitle: "Lizenz",
-        studioLabel: "Unsloth",
+        studioLabel: "DeepTenLab",
         studioLicense: "AGPL-3.0",
         studioDescription: "Open Source unter der GNU AGPL v3.0.",
-        libraryLabel: "Unsloth Core",
+        libraryLabel: "DeepTenLab Core",
         libraryLicense: "Apache-2.0",
         libraryDescription: "Lizenziert unter Apache 2.0.",
       },
       dangerZone: "Gefahrenzone",
-      shutDownStudio: "Unsloth herunterfahren",
+      shutDownStudio: "DeepTenLab herunterfahren",
       shutDownStudioDescription:
         "Stoppt den Unsloth-Server und beendet Ihre Sitzung.",
       shutDown: "Herunterfahren",
       update: {
-        title: "Unsloth aktualisieren",
+        title: "DeepTenLab aktualisieren",
         commandText: "{label} als Text",
         copied: "Kopiert",
         copyCommand: "Befehl kopieren",
         commandCopied: "{label} kopiert",
         copyNamedCommand: "{label} kopieren",
-        checkingInstall: "Es wird geprüft, wie Unsloth installiert wurde...",
-        installIntro: "So installieren oder aktualisieren Sie Unsloth:",
+        checkingInstall: "Es wird geprüft, wie DeepTenLab installiert wurde...",
+        installIntro: "So installieren oder aktualisieren Sie DeepTenLab:",
         localUpdateHeading: "Lokales Update",
         installCommandUnix: "macOS/Linux-Installationsbefehl",
         installCommandWindows: "Windows-Installationsbefehl",
@@ -2404,7 +2404,7 @@ export const de = {
           "Quell- oder VCS-Paketinstallation erkannt. Installieren Sie erneut vom ursprünglichen lokalen Pfad oder der Git-URL.",
         repoCheckoutFallback:
           "Wenn Sie den Repository-Checkout noch haben, führen Sie den lokalen Installer daraus aus:",
-        restartAfterUpdate: "Starten Sie Unsloth nach dem Update neu.",
+        restartAfterUpdate: "Starten Sie DeepTenLab nach dem Update neu.",
         desktopManaged:
           "Die Desktop-App sucht automatisch nach neuen App-Versionen. Sie können hier auch jederzeit nach Updates suchen oder ein Update durchführen.",
         desktopReady: "Updates für die Desktop-App",
@@ -2425,7 +2425,7 @@ export const de = {
           "Überprüfen Sie Ihre Verbindung und versuchen Sie es erneut.",
         desktopCurrent: "Die Desktop-App ist auf dem neuesten Stand",
         desktopCurrentDescription:
-          "Unsloth sucht weiterhin automatisch nach Updates.",
+          "DeepTenLab sucht weiterhin automatisch nach Updates.",
         checkForUpdates: "Nach Updates suchen",
         checkAgain: "Erneut suchen",
         retryCheck: "Erneut versuchen",
@@ -2433,7 +2433,7 @@ export const de = {
         updateNow: "Jetzt aktualisieren",
         openReleasePage: "Release-Seite öffnen",
         unknownInstall:
-          "Es konnte nicht erkannt werden, wie Unsloth installiert wurde. Verwenden Sie für Installer- oder PyPI-Installationen die obigen Befehle.",
+          "Es konnte nicht erkannt werden, wie DeepTenLab installiert wurde. Verwenden Sie für Installer- oder PyPI-Installationen die obigen Befehle.",
         localCheckout:
           "Führen Sie bei lokalen Checkout-Installationen den lokalen Installer aus diesem Checkout aus:",
         docs: "Installationsdokumentation:",
@@ -2951,7 +2951,7 @@ export const de = {
       },
       startFailed: "Training konnte nicht gestartet werden",
       startUnconfirmed:
-        "Unsloth konnte nicht bestätigen, ob das Training gestartet wurde. Der Status wird im Hintergrund geprüft.",
+        "DeepTenLab konnte nicht bestätigen, ob das Training gestartet wurde. Der Status wird im Hintergrund geprüft.",
       stopFailed: "Training konnte nicht gestoppt werden",
       trainingStillActiveTitle: "Training läuft noch",
       stopBeforeConfig:
@@ -3213,7 +3213,7 @@ export const de = {
     noMatch: "Keine Fähigkeiten passen zu „{query}“",
     clearSearch: "Suche leeren",
     readOnlyClaude: "Schreibgeschützt: liegt in ~/.claude/skills. Bearbeite die Datei dort.",
-    readOnlyBundled: "Schreibgeschützt: mit Unsloth mitgeliefert.",
+    readOnlyBundled: "Schreibgeschützt: mit DeepTenLab mitgeliefert.",
     readOnlyLinked: "Schreibgeschützt: dieser Eintrag ist eine Verknüpfung. Bearbeite die Dateien an ihrem Speicherort.",
     characters: "{count} Zeichen",
     unsaved: "ungespeicherte Änderungen",
@@ -3227,7 +3227,7 @@ export const de = {
     sectionClaude: "Claude-Fähigkeiten",
     sectionClaudeHint: "Gefunden in ~/.claude/skills. Hier schreibgeschützt; die Dateien dort bearbeiten.",
     sectionBundled: "Mitgeliefert",
-    sectionBundledHint: "Mit Unsloth ausgeliefert. Schreibgeschützt.",
+    sectionBundledHint: "Mit DeepTenLab ausgeliefert. Schreibgeschützt.",
     linked: "Verknüpfung",
     discardTitle: "Änderungen verwerfen?",
     discardDescription: "Nicht gespeicherte Änderungen an {name} gehen verloren.",
@@ -3371,7 +3371,7 @@ export const de = {
       audioTitle: "Noch kein Audio",
       audioDescription: "Sprache, die Sie auf der Audio-Seite generieren, erscheint hier.",
       modelsTitle: "Noch keine feinabgestimmten Modelle",
-      modelsDescription: "Modelle, die Sie in Unsloth trainieren oder exportieren, erscheinen hier.",
+      modelsDescription: "Modelle, die Sie in DeepTenLab trainieren oder exportieren, erscheinen hier.",
       createFolder: "Ordner erstellen",
       generateVideo: "Video generieren",
       generateAudio: "Audio generieren",

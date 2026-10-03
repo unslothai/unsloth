@@ -73,7 +73,7 @@ export function getTrainingTransformersUpgradeRequiredMessage(
 export function getTrainingTransformersUpgradeUnavailableMessage(
   modelName: string,
 ): string {
-  return `${modelName} is not supported yet by the installed transformers, and no released transformers version supports it either: the architecture is only on the transformers development branch, which Unsloth does not install. Wait for the next transformers release, or pick a model the installed transformers supports.`;
+  return `${modelName} is not supported yet by the installed transformers, and no released transformers version supports it either: the architecture is only on the transformers development branch, which DeepTenLab does not install. Wait for the next transformers release, or pick a model the installed transformers supports.`;
 }
 
 /** The resume that installing would strand: the checkpoint is attested against a 4-bit

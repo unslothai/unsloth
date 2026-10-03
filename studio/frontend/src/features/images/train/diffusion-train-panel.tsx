@@ -1050,7 +1050,7 @@ export function DiffusionTrainPanel({
       return;
     }
     if (!outputDir.trim()) {
-      toast.error("Name the adapter (this becomes its folder under Unsloth outputs).");
+      toast.error("Name the adapter (this becomes its folder under DeepTenLab outputs).");
       return;
     }
     // Require a trigger prompt whenever ANY image lacks a caption: without an instance_prompt the

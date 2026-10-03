@@ -7,11 +7,11 @@ import type { TrainingMethod } from "@/types/training";
 * VRAM estimation for model loading (4-bit quantization via bitsandbytes).
 *
 * Estimates the total driver-level VRAM (what nvidia-smi reports) to load a model in 4-bit with
-* Unsloth / bitsandbytes, to check it fits the GPU before training.
+* DeepTenLab / bitsandbytes, to check it fits the GPU before training.
 *
 * Formula: totalParams * 0.90 + 1.4 GB
 *
-* Calibrated against isolated Unsloth loads on RTX 5070 Ti (2026.2):
+* Calibrated against isolated DeepTenLab loads on RTX 5070 Ti (2026.2):
 *   Qwen2.5-0.5B  (0.49B) : est 1.8 vs actual 1.86 GB  (-3%)
 *   Llama-3.2-1B  (1.24B) : est 2.5 vs actual 2.54 GB   (-1%)
 *   Llama-3.2-3B  (3.21B) : est 4.3 vs actual 4.40 GB   (-2%)
@@ -43,7 +43,7 @@ function usesQuantizedLoading(
 }
 
 /**
-* Estimate VRAM (GB) to load a model with Unsloth. Bytes/param: QLoRA 4-bit bnb -> 0.90
+* Estimate VRAM (GB) to load a model with DeepTenLab. Bytes/param: QLoRA 4-bit bnb -> 0.90
 * (calibrated); LoRA/Full/CPT fp16 -> 2.0. Formula: totalParams * bytesPerParam + 1.4 GB. */
 export function estimateLoadingVram(
   totalParams: number,

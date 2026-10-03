@@ -4,7 +4,7 @@
 /**
  * Copy for a scan folder the backend could not read.
  *
- * A folder Unsloth is denied looks exactly like an empty one in the model list,
+ * A folder DeepTenLab is denied looks exactly like an empty one in the model list,
  * so the row has to say which it is and where to fix it.
  */
 
@@ -32,7 +32,7 @@ function permissionHint(userAgent: string): string {
     case "mac":
       return "Grant access in System Settings > Privacy & Security > Files and Folders, then reopen this dialog.";
     case "windows":
-      return "Check the folder's security permissions, or allow Unsloth in Controlled Folder Access, then reopen this dialog.";
+      return "Check the folder's security permissions, or allow DeepTenLab in Controlled Folder Access, then reopen this dialog.";
     default:
       return "Check the folder's permissions, then reopen this dialog.";
   }
@@ -45,7 +45,7 @@ export function scanFolderStatusCopy(
   switch (status) {
     case "permission_denied":
       return {
-        title: "Unsloth is not allowed to read this folder",
+        title: "DeepTenLab is not allowed to read this folder",
         hint: permissionHint(userAgent),
       };
     case "partial":

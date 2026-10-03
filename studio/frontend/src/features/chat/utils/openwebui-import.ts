@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Converts Open WebUI exports to Unsloth conversations. `history.messages` is the
+/** Converts Open WebUI exports to DeepTenLab conversations. `history.messages` is the
  *  authoritative DAG and `currentId` selects its active branch; flat `messages` is a legacy
  *  fallback. Modern output items and legacy details blocks both convert to message parts. */
 
@@ -602,7 +602,7 @@ export function openWebUIRecordToConversation(
     Date.now();
 
   const messages: MessageRecord[] = [];
-  // Unsloth sorts stored messages by createdAt, so the timeline must be strictly increasing or
+  // DeepTenLab sorts stored messages by createdAt, so the timeline must be strictly increasing or
   // the depth-first order would not survive a reload. Real timestamps are kept when they
   // already increase.
   let previousTs = createdAt - 1;

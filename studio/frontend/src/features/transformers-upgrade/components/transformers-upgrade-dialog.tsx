@@ -86,7 +86,7 @@ export function TransformersUpgradeDialog() {
                     <>
                       Even the latest transformers release on PyPI does not
                       support it yet: the architecture is only available on the
-                      transformers development branch (main), and Unsloth does
+                      transformers development branch (main), and DeepTenLab does
                       not install development builds. Support arrives with the
                       next transformers release on PyPI.
                     </>

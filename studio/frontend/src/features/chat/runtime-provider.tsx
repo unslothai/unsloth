@@ -3362,7 +3362,7 @@ function NonceThreadResumeRestore({
     if (!remoteId) {
       return;
     }
-    // ...and neither must a chat the user deleted while away. Unsloth deletes by tombstoning storage
+    // ...and neither must a chat the user deleted while away. DeepTenLab deletes by tombstoning storage
     // rather than calling runtime.threads.delete(), so every check above still passes. On
     // remoteId, which is the id storage and the sidebar delete agree on.
     if (isChatThreadDeleted(remoteId)) {

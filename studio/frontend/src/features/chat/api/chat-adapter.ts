@@ -2938,7 +2938,7 @@ async function ensureDefaultModelDownloaded(
   };
   const totalLabel = formatDownloadBytes(expectedBytes);
   const description =
-    `Unsloth couldn’t find an existing model. Unsloth is now getting ` +
+    `DeepTenLab couldn’t find an existing model. DeepTenLab is now getting ` +
     `${DEFAULT_CHAT_MODEL_LABEL} ready for use. You can stop the download or ` +
     `manage models later in the 'Model hub'`;
   setToast(
@@ -3241,7 +3241,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       label,
       // Older backends and non-Error throws carry no detail; still name the model that failed.
       detail:
-        detail || "The server did not report a reason. Check the Unsloth logs.",
+        detail || "The server did not report a reason. Check the DeepTenLab logs.",
       blamesModel,
     };
   }
@@ -4496,7 +4496,7 @@ export function createOpenAIStreamAdapter(
             ) !== true)
         ) {
           throw new Error(
-            "Deep research requires a selected local model or a connection whose provider supports Unsloth tools.",
+            "Deep research requires a selected local model or a connection whose provider supports DeepTenLab tools.",
           );
         }
         const reasoningRequested =
@@ -6432,7 +6432,7 @@ export function createOpenAIStreamAdapter(
                       ...studioLocalCodeTools,
                       // Hosted tools with no local stand-in; their pills stay lit regardless, so listing only local
                       // names dropped Images/Fetch whenever another tool selected this branch. Search is excluded
-                      // (Unsloth runs it above); Code rides along only when it resolved to the provider's sandbox.
+                      // (DeepTenLab runs it above); Code rides along only when it resolved to the provider's sandbox.
                       ...(imageGenerationEnabledForThisTurn
                         ? ["image_generation"]
                         : []),
@@ -6833,7 +6833,7 @@ export function createOpenAIStreamAdapter(
                 throw new ChatGenerationTerminalError(
                   "failed",
                   generationRun?.error ||
-                    "The Unsloth backend restarted during generation.",
+                    "The DeepTenLab backend restarted during generation.",
                 );
               }
               if (generationStatus === "cancelled" && !runSignal.aborted) {
@@ -6929,7 +6929,7 @@ export function createOpenAIStreamAdapter(
                         "context. They are saved and searchable, and relevant parts are " +
                         "brought back automatically."
                       : "The full conversation is still visible and saved. " +
-                        "Unsloth removed complete older turns from this request so the chat can continue.",
+                        "DeepTenLab removed complete older turns from this request so the chat can continue.",
                     duration: 8000,
                   });
                 }
@@ -6972,7 +6972,7 @@ export function createOpenAIStreamAdapter(
                 chunk as unknown as { _toolEvent?: Record<string, unknown> }
               )._toolEvent;
               if (toolEvent !== undefined) {
-                // Unsloth's own tool events end the turn that asked for them; finish_reason alone is not
+                // DeepTenLab's own tool events end the turn that asked for them; finish_reason alone is not
                 // enough, since a hosted tool runs INSIDE the turn and rides a whole chunk.
                 if (!chunk.choices) {
                   endProviderTurn();
@@ -7550,7 +7550,7 @@ export function createOpenAIStreamAdapter(
                   const deltaArgs = streamedToolCallArguments(
                     call.function?.arguments,
                   );
-                  // Unsloth's local Codex loop follows the OpenAI tool-call delta with tool_start/tool_end, so
+                  // DeepTenLab's local Codex loop follows the OpenAI tool-call delta with tool_start/tool_end, so
                   // resolve the backend id now to keep all three shapes on one card. Before resolving, since
                   // a provider claiming a minted spelling would merge two calls.
                   if (
@@ -8387,7 +8387,7 @@ export function createOpenAIStreamAdapter(
               toast.error("Response interrupted", {
                 description:
                   err.message ||
-                  "The Unsloth backend stopped during generation.",
+                  "The DeepTenLab backend stopped during generation.",
                 duration: 8000,
               });
             }

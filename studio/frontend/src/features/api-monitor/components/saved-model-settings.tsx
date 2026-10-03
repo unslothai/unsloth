@@ -183,7 +183,7 @@ export function SavedModelSettingsPanel(): ReactElement {
           Settings applied on API load
         </h2>
         <p className="text-sm text-muted-foreground">
-          When a request names one of these models, Unsloth loads it with these
+          When a request names one of these models, DeepTenLab loads it with these
           settings, the same ones you saved in the model&apos;s settings page.
           Models without an entry load with app defaults. Edit an entry from
           that model&apos;s settings, or forget it here, which clears it from

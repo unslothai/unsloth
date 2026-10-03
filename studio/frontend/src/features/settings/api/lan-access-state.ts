@@ -168,12 +168,12 @@ export function lanAccessStopDisconnectsOrigin(
 function launchManagedMessage(status: LanAccessStatus): string {
   if (status.wildcardBind) {
     const option = status.bindHost ? ` (--host ${status.bindHost})` : "";
-    return `This launch binds every network interface${option}, so Unsloth is on the network already.`;
+    return `This launch binds every network interface${option}, so DeepTenLab is on the network already.`;
   }
   if (!status.bindHost) {
-    return "This launch already puts Unsloth on the network.";
+    return "This launch already puts DeepTenLab on the network.";
   }
-  return `This launch binds ${status.bindHost} (--host ${status.bindHost}), so Unsloth is on the network already.`;
+  return `This launch binds ${status.bindHost} (--host ${status.bindHost}), so DeepTenLab is on the network already.`;
 }
 
 export function lanAccessBlockMessage(
@@ -182,7 +182,7 @@ export function lanAccessBlockMessage(
 ): string | null {
   switch (status?.blockReason) {
     case "server_starting":
-      return "Unsloth is still starting.";
+      return "DeepTenLab is still starting.";
     case "admin_password_change_required":
       return isDesktop
         ? "Set a remote password before putting this server on the network."

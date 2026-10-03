@@ -139,7 +139,7 @@ export function WebUpdateBanner({
               />
               <div className="min-w-0">
                 <p className="font-heading text-base font-medium text-foreground">
-                  New Unsloth version
+                  New DeepTenLab version
                 </p>
                 <p className="mt-0.5 text-xs text-muted-foreground">
                   {status.currentVersion} &rarr;{" "}

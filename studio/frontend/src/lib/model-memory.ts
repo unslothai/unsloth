@@ -329,7 +329,7 @@ export const KV_SHAPING_ARGS = [
   // mode, so the draft KV and the target rollback state would both be missing from the total.
   "--spec-type",
   "--spec-default",
-  // Draft depth in llama.cpp's spellings as well as Unsloth's: a recurrent
+  // Draft depth in llama.cpp's spellings as well as DeepTenLab's: a recurrent
   // target keeps one rollback state per drafted token, so --draft-max 16 is a
   // materially different reservation from the structured default.
   "--spec-draft-n-max",
