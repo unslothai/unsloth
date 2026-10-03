@@ -601,9 +601,8 @@ def engage_pinned_denoisers(
     applied: dict,
     logger: Any = None,
 ) -> dict:
-    """Install the int8 GEMM the plan refused once placement pinned every denoiser group; before the first forward,
-    no-op unless compiled. CUDA graphs stay off: an oversized request can still stream the groups (freed weight
-    pointers), and the hooks' copy-stream wait invalidates a capture."""
+    """Install the int8 GEMM the plan refused once every denoiser group is pinned (before the first forward). Graphs
+    stay off: an oversized request can still stream the groups, and the hooks' copy-stream wait breaks capture."""
     if getattr(pipe, "_unsloth_cuda_graph_reason", None) == "offload active":
         try:
             pipe._unsloth_cuda_graph_reason = "denoiser pinned resident under offload hooks"

@@ -519,8 +519,7 @@ def test_denoiser_residency_follows_the_final_placement(monkeypatch):
 
 
 def test_pinned_denoiser_reads_real_group_offload_hooks(monkeypatch):
-    """Real diffusers group offloading: pinned whole -> resident; an oversized request streams it again -> moving;
-    restored -> resident."""
+    """Real group offloading: pinned -> resident, released -> moving, restored -> resident."""
     torch, net = _cuda_offload_model()
     from diffusers.hooks import apply_group_offloading
 
