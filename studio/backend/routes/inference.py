@@ -40481,7 +40481,8 @@ def _structured_tool_history_for_local_template(messages: list[dict]) -> list[di
                 if isinstance(args, str):
                     try:
                         parsed = json.loads(args)
-                    except ValueError:
+                    # Deep but valid nesting blows the stack before it fails to parse.
+                    except (ValueError, RecursionError):
                         parsed = None
                     if isinstance(parsed, dict):
                         tc = {**tc, "function": {**fn, "arguments": parsed}}

@@ -241,3 +241,28 @@ def test_provider_synthetic_tool_calls_never_reach_the_local_template():
 
     assert [m["role"] for m in chat_messages] == ["user", "assistant", "user"]
     assert "_server_tool" not in json.dumps(chat_messages)
+
+
+def test_deeply_nested_history_arguments_stay_a_string():
+    from routes.inference import _extract_content_parts
+
+    arguments = '{"x":' + "[" * 10000 + "0" + "]" * 10000 + "}"
+    messages = [
+        ChatMessage(role = "user", content = "q"),
+        ChatMessage(
+            role = "assistant",
+            content = None,
+            tool_calls = [
+                {
+                    "id": "call_0",
+                    "type": "function",
+                    "function": {"name": "python", "arguments": arguments},
+                }
+            ],
+        ),
+        ChatMessage(role = "tool", tool_call_id = "call_0", name = "python", content = "r"),
+        ChatMessage(role = "user", content = "again"),
+    ]
+    _, chat_messages, _ = _extract_content_parts(messages)
+
+    assert chat_messages[1]["tool_calls"][0]["function"]["arguments"] == arguments
