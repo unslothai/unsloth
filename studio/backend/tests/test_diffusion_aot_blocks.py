@@ -260,7 +260,7 @@ _SCRIPT = textwrap.dedent(
     with torch.inference_mode():
         out = run()
     torch.save(out.cpu(), os.environ["OUT"])
-    print("RESULT", json.dumps({"stats": reg.describe(), "classes": sorted(names),
+    print("RESULT", json.dumps({"stats": reg.describe() if reg is not None else None, "classes": sorted(names),
                                 "frames": counters["stats"]["unique_graphs"]}))
     """
 )
