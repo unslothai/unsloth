@@ -57,7 +57,9 @@ def test_runtime_text_is_one_bounded_line_without_paths_or_tokens():
     [(500, 500), (None, 500), (502, 500), (422, 400), (404, 400), (401, 400), (503, 503)],
 )
 def test_runtime_status_maps_to_a_status_the_client_reads_as_this_request(status, expected):
-    code, detail = audio_runtime_http_error(AudioRuntimeError("Vevo2 requires target_voice", status = status))
+    code, detail = audio_runtime_http_error(
+        AudioRuntimeError("Vevo2 requires target_voice", status = status)
+    )
     assert (code, detail) == (expected, "Vevo2 requires target_voice")
 
 
@@ -170,7 +172,9 @@ def test_the_worker_tags_a_runtime_error_and_the_parent_rebuilds_it():
             raise AudioRuntimeError("Vevo2 requires target_voice", status = 500)
 
     responses: queue.Queue = queue.Queue()
-    _handle_generate_audio(_Backend(), {"request_id": "r1", "text": "hi"}, responses, threading.Event())
+    _handle_generate_audio(
+        _Backend(), {"request_id": "r1", "text": "hi"}, responses, threading.Event()
+    )
     sent = responses.get_nowait()
     assert sent["type"] == "audio_error"
     assert (sent["code"], sent["status"], sent["error"]) == (
@@ -183,7 +187,9 @@ def test_the_worker_tags_a_runtime_error_and_the_parent_rebuilds_it():
         def generate_audio_response(self, **_kwargs):
             raise RuntimeError("boom")
 
-    _handle_generate_audio(_Plain(), {"request_id": "r2", "text": "hi"}, responses, threading.Event())
+    _handle_generate_audio(
+        _Plain(), {"request_id": "r2", "text": "hi"}, responses, threading.Event()
+    )
     assert "code" not in responses.get_nowait()
 
 
