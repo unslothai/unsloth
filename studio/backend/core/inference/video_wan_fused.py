@@ -558,6 +558,20 @@ def _make_forward(stock: Callable) -> Callable:
         except _Fallback:
             _COUNTS["stock"] += 1
             return stock(self, hidden_states, encoder_hidden_states, temb, rotary_emb)
+        except torch.OutOfMemoryError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            # A Triton JIT / launch failure on a shape the self-check did not cover (a new specialization): stock for
+            # this key from now on, instead of failing the render.
+            _VERIFIED[key] = False
+            logger = _STATE.get("logger")
+            if logger is not None:
+                try:
+                    logger.warning("video.wan_fused: fused block failed (%s); keeping stock", exc)
+                except Exception:  # noqa: BLE001
+                    pass
+            _COUNTS["stock"] += 1
+            return stock(self, hidden_states, encoder_hidden_states, temb, rotary_emb)
         _COUNTS["fused"] += 1
         return out
 

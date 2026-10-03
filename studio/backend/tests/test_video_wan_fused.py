@@ -287,6 +287,29 @@ def test_self_check_mismatch_keeps_the_stock_forward(monkeypatch):
 
 
 @needs_cuda
+def test_kernel_failure_after_the_self_check_keeps_the_stock_forward(monkeypatch):
+    blk = _block(dim = 128, ffn = 256, heads = 2, device = "cuda", dtype = torch.float16)
+    x, enc, temb, rot = _inputs(blk, 1, 32, 128, "cuda", torch.float16)
+    real = wf._fused_forward
+    calls = []
+
+    def _jit_fails_after_verify(*args):
+        calls.append(1)
+        if len(calls) > 1:
+            raise RuntimeError("PTX JIT compilation failed")
+        return real(*args)
+
+    monkeypatch.setattr(wf, "_fused_forward", _jit_fails_after_verify)
+    with torch.no_grad():
+        want = WanTransformerBlock.forward(blk, x, enc, temb, rot)
+        assert wf.install(torch.float16, "cuda") is True
+        got = [blk(x, enc, temb, rot) for _ in range(2)]
+    assert all(torch.equal(want, g) for g in got)
+    assert len(calls) == 2 and wf.counts() == {"fused": 0, "stock": 2}
+    assert list(wf._VERIFIED.values()) == [False]
+
+
+@needs_cuda
 def test_grad_and_non_fp16_inputs_take_the_stock_path():
     blk = _block(dim = 128, ffn = 256, heads = 2, device = "cuda", dtype = torch.float16)
     x, enc, temb, rot = _inputs(blk, 1, 32, 128, "cuda", torch.float16)
