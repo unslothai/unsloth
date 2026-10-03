@@ -57,6 +57,32 @@ after(async () => {
   await vite.close();
 });
 
+test("markdown transcripts import as conversations", () => {
+  const markdown = [
+    "## User",
+    "",
+    "Hello",
+    "",
+    "## Assistant",
+    "",
+    "Hi there",
+    "",
+  ].join("\n");
+  const conversations = parseImportText(markdown, "my-chat.md");
+  assert.equal(conversations.length, 1);
+  assert.equal(conversations[0].title, "my-chat");
+  assert.deepEqual(
+    conversations[0].messages.map(({ role, content }) => ({
+      role,
+      content: (content as ReadonlyArray<{ text: string }>)[0]?.text,
+    })),
+    [
+      { role: "user", content: "Hello" },
+      { role: "assistant", content: "Hi there" },
+    ],
+  );
+});
+
 test("message JSONL imports as one conversation", () => {
   const conversations = parseImportText(
     '{"role":"user","content":"Hello"}\n' +
@@ -189,4 +215,16 @@ test("assistant images are represented explicitly in JSONL exports", () => {
     exported,
     [{ role: "assistant", content: "Chart\n\n[image attachment]" }],
   );
+});
+
+test("imports without message send times mark their ordering timestamps as estimated", () => {
+  for (const [filename, source] of [
+    ["messages.jsonl", '{"messages":[{"role":"user","content":"Hello"}]}'],
+    ["sharegpt.jsonl", '{"created_at":1700000000000,"conversations":[{"from":"human","value":"Hello"}]}'],
+    ["messages.csv", "role,content\nuser,Hello"],
+  ]) {
+    const conversation = parseImportText(source, filename)[0];
+    assert.ok(conversation, filename);
+    assert.equal(conversation.messages[0].metadata?.createdAtEstimated, true, filename);
+  }
 });

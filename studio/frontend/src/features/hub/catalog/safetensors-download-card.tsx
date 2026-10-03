@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useHubDownloadPlan } from "../download-manager/use-hub-download-queue";
+import { HubPlanProgress } from "../download-manager/hub-plan-progress";
+import { useRequiredAssetsDownload, type AssetRuntime } from "./use-required-assets-download";
 import { useHfEndpoint } from "@/lib/hf-endpoint";
 import {
   Tooltip,
@@ -60,6 +63,7 @@ export function SafetensorsDownloadCard({
   onRun,
   runPending = false,
   onChange,
+  assetRuntime,
 }: {
   repoId: string;
   isDownloaded: boolean;
@@ -76,9 +80,11 @@ export function SafetensorsDownloadCard({
   onRun?: () => void;
   runPending?: boolean;
   onChange?: () => void;
+  assetRuntime?: AssetRuntime;
 }) {
   const hfToken = useHfTokenStore((s) => s.token);
   const online = useOnlineStatus();
+  const assets = useRequiredAssetsDownload({ repoId, runtime: assetRuntime });
   const hfEndpoint = useHfEndpoint();
   const sizeKey = `${hfEndpoint}::${repoId}::${fingerprintToken(hfToken)}`;
   const [modelSize, setModelSize] = useState<{
@@ -157,9 +163,10 @@ export function SafetensorsDownloadCard({
     partialResumable,
     partialsResumable,
   });
-  const showDownloadAction =
-    !isDownloaded || downloading || cancelling || downloadAction.starting;
-  const showRunAction =
+  const hubPlan = useHubDownloadPlan(repoId);
+  const showDownloadAction = !hubPlan && (
+    !isDownloaded || downloading || cancelling || downloadAction.starting);
+  const showRunAction = !hubPlan &&
     Boolean(onRun) &&
     isDownloaded &&
     !isPartial &&
@@ -187,6 +194,7 @@ export function SafetensorsDownloadCard({
   return (
     <div className="flex w-full flex-col gap-2">
       <DownloadCard
+        footer={hubPlan ? <HubPlanProgress plan={hubPlan} /> : undefined}
         job={job}
         progress={downloading ? progress : null}
         dialogs={
@@ -267,16 +275,17 @@ export function SafetensorsDownloadCard({
           <DownloadActionButton
             downloading={downloadAction.downloading}
             cancelling={downloadAction.cancelling}
-            loading={downloadAction.starting}
+            loading={downloadAction.starting || assets.checking}
             isPartial={downloadAction.isPartial}
             partialResumable={downloadAction.partialResumable}
             stopMode={downloadAction.stopMode}
             progressPercent={downloadAction.progressPercent}
-            disabled={downloadAction.disabled}
-            onClick={downloadAction.onClick}
+            disabled={downloadAction.disabled || assets.checking}
+            onClick={() => downloading ? downloadAction.onClick() : void assets.request(downloadAction.onClick)}
             className={repoPeerActive ? "opacity-70" : undefined}
           />
         )}
+        {hubPlan && <span className="px-3 text-ui-12 text-muted-foreground">Downloading…</span>}
         {showRunAction && onRun && (
           <ModelRunActionButton
             label={`Configure and run ${repoId}`}
@@ -285,6 +294,7 @@ export function SafetensorsDownloadCard({
           />
         )}
       </DownloadCard>
+      {assets.dialog}
     </div>
   );
 }

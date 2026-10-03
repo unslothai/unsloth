@@ -15,6 +15,8 @@ Shape mirrors ``core/rag/embed_llama_server.py``:
                       drain stdout on a daemon thread, poll until ready.
   * ``img_gen``    -- POST ``/sdcpp/v1/img_gen`` (the whole batch in one request),
                       poll the async job to a terminal state, return image bytes.
+  * ``vid_gen``    -- POST ``/sdcpp/v1/vid_gen`` (MiniMax-H3 native video), same polling,
+                      return the encoded container (video + muxed audio).
   * ``stop``       -- SIGTERM -> wait -> SIGKILL, join the drain thread (idempotent).
 
 Readiness is real: upstream ``main.cpp`` loads the model BEFORE it binds the port and
@@ -78,6 +80,7 @@ _TRANSPORT_ERRORS = (
 # capabilities endpoint (which can block).
 _READY_PATH = "/v1/models"
 _IMG_GEN_PATH = "/sdcpp/v1/img_gen"
+_VID_GEN_PATH = "/sdcpp/v1/vid_gen"
 _JOBS_PATH = "/sdcpp/v1/jobs"
 
 # Stable parameter residency reported once during startup. Compute-buffer lines are deliberately excluded: those
@@ -153,6 +156,17 @@ def _has_ancestor(
     except Exception:  # noqa: BLE001 -- gone / no permission: treat as unknown
         return False
     return False
+
+
+class SdCppServerUnsupported(RuntimeError):
+    """The sd-server has no route / mode for this job kind; nothing ran, so the caller can fall back to sd-cli."""
+
+
+def _route_unsupported(status_code: int, text: str, kind: str) -> bool:
+    # 404: no route in this build; 400 "does not support": the loaded model lacks the mode (runtime.cpp).
+    if status_code == 404:
+        return True
+    return status_code == 400 and f"does not support {kind}" in (text or "")
 
 
 class SdCppServer:
@@ -530,6 +544,62 @@ class SdCppServer:
         Raises ``RuntimeError`` on submit/poll failures (including the server dying), with
         the log tail attached.
         """
+        return self._run_job(
+            "img_gen",
+            _IMG_GEN_PATH,
+            payload,
+            self._decode_images,
+            on_step = on_step,
+            cancel_event = cancel_event,
+            poll_interval = poll_interval,
+            submit_timeout = submit_timeout,
+            total_timeout = total_timeout,
+        )
+
+    def vid_gen(
+        self,
+        payload: dict[str, Any],
+        *,
+        on_step: Optional[Callable[[str], None]] = None,
+        cancel_event: Optional[threading.Event] = None,
+        poll_interval: float = 0.4,
+        submit_timeout: float = 60.0,
+        total_timeout: float = NATIVE_GENERATION_TIMEOUT_S,
+    ) -> bytes:
+        """``img_gen``'s contract for one ``vid_gen`` job, returning the container bytes (audio muxed); raises
+        ``SdCppServerUnsupported`` when the server cannot do video."""
+        return self._run_job(
+            "vid_gen",
+            _VID_GEN_PATH,
+            payload,
+            self._decode_video,
+            on_step = on_step,
+            cancel_event = cancel_event,
+            poll_interval = poll_interval,
+            submit_timeout = submit_timeout,
+            total_timeout = total_timeout,
+        )
+
+    def _run_job(
+        self,
+        kind: str,
+        path: str,
+        payload: dict[str, Any],
+        decode: Callable[[dict[str, Any]], Any],
+        *,
+        on_step: Optional[Callable[[str], None]] = None,
+        cancel_event: Optional[threading.Event] = None,
+        poll_interval: float = 0.4,
+        submit_timeout: float = 60.0,
+        total_timeout: float = NATIVE_GENERATION_TIMEOUT_S,
+    ) -> Any:
+        """Submit one async ``kind`` job at ``path``, poll it to completion, return ``decode(job)``.
+
+        ``on_step`` receives each server stdout line (for the step bar). ``cancel_event``,
+        when set, cancels the job via the native endpoint and raises ``SdCppCancelled``.
+        Raises ``RuntimeError`` on submit/poll failures (including the server dying), with
+        the log tail attached.
+        """
         # Already stopped with the cancel event set: report cancellation (route 409), not a generic "server died" 500.
         if self._stopped or not self.is_alive():
             if cancel_event is not None and cancel_event.is_set():
@@ -541,29 +611,34 @@ class SdCppServer:
         try:
             try:
                 resp = self._client.post(
-                    f"{self.base_url}{_IMG_GEN_PATH}", json = payload, timeout = submit_timeout
+                    f"{self.base_url}{path}", json = payload, timeout = submit_timeout
                 )
             except (*_TRANSPORT_ERRORS, httpx.TimeoutException) as exc:
-                raise RuntimeError(self._died_message("img_gen submit", exc)) from exc
+                raise RuntimeError(self._died_message(f"{kind} submit", exc)) from exc
             if resp.status_code == 429:
                 raise RuntimeError("sd-server job queue is full (HTTP 429).")
             if resp.status_code not in (200, 202):
+                if _route_unsupported(resp.status_code, resp.text, kind):
+                    raise SdCppServerUnsupported(
+                        f"this sd-server does not serve {kind} (HTTP {resp.status_code}): "
+                        f"{resp.text[:300]}"
+                    )
                 raise RuntimeError(
-                    f"sd-server img_gen submit -> {resp.status_code}: {resp.text[:500]}"
+                    f"sd-server {kind} submit -> {resp.status_code}: {resp.text[:500]}"
                 )
             try:
                 job = resp.json()
             except ValueError as exc:
                 raise RuntimeError(
-                    f"sd-server img_gen returned a non-JSON submit response: {exc}"
+                    f"sd-server {kind} returned a non-JSON submit response: {exc}"
                 ) from exc
             if not isinstance(job, dict):
                 raise RuntimeError(
-                    f"sd-server img_gen returned an unexpected submit response type: {type(job)}"
+                    f"sd-server {kind} returned an unexpected submit response type: {type(job)}"
                 )
             job_id = job.get("id")
             if not job_id:
-                raise RuntimeError(f"sd-server img_gen returned no job id: {job}")
+                raise RuntimeError(f"sd-server {kind} returned no job id: {job}")
 
             deadline = time.monotonic() + total_timeout
             cancel_sent_at: Optional[float] = None
@@ -583,7 +658,7 @@ class SdCppServer:
                     # Unwinding a cancel (e.g. unload killed the server): clean cancellation.
                     if cancel_event is not None and cancel_event.is_set():
                         raise SdCppCancelled("sd-server generation was cancelled.")
-                    raise RuntimeError(self._died_message("img_gen poll", None))
+                    raise RuntimeError(self._died_message(f"{kind} poll", None))
                 if time.monotonic() > deadline:
                     # sd-server will not interrupt an in-flight job, so cancel + stop to free the slot; the backend
                     # reloads on the next generate.
@@ -616,13 +691,19 @@ class SdCppServer:
                     )
                 status = jd.get("status")
                 if status == _TERMINAL_OK:
-                    return self._decode_images(jd)
+                    return decode(jd)
                 if status == _TERMINAL_FAIL:
                     err = jd.get("error") or {}
-                    raise RuntimeError(
+                    message = (
                         "sd-server generation failed: "
                         f"{err.get('code', 'error')}: {err.get('message', '')}".strip()
                     )
+                    if kind == "vid_gen":
+                        # The job error is generic; the cause (OOM, abort) is only in the log.
+                        tail = _diagnostic_tail(self._tail)
+                        if tail:
+                            message += "\nLast output:\n" + tail[:1500]
+                    raise RuntimeError(message)
                 if status == _TERMINAL_CANCELLED:
                     raise SdCppCancelled("sd-server generation was cancelled.")
                 time.sleep(poll_interval)
@@ -635,6 +716,17 @@ class SdCppServer:
             self._client.post(f"{self.base_url}{_JOBS_PATH}/{job_id}/cancel", timeout = 5.0)
         except Exception:  # noqa: BLE001 -- cancel is best-effort
             pass
+
+    @staticmethod
+    def _decode_video(job: dict[str, Any]) -> bytes:
+        result = job.get("result") if isinstance(job, dict) else None
+        b64 = result.get("b64_json") if isinstance(result, dict) else None
+        if not b64:
+            raise RuntimeError("sd-server completed the job but returned no video.")
+        try:
+            return base64.b64decode(b64)
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"sd-server returned an undecodable video: {exc}") from exc
 
     @staticmethod
     def _decode_images(job: dict[str, Any]) -> list[bytes]:

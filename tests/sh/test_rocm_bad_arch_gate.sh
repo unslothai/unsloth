@@ -479,7 +479,7 @@ assert_eq "declared gfx1033 with no probe tool -> cpu" \
 
 echo "=== Structural: the gate precedes the version-keyed index selection ==="
 _gate_line=$(grep -n 'Archs measured to compute INCORRECTLY under ROCm' "$INSTALL_SH" | head -1 | cut -d: -f1)
-_idx_line=$(grep -n 'rocm7.2|rocm7.2.\*) _rocm_selected_tag=rocm7.2' "$INSTALL_SH" | head -1 | cut -d: -f1)
+_idx_line=$(grep -n 'rocm7.2|rocm7.2.\*) echo "\$_base/rocm7.2"' "$INSTALL_SH" | head -1 | cut -d: -f1)
 assert_eq "gate is before the rocm index case" "yes" \
     "$([ -n "$_gate_line" ] && [ -n "$_idx_line" ] && [ "$_gate_line" -lt "$_idx_line" ] && echo yes || echo no)"
 

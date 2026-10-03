@@ -1050,6 +1050,18 @@ def _close_engine(engine) -> bool:
         return not _engine_is_alive(engine)
 
 
+def _av_open(av, source):
+    """Open ``source`` for reading with undecodable metadata ignored. PyAV 19 removed ``metadata_errors`` from ``av.open``, so passing it there raises TypeError before anything is read; retry without it."""
+    try:
+        return av.open(source, mode = "r", metadata_errors = "ignore")
+    except TypeError as exc:
+        if "metadata_errors" not in str(exc):
+            raise
+        # format = None is PyAV's own default (probe the container); spelling it keeps this call
+        # distinguishable from Path.open for the text-encoding lint.
+        return av.open(source, mode = "r", format = None)
+
+
 def _decode_audio_bounded(audio: bytes, cancel_event = None):
     """Decode to 16 kHz mono PCM without buffering unbounded audio.
 
@@ -1093,7 +1105,7 @@ def _decode_audio_bounded(audio: bytes, cancel_event = None):
         raw_buffer.write(array)
 
     try:
-        with av.open(io.BytesIO(audio), mode = "r", metadata_errors = "ignore") as container:
+        with _av_open(av, io.BytesIO(audio)) as container:
             if not container.streams.audio:
                 raise SttAudioDecodeError("Could not decode the audio.")
             frames = iter(container.decode(audio = 0))
@@ -1773,7 +1785,9 @@ class WhisperSttSidecar:
         if not self._lock.acquire(blocking = wait):
             return
         try:
-            if not self._holds_expected_model(expected_model):
+            # Nothing resident: the registry releases idle engines on every other engine's
+            # transcription, and a full gc.collect each time cost ~130 ms per request.
+            if self._model_id is None or not self._holds_expected_model(expected_model):
                 return
             self._release_engine_locked()
         finally:

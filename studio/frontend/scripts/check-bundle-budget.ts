@@ -32,16 +32,13 @@ const DIST = resolve(HERE, "..", "dist");
  * machine.
  */
 export const BUDGET = {
-  // Measured, one machine and one build per side, so the pair is comparable to itself rather
-  // than to a runner's: 5,599.7 KB raw / 1,663.4 KB transfer at 0065fade6 once its two
-  // ineffective import() calls were made static, leaving 210.8 KB and 65.1 KB spare, the margin
-  // the previous raise chose. Both halves are re-measured TOGETHER, or each drags main red on
-  // its own. Since that raise the eager set gained one 303-byte chunk (#11607's
-  // thread-message-slot split) and otherwise grew inside chunks already eager: #11607's fork
-  // boundary and #11648's UI scale, so what ran out is headroom, not laziness.
-  // The resource monitor remains eager so its frame can coordinate with overlays.
-  transferBytes: 1_770_000,
-  rawBytes: 5_950_000,
+  // Re-measured together on one machine and build: 6,023.4 KB raw / 1,802.1 KB transfer at 5b78bafd04,
+  // plus the margin the previous raises chose (210.8 KB raw, 65.1 KB transfer). The growth since is
+  // the vLLM / SGLang engine options inside the model config page and Resources tab (#11491), which
+  // live inline in the chat and settings chunks: lazy-loading the separable inference-engines
+  // module recovers only 0.6 KB transfer, so what ran out is headroom, not laziness.
+  transferBytes: 1_912_000,
+  rawBytes: 6_384_000,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

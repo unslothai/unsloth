@@ -426,39 +426,26 @@ class TestReleaseNotes:
             entries, tag = "prebuilt-wheels-cu13", repo = "unslothai/unsloth"
         )
 
-    def test_every_wheel_is_listed_with_its_digest(self):
-        notes = self._notes()
-        for torch in prebuilt_wheels.TORCH_VERSIONS:
-            for package in prebuilt_wheels.SPECS:
-                assert f"`{prebuilt_wheels.wheel_name(package, torch, '3.13')}`" in notes
-        assert "| 6 wheels" not in notes
-        assert "6 wheels, each with a `.sigstore.json` bundle beside it." in notes
-
-    def test_non_wheel_assets_are_not_rows(self):
-        assert "| `SHA256SUMS` |" not in self._notes()
-
-    def test_the_verification_commands_are_the_ones_the_workflow_signs_with(self):
-        notes = self._notes()
-        assert "python -m sigstore verify identity" in notes
-        assert (
-            "https://github.com/unslothai/unsloth/.github/workflows/prebuilt-cuda-wheels.yml"
-            in notes
+    def test_the_body_is_one_sentence_naming_what_is_attached(self):
+        assert self._notes() == (
+            "Prebuilt Linux x86_64 CUDA 13 wheels for flash-attn 2.8.4, causal-conv1d 1.7.0 and "
+            "mamba-ssm 2.3.2.post1, built for PyTorch 2.13 and 2.14 on Python 3.13.\n"
         )
-        assert "--cert-oidc-issuer https://token.actions.githubusercontent.com" in notes
-        assert "gh attestation verify <wheel> --repo unslothai/unsloth" in notes
-        assert "sha256sum -c SHA256SUMS" in notes
 
-    def test_it_says_why_these_exist_with_the_actual_symbols(self):
-        notes = self._notes()
-        assert "materialize_cow_storage" in notes
-        assert "c10_cuda_check_implementation" in notes
-        assert "Linux x86_64 only" in notes
-        assert "Not covered: Windows, macOS, ROCm" in notes
+    def test_it_describes_only_the_assets_present(self):
+        notes = prebuilt_wheels.render_notes(
+            [("0" * 64, prebuilt_wheels.wheel_name("mamba-ssm", "2.14.0", "3.12"))],
+            tag = "t",
+            repo = "o/r",
+        )
+        assert notes == (
+            "Prebuilt Linux x86_64 CUDA 13 wheels for mamba-ssm 2.3.2.post1, "
+            "built for PyTorch 2.14 on Python 3.12.\n"
+        )
 
-    def test_an_empty_release_does_not_render_an_empty_table(self):
-        notes = prebuilt_wheels.render_notes([], tag = "t", repo = "o/r")
-        assert "No wheels are attached" in notes
-        assert "| Wheel | Package |" not in notes
+    def test_an_empty_release_says_so(self):
+        notes = prebuilt_wheels.render_notes([("deadbeef", "SHA256SUMS")], tag = "t", repo = "o/r")
+        assert notes == "No wheels are attached to this release yet.\n"
 
 
 class TestMambaPatch:
@@ -765,3 +752,12 @@ class TestWarmWiring:
         assert pattern.endswith("*")
         assert uploaded.startswith(pattern[:-1])
         assert uploaded[len(pattern) - 1 :] == "${{ matrix.shard }}"
+
+
+def test_release_lookups_do_not_pass_arg_to_gh_jq():
+    """gh's --jq has no --arg flag: `--jq --arg tag X` fails the publish job before any release call."""
+    workflow = (REPO / ".github" / "workflows" / "prebuilt-cuda-wheels.yml").read_text(
+        encoding = "utf-8"
+    )
+    assert "--jq --arg" not in workflow
+    assert workflow.count("== env.TAG") == 2

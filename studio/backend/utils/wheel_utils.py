@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import logging
 import os
@@ -420,13 +421,17 @@ def install_wheel(
     return attempts
 
 
-def url_exists(url: str) -> bool:
+def url_exists(url: str) -> bool | None:
+    """True if reachable, False on a 404, None when it cannot be checked: a refusal is no proof the wheel is unpublished."""
     try:
         request = urllib.request.Request(url, method = "HEAD")
         with urllib.request.urlopen(request, timeout = 10):
             return True
     except urllib.error.HTTPError as exc:
-        _logger.debug("url_exists(%s): HTTP %s", url, exc.code)
-    except (urllib.error.URLError, TimeoutError) as exc:
-        _logger.debug("url_exists(%s): %s", url, exc)
-    return False
+        if exc.code == 404:
+            return False
+        reason = f"HTTP {exc.code}"
+    except (OSError, http.client.HTTPException) as exc:
+        reason = str(exc)
+    _logger.warning("url_exists(%s): %s; could not check prebuilt wheel availability", url, reason)
+    return None

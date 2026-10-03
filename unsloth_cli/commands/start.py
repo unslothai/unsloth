@@ -77,6 +77,7 @@ _HERMES_POSIX_INSTALL_HINT = (
 _HERMES_MIN_CONTEXT = 65536
 _DSH_PROVIDER = "unsloth"
 _DSH_ENV_KEY = "UNSLOTH_API_KEY"
+_DSH_PATCH_FILE = "unsloth.patch.yml"
 _DSH_PACKAGE = "@deepseek-ai/dsh"
 # dsh picks its sandbox+approval preset from DSH_PERMISSION_MODE via ??, so omitting it would inherit a danger-full-access exported in the parent shell, and "" is not unset to ??. Pin the mode in both directions instead of only setting it for --yolo.
 _DSH_SAFE_PERMISSION_MODE = "workspace-write"
@@ -129,6 +130,9 @@ _PI_USER_VERBATIM_SETTINGS = ("npmCommand",)
 _PI_USER_RESOURCES_MANIFEST = ".unsloth-user-resources.json"
 # OpenCode selects a model by "<providerID>/<modelID>". Use a dedicated id to avoid colliding with a user's providers; provider filters are set in the launch-time overlay.
 _OPENCODE_PROVIDER = "unsloth-studio"
+# OpenCode sends min(limit.output, this) as max_tokens unless the env var below raises it.
+_OPENCODE_OUTPUT_TOKEN_MAX = 32_000
+_OPENCODE_OUTPUT_TOKEN_MAX_ENV = "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"
 _PROVIDER_HEADER = f"[model_providers.{_CODEX_PROFILE}]"
 _PASSTHROUGH = {"allow_extra_args": True, "ignore_unknown_options": True}
 
@@ -223,7 +227,7 @@ _GPU_MEMORY_MODE_OPTION = typer.Option(
     ),
 )
 
-# Server knobs. Only used when `unsloth start` auto-starts the server (--serve); they have no effect when attaching to a server someone else already started.
+# Server knobs. Tool flags only configure a server `unsloth start` auto-starts (--serve); reasoning rides in the agent's own config where it can.
 _SERVE_OPTION = typer.Option(
     True,
     "--serve/--no-serve",
@@ -232,7 +236,7 @@ _SERVE_OPTION = typer.Option(
     "available after the agent exits. --no-serve errors out instead.",
 )
 _ENABLE_TOOLS_OPTION = typer.Option(
-    False,
+    None,
     "--enable-tools/--disable-tools",
     rich_help_panel = _PANEL_SERVER,
     help = "Server-side tools (web search, code execution) for the auto-started server. "
@@ -257,9 +261,8 @@ _REASONING_OPTION = typer.Option(
     "--reasoning",
     rich_help_panel = _PANEL_SERVER,
     help = (
-        "llama-server reasoning mode for an auto-started coding-agent server. "
-        "Defaults to auto so the model's chat template decides; use 'on' or 'off' "
-        "to override it."
+        "Reasoning mode for this agent session. Defaults to auto so the model's chat "
+        "template decides; use 'on' or 'off' to override it."
     ),
 )
 _REASONING_EFFORT_OPTION = typer.Option(
@@ -267,12 +270,12 @@ _REASONING_EFFORT_OPTION = typer.Option(
     "--reasoning-effort",
     rich_help_panel = _PANEL_SERVER,
     help = (
-        "Reasoning effort for an auto-started coding-agent server, e.g. 'medium'. The "
+        "Reasoning effort for this agent session, e.g. 'medium'. The "
         "levels are the model's own, so pass one its chat template accepts. Default: "
         "unset, which keeps the template's level."
     ),
 )
-# Sampling overrides pin a value on the auto-started server, winning over the client and the per-model recommendation. Default unset means the model's recommended sampling is used.
+# Sampling overrides ride in the agent's own config, so only this session uses them; one the agent cannot send pins the auto-started server instead. Default unset means the model's recommended sampling is used.
 _TEMPERATURE_OPTION = typer.Option(
     None,
     "--temperature",
@@ -320,6 +323,17 @@ _PRESENCE_PENALTY_OPTION = typer.Option(
     max = 2.0,
     rich_help_panel = _PANEL_SAMPLING,
     help = "Pin the presence penalty. Default: unset (per-model recommendation).",
+)
+_MAX_TOKENS_OPTION = typer.Option(
+    None,
+    "--max-tokens",
+    min = 1,
+    rich_help_panel = _PANEL_SAMPLING,
+    help = (
+        "Most tokens the agent may generate in one response. Default: a quarter of the "
+        "context window, up to 32,000. Capped at half the window so the conversation "
+        "keeps room."
+    ),
 )
 
 # Agent-session knobs.
@@ -569,11 +583,22 @@ _DSH_LAUNCHER_ARGS = frozenset(
 )
 
 
-def _dsh_command(args: list[str]) -> list[str]:
+# Launcher invocations that boot no profile, so they take no --patch overlay.
+_DSH_NO_PROFILE_ARGS = frozenset("-V --version plugin".split())
+
+
+def _dsh_command(args: list[str], patch: Optional[str] = None) -> list[str]:
     head = args[0] if args else ""
     if head in _DSH_LAUNCHER_ARGS or head.startswith(("--profile=", "--patch=")):
-        return ["dsh", *args]
-    return ["dsh", "web", *args]
+        command = ["dsh", *args]
+    else:
+        command = ["dsh", "web", *args]
+    if patch is not None and command[1] not in _DSH_NO_PROFILE_ARGS:
+        # `dsh <name>` only expands to `--profile <name>` when the name comes first, so the
+        # overlay goes after a bare profile name and ahead of a leading launcher option.
+        at = 1 if command[1].startswith("-") else 2
+        command[at:at] = ["--patch", patch]
+    return command
 
 
 class LoadOptions(NamedTuple):
@@ -645,9 +670,9 @@ def _load_options(
 
 
 class ServerOptions(NamedTuple):
-    """Tool-call knobs forwarded to an auto-started `unsloth run` server."""
+    """Start flags: carried fields ride in the agent's requests; the rest configure an auto-started server."""
 
-    enable_tools: bool = False
+    enable_tools: Optional[bool] = None
     tool_call_healing: Optional[bool] = None
     tool_call_nudging: Optional[bool] = None
     reasoning: Optional[Literal["on", "off", "auto"]] = None
@@ -658,6 +683,69 @@ class ServerOptions(NamedTuple):
     min_p: Optional[float] = None
     repetition_penalty: Optional[float] = None
     presence_penalty: Optional[float] = None
+    # Fields the agent's own config sends with each request, kept off the server.
+    carried: frozenset = frozenset()
+    # Carried fields with a value: an inherited UNSLOTH_SAMPLING_* pin would override them.
+    unpinned: frozenset = frozenset()
+
+    def sent_by_agent(self) -> frozenset:
+        # A request cannot ask for the template default back, so auto stays a server setting.
+        unsent = {"reasoning"} if self.reasoning == "auto" else set()
+        if self.reasoning_effort not in _STUDIO_REASONING_EFFORTS:
+            unsent.add("reasoning_effort")
+        return self.carried - unsent
+
+    def request_body(self) -> dict:
+        sent = self.sent_by_agent()
+        body = {
+            name: getattr(self, name)
+            for name in _SAMPLING_FIELDS
+            if name in sent and getattr(self, name) is not None
+        }
+        if "reasoning" in sent and self.reasoning in ("on", "off"):
+            body["enable_thinking"] = self.reasoning == "on"
+        if "reasoning_effort" in sent:
+            body["reasoning_effort"] = self.reasoning_effort
+        return body
+
+
+_SAMPLING_FIELDS = (
+    "temperature",
+    "top_p",
+    "top_k",
+    "min_p",
+    "repetition_penalty",
+    "presence_penalty",
+)
+_REASONING_FIELDS = frozenset({"reasoning", "reasoning_effort"})
+_ALL_REQUEST_FIELDS = frozenset(_SAMPLING_FIELDS) | _REASONING_FIELDS
+_REQUEST_BODY_KEYS = (*_SAMPLING_FIELDS, "enable_thinking", "reasoning_effort")
+_STUDIO_REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high", "max", "xhigh")
+_CODEX_REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh")
+
+
+def _codex_reasoning_effort(
+    reasoning: Optional[str], reasoning_effort: Optional[str]
+) -> Optional[str]:
+    if reasoning == "off":
+        return "none"
+    if reasoning_effort in _CODEX_REASONING_EFFORTS:
+        return reasoning_effort
+    return None
+
+
+def _merge_request_body(container: dict, key: str, body: dict) -> None:
+    current = container.get(key)
+    current = (
+        {k: v for k, v in current.items() if k not in _REQUEST_BODY_KEYS}
+        if isinstance(current, dict)
+        else {}
+    )
+    current.update(body)
+    if current:
+        container[key] = current
+    else:
+        container.pop(key, None)
 
 
 def _split_repo_variant(model: str) -> tuple:
@@ -799,6 +887,8 @@ _SERVER_START_TIMEOUT_S = 900
 _DOWNLOAD_POLL_INTERVAL_S = 1.0
 # Ceiling on the doubling back-off the progress reader uses after a polling error.
 _DOWNLOAD_POLL_MAX_BACKOFF_S = 60.0
+# How often the progress reader re-lists the repos a load announced; each listed repo costs a cache scan per poll.
+_LOAD_DOWNLOAD_LIST_INTERVAL_S = 5.0
 _START_API_KEY_PREFIX = "UNSLOTH_START_API_KEY: "
 _START_PORT_PREFIX = "UNSLOTH_START_PORT: "
 _START_API_KEY_MARKER_ENV = "_UNSLOTH_START_API_KEY_MARKER"
@@ -834,9 +924,21 @@ class _DownloadProgressDisplay:
         self._last_bucket = -1
         self._last_line_length = 0
         self._last_expected = 0
+        self._source: Optional[str] = None
         self._interactive = bool(getattr(sys.stdout, "isatty", lambda: False)())
 
-    def update(self, progress: dict) -> None:
+    def update(
+        self,
+        progress: dict,
+        source: Optional[str] = None,
+    ) -> None:
+        if source != self._source:
+            # A new repo is a new transfer; else redirected output (prints only on a rising bucket) stays silent for a base that starts after the adapter finished.
+            self._source = source
+            self._samples.clear()
+            self._last_expected = 0
+            # Keep `_shown`: `complete()` and `close()` gate on it.
+            self._last_bucket = -1
         downloaded = max(0, int(progress.get("downloaded_bytes") or 0))
         completed = max(0, int(progress.get("completed_bytes") or 0))
         expected = max(0, int(progress.get("expected_bytes") or 0))
@@ -932,15 +1034,27 @@ class _ModelDownloadProgress:
         self._retry_at = 0.0
         self._display = _DownloadProgressDisplay()
         self._configured = False
+        # A local model has no Hub reading of its own, but a remote base it names is still listed.
         self._disabled = not _is_hub_model_id(model)
         self._progress_prefix = "/api/hub"
+        # Repos the load announced (its base, the base the loader substitutes): bytes summed for liveness.
+        self._repo_bytes: dict[str, int] = {}
+        self._companions: list[str] = []
+        self._finished: dict[
+            str, dict
+        ] = {}  # Complete companions: final reading kept, never re-read.
+        self._listed_at: Optional[float] = None
+        self._active_repo = model
+
+    def _is_gguf(self) -> bool:
+        return bool(self._variant) or "gguf" in self._model.lower()
 
     def _configure(self) -> None:
         self._configured = True
         if self._disabled:
             return
         # GGUF repos need the selected quant's size; the repo endpoint totals every quant. Resolve the variant first, otherwise show bytes only.
-        if self._variant or "gguf" in self._model.lower():
+        if self._is_gguf():
             try:
                 params = urlencode({"repo_id": self._model})
                 try:
@@ -974,51 +1088,87 @@ class _ModelDownloadProgress:
                 # Older servers lack this endpoint; byte progress is still useful.
                 pass
 
+    def _companion_repos(self) -> list[str]:
+        now = time.monotonic()
+        if self._listed_at is not None and now - self._listed_at < _LOAD_DOWNLOAD_LIST_INTERVAL_S:
+            return self._companions
+        self._listed_at = now
+        try:
+            url = f"{self._base}{self._progress_prefix}/active-downloads"
+            listing = _http_json("GET", url, self._key, timeout = 10)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                self._listed_at = float("inf")  # Older server: no load-owned jobs to find.
+            return self._companions
+        except Exception:
+            return self._companions
+        for item in listing.get("downloads") or []:
+            repo = str(item.get("repo_id") or "")
+            if not (item.get("owner") == "load" or item.get("load_attached")):
+                continue
+            if repo and repo.lower() != self._model.lower() and repo not in self._companions:
+                self._companions.append(repo)
+        return self._companions
+
+    def _read(
+        self,
+        repo: str,
+        gguf: bool = False,
+    ) -> dict:
+        if gguf:
+            params = urlencode(
+                {"repo_id": repo, "variant": self._variant, "expected_bytes": self._expected_bytes}
+            )
+            url = f"{self._base}{self._progress_prefix}/gguf-download-progress?{params}"
+        else:
+            params = urlencode({"repo_id": repo})
+            url = f"{self._base}{self._progress_prefix}/download-progress?{params}"
+        return _http_json("GET", url, self._key, timeout = 10)
+
     def poll(self) -> None:
         if not self._configured:
             self._configure()
-        if self._disabled:
-            return
         if time.monotonic() < self._retry_at:
             return
         try:
-            if self._variant or "gguf" in self._model.lower():
-                params = urlencode(
-                    {
-                        "repo_id": self._model,
-                        "variant": self._variant,
-                        "expected_bytes": self._expected_bytes,
-                    }
-                )
-                url = f"{self._base}{self._progress_prefix}/gguf-download-progress?{params}"
-            else:
-                url = (
-                    f"{self._base}{self._progress_prefix}/download-progress?"
-                    f"{urlencode({'repo_id': self._model})}"
-                )
+            readings = {}
             try:
-                reading = _http_json("GET", url, self._key, timeout = 10)
+                if not self._disabled:
+                    readings[self._model] = self._read(self._model, gguf = self._is_gguf())
             except urllib.error.HTTPError as exc:
                 if exc.code != 404 or self._progress_prefix == "/api/models":
                     raise
                 self._progress_prefix = "/api/models"
                 self.poll()
                 return
-            # The liveness baseline only ever rises. A reading falls for reasons that are
-            # not "bytes left the disk": an incomplete scan reporting a lower bound, a
-            # cache mount vanishing cleanly (`hf_cache_state._safe_is_dir` calls that a
-            # measured absence, not an error), an XET run purging its partial. Following a
-            # reading down would make the recovery back to the same figure look like fresh
-            # growth and renew the deadline for a server that is downloading nothing, and a
-            # flapping mount could do that forever. The cost is that a transfer which truly
-            # restarts is not counted again until it passes its own high mark; that failure
-            # is bounded and says so, where a false renewal is an unbounded wait.
-            self._downloaded_bytes = max(
-                self._downloaded_bytes, max(0, int(reading.get("downloaded_bytes") or 0))
-            )
+            for repo in self._companion_repos():
+                if repo in self._finished:
+                    readings[repo] = self._finished[repo]
+                    continue
+                try:
+                    readings[repo] = item = self._read(repo)
+                except Exception:
+                    continue
+                if (
+                    0
+                    < int(item.get("expected_bytes") or 0)
+                    <= int(item.get("completed_bytes") or 0)
+                ):
+                    self._finished[repo] = item
+            # The line follows whichever repo grew most; a repo first seen already large (a cached base) has not grown.
+            growth = 0
+            for repo, item in readings.items():
+                current = max(0, int(item.get("downloaded_bytes") or 0))
+                if current - self._repo_bytes.get(repo, current) > growth:
+                    growth, self._active_repo = current - self._repo_bytes[repo], repo
+                # Only ever rises, so a dip and recovery never counts as fresh growth.
+                self._repo_bytes[repo] = max(self._repo_bytes.get(repo, 0), current)
+            self._downloaded_bytes = max(self._downloaded_bytes, sum(self._repo_bytes.values()))
             self._failures = 0
             self._retry_at = 0.0
-            self._display.update(reading)
+            active = self._active_repo if self._active_repo in readings else self._model
+            if active in readings:
+                self._display.update(readings[active], active)
         except Exception:
             # Progress is best-effort and never fails the load, but `_start_studio_server`
             # reads `downloaded_bytes` to tell a live transfer from a wedged one. Backing
@@ -1224,16 +1374,13 @@ def _start_studio_server(
     elif "UNSLOTH_TOOL_CALL_NUDGE" not in child_env:
         child_env["UNSLOTH_TOOL_CALL_NUDGE"] = "1"
     # Forward any sampling pin via the env; `unsloth run` reads UNSLOTH_SAMPLING_* and the backend resolver applies it as a hard override. Only set fields the operator specified.
-    for _sampling_env, _sampling_value in (
-        ("UNSLOTH_SAMPLING_TEMPERATURE", server.temperature),
-        ("UNSLOTH_SAMPLING_TOP_P", server.top_p),
-        ("UNSLOTH_SAMPLING_TOP_K", server.top_k),
-        ("UNSLOTH_SAMPLING_MIN_P", server.min_p),
-        ("UNSLOTH_SAMPLING_REPETITION_PENALTY", server.repetition_penalty),
-        ("UNSLOTH_SAMPLING_PRESENCE_PENALTY", server.presence_penalty),
-    ):
+    for _sampling_name in _SAMPLING_FIELDS:
+        _sampling_env = f"UNSLOTH_SAMPLING_{_sampling_name.upper()}"
+        _sampling_value = getattr(server, _sampling_name)
         if _sampling_value is not None:
             child_env[_sampling_env] = str(_sampling_value)
+        elif _sampling_name in server.unpinned:
+            child_env.pop(_sampling_env, None)
     kwargs: dict = {
         "stdout": log,
         "stderr": subprocess.STDOUT,
@@ -1338,43 +1485,67 @@ def _require_studio(
     server_options: ServerOptions = ServerOptions(),
 ) -> tuple:
     """Return (base, server). server is a Popen only when WE auto-started it."""
+    sent = server_options.sent_by_agent()
+    server_options = server_options._replace(
+        unpinned = frozenset(name for name in sent if getattr(server_options, name) is not None),
+        **dict.fromkeys(sent),
+    )
+    # What the agent cannot send itself only reaches the env of a server WE launch, which then applies it to every client.
+    _pinned = [
+        "--" + _name.replace("_", "-")
+        for _name in _SAMPLING_FIELDS
+        if getattr(server_options, _name) is not None
+    ]
+    _reasoning_pins = [
+        f"{_flag} {_value}"
+        for _flag, _value in (
+            ("--reasoning", server_options.reasoning),
+            ("--reasoning-effort", server_options.reasoning_effort),
+        )
+        if _value is not None
+    ]
     base = find_studio_server()
     if base is not None:
-        # Attaching to a server someone else started: UNSLOTH_SAMPLING_* pins only reach the server process when WE launch it, so a sampling flag on the attach path cannot take effect. Warn instead of silently dropping it.
-        _pinned = [
-            _flag
-            for _flag, _value in (
-                ("--temperature", server_options.temperature),
-                ("--top-p", server_options.top_p),
-                ("--top-k", server_options.top_k),
-                ("--min-p", server_options.min_p),
-                ("--repetition-penalty", server_options.repetition_penalty),
-                ("--presence-penalty", server_options.presence_penalty),
-            )
-            if _value is not None
-        ]
         if _pinned:
             typer.echo(
-                f"Warning: an Unsloth server is already running at {base}; sampling pins "
-                f"({', '.join(_pinned)}) apply only when this command starts the server, so the "
-                "running server keeps its current sampling. Stop it with `unsloth studio stop` "
-                "and re-run to apply them.",
+                f"Warning: an Unsloth server is already running at {base}, and this agent "
+                f"cannot send {', '.join(_pinned)} itself; they apply only when this command "
+                "starts the server, so the running server keeps its current sampling. Stop it "
+                "with `unsloth studio stop` and re-run to apply them.",
                 err = True,
             )
-        _reasoning_pins = [
-            f"{_flag} {_value}"
-            for _flag, _value in (
-                ("--reasoning", server_options.reasoning),
-                ("--reasoning-effort", server_options.reasoning_effort),
+        if _reasoning_pins:
+            typer.echo(
+                f"Warning: an Unsloth server is already running at {base}, and this agent "
+                f"cannot send {', '.join(_reasoning_pins)} itself; it takes effect only when "
+                "this command starts the server, so the running server keeps its current "
+                "reasoning mode. Stop it with `unsloth studio stop` and re-run to apply the "
+                "override.",
+                err = True,
+            )
+        _tool_flags = [
+            _on if _value else _off
+            for _value, _on, _off in (
+                (server_options.enable_tools, "--enable-tools", "--disable-tools"),
+                (
+                    server_options.tool_call_healing,
+                    "--enable-tool-call-healing",
+                    "--disable-tool-call-healing",
+                ),
+                (
+                    server_options.tool_call_nudging,
+                    "--enable-tool-call-nudging",
+                    "--disable-tool-call-nudging",
+                ),
             )
             if _value is not None
         ]
-        if _reasoning_pins:
+        if _tool_flags:
             typer.echo(
                 f"Warning: an Unsloth server is already running at {base}; "
-                f"{', '.join(_reasoning_pins)} takes effect only when this command starts "
-                "the server, so the running server keeps its current reasoning mode. Stop it "
-                "with `unsloth studio stop` and re-run to apply the override.",
+                f"{', '.join(_tool_flags)} takes effect only when this command starts the "
+                "server, so the running server keeps its current tool settings. Stop it with "
+                "`unsloth studio stop` and re-run to apply it.",
                 err = True,
             )
         return base, None
@@ -1390,6 +1561,25 @@ def _require_studio(
         # Normalize to the port unsloth run actually binds, so the health poll and the returned base hit the same server we launch, not a portless :80.
         expected = _effective_base(expected)
         load = load or LoadOptions()
+        _server_wide = _pinned + [pin for pin in _reasoning_pins if pin != "--reasoning auto"]
+        if _server_wide:
+            typer.echo(
+                f"Warning: this agent cannot send {', '.join(_server_wide)} itself, so the "
+                "server this command starts applies them to every client until it stops.",
+                err = True,
+            )
+        _dropped = [
+            f"UNSLOTH_SAMPLING_{_name.upper()}"
+            for _name in _SAMPLING_FIELDS
+            if _name in server_options.unpinned
+            and os.environ.get(f"UNSLOTH_SAMPLING_{_name.upper()}")
+        ]
+        if _dropped:
+            typer.echo(
+                f"Warning: this agent's flags replace the inherited {', '.join(_dropped)}, so "
+                "the server this command starts drops those pins for every client.",
+                err = True,
+            )
         # Leave a bare GGUF repo's variant unset: the server's own quant preference already picks the best available (UD-Q4_K_XL for Unsloth uploads, else Q4_K_M) and falls back when that exact quant is missing, which forcing a fixed variant here would break.
         return _start_studio_server(expected, model, load, server_options)
     model_hint = "" if model else " Pass --model to have it start one for you, or"
@@ -1585,12 +1775,6 @@ def _agent_api_key(
         )
 
     # Identity verified: replay a previously auto-minted key, else mint a new one.
-    for key in _cached_keys(cache, base, "minted"):
-        if _key_accepted(base, key):
-            _remember_key(cache, base, key, "minted")
-            return key
-
-    # Self-issue a JWT (signed with the local secret) and mint a key.
     token = _studio_token()
     if token is None:
         _fail(
@@ -1598,6 +1782,18 @@ def _agent_api_key(
             "an API key in Unsloth → Settings → API and pass it with --api-key, "
             "or set UNSLOTH_API_KEY."
         )
+    # Older releases could mint for a managed account, which cannot see the owner's model.
+    owned = {
+        entry.get("key_prefix")
+        for entry in _http_json(
+            "GET", f"{base}/api/auth/api-keys", token, error = "Couldn't list API keys"
+        ).get("api_keys", [])
+    }
+    for key in _cached_keys(cache, base, "minted"):
+        if key[len("sk-unsloth-") :][:8] in owned and _key_accepted(base, key):
+            _remember_key(cache, base, key, "minted")
+            return key
+
     key = _http_json(
         "POST",
         f"{base}/api/auth/api-keys",
@@ -1713,6 +1909,13 @@ def _inference_status(base: str, key: str) -> dict:
         return {}
 
 
+_OTHER_ACCOUNT_RESIDENT = (
+    "The model loaded in Unsloth belongs to another account, so this API key cannot use it. "
+    "Pass --model <hf-id-or-path> to load one: the same model and quant shares it, anything "
+    "else unloads it for every session using it."
+)
+
+
 def _resident_load_target(models: list, status: dict, allow_casefold: bool):
     """(identifier to post, id it is advertised as) for the running model. The loaded listing shows only the sanitized basename while _same_loaded_identifier compares resident paths exactly, so the load must carry the identifier status reports."""
     if status.get("is_diffusion"):
@@ -1745,6 +1948,8 @@ def _resident_load_target(models: list, status: dict, allow_casefold: bool):
             )
     public_id = active_id or (entry or {}).get("id")
     if not public_id:
+        if status.get("yours") is False:
+            _fail(_OTHER_ACCOUNT_RESIDENT)
         if status:
             # Status answered and named no chat model. Returning empty here would drop the knobs silently, which is the bug this path exists to fix.
             _fail(
@@ -1777,6 +1982,8 @@ _RESIDENT_RUNTIME_FIELDS = {
     "speculative_type": "speculative_type",
     "spec_draft_n_max": "spec_draft_n_max",
     # The applied value is null when the runtime refused the request.
+    # Scheme and width together; a bare width reads back as mx.quantize, so TurboQuant would reload as it. The width stays for servers without mlx_kv_quant.
+    "mlx_kv_quant_requested": "mlx_kv_quant",
     "mlx_kv_bits_requested": "mlx_kv_bits",
     # LoadRequest defaults this to True, so omitting it would reload a full-precision model in 4-bit. Null on GGUF, which has no such setting.
     "load_in_4bit": "load_in_4bit",
@@ -2007,6 +2214,14 @@ def _resolve_model(
                 )
                 typer.echo("This unloads the current model for every attached session.")
                 announced_switch = True
+        elif not active_id and _inference_status(base, key).get("yours") is False:
+            typer.echo(
+                "Switching the Unsloth server from another account's model to "
+                f"{_display_model_spec(requested, load.gguf_variant)}."
+            )
+            typer.echo(
+                "This unloads it for every attached session, unless it is the same model and quant."
+            )
         # Mirror `unsloth run`'s load knobs; keep the default payload as just model_path so a bare `--model` load is unchanged. Membership decides, not truthiness: a reset like --context-length 0 equals the default yet must be sent.
         payload = {"model_path": requested}
         if "gguf_variant" in overrides and load.gguf_variant:
@@ -2028,7 +2243,7 @@ def _resolve_model(
             else:
                 payload["gguf_variant"] = load.gguf_variant
         elif attach_public_id is not None and status_snapshot.get("is_gguf"):
-            # Re-send the running quant: a repo id carries none, so from_identifier would auto-pick (_GGUF_QUANT_PREFERENCE, UD-Q4_K_XL first) and changing only the context would evict a chosen Q8_0 to download a different quant. Skip a .gguf path, which loads as itself; the server gates on the same suffix.
+            # Re-send the running quant: a repo id carries none, so from_identifier would auto-pick (GGUF_QUANT_PREFERENCE, UD-Q4_K_XL first) and changing only the context would evict a chosen Q8_0 to download a different quant. Skip a .gguf path, which loads as itself; the server gates on the same suffix.
             resident_variant = status_snapshot.get("gguf_variant")
             if resident_variant and not str(requested).lower().endswith(".gguf"):
                 payload["gguf_variant"] = resident_variant
@@ -2108,6 +2323,8 @@ def _resolve_model(
         )
     resident = next((m for m in models if m.get("loaded") is not False), None)
     if resident is None:
+        if _inference_status(base, key).get("yours") is False:
+            _fail(_OTHER_ACCOUNT_RESIDENT)
         # An empty listing and one holding only unloaded entries are the same situation
         # to the user, and which one a server sends depends only on its version.
         _fail(
@@ -2203,9 +2420,9 @@ _QUANT_LABEL_RE = re.compile(
     r"(UD-)?"
     r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
     r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
-    r"|TQ[0-9]+_[0-9]+"
+    r"|P?TQ[0-9]+_[0-9]+"
     r"|Q[0-9]+_K_[A-Z]+"
-    r"|Q[0-9]+_[0-9]+"
+    r"|P?Q[0-9]+_[0-9]+(?:_G[0-9]+)?"
     r"|Q[0-9]+_K"
     r"|BF16|F16|F32)"
     r"(-[0-9]+(?:\.[0-9]+)?bpw)?",
@@ -2779,7 +2996,12 @@ def _claude_local_command(model_id: str, settings: str, yolo: bool, passthrough:
     ]
 
 
-def _claude_local_env(base: str, key: str, entry: dict) -> dict:
+def _claude_local_env(
+    base: str,
+    key: str,
+    entry: dict,
+    extra_body: Optional[dict] = None,
+) -> dict:
     """Build the local endpoint, cache, display, and compaction environment."""
     model_id = entry["id"]
     env = {
@@ -2799,6 +3021,8 @@ def _claude_local_env(base: str, key: str, entry: dict) -> dict:
         env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(int(window))
         env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(int(window))
         env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = "90"
+    if extra_body:
+        env["CLAUDE_CODE_EXTRA_BODY"] = json.dumps(extra_body)
     return env
 
 
@@ -2830,6 +3054,9 @@ def _merge_codex_config(existing: str, base: str) -> str:
 _CODEX_FALLBACK_PROMPT = Path(__file__).parent.parent / "codex_fallback_prompt.md"
 _CODEX_MODEL_CATALOG_MIN_VERSION = (0, 110, 0)
 _CODEX_PATCH_LINE_ENDINGS_MIN_VERSION = (0, 148, 0)
+# Older Codex sends no reasoning for a model without reasoning summaries, and older Pi has no samplingParams.
+_CODEX_REASONING_REQUEST_MIN_VERSION = (0, 145, 0)
+_PI_SAMPLING_PARAMS_MIN_VERSION = (0, 84, 0)
 
 
 def _codex_executable_version(executable: str) -> Optional[tuple[int, int, int]]:
@@ -2856,6 +3083,15 @@ def _codex_supports_model_catalog() -> bool:
         return True
     version = _codex_executable_version(executable)
     return version is not None and version >= _CODEX_MODEL_CATALOG_MIN_VERSION
+
+
+def _agent_version_at_least(command: str, minimum: tuple) -> bool:
+    executable = _which_with_install_dirs(command)
+    if executable is None:
+        # Only --no-launch gets here without the agent; its recipe may run elsewhere.
+        return True
+    version = _codex_executable_version(executable)
+    return version is not None and version >= minimum
 
 
 def _codex_supports_patch_line_endings() -> bool:
@@ -2898,7 +3134,12 @@ def _codex_model_catalog(model: dict) -> dict:
     return {"models": [entry]}
 
 
-def write_codex_config(base: str, model: dict, home: Path) -> None:
+def write_codex_config(
+    base: str,
+    model: dict,
+    home: Path,
+    reasoning_effort: Optional[str] = None,
+) -> None:
     home.mkdir(parents = True, exist_ok = True)
 
     config = home / "config.toml"
@@ -2931,6 +3172,8 @@ def write_codex_config(base: str, model: dict, home: Path) -> None:
     window = model.get("context_length") or model.get("max_context_length")
     if window:
         profile_text += f"model_context_window = {int(window)}\n"
+    if reasoning_effort:
+        profile_text += f"model_reasoning_effort = {json.dumps(reasoning_effort)}\n"
     profile = home / f"{_CODEX_PROFILE}.config.toml"
     if not profile.exists() or profile.read_text(encoding = "utf-8") != profile_text:
         profile.write_text(profile_text, encoding = "utf-8")
@@ -2938,11 +3181,17 @@ def write_codex_config(base: str, model: dict, home: Path) -> None:
 
 
 def write_codex_subagent_bridge(
-    base: str, key: str, model: dict, home: Path, *, yolo: bool
+    base: str,
+    key: str,
+    model: dict,
+    home: Path,
+    *,
+    yolo: bool,
+    reasoning_effort: Optional[str] = None,
 ) -> Path:
     """Write private config for an explicit local Codex child launched through MCP."""
     child_home = home / "child"
-    write_codex_config(base, model, child_home)
+    write_codex_config(base, model, child_home, reasoning_effort)
     path = home / "subagent.json"
     _write_private_json(
         path,
@@ -3305,7 +3554,10 @@ def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
                 server_env.get("UNSLOTH_CLAUDE_SUBAGENT_CONTEXT_WINDOW", "0") or 0
             ),
         }
-        settings = _write_claude_settings(plugin, model_id, _claude_local_env(base, key, entry))
+        local_env = _claude_local_env(base, key, entry)
+        if "CLAUDE_CODE_EXTRA_BODY" in server_env:
+            local_env["CLAUDE_CODE_EXTRA_BODY"] = server_env["CLAUDE_CODE_EXTRA_BODY"]
+        settings = _write_claude_settings(plugin, model_id, local_env)
         mcp_env[_CLAUDE_SUBAGENT_SETTINGS_ENV] = str(settings)
     if _wsl_windows_executable(["claude"]):
         command = "wsl.exe"
@@ -4390,6 +4642,7 @@ def write_openclaw_config(
     yolo: bool = False,
     workspace_path: Optional[str] = None,
     embedding_model: Optional[str] = None,
+    request_body: Optional[dict] = None,
 ) -> None:
     config = _read_json_object(path)
     if config is None:
@@ -4435,6 +4688,12 @@ def write_openclaw_config(
     agents = _subdict(config, "agents")
     defaults = _subdict(agents, "defaults")
     _subdict(defaults, "model")["primary"] = f"unsloth/{model['id']}"
+    # OpenClaw applies extra_body last; its own params only read camelCase keys, so top_p would be lost.
+    model_ref = f"unsloth/{model['id']}"
+    model_settings = defaults.get("models")
+    if request_body or (isinstance(model_settings, dict) and model_ref in model_settings):
+        params = _subdict(_subdict(_subdict(defaults, "models"), model_ref), "params")
+        _merge_request_body(params, "extra_body", request_body or {})
     # `unsloth start openclaw` is a coding-agent entry point, so the selected project may already contain its own AGENTS.md and git metadata. Do not seed OpenClaw's personal-assistant bootstrap files or initialize a repository in it.
     defaults["skipBootstrap"] = True
     # OPENCLAW_STATE_DIR does not relocate the workspace. Callers normally pin it to the directory where `unsloth start openclaw` was invoked so OpenClaw edits the same project as every other coding agent. Keep the managed fallback for direct config-writer callers that do not provide an explicit workspace.
@@ -4513,6 +4772,47 @@ def write_openclaw_config(
         typer.echo(f"Updated {path}")
 
 
+def opencode_output_limit(window: int, max_tokens: Optional[int] = None) -> int:
+    if max_tokens:
+        return max(1, min(int(max_tokens), window // 2))
+    return max(1, min(window // 4, _OPENCODE_OUTPUT_TOKEN_MAX))
+
+
+def _agent_output_limit(window: int, max_tokens: Optional[int]) -> int:
+    output = opencode_output_limit(window, max_tokens)
+    if max_tokens and output < max_tokens:
+        typer.echo(
+            f"Warning: --max-tokens {max_tokens} leaves too little of the {window:,}-token "
+            f"context for the conversation; using {output:,}.",
+            err = True,
+        )
+    return output
+
+
+def opencode_compaction_reserved(window: int, output: int) -> int:
+    return max(1, min(output, max(window // 10, 8192)))
+
+
+def _opencode_output_env(model: dict, max_tokens: Optional[int]) -> dict:
+    """Lift OpenCode's output ceiling when --max-tokens exceeds it; re-emit an inherited one so a --no-launch recipe keeps it."""
+    window = model.get("context_length") or model.get("max_context_length")
+    if not max_tokens:
+        return {}
+    if not window:
+        typer.echo(
+            "Warning: Studio did not report the model's context length, so --max-tokens is ignored.",
+            err = True,
+        )
+        return {}
+    output = _agent_output_limit(int(window), max_tokens)
+    raw = os.environ.get(_OPENCODE_OUTPUT_TOKEN_MAX_ENV, "")
+    inherited = int(raw) if raw.isdigit() and int(raw) > 0 else None
+    ceiling = inherited or _OPENCODE_OUTPUT_TOKEN_MAX
+    if output <= ceiling and inherited is None:
+        return {}
+    return {_OPENCODE_OUTPUT_TOKEN_MAX_ENV: str(max(output, ceiling))}
+
+
 def write_opencode_config(
     base: str,
     key: str,
@@ -4520,6 +4820,8 @@ def write_opencode_config(
     path: Path,
     yolo: bool = False,
     as_subagent: bool = False,
+    max_tokens: Optional[int] = None,
+    request_body: Optional[dict] = None,
 ) -> dict:
     config = _read_json_object(path)
     if config is None:
@@ -4534,14 +4836,27 @@ def write_opencode_config(
     # Keep the provider definition in this private session file. The launch path adjusts effective provider filters in the higher-priority inline overlay.
     model_entry = {"name": model["id"]}
     window = model.get("context_length") or model.get("max_context_length")
+    reserved = None
     if window:
         window = int(window)
-        # A custom-provider model with no limit defaults to context 0, which silently disables OpenCode's auto-compaction; declare the real window and a sane output cap so it compacts instead of overflowing the server.
-        model_entry["limit"] = {"context": window, "output": min(window // 4, 8192)}
+        output = opencode_output_limit(window, max_tokens)
+        reserved = opencode_compaction_reserved(window, output)
+        # Without a limit OpenCode assumes context 0 and never compacts. Without input it compacts at context - output and ignores compaction.reserved.
+        model_entry["limit"] = {"context": window, "input": window, "output": output}
+    provider_options = {"baseURL": f"{base}/v1", "apiKey": key}
+    if request_body:
+        # OpenCode 1.x sends model options, reading the effort only as reasoningEffort; 2.x sends only the provider body.
+        model_entry["options"] = {
+            "reasoningEffort" if name == "reasoning_effort" else name: value
+            for name, value in request_body.items()
+        }
+        if "temperature" in request_body:
+            model_entry["temperature"] = True
+        provider_options["body"] = request_body
     _subdict(config, "provider")[_OPENCODE_PROVIDER] = {
         "npm": "@ai-sdk/openai-compatible",
         "name": "Unsloth Studio",
-        "options": {"baseURL": f"{base}/v1", "apiKey": key},
+        "options": provider_options,
         "models": {model["id"]: model_entry},
     }
     # Normal mode pins this as the session model. Subagent mode leaves the user's main/small models alone and exposes the local model to @unsloth and /models.
@@ -4550,8 +4865,15 @@ def write_opencode_config(
         for field in ("model", "small_model"):
             if str(config.get(field) or "").startswith(f"{_OPENCODE_PROVIDER}/"):
                 config.pop(field, None)
-        managed_compaction = {"auto": True, "reserved": max(1, window // 10)} if window else None
-        if managed_compaction and config.get("compaction") == managed_compaction:
+        # Drop a managed compaction block, current or legacy value.
+        managed = {reserved, max(1, window // 10)} if window else set()
+        compaction = config.get("compaction")
+        if (
+            isinstance(compaction, dict)
+            and compaction.keys() == {"auto", "reserved"}
+            and compaction["auto"] is True
+            and compaction["reserved"] in managed
+        ):
             config.pop("compaction", None)
         _subdict(config, "agent")[_SUBAGENT_NAME] = {
             "description": _SUBAGENT_DESCRIPTION,
@@ -4567,10 +4889,10 @@ def write_opencode_config(
             if not agents:
                 config.pop("agent", None)
     if window and not as_subagent:
-        # Compact with ~10% headroom (near 90% full). The fixed 20k-token default buffer over-compacts, or never settles, on a small local context.
+        # The fixed 20k-token default buffer over-compacts, or never settles, on a small local context.
         compaction = _subdict(config, "compaction")
         compaction["auto"] = True
-        compaction["reserved"] = max(1, window // 10)
+        compaction["reserved"] = reserved
     tools = ("edit", "bash", "webfetch", *(("task",) if as_subagent else ()))
     if yolo:
         # Fallback for commands without native --auto and for the append-safe bare --no-launch command, where the subcommand is not known yet. Rides inline (OPENCODE_CONFIG_CONTENT) so it wins over a project config. TUI and `run` launches use --auto and call here with yolo=False, letting OpenCode preserve explicit deny rules.
@@ -4593,7 +4915,12 @@ def write_opencode_config(
     return session_permission
 
 
-def write_hermes_config(base: str, model: dict, path: Path) -> None:
+def write_hermes_config(
+    base: str,
+    model: dict,
+    path: Path,
+    request_body: Optional[dict] = None,
+) -> None:
     import yaml
 
     config: dict = {}
@@ -4641,6 +4968,7 @@ def write_hermes_config(base: str, model: dict, path: Path) -> None:
         "base_url": f"{base}/v1",
         "api_mode": "openai",
         "key_env": _HERMES_ENV_KEY,
+        **({"extra_body": request_body} if request_body else {}),
     }
     text = yaml.safe_dump(config, sort_keys = False)
     if not path.exists() or path.read_text(encoding = "utf-8") != text:
@@ -4649,7 +4977,15 @@ def write_hermes_config(base: str, model: dict, path: Path) -> None:
         typer.echo(f"Updated {path}")
 
 
-def write_pi_config(base: str, key: str, model: dict, path: Path) -> None:
+def write_pi_config(
+    base: str,
+    key: str,
+    model: dict,
+    path: Path,
+    *,
+    max_tokens: Optional[int] = None,
+    request_body: Optional[dict] = None,
+) -> None:
     config = _read_json_object(path)
     if config is None:
         typer.echo(
@@ -4666,7 +5002,11 @@ def write_pi_config(base: str, key: str, model: dict, path: Path) -> None:
         window = int(window)
         # An unspecified model defaults to contextWindow 128000 / maxTokens 16384, far larger than a small Unsloth context, so Pi compacts too late and overflows the server. Pin the real window and a sane output cap, mirroring OpenCode.
         provider_model["contextWindow"] = window
-        provider_model["maxTokens"] = min(window // 4, 8192)
+        provider_model["maxTokens"] = _agent_output_limit(window, max_tokens)
+    elif max_tokens:
+        provider_model["maxTokens"] = max_tokens
+    if request_body:
+        provider_model["samplingParams"] = request_body
     _subdict(config, "providers")[_PI_PROVIDER] = {
         "api": "openai-completions",
         "baseUrl": f"{base}/v1",
@@ -4936,6 +5276,8 @@ def write_pi_subagent_config(
     model: dict,
     path: Path,
     approve: bool = False,
+    max_tokens: Optional[int] = None,
+    request_body: Optional[dict] = None,
 ) -> None:
     """Write private bootstrap data for the bundled Pi extension."""
     window = model.get("context_length") or model.get("max_context_length")
@@ -4947,43 +5289,70 @@ def write_pi_subagent_config(
             "apiKey": key,
             "model": model["id"],
             "contextWindow": window,
-            "maxTokens": min(window // 4, 8192),
+            "maxTokens": _agent_output_limit(window, max_tokens),
             "approve": approve,
+            **({"samplingParams": request_body} if request_body else {}),
         },
     )
 
 
-def write_dsh_config(base: str, model: dict, path: Path) -> None:
+def write_dsh_patch(
+    base: str,
+    model: dict,
+    path: Path,
+    request_body: Optional[dict] = None,
+) -> None:
+    """Write the dsh loader patch that points the booted profile at Unsloth.
+
+    dsh 0.1.7 dropped `settings.yaml`: it now imports a leftover one into the profile only
+    after the first boot has settled, so that boot still runs on the DeepSeek default. A
+    `--patch` overlay is read at boot on every dsh release this supports, and the file is
+    Unsloth's own, so it is rewritten whole rather than merged.
+    """
     import yaml
 
-    config = _read_yaml_object(path)
-    if config is None:
-        typer.echo(
-            f"Warning: couldn't parse {path} — add an '{_DSH_PROVIDER}' provider "
-            "there yourself, or move the file aside and re-run.",
-            err = True,
-        )
-        return
     model_entry = {"id": model["id"]}
     window = model.get("context_length") or model.get("max_context_length")
     if window:
         window = int(window)
         model_entry["contextWindow"] = window
-        model_entry["maxTokens"] = min(window // 4, 8192)
-    _subdict(_subdict(config, "llm-pi-ai"), "providers")[_DSH_PROVIDER] = {
-        "displayName": "Unsloth Studio",
-        "api": "openai-completions",
-        "baseURL": f"{base}/v1",
-        "apiKeyEnv": _DSH_ENV_KEY,
-        # pi-ai reads an unknown base URL as OpenAI itself.
-        "compat": {"supportsDeveloperRole": False, "maxTokensField": "max_tokens"},
-        "models": [model_entry],
-    }
-    _subdict(config, "agent-default-model").update(
-        provider = _DSH_PROVIDER,
-        model = model["id"],
-    )
-    text = yaml.safe_dump(config, sort_keys = False)
+        model_entry["maxTokens"] = opencode_output_limit(window)
+    compat = {"supportsDeveloperRole": False, "maxTokensField": "max_tokens"}
+    if request_body:
+        # dsh sends template kwargs only for a model that declares reasoning levels.
+        model_entry["reasoningEfforts"] = {
+            "off": None,
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+        }
+        compat["thinkingFormat"] = "chat-template"
+        compat["chatTemplateKwargs"] = request_body
+    entries = [
+        {
+            "id": "llm-pi-ai",
+            "name": "@deepseek-ai/dsh-llm-pi-ai",
+            "config": {
+                "providers": {
+                    _DSH_PROVIDER: {
+                        "displayName": "Unsloth Studio",
+                        "api": "openai-completions",
+                        "baseURL": f"{base}/v1",
+                        "apiKeyEnv": _DSH_ENV_KEY,
+                        # pi-ai reads an unknown base URL as OpenAI itself.
+                        "compat": compat,
+                        "models": [model_entry],
+                    }
+                }
+            },
+        },
+        {
+            "id": "agent-default-model",
+            "name": "@deepseek-ai/dsh-agent-default-model",
+            "config": {"provider": _DSH_PROVIDER, "model": model["id"]},
+        },
+    ]
+    text = yaml.safe_dump(entries, sort_keys = False)
     if not path.exists() or path.read_text(encoding = "utf-8") != text:
         path.parent.mkdir(parents = True, exist_ok = True)
         path.write_text(text, encoding = "utf-8")
@@ -5001,7 +5370,7 @@ def claude(
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
     gpu_memory_mode: Optional[Literal["auto", "manual"]] = _GPU_MEMORY_MODE_OPTION,
-    enable_tools: bool = _ENABLE_TOOLS_OPTION,
+    enable_tools: Optional[bool] = _ENABLE_TOOLS_OPTION,
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
@@ -5028,6 +5397,20 @@ def claude(
     # Before the install prompt: _install_agent runs a remote installer, and this can refuse outright, so asking first fetches a tool the run cannot use.
     _preflight_agent_gguf(_CLAUDE_GGUF_AGENT, model, serve = serve, launch = launch)
     _require_agent_for_launch("claude", install_hint, launch)
+    server_options = ServerOptions(
+        enable_tools = enable_tools,
+        tool_call_healing = tool_call_healing,
+        tool_call_nudging = tool_call_nudging,
+        reasoning = reasoning,
+        reasoning_effort = reasoning_effort,
+        temperature = temperature,
+        top_p = top_p,
+        top_k = top_k,
+        min_p = min_p,
+        repetition_penalty = repetition_penalty,
+        presence_penalty = presence_penalty,
+        carried = _ALL_REQUEST_FIELDS,
+    )
     base, key, entry = _connect(
         api_key,
         model,
@@ -5037,19 +5420,7 @@ def claude(
         serve = serve,
         launch = launch,
         preload_check = functools.partial(_attach_gguf_check, _CLAUDE_GGUF_AGENT),
-        server_options = ServerOptions(
-            enable_tools = enable_tools,
-            tool_call_healing = tool_call_healing,
-            tool_call_nudging = tool_call_nudging,
-            reasoning = reasoning,
-            reasoning_effort = reasoning_effort,
-            temperature = temperature,
-            top_p = top_p,
-            top_k = top_k,
-            min_p = min_p,
-            repetition_penalty = repetition_penalty,
-            presence_penalty = presence_penalty,
-        ),
+        server_options = server_options,
     )
     # Before the launch owns the server, so a rejection tears it down, not atexit.
     try:
@@ -5070,6 +5441,8 @@ def claude(
         }
         if window:
             server_env["UNSLOTH_CLAUDE_SUBAGENT_CONTEXT_WINDOW"] = str(int(window))
+        if server_options.request_body():
+            server_env["CLAUDE_CODE_EXTRA_BODY"] = json.dumps(server_options.request_body())
         with _session_config("claude-subagent", launch, persist = persist) as config:
             plugin = write_claude_subagent_plugin(config, server_env)
             command = [
@@ -5095,7 +5468,7 @@ def claude(
             )
         return
 
-    env = _claude_local_env(base, key, entry)
+    env = _claude_local_env(base, key, entry, server_options.request_body())
     # Claude Code auto-compacts against its native context window; the local env above supplies the loaded model's real window and a 90% threshold instead. --yolo (or its aliases) maps to Claude's own --dangerously-skip-permissions. IS_SANDBOX is left unset on purpose: Claude refuses bypass mode as root unless a sandbox is detected, and we do not want to falsely claim one on the user's host. claude keeps its history in ~/.claude/projects, which --settings/env never relocate, so a session already survives exit; resume it with `claude --continue` or `--resume <id>` passed through.
     with _session_config("claude", launch, persist = persist) as config:
         settings = _write_claude_settings(config, model_id, env)
@@ -5127,7 +5500,7 @@ def codex(
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
     gpu_memory_mode: Optional[Literal["auto", "manual"]] = _GPU_MEMORY_MODE_OPTION,
-    enable_tools: bool = _ENABLE_TOOLS_OPTION,
+    enable_tools: Optional[bool] = _ENABLE_TOOLS_OPTION,
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
@@ -5150,6 +5523,23 @@ def codex(
     # Before the install prompt: _install_agent runs a remote installer, and this can refuse outright, so asking first fetches a tool the run cannot use.
     _preflight_agent_gguf(_CODEX_GGUF_AGENT, model, serve = serve, launch = launch)
     _require_agent_for_launch("codex", install_hint, launch)
+    codex_effort = _codex_reasoning_effort(reasoning, reasoning_effort)
+    if codex_effort and not _agent_version_at_least("codex", _CODEX_REASONING_REQUEST_MIN_VERSION):
+        codex_effort = None
+    server_options = ServerOptions(
+        enable_tools = enable_tools,
+        tool_call_healing = tool_call_healing,
+        tool_call_nudging = tool_call_nudging,
+        reasoning = reasoning,
+        reasoning_effort = reasoning_effort,
+        temperature = temperature,
+        top_p = top_p,
+        top_k = top_k,
+        min_p = min_p,
+        repetition_penalty = repetition_penalty,
+        presence_penalty = presence_penalty,
+        carried = _REASONING_FIELDS if codex_effort else frozenset(),
+    )
     base, key, entry = _connect(
         api_key,
         model,
@@ -5159,19 +5549,7 @@ def codex(
         serve = serve,
         launch = launch,
         preload_check = functools.partial(_attach_gguf_check, _CODEX_GGUF_AGENT),
-        server_options = ServerOptions(
-            enable_tools = enable_tools,
-            tool_call_healing = tool_call_healing,
-            tool_call_nudging = tool_call_nudging,
-            reasoning = reasoning,
-            reasoning_effort = reasoning_effort,
-            temperature = temperature,
-            top_p = top_p,
-            top_k = top_k,
-            min_p = min_p,
-            repetition_penalty = repetition_penalty,
-            presence_penalty = presence_penalty,
-        ),
+        server_options = server_options,
     )
     # This preflight runs after _connect may have auto-started a server but before _run takes over its lifecycle, so tear the server down here if it rejects the model (a transformers-backend model) rather than leaving it on the atexit backstop.
     try:
@@ -5189,6 +5567,7 @@ def codex(
                 subagent_model,
                 home,
                 yolo = yolo,
+                reasoning_effort = codex_effort,
             )
             parent_home = write_codex_parent_overlay(home / "parent")
             command = [
@@ -5219,7 +5598,7 @@ def codex(
         *ctx.args,
     ]
     with _session_config("codex", launch, persist = persist) as home:
-        write_codex_config(base, entry, home)
+        write_codex_config(base, entry, home, codex_effort)
         env = {_CODEX_ENV_KEY: key, "CODEX_HOME": str(home)}
         _run(
             base,
@@ -5243,7 +5622,7 @@ def openclaw(
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
     gpu_memory_mode: Optional[Literal["auto", "manual"]] = _GPU_MEMORY_MODE_OPTION,
-    enable_tools: bool = _ENABLE_TOOLS_OPTION,
+    enable_tools: Optional[bool] = _ENABLE_TOOLS_OPTION,
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
@@ -5268,6 +5647,20 @@ def openclaw(
         else "curl -fsSL https://openclaw.ai/install.sh | bash"
     )
     _require_agent_for_launch("openclaw", install_hint, launch)
+    server_options = ServerOptions(
+        enable_tools = enable_tools,
+        tool_call_healing = tool_call_healing,
+        tool_call_nudging = tool_call_nudging,
+        reasoning = reasoning,
+        reasoning_effort = reasoning_effort,
+        temperature = temperature,
+        top_p = top_p,
+        top_k = top_k,
+        min_p = min_p,
+        repetition_penalty = repetition_penalty,
+        presence_penalty = presence_penalty,
+        carried = _ALL_REQUEST_FIELDS,
+    )
     base, key, entry = _connect(
         api_key,
         model,
@@ -5276,19 +5669,7 @@ def openclaw(
         ),
         serve = serve,
         launch = launch,
-        server_options = ServerOptions(
-            enable_tools = enable_tools,
-            tool_call_healing = tool_call_healing,
-            tool_call_nudging = tool_call_nudging,
-            reasoning = reasoning,
-            reasoning_effort = reasoning_effort,
-            temperature = temperature,
-            top_p = top_p,
-            top_k = top_k,
-            min_p = min_p,
-            repetition_penalty = repetition_penalty,
-            presence_penalty = presence_penalty,
-        ),
+        server_options = server_options,
     )
     openclaw_args = list(ctx.args)
     # Default a bare `unsloth start openclaw` to the local TUI. Anything the caller passes through is forwarded verbatim so OpenClaw parses it under its own grammar (openclaw [global-flags] <command> [options]): an explicit subcommand, a global flag that must precede the command such as --profile/--dev, or a tui option. We cannot reinterpret those safely because a leading "--flag value" is ambiguous between a global (`--profile test`) and a tui option (`--message hi`), and prepending `tui --local` would break the global form, so only the empty case is defaulted.
@@ -5306,6 +5687,7 @@ def openclaw(
             yolo = yolo,
             workspace_path = "${OPENCLAW_WORKSPACE_DIR}",
             embedding_model = _studio_embedding_model(base, key),
+            request_body = server_options.request_body(),
         )
         # Scope both config and state so OpenClaw never touches the user's ~/.openclaw.
         # Off, else OpenClaw re-imports any provider key it cannot see from a login shell.
@@ -5337,7 +5719,7 @@ def opencode(
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
     gpu_memory_mode: Optional[Literal["auto", "manual"]] = _GPU_MEMORY_MODE_OPTION,
-    enable_tools: bool = _ENABLE_TOOLS_OPTION,
+    enable_tools: Optional[bool] = _ENABLE_TOOLS_OPTION,
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
@@ -5348,6 +5730,7 @@ def opencode(
     min_p: Optional[float] = _MIN_P_OPTION,
     repetition_penalty: Optional[float] = _REPETITION_PENALTY_OPTION,
     presence_penalty: Optional[float] = _PRESENCE_PENALTY_OPTION,
+    max_tokens: Optional[int] = _MAX_TOKENS_OPTION,
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
@@ -5359,6 +5742,20 @@ def opencode(
     command_name, opencode_v2 = _opencode_command()
     install_hint = _npm_install_hint("@opencode-ai/cli@beta" if opencode_v2 else "opencode-ai")
     _require_agent_for_launch(command_name, install_hint, launch)
+    server_options = ServerOptions(
+        enable_tools = enable_tools,
+        tool_call_healing = tool_call_healing,
+        tool_call_nudging = tool_call_nudging,
+        reasoning = reasoning,
+        reasoning_effort = reasoning_effort,
+        temperature = temperature,
+        top_p = top_p,
+        top_k = top_k,
+        min_p = min_p,
+        repetition_penalty = repetition_penalty,
+        presence_penalty = presence_penalty,
+        carried = _ALL_REQUEST_FIELDS,
+    )
     base, key, entry = _connect(
         api_key,
         model,
@@ -5367,19 +5764,7 @@ def opencode(
         ),
         serve = serve,
         launch = launch,
-        server_options = ServerOptions(
-            enable_tools = enable_tools,
-            tool_call_healing = tool_call_healing,
-            tool_call_nudging = tool_call_nudging,
-            reasoning = reasoning,
-            reasoning_effort = reasoning_effort,
-            temperature = temperature,
-            top_p = top_p,
-            top_k = top_k,
-            min_p = min_p,
-            repetition_penalty = repetition_penalty,
-            presence_penalty = presence_penalty,
-        ),
+        server_options = server_options,
     )
     if opencode_v2:
         typer.echo(
@@ -5409,8 +5794,13 @@ def opencode(
                 config_path,
                 yolo = yolo and not native_auto,
                 as_subagent = True,
+                max_tokens = max_tokens,
+                request_body = server_options.request_body(),
             )
-            env = {"OPENCODE_CONFIG": str(config_path)}
+            env = {
+                "OPENCODE_CONFIG": str(config_path),
+                **_opencode_output_env(subagent_model, max_tokens),
+            }
             inline_config = _opencode_subagent_inline_config(
                 config_path,
                 session_permission,
@@ -5471,6 +5861,8 @@ def opencode(
             entry,
             config_path,
             yolo = yolo and not native_auto,
+            max_tokens = max_tokens,
+            request_body = server_options.request_body(),
         )
         # A project's own opencode.json outranks OPENCODE_CONFIG, so the session model pin would silently lose to a repo config; carry it in OPENCODE_CONFIG_CONTENT, which outranks project config, while the API key stays in the private file. Only the config fallback carries a permission: native --auto omits it (auto-approve asks, keep explicit denies) and a non-yolo session omits it too, honoring project rules. V1 filters are ordinary overlays, so scope that session to our provider; V2 turns filters into security policies where global/project rules intentionally win, so keep those policies intact and tell the user above that they must allow our provider. small_model is opencode's separate model for lightweight tasks; pin it to the session model too, or a user/project small_model on another (now filtered) provider would resolve a not-found error mid-session.
         inline_config: dict = {
@@ -5485,6 +5877,7 @@ def opencode(
         env = {
             "OPENCODE_CONFIG": str(config_path),
             "OPENCODE_CONFIG_CONTENT": json.dumps(inline_config),
+            **_opencode_output_env(entry, max_tokens),
         }
         _run(base, entry, env, command, launch = launch, install_hint = install_hint)
 
@@ -5500,7 +5893,7 @@ def hermes(
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
     gpu_memory_mode: Optional[Literal["auto", "manual"]] = _GPU_MEMORY_MODE_OPTION,
-    enable_tools: bool = _ENABLE_TOOLS_OPTION,
+    enable_tools: Optional[bool] = _ENABLE_TOOLS_OPTION,
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
@@ -5523,6 +5916,20 @@ def hermes(
     command = ["hermes", *_hermes_resume_oneshot_args(native_args)]
     install_hint = _hermes_install_hint()
     _require_agent_for_launch("hermes", install_hint, launch)
+    server_options = ServerOptions(
+        enable_tools = enable_tools,
+        tool_call_healing = tool_call_healing,
+        tool_call_nudging = tool_call_nudging,
+        reasoning = reasoning,
+        reasoning_effort = reasoning_effort,
+        temperature = temperature,
+        top_p = top_p,
+        top_k = top_k,
+        min_p = min_p,
+        repetition_penalty = repetition_penalty,
+        presence_penalty = presence_penalty,
+        carried = _ALL_REQUEST_FIELDS,
+    )
     base, key, entry = _connect(
         api_key,
         model,
@@ -5531,23 +5938,11 @@ def hermes(
         ),
         serve = serve,
         launch = launch,
-        server_options = ServerOptions(
-            enable_tools = enable_tools,
-            tool_call_healing = tool_call_healing,
-            tool_call_nudging = tool_call_nudging,
-            reasoning = reasoning,
-            reasoning_effort = reasoning_effort,
-            temperature = temperature,
-            top_p = top_p,
-            top_k = top_k,
-            min_p = min_p,
-            repetition_penalty = repetition_penalty,
-            presence_penalty = presence_penalty,
-        ),
+        server_options = server_options,
     )
     with _session_config("hermes", launch, persist = persist) as home:
         # HERMES_HOME relocates hermes' whole home dir (config.yaml, sessions, state) like CODEX_HOME, so the user's ~/.hermes is left untouched for the session.
-        write_hermes_config(base, entry, home / "config.yaml")
+        write_hermes_config(base, entry, home / "config.yaml", server_options.request_body())
         env = {_HERMES_ENV_KEY: key, "HERMES_HOME": str(home)}
         _run(base, entry, env, command, launch = launch, install_hint = install_hint)
 
@@ -5560,10 +5955,11 @@ def pi(
     launch: bool = _LAUNCH_OPTION,
     gguf_variant: Optional[str] = _GGUF_VARIANT_OPTION,
     max_seq_length: int = _CONTEXT_OPTION,
+    max_tokens: Optional[int] = _MAX_TOKENS_OPTION,
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
     gpu_memory_mode: Optional[Literal["auto", "manual"]] = _GPU_MEMORY_MODE_OPTION,
-    enable_tools: bool = _ENABLE_TOOLS_OPTION,
+    enable_tools: Optional[bool] = _ENABLE_TOOLS_OPTION,
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
@@ -5589,6 +5985,24 @@ def pi(
     if as_subagent and not _PI_SUBAGENT_EXTENSION.is_file():
         _fail(f"Missing Pi subagent extension: {_PI_SUBAGENT_EXTENSION}")
     _require_agent_for_launch("pi", install_hint, launch)
+    server_options = ServerOptions(
+        enable_tools = enable_tools,
+        tool_call_healing = tool_call_healing,
+        tool_call_nudging = tool_call_nudging,
+        reasoning = reasoning,
+        reasoning_effort = reasoning_effort,
+        temperature = temperature,
+        top_p = top_p,
+        top_k = top_k,
+        min_p = min_p,
+        repetition_penalty = repetition_penalty,
+        presence_penalty = presence_penalty,
+        carried = _ALL_REQUEST_FIELDS,
+    )
+    if server_options.request_body() and not _agent_version_at_least(
+        "pi", _PI_SAMPLING_PARAMS_MIN_VERSION
+    ):
+        server_options = server_options._replace(carried = frozenset())
     base, key, entry = _connect(
         api_key,
         model,
@@ -5597,19 +6011,7 @@ def pi(
         ),
         serve = serve,
         launch = launch,
-        server_options = ServerOptions(
-            enable_tools = enable_tools,
-            tool_call_healing = tool_call_healing,
-            tool_call_nudging = tool_call_nudging,
-            reasoning = reasoning,
-            reasoning_effort = reasoning_effort,
-            temperature = temperature,
-            top_p = top_p,
-            top_k = top_k,
-            min_p = min_p,
-            repetition_penalty = repetition_penalty,
-            presence_penalty = presence_penalty,
-        ),
+        server_options = server_options,
     )
     if as_subagent:
         subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
@@ -5623,6 +6025,8 @@ def pi(
                 subagent_model,
                 config_path,
                 approve = yolo,
+                max_tokens = max_tokens,
+                request_body = server_options.request_body(),
             )
             command = [
                 "pi",
@@ -5659,7 +6063,14 @@ def pi(
     with _session_config("pi", launch, persist = persist) as home:
         # Pi resolves its config dir from PI_CODING_AGENT_DIR first (getAgentDir() prefers it over $HOME/.pi/agent), so pin it at the session dir: an inherited PI_CODING_AGENT_DIR in the user's shell would otherwise send Pi to their real config and skip our provider/key. HOME is relocated too so any other ~/.pi paths stay in the session. The key rides in the config rather than the env.
         pi_agent_dir = home / ".pi" / "agent"
-        write_pi_config(base, key, entry, pi_agent_dir / "models.json")
+        write_pi_config(
+            base,
+            key,
+            entry,
+            pi_agent_dir / "models.json",
+            max_tokens = max_tokens,
+            request_body = server_options.request_body(),
+        )
         write_pi_user_resources(pi_agent_dir, home)
         env = {"HOME": str(home), "PI_CODING_AGENT_DIR": str(pi_agent_dir)}
         if os.name == "nt" or os.environ.get("WSL_DISTRO_NAME"):
@@ -5691,7 +6102,7 @@ def dsh(
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
     gpu_memory_mode: Optional[Literal["auto", "manual"]] = _GPU_MEMORY_MODE_OPTION,
-    enable_tools: bool = _ENABLE_TOOLS_OPTION,
+    enable_tools: Optional[bool] = _ENABLE_TOOLS_OPTION,
     tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
     tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
     reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
@@ -5709,9 +6120,22 @@ def dsh(
     """Point DeepSeek Harness (dsh) at the running Unsloth server and start it."""
     model, ctx.args[:] = _consume_positional_model(model, ctx.args)
     _reject_as_subagent("dsh", ctx.args)
-    command = _dsh_command(ctx.args)
     install_hint = _npm_install_hint(_DSH_PACKAGE)
     _require_agent_for_launch("dsh", install_hint, launch)
+    server_options = ServerOptions(
+        enable_tools = enable_tools,
+        tool_call_healing = tool_call_healing,
+        tool_call_nudging = tool_call_nudging,
+        reasoning = reasoning,
+        reasoning_effort = reasoning_effort,
+        temperature = temperature,
+        top_p = top_p,
+        top_k = top_k,
+        min_p = min_p,
+        repetition_penalty = repetition_penalty,
+        presence_penalty = presence_penalty,
+        carried = _REASONING_FIELDS,
+    )
     base, key, entry = _connect(
         api_key,
         model,
@@ -5720,22 +6144,13 @@ def dsh(
         ),
         serve = serve,
         launch = launch,
-        server_options = ServerOptions(
-            enable_tools = enable_tools,
-            tool_call_healing = tool_call_healing,
-            tool_call_nudging = tool_call_nudging,
-            reasoning = reasoning,
-            reasoning_effort = reasoning_effort,
-            temperature = temperature,
-            top_p = top_p,
-            top_k = top_k,
-            min_p = min_p,
-            repetition_penalty = repetition_penalty,
-            presence_penalty = presence_penalty,
-        ),
+        server_options = server_options,
     )
     with _session_config("dsh", launch, persist = persist) as home:
-        write_dsh_config(base, entry, home / "settings.yaml")
+        patch = home / _DSH_PATCH_FILE
+        write_dsh_patch(base, entry, patch, server_options.request_body())
+        # A Windows dsh under WSL gets DSH_HOME translated through WSLENV, but not argv.
+        command = _dsh_command(ctx.args, _agent_config_path(patch, ["dsh"]))
         env = {
             _DSH_ENV_KEY: key,
             "DSH_HOME": str(home),
