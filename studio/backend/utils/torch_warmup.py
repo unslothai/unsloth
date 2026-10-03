@@ -371,6 +371,9 @@ def _warm(epoch: Optional[int] = None) -> None:
                 return
             # Only the real stage takes the epoch; a patched _STAGES entry is called bare.
             _run_stage(name, partial(fn, epoch) if fn is _warm_hardware else fn)
+            if name == "inference_backend":
+                # dynamo is imported by now, so the probe's imports cannot race its first import (#10350).
+                _kick_early_quant_probe()
             if epoch is not None and _detection_epoch() != epoch:
                 # Later stages reach get_device(), republishing DEVICE after teardown.
                 logger.info("torch warm stopped after %s: its lifespan ended", name)
@@ -549,6 +552,34 @@ def _is_native_video_pick(pick) -> bool:
     # Not covered on purpose: _detect_load_family also reads general.architecture out of a
     # renamed GGUF's header, which is file IO on a boot thread.
     return False
+
+
+EARLY_PROBE_ENV_VAR = "UNSLOTH_DIFFUSION_PROBE_EARLY"
+
+
+def _early_quant_probe() -> None:
+    try:
+        if not _a_local_model_would_load_through_diffusers():
+            return
+    except Exception as exc:  # noqa: BLE001 -- a gate that cannot answer means skip, not crash
+        logger.debug("early quant smoke probe skipped: %r", exc)
+        return
+    _prewarm_quant_probe()
+
+
+def _kick_early_quant_probe() -> Optional[threading.Thread]:
+    """Start the quant smoke probe's child while the warm is still importing transformers / datasets.
+
+    The probe's child process spends ~4 s importing torch and torchao. Run from the post-warm worker it started
+    after the diffusers import, so a first-ever image load posted right after the warm waited 3.2 s for it on a
+    B200 (load thread asleep in ``_child_probe_table``). Same gate and same function, ~2 s earlier, on its own daemon
+    thread so no warm stage waits on it. The table persists, so later starts skip it. ``UNSLOTH_DIFFUSION_PROBE_EARLY=0``
+    keeps the old timing; ``UNSLOTH_DIFFUSION_PROBE_PREWARM=0`` disables both."""
+    if os.environ.get(EARLY_PROBE_ENV_VAR, "").strip().lower() in ("0", "false", "no", "off"):
+        return None
+    thread = threading.Thread(target = _early_quant_probe, name = "early-quant-probe", daemon = True)
+    thread.start()
+    return thread
 
 
 def _prewarm_quant_probe() -> None:
