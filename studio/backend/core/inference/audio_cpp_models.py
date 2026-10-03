@@ -88,7 +88,9 @@ def _bindings_for(task: str, server_task: Optional[str]) -> dict[str, WorkflowBi
             )
         }
     if task == "music":
-        return {"music": WorkflowBinding("gen", "tasks", None, ("text", "lyrics", "duration_seconds"))}
+        return {
+            "music": WorkflowBinding("gen", "tasks", None, ("text", "lyrics", "duration_seconds"))
+        }
     if task == "asr":
         return {"transcribe": WorkflowBinding("asr", "transcriptions", None, ("audio",))}
     return {}
@@ -401,7 +403,9 @@ _TASK_NAMES = {
 
 
 def _family_from_spec_tasks(
-    family: str, spec: Optional[dict], label: Optional[str] = None
+    family: str,
+    spec: Optional[dict],
+    label: Optional[str] = None,
 ) -> AudioCppFamily:
     """Policy for a family Studio does not list, from the tasks its spec declares.
 

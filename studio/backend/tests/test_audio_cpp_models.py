@@ -346,7 +346,13 @@ def test_unsupported_task_tokens_are_refused_by_a_readable_name(hub):
 _REAL_RUNTIME_KNOWS_FAMILY = acm.runtime_knows_family
 
 
-def _fake_runtime(monkeypatch, tmp_path, *, tag = None, specs = None):
+def _fake_runtime(
+    monkeypatch,
+    tmp_path,
+    *,
+    tag = None,
+    specs = None,
+):
     """An installed audiocpp_server with a prebuilt install record for ``tag``, and a
     ``model_specs/`` folder beside it when ``specs`` is given."""
     from core.inference import audio_cpp_server
@@ -422,7 +428,11 @@ def test_a_spec_fallback_family_the_runtime_lacks_is_refused(hub, monkeypatch, t
         ("crisperwhisper", "CrisperWhisper2.0-GGUF", ["asr"]),
         ("kugelaudio", "KugelAudio-0-Open-GGUF", ["tts"]),
     ):
-        _put(_snapshot(hub), f"{folder}/m-q8_0.gguf", _gguf_bytes(family = family, spec = {"tasks": tasks}))
+        _put(
+            _snapshot(hub),
+            f"{folder}/m-q8_0.gguf",
+            _gguf_bytes(family = family, spec = {"tasks": tasks}),
+        )
     samsone = acm.resolve(f"{AUDIO_CPP_REPO}/Samsone-GGUF", network = False)
     assert (samsone.task, samsone.unsupported) == ("asr", None)
     crisper = acm.resolve(f"{AUDIO_CPP_REPO}/CrisperWhisper2.0-GGUF", network = False)

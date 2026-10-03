@@ -36,7 +36,9 @@ def status_audio_workflows(is_audio: bool, audio_type: Optional[str]) -> list[st
     return [workflow_for_audio_type(audio_type)]
 
 
-def inventory_audio_workflows(task: Optional[str], audio_type: Optional[str]) -> Optional[list[str]]:
+def inventory_audio_workflows(
+    task: Optional[str], audio_type: Optional[str]
+) -> Optional[list[str]]:
     """Workflows a cached or local model row serves, from its pipeline task first.
 
     audio.cpp music rows carry ``text-to-audio`` with no audio_type, so the task decides before
