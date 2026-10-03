@@ -17190,14 +17190,6 @@ async def load_model_gated(
                 )
             async with nullcontext() if new_slot else inference_lifecycle_gate():
                 _raise_if_sidecar_swap_in_progress()
-                if extra is None and request.engine != "auto" and model_slots.slots:
-                    # Another account's chats are its own to stop: refuse before touching its model.
-                    await asyncio.to_thread(account_access.require_idle_other_accounts)
-                    for slot in list(model_slots.slots):
-                        _raise_or_cancel_slot_generations(
-                            slot, force = request.force_cancel_active, action = "Loading a model"
-                        )
-                    await asyncio.to_thread(model_slots.unload_extra_models)
                 # The 409 gate runs inside _load_model_impl, under the lifecycle gate, atomic with teardown.
                 if new_slot:
                     reload_gate = None
@@ -17309,6 +17301,20 @@ async def load_model_gated(
 
 def _ran_out_of_memory(exc: HTTPException) -> bool:
     return exc.status_code == 500 and "out of memory" in str(exc.detail).lower()
+
+
+def _gate_kept_models(request: LoadRequest, cancel: bool = True) -> None:
+    for slot in list(model_slots.slots):
+        _raise_or_cancel_slot_generations(
+            slot, force = request.force_cancel_active, cancel = cancel, action = "Loading a model"
+        )
+
+
+async def _retire_kept_models(request: LoadRequest) -> None:
+    """vLLM and SGLang reserve the GPU, so a load of either takes the kept models down too: gated
+    before any chat is cancelled, torn down once nothing can still reject the load."""
+    _gate_kept_models(request)
+    await asyncio.to_thread(model_slots.unload_extra_models, strict = True)
 
 
 def _unload_primary() -> None:
@@ -18632,8 +18638,13 @@ async def _load_model_impl(
 
         # Point of no return for the Unsloth path: cancel only once nothing can still reject the load.
         _raise_if_scoped_load_cancelled()
+        retire_kept = request.engine != "auto" and replacing and bool(model_slots.slots)
+        if retire_kept:
+            _gate_kept_models(request, cancel = False)
         if serving and on_reload_confirmed is not None:
             on_reload_confirmed(cancel = True)
+        if retire_kept:
+            await _retire_kept_models(request)
 
         # Let the cancelled generations unwind before the teardown; no check follows. Bounded like GGUF.
         if cancel_pending:

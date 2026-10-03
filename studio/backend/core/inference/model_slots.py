@@ -37,6 +37,8 @@ slots: list[ExtraSlot] = []
 lock = threading.Lock()
 # (slot, model_path) while a load fills a slot of its own.
 loading: Optional[tuple[ExtraSlot, str]] = None
+# Out of routing, but their server would not stop: still priced for VRAM and retried by every drop.
+stuck: list[ExtraSlot] = []
 
 
 def in_slot(slot: Optional[ExtraSlot], fn: Callable):
@@ -69,7 +71,7 @@ def holds_vram() -> bool:
     return any_loading() or any(
         slot.orchestrator.active_model_name
         or (slot.llama.is_active and getattr(slot.llama, "_gpu_offload_active", None) is not False)
-        for slot in list(slots)
+        for slot in [*slots, *stuck]
     )
 
 
@@ -191,15 +193,22 @@ def routed_generation_count() -> int:
 
 def drop(slot: ExtraSlot) -> None:
     from core.inference.llama_cpp import unregister_serving_backend
+
     with suppress(ValueError):
         slots.remove(slot)
     try:
         slot.llama.unload_model()
-    finally:
-        unregister_serving_backend(slot.llama)
-        atexit.unregister(slot.llama._cleanup)
-        atexit.unregister(slot.orchestrator._cleanup)
+    except BaseException:
+        if slot not in stuck:
+            stuck.append(slot)
         slot.orchestrator._cleanup()
+        raise
+    with suppress(ValueError):
+        stuck.remove(slot)
+    unregister_serving_backend(slot.llama)
+    atexit.unregister(slot.llama._cleanup)
+    atexit.unregister(slot.orchestrator._cleanup)
+    slot.orchestrator._cleanup()
 
 
 def stop_orchestrator_workers() -> None:
@@ -224,12 +233,18 @@ def _drop_where(predicate, strict: bool = False) -> int:
     proceed past a server that may still hold VRAM."""
     filling = loading[0] if loading else None
     doomed = [slot for slot in list(slots) if predicate(slot, slot is filling)]
+    retried = list(stuck)
     failed = []
     for slot in doomed:
         try:
             drop(slot)
         except Exception as exc:
             logger.warning("Could not unload an extra model: %s", exc)
+            failed.append(exc)
+    for slot in retried:
+        try:
+            drop(slot)
+        except Exception as exc:
             failed.append(exc)
     if strict and failed:
         raise RuntimeError(f"Could not unload {len(failed)} model(s) kept alongside") from failed[0]

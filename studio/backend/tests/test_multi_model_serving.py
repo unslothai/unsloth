@@ -81,6 +81,7 @@ def backends(monkeypatch):
     monkeypatch.setattr(inf, "InferenceOrchestrator", FakeOrchestrator)
     monkeypatch.setattr(inf, "_raise_if_sidecar_swap_in_progress", lambda: None)
     monkeypatch.setattr(multi_model_settings, "get_multi_model_enabled", lambda: True)
+    monkeypatch.setattr(model_slots, "stuck", [])
     return primary, extra
 
 
@@ -1220,19 +1221,45 @@ def test_a_managed_engine_load_never_lands_in_a_kept_slot(backends):
     assert _selected(kept.model_copy(update = {"alongside": True})) is None
 
 
-def test_a_managed_engine_load_refuses_while_a_kept_model_generates(backends, monkeypatch):
+def test_a_managed_engine_load_refuses_while_a_kept_model_generates(backends):
     _, extra = backends
-    _gated_load_fakes(monkeypatch, short_fits = [])
     generating = threading.Event()
     extra.generations.add(generating)
     request = LoadRequest(model_path = "org/C", engine = "vllm")
     with pytest.raises(HTTPException) as excinfo:
-        asyncio.run(inf.load_model_gated(request, None, "s"))
-    assert excinfo.value.status_code == 409 and model_slots.slots == [extra]
-    assert not generating.is_set()
+        inf._gate_kept_models(request, cancel = False)
+    assert excinfo.value.status_code == 409 and not generating.is_set()
     forced = request.model_copy(update = {"force_cancel_active": True})
-    assert asyncio.run(inf.load_model_gated(forced, None, "s")) == "loaded"
-    assert generating.is_set() and model_slots.slots == []
+    inf._gate_kept_models(forced, cancel = False)
+    assert not generating.is_set() and model_slots.slots == [extra]
+    asyncio.run(inf._retire_kept_models(forced))
+    assert generating.is_set() and model_slots.slots == [] and not extra.llama.is_active
+
+
+def test_kept_models_go_only_once_nothing_can_reject_a_managed_load():
+    source = inspect.getsource(inf._load_model_impl)
+    gate = source.index("_gate_kept_models(request, cancel = False)")
+    primary_cancel = source.index("on_reload_confirmed(cancel = True)", gate)
+    retire = source.index("await _retire_kept_models(request)", primary_cancel)
+    assert source.index("_reject_unsupported_managed_kind(request, config)") < gate
+    assert source.index("account_access.require_idle_other_accounts()") < gate < retire
+
+
+def test_a_kept_model_that_would_not_unload_is_retried_and_still_priced(backends, monkeypatch):
+    _, extra = backends
+    registered = []
+    monkeypatch.setattr(llama_cpp, "unregister_serving_backend", registered.append)
+    real = extra.llama.unload_model
+    monkeypatch.setattr(
+        extra.llama, "unload_model", lambda: (_ for _ in ()).throw(RuntimeError("stuck"))
+    )
+    with pytest.raises(RuntimeError):
+        model_slots.unload_extra_models(strict = True)
+    assert model_slots.slots == [] and model_slots.stuck == [extra] and registered == []
+    assert model_slots.holds_vram()
+    monkeypatch.setattr(extra.llama, "unload_model", real)
+    assert model_slots.unload_extra_models(strict = True) == 0
+    assert model_slots.stuck == [] and registered == [extra.llama]
 
 
 def test_a_gpu_handoff_stops_on_a_kept_model_that_would_not_unload(backends, monkeypatch):
@@ -1274,20 +1301,6 @@ def test_a_non_gguf_load_out_of_memory_makes_room_then_replaces(backends, monkey
         asyncio.run(
             inf.load_model_gated(LoadRequest(model_path = "org/D", alongside = True), None, "s")
         )
-
-
-def test_a_managed_engine_load_leaves_another_accounts_models_alone(backends, monkeypatch):
-    _, extra = backends
-    _gated_load_fakes(monkeypatch, short_fits = [])
-
-    def busy():
-        raise HTTPException(409, "another account is generating")
-
-    monkeypatch.setattr(inf.account_access, "require_idle_other_accounts", busy)
-    forced = LoadRequest(model_path = "org/C", engine = "vllm", force_cancel_active = True)
-    with pytest.raises(HTTPException):
-        asyncio.run(inf.load_model_gated(forced, None, "s"))
-    assert model_slots.slots == [extra] and extra.llama.is_active
 
 
 def test_turning_the_setting_off_unloads_only_idle_kept_models(backends):
