@@ -12429,8 +12429,7 @@ def test_ltx2_load_turns_cudnn_benchmark_back_off(fake_runtime, tmp_path, monkey
 
 
 def test_wan_load_turns_cudnn_benchmark_back_off(fake_runtime, monkeypatch):
-    # cudnn.benchmark picks conv algorithms by timing, per process: two servers decoded the same Wan latents to frames
-    # differing by 1/255 on ~0.4% of values. Held off, the pick is deterministic and the decode bit-reproducible.
+    # cudnn.benchmark's per-process conv pick made two servers decode the same Wan latents differently.
     from core.inference import video as video_mod, video_ltx2
 
     monkeypatch.setattr(

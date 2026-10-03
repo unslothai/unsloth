@@ -90,9 +90,7 @@ class VideoFamily:
     # Wan VAE decodes in float32 (bf16 causes banding / black frames), so the loader pins it back. Its size term is
     # already fp32.
     vae_force_fp32: bool = False
-    # False holds cudnn.benchmark off after the speed optims: the benchmark times candidate conv algorithms per process,
-    # so two servers can pick different ones and decode the same latents to different pixels (Wan: up to 1/255 on ~0.4%
-    # of values). With it off cuDNN selects deterministically (PyTorch "Reproducibility" notes).
+    # False holds cudnn.benchmark off: its per-process conv pick makes servers decode the same latents differently.
     cudnn_benchmark: bool = True
     # Curated GGUF repo for the picker (the DiT as single-file GGUF quants).
     gguf_repo: Optional[str] = None
@@ -298,7 +296,6 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # (11.4); VAE fp32 (2.8).
         bf16_components_gb = (10.0, 11.4, 2.8),
         vae_force_fp32 = True,
-        # run-to-run bit-identical decodes at no measured speed cost (B200 fp16 + bf16)
         cudnn_benchmark = False,
         # UMT5 keeps its overflowing `wo` in fp32 itself; the VAE stays fp32 (vae_force_fp32).
         fp16_guard = "native",
@@ -342,7 +339,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # 114.3 fp32 sum. UMT5 TE bf16 (11.4); VAE fp32 (0.5).
         bf16_components_gb = (57.2, 11.4, 0.5),
         vae_force_fp32 = True,
-        # same Wan VAE convs as TI2V-5B: deterministic cuDNN algorithm selection
+        # same VAE as TI2V-5B
         cudnn_benchmark = False,
         # no gguf_repo: community GGUFs split the experts, and a single-file load covers only one
     ),
