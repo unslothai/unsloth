@@ -204,13 +204,9 @@ def write_flm_tokenizer_config(out_dir: Path, *configs: Optional[dict]) -> None:
     )
 
 
-_FOLDER_LOCKS: dict = {}
-_FOLDER_LOCKS_GUARD = threading.Lock()
-
-
-def _folder_lock(out_dir: Path) -> threading.Lock:
-    with _FOLDER_LOCKS_GUARD:
-        return _FOLDER_LOCKS.setdefault(os.path.abspath(out_dir), threading.Lock())
+# One standalone conversion at a time: each holds a whole model in RAM, and a retried request
+# must not interleave with one still writing the same folder.
+_CONVERT_LOCK = threading.Lock()
 
 
 def _read_json(path: Optional[Path]) -> Optional[dict]:
@@ -235,8 +231,7 @@ def convert_existing_gguf(
     }
     if found["tokenizer_config.json"] is None:
         raise RuntimeError(f"{base_model} has no tokenizer_config.json, which FastFlowLM needs.")
-    # A retried request (or a second tab) must not interleave with one still converting here.
-    with _folder_lock(out_dir), staged_output(out_dir) as staging:
+    with _CONVERT_LOCK, staged_output(out_dir) as staging:
         convert_gguf_to_q4nx(str(gguf_path), staging)
         for name in TOKENIZER_FILES:
             # The HF tokenizer.json replaces the one the converter rebuilds from the GGUF.

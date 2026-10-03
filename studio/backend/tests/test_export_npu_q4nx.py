@@ -335,7 +335,7 @@ def test_no_eos_id_anywhere_fails(monkeypatch, tmp_path):
         q4nx.write_flm_tokenizer_config(tmp_path, None, {})
 
 
-def test_conversions_into_one_folder_do_not_overlap(monkeypatch, tmp_path):
+def test_standalone_conversions_do_not_overlap(monkeypatch, tmp_path):
     import threading
     import time
 
@@ -358,9 +358,10 @@ def test_conversions_into_one_folder_do_not_overlap(monkeypatch, tmp_path):
     gguf = _gguf(tmp_path / "m.gguf")
     threads = [
         threading.Thread(
-            target = export_mod.q4nx.convert_existing_gguf, args = (gguf, str(base), tmp_path / "out")
+            target = export_mod.q4nx.convert_existing_gguf,
+            args = (gguf, str(base), tmp_path / f"out{i % 2}"),
         )
-        for _ in range(3)
+        for i in range(3)
     ]
     for t in threads:
         t.start()
