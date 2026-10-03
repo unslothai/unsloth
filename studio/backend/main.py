@@ -2460,9 +2460,22 @@ def _probe_quantised_streaming(supported: Any) -> bool:
 
 def _quantised_streaming() -> bool:
     """The streaming bit for ``/api/system``. Resolved here only once a load has already loaded every
-    module it reads, since a cold warm (UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1) never resolves it."""
+    module it reads, since a cold warm (UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1) never resolves it.
+
+    Initialised, not just present: sys.modules holds diffusers from the moment a load starts on it,
+    and probing then races that load the way the post-warm probe did (an early load leaves the bit
+    to this reader, since the post-warm probe stands down once a load claims the media window)."""
     if _quantised_streaming_capability is None and all(
-        name in sys.modules for name in ("torch", "diffusers", "torchao", "core.inference.video")
+        (module := sys.modules.get(name)) is not None
+        and not getattr(getattr(module, "__spec__", None), "_initializing", False)
+        for name in (
+            "torch",
+            "torchao",
+            "diffusers",
+            "diffusers.hooks",
+            "diffusers.hooks.group_offloading",
+            "core.inference.video",
+        )
     ):
         try:
             return _refresh_quantised_streaming_capability()
