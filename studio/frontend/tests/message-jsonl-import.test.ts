@@ -7,6 +7,7 @@ import { after, before, test } from "node:test";
 import ts from "typescript";
 import { type ViteDevServer, createServer } from "vite";
 import { toolCallReplayArguments } from "../src/features/chat/tool-call-arguments.ts";
+import { codexLocalToolRoundId, startsNewCodexToolRound } from "../src/features/chat/codex-reasoning.ts";
 import type { ParsedConversation } from "../src/features/chat/types.ts";
 
 import { readSrc } from "./helpers/kit.ts";
@@ -38,6 +39,8 @@ function loadMessageToOpenAI(): typeof messageToOpenAI {
     unwrapPastedTextContent: (text: string) => text,
     toolResultModelText: (result: unknown) => result,
     toolCallReplayArguments,
+    codexLocalToolRoundId,
+    startsNewCodexToolRound,
   } as Record<string, unknown>;
   vm.runInNewContext(javascript, context);
   return context.__messageToOpenAI as typeof messageToOpenAI;
@@ -299,6 +302,33 @@ test("JSONL exports split Studio's back-to-back searches into rounds", () => {
     { role: "tool", tool_call_id: "a", name: "web_search", content: "No results found." },
     { role: "assistant", content: null, tool_calls: [webSearchCall("b", "second")] },
     { role: "tool", tool_call_id: "b", name: "web_search", content: "B" },
+    { role: "assistant", content: "Final." },
+  ]);
+});
+
+test("JSONL exports keep a Studio round's parallel searches in one turn", () => {
+  const round = (round_id: number) => ({ provenance: { source: "local", round_id } });
+  const exported = structuredClone(
+    messageToOpenAI({
+      role: "assistant",
+      content: [
+        { ...toolCallPart("a", "first", "A"), ...round(1) },
+        { ...toolCallPart("b", "second", "B"), ...round(1) },
+        { ...toolCallPart("c", "third", "C"), ...round(2) },
+        { type: "text", text: "Final." },
+      ],
+    }),
+  );
+  assert.deepEqual(exported, [
+    {
+      role: "assistant",
+      content: null,
+      tool_calls: [webSearchCall("a", "first"), webSearchCall("b", "second")],
+    },
+    { role: "tool", tool_call_id: "a", name: "web_search", content: "A" },
+    { role: "tool", tool_call_id: "b", name: "web_search", content: "B" },
+    { role: "assistant", content: null, tool_calls: [webSearchCall("c", "third")] },
+    { role: "tool", tool_call_id: "c", name: "web_search", content: "C" },
     { role: "assistant", content: "Final." },
   ]);
 });

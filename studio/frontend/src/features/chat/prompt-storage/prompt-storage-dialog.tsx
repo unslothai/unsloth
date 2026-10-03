@@ -78,6 +78,7 @@ import {
 import { notifyChatHistoryUpdated } from "../api/chat-api";
 import { toolResultModelText } from "../api/chat-adapter";
 import { toolCallReplayArguments } from "../tool-call-arguments";
+import { codexLocalToolRoundId, startsNewCodexToolRound } from "../codex-reasoning";
 import { usePlusMenuPrefsStore } from "../stores/plus-menu-prefs-store";
 import type { ThreadRecord, MessageRecord } from "../types";
 import {
@@ -341,6 +342,7 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
     let toolCalls: OAIToolCall[] = [];
     let toolResults: OAIMessage[] = [];
     let callCount = 0;
+    let roundId: number | null = null;
 
     const flush = () => {
       const content = textParts.join("\n\n") || null;
@@ -353,6 +355,7 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
       textParts = [];
       toolCalls = [];
       toolResults = [];
+      roundId = null;
     };
     const pushText = (text: string) => {
       if (!text.trim()) return;
@@ -369,6 +372,9 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
       } else if (p.type === "image" && typeof p.image === "string" && p.image) {
         pushText("[image attachment]");
       } else if (p.type === "tool-call") {
+        const callRoundId = codexLocalToolRoundId(p.provenance);
+        if (toolCalls.length > 0 && startsNewCodexToolRound(roundId, callRoundId)) flush();
+        if (callRoundId !== null) roundId = callRoundId;
         const id = typeof p.toolCallId === "string" ? p.toolCallId : `call_${callCount}`;
         callCount++;
         const name = typeof p.toolName === "string" ? p.toolName : "unknown";
@@ -383,7 +389,7 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
           const resultStr =
             typeof modelText === "string" ? modelText : JSON.stringify(modelText);
           toolResults.push({ role: "tool", tool_call_id: id, name, content: resultStr });
-          if ((p.provenance as { source?: unknown } | undefined)?.source === "local") flush();
+          if (callRoundId === null && (p.provenance as { source?: unknown } | undefined)?.source === "local") flush();
         }
       }
     }
