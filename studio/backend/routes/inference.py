@@ -20465,9 +20465,11 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
         else None
     )
     if extra is not None:
-        from core.inference.llama_keepwarm import inference_lifecycle_gate
+        from core.inference.llama_keepwarm import inference_lifecycle_gate, model_load_gate
 
-        async with inference_lifecycle_gate():
+        # Load gate first, as a load takes them: a reload of this model holds its ref while it
+        # waits on the lifecycle gate, so taking that alone would wait on a ref that cannot drain.
+        async with model_load_gate(), inference_lifecycle_gate():
             _raise_or_cancel_slot_generations(extra, force = request.force_cancel_active)
             # Past this unload's own ref, a ref is a request already routed here: let it start
             # or finish, then gate whatever it started, as above.

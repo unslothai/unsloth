@@ -608,6 +608,35 @@ def test_unloading_a_slot_waits_for_a_request_already_routed_to_it(backends, mon
     assert model_slots.slots == [] and not extra.llama.is_loaded
 
 
+def test_unloading_a_slot_waits_for_a_reload_of_it_queued_on_the_gate(backends, monkeypatch):
+    from core.inference.llama_keepwarm import inference_lifecycle_gate, model_load_gate
+
+    _, extra = backends
+    monkeypatch.setattr(inf, "release_chat_after_kept_models", lambda: True)
+    monkeypatch.setattr(inf, "_POST_CANCEL_DRAIN_TIMEOUT_S", 0.5)
+    seen = {}
+
+    async def reload():
+        # As load_model_gated: the load gate, a ref on the slot, then the lifecycle gate.
+        async with model_load_gate():
+            extra.refs += 1
+            await asyncio.sleep(0.3)
+            async with inference_lifecycle_gate():
+                seen["still_kept"] = extra in model_slots.slots
+            extra.refs -= 1
+
+    async def run():
+        task = asyncio.create_task(reload())
+        await asyncio.sleep(0.1)
+        await inf._unload_model_impl(UnloadRequest(model_path = "org/B-GGUF"), "s")
+        await task
+
+    asyncio.run(run())
+    # The reload finished on a slot still kept, and the unload ran after it.
+    assert seen == {"still_kept": True}
+    assert model_slots.slots == [] and not extra.llama.is_loaded
+
+
 def test_a_slot_server_leaves_the_primary_pidfile_alone(monkeypatch):
     import utils.process_lifetime as process_lifetime
     from core.inference.llama_cpp import LlamaCppBackend
