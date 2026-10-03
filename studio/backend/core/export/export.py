@@ -1105,8 +1105,9 @@ class ExportBackend:
                             "FP8/FP4 compressed-tensors export is not available for this model: it "
                             f"runs under transformers {_tf_ver}, but the installed llm-compressor "
                             f"supports transformers <= {_us._LLM_COMPRESSOR_MAX_TRANSFORMERS} and the "
-                            "llm-compressor-main runtime could not be provisioned (offline or "
-                            "UNSLOTH_DISABLE_LLMCOMPRESSOR_MAIN). Export to GGUF or 16-bit instead.",
+                            "llm-compressor-main runtime is not set up (install not approved, "
+                            "offline, UNSLOTH_DISABLE_LLMCOMPRESSOR_MAIN, or provisioning failed). "
+                            "Approve the install, or export to GGUF or 16-bit instead.",
                             None,
                         )
 
