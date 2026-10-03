@@ -240,7 +240,7 @@ from .diffusion_precision import (
     torchao_quantize_importable,
 )
 from .diffusion_te_prequant import te_prequant_pipe_kwargs
-from .diffusion_fast_load import start_load_prefetch, stop_prefetch
+from .diffusion_fast_load import start_load_prefetch, stop_prefetch, te_precast_components
 from .diffusion_denoiser_prequant import (
     DENOISER_COMPONENT,
     PIPELINE_SEED_DECLINED,
@@ -6329,8 +6329,9 @@ class DiffusionBackend:
                                     prequant_scheme = pipeline_seed_scheme,
                                     prequant_path_override = transformer_prequant_path,
                                     prequant_base_repo = base,
-                                    text_encoders_replaced = bool(text_encoder_quant)
-                                    and str(text_encoder_quant).lower() not in ("off", "none"),
+                                    text_encoders_replaced = te_precast_components(
+                                        fam, fetch_base, text_encoder_quant, target
+                                    ),
                                     cache_dir = hub_cache_dir(),
                                     logger = logger,
                                 )
