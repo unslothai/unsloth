@@ -8,6 +8,8 @@ No embedder is needed - the whole-doc path does no query embedding."""
 
 import json
 
+import pytest
+
 from core.rag import store, tool
 from core.rag.chunking import Chunk
 from core.inference import tools as inf_tools
@@ -456,6 +458,41 @@ def test_build_rag_autoinject_on_still_grounds_over_budget_doc_below_floor(rag_c
     result = inf_tools.build_rag_autoinject(
         _convo("Summarize this document"),
         {"thread_id": "t1", "autoinject": True, "autoinject_min_score": 0.7},
+    )
+    assert result is not None
+    assert "OVER_BUDGET_PASSAGE" in _injected_text(result)
+
+
+@pytest.mark.parametrize("autoinject", [True, False])
+def test_build_rag_autoinject_lexical_mode_still_grounds_generic_request(
+    rag_conn, monkeypatch, autoinject
+):
+    from core.rag import embeddings
+
+    _add_doc(
+        rag_conn,
+        store.thread_scope("t1"),
+        "d1",
+        "big.pdf",
+        "h1",
+        ["OVER_BUDGET_PASSAGE"],
+        tokens = [50_000],
+    )
+    monkeypatch.setattr(
+        embeddings,
+        "encode",
+        lambda texts, *, model_name = None, normalize = True: [[1.0, 0.0, 0.0, 0.0] for _ in texts],
+    )
+    monkeypatch.setattr(embeddings, "dim", lambda model_name = None: len(_VEC))
+
+    result = inf_tools.build_rag_autoinject(
+        _convo("Summarize this document"),
+        {
+            "thread_id": "t1",
+            "autoinject": autoinject,
+            "autoinject_min_score": 0.7,
+            "mode": "lexical",
+        },
     )
     assert result is not None
     assert "OVER_BUDGET_PASSAGE" in _injected_text(result)
