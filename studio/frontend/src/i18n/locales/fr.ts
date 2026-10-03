@@ -2505,6 +2505,7 @@ export const fr = {
       context: "Contexte",
       lr: "LR",
       hardware: "Matériel",
+      vram: "VRAM",
       noGpu: "Aucun GPU détecté",
       hfToken: "Token HF",
       saved: "Enregistré",

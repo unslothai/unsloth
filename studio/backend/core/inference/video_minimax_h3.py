@@ -1267,6 +1267,28 @@ H3_NATIVE_RESIDENT_ENV = "UNSLOTH_H3_NATIVE_RESIDENT"
 # Unsloth sd.cpp fork: quantized matmuls with >= this many rows run BF16 cuBLAS instead of int8 MMQ. Unset/0 = MMQ.
 H3_QUANT_CUBLAS_ENV = "GGML_CUDA_QUANT_CUBLAS_MIN_BATCH"
 H3_QUANT_CUBLAS_MIN_BATCH = "1024"
+# The fork's own floor (bf16_mma_hardware_available); below it the env changes nothing.
+H3_QUANT_CUBLAS_MIN_CC = (8, 0)
+
+
+def h3_quant_cublas_env(
+    cuda_cc: "Optional[tuple[int, int]]",
+    *,
+    sage: bool,
+    environ: Optional[dict] = None,
+) -> tuple[tuple[str, str], ...]:
+    """sd-cli env for the BF16 cuBLAS route: known sm80+ always, known older never, unknown
+    (``cuda_cc`` None) only with sage. A user-exported value (0 included) always wins."""
+    environ = os.environ if environ is None else environ
+    if H3_QUANT_CUBLAS_ENV in environ:
+        return ()
+    if cuda_cc is not None:
+        take = tuple(cuda_cc) >= H3_QUANT_CUBLAS_MIN_CC
+    else:
+        take = sage
+    return ((H3_QUANT_CUBLAS_ENV, H3_QUANT_CUBLAS_MIN_BATCH),) if take else ()
+
+
 # Denoiser compute buffer at 960x544x124, from sd-cli's log; scaled by pixel volume.
 H3_NATIVE_DIT_COMPUTE_BYTES_H1 = int(5.4 * 1024**3)
 H3_NATIVE_H1_PIXEL_VOLUME = 960 * 544 * 124
