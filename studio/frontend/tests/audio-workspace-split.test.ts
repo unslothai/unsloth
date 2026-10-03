@@ -94,3 +94,16 @@ test("each page tours its own model and settings", () => {
   assert.match(tour, /modelStep\(workflow\)/);
   assert.match(host, /buildAudioTourSteps\(\{ workflow: pageWorkflow \}\)/);
 });
+
+test("the rail heading switches pages from a menu of every workflow", () => {
+  // A tab row of 5-7 pages truncated every label in the default rail; the title menu lists them all.
+  const host = readSrc("features/audio/audio-page.tsx");
+  assert.doesNotMatch(host, /ariaLabel="Audio workflow"/);
+  assert.match(host, /<WorkflowTitleMenu\s+workflow=\{pageWorkflow\}\s+onSelect=\{transitionWorkflow\}/);
+  const menu = readSrc("features/audio/components/workflow-title-menu.tsx");
+  assert.match(menu, /data-tour="audio-mode"/);
+  assert.match(menu, /AUDIO_WORKFLOWS\.map\(\(tab\) =>/);
+  assert.match(menu, /\{tab\.hint\}/);
+  // Radio items: the current page is ticked and announced as checked.
+  assert.match(menu, /<DropdownMenuRadioGroup\s+value=\{current\.id\}/);
+});

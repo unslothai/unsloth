@@ -39,6 +39,7 @@ import {
 } from "./audio-page-policy";
 import { type CreateMode, deviceSizeBytes } from "./audio-workspace-utils";
 import { audioCapabilityLine, audioModelsForTask } from "./catalog";
+import { WorkflowTitleMenu } from "./components/workflow-title-menu";
 import { galleryCache, useAudioGallery, useWorkflowHistory } from "./hooks/use-audio-gallery";
 import { useAudioHandoff } from "./hooks/use-audio-handoff";
 import { useAudioModelSlot } from "./hooks/use-audio-model-slot";
@@ -53,11 +54,9 @@ import { type AudioPickerRow, audioRowMatchesWorkflow } from "./picker-filter";
 import { useAudioWorkspaceStore } from "./stores/audio-workspace-store";
 import { InstructionsField, MossLanguageField } from "./components/instructions-fields";
 import {
-  AUDIO_WORKFLOWS,
   type AudioWorkflowId,
   audioWorkflowTab,
   clipWorkflow,
-  isAudioWorkflowId,
   slotForWorkflow,
 } from "./workflows";
 
@@ -781,13 +780,10 @@ export function AudioPage({
           >
             {/* Same heading treatment as the Images and Video Create panes, so the media panes stay level (#7986). */}
             <div className="mb-2 grid gap-1.5">
-              <h2 className="flex items-center gap-2 font-heading text-xl font-medium leading-none text-foreground">
-                <HugeiconsIcon
-                  icon={workflowTab.icon}
-                  className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0"
-                />
-                {workflowTab.heading}
-              </h2>
+              <WorkflowTitleMenu
+                workflow={pageWorkflow}
+                onSelect={transitionWorkflow}
+              />
               <p className="text-ui-11p5 leading-snug text-muted-foreground">
                 {workflowTab.hint}
               </p>
@@ -796,21 +792,6 @@ export function AudioPage({
                 {capabilityLine}
               </p>
             </div>
-
-            <PillTabs
-              dataTour="audio-mode"
-              ariaLabel="Audio workflow"
-              value={pageWorkflow}
-              onValueChange={(v) => {
-                if (isAudioWorkflowId(v)) transitionWorkflow(v);
-              }}
-              fit={true}
-              className="h-[calc(30px*var(--ui-space-scale,1))] self-start [&>button]:h-[calc(30px*var(--ui-space-scale,1))] [&>button]:px-6"
-              tabs={AUDIO_WORKFLOWS.map(({ id, label }) => ({
-                value: id,
-                label,
-              }))}
-            />
 
             {mode === "speak" ? (
               (() => {

@@ -10,9 +10,10 @@ const modeStep: TourStep = {
   title: "Speak, Music or Transcribe",
   body: (
     <>
-      Speak turns text into speech, Music makes songs and sound effects, and
-      Transcribe turns a recording into text. Each lists only the models that
-      can do it, so the picker above follows the page.
+      Open the page title to switch pages. Speak turns text into speech, Music
+      makes songs and sound effects, and Transcribe turns a recording into
+      text. Each lists only the models that can do it, so the picker above
+      follows the page.
     </>
   ),
 };
