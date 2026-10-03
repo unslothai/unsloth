@@ -1272,9 +1272,22 @@ export const es = {
       },
       permissions: {
         sectionTitle: "Permisos",
-        bypassLabel: "Permisos de herramientas",
-        bypassDescription:
-          "Cómo aprueba Unsloth las llamadas a herramientas del chat (terminal, python, web, MCP) antes de ejecutarlas. El modo «Full access» desactiva las aprobaciones y el sandbox de código.",
+        names: {
+          ask: "Pedir aprobación",
+          auto: "Aprobar por mí",
+          off: "Ejecutar automáticamente",
+          full: "Acceso total",
+        },
+        details: {
+          ask:
+            "Pide aprobación antes de cada llamada a herramientas, incluido el código de terminal y Python, las búsquedas web, la edición de archivos y las herramientas MCP. Las herramientas que ejecuta un proveedor externo no se detienen. Ideal si quieres revisar cada paso.",
+          auto:
+            "Ejecuta por sí solo las llamadas habituales y solo pregunta cuando una acción parece arriesgada, como leer credenciales, elevar privilegios o ejecutar comandos destructivos.",
+          off:
+            "Ejecuta todas las llamadas a herramientas sin preguntar. El código de Python y terminal sigue ejecutándose en el sandbox, que limita a qué archivos de tu equipo puede acceder.",
+          full:
+            "Ejecuta todas las llamadas a herramientas sin preguntar y desactiva el sandbox de código, así el código de Python y terminal puede leer y cambiar cualquier archivo al que tenga acceso tu cuenta. Ideal para tareas de confianza que necesitan trabajar fuera del sandbox.",
+        },
       },
     },
     profile: {
