@@ -11,6 +11,7 @@ import { StripDropLine } from "@/components/gallery-strip-reorder";
 import { Button } from "@/components/ui/button";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { Progress } from "@/components/ui/progress";
+import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { ParamSlider } from "@/features/chat";
 import { formatRelativeShort } from "@/features/hub/lib/format";
@@ -304,6 +305,7 @@ export function TtsFooter({
   shortcutLabel,
   error,
   elapsedSeconds,
+  loadNote = null,
 }: Pick<
   SpeechGeneration,
   | "handleGenerate"
@@ -319,6 +321,8 @@ export function TtsFooter({
     shortcutLabel: string;
     error: GenerateBlocker | null;
     elapsedSeconds: number | null;
+    /** Said before a run that will load or switch the model first, e.g. "Loads Kokoro for Speak, about 5 s". */
+    loadNote?: string | null;
   }) {
   return (
     <div className="flex w-full max-w-sm flex-col gap-2">
@@ -343,8 +347,17 @@ export function TtsFooter({
           />
         </>
       ) : null}
+      {loadNote && !generationPresentation ? (
+        <p className="text-center text-ui-11p5 leading-snug text-muted-foreground">
+          {loadNote}
+        </p>
+      ) : null}
       <Button
-        className="relative z-10 mx-auto h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+        className={cn(
+          "relative z-10 mx-auto h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100",
+          // Same Stop as Images: outline, neutral hover. Destructive is for deleting, not for stopping.
+          generationPresentation && "hover:bg-muted dark:hover:bg-muted",
+        )}
         onClick={
           generationPresentation?.canStop
             ? handleStopGeneration
@@ -358,7 +371,7 @@ export function TtsFooter({
               (!prompt.trim() && !lyricsOptional) ||
               (musicNeedsDescription && !audioInstructions.trim())
         }
-        variant={generationPresentation?.canStop ? "destructive" : "default"}
+        variant={generationPresentation ? "outline" : "default"}
         aria-describedby={blocker ? "audio-generate-blocker" : undefined}
         aria-keyshortcuts="Control+Enter Meta+Enter"
         title={
@@ -370,8 +383,13 @@ export function TtsFooter({
             <HugeiconsIcon icon={StopIcon} className="mr-2 size-4" />
             Stop
           </>
+        ) : generationPresentation ? (
+          <>
+            <Spinner className="mr-2 size-4" />
+            {generationPresentation.actionLabel}
+          </>
         ) : (
-          (generationPresentation?.actionLabel ?? "Generate")
+          "Generate"
         )}
       </Button>
       {blocker && !generationPresentation ? (

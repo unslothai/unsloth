@@ -798,94 +798,98 @@ export function AudioPage({
             ref={attachSettingsScroll}
             onScroll={onSettingsScroll}
             className={cn(
-              "hover-scrollbar flex min-h-0 flex-1 flex-col gap-4 px-10 max-sm:px-5 pt-9 pb-6 @[50rem]:overflow-y-auto",
+              "hover-scrollbar flex min-h-0 flex-1 flex-col px-10 max-sm:px-5 pt-9 pb-12 @[50rem]:overflow-y-auto",
               mode === "speak"
                 ? "panel-scroll-fade-action"
                 : "panel-scroll-fade",
               settingsFadeClass,
             )}
           >
-            {/* Same heading treatment as the Images and Video Create panes, so the media panes stay level (#7986). */}
-            <div className="mb-2 grid gap-1.5">
-              <WorkflowTitleMenu
-                workflow={pageWorkflow}
-                onSelect={transitionWorkflow}
-              />
-              <p className="text-ui-11p5 leading-snug text-muted-foreground">
-                {workflowTab.hint}
-              </p>
-              {/* The always-on capability line: which task the selected model actually does. */}
-              <p className="text-xs leading-snug text-muted-foreground">
-                {capabilityLine}
-              </p>
-            </div>
+            {/* One child, so the scroll fades see the rail grow (they watch only the first child): with
+                the heading first, opening Advanced left the bottom fade over the last controls. */}
+            <div className="flex flex-col gap-4">
+              {/* Same heading treatment as the Images and Video Create panes, so the media panes stay level (#7986). */}
+              <div className="mb-2 grid gap-1.5">
+                <WorkflowTitleMenu
+                  workflow={pageWorkflow}
+                  onSelect={transitionWorkflow}
+                />
+                <p className="text-ui-11p5 leading-snug text-muted-foreground">
+                  {workflowTab.hint}
+                </p>
+                {/* The always-on capability line: which task the selected model actually does. */}
+                <p className="text-xs leading-snug text-muted-foreground">
+                  {capabilityLine}
+                </p>
+              </div>
 
-            {mode === "speak" ? (
-              (() => {
-                const railProps = {
-                  prompt,
-                  setPrompt,
-                  toolPanels: instructionsKind ? (
-                    <>
-                      <InstructionsField
-                        instructionsKind={instructionsKind}
-                        musicNeedsDescription={musicNeedsDescription}
-                        audioInstructions={audioInstructions}
-                        setAudioInstructions={setAudioInstructions}
-                      />
-                      {instructionsKind === "style" ? (
-                        <MossLanguageField
-                          audioLanguage={audioLanguage}
-                          setAudioLanguage={setAudioLanguage}
+              {mode === "speak" ? (
+                (() => {
+                  const railProps = {
+                    prompt,
+                    setPrompt,
+                    toolPanels: instructionsKind ? (
+                      <>
+                        <InstructionsField
+                          instructionsKind={instructionsKind}
+                          musicNeedsDescription={musicNeedsDescription}
+                          audioInstructions={audioInstructions}
+                          setAudioInstructions={setAudioInstructions}
                         />
-                      ) : null}
-                    </>
-                  ) : null,
-                  audioDevice,
-                  busy,
-                  isRecording,
-                  status,
-                  setAudioDeviceState,
-                  ttsLoaded,
-                  handleEject,
-                  samplingControls,
-                  audioOptionSpecs,
-                  advancedOpen,
-                  setAdvancedOpen,
-                  temperature,
-                  mossFrameLimit,
-                  handleTemperatureChange,
-                  musicSeconds,
-                  musicRange,
-                  setMinimaxMaxSeconds,
-                  cudaMusicGeneration,
-                  mossMaxSeconds,
-                  mossMaxSecondsLimit,
-                  setMossMaxSeconds,
-                  maxTokens,
-                  setMaxTokens,
-                  audioOptionValues,
-                  handleAudioOptionChange,
-                  handleAudioOptionsReset,
-                };
-                return ttsWorkflow === "music" ? (
-                  <MusicRail {...railProps} />
-                ) : (
-                  <SpeakRail {...railProps} />
-                );
-              })()
-            ) : (
-              <TranscribeRail
-                recordingSupported={recordingSupported}
-                isRecording={isRecording}
-                sttSelected={sttSelected}
-                lastSttRepo={lastSttRepo}
-                busy={busy}
-                micRequestPending={micRequestPending}
-                handleRecordToggle={handleRecordToggle}
-                handleTranscribeFile={handleTranscribeFile}
-              />
-            )}
+                        {instructionsKind === "style" ? (
+                          <MossLanguageField
+                            audioLanguage={audioLanguage}
+                            setAudioLanguage={setAudioLanguage}
+                          />
+                        ) : null}
+                      </>
+                    ) : null,
+                    audioDevice,
+                    busy,
+                    isRecording,
+                    status,
+                    setAudioDeviceState,
+                    ttsLoaded,
+                    handleEject,
+                    samplingControls,
+                    audioOptionSpecs,
+                    advancedOpen,
+                    setAdvancedOpen,
+                    temperature,
+                    mossFrameLimit,
+                    handleTemperatureChange,
+                    musicSeconds,
+                    musicRange,
+                    setMinimaxMaxSeconds,
+                    cudaMusicGeneration,
+                    mossMaxSeconds,
+                    mossMaxSecondsLimit,
+                    setMossMaxSeconds,
+                    maxTokens,
+                    setMaxTokens,
+                    audioOptionValues,
+                    handleAudioOptionChange,
+                    handleAudioOptionsReset,
+                  };
+                  return ttsWorkflow === "music" ? (
+                    <MusicRail {...railProps} />
+                  ) : (
+                    <SpeakRail {...railProps} />
+                  );
+                })()
+              ) : (
+                <TranscribeRail
+                  recordingSupported={recordingSupported}
+                  isRecording={isRecording}
+                  sttSelected={sttSelected}
+                  lastSttRepo={lastSttRepo}
+                  busy={busy}
+                  micRequestPending={micRequestPending}
+                  handleRecordToggle={handleRecordToggle}
+                  handleTranscribeFile={handleTranscribeFile}
+                />
+              )}
+            </div>
           </div>
           {mode === "speak" ? (
             /* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */
