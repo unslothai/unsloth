@@ -137,12 +137,17 @@ interface ModelSelectorProps {
   /** Also list community (non-unsloth) models for `task`. Opt-in: only pages whose runtime loads
    *  arbitrary publishers. */
   communityModelPolicy?: CommunityModelPolicy;
+  /** The one opaque on-device artifact kind this task runtime may load. */
+  opaqueKind?: "diffusers_pipeline" | "diffusers_modular_pipeline";
   /** Hub filter the Search Hub button opens with. Also shows Search Hub on curated task pickers. */
   hubCapability?: CapabilityKey;
   /** Trigger text when nothing is loaded. Defaults to "Select model"; task pages name what they
    *  pick so it reads as separate from the chat model. */
   placeholder?: string;
 }
+
+// Space before the description or suffix, drawn inside its box so it truncates away with the text.
+const GAP_BEFORE = "before:inline-block before:w-2 before:content-['']";
 
 function ModelSelectorTrigger({
   currentModel,
@@ -236,8 +241,8 @@ function ModelSelectorTrigger({
         ) : null}
         {/* No vertical offset, so the caps line up with the project switcher. */}
         <span className="flex min-w-0 flex-1 items-baseline">
-          {/* Name and quant stay whole; only the description truncates. The suffix sits outside this
-              group, so even an over-long name leaves room for it. */}
+          {/* The name gives way last: the suffix (format and quant), then the description, shrink
+              away first. Their far larger shrink factor makes that order effectively strict. */}
           <span className="flex min-w-0 items-baseline">
             <span
               className={cn(
@@ -257,8 +262,8 @@ function ModelSelectorTrigger({
             {subtitle && (
               <span
                 className={cn(
-                  "min-w-0 truncate text-xs leading-tight text-muted-foreground",
-                  showCloudIndicator ? "" : "ml-2",
+                  "min-w-0 shrink-[1000] truncate text-xs leading-tight text-muted-foreground",
+                  !showCloudIndicator && GAP_BEFORE,
                 )}
               >
                 {subtitle}
@@ -268,8 +273,8 @@ function ModelSelectorTrigger({
           {currentModel?.descriptionSuffix && (
             <span
               className={cn(
-                "shrink-0 whitespace-nowrap text-xs leading-none text-muted-foreground",
-                !subtitle && !showCloudIndicator && "ml-2",
+                "min-w-0 shrink-[1000000] truncate whitespace-nowrap text-xs leading-tight text-muted-foreground",
+                !subtitle && !showCloudIndicator && GAP_BEFORE,
               )}
             >
               {subtitle ? " - " : ""}
@@ -363,6 +368,7 @@ function ModelSelectorContent({
   task,
   catalog,
   communityModelPolicy,
+  opaqueKind,
 }: {
   open: boolean;
   models: ModelOption[];
@@ -393,6 +399,7 @@ function ModelSelectorContent({
   task?: HfTaskFilter;
   catalog?: CatalogGroup[];
   communityModelPolicy?: CommunityModelPolicy;
+  opaqueKind?: "diffusers_pipeline" | "diffusers_modular_pipeline";
 }) {
   const t = useT();
   const hasSelection = Boolean(value);
@@ -664,6 +671,7 @@ function ModelSelectorContent({
               task={task}
               catalog={catalog}
               communityModelPolicy={communityModelPolicy}
+              opaqueKind={opaqueKind}
               npu={npu}
               section={effectiveHubSection}
               sectionToggle={
@@ -726,6 +734,7 @@ export function ModelSelector({
   task,
   catalog,
   communityModelPolicy = "none",
+  opaqueKind,
   hubCapability,
   placeholder,
   loaded,
@@ -925,6 +934,7 @@ export function ModelSelector({
         task={task}
         catalog={catalog}
         communityModelPolicy={communityModelPolicy}
+        opaqueKind={opaqueKind}
       />
     </Popover>
   );

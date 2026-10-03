@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+// eslint-disable-next-line no-restricted-imports -- Keep the import-free payload helper independent of the picker UI.
+import { llamaCppConfigPayload } from "@/features/model-picker/model-config/llama-cpp-config";
 import { useChatArtifactsStore } from "./artifacts/store";
 import { mlxRuntimeStateFrom } from "./lib/mlx-runtime-state";
 import { offloadCountsFrom, offloadWarning } from "./lib/partial-offload";
@@ -20,6 +22,8 @@ import { useChatPreferencesStore } from "./stores/chat-preferences-store";
 import {
   composerSubmitIntent,
   composerShortcutLabels,
+  composerKeyEventForImeSubmit,
+  imeKeydownBlocksComposerSubmit,
 } from "./utils/composer-preferences";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
@@ -61,10 +65,11 @@ import {
   AUDIO_PICKER_ACCEPT,
   isAudioAttachmentFile,
   fileToBase64,
-  getAudioSizeError,
+  getAudioAddError,
 } from "@/lib/audio-utils";
 import { isTauri } from "@/lib/api-base";
 import { classifiedAttachmentFiles, isVideoFile } from "@/lib/video-utils";
+import { newAttachmentId } from "./audio-attachment-adapter";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { isMultimodalResponse } from "./types/api";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
@@ -129,6 +134,7 @@ import {
 } from "./api/prompts-api";
 import { PromptCountBadge } from "./prompt-storage/prompt-count-badge";
 import { McpComposerButton } from "./mcp-composer-button";
+import { SkillsComposerButton } from "./skills-composer-button";
 import { PermissionModeComposerPill } from "./permission-mode-select";
 import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
 import { resyncInferenceStatusAfterServerModelChange } from "./hooks/use-chat-model-runtime";
@@ -200,10 +206,12 @@ import {
   shouldPinDiffusionPlacement,
 } from "./lib/gpu-placement";
 import {
-  loadedGpuMemoryFields,
+  loadedLlamaCppConfigFields,
+  managedGpuMemoryFields,
   type ReasoningEffort,
   reconcilePersistedGpuIds,
-  resolveLoadedSpeculativeSettings,
+  managedKvCacheFields,
+  managedSpeculativeSettings,
   resolvePreserveThinkingOnLoad,
   persistGpuMemoryModeOnLoad,
   resolveSpeculativeSettingsForLoad,
@@ -632,14 +640,19 @@ export function SharedComposer({
   const [comparing, setComparing] = useState(false);
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [convertingImages, setConvertingImages] = useState(0);
-  const [pendingAudio, setPendingAudio] = useState<{
-    name: string;
-    base64: string;
-    contentType: string;
-  } | null>(null);
+  const [pendingAudio, setPendingAudio] = useState<
+    {
+      id: string;
+      name: string;
+      base64: string;
+      contentType: string;
+      size: number;
+    }[]
+  >([]);
   const textRef = useRef(text);
   const pendingImagesRef = useRef(pendingImages);
   const pendingAudioRef = useRef(pendingAudio);
+  const readingAudioRef = useRef(new Map<string, number>());
   const setCurrentText = useCallback(
     (value: string | ((previous: string) => string)) => {
       const next =
@@ -649,8 +662,6 @@ export function SharedComposer({
     },
     [],
   );
-  // Audio files still being read into base64, which pendingAudio cannot see yet.
-  const audioDecodingRef = useRef(0);
   // Attachments still classifying or converting; a ref so runPromptList reads it synchronously.
   const attachingRef = useRef(0);
   useEffect(() => {
@@ -719,6 +730,8 @@ export function SharedComposer({
     window.setTimeout(() => textareaRef.current?.focus(), 0);
   }, [pendingFixPrompt, setCurrentText]);
   const composingRef = useRef(false);
+  const imeSessionOpenRef = useRef(false);
+  const compositionEndedAtRef = useRef(-Infinity);
   const stuckImeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
@@ -993,6 +1006,18 @@ export function SharedComposer({
   const clearPendingAudioStore = useChatRuntimeStore(
     (s) => s.clearPendingAudio,
   );
+  // Mirror the first clip into the store's single-clip slot.
+  const mirroredAudioRef = useRef(false);
+  useEffect(() => {
+    const [first] = pendingAudio;
+    if (first) {
+      setPendingAudioStore(first.base64, first.name);
+      mirroredAudioRef.current = true;
+    } else if (mirroredAudioRef.current) {
+      clearPendingAudioStore();
+      mirroredAudioRef.current = false;
+    }
+  }, [pendingAudio, setPendingAudioStore, clearPendingAudioStore]);
 
   const {
     isDictating,
@@ -1114,30 +1139,46 @@ export function SharedComposer({
       const files = await classifiedAttachmentFiles(input);
       const next: PendingImage[] = [];
       let droppedImageForUnavailable = false;
-      let audioSizeError: string | null = null;
+      let audioAddError: string | null = null;
       let videoUnsupported = false;
       let conversionError: string | null = null;
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         if (!file) continue;
         if (isAudioAttachmentFile(file)) {
-          const sizeError = getAudioSizeError(file.size);
-          if (sizeError) {
-            audioSizeError ??= sizeError;
+          // Caps count staged clips and ones still being read by any batch.
+          const counted = [
+            ...pendingAudioRef.current.map((clip) => clip.size),
+            ...readingAudioRef.current.values(),
+          ];
+          const addError = getAudioAddError(
+            counted.length,
+            counted.reduce((total, size) => total + size, 0),
+            file.size,
+          );
+          if (addError) {
+            audioAddError ??= addError;
             continue;
           }
-          audioDecodingRef.current += 1;
-          fileToBase64(file)
-            .then((base64) => {
-              setPendingAudio({ name: file.name, base64, contentType: file.type });
-              setPendingAudioStore(base64, file.name);
-            })
-            .catch(() => {
-              toast.error("Could not read that audio file.");
-            })
-            .finally(() => {
-              audioDecodingRef.current -= 1;
-            });
+          const clip = {
+            id: newAttachmentId(),
+            name: file.name,
+            base64: "",
+            contentType: file.type,
+            size: file.size,
+          };
+          readingAudioRef.current.set(clip.id, clip.size);
+          try {
+            clip.base64 = await fileToBase64(file);
+          } catch {
+            toast.error("Could not read that audio file.");
+            continue;
+          } finally {
+            readingAudioRef.current.delete(clip.id);
+          }
+          // Updated now, not on commit, so the next check already counts it.
+          pendingAudioRef.current = [...pendingAudioRef.current, clip];
+          setPendingAudio((prev) => [...prev, clip]);
           continue;
         }
         // video_base64 targets the single loaded GGUF, so at most one side of a compare could answer. Say
@@ -1168,8 +1209,8 @@ export function SharedComposer({
       if (droppedImageForUnavailable && attachUnavailableReason) {
         toast.error(attachUnavailableReason);
       }
-      if (audioSizeError) {
-        toast.error(audioSizeError);
+      if (audioAddError) {
+        toast.error(audioAddError);
       }
       if (conversionError) {
         toast.error(conversionError);
@@ -1181,15 +1222,19 @@ export function SharedComposer({
       }
       setPendingImages((prev) => [...prev, ...next]);
     },
-    [setPendingAudioStore, attachUnavailableReason],
+    [attachUnavailableReason],
   );
 
+  // State mirror of attachingRef: holds sends until a whole batch is read.
+  const [addingFiles, setAddingFiles] = useState(0);
   const trackAttaching = useCallback(async (work: () => Promise<void>) => {
     attachingRef.current += 1;
+    setAddingFiles((count) => count + 1);
     try {
       await work();
     } finally {
       attachingRef.current -= 1;
+      setAddingFiles((count) => count - 1);
     }
   }, []);
 
@@ -1265,7 +1310,7 @@ export function SharedComposer({
   useEffect(() => () => clearStuckImeTimer(), []);
 
   async function send() {
-    if (composingRef.current || convertingImages > 0) {
+    if (composingRef.current || convertingImages > 0 || addingFiles > 0) {
       resetPromptQueue();
       return;
     }
@@ -1273,7 +1318,7 @@ export function SharedComposer({
     const submittedImages = pendingImages;
     const submittedAudio = pendingAudio;
     const msg = submittedText.trim();
-    if (!msg && submittedImages.length === 0 && !submittedAudio) {
+    if (!msg && submittedImages.length === 0 && submittedAudio.length === 0) {
       resetPromptQueue();
       return;
     }
@@ -1326,11 +1371,11 @@ export function SharedComposer({
       } catch {
       }
     }
-    if (submittedAudio) {
+    for (const clip of submittedAudio) {
       content.push({
         type: "audio",
-        name: submittedAudio.name,
-        audio: `data:${submittedAudio.contentType};base64,${submittedAudio.base64}`,
+        name: clip.name,
+        audio: `data:${clip.contentType};base64,${clip.base64}`,
       });
     }
     if (msg) {
@@ -1386,7 +1431,7 @@ export function SharedComposer({
     const clearSubmittedDraft = () => {
       setCurrentText("");
       setPendingImages([]);
-      setPendingAudio(null);
+      setPendingAudio([]);
       clearPendingAudioStore();
       textareaRef.current?.focus();
     };
@@ -1644,6 +1689,23 @@ export function SharedComposer({
         // active model's shared snapshot, which resolveFitMaxSeqLength would treat as a pin. A GGUF pane
         // with no explicit context loads at native (0 -> n_ctx_train), not the session maxSeqLength.
         const effectiveCustomContextLength = ownConfig.customContextLength;
+        const paneEngine = targetIsGguf ? "auto" : (ownConfig.engine ?? "auto");
+        const paneEngineFields = {
+          engine: paneEngine,
+          engine_precision: ownConfig.enginePrecision ?? "auto",
+          engine_parallelism: ownConfig.engineParallelism ?? "tensor",
+          load_in_4bit: paneEngine === "auto",
+          ...(paneEngine !== "auto" && ownConfig.selectedGpuIds !== undefined
+            ? {
+                gpu_ids:
+                  reconcilePersistedGpuIds(
+                    ownConfig.selectedGpuIds,
+                    ownConfig.selectedGpuIndexKind,
+                    false,
+                  ) ?? undefined,
+              }
+            : {}),
+        };
         let loadTrustRemoteCode = trustRemoteCode;
         let approvedRemoteCodeFingerprint: string | null = null;
         // Size validation exactly as the load below, so the training-guard preflight checks the footprint
@@ -1661,7 +1723,7 @@ export function SharedComposer({
           model_path: sel.id,
           hf_token: currentStore.hfToken || null,
           max_seq_length: compareMaxSeqLength,
-          load_in_4bit: true,
+          ...paneEngineFields,
           is_lora: sel.isLora,
           gguf_variant: sel.ggufVariant ?? null,
           trust_remote_code: loadTrustRemoteCode,
@@ -1688,6 +1750,9 @@ export function SharedComposer({
                   : ownConfig.reasoningBudgetMessage,
                 // Only when this panel has read the stored value: omitted, the load inherits it, which is what
                 // keeps CLI-set flags working.
+                ...llamaCppConfigPayload(ownConfig.llamaCppConfig, {
+                  isDiffusion: resolvedIsDiffusion === true,
+                }),
                 ...(ownConfig.llamaExtraArgs !== undefined
                   ? // biome-ignore lint/style/useNamingConvention: API schema
                     { llama_extra_args: ownConfig.llamaExtraArgs ?? [] }
@@ -1758,7 +1823,7 @@ export function SharedComposer({
           load_request_id: loadRequestId,
           hf_token: useChatRuntimeStore.getState().hfToken || null,
           max_seq_length: compareMaxSeqLength,
-          load_in_4bit: true,
+          ...paneEngineFields,
           is_lora: sel.isLora,
           gguf_variant: sel.ggufVariant ?? null,
           trust_remote_code: loadTrustRemoteCode,
@@ -1788,6 +1853,9 @@ export function SharedComposer({
                 n_cpu_moe: effectiveNCpuMoe,
                 tensor_split: compareLoadKnobs.splitRatio ?? undefined,
                 gpu_ids: effectiveSelectedGpuIds ?? undefined,
+                ...llamaCppConfigPayload(ownConfig.llamaCppConfig, {
+                  isDiffusion: resolvedIsDiffusion === true,
+                }),
                 ...(ownConfig.llamaExtraArgs !== undefined
                   ? // biome-ignore lint/style/useNamingConvention: API schema
                     { llama_extra_args: ownConfig.llamaExtraArgs ?? [] }
@@ -1884,8 +1952,7 @@ export function SharedComposer({
           supportsPreserveThinking: resp.supports_preserve_thinking ?? false,
           preserveThinking: resolvePreserveThinkingOnLoad(resp),
           supportsTools: resp.supports_tools ?? false,
-          kvCacheDtype: resp.cache_type_kv ?? null,
-          loadedKvCacheDtype: resp.cache_type_kv ?? null,
+          ...managedKvCacheFields(resp),
           ...mlxRuntimeStateFrom(resp),
           // Click-time value, not the resolved echo (see the single-model load).
           nParallel: committedSlots,
@@ -1923,12 +1990,16 @@ export function SharedComposer({
             : clearedServerTuningState()),
           // What this pane's launch is running, for a later rollback: the status applier is held off for
           // the whole load, so a switch straight after would snapshot the other model's list.
+          ...loadedLlamaCppConfigFields(resp, ownConfig.llamaCppConfig),
           loadedLlamaExtraArgs:
             resp.requested_llama_extra_args !== undefined
               ? (resp.requested_llama_extra_args ?? [])
               : (ownConfig.llamaExtraArgs ?? null),
           tensorParallel: resp.tensor_parallel ?? false,
           loadedTensorParallel: resp.tensor_parallel ?? false,
+          loadedEngine: resp.engine ?? "auto",
+          loadedEnginePrecision: resp.engine_precision ?? "auto",
+          loadedEngineParallelism: resp.engine_parallelism ?? "tensor",
           loadedDisableVision: resp.disable_vision ?? false,
           // Adopted from the echo like the knob above: this pane loaded its own model, so the editable
           // value must follow it or Advanced Settings shows the other pane's Vision state.
@@ -1941,7 +2012,7 @@ export function SharedComposer({
           loadedCustomContextLength: keepCustomCtx,
           // Adopt the load response's GPU-memory fields (mode/layers/MoE/split/pick plus loaded baselines)
           // so the GPU controls round-trip. The context group and native-path token/expiry clear below.
-          ...loadedGpuMemoryFields(resp),
+          ...managedGpuMemoryFields(resp),
           // Drives the GPU Memory controls' diffusion gate; set alongside the GPU fields on every load path
           // so the gate cannot read stale.
           loadedIsDiffusion: resp.is_diffusion ?? false,
@@ -1958,7 +2029,7 @@ export function SharedComposer({
           // lease. Clear any prior picked file's token/expiry so the reload path never sends a stale one.
           activeNativePathToken: null,
           activeNativePathExpiresAtMs: null,
-          ...resolveLoadedSpeculativeSettings(resp),
+          ...managedSpeculativeSettings(resp),
         });
         if (!targetIsGguf) {
           // Non-GGUF panes carry their context in params.maxSeqLength.
@@ -2186,13 +2257,25 @@ export function SharedComposer({
   const busy = running || comparing;
 
   function onKeyDown(e: KeyboardEvent) {
+    const msSinceCompositionEnd = e.timeStamp - compositionEndedAtRef.current;
+    compositionEndedAtRef.current = -Infinity;
     // IME composition (JP/CN/KR): Enter commits the candidate, so do not hijack it (#5318). Re-pin
     // composingRef in case the stuck watchdog (#5546) cleared it during a long candidate-window pause,
     // and re-arm the watchdog on the same path, or the WSL+Chrome no-compositionend case pins it forever.
-    if (e.nativeEvent.isComposing || e.keyCode === 229) {
-      composingRef.current = true;
-      refreshStuckImeTimer();
-      return;
+    const imeKey = e.nativeEvent.isComposing || e.keyCode === 229;
+    if (imeKey) {
+      if (
+        imeKeydownBlocksComposerSubmit(
+          e,
+          imeSessionOpenRef.current,
+          msSinceCompositionEnd,
+        )
+      ) {
+        composingRef.current = true;
+        refreshStuckImeTimer();
+        return;
+      }
+      setCompositionState(false);
     }
     // Non-IME key while composingRef is stuck; mirrors the fix in thread.tsx. On macOS, switching
     // input methods without composing can leave composingRef pinned.
@@ -2207,7 +2290,13 @@ export function SharedComposer({
       }
       setCompositionState(false);
     }
-    if (composerSubmitIntent(e, sendShortcut, text)) {
+    if (
+      composerSubmitIntent(
+        imeKey ? composerKeyEventForImeSubmit(e) : e,
+        sendShortcut,
+        text,
+      )
+    ) {
       e.preventDefault();
       if (!busy && !isDictating) {
         send();
@@ -2218,11 +2307,12 @@ export function SharedComposer({
   const canSend =
     (text.trim().length > 0 ||
       pendingImages.length > 0 ||
-      pendingAudio !== null) &&
+      pendingAudio.length > 0) &&
     !busy &&
     !isComposing &&
     !isDictating &&
     convertingImages === 0 &&
+    addingFiles === 0 &&
     !sendUnavailableReason;
 
   // Compare mode swaps this composer in for the single-chat one and only one is ever on screen, so the
@@ -2312,8 +2402,7 @@ export function SharedComposer({
       // Only the first send would carry staged attachments; refuse rather than clear.
       if (
         pendingImagesRef.current.length > 0 ||
-        pendingAudioRef.current ||
-        audioDecodingRef.current > 0 ||
+        pendingAudioRef.current.length > 0 ||
         attachingRef.current > 0
       ) {
         toast.error("Remove the staged attachment before running a list", {
@@ -2584,20 +2673,22 @@ export function SharedComposer({
             onRemove={() => removePendingImage(id)}
           />
         ))}
-        {pendingAudio && (
+        {pendingAudio.map((clip) => (
           <div
+            key={clip.id}
             data-composer-attachment="audio"
             className="flex items-center gap-2 rounded-lg border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted px-3 py-1.5 text-xs"
           >
             <HeadphonesIcon className="size-3.5 text-muted-foreground" />
             <span data-reload-snapshot-sensitive className="max-w-48 truncate">
-              {pendingAudio.name}
+              {clip.name}
             </span>
             <button
               type="button"
               onClick={() => {
-                setPendingAudio(null);
-                clearPendingAudioStore();
+                setPendingAudio((prev) =>
+                  prev.filter((other) => other.id !== clip.id),
+                );
               }}
               className="flex size-4 items-center justify-center rounded-full hover:bg-destructive hover:text-destructive-foreground"
               aria-label="Remove audio"
@@ -2605,7 +2696,7 @@ export function SharedComposer({
               <XIcon className="size-3" />
             </button>
           </div>
-        )}
+        ))}
       </div>
       {skillMentions.popover}
       <ComposerDraftPreview text={text} />
@@ -2634,12 +2725,15 @@ export function SharedComposer({
           );
         }}
         onCompositionStart={() => {
+          imeSessionOpenRef.current = true;
           setCompositionState(true);
         }}
         onCompositionUpdate={() => {
           refreshStuckImeTimer();
         }}
         onCompositionEnd={(e: CompositionEvent<HTMLTextAreaElement>) => {
+          imeSessionOpenRef.current = false;
+          compositionEndedAtRef.current = e.timeStamp;
           setCompositionState(false);
           setCurrentText(e.currentTarget.value);
         }}
@@ -2650,6 +2744,7 @@ export function SharedComposer({
         onBlur={() => {
           // Mac: switching input methods can fire compositionstart without a matching compositionend,
           // leaving composingRef pinned. The OS always commits or cancels before focus is lost.
+          imeSessionOpenRef.current = false;
           setCompositionState(false);
 
           skillMentions.close();
@@ -2685,6 +2780,7 @@ export function SharedComposer({
             ref={audioInputRef}
             type="file"
             accept={AUDIO_PICKER_ACCEPT}
+            multiple
             className="hidden"
             onChange={(e) => {
               void addFiles(e.target.files);
@@ -2960,6 +3056,7 @@ export function SharedComposer({
             </button>
           ) : null}
           {mcpEnabledForChat ? <McpComposerButton side="top" /> : null}
+          <SkillsComposerButton side="top" />
         </div>
         {/* mr-0.5 matches the send button inset from the edge in normal chat; gap-1.5 matches its control spacing. */}
         <div className="ml-auto mr-0.5 flex items-center gap-1.5">

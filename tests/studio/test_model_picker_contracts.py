@@ -508,9 +508,19 @@ def test_active_model_config_round_trips_gpu_fields():
         "nCpuMoe",
         "selectedGpuIds",
         "selectedGpuIndexKind",
+        "llamaExtraArgs",
+        "loadedLlamaExtraArgs",
     ):
         assert field in src, field
-    assert "if (!isGguf)" in src and "return base" in src
+    # Only GGUF carries the offload knobs; an optional engine keeps just its GPU pick.
+    flat = " ".join(src.split())
+    assert "if (!isGguf) {" in flat and ": base; }" in flat
+    assert (
+        'engine === "vllm" || engine === "sglang" ? { ...base, selectedGpuIds, selectedGpuIndexKind }'
+        in flat
+    )
+    assert "loadedLlamaExtraArgs != null" in src
+    assert "llamaExtraArgs: [...loadedLlamaExtraArgs]" in src
     assert "useActiveModelConfig(" in _read("features/chat/chat-page.tsx")
     # Live config sync is in the shared draft store; instance keys still remount on signature.
     shared = _read("features/model-picker/model-config/config-signature.ts")
@@ -704,7 +714,7 @@ def test_gguf_vision_capability_is_threaded_through_deferred_chat_load():
 def test_local_picker_rows_require_chat_capability():
     """Local inventory rows can be classified non-chat (canChat false, e.g."""
     src = _read("features/model-picker/inventory/use-chat-picker-inventory.ts")
-    memo = re.search(r"const localModels = useMemo\(.*?\[inventory\.localRows", src, re.S)
+    memo = re.search(r"const localModels = useMemo\(.*?\[\s*inventory\.localRows", src, re.S)
     assert memo, "localModels memo not found"
     assert "row.capabilities.canChat" in memo.group(0)
 
@@ -1226,7 +1236,7 @@ def test_context_commit_rechecks_persistence_only_shortcut():
     """Committed context changes must bypass persistence-only saves."""
     src = _read("features/model-picker/components/model-config-page.tsx")
     assert "const effectiveConfig =" in src
-    assert "perModelConfigsEqual(effectiveConfig, baseline)" in src
+    assert "perModelConfigsEqual(effectiveConfig, baseline, {" in src
     assert "const effectivePersistenceOnly =" in src
     assert "if (effectivePersistenceOnly)" in src
 
@@ -1548,7 +1558,10 @@ def test_forget_settings_is_not_locked_by_unloadable_extra_args():
     """Forget only deletes, so invalid saved llama args must not lock it: the args gates
     apply to a save only."""
     gate = " ".join(_save_button_gate().split())
-    assert "(remember && ((!extraArgsLoadable && !sharedExtraArgsCleared) ||" in gate, gate
+    assert re.search(
+        r"\(remember && \((?:\([^()]*\) \|\| )?\(!extraArgsLoadable && !sharedExtraArgsCleared\) \|\|",
+        gate,
+    ), gate
     assert "sharedExtraArgsRefused || extraArgsHydrating))" in gate, gate
 
 
@@ -1646,6 +1659,16 @@ def test_a_routed_local_single_file_pick_keeps_its_load_kind():
         assert "diffusionRoutePick(" in src, f"{rel}: route pick not derived"
         # And the derived pick is what gets loaded, not the raw search params.
         assert re.search(r"loadOrStage\(\s*pick\.repoId,\s*pick\.opts", src), rel
+
+
+def test_video_reapply_recovers_a_resident_pipeline_target_after_remount():
+    """Reapply after refresh rebuilds target, logical identity and H3 partition from status."""
+    src = _read("features/video/video-page.tsx")
+    assert 'status?.model_kind !== "pipeline"' in src
+    assert "displayRepoId: status.display_repo_id ?? undefined," in src
+    assert 'status.h3_task === "fl2va" || status.h3_task === "ref2va"' in src
+    assert "lastLoad.current = {" in src
+    assert "setCanReapply(true);" in src
 
 
 def test_a_routed_curated_pick_uses_the_same_load_spec_as_a_direct_one():
@@ -2086,13 +2109,18 @@ def test_staged_downloads_always_scope_their_files():
     it would finish instantly having fetched everything except the weights and leave the
     repo on device unloadable."""
     src = _read("features/hub/download-manager/use-staged-download.ts")
-    start = re.search(r"downloadManager\.requestStart\(\{.*?\}\);", src, re.S)
+    # A GGUF quant entry goes out as the standard variant download (its plan brings companions);
+    # every other entry is the scoped branch.
+    start = re.search(r"downloadManager\.requestStart\(.*?\n      \);", src, re.S)
     assert start, "requestStart call not found"
     body = start.group(0)
     # Unconditional: no branch may send a null scope or omit the files.
     assert "scopeId," in body and "files: current.files," in body
     assert "? null" not in body and "? undefined" not in body
-    assert "const activeVariant = current ? scopedVariant(scopeId) : null;" in src
+    assert re.search(
+        r"const activeVariant = current\s*\?\s*\(current\.ggufVariant \?\? scopedVariant\(scopeId\)\)\s*:\s*null;",
+        src,
+    )
 
 
 def test_staged_downloads_use_one_actionable_download_surface():
@@ -2121,23 +2149,23 @@ def test_staged_plans_label_the_checkpoint_without_guessing_from_the_extension()
     alone is not enough -- a checkpoint sharing its repo with the companions, and already
     cached, leaves an entry of companion files that would still claim to be the model."""
     for page in ("images/images-page.tsx", "video/video-page.tsx"):
-        src = _read(f"features/{page}")
-        entries = re.search(r"plan\.entries\.map\(\(e\) => \(\{.*?\}\)\)", src, re.S)
-        assert entries, f"{page} does not map the plan entries into staged downloads"
-        assert "e.files.includes(opts.filename)" in entries.group(
-            0
-        ), f"{page} does not mark the picked repo's entry as the checkpoint"
-        # The plan's own answer wins over both local guesses. A gated pipeline is staged from an
-        # ungated MIRROR, so its entry no longer carries the id we picked and the repo-id test
-        # reads the whole selected model as "Required assets". Only the planner knows about the
-        # swap. `??`, not `||`: a planner that answers false must not fall through to a guess.
-        assert "e.checkpoint ??" in entries.group(
-            0
-        ), f"{page} ignores the checkpoint flag the plan carried"
+        assert "diffusionStagingEntries(plan.entries" in _read(
+            f"features/{page}"
+        ), f"{page} does not map the plan entries into staged downloads"
+    page = "lib/diffusion-pipeline-load-target.ts"
+    entries = re.search(r"entries\s*\.map\(\(e\) => \(\{.*?\}\)\)", _read(page), re.S)
+    assert entries, f"{page} does not map the plan entries into staged downloads"
+    assert "e.files.includes(opts.filename)" in entries.group(
+        0
+    ), f"{page} does not mark the picked repo's entry as the checkpoint"
+    # The plan's answer wins (only it knows a gated pipeline is staged from an ungated mirror); false is final.
+    assert "e.checkpoint ??" in entries.group(
+        0
+    ), f"{page} ignores the checkpoint flag the plan carried"
 
     staged = _read("features/hub/download-manager/use-staged-download.ts")
     assert "checkpoint?: boolean;" in staged
-    start = re.search(r"downloadManager\.requestStart\(\{.*?\}\);", staged, re.S)
+    start = re.search(r"downloadManager\.requestStart\(.*?\n      \);", staged, re.S)
     assert start, "requestStart call not found"
     assert "checkpoint: current.checkpoint," in start.group(0)
 

@@ -5705,6 +5705,54 @@ PY
     fi
 fi
 
+# ── audio.cpp (speech, music and dictation engine) ──
+# audio.cpp vendors its own patched ggml, so its bundles are self-contained and do not pair with
+# the llama install. Fail-open like whisper.cpp: every other audio engine keeps working.
+AUDIO_CPP_DIR="$UNSLOTH_HOME/audio.cpp"
+if [ -n "${AUDIOCPP_SERVER_PATH:-}" ] || [ -n "${UNSLOTH_AUDIO_CPP_PATH:-}" ]; then
+    verbose_substep "audio.cpp: using a user-configured binary/dir; skipping managed install"
+elif [ "${UNSLOTH_SKIP_AUDIO_CPP_INSTALL:-0}" = "1" ]; then
+    verbose_substep "audio.cpp: install skipped (UNSLOTH_SKIP_AUDIO_CPP_INSTALL=1)"
+elif [ -f "$SCRIPT_DIR/install_audio_cpp_prebuilt.py" ]; then
+    if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ]; then
+        _assert_studio_owned_or_absent "$AUDIO_CPP_DIR" "audio.cpp install" "$_RUNTIME_ROOT_IS_CUSTOM"
+    fi
+    _AUDIO_CPP_CMD=(python "$SCRIPT_DIR/install_audio_cpp_prebuilt.py" --install-dir "$AUDIO_CPP_DIR")
+    # A host whose GPU is invisible at install time (a Docker image build) names its bundle here.
+    if [ -n "${UNSLOTH_AUDIO_CPP_ACCELERATOR:-}" ]; then
+        _AUDIO_CPP_CMD+=(--accelerator "$UNSLOTH_AUDIO_CPP_ACCELERATOR")
+    fi
+    _AUDIO_CPP_LOG="$(mktemp)"
+    set +e
+    if _is_verbose || [ "${UNSLOTH_TAURI_UPDATE:-0}" = "1" ] || [ "${UNSLOTH_TAURI_UPDATE:-0}" = "true" ]; then
+        "${_AUDIO_CPP_CMD[@]}" 2>&1 | tee "$_AUDIO_CPP_LOG" | _filter_download_output
+        _AUDIO_CPP_STATUS=${PIPESTATUS[0]}
+    else
+        "${_AUDIO_CPP_CMD[@]}" >"$_AUDIO_CPP_LOG" 2>&1
+        _AUDIO_CPP_STATUS=$?
+    fi
+    set -e
+    if [ "$_AUDIO_CPP_STATUS" -eq 0 ]; then
+        if grep -Fq "already matches" "$_AUDIO_CPP_LOG"; then
+            step "audio.cpp" "prebuilt up to date"
+        elif grep -Fq "keeping the existing complete install" "$_AUDIO_CPP_LOG"; then
+            # The release lookup could not answer and the install on disk is complete; "prebuilt
+            # installed" would name a release nothing fetched. whisper.cpp's wording.
+            step "audio.cpp" "update unavailable, existing prebuilt kept" "$C_WARN"
+        else
+            step "audio.cpp" "prebuilt installed"
+        fi
+        if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ] && [ -d "$AUDIO_CPP_DIR" ]; then
+            : > "$AUDIO_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
+        fi
+    elif [ "$_AUDIO_CPP_STATUS" -eq 3 ]; then
+        step "audio.cpp" "install busy; keeping existing runtime" "$C_WARN"
+    else
+        step "audio.cpp" "prebuilt install failed; audio.cpp models are unavailable; retry setup or inspect verbose output; other audio engines remain available" "$C_WARN"
+    fi
+    rm -f "$_AUDIO_CPP_LOG"
+fi
+
 # Named in the footer: every path to a lost GPU exits 0, and a mid-log line is what #9255's reporters scrolled past.
 _print_llama_gpu_notes() {
     if [ -n "$_LLAMA_KEPT_GPU_PREBUILT" ]; then

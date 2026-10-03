@@ -63,19 +63,19 @@ test("the catalog states the hosted checkpoint each official row would be fetche
 
 test("the fit verdict is the quantised resident size on a host that runs a scheme", () => {
   assert.equal(
-    curatedArtifactFitsDevice(Z_TURBO, IMAGE_CATALOG, onCard(40)),
+    curatedArtifactFitsDevice(Z_TURBO, IMAGE_CATALOG, onCard(24)),
     false,
   );
   assert.equal(
-    curatedArtifactFitsDevice(Z_TURBO, IMAGE_CATALOG, onCard(40, ["fp8"])),
-    true,
-  );
-  assert.equal(
-    curatedArtifactFitsDevice(Z_TURBO, IMAGE_CATALOG, onCard(40, ["int8"])),
-    true,
-  );
-  assert.equal(
     curatedArtifactFitsDevice(Z_TURBO, IMAGE_CATALOG, onCard(24, ["fp8"])),
+    true,
+  );
+  assert.equal(
+    curatedArtifactFitsDevice(Z_TURBO, IMAGE_CATALOG, onCard(24, ["int8"])),
+    true,
+  );
+  assert.equal(
+    curatedArtifactFitsDevice(Z_TURBO, IMAGE_CATALOG, onCard(16, ["fp8"])),
     false,
   );
 });
@@ -118,7 +118,7 @@ test("the 2512 pick is judged by the checkpoint the backend seeds for it, not by
 
 test("a host with no scheme, and a row with no hosted checkpoint, are unchanged", () => {
   assert.equal(
-    curatedArtifactFitsDevice(Z_TURBO, IMAGE_CATALOG, onCard(40, [])),
+    curatedArtifactFitsDevice(Z_TURBO, IMAGE_CATALOG, onCard(24, [])),
     false,
   );
   for (const id of ["black-forest-labs/FLUX.1-dev", "stabilityai/sdxl-turbo"]) {
@@ -134,20 +134,20 @@ test("the router sends a card that only fits the quantised form to the official 
   const group = groupForRepoId(Z_TURBO, IMAGE_CATALOG);
   assert.ok(group);
   assert.equal(
-    pickDefaultArtifact(group, { ...onCard(40), isDownloaded: notDownloaded })
+    pickDefaultArtifact(group, { ...onCard(24), isDownloaded: notDownloaded })
       .format,
     "bnb-4bit",
   );
   assert.equal(
     pickDefaultArtifact(group, {
-      ...onCard(40, ["fp8"]),
+      ...onCard(24, ["fp8"]),
       isDownloaded: notDownloaded,
     }).repoId,
     Z_TURBO,
   );
   assert.equal(
     pickDefaultArtifact(group, {
-      ...onCard(24, ["fp8"]),
+      ...onCard(16, ["fp8"]),
       isDownloaded: notDownloaded,
     }).format,
     "bnb-4bit",
@@ -314,10 +314,10 @@ test("the over-budget text never shows the size below the budget it exceeds", ()
     assert.ok(budget);
     return curatedBudgetText(Math.round(fit.sizeGb), gpuGb, budget);
   };
-  // 24.40 GB rounds to 24, under the 24.1 budget, so it is shown rounded up.
+  // 13.50 GB rounds to 13, under the 13.3 budget, so it is shown rounded up.
   assert.equal(
-    text(Z_TURBO, 34.5),
-    "Needs ~24.4GB for weights (budget: ~24.1GB, 70% of a 34.5GB GPU)",
+    text(Z_TURBO, 19),
+    "Needs ~13.5GB for weights (budget: ~13.3GB, 70% of a 19GB GPU)",
   );
   // A whole 4 GB against a 3.99 allowance: the budget is rounded down so 4.0 still reads as over.
   const whisper = curatedArtifactFit("unsloth/whisper-large-v3", AUDIO_CATALOG, {

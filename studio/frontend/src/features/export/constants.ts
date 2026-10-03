@@ -398,7 +398,7 @@ export function adapterCompatibilityTip(
   }
   return (
     base +
-    "loads in transformers, vLLM, and Unsloth Studio on GPU machines, and " +
+    "loads in transformers, vLLM, and Unsloth on GPU machines, and " +
     "is required for GGUF adapter export."
   );
 }

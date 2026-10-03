@@ -2,9 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import type { en } from "./en";
+import { en } from "./en.ts";
 
 export const zhCN = {
+  // English fallback until this experimental feature is translated.
+  managedEngines: en.managedEngines,
   composerSettings: {
     title: "消息输入",
     plainText: "纯文本输入",
@@ -215,6 +217,45 @@ export const zhCN = {
       actions: "操作",
       chat: "聊天",
       searchChats: "搜索聊天...",
+    },
+    search: {
+      placeholder: "搜索",
+      tabs: {
+        all: "全部",
+        chats: "聊天",
+        projects: "项目",
+        files: "文件",
+        models: "模型",
+      },
+      recents: "最近",
+      actions: "操作",
+      newChat: "新聊天",
+      newTemporaryChat: "新建临时聊天",
+      fineTune: "微调模型",
+      generateImage: "生成图像",
+      generateVideo: "生成视频",
+      untitledChat: "未命名聊天",
+      compare: "对比",
+      loading: "加载中...",
+      empty: {
+        all: "暂无可搜索的内容。",
+        chats: "暂无聊天。",
+        projects: "暂无项目。",
+        files: "你的资料库中暂无文件。",
+        models: "暂无已下载的模型。",
+      },
+      noMatches: "无结果。",
+      when: {
+        today: "今天",
+        pastWeek: "过去一周",
+        pastMonth: "过去一个月",
+        older: "更早",
+      },
+      footer: {
+        close: "关闭",
+        changeType: "切换类型",
+        open: "打开",
+      },
     },
     notFound: {
       title: "页面未找到",
@@ -1318,20 +1359,13 @@ export const zhCN = {
           wide: "宽",
           full: "全宽",
         },
-        composerAttachments: {
-          label: "输入框中的附件",
-          description:
-            "使用会撑大输入框的大卡片，或紧凑的一行小图块。",
-          cards: "大卡片",
-          compact: "紧凑图块",
-        },
         sentAttachments: {
           label: "已发送消息中的附件",
           description:
-            "显示各文件类型的列表，或小标签。超过六个文件时，“自动”会切换为小标签。",
+            "标准会显示每个文件及其类型，紧凑会在每行显示更多文件。超过六个文件时，“自动”会切换为紧凑。",
           auto: "自动",
-          list: "列表",
-          chips: "小标签",
+          list: "标准",
+          chips: "紧凑",
         },
         reset: "重置",
         resetAll: "重置自定义",
@@ -1767,9 +1801,6 @@ export const zhCN = {
         "粘贴的文本达到 {count} 个字符时会转为 .txt 附件，较短的文本则保留在消息输入框中。",
       pastedTextOffDescription:
         "无论长度如何，粘贴的文本都会保留在消息输入框中。",
-      projectsSection: "显示项目分区",
-      projectsSectionDescription:
-        "将项目对话归到「项目」标题下。关闭后改为显示在「最近」中。",
       title: "聊天",
       description: "自定义此设备上的聊天行为。",
       modelSelection: {
@@ -1806,6 +1837,11 @@ export const zhCN = {
       autoScrollManual: "手动",
       autoScrollKeywords:
         "滚动 自动滚动 跟随 底部 跳转 流式 生成 锁定 scroll autoscroll follow",
+      scrollToBottomButton: "滚动到底部按钮",
+      scrollToBottomButtonDescription:
+        "向上滚动后显示一个按钮，用于跳回最新消息。",
+      scrollToBottomButtonKeywords:
+        "滚动 底部 跳转 最新 箭头 按钮 隐藏 scroll bottom button",
       showResponseModel: "显示回复模型",
       showResponseModelDescription: "在助手回复中显示模型元数据。",
       inlineReadAloud: "在回复上显示朗读",
@@ -2166,11 +2202,13 @@ export const zhCN = {
       revoking: "撤销中...",
       decisionApi: {
         title: "决策 API",
-        description: "使用本地 Laya 模型回答关于文本的是/否、选择和评分问题。可配合 TypeSafe SDK 使用。",
+        description: "使用本机模型或连接中的决策模型回答关于文本的是/否、选择和评分问题。可配合 TypeSafe SDK 使用。",
         enable: "处理请求",
         enableDescription: "提供 /v1/systemone。开启后会下载模型。",
+        enableRemoteDescription: "提供 /v1/systemone。",
         lockedByEnv: "由 {name} 设置。",
         model: "模型",
+        thisMachine: "本机",
         modelMultilingual: "多语言",
         modelEnglish: "英语",
         modelTypedDecisions: "类型化决策",
@@ -2195,6 +2233,10 @@ export const zhCN = {
         downloadFailed: "无法开始下载。",
         saveFailed: "无法保存决策 API 设置。",
         loadError: "无法加载决策 API 设置。",
+        sendsTo: "请求将发送到 {provider}。",
+        connectionMissing: "此连接已不存在或没有决策模型。请选择其他模型。",
+        addConnection: "要使用托管的决策模型，请在连接中添加 TypeSafe、Liquid AI 或 OpenRouter。",
+        openConnections: "打开连接",
       },
       usageNoModel:
         "加载或下载一个模型后即可看到可运行的示例。此服务器目前还没有可指定的模型。",
@@ -3017,6 +3059,7 @@ export const zhCN = {
     discardDescription: "对 {name} 未保存的修改将会丢失。",
     discard: "放弃",
     mentions: "技能",
+    manage: "管理技能",
   },
   library: {
     tabs: {

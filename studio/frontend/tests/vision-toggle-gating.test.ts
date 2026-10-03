@@ -91,26 +91,32 @@ test("the Vision row exists only in the GGUF half of Advanced Settings", () => {
     1,
     "expected exactly one Vision switch in the file",
   );
+  assert.ok(bodyOf("VisionRow").includes(wiring));
   assert.ok(
-    gguf.includes(wiring),
+    gguf.includes("<VisionRow"),
     "Vision switch is not in GgufAdvancedSettings",
   );
   assert.ok(
-    !mlx.includes(wiring),
+    !mlx.includes("VisionRow"),
     "Vision switch leaked into MlxAdvancedSettings",
   );
   assert.ok(
     !mlx.includes("disableVision"),
     "MlxAdvancedSettings reads disableVision, which it cannot act on",
   );
-  assert.ok(gguf.includes(">Vision</span>"));
+  assert.ok(bodyOf("VisionRow").includes(">Vision</span>"));
 
   // And the GGUF half only renders under target.isGguf, so a non-GGUF target
   // shows no Vision switch at all.
   const gateAbove = (index: number): string => {
     for (let i = index; i >= 0; i--) {
       const line = lines[i].trim();
-      if (line === "{target.isGguf && (") return "isGguf";
+      // An audio-runtime GGUF launches no llama-server, so its half is gated off too.
+      if (
+        line === "{target.isGguf && (" ||
+        line === "{target.isGguf && !audioRuntimeGguf && ("
+      )
+        return "isGguf";
       if (line === "{!target.isGguf && (") return "!isGguf";
     }
     return "none";
@@ -286,7 +292,9 @@ test("the Vision row is gated out for diffusion models", () => {
 
   const lines = CONFIG_PAGE.split("\n");
   const visionAt = lines.findIndex((line) =>
-    line.includes("checked={!config.disableVision}"),
+    line.includes(
+      "hideVision ? null : <VisionRow config={config} update={update} />",
+    ),
   );
   assert.notEqual(visionAt, -1, "no Vision switch to gate");
 

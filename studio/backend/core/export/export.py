@@ -825,6 +825,8 @@ class ExportBackend:
                     dtype = None,
                     load_in_4bit = False,
                     auto_model = WhisperForConditionalGeneration,
+                    whisper_language = "English",
+                    whisper_task = "transcribe",
                     trust_remote_code = trust_remote_code,
                     token = token,
                     local_files_only = local_files_only,
@@ -1123,8 +1125,6 @@ class ExportBackend:
                 save_method = compressed_alias
             elif format_type == "4-bit (FP4)":
                 save_method = "merged_4bit_forced"
-            elif self._audio_type == "whisper":
-                save_method = None
             else:
                 save_method = "merged_16bit"
 
@@ -1249,11 +1249,10 @@ class ExportBackend:
                         except Exception as exception:
                             logger.warning(f"Could not publish the model card: {exception}")
                     else:
-                        hub_save_method = save_method if save_method is not None else "merged_16bit"
                         self.current_model.push_to_hub_merged(
                             repo_id,
                             self.current_tokenizer,
-                            save_method = hub_save_method,
+                            save_method = save_method,
                             token = hf_token,
                             private = private,
                         )
@@ -1808,6 +1807,8 @@ class ExportBackend:
                     check = True,
                     capture_output = True,
                     text = True,
+                    encoding = "utf-8",
+                    errors = "replace",
                 )
                 if not os.path.exists(source_dir):
                     os.replace(clone, source_dir)
@@ -1866,7 +1867,14 @@ class ExportBackend:
         env = os.environ.copy()
         apply_token_to_child_env(env, normalize_token(hf_token))
         logger.info(f"Converting adapter at '{save_directory}' to GGUF -> '{out_gguf}'")
-        result = subprocess.run(cmd, env = env, capture_output = True, text = True)
+        result = subprocess.run(
+            cmd,
+            env = env,
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+        )
         if result.returncode != 0:
             raise RuntimeError(
                 f"LoRA -> GGUF conversion failed (exit {result.returncode}): "
