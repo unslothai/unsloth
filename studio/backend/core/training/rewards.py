@@ -56,7 +56,6 @@ def normalize_reward_name(name: str) -> str:
 
 def _user_root() -> Path:
     from utils.paths import workspace_root
-
     return workspace_root() / _MANAGED_DIR
 
 
@@ -95,7 +94,11 @@ def _validate_extract(extract: Any) -> Optional[dict]:
         raise RewardError("extract must be a mapping.")
     if "between" in extract:
         pair = extract["between"]
-        if not (isinstance(pair, list) and len(pair) == 2 and all(isinstance(p, str) and p for p in pair)):
+        if not (
+            isinstance(pair, list)
+            and len(pair) == 2
+            and all(isinstance(p, str) and p for p in pair)
+        ):
             raise RewardError("extract.between takes two non-empty strings.")
         return {"between": pair}
     if "regex" in extract:
@@ -154,7 +157,10 @@ def validate_rule(rule: dict) -> dict:
                 raise RewardError("numeric needs a non-empty bands list.")
             out["bands"] = sorted(
                 (
-                    {"within": _number(b.get("within"), "bands.within"), "score": _number(b.get("score"), "bands.score")}
+                    {
+                        "within": _number(b.get("within"), "bands.within"),
+                        "score": _number(b.get("score"), "bands.score"),
+                    }
                     for b in bands
                     if isinstance(b, dict)
                 ),
@@ -190,12 +196,21 @@ def parse_reward_markdown(raw: str, folder_name: Optional[str] = None) -> dict:
     description = meta.get("description", "")
     if not isinstance(description, str):
         raise RewardError("description must be a string.")
-    return {"name": name, "kind": kind, "description": description.strip(), "rule": validate_rule(rule)}
+    return {
+        "name": name,
+        "kind": kind,
+        "description": description.strip(),
+        "rule": validate_rule(rule),
+    }
 
 
 def render_reward_markdown(spec: dict) -> str:
     head = yaml.safe_dump(
-        {"name": spec["name"], "kind": spec.get("kind", "rule"), "description": spec.get("description", "")},
+        {
+            "name": spec["name"],
+            "kind": spec.get("kind", "rule"),
+            "description": spec.get("description", ""),
+        },
         sort_keys = False,
         allow_unicode = True,
     )
@@ -213,13 +228,20 @@ def _read_root(source: str, root: Path) -> list[dict]:
         return records
     for child in sorted(root.iterdir())[:MAX_REWARDS_PER_ROOT]:
         manifest = child / "REWARD.md"
-        if child.is_symlink() or not child.is_dir() or not manifest.is_file() or manifest.is_symlink():
+        if (
+            child.is_symlink()
+            or not child.is_dir()
+            or not manifest.is_file()
+            or manifest.is_symlink()
+        ):
             continue
         record = {"name": child.name, "source": source, "valid": True, "error": None}
         try:
             record.update(parse_reward_markdown(manifest.read_text("utf-8"), child.name))
         except (RewardError, OSError, UnicodeDecodeError) as exc:
-            record.update({"valid": False, "error": str(exc), "kind": "rule", "description": "", "rule": None})
+            record.update(
+                {"valid": False, "error": str(exc), "kind": "rule", "description": "", "rule": None}
+            )
         records.append(record)
     return records
 
@@ -264,7 +286,9 @@ def delete_reward(name: str) -> None:
     target = _user_root() / name
     with _LOCK:
         if not (target / "REWARD.md").is_file() or target.is_symlink():
-            raise RewardNotFoundError(f"No user reward named '{name}'; bundled rewards cannot be deleted.")
+            raise RewardNotFoundError(
+                f"No user reward named '{name}'; bundled rewards cannot be deleted."
+            )
         shutil.rmtree(target)
 
 
@@ -277,7 +301,9 @@ def completion_text(completion: Any) -> str:
         return completion
     if isinstance(completion, list):
         return "".join(
-            m.get("content", "") if isinstance(m, dict) and isinstance(m.get("content"), str) else ""
+            m.get("content", "")
+            if isinstance(m, dict) and isinstance(m.get("content"), str)
+            else ""
             for m in completion
         )
     if isinstance(completion, dict):
@@ -329,23 +355,37 @@ def _json_matches(text: str, schema: dict) -> bool:
         value = json.loads(fenced.group(1) if fenced else text)
     except (ValueError, TypeError):
         return False
-    expected = {"object": dict, "array": list, "string": str, "number": (int, float)}.get(schema["type"])
+    expected = {"object": dict, "array": list, "string": str, "number": (int, float)}.get(
+        schema["type"]
+    )
     if expected is not None and not isinstance(value, expected):
         return False
-    return all(key in value for key in schema["required"]) if isinstance(value, dict) else not schema["required"]
+    return (
+        all(key in value for key in schema["required"])
+        if isinstance(value, dict)
+        else not schema["required"]
+    )
 
 
-def score_rule(rule: dict, text: str, reference: Any = None) -> float:
+def score_rule(
+    rule: dict,
+    text: str,
+    reference: Any = None,
+) -> float:
     kind = rule["type"]
     if kind == "regex":
         pattern = re.compile(rule["pattern"], re.DOTALL | re.MULTILINE)
-        hit = pattern.fullmatch(text.strip()) if rule["mode"] == "fullmatch" else pattern.search(text)
+        hit = (
+            pattern.fullmatch(text.strip()) if rule["mode"] == "fullmatch" else pattern.search(text)
+        )
         return rule["score"]["match" if hit else "miss"]
     if kind == "length":
         return rule["score"]["over" if len(text) > rule["max_chars"] else "under"]
     if kind == "json_schema":
         part = _extract(text, rule["extract"])
-        return rule["score"]["match" if part is not None and _json_matches(part, rule["schema"]) else "miss"]
+        return rule["score"][
+            "match" if part is not None and _json_matches(part, rule["schema"]) else "miss"
+        ]
     part = _extract(text, rule["extract"])
     if part is None or reference is None:
         return rule["missing"]
@@ -371,11 +411,19 @@ def make_reward_func(spec: dict) -> Callable[..., list[float]]:
     rule = spec["rule"]
     column = rule.get("compare_to")
 
-    def reward(prompts = None, completions = None, **kwargs) -> list[float]:
+    def reward(
+        prompts = None,
+        completions = None,
+        **kwargs,
+    ) -> list[float]:
         references = kwargs.get(column) if column else None
         out = []
         for i, completion in enumerate(completions or []):
-            ref = references[i] if isinstance(references, (list, tuple)) and i < len(references) else None
+            ref = (
+                references[i]
+                if isinstance(references, (list, tuple)) and i < len(references)
+                else None
+            )
             out.append(float(score_rule(rule, completion_text(completion), ref)))
         return out
 
@@ -383,5 +431,9 @@ def make_reward_func(spec: dict) -> Callable[..., list[float]]:
     return reward
 
 
-def preview_scores(specs: list[dict], text: str, reference: Any = None) -> list[dict]:
+def preview_scores(
+    specs: list[dict],
+    text: str,
+    reference: Any = None,
+) -> list[dict]:
     return [{"name": s["name"], "score": score_rule(s["rule"], text, reference)} for s in specs]
