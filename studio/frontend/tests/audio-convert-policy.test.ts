@@ -297,6 +297,9 @@ const CONVERT_REFRESHES_AFTER_STOPPED_SWITCH =
   /\} else if \(switchNotice\) \{\s*(?:\/\/[^\n]*\n\s*)*await refreshStatus\(\);\s*\}\s*\} finally/;
 const CONVERT_REFRESHES_ON_ARRIVAL =
   /useEffect\(\(\) => \{\s*if \(active && ttsWorkflow === "convert" && initialReadySent\.current\) \{\s*void refreshStatus\(\);\s*\}\s*\}, \[active, ttsWorkflow, refreshStatus\]\);/;
+const TABS_SCROLL_IN_PADDED_WRAPPER =
+  /<div className="-m-1\.5 shrink-0 self-start overflow-x-auto p-1\.5[^"]*">\s*<PillTabs\s*dataTour="audio-mode"/;
+const TAB_LIST_CLASS = /ariaLabel="Audio workflow"[\s\S]*?className="([^"]*)"/;
 const CONVERTS_ONLY =
   /const loadedConvertsOnly =\s*!!status\?\.audio_workflows\?\.includes\("convert"\) &&\s*!status\.audio_workflows\.includes\("clone"\);/;
 const SPEAK_BLOCKER_OPENS_CONVERT =
@@ -336,4 +339,12 @@ test("Use again re-uploads a conversion's kept source instead of its expiring up
     page,
     /\/source\/file`,\s*\)\s*\.then\(\(blob\) => uploadAudioInput\(blob, name\)\)/,
   );
+});
+
+test("five workflow tabs scroll in a padded wrapper, so the selected pill is not clipped", () => {
+  const page = readSrc("features/audio/audio-page.tsx");
+  assert.match(page, TABS_SCROLL_IN_PADDED_WRAPPER);
+  // Overflow on the tab list itself clips the selected pill's edge and shadow.
+  const tabListClass = page.match(TAB_LIST_CLASS)?.[1] ?? "";
+  assert.doesNotMatch(tabListClass, /overflow/);
 });
