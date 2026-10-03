@@ -170,3 +170,10 @@ test("typed Hub search results are scoped to the page too", () => {
   assert.match(block, /\.filter\(hubRowAllowed\)/);
   assert.match(block, /\n\s+rowFilter,\n/);
 });
+
+test("a Hub music model tagged text-to-speech stays on Music", () => {
+  const row = { id: "MiniMaxAI/MiniMax-Music3", task: "text-to-speech" };
+  assert.equal(audioRowMatchesWorkflow(row, "speak"), false);
+  assert.equal(audioRowMatchesWorkflow(row, "music"), true);
+  assert.equal(audioRowMatchesWorkflow({ id: "hexgrad/Kokoro-82M", task: "text-to-speech" }, "speak"), true);
+});

@@ -457,13 +457,21 @@ export function useAudioModelSlot({
           return false;
         }
         if (busyRef.current === "generating") handleStopGeneration();
+        invalidatePendingTtsSelection();
       } else if (!transitionMode(slotForWorkflow(next))) {
         return false;
       }
       store.commitWorkflow(next);
       return true;
     },
-    [transitionMode, mode, busyRef, generationPhaseRef, handleStopGeneration],
+    [
+      transitionMode,
+      mode,
+      busyRef,
+      generationPhaseRef,
+      handleStopGeneration,
+      invalidatePendingTtsSelection,
+    ],
   );
   const { stage: stageTtsDownload } = useStagedDownload({
     scopeId: "audio",
