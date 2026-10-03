@@ -14473,8 +14473,7 @@ def test_generate_leaves_t5_length_alone_off_flux1(fake_runtime, tmp_path):
 
 
 def test_qwen_true_cfg_gets_an_empty_negative_like_comfy(fake_runtime, tmp_path, monkeypatch):
-    """diffusers runs Qwen-Image true CFG only when a negative is present; ComfyUI always encodes the
-    empty negative and applies CFG. A blank negative must not silently turn CFG off."""
+    """A blank negative must not silently turn Qwen-Image true CFG off."""
     diffusers = sys.modules["diffusers"]
     monkeypatch.setattr(diffusers, "QwenImagePipeline", _FakePipeline, raising = False)
     monkeypatch.setattr(diffusers, "QwenImageTransformer2DModel", _FakeTransformer, raising = False)
@@ -14512,8 +14511,7 @@ class _IdeogramScheduleFakePipe(_FakePipe):
 
 
 def test_generate_ideogram_defaults_follow_comfy_template(fake_runtime, tmp_path):
-    """ComfyUI's Ideogram 4 template: 20 steps, mu 0.0 / std 1.75, guidance 7 overridden to 3 where sigma <= 0.3
-    (the last 3 of 20 steps at 1024^2). Another guidance stays constant; an explicit 48 / 7 keeps the card taper."""
+    """Ideogram 4 ComfyUI preset; other guidance stays constant, explicit 48 / 7 keeps the card taper."""
     backend = DiffusionBackend()
     _load_ideogram(backend, tmp_path)
     pipe = _IdeogramScheduleFakePipe()

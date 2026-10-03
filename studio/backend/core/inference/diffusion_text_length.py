@@ -3,17 +3,7 @@
 
 """Text-conditioning defaults that follow ComfyUI. No torch/diffusers imports.
 
-FLUX.1 T5 sequence length:
-
-diffusers pads (and truncates) the FLUX.1 T5 prompt to ``max_sequence_length=512`` and runs T5
-without an attention mask, so every pad token takes part in the encoder's self-attention. ComfyUI,
-our baseline, pads the same T5 prompt only up to 256 tokens and otherwise uses its real length
-(again with no mask). Both the embeddings and the text tokens the DiT attends over therefore differ,
-and 512 costs 256 extra joint-attention tokens per step for a short prompt.
-
-``flux_t5_sequence_length`` reproduces the ComfyUI length (256) for every prompt of at most 256 T5
-tokens (EOS included). Longer prompts pad to 512 as before (bucketed, see the function), and a prompt
-past 512 tokens truncates exactly as before.
+FLUX.1 T5 runs unmasked, so pad tokens change the embeddings: ComfyUI pads to 256, diffusers to 512.
 """
 
 from __future__ import annotations
@@ -21,10 +11,7 @@ from __future__ import annotations
 import math
 from typing import Any, Iterable, Optional
 
-# ComfyUI's Ideogram 4 template ("Default" preset): 20 steps, logit-normal mean 0.0 and spread 1.75 before the
-# resolution term (both implementations add it the same way), and guidance 7 overridden to 3 over the last 30% of
-# sampling (CFG override, start 0.7 / end 1.0). Ideogram 4 samples a plain flow model (shift 1), so that range is
-# sigma <= 0.3.
+# ComfyUI's Ideogram 4 "Default" preset; plain flow (shift 1), so "last 30%" of the CFG override is sigma <= 0.3.
 IDEOGRAM4_COMFY_STEPS = 20
 IDEOGRAM4_COMFY_MU = 0.0
 IDEOGRAM4_COMFY_STD = 1.75
@@ -106,10 +93,7 @@ def flux_t5_sequence_length(
         longest = max(t5_token_count(tokenizer, t) for t in texts)
     except Exception:  # noqa: BLE001 - an odd tokenizer only keeps the pipeline default
         return None
-    # Bucketed, a deliberate deviation from ComfyUI's exact length: every distinct text length is a new denoiser shape,
-    # and on the compiled default path the first one past 256 measured a 14 s recompile, each further one a CUDA graph
-    # recapture (0.4 to 1 s) until the 4-graph cap made later shapes run eager. So a prompt past 256 tokens pads to the
-    # cap (exactly the old behaviour); T5 runs unmasked, so that padding shifts the embeddings of those prompts only.
+    # Bucketed (not ComfyUI's exact length): each new length recompiles (~14 s) / recaptures CUDA graphs.
     return int(floor) if longest <= int(floor) else int(cap)
 
 

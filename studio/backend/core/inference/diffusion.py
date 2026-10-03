@@ -6996,7 +6996,7 @@ class DiffusionBackend:
                         )
 
                     self._raise_if_load_cancelled(_load_token)
-                    # Sample at ComfyUI's static sigma shift where the shipped scheduler differs (before from_pipe copies it).
+                    # Before from_pipe copies the scheduler.
                     apply_comfy_flow_shift(pipe, getattr(fam, "comfy_flow_shift", None), logger)
                     # Before the speed optims so their decode compile lands inside the non-finite check; `off` keeps fp32.
                     vae_fp16 = str(
@@ -9416,9 +9416,7 @@ class DiffusionBackend:
                     if steps == 48 and abs(float(guidance) - 7.0) < 1e-6:
                         kwargs.pop(state.family.cfg_kwarg, None)
                     else:
-                        # Otherwise ComfyUI's template: its "Default" schedule (mu 0.0, std 1.75; the card taper above
-                        # keeps the pipeline's mu 0 / std 1.5) and, at the default guidance 7, its CFG override to 3
-                        # over the last 30% of sampling, as a per-step schedule. Any other guidance stays constant.
+                        # ComfyUI "Default" preset; the 7 -> 3 CFG override only at guidance 7.
                         if "mu" in call_params:
                             kwargs["mu"] = IDEOGRAM4_COMFY_MU
                         if "std" in call_params:
@@ -9464,9 +9462,7 @@ class DiffusionBackend:
                 elif "negative_prompt" in call_params and true_cfg_needs_empty_negative(
                     state.family.cfg_kwarg, guidance
                 ):
-                    # Qwen-Image style pipelines run true CFG only when a negative is PRESENT, so a blank negative
-                    # silently dropped CFG while the UI showed guidance 4. ComfyUI encodes an empty negative and
-                    # applies CFG; do the same.
+                    # Qwen-Image true CFG needs a negative present; ComfyUI encodes an empty one.
                     kwargs["negative_prompt"] = ""
                 if workflow == "controlnet" and control_pil is not None:
                     # CN pipeline takes the control map + scale; guidance start/end bound its step range. Every kwarg
@@ -9666,8 +9662,7 @@ class DiffusionBackend:
                                 chunk_kwargs["negative_prompt"] = [
                                     chunk_kwargs["negative_prompt"]
                                 ] * len(chunk)
-                        # FLUX.1 T5 length as ComfyUI pads it: 256 for prompts up to 256 tokens (diffusers pads every
-                        # prompt to 512); longer prompts keep the 512 bucket. Per chunk, since a prompts list varies.
+                        # Per chunk, since a prompts list varies in length.
                         t5_len = flux_t5_kwarg(state.family.name, pipe, call_params, chunk_kwargs)
                         if t5_len is not None:
                             chunk_kwargs["max_sequence_length"] = t5_len
