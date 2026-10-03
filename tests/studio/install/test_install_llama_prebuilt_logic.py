@@ -3865,6 +3865,65 @@ def test_runtime_overlay_cannot_overwrite_main_archive_payload(tmp_path: Path) -
         assert (release_dir / name).exists(), f"missing {name}"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX mode bits")
+@pytest.mark.parametrize("ships_bench", [True, False])
+def test_linux_overlay_keeps_llama_bench_executable_when_bundled(
+    tmp_path: Path, ships_bench: bool
+) -> None:
+    # Bundle members are not executable; the Benchmarks page launches llama-bench directly.
+    import hashlib
+    import shutil as _shutil
+
+    work = tmp_path / "work"
+    install = tmp_path / "install"
+    work.mkdir()
+    install.mkdir()
+    bundle = tmp_path / "app-b11160-linux-x64-cuda13-newer.tar.gz"
+    names = ["llama-server", "llama-quantize", "libllama.so"] + (
+        ["llama-bench", "libllama-bench-impl.so"] if ships_bench else []
+    )
+    with tarfile.open(bundle, "w:gz") as archive:
+        for name in names:
+            payload = f"{name}\n".encode()
+            member = tarfile.TarInfo(name)
+            member.size = len(payload)
+            member.mode = 0o644
+            archive.addfile(member, io.BytesIO(payload))
+    choice = asset_choice(
+        name = bundle.name,
+        url = f"https://example.com/{bundle.name}",
+        tag = "b11160",
+        source_label = "published",
+        install_kind = "linux-cuda",
+        runtime_line = "cuda13",
+        expected_sha256 = hashlib.sha256(bundle.read_bytes()).hexdigest(),
+    )
+    host = linux_host(driver_cuda_version = (13, 0), has_physical_nvidia = True, has_usable_nvidia = True)
+
+    def fake_download(
+        url,
+        target_path,
+        *,
+        expected_sha256 = None,
+        label = None,
+        **kw,
+    ):
+        _shutil.copy2(bundle, target_path)
+
+    orig_download = INSTALL_LLAMA_PREBUILT.download_file_verified
+    INSTALL_LLAMA_PREBUILT.download_file_verified = fake_download
+    try:
+        INSTALL_LLAMA_PREBUILT.install_from_archives(choice, host, install, work)
+    finally:
+        INSTALL_LLAMA_PREBUILT.download_file_verified = orig_download
+
+    bench = install / "build" / "bin" / "llama-bench"
+    if ships_bench:
+        assert bench.is_file() and os.access(bench, os.X_OK)
+    else:
+        assert not bench.exists()
+
+
 def test_linux_runtime_overlay_copies_llama_tool_impl_libraries(tmp_path: Path) -> None:
     install_from_archives = INSTALL_LLAMA_PREBUILT.install_from_archives
 
