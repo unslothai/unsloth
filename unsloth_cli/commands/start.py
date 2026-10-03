@@ -3063,7 +3063,6 @@ def _codex_provider_table(base: str, key: Optional[str] = None) -> str:
     )
 
 
-# The provider table and any stale [model_providers.unsloth_api.*] subtables.
 _CODEX_PROVIDER_TABLES = (_PROVIDER_HEADER, _PROVIDER_HEADER[:-1] + ".")
 
 
@@ -4993,7 +4992,7 @@ def _set_hermes_provider(
         else:
             # Below Hermes' 64,000-token floor it refuses to initialize, so claim the floor and shrink the threshold so compaction still fires at 90% of the REAL window (the threshold is a fraction of the claimed context_length). The auxiliary override keeps the same floor check from rejecting the compression model mid-session.
             _subdict(config, "model")["context_length"] = _HERMES_MIN_CONTEXT
-            # Hermes Desktop checks a local server's floor against the served window unless ollama_num_ctx says otherwise.
+            # Current Hermes refuses a local server below its floor unless ollama_num_ctx claims it; context_length alone no longer passes.
             _subdict(config, "model")["ollama_num_ctx"] = _HERMES_MIN_CONTEXT
             threshold = round(0.9 * window / _HERMES_MIN_CONTEXT, 4)
             _subdict(config, "compression").update(enabled = True, threshold = threshold)
@@ -5752,7 +5751,6 @@ def _codex_app_owner() -> dict:
 
 
 def _codex_app_owner_alive(owner: object) -> bool:
-    # The start time guards against the PID having been reused by an unrelated process.
     try:
         pid = int(owner["pid"])
         if owner["started"] is None:
