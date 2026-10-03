@@ -407,7 +407,7 @@ def test_streamed_kill_switch(forced, monkeypatch):
         ((9, 0), False),
         ((10, 0), False),
         ((12, 0), True),
-    ],  # only the arches measured end to end (G4, A100) are on
+    ],
 )
 def test_rotquant_arch_gate(cap, on):
     assert (g8.rotquant_config(cap, "auto") is not None) is on
@@ -478,9 +478,7 @@ def test_rotquant_fake_op_matches_the_real_scale_dtype(forced_rotq):
 def test_rotquant_unsupported_shapes_take_the_stock_math(forced_rotq):
     x = _act(40, 256 * 129, 3)  # more groups than one tile holds
     assert not g8.rotquant_supported(x, 256, forced_rotq)
-    assert not g8.rotquant_supported(
-        _act(40, 1024, 4), 64, forced_rotq
-    )  # group outside the kernel's set
+    assert not g8.rotquant_supported(_act(40, 1024, 4), 64, forced_rotq)
     assert not g8.rotquant_supported(_act(40, 1024, 5).half(), 256, forced_rotq)
     q, s = g8._rotq_op()(x, 256, True)
     rq, rs = g8.rotquant_reference(x, 256, "v2")
@@ -533,7 +531,7 @@ def test_rotquant_kill_switch_keeps_the_stock_rotation(forced, monkeypatch):
     stock = _convrot(_int8_linear(1024, 768, False, 2))
     fused = _convrot(_int8_linear(1024, 768, False, 2))
     holder = torch.nn.Sequential(fused)
-    assert g8.install(holder) == 1 and fused.__dict__[g8._REC][2] is False  # fused GEMM still on
+    assert g8.install(holder) == 1 and fused.__dict__[g8._REC][2] is False
     x = torch.randn(300, 1024, device = "cuda", dtype = torch.bfloat16)
     with torch.inference_mode():
         before, gemm = g8.rotquant_call_count(), g8.call_count()
@@ -545,8 +543,6 @@ def test_rotquant_kill_switch_keeps_the_stock_rotation(forced, monkeypatch):
 @needs_cuda
 def test_rotquant_probe_refusal_keeps_the_stock_rotation(forced, monkeypatch):
     monkeypatch.delenv(g8.INT8_GEMM_CONVROT_ENV, raising = False)
-    monkeypatch.setattr(
-        g8, "_rotq_probe", lambda index, cfg: False
-    )  # e.g. an accumulation order that differs
+    monkeypatch.setattr(g8, "_rotq_probe", lambda index, cfg: False)
     fused = _convrot(_int8_linear(1024, 768, False, 2))
     assert g8.install(torch.nn.Sequential(fused)) == 1 and fused.__dict__[g8._REC][2] is False
