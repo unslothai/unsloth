@@ -886,8 +886,7 @@ def _compile_repeated_blocks(
         inductor_cfg = _inductor_config()
         if inductor_cfg is not None and hasattr(inductor_cfg, "emulate_precision_casts"):
             compile_config.set_knob(_INDUCTOR_MODULE, "emulate_precision_casts", True)
-        # One R0_BLOCK per reduction, chosen at codegen: see diffusion_compile_config.DYNAMIC_SCALE_RBLOCK_ENV. Same
-        # seed, same image in every server process. Process-global, restored on unload like the flag above.
+        # One R0_BLOCK per reduction: see diffusion_compile_config.DYNAMIC_SCALE_RBLOCK_ENV.
         if (
             inductor_cfg is not None
             and hasattr(inductor_cfg, "dynamic_scale_rblock")

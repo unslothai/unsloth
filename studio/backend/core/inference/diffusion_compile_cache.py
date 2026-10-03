@@ -328,8 +328,7 @@ def model_fingerprint(
         dynamic_text = None
     if dynamic_text:
         fp["dynamic_text"] = dynamic_text
-    # Inductor keys its graph cache on dynamic_scale_rblock, so a bundle compiled before the pin would load as a hit,
-    # miss every graph, and (a hit starts clean) never be rewritten. Absent under the kill switch: the old key.
+    # Inductor keys graphs on dynamic_scale_rblock: an old bundle would hit, miss every graph, and never be rewritten.
     from .diffusion_compile_config import reduction_blocks_pinned
 
     if reduction_blocks_pinned():

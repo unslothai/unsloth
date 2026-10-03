@@ -11,11 +11,8 @@ import threading
 from contextvars import ContextVar
 from typing import Any
 
-# Inductor's dynamic_scale_rblock (on by default) gives a register-heavy looped reduction a second launcher with half
-# the R0_BLOCK and benchmarks both on first use, in every process: the pick is never written to the autotune cache.
-# The two block sizes sum in a different order, so a near-tie flips the LayerNorm statistics, and with them the render,
-# between server processes on one seed (FLUX.1-schnell int8 on a B200: 4 of 15 servers). Pinned off for diffusion
-# compiles; UNSLOTH_DIFFUSION_DYNAMIC_SCALE_RBLOCK=1 restores inductor's default, for A/B benchmarking.
+# dynamic_scale_rblock benchmarks R0_BLOCK vs R0_BLOCK/2 per process (never cached); the two sum in different orders,
+# so renders differed across servers on one seed (FLUX.1-schnell int8, B200). =1 restores inductor's default.
 DYNAMIC_SCALE_RBLOCK_ENV = "UNSLOTH_DIFFUSION_DYNAMIC_SCALE_RBLOCK"
 
 
