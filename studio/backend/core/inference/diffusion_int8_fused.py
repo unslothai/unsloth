@@ -587,7 +587,9 @@ def _act_quant_op() -> Any:
     try:
 
         @custom_op(
-            f"{_OP_NAMESPACE}::{_OP_NAME_ACTQ}", mutates_args = (), schema = "(Tensor x) -> (Tensor, Tensor)"
+            f"{_OP_NAMESPACE}::{_OP_NAME_ACTQ}",
+            mutates_args = (),
+            schema = "(Tensor x) -> (Tensor, Tensor)",
         )
         def _int8_act_quant_rows(x):
             return _launch_act_quant(x)
@@ -596,9 +598,7 @@ def _act_quant_op() -> Any:
         def _(x):
             return (
                 x.new_empty((x.shape[0], x.shape[1]), dtype = torch.int8),
-                x.new_empty(
-                    (x.shape[0],), dtype = torch.float32 if _act_scale_fp32() else x.dtype
-                ),
+                x.new_empty((x.shape[0],), dtype = torch.float32 if _act_scale_fp32() else x.dtype),
             )
     except Exception:  # noqa: BLE001
         return None
@@ -963,7 +963,6 @@ def int8_linear(module: Any, x: Any) -> Any:
 def _rotate(x2d: Any, group: int) -> Any:
     """``ConvRotLinear.forward``'s input rotation, same ops and dtype."""
     from .diffusion_convrot import build_convrot_hadamard, rotate_convrot_activation
-
     return rotate_convrot_activation(
         x2d, build_convrot_hadamard(group, device = x2d.device, dtype = x2d.dtype), group
     )
@@ -1194,7 +1193,9 @@ def install(
     """Idempotent; returns the (candidate) count. Must run before the first compiled forward, which traces ``forward``."""
     global _ACTQ_HANDLE
     if int8_fused_disabled():
-        _ACTQ_HANDLE = None  # process-global: a previous load's probe must not outlive the kill switch
+        _ACTQ_HANDLE = (
+            None  # process-global: a previous load's probe must not outlive the kill switch
+        )
         return 0
     if transformer is None or offload_active:
         return 0

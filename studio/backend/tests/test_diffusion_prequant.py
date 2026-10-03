@@ -2831,8 +2831,12 @@ def test_a_full_fingerprint_pass_is_remembered_per_unchanged_file(monkeypatch, t
     # A changed file (size / mtime) is checked in full again, and a mismatch is never remembered.
     ckpt_file.write_bytes(b"weights, rebuilt")
     os.utime(ckpt_file, ns = (1, 1))
-    assert not pq._verify_packed_fingerprint({"a.weight": "x", "b.weight": "z"}, meta, path = ckpt_file)
-    assert not pq._verify_packed_fingerprint({"a.weight": "x", "b.weight": "z"}, meta, path = ckpt_file)
+    assert not pq._verify_packed_fingerprint(
+        {"a.weight": "x", "b.weight": "z"}, meta, path = ckpt_file
+    )
+    assert not pq._verify_packed_fingerprint(
+        {"a.weight": "x", "b.weight": "z"}, meta, path = ckpt_file
+    )
     assert len(calls) == 3
     # Without a path (or outside full mode) nothing is remembered.
     assert pq._verify_packed_fingerprint(expected, meta)

@@ -164,7 +164,6 @@ def test_compiled_block_stays_within_the_compile_floor(quant):
     blk = _block(quant)
     if quant == "int8_convrot":
         from core.inference.diffusion_convrot import is_rotated_linear
-
         assert is_rotated_linear(blk.attention.to_q)
     if quant != "bf16" and type(blk.attention.to_q.weight).__name__ != "Int8Tensor":
         pytest.skip(

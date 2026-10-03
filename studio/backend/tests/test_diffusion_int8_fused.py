@@ -706,7 +706,9 @@ def test_zimage_convrot_swiglu_fuses_and_matches_stock_eager(rotate, groups):
     if not groups[1] and not _act_scale_is_fp32():
         # A plain w2 runs the SwiGLU kernel's own quant, which matches torchao's fp32-scale act quant (>= 0.18) only;
         # this is the kernel's existing contract, unchanged here (the all-rotated MLP never reaches that quant).
-        pytest.skip("the fused SwiGLU kernel's act quant matches torchao >= 0.18 (fp32 activation scale) only")
+        pytest.skip(
+            "the fused SwiGLU kernel's act quant matches torchao >= 0.18 (fp32 activation scale) only"
+        )
     ff = _zimage_convrot_ff(rotate)
     x = _outlier_input()
     with torch.no_grad():
@@ -739,7 +741,9 @@ def _act_scale_is_fp32() -> bool:
 
 
 @needs_cuda
-@pytest.mark.parametrize("m, k", [(4224, 3840), (4224, 10240), (77, 2560), (17, 4096), (40, 4352), (3, 256)])
+@pytest.mark.parametrize(
+    "m, k", [(4224, 3840), (4224, 10240), (77, 2560), (17, 4096), (40, 4352), (3, 256)]
+)
 def test_act_quant_kernel_is_bit_exact_vs_torchao(m, k):
     assert fused._act_quant_device_ok(torch.cuda.current_device())
     g = torch.Generator(device = "cpu").manual_seed(m + k)
@@ -762,7 +766,9 @@ def test_act_quant_kernel_is_bit_exact_vs_torchao(m, k):
 @pytest.mark.parametrize("fast_quant", [False, True])
 @pytest.mark.parametrize("rotated", [False, True])
 @pytest.mark.parametrize("bias", [False, True])
-def test_int8_linear_equals_the_module_without_the_zero_point_pass(rotated, bias, fast_quant, monkeypatch):
+def test_int8_linear_equals_the_module_without_the_zero_point_pass(
+    rotated, bias, fast_quant, monkeypatch
+):
     monkeypatch.setattr(fused, "_ACTQ_HANDLE", fused._act_quant_op() if fast_quant else None)
     from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
 

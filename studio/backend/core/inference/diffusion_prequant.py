@@ -912,7 +912,12 @@ def _verified_marker(path: Any, expected: dict) -> Optional[tuple]:
         from .diffusion_compile_cache import cache_root
 
         recorded = hashlib.md5(json.dumps(expected, sort_keys = True).encode("utf-8")).hexdigest()
-        identity = {"path": real, "size": st.st_size, "mtime_ns": st.st_mtime_ns, "fingerprint": recorded}
+        identity = {
+            "path": real,
+            "size": st.st_size,
+            "mtime_ns": st.st_mtime_ns,
+            "fingerprint": recorded,
+        }
         name = hashlib.md5(real.encode("utf-8")).hexdigest() + ".json"
         return cache_root() / "prequant_verified" / name, identity
     except Exception:  # noqa: BLE001 -- unidentifiable: check in full
@@ -921,7 +926,6 @@ def _verified_marker(path: Any, expected: dict) -> Optional[tuple]:
 
 def _already_verified(marker: Optional[tuple]) -> bool:
     import json
-
     if marker is None:
         return False
     try:
@@ -1275,7 +1279,9 @@ def load_prequantized_transformer(
             return None
         state_dict = ckpt["state_dict"]
         # The only check reading what the artifact HOLDS: corruption after build passes the rest.
-        if not _verify_packed_fingerprint(state_dict, ckpt.get("metadata") or {}, logger = logger, path = path):
+        if not _verify_packed_fingerprint(
+            state_dict, ckpt.get("metadata") or {}, logger = logger, path = path
+        ):
             return None
         _pin_kernel_preference(state_dict, logger)
 

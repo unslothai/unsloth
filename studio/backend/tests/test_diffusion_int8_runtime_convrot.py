@@ -419,7 +419,10 @@ _ZIMAGE_SUFFIXES = {
 def test_zimage_int8_convrot_spec_and_artifact_name():
     group, suffixes = tq.convrot_spec_for_scheme(tq.TQ_INT8, "z-image")
     assert group == 256 and set(suffixes) == _ZIMAGE_SUFFIXES
-    assert tq.convrot_prequant_filename(tq.TQ_INT8, "z-image") == "Z-Image-Turbo-INT8-ConvRot.safetensors"
+    assert (
+        tq.convrot_prequant_filename(tq.TQ_INT8, "z-image")
+        == "Z-Image-Turbo-INT8-ConvRot.safetensors"
+    )
     for scheme in (tq.TQ_FP8, tq.TQ_NVFP4, tq.TQ_MXFP8):
         assert tq.convrot_spec_for_scheme(scheme, "z-image") == (0, ())
         assert tq.convrot_prequant_filename(scheme, "z-image") is None
@@ -439,7 +442,9 @@ def test_zimage_convrot_is_default_on_and_the_env_is_its_kill_switch(monkeypatch
 
 
 @pytest.mark.parametrize("env, rotated_first", [(None, True), ("0", False), ("1", True)])
-def test_zimage_int8_resolves_the_rotated_artifact_first_unless_killed(monkeypatch, env, rotated_first):
+def test_zimage_int8_resolves_the_rotated_artifact_first_unless_killed(
+    monkeypatch, env, rotated_first
+):
     from core.inference.diffusion_families import detect_family
     from core.inference.diffusion_prequant import candidate_filenames_of, resolve_prequant_source
 
