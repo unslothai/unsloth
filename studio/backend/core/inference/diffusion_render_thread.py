@@ -9,12 +9,14 @@ import contextvars
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 _ENV = "UNSLOTH_DIFFUSION_RENDER_THREAD"
 _EXECUTORS: dict[str, ThreadPoolExecutor] = {}
 _RENDER_THREAD_IDS: set[int] = set()
 _LOCK = threading.Lock()
+# Renders submitted and not yet finished, per executor: background jobs (``submit_idle``) step aside while any wait.
+_PENDING: dict[str, int] = {}
 
 
 def enabled() -> bool:
@@ -72,4 +74,52 @@ def run(name: str, fn: Callable[[], Any]) -> Any:
         with torch.set_grad_enabled(grad):
             return fn()
 
-    return _executor(f"{name}-cuda{device}").submit(ctx.run, call).result()
+    key = f"{name}-cuda{device}"
+    with _LOCK:
+        _PENDING[key] = _PENDING.get(key, 0) + 1
+    try:
+        return _executor(key).submit(ctx.run, call).result()
+    finally:
+        with _LOCK:
+            _PENDING[key] -= 1
+
+
+def renders_waiting(name: str, device: int) -> int:
+    with _LOCK:
+        return _PENDING.get(f"{name}-cuda{device}", 0)
+
+
+def submit_idle(
+    name: str,
+    fn: Callable[[], Any],
+    *,
+    device: Optional[int] = None,
+    yield_to_renders: bool = True,
+) -> bool:
+    """Queue ``fn`` on the render thread without waiting for it. True when queued.
+
+    For work that must run on the thread every compile runs on but that no caller waits for (persisting compile
+    artifacts, warming the compiler). With ``yield_to_renders`` a job that finds a render queued re-queues itself
+    behind it, so a render waits for at most one job already running. Never runs ``fn`` inline: without a render
+    thread (disabled, ROCm, CPU) nothing is queued."""
+    if not enabled():
+        return False
+    import torch  # noqa: PLC0415
+
+    dev = torch.cuda.current_device() if device is None else int(device)
+    key = f"{name}-cuda{dev}"
+    ctx = contextvars.copy_context()
+
+    def call() -> Any:
+        if yield_to_renders and renders_waiting(name, dev) > 0:
+            _executor(key).submit(ctx.run, call)
+            return None
+        torch.cuda.set_device(dev)
+        _apply_compile_config()
+        try:
+            return fn()
+        except Exception:  # noqa: BLE001 - a background job never surfaces into a render
+            return None
+
+    _executor(key).submit(ctx.run, call)
+    return True

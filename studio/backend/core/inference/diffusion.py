@@ -1937,6 +1937,15 @@ def _progress_latch_enabled() -> bool:
     )
 
 
+def _aot_blocks_status(pipe: Any) -> Any:
+    try:
+        from . import diffusion_aot_blocks
+
+        return diffusion_aot_blocks.describe(pipe)
+    except Exception:  # noqa: BLE001 - diagnostics only
+        return None
+
+
 def _bg_compile_module(
     pipe: Any,
     *,
@@ -7041,6 +7050,15 @@ class DiffusionBackend:
                     )
                     if vae_fp16:
                         speed_applied["vae_fp16_decode"] = True
+                    # Persisted dynamo-included block graphs: bound to this load's bundle key, and loaded on the render
+                    # thread while the rest of this load (encoders, placement) runs.
+                    try:
+                        from . import diffusion_aot_blocks
+
+                        if diffusion_aot_blocks.bind(pipe, compile_ctx):
+                            diffusion_aot_blocks.preload(pipe, placed_cuda_ordinal(target))
+                    except Exception as exc:  # noqa: BLE001 - optimisation only
+                        logger.warning("diffusion.aot_blocks: bind failed: %s", exc)
                     self._raise_if_load_cancelled(_load_token)
                     if (
                         transformer_quant_engaged is not None
@@ -9046,6 +9064,12 @@ class DiffusionBackend:
         )
         if getattr(getattr(state.pipe, "vae", None), "_unsloth_fp16_decode", False):
             speed_applied["vae_fp16_decode"] = True
+        try:
+            from . import diffusion_aot_blocks
+
+            diffusion_aot_blocks.bind(state.pipe, getattr(state, "compile_cache_ctx", None))
+        except Exception:  # noqa: BLE001 - optimisation only
+            pass
         object.__setattr__(state, "speed_mode", SPEED_DEFAULT)
         object.__setattr__(state, "speed_optims", tuple(k for k, v in speed_applied.items() if v))
         object.__setattr__(
@@ -9823,6 +9847,13 @@ class DiffusionBackend:
                         compile_cache.save_async(state.compile_cache_ctx, logger = logger)
                     except Exception:  # noqa: BLE001 - cache persistence is best-effort
                         pass
+                    try:
+                        # Render-thread jobs that yield to the next render; a no-op once every signature is persisted.
+                        from . import diffusion_aot_blocks
+
+                        diffusion_aot_blocks.schedule_save(state.pipe)
+                    except Exception:  # noqa: BLE001 - persistence is best-effort
+                        pass
                 # Last word on cancellation, AFTER the post-denoise work: the event stays registered through the
                 # compile-cache bookkeeping and the page still shows Stop for as long as progress reads active, so a Stop
                 # landing there was answered cancelled = true and then contradicted by the image the route persisted.
@@ -10155,6 +10186,7 @@ class DiffusionBackend:
             "speed_mode": state.speed_mode,
             "speed_optims": speed_optims,
             "bg_compile": state.bg_compile.describe() if state.bg_compile is not None else None,
+            "aot_blocks": _aot_blocks_status(state.pipe),
             "text_encoder_quant": state.text_encoder_quant,
             "transformer_quant": state.transformer_quant,
             **_nvfp4_backend_fields(_transformer_quant_backend(state), owner = self),
