@@ -151,6 +151,12 @@ test("an undefined rowFilter leaves the picker rows untouched", () => {
   assert.equal(guards.length, 2);
   // LM Studio, models-dir and custom-folder rows go through the same filter.
   assert.equal(pickers.match(/localRowAllowed\(m\) &&/g)?.length, 3);
+  // Recommended and searched Hub rows too.
+  assert.match(pickers, /!isMobileVariant\(r\.id\) &&\s*hubRowAllowed\(r\) &&/);
+  assert.match(
+    pickers,
+    /\.filter\(isTaskRuntimeSupported\)\s*\.filter\(hubRowAllowed\)/,
+  );
   const selector = readSrc(
     "features/model-picker/components/model-selector.tsx",
   );

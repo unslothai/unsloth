@@ -73,8 +73,7 @@ export async function showRunResult({
         model: response.model,
         saved: true,
       });
-    } catch {
-    }
+    } catch {}
     selectClip(clip.id, true);
     return;
   }
@@ -150,7 +149,6 @@ export function useCloneGeneration({
 
   const transcriber = useReferenceTranscribe({
     sttRepo,
-    language,
     onText: (next) => useAudioCloneStore.getState().setReferenceText(next),
   });
 

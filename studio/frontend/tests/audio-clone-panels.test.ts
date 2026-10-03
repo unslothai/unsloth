@@ -417,3 +417,18 @@ test("panel labels are plain words, never option names", () => {
     />\s*(x_vector_only_mode|emotion_alpha|guidance_scale|template_name)\s*</,
   );
 });
+
+test("deleting the selected saved voice clears Speak's pick", () => {
+  const picker = readSrc("features/audio/components/voice-picker.tsx");
+  assert.match(picker, /if \(voice\.id === selectedId\) onDeselect\?\.\(\);/);
+  const speak = readSrc("features/audio/tools/speak-panels.tsx");
+  assert.match(
+    speak,
+    /onDeselect=\{\(\) => onChange\(\{ \.\.\.value, voiceId: null \}\)\}/,
+  );
+});
+
+test("reference transcription sends no language hint", () => {
+  const hook = readSrc("features/audio/hooks/use-reference-transcribe.ts");
+  assert.doesNotMatch(hook, /\blanguage\s*[:,}]/);
+});

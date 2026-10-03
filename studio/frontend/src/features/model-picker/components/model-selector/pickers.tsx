@@ -3724,6 +3724,16 @@ export function HubModelPicker({
 
   // Recommended suggests GGUF anywhere, plus MLX and safetensors on Mac; the "Fits on device"
   // tick also drops models too big for the device. Downloaded models stay visible.
+  const hubRowAllowed = (r: HfModelResult) =>
+    !rowFilter || rowFilter({ id: r.id, task: r.pipelineTag });
+  const localRowAllowed = (m: LocalModelInfo) =>
+    !rowFilter ||
+    rowFilter({
+      id: m.model_id ?? m.id,
+      task: m.task,
+      audioType: m.audio_type,
+      audioWorkflows: m.audio_workflows,
+    });
   const recommendedRows = useMemo(() => {
     const catalogSeedIds = new Set(
       catalogSeedRows.map((row) => row.id.toLowerCase()),
@@ -3732,6 +3742,7 @@ export function HubModelPicker({
       const isCatalogSeed = catalogSeedIds.has(r.id.toLowerCase());
       return (
         !isMobileVariant(r.id) &&
+        hubRowAllowed(r) &&
         taskPickerRowMatches({
           isCatalogSeed,
           isHidden: isHiddenModelId(r.id),
@@ -3806,6 +3817,7 @@ export function HubModelPicker({
       .filter((r) => !deviceFiltered || fits(r));
     return [...unslothRows, ...communityRows];
   }, [
+    rowFilter,
     budgetFraction,
     diffusionLoad,
     recommendedSearch.results,
@@ -4255,14 +4267,6 @@ export function HubModelPicker({
     normalizeForSearch(
       `${m.model_id ?? ""} ${m.display_name} ${m.id}`,
     ).includes(localQuery);
-  const localRowAllowed = (m: LocalModelInfo) =>
-    !rowFilter ||
-    rowFilter({
-      id: m.model_id ?? m.id,
-      task: m.task,
-      audioType: m.audio_type,
-      audioWorkflows: m.audio_workflows,
-    });
   const sortedLmStudio = useMemo(
     () =>
       sortLocalModels(
@@ -5095,6 +5099,7 @@ export function HubModelPicker({
       rows
         .filter(isChatSupported)
         .filter(isTaskRuntimeSupported)
+        .filter(hubRowAllowed)
         .filter(
           (r) =>
             !fitOnDeviceOnly ||
@@ -5119,6 +5124,7 @@ export function HubModelPicker({
           matchesFormatFilter(id, isKnownGgufRepo(id), formatFilter),
         ),
     [
+      rowFilter,
       recommendedSet,
       chatOnly,
       isKnownGgufRepo,
