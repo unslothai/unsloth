@@ -446,7 +446,6 @@ export interface AudioRunResponse {
     workflow: string;
   }[];
   model: string;
-  /** Only when the gallery could not save the result. */
   audio: GeneratedAudio | null;
 }
 

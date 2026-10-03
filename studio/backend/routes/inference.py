@@ -21782,7 +21782,6 @@ async def run_audio_workflow(
     reference_source = prepared["reference"][0] if "reference" in prepared else None
     reference_text = (body.inputs.reference_text or "").strip() or None
     if reference_text is None and reference_source is not None and reference_source.kind == "voice":
-        # A saved voice carries its own transcript.
         from core.inference import audio_voices
         voice = await asyncio.to_thread(audio_voices.get, reference_source.id)
         reference_text = ((voice or {}).get("transcript") or "").strip() or None

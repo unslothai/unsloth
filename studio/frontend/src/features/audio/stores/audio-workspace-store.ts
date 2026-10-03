@@ -14,7 +14,6 @@ interface AudioWorkspaceState {
   workflowChosen: boolean;
   requestedWorkflow: AudioWorkflowId | null;
   navExpanded: boolean;
-  /** The model last loaded on each workflow. */
   lastModelByWorkflow: Partial<Record<AudioWorkflowId, string>>;
   commitWorkflow: (workflow: AudioWorkflowId) => void;
   adoptWorkflow: (workflow: AudioWorkflowId) => void;
@@ -53,7 +52,6 @@ export const useAudioWorkspaceStore = create<AudioWorkspaceState>()(
     {
       name: AUDIO_WORKSPACE_STORAGE_KEY,
       version: 1,
-      // The open workflow is not remembered across reloads.
       partialize: (state) => ({
         lastModelByWorkflow: state.lastModelByWorkflow,
       }),

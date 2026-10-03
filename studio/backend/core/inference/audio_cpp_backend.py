@@ -107,7 +107,6 @@ def model_info_fields(model: AudioCppModel) -> dict[str, Any]:
         "audio_workflows": list(model.workflows),
         "audio_reference_text": model.clone.reference_text if model.clone else None,
         "audio_required_inputs": list(model.required_inputs),
-        # Internal: read by the route's pre-generation checks.
         "audio_clone": clone_rules(model),
     }
 

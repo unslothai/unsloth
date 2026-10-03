@@ -60,7 +60,6 @@ def test_save_list_rename_and_delete_a_voice(client):
     assert client.patch(url, json = {"name": "x"}).status_code == 404
 
 
-# A clone run sends at most 30 s of a reference, so a longer clip is cut, not refused.
 @pytest.mark.parametrize(
     "make_source, duration",
     [

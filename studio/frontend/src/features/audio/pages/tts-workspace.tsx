@@ -138,11 +138,9 @@ export function TtsRailFields({
     isRecording: boolean;
     setAudioDeviceState: (next: string) => void;
     advancedOpen: boolean;
-    /** Replaces the Text field (Clone's reference, transcript and text). */
     inputs?: ReactNode;
     claimedOptions?: ReadonlySet<string>;
   }) {
-  // Advanced leaves out options a shown tool panel renders itself.
   const audioOptionSpecs = claimedOptions?.size
     ? allAudioOptionSpecs.filter((spec) => !claimedOptions.has(spec.name))
     : allAudioOptionSpecs;

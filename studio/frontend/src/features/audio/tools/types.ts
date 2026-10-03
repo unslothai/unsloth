@@ -8,7 +8,6 @@ import type { AudioWorkflowId } from "../workflows";
 
 export type AudioReferenceTextMode = "required" | "optional" | "unused";
 
-/** What a tool panel knows about the loaded model when deciding whether it applies. */
 export interface AudioModelContext {
   audioType: string | null;
   audioFamily: string | null;
@@ -21,7 +20,6 @@ export interface AudioModelContext {
   referenceTextMode?: AudioReferenceTextMode | null;
 }
 
-/** The part of a generation request a panel contributes. */
 export interface AudioRunPatch {
   instructions?: string;
   language?: string;
@@ -30,7 +28,6 @@ export interface AudioRunPatch {
   route?: string;
   text?: string;
   speed?: number;
-  /** Overrides the model's reported transcript use. */
   referenceTextMode?: "required" | "optional" | "hidden";
 }
 
@@ -49,14 +46,12 @@ export interface AudioToolPanelProps<V> {
   core?: CoreInputs;
 }
 
-/** Model-specific controls shown between a page's own inputs and Advanced, only for models that have them. */
 export interface AudioToolPanel<V> {
   id: string;
   /** Runtime families the panel serves. Ignored when `appliesTo` is given. */
   families: readonly string[];
   workflows: readonly AudioWorkflowId[];
   title: string;
-  /** Spec option names the panel renders itself, so Advanced leaves them out. */
   claims: readonly string[];
   /** Matches on more than the family, e.g. on audio_type for native runtimes. */
   appliesTo?: (ctx: AudioModelContext) => boolean;

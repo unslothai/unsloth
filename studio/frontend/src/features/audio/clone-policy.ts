@@ -8,7 +8,6 @@ import type { AudioModelContext, AudioRunPatch } from "./tools/types";
 
 type ReferenceTextField = "required" | "optional" | "hidden";
 
-/** A panel override (Timbre only, CosyVoice3 Cross-lingual) wins; unknown models get optional. */
 export function referenceTextField(
   ctx: Pick<AudioModelContext, "referenceTextMode">,
   patch: Pick<AudioRunPatch, "referenceTextMode">,
@@ -46,7 +45,6 @@ export const CLONE_TEXT_EXAMPLES = [
 
 const SPEAKER_LINE = /^\s*Speaker\s*\d+\s*:/im;
 
-/** Same rule as the backend, so the preview shows what is sent. */
 export function formatVibeVoiceScript(text: string): string {
   const trimmed = text.trim();
   if (!trimmed || SPEAKER_LINE.test(trimmed)) return trimmed;
@@ -96,7 +94,6 @@ interface CloneBlockerInput {
   panelError: string | null;
 }
 
-/** First missing input in rail order; model blockers come from the host before this. */
 export function cloneBlocker(
   input: CloneBlockerInput,
 ): { kind: CloneBlockerKind; reason: string } | null {

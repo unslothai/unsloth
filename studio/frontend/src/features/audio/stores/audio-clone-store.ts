@@ -21,7 +21,6 @@ interface AudioCloneState {
   setToolValue: (key: string, value: unknown) => void;
 }
 
-/** Oldest evicted first so storage stays bounded. */
 const MAX_TOOL_VALUES = 200;
 
 export const useAudioCloneStore = create<AudioCloneState>()(
@@ -45,7 +44,6 @@ export const useAudioCloneStore = create<AudioCloneState>()(
             entries.length >= MAX_TOOL_VALUES
               ? entries.slice(entries.length - MAX_TOOL_VALUES + 1)
               : entries;
-          // Re-inserted last, so insertion order is recency.
           return { toolValues: { ...Object.fromEntries(kept), [key]: value } };
         }),
     }),

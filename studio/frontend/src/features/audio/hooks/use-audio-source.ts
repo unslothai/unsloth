@@ -79,7 +79,6 @@ export function recordingSupported(): boolean {
   );
 }
 
-/** The selection belongs to the caller, so it can be kept in a store across reloads. */
 export function useAudioSource({
   value,
   onChange,

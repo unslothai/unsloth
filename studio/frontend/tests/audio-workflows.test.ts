@@ -87,7 +87,6 @@ test("a loaded model keeps the open page when it can run it, else opens its own"
     workflowForLoadedModel({ current: "speak", audioWorkflows: ["clone"], music: false }),
     "clone",
   );
-  // The sidecar's page is never a main-slot answer.
   assert.equal(
     workflowForLoadedModel({ current: "speak", audioWorkflows: ["transcribe"], music: true }),
     "music",
