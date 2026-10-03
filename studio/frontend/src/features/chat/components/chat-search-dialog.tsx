@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/command";
 import {
   type ShortcutId,
+  isImeComposing,
   triggerShortcut,
   useShortcut,
   useShortcutAvailable,
@@ -45,10 +46,12 @@ import {
   type CachedInventoryRow,
   type LocalInventoryRow,
   type ModelInventoryFormat,
+  isHiddenModelId,
   useHubInventory,
 } from "@/features/hub";
 import { modelLabelKey } from "@/features/library";
 import { useChatProjects } from "../hooks/use-chat-projects";
+import { useChatSidebarItems } from "../hooks/use-chat-sidebar-items";
 import {
   type ChatSearchItem,
   chatSearchIndexHasRows,
@@ -118,6 +121,8 @@ interface Row extends ChatSearchRow {
   icon: RowIcon;
   /** Replaces the age at the row's end. */
   meta?: string;
+  /** Not a runnable model (embedder, STT, probe); listed only when queried. */
+  hidden?: boolean;
   open: () => void;
 }
 
@@ -170,6 +175,11 @@ export function ChatSearchDialog() {
   const opener = useChatSearchStore((s) => s.opener);
   const navigate = useNavigate();
   const { items, loading } = useChatSearchIndex(isOpen);
+  // Every thread, empty ones too: the index skips those, the sidebar's project ages do not.
+  const { items: threads } = useChatSidebarItems({
+    enabled: isOpen,
+    requireMessages: false,
+  });
   const { projects, hasLoaded: projectsLoaded } = useChatProjects();
   const sources = useChatSearchSources(isOpen);
   const { cachedRows, localRows, downloadedReady } = useHubInventory({
@@ -276,10 +286,12 @@ export function ChatSearchDialog() {
   const rowsByKind = useMemo<Record<Exclude<ChatSearchKind, "chats">, Row[]>>(() => {
     // As the sidebar: a project's own edits or its newest chat, whichever is later.
     const newestChat = new Map<string, number>();
-    for (const item of items) {
-      if (!item.projectId) continue;
-      const at = item.updatedAt ?? item.createdAt;
-      newestChat.set(item.projectId, Math.max(newestChat.get(item.projectId) ?? 0, at));
+    for (const thread of threads) {
+      if (!thread.projectId) continue;
+      newestChat.set(
+        thread.projectId,
+        Math.max(newestChat.get(thread.projectId) ?? 0, thread.updatedAt),
+      );
     }
     const activityAt = (project: (typeof projects)[number]) =>
       Math.max(project.updatedAt ?? project.createdAt, newestChat.get(project.id) ?? 0);
@@ -309,7 +321,7 @@ export function ChatSearchDialog() {
         }),
       ].sort((a, b) => b.time - a.time),
     };
-  }, [projects, items, sources, cachedRows, localRows, navigate, t]);
+  }, [projects, threads, sources, cachedRows, localRows, navigate, t]);
 
   const matchAll = useCallback(
     (search: string): Record<ChatSearchKind, Row[]> => ({
@@ -318,7 +330,13 @@ export function ChatSearchDialog() {
         .sort((a, b) => b.time - a.time),
       projects: filterRows(rowsByKind.projects, search),
       files: filterRows(rowsByKind.files, search),
-      models: filterRows(rowsByKind.models, search),
+      // Infrastructure models stay out until a query names them, as in the Hub.
+      models: filterRows(
+        queryTokens(search).length > 0
+          ? rowsByKind.models
+          : rowsByKind.models.filter((row) => !row.hidden),
+        search,
+      ),
     }),
     [chats, rowsByKind, t, navigate],
   );
@@ -377,6 +395,8 @@ export function ChatSearchDialog() {
   };
 
   const onInputKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    // An arrow mid-composition moves the IME caret, not the tab.
+    if (isImeComposing(event.nativeEvent)) return;
     if (event.altKey || event.metaKey || event.ctrlKey || event.shiftKey) return;
     const step = tabStepForKey(event.key, event.currentTarget);
     if (step === null) return;
@@ -570,8 +590,13 @@ function downloadedModelRows(
 ): Row[] {
   const open = (id: string) => () =>
     navigate({ to: "/hub", search: { tab: "downloaded", model: id } });
+  // The server already hides infrastructure cache rows, but not optimistic ones.
   const cached = cachedRows
-    .filter((row) => !row.partial)
+    .filter(
+      (row) =>
+        !row.partial &&
+        !(row.optimistic && isHiddenModelId(row.id, row.repoId, row.cachePath)),
+    )
     .map(
       (row): Row => ({
         key: `hub-cache:${row.id}`,
@@ -612,6 +637,7 @@ function downloadedModelRows(
           .toLowerCase(),
         icon: DashboardCircleIcon,
         meta: row.sourceLabel,
+        hidden: isHiddenModelId(row.id, row.repoId, row.path, row.title),
         open: open(row.id),
       };
     });

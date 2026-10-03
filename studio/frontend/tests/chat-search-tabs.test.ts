@@ -94,7 +94,7 @@ test("the Library store loads with the dialog, not with the app, and recipes are
 
 test("Models lists every complete download the Hub knows of, plus the Library's fine-tunes", () => {
   assert.match(DIALOG, /useHubInventory\(\{\s*kind: "models",\s*enabled: isOpen,\s*\}\)/);
-  assert.match(DIALOG, /cachedRows\s*\.filter\(\(row\) => !row\.partial\)/);
+  assert.match(DIALOG, /cachedRows\s*\.filter\(\s*\(row\) =>\s*!row\.partial &&/);
   assert.match(DIALOG, /localRows\s*\.filter\(\(row\) => !row\.partial\)/);
   assert.match(DIALOG, /search: \{ tab: "downloaded", model: id \}/);
   assert.match(DIALOG, /sources\.fineTunes\.map/);
@@ -148,4 +148,22 @@ test("untitled and compare chats are searchable by their shown labels", () => {
   assert.match(DIALOG, /item\.title \? "" : untitled,/);
   assert.match(DIALOG, /item\.type === "compare" \? compare : "",/);
   assert.match(DIALOG, /selectVisibleChats\(chats, search\)/);
+});
+
+test("project ages count empty threads, which the search index skips", () => {
+  assert.match(DIALOG, /useChatSidebarItems\(\{\s*enabled: isOpen,\s*requireMessages: false,\s*\}\)/);
+  assert.match(DIALOG, /for \(const thread of threads\) \{/);
+});
+
+test("infrastructure models stay out of the list until queried", () => {
+  assert.match(DIALOG, /hidden: isHiddenModelId\(row\.id, row\.repoId, row\.path, row\.title\),/);
+  assert.match(DIALOG, /row\.optimistic && isHiddenModelId\(row\.id, row\.repoId, row\.cachePath\)/);
+  assert.match(DIALOG, /: rowsByKind\.models\.filter\(\(row\) => !row\.hidden\),/);
+});
+
+test("tab arrows leave IME composition alone", () => {
+  assert.match(
+    DIALOG,
+    /if \(isImeComposing\(event\.nativeEvent\)\) return;\n[^\n]*\n\s*const step = tabStepForKey/,
+  );
 });
