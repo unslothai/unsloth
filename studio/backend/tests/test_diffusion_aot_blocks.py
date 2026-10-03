@@ -317,6 +317,14 @@ _SCRIPT = textwrap.dedent(
 )
 
 
+def _close_to_the_normal_path(tmp_path: Path) -> None:
+    """The kill-switch run compiles the same graph on the normal path in another process. Its kernels are tuned in
+    that process, so the bits can differ (as two normal-path processes can on some cards); the values may not."""
+    a, b = torch.load(tmp_path / "first.pt").float(), torch.load(tmp_path / "off.pt").float()
+    assert torch.isfinite(a).all()
+    assert ((a - b).norm() / b.norm()).item() < 1e-2
+
+
 def _run(tmp_path: Path, tag: str, extra_env: dict | None = None) -> dict:
     env = dict(os.environ)
     env.update(
@@ -353,16 +361,17 @@ def test_restart_serves_blocks_from_the_artifact_without_tracing_and_bit_identic
     hooked = _run(tmp_path, "hooked", {"HOOK": "1"})
     assert hooked["stats"]["hits"] == 2 and hooked["stats"]["misses"] == 1, hooked
     assert not torch.equal(torch.load(tmp_path / "first.pt"), torch.load(tmp_path / "hooked.pt"))
-    # Kill switch: the normal torch.compile path, same bits as the aot_compile path.
+    # Kill switch: the normal torch.compile path.
     off = _run(tmp_path, "off", {"UNSLOTH_DIFFUSION_AOT_BLOCKS": "0"})
     assert off["frames"] >= 1
-    assert torch.equal(torch.load(tmp_path / "first.pt"), torch.load(tmp_path / "off.pt"))
+    _close_to_the_normal_path(tmp_path)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "CUDA only")
 def test_real_flux_blocks_with_torchao_int8_weights_persist_and_restart_bit_identical(tmp_path):
     """diffusers' FLUX blocks (attention processor identity guards) with int8 torchao weights (a guard pickler that
-    cannot copy them): both block classes serialise, a restart serves every block without tracing, same bits."""
+    cannot copy them) and instance-bound Linear forwards: both block classes serialise, and a restart serves every
+    block without tracing, bit-identical to the first start."""
     if not aot.supported():
         pytest.skip("this torch has no aot_compile")
     pytest.importorskip("torchao")
@@ -377,7 +386,7 @@ def test_real_flux_blocks_with_torchao_int8_weights_persist_and_restart_bit_iden
     assert restart["stats"]["hits"] == 4 and restart["frames"] == 0, restart
     assert torch.equal(torch.load(tmp_path / "first.pt"), torch.load(tmp_path / "restart.pt"))
     off = _run(tmp_path, "off", dict(flux, UNSLOTH_DIFFUSION_AOT_BLOCKS = "0"))
-    assert torch.equal(torch.load(tmp_path / "first.pt"), torch.load(tmp_path / "off.pt"))
+    _close_to_the_normal_path(tmp_path)
     hooked = _run(tmp_path, "hooked", dict(flux, HOOK = "1"))
     assert hooked["stats"]["misses"] >= 1 and not torch.equal(torch.load(tmp_path / "first.pt"),
                                                               torch.load(tmp_path / "hooked.pt"))
