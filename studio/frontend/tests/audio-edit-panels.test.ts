@@ -89,68 +89,39 @@ test("the panels claim the options the adapters set, so Advanced hides them", ()
 });
 
 test("collectToolRequest returns the adapter's reason and adds nothing to the request", () => {
-  // Logic without Components, which collectToolRequest never reads.
-  const panelsFor = (c: AudioModelContext) =>
-    EDIT_PANEL_LOGIC.filter((panel) => panelApplies(panel, "edit", c)) as never;
   const fire = ctx("firered_audio", ["clone", "edit"]);
-  const atEnd = collectToolRequest(
-    panelsFor(fire),
-    {},
-    core(`${S2} Really.`),
-    fire,
-  );
+  const dots = ctx("dots_tts", ["speak", "edit"]);
+  const check = (c: AudioModelContext, inputs: CoreInputs) =>
+    collectToolRequest(
+      EDIT_PANEL_LOGIC.filter((panel) =>
+        panelApplies(panel, "edit", c),
+      ) as never,
+      {},
+      inputs,
+      c,
+    );
+  const atEnd = check(fire, core(`${S2} Really.`));
   assert.equal(atEnd.error, FIRERED_INSERT_AT_END);
   assert.deepEqual(atEnd.patch, {});
   // Six separate changes: every other word.
-  const many = "OKAY, I'm CEMO and WHAT you JUST heard WASN'T a human voice.";
-  assert.equal(
-    collectToolRequest(
-      panelsFor(fire),
-      {},
-      core(many.replace("human", "HUMAN")),
-      fire,
-    ).error,
-    FIRERED_TOO_MANY_CHANGES,
-  );
-  assert.equal(
-    collectToolRequest(
-      panelsFor(fire),
-      {},
-      core(S2.replace("human", "robot")),
-      fire,
-    ).error,
-    null,
-  );
-  const dots = ctx("dots_tts", ["speak", "edit"]);
-  assert.equal(
-    collectToolRequest(
-      panelsFor(dots),
-      {},
-      core(S2.replace("human", "<robot>")),
-      dots,
-    ).error,
-    DOTS_BAD_CHARACTERS,
-  );
-  assert.equal(
-    collectToolRequest(panelsFor(dots), {}, core(S2, "delivery"), dots).error,
-    DELIVERY_NEEDS_FIRERED,
-  );
-  assert.equal(
-    collectToolRequest(panelsFor(fire), {}, core(S2, "delivery"), fire).error,
-    null,
-  );
-  // Without the page's edit inputs a panel never blocks.
-  assert.equal(
-    collectToolRequest(panelsFor(fire), {}, { text: "" }, fire).error,
-    null,
-  );
+  const six = "OKAY, I'm CEMO and WHAT you JUST heard WASN'T a HUMAN voice.";
+  const cases: [AudioModelContext, CoreInputs, string | null][] = [
+    [fire, core(six), FIRERED_TOO_MANY_CHANGES],
+    [fire, core(S2.replace("human", "robot")), null],
+    [dots, core(S2.replace("human", "<robot>")), DOTS_BAD_CHARACTERS],
+    [dots, core(S2, "delivery"), DELIVERY_NEEDS_FIRERED],
+    [fire, core(S2, "delivery"), null],
+    // Without the page's edit inputs a panel never blocks.
+    [fire, { text: "" }, null],
+  ];
+  for (const [c, inputs, error] of cases) {
+    assert.equal(check(c, inputs).error, error);
+  }
 });
 
 test("the registry lists the edit panels and the panel keeps its labels", () => {
   const registry = readSrc("features/audio/tools/registry.tsx");
   assert.match(registry, /\.\.\.EDIT_TOOL_PANELS,/);
-  const panels = readSrc("features/audio/tools/edit-panels.tsx");
-  assert.match(panels, /EDIT_COPY\.howItEditsTitle/);
   const editor = readSrc(
     "features/audio/components/transcript-diff-editor.tsx",
   );

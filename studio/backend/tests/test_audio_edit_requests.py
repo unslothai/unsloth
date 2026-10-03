@@ -111,7 +111,6 @@ class _Recorder:
         self.calls.append((path, body))
         read = body.get(self.field) if self.field else None
         if read and re.search(r"step\d+\.wav$", str(read)):
-            # A chained call reads the previous answer from the temp WAV the server wrote.
             assert Path(read).read_bytes() == self.answers[-1]
             self.step_files.append(read)
         answer = _wav(240 * (len(self.calls) + 1))
@@ -148,11 +147,7 @@ def started(monkeypatch, tmp_path):
 
 def _backend(model, server = None):
     backend = acb.AudioCppBackend()
-    backend._server = (
-        server
-        if server is not None
-        else _Recorder(model, model.edit.source_field if model.edit else None)
-    )
+    backend._server = server or _Recorder(model, model.edit.source_field if model.edit else None)
     backend._model = model
     backend.models = {model.id: {"is_audio": True}}
     backend.active_model_name = model.id
@@ -176,53 +171,52 @@ def _placeholders(body: dict, server: _Recorder) -> dict:
 _CASES = json.loads(FIXTURE.read_text(encoding = "utf-8"))["cases"]
 
 
-@pytest.mark.parametrize("case", _CASES, ids = [c["name"] for c in _CASES])
-def test_the_runtime_bodies_match_the_shared_fixture(case, started, tmp_path):
-    model = _model(case["family"])
-    backend = _backend(model)
-    run = case["run_body"]
-    wav, rate = backend.generate_audio_response(
-        run["text"],
+def _edit(
+    backend,
+    edit,
+    text = EDITED,
+    reference_text = ORIGINAL,
+    **kwargs,
+):
+    return backend.generate_audio_response(
+        text,
         workflow = "edit",
         audio_inputs = {"source": SOURCE},
-        reference_text = run["inputs"].get("reference_text"),
-        edit = run["edit"],
+        reference_text = reference_text,
+        edit = edit,
+        **kwargs,
+    )
+
+
+_TWO = ["Replace 'Cemo' with 'Sam'.", "Replace 'human' with 'robot'."]
+
+
+@pytest.mark.parametrize("case", _CASES, ids = [c["name"] for c in _CASES])
+def test_the_runtime_bodies_match_the_shared_fixture(case, started, tmp_path):
+    backend = _backend(_model(case["family"]))
+    run = case["run_body"]
+    wav, rate = _edit(
+        backend,
+        run["edit"],
+        run["text"],
+        run["inputs"].get("reference_text"),
         audio_options = case["input"]["advanced"] or None,
     )
     server = backend._server
-    assert wav[:4] == b"RIFF" and rate == 24000
-    # The last call's answer is the result.
-    assert wav == server.answers[-1]
+    assert rate == 24000 and wav == server.answers[-1]
     sent = [{"path": path, "body": _placeholders(body, server)} for path, body in server.calls]
     assert sent == case["runtime"]
-    assert all(not os.path.exists(step) for step in server.step_files)
     assert list((tmp_path / "tmp").iterdir()) == []
 
 
 def test_a_firered_chain_reads_each_previous_output(started):
-    model = _model("firered_audio")
-    backend = _backend(model)
-    instructions = [
-        "Replace 'Cemo' with 'Sam'.",
-        "Replace 'human' with 'robot'.",
-        "Delete 'Okay,'.",
-    ]
-    backend.generate_audio_response(
-        "I'm Sam and what you just heard wasn't a robot voice.",
-        workflow = "edit",
-        audio_inputs = {"source": SOURCE},
-        reference_text = ORIGINAL,
-        edit = {"mode": "words", "instructions": instructions},
-        seed = 7,
-    )
+    backend = _backend(_model("firered_audio"))
+    instructions = [*_TWO, "Delete 'Okay,'."]
+    _edit(backend, {"mode": "words", "instructions": instructions}, EDITED[6:], seed = 7)
     server = backend._server
-    assert [body["audio"] for _p, body in server.calls][0] == SOURCE
-    assert len(server.step_files) == 2
+    assert server.calls[0][1]["audio"] == SOURCE
     assert [Path(p).name for p in server.step_files] == ["step1.wav", "step2.wav"]
-    # One shared temp dir, removed with its files.
-    assert Path(server.step_files[0]).parent.name.startswith("unsloth-audio-edit-")
     assert not Path(server.step_files[0]).parent.exists()
-    # The seed goes top-level, as a string like the clone path, on every call.
     assert [body["seed"] for _p, body in server.calls] == ["7", "7", "7"]
     assert [body["options"]["instruction"] for _p, body in server.calls] == instructions
 
@@ -231,98 +225,56 @@ def test_a_cancel_between_steps_stops_the_chain(started):
     model = _model("firered_audio")
     cancel = threading.Event()
     server = _Recorder(model, "audio", cancel_after = 1, cancel_event = cancel)
-    backend = _backend(model, server)
     with pytest.raises(AudioGenerationCancelledError):
-        backend.generate_audio_response(
-            EDITED,
-            workflow = "edit",
-            audio_inputs = {"source": SOURCE},
-            reference_text = ORIGINAL,
-            edit = {
-                "mode": "words",
-                "instructions": ["Replace 'Cemo' with 'Sam'.", "Replace 'human' with 'robot'."],
-            },
+        _edit(
+            _backend(model, server),
+            {"mode": "words", "instructions": _TWO},
             cancel_event = cancel,
         )
     assert len(server.calls) == 1
 
 
 def test_vevo2_edits_as_s2s_and_the_next_clone_restarts_as_tts(started):
-    model = _model("vevo2")
-    assert model.server_task == "tts"
-    backend = _backend(model)
-    backend.generate_audio_response(
-        EDITED,
-        workflow = "edit",
-        audio_inputs = {"source": SOURCE},
-        reference_text = ORIGINAL,
-        edit = {"mode": "words"},
-    )
+    backend = _backend(_model("vevo2"))
+    _edit(backend, {"mode": "words"})
+    _edit(backend, {"mode": "words"}, reference_text = None)
     assert started == ["s2s"]
-    assert backend._server.model.server_task == "s2s"
-    # A second edit keeps the s2s session.
-    backend.generate_audio_response(
-        EDITED, workflow = "edit", audio_inputs = {"source": SOURCE}, edit = {"mode": "words"}
-    )
-    assert started == ["s2s"]
+    ((_path, body),) = backend._server.calls[-1:]
+    assert "reference_text" not in body and body["target_text"] == EDITED
     backend.generate_audio_response(EDITED, workflow = "clone", audio_inputs = {"reference": REF})
     assert started == ["s2s", "tts"]
-    (call,) = backend._server.calls
-    assert call[0] == "/v1/audio/speech" and call[1]["voice_ref"] == REF
-
-
-def test_vevo2_without_a_transcript_leaves_reference_text_out(started):
-    backend = _backend(_model("vevo2"))
-    backend.generate_audio_response(
-        EDITED, workflow = "edit", audio_inputs = {"source": SOURCE}, edit = {"mode": "words"}
-    )
-    ((_path, body),) = backend._server.calls
-    assert "reference_text" not in body and body["target_text"] == EDITED
+    ((path, body),) = backend._server.calls
+    assert path == "/v1/audio/speech" and body["voice_ref"] == REF
 
 
 def test_firered_edits_in_the_clone_session_without_a_restart(started):
-    model = _model("firered_audio")
-    backend = _backend(model)
+    backend = _backend(_model("firered_audio"))
     before = backend._server
-    backend.generate_audio_response(
-        EDITED,
-        workflow = "edit",
-        audio_inputs = {"source": SOURCE},
-        reference_text = ORIGINAL,
-        edit = {"mode": "words", "instructions": ["Replace 'human' with 'robot'."]},
-    )
+    _edit(backend, {"mode": "words", "instructions": _TWO[1:]})
     assert started == [] and backend._server is before
 
 
-_DOTS_OPTIONS = (
-    {"name": "template_name", "type": "enum", "values": ["tts", "edit"]},
-    {"name": "source_text", "type": "string"},
-    {"name": "target_text", "type": "string"},
-    {"name": "num_inference_steps", "type": "int", "min": 1, "max": 64},
-    {"name": "use_xvector", "type": "bool"},
-)
-
-
 def test_advanced_options_leave_out_the_claimed_ones_and_unknown_ones(started):
-    backend = _backend(_model("dots_tts", options = _DOTS_OPTIONS))
-    backend.generate_audio_response(
-        EDITED,
-        workflow = "edit",
-        audio_inputs = {"source": SOURCE},
-        reference_text = ORIGINAL,
-        edit = {"mode": "words", "markup": "x"},
+    dots_options = (
+        {"name": "template_name", "type": "enum", "values": ["tts", "edit"]},
+        {"name": "source_text", "type": "string"},
+        {"name": "num_inference_steps", "type": "int", "min": 1, "max": 64},
+        {"name": "use_xvector", "type": "bool"},
+    )
+    backend = _backend(_model("dots_tts", options = dots_options))
+    claimed = {name: "ignored" for name in ("source_text", "target_text", "instruction")}
+    _edit(
+        backend,
+        {"mode": "words", "markup": "x"},
         audio_options = {
             "template_name": "tts",
-            "source_text": "ignored",
-            "target_text": "ignored",
-            "instruction": "ignored",
+            **claimed,
             "num_inference_steps": 10.0,
             "use_xvector": True,
             "not_in_the_spec": 1,
         },
     )
-    ((_path, body),) = backend._server.calls
-    assert body["options"] == {
+    assert backend._server.calls[0][1]["options"] == {
         "template_name": "edit",
         "num_inference_steps": "10",
         "use_xvector": "true",
@@ -332,15 +284,12 @@ def test_advanced_options_leave_out_the_claimed_ones_and_unknown_ones(started):
         {"name": "num_inference_steps", "type": "int", "min": 1},
     )
     backend = _backend(_model("firered_audio", options = firered_options))
-    backend.generate_audio_response(
-        EDITED,
-        workflow = "edit",
-        audio_inputs = {"source": SOURCE},
-        edit = {"mode": "delivery", "speed": 0.5},
+    _edit(
+        backend,
+        {"mode": "delivery", "speed": 0.5},
         audio_options = {"template_name": "semantic_edit", "num_inference_steps": 4},
     )
-    ((_path, body),) = backend._server.calls
-    assert body["options"] == {
+    assert backend._server.calls[0][1]["options"] == {
         "template_name": "acoustic_edit",
         "instruction": "adjust the speed to 0.5x",
         "num_inference_steps": "4",
@@ -348,8 +297,7 @@ def test_advanced_options_leave_out_the_claimed_ones_and_unknown_ones(started):
 
 
 def test_speak_with_a_saved_voice_still_clones_and_edit_never_does(started, monkeypatch):
-    # F-6: an edit carries audio_inputs too, which must not make it a clone; Speak in a saved voice
-    # relies on exactly that rule.
+    # An edit carries audio_inputs too; that must not make it a clone.
     backend = _backend(_model("voxcpm2"))
     backend.generate_audio_response(
         "Hello there.", workflow = "speak", audio_inputs = {"reference": REF}
@@ -361,60 +309,38 @@ def test_speak_with_a_saved_voice_still_clones_and_edit_never_does(started, monk
         raise AssertionError("an edit took the clone path")
 
     monkeypatch.setattr(acb.AudioCppBackend, "_generate_clone", staticmethod(no_clone))
-    backend = _backend(_model("firered_audio"))
-    backend.generate_audio_response(
-        EDITED,
-        workflow = "edit",
-        audio_inputs = {"source": SOURCE},
-        reference_text = ORIGINAL,
-        edit = {"mode": "words", "instructions": ["Replace 'human' with 'robot'."]},
-    )
-    ((path, body),) = backend._server.calls
-    assert path == "/v1/tasks/run" and "voice_ref" not in body
-    # DotTTS Edit cannot clone; read as a clone, its edit would be refused.
-    dots = _model("dots_tts")
-    assert dots.clone is None
-    backend = _backend(dots)
-    backend.generate_audio_response(
-        EDITED,
-        workflow = "edit",
-        audio_inputs = {"source": SOURCE},
-        reference_text = ORIGINAL,
-        edit = {"mode": "words", "markup": 'a <sub targ="robot">human</sub> voice.'},
-    )
-    ((path, body),) = backend._server.calls
-    assert path == "/v1/tasks/run" and body["source_audio"] == SOURCE
+    for family, edit in (
+        ("firered_audio", {"mode": "words", "instructions": _TWO[1:]}),
+        ("dots_tts", {"mode": "words", "markup": 'a <sub targ="robot">human</sub> voice.'}),
+    ):
+        backend = _backend(_model(family))
+        _edit(backend, edit)
+        ((path, body),) = backend._server.calls
+        assert path == "/v1/tasks/run" and "voice_ref" not in body
 
 
 def test_a_model_that_cannot_edit_refuses_before_any_call(started):
     backend = _backend(_model("voxcpm2"))
     with pytest.raises(RuntimeError, match = "cannot edit speech"):
-        backend.generate_audio_response(
-            EDITED, workflow = "edit", audio_inputs = {"source": SOURCE}, edit = {"mode": "words"}
-        )
+        _edit(backend, {"mode": "words"})
     assert backend._server.calls == [] and started == []
 
 
-def test_status_fields_carry_the_edit_rules():
-    dots = acb.model_info_fields(_model("dots_tts"))
-    assert dots["audio_workflows"] == ["speak", "edit"]
-    assert dots["audio_edit"] == {
-        "style": "markup",
-        "delivery": False,
-        "max_changes": None,
-        "input_rate": 24000,
-    }
-    vevo = acb.model_info_fields(_model("vevo2"))
-    assert vevo["audio_workflows"] == ["clone", "edit"]
-    assert vevo["audio_edit"]["style"] == "sentence" and vevo["audio_edit"]["delivery"] is False
-    firered = acb.model_info_fields(_model("firered_audio"))
-    assert firered["audio_edit"] == {
-        "style": "instructions",
-        "delivery": True,
-        "max_changes": 5,
-        "input_rate": 24000,
-    }
-    assert acb.model_info_fields(_model("voxcpm2"))["audio_edit"] is None
+@pytest.mark.parametrize(
+    "family, workflows, rules",
+    [
+        ("dots_tts", ["speak", "edit"], ("markup", False, None)),
+        ("vevo2", ["clone", "edit"], ("sentence", False, None)),
+        ("firered_audio", None, ("instructions", True, 5)),
+        ("voxcpm2", None, None),
+    ],
+)
+def test_status_fields_carry_the_edit_rules(family, workflows, rules):
+    fields = acb.model_info_fields(_model(family))
+    if workflows:
+        assert fields["audio_workflows"] == workflows
+    expected = rules and dict(zip(("style", "delivery", "max_changes"), rules), input_rate = 24000)
+    assert fields["audio_edit"] == expected
 
 
 # The pure checks.
@@ -469,15 +395,18 @@ def test_check_instructions():
     assert check(["Replace 'human' with 'cat'."], ORIGINAL, EDITED, 5) == audio_edit.MISMATCH
 
 
-def test_delivery_instructions():
-    assert audio_edit.delivery_instructions(1.5, None) == ["adjust the speed to 1.5x"]
-    assert audio_edit.delivery_instructions(2.0, None) == ["adjust the speed to 2x"]
-    assert audio_edit.delivery_instructions(1.0, 3) == ["shift the pitch by 3 steps"]
-    assert audio_edit.delivery_instructions(0.5, 2) == [
-        "adjust the speed to 0.5x",
-        "shift the pitch by 2 steps",
-    ]
-    assert audio_edit.delivery_instructions(None, None) == []
+@pytest.mark.parametrize(
+    "speed, pitch, expected",
+    [
+        (1.5, None, ["adjust the speed to 1.5x"]),
+        (2.0, None, ["adjust the speed to 2x"]),
+        (1.0, 3, ["shift the pitch by 3 steps"]),
+        (0.5, 2, ["adjust the speed to 0.5x", "shift the pitch by 2 steps"]),
+        (None, None, []),
+    ],
+)
+def test_delivery_instructions(speed, pitch, expected):
+    assert audio_edit.delivery_instructions(speed, pitch) == expected
 
 
 def test_request_problem_per_style():

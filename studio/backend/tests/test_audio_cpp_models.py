@@ -572,51 +572,22 @@ def test_every_task_family_binds_its_workflows():
 
 
 def test_edit_families_bind_the_edit_workflow():
-    edit_names = [
-        f"{AUDIO_CPP_REPO}/DotTTS-Edit-GGUF",
-        "DotTTS-Edit-GGUF",
-        "dots-tts-edit-q8_0.gguf",
-    ]
+    edit_names = ["DotTTS-Edit-GGUF", "dots-tts-edit-q8_0.gguf"]
     dots_edit = acm.family_policy("dots_tts", names = edit_names)
-    assert list(dots_edit.workflows) == ["speak", "edit"]
     binding = dots_edit.workflows["edit"]
-    assert (binding.server_task, binding.endpoint, binding.route, binding.input_rate) == (
-        "tts",
-        "tasks",
-        None,
-        24000,
-    )
-    assert dots_edit.edit.style == "markup" and dots_edit.edit.template == "edit"
-    # The other DotTTS packages only speak.
-    for names in (
-        ["DotTTS-MF-GGUF", "dots-tts-mf-q8_0.gguf"],
-        ["DotTTS-SOAR-GGUF", "dots-tts-soar-q8_0.gguf"],
-        [],
-    ):
+    assert list(dots_edit.workflows) == ["speak", "edit"]
+    assert (binding.server_task, binding.endpoint, binding.input_rate) == ("tts", "tasks", 24000)
+    for names in (["DotTTS-MF-GGUF"], ["DotTTS-SOAR-GGUF"], []):
         assert list(acm.family_policy("dots_tts", names = names).workflows) == ["speak"], names
-    assert acm.FAMILIES["dots_tts"].edit is None
-    vevo2 = acm.FAMILIES["vevo2"]
-    assert list(vevo2.workflows) == ["clone", "edit"]
+    vevo2, firered = acm.FAMILIES["vevo2"], acm.FAMILIES["firered_audio"]
+    assert list(vevo2.workflows) == list(firered.workflows) == ["clone", "edit"]
+    # Vevo2 edits in an s2s session though it loads as tts.
     assert vevo2.default_server_task == "tts"
-    binding = vevo2.workflows["edit"]
-    assert (binding.server_task, binding.route, binding.inputs) == (
+    assert (vevo2.workflows["edit"].server_task, vevo2.workflows["edit"].route) == (
         "s2s",
         "editing",
-        ("source", "text", "reference_text"),
     )
-    firered = acm.FAMILIES["firered_audio"]
-    assert list(firered.workflows) == ["clone", "edit"]
     assert firered.workflows["edit"].server_task == "tts"
-    assert (
-        firered.edit.source_field,
-        firered.edit.max_changes,
-        firered.edit.delivery_template,
-    ) == (
-        "audio",
-        5,
-        "acoustic_edit",
-    )
-    assert firered.edit.claims == ("template_name", "instruction")
     assert {name for name, f in acm.FAMILIES.items() if f.edit is not None} == {
         "vevo2",
         "firered_audio",

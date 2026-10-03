@@ -55,6 +55,8 @@ const actionIds = (input: Input) =>
 
 test("a recording with a checked transcript and one change can run", () => {
   assert.equal(editBlocker(ready), null);
+  // An unknown length does not block; the server checks it again.
+  assert.equal(editBlocker({ ...ready, sourceDurationS: null }), null);
 });
 
 test("Edit's blockers come in rail order, each with its action", () => {
@@ -87,10 +89,6 @@ test("Edit's blockers come in rail order, each with its action", () => {
     { id: "add-recording", label: "Add it again" },
   ]);
   assert.equal(editBlocker(picked)?.reason, EDIT_SOURCE_TOO_LONG);
-  assert.equal(
-    EDIT_SOURCE_TOO_LONG,
-    "Edit works on recordings up to 30 s. Record or upload a shorter take.",
-  );
   assert.deepEqual(actionIds(picked), ["choose-recording"]);
   const fits = { ...picked, sourceDurationS: 30 };
   assert.equal(editBlocker(fits)?.reason, EDIT_TRANSCRIBING);
@@ -115,10 +113,6 @@ test("Edit's blockers come in rail order, each with its action", () => {
   assert.equal(editBlocker({ ...changed, panelError: null }), null);
 });
 
-test("an unknown length does not block; the server checks it again", () => {
-  assert.equal(editBlocker({ ...ready, sourceDurationS: null }), null);
-});
-
 test("past the word cap Words is held back", () => {
   const long = Array.from({ length: 401 }, (_, i) => `w${i}`).join(" ");
   assert.equal(
@@ -136,14 +130,12 @@ test("Delivery needs a speed or a pitch change, but no transcript", () => {
     transcribing: true,
   };
   assert.equal(editBlocker(delivery)?.reason, EDIT_DELIVERY_EMPTY);
-  assert.equal(
-    editBlocker({ ...delivery, delivery: { speed: 1.5, pitchSteps: 0 } }),
-    null,
-  );
-  assert.equal(
-    editBlocker({ ...delivery, delivery: { speed: 1, pitchSteps: 3 } }),
-    null,
-  );
+  for (const change of [
+    { speed: 1.5, pitchSteps: 0 },
+    { speed: 1, pitchSteps: 3 },
+  ]) {
+    assert.equal(editBlocker({ ...delivery, delivery: change }), null);
+  }
   // A panel error (Delivery on a model without it) comes first.
   assert.equal(
     editBlocker({

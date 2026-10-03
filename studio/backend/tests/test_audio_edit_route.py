@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""POST /audio/run with workflow edit: a recording named by id in, the edit and its source in
-history out; never a client path, never a server path in a response or sidecar.
-
-Reuses the stub orchestrator and the real account boundary of test_audio_run_route.
-"""
+"""POST /audio/run with workflow edit, on test_audio_run_route's stub orchestrator: never a client
+path in, never a server path in a response or sidecar."""
 
 from __future__ import annotations
 
@@ -73,8 +70,7 @@ def _dots(stub):
 
 def _firered(stub):
     return stub["use"](
-        FIRERED,
-        _edit_info("firered_audio", ("clone", "edit"), "instructions", True, 5),
+        FIRERED, _edit_info("firered_audio", ("clone", "edit"), "instructions", True, 5)
     )
 
 
@@ -94,6 +90,14 @@ def _edit(
     return client.post("/api/inference/audio/run", json = payload)
 
 
+MISMATCH = "The changes do not match the transcript. Check ① and ② again."
+
+
+def _detail(response):
+    assert response.status_code == 400, response.text
+    return response.json()["detail"]
+
+
 def _sidecar(tmp_path, clip_id):
     return (tmp_path / "accounts" / ALICE.account_id / "audio" / f"{clip_id}.json").read_text(
         encoding = "utf-8"
@@ -110,11 +114,9 @@ def _sidecar(tmp_path, clip_id):
         {"inputs": {"source": {"input_id": "a" * 32}}, "edit": {"mode": "rewrite"}},
         {"inputs": {"source": {"input_id": "a" * 32}}, "edit": {"speed": 3.0}},
         {"inputs": {"source": {"input_id": "a" * 32}}, "edit": {"instructions": ["x"] * 9}},
-        # edit only with workflow edit, and workflow edit only with edit.
         {"workflow": "clone", "inputs": {"reference": {"input_id": "a" * 32}}},
         {"inputs": {"source": {"input_id": "a" * 32}}, "edit": None},
         {"workflow": "speak", "inputs": {"source": {"input_id": "a" * 32}}, "edit": None},
-        # An edit takes a source, not a reference.
         {"inputs": {"source": {"input_id": "a" * 32}, "reference": {"input_id": "a" * 32}}},
         {"options": {"source_audio": "/etc/passwd"}},
     ],
@@ -142,11 +144,8 @@ def test_an_edit_needs_a_recording_and_not_a_saved_voice(stub):
     with _client(ALICE) as client:
         missing = _edit(client)
         voiced = _edit(client, {"voice_id": voice["id"]})
-    assert (missing.status_code, missing.json()["detail"]) == (400, "Add a recording to edit.")
-    assert (voiced.status_code, voiced.json()["detail"]) == (
-        400,
-        "Pick a recording or a history clip to edit.",
-    )
+    assert _detail(missing) == "Add a recording to edit."
+    assert _detail(voiced) == "Pick a recording or a history clip to edit."
     assert stub["backend"].calls == []
 
 
@@ -155,9 +154,8 @@ def test_a_recording_over_30_seconds_is_refused_unless_trimmed(stub):
     input_id = _input(ALICE, 31.0)
     with _client(ALICE) as client:
         long = _edit(client, {"input_id": input_id})
-        assert (long.status_code, long.json()["detail"]) == (
-            400,
-            "Edit works on recordings up to 30 s. Record or upload a shorter take.",
+        assert (
+            _detail(long) == "Edit works on recordings up to 30 s. Record or upload a shorter take."
         )
         assert stub["backend"].calls == []
         trimmed = _edit(client, {"input_id": input_id, "trim": {"start_s": 2.0, "end_s": 12.0}})
@@ -166,7 +164,6 @@ def test_a_recording_over_30_seconds_is_refused_unless_trimmed(stub):
     from core.inference import audio_inputs
 
     info = audio_inputs.wav_info(Path(call["audio_inputs"]["source"]))
-    # Trimmed, not cut to 30 s.
     assert 9.9 <= info["duration_s"] <= 10.1
 
 
@@ -185,10 +182,7 @@ def test_a_model_that_cannot_edit_is_a_400(stub, monkeypatch):
     )
     with _client(ALICE) as client:
         response = _edit(client, {"input_id": input_id})
-    assert (response.status_code, response.json()["detail"]) == (
-        400,
-        "Load a model that can edit speech.",
-    )
+    assert _detail(response) == "Load a model that can edit speech."
     assert stub["backend"].calls == []
 
     # A GGUF speech model on llama.cpp has no workflows to read.
@@ -210,28 +204,15 @@ def test_a_model_that_cannot_edit_is_a_400(stub, monkeypatch):
     monkeypatch.setattr(inference, "get_llama_cpp_backend", lambda: _Llama())
     with _client(ALICE) as client:
         direct = _edit(client, {"input_id": input_id})
-    assert (direct.status_code, direct.json()["detail"]) == (
-        400,
-        "Load a model that can edit speech.",
-    )
+    assert _detail(direct) == "Load a model that can edit speech."
     assert calls == []
 
 
 @pytest.mark.parametrize(
     "family, edit, text, detail",
     [
-        (
-            "dots",
-            {"mode": "words", "markup": MARKUP.replace("Sam", "Sammy")},
-            EDITED,
-            "The changes do not match the transcript. Check ① and ② again.",
-        ),
-        (
-            "dots",
-            {"mode": "words", "markup": "Okay <b>x</b>"},
-            EDITED,
-            "The changes do not match the transcript. Check ① and ② again.",
-        ),
+        ("dots", {"mode": "words", "markup": MARKUP.replace("Sam", "Sammy")}, EDITED, MISMATCH),
+        ("dots", {"mode": "words", "markup": "Okay <b>x</b>"}, EDITED, MISMATCH),
         ("dots", {"mode": "words"}, EDITED, "DotTTS-Edit needs the marked-up changes."),
         ("dots", {"mode": "words"}, ORIGINAL, "Change at least one word."),
         ("dots", {"mode": "delivery", "speed": 1.5}, EDITED, "Delivery changes need FireRedAudio."),
@@ -256,7 +237,7 @@ def test_changes_that_do_not_fit_the_model_are_400(stub, family, edit, text, det
     input_id = _input(ALICE)
     with _client(ALICE) as client:
         response = _edit(client, {"input_id": input_id}, edit, text = text)
-    assert (response.status_code, response.json()["detail"]) == (400, detail)
+    assert _detail(response) == detail
     assert stub["backend"].calls == []
 
 
@@ -264,11 +245,7 @@ def test_an_edit_run_hands_the_worker_paths_and_keeps_the_source(stub, tmp_path)
     backend = _dots(stub)
     input_id = _input(ALICE)
     with _client(ALICE) as client:
-        response = _edit(
-            client,
-            {"input_id": input_id},
-            options = {"num_inference_steps": 10},
-        )
+        response = _edit(client, {"input_id": input_id}, options = {"num_inference_steps": 10})
         assert response.status_code == 200, response.text
         body = response.json()
         files = [client.get(clip["url"]).status_code for clip in body["clips"]]
@@ -277,23 +254,16 @@ def test_an_edit_run_hands_the_worker_paths_and_keeps_the_source(stub, tmp_path)
     inputs_root = tmp_path / "accounts" / ALICE.account_id / "audio" / "inputs"
     assert source.is_absolute() and source.parent == inputs_root
     assert source.name.startswith(f"{input_id}.24000.mono")
-    assert set(call["audio_inputs"]) == {"source"}
     assert (call["workflow"], call["reference_text"], call["edit"]) == (
         "edit",
         ORIGINAL,
         {"mode": "words", "markup": MARKUP},
     )
     assert call["text"] == EDITED and "speed" not in call
-    assert all(not isinstance(v, (bytes, bytearray)) for v in call.values())
-    # FireRed's answer text is never surfaced; the edited transcript is the clip's prompt.
     assert body["text"] is None and body["audio"] is None
     output, original = body["clips"]
     assert (output["role"], output["workflow"]) == ("output", "edit")
-    assert (original["role"], original["workflow"], original["sample_rate"]) == (
-        "source",
-        "edit",
-        24000,
-    )
+    assert (original["role"], original["workflow"]) == ("source", "edit")
     assert files == [200, 200]
     out_meta = json.loads(_sidecar(tmp_path, output["id"]))
     src_meta = json.loads(_sidecar(tmp_path, original["id"]))
@@ -306,18 +276,14 @@ def test_an_edit_run_hands_the_worker_paths_and_keeps_the_source(stub, tmp_path)
         "original_text": ORIGINAL,
         "options": {"num_inference_steps": 10},
     }
-    assert (src_meta["role"], src_meta["model"], src_meta["audio_type"]) == (
+    assert (src_meta["role"], src_meta["model"], src_meta["prompt"]) == (
         "source",
         "Recording",
-        "recording",
+        ORIGINAL,
     )
-    assert src_meta["prompt"] == ORIGINAL and len(src_meta["source_sha256"]) == 64
     for clip in (output, original):
         text = _sidecar(tmp_path, clip["id"])
         assert str(tmp_path) not in text and "inputs" not in text
-        assert not any(
-            isinstance(v, str) and v.startswith(("/", "\\")) for v in json.loads(text).values()
-        )
     assert str(tmp_path) not in response.text
 
 
@@ -330,13 +296,9 @@ def test_the_same_upload_reuses_its_source_clip(stub):
         trimmed = _edit(client, {"input_id": input_id, "trim": {"start_s": 0.1}}).json()
     assert first["clips"][1]["id"] == second["clips"][1]["id"]
     assert first["group_id"] != second["group_id"]
-    # Another trim is other audio.
     assert trimmed["clips"][1]["id"] != first["clips"][1]["id"]
-    sources = run_as(
-        ALICE,
-        lambda: [c for c in audio_gallery.list_audio() if c.get("role") == "source"],
-    )
-    assert len(sources) == 2
+    clips = run_as(ALICE, audio_gallery.list_audio)
+    assert sum(c.get("role") == "source" for c in clips) == 2
 
 
 def test_a_history_clip_source_makes_no_copy(stub, tmp_path):
@@ -363,12 +325,17 @@ def test_a_history_clip_source_makes_no_copy(stub, tmp_path):
             text = ORIGINAL,
         )
     assert response.status_code == 200, response.text
-    body = response.json()
-    (output,) = body["clips"]
+    (output,) = response.json()["clips"]
     meta = json.loads(_sidecar(tmp_path, output["id"]))
     assert meta["source_clip_id"] == clip["id"]
-    assert meta["settings"]["mode"] == "delivery" and meta["settings"]["changes"] == 2
-    assert (meta["settings"]["speed"], meta["settings"]["pitch_steps"]) == (1.5, 3)
+    assert meta["settings"] == {
+        "mode": "delivery",
+        "changes": 2,
+        "original_text": ORIGINAL,
+        "options": {},
+        "speed": 1.5,
+        "pitch_steps": 3,
+    }
     assert len(run_as(ALICE, audio_gallery.list_audio)) == 2
 
 

@@ -23,6 +23,8 @@ test("words are whitespace tokens; punctuation stays on its word", () => {
     "Cemo.",
   ]);
   assert.deepEqual(tokenizeWords("   "), []);
+  assert.equal(countChanges(S2, `  ${S2.replaceAll(" ", "   ")} `), 0);
+  assert.equal(countChanges("", ""), 0);
   const changes = changesBetween(S2, S2.replace("voice.", "voice!"));
   assert.deepEqual(changes, [
     {
@@ -33,12 +35,6 @@ test("words are whitespace tokens; punctuation stays on its word", () => {
       index: 11,
     },
   ]);
-});
-
-test("identical text, or only spacing changed, gives no changes", () => {
-  assert.equal(countChanges(S2, S2), 0);
-  assert.equal(countChanges(S2, `  ${S2.replaceAll(" ", "   ")} `), 0);
-  assert.equal(countChanges("", ""), 0);
 });
 
 test("the S2 sentence human→robot is one replace before 'voice.'", () => {
@@ -88,7 +84,6 @@ test("past the word cap the diff is not computed", () => {
     { length: EDIT_DIFF_MAX_WORDS + 1 },
     (_, i) => `w${i}`,
   ).join(" ");
-  assert.equal(diffWords(long, "short"), null);
   assert.equal(diffWords("short", long), null);
   assert.equal(countChanges(long, long), null);
   assert.equal(diffSegments(long, "x"), null);

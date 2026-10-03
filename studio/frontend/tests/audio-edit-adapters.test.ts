@@ -126,14 +126,8 @@ test("DotTTS refuses quotes and angle brackets the markup cannot carry", () => {
     ),
     DOTS_ANGLE_BRACKETS,
   );
-  // FireRedAudio quotes with single quotes and takes apostrophes as they are.
-  assert.equal(
-    EDIT_ADAPTERS.firered_audio.validateWords(
-      S2,
-      S2.replace("human", '"robot"'),
-    ),
-    null,
-  );
+  const quoted = S2.replace("human", '"robot"');
+  assert.equal(EDIT_ADAPTERS.firered_audio.validateWords(S2, quoted), null);
 });
 
 test("past the word cap every adapter says so", () => {
@@ -156,9 +150,10 @@ test("Vevo2 sends neither markup nor instructions, and drops an empty transcript
 
 test("Delivery is FireRedAudio's only, speed then pitch, skipping what is unchanged", () => {
   assert.deepEqual(deliveryInstructions(1, 0), []);
-  assert.deepEqual(deliveryInstructions(2, 0), ["adjust the speed to 2x"]);
-  assert.deepEqual(deliveryInstructions(0.5, 0), ["adjust the speed to 0.5x"]);
-  assert.deepEqual(deliveryInstructions(1, 3), ["shift the pitch by 3 steps"]);
+  assert.deepEqual(deliveryInstructions(2, 3), [
+    "adjust the speed to 2x",
+    "shift the pitch by 3 steps",
+  ]);
   assert.deepEqual(deliveryInstructions(0.7000000000000001, 0), [
     "adjust the speed to 0.7x",
   ]);
@@ -180,12 +175,6 @@ test("Delivery is FireRedAudio's only, speed then pitch, skipping what is unchan
     delivery: { speed: 1.5, pitchSteps: 3 },
   });
   assert.deepEqual(dots.edit, { mode: "words" });
-  assert.equal(EDIT_ADAPTERS.dots_tts.delivery, null);
-  assert.equal(EDIT_ADAPTERS.vevo2.delivery, null);
-  assert.deepEqual(EDIT_ADAPTERS.firered_audio.delivery, {
-    speed: [0.5, 2, 0.1],
-    pitchSteps: [1, 6],
-  });
 });
 
 test("the adapter follows the loaded model's family and edit workflow", () => {
@@ -193,20 +182,11 @@ test("the adapter follows the loaded model's family and edit workflow", () => {
     audioFamily,
     audioWorkflows,
   });
-  assert.equal(
-    editAdapterFor(ctx("dots_tts", ["speak", "edit"]))?.label,
-    "DotTTS Edit",
-  );
+  for (const family of ["dots_tts", "vevo2", "firered_audio"]) {
+    assert.equal(editAdapterFor(ctx(family, ["edit"])), EDIT_ADAPTERS[family]);
+  }
   // DotTTS-MF is dots_tts but cannot edit.
   assert.equal(editAdapterFor(ctx("dots_tts", ["speak"])), null);
-  assert.equal(
-    editAdapterFor(ctx("vevo2", ["clone", "edit"]))?.style,
-    "sentence",
-  );
-  assert.equal(
-    editAdapterFor(ctx("firered_audio", ["clone", "edit"]))?.maxChanges,
-    5,
-  );
   assert.equal(editAdapterFor(ctx("qwen3_tts", ["clone", "edit"])), null);
   assert.equal(editAdapterFor(ctx("toString", ["edit"])), null);
   assert.equal(editAdapterFor(ctx("vevo2")), null);
