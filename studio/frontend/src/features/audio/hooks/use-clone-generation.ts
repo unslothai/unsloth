@@ -74,8 +74,7 @@ export async function showRunResult({
         saved: true,
         workflow: "clone",
       });
-    } catch {
-    }
+    } catch {}
     selectClip(clip.id, true);
     return;
   }
@@ -152,7 +151,6 @@ export function useCloneGeneration({
 
   const transcriber = useReferenceTranscribe({
     sttRepo,
-    language,
     onText: (next) => useAudioCloneStore.getState().setReferenceText(next),
   });
 

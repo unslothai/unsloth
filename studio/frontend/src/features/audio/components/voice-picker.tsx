@@ -30,11 +30,13 @@ const voiceUrls = new Map<string, string>();
 export function VoicePicker({
   selectedId,
   onSelect,
+  onDeselect,
   disabled,
   className,
 }: {
   selectedId?: string | null;
   onSelect?: (voice: AudioVoice) => void;
+  onDeselect?: () => void;
   disabled?: boolean;
   className?: string;
 }) {
@@ -90,6 +92,7 @@ export function VoicePicker({
     }
     try {
       await remove(voice.id);
+      if (voice.id === selectedId) onDeselect?.();
       toast.success(`Deleted ${voice.name}.`);
     } catch (reason) {
       toast.error(

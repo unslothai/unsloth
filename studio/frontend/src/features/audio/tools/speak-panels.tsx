@@ -39,6 +39,7 @@ const speakVoicePanel: AudioToolPanel<SpeakVoiceValue> = {
           selectedId={value.voiceId}
           disabled={disabled}
           onSelect={(voice) => onChange({ ...value, voiceId: voice.id })}
+          onDeselect={() => onChange({ ...value, voiceId: null })}
         />
       ) : (
         <p className="text-ui-11p5 leading-snug text-muted-foreground">
