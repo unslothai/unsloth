@@ -51,7 +51,11 @@ def _legacy_fp8_weight():
 
 
 def test_restored_floor_is_the_runtime_config_floor():
-    from core.inference.diffusion_transformer_quant import FP8_ACTIVATION_VALUE_LB, TQ_FP8, _make_quant_config
+    from core.inference.diffusion_transformer_quant import (
+        FP8_ACTIVATION_VALUE_LB,
+        TQ_FP8,
+        _make_quant_config,
+    )
 
     config = _make_quant_config(TQ_FP8)
     if getattr(config, "activation_value_lb", None) is None:

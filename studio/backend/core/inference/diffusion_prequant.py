@@ -1531,7 +1531,12 @@ def _load_transformer_config(
 _FLOAT8_TENSOR_CLASS = "Float8Tensor"
 
 
-def _fp8_activation_floor_present(state_dict: Any, logger: Any, *, warn: bool = True) -> bool:
+def _fp8_activation_floor_present(
+    state_dict: Any,
+    logger: Any,
+    *,
+    warn: bool = True,
+) -> bool:
     """True unless the first Float8Tensor has no activation lower bound (by class: NVFP4Tensor lacks one too).
     ``warn = False`` only answers, without recording a load failure."""
     from .diffusion_transformer_quant import TQ_FP8
@@ -1588,7 +1593,10 @@ def _fp8_activation_floor_restorable(state_dict: Any) -> bool:
             kwargs = _fp8_kwargs_missing_floor(tensor)
             if kwargs is None:
                 continue
-            if not hasattr(kwargs, "hp_value_lb") or getattr(kwargs, "hp_value_ub", None) is not None:
+            if (
+                not hasattr(kwargs, "hp_value_lb")
+                or getattr(kwargs, "hp_value_ub", None) is not None
+            ):
                 return False
     except Exception:  # noqa: BLE001 -- cannot prove it: keep refusing
         return False
@@ -1628,7 +1636,11 @@ def _restore_fp8_activation_floor(state_dict: Any, logger: Any = None) -> int:
     return restored
 
 
-def _repair_legacy_checkpoint(ckpt: Any, scheme: str, logger: Any = None) -> None:
+def _repair_legacy_checkpoint(
+    ckpt: Any,
+    scheme: str,
+    logger: Any = None,
+) -> None:
     """Bring an artifact ``_validate_checkpoint`` accepted as repairable to the runtime's exact contract."""
     from .diffusion_nvfp4_policy import declares_policy
     from .diffusion_transformer_quant import TQ_FP8

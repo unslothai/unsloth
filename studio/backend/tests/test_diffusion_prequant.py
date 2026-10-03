@@ -2194,7 +2194,12 @@ def test_an_fp8_checkpoint_without_the_floor_loads_with_the_runtime_floor(monkey
     first, second, floored = Float8Tensor(), Float8Tensor(), Float8Tensor(hp_value_lb = 1e-9)
     first.act_quant_kwargs = shared
     second.act_quant_kwargs = shared  # a pickle may share one kwargs object between tensors
-    ckpt["state_dict"] = {"a.weight": first, "b.weight": second, "c.weight": floored, "d.bias": object()}
+    ckpt["state_dict"] = {
+        "a.weight": first,
+        "b.weight": second,
+        "c.weight": floored,
+        "d.bias": object(),
+    }
     out = _load(monkeypatch, tmp_path, ckpt, scheme = "fp8")
     assert out is not None
     # a repaired load is not a failure: nothing for the status line to report
@@ -2203,7 +2208,9 @@ def test_an_fp8_checkpoint_without_the_floor_loads_with_the_runtime_floor(monkey
     assert second.act_quant_kwargs.hp_value_lb == FP8_ACTIVATION_VALUE_LB
     assert first.act_quant_kwargs is not second.act_quant_kwargs
     assert shared.hp_value_lb is None
-    assert floored.act_quant_kwargs.hp_value_lb == 1e-9  # an artifact's own floor is never rewritten
+    assert (
+        floored.act_quant_kwargs.hp_value_lb == 1e-9
+    )  # an artifact's own floor is never rewritten
 
 
 def test_an_fp8_checkpoint_differing_in_more_than_the_floor_stays_refused(monkeypatch, tmp_path):
