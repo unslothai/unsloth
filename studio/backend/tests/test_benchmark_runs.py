@@ -1,0 +1,222 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from auth.authentication import authenticated_via_api_key, get_current_subject
+from routes import benchmarks as benchmarks_routes
+from storage import benchmark_runs_db as db
+
+
+def _result(
+    variant,
+    rep,
+    tps,
+    warmup = False,
+):
+    return {
+        "variant": variant,
+        "rep": rep,
+        "warmup": warmup,
+        "promptIndex": rep % 5,
+        "tps": tps,
+        "promptTps": 300.0,
+        "promptTokens": 40,
+        "genTokens": 256,
+        "ttftMs": 120.5,
+        "wallMs": 5000.0,
+        "clientTps": None,
+        "draftN": 100,
+        "draftAccepted": 78,
+        "loadMs": 8100.0 if rep == 0 else None,
+        "at": 1_700_000_000_000 + rep,
+    }
+
+
+def _run(run_id = "run-1", results = None):
+    return {
+        "id": run_id,
+        "kind": "sweep",
+        "sweep": "draft",
+        "model": "unsloth/Qwen3.5-4B-MTP-GGUF",
+        "ggufVariant": "Q4_K_M",
+        "kv": "q8_0",
+        "context": 32768,
+        "config": {
+            "sweep": "draft",
+            "variants": [{"label": "Speculation off", "load": {}}],
+            "repetitions": 3,
+        },
+        "meta": {"gpu": "AMD Radeon AI PRO R9700", "backend": "vulkan"},
+        "base": [{"field": "cache_type_kv", "label": "KV Cache Dtype", "value": "q8_0"}],
+        "outcomes": [{"label": "Speculation off", "state": "done"}],
+        "results": results
+        if results is not None
+        else [
+            _result("Speculation off", 0, 10.0, warmup = True),
+            _result("Speculation off", 1, 30.1),
+        ],
+        "createdAt": 1_700_000_000_000,
+        "finishedAt": None,
+    }
+
+
+def _client(via_api_key = False):
+    """A caller with a UI session (the get_current_subject override) — or, with via_api_key,
+    an sk-unsloth API key, the other caller class the runs routes distinguish."""
+    app = FastAPI()
+    app.dependency_overrides[get_current_subject] = lambda: "unsloth"
+    app.dependency_overrides[authenticated_via_api_key] = lambda: via_api_key
+    app.include_router(benchmarks_routes.router, prefix = "/api/benchmarks")
+    return TestClient(app)
+
+
+def test_round_trip_keeps_every_measurement_column():
+    saved = db.upsert_run(_run())
+    assert saved["id"] == "run-1"
+    assert [r["tps"] for r in saved["results"]] == [10.0, 30.1]
+    assert saved["results"][0]["warmup"] is True
+    assert saved["results"][1]["warmup"] is False
+    assert saved["results"][0]["loadMs"] == 8100.0
+    assert saved["results"][1]["draftAccepted"] == 78
+    assert saved["base"][0]["label"] == "KV Cache Dtype"
+    assert saved["meta"]["gpu"] == "AMD Radeon AI PRO R9700"
+
+
+def test_saving_again_replaces_results_instead_of_appending():
+    db.upsert_run(_run())
+    db.upsert_run(
+        _run(
+            results = [
+                _result("Speculation off", 0, 29.7),
+                _result("Speculation off", 1, 30.0),
+                _result("Speculation off", 2, 30.3),
+            ]
+        )
+    )
+    run = db.get_run("run-1")
+    assert [r["tps"] for r in run["results"]] == [29.7, 30.0, 30.3]
+
+
+def test_list_is_newest_first_without_results_and_counts_measured_runs_only():
+    db.upsert_run(_run("older"))
+    later = _run("newer")
+    later["createdAt"] += 1
+    db.upsert_run(later)
+    runs = db.list_runs()
+    assert [r["id"] for r in runs] == ["newer", "older"]
+    assert "results" not in runs[0]
+    # One warm-up and one measured run were saved; only the measured one counts.
+    assert runs[1]["resultCount"] == 1
+
+
+def test_list_carries_each_rows_measured_mean():
+    db.upsert_run(
+        _run(
+            results = [
+                _result("Speculation off", 0, 5.0, warmup = True),
+                _result("Speculation off", 1, 30.0),
+                _result("Speculation off", 2, 32.0),
+                _result("MTP 3", 1, 42.0),
+            ]
+        )
+    )
+    [run] = db.list_runs()
+    assert run["resultCount"] == 3
+    # The warm-up's 5.0 stays out of the mean.
+    assert run["rowMeans"] == {"Speculation off": 31.0, "MTP 3": 42.0}
+
+
+def test_delete_cascades_to_results():
+    db.upsert_run(_run())
+    assert db.delete_run("run-1") is True
+    assert db.get_run("run-1") is None
+    assert db.delete_run("run-1") is False
+    conn = db.get_connection()
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM benchmark_results").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_routes_round_trip_and_refuse_a_mismatched_id():
+    client = _client()
+    put = client.put("/api/benchmarks/runs/run-1", json = _run())
+    assert put.status_code == 200, put.text
+    assert put.json()["results"][1]["tps"] == 30.1
+
+    assert client.put("/api/benchmarks/runs/other", json = _run()).status_code == 400
+
+    listed = client.get("/api/benchmarks/runs").json()["runs"]
+    assert [r["id"] for r in listed] == ["run-1"]
+    assert listed[0]["resultCount"] == 1
+
+    one = client.get("/api/benchmarks/runs/run-1")
+    assert one.status_code == 200
+    assert len(one.json()["results"]) == 2
+
+    assert client.delete("/api/benchmarks/runs/run-1").status_code == 204
+    assert client.get("/api/benchmarks/runs/run-1").status_code == 404
+    assert client.delete("/api/benchmarks/runs/run-1").status_code == 404
+
+
+def test_api_key_caller_gets_host_paths_redacted_ui_caller_does_not():
+    """The runs routes hide local GGUF paths from API-key callers (the same host identity the
+    inference status route hides), while a UI session sees them as stored."""
+    run = _run()
+    run["model"] = "/Users/dev/models/Qwen3.5-4B-Q4_K_M.gguf"
+    run["config"]["tuneModel"] = "/Users/dev/checkpoints/ckpt-1000"
+    db.upsert_run(run)
+
+    ui = _client()
+    listed = ui.get("/api/benchmarks/runs").json()["runs"]
+    assert listed[0]["model"] == "/Users/dev/models/Qwen3.5-4B-Q4_K_M.gguf"
+    assert listed[0]["config"]["tuneModel"] == "/Users/dev/checkpoints/ckpt-1000"
+
+    api = _client(via_api_key = True)
+    listed = api.get("/api/benchmarks/runs").json()["runs"]
+    assert listed[0]["model"].startswith("ref:")
+    assert listed[0]["config"]["tuneModel"].startswith("ref:")
+    one = api.get("/api/benchmarks/runs/run-1").json()
+    assert one["model"].startswith("ref:")
+    # The sweep config's other fields survive the redaction untouched.
+    assert one["config"]["sweep"] == "draft"
+
+
+def test_unknown_kind_is_rejected_until_that_phase_ships():
+    client = _client()
+    body = _run()
+    body["kind"] = "llama-bench"
+    assert client.put("/api/benchmarks/runs/run-1", json = body).status_code == 422
+
+
+def test_a_second_runner_is_refused_until_the_first_lets_go(monkeypatch):
+    monkeypatch.setattr(benchmarks_routes, "_lease", None)
+    client = _client()
+    first = {"holder": "tab-aaaaaaaa", "kind": "sweep"}
+    second = {"holder": "tab-bbbbbbbb", "kind": "sweep"}
+    assert client.post("/api/benchmarks/lease", json = first).status_code == 200
+    # Renewing your own lease is fine; anyone else is told what holds it.
+    assert client.post("/api/benchmarks/lease", json = first).status_code == 200
+    refused = client.post("/api/benchmarks/lease", json = second)
+    assert refused.status_code == 409
+    assert refused.json()["detail"]["error"] == "benchmark_running"
+    # Only the holder can release it.
+    client.delete("/api/benchmarks/lease", params = {"holder": second["holder"]})
+    assert client.post("/api/benchmarks/lease", json = second).status_code == 409
+    client.delete("/api/benchmarks/lease", params = {"holder": first["holder"]})
+    assert client.post("/api/benchmarks/lease", json = second).status_code == 200
+
+
+def test_an_abandoned_lease_expires(monkeypatch):
+    monkeypatch.setattr(benchmarks_routes, "_lease", None)
+    client = _client()
+    assert client.post("/api/benchmarks/lease", json = {"holder": "tab-aaaaaaaa"}).status_code == 200
+    now = benchmarks_routes.time.monotonic()
+    monkeypatch.setattr(
+        benchmarks_routes.time,
+        "monotonic",
+        lambda: now + benchmarks_routes.LEASE_TTL_SECONDS + 1,
+    )
+    assert client.post("/api/benchmarks/lease", json = {"holder": "tab-bbbbbbbb"}).status_code == 200

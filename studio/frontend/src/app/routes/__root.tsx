@@ -54,6 +54,7 @@ import { LlmCompressorConsentDialog } from "@/features/export/components/llm-com
 import { useNativePathLeasesSupported } from "@/features/native-intents";
 import { useRagAvailabilityStore } from "@/features/rag";
 import { useIsMobileShell } from "@/hooks/use-mobile";
+import { useBenchmarkRuntimeLifecycle } from "@/features/benchmark";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { type TranslationKey, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
@@ -282,6 +283,8 @@ const CHAT_ONLY_ALLOWED = new Set([
   // Chat-only hosts serve the API like any other, so the monitor must be reachable there
   // or the overlay's "Expand" and the Settings API card redirect to /chat.
   "/api-monitor",
+  // Inference only: a sweep reloads the chat model, which chat-only hosts run like any other.
+  "/benchmarks",
 ]);
 
 // Paths that render their own "still checking" state and self-gate once the verdict lands.
@@ -445,6 +448,8 @@ function RootLayout() {
   // Global export driver: streams worker logs and tracks status from any route
   // so an export keeps running and stays visible while training / chatting.
   useExportRuntimeLifecycle();
+  // Global benchmark driver: same pattern for benchmark runs.
+  useBenchmarkRuntimeLifecycle();
 
   const matchedTitle = useMatches({
     select: (matches) => {
