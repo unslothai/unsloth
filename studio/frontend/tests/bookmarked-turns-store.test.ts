@@ -26,6 +26,22 @@ test("forgetting chats with no bookmarks keeps the state object", () => {
   assert.equal(store().bookmarkedByThread, before);
 });
 
+test("every chat delete route forgets the deleted chats' bookmarks", async () => {
+  // A project delete or a clear-all removes chats without going through deleteChatItems.
+  const { readSrcAsync } = await import("./helpers/kit.ts");
+  for (const file of [
+    "features/chat/hooks/use-chat-sidebar-items.ts",
+    "features/chat/hooks/use-chat-projects.ts",
+    "features/chat/utils/clear-all-chats.ts",
+  ]) {
+    assert.match(
+      await readSrcAsync(file),
+      /forgetThreads\(/,
+      `${file} leaves bookmarks behind`,
+    );
+  }
+});
+
 test("clear all chats forgets the cleared chats' bookmarks", async () => {
   // Settings -> Clear all chats skips deleteChatItems, so it forgets them itself.
   const clearAll = await readFile(
@@ -33,4 +49,45 @@ test("clear all chats forgets the cleared chats' bookmarks", async () => {
     "utf8",
   );
   assert.match(clearAll, /forgetThreads\(result\.deletedThreadIds\)/);
+});
+
+test("forgetting a deleted prompt drops only that bookmark", () => {
+  store().toggleBookmarkedTurn("chat-a", "m1");
+  store().toggleBookmarkedTurn("chat-a", "m2");
+  store().forgetTurns("chat-a", ["m1"]);
+  assert.deepEqual(store().bookmarkedByThread["chat-a"], ["m2"]);
+  store().forgetTurns("chat-a", ["m2"]);
+  assert.equal("chat-a" in store().bookmarkedByThread, false);
+  const before = store().bookmarkedByThread;
+  store().forgetTurns("chat-a", ["m3"]);
+  assert.equal(store().bookmarkedByThread, before);
+});
+
+test("deleting a message forgets its bookmark, and the rail resyncs after keyboard focus leaves", async () => {
+  const thread = await readFile(
+    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(thread, /forgetTurns\(remoteId, \[messageId\]\)/);
+  const nav = await readFile(
+    new URL(
+      "../src/components/assistant-ui/turn-navigation.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(nav, /addEventListener\("focusout", onFocusOut\)/);
+  assert.match(nav, /addEventListener\("scroll", fadeEnds/);
+});
+
+test("an open turn card reads its reply live while it streams", async () => {
+  const nav = await readFile(
+    new URL(
+      "../src/components/assistant-ui/turn-navigation.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(nav, /const liveReply = useAuiState/);
+  assert.match(nav, /\{liveReply \?\? preview\.reply\}/);
 });

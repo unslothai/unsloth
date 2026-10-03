@@ -316,6 +316,20 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
   }>({ messages: null, index: new Map() });
   const previewId = useId();
   const [preview, setPreview] = useState<TurnPreview | null>(null);
+  // an open card follows its reply while it streams; scanning back from the end keeps the latest turn cheap
+  const previewOpenerId = preview?.openerId;
+  const liveReply = useAuiState(({ thread }) => {
+    if (!previewOpenerId) {
+      return null;
+    }
+    const messages = thread.messages;
+    for (let index = messages.length - 1; index >= 0; index--) {
+      if (messages[index].id === previewOpenerId) {
+        return turnReplyText(messages, index);
+      }
+    }
+    return null;
+  });
   const hideTimerRef = useRef<number | undefined>(undefined);
   const cancelHide = useCallback(
     () => window.clearTimeout(hideTimerRef.current),
@@ -714,9 +728,9 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
               </button>
             )}
           </div>
-          {preview.reply && (
+          {(liveReply ?? preview.reply) && (
             <p className="line-clamp-3 pr-1.5 text-muted-foreground leading-relaxed">
-              {preview.reply}
+              {liveReply ?? preview.reply}
             </p>
           )}
         </div>
