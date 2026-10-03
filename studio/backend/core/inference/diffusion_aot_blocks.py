@@ -39,6 +39,7 @@ Artifacts live under the compile bundle's key dir (its LRU eviction removes them
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -223,9 +224,9 @@ def _tensor_digest(name: str, t: Any, h: Any, depth: int = 0) -> None:
 
 
 def _code_fingerprint(module: Any) -> str:
-    """Class and bytecode of every submodule's ``forward`` and every attention processor's ``__call__`` (what the
-    artifact inlined but whose identity guards ``aot_compile`` cannot keep), plus the type, dtype, shape and device of
-    every weight (guards on torchao weights cannot be serialised either)."""
+    """Class and bytecode of every submodule's ``forward`` (class or instance-bound) and every attention processor's
+    ``__call__`` (what the artifact inlined but whose identity guards ``aot_compile`` cannot keep), plus the type,
+    dtype, shape, stride and device of every weight (guards on torchao weights cannot be serialised either)."""
     h = hashlib.sha256()
     for name, t in list(module.named_parameters()) + list(module.named_buffers()):
         # A guard on a weight the pickler cannot copy is dropped (``_guard_filter``): keep its metadata here.
@@ -234,6 +235,10 @@ def _code_fingerprint(module: Any) -> str:
         cls = type(m)
         h.update(f"{name}:{cls.__module__}.{cls.__qualname__}".encode())
         _code_digest(getattr(cls, "forward", None), h)
+        inst = vars(m).get("forward")
+        if inst is not None:  # an instance-bound forward (its guards are dropped by ``_guard_filter``)
+            h.update(b"instance-forward")
+            _code_digest(inst, h)
         proc = vars(m).get("processor")
         if proc is not None:
             pcls = type(proc)
@@ -257,23 +262,83 @@ def _guard_filter(entries: Any) -> list[bool]:
     # A torchao weight the guard pickler cannot copy: every guard on it, on its owning module (the pickler copies a
     # guarded module's attributes, and torchao gives a quantised Linear an ``extra_repr`` it cannot copy either) or
     # reached through them is dropped. Their classes, code and weight metadata are fingerprinted instead.
+    # Same for a submodule whose ``forward`` is an instance attribute (Studio's int8 GEMM binds one to each int8
+    # Linear): the pickler cannot copy a bound method of a module-level function; its code is fingerprinted.
     opaque: set = set()
     for g in entries:
-        if getattr(g, "has_value", False) and not _meta_picklable(getattr(g, "value", None)):
-            name = str(g.name)
+        if not getattr(g, "has_value", False):
+            continue
+        value = getattr(g, "value", None)
+        name = str(g.name)
+        if not _meta_picklable(value):
             opaque.add(name)
             for marker in ("._parameters[", "._buffers["):
                 if marker in name:
                     opaque.add(name.split(marker, 1)[0])
+        elif _has_instance_forward(value):
+            opaque.add(name)
     opaque = tuple(sorted(opaque))
     out = []
     for g in entries:
         types = {getattr(g, "guard_type", None), *(getattr(g, "derived_guard_types", None) or ())}
         keep = not (getattr(g, "is_global", False) or bool(types & bad))
-        if keep and opaque and str(g.name).startswith(opaque):
+        name = str(g.name)
+        if keep and opaque and name.startswith(opaque):
             keep = False
         out.append(keep)
     return out
+
+
+def _has_instance_forward(value: Any) -> bool:
+    try:
+        import torch
+
+        return isinstance(value, torch.nn.Module) and "forward" in vars(value)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+_UNSET = object()
+
+
+@contextlib.contextmanager
+def _picklable_instance_forwards(module: Any):
+    """While ``aot_compile`` pickles its guard state, give every method bound on a block submodule's instance the
+    ``__name__`` it is bound under.
+
+    A block's parameters are graph inputs, so their modules stay in the pickled guard tree whatever the filter drops,
+    and the pickler reduces a bound method by looking its function up on the instance under the function's
+    ``__name__``. Studio's int8 GEMM binds ``_linear_forward`` as ``module.forward`` and torchao binds a
+    ``functools.partial`` as ``extra_repr``: both lookups fail. Under the name they are bound as, the lookup finds the
+    method itself and pickles it by reference. Only ``__name__`` changes (``__qualname__``, which pickling a function
+    by reference uses, does not), and it is restored right after."""
+    import types
+
+    renamed = []
+    try:
+        for m in module.modules():
+            for attr, value in list(vars(m).items()):
+                if not isinstance(value, types.MethodType) or value.__self__ is not m:
+                    continue
+                fn = value.__func__
+                old = getattr(fn, "__name__", _UNSET)
+                if old == attr:
+                    continue
+                try:
+                    fn.__name__ = attr
+                except (AttributeError, TypeError):
+                    continue
+                renamed.append((fn, old))
+        yield
+    finally:
+        for fn, old in reversed(renamed):
+            try:
+                if old is _UNSET:
+                    del fn.__name__
+                else:
+                    fn.__name__ = old
+            except (AttributeError, TypeError):
+                pass
 
 
 def _meta_picklable(value: Any, depth: int = 0) -> bool:
@@ -444,7 +509,10 @@ class Registry:
             saved_aot = torch._dynamo.config.enable_aot_compile
             torch._dynamo.config.enable_aot_compile = True
             try:
-                fn = _compiler(type(module).forward, self.compile_kwargs).aot_compile(((module,) + tuple(args), kwargs))
+                with _picklable_instance_forwards(module):
+                    fn = _compiler(type(module).forward, self.compile_kwargs).aot_compile(
+                        ((module,) + tuple(args), kwargs)
+                    )
             finally:
                 torch._dynamo.config.enable_aot_compile = saved_aot
             if not fn.guard_check(module, *args, **kwargs):
@@ -467,7 +535,8 @@ class Registry:
         self.stats["compiled"] = self.stats.get("compiled", 0) + 1
         self._log("info", "diffusion.aot_blocks: compiled a %s graph in %.1f s", cls, time.perf_counter() - t0)
         try:
-            res = type(fn).serialize(fn)
+            with _picklable_instance_forwards(module):
+                res = type(fn).serialize(fn)
             self._persist(key, cls, getattr(res, "serialized_data", res), state, code)
         except Exception as exc:  # noqa: BLE001 - this process still uses it; only the next start pays the trace
             self._log("warning", "diffusion.aot_blocks: could not serialise a %s graph (%s: %s)", cls,

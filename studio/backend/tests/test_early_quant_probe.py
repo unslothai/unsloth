@@ -41,6 +41,9 @@ def test_kick_runs_the_existing_prewarm_on_a_daemon_thread_only_for_diffusers_in
 
     monkeypatch.setattr(warm, "_prewarm_quant_probe", prewarm)
     monkeypatch.setattr(warm, "_a_local_model_would_load_through_diffusers", lambda: True)
+    from core.inference import diffusion_probe_cache
+
+    monkeypatch.setattr(diffusion_probe_cache, "has_file", lambda: False)
     thread = warm._kick_early_quant_probe()
     assert thread is not None and thread.daemon
     thread.join(10)
@@ -57,6 +60,27 @@ def test_kick_runs_the_existing_prewarm_on_a_daemon_thread_only_for_diffusers_in
     monkeypatch.setattr(warm, "_a_local_model_would_load_through_diffusers", broken)
     warm._kick_early_quant_probe().join(10)
     assert calls == []
+
+
+def test_a_later_start_with_a_persisted_table_does_not_import_the_probe_during_the_warm(warm, monkeypatch):
+    from core.inference import diffusion_probe_cache
+
+    monkeypatch.setattr(warm, "_a_local_model_would_load_through_diffusers", lambda: True)
+    monkeypatch.setattr(warm, "_prewarm_quant_probe", lambda: pytest.fail("probe ran although its table is on disk"))
+    monkeypatch.setattr(diffusion_probe_cache, "has_file", lambda: True)
+    warm._kick_early_quant_probe().join(10)
+
+
+def test_probe_cache_file_check(tmp_path, monkeypatch):
+    from core.inference import diffusion_probe_cache
+
+    path = tmp_path / "diffusion_quant_probe.json"
+    monkeypatch.setattr(diffusion_probe_cache, "_cache_file", lambda: path)
+    assert not diffusion_probe_cache.has_file()
+    path.write_text("{}")
+    assert diffusion_probe_cache.has_file()
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_PROBE_CACHE", "0")
+    assert not diffusion_probe_cache.has_file()
 
 
 def test_kill_switch_keeps_the_old_timing(warm, monkeypatch):

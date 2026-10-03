@@ -156,6 +156,27 @@ def test_hook_check_sees_hooks_added_after_the_first_call():
         handle.remove()
 
 
+def _bound_forward(self, x):
+    return type(self).forward(self, x)
+
+
+def test_instance_bound_methods_carry_their_bound_name_only_while_pickling():
+    import functools
+
+    block = Block()
+    block.fc1.forward = types.MethodType(_bound_forward, block.fc1)
+    block.fc2.extra_repr = types.MethodType(functools.partial(lambda self: "x"), block.fc2)
+    partial = block.fc2.extra_repr.__func__
+    with aot._picklable_instance_forwards(block):
+        # what dynamo's guard pickler looks up: getattr(instance, function.__name__)
+        assert getattr(block.fc1, block.fc1.forward.__func__.__name__) == block.fc1.forward
+        assert getattr(block.fc2, partial.__name__) == block.fc2.extra_repr
+    assert _bound_forward.__name__ == "_bound_forward" and not hasattr(partial, "__name__")
+    fp = aot._code_fingerprint(block)
+    block.fc1.forward = types.MethodType(lambda self, x: x, block.fc1)
+    assert aot._code_fingerprint(block) != fp  # the instance forward's code is fingerprinted
+
+
 class _Processor:
     def __call__(self, x):
         return x
@@ -228,6 +249,13 @@ _SCRIPT = textwrap.dedent(
         # Studio's int8 layers (not the adaLN projections of the [1, D] timestep embedding: torch._int_mm needs M > 16).
         quantize_(model, Int8DynamicActivationInt8WeightConfig(),
                   filter_fn = lambda m, fqn: isinstance(m, torch.nn.Linear) and "blocks" in fqn and ".norm" not in fqn)
+        # Studio's int8 GEMM binds a module-level function as each int8 Linear's instance ``forward``.
+        def _linear_forward(self, x):
+            return type(self).forward(self, x)
+
+        for fqn, m in model.named_modules():
+            if isinstance(m, torch.nn.Linear) and "blocks" in fqn and ".norm" not in fqn:
+                m.forward = types.MethodType(_linear_forward, m)
         ids = torch.zeros(256, 3, device = "cuda")
         ids[:, 1], ids[:, 2] = torch.arange(256) // 16, torch.arange(256) % 16
         inputs = dict(hidden_states = torch.randn(1, 256, 64, device = "cuda", dtype = torch.bfloat16),
