@@ -75,18 +75,12 @@ _ARCH_CONFIG = {
 # When the arch tile does not fit this part's shared memory.
 _FALLBACK_CONFIG = (128, 128, 64, 8, 4, 4)
 
-# Fused ConvRot rotation + activation quant, (BLOCK_M group rows, BLOCK_K, num_warps, num_stages) per arch. The tile is
-# BLOCK_M rows of the [M * K / G, G] group view by the full group width G, and holds whole activation rows only, so
-# the per-row amax closes inside the tile. Measured on G4 (RTX PRO 6000) at H3's shapes (M = 19303, G = 256), vs the
-# compiled stock rotation GEMM + act quant: K 5376 0.506 -> 0.243 ms, K 7168 0.669 -> 0.340, K 14336 1.328 -> 0.648.
-# A100 (M = 19303): K 5376 0.71-0.82 -> 0.49 ms, K 7168 0.88-1.00 -> 0.69, K 14336 1.65 -> 1.34 (stock arm A/A spread
-# shown as a range). An arch absent here keeps the stock rotation even where the fused GEMM runs.
+# rotq_i8 (BLOCK_M group rows, BLOCK_K, num_warps, num_stages); measured end to end on these archs only.
 _ROTQ_CONFIG = {
-    (8, 0): (128, 32, 8, 3),  # A100 40 GB, streamed H3: 4.813 -> 4.761 s/step
-    (12, 0): (128, 32, 8, 4),  # RTX PRO 6000, resident H3: 2.764 -> 2.695 s/step
+    (8, 0): (128, 32, 8, 3),
+    (12, 0): (128, 32, 8, 4),
 }
 _ROTQ_FALLBACK = (128, 32, 8, 3)
-# Group sizes the fused rotation takes (the [BLOCK_M, G] accumulator and the G x G Hadamard tile are sized for these).
 _ROTQ_GROUPS = (256,)
 
 
@@ -258,7 +252,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         EPS: tl.constexpr,
         FP32_SCALE: tl.constexpr,
     ):
-        # One program = ROWS whole activation rows = ROWS * NG rows of the [M * NG, G] group view (x contiguous).
+        # one program = ROWS whole activation rows, so the per-row amax closes inside the tile
         pid = tl.program_id(0)
         t = tl.arange(0, BLOCK_M)
         lr = t // NG
@@ -267,7 +261,6 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         rg = tl.where(live, row * NG + (t % NG), 0)
         offs_k = tl.arange(0, BLOCK_K)
         offs_n = tl.arange(0, G)
-        # The rotation as the stock path runs it: blockdiag(H) GEMM, fp32 accumulation in K order, bf16 out.
         acc = tl.zeros((BLOCK_M, G), dtype = tl.float32)
         a_ptrs = x_ptr + rg[:, None] * G + offs_k[None, :]
         h_ptrs = h_ptr + offs_k[:, None] * G + offs_n[None, :]
@@ -277,10 +270,8 @@ def _kernels() -> Optional[types.SimpleNamespace]:
             a_ptrs += BLOCK_K
             h_ptrs += BLOCK_K * G
         z = _rbf16(acc)
-        # torchao's symmetric per-row quant on the bf16 rotated rows, every bf16 rounding kept:
-        # s = bf16(max(bf16(amax / DIV), EPS)), q = clamp(rint(bf16(z * bf16(1 / s))), QMIN, QMAX).
-        # FP32_SCALE (torchao >= 0.18 Int8Tensor: scale_dtype float32): the same s, stored as fp32, and
-        # q = clamp(rint(z * (1 / s)), QMIN, QMAX) with the reciprocal and the product left in fp32.
+        # s = bf16(max(bf16(amax / DIV), EPS)), q = clamp(rint(bf16(z * bf16(1 / s)))); FP32_SCALE (torchao >= 0.18
+        # Int8Tensor) keeps the reciprocal and the product in fp32.
         j = tl.arange(0, ROWS_P2)
         sel = lr[:, None] == j[None, :]
         amax = tl.max(tl.where(sel, tl.max(tl.abs(z), axis = 1)[:, None], 0.0), axis = 0)
@@ -458,17 +449,12 @@ def _probe(index: int, cfg: tuple) -> bool:
         return False
 
 
-# ------------------------------------------------------------------------------- fused ConvRot rotation + act quant
-
-# (QMIN, QMAX, DIV, EPS) of the two torchao activation quants the rotated Linears use: v1
-# ``_int8_symm_per_token_reduced_range_quant`` and v2 ``Int8Tensor.from_hp(PerRow, SYMMETRIC)``. v1 keeps a bf16
-# scale for a bf16 activation; v2 does up to torchao 0.17, and from 0.18 (``scale_dtype = torch.float32``) returns the
-# same bf16-valued scale as fp32 and quantizes with the fp32 reciprocal and an fp32 product (``_rotq_scale_fp32``).
+# (QMIN, QMAX, DIV, EPS): v1 _int8_symm_per_token_reduced_range_quant, v2 Int8Tensor.from_hp(PerRow, SYMMETRIC).
 _ROTQ_QPARAMS = {
     "v1": (-127.0, 127.0, 127.0, 1e-5),
     "v2": (-128.0, 127.0, 127.5, 1.1920928955078125e-07),
 }
-# device index -> fused rotation tile that matched the stock rotation + quant bit for bit there (None = stock).
+# device index -> probed rotq tile (None = stock).
 _ROTQ_DEVICE: dict = {}
 _ROTQ_CALLS = [0]
 _ROTQ_HANDLE: Any = None
@@ -476,8 +462,7 @@ _ROTQ_HANDLE: Any = None
 
 @lru_cache(maxsize = 1)
 def _v2_act_scale_fp32() -> bool:
-    """Whether this torchao's ``Int8Tensor.from_hp`` hands back an fp32 activation scale (0.18+) rather than the
-    activation's bf16. Decides both the kernel's reciprocal / product rounding and the scale dtype it returns."""
+    """torchao 0.18+ ``Int8Tensor.from_hp`` returns an fp32 activation scale (and quantizes in fp32)."""
     try:
         import torch
         from torchao.quantization.granularity import PerRow
@@ -628,8 +613,8 @@ def _rotq_op() -> Any:
 
 
 def rotquant_device_config(index: int) -> Optional[tuple]:
-    """Probe once per device: arch gate, then launches that must equal the stock rotation + act quant bit for bit
-    (codes and scales, v1 and v2, outlier rows, a zero row, ragged M, several rows per tile and one). None = stock."""
+    """Once per device: arch gate, then bit-exact codes and scales vs the stock path (v1, v2, outliers, zero row, ragged
+    M). None = stock."""
     if index in _ROTQ_DEVICE:
         return _ROTQ_DEVICE[index]
     cfg = None
@@ -680,9 +665,6 @@ def _rotq_probe(index: int, cfg: tuple) -> bool:
 
 def rotquant_call_count() -> int:
     return _ROTQ_CALLS[0]
-
-
-# ------------------------------------------------------------------------------------------- weight recognition
 
 
 def _v1_parts(w: Any) -> Optional[tuple]:
