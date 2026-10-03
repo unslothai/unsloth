@@ -1284,10 +1284,7 @@ def _qwen_image_21_checkpoint_to_diffusers(checkpoint = None, **kwargs):
     for key, value in (checkpoint or {}).items():
         if key.startswith(prefix):
             key = key[len(prefix) :]
-        quant_shape = getattr(value, "quant_shape", None)
-        if quant_shape is not None and len(quant_shape) == 1:
-            from diffusers.quantizers.gguf.utils import dequantize_gguf_tensor
-            value = dequantize_gguf_tensor(value)
+        value = _maybe_dequantize_gguf_one_dimensional(value)
         if key.endswith("." + fused):
             rows = int(value.shape[0])
             if rows % 2:
@@ -1347,6 +1344,24 @@ def _register_unregistered_single_file_classes(logger: Any = None) -> tuple:
     return tuple(added)
 
 
+def _maybe_dequantize_gguf_one_dimensional(value: Any) -> Any:
+    """Dequantise a 1-D ``GGUFParameter``; diffusers only dequantises inside ``GGUFLinear`` layers."""
+    quant_shape = getattr(value, "quant_shape", None)
+    if quant_shape is not None and len(quant_shape) == 1:
+        from diffusers.quantizers.gguf.utils import dequantize_gguf_tensor
+        return dequantize_gguf_tensor(value)
+    return value
+
+
+def _dequantize_gguf_one_dimensional(state_dict: Any) -> Any:
+    """Dequantise every 1-D packed tensor in a GGUF state dict before load."""
+    for name, have in list(state_dict.items()):
+        new = _maybe_dequantize_gguf_one_dimensional(have)
+        if new is not have:
+            state_dict[name] = new
+    return state_dict
+
+
 def _restore_gguf_trimmed_dims(model: Any, state_dict: Any) -> Any:
     """Put back the leading size-1 dimensions GGUF drops when it stores a tensor.
 
@@ -1380,7 +1395,8 @@ def _install_gguf_dim_restore(logger: Any) -> None:
     """Wrap diffusers' meta loader so a GGUF's trimmed dimensions are restored before its shape
     check. Patched here rather than in the mapping fn because a GGUF whose tensor names already
     match diffusers skips conversion entirely (``_should_convert_state_dict_to_diffusers``), so the
-    mapping fn never runs for it -- which is precisely the Z-Image case.
+    mapping fn never runs for it -- which is precisely the Z-Image case and pre-converted
+    Qwen-Image-2.1 GGUFs whose norm weights would otherwise stay packed (4096 vs 8192 at forward).
 
     Both names are rebound, and the second one is the one that matters: ``single_file_model``
     imports the function at MODULE level (under ``if is_accelerate_available()``), so it holds its
@@ -1396,6 +1412,7 @@ def _install_gguf_dim_restore(logger: Any) -> None:
 
         def _restoring_loader(model, state_dict, *args: Any, **kwargs: Any):
             try:
+                state_dict = _dequantize_gguf_one_dimensional(state_dict)
                 state_dict = _restore_gguf_trimmed_dims(model, state_dict)
             except Exception:  # noqa: BLE001 - never turn a load failure into a different one
                 pass
