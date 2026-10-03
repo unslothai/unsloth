@@ -1206,6 +1206,8 @@ def load_prequantized_transformer(
         # The only check reading what the artifact HOLDS: corruption after build passes the rest.
         if not _verify_packed_fingerprint(state_dict, ckpt.get("metadata") or {}, logger = logger):
             return None
+        # After the fingerprint, which describes the bytes as built: the repair may swap weights for dense copies.
+        _repair_legacy_checkpoint(ckpt, scheme, logger)
         _pin_kernel_preference(state_dict, logger)
 
         # Read from the root that actually supplied the checkpoint: after a mid-session cache change the pinned root
@@ -1555,6 +1557,154 @@ def _fp8_activation_floor_present(state_dict: Any, logger: Any) -> bool:
     return True
 
 
+def _fp8_kwargs_missing_floor(tensor: Any) -> Optional[Any]:
+    """The ``act_quant_kwargs`` of a Float8Tensor that carries no positive activation floor, else None."""
+    if type(tensor).__name__ != _FLOAT8_TENSOR_CLASS:
+        return None
+    kwargs = getattr(tensor, "act_quant_kwargs", None)
+    if kwargs is None or getattr(kwargs, "hp_value_lb", None):
+        return None
+    return kwargs
+
+
+def _fp8_activation_floor_restorable(state_dict: Any) -> bool:
+    """Whether every unfloored Float8Tensor can take the runtime floor without changing anything else.
+
+    The floor lives ONLY in ``act_quant_kwargs.hp_value_lb``: torchao's fp8 weight quantiser never reads it, so the
+    weight bytes of an artifact built before ``activation_value_lb`` are exactly what the runtime path produces today
+    (measured: 500/500 FLUX.1-dev, 106/106 FLUX.2-klein-4B, FLUX.2-dev and Qwen-Image-2512 weights bit-identical to
+    ``quantize_`` with ``_make_quant_config``). Writing the runtime floor into the kwargs therefore yields the same
+    tensor the dense-quantise fallback would build. Restorable only when the kwargs exposes the field and sets no upper
+    bound, i.e. it differs from the runtime config in the floor alone."""
+    try:
+        items = state_dict.items() if hasattr(state_dict, "items") else ()
+        for _name, tensor in items:
+            kwargs = _fp8_kwargs_missing_floor(tensor)
+            if kwargs is None:
+                continue
+            if not hasattr(kwargs, "hp_value_lb") or getattr(kwargs, "hp_value_ub", None) is not None:
+                return False
+    except Exception:  # noqa: BLE001 -- cannot prove it: keep refusing
+        return False
+    return True
+
+
+def _restore_fp8_activation_floor(state_dict: Any, logger: Any = None) -> int:
+    """Write the runtime activation floor into every unfloored Float8Tensor; returns how many.
+
+    A fresh kwargs object per tensor (``dataclasses.replace``), since a pickle may share one instance between tensors.
+    Like ``_pin_kernel_preference`` this rewrites a runtime knob, not weight data, so the packed fingerprint and the
+    checkpoint's sha256 still describe the tensors."""
+    import copy
+    import dataclasses
+
+    from .diffusion_transformer_quant import FP8_ACTIVATION_VALUE_LB
+
+    restored = 0
+    for _name, tensor in list(state_dict.items()):
+        kwargs = _fp8_kwargs_missing_floor(tensor)
+        if kwargs is None:
+            continue
+        if dataclasses.is_dataclass(kwargs) and not isinstance(kwargs, type):
+            fixed = dataclasses.replace(kwargs, hp_value_lb = FP8_ACTIVATION_VALUE_LB)
+        else:
+            fixed = copy.copy(kwargs)
+            fixed.hp_value_lb = FP8_ACTIVATION_VALUE_LB
+        tensor.act_quant_kwargs = fixed
+        restored += 1
+    if restored and logger is not None:
+        logger.info(
+            "diffusion.prequant: restored the fp8 activation scale floor (%g) on %d weights built "
+            "before activation_value_lb",
+            FP8_ACTIVATION_VALUE_LB,
+            restored,
+        )
+    return restored
+
+
+def _int8_excludes_to_densify(meta: Any, scheme: str) -> Optional[tuple]:
+    """The exclusion tokens the runtime applies but the artifact did not, when that is the ONLY difference.
+
+    An int8 artifact recording a SUBSET of this build's exclusion set quantised a superset of the runtime's Linears
+    (Qwen-Image-2512 INT8 was built with the family-less set, so its whole text stream -- txt_in, add_*_proj,
+    to_add_out, txt_mlp -- is int8, where the runtime keeps it bf16 for ``_int_mm``'s M floor). Handing those weights
+    back dense restores the runtime's module set exactly; every other layer is untouched. Returns () for a matching
+    set, the missing tokens for a strict subset, and None for anything else (a stale or foreign token: refused)."""
+    from .diffusion_transformer_quant import TQ_INT8, exclude_tokens_for_scheme
+
+    recorded = (meta or {}).get("exclude_name_tokens")
+    if recorded is None:
+        return ()
+    expected = tuple(exclude_tokens_for_scheme(scheme, (meta or {}).get("family")))
+    if tuple(recorded) == expected:
+        return ()
+    if scheme != TQ_INT8 or not set(recorded) < set(expected):
+        return None
+    return tuple(tok for tok in expected if tok not in set(recorded))
+
+
+def _dense_copy(tensor: Any) -> Any:
+    """A plain tensor holding ``tensor``'s dequantized weight (Int8Tensor, or the v1 activation-quantized wrapper)."""
+    try:
+        dense = tensor.dequantize()
+    except Exception:  # noqa: BLE001 -- the v1 wrapper keeps its weight one level down
+        dense = tensor.original_weight_tensor.dequantize()
+    dtype = getattr(tensor, "dtype", None)
+    if dtype is not None and getattr(dense, "dtype", dtype) != dtype:
+        dense = dense.to(dtype)
+    return dense.contiguous()
+
+
+def _is_quantized_weight(tensor: Any) -> bool:
+    """A torchao weight subclass (by class NAME, so this needs no torch import), not a plain tensor."""
+    return type(tensor).__name__ not in ("Tensor", "Parameter") and callable(
+        getattr(tensor, "dequantize", None)
+    )
+
+
+def _densify_excluded_weights(state_dict: Any, tokens: tuple, logger: Any = None) -> int:
+    """Replace every QUANTIZED ``<fqn>.weight`` whose fqn holds one of ``tokens`` with its dense weight; returns how many.
+
+    Same match as the runtime filter (``make_filter_fn``: substring of the lower-cased fqn), so the loaded module set
+    equals the one ``quantize_`` would produce."""
+    if not tokens:
+        return 0
+    densified = 0
+    for key in list(state_dict.keys()):
+        if not key.endswith(".weight"):
+            continue
+        tensor = state_dict[key]
+        if not _is_quantized_weight(tensor):
+            continue
+        fqn = key[: -len(".weight")].lower()
+        if not any(tok in fqn for tok in tokens):
+            continue
+        state_dict[key] = _dense_copy(tensor)
+        densified += 1
+    if densified and logger is not None:
+        logger.info(
+            "diffusion.prequant: %d int8 weights matching %s are excluded by this build; loaded "
+            "them dense",
+            densified,
+            list(tokens),
+        )
+    return densified
+
+
+def _repair_legacy_checkpoint(ckpt: Any, scheme: str, logger: Any = None) -> None:
+    """Bring an artifact ``_validate_checkpoint`` accepted as repairable to the runtime's exact contract."""
+    state_dict = ckpt["state_dict"]
+    meta = ckpt.get("metadata") or {}
+    from .diffusion_nvfp4_policy import declares_policy
+    from .diffusion_transformer_quant import TQ_FP8
+
+    if scheme == TQ_FP8 or declares_policy(meta):
+        _restore_fp8_activation_floor(state_dict, logger)
+    tokens = _int8_excludes_to_densify(meta, scheme)
+    if tokens:
+        _densify_excluded_weights(state_dict, tokens, logger)
+
+
 def _validate_activation_rotation(ckpt_format: Any, meta: Any, scheme: str, logger: Any) -> bool:
     """Reject a checkpoint whose activation rotation this build cannot honour EXACTLY.
 
@@ -1734,8 +1884,17 @@ def _validate_checkpoint(
     # act_quant_kwargs.hp_value_lb, so an artifact built before the fix stays broken however it is loaded, and it
     # predates any metadata field we could stamp -- and "absent is accepted for back-compat", the convention every
     # check above follows, is exactly wrong here. Reading the tensors is fail-closed and needs no format bump.
+    # An artifact built before the floor existed is not lost, though: the floor is a runtime knob on each tensor, not
+    # weight data, so ``_repair_legacy_checkpoint`` writes the runtime value in and the load proceeds. Refused only
+    # when the kwargs differs from the runtime config in more than the floor.
     if holds_fp8 and not _fp8_activation_floor_present(ckpt.get("state_dict"), logger):
-        return False
+        if not _fp8_activation_floor_restorable(ckpt.get("state_dict")):
+            return False
+        if logger is not None:
+            logger.info(
+                "diffusion.prequant: fp8 checkpoint predates activation_value_lb; the runtime "
+                "floor will be written into its weights"
+            )
     ckpt_base = meta.get("base_model_id")
     if base:
         # Keys matching a different base can load strict=True and generate from the wrong weights. Our builder always
@@ -1769,9 +1928,10 @@ def _validate_checkpoint(
         from .diffusion_transformer_quant import exclude_tokens_for_scheme
 
         # The exclude set derives from scheme AND family, so use the recorded family: an artifact baked under an older
-        # token list is rejected and re-quantised, not loaded crashing.
+        # token list is rejected and re-quantised, not loaded crashing. A strict SUBSET is the one exception: the
+        # artifact quantised extra Linears, which ``_repair_legacy_checkpoint`` hands back dense.
         expected = tuple(exclude_tokens_for_scheme(scheme, meta.get("family")))
-        if tuple(ckpt_excludes) != expected:
+        if _int8_excludes_to_densify(meta, scheme) is None:
             _warn(
                 logger,
                 scheme,

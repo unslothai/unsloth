@@ -787,15 +787,59 @@ def test_load_exclude_tokens_match_ok(monkeypatch, tmp_path):
     assert _load(monkeypatch, tmp_path, ckpt, scheme = "int8") is not None
 
 
+class _Dense:
+    """What ``dequantize`` hands back: a plain weight (the load only needs ``dtype`` and ``contiguous``)."""
+
+    dtype = "bfloat16"
+
+    def __init__(self, source):
+        self.source = source
+
+    def contiguous(self):
+        return self
+
+
+class _DequantizableInt8(Int8Tensor):
+    """The int8 weight above plus the ``dequantize`` the excluded-layer repair calls."""
+
+    dtype = "bfloat16"
+
+    def __init__(self, qdata = b"q"):
+        super().__init__(qdata)
+
+    def dequantize(self):
+        return _Dense(self)
+
+
 def test_load_exclude_tokens_need_the_recorded_family(monkeypatch, tmp_path):
-    # int8 carries PER-FAMILY exclusions (Qwen's unpadded text stream runs at M = prompt tokens, under _int_mm's floor of 16), so an artifact
-    # recording the family but building its set with family=None is rejected. Pins the offline builder to exclude_tokens_for_scheme(scheme, fam.name).
+    # int8 carries PER-FAMILY exclusions (Qwen's unpadded text stream runs at M = prompt tokens, under _int_mm's floor
+    # of 16). An artifact recording the family but building its set with family=None quantised that text stream too
+    # (the hosted Qwen-Image-2512 INT8 is one), so the load hands exactly those weights back dense: the module set is
+    # then the runtime's, and nothing else in the artifact changes.
     from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme
     for family in ("qwen-image", "qwen-image-edit"):
         family_less = _good_ckpt(scheme = "int8")
         family_less["metadata"]["family"] = family
         family_less["metadata"]["exclude_name_tokens"] = list(exclude_tokens_for_scheme("int8"))
-        assert _load(monkeypatch, tmp_path, family_less, scheme = "int8") is None
+        image = _DequantizableInt8()
+        family_less["state_dict"] = {
+            "transformer_blocks.0.attn.to_q.weight": image,
+            "transformer_blocks.0.attn.add_q_proj.weight": _DequantizableInt8(),
+            "transformer_blocks.0.txt_mlp.net.2.weight": _DequantizableInt8(),
+            "txt_in.weight": _DequantizableInt8(),
+            "txt_in.bias": object(),
+        }
+        out = _load(monkeypatch, tmp_path, family_less, scheme = "int8")
+        assert out is not None
+        sd = out.assigned
+        assert sd["transformer_blocks.0.attn.to_q.weight"] is image
+        for key in (
+            "transformer_blocks.0.attn.add_q_proj.weight",
+            "transformer_blocks.0.txt_mlp.net.2.weight",
+            "txt_in.weight",
+        ):
+            assert isinstance(sd[key], _Dense), key
+        assert not isinstance(sd["txt_in.bias"], _Dense)
 
         family_aware = _good_ckpt(scheme = "int8")
         family_aware["metadata"]["family"] = family
@@ -803,6 +847,24 @@ def test_load_exclude_tokens_need_the_recorded_family(monkeypatch, tmp_path):
             exclude_tokens_for_scheme("int8", family)
         )
         assert _load(monkeypatch, tmp_path, family_aware, scheme = "int8") is not None
+
+
+def test_load_exclude_tokens_only_a_strict_subset_is_repaired(monkeypatch, tmp_path):
+    # A recorded token the runtime does not use means the artifact left a Linear dense that the runtime quantises (or
+    # names something unknown): no repair can recover quantised weights, so that stays refused, as does fp8.
+    from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme
+
+    extra = _good_ckpt(scheme = "int8")
+    extra["metadata"]["family"] = "qwen-image"
+    extra["metadata"]["exclude_name_tokens"] = list(exclude_tokens_for_scheme("int8", "qwen-image")) + ["stale"]
+    assert _load(monkeypatch, tmp_path, extra, scheme = "int8") is None
+    assert pq._int8_excludes_to_densify({"exclude_name_tokens": ["norm"]}, "fp8") is None
+    assert pq._int8_excludes_to_densify({"exclude_name_tokens": []}, "fp8") == ()
+    assert pq._int8_excludes_to_densify({}, "int8") == ()
+    assert pq._int8_excludes_to_densify(
+        {"exclude_name_tokens": list(exclude_tokens_for_scheme("int8")), "family": "qwen-image"},
+        "int8",
+    ) == ("txt_in", "add_q_proj", "add_k_proj", "add_v_proj", "to_add_out", "txt_mlp")
 
 
 def test_load_require_bf16_mismatch_is_none(monkeypatch, tmp_path):
@@ -2170,18 +2232,49 @@ def test_load_is_dropped_when_the_padding_cannot_be_proven(monkeypatch, tmp_path
 # ── fp8 activation scale floor ──────────────────────────────────────────────────
 
 
-def test_an_fp8_checkpoint_without_the_activation_floor_is_rejected():
-    # A checkpoint built before activation_value_lb bakes hp_value_lb=None into every quantised
-    # tensor, and stays broken however it is loaded: torchao's per-row activation quantiser divides
-    # by the row amax, so qwen's all-zero text rows give scale 0 and NaN. The metadata checks around
-    # this one all accept an absent field for back-compat, which is exactly wrong here, so the floor
-    # is read off the TENSORS instead. Measured: 412 of 512 rows non-finite without it, 0 with it.
+def test_an_fp8_checkpoint_without_the_activation_floor_is_detected():
+    # A checkpoint built before activation_value_lb bakes hp_value_lb=None into every quantised tensor: torchao's
+    # per-row activation quantiser divides by the row amax, so qwen's all-zero text rows give scale 0 and NaN. The
+    # metadata checks around this one all accept an absent field for back-compat, which is exactly wrong here, so the
+    # floor is read off the TENSORS instead. Measured: 412 of 512 rows non-finite without it, 0 with it.
     floored = {"blocks.0.attn.to_q.weight": Float8Tensor(hp_value_lb = 1e-12)}
     unfloored = {"blocks.0.attn.to_q.weight": Float8Tensor(hp_value_lb = None)}
     assert pq._fp8_activation_floor_present(floored, None) is True
     assert pq._fp8_activation_floor_present(unfloored, None) is False
     # Zero is not a floor either: it is what an unclamped amax divide produces.
     assert pq._fp8_activation_floor_present({"w": Float8Tensor(hp_value_lb = 0.0)}, None) is False
+
+
+def test_an_fp8_checkpoint_without_the_floor_loads_with_the_runtime_floor(monkeypatch, tmp_path):
+    # The floor is a field of each tensor's activation kwargs, never weight data (torchao's weight quantiser does not
+    # read it), so an artifact built before it holds the runtime path's exact weights. The hosted FLUX.1-dev,
+    # FLUX.2-klein-4B, FLUX.2-dev and Qwen-Image-2512 FP8 files are such artifacts and were refused outright.
+    from core.inference.diffusion_transformer_quant import FP8_ACTIVATION_VALUE_LB
+
+    ckpt = _good_ckpt(scheme = "fp8")
+    shared = types.SimpleNamespace(hp_value_lb = None, hp_value_ub = None)
+    first, second, floored = Float8Tensor(), Float8Tensor(), Float8Tensor(hp_value_lb = 1e-9)
+    first.act_quant_kwargs = shared
+    second.act_quant_kwargs = shared  # a pickle may share one kwargs object between tensors
+    ckpt["state_dict"] = {"a.weight": first, "b.weight": second, "c.weight": floored, "d.bias": object()}
+    out = _load(monkeypatch, tmp_path, ckpt, scheme = "fp8")
+    assert out is not None
+    assert first.act_quant_kwargs.hp_value_lb == FP8_ACTIVATION_VALUE_LB
+    assert second.act_quant_kwargs.hp_value_lb == FP8_ACTIVATION_VALUE_LB
+    assert first.act_quant_kwargs is not second.act_quant_kwargs
+    assert shared.hp_value_lb is None
+    assert floored.act_quant_kwargs.hp_value_lb == 1e-9  # an artifact's own floor is never rewritten
+
+
+def test_an_fp8_checkpoint_differing_in_more_than_the_floor_stays_refused(monkeypatch, tmp_path):
+    ckpt = _good_ckpt(scheme = "fp8")
+    capped = Float8Tensor(hp_value_lb = None)
+    capped.act_quant_kwargs.hp_value_ub = 1e4
+    ckpt["state_dict"] = {"a.weight": capped}
+    assert _load(monkeypatch, tmp_path, ckpt, scheme = "fp8") is None
+    no_field = Float8Tensor()
+    no_field.act_quant_kwargs = types.SimpleNamespace()
+    assert pq._fp8_activation_floor_restorable({"a.weight": no_field}) is False
 
 
 def test_the_floor_check_ignores_dense_and_unreadable_state_dicts():
@@ -2293,6 +2386,11 @@ def test_the_fp8_invariants_cover_the_fp8_half_of_a_policy_checkpoint():
     unfloored = dict(ckpt)
     unfloored["state_dict"] = dict(ckpt["state_dict"])
     unfloored["state_dict"]["layers.0.feed_forward.w1.weight"] = Float8Tensor(hp_value_lb = None)
+    # The fp8 half without its floor is restorable (the load writes the runtime floor in), so it validates.
+    assert pq._validate_checkpoint(unfloored, "nvfp4", base, logger) is True
+    capped = Float8Tensor(hp_value_lb = None)
+    capped.act_quant_kwargs.hp_value_ub = 1.0
+    unfloored["state_dict"]["layers.0.feed_forward.w1.weight"] = capped
     assert pq._validate_checkpoint(unfloored, "nvfp4", base, logger) is False
     per_tensor = dict(ckpt)
     per_tensor["metadata"] = _policy_meta()
