@@ -907,9 +907,7 @@ export function AppSidebar() {
   const navigateFromRow = rowNavigation.go;
   useEffect(
     () =>
-      router.subscribe("onResolved", (event) =>
-        rowNavigation.rendered(event.toLocation.state.__TSR_key),
-      ),
+      router.subscribe("onResolved", () => rowNavigation.resolved()),
     [router, rowNavigation],
   );
   const imagesPageMode = useImageWorkflowStore((s) => s.pageMode);

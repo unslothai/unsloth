@@ -40,9 +40,12 @@ function fakeRouter(start = "/chat", { blocked = false } = {}) {
   });
   return {
     click: (to: string) => nav.go({ to }),
-    render: () => nav.rendered(stack[index].key),
+    render: () => nav.resolved(),
     back: () => {
       index -= 1;
+    },
+    forward: () => {
+      index += 1;
     },
     hrefs: () => stack.map((e) => e.href),
     calls,
@@ -98,6 +101,16 @@ test("Back onto the entry a click pushed, once rendered, is not replaced", () =>
   r.back();
   r.click("/images");
   assert.deepEqual(r.calls, ["/hub", "/library", "/images"]);
+});
+
+test("Back off an unrendered sidebar entry, then Forward onto it, keeps it", () => {
+  const r = fakeRouter();
+  r.click("/hub");
+  r.back();
+  r.render();
+  r.forward();
+  r.click("/images");
+  assert.deepEqual(r.hrefs(), ["/chat", "/hub", "/images"]);
 });
 
 test("clicks held by a blocker never replace the entry on screen", () => {

@@ -23,10 +23,7 @@ export function createNavigationCoalescer<T>({
   /** Key of the router's latest history entry. */
   currentEntry: () => string | undefined;
   asReplace: (options: T) => T;
-}): {
-  go: (options: T) => void;
-  rendered: (entry: string | undefined) => void;
-} {
+}): { go: (options: T) => void; resolved: () => void } {
   let unshown: string | undefined;
 
   return {
@@ -36,8 +33,10 @@ export function createNavigationCoalescer<T>({
       void navigate(replace ? asReplace(options) : options).catch(() => {});
       unshown = currentHref() === hrefOf(options) ? currentEntry() : undefined;
     },
-    rendered(entry: string | undefined) {
-      if (entry === unshown) unshown = undefined;
+    // Any resolve: the router only resolves once nothing is pending, so the entry either
+    // rendered or history left it (Back, then Forward onto it, must not replace it).
+    resolved() {
+      unshown = undefined;
     },
   };
 }
