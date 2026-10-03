@@ -2723,7 +2723,8 @@ _COLOURS_THAT_MUST_KEEP_THEIR_GAIN = ((IMAGES_PAGE, "border", "--foreground", "1
 # setting other than the default, and the reach arithmetic that decides whether the pin can
 # overlap the title is done against a number the UI no longer renders.
 _CSS_DECLARATIONS_THAT_MUST_KEEP_THE_SCALE = (
-    ("right", "1.875rem", 1),
+    # 27px since #12563 moved the pin and options buttons 3px right (was 1.875rem).
+    ("right", "1.6875rem", 1),
     ("padding-right", "0.125rem", 1),
 )
 
