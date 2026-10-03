@@ -253,22 +253,50 @@ export function ChatSearchDialog() {
     close();
   };
 
+  // The labels a row shows but its text lacks, so typing them finds it.
+  const chats = useMemo(() => {
+    const untitled = t("shell.search.untitledChat").toLowerCase();
+    const compare = t("shell.search.compare").toLowerCase();
+    return items.map((item) => {
+      const extra = [
+        item.title ? "" : untitled,
+        item.type === "compare" ? compare : "",
+      ].join(" ").trim();
+      return extra
+        ? {
+            ...item,
+            userSearchText: `${item.userSearchText} ${extra}`,
+            searchText: `${item.searchText} ${extra}`,
+          }
+        : item;
+    });
+  }, [items, t]);
+
   // Unfiltered rows per kind. Chats are matched separately (two tiers).
-  const rowsByKind = useMemo<Record<Exclude<ChatSearchKind, "chats">, Row[]>>(
-    () => ({
+  const rowsByKind = useMemo<Record<Exclude<ChatSearchKind, "chats">, Row[]>>(() => {
+    // As the sidebar: a project's own edits or its newest chat, whichever is later.
+    const newestChat = new Map<string, number>();
+    for (const item of items) {
+      if (!item.projectId) continue;
+      const at = item.updatedAt ?? item.createdAt;
+      newestChat.set(item.projectId, Math.max(newestChat.get(item.projectId) ?? 0, at));
+    }
+    const activityAt = (project: (typeof projects)[number]) =>
+      Math.max(project.updatedAt ?? project.createdAt, newestChat.get(project.id) ?? 0);
+    return {
       projects: projects
         .filter((project) => !project.archived)
-        .sort((a, b) => b.updatedAt - a.updatedAt)
         .map((project) => ({
           key: `project:${project.id}`,
-          kind: "projects",
+          kind: "projects" as const,
           title: project.name,
-          time: project.updatedAt,
+          time: activityAt(project),
           haystack: project.name.toLowerCase(),
           icon: Folder01Icon,
           open: () =>
             navigate({ to: "/chat", search: { project: project.id } }),
-        })),
+        }))
+        .sort((a, b) => b.time - a.time),
       files: sources.files.map((entry) => libraryRow(entry, "files", navigate)),
       // Hub downloads plus Library fine-tunes.
       models: [
@@ -280,20 +308,19 @@ export function ChatSearchDialog() {
           return { ...row, meta: label, haystack: `${row.haystack} ${label.toLowerCase()}` };
         }),
       ].sort((a, b) => b.time - a.time),
-    }),
-    [projects, sources, cachedRows, localRows, navigate, t],
-  );
+    };
+  }, [projects, items, sources, cachedRows, localRows, navigate, t]);
 
   const matchAll = useCallback(
     (search: string): Record<ChatSearchKind, Row[]> => ({
-      chats: selectVisibleChats(items, search)
+      chats: selectVisibleChats(chats, search)
         .map((item) => chatRow(item, t, navigate))
         .sort((a, b) => b.time - a.time),
       projects: filterRows(rowsByKind.projects, search),
       files: filterRows(rowsByKind.files, search),
       models: filterRows(rowsByKind.models, search),
     }),
-    [items, rowsByKind, t, navigate],
+    [chats, rowsByKind, t, navigate],
   );
   const matched = useMemo(() => matchAll(activeQuery), [matchAll, activeQuery]);
 

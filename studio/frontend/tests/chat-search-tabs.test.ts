@@ -138,3 +138,14 @@ test("model rows are searchable by the labels they show", () => {
   assert.match(DIALOG, /t\(modelLabelKey\(entry\.item\) \?\? "library\.modelKind\.model"\)/);
   assert.doesNotMatch(DIALOG, /shell\.search\.fineTuned/);
 });
+
+test("projects rank by their newest chat, as the sidebar does", () => {
+  assert.match(DIALOG, /Math\.max\(project\.updatedAt \?\? project\.createdAt, newestChat\.get\(project\.id\) \?\? 0\)/);
+  assert.match(DIALOG, /time: activityAt\(project\),/);
+});
+
+test("untitled and compare chats are searchable by their shown labels", () => {
+  assert.match(DIALOG, /item\.title \? "" : untitled,/);
+  assert.match(DIALOG, /item\.type === "compare" \? compare : "",/);
+  assert.match(DIALOG, /selectVisibleChats\(chats, search\)/);
+});
