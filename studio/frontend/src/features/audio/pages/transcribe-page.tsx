@@ -136,6 +136,7 @@ export function TranscribeRail({
           maxRecordSeconds={RECORDING_MAX_SECONDS}
           expiredMessage="This upload expired. Add it again."
           usesFirstSeconds={null}
+          recordHint="Record up to 30 minutes, then transcribe it."
         />
       </div>
 

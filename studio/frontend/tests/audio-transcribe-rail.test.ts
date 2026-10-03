@@ -111,3 +111,12 @@ test("the run sends the language the rail shows, never a hidden saved one", () =
   assert.match(host, /language: transcribeLanguage,/);
   assert.doesNotMatch(host, /language: transcribePrefs\.language/);
 });
+
+test("the source card speaks for Transcribe, not for a clone reference", () => {
+  assert.match(
+    rail,
+    /recordHint="Record up to 30 minutes, then transcribe it\."/,
+  );
+  assert.match(rail, /expiredMessage="This upload expired\. Add it again\."/);
+  assert.match(rail, /usesFirstSeconds=\{null\}/);
+});
