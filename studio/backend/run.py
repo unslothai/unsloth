@@ -356,8 +356,7 @@ def _verify_global_reachability(
     """Probe check-host.net to confirm display_host:port is reachable from the public internet. Synchronous so
     output lands between the banner URLs and the stop hint. Bounded at ~15s; failures swallowed (verifier
     failing is not Unsloth failing). Only meaningful for a wildcard bind, and skipped entirely by
-    UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK. ``wsl_nat``: the private address is WSL's NAT side, not a LAN
-    one, and the WSL note already printed says so."""
+    UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK. ``wsl_nat`` skips the LAN note (the WSL hint replaces it)."""
     global _public_reachable
     # Reset to "unknown" each run; set True/False only when the probe decides.
     _public_reachable = None
@@ -549,16 +548,14 @@ def _is_wsl_nat() -> bool:
     # "unknown" = WSL too old for wslinfo, which is NAT; "none" has no network at all.
     if _wsl_networking_mode() not in ("nat", "unknown"):
         return False
-    # Imported only on WSL: every wildcard bind reaches here. A container on Docker Desktop's WSL2
-    # kernel also reads "unknown", but its host port is whatever -p published.
+    # Lazy import (every wildcard bind gets here); Docker Desktop containers also read "unknown".
     from utils.paths.file_manager import _in_container
 
     return not _in_container()
 
 
 def _print_wsl_windows_hint(port: int) -> None:
-    """WSL2 NAT has no LAN URL to print, but Windows reaches a wildcard bind through localhost
-    forwarding (#11187). Printed where the reachability note goes, which it stands in for."""
+    """WSL2 NAT: Windows reaches a wildcard bind via localhost forwarding (#11187)."""
     dim = "\033[38;5;245m" if _stdout_color_ok() else ""
     reset = "\033[0m" if dim else ""
     print(
