@@ -1785,7 +1785,9 @@ class WhisperSttSidecar:
         if not self._lock.acquire(blocking = wait):
             return
         try:
-            if not self._holds_expected_model(expected_model):
+            # Nothing resident: the registry releases idle engines on every other engine's
+            # transcription, and a full gc.collect each time cost ~130 ms per request.
+            if self._model_id is None or not self._holds_expected_model(expected_model):
                 return
             self._release_engine_locked()
         finally:

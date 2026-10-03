@@ -336,6 +336,12 @@ type NavRowDef = {
 };
 
 // An expanded project shows this many recent chats before "Show more".
+// Row kebab with centred dots: Hugeicons draws them half a unit low.
+const MoreVerticalCenteredIcon = MoreVerticalIcon.map(([tag, attrs]) => [
+  tag,
+  { ...attrs, transform: "translate(0 -0.5)" },
+]) as unknown as IconSvgElement;
+
 const PROJECT_CHAT_LIMIT = 4;
 // And the Projects section shows this many folders before its own "Show more".
 const SIDEBAR_PROJECT_LIMIT = 5;
@@ -2512,7 +2518,7 @@ export function AppSidebar() {
   const unrailedRowPadding = usesDesktopTitlebar ? "px-[calc(5px*var(--ui-space-scale,1))]" : "px-1.5";
 
   // Headers follow unrailedRowPadding: the label starts where row content does, and the
-  // actions end where a hovered row's "…" does. 18px / 12px normally (the class defaults), 17px / 11px here.
+  // actions end where a hovered row's "…" does. 18px / 9px normally (the class defaults), 17px / 8px here.
   const headerInset = usesDesktopTitlebar
     ? "sidebar-sticky-label-desktop"
     : null;
@@ -2947,9 +2953,6 @@ export function AppSidebar() {
   function handleInlineRenameKeyDown(
     event: React.KeyboardEvent<HTMLInputElement>,
   ) {
-    // Enter confirms an IME candidate; Escape dismisses one. Neither should
-    // finish the rename. Check before preventDefault so the IME keeps its key.
-    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
     if (event.key === "Enter") {
       event.preventDefault();
       skipRenameBlurRef.current = true;
@@ -4679,7 +4682,7 @@ export function AppSidebar() {
                   className={actionClass}
                 >
                   <span className="sidebar-row-action-glyph">
-                    <HugeiconsIcon icon={MoreVerticalIcon} strokeWidth={1.75} className="size-icon" />
+                    <HugeiconsIcon icon={MoreVerticalCenteredIcon} strokeWidth={1.75} className="size-icon" />
                   </span>
                 </button>
               )}
@@ -4867,7 +4870,7 @@ export function AppSidebar() {
                 className="sidebar-row-action sidebar-touch-reveal group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
               >
                 <span className="sidebar-row-action-glyph">
-                  <HugeiconsIcon icon={MoreVerticalIcon} strokeWidth={1.75} className="size-icon" />
+                  <HugeiconsIcon icon={MoreVerticalCenteredIcon} strokeWidth={1.75} className="size-icon" />
                 </span>
               </button>
             )}
@@ -5530,7 +5533,7 @@ export function AppSidebar() {
                               className="sidebar-row-action group-hover/run-item:opacity-100 group-hover/run-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
                             >
                               <span className="sidebar-row-action-glyph">
-                                <HugeiconsIcon icon={MoreVerticalIcon} strokeWidth={1.75} className="size-icon" />
+                                <HugeiconsIcon icon={MoreVerticalCenteredIcon} strokeWidth={1.75} className="size-icon" />
                               </span>
                             </button>
                           )}
@@ -5956,13 +5959,7 @@ export function AppSidebar() {
         if (!open) setRenamingTarget(null);
       }}
     >
-      <DialogContent
-        className="corner-squircle dialog-soft-surface sm:max-w-md"
-        // Radix closes on Escape before the input sees it; keep IME candidate dismissal from closing.
-        onEscapeKeyDown={(event) => {
-          if (event.isComposing || event.keyCode === 229) event.preventDefault();
-        }}
-      >
+      <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-md">
         <DialogHeader>
           <DialogTitle>
             {renamingTarget?.kind === "run"
@@ -5974,7 +5971,6 @@ export function AppSidebar() {
           value={renameDraft}
           onChange={(event) => setRenameDraft(event.target.value)}
           onKeyDown={(event) => {
-            if (event.nativeEvent.isComposing || event.keyCode === 229) return;
             if (event.key === "Enter") {
               event.preventDefault();
               void commitRename();

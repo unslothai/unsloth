@@ -853,7 +853,14 @@ def _studio_token() -> Optional[str]:
         from studio.backend.auth import storage
         from studio.backend.auth.authentication import create_access_token
 
-        row = storage.get_connection().execute("SELECT username FROM auth_user LIMIT 1").fetchone()
+        row = (
+            storage.get_connection()
+            .execute(
+                "SELECT username FROM auth_user WHERE username = ?",
+                (storage.DEFAULT_ADMIN_USERNAME,),
+            )
+            .fetchone()
+        )
         return create_access_token(row[0], desktop = True) if row else None
     except Exception:
         return None
