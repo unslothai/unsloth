@@ -160,6 +160,7 @@ from .diffusion_memory import (
 )
 from .diffusion_torchao_patches import install_torchao_int_mm_patch
 from .image_orientation import exif_upright
+from .mcp_images import flattened_rgb
 from .media_decode_phase import decode_phase
 from .diffusion_speed import (
     SPEED_DEFAULT,
@@ -582,7 +583,7 @@ def decode_b64_image(
         raise  # the size guard's own message; don't wrap it as a decode error
     except Exception as exc:  # noqa: BLE001 - surfaced as a 400 to the client
         raise ValueError(f"Could not decode image: {exc}") from exc
-    return img.convert(mode)
+    return flattened_rgb(img) if mode == "RGB" else img.convert(mode)
 
 
 def _snap_to_multiple(img: Any, multiple: int = 16) -> Any:
