@@ -57,7 +57,12 @@ def _free_bytes(device: Any) -> Optional[int]:
         return None
 
 
-def install_untiled_decode(pipe: Any, family: str, *, logger: Any = None) -> bool:
+def install_untiled_decode(
+    pipe: Any,
+    family: str,
+    *,
+    logger: Any = None,
+) -> bool:
     """Wrap ``pipe.vae.decode`` so each call decodes untiled when it fits. Returns whether it was installed.
 
     Only for a CUDA-resident pipeline whose VAE is tiled and whose family has a measured coefficient; the caller

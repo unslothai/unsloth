@@ -18,7 +18,11 @@ class FakeVAE:
         self.calls = []
         self.oom_untiled = oom_untiled
 
-    def decode(self, z, return_dict = False):
+    def decode(
+        self,
+        z,
+        return_dict = False,
+    ):
         self.calls.append(self.use_tiling)
         if not self.use_tiling and self.oom_untiled:
             raise torch.OutOfMemoryError("fake")
