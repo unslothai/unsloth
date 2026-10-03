@@ -164,3 +164,9 @@ test("the Music studio's Advanced hides speech sampling it never sends", () => {
     /musicGeneration=\{false\}\s*samplingControls=\{false\}\s*inputs=\{\s*<MusicStudioInputs/,
   );
 });
+
+test("Music's source card releases the mic when Audio is hidden, as Clone's does", () => {
+  const host = readSrc("features/audio/audio-page.tsx");
+  assert.match(host, /<AudioActiveProvider value=\{active\}>\s*<MusicRail/);
+  assert.match(host, /<AudioActiveProvider value=\{active\}>\s*<CloneRail/);
+});

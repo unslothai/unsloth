@@ -1089,13 +1089,15 @@ export function AudioPage({
                     handleAudioOptionsReset,
                   };
                   return ttsWorkflow === "music" ? (
-                    <MusicRail
-                      {...railProps}
-                      music={music}
-                      historyClips={clips}
-                      description={audioInstructions}
-                      setDescription={setAudioInstructions}
-                    />
+                    <AudioActiveProvider value={active}>
+                      <MusicRail
+                        {...railProps}
+                        music={music}
+                        historyClips={clips}
+                        description={audioInstructions}
+                        setDescription={setAudioInstructions}
+                      />
+                    </AudioActiveProvider>
                   ) : ttsWorkflow === "clone" ? (
                     <AudioActiveProvider value={active}>
                       <CloneRail
