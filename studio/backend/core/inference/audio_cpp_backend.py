@@ -366,8 +366,6 @@ class AudioCppBackend:
             raise
         except AudioCppRequestError as exc:
             from core.inference.audio_errors import AudioRuntimeError
-
-            # Typed so the route can show the runtime's reason ("CosyVoice3 requires reference audio").
             raise AudioRuntimeError(
                 f"The audio runtime could not generate audio: {exc.detail}", status = exc.status
             ) from exc

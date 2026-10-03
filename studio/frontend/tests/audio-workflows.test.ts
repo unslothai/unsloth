@@ -62,7 +62,6 @@ test("a clip without a workflow falls back to its audio type", () => {
   assert.equal(clipWorkflow({ audio_type: "snac" }), "speak");
   assert.equal(clipWorkflow({ workflow: "music", audio_type: "snac" }), "music");
   assert.equal(clipWorkflow({ workflow: "clone", audio_type: "audiocpp_tts" }), "clone");
-  // An unknown stored value is not trusted over the audio type.
   assert.equal(clipWorkflow({ workflow: "edit", audio_type: "audiocpp_music" }), "music");
   assert.equal(audioWorkflowForAudioType(null), "speak");
 });

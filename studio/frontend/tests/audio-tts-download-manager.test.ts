@@ -27,7 +27,6 @@ test("uncached remote TTS GGUFs stage the picked quant through the shared manage
 
 test("remote code approval precedes native model staging and survives completion", () => {
   const start = source.indexOf("const loadOrStageTtsModel");
-  // The slot hook's next block is the deactivation effect; the sidecar load lives in its own hook.
   const end = source.indexOf("// A hidden page may let the shared download continue", start);
   const stagedFlow = source.slice(start, end);
   assert.ok(start >= 0 && end > start);

@@ -21569,7 +21569,6 @@ async def _generate_tts_wav(
             if isinstance(e, AudioBackendUnsupportedError):
                 logger.info("Audio generation unsupported on this backend: %s", e.detail)
                 raise HTTPException(status_code = 501, detail = e.message)
-            # The runtime said why ("CosyVoice3 requires reference audio"): show that, sanitized.
             if isinstance(e, AudioRuntimeError):
                 status_code, detail = audio_runtime_http_error(e)
                 logger.warning("Audio generation refused by the runtime: %s", e)
@@ -43947,7 +43946,6 @@ async def clear_gallery_audio(
     from core.inference.gallery_flags import FlagsUnavailable
 
     try:
-        # A workflow scopes the clear to that page's clips.
         removed = await asyncio.to_thread(audio_gallery.clear, workflow = workflow)
     except FlagsUnavailable as exc:
         logger.warning("audio_gallery.clear_blocked: %s", exc)

@@ -42,7 +42,6 @@ def test_runtime_text_is_one_bounded_line_without_paths_or_tokens():
     assert "hf_AbCdEf" not in detail and "<redacted>" in detail
     long = sanitize_runtime_detail("x " * 1000)
     assert len(long) <= 300 and long.endswith("...")
-    # Sentences the runtime writes keep their meaning.
     assert (
         sanitize_runtime_detail("VibeVoice prompt has no valid Speaker N: lines")
         == "VibeVoice prompt has no valid Speaker N: lines"
@@ -102,7 +101,6 @@ def _route_with_backend(monkeypatch, error):
 
 
 def test_the_generate_and_speech_core_shows_the_runtime_reason(monkeypatch):
-    # /audio/generate and /v1/audio/speech both go through _generate_tts_wav.
     error = _route_with_backend(monkeypatch, AudioRuntimeError(_LEAKY, status = 500))
     assert error.status_code == 500
     assert "CosyVoice3 requires reference audio" in error.detail

@@ -142,8 +142,6 @@ interface ModelSelectorProps {
   communityModelPolicy?: CommunityModelPolicy;
   /** The one opaque on-device artifact kind this task runtime may load. */
   opaqueKind?: "diffusers_pipeline" | "diffusers_modular_pipeline";
-  /** Narrows the downloaded Hub rows past `task` (the Audio pages split speech from music).
-   *  Undefined (chat and every other picker) changes nothing. */
   rowFilter?: ModelPickerRowFilter;
   /** Hub filter the Search Hub button opens with. Also shows Search Hub on curated task pickers. */
   hubCapability?: CapabilityKey;

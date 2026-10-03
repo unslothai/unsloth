@@ -2,9 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { NativeAudioInstructionsKind } from "../audio-page-policy";
+import {
+  InstructionsField,
+  MossLanguageField,
+} from "../components/instructions-fields";
 import type { AudioWorkflowId } from "../workflows";
 import { CLONE_TOOL_PANELS } from "./clone-panels";
-import { InstructionsField, MossLanguageField } from "./instructions-panels";
 import { instructionsKindFor, panelApplies } from "./select";
 import { SPEAK_TOOL_PANELS } from "./speak-panels";
 import type {
