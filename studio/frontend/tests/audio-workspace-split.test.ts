@@ -148,7 +148,7 @@ test("Send to lists the other Audio pages from the shared workflow list", () => 
   // Bytes first: a failed fetch must not leave the user on another page.
   assert.match(
     host,
-    /const blob = await fetchClipBlob\(clip\.url\);\s*if \(!transitionWorkflow\("transcribe"\)\) return;/,
+    /const blob = await fetchClipBlob\(clip\.url\);[\s\S]*?if \(!transitionWorkflow\("transcribe"\)\) return;/,
   );
 });
 
@@ -183,7 +183,7 @@ test("Send to waits for a running task instead of stopping it and dropping the c
   // transcription was refused and the clip silently dropped.
   assert.match(
     host,
-    /transcribe: \(\) => \{[\s\S]*?if \(busyRef\.current !== null\) \{\s*toast\.info\([^)]*\);\s*return;\s*\}\s*void \(async \(\) => \{/,
+    /transcribe: \(\) => \{[\s\S]*?const busyNow = \(\) => \{\s*if \(busyRef\.current === null\) return false;\s*toast\.info\([^)]*\);\s*return true;\s*\};\s*if \(busyNow\(\)\) return;/,
   );
 });
 
@@ -198,5 +198,22 @@ test("trained checkpoints are split between Speak and Music like the catalog", (
   assert.match(
     host,
     /trainedTtsModels\.filter\(\s*\(model\) =>\s*isMusicGenerationModel\(model\.id, model\.audioType\) ===\s*\(ttsWorkflow === "music"\),\s*\)/,
+  );
+});
+
+test("picking a clip on one page keeps the other page's unsaved clip", () => {
+  // A clip that failed to save exists only as the fallback; clicking a History row on the other
+  // page cleared it, so returning to its page lost the clip.
+  assert.match(
+    gallery,
+    /const otherPage =\s*clip !== undefined &&\s*fallbackClipRef\.current !== null &&\s*clipWorkflow\(clip\) !== fallbackClipRef\.current\.workflow;\s*if \(!keepFallback && !otherPage\) setFallbackClip\(null\);/,
+  );
+});
+
+test("Send to checks again after the clip downloads, before switching pages", () => {
+  // Generate pressed while the clip downloaded was stopped by the switch, and the clip dropped.
+  assert.match(
+    host,
+    /const blob = await fetchClipBlob\(clip\.url\);[\s\S]*?if \(busyNow\(\)\) return;\s*if \(!transitionWorkflow\("transcribe"\)\) return;/,
   );
 });
