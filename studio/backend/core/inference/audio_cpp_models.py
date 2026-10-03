@@ -107,6 +107,27 @@ class CloneSpec:
 
 
 @dataclass(frozen = True)
+class EditSpec:
+    """How a family edits the words or delivery of a recording (``/v1/tasks/run``, spike S2)."""
+
+    # audiocpp_server task the edit runs under; one other than the model's own restarts the server.
+    server_task: str
+    # ``markup`` (DotTTS ``<sub>``/``<del>``/``<ins>`` text), ``sentence`` (Vevo2: the whole new
+    # sentence) or ``instructions`` (FireRedAudio: one instruction per call, chained).
+    style: str
+    # The request field that carries the recording.
+    source_field: str = "source_audio"
+    route: Optional[str] = None
+    template: Optional[str] = None
+    # Template for speed and pitch changes; None when the family has no delivery control.
+    delivery_template: Optional[str] = None
+    max_changes: Optional[int] = None
+    input_rate: int = 24000
+    # Options Studio fills itself, so Advanced never sends them.
+    claims: tuple[str, ...] = ("template_name", "source_text", "target_text", "instruction")
+
+
+@dataclass(frozen = True)
 class CompanionModel:
     """A second model a family loads beside its own (MioTTS's MioCodec), by session option."""
 
@@ -137,6 +158,15 @@ def _bindings_for(
         if clone is not None:
             bindings["clone"] = WorkflowBinding(
                 server_task or "tts", "speech", None, _CLONE_INPUTS, clone.input_rate
+            )
+        edit = getattr(family, "edit", None)
+        if edit is not None:
+            bindings["edit"] = WorkflowBinding(
+                edit.server_task,
+                "tasks",
+                edit.route,
+                ("source", "text", "reference_text"),
+                edit.input_rate,
             )
         return bindings
     if task == "music":
@@ -176,6 +206,8 @@ class AudioCppFamily:
     clone: Optional[CloneSpec] = None
     # Models it loads beside its own GGUF.
     companions: tuple[CompanionModel, ...] = ()
+    # How it edits a recording, when it does.
+    edit: Optional[EditSpec] = None
 
     @property
     def default_server_task(self) -> str:
@@ -554,6 +586,33 @@ _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
 
 FAMILIES: dict[str, AudioCppFamily] = {f.family: f for f in _FAMILY_LIST}
 
+# Speech editing (spike S2). Vevo2 edits only as a speech-to-speech session; FireRedAudio edits in
+# the tts session Clone loads, one instruction per call. DotTTS edits only as the Edit package,
+# picked by name in ``family_policy``.
+_EDIT_SPECS = {
+    "vevo2": EditSpec("s2s", "sentence", route = "editing"),
+    "firered_audio": EditSpec(
+        "tts",
+        "instructions",
+        source_field = "audio",
+        template = "semantic_edit",
+        delivery_template = "acoustic_edit",
+        max_changes = 5,
+        claims = ("template_name", "instruction"),
+    ),
+}
+_DOTS_EDIT = EditSpec("tts", "markup", template = "edit")
+
+
+def _with_edit_specs() -> None:
+    from dataclasses import replace
+
+    for name, spec in _EDIT_SPECS.items():
+        FAMILIES[name] = replace(FAMILIES[name], edit = spec)
+
+
+_with_edit_specs()
+
 # Spec task names that are not runtime task tokens.
 _SPEC_TO_SERVER_TASK = {
     "music": "gen",
@@ -680,6 +739,10 @@ def family_policy(
         # The Base package only loads as a cloning session.
         from dataclasses import replace
         return replace(policy, server_task = "clon")
+    if family == "dots_tts" and re.search(r"(^|[-_ /])edit([-_ ./]|$)", " ".join(names).lower()):
+        # Only the Edit package edits; DotTTS-MF and SOAR speak.
+        from dataclasses import replace
+        return replace(policy, edit = _DOTS_EDIT)
     return policy
 
 
@@ -1552,6 +1615,7 @@ class AudioCppModel:
     companions: tuple[CompanionModel, ...] = ()
     # Request fields the spec marks required that Studio sends as request fields (Maya1's instruct).
     required_inputs: tuple[str, ...] = ()
+    edit: Optional[EditSpec] = None
 
     @property
     def is_package(self) -> bool:
@@ -1900,6 +1964,7 @@ def _resolve_uncached(
         clone = policy.clone,
         companions = policy.companions,
         required_inputs = _required_inputs(spec, embedded, policy),
+        edit = policy.edit,
     )
     return model.with_variant(chosen)
 

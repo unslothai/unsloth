@@ -19,7 +19,9 @@ from __future__ import annotations
 import base64
 import io
 import json
+import os
 import re
+import tempfile
 import threading
 import wave
 from dataclasses import replace
@@ -30,6 +32,7 @@ from core.inference.audio_cpp_models import (
     AudioCppModel,
     AudioCppModelError,
     CloneSpec,
+    EditSpec,
     forget,
     require_runnable,
     resolve,
@@ -108,6 +111,8 @@ def model_info_fields(model: AudioCppModel) -> dict[str, Any]:
         "audio_required_inputs": list(model.required_inputs),
         # Internal: what the /audio/run route checks before a clone request reaches the worker.
         "audio_clone": clone_rules(model),
+        # Internal, likewise for an edit request.
+        "audio_edit": edit_rules(model),
     }
 
 
@@ -123,6 +128,97 @@ def clone_rules(model: AudioCppModel) -> Optional[dict[str, Any]]:
         "emotion_audio": clone.emotion_audio,
         "input_rate": clone.input_rate,
     }
+
+
+def edit_rules(model: AudioCppModel) -> Optional[dict[str, Any]]:
+    edit = getattr(model, "edit", None)
+    if edit is None:
+        return None
+    return {
+        "style": edit.style,
+        "delivery": edit.delivery_template is not None,
+        "max_changes": edit.max_changes,
+        "input_rate": edit.input_rate,
+    }
+
+
+def edit_options(model: AudioCppModel) -> tuple[dict, ...]:
+    """The spec's options an edit request may send: those the edit fills itself are left out."""
+    claims = set(model.edit.claims) if model.edit is not None else set()
+    return tuple(option for option in model.options if option["name"] not in claims)
+
+
+EDIT_MODEL_PLACEHOLDER = "<model>"
+EDIT_SOURCE_PLACEHOLDER = "<recording>"
+
+
+def edit_previous_result(call: int) -> str:
+    """The placeholder for call ``call``'s output, which the next call of a chain edits."""
+    return f"<result of call {call}>"
+
+
+def edit_request_bodies(
+    model: AudioCppModel,
+    text: str,
+    reference_text: Optional[str],
+    edit: Optional[dict],
+    options: dict,
+    seed: Optional[int],
+    source: str = EDIT_SOURCE_PLACEHOLDER,
+    model_id: str = EDIT_MODEL_PLACEHOLDER,
+) -> list[dict[str, Any]]:
+    """The ``/v1/tasks/run`` calls an edit makes, in order, as ``{"path", "body"}`` (S2's bodies).
+
+    The first call reads ``source``; each later one reads the previous call's output, named by
+    ``edit_previous_result``. ``options`` are validated already and leave out the edit's claims."""
+    spec = model.edit
+    if spec is None:
+        raise RuntimeError(f"{model.display_name} cannot edit speech.")
+    edit = dict(edit or {})
+    advanced = {name: _option_string(value) for name, value in options.items()}
+    top: dict[str, Any] = {}
+    if seed is not None:
+        top["seed"] = str(int(seed))
+    if spec.style == "markup":
+        markup = str(edit.get("markup") or "")
+        if not markup.strip():
+            raise RuntimeError(f"{model.display_name} needs the marked-up changes.")
+        body: dict[str, Any] = {"model": model_id, "text": markup, spec.source_field: source}
+        body["options"] = {"template_name": spec.template, **advanced}
+        return [{"path": "/v1/tasks/run", "body": {**body, **top}}]
+    if spec.style == "sentence":
+        body = {"model": model_id}
+        if spec.route:
+            body["route"] = spec.route
+        body[spec.source_field] = source
+        body["target_text"] = text
+        original = str(reference_text or "").strip()
+        if original:
+            body["reference_text"] = original
+        if advanced:
+            body["options"] = advanced
+        return [{"path": "/v1/tasks/run", "body": {**body, **top}}]
+    if edit.get("mode") == "delivery":
+        from core.inference.audio_edit import delivery_instructions
+
+        template = spec.delivery_template
+        if template is None:
+            raise RuntimeError("Delivery changes need FireRedAudio.")
+        instructions = delivery_instructions(edit.get("speed"), edit.get("pitch_steps"))
+    else:
+        template = spec.template
+        instructions = [str(item) for item in edit.get("instructions") or ()]
+    if not instructions:
+        raise RuntimeError("Change at least one word.")
+    calls = []
+    for index, instruction in enumerate(instructions):
+        body = {
+            "model": model_id,
+            spec.source_field: source if index == 0 else edit_previous_result(index),
+            "options": {"template_name": template, "instruction": instruction, **advanced},
+        }
+        calls.append({"path": "/v1/tasks/run", "body": {**body, **top}})
+    return calls
 
 
 def language_name(language: Optional[str]) -> Optional[str]:
@@ -324,6 +420,7 @@ class AudioCppBackend:
         audio_inputs: Optional[dict] = None,
         reference_text: Optional[str] = None,
         speed: Optional[float] = None,
+        edit: Optional[dict] = None,
     ) -> Tuple[bytes, int]:
         del top_k, min_p, repetition_penalty, use_adapter
         if not self.active_model_name or self.active_model_name not in self.models:
@@ -332,13 +429,36 @@ class AudioCppBackend:
         if model is None:
             raise RuntimeError("No active audio model")
         _raise_if_cancelled(cancel_event)
-        cloning = workflow == "clone" or bool(audio_inputs)
+        editing = workflow == "edit"
+        # Speak in a saved voice sends a reference with workflow "speak": that is a clone too.
+        cloning = not editing and (workflow == "clone" or bool(audio_inputs))
+        if editing and model.edit is None:
+            raise RuntimeError(f"{model.display_name} cannot edit speech.")
         if cloning and model.clone is None:
             raise RuntimeError(f"{model.display_name} cannot clone a voice.")
-        options = validate_options(model.clone_options if cloning else model.options, audio_options)
-        server = self._running_server(model, cancel_event)
+        if editing:
+            options = validate_options(edit_options(model), audio_options)
+            served = _served_for_edit(model)
+        else:
+            options = validate_options(
+                model.clone_options if cloning else model.options, audio_options
+            )
+            served = model
+        server = self._running_server(served, cancel_event)
         try:
-            if cloning:
+            if editing:
+                wav = self._generate_edit(
+                    server,
+                    model,
+                    text,
+                    audio_inputs or {},
+                    reference_text,
+                    edit,
+                    options,
+                    seed,
+                    cancel_event,
+                )
+            elif cloning:
                 wav = self._generate_clone(
                     server,
                     model,
@@ -529,6 +649,56 @@ class AudioCppBackend:
         return data
 
     @staticmethod
+    def _generate_edit(
+        server: AudioCppServer,
+        model: AudioCppModel,
+        text: str,
+        audio_inputs: dict,
+        reference_text: Optional[str],
+        edit: Optional[dict],
+        options: dict,
+        seed: Optional[int],
+        cancel_event,
+    ) -> bytes:
+        """Edit ``audio_inputs["source"]``, a server-local WAV path, and return the result.
+
+        A FireRedAudio chain makes one call per change; each call reads the previous output from a
+        temporary WAV that is removed afterwards. The runtime's ``text`` (FireRed answers with one
+        that is not the edited transcript) is never read."""
+        source = audio_inputs.get("source")
+        if not source:
+            raise RuntimeError(f"{model.display_name} needs a recording to edit.")
+        calls = edit_request_bodies(
+            model,
+            text,
+            reference_text,
+            edit,
+            options,
+            seed,
+            source = str(source),
+            model_id = server.model_id,
+        )
+        field = (model.edit or EditSpec("tts", "markup")).source_field
+        with tempfile.TemporaryDirectory(prefix = "unsloth-audio-edit-") as scratch:
+            wav = b""
+            for index, call in enumerate(calls):
+                _raise_if_cancelled(cancel_event)
+                body = dict(call["body"])
+                if index:
+                    step = os.path.join(scratch, f"step{index}.wav")
+                    with open(step, "wb") as handle:
+                        handle.write(wav)
+                    body[field] = step
+                ctype, data = server.post_json(
+                    call["path"],
+                    body,
+                    timeout = _GENERATE_TIMEOUT_SECONDS,
+                    cancel_event = cancel_event,
+                )
+                wav = _audio_from_task_response(ctype, data)
+        return wav
+
+    @staticmethod
     def _generate_music(
         server: AudioCppServer,
         model: AudioCppModel,
@@ -615,6 +785,15 @@ def _resolve_companion(
         name = companion.id.rsplit("/", 1)[-1]
         raise RuntimeError(f"{model.display_name} needs {name}, which Studio could not find.")
     return found
+
+
+def _served_for_edit(model: AudioCppModel) -> AudioCppModel:
+    """``model`` under its edit task: Vevo2 edits only as a speech-to-speech session, so the server
+    restarts for the edit and again for the next Clone."""
+    edit = model.edit
+    if edit is None or edit.server_task == model.server_task:
+        return model
+    return replace(model, server_task = edit.server_task)
 
 
 def _with_companions(model: AudioCppModel) -> AudioCppModel:

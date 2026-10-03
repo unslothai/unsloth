@@ -99,7 +99,7 @@ def test_workflow_for_audio_type_is_speak_or_music():
     assert aw.workflow_for_audio_type("snac") == "speak"
     assert aw.workflow_for_audio_type("unknown") == "speak"
     assert aw.workflow_for_audio_type(None) == "speak"
-    assert aw.AUDIO_WORKFLOW_IDS == ("speak", "clone", "music", "transcribe")
+    assert aw.AUDIO_WORKFLOW_IDS == ("speak", "clone", "edit", "music", "transcribe")
 
 
 def test_workflow_ids_match_the_frontend_order():
@@ -156,6 +156,11 @@ def _inventory_gguf(hub_root, folder, family, filename):
             ["clone"],
         ),
         ("Kokoro-82M-GGUF", "kokoro_tts", "kokoro-82m-q8_0.gguf", ["speak"]),
+        ("DotTTS-Edit-GGUF", "dots_tts", "dots-tts-edit-q8_0.gguf", ["speak", "edit"]),
+        ("DotTTS-MF-GGUF", "dots_tts", "dots-tts-mf-q8_0.gguf", ["speak"]),
+        ("DotTTS-SOAR-GGUF", "dots_tts", "dots-tts-soar-q8_0.gguf", ["speak"]),
+        ("Vevo2-GGUF", "vevo2", "vevo2-q8_0.gguf", ["clone", "edit"]),
+        ("FireRedAudio-GGUF", "firered_audio", "firered-audio-q8_0.gguf", ["clone", "edit"]),
     ],
 )
 def test_inventory_rows_of_clone_families_list_clone(tmp_path, folder, family, filename, workflows):

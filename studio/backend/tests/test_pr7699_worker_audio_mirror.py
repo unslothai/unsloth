@@ -130,6 +130,12 @@ def test_audio_cpp_workflow_fields_cross_the_worker_and_the_parent(monkeypatch):
             "reference_text_waived": [],
             "emotion_audio": False,
         },
+        "audio_edit": {
+            "style": "instructions",
+            "delivery": True,
+            "max_changes": 5,
+            "input_rate": 24000,
+        },
     }
     backend = SimpleNamespace(
         device = "cuda",
@@ -158,5 +164,11 @@ def test_audio_cpp_workflow_fields_cross_the_worker_and_the_parent(monkeypatch):
     for key, value in fields.items():
         assert info[key] == value, key
     entry = _mirrored_model_entry(info, mc.identifier)
-    for key in ("audio_workflows", "audio_reference_text", "audio_required_inputs", "audio_clone"):
+    for key in (
+        "audio_workflows",
+        "audio_reference_text",
+        "audio_required_inputs",
+        "audio_clone",
+        "audio_edit",
+    ):
         assert entry[key] == fields[key], key

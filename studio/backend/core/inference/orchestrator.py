@@ -390,6 +390,7 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
         "audio_reference_text": model_info.get("audio_reference_text"),
         "audio_required_inputs": model_info.get("audio_required_inputs"),
         "audio_clone": model_info.get("audio_clone"),
+        "audio_edit": model_info.get("audio_edit"),
     }
 
 
@@ -3349,6 +3350,7 @@ class InferenceOrchestrator:
         audio_inputs: Optional[dict[str, str]] = None,
         reference_text: Optional[str] = None,
         speed: Optional[float] = None,
+        edit: Optional[dict] = None,
     ) -> Tuple[bytes, int]:
         """Generate TTS audio. Returns (wav_bytes, sample_rate). Blocking: sends the command and
         waits for the full audio response. ``audio_inputs`` maps a role (reference, emotion) to a
@@ -3429,6 +3431,8 @@ class InferenceOrchestrator:
                     cmd["reference_text"] = reference_text
                 if speed is not None:
                     cmd["speed"] = float(speed)
+                if edit is not None:
+                    cmd["edit"] = dict(edit)
 
                 # Same shared-queue hazard as _generate_inner: see _direct_reader.
                 read_one, _drain, release_mailbox = self._direct_reader(request_id, cancel_event)

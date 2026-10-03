@@ -21374,7 +21374,26 @@ def _audio_request_problem(
     workflows = model_info.get("audio_workflows")
     label = _audio_model_label(model_name)
     inputs = (run_inputs or {}).get("audio_inputs") or {}
-    cloning = bool(run_inputs) and (run_inputs.get("workflow") == "clone" or bool(inputs))
+    if (run_inputs or {}).get("workflow") == "edit":
+        from core.inference import audio_edit
+
+        # The llama.cpp direct path reports no workflows, so it lands here too.
+        if not workflows or "edit" not in workflows or not model_info.get("audio_edit"):
+            return "Load a model that can edit speech."
+        if not inputs.get("source"):
+            return "Add a recording to edit."
+        return audio_edit.request_problem(
+            model_info.get("audio_edit"),
+            run_inputs.get("edit"),
+            str(run_inputs.get("text") or ""),
+            run_inputs.get("reference_text"),
+            label,
+        )
+    cloning = (
+        bool(run_inputs)
+        and (run_inputs.get("workflow") == "clone" or bool(inputs))
+        and run_inputs.get("workflow") != "edit"
+    )
     if cloning:
         if not workflows or "clone" not in workflows:
             return "Load a model that can clone a voice."
@@ -21518,7 +21537,7 @@ async def _generate_tts_wav(
             **{
                 key: value
                 for key, value in (run_inputs or {}).items()
-                if key in ("workflow", "audio_inputs", "reference_text", "speed")
+                if key in ("workflow", "audio_inputs", "reference_text", "speed", "edit")
                 and value is not None
             },
         )
@@ -21773,6 +21792,142 @@ def _audio_run_settings(body: AudioRunRequest, reference_text_used: bool) -> dic
     }
 
 
+def _audio_edit_settings(body: AudioRunRequest) -> dict[str, Any]:
+    """An edit's recipe for history: what changed and how, never a file or server path."""
+    from core.inference import audio_edit
+
+    edit = body.edit.model_dump(exclude_none = True) if body.edit is not None else {}
+    settings: dict[str, Any] = {
+        "mode": edit.get("mode", "words"),
+        "changes": audio_edit.change_count(edit),
+        "original_text": (body.inputs.reference_text or "").strip() or None,
+        "options": _audio_run_settings(body, False)["options"],
+    }
+    if edit.get("mode") == "delivery":
+        for name in ("speed", "pitch_steps"):
+            if edit.get(name) is not None:
+                settings[name] = edit[name]
+    return settings
+
+
+def _audio_run_clip(record: dict[str, Any], role: str) -> dict[str, Any]:
+    return {
+        "id": record["id"],
+        "role": role,
+        "url": record["url"],
+        "sample_rate": record["sample_rate"],
+        "duration_s": record["duration_s"],
+        "workflow": record["workflow"],
+    }
+
+
+async def _run_audio_edit(
+    body: AudioRunRequest,
+    request: Request,
+    current_subject: str,
+) -> AudioRunResponse:
+    """Edit speech: the recording is resolved in the caller's account and prepared as 24 kHz mono
+    (never cut: over 30 s is refused); an uploaded one is kept in history as the run's source."""
+    import base64
+
+    from core.inference import audio_edit, audio_inputs
+
+    source_ref = body.inputs.source
+    if source_ref is None:
+        raise HTTPException(status_code = 400, detail = "Add a recording to edit.")
+    if source_ref.voice_id:
+        raise HTTPException(
+            status_code = 400, detail = "Pick a recording or a history clip to edit."
+        )
+    ref = source_ref.model_dump(exclude_none = True)
+    trim = ref.get("trim")
+    limit = audio_edit.EDIT_SOURCE_MAX_SECONDS + 0.05
+
+    def prepare():
+        source = audio_inputs.resolve_source(ref)
+        seconds = audio_edit.source_seconds(source.path, trim)
+        if seconds is not None and seconds > limit:
+            raise audio_inputs.AudioInputError(400, audio_edit.TOO_LONG)
+        path = audio_inputs.prepared_path(source, audio_inputs.REFERENCE_RATE, "mono", trim, None)
+        if seconds is None and audio_inputs.wav_info(path)["duration_s"] > limit:
+            raise audio_inputs.AudioInputError(400, audio_edit.TOO_LONG)
+        return source, path
+
+    try:
+        source, source_path = await asyncio.to_thread(prepare)
+    except audio_inputs.AudioInputError as exc:
+        raise _audio_source_error(exc) from None
+    reference_text = (body.inputs.reference_text or "").strip() or None
+    edit = body.edit.model_dump(exclude_none = True) if body.edit is not None else {}
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": body.text}],
+        max_tokens = body.max_tokens,
+        audio_options = body.options,
+        seed = body.seed,
+    )
+    wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
+        body.text,
+        payload,
+        request,
+        current_subject,
+        run_inputs = {
+            "workflow": "edit",
+            "audio_inputs": {"source": str(source_path)},
+            "reference_text": reference_text,
+            "edit": edit,
+            # Read by the request check only; the worker gets the text as the prompt.
+            "text": body.text,
+        },
+    )
+    group_id = uuid.uuid4().hex
+    source_record = None
+    try:
+        source_record = await asyncio.to_thread(
+            audio_edit.save_source_clip, source, source_path, reference_text, trim, group_id
+        )
+    except Exception as exc:  # noqa: BLE001 - the edit is served even when its source is not kept
+        logger.warning("audio_edit.source_save_failed: %s", exc)
+    if source_record is not None:
+        source_clip_id = source_record["id"]
+    else:
+        source_clip_id = source.id if source.kind == "clip" else None
+    extra_meta: dict[str, Any] = {
+        "role": "output",
+        "group_id": group_id,
+        "source_clip_id": source_clip_id,
+        "reference_name": source.name,
+        "settings": _audio_edit_settings(body),
+    }
+    record = await asyncio.to_thread(
+        _persist_tts_clip,
+        wav_bytes,
+        sample_rate,
+        body.text,
+        model_name,
+        audio_type,
+        extra_meta,
+        "edit",
+    )
+    sources = [_audio_run_clip(source_record, "source")] if source_record is not None else []
+    if record is None:
+        return AudioRunResponse(
+            clips = sources,
+            group_id = group_id,
+            model = model_name,
+            audio = {
+                "data": base64.b64encode(wav_bytes).decode("ascii"),
+                "format": "wav",
+                "sample_rate": sample_rate,
+            },
+        )
+    # ``text`` stays None: FireRedAudio's answer text is not the edited transcript (S2).
+    return AudioRunResponse(
+        clips = [_audio_run_clip(record, "output"), *sources],
+        group_id = group_id,
+        model = model_name,
+    )
+
+
 @router.post("/audio/run", response_model = AudioRunResponse)
 async def run_audio_workflow(
     body: AudioRunRequest,
@@ -21788,6 +21943,8 @@ async def run_audio_workflow(
 
     from core.inference import audio_inputs
 
+    if body.workflow == "edit":
+        return await _run_audio_edit(body, request, current_subject)
     reference_ref = body.inputs.reference
     if body.workflow == "clone" and reference_ref is None:
         raise HTTPException(status_code = 400, detail = "Add a reference clip to clone.")
@@ -43983,7 +44140,7 @@ async def delete_gallery_audio(audio_id: str, current_subject: str = Depends(get
 
 @studio_router.delete("/audio/gallery")
 async def clear_gallery_audio(
-    workflow: Optional[Literal["speak", "clone", "music"]] = None,
+    workflow: Optional[Literal["speak", "clone", "edit", "music"]] = None,
     current_subject: str = Depends(get_current_subject),
 ):
     from core.inference import audio_gallery

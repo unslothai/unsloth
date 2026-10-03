@@ -805,6 +805,47 @@ def test_a_scoped_clear_spares_clone_clips():
     assert gallery.list_audio() == []
 
 
+def test_an_edit_keeps_its_workflow_and_a_scoped_clear_takes_its_source_clips():
+    from models.inference import AudioGalleryItem
+    from routes.inference import _persist_tts_clip
+
+    speech = gallery.save(_wav(), _meta())
+    source = gallery.save(
+        _wav(),
+        _meta(
+            model = "Recording",
+            audio_type = "recording",
+            workflow = "edit",
+            role = "source",
+            group_id = "g" * 32,
+        ),
+    )
+    edited = _persist_tts_clip(
+        _wav(),
+        24000,
+        "edited",
+        "m",
+        "audiocpp_tts",
+        {"role": "output", "group_id": "g" * 32, "source_clip_id": source["id"]},
+        "edit",
+    )
+    listed = {r["id"]: r for r in gallery.list_audio()}
+    assert listed[source["id"]]["workflow"] == listed[edited["id"]]["workflow"] == "edit"
+    assert AudioGalleryItem(**listed[edited["id"]]).source_clip_id == source["id"]
+    assert gallery.set_flags(edited["id"], pinned = True)["workflow"] == "edit"
+    assert gallery.clear(workflow = "edit") == 2
+    assert [r["id"] for r in gallery.list_audio()] == [speech["id"]]
+
+
+def test_the_clear_route_accepts_the_edit_workflow():
+    from routes.inference import clear_gallery_audio
+
+    gallery.save(_wav(), _meta(workflow = "edit", role = "source", audio_type = "recording"))
+    assert asyncio.run(clear_gallery_audio(workflow = "edit", current_subject = "tester")) == {
+        "removed": 1
+    }
+
+
 def test_the_inputs_and_voices_folders_never_list_as_clips():
     gallery.save(_wav(), _meta())
     for folder in ("inputs", "voices"):

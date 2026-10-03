@@ -5095,7 +5095,7 @@ class AudioGalleryItem(BaseModel):
     pinned: bool = Field(False, description = "Pinned to the top of history")
     archived: bool = Field(False, description = "Moved to the archived shelf, hidden from history")
     workflow: Optional[str] = Field(
-        None, description = "Audio page workflow that made the clip: speak, clone or music"
+        None, description = "Audio page workflow that made the clip: speak, clone, edit or music"
     )
     order_at: Optional[float] = Field(
         None,
@@ -5161,6 +5161,22 @@ class AudioRunInputs(BaseModel):
     reference: Optional[AudioSourceRef] = None
     reference_text: Optional[str] = Field(None, max_length = 4000)
     emotion: Optional[AudioSourceRef] = None
+    source: Optional[AudioSourceRef] = None
+
+
+class AudioRunEdit(BaseModel):
+    """What an Edit speech run changes. Words: DotTTS markup or FireRedAudio instructions, rendered
+    by the client and checked against both transcripts. Delivery (FireRedAudio): numbers only."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    mode: Literal["words", "delivery"] = "words"
+    markup: Optional[str] = Field(None, max_length = 8000)
+    instructions: Optional[List[Annotated[str, Field(min_length = 1, max_length = 300)]]] = Field(
+        None, max_length = 8
+    )
+    speed: Optional[float] = Field(None, ge = 0.5, le = 2.0)
+    pitch_steps: Optional[int] = Field(None, ge = 1, le = 12)
 
 
 class AudioRunRequest(BaseModel):
@@ -5168,7 +5184,7 @@ class AudioRunRequest(BaseModel):
 
     model_config = ConfigDict(extra = "forbid")
 
-    workflow: Literal["clone", "speak"]
+    workflow: Literal["clone", "speak", "edit"]
     text: str = Field(..., min_length = 1)
     language: Optional[str] = Field(None, max_length = 64)
     instructions: Optional[str] = Field(None, max_length = 4000)
@@ -5179,6 +5195,19 @@ class AudioRunRequest(BaseModel):
     speed: Optional[float] = Field(None, ge = 0.25, le = 4.0)
     seed: Optional[int] = Field(None, ge = -(2**63), le = 2**64 - 1)
     max_tokens: Optional[int] = Field(None, ge = 1)
+    edit: Optional[AudioRunEdit] = None
+
+    @model_validator(mode = "after")
+    def _edit_fields(self):
+        if (self.edit is not None) != (self.workflow == "edit"):
+            raise ValueError("Send edit with workflow edit, and only then.")
+        if self.inputs.source is not None and self.workflow != "edit":
+            raise ValueError("inputs.source is for workflow edit.")
+        if self.workflow == "edit" and (
+            self.inputs.reference is not None or self.inputs.emotion is not None
+        ):
+            raise ValueError("An edit takes inputs.source, not a reference or emotion clip.")
+        return self
 
     @field_validator("options")
     @classmethod
