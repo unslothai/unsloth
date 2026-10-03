@@ -19,11 +19,13 @@ import {
 } from "../audio-run-request";
 import type { AudioSourceInputHandle } from "../components/audio-source-input";
 import {
+  type ConvertBlockerKind,
   convertBlocker,
   convertCaps,
   convertPitchSupport,
   convertServerTask,
   convertSwitchNotice,
+  effectiveConvertStyle,
 } from "../convert-policy";
 import type { GenerateBlocker } from "../pages/tts-workspace";
 import { useAudioCloneStore } from "../stores/audio-clone-store";
@@ -187,10 +189,11 @@ export function useConvertGeneration({
       convertOptionSpecs,
     ],
   );
-  const style =
-    caps?.style && mode === "speech"
-      ? (toolRequest.patch.convert?.style ?? "source")
-      : "source";
+  const style = effectiveConvertStyle(
+    caps,
+    mode,
+    toolRequest.patch.convert?.style ?? "source",
+  );
   const route = toolRequest.patch.convert?.route ?? null;
   const pitchSupport = convertPitchSupport(caps, mode, style);
   const claimedOptions = useMemo(
@@ -244,10 +247,6 @@ export function useConvertGeneration({
   const targetExpired = isExpired(target, targetStatus);
   const builtinTarget = caps?.target === "builtin";
 
-  const focusField = useCallback((id: string) => {
-    document.getElementById(id)?.focus();
-  }, []);
-
   const inputBlocker = convertBlocker({
     source,
     sourceBusy: sourceBusy(sourceStatus),
@@ -279,47 +278,48 @@ export function useConvertGeneration({
       },
     },
   ];
+  const focusAction = (label: string, handle: typeof sourceHandle) => [
+    { label, onClick: () => handle.current?.focus() },
+  ];
+  const blockerActions = (
+    kind: ConvertBlockerKind,
+  ): GenerateBlocker["actions"] => {
+    switch (kind) {
+      case "source":
+      case "source-error":
+        return focusAction("Add a recording", sourceHandle);
+      case "target":
+      case "target-error":
+        return focusAction("Add the target voice", targetHandle);
+      case "source-expired":
+        return againAction(sourceHandle, () =>
+          useAudioConvertStore.getState().setSource(null),
+        );
+      case "target-expired":
+        return againAction(targetHandle, () =>
+          useAudioConvertStore.getState().setTarget(null),
+        );
+      case "source-text":
+        return [
+          {
+            label: "Transcribe it",
+            onClick: () => void transcriber.transcribe(source),
+          },
+          {
+            label: "type it",
+            onClick: () =>
+              document.getElementById(CONVERT_SOURCE_TEXT_FIELD_ID)?.focus(),
+          },
+        ];
+      default:
+        return undefined;
+    }
+  };
   /** What holds Generate back on this page, with the fix as an action. The model blockers are the host's. */
   const blocker: GenerateBlocker | null = inputBlocker
     ? {
         reason: inputBlocker.reason,
-        actions:
-          inputBlocker.kind === "source" || inputBlocker.kind === "source-error"
-            ? [
-                {
-                  label: "Add a recording",
-                  onClick: () => sourceHandle.current?.focus(),
-                },
-              ]
-            : inputBlocker.kind === "source-expired"
-              ? againAction(sourceHandle, () =>
-                  useAudioConvertStore.getState().setSource(null),
-                )
-              : inputBlocker.kind === "target" ||
-                  inputBlocker.kind === "target-error"
-                ? [
-                    {
-                      label: "Add the target voice",
-                      onClick: () => targetHandle.current?.focus(),
-                    },
-                  ]
-                : inputBlocker.kind === "target-expired"
-                  ? againAction(targetHandle, () =>
-                      useAudioConvertStore.getState().setTarget(null),
-                    )
-                  : inputBlocker.kind === "source-text"
-                    ? [
-                        {
-                          label: "Transcribe it",
-                          onClick: () => void transcriber.transcribe(source),
-                        },
-                        {
-                          label: "type it",
-                          onClick: () =>
-                            focusField(CONVERT_SOURCE_TEXT_FIELD_ID),
-                        },
-                      ]
-                    : undefined,
+        actions: blockerActions(inputBlocker.kind),
       }
     : null;
 

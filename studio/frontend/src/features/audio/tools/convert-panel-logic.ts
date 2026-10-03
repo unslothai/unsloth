@@ -117,30 +117,17 @@ export const seedVcLogic: AudioToolPanelLogic<SeedVcValue> = {
         clamp(value.steps, SEED_VC_STEPS_RANGE.min, SEED_VC_STEPS_RANGE.max),
       ),
     };
+    const guidance = (v: number) =>
+      clamp(v, SEED_VC_GUIDANCE_RANGE.min, SEED_VC_GUIDANCE_RANGE.max);
     const options =
       route === "v2_vc"
         ? {
             ...shared,
-            similarity_guidance_scale: clamp(
-              value.similarity,
-              SEED_VC_GUIDANCE_RANGE.min,
-              SEED_VC_GUIDANCE_RANGE.max,
-            ),
-            intelligibility_guidance_scale: clamp(
-              value.intelligibility,
-              SEED_VC_GUIDANCE_RANGE.min,
-              SEED_VC_GUIDANCE_RANGE.max,
-            ),
+            similarity_guidance_scale: guidance(value.similarity),
+            intelligibility_guidance_scale: guidance(value.intelligibility),
             voice_anonymization: value.anonymize === true,
           }
-        : {
-            ...shared,
-            inference_guidance_scale: clamp(
-              value.guidance,
-              SEED_VC_GUIDANCE_RANGE.min,
-              SEED_VC_GUIDANCE_RANGE.max,
-            ),
-          };
+        : { ...shared, inference_guidance_scale: guidance(value.guidance) };
     return { options, convert: { route } };
   },
 };

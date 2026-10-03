@@ -12,8 +12,6 @@ import type {
 } from "./audio-run-request";
 import type { AudioModelContext } from "./tools/types";
 
-export type { ConvertMode, ConvertStyle } from "./audio-run-request";
-
 /** Convert's picker order: the general-purpose converters first, then the clone models that also convert. */
 export const CONVERT_MODEL_ORDER: string[] = [
   "SeedVC-MLX-GGUF",
@@ -47,8 +45,7 @@ export function convertPitchSupport(
   style: ConvertStyle,
 ): { show: boolean; auto: boolean } {
   const pitch = caps?.modes.includes(mode) ? caps.pitch[mode] : undefined;
-  if (!pitch) return { show: false, auto: false };
-  if (effectiveConvertStyle(caps, mode, style) === "target") {
+  if (!pitch || effectiveConvertStyle(caps, mode, style) === "target") {
     return { show: false, auto: false };
   }
   return { show: true, auto: pitch.auto === true };
@@ -160,6 +157,13 @@ function builtinBlocker(
 export function convertBlocker(
   input: ConvertBlockerInput,
 ): ConvertBlocker | null {
+  const source = inputBlocker(
+    input.source,
+    input.sourceBusy,
+    input.sourceExpired,
+    input.sourceError,
+    "source",
+  );
   const target =
     input.caps?.target === "builtin"
       ? builtinBlocker(input.caps, input.builtinVoice)
@@ -170,34 +174,24 @@ export function convertBlocker(
           input.targetError,
           "target",
         );
-  const blocker =
-    inputBlocker(
-      input.source,
-      input.sourceBusy,
-      input.sourceExpired,
-      input.sourceError,
-      "source",
-    ) ?? target;
   // Name everything still missing at once, so nothing new appears after the first fix.
   if (
-    blocker?.kind === "source" &&
+    source?.kind === "source" &&
     !input.source &&
-    target?.kind === "target"
+    !input.sourceBusy &&
+    target?.kind === "target" &&
+    !input.target &&
+    input.caps?.target !== "builtin"
   ) {
-    if (
-      !input.sourceBusy &&
-      input.caps?.target !== "builtin" &&
-      !input.target
-    ) {
-      return { kind: "source", reason: CONVERT_INPUTS_MISSING };
-    }
+    return { kind: "source", reason: CONVERT_INPUTS_MISSING };
   }
-  if (blocker?.kind === "source-expired" && target?.kind === "target-expired") {
+  if (source?.kind === "source-expired" && target?.kind === "target-expired") {
     return {
       kind: "source-expired",
       reason: "The recording and target voice are no longer on the server.",
     };
   }
+  const blocker = source ?? target;
   if (blocker) return blocker;
   if (input.caps && !input.caps.modes.includes(input.mode)) {
     return { kind: "mode", reason: CONVERT_SINGING_UNSUPPORTED };
@@ -240,18 +234,16 @@ export function convertSwitchNotice(
   );
   if (!taskChange && !input.routeChange) return null;
   const name = input.modelName.trim() || "the model";
-  const target = taskChange && input.nextTask === "svc" ? "singing" : "Convert";
+  const what = !taskChange
+    ? "the new engine"
+    : input.nextTask === "svc"
+      ? "singing"
+      : "Convert";
   const seconds = input.family
     ? CONVERT_RELOAD_SECONDS[input.family]
     : undefined;
-  if (!taskChange) {
-    return {
-      before: `Reloads ${name} with the new engine${seconds ? `, ${seconds}` : ""}.`,
-      during: `Switching ${name} to the new engine…`,
-    };
-  }
   return {
-    before: `Reloads ${name} for ${target}${seconds ? `, ${seconds}` : ""}.`,
-    during: `Switching ${name} to ${target}…`,
+    before: `Reloads ${name} ${taskChange ? "for" : "with"} ${what}${seconds ? `, ${seconds}` : ""}.`,
+    during: `Switching ${name} to ${what}…`,
   };
 }

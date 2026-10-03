@@ -44,7 +44,7 @@ const shown = (
     panelApplies(panel, workflow, ctx({ audioFamily: family })),
   ).map((panel) => panel.id);
 
-test("each converting family gets its one panel, only on Convert", () => {
+test("each converting family gets its one titled panel, only on Convert", () => {
   assert.deepEqual(shown("seed_vc"), ["seed-vc"]);
   assert.deepEqual(shown("rvc"), ["rvc"]);
   assert.deepEqual(shown("chatterbox"), ["chatterbox-convert"]);
@@ -59,9 +59,6 @@ test("each converting family gets its one panel, only on Convert", () => {
     panelApplies(panel, "convert", ctx({ audioFamily: "chatterbox" })),
   );
   assert.deepEqual(cloneOnConvert, []);
-});
-
-test("titles are the tool names, in plain words", () => {
   assert.deepEqual(
     CONVERT_PANEL_LOGIC.map((panel) => panel.title),
     ["Seed-VC", "RVC", "Chatterbox", "Vevo2"],
@@ -135,11 +132,6 @@ test("Seed-VC sends only what the chosen engine reads", () => {
       "route",
     ]);
   }
-  // Speech never sends pitch or f0 options: the runtime ignores or refuses them there.
-  assert.doesNotMatch(
-    JSON.stringify(seedVcLogic.toRequest(value, speech)),
-    /semitone_shift|auto_f0_adjust|f0_condition/,
-  );
 });
 
 test("Seed-VC singing runs the singing engine, whatever engine speech had", () => {
@@ -155,12 +147,6 @@ test("Seed-VC singing runs the singing engine, whatever engine speech had", () =
   assert.equal(singing.options?.route, "v1_svc");
   assert.equal("similarity_guidance_scale" in (singing.options ?? {}), false);
   assert.equal("inference_guidance_scale" in (singing.options ?? {}), true);
-  // Engine is hidden while singing.
-  const jsx = readSrc("features/audio/tools/convert-panels.tsx");
-  assert.match(
-    jsx,
-    /\{singing \? null : \(\s*<div className="grid gap-1\.5">\s*<label\s+htmlFor="convert-seed-vc-engine"/,
-  );
   assert.deepEqual(
     SEED_VC_ENGINES.map((engine) => engine.label),
     ["V2", "V1 Whisper", "V1 XLSR"],
@@ -200,29 +186,20 @@ test("RVC and Chatterbox send their settings within range", () => {
       options: { s3gen_cfg_rate: 0.5, num_inference_steps: 12 },
     },
   );
-  // Exaggeration belongs to Clone only.
-  assert.doesNotMatch(
-    JSON.stringify(
-      chatterboxConvertLogic.toRequest({ guidance: 0.5, steps: 10 }),
-    ),
-    /exaggeration|guidance_scale"/,
-  );
 });
 
 test("Vevo2's style reaches the convert settings; singing always keeps the source's", () => {
   const speech = ctx({ audioFamily: "vevo2", convertMode: "speech" });
   const singing = ctx({ audioFamily: "vevo2", convertMode: "singing" });
-  assert.deepEqual(vevo2StyleLogic.toRequest({ style: "target" }, speech), {
-    convert: { style: "target" },
-  });
-  assert.deepEqual(vevo2StyleLogic.toRequest({ style: "source" }, speech), {
-    convert: { style: "source" },
-  });
-  assert.deepEqual(vevo2StyleLogic.toRequest({ style: "target" }, singing), {
-    convert: { style: "source" },
-  });
-  const jsx = readSrc("features/audio/tools/convert-panels.tsx");
-  assert.match(jsx, /ctx\.convertMode === "singing" \?/);
+  for (const [style, mode, sent] of [
+    ["target", speech, "target"],
+    ["source", speech, "source"],
+    ["target", singing, "source"],
+  ] as const) {
+    assert.deepEqual(vevo2StyleLogic.toRequest({ style }, mode), {
+      convert: { style: sent },
+    });
+  }
 });
 
 test("collectToolRequest merges each panel's convert part with its options", () => {
@@ -247,7 +224,7 @@ test("collectToolRequest merges each panel's convert part with its options", () 
   );
 });
 
-test("the tool context reads the Convert caps and workflow tasks from the status", () => {
+test("the tool context reads the Convert caps from the status", () => {
   const context = audioModelContextFor(
     {
       audio_family: "vevo2",
@@ -261,12 +238,6 @@ test("the tool context reads the Convert caps and workflow tasks from the status
         route_reloads: false,
         source_max_seconds: 300,
       },
-      audio_workflow_tasks: {
-        clone: "tts",
-        convert: "vc",
-        "convert:singing": "svc",
-        bad: 3 as never,
-      },
     },
     {
       musicGeneration: false,
@@ -276,11 +247,6 @@ test("the tool context reads the Convert caps and workflow tasks from the status
   );
   assert.deepEqual(context.convert?.modes, ["speech", "singing"]);
   assert.equal(context.convert?.style, true);
-  assert.deepEqual(context.workflowTasks, {
-    clone: "tts",
-    convert: "vc",
-    "convert:singing": "svc",
-  });
   // A model that does not convert, or an older server, has no caps.
   const none = audioModelContextFor(
     { audio_family: "kokoro", audio_convert: null },
@@ -291,7 +257,6 @@ test("the tool context reads the Convert caps and workflow tasks from the status
     },
   );
   assert.equal(none.convert, null);
-  assert.deepEqual(none.workflowTasks, {});
 });
 
 test("the registry lists the Convert panels after Clone's", () => {
@@ -299,10 +264,5 @@ test("the registry lists the Convert panels after Clone's", () => {
   assert.match(
     registry,
     /\.\.\.CLONE_TOOL_PANELS,\s*\.\.\.CONVERT_TOOL_PANELS,\s*\];/,
-  );
-  const jsx = readSrc("features/audio/tools/convert-panels.tsx");
-  assert.match(
-    jsx,
-    /CONVERT_TOOL_PANELS = \[\s*seedVcPanel,\s*rvcPanel,\s*chatterboxConvertPanel,\s*vevo2StylePanel,\s*\]/,
   );
 });

@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import type { ConvertBlockerInput } from "../src/features/audio/convert-policy.ts";
 import type { AudioConvertCaps } from "../src/features/chat/types/api.ts";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
@@ -76,7 +77,7 @@ const voice = {
   durationS: 6,
 };
 
-const ready = {
+const ready: ConvertBlockerInput = {
   source: recording,
   sourceBusy: false,
   sourceExpired: false,
@@ -109,74 +110,45 @@ test("caps come from the tool context; a model without modes cannot convert", ()
   assert.equal(convertCaps({ convert: CAPS.rvc }), CAPS.rvc);
 });
 
-test("blockers come in rail order: source, target, mode, transcript, panel", () => {
+test("blockers come in rail order and explain themselves", () => {
   assert.equal(convertBlocker(ready), null);
-  assert.deepEqual(
-    convertBlocker({ ...ready, source: null, target: null, panelError: "x" }),
-    { kind: "source", reason: CONVERT_INPUTS_MISSING },
-  );
-  assert.deepEqual(convertBlocker({ ...ready, source: null }), {
-    kind: "source",
-    reason: CONVERT_SOURCE_MISSING,
-  });
-  assert.deepEqual(
-    convertBlocker({ ...ready, target: null, panelError: "x" }),
-    {
-      kind: "target",
-      reason: CONVERT_TARGET_MISSING,
-    },
-  );
-  assert.deepEqual(
-    convertBlocker({
-      ...ready,
-      caps: CAPS.vevo2,
-      style: "target",
-      sourceText: " ",
-      panelError: "x",
-    }),
-    { kind: "source-text", reason: CONVERT_SOURCE_TEXT_MISSING },
-  );
-  assert.deepEqual(convertBlocker({ ...ready, panelError: "Pick one." }), {
-    kind: "panel",
-    reason: "Pick one.",
-  });
-  // Singing on a speech-only model.
-  assert.deepEqual(
-    convertBlocker({ ...ready, caps: CAPS.meanvc2, mode: "singing" }),
-    { kind: "mode", reason: CONVERT_SINGING_UNSUPPORTED },
-  );
-});
-
-test("expired, busy and failed inputs explain themselves", () => {
-  assert.match(
-    convertBlocker({ ...ready, sourceExpired: true, targetExpired: true })
-      ?.reason ?? "",
-    /recording and target voice are no longer on the server/,
-  );
-  assert.equal(
-    convertBlocker({ ...ready, sourceExpired: true })?.kind,
-    "source-expired",
-  );
-  assert.match(
-    convertBlocker({ ...ready, sourceBusy: true })?.reason ?? "",
-    /Waiting for the recording/,
-  );
-  assert.deepEqual(
-    convertBlocker({ ...ready, source: null, sourceError: "Too long." }),
-    { kind: "source-error", reason: "Too long." },
-  );
-  assert.equal(
-    convertBlocker({ ...ready, targetExpired: true })?.kind,
-    "target-expired",
-  );
-  assert.match(
-    convertBlocker({ ...ready, targetBusy: true })?.reason ?? "",
-    /Waiting for the target voice/,
-  );
-  assert.deepEqual(
-    convertBlocker({ ...ready, target: null, targetError: "Bad file." }),
-    { kind: "target-error", reason: "Bad file." },
-  );
+  const cases: [Partial<ConvertBlockerInput>, string, RegExp | string][] = [
+    [
+      { source: null, target: null, panelError: "x" },
+      "source",
+      CONVERT_INPUTS_MISSING,
+    ],
+    [{ source: null }, "source", CONVERT_SOURCE_MISSING],
+    [{ target: null, panelError: "x" }, "target", CONVERT_TARGET_MISSING],
+    [
+      { caps: CAPS.vevo2, style: "target", sourceText: " ", panelError: "x" },
+      "source-text",
+      CONVERT_SOURCE_TEXT_MISSING,
+    ],
+    [{ panelError: "Pick one." }, "panel", "Pick one."],
+    [
+      { caps: CAPS.meanvc2, mode: "singing" },
+      "mode",
+      CONVERT_SINGING_UNSUPPORTED,
+    ],
+    [
+      { sourceExpired: true, targetExpired: true },
+      "source-expired",
+      /recording and target voice are no longer on the server/,
+    ],
+    [{ sourceExpired: true }, "source-expired", /recording is no longer/],
+    [{ sourceBusy: true }, "source", /Waiting for the recording/],
+    [{ source: null, sourceError: "Too long." }, "source-error", "Too long."],
+    [{ targetExpired: true }, "target-expired", /target voice is no longer/],
+    [{ targetBusy: true }, "target", /Waiting for the target voice/],
+    [{ target: null, targetError: "Bad file." }, "target-error", "Bad file."],
+  ];
+  for (const [patch, kind, reason] of cases) {
+    const blocker = convertBlocker({ ...ready, ...patch });
+    assert.equal(blocker?.kind, kind, JSON.stringify(patch));
+    if (typeof reason === "string") assert.equal(blocker?.reason, reason);
+    else assert.match(blocker?.reason ?? "", reason);
+  }
 });
 
 test("RVC needs a built-in voice, not a target recording", () => {
@@ -204,40 +176,28 @@ test("Take target style needs the transcript only in Speech", () => {
 });
 
 test("pitch shows per family, mode and style", () => {
-  const hidden = { show: false, auto: false };
-  assert.deepEqual(convertPitchSupport(CAPS.rvc, "speech", "source"), {
-    show: true,
-    auto: false,
-  });
-  assert.deepEqual(
-    convertPitchSupport(CAPS.seed_vc, "speech", "source"),
-    hidden,
-  );
-  assert.deepEqual(convertPitchSupport(CAPS.seed_vc, "singing", "source"), {
-    show: true,
-    auto: true,
-  });
-  assert.deepEqual(convertPitchSupport(CAPS.vevo2, "speech", "source"), {
-    show: true,
-    auto: true,
-  });
-  assert.deepEqual(convertPitchSupport(CAPS.vevo2, "speech", "target"), hidden);
-  // Singing forces Keep source style, so pitch comes back.
-  assert.deepEqual(convertPitchSupport(CAPS.vevo2, "singing", "target"), {
-    show: true,
-    auto: true,
-  });
-  assert.deepEqual(
-    convertPitchSupport(CAPS.meanvc2, "speech", "source"),
-    hidden,
-  );
-  assert.deepEqual(
-    convertPitchSupport(CAPS.chatterbox, "speech", "source"),
-    hidden,
-  );
-  assert.deepEqual(convertPitchSupport(null, "speech", "source"), hidden);
-  // A mode the model does not offer has no pitch either.
-  assert.deepEqual(convertPitchSupport(CAPS.rvc, "singing", "source"), hidden);
+  const cases: [
+    AudioConvertCaps | null,
+    "speech" | "singing",
+    "source" | "target",
+    boolean,
+    boolean,
+  ][] = [
+    [CAPS.rvc, "speech", "source", true, false],
+    [CAPS.rvc, "singing", "source", false, false],
+    [CAPS.seed_vc, "speech", "source", false, false],
+    [CAPS.seed_vc, "singing", "source", true, true],
+    [CAPS.vevo2, "speech", "source", true, true],
+    [CAPS.vevo2, "speech", "target", false, false],
+    // Singing forces Keep source style, so pitch comes back.
+    [CAPS.vevo2, "singing", "target", true, true],
+    [CAPS.meanvc2, "speech", "source", false, false],
+    [CAPS.chatterbox, "speech", "source", false, false],
+    [null, "speech", "source", false, false],
+  ];
+  for (const [caps, mode, style, show, auto] of cases) {
+    assert.deepEqual(convertPitchSupport(caps, mode, style), { show, auto });
+  }
 });
 
 test("the server task per mode comes from the workflow tasks", () => {
@@ -254,74 +214,36 @@ test("the server task per mode comes from the workflow tasks", () => {
 });
 
 test("a run that reloads the model says so before and during; a repeat run does not", () => {
-  assert.deepEqual(
+  const notice = (
+    modelName: string,
+    loadedTask: string | null,
+    nextTask: string,
+    routeChange: boolean,
+    family?: string,
+  ) =>
     convertSwitchNotice({
-      modelName: "Chatterbox",
-      loadedTask: "clon",
-      nextTask: "vc",
-      routeChange: false,
-      family: "chatterbox",
-    }),
-    {
-      before: "Reloads Chatterbox for Convert, about 2 s.",
-      during: "Switching Chatterbox to Convert…",
-    },
-  );
-  assert.deepEqual(
-    convertSwitchNotice({
-      modelName: "Vevo2",
-      loadedTask: "vc",
-      nextTask: "svc",
-      routeChange: false,
-      family: "vevo2",
-    }),
-    {
-      before: "Reloads Vevo2 for singing, about 6 s.",
-      during: "Switching Vevo2 to singing…",
-    },
-  );
-  assert.deepEqual(
-    convertSwitchNotice({
-      modelName: "Seed-VC",
-      loadedTask: "vc",
-      nextTask: "vc",
-      routeChange: true,
-      family: "seed_vc",
-    }),
-    {
-      before: "Reloads Seed-VC with the new engine, about 4–8 s.",
-      during: "Switching Seed-VC to the new engine…",
-    },
-  );
-  // Same task, same engine: no notice.
+      modelName,
+      loadedTask,
+      nextTask,
+      routeChange,
+      family,
+    });
+  assert.deepEqual(notice("Chatterbox", "clon", "vc", false, "chatterbox"), {
+    before: "Reloads Chatterbox for Convert, about 2 s.",
+    during: "Switching Chatterbox to Convert…",
+  });
+  assert.deepEqual(notice("Vevo2", "vc", "svc", false, "vevo2"), {
+    before: "Reloads Vevo2 for singing, about 6 s.",
+    during: "Switching Vevo2 to singing…",
+  });
+  assert.deepEqual(notice("Seed-VC", "vc", "vc", true, "seed_vc"), {
+    before: "Reloads Seed-VC with the new engine, about 4–8 s.",
+    during: "Switching Seed-VC to the new engine…",
+  });
+  assert.equal(notice("Seed-VC", "vc", "vc", false, "seed_vc"), null);
+  assert.equal(notice("X", null, "vc", false), null);
   assert.equal(
-    convertSwitchNotice({
-      modelName: "Seed-VC",
-      loadedTask: "vc",
-      nextTask: "vc",
-      routeChange: false,
-      family: "seed_vc",
-    }),
-    null,
-  );
-  // Unknown on either side: nothing to promise.
-  assert.equal(
-    convertSwitchNotice({
-      modelName: "X",
-      loadedTask: null,
-      nextTask: "vc",
-      routeChange: false,
-    }),
-    null,
-  );
-  // A family without a measured time gets no estimate.
-  assert.equal(
-    convertSwitchNotice({
-      modelName: "Custom",
-      loadedTask: "tts",
-      nextTask: "vc",
-      routeChange: false,
-    })?.before,
+    notice("Custom", "tts", "vc", false)?.before,
     "Reloads Custom for Convert.",
   );
 });

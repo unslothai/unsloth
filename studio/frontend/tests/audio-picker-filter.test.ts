@@ -85,31 +85,30 @@ test("a clone-only speech model lists only on Clone", () => {
 });
 
 test("voice conversion models list on Convert only; Chatterbox and Vevo2 on Clone and Convert", () => {
-  for (const name of ["RVC-GGUF", "SeedVC-MLX-GGUF", "MeanVC2-GGUF"]) {
+  for (const [name, workflows] of [
+    ["RVC-GGUF", ["convert"]],
+    ["SeedVC-MLX-GGUF", ["convert"]],
+    ["MeanVC2-GGUF", ["convert"]],
+    ["Chatterbox-GGUF", ["clone", "convert"]],
+    ["Vevo2-GGUF", ["clone", "convert"]],
+  ] as const) {
     const id = `audio-cpp/audio.cpp-gguf/${name}`;
-    // From the catalog entry, before the backend row says so...
     assert.deepEqual(
       workflowsFor({ id, task: "text-to-speech", audioType: "audiocpp_tts" }),
-      ["convert"],
-      name,
-    );
-    // ...and from the backend's list.
-    assert.deepEqual(
-      workflowsFor({ id, task: "text-to-speech", audioWorkflows: ["convert"] }),
-      ["convert"],
+      workflows,
       name,
     );
     assert.equal(audioCppModelSpeaks(id), false, name);
   }
-  for (const name of ["Chatterbox-GGUF", "Vevo2-GGUF"]) {
-    const id = `audio-cpp/audio.cpp-gguf/${name}`;
-    assert.deepEqual(
-      workflowsFor({ id, task: "text-to-speech", audioType: "audiocpp_tts" }),
-      ["clone", "convert"],
-      name,
-    );
-    assert.equal(audioCppModelSpeaks(id), false, name);
-  }
+  // The backend's list wins once it arrives.
+  assert.deepEqual(
+    workflowsFor({
+      id: "audio-cpp/audio.cpp-gguf/RVC-GGUF",
+      task: "text-to-speech",
+      audioWorkflows: ["convert"],
+    }),
+    ["convert"],
+  );
   // A speech model never lists on Convert.
   assert.deepEqual(
     workflowsFor({

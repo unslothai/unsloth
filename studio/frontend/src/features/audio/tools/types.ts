@@ -30,8 +30,6 @@ export interface AudioModelContext {
   referenceTextMode?: AudioReferenceTextMode | null;
   /** Status `audio_convert`: null when the model does not convert. */
   convert?: AudioConvertCaps | null;
-  /** Status `audio_workflow_tasks`: the server task each workflow runs under. */
-  workflowTasks?: Readonly<Record<string, string>>;
   /** Convert: the Speech or Singing tab the page has selected. */
   convertMode?: ConvertMode;
 }

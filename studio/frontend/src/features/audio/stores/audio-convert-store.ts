@@ -5,12 +5,9 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { AudioSourceSelection, ConvertMode } from "../audio-run-request";
 
-export type { ConvertMode, ConvertStyle } from "../audio-run-request";
-
 export const AUDIO_CONVERT_STORAGE_KEY = "unsloth_audio_convert_v1";
 
-/** Which side the result's A/B player is on. */
-export type ConvertCompareSide = "source" | "converted";
+type ConvertCompareSide = "source" | "converted";
 
 /** Convert's draft, kept across page switches and reloads. Tool panel values live in
  *  useAudioCloneStore.toolValues under toolValueKey(model, "convert", panelId). */

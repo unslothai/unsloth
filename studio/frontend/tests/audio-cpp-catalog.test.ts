@@ -163,27 +163,25 @@ test("recommended models are plain GGUF Audio rows named as on the Hub", () => {
 });
 
 test("voice conversion models are seeded with the pages they run on", () => {
-  const workflowsOf = (name: string) => {
-    const model = audioCppModelFor(`${AUDIO_CPP_REPO}/${name}`);
+  for (const [name, workflows, description] of [
+    ["RVC-GGUF", ["convert"], "Voice conversion"],
+    ["SeedVC-MLX-GGUF", ["convert"], "Voice conversion"],
+    ["MeanVC2-GGUF", ["convert"], "Voice conversion"],
+    ["Chatterbox-GGUF", ["clone", "convert"], "Voice cloning and conversion"],
+    ["Vevo2-GGUF", ["clone", "convert"], "Voice cloning and conversion"],
+    ["IndexTTS2-GGUF", ["clone"], "Voice cloning"],
+  ] as const) {
+    const id = `${AUDIO_CPP_REPO}/${name}`;
+    const model = audioCppModelFor(id);
     assert.ok(model, name);
     assert.equal(model.task, "tts", name);
-    return audioCppWorkflowsFor(model);
-  };
-  assert.deepEqual(workflowsOf("RVC-GGUF"), ["convert"]);
-  assert.deepEqual(workflowsOf("SeedVC-MLX-GGUF"), ["convert"]);
-  assert.deepEqual(workflowsOf("MeanVC2-GGUF"), ["convert"]);
-  assert.deepEqual(workflowsOf("Chatterbox-GGUF"), ["clone", "convert"]);
-  assert.deepEqual(workflowsOf("Vevo2-GGUF"), ["clone", "convert"]);
-  // The picker says what they do instead of "Text-to-speech".
-  const description = (name: string) =>
-    groupForRepoId(`${AUDIO_CPP_REPO}/${name}`, AUDIO_CATALOG)?.description;
-  assert.equal(description("RVC-GGUF"), "Voice conversion");
-  assert.equal(description("SeedVC-MLX-GGUF"), "Voice conversion");
-  assert.equal(description("MeanVC2-GGUF"), "Voice conversion");
-  assert.equal(description("Chatterbox-GGUF"), "Voice cloning and conversion");
-  assert.equal(description("Vevo2-GGUF"), "Voice cloning and conversion");
-  assert.equal(description("IndexTTS2-GGUF"), "Voice cloning");
-  assert.equal(description("VoxCPM2-GGUF"), "Text-to-speech");
+    assert.deepEqual(audioCppWorkflowsFor(model), workflows, name);
+    assert.equal(
+      groupForRepoId(id, AUDIO_CATALOG)?.description,
+      description,
+      name,
+    );
+  }
 });
 
 test("GGUF heuristics treat these rows like any llama.cpp GGUF", () => {

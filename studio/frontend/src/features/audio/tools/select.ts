@@ -62,7 +62,6 @@ export function audioModelContextFor(
     audio_required_inputs?: readonly string[] | null;
     audio_reference_text?: string | null;
     audio_convert?: AudioConvertCaps | null;
-    audio_workflow_tasks?: Readonly<Record<string, string>> | null;
   } | null,
   page: {
     musicGeneration: boolean;
@@ -89,7 +88,6 @@ export function audioModelContextFor(
         ? (referenceText as AudioReferenceTextMode)
         : null,
     convert: convertCapsOf(status?.audio_convert),
-    workflowTasks: workflowTasksOf(status?.audio_workflow_tasks),
   };
 }
 
@@ -120,15 +118,6 @@ function convertCapsOf(value: unknown): AudioConvertCaps | null {
         ? caps.source_max_seconds
         : 300,
   };
-}
-
-function workflowTasksOf(value: unknown): Record<string, string> {
-  if (!isPlainObject(value)) return {};
-  return Object.fromEntries(
-    Object.entries(value).filter(
-      (entry): entry is [string, string] => typeof entry[1] === "string",
-    ),
-  );
 }
 
 /** Where a panel's value is kept: per model, page and panel, so models never share settings. */
