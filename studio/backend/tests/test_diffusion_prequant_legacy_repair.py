@@ -6,7 +6,6 @@
 Real torchao (whatever this venv ships: 0.17 builds the v1 int8 wrapper, 0.18+ ``Int8Tensor``), CPU only:
 - an fp8 weight built before ``activation_value_lb`` gets exactly the floor ``_make_quant_config`` sets, and with it
   an all-zero activation row gets a finite scale;
-- an int8 weight the runtime would leave dense comes back as a plain dense tensor;
 - Krea 2 pipeline picks seed their hosted denoiser like every other family.
 """
 
@@ -90,36 +89,6 @@ def test_restored_floor_gives_a_zero_row_a_finite_scale():
     )
     assert bool((floored > 0).all()) and bool(torch.isfinite(floored).all())
     assert bool(torch.isfinite(zero_rows.float() / floored.reshape(-1, 1)).all())
-
-
-def _real_int8_weight():
-    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
-
-    linear = torch.nn.Linear(64, 64, bias = False, dtype = torch.bfloat16)
-    reference = linear.weight.detach().clone()
-    quantize_(linear, Int8DynamicActivationInt8WeightConfig())
-    return linear.weight, reference
-
-
-def test_an_excluded_int8_weight_comes_back_dense():
-    weight, reference = _real_int8_weight()
-    assert pq._is_quantized_weight(weight)
-    keep, _ = _real_int8_weight()
-    bias = torch.zeros(64, dtype = torch.bfloat16)
-    state_dict = {
-        "transformer_blocks.0.txt_mlp.net.2.weight": weight,
-        "transformer_blocks.0.img_mlp.net.2.weight": keep,
-        "transformer_blocks.0.txt_mlp.net.2.bias": bias,
-    }
-    assert pq._densify_excluded_weights(state_dict, ("txt_mlp",)) == 1
-    dense = state_dict["transformer_blocks.0.txt_mlp.net.2.weight"]
-    assert type(dense) is torch.Tensor and dense.dtype == torch.bfloat16
-    assert dense.shape == reference.shape and dense.is_contiguous()
-    # per-row symmetric int8: within half a quantization step of the bf16 original
-    step = reference.float().abs().amax(dim = 1, keepdim = True) / 127.0
-    assert bool(((dense.float() - reference.float()).abs() <= step * 0.51 + 1e-3).all())
-    assert state_dict["transformer_blocks.0.img_mlp.net.2.weight"] is keep
-    assert state_dict["transformer_blocks.0.txt_mlp.net.2.bias"] is bias
 
 
 def test_krea2_pipeline_picks_seed_their_hosted_denoiser():

@@ -787,59 +787,15 @@ def test_load_exclude_tokens_match_ok(monkeypatch, tmp_path):
     assert _load(monkeypatch, tmp_path, ckpt, scheme = "int8") is not None
 
 
-class _Dense:
-    """What ``dequantize`` hands back: a plain weight (the load only needs ``dtype`` and ``contiguous``)."""
-
-    dtype = "bfloat16"
-
-    def __init__(self, source):
-        self.source = source
-
-    def contiguous(self):
-        return self
-
-
-class _DequantizableInt8(Int8Tensor):
-    """The int8 weight above plus the ``dequantize`` the excluded-layer repair calls."""
-
-    dtype = "bfloat16"
-
-    def __init__(self, qdata = b"q"):
-        super().__init__(qdata)
-
-    def dequantize(self):
-        return _Dense(self)
-
-
 def test_load_exclude_tokens_need_the_recorded_family(monkeypatch, tmp_path):
-    # int8 carries PER-FAMILY exclusions (Qwen's unpadded text stream runs at M = prompt tokens, under _int_mm's floor
-    # of 16). An artifact recording the family but building its set with family=None quantised that text stream too
-    # (the hosted Qwen-Image-2512 INT8 is one), so the load hands exactly those weights back dense: the module set is
-    # then the runtime's, and nothing else in the artifact changes.
+    # int8 carries PER-FAMILY exclusions (Qwen's unpadded text stream runs at M = prompt tokens, under _int_mm's floor of 16), so an artifact
+    # recording the family but building its set with family=None is rejected. Pins the offline builder to exclude_tokens_for_scheme(scheme, fam.name).
     from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme
     for family in ("qwen-image", "qwen-image-edit"):
         family_less = _good_ckpt(scheme = "int8")
         family_less["metadata"]["family"] = family
         family_less["metadata"]["exclude_name_tokens"] = list(exclude_tokens_for_scheme("int8"))
-        image = _DequantizableInt8()
-        family_less["state_dict"] = {
-            "transformer_blocks.0.attn.to_q.weight": image,
-            "transformer_blocks.0.attn.add_q_proj.weight": _DequantizableInt8(),
-            "transformer_blocks.0.txt_mlp.net.2.weight": _DequantizableInt8(),
-            "txt_in.weight": _DequantizableInt8(),
-            "txt_in.bias": object(),
-        }
-        out = _load(monkeypatch, tmp_path, family_less, scheme = "int8")
-        assert out is not None
-        sd = out.assigned
-        assert sd["transformer_blocks.0.attn.to_q.weight"] is image
-        for key in (
-            "transformer_blocks.0.attn.add_q_proj.weight",
-            "transformer_blocks.0.txt_mlp.net.2.weight",
-            "txt_in.weight",
-        ):
-            assert isinstance(sd[key], _Dense), key
-        assert not isinstance(sd["txt_in.bias"], _Dense)
+        assert _load(monkeypatch, tmp_path, family_less, scheme = "int8") is None
 
         family_aware = _good_ckpt(scheme = "int8")
         family_aware["metadata"]["family"] = family
@@ -847,24 +803,6 @@ def test_load_exclude_tokens_need_the_recorded_family(monkeypatch, tmp_path):
             exclude_tokens_for_scheme("int8", family)
         )
         assert _load(monkeypatch, tmp_path, family_aware, scheme = "int8") is not None
-
-
-def test_load_exclude_tokens_only_a_strict_subset_is_repaired(monkeypatch, tmp_path):
-    # A recorded token the runtime does not use means the artifact left a Linear dense that the runtime quantises (or
-    # names something unknown): no repair can recover quantised weights, so that stays refused, as does fp8.
-    from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme
-
-    extra = _good_ckpt(scheme = "int8")
-    extra["metadata"]["family"] = "qwen-image"
-    extra["metadata"]["exclude_name_tokens"] = list(exclude_tokens_for_scheme("int8", "qwen-image")) + ["stale"]
-    assert _load(monkeypatch, tmp_path, extra, scheme = "int8") is None
-    assert pq._int8_excludes_to_densify({"exclude_name_tokens": ["norm"]}, "fp8") is None
-    assert pq._int8_excludes_to_densify({"exclude_name_tokens": []}, "fp8") == ()
-    assert pq._int8_excludes_to_densify({}, "int8") == ()
-    assert pq._int8_excludes_to_densify(
-        {"exclude_name_tokens": list(exclude_tokens_for_scheme("int8")), "family": "qwen-image"},
-        "int8",
-    ) == ("txt_in", "add_q_proj", "add_k_proj", "add_v_proj", "to_add_out", "txt_mlp")
 
 
 def test_load_require_bf16_mismatch_is_none(monkeypatch, tmp_path):

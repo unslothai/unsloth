@@ -1206,7 +1206,7 @@ def load_prequantized_transformer(
         # The only check reading what the artifact HOLDS: corruption after build passes the rest.
         if not _verify_packed_fingerprint(state_dict, ckpt.get("metadata") or {}, logger = logger):
             return None
-        # After the fingerprint, which describes the bytes as built: the repair may swap weights for dense copies.
+        # After the fingerprint, which describes the bytes as built.
         _repair_legacy_checkpoint(ckpt, scheme, logger)
         _pin_kernel_preference(state_dict, logger)
 
@@ -1625,87 +1625,13 @@ def _restore_fp8_activation_floor(state_dict: Any, logger: Any = None) -> int:
     return restored
 
 
-def _int8_excludes_to_densify(meta: Any, scheme: str) -> Optional[tuple]:
-    """The exclusion tokens the runtime applies but the artifact did not, when that is the ONLY difference.
-
-    An int8 artifact recording a SUBSET of this build's exclusion set quantised a superset of the runtime's Linears
-    (Qwen-Image-2512 INT8 was built with the family-less set, so its whole text stream -- txt_in, add_*_proj,
-    to_add_out, txt_mlp -- is int8, where the runtime keeps it bf16 for ``_int_mm``'s M floor). Handing those weights
-    back dense restores the runtime's module set exactly; every other layer is untouched. Returns () for a matching
-    set, the missing tokens for a strict subset, and None for anything else (a stale or foreign token: refused)."""
-    from .diffusion_transformer_quant import TQ_INT8, exclude_tokens_for_scheme
-
-    recorded = (meta or {}).get("exclude_name_tokens")
-    if recorded is None:
-        return ()
-    expected = tuple(exclude_tokens_for_scheme(scheme, (meta or {}).get("family")))
-    if tuple(recorded) == expected:
-        return ()
-    if scheme != TQ_INT8 or not set(recorded) < set(expected):
-        return None
-    return tuple(tok for tok in expected if tok not in set(recorded))
-
-
-def _dense_copy(tensor: Any) -> Any:
-    """A plain tensor holding ``tensor``'s dequantized weight (Int8Tensor, or the v1 activation-quantized wrapper)."""
-    try:
-        dense = tensor.dequantize()
-    except Exception:  # noqa: BLE001 -- the v1 wrapper keeps its weight one level down
-        dense = tensor.original_weight_tensor.dequantize()
-    dtype = getattr(tensor, "dtype", None)
-    if dtype is not None and getattr(dense, "dtype", dtype) != dtype:
-        dense = dense.to(dtype)
-    return dense.contiguous()
-
-
-def _is_quantized_weight(tensor: Any) -> bool:
-    """A torchao weight subclass (by class NAME, so this needs no torch import), not a plain tensor."""
-    return type(tensor).__name__ not in ("Tensor", "Parameter") and callable(
-        getattr(tensor, "dequantize", None)
-    )
-
-
-def _densify_excluded_weights(state_dict: Any, tokens: tuple, logger: Any = None) -> int:
-    """Replace every QUANTIZED ``<fqn>.weight`` whose fqn holds one of ``tokens`` with its dense weight; returns how many.
-
-    Same match as the runtime filter (``make_filter_fn``: substring of the lower-cased fqn), so the loaded module set
-    equals the one ``quantize_`` would produce."""
-    if not tokens:
-        return 0
-    densified = 0
-    for key in list(state_dict.keys()):
-        if not key.endswith(".weight"):
-            continue
-        tensor = state_dict[key]
-        if not _is_quantized_weight(tensor):
-            continue
-        fqn = key[: -len(".weight")].lower()
-        if not any(tok in fqn for tok in tokens):
-            continue
-        state_dict[key] = _dense_copy(tensor)
-        densified += 1
-    if densified and logger is not None:
-        logger.info(
-            "diffusion.prequant: %d int8 weights matching %s are excluded by this build; loaded "
-            "them dense",
-            densified,
-            list(tokens),
-        )
-    return densified
-
-
 def _repair_legacy_checkpoint(ckpt: Any, scheme: str, logger: Any = None) -> None:
     """Bring an artifact ``_validate_checkpoint`` accepted as repairable to the runtime's exact contract."""
-    state_dict = ckpt["state_dict"]
-    meta = ckpt.get("metadata") or {}
     from .diffusion_nvfp4_policy import declares_policy
     from .diffusion_transformer_quant import TQ_FP8
 
-    if scheme == TQ_FP8 or declares_policy(meta):
-        _restore_fp8_activation_floor(state_dict, logger)
-    tokens = _int8_excludes_to_densify(meta, scheme)
-    if tokens:
-        _densify_excluded_weights(state_dict, tokens, logger)
+    if scheme == TQ_FP8 or declares_policy(ckpt.get("metadata") or {}):
+        _restore_fp8_activation_floor(ckpt["state_dict"], logger)
 
 
 def _validate_activation_rotation(ckpt_format: Any, meta: Any, scheme: str, logger: Any) -> bool:
@@ -1932,10 +1858,9 @@ def _validate_checkpoint(
         from .diffusion_transformer_quant import exclude_tokens_for_scheme
 
         # The exclude set derives from scheme AND family, so use the recorded family: an artifact baked under an older
-        # token list is rejected and re-quantised, not loaded crashing. A strict SUBSET is the one exception: the
-        # artifact quantised extra Linears, which ``_repair_legacy_checkpoint`` hands back dense.
+        # token list is rejected and re-quantised, not loaded crashing.
         expected = tuple(exclude_tokens_for_scheme(scheme, meta.get("family")))
-        if _int8_excludes_to_densify(meta, scheme) is None:
+        if tuple(ckpt_excludes) != expected:
             _warn(
                 logger,
                 scheme,
