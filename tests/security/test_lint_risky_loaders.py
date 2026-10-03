@@ -57,6 +57,10 @@ REPORTED = {
         "import importlib.util\ndef f(p):\n    importlib.util.spec_from_file_location('x', p)\n",
         ("dynamic-import", "spec_from_file_location"),
     ),
+    "a computed path into SourceFileLoader": (
+        "import importlib.machinery\ndef f(p):\n    importlib.machinery.SourceFileLoader('x', p)\n",
+        ("dynamic-import", "SourceFileLoader"),
+    ),
     "trust_remote_code default": (
         "def load(name, trust_remote_code = True):\n    pass\n",
         ("trust-remote-code", "default"),
@@ -81,6 +85,19 @@ REPORTED = {
     "git clone with no checkout": (
         "import subprocess\ndef f():\n    subprocess.run(['git', 'clone', 'https://github.com/o/r'])\n",
         ("unpinned-code-fetch", "git-clone-unpinned"),
+    ),
+    "a shell-string git clone": (
+        "def f(folder):\n    run(f'git clone https://github.com/o/r {folder}')\n",
+        ("unpinned-code-fetch", "git-clone-unpinned"),
+    ),
+    "a clone next to a message that only mentions checkout": (
+        "import subprocess\ndef f():\n    subprocess.run(['git', 'clone', 'u'])\n"
+        "    print('source checkout detected')\n",
+        ("unpinned-code-fetch", "git-clone-unpinned"),
+    ),
+    "torch.load with weights_only omitted": (
+        "import torch\ndef f(p):\n    torch.load(p)\n",
+        ("unsafe-deserialize", "torch.load"),
     ),
     "torch.load weights_only=False": (
         "import torch\ndef f(p):\n    torch.load(p, weights_only = False)\n",
@@ -120,7 +137,7 @@ QUIET = {
         "import subprocess\ndef f():\n    subprocess.run(['git', 'clone', 'u'])\n"
         "    subprocess.run(['git', 'checkout', 'abc123'])\n"
     ),
-    "torch.load at the safe default": "import torch\ndef f(p):\n    torch.load(p)\n    torch.load(p, weights_only = True)\n",
+    "torch.load with weights_only=True": "import torch\ndef f(p):\n    torch.load(p, weights_only = True)\n",
     "yaml with a safe loader": "import yaml\ndef f(s):\n    yaml.load(s, Loader = yaml.SafeLoader)\n    yaml.safe_load(s)\n",
 }
 
@@ -151,6 +168,22 @@ def test_a_second_identical_call_is_not_covered_by_one_baseline_entry(tmp_path, 
     )
     found = module.scan_file(sample, "sample.py")
     entry = dict(found[0], count = 1, reason = "reviewed")
+    entry.pop("line")
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(
+        json.dumps({"targets": [str(sample)], "entries": [entry]}), encoding = "utf-8"
+    )
+    monkeypatch.setattr(module, "BASELINE_PATH", baseline)
+    monkeypatch.setattr(module, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(sys, "argv", ["lint_risky_loaders.py"])
+    assert module.main() == 1
+
+
+def test_a_removed_duplicate_leaves_no_spare_allowance(tmp_path, monkeypatch):
+    module = _module()
+    sample = tmp_path / "sample.py"
+    sample.write_text("import pickle\ndef f(b):\n    pickle.loads(b)\n", encoding = "utf-8")
+    entry = dict(module.scan_file(sample, "sample.py")[0], count = 2, reason = "reviewed")
     entry.pop("line")
     baseline = tmp_path / "baseline.json"
     baseline.write_text(

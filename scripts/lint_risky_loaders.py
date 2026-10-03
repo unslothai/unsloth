@@ -110,7 +110,7 @@ BRANCH_HEAD_PY = re.compile(
     r"(?:raw\.githubusercontent\.com/[^/\s]+/[^/\s]+/(?:refs/heads/)?(?:main|master)/"
     r"|github\.com/[^/\s]+/[^/\s]+/raw/(?:refs/heads/)?(?:main|master)/)\S*\.py\b"
 )
-PIN_WORDS = ("checkout", "--revision", "reset")
+PIN_WORDS = {"checkout", "--revision", "reset"}
 
 
 def _imports(tree: ast.AST) -> dict:
@@ -184,9 +184,10 @@ def _dynamic_import(call: ast.Call, qualified: str):
     sink = DYNAMIC_IMPORTS.get(qualified) or DYNAMIC_IMPORT_TAILS.get(qualified.split(".")[-1])
     if sink is None:
         return None
-    if sink == "spec_from_file_location":
+    if sink in ("spec_from_file_location", "SourceFileLoader"):
         # The module name is a label; the path is what gets executed.
-        target = call.args[1] if len(call.args) > 1 else _keyword(call, "location")
+        keyword = "location" if sink == "spec_from_file_location" else "path"
+        target = call.args[1] if len(call.args) > 1 else _keyword(call, keyword)
     else:
         target = _first_argument(call, "name")
     if target is None or _is_written_out(target):
@@ -198,9 +199,8 @@ def _unsafe_deserialize(call: ast.Call, qualified: str):
     if qualified in PICKLE_LIKE:
         return qualified
     if qualified == "torch.load":
-        # torch >= 2.6 (the floor here) defaults to weights_only=True.
-        value = _keyword(call, "weights_only")
-        if value is not None and not (isinstance(value, ast.Constant) and value.value is True):
+        # Omitted is unsafe too: torch < 2.6, still supported, defaults to weights_only=False.
+        if not _is_true(_keyword(call, "weights_only")):
             return "torch.load"
     elif qualified == "numpy.load":
         if _is_true(_keyword(call, "allow_pickle")):
@@ -269,13 +269,24 @@ def _trust_remote_code(node: ast.AST):
     return None
 
 
-def _strings(node: ast.AST):
-    for child in ast.walk(node):
-        if isinstance(child, ast.Constant) and isinstance(child.value, str):
-            yield child.value
+def _git_words(command) -> list:
+    """The written-out words of a git command, from an argv list or a shell string; [] otherwise."""
+    if isinstance(command, (ast.List, ast.Tuple)):
+        words = [
+            e.value
+            for e in command.elts
+            if isinstance(e, ast.Constant) and isinstance(e.value, str)
+        ]
+    else:
+        if isinstance(command, ast.JoinedStr) and command.values:
+            command = command.values[0]
+        if not (isinstance(command, ast.Constant) and isinstance(command.value, str)):
+            return []
+        words = command.value.split()
+    return words if words[:1] == ["git"] else []
 
 
-def _unpinned_fetches(function: ast.AST, calls: list) -> list:
+def _unpinned_fetches(calls: list) -> list:
     """Per function: a clone with no pin, or a revision-less Hub download feeding a code loader."""
     found = []
     pinned = None
@@ -285,15 +296,13 @@ def _unpinned_fetches(function: ast.AST, calls: list) -> list:
             if loads_code and _keyword(call, "revision") is None:
                 found.append((call, "hub-download-loaded-as-code"))
             continue
-        arguments = call.args[0] if call.args else None
-        if (
-            isinstance(arguments, (ast.List, ast.Tuple))
-            and len(arguments.elts) >= 2
-            and all(isinstance(e, ast.Constant) for e in arguments.elts[:2])
-            and [e.value for e in arguments.elts[:2]] == ["git", "clone"]
-        ):
+        if _git_words(call.args[0] if call.args else None)[1:2] == ["clone"]:
             if pinned is None:
-                pinned = any(word in text for text in _strings(function) for word in PIN_WORDS)
+                # A git command that moves to a revision, not any string that mentions one.
+                pinned = any(
+                    set(_git_words(other.args[0] if other.args else None)) & PIN_WORDS
+                    for other, _ in calls
+                )
             if not pinned:
                 found.append((call, "git-clone-unpinned"))
     return found
@@ -356,7 +365,7 @@ def scan_file(path: Path, relative: str) -> list:
             sink = _unsafe_deserialize(call, qualified)
             if sink:
                 found.append(_key(relative, "unsafe-deserialize", sink, call))
-        for call, sink in _unpinned_fetches(owner, calls):
+        for call, sink in _unpinned_fetches(calls):
             found.append(_key(relative, "unpinned-code-fetch", sink, call))
     return found
 
@@ -465,10 +474,11 @@ def main() -> int:
         print(f"\nSay why the input is trusted in the entry's `reason` field in {baseline_rel}.")
         return 1
 
-    stale = sorted(k for k in allowed if k not in observed)
+    # Fewer calls than allowed counts too, so a removed duplicate cannot make room for a new one.
+    stale = sorted(k for k in allowed if observed.get(k, 0) < allowed[k])
     if stale:
         # An entry outliving its call site would re-permit whatever lands on that digest next.
-        print(f"{len(stale)} baseline entr(y/ies) no longer match any call:\n")
+        print(f"{len(stale)} baseline entr(y/ies) match fewer calls than recorded:\n")
         for f, r, s, d in stale:
             print(f"  {f}  [{r}] {s}  {d}")
         print(
@@ -493,6 +503,7 @@ def f(config, name, path):
     import_from_string(config["type"])
     get_class_from_dynamic_module(config.auto_map["AutoModel"], name)
     importlib.util.spec_from_file_location("x", path)
+    importlib.machinery.SourceFileLoader("x", path)
 """,
     "trust-remote-code": """
 def load(name, trust_remote_code = True):
@@ -511,6 +522,8 @@ def codec():
     sys.path.insert(0, path)
 def clone():
     subprocess.run(["git", "clone", "https://github.com/org/repo"])
+def shell_clone(folder):
+    run(f"git clone https://github.com/org/repo {folder}")
 """,
     "unsafe-deserialize": """
 import pickle, torch, yaml, joblib
@@ -519,16 +532,17 @@ def f(path, flag):
     pickle.loads(open(path, "rb").read())
     torch.load(path, weights_only = False)
     torch.load(path, weights_only = flag)
+    torch.load(path)
     np.load(path, allow_pickle = True)
     yaml.load(open(path))
     joblib.load(path)
 """,
 }
 _BAD_COUNTS = {
-    "dynamic-import": 6,
+    "dynamic-import": 7,
     "trust-remote-code": 6,
-    "unpinned-code-fetch": 3,
-    "unsafe-deserialize": 6,
+    "unpinned-code-fetch": 4,
+    "unsafe-deserialize": 7,
 }
 
 _GOOD = """
@@ -541,7 +555,6 @@ def f(name, path, trust_remote_code = False):
     importlib.util.find_spec(name)
     __import__("os")
     AutoConfig.from_pretrained(name, trust_remote_code = trust_remote_code)
-    torch.load(path)
     torch.load(path, weights_only = True)
     np.load(path)
     yaml.load(open(path), Loader = yaml.SafeLoader)
