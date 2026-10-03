@@ -251,8 +251,8 @@ def test_words_without_a_match_in_the_text_are_kept_bare():
         {"start": 0.0, "end": 0.4, "word": "hello"},
         {"start": 0.4, "end": 0.9, "word": "world"},
     ]
-    # A token spanning two words, CJK without spaces, or no text: nothing lines up.
-    for text in ("helloworld", "你好世界", ""):
+    # A token spanning two words, or no text: nothing lines up.
+    for text in ("helloworld", ""):
         assert stt_details.punctuate_words(words, text) == words
     # Only the words that match take the text's spelling; the inputs are never changed.
     spelled = stt_details.punctuate_words(words, "Goodbye, world!")
@@ -326,3 +326,12 @@ def test_nemotron_sub_word_spans_never_replace_its_text():
     }
     result = stt_details.normalize(payload, "nemotron_asr", 16000)
     assert result == {"text": "He was in a fevered state of mind", "language": None}
+
+
+def test_cjk_text_keeps_its_punctuation_through_alignment():
+    # Qwen3-ASR's punctuated Chinese has no spaces; the aligner splits it into words.
+    for split in (["你好", "世界"], ["你", "好", "世", "界"]):
+        words = [{"start": n * 0.3, "end": n * 0.3 + 0.2, "word": w} for n, w in enumerate(split)]
+        spelled = stt_details.punctuate_words(words, "你好，世界。")
+        assert "".join(w["word"] for w in spelled) == "你好，世界。"
+        assert stt_details.group_words(spelled)[0]["text"] == "你好，世界。"

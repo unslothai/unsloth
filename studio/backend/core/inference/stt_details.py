@@ -138,25 +138,48 @@ def _respell(token: str, word: str) -> str:
     return "".join(next(letters, ch) if ch.isalnum() else ch for ch in token)
 
 
+def _split_cjk(token: str) -> list[str]:
+    """``token`` with each CJK character on its own: CJK text has no spaces to split words on."""
+    units, run = [], ""
+    for ch in token:
+        if ch.isalnum() and _is_cjk(ch):
+            if run:
+                units.append(run)
+                run = ""
+            units.append(ch)
+        else:
+            run += ch
+    return units + [run] if run else units
+
+
 def punctuate_words(words: list[dict], text: str) -> list[dict]:
-    """Aligned on letters, matches only: the text repeats chunk overlaps, CJK has no spaces."""
-    tokens = text.split()
+    """Aligned on letters, matches only: the text repeats chunk overlaps. A word takes the text's
+    spelling only when every one of its pieces matched."""
+    tokens = [unit for token in text.split() for unit in _split_cjk(token)]
     if not words or not tokens:
         return words
+    pieces = [(i, unit) for i, word in enumerate(words) for unit in _split_cjk(word["word"])]
     letters = [_letters(token) for token in tokens]
     matcher = difflib.SequenceMatcher(
-        None, [_letters(w["word"]) for w in words], letters, autojunk = False
+        None, [_letters(unit) for _, unit in pieces], letters, autojunk = False
     )
-    spelled = [dict(word) for word in words]
+    shown: dict[int, str] = {}
     for block in matcher.get_matching_blocks():
         for offset in range(block.size):
             index = block.b + offset
-            shown = _respell(tokens[index], spelled[block.a + offset]["word"])
+            piece = _respell(tokens[index], pieces[block.a + offset][1])
             following = index + 1
             while following < len(tokens) and not letters[following]:
-                shown += tokens[following]
+                piece += tokens[following]
                 following += 1
-            spelled[block.a + offset]["word"] = shown
+            shown[block.a + offset] = piece
+    spelled = [dict(word) for word in words]
+    by_word: dict[int, list[int]] = {}
+    for n, (i, _) in enumerate(pieces):
+        by_word.setdefault(i, []).append(n)
+    for i, ns in by_word.items():
+        if all(n in shown for n in ns):
+            spelled[i]["word"] = "".join(shown[n] for n in ns)
     return spelled
 
 
