@@ -35,7 +35,6 @@ export function imeKeydownBlocksComposerSubmit(
   );
 }
 
-/** Composition tracking for single-line inputs that submit on Enter (rename fields). */
 export type InputImeState = { open: boolean; endedAt: number };
 
 export function newInputImeState(): InputImeState {
@@ -48,8 +47,7 @@ export function resetInputIme(ime: InputImeState) {
 }
 
 export function inputImeHandlers(ime: InputImeState) {
-  // A compositionend can go missing (#5546, macOS input-method switch); focus
-  // changes always commit or cancel the composition, so they reset it, as the composers do.
+  // compositionend can go missing (#5546); a focus change always ends the composition.
   const reset = () => resetInputIme(ime);
   return {
     onFocus: reset,
@@ -76,8 +74,7 @@ export function imeOwnsInputKeydown(
   ime.endedAt = -Infinity;
   if (event.nativeEvent.isComposing) return true;
   if (event.keyCode !== 229) {
-    // Candidate-confirming Enter can arrive as a plain keyCode 13 while the
-    // composition is open (as in the composers); swallow that one Enter only.
+    // Candidate-confirming Enter can arrive as keyCode 13 mid-composition; swallow it once.
     const confirmsCandidate = ime.open && event.key === "Enter";
     ime.open = false;
     return confirmsCandidate;
