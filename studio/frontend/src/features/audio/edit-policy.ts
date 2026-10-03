@@ -42,6 +42,7 @@ export const EDIT_SOURCE_TOO_LONG = `Edit works on recordings up to ${EDIT_SOURC
 export const EDIT_TRANSCRIBING = "Checking the transcript…";
 export const EDIT_TRANSCRIPT_EMPTY = "Type what's said in the recording.";
 export const EDIT_NO_CHANGES = "Change at least one word in ②.";
+export const EDIT_CHANGES_EMPTY = "Keep at least one word in ②.";
 export const EDIT_DELIVERY_EMPTY = "Pick a speed or a pitch change.";
 
 export type EditBlockerActionId =
@@ -110,6 +111,11 @@ export function editBlocker(input: EditBlockerInput): EditBlocker | null {
       return blocker("transcript", EDIT_TRANSCRIPT_EMPTY, [
         { id: "transcribe", label: "Transcribe it" },
         { id: "type-transcript", label: "Type it" },
+      ]);
+    }
+    if (!input.edited.trim()) {
+      return blocker("changes-empty", EDIT_CHANGES_EMPTY, [
+        { id: "focus-changes", label: "Go to ②" },
       ]);
     }
     const changes = countChanges(input.transcript, input.edited);

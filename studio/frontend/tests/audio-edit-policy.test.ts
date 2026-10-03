@@ -8,6 +8,7 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 const {
+  EDIT_CHANGES_EMPTY,
   EDIT_DELIVERY_EMPTY,
   EDIT_NO_CHANGES,
   EDIT_NO_SOURCE,
@@ -101,6 +102,8 @@ test("Edit's blockers come in rail order, each with its action", () => {
     edited: `  ${EDIT_EXAMPLE.original} `,
   };
   assert.equal(editBlocker(typed)?.reason, EDIT_NO_CHANGES);
+  // Deleting every word would send an empty text the run route refuses with a 422.
+  assert.equal(editBlocker({ ...typed, edited: "  " })?.reason, EDIT_CHANGES_EMPTY);
   assert.deepEqual(editBlocker(typed)?.actions, [
     { id: "focus-changes", label: "Go to ②" },
   ]);
