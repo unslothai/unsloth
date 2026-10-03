@@ -175,8 +175,10 @@ def _reset_gpu_query_cache():
     # Only when already imported: importing utils.hardware would change import-order tests.
     def _reset():
         gpu_query = sys.modules.get("utils.hardware.gpu_query")
-        if gpu_query is not None:
-            gpu_query.reset()
+        # A background probe thread may still be importing it; a half-built module has no cache yet.
+        reset = getattr(gpu_query, "reset", None)
+        if reset is not None:
+            reset()
         hw = sys.modules.get("utils.hardware.hardware")
         if hw is not None and hasattr(hw, "_last_good_visible_info"):
             with hw._last_good_visible_lock:
@@ -1358,3 +1360,21 @@ def _clear_github_rate_limit_lockout():
     freshness_flow._api_rate_limited_until = 0.0
     yield
     freshness_flow._api_rate_limited_until = 0.0
+
+
+@pytest.fixture
+def traced_offload_hooks(monkeypatch):
+    """diffusers' own group-offload hook methods for one test (install_group_offload_hooks_eager is process-wide)."""
+    go = pytest.importorskip("diffusers.hooks.group_offloading")
+    from core.inference.diffusion_memory import install_group_offload_hooks_eager
+
+    install_group_offload_hooks_eager()
+    for cls in (
+        go.GroupOffloadingHook,
+        go.LayerExecutionTrackerHook,
+        go.LazyPrefetchGroupOffloadingHook,
+    ):
+        for name, fn in list(vars(cls).items()):
+            orig = getattr(fn, "_unsloth_orig", None)
+            if orig is not None:
+                monkeypatch.setattr(cls, name, orig)

@@ -6,6 +6,7 @@ import test from "node:test";
 import { matchesFormatFilter } from "../src/features/model-picker/components/model-selector/recommended-fit.ts";
 import type * as NpuApi from "../src/features/npu/api.ts";
 import * as formatFastApiError from "../src/lib/format-fastapi-error.ts";
+import * as sseJsonEvents from "../src/lib/sse-json-events.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 function client(response: () => Response) {
@@ -20,6 +21,7 @@ function client(response: () => Response) {
         },
       },
       "@/lib/format-fastapi-error": formatFastApiError,
+      "@/lib/sse-json-events": sseJsonEvents,
     },
   );
   return { api, requests };
@@ -80,6 +82,34 @@ test("download rejects a stream that ends before completing", async () => {
   );
 });
 
+test("following a download reads the running pull and never starts one", async () => {
+  const c = client(() =>
+    sse([
+      'data: {"event":"progress","percent":30}\n\n',
+      'data: {"event":"complete"}\n\n',
+    ]),
+  );
+  const seen: number[] = [];
+  await c.api.followNpuModelDownload("gemma3-4b-FLM", (event) => {
+    if (typeof event.percent === "number") seen.push(event.percent);
+  });
+  assert.deepEqual(seen, [30]);
+  assert.equal(c.requests[0].path, "/api/npu/models/gemma3-4b-FLM/download");
+  assert.equal(c.requests[0].init?.method, undefined);
+});
+
+test("following a pull that already ended resolves without an error", async () => {
+  const c = client(() =>
+    Response.json(
+      { detail: "gemma3-4b-FLM is not downloading." },
+      { status: 404 },
+    ),
+  );
+  await c.api.followNpuModelDownload("gemma3-4b-FLM", () => {
+    throw new Error("no progress expected");
+  });
+});
+
 test("enable surfaces the backend's reason", async () => {
   const c = client(() =>
     Response.json(
@@ -103,6 +133,7 @@ test("NPU rows: downloaded ones on device, all of them to browse, by query", () 
     supports_reasoning: false,
     supports_tools: false,
     max_context_length: null,
+    resume_percent: null,
   });
   const models = [model("qwen3-0.6b-FLM", true), model("gemma3-4b-FLM", false)];
   const ids = (onDevice: boolean, query: string) =>
@@ -112,6 +143,22 @@ test("NPU rows: downloaded ones on device, all of them to browse, by query", () 
   assert.deepEqual(ids(false, " GEMMA "), ["gemma3-4b-FLM"]);
   assert.deepEqual(ids(true, "gemma"), []);
   assert.deepEqual(api.npuRowsFor(null, { onDevice: false, query: "" }), []);
+});
+
+test("an interrupted NPU download says how much it kept", () => {
+  const { api } = client(() => new Response(null));
+  const model = (resume_percent: number | null) =>
+    ({ resume_percent }) as Parameters<typeof api.npuResumeLabel>[0];
+  assert.equal(api.npuResumeLabel(model(37)), "37% downloaded");
+  assert.equal(api.npuResumeLabel(model(null)), null);
+});
+
+test("a download waiting for the backend says it is reconnecting", () => {
+  const { api } = client(() => new Response(null));
+  assert.equal(api.npuDownloadLabel(40), "Downloading 40%");
+  assert.equal(api.npuDownloadLabel(40, true), "Reconnecting 40%");
+  assert.equal(api.npuDownloadLabel(null), "Downloading");
+  assert.equal(api.npuDownloadLabel(null, true), "Reconnecting");
 });
 
 test("the picker's NPU format holds no Hub repo", () => {

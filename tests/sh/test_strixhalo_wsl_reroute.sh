@@ -317,6 +317,17 @@ _out=$(run_func "$_d" _SKIP_AUTOSTART=true UNSLOTH_SKIP_AUTOSTART= \
 assert_contains "UNSLOTH_SKIP_AUTOSTART forwarded to reroute"    "$_out" "skip=[1]"
 rm -rf "$_d"
 
+# 27b) The systemd opt-in and its bind settings reach the target distro too (the mock prints the
+#      command it was handed; the target distro does not inherit this shell's environment).
+_d=$(make_fixture 1 strix 0 26.04 1)
+_out=$(run_func "$_d" _INSTALL_SYSTEMD=true UNSLOTH_SYSTEMD_HOST=0.0.0.0 UNSLOTH_SYSTEMD_PORT=9000)
+assert_contains "systemd opt-in forwarded to reroute"             "$_out" "export UNSLOTH_INSTALL_SYSTEMD=1"
+assert_contains "systemd host forwarded to reroute"               "$_out" "export UNSLOTH_SYSTEMD_HOST='0.0.0.0'"
+assert_contains "systemd port forwarded to reroute"               "$_out" "export UNSLOTH_SYSTEMD_PORT='9000'"
+_out=$(run_func "$_d" UNSLOTH_SYSTEMD_HOST=0.0.0.0)
+assert_absent   "no systemd opt-in -> nothing forwarded"          "$_out" "SYSTEMD"
+rm -rf "$_d"
+
 # 28) Non-tauri mode: a child exit 2 is just a failure -> CPU fallback, not propagated.
 _d=$(make_fixture 1 strix 0 26.04 1)
 _rc=0

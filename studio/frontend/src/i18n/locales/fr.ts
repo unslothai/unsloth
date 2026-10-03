@@ -2,9 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import type { en } from "./en";
+import { en } from "./en.ts";
 
 export const fr = {
+  // English fallback until this experimental feature is translated.
+  managedEngines: en.managedEngines,
   composerSettings: {
     title: "Saisie des messages",
     plainText: "Saisie en texte brut",
@@ -220,6 +222,45 @@ export const fr = {
       actions: "Actions",
       chat: "Chat",
       searchChats: "Rechercher des chats...",
+    },
+    search: {
+      placeholder: "Rechercher",
+      tabs: {
+        all: "Tout",
+        chats: "Discussions",
+        projects: "Projets",
+        files: "Fichiers",
+        models: "Modèles",
+      },
+      recents: "Récents",
+      actions: "Actions",
+      newChat: "Nouvelle discussion",
+      newTemporaryChat: "Nouvelle discussion temporaire",
+      fineTune: "Affiner un modèle",
+      generateImage: "Générer une image",
+      generateVideo: "Générer une vidéo",
+      untitledChat: "Discussion sans titre",
+      compare: "Comparaison",
+      loading: "Chargement...",
+      empty: {
+        all: "Rien à rechercher pour l’instant.",
+        chats: "Aucune discussion pour l’instant.",
+        projects: "Aucun projet pour l’instant.",
+        files: "Aucun fichier dans votre Bibliothèque pour l’instant.",
+        models: "Aucun modèle téléchargé pour l’instant.",
+      },
+      noMatches: "Aucun résultat.",
+      when: {
+        today: "Aujourd’hui",
+        pastWeek: "Semaine dernière",
+        pastMonth: "Mois dernier",
+        older: "Plus ancien",
+      },
+      footer: {
+        close: "Fermer",
+        changeType: "Changer de type",
+        open: "Ouvrir",
+      },
     },
     notFound: {
       title: "Page introuvable",
@@ -1234,9 +1275,22 @@ export const fr = {
       },
       permissions: {
         sectionTitle: "Autorisations",
-        bypassLabel: "Autorisations des outils",
-        bypassDescription:
-          "Comment Unsloth approuve les appels d'outils de la discussion (terminal, python, web, MCP) avant leur exécution. Le mode « Full access » désactive les demandes d'approbation et le bac à sable d'exécution du code.",
+        names: {
+          ask: "Demander l'accord",
+          auto: "Approuver pour moi",
+          off: "Exécuter automatiquement",
+          full: "Accès complet",
+        },
+        details: {
+          ask:
+            "Demande votre accord avant chaque appel d'outil, y compris le code terminal et Python, les recherches web, les modifications de fichiers et les outils MCP. Les outils exécutés par un fournisseur externe ne sont pas mis en pause. Idéal pour vérifier chaque étape.",
+          auto:
+            "Exécute seul les appels d'outils courants et ne demande votre accord que lorsqu'une action semble risquée, comme lire des identifiants, élever des privilèges ou lancer des commandes destructrices.",
+          off:
+            "Exécute chaque appel d'outil sans demander. Le code Python et terminal reste exécuté dans le bac à sable, qui limite les fichiers auxquels il peut accéder sur votre ordinateur.",
+          full:
+            "Exécute chaque appel d'outil sans demander et désactive le bac à sable du code : le code Python et terminal peut lire et modifier tout fichier accessible à votre compte. Idéal pour les tâches de confiance qui doivent travailler hors du bac à sable.",
+        },
       },
     },
     profile: {
@@ -3190,6 +3244,7 @@ export const fr = {
     discardDescription: "Les modifications non enregistrées de {name} seront perdues.",
     discard: "Abandonner",
     mentions: "Compétences",
+    manage: "Gérer les compétences",
   },
   library: {
     tabs: {

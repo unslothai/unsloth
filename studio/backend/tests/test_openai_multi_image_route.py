@@ -296,3 +296,70 @@ def test_the_image_budget_refusal_goes_through_the_callers_reject(monkeypatch):
     with pytest.raises(HTTPException):
         asyncio.run(inference_route._decode_request_images(None, ["a", "b"], None, reject = reject))
     assert len(seen) == 1 and seen[0][0] == 400
+
+
+@pytest.mark.parametrize("engine", ["vllm", "sglang"])
+@pytest.mark.parametrize("remote", [False, True])
+def test_managed_engine_preserves_native_image_parts(monkeypatch, engine, remote):
+    from core.inference import external_provider
+
+    monkeypatch.setattr(
+        external_provider, "safe_fetch_remote_image_sync", lambda *a, **k: ("image/webp", "QUJD")
+    )
+    backend = passthrough._ScriptedBackend(passthrough._fixed("an answer"))
+    backend.models["sf-model"].update(engine = engine, is_vision = True)
+    image = (
+        {"type": "image_url", "image_url": {"url": "https://example.com/image.png"}}
+        if remote
+        else _sized(4)
+    )
+    messages = [
+        ChatMessage(role = "system", content = "Be brief."),
+        ChatMessage(role = "user", content = [image, _text("First?")]),
+        ChatMessage(role = "assistant", content = "Blue."),
+        ChatMessage(role = "user", content = [_text("Compare."), _sized(8)]),
+    ]
+    passthrough._call(passthrough._request(messages = messages, stream = False), monkeypatch, backend)
+    call = backend.calls[0]
+    assert call["messages"][0]["content"][0]["image_url"]["url"] == (
+        "data:image/webp;base64,QUJD" if remote else image["image_url"]["url"]
+    )
+    assert (
+        call["messages"][2]["content"][1]["image_url"]["url"]
+        == messages[3].content[1].image_url.url
+    )
+    assert call["system_prompt"].endswith("Be brief.")
+    assert call.get("image") is None and not call.get("images")
+
+
+def test_managed_engine_refuses_a_remote_image_the_guarded_fetch_rejects(monkeypatch):
+    from core.inference import external_provider
+
+    monkeypatch.setattr(external_provider, "safe_fetch_remote_image_sync", lambda *a, **k: None)
+    backend = passthrough._ScriptedBackend(passthrough._fixed("an answer"))
+    backend.models["sf-model"].update(engine = "vllm", is_vision = True)
+    image = {"type": "image_url", "image_url": {"url": "http://169.254.169.254/latest"}}
+    messages = [ChatMessage(role = "user", content = [image, _text("What is this?")])]
+    with pytest.raises(HTTPException) as raised:
+        passthrough._call(
+            passthrough._request(messages = messages, stream = False), monkeypatch, backend
+        )
+    assert raised.value.status_code == 400
+    assert not backend.calls
+
+
+def test_managed_engine_applies_the_served_image_cap(monkeypatch):
+    from routes import inference as inference_route
+
+    monkeypatch.setattr(inference_route, "_MAX_SERVED_IMAGES", 3)
+    backend = passthrough._ScriptedBackend(passthrough._fixed("an answer"))
+    backend.models["sf-model"].update(engine = "vllm", is_vision = True)
+    parts = [_sized(4) for _ in range(4)]
+    messages = [ChatMessage(role = "user", content = [*parts, _text("Describe.")])]
+    with pytest.raises(HTTPException) as raised:
+        passthrough._call(
+            passthrough._request(messages = messages, stream = False), monkeypatch, backend
+        )
+    assert raised.value.status_code == 400
+    assert "at most" in str(raised.value.detail)
+    assert not backend.calls

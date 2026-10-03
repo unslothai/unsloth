@@ -21,9 +21,6 @@ def _clean(monkeypatch):
     g8._DEVICE_CFG.clear()
 
 
-# ----------------------------------------------------------------------------------------------- gate (CPU only)
-
-
 @pytest.mark.parametrize(
     "cap, on",
     [
@@ -70,11 +67,16 @@ def test_rocm_never_probes(monkeypatch):
     assert g8.device_config(0) is None
 
 
+def test_deferred_finalize_records_the_final_count():
+    """A deferred install records the candidate count; a first forward that swaps nothing must clear it (status)."""
+    holder = torch.nn.Sequential(torch.nn.Linear(64, 64))
+    holder._unsloth_int8_gemm = 3
+    assert g8._finalize(holder) == 0
+    assert holder._unsloth_int8_gemm == 0
+
+
 def test_dense_linear_is_not_eligible():
     assert g8._eligible(torch.nn.Linear(128, 128)) is None
-
-
-# ----------------------------------------------------------------------------------------------- CUDA
 
 
 def _cuda_ready() -> bool:
@@ -248,6 +250,19 @@ def test_fused_mlp_down_projection_traces_without_breaks(forced, monkeypatch):
     assert torch.equal(compiled, ref_compiled)
     g8.uninstall(fused)
     f8.uninstall(fused)
+
+
+def test_status_drops_int8_gemm_once_the_deferred_probe_swapped_nothing():
+    from types import SimpleNamespace
+
+    from core.inference.diffusion_speed import int8_gemm_live
+
+    dit = SimpleNamespace(_unsloth_int8_gemm = 224)
+    pipe = SimpleNamespace(transformer = dit)
+    assert int8_gemm_live(pipe, ("compiled", "int8_gemm")) == ["compiled", "int8_gemm"]
+    dit._unsloth_int8_gemm = 0
+    assert int8_gemm_live(pipe, ("compiled", "int8_gemm")) == ["compiled"]
+    assert int8_gemm_live(pipe, ("compiled",)) == ["compiled"]
 
 
 # ----------------------------------------------------------------------------------------------- ConvRot (MiniMax-H3)

@@ -2,9 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import type { en } from "./en";
+import { en } from "./en.ts";
 
 export const ptBR = {
+  // English fallback until this experimental feature is translated.
+  managedEngines: en.managedEngines,
   composerSettings: {
     title: "Composição de mensagens",
     plainText: "Composição em texto simples",
@@ -219,6 +221,45 @@ export const ptBR = {
       actions: "Ações",
       chat: "Chat",
       searchChats: "Buscar chats...",
+    },
+    search: {
+      placeholder: "Buscar",
+      tabs: {
+        all: "Tudo",
+        chats: "Chats",
+        projects: "Projetos",
+        files: "Arquivos",
+        models: "Modelos",
+      },
+      recents: "Recentes",
+      actions: "Ações",
+      newChat: "Novo chat",
+      newTemporaryChat: "Novo chat temporário",
+      fineTune: "Fazer fine-tune de um modelo",
+      generateImage: "Gerar uma imagem",
+      generateVideo: "Gerar um vídeo",
+      untitledChat: "Chat sem título",
+      compare: "Comparar",
+      loading: "Carregando...",
+      empty: {
+        all: "Nada para buscar ainda.",
+        chats: "Nenhum chat ainda.",
+        projects: "Nenhum projeto ainda.",
+        files: "Nenhum arquivo na sua Biblioteca ainda.",
+        models: "Nenhum modelo baixado ainda.",
+      },
+      noMatches: "Nenhum resultado.",
+      when: {
+        today: "Hoje",
+        pastWeek: "Última semana",
+        pastMonth: "Último mês",
+        older: "Mais antigos",
+      },
+      footer: {
+        close: "Fechar",
+        changeType: "Mudar tipo",
+        open: "Abrir",
+      },
     },
     notFound: {
       title: "Página não encontrada",
@@ -1223,9 +1264,22 @@ export const ptBR = {
       },
       permissions: {
         sectionTitle: "Permissões",
-        bypassLabel: "Permissões de ferramentas",
-        bypassDescription:
-          "Como o Unsloth aprova as chamadas de ferramentas do chat (terminal, python, web, MCP) antes de executá-las. O modo “Full access” desativa as aprovações e o sandbox de código.",
+        names: {
+          ask: "Pedir aprovação",
+          auto: "Aprovar por mim",
+          off: "Executar automaticamente",
+          full: "Acesso total",
+        },
+        details: {
+          ask:
+            "Pede aprovação antes de cada chamada de ferramenta, incluindo código de terminal e Python, buscas na web, edição de arquivos e ferramentas MCP. Ferramentas executadas por um provedor externo não são pausadas. Ideal quando você quer revisar cada etapa.",
+          auto:
+            "Executa sozinho as chamadas comuns e só pergunta quando uma ação parece arriscada, como ler credenciais, elevar privilégios ou executar comandos destrutivos.",
+          off:
+            "Executa todas as chamadas de ferramentas sem perguntar. O código de Python e terminal continua rodando no sandbox, que limita quais arquivos do seu computador ele pode acessar.",
+          full:
+            "Executa todas as chamadas de ferramentas sem perguntar e desativa o sandbox de código, assim o código de Python e terminal pode ler e alterar qualquer arquivo que sua conta acessa. Ideal para tarefas confiáveis que precisam trabalhar fora do sandbox.",
+        },
       },
     },
     profile: {
@@ -3138,6 +3192,7 @@ export const ptBR = {
     discardDescription: "As alterações não salvas em {name} serão perdidas.",
     discard: "Descartar",
     mentions: "Habilidades",
+    manage: "Gerenciar habilidades",
   },
   library: {
     tabs: {
