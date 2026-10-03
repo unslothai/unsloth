@@ -223,6 +223,15 @@ def test_disabled_reason_remote_access(monkeypatch):
     assert "UNSLOTH_STUDIO_ALLOW_STDIO_MCP" not in reason
 
 
+def test_configured_proxy_suspends_automatic_stdio_mcp(monkeypatch):
+    _disable(monkeypatch)
+    host_policy.apply_stdio_mcp_loopback_default("127.0.0.1")
+    monkeypatch.setenv("UNSLOTH_STUDIO_PROXY_ORIGIN", "https://studio.example.ts.net")
+    assert host_policy.remote_connector_active() is True
+    assert mcp_client.stdio_mcp_enabled() is False
+    assert "Remote Access" in mcp_client.stdio_mcp_disabled_reason()
+
+
 def test_disabled_reason_tools_disabled(monkeypatch):
     from state import tool_policy
 
