@@ -475,7 +475,9 @@ def test_gemma3_text_only_save_reloads_as_the_decoder(tmp_path):
     transformers = pytest.importorskip("transformers")
     torch = pytest.importorskip("torch")
     if int(transformers.__version__.split(".")[0]) < 5:
-        pytest.skip("transformers 4 strips the wrapper prefix without a key_mapping")
+        pytest.skip(
+            reason = "#12554: transformers 4 strips the wrapper prefix itself, so no key_mapping is added or dropped"
+        )
     ns = _load_text_only_namespace()
     # The parent-conversion carry has its own tests in test_text_only_parent_conversions.py.
     ns["_parent_conversions_for_text_only"] = lambda model_type: []
