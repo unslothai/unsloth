@@ -68,7 +68,7 @@ def test_install_is_inert_until_bound_and_respects_kill_switch(monkeypatch):
     x, t = torch.randn(1, 4, 64), torch.randn(1, 64)
     with torch.no_grad():
         model(x, t)
-    assert len(calls) == 3 and reg.stats["misses"] == 0 and not reg.recorded  # unbound: plain passthrough
+    assert len(calls) == 3 and reg.stats["misses"] == 0 and reg.stats["hits"] == 0  # unbound: plain passthrough
     assert aot.bind(_fake_pipe(model), None) == 0 and reg.failed is not None
 
 
@@ -85,6 +85,113 @@ def test_subkey_tracks_sources_env_and_compile_kwargs(monkeypatch):
     assert aot.subkey({"fullgraph": True, "dynamic": None}) != base
 
 
+def _entry(name, guard_type, value = None, derived = (), is_global = False):
+    return types.SimpleNamespace(name = name, guard_type = guard_type, derived_guard_types = derived,
+                                 is_global = is_global, has_value = value is not None, value = value)
+
+
+def test_guard_filter_drops_only_what_cannot_be_serialised():
+    entries = [
+        _entry("L['self']._modules['fc1'].in_features", "EQUALS_MATCH", 64),
+        _entry("G['torch']", "ID_MATCH", is_global = True),
+        _entry("type(L['self']._modules['attn'].processor).__call__", "CLOSURE_MATCH"),
+        # a constant match on a code object derives an identity guard: the serialiser refuses it too
+        _entry("type(L['self']._modules['attn'].processor).__call__.__code__", "CONSTANT_MATCH", derived = ("ID_MATCH",)),
+        _entry("L['hidden_states']", "TENSOR_MATCH", torch.zeros(2)),
+    ]
+    assert aot._guard_filter(entries) == [True, False, False, False, True]
+
+
+def test_guard_filter_drops_guards_through_a_weight_the_pickler_cannot_copy():
+    quant = pytest.importorskip("torchao.quantization")
+    lin = torch.nn.Sequential(torch.nn.Linear(64, 64)).to(torch.bfloat16)
+    quant.quantize_(lin, quant.Int8DynamicActivationInt8WeightConfig())
+    weight = lin[0].weight
+    if aot._meta_picklable(weight):
+        pytest.skip("this torchao's int8 weight copies to meta: nothing to drop")
+    owner = "L['self']._modules['to_q']"
+    entries = [
+        _entry(owner, "TYPE_MATCH", lin[0], derived = ("TYPE_MATCH",)),
+        _entry(owner + "._parameters['weight']", "TENSOR_MATCH", weight),
+        _entry(owner + "._parameters['weight'].original_weight_tensor.tensor_impl.int_data", "TENSOR_MATCH",
+               torch.zeros(1, dtype = torch.int8)),
+        _entry("L['self']._modules['to_k']", "TYPE_MATCH", torch.nn.Linear(2, 2), derived = ("TYPE_MATCH",)),
+        _entry("L['self']._modules['to_q2']", "TYPE_MATCH", torch.nn.Linear(2, 2), derived = ("TYPE_MATCH",)),
+    ]
+    assert aot._guard_filter(entries) == [False, False, False, True, True]
+    assert aot._meta_picklable(torch.zeros(3)) and aot._meta_picklable(None)
+
+
+def test_fingerprint_tracks_code_classes_and_weights_the_dropped_guards_covered():
+    model = Model()
+    block = model.blocks[0]
+    base = aot._code_fingerprint(block)
+    assert aot._code_fingerprint(model.blocks[1]) == base  # same class, same code, same weight metadata
+    orig = Block.forward
+    try:
+        Block.forward = lambda self, hidden_states, temb = None: orig(self, hidden_states, temb)  # a class patch
+        assert aot._code_fingerprint(block) != base
+    finally:
+        Block.forward = orig
+    assert aot._code_fingerprint(block) == base
+    block.fc1.to(torch.float16)
+    assert aot._code_fingerprint(block) != base
+    block.fc1.to(torch.float32)
+    block.fc2 = torch.nn.Sequential(block.fc2)  # a wrapped submodule
+    assert aot._code_fingerprint(block) != base
+
+
+class _Processor:
+    def __call__(self, x):
+        return x
+
+
+def test_fingerprint_tracks_the_attention_processor_class_code():
+    block = Block()
+    block.processor = _Processor()
+    base = aot._code_fingerprint(block)
+    orig = _Processor.__call__
+    try:
+        _Processor.__call__ = lambda self, x: x * 1
+        assert aot._code_fingerprint(block) != base
+    finally:
+        _Processor.__call__ = orig
+    block.processor = type("Other", (_Processor,), {})()
+    assert aot._code_fingerprint(block) != base
+
+
+def test_a_class_that_does_not_serialise_is_refused_once_and_on_restart(tmp_path, monkeypatch):
+    monkeypatch.setattr(aot, "supported", lambda: True)
+    calls = []
+
+    class _Refusing:
+        def aot_compile(self, inputs):
+            calls.append(1)
+            raise RuntimeError("PackageError: ID_MATCH guard cannot be serialized.")
+
+    monkeypatch.setattr(aot, "_compiler", lambda fn, kwargs: _Refusing())
+    monkeypatch.setattr(aot, "_capturing", lambda: False)
+    key = tmp_path / "key"
+
+    def run():
+        model = Model()
+        for b in model.blocks:
+            b._compiled_call_impl = b._call_impl
+        reg = aot.install(model, {"fullgraph": True, "dynamic": None})
+        aot.bind(_fake_pipe(model), types.SimpleNamespace(dir = str(key)))
+        with torch.no_grad():
+            model(torch.randn(1, 4, 64), torch.randn(1, 64))
+            model(torch.randn(1, 8, 64), torch.randn(1, 64))  # a new signature: no second attempt either
+        return reg
+
+    reg = run()
+    assert len(calls) == 1 and reg.refused == {"Block"}
+    man = json.loads(next(key.rglob("manifest.json")).read_text())
+    assert man["refused"] == ["Block"]
+    reg = run()  # a restart reads the refusal: no second aot_compile
+    assert len(calls) == 1 and reg.refused == {"Block"} and reg.stats["misses"] == 6
+
+
 _SCRIPT = textwrap.dedent(
     r"""
     import json, os, sys, types
@@ -95,23 +202,49 @@ _SCRIPT = textwrap.dedent(
     from tests.test_diffusion_aot_blocks import Model
 
     torch.manual_seed(0)
-    model = Model().cuda().to(torch.bfloat16)
-    x = torch.randn(1, 256, 64, device = "cuda", dtype = torch.bfloat16)
-    t = torch.randn(1, 64, device = "cuda", dtype = torch.bfloat16)
-    for b in model.blocks:
-        b.compile(fullgraph = True, dynamic = None)
+    if os.environ.get("FAMILY") == "flux-int8":
+        # The real thing: diffusers' FLUX blocks (attention processors) with Studio's torchao int8 weights.
+        from diffusers import FluxTransformer2DModel
+        from torchao.quantization import quantize_, Int8DynamicActivationInt8WeightConfig
+
+        model = FluxTransformer2DModel(patch_size = 1, in_channels = 64, num_layers = 2, num_single_layers = 2,
+                                       attention_head_dim = 64, num_attention_heads = 2, joint_attention_dim = 128,
+                                       pooled_projection_dim = 128, axes_dims_rope = (16, 24, 24)).cuda().to(torch.bfloat16)
+        quantize_(model, Int8DynamicActivationInt8WeightConfig(),
+                  filter_fn = lambda m, fqn: isinstance(m, torch.nn.Linear) and "blocks" in fqn)
+        ids = torch.zeros(256, 3, device = "cuda")
+        ids[:, 1], ids[:, 2] = torch.arange(256) // 16, torch.arange(256) % 16
+        inputs = dict(hidden_states = torch.randn(1, 256, 64, device = "cuda", dtype = torch.bfloat16),
+                      encoder_hidden_states = torch.randn(1, 32, 128, device = "cuda", dtype = torch.bfloat16),
+                      pooled_projections = torch.randn(1, 128, device = "cuda", dtype = torch.bfloat16),
+                      timestep = torch.tensor([0.5], device = "cuda"), img_ids = ids,
+                      txt_ids = torch.zeros(32, 3, device = "cuda"), return_dict = False)
+        run = lambda: model(**{k: (v.clone() if torch.is_tensor(v) else v) for k, v in inputs.items()})[0]
+        hook_target = model.transformer_blocks[0].ff
+    else:
+        model = Model().cuda().to(torch.bfloat16)
+        x = torch.randn(1, 256, 64, device = "cuda", dtype = torch.bfloat16)
+        t = torch.randn(1, 64, device = "cuda", dtype = torch.bfloat16)
+        run = lambda: model(x.clone(), t.clone())  # a pipeline's latents are inference tensors, like block outputs
+        hook_target = model.blocks[0].fc1
+    names = set(model._repeated_blocks)
+    for b in model.modules():
+        if type(b).__name__ in names:
+            b.compile(fullgraph = True, dynamic = None)
     if os.environ.get("HOOK") == "1":
         # A hook added after the artifact was saved: a serialised artifact would skip it, so the block must not use it.
-        model.blocks[0].fc1.register_forward_hook(lambda m, i, o: o * 2)
+        hook_target.register_forward_hook(lambda m, i, o: o * 2)
     reg = aot.install(model, {"fullgraph": True, "dynamic": None})
+    if os.environ.get("FAMILY") == "flux-int8":
+        from core.inference import diffusion_block_restride
+
+        diffusion_block_restride.install(model, None)  # as Studio does: single block 0 shares blocks 1..N's graph
     pipe = types.SimpleNamespace(transformer = model)
     aot.bind(pipe, types.SimpleNamespace(dir = os.environ["KEYDIR"]))
     with torch.inference_mode():
-        x, t = x.clone(), t.clone()  # a pipeline's latents are inference tensors, like every block output
-        out = model(x, t)
-        saved = [reg.save_one(k) for k in reg.pending()]
+        out = run()
     torch.save(out.cpu(), os.environ["OUT"])
-    print("RESULT", json.dumps({"stats": reg.describe(), "saved": saved,
+    print("RESULT", json.dumps({"stats": reg.describe(), "classes": sorted(names),
                                 "frames": counters["stats"]["unique_graphs"]}))
     """
 )
@@ -143,13 +276,11 @@ def test_restart_serves_blocks_from_the_artifact_without_tracing_and_bit_identic
     # The first block compiles through aot_compile and is persisted at once; the other two reuse its graph.
     assert first["stats"]["compiled"] == 1 and first["stats"]["saved"] == 1, first
     assert first["stats"]["hits"] == 2 and first["stats"]["misses"] == 0, first
-    assert first["saved"] == [], first
     man = json.loads(next((tmp_path / "key").rglob("manifest.json")).read_text())
     assert len(man["entries"]) == 1 and man["entries"][0]["cls"] == "Block"
     restart = _run(tmp_path, "restart")
     assert restart["stats"]["loaded"] == 1 and restart["stats"]["hits"] == 3 and restart["stats"]["misses"] == 0
     assert restart["frames"] == 0, "dynamo traced a block the artifact covers"
-    assert restart["saved"] == []
     assert torch.equal(torch.load(tmp_path / "first.pt"), torch.load(tmp_path / "restart.pt"))
     # A hook the artifact never saw: that block takes the normal path (and honours the hook), the others still hit.
     hooked = _run(tmp_path, "hooked", {"HOOK": "1"})
@@ -162,22 +293,24 @@ def test_restart_serves_blocks_from_the_artifact_without_tracing_and_bit_identic
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "CUDA only")
-def test_a_graph_the_normal_path_did_not_compile_is_not_persisted(tmp_path, monkeypatch):
-    """The save's FX-cache check: an aot trace that lowers a NEW graph (here: other compile kwargs) is dropped."""
+def test_real_flux_blocks_with_torchao_int8_weights_persist_and_restart_bit_identical(tmp_path):
+    """diffusers' FLUX blocks (attention processor identity guards) with int8 torchao weights (a guard pickler that
+    cannot copy them): both block classes serialise, a restart serves every block without tracing, same bits."""
     if not aot.supported():
         pytest.skip("this torch has no aot_compile")
-    monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", str(tmp_path / "inductor"))
-    model = Model().cuda().to(torch.bfloat16)
-    for b in model.blocks:
-        b.compile(fullgraph = True, dynamic = None)
-    # The registry believes the blocks compiled dynamic=True: its re-trace lowers a graph nobody ran.
-    reg = aot.install(model, {"fullgraph": True, "dynamic": True})
-    aot.bind(_fake_pipe(model), types.SimpleNamespace(dir = str(tmp_path / "key")))
-    reg.compiled_classes.add("Block")  # a later signature: the normal path compiles it and the idle save re-traces
-    x = torch.randn(1, 128, 64, device = "cuda", dtype = torch.bfloat16)
-    t = torch.randn(1, 64, device = "cuda", dtype = torch.bfloat16)
-    with torch.inference_mode():
-        model(x.clone(), t.clone())
-        assert [reg.save_one(k) for k in reg.pending()] == [False]
-    assert not list((tmp_path / "key").rglob("*.aot"))
-    torch._dynamo.reset()
+    pytest.importorskip("torchao")
+    pytest.importorskip("diffusers")
+    flux = {"FAMILY": "flux-int8"}
+    first = _run(tmp_path, "first", flux)
+    assert first["stats"]["compiled"] == 2 and first["stats"]["saved"] == 2, first
+    assert first["stats"]["hits"] == 2 and first["stats"]["misses"] == 0, first
+    assert not first["stats"].get("refused"), first
+    restart = _run(tmp_path, "restart", flux)
+    assert restart["stats"]["loaded"] == 2 and restart["stats"]["misses"] == 0, restart
+    assert restart["stats"]["hits"] == 4 and restart["frames"] == 0, restart
+    assert torch.equal(torch.load(tmp_path / "first.pt"), torch.load(tmp_path / "restart.pt"))
+    off = _run(tmp_path, "off", dict(flux, UNSLOTH_DIFFUSION_AOT_BLOCKS = "0"))
+    assert torch.equal(torch.load(tmp_path / "first.pt"), torch.load(tmp_path / "off.pt"))
+    hooked = _run(tmp_path, "hooked", dict(flux, HOOK = "1"))
+    assert hooked["stats"]["misses"] >= 1 and not torch.equal(torch.load(tmp_path / "first.pt"),
+                                                              torch.load(tmp_path / "hooked.pt"))

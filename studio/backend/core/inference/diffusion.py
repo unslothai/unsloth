@@ -9846,13 +9846,6 @@ class DiffusionBackend:
                         compile_cache.save_async(state.compile_cache_ctx, logger = logger)
                     except Exception:  # noqa: BLE001 - cache persistence is best-effort
                         pass
-                    try:
-                        # Render-thread jobs that yield to the next render; a no-op once every signature is persisted.
-                        from . import diffusion_aot_blocks
-
-                        diffusion_aot_blocks.schedule_save(state.pipe)
-                    except Exception:  # noqa: BLE001 - persistence is best-effort
-                        pass
                 # Last word on cancellation, AFTER the post-denoise work: the event stays registered through the
                 # compile-cache bookkeeping and the page still shows Stop for as long as progress reads active, so a Stop
                 # landing there was answered cancelled = true and then contradicted by the image the route persisted.

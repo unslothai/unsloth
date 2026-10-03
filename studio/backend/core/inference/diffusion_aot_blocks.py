@@ -17,33 +17,41 @@ on a second thread):
 - The FIRST graph of each block class (every graph, for a static compile) is compiled through ``aot_compile`` of the
   class's ``forward`` instead of the module's ``torch.compile`` wrapper: the same code, inputs and settings, so the
   same graph and the same dynamo bookkeeping, and the result is persisted right away (no idle time needed).
-- A later new signature under automatic dynamic takes the normal ``torch.compile`` path (so dynamo generalises it as
-  before) and is RECORDED; ``schedule_save`` persists it from a render-thread job that yields to a queued render,
-  and keeps it ONLY when inductor served every graph of that re-trace from the FX graph cache with zero misses: the
-  proof that the artifact runs exactly the kernels the normal path just ran.
+- A later new signature under automatic dynamic takes the normal ``torch.compile`` path, so dynamo generalises it
+  exactly as before, and a restart re-traces it as before. Persisting it would need a second trace on the render
+  thread between renders, which a queued render would then wait for.
 
-Artifacts live under the compile bundle's key dir (its LRU eviction removes them), in a sub-dir keyed on the Studio
-diffusion sources, the env knobs and the compile kwargs: ``aot_compile`` drops guards on globals, so a patch that
-changed what a block calls must also change the directory. Kill switch: ``UNSLOTH_DIFFUSION_AOT_BLOCKS=0``.
+Guards: ``aot_compile`` keeps the guards on the block's inputs, its parameters, buffers and attribute values, and
+drops the ones it cannot serialise: guards on globals, and identity guards on functions and code objects (a diffusers
+attention processor's ``__call__`` is one; with them left in, every FLUX / Qwen-Image block fails to serialise).
+What those dropped guards protected is covered instead by
+- the sub-dir key: Studio diffusion sources, package versions, env knobs, compile kwargs, under the compile bundle's
+  key (GPU, dtype, quant, attention backend);
+- a code fingerprint stored with each artifact: the class and the bytecode of every submodule's ``forward`` and every
+  attention processor's ``__call__``, compared before a block uses the artifact (a patched class takes the normal
+  path).
+A class whose graph still cannot be serialised is recorded as refused in the manifest, so neither this process nor a
+later start pays a second ``aot_compile`` for it.
+
+Artifacts live under the compile bundle's key dir (its LRU eviction removes them). Kill switch:
+``UNSLOTH_DIFFUSION_AOT_BLOCKS=0``.
 """
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import json
 import os
 import threading
 import time
+import weakref
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 _ENV = "UNSLOTH_DIFFUSION_AOT_BLOCKS"
 _FALSE = ("0", "false", "no", "off")
 _MANIFEST = "manifest.json"
-_FORMAT = 1
-# Distinct signatures recorded per transformer; past this a new signature is simply not persisted.
-_MAX_RECORDED = 16
+_FORMAT = 2
 _DISPATCH_MARK = "_unsloth_aot_dispatch"
 
 _SOURCE_DIGEST: Optional[str] = None
@@ -136,29 +144,16 @@ def _signature(x: Any) -> Any:
     return ("O", type(x).__name__)
 
 
-def _clone(x: Any) -> Any:
-    import torch
-
-    if isinstance(x, torch.Tensor):
-        return x.detach().clone()
-    if isinstance(x, tuple):
-        return tuple(_clone(y) for y in x)
-    if isinstance(x, list):
-        return [_clone(y) for y in x]
-    if isinstance(x, dict):
-        return {k: _clone(v) for k, v in x.items()}
-    return x
-
-
-def _recordable(x: Any) -> bool:
+def _plain_inputs(x: Any) -> bool:
+    """Tensors that need no grad, containers of them, plain constants: what a block call can be traced from."""
     import torch
 
     if isinstance(x, torch.Tensor):
         return not x.requires_grad
     if isinstance(x, (list, tuple)):
-        return all(_recordable(y) for y in x)
+        return all(_plain_inputs(y) for y in x)
     if isinstance(x, dict):
-        return all(_recordable(v) for v in x.values())
+        return all(_plain_inputs(v) for v in x.values())
     return x is None or isinstance(x, (bool, int, float, str))
 
 
@@ -199,6 +194,113 @@ def _capturing() -> bool:
     return bool(torch.cuda.is_available() and torch.cuda.is_current_stream_capturing())
 
 
+def _code_digest(fn: Any, h: Any, depth: int = 0) -> None:
+    fn = getattr(fn, "__func__", fn)
+    h.update(f"{getattr(fn, '__module__', '')}.{getattr(fn, '__qualname__', type(fn).__name__)}".encode())
+    code = getattr(fn, "__code__", None)
+    if code is None:
+        return
+    _code_object_digest(code, h, depth)
+
+
+def _code_object_digest(code: Any, h: Any, depth: int = 0) -> None:
+    h.update(code.co_code)
+    h.update(repr(code.co_names).encode())
+    for const in code.co_consts:
+        if hasattr(const, "co_code") and depth < 8:
+            _code_object_digest(const, h, depth + 1)
+        else:
+            h.update(repr(const).encode())
+
+
+def _tensor_digest(name: str, t: Any, h: Any, depth: int = 0) -> None:
+    h.update(f"{name}:{type(t).__qualname__}:{t.dtype}:{tuple(t.shape)}:{tuple(t.stride())}:{t.device.type}".encode())
+    flatten = getattr(t, "__tensor_flatten__", None)
+    if flatten is None or depth > 8:
+        return
+    try:
+        attrs, _ctx = flatten()
+    except Exception:  # noqa: BLE001
+        return
+    for a in attrs:
+        inner = getattr(t, a, None)
+        if inner is not None and hasattr(inner, "dtype"):
+            _tensor_digest(f"{name}.{a}", inner, h, depth + 1)
+
+
+def _code_fingerprint(module: Any) -> str:
+    """Class and bytecode of every submodule's ``forward`` and every attention processor's ``__call__`` (what the
+    artifact inlined but whose identity guards ``aot_compile`` cannot keep), plus the type, dtype, shape and device of
+    every weight (guards on torchao weights cannot be serialised either)."""
+    h = hashlib.sha256()
+    for name, t in list(module.named_parameters()) + list(module.named_buffers()):
+        # A guard on a weight the pickler cannot copy is dropped (``_guard_filter``): keep its metadata here.
+        _tensor_digest(name, t, h)
+    for name, m in module.named_modules():
+        cls = type(m)
+        h.update(f"{name}:{cls.__module__}.{cls.__qualname__}".encode())
+        _code_digest(getattr(cls, "forward", None), h)
+        proc = vars(m).get("processor")
+        if proc is not None:
+            pcls = type(proc)
+            h.update(f"p:{pcls.__module__}.{pcls.__qualname__}".encode())
+            _code_digest(getattr(pcls, "__call__", None), h)
+            if "__call__" in vars(proc):
+                h.update(b"instance-call")
+    return h.hexdigest()[:24]
+
+
+def _guard_filter(entries: Any) -> list[bool]:
+    """Keep every guard ``aot_compile`` can serialise; drop globals and identity guards (also when derived, e.g. a
+    constant match on a processor's code object). What they covered is keyed or fingerprinted (module docstring)."""
+    try:
+        from torch._dynamo.guards import CheckFunctionManager
+
+        bad = set(CheckFunctionManager.UNSUPPORTED_SERIALIZATION_GUARD_TYPES)
+    except Exception:  # noqa: BLE001
+        bad = {"DICT_VERSION", "NN_MODULE", "ID_MATCH", "FUNCTION_MATCH", "CLASS_MATCH", "MODULE_MATCH",
+               "CLOSURE_MATCH", "WEAKREF_ALIVE"}
+    # A torchao weight the guard pickler cannot copy: every guard on it, on its owning module (the pickler copies a
+    # guarded module's attributes, and torchao gives a quantised Linear an ``extra_repr`` it cannot copy either) or
+    # reached through them is dropped. Their classes, code and weight metadata are fingerprinted instead.
+    opaque: set = set()
+    for g in entries:
+        if getattr(g, "has_value", False) and not _meta_picklable(getattr(g, "value", None)):
+            name = str(g.name)
+            opaque.add(name)
+            for marker in ("._parameters[", "._buffers["):
+                if marker in name:
+                    opaque.add(name.split(marker, 1)[0])
+    opaque = tuple(sorted(opaque))
+    out = []
+    for g in entries:
+        types = {getattr(g, "guard_type", None), *(getattr(g, "derived_guard_types", None) or ())}
+        keep = not (getattr(g, "is_global", False) or bool(types & bad))
+        if keep and opaque and str(g.name).startswith(opaque):
+            keep = False
+        out.append(keep)
+    return out
+
+
+def _meta_picklable(value: Any, depth: int = 0) -> bool:
+    """Can dynamo's guard pickler copy this value (it rebuilds tensor subclasses from ``empty_like(device="meta")``
+    of every inner tensor; torchao's int8 ``PlainAQTTensorImpl`` refuses that op)."""
+    import torch
+
+    if not isinstance(value, torch.Tensor) or depth > 8:
+        return True
+    try:
+        from torch.utils._python_dispatch import is_traceable_wrapper_subclass
+
+        if not is_traceable_wrapper_subclass(value):
+            return True
+        torch.empty_like(value, device = "meta")
+        attrs, _ctx = value.__tensor_flatten__()
+        return all(_meta_picklable(getattr(value, a), depth + 1) for a in attrs)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _digest(sig: Any) -> str:
     return hashlib.sha256(repr(sig).encode()).hexdigest()[:32]
 
@@ -217,27 +319,8 @@ def _atomic_write(path: Path, data: bytes) -> None:
     write(path, data)
 
 
-class _Sample:
-    __slots__ = ("module", "cls", "args", "kwargs", "inference", "dynamic_sources", "unbacked_sources", "device",
-                 "global_state")
-
-    def __init__(self, module: Any, args: tuple, kwargs: dict) -> None:
-        import torch
-
-        self.module = module
-        self.cls = type(module).__name__
-        self.args = _clone(args)
-        self.kwargs = _clone(kwargs)
-        self.inference = bool(torch.is_inference_mode_enabled())
-        cfg = getattr(getattr(torch, "compiler", None), "config", None)
-        self.dynamic_sources = getattr(cfg, "dynamic_sources", None)
-        self.unbacked_sources = getattr(cfg, "unbacked_sources", None)
-        self.device = torch.cuda.current_device() if torch.cuda.is_available() else None
-        self.global_state = _global_state()
-
-
 class Registry:
-    """Per-transformer state: loaded artifacts, recordings waiting for a save, counters for status / tests."""
+    """Per-transformer state: loaded artifacts, refused classes, counters for logs / tests."""
 
     def __init__(self, compile_kwargs: dict[str, Any], logger: Any = None) -> None:
         # Set by ``bind`` once the load knows its compile-bundle key; until then every call takes the normal path.
@@ -248,12 +331,12 @@ class Registry:
         self.loaded = False
         self.failed: Optional[str] = None
         self.entries: dict[str, list[Any]] = {}
-        self.known: set = set()
-        self.recorded: dict[str, _Sample] = {}
-        self.queued: set = set()
         # Block classes whose first graph went through _compile_now (or was refused by it).
         self.compiled_classes: set = set()
-        self.stats: dict[str, Any] = {"hits": 0, "misses": 0, "loaded": 0, "load_s": 0.0, "saved": 0, "rejected": 0}
+        # Block classes aot_compile could not serialise: never retried (persisted, so a restart does not either).
+        self.refused: set = set()
+        self._fingerprints: "weakref.WeakKeyDictionary[Any, str]" = weakref.WeakKeyDictionary()
+        self.stats: dict[str, Any] = {"hits": 0, "misses": 0, "loaded": 0, "load_s": 0.0, "saved": 0}
 
     # ---- loading -----------------------------------------------------------------------------------------------
     def load(self) -> None:
@@ -268,6 +351,9 @@ class Registry:
         import torch
 
         n = 0
+        for ent in man.get("refused", []):
+            self.refused.add(str(ent))
+            self.compiled_classes.add(str(ent))
         for ent in man.get("entries", []):
             path = self.dir / Path(str(ent.get("file", ""))).name
             try:
@@ -278,9 +364,8 @@ class Registry:
                 self._log("warning", "diffusion.aot_blocks: could not load %s (%s: %s)", path.name,
                           type(exc).__name__, str(exc)[:200])
                 continue
-            self.entries.setdefault(str(ent.get("cls")), []).append((ent.get("global"), fn))
+            self.entries.setdefault(str(ent.get("cls")), []).append((ent.get("global"), ent.get("code"), fn))
             self.compiled_classes.add(str(ent.get("cls")))
-            self.known.add(str(ent.get("sig")))
             n += 1
         self.stats["loaded"] = n
         self.stats["load_s"] = round(time.perf_counter() - t0, 3)
@@ -299,8 +384,9 @@ class Registry:
         if fns and "forward" not in vars(module) and _hook_free(module):
             state = _global_state()
             try:
-                for want, fn in fns:
-                    if want == state and fn.guard_check(module, *args, **kwargs):
+                code = self.fingerprint(module)
+                for want, want_code, fn in fns:
+                    if want == state and want_code == code and fn.guard_check(module, *args, **kwargs):
                         self.stats["hits"] += 1
                         return fn(module, *args, **kwargs)
             except Exception as exc:  # noqa: BLE001
@@ -317,28 +403,37 @@ class Registry:
             if done:
                 return out
         self.stats["misses"] += 1
-        out = inner(*args, **kwargs)
-        self._maybe_record(module, args, kwargs)
-        return out
+        return inner(*args, **kwargs)
+
+    def fingerprint(self, module: Any) -> str:
+        """``_code_fingerprint`` once per block instance (a class patched after a block's first call is not seen)."""
+        fp = self._fingerprints.get(module)
+        if fp is None:
+            fp = self._fingerprints[module] = _code_fingerprint(module)
+        return fp
 
     def _compile_first_allowed(self, module: Any) -> bool:
         """The first graph of a block class (or any graph of a static compile) is compiled through ``aot_compile``.
 
         That IS the compile the normal path would run (same forward code, same inputs, so the same automatic-dynamic
         bookkeeping), and it leaves a serialisable result. A later new signature of a class under automatic dynamic
-        takes the normal path, so dynamo generalises it exactly as before; that one is persisted by an idle save."""
+        takes the normal path, so dynamo generalises it exactly as before."""
         if self.failed is not None or self.dir is None or "forward" in vars(module):
             return False
-        return self.compile_kwargs.get("dynamic") is False or type(module).__name__ not in self.compiled_classes
+        cls = type(module).__name__
+        if cls in self.refused:
+            return False
+        return self.compile_kwargs.get("dynamic") is False or cls not in self.compiled_classes
 
     def _compile_now(self, module: Any, args: tuple, kwargs: dict) -> tuple[bool, Any]:
         import torch
 
         try:
-            if _capturing() or not _recordable((args, kwargs)) or not _hook_free(module):
+            if _capturing() or not _plain_inputs((args, kwargs)) or not _hook_free(module):
                 return False, None
             key = _digest((type(module).__name__, _signature(args), _signature(kwargs)))
             state = _global_state()
+            code = self.fingerprint(module)
             t0 = time.perf_counter()
             saved_aot = torch._dynamo.config.enable_aot_compile
             torch._dynamo.config.enable_aot_compile = True
@@ -357,75 +452,57 @@ class Registry:
             self._log("info", "diffusion.aot_blocks: %s compiles on the normal path (%s: %s)", type(module).__name__,
                       type(exc).__name__, str(exc).splitlines()[0][:200] if str(exc) else "")
             self.compiled_classes.add(type(module).__name__)
+            self._refuse(type(module).__name__)
             exc.__traceback__ = None
             return False, None
         cls = type(module).__name__
         self.compiled_classes.add(cls)
-        self.entries.setdefault(cls, []).append((state, fn))
-        self.known.add(key)
+        self.entries.setdefault(cls, []).append((state, code, fn))
         self.stats["compiled"] = self.stats.get("compiled", 0) + 1
         self._log("info", "diffusion.aot_blocks: compiled a %s graph in %.1f s", cls, time.perf_counter() - t0)
         try:
             res = type(fn).serialize(fn)
-            self._persist(key, cls, getattr(res, "serialized_data", res), state)
+            self._persist(key, cls, getattr(res, "serialized_data", res), state, code)
         except Exception as exc:  # noqa: BLE001 - this process still uses it; only the next start pays the trace
             self._log("warning", "diffusion.aot_blocks: could not serialise a %s graph (%s: %s)", cls,
                       type(exc).__name__, str(exc)[:200])
+            self._refuse(cls)
         return True, fn(module, *args, **kwargs)
 
-    def _maybe_record(self, module: Any, args: tuple, kwargs: dict) -> None:
-        try:
-            import torch
+    def _update_manifest(self, edit: Callable[[dict], None]) -> None:
+        self.dir.mkdir(parents = True, exist_ok = True)
+        with self.lock:
+            man = _read_json(self.dir / _MANIFEST) or {}
+            if man.get("format") != _FORMAT:
+                man = {"format": _FORMAT, "entries": []}
+            edit(man)
+            _atomic_write(self.dir / _MANIFEST, json.dumps(man, indent = 1).encode())
 
-            if _capturing():
-                return
-            if len(self.recorded) >= _MAX_RECORDED or not _recordable((args, kwargs)):
-                return
-            if not _hook_free(module) or "forward" in vars(module):
-                return
-            key = _digest((type(module).__name__, _signature(args), _signature(kwargs)))
-            if key in self.known or key in self.recorded:
-                return
-            self.recorded[key] = _Sample(module, args, kwargs)
-        except Exception:  # noqa: BLE001 - a missed recording only means no artifact for that signature
+    def _refuse(self, cls: str) -> None:
+        """Remember (also on disk) that ``cls`` does not serialise, so nothing pays its aot_compile again."""
+        self.refused.add(cls)
+        self.stats["refused"] = sorted(self.refused)
+        if self.dir is None:
+            return
+        try:
+            self._update_manifest(
+                lambda man: man.__setitem__("refused", sorted(set(man.get("refused", [])) | {cls}))
+            )
+        except Exception:  # noqa: BLE001 - best-effort
             pass
 
-    # ---- saving ------------------------------------------------------------------------------------------------
-    def pending(self) -> list[str]:
-        return [k for k in list(self.recorded) if k not in self.known]
-
-    def save_one(self, key: str) -> Optional[bool]:
-        """aot_compile one recording; True saved, False rejected, None nothing to do. Runs on the render thread."""
-        sample = self.recorded.get(key)
-        if sample is None or key in self.known or self.dir is None or self.failed is not None:
-            return None
-        self.known.add(key)
-        try:
-            ok, data, why = _aot_compile_sample(sample, self.compile_kwargs)
-        except Exception as exc:  # noqa: BLE001
-            ok, data, why = False, None, f"{type(exc).__name__}: {str(exc)[:200]}"
-        finally:
-            self.recorded.pop(key, None)
-        if not ok or data is None:
-            self.stats["rejected"] += 1
-            self._log("info", "diffusion.aot_blocks: not persisting a %s graph (%s)", sample.cls, why)
-            return False
-        return self._persist(key, sample.cls, data, sample.global_state)
-
-    def _persist(self, key: str, cls: str, data: bytes, global_state: list) -> bool:
+    def _persist(self, key: str, cls: str, data: bytes, global_state: list, code: Optional[str]) -> bool:
         try:
             self.dir.mkdir(parents = True, exist_ok = True)
             fname = f"b-{key[:16]}.aot"
             _atomic_write(self.dir / fname, data)
-            with self.lock:
-                man = _read_json(self.dir / _MANIFEST) or {}
-                if man.get("format") != _FORMAT:
-                    man = {"format": _FORMAT, "entries": []}
+
+            def edit(man: dict) -> None:
                 man["entries"] = [e for e in man.get("entries", []) if e.get("sig") != key]
-                man["entries"].append(
-                    {"cls": cls, "sig": key, "file": fname, "bytes": len(data), "global": global_state}
-                )
-                _atomic_write(self.dir / _MANIFEST, json.dumps(man, indent = 1).encode())
+                man["entries"].append({"cls": cls, "sig": key, "file": fname, "bytes": len(data),
+                                       "global": global_state, "code": code})
+
+            self._update_manifest(edit)
             self.stats["saved"] += 1
             self._log("info", "diffusion.aot_blocks: persisted a %s graph (%d KB)", cls, len(data) // 1024)
             return True
@@ -434,7 +511,7 @@ class Registry:
             return False
 
     def describe(self) -> dict:
-        return dict(self.stats, failed = self.failed, pending = len(self.pending()))
+        return dict(self.stats, failed = self.failed)
 
     def _log(self, level: str, msg: str, *args: Any) -> None:
         if self.logger is not None:
@@ -444,67 +521,21 @@ class Registry:
                 pass
 
 
-@contextlib.contextmanager
-def _pristine_dynamo_state(sample: _Sample):
-    """Trace as a first compile would: automatic-dynamic history isolated and restored, the recorded compiler config."""
-    import torch
-    from torch._dynamo import pgo
-
-    saved_state = pgo._CODE_STATE
-    cfg = torch.compiler.config
-    saved_cfg = (getattr(cfg, "dynamic_sources", None), getattr(cfg, "unbacked_sources", None))
-    saved_aot = torch._dynamo.config.enable_aot_compile
-    try:
-        pgo._CODE_STATE = None
-        if hasattr(cfg, "dynamic_sources"):
-            cfg.dynamic_sources = sample.dynamic_sources
-        if hasattr(cfg, "unbacked_sources"):
-            cfg.unbacked_sources = sample.unbacked_sources
-        torch._dynamo.config.enable_aot_compile = True
-        yield
-    finally:
-        pgo._CODE_STATE = saved_state
-        if hasattr(cfg, "dynamic_sources"):
-            cfg.dynamic_sources = saved_cfg[0]
-        if hasattr(cfg, "unbacked_sources"):
-            cfg.unbacked_sources = saved_cfg[1]
-        torch._dynamo.config.enable_aot_compile = saved_aot
-
-
 def _compiler(fn: Callable, compile_kwargs: dict[str, Any]) -> Any:
     """``torch.compile`` with the regional compile's settings, around the block class's ``forward``: the code object
     the normal path traces, so dynamo's per-code bookkeeping lands where it would have."""
     import torch
 
-    kwargs: dict[str, Any] = {"fullgraph": True, "dynamic": compile_kwargs.get("dynamic")}
+    dynamic = compile_kwargs.get("dynamic")
+    # torch.compile takes the guard filter only through ``options``, and refuses ``mode`` next to ``options``: a mode
+    # is passed as the inductor options it stands for (the same config patch, so the same graphs and cache keys).
+    options: dict[str, Any] = {}
     if compile_kwargs.get("mode"):
-        kwargs["mode"] = compile_kwargs["mode"]
-    return torch.compile(fn, **kwargs)
+        from torch._inductor import list_mode_options
 
-
-def _aot_compile_sample(sample: _Sample, compile_kwargs: dict[str, Any]) -> tuple[bool, Optional[bytes], str]:
-    import torch
-    from torch._dynamo.utils import counters
-
-    before = {k: counters["inductor"].get(k, 0) for k in ("fxgraph_cache_hit", "fxgraph_cache_miss",
-                                                           "fxgraph_cache_bypass")}
-    mode = torch.inference_mode() if sample.inference else torch.no_grad()
-    if sample.device is not None:
-        torch.cuda.set_device(sample.device)
-    with _pristine_dynamo_state(sample), mode:
-        # Built inside: torch.compile only attaches .aot_compile while enable_aot_compile is on.
-        cf = _compiler(type(sample.module).forward, compile_kwargs)
-        fn = cf.aot_compile(((sample.module,) + tuple(sample.args), sample.kwargs))
-        guard_ok = bool(fn.guard_check(sample.module, *sample.args, **sample.kwargs))
-    delta = {k: counters["inductor"].get(k, 0) - v for k, v in before.items()}
-    if not guard_ok:
-        return False, None, "its guards reject the inputs it was traced from"
-    if delta["fxgraph_cache_miss"] or delta["fxgraph_cache_bypass"] or delta["fxgraph_cache_hit"] < 1:
-        # A miss means this trace lowered a graph the normal path did not: other kernels, possibly other bits.
-        return False, None, "FX cache " + ", ".join(f"{k[13:]}={v}" for k, v in delta.items())
-    res = type(fn).serialize(fn)
-    data = getattr(res, "serialized_data", res)  # torch 2.10 returns the bytes themselves
-    return True, data, "ok"
+        options.update(list_mode_options(compile_kwargs["mode"], dynamic))
+    options["guard_filter_fn"] = _guard_filter
+    return torch.compile(fn, fullgraph = True, dynamic = dynamic, options = options)
 
 
 # ---- wiring --------------------------------------------------------------------------------------------------------
@@ -573,24 +604,6 @@ def bind(pipe: Any, compile_ctx: Any) -> int:
         reg.dir = Path(cdir) / "aot" / subkey(reg.compile_kwargs)
         count += 1
     return count
-
-
-def schedule_save(pipe: Any, name: str = "diffusion") -> int:
-    """Queue one render-thread job per pending recording. Each yields to a queued render. Returns jobs queued."""
-    from . import diffusion_render_thread as render_thread
-
-    queued = 0
-    for reg in registries(pipe):
-        for key in reg.pending():
-            sample = reg.recorded.get(key)
-            if sample is None or key in reg.queued:
-                continue
-            if render_thread.submit_idle(name, lambda r = reg, k = key: r.save_one(k), device = sample.device):
-                reg.queued.add(key)
-                queued += 1
-        if queued:
-            reg._log("info", "diffusion.aot_blocks: queued %d block graph(s) to persist after this render", queued)
-    return queued
 
 
 def warm_compiler(pool: bool) -> None:
