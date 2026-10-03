@@ -4311,6 +4311,29 @@ def test_h3_native_bf16_cublas_never_on_the_cpu_build(monkeypatch, tmp_path):
         assert state.pipe.env == (), mode
 
 
+def test_h3_native_status_names_the_matmul_route(monkeypatch, tmp_path):
+    """The speed_mode reason says BF16 cuBLAS exactly when sd-cli gets a nonzero value for it."""
+    monkeypatch.delenv("UNSLOTH_H3_SAGE_ATTN", raising = False)
+    monkeypatch.delenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", raising = False)
+
+    def reason(**kw):
+        state, _offload = _load_h3_native_offload(monkeypatch, tmp_path, help_text = _SAGE_HELP, **kw)
+        return state.resolved["speed_mode"]["reason"]
+
+    assert reason(devices = _cuda_devices("10.0")) == "sd.cpp BF16 cuBLAS matmuls"
+    assert (
+        reason(devices = _cuda_devices("10.0"), speed_mode = "max")
+        == "sd.cpp SageAttention + BF16 cuBLAS"
+    )
+    assert reason(devices = _cuda_devices("7.5")) == "sd.cpp exact kernels"
+    assert reason(devices = _cuda_devices("7.5"), speed_mode = "max") == "sd.cpp SageAttention"
+    assert reason(accelerator = False) == "sd.cpp exact kernels"
+    monkeypatch.setenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", "0")
+    assert reason(devices = _cuda_devices("10.0"), speed_mode = "max") == "sd.cpp SageAttention"
+    monkeypatch.setenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", "2048")
+    assert reason(devices = _cuda_devices("7.5")) == "sd.cpp BF16 cuBLAS matmuls"
+
+
 def test_h3_native_generate_hands_the_runtime_env_to_sd_cli(monkeypatch):
     import dataclasses
 

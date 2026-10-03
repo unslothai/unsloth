@@ -3578,6 +3578,11 @@ class VideoBackend:
             # faster and more accurate with it; a user-exported value (0 included) wins.
             from .video_minimax_h3 import h3_quant_cublas_env
             native_env += h3_quant_cublas_env(native_cuda_cc, sage = h3_sage)
+        from .video_minimax_h3 import H3_QUANT_CUBLAS_ENV
+
+        h3_quant_cublas = native_device != "cpu" and dict(native_env).get(
+            H3_QUANT_CUBLAS_ENV, os.environ.get(H3_QUANT_CUBLAS_ENV, "")
+        ).strip() not in ("", "0")
         # After the policy, so the pin can see which modules it left on the CPU; without it sd.cpp uses ordinal 0
         # whatever was selected.
         native_offload += tuple(device_backend_flags(native_device_name, list(native_offload)))
@@ -3658,9 +3663,12 @@ class VideoBackend:
                                 "speed_mode": (
                                     speed_mode,
                                     SPEED_MAX if h3_sage else SPEED_OFF,
-                                    "sd.cpp SageAttention + BF16 cuBLAS"
-                                    if h3_sage
-                                    else "sd.cpp exact kernels",
+                                    {
+                                        (True, True): "sd.cpp SageAttention + BF16 cuBLAS",
+                                        (True, False): "sd.cpp SageAttention",
+                                        (False, True): "sd.cpp BF16 cuBLAS matmuls",
+                                        (False, False): "sd.cpp exact kernels",
+                                    }[(bool(h3_sage), bool(h3_quant_cublas))],
                                 ),
                                 "attention_backend": (
                                     None,
