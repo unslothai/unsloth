@@ -9016,6 +9016,45 @@ class LlamaCppBackend:
         return ",".join(rendered)
 
     @staticmethod
+    def _discrete_first_split(
+        gpu_indices: List[int],
+        usable_mib: dict[int, float],
+        shared_gpu_ids: Iterable[int],
+        layered_mib: float,
+        per_device_mib: float = 0.0,
+    ) -> Optional[List[float]]:
+        """``--tensor-split`` shares, positional over ``gpu_indices``, that fill the
+        discrete cards before any shared-memory iGPU.
+
+        Without a split llama.cpp divides layers by free memory, and an iGPU reports
+        its whole shared pool, so it took the larger share of a pin it was only meant
+        to top up (a 27B on a 12 GB card plus a Ryzen iGPU: 4.8 GB on the card,
+        8.3 GB on the iGPU, 1 t/s). ``layered_mib`` is what the split divides
+        (weights + KV); ``per_device_mib`` is held back on each card for its own
+        compute buffer. None unless the pin mixes both kinds.
+        """
+        shared = set(shared_gpu_ids)
+        discrete = [i for i in gpu_indices if i not in shared]
+        igpus = [i for i in gpu_indices if i in shared]
+        if not discrete or not igpus or layered_mib <= 0:
+            return None
+        caps = {i: max(0.0, usable_mib.get(i, 0.0) - per_device_mib) for i in discrete}
+        if sum(caps.values()) <= 0:
+            return None
+        left = layered_mib
+        shares: dict[int, float] = {}
+        for i in sorted(discrete, key = lambda d: caps[d], reverse = True):
+            shares[i] = min(caps[i], left)
+            left -= shares[i]
+        igpu_room = {i: max(0.0, usable_mib.get(i, 0.0)) for i in igpus}
+        room_total = sum(igpu_room.values())
+        for i in igpus:
+            shares[i] = (
+                left * igpu_room[i] / room_total if room_total > 0 else left / len(igpus)
+            )
+        return [shares[i] for i in gpu_indices]
+
+    @staticmethod
     def _auto_split_fingerprint(tensor_split: Optional[List[float]]) -> Optional[tuple[float, ...]]:
         """What an auto-mode load ASKED for, as a comparable ratio.
 
@@ -16245,6 +16284,7 @@ class LlamaCppBackend:
         total_by_idx: Optional[dict[int, int]] = None,
         per_device_overhead_bytes: int = 0,
         min_gpus: int = 1,
+        shared_gpu_ids: Optional[Iterable[int]] = None,
     ) -> tuple[Optional[list[int]], bool]:
         """Pick GPU(s) for a model from estimated VRAM and free memory.
 
@@ -16260,6 +16300,8 @@ class LlamaCppBackend:
         ``per_device_overhead_bytes`` is the fixed layer-split cost per GPU beyond
         the first; a k-GPU pin must hold ``model + (k-1) * overhead`` or it can OOM
         a device after -ngl -1 (no --fit fallback). Single-GPU adds none.
+        ``shared_gpu_ids`` (iGPUs whose "VRAM" is host RAM) rank after every
+        discrete card, so their larger shared pool never outranks real VRAM.
 
         Returns (gpu_indices, use_fit):
           - ([1], False)       fits on 1 GPU at the headroom threshold
@@ -16288,7 +16330,10 @@ class LlamaCppBackend:
 
         # Rank by usable budget (free - reserve), not raw free: a more-used large
         # card can have less usable room than a less-used small one.
-        ranked = sorted(gpus, key = lambda g: _usable(g[0], g[1]), reverse = True)
+        _shared = set(shared_gpu_ids or ())
+        ranked = sorted(
+            gpus, key = lambda g: (g[0] not in _shared, _usable(g[0], g[1])), reverse = True
+        )
 
         # Cap a downgraded multi-GPU request to the usable count so it doesn't pull
         # in a near-full card to hit min_gpus. No-op for the default min_gpus == 1.
@@ -16329,6 +16374,7 @@ class LlamaCppBackend:
         per_device_overhead_bytes: int = 0,
         min_gpus: int = 1,
         split_extra_bytes: int = 0,
+        shared_gpu_ids: Optional[Iterable[int]] = None,
     ) -> tuple[Optional[list[int]], bool]:
         """``_select_gpus``, re-checked at the multi-device context-compute rate.
 
@@ -16348,6 +16394,7 @@ class LlamaCppBackend:
             total_by_idx = total_by_idx,
             per_device_overhead_bytes = per_device_overhead_bytes,
             min_gpus = min_gpus,
+            shared_gpu_ids = shared_gpu_ids,
         )
         if use_fit or split_extra_bytes <= 0 or not gpu_indices or len(gpu_indices) < 2:
             return gpu_indices, use_fit
@@ -16358,6 +16405,7 @@ class LlamaCppBackend:
             total_by_idx = total_by_idx,
             per_device_overhead_bytes = per_device_overhead_bytes + split_extra_bytes,
             min_gpus = min_gpus,
+            shared_gpu_ids = shared_gpu_ids,
         )
         if not retry_fit and retry_indices and len(retry_indices) >= 2:
             return retry_indices, retry_fit
@@ -16368,6 +16416,7 @@ class LlamaCppBackend:
             total_by_idx = total_by_idx,
             per_device_overhead_bytes = per_device_overhead_bytes,
             min_gpus = 1,
+            shared_gpu_ids = shared_gpu_ids,
         )
         if not single_fit and single is not None and len(single) == 1:
             return single, False
@@ -17598,6 +17647,7 @@ class LlamaCppBackend:
         ctx_checkpoints: int = 0,
         include_requested: bool = False,
         exact: bool = False,
+        shared_gpu_ids: Optional[Iterable[int]] = None,
     ) -> tuple[Optional[list[int]], bool, int]:
         """Largest serving-slot count that fits fully on GPU, so Unsloth keeps the model on
         GPU (-ngl -1) instead of --fit on, which offloads layers to host and collapses decode
@@ -17659,6 +17709,7 @@ class LlamaCppBackend:
                 split_extra_bytes = (
                     split_extra_for_slots(slots) if split_extra_for_slots else split_extra_bytes
                 ),
+                shared_gpu_ids = shared_gpu_ids,
             )
             if not use_fit:
                 return gpu_indices, False, slots
@@ -25976,6 +26027,7 @@ class LlamaCppBackend:
                                 + _cc_bytes(_mm_floor_ctx),
                                 min_gpus = _layer_min_gpus,
                                 split_extra_bytes = _cc_split_extra(_mm_floor_ctx),
+                                shared_gpu_ids = _shared_gpu_ids,
                             )
                             if _mm_split_aware
                             else self._select_gpus(
@@ -25985,6 +26037,7 @@ class LlamaCppBackend:
                                 total_by_idx = total_by_idx,
                                 per_device_overhead_bytes = _pipeline_overhead_bytes,
                                 min_gpus = _layer_min_gpus,
+                                shared_gpu_ids = _shared_gpu_ids,
                             )
                         )
                         if _mm_needs_fit:
@@ -26517,6 +26570,7 @@ class LlamaCppBackend:
                                 + _cc_bytes(effective_ctx),
                                 min_gpus = _layer_min_gpus,
                                 split_extra_bytes = _cc_split_extra(effective_ctx),
+                                shared_gpu_ids = _shared_gpu_ids,
                             )
                             # No silent shrink: effective_ctx stays == requested_ctx.
                             # use_fit = the pin failed and --fit on will offload; say why.
@@ -26574,6 +26628,7 @@ class LlamaCppBackend:
                                             split_extra_bytes = _cc_split_extra(
                                                 effective_ctx, cache_type = "q8_0"
                                             ),
+                                            shared_gpu_ids = _shared_gpu_ids,
                                         )
                                         _q8_fits = not _q8_use_fit
                                 _cuda_ctx_notice = self._cuda_context_overcommit_notice(
@@ -26719,6 +26774,7 @@ class LlamaCppBackend:
                             total_by_idx = total_by_idx,
                             per_device_overhead_bytes = _pipeline_overhead_bytes,
                             min_gpus = _layer_min_gpus,
+                            shared_gpu_ids = _shared_gpu_ids,
                         )
                         if use_fit and not explicit_ctx:
                             # Without KV metadata, llama.cpp owns the fit. Keep the
@@ -27059,6 +27115,7 @@ class LlamaCppBackend:
                             ubatch_for_slots = _ubatch_for_slots,
                             mtp_bytes_for_slots = lambda s, ub: _mtp_bytes(_reduce_ctx, s, ub),
                             ctx_checkpoints = _fit_ctx_checkpoints,
+                            shared_gpu_ids = _shared_gpu_ids,
                         )
                         if not _uf_slots:
                             _slots_asked = n_parallel
@@ -27094,6 +27151,7 @@ class LlamaCppBackend:
                                     include_requested = True,
                                     exact = True,  # only n_parallel is accepted below
                                     ctx_checkpoints = _fit_ctx_checkpoints,
+                                    shared_gpu_ids = _shared_gpu_ids,
                                 )
                                 return _gi if not _uf and _got == n_parallel else None
 
@@ -27997,6 +28055,29 @@ class LlamaCppBackend:
                     # and offloads ~1 GB at --parallel 4 even though the model fits.
                     cmd.extend(["-ngl", "-1", "--fit", "off"])
                     fully_gpu_offloaded = True
+                    _mixed_split = (
+                        self._discrete_first_split(
+                            list(gpu_indices),
+                            _spill_inputs["gpu_usable_mib"],
+                            _shared_gpu_ids,
+                            (_spill_inputs["model_size"] + _spill_inputs["kv_cache_bytes"])
+                            / (1024 * 1024),
+                            _spill_inputs["ctx_compute_per_device"] / (1024 * 1024),
+                        )
+                        if _shared_gpu_ids
+                        and _spill_inputs is not None
+                        and not tensor_parallel
+                        and not _extra_args_set_any_flag(extra_args, _TENSOR_SPLIT_FLAGS)
+                        else None
+                    )
+                    if _mixed_split is not None:
+                        cmd.extend(["--tensor-split", self._format_tensor_split(_mixed_split)])
+                        logger.info(
+                            "Filling discrete GPU(s) before the shared-memory iGPU: "
+                            "--tensor-split %s over %s",
+                            cmd[-1],
+                            list(gpu_indices),
+                        )
 
                 # Expose Prometheus /metrics for the engine-stats logger, only
                 # when the binary advertises it (older/custom binaries may not).
