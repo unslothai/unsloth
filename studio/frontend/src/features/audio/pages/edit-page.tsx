@@ -29,7 +29,6 @@ import { useAudioEditStore } from "../stores/audio-edit-store";
 import { AudioToolPanels } from "../tools/tool-panel-host";
 import { TtsFooter, TtsOutput, TtsRailFields } from "./tts-workspace";
 
-// Downloaded first-choice edit models, in the order the picker offers them.
 const EDIT_MODEL_ORDER = [
   "DotTTS-Edit-GGUF",
   "Vevo2-GGUF",
@@ -41,7 +40,6 @@ function editRank(id: string): number {
   return index === -1 ? EDIT_MODEL_ORDER.length : index;
 }
 
-/** Edit's picker rows: catalog models that can edit speech, the recommended ones first. */
 export function editPageModels(
   models: ModelOption[],
   isMac: boolean,
@@ -73,11 +71,7 @@ type RailProps = Omit<
   | "claimedOptions"
 >;
 
-function formatSpeed(speed: number): string {
-  return `${Number(speed.toFixed(2))}×`;
-}
-
-/** Puts the cursor on ②'s last word, selected, so typing replaces it. */
+/** Selects ②'s last word so typing replaces it. */
 function selectLastWord(field: HTMLTextAreaElement | null) {
   if (!field) return;
   const match = /([\p{L}\p{N}'’-]+)[^\p{L}\p{N}]*$/u.exec(field.value);
@@ -86,7 +80,6 @@ function selectLastWord(field: HTMLTextAreaElement | null) {
     field.setSelectionRange(match.index, match.index + match[1].length);
 }
 
-/** Edit's own inputs: the recording, ① its transcript, ② the changes, and the mode. */
 function EditInputs({
   edit,
   historyClips,
@@ -239,7 +232,7 @@ function EditInputs({
             min={deliveryRange.speed[0]}
             max={deliveryRange.speed[1]}
             step={deliveryRange.speed[2]}
-            displayValue={formatSpeed(delivery.speed)}
+            displayValue={`${Number(delivery.speed.toFixed(2))}×`}
             disabled={disabled}
             onChange={(speed) => setDelivery({ speed })}
           />
@@ -269,8 +262,6 @@ function EditInputs({
   );
 }
 
-/** Edit's rail: its inputs, then the model's tools (how it applies edits, the request preview),
- *  the device and Advanced, as on Clone. */
 export function EditRail({
   edit,
   historyClips,
@@ -309,7 +300,6 @@ export function EditRail({
   );
 }
 
-/** Generate; Vevo2's mode-switch cost is said in the rail, before the run that pays it. */
 export function EditFooter({
   edit,
   ...props
@@ -337,7 +327,6 @@ function galleryFileUrl(id: string): string {
   return `/api/inference/audio/gallery/${encodeURIComponent(id)}/file`;
 }
 
-/** The selected edit as Original | Edited in one player, which keeps its place across the switch. */
 function EditComparePlayer({
   clip,
   src,
@@ -361,7 +350,7 @@ function EditComparePlayer({
         setOriginalSrc(url);
       })
       .catch(() => {
-        // The original was deleted: the compare still plays the edit.
+        // Original deleted: the compare still plays the edit.
       });
     return () => {
       cancelled = true;
@@ -387,7 +376,6 @@ function EditComparePlayer({
   );
 }
 
-/** Edit's output: the selected edit with Original | Edited, then Edit's history. */
 export function EditOutput({
   modelReady,
   recommendedModels = [],

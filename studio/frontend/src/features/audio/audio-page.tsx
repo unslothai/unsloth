@@ -758,11 +758,13 @@ export function AudioPage({
   const pageRootRef = useRef<HTMLDivElement | null>(null);
   const generateShortcut = useRef<() => void>(() => {});
   const handlePageGenerate =
-    ttsWorkflow === "clone" ? clone.handleGenerate : handleGenerate;
-  const handleWorkflowGenerate =
-    ttsWorkflow === "edit" ? edit.handleGenerate : handlePageGenerate;
+    ttsWorkflow === "clone"
+      ? clone.handleGenerate
+      : ttsWorkflow === "edit"
+        ? edit.handleGenerate
+        : handleGenerate;
   generateShortcut.current = () => {
-    if (canGenerate) void handleWorkflowGenerate();
+    if (canGenerate) void handlePageGenerate();
   };
   useEffect(() => {
     if (!active) return;
@@ -842,11 +844,9 @@ export function AudioPage({
           ? audioCapabilityLine(
               musicGeneration
                 ? "music"
-                : ttsWorkflow === "clone"
-                  ? "clone"
-                  : ttsWorkflow === "edit"
-                    ? "edit"
-                    : "tts",
+                : ttsWorkflow === "clone" || ttsWorkflow === "edit"
+                  ? ttsWorkflow
+                  : "tts",
               status?.audio_type,
             )
           : ttsWorkflow === "clone"

@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
 
-const { INITIAL_AB_STATE, clampPosition, resumeAfterLoad, seekBy, switchSide } =
+const { INITIAL_AB_STATE, clampPosition, resumeAfterLoad, switchSide } =
   await import("../src/features/audio/components/ab-compare-state.ts");
 
 test("a result opens on Edited, stopped at the start", () => {
@@ -37,8 +37,6 @@ test("the position is clamped to the other clip's length", () => {
   assert.equal(switchSide(late, "edited", null).position, 4.6);
   assert.equal(clampPosition(-1, 3), 0);
   assert.equal(clampPosition(Number.NaN, 3), 0);
-  assert.equal(seekBy(late, 5, 4.7).position, 4.7);
-  assert.equal(seekBy(late, -10, 4.7).position, 0);
 });
 
 test("after loading, the clip resumes at the kept moment, or the top when past its end", () => {

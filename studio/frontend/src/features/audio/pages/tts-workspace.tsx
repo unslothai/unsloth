@@ -496,8 +496,7 @@ export function TtsOutput({
     announcement: string;
     /** A short tag after a clip's text, such as the voice a clone used. */
     clipBadge?: (clip: AudioGalleryClip) => string | null;
-    /** Plays the selected clip instead of the plain player (Edit's Original | Edited compare).
-     *  `focusRef` goes on its first control so a fresh clip takes focus as the player would. */
+    /** Replaces the plain player; `focusRef` goes on its first control. */
     selectedPlayer?: (
       clip: AudioGalleryClip,
       src: string,
@@ -509,7 +508,6 @@ export function TtsOutput({
     element.focus();
     onFreshClipFocused();
   };
-  // Null when the page has no player of its own for this clip; the plain one plays it then.
   const customPlayer =
     selectedClip && selectedClipSrc && selectedPlayer
       ? selectedPlayer(

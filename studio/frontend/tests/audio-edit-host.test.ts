@@ -14,10 +14,6 @@ const output = readSrc("features/audio/pages/tts-workspace.tsx");
 
 test("Edit runs through its own hook, from the button and from Mod+Enter", () => {
   assert.match(host, /const edit = useEditGeneration\(\{/);
-  assert.match(
-    host,
-    /const handleWorkflowGenerate =\s*ttsWorkflow === "edit" \? edit\.handleGenerate : handlePageGenerate;/,
-  );
   assert.match(host, /handleGenerate=\{edit\.handleGenerate\}|edit=\{edit\}/);
   assert.match(page, /handleGenerate=\{edit\.handleGenerate\}/);
   assert.match(host, /: ttsWorkflow === "edit"\s*\? edit\.blocker/);
@@ -38,7 +34,7 @@ test("Edit lists only models that can edit, DotTTS Edit first", () => {
 });
 
 test("history hides an edit's original, and the selected edit plays as Original | Edited", () => {
-  assert.match(gallery, /\.filter\(\(clip\) => clip\.role !== "source"\)/);
+  assert.match(gallery, /clip\.role !== "source"/);
   assert.match(page, /clip\.source_clip_id \?/);
   assert.match(page, /<ABCompare/);
   // A clip without an original falls back to the plain player.

@@ -41,17 +41,13 @@ import { useReferenceTranscribe } from "./use-reference-transcribe";
 export const EDIT_TRANSCRIPT_FIELD_ID = "edit-transcript";
 export const EDIT_CHANGES_FIELD_ID = "edit-changes";
 
-/** Picking a recording fills ① with what it already says (a history clip's text); a new one
- *  without text clears the old transcript so it gets transcribed again. */
+/** A new recording restarts ① from its own text (a history clip's), or clears it for STT. */
 export function adoptEditSource(next: AudioSourceSelection | null) {
   const store = useAudioEditStore.getState();
-  if (next?.id === store.source?.id && next?.kind === store.source?.kind) {
-    store.setSource(next);
-    return;
-  }
+  const same =
+    next?.id === store.source?.id && next?.kind === store.source?.kind;
   store.setSource(next);
-  if (!next) return;
-  // A new recording starts its changes over from its own transcript.
+  if (same || !next) return;
   useAudioEditStore.setState({ editedTouched: false });
   store.setTranscript(
     next.transcript?.trim() ?? "",
@@ -59,8 +55,7 @@ export function adoptEditSource(next: AudioSourceSelection | null) {
   );
 }
 
-/** Edit: its draft (kept in the edit store), the model's adapter and tools, what holds Generate
- *  back, and the run. Mirrors useCloneGeneration so Stop, phases and errors behave the same. */
+/** Mirrors useCloneGeneration so Stop, phases and errors behave the same. */
 export function useEditGeneration({
   status,
   busyRef,
@@ -102,9 +97,7 @@ export function useEditGeneration({
   Pick<AudioModelSlot, "pendingTranscribeRelease" | "replayQueuedTtsPick"> & {
     audioOptionSpecs: AudioOptionSpec[];
     audioOptionValues: AudioOptionValues;
-    /** Transcribe's selected or last speech-to-text repo, for ①. */
     sttRepo: string | null;
-    /** Takes the user to Transcribe to get a speech-to-text model. */
     onOpenTranscribe: () => void;
   }) {
   const source = useAudioEditStore((state) => state.source);
@@ -143,7 +136,6 @@ export function useEditGeneration({
     [status],
   );
   const adapter = useMemo(() => editAdapterFor(toolContext), [toolContext]);
-  // Delivery shows only for a model that can change it; Words otherwise.
   const mode =
     editMode === "delivery" && adapter?.delivery ? "delivery" : "words";
   const toolPanels = useMemo(
@@ -214,7 +206,7 @@ export function useEditGeneration({
   const sourceBusy =
     sourceStatus.phase === "uploading" || sourceStatus.phase === "recording";
 
-  // ① fills itself once per recording: speech-to-text runs as soon as the recording is usable.
+  // ① transcribes itself once per recording.
   const autoTranscribed = useRef<string | null>(null);
   const transcribe = transcriber.transcribe;
   useEffect(() => {
@@ -231,10 +223,6 @@ export function useEditGeneration({
     transcript,
     transcribe,
   ]);
-
-  const focusField = useCallback((id: string) => {
-    document.getElementById(id)?.focus();
-  }, []);
 
   const inputBlocker = editBlocker({
     source,
@@ -266,7 +254,7 @@ export function useEditGeneration({
           void transcribe(useAudioEditStore.getState().source);
           return;
         case "type-transcript":
-          focusField(EDIT_TRANSCRIPT_FIELD_ID);
+          document.getElementById(EDIT_TRANSCRIPT_FIELD_ID)?.focus();
           return;
         case "open-transcribe":
           onOpenTranscribe();
@@ -276,7 +264,7 @@ export function useEditGeneration({
           return;
       }
     },
-    [sourceExpired, transcribe, focusField, onOpenTranscribe],
+    [sourceExpired, transcribe, onOpenTranscribe],
   );
   const blocker: GenerateBlocker | null = inputBlocker
     ? {
@@ -398,7 +386,6 @@ export function useEditGeneration({
     replayQueuedTtsPick,
   ]);
 
-  // A new recording clears a failure that was about the old one.
   useEffect(() => {
     if (source) setGenerationError(null);
   }, [source]);
@@ -424,12 +411,10 @@ export function useEditGeneration({
     advancedOptionSpecs,
     core,
     blocker,
-    /** Whether the page inputs are complete; the host still checks the model. */
     inputsReady: inputBlocker === null,
     handleGenerate,
     generationError,
     setGenerationError,
-    /** "Applying 3 changes, one pass each" while a chained FireRedAudio run is going. */
     phaseLabel,
   };
 }

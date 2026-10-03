@@ -23,22 +23,17 @@ const SEEK_STEP_SECONDS = 5;
 const DECODE_MAX_BYTES = 60 * 1024 * 1024;
 
 export interface ABClip {
-  /** A playable URL, normally an object URL of the clip. */
   src: string | null;
-  /** Where the server serves the clip, to draw its bars from. The page's CSP blocks fetching
-   *  an object URL, so without it the bars stay flat. */
+  /** Server URL to draw bars from: the page CSP blocks fetching an object URL. */
   fileUrl?: string | null;
-  /** What the clip is, for screen readers. */
   label: string;
   durationS: number | null;
 }
 
-/** Bar heights for a clip, decoded in the browser; null when it cannot be decoded. */
 async function decodeClipPeaks(
   src: string,
   signal: AbortSignal,
 ): Promise<number[] | null> {
-  // Object URLs cannot be fetched under the app's connect-src; callers pass the server's URL.
   if (src.startsWith("blob:")) return null;
   const blob = src.startsWith("data:")
     ? await (await fetch(src, { signal })).blob()
@@ -61,7 +56,6 @@ async function decodeClipPeaks(
   );
 }
 
-/** The bars of every clip shown, keyed by src, decoded once each. */
 function useClipPeaks(srcs: readonly (string | null)[]) {
   const [peaks, setPeaks] = useState<Record<string, number[] | null>>({});
   const key = srcs.join("\n");
@@ -85,12 +79,7 @@ function useClipPeaks(srcs: readonly (string | null)[]) {
   return peaks;
 }
 
-/** The original and the edited clip on one player. Switching sides keeps the moment and whether
- *  it was playing, so the change can be heard both ways. The bars are the clip's level, played
- *  part in the text colour and the rest muted, and the position is also spoken, so colour never
- *  carries it alone. Focus the bars and press Space to play or pause, arrows to seek, Home to go
- *  to the start. Nothing animates, so reduced motion needs no separate state. Opens on Edited,
- *  stopped. */
+/** Original | Edited on one player; switching sides keeps the moment and the playing state. */
 export function ABCompare({
   original,
   edited,
@@ -99,7 +88,6 @@ export function ABCompare({
 }: {
   original: ABClip;
   edited: ABClip;
-  /** Gets the play button, so the host can focus it after a run. */
   autoFocusRef?: Ref<HTMLButtonElement>;
   className?: string;
 }) {
@@ -108,8 +96,7 @@ export function ABCompare({
   const [mediaDuration, setMediaDuration] = useState<
     Partial<Record<ABSide, number>>
   >({});
-  // Set while the element loads the other side, so its pause and time events are not taken as
-  // the user's.
+  // Set while the element loads the other side, so its pause/time events are not the user's.
   const pendingRef = useRef<ABState | null>(null);
   const originalBarsSrc = original.fileUrl ?? original.src;
   const editedBarsSrc = edited.fileUrl ?? edited.src;
@@ -130,7 +117,6 @@ export function ABCompare({
   const count = bars?.length ?? WAVEFORM_BARS;
   const src = current.src;
 
-  // New clips (another result) start over on Edited, stopped.
   // biome-ignore lint/correctness/useExhaustiveDependencies: the srcs are the trigger, not inputs.
   useEffect(() => {
     pendingRef.current = null;

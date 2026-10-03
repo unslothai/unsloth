@@ -24,10 +24,19 @@ test("the host calls its hooks in the order their effects ran in the single page
     "useSpeechGeneration(",
     "useAudioHandoff(",
   ].map((call) => host.indexOf(call));
-  assert.ok(order.every((at) => at > 0), String(order));
-  assert.deepEqual([...order].sort((a, b) => a - b), order);
+  assert.ok(
+    order.every((at) => at > 0),
+    String(order),
+  );
+  assert.deepEqual(
+    [...order].sort((a, b) => a - b),
+    order,
+  );
   // The activation resync still runs before the slot's deactivation effect.
-  assert.ok(host.indexOf("// Resync on activation") < host.indexOf("useAudioModelSlot("));
+  assert.ok(
+    host.indexOf("// Resync on activation") <
+      host.indexOf("useAudioModelSlot("),
+  );
 });
 
 test("only the page commits a workflow; the sidebar's request goes through the same gate", () => {
@@ -40,7 +49,10 @@ test("only the page commits a workflow; the sidebar's request goes through the s
     /const transitionWorkflow = useCallback\(\s*\(next: AudioWorkflowId\) => \{\s*if \(!transitionMode\(slotForWorkflow\(next\)\)\) return false;\s*useAudioWorkspaceStore\.getState\(\)\.commitWorkflow\(next\);/,
   );
   // A failed Transcribe release puts mode back on Transcribe; the workflow follows it.
-  assert.match(host, /mode === "transcribe" \? "transcribe" : musicGeneration \? "music" : "speak"/);
+  assert.match(
+    host,
+    /mode === "transcribe" \? "transcribe" : musicGeneration \? "music" : "speak"/,
+  );
 });
 
 test("a loaded model opens the page that fits it", () => {
@@ -53,7 +65,9 @@ test("a loaded model opens the page that fits it", () => {
 });
 
 test("?workflow= names the page ahead of ?task=, and both clear the URL", () => {
-  const workflowAt = handoff.indexOf("const routedWorkflow = routeSearch.workflow;");
+  const workflowAt = handoff.indexOf(
+    "const routedWorkflow = routeSearch.workflow;",
+  );
   const taskAt = handoff.indexOf("const task = routeSearch.task;");
   assert.ok(workflowAt > 0 && workflowAt < taskAt);
   assert.match(
@@ -70,41 +84,63 @@ test("?workflow= names the page ahead of ?task=, and both clear the URL", () => 
 });
 
 test("Speak and Music keep separate drafts that survive a reload", () => {
-  assert.match(generation, /readLastPrompt\(ttsDraftKey\("prompt", "speak"\)\)/);
-  assert.match(generation, /readLastPrompt\(ttsDraftKey\("prompt", "music"\)\)/);
+  assert.match(
+    generation,
+    /readLastPrompt\(ttsDraftKey\("prompt", "speak"\)\)/,
+  );
+  assert.match(
+    generation,
+    /readLastPrompt\(ttsDraftKey\("prompt", "music"\)\)/,
+  );
   // Speak keeps the key the single page used, so an existing draft is not lost.
-  assert.match(generation, /const base = workflow === "music" \? "audio:music" : "audio";/);
-  assert.match(generation, /saveLastPrompt\(ttsDraftKey\(field, page\), next\);/);
+  assert.match(
+    generation,
+    /const base = workflow === "music" \? "audio:music" : "audio";/,
+  );
+  assert.match(
+    generation,
+    /saveLastPrompt\(ttsDraftKey\(field, page\), next\);/,
+  );
 });
 
 test("history is per page, and Clear all clears only that page", () => {
-  assert.match(gallery, /clips\.filter\(\(clip\) => clipWorkflow\(clip\) === workflow\)/);
+  assert.match(
+    gallery,
+    /clips\.filter\(\(clip\) => clipWorkflow\(clip\) === workflow/,
+  );
   assert.match(gallery, /await clearAudioGallery\(workflow\);/);
   assert.match(host, /\(\) => handleClearGallery\(ttsWorkflow\)/);
 });
 
 test("Create|Train shows only where the page trains", () => {
-  assert.match(host, /\{workflowTab\.createTrain \? \(\s*<PillTabs\s*ariaLabel="Page mode"/);
+  assert.match(
+    host,
+    /\{workflowTab\.createTrain \? \(\s*<PillTabs\s*ariaLabel="Page mode"/,
+  );
 });
 
 test("Generate says why it is off and runs from Mod+Enter anywhere on the page", () => {
   assert.match(host, /: "Type the text to speak\."/);
-  assert.match(host, /const chooseModelAction = \{ label: "Choose a model", onClick: openSelector \};/);
-  assert.match(host, /\{ label: "Choose a music model", onClick: openSelector \}/);
+  assert.match(
+    host,
+    /const chooseModelAction = \{ label: "Choose a model", onClick: openSelector \};/,
+  );
+  assert.match(
+    host,
+    /\{ label: "Choose a music model", onClick: openSelector \}/,
+  );
   // A failed run keeps its reason under Generate until the next run.
-  assert.match(host, /if \(busy === "generating"\) setGenerationError\(null\);/);
+  assert.match(
+    host,
+    /if \(busy === "generating"\) setGenerationError\(null\);/,
+  );
   assert.match(host, /!pageRootRef\.current\?\.contains\(event\.target\)/);
   // Clone runs through its own hook; the shortcut follows the page.
   assert.match(
     host,
-    /const handlePageGenerate =\s*ttsWorkflow === "clone" \? clone\.handleGenerate : handleGenerate;/,
+    /const handlePageGenerate =\s*ttsWorkflow === "clone"\s*\? clone\.handleGenerate\s*: ttsWorkflow === "edit"\s*\? edit\.handleGenerate\s*: handleGenerate;/,
   );
-  // Edit runs through its own hook too, picked on a line of its own.
-  assert.match(
-    host,
-    /const handleWorkflowGenerate =\s*ttsWorkflow === "edit" \? edit\.handleGenerate : handlePageGenerate;/,
-  );
-  assert.match(host, /if \(canGenerate\) void handleWorkflowGenerate\(\);/);
+  assert.match(host, /if \(canGenerate\) void handlePageGenerate\(\);/);
 });
 
 test("each page tours its own model and settings", () => {

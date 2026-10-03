@@ -566,8 +566,8 @@ export function useWorkflowHistory({
 >) {
   const visibleClips = useMemo(
     () =>
-      // An edit's original is kept for its Original | Edited compare, not listed beside it.
-      clips.filter((clip) => clipWorkflow(clip) === workflow).filter((clip) => clip.role !== "source"),
+      // An edit's original is kept for its A/B compare, not listed.
+      clips.filter((clip) => clipWorkflow(clip) === workflow && clip.role !== "source"),
     [clips, workflow],
   );
   const selectedClip =

@@ -8,32 +8,24 @@ import { type Ref, useMemo } from "react";
 import { EDIT_DIFF_MAX_WORDS, countChanges, diffSegments } from "../edit-diff";
 import { EDIT_COPY } from "../edit-policy";
 
-/** "② Make your changes": the transcript's editable copy, with every change marked below it.
- *  Inserted words are underlined on the secondary surface, deleted ones struck through and
- *  muted, and each also carries hidden "inserted" or "deleted" text, so neither colour nor
- *  decoration carries the meaning alone. */
+/** ② the transcript's editable copy, each change marked below it (with sr-only text too). */
 export function TranscriptDiffEditor({
   value,
   onChange,
   transcript,
   disabled = false,
   onReset,
-  id = "edit-changes",
+  id,
   textareaRef,
   dataTour,
 }: {
-  /** ② */
   value: string;
   onChange: (value: string) => void;
-  /** ① The transcript the changes are measured against. */
   transcript: string;
   disabled?: boolean;
-  /** Puts ② back to ①; defaults to onChange(transcript). */
-  onReset?: () => void;
-  id?: string;
-  /** For the host's "Go to ②" action. */
+  onReset: () => void;
+  id: string;
   textareaRef?: Ref<HTMLTextAreaElement>;
-  /** Guided-tour anchor, e.g. "audio-edit-changes". */
   dataTour?: string;
 }) {
   const segments = useMemo(
@@ -69,7 +61,7 @@ export function TranscriptDiffEditor({
             variant="ghost"
             size="xs"
             disabled={disabled || value === transcript}
-            onClick={() => (onReset ? onReset() : onChange(transcript))}
+            onClick={onReset}
           >
             {EDIT_COPY.resetLabel}
           </Button>
@@ -91,36 +83,23 @@ export function TranscriptDiffEditor({
           className="rounded-xl bg-muted/50 px-3 py-2 text-ui-13 leading-relaxed text-foreground [overflow-wrap:anywhere]"
         >
           {segments.map((segment, index) => {
-            const space = index > 0 ? " " : "";
-            if (segment.kind === "insert") {
-              return (
-                // biome-ignore lint/suspicious/noArrayIndexKey: segments are positional and rebuilt on every change.
-                <span key={index}>
-                  {space}
+            return (
+              // biome-ignore lint/suspicious/noArrayIndexKey: segments are positional and rebuilt on every change.
+              <span key={index}>
+                {index > 0 ? " " : ""}
+                {segment.kind === "insert" ? (
                   <ins className="rounded-sm bg-secondary px-0.5 text-secondary-foreground underline decoration-2 underline-offset-2">
                     <span className="sr-only">{segment.srLabel}</span>
                     {segment.text}
                   </ins>
-                </span>
-              );
-            }
-            if (segment.kind === "delete") {
-              return (
-                // biome-ignore lint/suspicious/noArrayIndexKey: segments are positional and rebuilt on every change.
-                <span key={index}>
-                  {space}
+                ) : segment.kind === "delete" ? (
                   <del className="text-muted-foreground line-through">
                     <span className="sr-only">{segment.srLabel}</span>
                     {segment.text}
                   </del>
-                </span>
-              );
-            }
-            return (
-              // biome-ignore lint/suspicious/noArrayIndexKey: segments are positional and rebuilt on every change.
-              <span key={index}>
-                {space}
-                {segment.text}
+                ) : (
+                  segment.text
+                )}
               </span>
             );
           })}
