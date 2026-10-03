@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""On Windows ROCm (torch 2.11.0+rocm7.14.1, gfx1151) fused SDPA raises hipErrorInvalidValue on
-any backward, an explicit mask and enable_gqa. Those calls must run on the math kernel, and every
-other call must keep its fused kernel. The routing tests fake the probe result, so they run on
-any CUDA GPU; the last test needs the real Windows ROCm host."""
+"""On Windows ROCm (torch 2.11.0+rocm7.14.1, gfx1151) flash and memory-efficient SDPA fail with
+hipErrorInvalidValue on every call. `import unsloth` must turn off exactly the backends that fail,
+so attention runs on the math kernel. The failed launch only surfaces at the next checked kernel
+launch, so the probe must not blame a later call. The last two tests need the real host."""
 
 import json
 import subprocess
@@ -16,175 +16,142 @@ import pytest
 torch = pytest.importorskip("torch")
 
 
-def _detour(*args):
-    # Per test, so the tests still run (and fail) on a tree without the fix.
-    from unsloth.import_fixes import _sdpa_needs_rocm_windows_detour
-    return _sdpa_needs_rocm_windows_detour(*args)
-
-
-ALL = {0: frozenset({"grad", "mask", "gqa"})}
-
-
-def _t(
-    *shape,
-    requires_grad = False,
-    device = "cpu",
-):
-    return torch.zeros(*shape, dtype = torch.bfloat16, device = device, requires_grad = requires_grad)
-
-
-class TestDetourDecision:
-    def test_cpu_query_is_never_detoured(self):
-        q = _t(1, 2, 8, 64, requires_grad = True)
-        assert not _detour(
-            {None: ALL[0], 0: ALL[0]}, q, q, q, torch.ones(8, 8, dtype = torch.bool), True
-        )
-
-    def test_device_without_failures_is_never_detoured(self):
-        if not torch.cuda.is_available():
-            pytest.skip("needs a CUDA tensor")
-        q = _t(1, 2, 8, 64, requires_grad = True, device = "cuda:0")
-        assert not _detour({}, q, q, q, torch.ones(8, 8, dtype = torch.bool, device = "cuda:0"), True)
-
-    @pytest.mark.parametrize(
-        "kinds, grad, mask, gqa, expected",
-        [
-            (
-                {"grad", "mask", "gqa"},
-                False,
-                False,
-                False,
-                False,
-            ),  # plain forward keeps the fused kernel
-            ({"grad", "mask", "gqa"}, True, False, False, True),
-            ({"grad", "mask", "gqa"}, False, True, False, True),
-            ({"grad", "mask", "gqa"}, False, False, True, True),
-            ({"mask"}, True, False, True, False),  # only the kinds that failed are routed
-            ({"gqa"}, False, True, False, False),
-            ({"grad"}, False, True, True, False),
-        ],
+def _on_windows_rocm():
+    return (
+        sys.platform == "win32"
+        and bool(getattr(torch.version, "hip", None))
+        and torch.cuda.is_available()
     )
-    def test_only_failing_kinds_are_detoured(self, kinds, grad, mask, gqa, expected):
-        if not torch.cuda.is_available():
-            pytest.skip("needs a CUDA tensor")
-        q = _t(1, 2, 8, 64, requires_grad = grad, device = "cuda:0")
-        m = torch.ones(8, 8, dtype = torch.bool, device = "cuda:0") if mask else None
-        assert _detour({0: frozenset(kinds)}, q, q, q, m, gqa) is expected
 
-    def test_no_grad_mode_is_not_a_backward(self):
-        if not torch.cuda.is_available():
-            pytest.skip("needs a CUDA tensor")
-        q = _t(1, 2, 8, 64, requires_grad = True, device = "cuda:0")
-        with torch.no_grad():
-            assert not _detour({0: frozenset({"grad"})}, q, q, q, None, False)
+
+def _run(code, *args):
+    p = subprocess.run(
+        [sys.executable, "-c", code, *args], capture_output = True, text = True, timeout = 900
+    )
+    line = [l for l in p.stdout.splitlines() if l.startswith("RESULT ")]
+    assert line, p.stdout[-2000:] + p.stderr[-3000:]
+    return json.loads(line[-1].split(" ", 1)[1])
 
 
 def test_probe_is_windows_rocm_only():
-    from unsloth.import_fixes import _rocm_windows_fused_sdpa_failures
-    if sys.platform == "win32" and getattr(torch.version, "hip", None):
+    if _on_windows_rocm():
         pytest.skip("this host is the one the probe is for")
-    assert _rocm_windows_fused_sdpa_failures() == {}
+    from unsloth.import_fixes import _rocm_windows_broken_sdpa_backends
+    assert _rocm_windows_broken_sdpa_backends() == []
 
 
-_ROUTING = textwrap.dedent(
+_DISABLE = textwrap.dedent(
     """
-    import json
+    import json, sys
     import unsloth.import_fixes as fixes
-    fixes._rocm_windows_fused_sdpa_failures = lambda: {0: frozenset({"grad", "mask", "gqa"})}
-    fixes.fix_rocm_windows_fused_sdpa()
     import torch
-    import torch.nn.functional as F
-    from torch.nn.attention import SDPBackend, sdpa_kernel
-
-    torch.cuda.set_device(0)
-    g = torch.Generator(device = "cuda").manual_seed(0)
-    q, k, v = (torch.randn(2, 4, 64, 64, device = "cuda", dtype = torch.bfloat16, generator = g) for _ in range(3))
-    kv = (k[:, :2].contiguous(), v[:, :2].contiguous())
-    mask = torch.ones(64, 64, device = "cuda", dtype = torch.bool).tril()
-    orig = F.scaled_dot_product_attention.__wrapped__
-
-    def ref(backend, *a, **kw):
-        with sdpa_kernel([backend]):
-            return orig(*a, **kw)
-
-    def same(a, b):
-        return bool(torch.equal(a, b))
-
-    out = {"wrapped": F.scaled_dot_product_attention is not orig}
-    with torch.no_grad():
-        out["mask_is_math"] = same(F.scaled_dot_product_attention(q, k, v, attn_mask = mask),
-                                   ref(SDPBackend.MATH, q, k, v, attn_mask = mask))
-        out["gqa_is_math"] = same(F.scaled_dot_product_attention(q, *kv, is_causal = True, enable_gqa = True),
-                                  ref(SDPBackend.MATH, q, *kv, is_causal = True, enable_gqa = True))
-        out["plain_is_flash"] = same(F.scaled_dot_product_attention(q, k, v, is_causal = True),
-                                     ref(SDPBackend.FLASH_ATTENTION, q, k, v, is_causal = True))
-        out["flash_differs_from_math"] = not same(ref(SDPBackend.FLASH_ATTENTION, q, k, v, is_causal = True),
-                                                  ref(SDPBackend.MATH, q, k, v, is_causal = True))
-    qg = q.clone().requires_grad_()
-    out["grad_is_math"] = same(F.scaled_dot_product_attention(qg, k, v, is_causal = True),
-                               ref(SDPBackend.MATH, qg, k, v, is_causal = True))
-    print("ROUTING " + json.dumps(out))
+    torch.backends.cuda.enable_flash_sdp(True)
+    torch.backends.cuda.enable_mem_efficient_sdp(True)
+    fixes._rocm_windows_broken_sdpa_backends = lambda: json.loads(sys.argv[1])
+    fixes.fix_rocm_windows_fused_sdpa()
+    print("RESULT " + json.dumps([torch.backends.cuda.flash_sdp_enabled(),
+                                  torch.backends.cuda.mem_efficient_sdp_enabled(),
+                                  torch.backends.cuda.math_sdp_enabled()]))
     """
 )
 
 
-def test_wrapper_routes_failing_kinds_to_math_and_keeps_the_rest():
-    if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
-        pytest.skip("needs an NVIDIA GPU with the flash kernel")
-    p = subprocess.run(
-        [sys.executable, "-c", _ROUTING], capture_output = True, text = True, timeout = 900
+@pytest.mark.parametrize(
+    "broken, expected",
+    [
+        ([], [True, True, True]),
+        (["flash"], [False, True, True]),
+        (["mem_efficient"], [True, False, True]),
+        (["flash", "mem_efficient"], [False, False, True]),
+    ],
+)
+def test_only_broken_backends_are_turned_off(broken, expected):
+    assert _run(_DISABLE, json.dumps(broken)) == expected
+
+
+def test_opt_out_skips_the_probe(monkeypatch):
+    import unsloth.import_fixes as fixes
+
+    monkeypatch.setenv("UNSLOTH_ALLOW_ROCM_FUSED_SDPA", "1")
+    monkeypatch.setattr(
+        fixes,
+        "_rocm_windows_broken_sdpa_backends",
+        lambda: pytest.fail("probed despite the opt-out"),
     )
-    line = [l for l in p.stdout.splitlines() if l.startswith("ROUTING ")]
-    assert line, p.stdout[-2000:] + p.stderr[-3000:]
-    out = json.loads(line[-1].split(" ", 1)[1])
-    if not out.pop("flash_differs_from_math"):
-        pytest.skip("flash and math agree bit for bit here, so routing cannot be told apart")
-    assert out == {
-        "wrapped": True,
-        "mask_is_math": True,
-        "gqa_is_math": True,
-        "plain_is_flash": True,
-        "grad_is_math": True,
-    }
+    fixes.fix_rocm_windows_fused_sdpa()
 
 
-_REAL = textwrap.dedent(
+_PROBE_TWICE = textwrap.dedent(
+    """
+    import json
+    import torch
+    from unsloth.import_fixes import _rocm_windows_broken_sdpa_backends
+    first = _rocm_windows_broken_sdpa_backends()
+    second = _rocm_windows_broken_sdpa_backends()
+    # Nothing may be left pending: a stale launch error would raise on this checked kernel.
+    torch.ones(4, device = "cuda").float().sum().item()
+    print("RESULT " + json.dumps([first, second]))
+    """
+)
+
+
+def test_windows_rocm_probe_is_stable_and_leaves_no_pending_error():
+    if not _on_windows_rocm():
+        pytest.skip("needs a Windows ROCm GPU")
+    first, second = _run(_PROBE_TWICE)
+    assert first == second
+
+
+_ATTENTION = textwrap.dedent(
     """
     import json
     import unsloth  # noqa: F401  (applies the import-time fixes)
     import torch
     import torch.nn.functional as F
+    from torch.nn.attention import SDPBackend, sdpa_kernel
 
     g = torch.Generator(device = "cuda").manual_seed(0)
-    q, k, v = (torch.randn(2, 4, 24, 64, device = "cuda", dtype = torch.bfloat16, generator = g).requires_grad_() for _ in range(3))
+    q, k, v = (torch.randn(2, 4, 24, 64, device = "cuda", dtype = torch.bfloat16, generator = g)
+               for _ in range(3))
+    mask = torch.ones(24, 24, device = "cuda", dtype = torch.bool).tril()
     out = {}
-    for name, kw in (("causal_bwd", {"is_causal": True}),
-                     ("mask_bwd", {"attn_mask": torch.ones(24, 24, device = "cuda", dtype = torch.bool).tril()}),
-                     ("gqa_bwd", {"is_causal": True, "enable_gqa": True})):
-        kk, vv = (k[:, :2], v[:, :2]) if name == "gqa_bwd" else (k, v)
+    for name, grad, kw, nkv in (
+        ("causal_fwd", False, {"is_causal": True}, 4),
+        ("mask_fwd", False, {"attn_mask": mask}, 4),
+        ("causal_bwd", True, {"is_causal": True}, 4),
+        ("mask_bwd", True, {"attn_mask": mask}, 4),
+        ("gqa_bwd", True, {"is_causal": True, "enable_gqa": True}, 2),
+    ):
+        def run(math):
+            qq = q.clone().requires_grad_(grad)
+            if math:
+                with sdpa_kernel([SDPBackend.MATH]):
+                    o = F.scaled_dot_product_attention(qq, k[:, :nkv], v[:, :nkv], **kw)
+            else:
+                o = F.scaled_dot_product_attention(qq, k[:, :nkv], v[:, :nkv], **kw)
+            o = o.float()  # a checked launch: a failed attention launch raises here
+            if grad:
+                o.sum().backward()
+                return o.detach(), qq.grad.float()
+            return o, o
         try:
-            F.scaled_dot_product_attention(q, kk, vv, **kw).float().sum().backward()
-            torch.cuda.synchronize()
-            out[name] = bool(torch.isfinite(q.grad).all())
+            o, d = run(False)
+            ro, rd = run(True)
+            out[name] = bool(torch.allclose(o, ro, atol = 2e-2, rtol = 2e-2)
+                             and torch.allclose(d, rd, atol = 2e-2, rtol = 2e-2))
         except Exception as e:
             out[name] = f"{type(e).__name__}: {e}"[:200]
-        q.grad = None
-    print("REAL " + json.dumps(out))
+    print("RESULT " + json.dumps(out))
     """
 )
 
 
-def test_windows_rocm_training_attention_runs():
-    if not (
-        sys.platform == "win32"
-        and getattr(torch.version, "hip", None)
-        and torch.cuda.is_available()
-    ):
+def test_windows_rocm_attention_runs_after_import():
+    if not _on_windows_rocm():
         pytest.skip("needs a Windows ROCm GPU")
-    p = subprocess.run([sys.executable, "-c", _REAL], capture_output = True, text = True, timeout = 900)
-    line = [l for l in p.stdout.splitlines() if l.startswith("REAL ")]
-    assert line, p.stdout[-2000:] + p.stderr[-3000:]
-    assert json.loads(line[-1].split(" ", 1)[1]) == {
+    assert _run(_ATTENTION) == {
+        "causal_fwd": True,
+        "mask_fwd": True,
         "causal_bwd": True,
         "mask_bwd": True,
         "gqa_bwd": True,

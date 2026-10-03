@@ -6639,149 +6639,91 @@ def fix_cudnn_sdpa_d256_masked_backward():
     )
 
 
-_SDPA_ROCM_WINDOWS_FLAG = "_unsloth_avoids_rocm_windows_fused_sdpa"
-_SDPA_ROCM_WINDOWS_WARNED = False
+def _rocm_windows_broken_sdpa_backends():
+    """The fused SDPA backends ("flash", "mem_efficient") that fail on a Windows ROCm GPU here.
 
-
-def _rocm_windows_fused_sdpa_failures():
-    """Map device index -> the SDPA call kinds whose fused kernel fails there, on Windows ROCm.
-
-    The kinds are "grad" (any backward), "mask" (an explicit attn_mask) and "gqa" (enable_gqa).
-    On torch 2.11.0+rocm7.14.1, gfx1151, all three raise hipErrorInvalidValue while a plain
-    forward runs. Each kind is probed with a synchronize, and only kinds the math kernel then
-    serves are reported, so a device where nothing fails (or math fails too) maps to nothing.
+    On torch 2.11.0+rocm7.14.1, gfx1151, every flash and memory-efficient call fails with
+    hipErrorInvalidValue, forward or backward. The failed launch is not raised by the call nor by
+    synchronize(), only by the next checked kernel launch, so each probe ends in a checked op and is
+    also compared against the math kernel. A backend with no kernel for the probe ("No available
+    kernel") is left alone: the dispatcher already skips it where it cannot run.
     """
     if sys.platform != "win32":
-        return {}
+        return []
     try:
         import torch
         import torch.nn.functional as F
         from torch.nn.attention import SDPBackend, sdpa_kernel
 
         if not getattr(torch.version, "hip", None) or not torch.cuda.is_available():
-            return {}
+            return []
     except Exception:
-        return {}
+        return []
 
-    def run(kind, device, math_only):
+    def attend(device, backend):
         g = torch.Generator(device = device).manual_seed(0)
-        shape = (1, 2, 16, 64)
-        q = torch.randn(shape, device = device, dtype = torch.bfloat16, generator = g)
-        kv_shape = (1, 1, 16, 64) if kind == "gqa" else shape
-        k = torch.randn(kv_shape, device = device, dtype = torch.bfloat16, generator = g)
-        v = torch.randn(kv_shape, device = device, dtype = torch.bfloat16, generator = g)
-        kwargs = {"is_causal": kind != "mask"}
-        if kind == "grad":
-            q.requires_grad_(True)
-        elif kind == "gqa":
-            kwargs["enable_gqa"] = True
-        else:
-            kwargs["attn_mask"] = torch.ones(16, 16, device = device, dtype = torch.bool).tril()
-        with sdpa_kernel([SDPBackend.MATH]) if math_only else contextlib.nullcontext():
-            out = F.scaled_dot_product_attention(q, k, v, **kwargs)
-            if kind == "grad":
-                out.float().sum().backward()
-        torch.cuda.synchronize(device)
+        q, k, v = (
+            torch.randn(1, 2, 16, 64, device = device, dtype = torch.bfloat16, generator = g)
+            for _ in range(3)
+        )
+        with sdpa_kernel([backend]):
+            out = F.scaled_dot_product_attention(q, k, v, is_causal = True)
+        # A checked launch, then a host read: a failed launch above raises here, not later.
+        out = out.float()
+        out.sum().item()
+        return out
 
-    failures = {}
-    for index in range(torch.cuda.device_count()):
-        device = torch.device("cuda", index)
-        kinds = set()
-        for kind in ("grad", "mask", "gqa"):
+    broken = []
+    for name, backend in (
+        ("flash", SDPBackend.FLASH_ATTENTION),
+        ("mem_efficient", SDPBackend.EFFICIENT_ATTENTION),
+    ):
+        for index in range(torch.cuda.device_count()):
+            device = torch.device("cuda", index)
             try:
-                with torch.enable_grad():
-                    run(kind, device, math_only = False)
+                with torch.cuda.device(device):
+                    reference = attend(device, SDPBackend.MATH)
+            except Exception:
+                # Math itself fails: this probe cannot tell anything about the fused kernels.
                 continue
-            except Exception:
-                pass
             try:
-                # The launch error does not stick to the context, so the math check is meaningful.
-                with torch.enable_grad():
-                    run(kind, device, math_only = True)
-                kinds.add(kind)
-            except Exception:
-                pass
-        if kinds:
-            failures[index] = frozenset(kinds)
-    return failures
-
-
-def _sdpa_needs_rocm_windows_detour(failures, query, key, value, attn_mask, enable_gqa):
-    """True for calls of a kind whose fused kernel failed the probe on this query's device."""
-    import torch
-
-    if not isinstance(query, torch.Tensor) or not query.is_cuda:
-        return False
-    kinds = failures.get(query.device.index)
-    if not kinds:
-        return False
-    if "mask" in kinds and attn_mask is not None:
-        return True
-    if "gqa" in kinds and enable_gqa:
-        return True
-    if "grad" in kinds and torch.is_grad_enabled():
-        return any(isinstance(t, torch.Tensor) and t.requires_grad for t in (query, key, value))
-    return False
+                with torch.cuda.device(device):
+                    ok = torch.allclose(attend(device, backend), reference, atol = 2e-2, rtol = 2e-2)
+            except Exception as e:
+                ok = "No available kernel" in str(e)
+            if not ok:
+                broken.append(name)
+                break
+    return broken
 
 
 def fix_rocm_windows_fused_sdpa():
-    """Route SDPA calls whose fused ROCm kernel fails on Windows to the math kernel.
+    """Turn off the fused SDPA backends that fail on this Windows ROCm GPU, so attention uses math.
 
-    On Windows ROCm (torch 2.11.0+rocm7.14.1, gfx1151) the flash and memory-efficient kernels
-    raise hipErrorInvalidValue on any backward, on an explicit mask and on enable_gqa, so LoRA
-    training of most models stops in the first attention layer. Plain forwards keep the fused
-    kernel. Probe-gated per device, so it turns itself off once the kernels work.
+    On Windows ROCm (torch 2.11.0+rocm7.14.1, gfx1151) flash and memory-efficient attention fail
+    with hipErrorInvalidValue on every call, which stops training and inference of any model whose
+    attention reaches them. Probe-gated, so it turns itself off once the kernels work.
     UNSLOTH_ALLOW_ROCM_FUSED_SDPA=1 opts out.
     """
     if os.environ.get("UNSLOTH_ALLOW_ROCM_FUSED_SDPA", "0") == "1":
         return
-    failures = _rocm_windows_fused_sdpa_failures()
-    if not failures:
+    broken = _rocm_windows_broken_sdpa_backends()
+    if not broken:
         return
     try:
         import torch
-        import torch.nn.functional as F
-        from torch.nn.attention import SDPBackend, sdpa_kernel
+        if "flash" in broken:
+            torch.backends.cuda.enable_flash_sdp(False)
+        if "mem_efficient" in broken:
+            torch.backends.cuda.enable_mem_efficient_sdp(False)
     except Exception as e:
         logger.info(f"Unsloth: Skipping the Windows ROCm SDPA fix ({e})")
         return
-    if getattr(F.scaled_dot_product_attention, _SDPA_ROCM_WINDOWS_FLAG, False):
-        return
-
-    original = F.scaled_dot_product_attention
-    backends = [SDPBackend.MATH]
-
-    @functools.wraps(original)
-    def scaled_dot_product_attention(
-        query,
-        key,
-        value,
-        attn_mask = None,
-        *args,
-        **kwargs,
-    ):
-        global _SDPA_ROCM_WINDOWS_WARNED
-        if _sdpa_needs_rocm_windows_detour(
-            failures, query, key, value, attn_mask, kwargs.get("enable_gqa", False)
-        ):
-            if not torch.compiler.is_compiling() and not _SDPA_ROCM_WINDOWS_WARNED:
-                _SDPA_ROCM_WINDOWS_WARNED = True
-                logger.warning(
-                    "Unsloth: this Windows ROCm torch cannot run fused attention for training, "
-                    "masks or grouped-query attention; using the math kernel for those calls "
-                    "(set UNSLOTH_ALLOW_ROCM_FUSED_SDPA=1 to keep the fused kernels)."
-                )
-            with sdpa_kernel(backends):
-                return original(query, key, value, attn_mask, *args, **kwargs)
-        return original(query, key, value, attn_mask, *args, **kwargs)
-
-    scaled_dot_product_attention.__wrapped__ = original
-    setattr(scaled_dot_product_attention, _SDPA_ROCM_WINDOWS_FLAG, True)
-    F.scaled_dot_product_attention = scaled_dot_product_attention
-    logger.info(
-        "Unsloth: Windows ROCm fused SDPA fails for "
-        + ", ".join(f"device {i}: {sorted(k)}" for i, k in sorted(failures.items()))
-        + "; those calls use the math kernel"
+    logger.warning(
+        "Unsloth: this Windows ROCm torch cannot run "
+        + " or ".join("flash" if b == "flash" else "memory-efficient" for b in broken)
+        + " attention; using the math kernel instead "
+        "(set UNSLOTH_ALLOW_ROCM_FUSED_SDPA=1 to keep them)."
     )
 
 
