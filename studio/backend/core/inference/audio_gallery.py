@@ -233,19 +233,22 @@ def _sidecar_path(audio_id: str) -> Path:
 
 
 def _sources_in_use(directory: Path, leaving: set[str]) -> set[str]:
-    """Edit sources that a clip staying in the gallery still plays as its Original."""
+    """Hidden Edit sources that a clip staying in the gallery still plays as its Original."""
     try:
         paths = list(directory.glob("*.wav"))
     except OSError:
         return set()
+    sources: set[str] = set()
     used: set[str] = set()
     for path in paths:
-        if path.stem in leaving:
-            continue
         meta = _read_meta(_sidecar_path(path.stem))
-        if meta is not None and meta.get("source_clip_id"):
+        if meta is None:
+            continue
+        if meta.get("role") == "source":
+            sources.add(path.stem)
+        if path.stem not in leaving and meta.get("source_clip_id"):
             used.add(str(meta["source_clip_id"]))
-    return used
+    return used & sources
 
 
 # Key-presence ownership test: a hand-dropped wav with a partial sidecar is neither counted as ours nor destroyed.

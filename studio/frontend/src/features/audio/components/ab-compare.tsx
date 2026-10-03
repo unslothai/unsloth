@@ -158,7 +158,8 @@ export function ABCompare({
     };
     const next = switchSide(now, side, durationOf(side));
     pendingRef.current = clips[side].src ? next : null;
-    setAb(next);
+    // A side still loading has nothing playing yet.
+    setAb(clips[side].src ? next : { ...next, playing: false });
   };
 
   return (

@@ -832,3 +832,15 @@ def test_the_inputs_and_voices_folders_never_list_as_clips():
     assert len(gallery.list_audio()) == 1
     assert gallery.clear() == 1
     assert (gallery.gallery_dir() / "inputs" / "abc.wav").is_file()
+
+
+def test_only_a_hidden_edit_source_is_kept_for_the_clip_that_plays_it(monkeypatch):
+    reference = gallery.save(_wav(), _meta(workflow = "speak"))
+    gallery.save(_wav(), _meta(workflow = "clone", source_clip_id = reference["id"]))
+    # A visible clip another clip was made from still goes with its own page's Clear and the cap.
+    assert gallery.clear(workflow = "speak") == 1
+    monkeypatch.setenv("UNSLOTH_AUDIO_GALLERY_MAX_CLIPS", "1")
+    reference = _save_with_mtime("reference", 1000)
+    clone = gallery.save(_wav(), _meta(workflow = "clone", source_clip_id = reference["id"]))
+    gallery._prune_to_cap()
+    assert [r["id"] for r in gallery.list_audio()] == [clone["id"]]

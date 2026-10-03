@@ -40,6 +40,10 @@ test("the compare resets for a new pair, not when the Original's file arrives", 
   const compare = readSrc("features/audio/components/ab-compare.tsx");
   assert.match(compare, /\}, \[originalKey, editedKey\]\);/);
   assert.doesNotMatch(compare, /\}, \[original\.src, edited\.src\]\);/);
+  assert.match(
+    compare,
+    /clips\[side\]\.src \? next : \{ \.\.\.next, playing: false \}/,
+  );
 });
 
 test("a new recording cancels the previous one's transcription", () => {
