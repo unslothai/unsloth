@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  type FlaggableItem,
   PAGE_MAX_ATTEMPTS,
   applyPin,
   fetchNextPage,
@@ -543,8 +544,11 @@ test("a manual key compares in seconds against ISO timestamps too", () => {
 
 // Shelf rows tagged with the page that shows them; a page's history is the shelf filtered to its tag.
 const row = (id: string, page: "s" | "m", pinned = false) => ({ id, created_at: 0, pinned, page });
-const onPage = (page: "s" | "m") => (i: { page: string }) => i.page === page;
-const placed = <T extends { id: string; pinned?: boolean; page: string }>(
+const onPage =
+  (page: "s" | "m") =>
+  <T extends { page: string }>(i: T) =>
+    i.page === page;
+const placed = <T extends FlaggableItem & { page: string }>(
   shelf: T[],
   page: "s" | "m",
   id: string,
