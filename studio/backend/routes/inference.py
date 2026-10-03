@@ -23150,7 +23150,6 @@ def _labeled_speakers(result: dict) -> dict:
     speakers = result.get("speakers") if isinstance(result, dict) else None
     if isinstance(speakers, list) and all(isinstance(s, str) for s in speakers):
         from core.inference.stt_capabilities import label_speakers
-
         result = {**result, "speakers": label_speakers(speakers)}
     return result
 
@@ -23241,7 +23240,12 @@ _NO_SPEAKERS_DETAIL = (
 )
 
 
-def _source_transcript(result: dict, source, speakers: bool, timed: bool = True) -> dict:
+def _source_transcript(
+    result: dict,
+    source,
+    speakers: bool,
+    timed: bool = True,
+) -> dict:
     """The stream's complete payload: speakers only when asked for, the source by id and name.
 
     ``timed`` is False for a model whose spans Studio does not trust (Nemotron's are sub-word
@@ -23263,8 +23267,7 @@ def _source_transcript(result: dict, source, speakers: bool, timed: bool = True)
 
 @studio_router.post("/audio/transcribe/source")
 async def transcribe_audio_source(
-    body: TranscribeSourceRequest,
-    current_subject: str = Depends(get_current_subject),
+    body: TranscribeSourceRequest, current_subject: str = Depends(get_current_subject)
 ):
     """Transcribe Audio page audio named by id, streamed as NDJSON and saved to history.
 
@@ -44329,6 +44332,7 @@ async def get_gallery_transcript(
 ):
     """One transcript in full: its segments, words and speakers included."""
     from core.inference import transcript_gallery
+
     record = await asyncio.to_thread(transcript_gallery.get_full, transcript_id)
     if record is None:
         raise HTTPException(status_code = 404, detail = "Transcript not found.")

@@ -157,9 +157,7 @@ class Fake:
         path = self.root / name
         if not path.exists():
             return []
-        return [
-            json.loads(line) for line in path.read_text(encoding = "utf-8").splitlines()
-        ]
+        return [json.loads(line) for line in path.read_text(encoding = "utf-8").splitlines()]
 
     @property
     def requests(self):
@@ -244,18 +242,12 @@ def test_bytes_go_as_json_naming_a_temp_file_that_is_removed_after(fake, side):
     result = side.transcribe(_wav(), QWEN3, "en")
     assert result["text"] == "Concord returned." and result["language"] == "en"
     assert result["duration"] == pytest.approx(2.0)
-    assert (
-        "segments" not in result and "words" not in result and "speakers" not in result
-    )
+    assert "segments" not in result and "words" not in result and "speakers" not in result
     (request,) = _details(fake)
     assert request["content_type"] == "application/json"
     body = request["json"]
     audio = Path(body["audio"])
-    assert (
-        audio.is_absolute()
-        and audio.parent == stt._stt_tmp_dir()
-        and audio.suffix == ".wav"
-    )
+    assert audio.is_absolute() and audio.parent == stt._stt_tmp_dir() and audio.suffix == ".wav"
     # The server could read it while answering; it is gone now.
     assert request["audio_existed"] and not audio.exists()
     assert body["language"] == "en" and body["model"] == fake.starts[0]["entry"]["id"]
@@ -285,9 +277,7 @@ def test_a_rejected_language_is_retried_without_it(fake, side):
     assert first["json"]["language"] == "xx" and "language" not in second["json"]
 
 
-def test_a_path_transcription_names_the_source_and_moss_gets_no_options(
-    fake, side, tmp_path
-):
+def test_a_path_transcription_names_the_source_and_moss_gets_no_options(fake, side, tmp_path):
     source = _source(tmp_path)
     result = side.transcribe_path(source, MOSS, None, timestamps = True)
     (request,) = _details(fake)
@@ -320,12 +310,8 @@ def test_qwen3_timestamps_load_the_aligner_once_and_keep_it(fake, side, tmp_path
     assert ALIGNER_KEY not in (fake.starts[0]["entry"].get("session_options") or {})
 
     # On, with no aligner loaded: a restart with it, and the two request options.
-    assert side.needs_reload_for(QWEN3, True) and not side.needs_reload_for(
-        QWEN3, False
-    )
-    result = side.transcribe_path(
-        source, QWEN3, None, timestamps = True, on_phase = phases.append
-    )
+    assert side.needs_reload_for(QWEN3, True) and not side.needs_reload_for(QWEN3, False)
+    result = side.transcribe_path(source, QWEN3, None, timestamps = True, on_phase = phases.append)
     assert len(fake.starts) == 2
     served = fake.starts[1]["entry"]["session_options"][ALIGNER_KEY]
     assert Path(served).name == aligner.name
@@ -338,9 +324,7 @@ def test_qwen3_timestamps_load_the_aligner_once_and_keep_it(fake, side, tmp_path
         {"start": 0.568, "end": 1.208, "word": "Concord"},
         {"start": 1.208, "end": 1.608, "word": "returned."},
     ]
-    assert result["segments"] == [
-        {"start": 0.568, "end": 1.608, "text": "Concord returned."}
-    ]
+    assert result["segments"] == [{"start": 0.568, "end": 1.608, "text": "Concord returned."}]
     # The aligner was already downloaded: no download phase.
     assert "downloading_aligner" not in phases and "loading" in phases
     assert phases[-1] == "transcribing"
@@ -378,23 +362,17 @@ def test_a_missing_aligner_is_downloaded_first_with_its_phase(
         staticmethod(lambda model, token: downloads.append(model.id) or True),
     )
     phases = []
-    side.transcribe_path(
-        _source(tmp_path), QWEN3, None, timestamps = True, on_phase = phases.append
-    )
+    side.transcribe_path(_source(tmp_path), QWEN3, None, timestamps = True, on_phase = phases.append)
     assert phases == ["downloading_aligner", "loading", "transcribing"]
     assert downloads == [stt.QWEN3_ALIGNER.id]
     assert ALIGNER_KEY in fake.starts[-1]["entry"]["session_options"]
     # Present now: a second timestamped run neither downloads nor restarts.
     phases.clear()
-    side.transcribe_path(
-        _source(tmp_path), QWEN3, None, timestamps = True, on_phase = phases.append
-    )
+    side.transcribe_path(_source(tmp_path), QWEN3, None, timestamps = True, on_phase = phases.append)
     assert phases == ["transcribing"] and len(downloads) == 1 and len(fake.starts) == 1
 
 
-def test_an_aligner_download_failure_says_how_to_go_on(
-    fake, side, tmp_path, monkeypatch
-):
+def test_an_aligner_download_failure_says_how_to_go_on(fake, side, tmp_path, monkeypatch):
     def offline(
         model,
         companion,

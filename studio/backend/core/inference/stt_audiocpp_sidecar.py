@@ -102,7 +102,6 @@ class SttEngineUnavailableError(SttUnavailableError):
 def _stt_tmp_dir() -> Path:
     """Where the WAVs the server reads by path are written: ``<studio_root>/cache/audiocpp-stt``."""
     from utils.paths.storage_roots import ensure_dir, studio_root, tmp_root
-
     try:
         return ensure_dir(studio_root() / "cache" / "audiocpp-stt")
     except Exception:  # noqa: BLE001 - an unusable studio root falls back to the temp dir
@@ -740,7 +739,9 @@ class AudioCppSttSidecar:
             raise SttEngineUnavailableError(str(exc)) from exc
 
     def _ensure_aligner_downloaded(
-        self, entry: AudioCppModel, on_phase: Optional[Callable[[str], None]] = None
+        self,
+        entry: AudioCppModel,
+        on_phase: Optional[Callable[[str], None]] = None,
     ) -> None:
         """Download the timestamp aligner when it is not in the cache yet (about 1.1 GB, once)."""
         from core.inference import audio_cpp_backend

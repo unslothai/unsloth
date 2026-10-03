@@ -5272,9 +5272,7 @@ class TranscribeSourceRequest(BaseModel):
     language: Optional[str] = Field(None, max_length = 64)
     timestamps: bool = Field(False, description = "Ask for segment and word timestamps")
     speakers: bool = Field(False, description = "Keep who spoke each segment, when the model tells")
-    title: Optional[str] = Field(
-        None, max_length = 255, description = "Defaults to the source's name"
-    )
+    title: Optional[str] = Field(None, max_length = 255, description = "Defaults to the source's name")
 
 
 class TranscriptPatch(BaseModel):

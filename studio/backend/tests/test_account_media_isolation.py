@@ -376,9 +376,7 @@ def test_transcribe_sources_and_transcripts_do_not_resolve_another_accounts_ids(
         assert client.patch(url, json = {"archived": True}).status_code == 404
         assert transcript["id"] not in client.get("/api/inference/audio/transcripts").text
     with _client(account) as client:
-        response = client.post(
-            route, json = {"source": {"input_id": record["id"]}, "model": "small"}
-        )
+        response = client.post(route, json = {"source": {"input_id": record["id"]}, "model": "small"})
         assert response.status_code == 200
         assert '"type": "complete"' in response.text and "private words" in response.text
         assert client.get(url).json()["segments"][0]["text"] == "private words"
