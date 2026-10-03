@@ -70,6 +70,7 @@ def hub(tmp_path, monkeypatch):
     monkeypatch.setattr(acm, "_hub_cache", lambda: root)
     monkeypatch.setattr(audio_cpp_files, "_hub_cache", lambda: root)
     monkeypatch.setattr(acm, "runtime_spec", lambda family: None)
+    monkeypatch.setattr(acm, "runtime_knows_family", lambda family: None)
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     acm.forget()
     with acm._resolve_lock:
@@ -314,6 +315,9 @@ def test_an_unknown_family_follows_its_spec_tasks_or_is_refused(hub):
     for family, tasks, task, server in (
         ("new_tts", ["tts", "clone"], "tts", "tts"),
         ("new_music", ["music"], "music", "gen"),
+        ("new_clone_music", ["clone", "music"], "music", "gen"),
+        ("new_clone_asr", ["clone", "asr"], "asr", "asr"),
+        ("new_clone_only", ["clone"], "", ""),
         ("new_sep", ["sep"], "", ""),
     ):
         repo = f"someone/{family}-GGUF"
@@ -323,6 +327,120 @@ def test_an_unknown_family_follows_its_spec_tasks_or_is_refused(hub):
         assert (model.unsupported is None) == bool(task)
     sep = acm.resolve("someone/new_sep-GGUF", network = False)
     assert "Source separation" in sep.unsupported
+    clone_only = acm.resolve("someone/new_clone_only-GGUF", network = False)
+    assert "only clones a reference voice" in clone_only.unsupported
+
+
+def test_unsupported_task_tokens_are_refused_by_a_readable_name(hub):
+    for family, tasks, message in (
+        ("smart_turn", ["turn"], "Turn detection models are not supported in Studio yet."),
+        ("new_svc", ["svc"], "Singing voice conversion models are not supported in Studio yet."),
+        ("new_s2s", ["s2s"], "Speech-to-speech models are not supported in Studio yet."),
+        ("new_odd", ["odd_task"], "Studio does not support the 'odd_task' task yet."),
+    ):
+        repo = f"someone/{family}-GGUF"
+        _put(_snapshot(hub, repo), "m-q8_0.gguf", _gguf_bytes(family = family, spec = {"tasks": tasks}))
+        assert acm.resolve(repo, network = False).unsupported == message
+
+
+_REAL_RUNTIME_KNOWS_FAMILY = acm.runtime_knows_family
+
+
+def _fake_runtime(monkeypatch, tmp_path, *, tag = None, specs = None):
+    """An installed audiocpp_server with a prebuilt install record for ``tag``, and a
+    ``model_specs/`` folder beside it when ``specs`` is given."""
+    from core.inference import audio_cpp_server
+
+    root = tmp_path / "audio.cpp"
+    root.mkdir(parents = True)
+    binary = root / "audiocpp_server"
+    binary.write_bytes(b"\x7fELF")
+    if tag is not None:
+        (root / audio_cpp_server.INSTALL_RECORD).write_text(json.dumps({"release_tag": tag}))
+    if specs is not None:
+        (root / "model_specs").mkdir()
+        for name in specs:
+            (root / "model_specs" / f"{name}.json").write_text(json.dumps({"family": name}))
+    monkeypatch.setattr(audio_cpp_server, "find_audio_cpp_server_binary", lambda: str(binary))
+    return binary
+
+
+def test_the_spec_family_list_matches_the_pinned_runtime():
+    import importlib.util
+
+    from core.inference.audio_cpp_spec_families import (
+        AUDIO_CPP_SPEC_FAMILIES,
+        AUDIO_CPP_SPEC_FAMILIES_TAG,
+    )
+
+    installer = Path(__file__).resolve().parents[2] / "install_audio_cpp_prebuilt.py"
+    spec = importlib.util.spec_from_file_location("_audio_cpp_installer", installer)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    # A pin bump without a regenerated list fails here.
+    assert AUDIO_CPP_SPEC_FAMILIES_TAG == module.DEFAULT_TAG
+    for family in ("crisperwhisper", "index_echo", "audio_flamingo", "kugelaudio", "smart_turn"):
+        assert family not in AUDIO_CPP_SPEC_FAMILIES
+    for family in ("samsone", "gigaam_asr", "maya1"):
+        assert family in AUDIO_CPP_SPEC_FAMILIES
+    # The verified table runs on this runtime. The two VAD loaders are refused by the table and
+    # ship no spec of their own.
+    assert set(acm.FAMILIES) - AUDIO_CPP_SPEC_FAMILIES == {"marblenet_vad", "silero_vad"}
+
+
+def test_runtime_knows_a_family_from_its_specs_or_the_pinned_list(monkeypatch, tmp_path):
+    from core.inference import audio_cpp_server
+    from core.inference.audio_cpp_spec_families import AUDIO_CPP_SPEC_FAMILIES_TAG
+
+    monkeypatch.setattr(audio_cpp_server, "find_audio_cpp_server_binary", lambda: None)
+    # No runtime installed: no answer, so the spec's guess stands.
+    assert acm.runtime_knows_family("samsone") is None
+    _fake_runtime(monkeypatch, tmp_path / "pinned", tag = AUDIO_CPP_SPEC_FAMILIES_TAG)
+    assert acm.runtime_knows_family("samsone") is True
+    assert acm.runtime_knows_family("crisperwhisper") is False
+    # Another tag, or a custom build with no install record, is not judged by the pinned list.
+    _fake_runtime(monkeypatch, tmp_path / "newer", tag = "v9.9.9-unsloth.1")
+    assert acm.runtime_knows_family("crisperwhisper") is None
+    _fake_runtime(monkeypatch, tmp_path / "custom")
+    assert acm.runtime_knows_family("crisperwhisper") is None
+    # A shipped model_specs/ folder wins over the list, either way.
+    _fake_runtime(
+        monkeypatch, tmp_path / "specs", tag = AUDIO_CPP_SPEC_FAMILIES_TAG, specs = ("crisperwhisper",)
+    )
+    assert acm.runtime_knows_family("crisperwhisper") is True
+    assert acm.runtime_knows_family("samsone") is False
+
+
+def test_a_spec_fallback_family_the_runtime_lacks_is_refused(hub, monkeypatch, tmp_path):
+    from core.inference.audio_cpp_spec_families import AUDIO_CPP_SPEC_FAMILIES_TAG
+
+    # The hub fixture leaves the runtime out of reach; this test installs one.
+    monkeypatch.setattr(acm, "runtime_knows_family", _REAL_RUNTIME_KNOWS_FAMILY)
+    _fake_runtime(monkeypatch, tmp_path, tag = AUDIO_CPP_SPEC_FAMILIES_TAG)
+    for family, folder, tasks in (
+        ("samsone", "Samsone-GGUF", ["asr"]),
+        ("crisperwhisper", "CrisperWhisper2.0-GGUF", ["asr"]),
+        ("kugelaudio", "KugelAudio-0-Open-GGUF", ["tts"]),
+    ):
+        _put(_snapshot(hub), f"{folder}/m-q8_0.gguf", _gguf_bytes(family = family, spec = {"tasks": tasks}))
+    samsone = acm.resolve(f"{AUDIO_CPP_REPO}/Samsone-GGUF", network = False)
+    assert (samsone.task, samsone.unsupported) == ("asr", None)
+    crisper = acm.resolve(f"{AUDIO_CPP_REPO}/CrisperWhisper2.0-GGUF", network = False)
+    assert crisper.task == "" and crisper.workflows == {}
+    assert crisper.unsupported == (
+        "CrisperWhisper2.0-GGUF needs a newer audio runtime than the one installed."
+    )
+    kugel = acm.resolve(f"{AUDIO_CPP_REPO}/KugelAudio-0-Open-GGUF", network = False)
+    assert "needs a newer audio runtime" in kugel.unsupported
+    # The verified table is never second-guessed.
+    assert acm.family_policy("silero_vad").unsupported.startswith("Voice activity detection")
+    assert acm.family_policy("kokoro_tts").task == "tts"
+    assert acm.family_policy("crisperwhisper", {"tasks": ["asr"]}).unsupported == (
+        "crisperwhisper needs a newer audio runtime than the one installed."
+    )
+    # On a runtime Studio cannot judge, the spec's tasks decide as before.
+    _fake_runtime(monkeypatch, tmp_path / "newer", tag = "v9.9.9-unsloth.1")
+    assert acm.family_policy("crisperwhisper", {"tasks": ["asr"]}).task == "asr"
 
 
 def test_known_task_families_are_refused_with_a_reason(hub):
@@ -353,6 +471,39 @@ def test_qwen3_tts_package_kind_comes_from_its_name(hub):
     )
     assert not any(o["name"] == "voice" for o in design.options)
     assert "reference voice" in base.unsupported
+
+
+def test_every_task_family_binds_exactly_one_workflow():
+    workflow_for = {"tts": "speak", "music": "music", "asr": "transcribe"}
+    endpoint_for = {"speak": "speech", "music": "tasks", "transcribe": "transcriptions"}
+    for family in acm.FAMILIES.values():
+        bindings = family.workflows
+        if not family.task:
+            assert bindings == {}, family.family
+            continue
+        ((workflow, binding),) = bindings.items()
+        assert workflow == workflow_for[family.task], family.family
+        assert binding.endpoint == endpoint_for[workflow]
+        assert binding.server_task == family.default_server_task
+    assert acm.FAMILIES["kokoro_tts"].workflows["speak"].server_task == "tts"
+    assert acm.FAMILIES["moss_voicegen"].workflows["speak"].server_task == "vdes"
+    assert acm.FAMILIES["ace_step"].workflows["music"] == acm.WorkflowBinding(
+        "gen", "tasks", None, ("text", "lyrics", "duration_seconds")
+    )
+    assert acm.FAMILIES["moonshine_asr"].workflows["transcribe"].inputs == ("audio",)
+    design = acm.family_policy("qwen3_tts", names = ["Qwen3-TTS-12Hz-1.7B-VoiceDesign-GGUF"])
+    assert design.workflows["speak"].server_task == "vdes"
+    assert acm.family_policy("htdemucs").workflows == {}
+
+
+def test_a_resolved_model_carries_its_workflow_binding(hub):
+    snap = _snapshot(hub)
+    folder = "Qwen3-TTS-12Hz-1.7B-VoiceDesign-GGUF"
+    _put(snap, f"{folder}/{folder.lower()}-q8_0.gguf", _gguf_bytes(family = "qwen3_tts"))
+    model = acm.resolve(f"{AUDIO_CPP_REPO}/{folder}", network = False)
+    assert list(model.workflows) == ["speak"] and model.workflows["speak"].server_task == "vdes"
+    _put(snap, "HTDemucs-GGUF/htdemucs-q8_0.gguf", _gguf_bytes(family = "htdemucs"))
+    assert acm.resolve(f"{AUDIO_CPP_REPO}/HTDemucs-GGUF", network = False).workflows == {}
 
 
 def test_sub_folders_and_same_quant_files_become_named_variants(hub):
