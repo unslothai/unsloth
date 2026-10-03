@@ -423,24 +423,135 @@ def _load_h3(backend, transformer_cache):
     )
 
 
-def test_modular_workflow_reports_a_static_ask_as_unsupported(fake_runtime):
+class _H3DiT:
+    """MiniMax-H3's denoiser: one call per step (guidance-distilled), returning (video velocity, audio velocity)."""
+
+    def __init__(self) -> None:
+        self.computed = 0
+
+    def __call__(self, *args, **kwargs):
+        # nn.Module.__call__ reads the INSTANCE forward, which is where the skip layer sits.
+        return self.forward(*args, **kwargs)
+
+    def forward(
+        self,
+        hidden_states = None,
+        audio_hidden_states = None,
+        timestep = None,
+        return_dict = True,
+    ):
+        self.computed += 1
+        return _Tensorish(self.computed), _Tensorish(-self.computed)
+
+
+class _H3LoopPipe:
+    """The modular denoise loop: transformer, then components.scheduler.step, once per step; no step callback."""
+
+    def __init__(self, inner) -> None:
+        object.__setattr__(self, "_inner", inner)
+        object.__setattr__(self, "transformer", _H3DiT())
+        object.__setattr__(self, "outputs", [])
+
+    def __getattr__(self, name):
+        return getattr(object.__getattribute__(self, "_inner"), name)
+
+    def __setattr__(self, name, value):
+        setattr(object.__getattribute__(self, "_inner"), name, value)
+
+    def __call__(self, *, num_inference_steps = None, num_frames = None, **kwargs):
+        for _ in range(int(num_inference_steps or 1)):
+            self.outputs.append(self.transformer(timestep = None, return_dict = False))
+            self.scheduler.step(object(), 0, object())
+        return {"videos": [[object() for _ in range(int(num_frames or 1))]], "audio": None}
+
+
+@pytest.fixture
+def h3_runtime(fake_runtime, monkeypatch):
+    from .test_video_backend import _FakeModularPipe
+
+    class _Loader:
+        @classmethod
+        def from_pretrained(cls, path, **kwargs):
+            _FakeModularPipeline.instance = _H3LoopPipe(_FakeModularPipe())
+            return _FakeModularPipeline.instance
+
+    monkeypatch.setattr(_FakeModularPipeline, "from_pretrained", _Loader.from_pretrained)
+    monkeypatch.setattr(
+        sys.modules["torch"], "is_tensor", lambda obj: isinstance(obj, _Tensorish), raising = False
+    )
+    monkeypatch.delenv(dcache.ENV_AUTO_STEP_SKIP, raising = False)
+    return _FakeModularPipeline
+
+
+def _h3_fwd_calls(pipe):
+    return pipe.transformer.computed
+
+
+def test_modular_workflow_engages_an_explicit_static_skip(h3_runtime, monkeypatch):
+    monkeypatch.setattr(dcache, "AUTO_STATIC_SKIP", {})
     backend = VideoBackend()
     status = _load_h3(backend, "static")
     entry = status["resolved"]["transformer_cache"]
+    assert status["transformer_cache"] == "static"
+    assert entry["requested"] == "static" and entry["value"] == "static"
+    assert entry["status"] == "applied" and entry["reason"] == "requested"
+    pipe = h3_runtime.instance
+    assert isinstance(pipe.transformer.__dict__["forward"], ss.StaticStepSkip)
+    backend.generate(prompt = "a sloth", steps = 30, num_frames = 124, width = 960, height = 544)
+    plan = ss.static_schedule(30)
+    # One call per step, the per-call counter is the step index: exactly the planned skips are skipped.
+    assert _h3_fwd_calls(pipe) == sum(plan)
+    stats = backend.status()["transformer_cache_stats"]["stats"]
+    assert stats == {"calls": 30, "computed": sum(plan), "skipped": 30 - sum(plan)}
+    # Every skipped step still hands the loop a (video, audio) pair.
+    assert all(type(o) is tuple and len(o) == 2 for o in pipe.outputs)
+    backend.unload()
+    assert "forward" not in pipe.transformer.__dict__
+
+
+def test_modular_workflow_auto_follows_the_table_and_the_kill_switch(h3_runtime, monkeypatch):
+    monkeypatch.setattr(dcache, "AUTO_STATIC_SKIP", {"minimax-h3": ("default", 2)})
+    backend = VideoBackend()
+    status = _load_h3(backend, None)
+    entry = status["resolved"]["transformer_cache"]
+    assert status["transformer_cache"] == "static"
+    assert entry["requested"] is None and entry["value"] == "static"
+    assert "UNSLOTH_DIFFUSION_AUTO_STEP_SKIP" in entry["reason"]
+    layer = h3_runtime.instance.transformer.__dict__["forward"]
+    assert layer.auto is True and layer.min_steps == dcache.AUTO_STATIC_MIN_STEPS
+    # A 16-step clip is under the auto floor: every step computes.
+    backend.generate(prompt = "a sloth", steps = 16, num_frames = 124, width = 960, height = 544)
+    assert _h3_fwd_calls(h3_runtime.instance) == 16
+    backend.unload()
+
+    monkeypatch.setenv(dcache.ENV_AUTO_STEP_SKIP, "0")
+    backend = VideoBackend()
+    status = _load_h3(backend, None)
     assert status["transformer_cache"] is None
-    assert entry["requested"] == "static" and entry["value"] == "off"
-    assert entry["status"] == "unsupported" and "modular" in entry["reason"]
+    assert "forward" not in h3_runtime.instance.transformer.__dict__
     backend.unload()
 
 
-@pytest.mark.parametrize("request_cache", [None, "off", "fbcache", "bogus"])
-def test_modular_workflow_keeps_its_record_for_every_other_ask(fake_runtime, request_cache):
+@pytest.mark.parametrize("request_cache", ["fbcache", "bogus"])
+def test_modular_workflow_reports_other_caches_as_unsupported(h3_runtime, request_cache):
     backend = VideoBackend()
     status = _load_h3(backend, request_cache)
     entry = status["resolved"]["transformer_cache"]
-    assert entry["requested"] is None and entry["value"] == "off"
-    assert entry["reason"] == "not supported by this modular workflow"
+    assert status["transformer_cache"] is None
+    assert entry["requested"] == request_cache and entry["value"] == "off"
+    assert entry["status"] == "unsupported" and "static" in entry["reason"]
     backend.unload()
+
+
+def test_modular_workflow_off_and_unlisted_auto_run_uncached(h3_runtime, monkeypatch):
+    monkeypatch.setattr(dcache, "AUTO_STATIC_SKIP", {})
+    for ask in ("off", None):
+        backend = VideoBackend()
+        status = _load_h3(backend, ask)
+        assert status["transformer_cache"] is None
+        assert status["resolved"]["transformer_cache"]["value"] == "off"
+        assert "forward" not in h3_runtime.instance.transformer.__dict__
+        backend.unload()
 
 
 def test_video_api_accepts_static_and_reports_its_stats():

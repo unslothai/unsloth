@@ -24,7 +24,7 @@ from typing import Any, Optional
 TC_OFF = "off"
 TC_AUTO = "auto"
 TC_FBCACHE = "fbcache"
-# Fixed-schedule step skip (diffusion_step_skip.py); explicit opt-in only, auto never picks it.
+# Fixed-schedule step skip (diffusion_step_skip.py); explicit, or auto for the measured families below.
 TC_STATIC = "static"
 TC_MODES = (TC_FBCACHE, TC_STATIC)
 
@@ -41,12 +41,82 @@ FBCACHE_MIN_STEPS = 20
 AUTO_STEP_CACHE_TIER = "max"
 
 
+# == diffusion_speed.SPEED_DEFAULT / SPEED_MAX, spelled out for the same reason.
+_TIER_DEFAULT = "default"
+_TIER_MAX = "max"
+
+# Auto static step skip. Unset / "auto" picks the fixed-schedule skip for the families below, measured against their
+# own no-skip render at the family's default steps (16 prompts per image family, 4 clips per video family, B200; see
+# the per-row numbers). "default": meets the default-on bar (mean LPIPS <= 0.05, max <= 0.10, SSIM / PSNR inside
+# the no-skip run-to-run floor, faster end to end) and engages on the default and max tiers. "max": mean LPIPS
+# <= 0.10, engages on the max tier only. A family not listed keeps the FBCache-on-max behaviour. Keyed by the
+# generation-defaults variant for images (diffusion_families.generation_variant) and the family name for video,
+# so a distilled sibling sharing the family (FLUX.1-schnell, klein 4-step, Z-Image-Turbo) is never matched.
+# Value: (tier, every); every = compute one step in ``every`` through the middle of the schedule.
+AUTO_STATIC_SKIP: dict = {}
+
+# Auto static engages only from this many denoise steps, the shortest default schedule it was measured on; a user
+# who drops a 28-step model to 14 steps gets every step computed. Explicit "static" keeps STATIC_MIN_STEPS (12).
+AUTO_STATIC_MIN_STEPS = 20
+
+# Kill switch: "0" / "false" / "off" stops auto from ever picking static (explicit requests still honoured), restoring
+# the previous auto behaviour (FBCache on max only).
+ENV_AUTO_STEP_SKIP = "UNSLOTH_DIFFUSION_AUTO_STEP_SKIP"
+
+
+def auto_step_skip_disabled(env: Optional[dict] = None) -> bool:
+    import os
+
+    raw = str((os.environ if env is None else env).get(ENV_AUTO_STEP_SKIP, "") or "").strip().lower()
+    return raw in ("0", "false", "off", "no", "none")
+
+
+def auto_static_skip_plan(
+    key: Optional[str],
+    speed_mode: Optional[str],
+    default_steps: Optional[int],
+    env: Optional[dict] = None,
+) -> Optional[dict]:
+    """Settings for an auto static skip (``{"every": n, "min_steps": m}``), or None when auto must not pick it.
+
+    ``speed_mode`` is the tier the user ASKED for (an eager downgrade forced by offload does not change what the
+    skip costs in quality)."""
+    if not key or auto_step_skip_disabled(env):
+        return None
+    entry = AUTO_STATIC_SKIP.get(str(key).strip().lower())
+    if entry is None:
+        return None
+    tier, every = entry
+    if speed_mode == _TIER_MAX:
+        allowed = tier in (_TIER_DEFAULT, _TIER_MAX)
+    elif speed_mode == _TIER_DEFAULT:
+        allowed = tier == _TIER_DEFAULT
+    else:
+        allowed = False  # off / eager are the lossless tiers
+    try:
+        steps_ok = default_steps is not None and int(default_steps) >= AUTO_STATIC_MIN_STEPS
+    except (TypeError, ValueError):
+        steps_ok = False
+    if not (allowed and steps_ok):
+        return None
+    return {"every": int(every), "min_steps": AUTO_STATIC_MIN_STEPS}
+
+
 def auto_step_cache_allowed(speed_mode: Optional[str]) -> bool:
     """Takes the EFFECTIVE speed tier."""
     return speed_mode == AUTO_STEP_CACHE_TIER
 
 
-def resolve_auto_step_cache(speed_mode: Optional[str], default_steps: int) -> Optional[str]:
+def resolve_auto_step_cache(
+    speed_mode: Optional[str],
+    default_steps: int,
+    *,
+    static_plan: Optional[dict] = None,
+) -> Optional[str]:
+    """``static_plan`` (from auto_static_skip_plan) wins: a family measured for the fixed schedule takes it on every
+    tier the plan allows, FBCache stays the max-tier fallback for the rest."""
+    if static_plan:
+        return TC_STATIC
     if auto_step_cache_allowed(speed_mode) and int(default_steps) >= FBCACHE_MIN_STEPS:
         return TC_FBCACHE
     return None

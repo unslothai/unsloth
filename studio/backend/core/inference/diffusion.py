@@ -60,6 +60,7 @@ from .diffusion_families import (
     canonical_base,
     cache_holds_files,
     default_generation_params,
+    generation_variant,
     detect_family_for_pick,
     excluded_model_reason,
     prefer_ungated_mirror,
@@ -210,6 +211,7 @@ from .diffusion_cache import (
     TC_AUTO,
     TC_STATIC,
     apply_step_cache,
+    auto_static_skip_plan,
     auto_step_cache_allowed,
     cache_breaks_graph,
     effective_denoise_steps,
@@ -220,6 +222,7 @@ from .diffusion_cache import (
     step_cache_supported,
 )
 from .diffusion_step_skip import (
+    auto_static_settings,
     install_static_step_skip,
     mark_step_end,
     reset_static_step_skip,
@@ -6867,15 +6870,36 @@ class DiffusionBackend:
                         gguf_filename
                     )
                     default_steps: Optional[int] = None
+                    static_plan: Optional[dict] = None
                     if cache_auto:
                         default_steps, _ = default_generation_params(
                             gguf_filename, repo_id, base, fam.name
                         )
-                        cache_request = resolve_auto_step_cache(effective_speed, default_steps)
+                        # Measured families take the fixed-schedule skip (keeps fullgraph and the CUDA graph).
+                        static_plan = auto_static_skip_plan(
+                            generation_variant(gguf_filename, repo_id, base, fam.name),
+                            effective_speed,
+                            default_steps,
+                        )
+                        cache_request = resolve_auto_step_cache(
+                            effective_speed, default_steps, static_plan = static_plan
+                        )
+                    cache_engaged = None
                     if cache_request == TC_STATIC:
-                        # Explicit only: auto never resolves to static.
-                        cache_engaged = install_static_step_skip(pipe, logger = logger)
-                    else:
+                        cache_engaged = (
+                            install_static_step_skip(
+                                pipe,
+                                settings = auto_static_settings(static_plan, logger = logger),
+                                logger = logger,
+                            )
+                            if static_plan
+                            else install_static_step_skip(pipe, logger = logger)
+                        )
+                        if cache_engaged is None and static_plan:
+                            # Declined (second denoiser, no forward): auto falls back to what it picked before.
+                            static_plan = None
+                            cache_request = resolve_auto_step_cache(effective_speed, default_steps)
+                    if cache_request != TC_STATIC:
                         cache_engaged = apply_step_cache(
                             pipe,
                             mode = cache_request,
@@ -6890,12 +6914,25 @@ class DiffusionBackend:
                     cache_graph_break = cache_breaks_graph(cache_engaged)
                     self._raise_if_load_cancelled(_load_token)
                     # Arm only where FBCache can engage: a live toggle drops fullgraph and retries every generation.
-                    cache_may_toggle = cache_auto_live and (
-                        cache_engaged is not None
-                        or (cache_request is None and step_cache_supported(pipe, logger = logger))
+                    cache_may_toggle = (
+                        cache_auto_live
+                        and cache_engaged != TC_STATIC
+                        and (
+                            cache_engaged is not None
+                            or (
+                                cache_request is None
+                                and step_cache_supported(pipe, logger = logger)
+                            )
+                        )
                     )
                     if cache_auto:
-                        if not cache_auto_live:
+                        if cache_engaged == TC_STATIC:
+                            cache_reason = (
+                                f"auto: static step skip (every {static_plan['every']}) for this model "
+                                f"at {static_plan['min_steps']}+ steps; set "
+                                "UNSLOTH_DIFFUSION_AUTO_STEP_SKIP=0 to turn it off"
+                            )
+                        elif not cache_auto_live:
                             # Only name the max tier where it would help: SDXL / LTX-2 never cache on any tier.
                             cache_reason = (
                                 "auto: step caching engages on the max speed tier only"

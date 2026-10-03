@@ -56,10 +56,12 @@ from .diffusion_attention import (
     select_attention_backend,
 )
 from .diffusion_cache import (
+    AUTO_STATIC_SKIP,
     FBCACHE_MIN_STEPS,
     TC_AUTO,
     TC_STATIC,
     apply_step_cache,
+    auto_static_skip_plan,
     auto_step_cache_allowed,
     cache_breaks_graph,
     maybe_toggle_step_cache,
@@ -68,6 +70,7 @@ from .diffusion_cache import (
     step_cache_supported,
 )
 from .diffusion_step_skip import (
+    auto_static_settings,
     install_static_step_skip,
     mark_step_end,
     reset_static_step_skip,
@@ -2252,6 +2255,16 @@ class _NamedDiTView:
 def _denoiser_view(pipe: Any, component: str) -> Any:
     """``pipe`` itself for the usual ``transformer``; a view onto ``component`` otherwise."""
     return pipe if component == "transformer" else _NamedDiTView(pipe, component)
+
+
+def _skip_pipe(state: Any, pipe: Any = None) -> Any:
+    """What the static step skip helpers read ``transformer`` from: the pipe, or for MiniMax-H3 a view onto the
+    partition this load denoises with (a reference load's DiT is ``transformer_ref``)."""
+    pipe = getattr(state, "pipe", None) if pipe is None else pipe
+    fam = getattr(state, "family", None)
+    if pipe is None or not getattr(fam, "modular_workflow", None):
+        return pipe
+    return _denoiser_view(pipe, h3_denoiser_component(getattr(state, "h3_task", None)))
 
 
 def _is_static_cache_request(value: Optional[str]) -> bool:
@@ -6258,12 +6271,27 @@ class VideoBackend:
         # GGUF and torchao-quantised DiTs need the higher threshold to trigger over quant noise
         cache_quant_active = kind == "gguf" or transformer_quant_engaged is not None
         default_cache_steps: Optional[int] = None
+        static_plan: Optional[dict] = None
         if cache_auto:
-            default_cache_steps, _ = default_video_generation_params(gguf_filename, repo_id, base)
-            cache_request = resolve_auto_step_cache(effective_speed, default_cache_steps)
+            default_cache_steps, _ = default_video_generation_params(
+                gguf_filename, repo_id, base, fallback = (fam.default_steps, fam.default_guidance)
+            )
+            # A distilled variant of a listed family (LTX distilled, 8 steps) falls under AUTO_STATIC_MIN_STEPS.
+            static_plan = auto_static_skip_plan(fam.name, effective_speed, default_cache_steps)
+            cache_request = resolve_auto_step_cache(
+                effective_speed, default_cache_steps, static_plan = static_plan
+            )
         cache_engaged = None
         static_decline: Optional[str] = None
-        if cache_request == TC_STATIC:
+        if cache_request == TC_STATIC and static_plan:
+            # Auto: only where it was measured, which never lists a two-expert or joint audio-video family.
+            cache_engaged = install_static_step_skip(
+                pipe, settings = auto_static_settings(static_plan, logger = logger), logger = logger
+            )
+            if cache_engaged is None:
+                static_plan = None
+                cache_request = resolve_auto_step_cache(effective_speed, default_cache_steps)
+        if cache_request == TC_STATIC and not static_plan:
             # One denoiser only: a dual-expert MoE hands part of the trajectory to transformer_2, unseen by the history.
             if len(views) > 1 or getattr(pipe, "transformer_2", None) is not None:
                 static_decline = (
@@ -6284,7 +6312,7 @@ class VideoBackend:
                     static_decline = (
                         "static step skip is unavailable for this pipeline; it runs uncached"
                     )
-        else:
+        elif cache_request != TC_STATIC:
             for view in views:
                 engaged = apply_step_cache(
                     view,
@@ -6298,12 +6326,21 @@ class VideoBackend:
                     cache_engaged = engaged
         cache_graph_break = cache_breaks_graph(cache_engaged)
         # Arm only where FBCache can engage: a live toggle drops fullgraph and retries every generation.
-        cache_may_toggle = cache_auto_live and (
-            cache_engaged is not None
-            or (cache_request is None and step_cache_supported(pipe, logger = logger))
+        cache_may_toggle = (
+            cache_auto_live
+            and cache_engaged != TC_STATIC
+            and (
+                cache_engaged is not None
+                or (cache_request is None and step_cache_supported(pipe, logger = logger))
+            )
         )
         if cache_auto:
-            if not cache_auto_live:
+            if cache_engaged == TC_STATIC:
+                cache_reason = (
+                    f"auto: static step skip (every {static_plan['every']}) for this model at "
+                    f"{static_plan['min_steps']}+ steps; set UNSLOTH_DIFFUSION_AUTO_STEP_SKIP=0 to turn it off"
+                )
+            elif not cache_auto_live:
                 # Only name the max tier where it would help: SDXL / LTX-2 never cache on any tier.
                 cache_reason = (
                     "auto: step caching engages on the max speed tier only"
@@ -7420,6 +7457,49 @@ class VideoBackend:
             except Exception as exc:  # noqa: BLE001 -- optimisation only, never fail a load
                 logger.warning("video.h3_audio_vae: keeping the stock audio VAE: %s", exc)
 
+        # Static step skip, the only step cache this workflow can take: FBCache needs a pipeline that opens
+        # cache_context, and the modular denoise loop opens none. The skip is an outer forward on the partition this
+        # load denoises with and returns the joint (video, audio) prediction stream by stream. One call per step (the
+        # checkpoint is guidance-distilled), so the per-call counter is the step index.
+        h3_cache_engaged: Optional[str] = None
+        h3_cache_reason = "not supported by this modular workflow"
+        try:
+            h3_cache_request = normalize_transformer_cache(transformer_cache)
+        except ValueError:
+            h3_cache_request = str(transformer_cache)  # the routes refuse it first; a direct call runs uncached
+        h3_cache_auto = transformer_cache is None or h3_cache_request == TC_AUTO
+        h3_static_plan = (
+            auto_static_skip_plan(fam.name, h3_vae_speed, fam.default_steps)
+            if h3_cache_auto
+            else None
+        )
+        if h3_static_plan or h3_cache_request == TC_STATIC:
+            h3_cache_engaged = install_static_step_skip(
+                _denoiser_view(pipe, denoiser_component),
+                settings = (
+                    auto_static_settings(h3_static_plan, logger = logger) if h3_static_plan else None
+                ),
+                logger = logger,
+            )
+            if h3_cache_engaged is None:
+                h3_cache_reason = "static step skip is unavailable for this pipeline; it runs uncached"
+            elif h3_static_plan:
+                h3_cache_reason = (
+                    f"auto: static step skip (every {h3_static_plan['every']}) for this model at "
+                    f"{h3_static_plan['min_steps']}+ steps; set UNSLOTH_DIFFUSION_AUTO_STEP_SKIP=0 to turn it off"
+                )
+            else:
+                h3_cache_reason = "requested"
+        elif h3_cache_auto:
+            h3_cache_reason = (
+                "auto: static step skip engages on the max speed tier only"
+                if AUTO_STATIC_SKIP.get(fam.name)
+                else "auto: not enabled for this model"
+            )
+        elif h3_cache_request is not None:
+            h3_cache_reason = "only static step skip is supported by this modular workflow; running uncached"
+        else:
+            h3_cache_reason = "requested"
         if offload_policy != "none" and (te_streamed or denoiser_streamed):
             # Only the VAEs rotate now, evicting each other every render. Installed last: the levers above replace weights.
             from .video_minimax_h3_residency import install_pinned_swap
@@ -7469,11 +7549,15 @@ class VideoBackend:
                     (
                         transformer_cache,
                         "off",
-                        "static step skip is not supported by this modular workflow",
+                        h3_cache_reason,
                         RESOLVED_UNSUPPORTED,
                     )
-                    if _is_static_cache_request(transformer_cache)
-                    else (None, "off", "not supported by this modular workflow")
+                    if h3_cache_engaged is None and h3_cache_request not in (None, TC_AUTO)
+                    else (
+                        None if h3_cache_auto else transformer_cache,
+                        h3_cache_engaged or "off",
+                        h3_cache_reason,
+                    )
                 ),
                 "cuda_graph": (
                     None,
@@ -7548,6 +7632,7 @@ class VideoBackend:
                 # a dense fallback recorded as int8 would under-state the floor by 39 GB and let a doomed generation
                 # start.
                 text_encoder_quant = text_encoder_quant_engaged,
+                transformer_cache = h3_cache_engaged,
                 denoiser_pinned = denoiser_pinned,
                 denoiser_streamed = bool(denoiser_streamed),
                 # A slab-arena pin released the pageable source, so the pinned copy is the only one.
@@ -7845,7 +7930,7 @@ class VideoBackend:
         state = self._state
         if state is None or state.transformer_cache != TC_STATIC:
             return None, None
-        return static_skip_view(state.pipe)
+        return static_skip_view(_skip_pipe(state))
 
     def _run_generate(
         self,
@@ -8522,7 +8607,7 @@ class VideoBackend:
 
                 def _on_step(p, step_index, timestep, callback_kwargs):
                     if static_skip:
-                        mark_step_end(pipe)
+                        mark_step_end(_skip_pipe(state, pipe))
                     # diffusers calls this at the END of a loop iteration, after scheduler.step, so
                     # the step's latent update is already submitted when the marker goes down.
                     if cancel.is_set():
@@ -8592,7 +8677,7 @@ class VideoBackend:
                 if static_skip:
                     # Without a step callback (HunyuanVideo-1.5) steps count per CFG branch from cache_context names.
                     reset_static_step_skip(
-                        pipe, steps, step_signal = has_step_callback, owner = current_account_id()
+                        _skip_pipe(state, pipe), steps, step_signal = has_step_callback, owner = current_account_id()
                     )
                 elif state.transformer_cache:
                     self._reset_step_cache(pipe)
@@ -8623,8 +8708,10 @@ class VideoBackend:
                     # whether this render finished, was cancelled or failed.
                     settle_compile_fallback(state, pipe, logger)
                     if static_skip:
-                        logger.debug("video.step_skip: %s", static_skip_stats(pipe))
-                        reset_static_step_skip(pipe, None)
+                        logger.debug(
+                            "video.step_skip: %s", static_skip_stats(_skip_pipe(state, pipe))
+                        )
+                        reset_static_step_skip(_skip_pipe(state, pipe), None)
                     if fam.modular_workflow:
                         from .video_minimax_h3_vae import settle_h3_vae_fallback
                         settle_h3_vae_fallback(state, pipe)
@@ -9369,7 +9456,7 @@ class VideoBackend:
             diffusion_cuda_graph.uninstall_all(
                 getattr(getattr(state, "pipe", None), "_unsloth_cuda_graphs", ()) or ()
             )
-            uninstall_static_step_skip(getattr(state, "pipe", None))
+            uninstall_static_step_skip(_skip_pipe(state))
             try:
                 from .diffusion_nvfp4_linear import reset_nvfp4_state
                 reset_nvfp4_state()
@@ -9502,7 +9589,9 @@ class VideoBackend:
             "attention_backend": state.attention_backend,
             "transformer_cache": state.transformer_cache,
             "transformer_cache_stats": (
-                static_skip_stats(state.pipe) if state.transformer_cache == TC_STATIC else None
+                static_skip_stats(_skip_pipe(state))
+                if state.transformer_cache == TC_STATIC
+                else None
             ),
             "transformer_quant": state.transformer_quant,
             **_nvfp4_backend_fields(_video_transformer_quant_backend(state), owner = self),
