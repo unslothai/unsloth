@@ -312,11 +312,29 @@ export function ReasoningTranscript({
   const [protectedKeys, setProtectedKeys] = useState<Set<string>>(
     () => new Set(),
   );
-  const adjustAbove = useAdjustForContentInsertedAbove();
+  const adjustThreadAbove = useAdjustForContentInsertedAbove();
   const detach = useDetachThreadFromBottom();
-  const viewport = useCallback(
-    () => root.current?.closest<HTMLDivElement>(".aui-thread-viewport") ?? null,
-    [],
+  const viewport = useCallback(() => {
+    const element = root.current;
+    return (
+      element?.closest<HTMLDivElement>(
+        '[data-slot="reasoning-scroll-region"]',
+      ) ??
+      element?.closest<HTMLDivElement>(".aui-thread-viewport") ??
+      null
+    );
+  }, []);
+  const adjustAbove = useCallback(
+    (delta: number) => {
+      const element = viewport();
+      if (!element) return;
+      if (element.matches(".aui-thread-viewport")) {
+        adjustThreadAbove(delta);
+      } else {
+        element.scrollTop += delta;
+      }
+    },
+    [adjustThreadAbove, viewport],
   );
 
   const virtualizer = useVirtualizer<HTMLDivElement, HTMLElement>({
@@ -383,8 +401,9 @@ export function ReasoningTranscript({
         });
       return [...mounted].sort((a, b) => a - b);
     },
-    // TanStack reports measurement corrections; the thread controller owns all scroll writes.
-    // Its own initial-position writes are intentionally ignored.
+    // Measurement corrections preserve the active reasoning viewport's reading position.
+    // The thread controller owns shared-viewport writes; a bounded panel owns local writes.
+    // TanStack's initial-position writes are intentionally ignored.
     scrollToFn: (offset, { adjustments }) => {
       const element = viewport();
       if (element && adjustments !== undefined)
