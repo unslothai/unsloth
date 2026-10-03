@@ -182,6 +182,7 @@ def create_studio_mcp() -> FastMCP:
         """Stop the running diffusion training job; save=False cancels without exporting the adapter."""
         from models.training import DiffusionTrainingStopRequest
         from routes.training import stop_diffusion_training as stop
+
         return _dump(await stop(DiffusionTrainingStopRequest(save = save), current_subject = "mcp"))
 
     @mcp.tool
