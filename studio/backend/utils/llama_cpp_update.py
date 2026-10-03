@@ -662,17 +662,19 @@ def _run_llama_phase(
                         backend.unload_model()
             except Exception as exc:
                 logger.debug("llama update: load coordination failed", error = str(exc))
-        try:
-            from core.inference import model_slots
+        from core.inference import model_slots
 
-            # Each kept model's in-flight load drains under its own lock, as the primary's did above.
-            for slot in list(model_slots.slots):
-                with slot.llama._serial_load_lock:
-                    slot.llama._llama_update_in_progress = True
-            if model_slots.unload_llama_slots():
+        # Each kept model's in-flight load drains under its own lock, as the primary's did above.
+        for slot in list(model_slots.slots):
+            with slot.llama._serial_load_lock:
+                slot.llama._llama_update_in_progress = True
+        try:
+            if model_slots.unload_llama_slots(strict = True):
                 model_was_active = True
-        except Exception as exc:
-            logger.debug("llama update: could not stop models kept alongside", error = str(exc))
+        except RuntimeError:
+            # A kept server that survived would run from, or lock, the tree being replaced.
+            model_was_active = True
+            raise
 
         # The mtmd dictation sidecar serves Qwen3-ASR from this same llama-server out of this same tree, so a live one locks the exe on Windows and a concurrent load would start against a half-swapped install.
         model_was_active = _block_mtmd_sidecar(mtmd_guard) or model_was_active

@@ -1164,7 +1164,7 @@ def test_update_drains_and_marks_each_kept_model_before_swapping(monkeypatch, tm
     monkeypatch.setattr(model_slots, "slots", [SimpleNamespace(llama = kept)])
     seen = {}
 
-    def unload_llama_slots():
+    def unload_llama_slots(strict = False):
         # A load still holding the slot's lock would have finished before this runs.
         seen["lock_free"] = kept._serial_load_lock.acquire(blocking = False)
         seen["flag"] = kept._llama_update_in_progress
@@ -1179,6 +1179,34 @@ def test_update_drains_and_marks_each_kept_model_before_swapping(monkeypatch, tm
             break
         time.sleep(0.05)
     assert seen == {"lock_free": True, "flag": True}
+
+
+def test_update_stops_when_a_kept_model_would_not_unload(monkeypatch, tmp_path):
+    import core.inference.model_slots as model_slots
+
+    install_dir = tmp_path / "llama.cpp"
+    binary = _write_install(install_dir, "b9493")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
+    _inject_backend(monkeypatch, _FakeBackend())
+    monkeypatch.setattr(model_slots, "slots", [])
+
+    def stuck(strict = False):
+        assert strict
+        raise RuntimeError("Could not unload 1 model(s) kept alongside")
+
+    monkeypatch.setattr(model_slots, "unload_llama_slots", stuck)
+    spawned = []
+    _patch_installer_popen(monkeypatch, spawned = spawned)
+    assert upd.start_update()["started"] is True
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        if upd.get_update_status()["job"]["state"] in ("success", "error"):
+            break
+        time.sleep(0.05)
+    assert upd.get_update_status()["job"]["state"] == "error"
+    assert not any("install_llama_prebuilt" in " ".join(map(str, c)) for c in spawned)
 
 
 def test_update_clears_maintenance_flag_on_installer_failure(monkeypatch, tmp_path):

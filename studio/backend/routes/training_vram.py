@@ -509,20 +509,21 @@ def free_chat_models_for_training(reason: str) -> List[str]:
 
 
 def free_kept_models_for_training(reason: str) -> List[str]:
-    try:
-        from core.inference import model_slots
+    from core.inference import model_slots
 
-        kept = [
-            slot.orchestrator.active_model_name or slot.llama.model_identifier or "gguf"
-            for slot in list(model_slots.slots)
-        ]
-        if kept:
-            logger.info("Unloading %d model(s) kept alongside for training (%s)", len(kept), reason)
-            model_slots.unload_extra_models()
-        return [f"kept:{name}" for name in kept]
-    except Exception as e:
-        logger.warning("Could not unload models kept alongside: %s", e)
-        return []
+    kept = [
+        slot.orchestrator.active_model_name or slot.llama.model_identifier or "gguf"
+        for slot in list(model_slots.slots)
+    ]
+    if kept:
+        logger.info("Unloading %d model(s) kept alongside for training (%s)", len(kept), reason)
+        try:
+            model_slots.unload_extra_models(strict = True)
+        except RuntimeError as exc:
+            raise ManagedEngineStillRunning(
+                "A model kept alongside could not be stopped. Retry before starting training."
+            ) from exc
+    return [f"kept:{name}" for name in kept]
 
 
 def _stt_sidecar_holds_no_vram(sidecar) -> bool:

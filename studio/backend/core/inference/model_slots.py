@@ -250,10 +250,11 @@ def unload_idle() -> int:
     return len(evict_these(idle))
 
 
-def unload_llama_slots() -> int:
+def unload_llama_slots(strict: bool = False) -> int:
     """Drop every slot running or starting a llama-server, a GGUF load still filling one included."""
     return _drop_where(
         lambda slot, filling: slot.llama.is_active
         or slot.llama.is_loaded
-        or (filling and not getattr(slot.orchestrator, "loading_models", None))
+        or (filling and not getattr(slot.orchestrator, "loading_models", None)),
+        strict,
     )

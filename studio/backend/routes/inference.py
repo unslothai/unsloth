@@ -17240,10 +17240,16 @@ async def load_model_gated(
                             if exc.capped:
                                 request = request.model_copy(update = {"force_alongside": True})
                                 continue
-                            # Fits nowhere beside the others: replace the active model, as before.
+                            # Fits nowhere beside the others: replace the active model, as before,
+                            # unless its chats refuse that, checked before anything else changes.
+                            routed_slot.set(None)
+                            _raise_or_cancel_active_generations(
+                                force = request.force_cancel_active,
+                                action = "Loading a model",
+                                cancel = False,
+                            )
                             await asyncio.to_thread(model_slots.drop, extra)
                             model_slots.loading, extra = None, None
-                            routed_slot.set(None)
                             replaced = _primary_model_label()
                             request = request.model_copy(
                                 update = {"alongside": False, "force_alongside": False}

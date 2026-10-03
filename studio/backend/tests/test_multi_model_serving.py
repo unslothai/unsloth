@@ -1240,3 +1240,33 @@ def test_turning_the_setting_off_unloads_only_idle_kept_models(backends):
     model_slots.slots.append(busy)
     assert model_slots.unload_idle() == 1
     assert model_slots.slots == [busy] and not extra.llama.is_active
+
+
+def test_the_replace_fallback_refuses_while_the_active_model_generates(backends, monkeypatch):
+    primary, extra = backends
+    extra.request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0")
+    _gated_load_fakes(monkeypatch, short_fits = [1, 1])
+    seen = []
+    monkeypatch.setattr(
+        inf,
+        "_raise_or_cancel_active_generations",
+        lambda **kw: seen.append(kw) or (_ for _ in ()).throw(HTTPException(409, "chats running")),
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            inf.load_model_gated(LoadRequest(model_path = "org/C-GGUF", alongside = True), None, "s")
+        )
+    assert excinfo.value.status_code == 409 and seen[0]["cancel"] is False
+    assert primary.model_identifier == "org/A-GGUF" and primary.is_loaded
+    assert model_slots.slots == []
+
+
+def test_training_stops_on_a_kept_model_that_would_not_unload(backends, monkeypatch):
+    _, extra = backends
+
+    def stuck():
+        raise RuntimeError("llama-server ignored SIGKILL")
+
+    monkeypatch.setattr(extra.llama, "unload_model", stuck)
+    with pytest.raises(training_vram.ManagedEngineStillRunning):
+        training_vram.free_kept_models_for_training("test")
