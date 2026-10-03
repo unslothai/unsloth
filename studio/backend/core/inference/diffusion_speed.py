@@ -980,6 +980,18 @@ def _compile_repeated_blocks(
         # compile_repeated_blocks is lazy: inductor only runs on the first forward, inside generate(), where a lowering
         # bug would fail the render. Guard every compiled block so such a failure drops this DiT to eager instead.
         guard_compiled_blocks(transformer, logger)
+        # Inside the restride below, so it sees the inputs the compiled graph sees; inert until the load binds it.
+        try:
+            from . import diffusion_aot_blocks
+            diffusion_aot_blocks.install(transformer, dit_kwargs, logger)
+        except Exception as exc:  # noqa: BLE001 - optimisation only
+            _warn(logger, "aot blocks", exc)
+        # After the guard (it wraps the guarded call): FLUX.1's first single block otherwise compiles a second graph.
+        try:
+            from . import diffusion_block_restride
+            diffusion_block_restride.install(transformer, logger)
+        except Exception as exc:  # noqa: BLE001 - optimisation only
+            _warn(logger, "block restride", exc)
         # Inductor turns the prefix KV cache's clone into a view of the full K/V buffer, which pins it for the render.
         try:
             from .diffusion_prefix_kv import install_prefix_kv_compaction
