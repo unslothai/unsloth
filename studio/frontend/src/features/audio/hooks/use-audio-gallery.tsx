@@ -162,8 +162,9 @@ export function useAudioGallery({
         }
         setClips(merged);
         setHasMore(galleryCache.hasMore);
+        // Only a saved fallback is the selected clip; an unsaved one is the only copy.
         if (
-          fallbackClipRef.current &&
+          fallbackClipRef.current?.saved &&
           galleryCache.selectedId &&
           merged.some((c) => c.id === galleryCache.selectedId)
         ) {
@@ -572,8 +573,9 @@ export function useWorkflowHistory({
   useEffect(() => {
     if (!enabled || selectedClip || pageFallbackClip) return;
     const first = visibleClips[0];
-    if (first) selectClip(first.id);
-  }, [enabled, selectedClip, pageFallbackClip, visibleClips, selectClip]);
+    // Keep another page's unsaved clip: it is the only copy.
+    if (first) selectClip(first.id, fallbackClip !== null);
+  }, [enabled, selectedClip, pageFallbackClip, fallbackClip, visibleClips, selectClip]);
 
   useEffect(() => {
     if (

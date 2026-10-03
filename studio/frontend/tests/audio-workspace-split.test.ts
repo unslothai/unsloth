@@ -173,3 +173,7 @@ test("the Max tokens stop warning from main lives in the generation hook", () =>
     /if \(generated\.choices\[0\]\?\.finish_reason === "length"\)\s*toast\.warning\(\s*maxTokens < TTS_MAX_TOKENS/,
   );
 });
+
+test("auto-selecting a page's history keeps another page's unsaved clip", () => {
+  assert.match(gallery, /if \(first\) selectClip\(first\.id, fallbackClip !== null\);/);
+});
