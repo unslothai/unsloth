@@ -27,8 +27,7 @@ logger = get_logger(__name__)
 
 # GGUF types FastFlowLM's Q4NX packs directly; any other quant is dequantized and rounded again.
 SOURCE_QUANTS = ("q4_0", "q4_1", "q4_k_m")
-# What FLM loads next to model.q4nx; it hard-exits without tokenizer_config.json, and reads the
-# chat template from it or from chat_template.jinja, where transformers 5 saves it.
+# Loaded beside model.q4nx; FLM hard-exits without tokenizer_config.json.
 TOKENIZER_FILES = ("tokenizer.json", "tokenizer_config.json", "chat_template.jinja")
 # Read for token ids only. No config.json is written: FLM's own carries the flm_version its
 # catalog checks, and one without it makes FLM delete the folder's weights and re-pull stock.
@@ -121,8 +120,7 @@ def convert_gguf_to_q4nx(gguf_path: str, out_dir: Path) -> None:
     from utils.process_lifetime import child_popen_kwargs, spawn_on_lifetime_thread
     from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
-    # Bound to this process's lifetime: cancelling an export kills the worker, and a converter
-    # left behind would keep a whole model in RAM.
+    # Dies with its parent: a cancelled export's worker must not leave a converter holding a model.
     process = spawn_on_lifetime_thread(
         lambda: subprocess.Popen(
             [sys.executable, "-c", _RUN_CONVERTER, gguf_path, str(out_dir)],
@@ -220,8 +218,7 @@ def write_flm_tokenizer_config(out_dir: Path, *configs: Optional[dict]) -> None:
     )
 
 
-# One standalone conversion at a time: each holds a whole model in RAM, and a retried request
-# must not interleave with one still writing the same folder.
+# One conversion at a time: each holds a whole model in RAM, and retries must not interleave.
 _CONVERT_LOCK = threading.Lock()
 
 
