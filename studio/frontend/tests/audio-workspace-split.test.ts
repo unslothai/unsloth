@@ -149,10 +149,10 @@ test("Send to lists the other Audio pages from the shared workflow list", () => 
     card,
     /AUDIO_WORKFLOWS\.filter\(\s*\(tab\) => tab\.id !== current && handlers\[tab\.id\],?\s*\)/,
   );
-  // Bytes first: a failed fetch must not leave the user on another page.
+  // Transcribe takes the clip by id, as its "From history" does; nothing is downloaded first.
   assert.match(
     host,
-    /const blob = await fetchClipBlob\(clip\.url\);\s*if \(!transitionWorkflow\("transcribe"\)\) return;/,
+    /if \(!transitionWorkflow\("transcribe"\)\) return;[\s\S]{0,200}?useAudioTranscribeStore\.getState\(\)\.setSource\(\{\s*kind: "clip",\s*id: clip\.id,/,
   );
 });
 
@@ -187,7 +187,7 @@ test("Send to waits for a running task instead of stopping it and dropping the c
   // transcription was refused and the clip silently dropped.
   assert.match(
     host,
-    /transcribe: \(\) => \{[\s\S]*?if \(busyRef\.current !== null\) \{\s*toast\.info\([^)]*\);\s*return;\s*\}\s*void \(async \(\) => \{/,
+    /transcribe: \(\) => \{[\s\S]*?if \(busyRef\.current !== null\) \{\s*toast\.info\([^)]*\);\s*return;\s*\}\s*if \(!transitionWorkflow\("transcribe"\)\) return;/,
   );
 });
 

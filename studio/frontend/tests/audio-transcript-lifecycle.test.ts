@@ -128,9 +128,9 @@ test("leaving the page lets a transcription finish into history; the input card 
   const card = readSrc("features/audio/hooks/use-audio-source.ts");
   assert.match(
     card,
-    /if \(unmounted\.current \|\| !activeRef\.current\) \{\s*for \(const track of stream\.getTracks\(\)\) track\.stop\(\);\s*return;\s*\}/,
+    /if \(ticket !== acquisition\.current \|\| !activeRef\.current\) \{\s*for \(const track of stream\.getTracks\(\)\) track\.stop\(\);\s*return;\s*\}/,
   );
-  assert.match(card, /unmounted\.current = true;[\s\S]*?track\.stop\(\)/);
+  assert.match(card, /abortAll\(\);\s*for \(const track of streamRef\.current\?\.getTracks\(\) \?\? \[\]\) track\.stop\(\)/);
   // The page stays mounted when hidden, so hiding it must end a recording too.
   assert.match(card, /activeRef\.current = active;\s*if \(!active\) stopRecording\(\);/);
   assert.match(

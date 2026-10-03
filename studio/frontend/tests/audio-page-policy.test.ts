@@ -345,9 +345,12 @@ test("leaving Audio clears an unresolved microphone permission wait", () => {
   // The card unmounts with the page; a permission prompt that resolves afterwards is released.
   assert.match(
     audioSourceCard,
-    /if \(unmounted\.current \|\| !activeRef\.current\) \{\s*for \(const track of stream\.getTracks\(\)\) track\.stop\(\);\s*return;\s*\}/,
+    /if \(ticket !== acquisition\.current \|\| !activeRef\.current\) \{\s*for \(const track of stream\.getTracks\(\)\) track\.stop\(\);\s*return;\s*\}/,
   );
-  assert.match(audioSourceCard, /return \(\) => \{\s*unmounted\.current = true;/);
+  assert.match(
+    audioSourceCard,
+    /\(\) => \(\) => \{\s*abortAll\(\);\s*for \(const track of streamRef\.current\?\.getTracks\(\) \?\? \[\]\) track\.stop\(\);/,
+  );
   assert.match(audioSourceCard, /activeRef\.current = active;\s*if \(!active\) stopRecording\(\);/);
 });
 

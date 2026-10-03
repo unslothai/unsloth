@@ -216,7 +216,7 @@ test("a superseded microphone request releases its stream", () => {
   );
   assert.match(
     hook,
-    /if \(ticket !== acquisition\.current\) \{\s*for \(const track of stream\.getTracks\(\)\) track\.stop\(\);/,
+    /if \(ticket !== acquisition\.current \|\| !activeRef\.current\) \{\s*for \(const track of stream\.getTracks\(\)\) track\.stop\(\);/,
   );
   assert.match(
     hook,
