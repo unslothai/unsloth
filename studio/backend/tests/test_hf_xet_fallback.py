@@ -385,6 +385,36 @@ def test_no_light_gpu_init_retry_on_an_accelerator_host(monkeypatch):
             sys.modules["utils.hf_xet_fallback"] = saved_shim
 
 
+def test_optional_loader_does_not_retry_under_light_gpu_init_on_an_accelerator_host(monkeypatch):
+    """_load_optional is reached by xet_health() before every download. Its retry under
+    UNSLOTH_ZOO_DISABLE_GPU_INIT=1 makes unsloth_zoo put its pass-through triton stub in sys.modules
+    for the whole process, so @triton.jit stops decorating and xformers' unroll_varargs later fails
+    with "'function' object has no attribute 'fn'". Like _load_shared, it must not retry on a GPU host."""
+    monkeypatch.delenv("UNSLOTH_ZOO_DISABLE_GPU_INIT", raising = False)
+    real_triton = _types.ModuleType("triton")
+    monkeypatch.setitem(sys.modules, "triton", real_triton)
+    monkeypatch.setattr(shim, "_gpu_present", lambda: True)
+    shim._reset_optional_module_cache()
+    attempts = []
+
+    def _fake_import(name):
+        attempts.append(os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT"))
+        if os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT") == "1":
+            sys.modules["triton"] = _types.ModuleType("unsloth_zoo_triton_stub")
+            return _types.ModuleType(name)
+        raise NotImplementedError("Unsloth cannot find any torch accelerator")
+
+    monkeypatch.setattr(importlib, "import_module", _fake_import)
+    try:
+        assert shim.xet_health() is None
+        assert shim.xet_health() is None
+        assert attempts == [None], attempts
+        assert sys.modules["triton"] is real_triton
+        assert os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT") is None
+    finally:
+        shim._reset_optional_module_cache()
+
+
 def test_retries_under_light_gpu_init_when_import_fails(monkeypatch):
     """GPU detection in unsloth_zoo's __init__ raises NotImplementedError on a GPU-less host. The shim
     retries under UNSLOTH_ZOO_DISABLE_GPU_INIT=1, restores the env, and degrades if the retry fails.

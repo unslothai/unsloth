@@ -201,6 +201,17 @@ def _load_optional(module_name: str) -> Any:
         cached = _optional_modules.get(module_name, _UNTRIED)
         if cached is not _UNTRIED:
             return cached
+        # Same rule as _load_shared: the retry's triton/bitsandbytes stubs stay in sys.modules for good.
+        if _gpu_present():
+            import logging as _logging
+
+            _logging.getLogger(__name__).debug(
+                "%s unavailable (%s); not retrying under UNSLOTH_ZOO_DISABLE_GPU_INIT on a host with an accelerator",
+                module_name,
+                first_error,
+            )
+            _optional_modules[module_name] = None
+            return None
         global _gpu_init_override_depth
         previous = _os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT")
         ours = previous != "1"
