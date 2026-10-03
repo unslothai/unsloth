@@ -371,6 +371,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # DiT fp32 on disk (32.0 to 16.6 bf16); VAE 4.7 to 2.4; Qwen2.5-VL TE bf16 14.0 + ByT5 0.8
         bf16_components_gb = (16.6, 14.8, 2.4),
         fp16_guard = "native",
+        cudnn_benchmark = False,
     ),
     # The 720p t2v repack: same architecture and footprint as the 480p entry, only the trained resolution differs. Its
     # own family so a 720p load defaults to 720p sizes; the full-path alias outranks the generic token.
@@ -397,6 +398,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         resolution_presets = ((1280, 720), (720, 1280), (960, 960)),
         bf16_components_gb = (16.6, 14.8, 2.4),
         fp16_guard = "native",
+        cudnn_benchmark = False,
     ),
 )
 
