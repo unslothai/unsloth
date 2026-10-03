@@ -588,7 +588,6 @@ def test_prefill_signal_counts_only_moving_progress():
 
     forwarded = []
     bare = inference._PrefillProgressSignal(None)
-    # Without a monitor the wrapper must not switch llama-server to per-token timings.
     assert _perf_callback_wants_timings(bare) is False
     assert bare.needs_phase is False
     assert bare.advanced() is False
@@ -596,7 +595,6 @@ def test_prefill_signal_counts_only_moving_progress():
     bare({"prompt_progress": {"processed": 10}})
     assert bare.advanced() is True
     assert bare.advanced() is False
-    # A new prefill round restarts the count lower; that is still movement.
     bare({"prompt_progress": {"processed": 2}})
     assert bare.advanced() is True
     bare({"timings": {"predicted_n": 1}})

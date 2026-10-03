@@ -805,9 +805,8 @@ class ChatGenerationSupervisor:
                     break
                 next_raw_task = asyncio.create_task(iterator.__anext__())
                 text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
-                # Admission / tool / prefill comments are progress (_SSEDecoder drops them, so a healthy
-                # queue would reap itself); `: keep-alive` means NOTHING produced, so renewing on it would
-                # keep a wedged run alive forever. Rate limited: chunks already renew via append_events.
+                # Admission / tool / prefill comments are progress (_SSEDecoder drops them); `: keep-alive`
+                # means nothing was produced, so renewing on it would keep a wedged run alive forever.
                 if _ADMISSION_DONE_MARKER in text:
                     last_keepalive = time.monotonic()
                     await self._try_touch_progress(run_id)
