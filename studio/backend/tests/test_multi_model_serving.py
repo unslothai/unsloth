@@ -157,11 +157,25 @@ def test_a_load_picks_its_slot(backends):
 
 
 def test_alongside_is_off_until_settings_turns_it_on(backends, monkeypatch):
+    _, extra = backends
     monkeypatch.setattr(multi_model_settings, "get_multi_model_enabled", lambda: False)
-    assert _selected(LoadRequest(model_path = "org/C-GGUF", alongside = True)) is None
     # A model already kept alongside still reloads in its own slot.
     served = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0", alongside = True)
-    assert _selected(served) is backends[1]
+    assert _selected(served) is extra
+    # Any other load goes to the primary, and retires a kept model once nothing uses it.
+    extra.refs += 1
+    assert _selected(LoadRequest(model_path = "org/C-GGUF", alongside = True)) is None
+    assert model_slots.slots == [extra]
+    extra.refs -= 1
+    assert _selected(LoadRequest(model_path = "org/D-GGUF")) is None
+    assert model_slots.slots == [] and not extra.llama.is_active
+
+
+def test_a_kept_model_with_no_gpu_layers_does_not_hold_the_gpu(backends):
+    _, extra = backends
+    assert model_slots.holds_vram()
+    extra.llama._gpu_offload_active = False
+    assert not model_slots.holds_vram() and model_slots.busy()
 
 
 def test_the_multi_model_setting_defaults_off(monkeypatch):

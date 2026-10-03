@@ -11469,7 +11469,7 @@ def _release_chat_for_zero_vram_primary() -> None:
     if not model_slots.slots and model_slots.loading is None:
         release(CHAT)
         return
-    release_if(CHAT, lambda: not model_slots.busy())
+    release_if(CHAT, lambda: not model_slots.holds_vram())
 
 
 def reap_dead_managed_engine(backend) -> None:
@@ -17332,12 +17332,17 @@ async def _select_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
         slot = await _route_to_extra_slot(request.model_path)
         if slot is not None or await asyncio.to_thread(_loaded_satisfies, request.model_path):
             return slot
-    if slot is not None or not request.alongside:
+    if slot is not None:
         return slot
     from utils.multi_model_settings import get_multi_model_enabled
 
-    # Off unless turned on in Settings.
+    # Off unless turned on in Settings. Off, a kept model left busy when it was turned off goes
+    # at the first load after it is idle.
     if not await asyncio.to_thread(get_multi_model_enabled):
+        if model_slots.slots:
+            await asyncio.to_thread(model_slots.unload_idle)
+        return None
+    if not request.alongside:
         return None
     orchestrator = _peek_inference_backend()
     if getattr(orchestrator, "_managed_engine", None) is not None:

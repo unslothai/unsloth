@@ -64,6 +64,15 @@ def busy() -> bool:
     return any_loading() or any(in_use(slot) for slot in list(slots))
 
 
+def holds_vram() -> bool:
+    """A kept model on the GPU or one loading; a llama-server started with no GPU layers is not."""
+    return any_loading() or any(
+        slot.orchestrator.active_model_name
+        or (slot.llama.is_active and getattr(slot.llama, "_gpu_offload_active", None) is not False)
+        for slot in list(slots)
+    )
+
+
 def visible() -> list[ExtraSlot]:
     if not account_access.managed_account():
         return list(slots)
