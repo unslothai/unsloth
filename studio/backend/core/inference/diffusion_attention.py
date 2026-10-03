@@ -1062,6 +1062,7 @@ def apply_attention_backend(
             except Exception as exc:  # noqa: BLE001 - unavailable kernel -> restore native below
                 _warn(logger, backend, exc)
         if engaged:
+            _tag_dits(pipe, backend)
             # set_attention_backend also pins the backend process-wide. Each DiT's processors keep it locally, so reset
             # the global to native ONCE, else a later component inherits this kernel.
             _reset_global_backend_to_native(logger)
@@ -1070,12 +1071,25 @@ def apply_attention_backend(
             return backend
     # No backend requested, or every set failed: pin native so a stale process-wide backend cannot leak in. One reset
     # covers every fresh DiT.
+    _tag_dits(pipe, None)
     _restore_native_backend(setters[0], logger)
     # Native means torch's SDPA dispatch decides per call, and on a device with no fused kernel that decision is MATH.
     # Say so now; the flags this would otherwise be read off lie (#8225).
     if target is not None:
         warn_if_sdpa_math_only(target, logger)
     return None
+
+
+# The backend each DiT was set to, read by the CUDA-graph eligibility check: Sage under a replayed graph renders noise.
+ATTENTION_BACKEND_ATTR = "_unsloth_attention_backend"
+
+
+def _tag_dits(pipe: Any, backend: Optional[str]) -> None:
+    for dit in _attention_dits(pipe):
+        try:
+            setattr(dit, ATTENTION_BACKEND_ATTR, backend)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _active_attention_backend() -> Optional[str]:

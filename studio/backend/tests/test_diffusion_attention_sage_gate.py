@@ -372,3 +372,19 @@ def test_unguarded_sage_call_breaks_a_fullgraph_compile():
     with pytest.raises(Exception):
         compiled(q, k, v)
     torch._dynamo.reset()
+
+
+# --- the engaged backend is recorded on each DiT, for the CUDA-graph eligibility check ---------------------------
+
+
+def test_engaged_backend_is_tagged_on_every_dit(monkeypatch):
+    monkeypatch.setattr(att, "_run_sage_probe", lambda d, dt, hd = 128: "")
+    t, t2 = _Transformer(128), _Transformer(128)
+    pipe = types.SimpleNamespace(transformer = t, transformer_2 = t2)
+    assert apply_attention_backend(pipe, "sage", target = _target()) == "sage"
+    assert t._unsloth_attention_backend == "sage" and t2._unsloth_attention_backend == "sage"
+    # A later load on the same modules that falls back clears the tag.
+    monkeypatch.setattr(att, "_run_sage_probe", lambda d, dt, hd = 128: "ValueError: Unsupported CUDA architecture: sm100")
+    monkeypatch.setattr(att, "_SAGE_PROBE_CACHE", {})
+    assert apply_attention_backend(pipe, "sage", target = _target()) is None
+    assert t._unsloth_attention_backend is None and t2._unsloth_attention_backend is None
