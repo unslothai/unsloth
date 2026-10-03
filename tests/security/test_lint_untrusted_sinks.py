@@ -6016,3 +6016,73 @@ def test_session_and_generic_request_bodies_are_sources(tmp_path):
         "        return importlib.import_module(session.get(url).text)\n",
     )
     assert sum(f["sink"] == "importlib.import_module" for f in findings if f["tier"] == "A") == 2
+
+
+def test_runpy_joblib_and_native_loaders_are_sinks(tmp_path):
+    """`runpy.run_path`, `joblib.load` and `ctypes.CDLL` on a download all execute it."""
+    findings = _scan(
+        tmp_path,
+        "import ctypes, joblib, runpy\n"
+        "from huggingface_hub import hf_hub_download\n"
+        "def a(repo):\n"
+        "    runpy.run_path(hf_hub_download(repo, 'plugin.py', revision = 'ab' * 20))\n"
+        "def b(repo):\n"
+        "    return joblib.load(hf_hub_download(repo, 'model.joblib', revision = 'ab' * 20))\n"
+        "def c(repo):\n"
+        "    return ctypes.CDLL(hf_hub_download(repo, 'plugin.so', revision = 'ab' * 20))\n",
+    )
+    assert {"runpy.run_path", "joblib.load", "ctypes.CDLL"} <= _sinks(findings)
+
+
+def test_more_http_verbs_and_httpx_helpers_are_sources(tmp_path):
+    """`requests.put` and `httpx.get` return the same untrusted body."""
+    findings = _scan(
+        tmp_path,
+        "import httpx, importlib, requests\n"
+        "def a(url):\n"
+        "    return importlib.import_module(requests.put(url).text)\n"
+        "def b(url):\n"
+        "    return importlib.import_module(httpx.get(url).text)\n",
+    )
+    assert sum(f["sink"] == "importlib.import_module" for f in findings if f["tier"] == "A") == 2
+
+
+def test_a_remote_code_flag_read_from_parsed_data_is_reported(tmp_path):
+    """`trust_remote_code = json.loads(blob)["trust_remote_code"]`, direct or via a local."""
+    findings = _scan(
+        tmp_path,
+        "import json\n"
+        "from transformers import AutoModel\n"
+        "def a(name, blob):\n"
+        "    return AutoModel.from_pretrained(name, trust_remote_code = json.loads(blob)['trust_remote_code'])\n"
+        "def b(name, blob):\n"
+        "    flag = json.loads(blob).get('trust_remote_code')\n"
+        "    return AutoModel.from_pretrained(name, trust_remote_code = flag)\n",
+    )
+    quiet = _scan(
+        tmp_path,
+        "from transformers import AutoModel\n"
+        "def a(name, trust_remote_code = False):\n"
+        "    return AutoModel.from_pretrained(name, trust_remote_code = trust_remote_code)\n",
+        name = "quiet.py",
+    )
+    assert (
+        sum(
+            f["sink"] == "trust_remote_code (untrusted value)" for f in findings if f["tier"] == "A"
+        )
+        == 2
+    )
+    assert "trust_remote_code (untrusted value)" not in _sinks(quiet)
+
+
+def test_a_revision_local_read_from_data_is_not_a_pin(tmp_path):
+    """`revision = json.loads(blob)["revision"]` then `revision = revision`."""
+    findings = _scan(
+        tmp_path,
+        "import json, sys\n"
+        "from huggingface_hub import snapshot_download\n"
+        "def load(repo, blob):\n"
+        "    revision = json.loads(blob)['revision']\n"
+        "    sys.path.insert(0, snapshot_download(repo, revision = revision))\n",
+    )
+    assert "unpinned code fetch" in _sinks(findings)

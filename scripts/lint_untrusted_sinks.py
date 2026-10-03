@@ -154,7 +154,14 @@ UNTRUSTED_CALLS = frozenset(
         # Network bodies.
         "requests.get",
         "requests.post",
+        "requests.put",
+        "requests.patch",
         "requests.request",
+        "httpx.get",
+        "httpx.post",
+        "httpx.put",
+        "httpx.patch",
+        "httpx.request",
         "urlopen",
         "urlretrieve",
         # Hub metadata and datasets.
@@ -311,6 +318,17 @@ SINKS: dict[str, tuple[tuple[int, ...], frozenset[str]]] = {
     "pickle.load": ((0,), frozenset({"file"})),
     # The object form: `pickle.Unpickler(stream).load()` runs the same reducers.
     "pickle.Unpickler": ((0,), frozenset({"file"})),
+    # joblib pickles under the hood, reducers and all.
+    "joblib.load": ((0,), frozenset({"filename"})),
+    # Running a file or module by path executes it outright.
+    "runpy.run_path": ((0,), frozenset({"path_name"})),
+    "runpy.run_module": ((0,), frozenset({"mod_name"})),
+    # Loading a shared object runs its native initialisers.
+    "ctypes.CDLL": ((0,), frozenset({"name"})),
+    "ctypes.PyDLL": ((0,), frozenset({"name"})),
+    "ctypes.WinDLL": ((0,), frozenset({"name"})),
+    "ctypes.OleDLL": ((0,), frozenset({"name"})),
+    "ctypes.cdll.LoadLibrary": ((0,), frozenset({"name"})),
     # The YAML object form: `yaml.Loader(stream).get_data()` builds tagged objects.
     "yaml.Loader": ((0,), frozenset({"stream"})),
     "yaml.CLoader": ((0,), frozenset({"stream"})),
@@ -4043,6 +4061,30 @@ class _TaintPass(ast.NodeVisitor):
                 self._record(node, sink, reason, _short(argument))
                 return
 
+    def _parsed_value(self, value: ast.AST) -> str | None:
+        """A value looked up in a parsed mapping, directly or through one local."""
+        if isinstance(value, ast.Name):
+            own = self.facts.functions.get(self.qualname)
+            body = own if own is not None else self.facts.tree
+            for child in ast.walk(body):
+                if isinstance(child, ast.Assign) and any(
+                    isinstance(t, ast.Name) and t.id == value.id for t in child.targets
+                ):
+                    if isinstance(child.value, (ast.Subscript, ast.Call)):
+                        reason = self._parsed_value(child.value)
+                        if reason:
+                            return reason
+            return None
+        if isinstance(value, ast.Subscript):
+            return self._parsed_mapping(value.value)
+        if (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Attribute)
+            and value.func.attr == "get"
+        ):
+            return self._parsed_mapping(value.func.value)
+        return None
+
     def _parsed_mapping(self, value: ast.AST) -> str | None:
         """The deserialiser behind `value`, when `value` is a parsed mapping itself."""
         if isinstance(value, ast.Name):
@@ -4141,6 +4183,16 @@ class _TaintPass(ast.NodeVisitor):
             written_true = (
                 isinstance(keyword.value, ast.Constant) and keyword.value.value is True
             ) or (isinstance(keyword.value, ast.Name) and keyword.value.id in self.true_names)
+            # The flag read out of parsed data: the document decides, not the user.
+            parsed = self._parsed_value(keyword.value)
+            if parsed:
+                self._record(
+                    node,
+                    "trust_remote_code (untrusted value)",
+                    parsed,
+                    f"{name}(trust_remote_code = {_short(keyword.value, 60)})",
+                    tier = "A",
+                )
             if written_true:
                 self._record(
                     node,
@@ -4696,10 +4748,16 @@ def _unpinned_code_fetches(facts: _FileFacts, reached: frozenset) -> list[dict]:
             target.id
             for child in ast.walk(node)
             if isinstance(child, ast.Assign)
-            and isinstance(child.value, ast.Constant)
-            and not (
-                isinstance(child.value.value, str)
-                and re.fullmatch(r"[0-9a-f]{40}", child.value.value)
+            and (
+                # A call or lookup is data choosing the branch, as at the keyword itself.
+                isinstance(child.value, (ast.Call, ast.Subscript))
+                or (
+                    isinstance(child.value, ast.Constant)
+                    and not (
+                        isinstance(child.value.value, str)
+                        and re.fullmatch(r"[0-9a-f]{40}", child.value.value)
+                    )
+                )
             )
             for target in child.targets
             if isinstance(target, ast.Name)
