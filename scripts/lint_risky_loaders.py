@@ -105,7 +105,6 @@ CODE_LOADERS = {
     "importlib.machinery.SourceFileLoader",
     "runpy.run_path",
 }
-# Python source on a moving ref: a branch head rather than a tag or commit.
 BRANCH_HEAD_PY = re.compile(
     r"(?:raw\.githubusercontent\.com/[^/\s]+/[^/\s]+/(?:refs/heads/)?(?:main|master)/"
     r"|github\.com/[^/\s]+/[^/\s]+/raw/(?:refs/heads/)?(?:main|master)/)\S*\.py\b"
@@ -186,7 +185,6 @@ _PATH_KEYWORDS = {
     "SourceFileLoader": "path",
     "get_class_in_module": "module_path",
 }
-# The keyword that names the module or file, where it is not `name`.
 _TARGET_KEYWORDS = {
     "runpy.run_path": "path_name",
     "runpy.run_module": "mod_name",
@@ -199,7 +197,6 @@ def _dynamic_import(call: ast.Call, qualified: str):
     if sink is None:
         return None
     if sink in _PATH_KEYWORDS:
-        # The module or class name is a label; the path is what gets executed.
         keyword = _PATH_KEYWORDS[sink]
         target = call.args[1] if len(call.args) > 1 else _keyword(call, keyword)
     else:
@@ -450,7 +447,6 @@ def collect(targets: list) -> list:
             if not path.is_file() or path.resolve() == Path(__file__).resolve():
                 continue
             relative = _relative(path)
-            # Overlapping targets must not count one file's calls twice.
             if relative in seen or EXCLUDED_PARTS & set(Path(relative).parts):
                 continue
             seen.add(relative)
@@ -518,7 +514,6 @@ def main() -> int:
 
     entries = document["entries"]
     if arguments.paths:
-        # A scoped run judges only the entries under the paths it scanned.
         scopes = [_relative(REPO_ROOT / path) for path in arguments.paths]
         if "." not in scopes:
             entries = [
