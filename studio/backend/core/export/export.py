@@ -1005,6 +1005,7 @@ class ExportBackend:
         hf_token: HfTokenArg = None,
         private: bool = False,
         compressed_method: Optional[str] = None,
+        install_missing_dependencies: bool = False,
     ) -> Tuple[bool, str, Optional[str]]:
         """Export a merged model (a no-op merge for non-PEFT base models).
 
@@ -1085,14 +1086,27 @@ class ExportBackend:
                 # Prefer the llm-compressor-main shadow (transformers 5.x): the shipped 0.10.x cannot quantize newer
                 # models.
                 _shadow_pp = None
+                _shadow_offered = False
                 try:
-                    from utils.transformers_version import llmcompressor_shadow_pythonpath
-                    _shadow_pp = llmcompressor_shadow_pythonpath()
+                    from utils.transformers_version import (
+                        _env_offline,
+                        _llmcompressor_main_disabled,
+                        llmcompressor_shadow_pythonpath,
+                    )
+
+                    # Same rule as the consent probe: the dialog names the shadow whenever it can be provisioned.
+                    _shadow_offered = not _llmcompressor_main_disabled() and not _env_offline()
+                    _shadow_pp = llmcompressor_shadow_pythonpath(
+                        allow_provision = install_missing_dependencies,
+                    )
                 except Exception as e:
                     logger.warning(f"llm-compressor-main shadow unavailable: {e}")
                 if _shadow_pp:
                     os.environ[_us._COMPRESSED_QUANTIZE_PYTHONPATH_ENV] = _shadow_pp
                 else:
+                    # Consent for the shadow does not cover installing into this interpreter instead.
+                    if _shadow_offered:
+                        install_missing_dependencies = False
                     # The workspace 0.10.x cannot exceed its transformers ceiling, so fail fast for sidecar models.
                     os.environ.pop(_us._COMPRESSED_QUANTIZE_PYTHONPATH_ENV, None)
                     _exceeds, _tf_ver = _us._transformers_exceeds_llm_compressor_ceiling()
@@ -1102,8 +1116,9 @@ class ExportBackend:
                             "FP8/FP4 compressed-tensors export is not available for this model: it "
                             f"runs under transformers {_tf_ver}, but the installed llm-compressor "
                             f"supports transformers <= {_us._LLM_COMPRESSOR_MAX_TRANSFORMERS} and the "
-                            "llm-compressor-main runtime could not be provisioned (offline or "
-                            "UNSLOTH_DISABLE_LLMCOMPRESSOR_MAIN). Export to GGUF or 16-bit instead.",
+                            "llm-compressor-main runtime is not set up (install not approved, "
+                            "offline, UNSLOTH_DISABLE_LLMCOMPRESSOR_MAIN, or provisioning failed). "
+                            "Approve the install, or export to GGUF or 16-bit instead.",
                             None,
                         )
 
@@ -1144,6 +1159,14 @@ class ExportBackend:
                     and _supports_kwarg(self.current_model.save_pretrained_merged, "token")
                     else {}
                 )
+                # Always explicit: the library defaults to auto-installing, so an unconsented export must say False.
+                consent_kw = (
+                    {"install_missing_dependencies": bool(install_missing_dependencies)}
+                    if _supports_kwarg(
+                        self.current_model.save_pretrained_merged, "install_missing_dependencies"
+                    )
+                    else {}
+                )
                 if _IS_MLX:
                     self.current_model.save_pretrained_merged(
                         save_directory,
@@ -1156,6 +1179,7 @@ class ExportBackend:
                         save_directory,
                         self.current_tokenizer,
                         save_method = save_method,
+                        **consent_kw,
                         **merged_token_kw,
                     )
 
@@ -1255,6 +1279,14 @@ class ExportBackend:
                             save_method = save_method,
                             token = hf_token,
                             private = private,
+                            **(
+                                {"install_missing_dependencies": bool(install_missing_dependencies)}
+                                if _supports_kwarg(
+                                    self.current_model.push_to_hub_merged,
+                                    "install_missing_dependencies",
+                                )
+                                else {}
+                            ),
                         )
                 logger.info(f"Model pushed successfully to {repo_id}")
 
