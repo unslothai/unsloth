@@ -79,5 +79,96 @@ def test_for_training_default_restores_the_recorded_mode(which):
 
 def test_unrecorded_model_keeps_the_old_default_of_on():
     from unsloth.models._utils import resolve_training_gradient_checkpointing
-    assert resolve_training_gradient_checkpointing(object(), None) is True
-    assert resolve_training_gradient_checkpointing(object(), False) is False
+    assert resolve_training_gradient_checkpointing(torch.nn.Linear(2, 2), None) is True
+    assert resolve_training_gradient_checkpointing(torch.nn.Linear(2, 2), False) is False
+
+
+@pytest.mark.parametrize("which", [0, 1])
+@pytest.mark.parametrize("armed", [True, False])
+def test_unrecorded_model_keeps_its_load_time_choice(which, armed):
+    fast = _fast_classes()[which]
+    model = _tiny_qwen3()
+    if armed:
+        model.gradient_checkpointing_enable()
+    fast.for_training(model)
+    assert all(bool(layer.gradient_checkpointing) == armed for layer in _decoder_layers(model))
+
+
+class _Block(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.linear = torch.nn.Linear(8, 8)
+
+    def forward(self, hidden):
+        return torch.tanh(self.linear(hidden))
+
+
+class _RemoteBackbone(torch.nn.Module):
+    """Older / remote-code protocol: the backbone, not the block, calls the checkpoint function."""
+
+    def __init__(self):
+        super().__init__()
+        self.gradient_checkpointing = False
+        self.layers = torch.nn.ModuleList([_Block(), _Block()])
+
+    def forward(self, hidden):
+        for layer in self.layers:
+            if self.gradient_checkpointing and self.training:
+                hidden = self._gradient_checkpointing_func(layer.__call__, hidden)
+            else:
+                hidden = layer(hidden)
+        return hidden
+
+
+class _RemoteModel(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.model = _RemoteBackbone()
+        self.enabled_by = []
+
+    def gradient_checkpointing_enable(self):
+        from torch.utils.checkpoint import checkpoint
+        import functools
+
+        self.enabled_by.append("model")
+        for module in self.modules():
+            if hasattr(module, "gradient_checkpointing"):
+                module._gradient_checkpointing_func = functools.partial(
+                    checkpoint, use_reentrant = False
+                )
+                module.gradient_checkpointing = True
+
+    def forward(self, hidden):
+        return self.model(hidden)
+
+
+@pytest.mark.parametrize("which", [0, 1])
+@pytest.mark.parametrize("arg", [True, None, False])
+def test_backbone_that_calls_the_checkpoint_function_itself(which, arg):
+    fast = _fast_classes()[which]
+    model = _RemoteModel()
+    fast.for_training(model, use_gradient_checkpointing = arg)
+    assert model.model.gradient_checkpointing == bool(arg)
+    assert model.enabled_by == (["model"] if arg else [])
+    model(torch.randn(2, 8, requires_grad = True)).sum().backward()
+
+
+@pytest.mark.parametrize("which", [0, 1])
+def test_explicit_enable_goes_through_the_outer_override(which):
+    fast = _fast_classes()[which]
+    model = _tiny_qwen3()
+    model._unsloth_gradient_checkpointing = False
+    calls = []
+    original = model.gradient_checkpointing_enable
+
+    def override(**kwargs):
+        calls.append(kwargs)
+        return original(gradient_checkpointing_kwargs = {"use_reentrant": True})
+
+    model.gradient_checkpointing_enable = override
+    fast.for_training(model, use_gradient_checkpointing = True)
+    assert calls == [{}]
+    assert all(
+        layer._gradient_checkpointing_func.keywords == {"use_reentrant": True}
+        for layer in _decoder_layers(model)
+    )

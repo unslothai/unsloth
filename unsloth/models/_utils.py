@@ -6807,13 +6807,6 @@ except Exception:
     pass
 
 
-def resolve_training_gradient_checkpointing(model, use_gradient_checkpointing):
-    """`None` restores the mode chosen at load / get_peft_model instead of forcing it on."""
-    if use_gradient_checkpointing is None:
-        return getattr(model, "_unsloth_gradient_checkpointing", True)
-    return use_gradient_checkpointing
-
-
 @functools.lru_cache(maxsize = 1)
 def _gradient_checkpointing_layer_class():
     try:
@@ -6823,18 +6816,54 @@ def _gradient_checkpointing_layer_class():
     return GradientCheckpointingLayer
 
 
+@functools.lru_cache(maxsize = None)
+def _forward_reads_checkpoint_function(cls):
+    try:
+        return "_gradient_checkpointing_func" in inspect.getsource(cls.forward)
+    except Exception:
+        return False
+
+
+def _calls_checkpoint_function(module):
+    """True for modules that call `self._gradient_checkpointing_func` once their flag is on: transformers'
+    checkpointing layers, and older / remote-code backbones whose own forward does it."""
+    layer_class = _gradient_checkpointing_layer_class()
+    if layer_class is not None and isinstance(module, layer_class):
+        return True
+    return hasattr(module, "gradient_checkpointing") and _forward_reads_checkpoint_function(
+        type(module)
+    )
+
+
+def _is_unarmed(module):
+    return (
+        _calls_checkpoint_function(module)
+        and getattr(module, "_gradient_checkpointing_func", None) is None
+    )
+
+
+def resolve_training_gradient_checkpointing(model, use_gradient_checkpointing):
+    """`None` keeps the mode chosen at load / get_peft_model instead of forcing it on."""
+    if use_gradient_checkpointing is not None:
+        return use_gradient_checkpointing
+    if hasattr(model, "_unsloth_gradient_checkpointing"):
+        return model._unsloth_gradient_checkpointing
+    # Nothing recorded (no adapter, full finetuning): whether loading armed the layers is the choice.
+    checkpointing = [m for m in model.modules() if _calls_checkpoint_function(m)]
+    if checkpointing:
+        return any(not _is_unarmed(m) for m in checkpointing)
+    return True
+
+
 def arm_gradient_checkpointing(model):
     """A model loaded with checkpointing off has no checkpoint function on its layers; asking
     for_training to turn checkpointing on installs it the way loading with it on does."""
-    layer_class = _gradient_checkpointing_layer_class()
-    if layer_class is None or not any(
-        isinstance(m, layer_class) and getattr(m, "_gradient_checkpointing_func", None) is None
-        for m in model.modules()
-    ):
+    if not any(_is_unarmed(m) for m in model.modules()):
         return False
-    base = model.get_base_model() if hasattr(model, "get_base_model") else model
+    # The outer model may carry a per-model override (Gemma 3N / 4 reentrant, DeepSeek-V4.1 non-reentrant);
+    # a PEFT wrapper without one forwards the call to its base model.
     try:
-        base.gradient_checkpointing_enable()
+        model.gradient_checkpointing_enable()
     except Exception as e:
         logger.warning(
             f"Unsloth: could not turn on gradient checkpointing ({e}); training without it."
@@ -6844,17 +6873,10 @@ def arm_gradient_checkpointing(model):
 
 
 def set_module_gradient_checkpointing(module, value):
-    """Set `module.gradient_checkpointing`, but never turn on a transformers checkpointing layer that
-    gradient_checkpointing_enable() never armed: it has no `_gradient_checkpointing_func` and its
-    first training forward raises AttributeError."""
-    if value:
-        layer_class = _gradient_checkpointing_layer_class()
-        if (
-            layer_class is not None
-            and isinstance(module, layer_class)
-            and getattr(module, "_gradient_checkpointing_func", None) is None
-        ):
-            module.gradient_checkpointing = False
-            return False
+    """Set `module.gradient_checkpointing`, but never turn on a module that calls a checkpoint function
+    gradient_checkpointing_enable() never installed: its first training forward raises AttributeError."""
+    if value and _is_unarmed(module):
+        module.gradient_checkpointing = False
+        return False
     module.gradient_checkpointing = value
     return True

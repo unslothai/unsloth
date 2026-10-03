@@ -3,6 +3,7 @@
 
 import ast
 import builtins
+import inspect
 import os
 from pathlib import Path
 
@@ -61,6 +62,9 @@ def _for_training(module, class_name):
         in (
             "resolve_training_gradient_checkpointing",
             "_gradient_checkpointing_layer_class",
+            "_forward_reads_checkpoint_function",
+            "_calls_checkpoint_function",
+            "_is_unarmed",
             "arm_gradient_checkpointing",
             "set_module_gradient_checkpointing",
         )
@@ -68,7 +72,7 @@ def _for_training(module, class_name):
     for node in shared:
         node.decorator_list = []
     compiled = ast.Module(body = shared + _helpers_used_by(method, tree) + [method], type_ignores = [])
-    namespace = _Namespace(os = os)
+    namespace = _Namespace(os = os, inspect = inspect)
     exec(compile(ast.fix_missing_locations(compiled), str(path), "exec"), namespace)
     return namespace["for_training"]
 
