@@ -218,6 +218,45 @@ export const zhCN = {
       chat: "聊天",
       searchChats: "搜索聊天...",
     },
+    search: {
+      placeholder: "搜索",
+      tabs: {
+        all: "全部",
+        chats: "聊天",
+        projects: "项目",
+        files: "文件",
+        models: "模型",
+      },
+      recents: "最近",
+      actions: "操作",
+      newChat: "新聊天",
+      newTemporaryChat: "新建临时聊天",
+      fineTune: "微调模型",
+      generateImage: "生成图像",
+      generateVideo: "生成视频",
+      untitledChat: "未命名聊天",
+      compare: "对比",
+      loading: "加载中...",
+      empty: {
+        all: "暂无可搜索的内容。",
+        chats: "暂无聊天。",
+        projects: "暂无项目。",
+        files: "你的资料库中暂无文件。",
+        models: "暂无已下载的模型。",
+      },
+      noMatches: "无结果。",
+      when: {
+        today: "今天",
+        pastWeek: "过去一周",
+        pastMonth: "过去一个月",
+        older: "更早",
+      },
+      footer: {
+        close: "关闭",
+        changeType: "切换类型",
+        open: "打开",
+      },
+    },
     notFound: {
       title: "页面未找到",
       description: "{path} 不存在。",
@@ -1190,9 +1229,22 @@ export const zhCN = {
       },
       permissions: {
         sectionTitle: "权限",
-        bypassLabel: "工具权限",
-        bypassDescription:
-          "设置 Unsloth 执行聊天中的工具调用（终端、python、网页、MCP）前的审批方式。“Full access”会关闭审批和代码沙箱。",
+        names: {
+          ask: "请求批准",
+          auto: "替我批准",
+          off: "自动运行",
+          full: "完全访问",
+        },
+        details: {
+          ask:
+            "每次调用工具前都会询问，包括终端和 Python 代码、网页搜索、编辑文件以及 MCP 工具。由外部提供商运行的工具不会暂停。适合需要逐步检查的场景。",
+          auto:
+            "常规工具调用会自动执行，只有在操作看起来有风险时才会询问，例如读取凭据、提升权限或执行破坏性命令。",
+          off:
+            "所有工具调用都不再询问。Python 和终端代码仍在沙箱中运行，沙箱会限制它们能访问你电脑上的哪些文件。",
+          full:
+            "所有工具调用都不再询问，并关闭代码沙箱，Python 和终端代码可以读取和修改你的账户能访问的任何文件。适合需要在沙箱外工作的可信任务。",
+        },
       },
     },
     profile: {
@@ -3020,6 +3072,7 @@ export const zhCN = {
     discardDescription: "对 {name} 未保存的修改将会丢失。",
     discard: "放弃",
     mentions: "技能",
+    manage: "管理技能",
   },
   library: {
     tabs: {

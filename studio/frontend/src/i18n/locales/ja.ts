@@ -222,6 +222,45 @@ export const ja = {
       chat: "チャット",
       searchChats: "チャットを検索...",
     },
+    search: {
+      placeholder: "検索",
+      tabs: {
+        all: "すべて",
+        chats: "チャット",
+        projects: "プロジェクト",
+        files: "ファイル",
+        models: "モデル",
+      },
+      recents: "最近",
+      actions: "アクション",
+      newChat: "新規チャット",
+      newTemporaryChat: "新しい一時チャット",
+      fineTune: "モデルをファインチューン",
+      generateImage: "画像を生成",
+      generateVideo: "動画を生成",
+      untitledChat: "無題のチャット",
+      compare: "比較",
+      loading: "読み込み中...",
+      empty: {
+        all: "まだ検索できるものはありません。",
+        chats: "チャットはまだありません。",
+        projects: "プロジェクトはまだありません。",
+        files: "ライブラリにファイルはまだありません。",
+        models: "ダウンロード済みのモデルはまだありません。",
+      },
+      noMatches: "結果がありません。",
+      when: {
+        today: "今日",
+        pastWeek: "過去 1 週間",
+        pastMonth: "過去 1 か月",
+        older: "それ以前",
+      },
+      footer: {
+        close: "閉じる",
+        changeType: "種類を切り替え",
+        open: "開く",
+      },
+    },
     notFound: {
       title: "ページが見つかりません",
       description: "{path} は存在しません。",
@@ -1196,9 +1235,22 @@ export const ja = {
       },
       permissions: {
         sectionTitle: "権限",
-        bypassLabel: "ツールの権限",
-        bypassDescription:
-          "チャットのツール呼び出し (ターミナル、python、ウェブ、MCP) を実行する前に、Unsloth がどのように承認するかを決めます。「Full access」にすると承認とコードサンドボックスが無効になります。",
+        names: {
+          ask: "承認を求める",
+          auto: "代わりに承認",
+          off: "自動で実行",
+          full: "フルアクセス",
+        },
+        details: {
+          ask:
+            "ターミナルや Python のコード、ウェブ検索、ファイル編集、MCP ツールを含め、すべてのツール呼び出しの前に確認します。外部プロバイダーが実行するツールは一時停止されません。各ステップを確認したいときに最適です。",
+          auto:
+            "通常のツール呼び出しは自動で実行し、認証情報の読み取り、権限昇格、破壊的なコマンドなど、危険そうな操作のときだけ確認します。",
+          off:
+            "すべてのツール呼び出しを確認なしで実行します。Python とターミナルのコードは引き続きサンドボックス内で実行され、コンピューター上でアクセスできるファイルが制限されます。",
+          full:
+            "すべてのツール呼び出しを確認なしで実行し、コードサンドボックスをオフにします。Python とターミナルのコードは、アカウントがアクセスできる任意のファイルを読み取り、変更できます。サンドボックスの外で作業する必要がある、信頼できるタスクに最適です。",
+        },
       },
     },
     profile: {
@@ -3060,6 +3112,7 @@ export const ja = {
     discardDescription: "{name} の保存されていない変更は失われます。",
     discard: "破棄",
     mentions: "スキル",
+    manage: "スキルを管理",
   },
   library: {
     tabs: {

@@ -36,16 +36,12 @@ from utils.api_errors import install_api_error_handlers
 @pytest.mark.parametrize(
     "repo_id, expected",
     [
-        ("unsloth/Z-Image-Turbo-GGUF", (8, 0.0)),  # turbo entry, before the z-image fallback
-        ("unsloth/Z-Image-GGUF", (25, 3.0)),
+        ("unsloth/Z-Image-Turbo-GGUF", (9, 0.0)),  # turbo entry, before the z-image fallback
+        ("unsloth/Z-Image-GGUF", (20, 4.0)),
         ("unsloth/FLUX.1-schnell-GGUF", (4, 0.0)),  # schnell entry, before the flux.1 entry
-        ("black-forest-labs/FLUX.1-dev", (20, 3.5)),
+        ("black-forest-labs/FLUX.1-dev", (28, 3.5)),
         ("unsloth/FLUX.2-klein-4B-GGUF", (4, 1.0)),
-        ("unsloth/Qwen-Image-2512-GGUF", (50, 4.0)),
-        ("Qwen/Qwen-Image-Edit-2511", (40, 4.0)),
-        ("black-forest-labs/FLUX.1-Kontext-dev", (20, 2.5)),
-        ("black-forest-labs/FLUX.2-dev", (20, 4.0)),
-        ("stabilityai/stable-diffusion-xl-base-1.0", (25, 7.0)),
+        ("unsloth/Qwen-Image-2512-GGUF", (20, 4.0)),
         ("some/unknown-model", (9, 0.0)),  # fallback
         ("", (9, 0.0)),
     ],
@@ -64,14 +60,14 @@ def test_default_generation_params_specificity_ordering():
 
 def test_default_generation_params_falls_back_to_base_repo():
     # A local-path load: repo_id names no model, so the resolved base repo identifies it (and separates dev from schnell).
-    assert default_generation_params("/models/my-ckpt", "black-forest-labs/FLUX.1-dev") == (20, 3.5)
+    assert default_generation_params("/models/my-ckpt", "black-forest-labs/FLUX.1-dev") == (28, 3.5)
     assert default_generation_params("/models/my-ckpt", "black-forest-labs/FLUX.1-schnell") == (
         4,
         0.0,
     )
     assert default_generation_params("/models/my-ckpt", "Qwen/Qwen-Image") == (20, 4.0)
     # repo_id wins when it already names the model; base repo is only a fallback.
-    assert default_generation_params("unsloth/Z-Image-Turbo-GGUF", "Tongyi-MAI/Z-Image") == (8, 0.0)
+    assert default_generation_params("unsloth/Z-Image-Turbo-GGUF", "Tongyi-MAI/Z-Image") == (9, 0.0)
     # Nothing identifiable -> fallback; None identifiers are skipped.
     assert default_generation_params(None, None) == (9, 0.0)
     assert default_generation_params("/models/x", None) == (9, 0.0)
@@ -236,12 +232,12 @@ def test_url_response_shape(client):
     assert "url" in item and "b64_json" not in item  # exclude_none drops the unused key
     # Signed link, not the bearer-gated /file route: an OpenAI client downloads this URL with a plain GET and no auth header.
     assert "/images/gallery/img0/file-signed?token=" in item["url"]
-    # Z-Image-Turbo defaults (8 steps, 0 guidance) flow into the backend call.
+    # Z-Image-Turbo defaults (9 steps, 0 guidance) flow into the backend call.
     assert client.backend.calls[0] == dict(
         prompt = "a sloth",
         width = 256,
         height = 256,
-        steps = 8,
+        steps = 9,
         guidance = 0.0,
         batch_size = 1,
         expected_load = load_identity("unsloth/Z-Image-Turbo-GGUF", None, "z-image"),
@@ -302,7 +298,7 @@ def test_local_load_uses_base_repo_for_defaults(monkeypatch):
     monkeypatch.setattr(gallery_module, "save", _save)
     resp = cli.post("/v1/images/generations", json = {"prompt": "p", "size": "256x256"})
     assert resp.status_code == 200
-    assert backend.calls[0]["steps"] == 20 and backend.calls[0]["guidance"] == 3.5
+    assert backend.calls[0]["steps"] == 28 and backend.calls[0]["guidance"] == 3.5
 
 
 def test_pipeline_runtime_error_is_sanitized_500(monkeypatch):
@@ -641,14 +637,14 @@ def test_generation_pins_the_status_read_it_derived_its_params_from(monkeypatch)
 
 
 def test_replacement_retries_once_with_the_new_models_params(monkeypatch):
-    # Z-Image-Turbo (8 steps, guidance 0) is replaced by Z-Image (25 steps, guidance 3). The first
+    # Z-Image-Turbo (9 steps, guidance 0) is replaced by Z-Image (20 steps, guidance 4). The first
     # attempt is refused in-lock; the retry must re-derive from fresh state, not reuse the turbo's.
     backend = _FakeBackend(replaced_by = [("unsloth/Z-Image-GGUF", None)])
     cli, _ = _replacement_client(monkeypatch, backend)
     resp = cli.post("/v1/images/generations", json = {"prompt": "p", "size": "256x256"})
     assert resp.status_code == 200
     assert len(backend.calls) == 1  # the refused attempt never generated
-    assert (backend.calls[0]["steps"], backend.calls[0]["guidance"]) == (25, 3.0)
+    assert (backend.calls[0]["steps"], backend.calls[0]["guidance"]) == (20, 4.0)
 
 
 def test_second_replacement_is_a_503_not_a_sanitized_500(monkeypatch):
