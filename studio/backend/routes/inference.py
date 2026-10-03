@@ -21265,9 +21265,11 @@ async def get_status(current_subject: str, model: Optional[str] = None):
                 )
                 response.loaded += [e["id"] for e in entries if e["id"] not in response.loaded]
                 for e in entries:
-                    if e["id"] not in response.serving:
+                    # By checkpoint: two local files can share a label.
+                    checkpoint = checkpoints.get(e["id"]) or e["id"]
+                    if checkpoint not in response.serving_checkpoints:
                         response.serving.append(e["id"])
-                        response.serving_checkpoints.append(checkpoints.get(e["id"]) or e["id"])
+                        response.serving_checkpoints.append(checkpoint)
     return response
 
 

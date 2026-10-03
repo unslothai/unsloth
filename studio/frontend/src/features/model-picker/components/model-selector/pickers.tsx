@@ -5290,7 +5290,7 @@ export function HubModelPicker({
   }, [connectedMatches, pinnedConnectedSet, connectedSort]);
   const hubOptionKeys = useMemo(() => {
     const keys: string[] = loadedRows.map((m) =>
-      makeModelOptionKey("loaded", m.id),
+      makeModelOptionKey("loaded", m.checkpoint ?? m.id),
     );
 
     // The tab lists nothing else, so these are the whole roving order, in drawn order.
@@ -5885,9 +5885,10 @@ export function HubModelPicker({
       : undefined;
 
   const renderLoadedRow = (entry: (typeof loadedModels)[number]) => {
-    const optionKey = makeModelOptionKey("loaded", entry.id);
-    // Select and eject by the checkpoint: a local model is labelled by name but loaded by path.
+    // Select, eject and key by the checkpoint: a local model is labelled by name but loaded by
+    // path, and two files can share a name.
     const checkpoint = entry.checkpoint ?? entry.id;
+    const optionKey = makeModelOptionKey("loaded", checkpoint);
     const isSelected = modelIdsMatchForPicker(value, checkpoint);
     const quant = entry.quant ?? (isSelected ? activeGgufVariant : null);
     return (

@@ -264,13 +264,18 @@ def test_status_describes_the_named_slot_and_lists_the_rest(backends, monkeypatc
 def test_status_pairs_each_serving_model_with_the_checkpoint_to_select_it_by(backends, monkeypatch):
     # A local model is listed under its label but selected, loaded and unloaded by its path.
     _, extra = backends
-    local = "/home/alice/models/B-local.gguf"
+    local, twin = "/home/alice/models/B-local.gguf", "/home/alice/other/B-local.gguf"
     extra.llama = FakeLlama(local, "Q8_0")
+    model_slots.slots.append(
+        model_slots.ExtraSlot(FakeLlama(twin, "Q8_0"), FakeOrchestrator(), "owner")
+    )
     public = inf._llama_public_model_id
     monkeypatch.setattr(
         inf,
         "_llama_public_model_id",
-        lambda llama: "B-local" if llama is extra.llama else public(llama),
+        lambda llama: (
+            "B-local" if str(llama.model_identifier).endswith("B-local.gguf") else public(llama)
+        ),
     )
 
     async def slot_status(subject):
@@ -278,8 +283,9 @@ def test_status_pairs_each_serving_model_with_the_checkpoint_to_select_it_by(bac
 
     monkeypatch.setattr(inf, "_slot_status", slot_status)
     status = asyncio.run(inf.get_status("s"))
-    assert status.serving == ["org/A-GGUF", "B-local"]
-    assert status.serving_checkpoints == ["org/A-GGUF", local]
+    # Two files sharing a label both stay listed, each with its own path.
+    assert status.serving == ["org/A-GGUF", "B-local", "B-local"]
+    assert status.serving_checkpoints == ["org/A-GGUF", local, twin]
 
 
 def test_stop_loading_reaches_the_slot_being_filled(backends, monkeypatch):

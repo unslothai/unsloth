@@ -609,11 +609,11 @@ function publishLoadedModels(
 ): void {
   // The status names the quant of the model it describes; only the others need /v1/models.
   const current = useChatRuntimeStore.getState().loadedModels;
-  const known = new Map(current.map((m) => [m.id, m]));
+  const known = new Map(current.map((m) => [m.checkpoint ?? m.id, m]));
   const next = ids.map((id, i) => {
-    const prev = known.get(id);
-    const quant = id === statusId ? (statusQuant ?? null) : prev?.quant;
     const checkpoint = checkpoints?.[i] || id;
+    const prev = known.get(checkpoint);
+    const quant = id === statusId ? (statusQuant ?? null) : prev?.quant;
     return prev && prev.quant === quant && prev.checkpoint === checkpoint
       ? prev
       : { id, quant, checkpoint };
