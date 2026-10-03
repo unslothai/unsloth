@@ -215,6 +215,23 @@ def test_update_refuses_a_partial_scan(monkeypatch):
     assert raised.value.code == 2
 
 
+def test_a_scoped_run_ignores_entries_outside_its_paths():
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--paths",
+            "unsloth_zoo/compiler.py"
+            if (SCRIPT.parents[1] / "unsloth_zoo").is_dir()
+            else "unsloth/models/loader.py",
+        ],
+        capture_output = True,
+        text = True,
+        cwd = SCRIPT.parents[1],
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_every_baseline_entry_is_reviewed():
     entries = json.loads(BASELINE.read_text(encoding = "utf-8"))["entries"]
     assert entries

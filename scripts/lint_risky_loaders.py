@@ -411,14 +411,18 @@ def collect(targets: list) -> list:
             # This file's self-test sources spell out every bad shape on purpose.
             if not path.is_file() or path.resolve() == Path(__file__).resolve():
                 continue
-            try:
-                relative = path.relative_to(REPO_ROOT).as_posix()
-            except ValueError:
-                relative = path.as_posix()
+            relative = _relative(path)
             if EXCLUDED_PARTS & set(Path(relative).parts):
                 continue
             found.extend(scan_file(path, relative))
     return found
+
+
+def _relative(path: Path) -> str:
+    try:
+        return path.resolve().relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return path.as_posix()
 
 
 def _identity(entry: dict) -> tuple:
@@ -472,7 +476,16 @@ def main() -> int:
         print(f"baseline: {len(document['entries'])} entries, {len(found)} call sites")
         return 0
 
-    allowed = {_identity(e): e["count"] for e in document["entries"]}
+    entries = document["entries"]
+    if arguments.paths:
+        # A scoped run judges only the entries under the paths it scanned.
+        scopes = [_relative(REPO_ROOT / path) for path in arguments.paths]
+        entries = [
+            e
+            for e in entries
+            if any(e["file"] == p or e["file"].startswith(p.rstrip("/") + "/") for p in scopes)
+        ]
+    allowed = {_identity(e): e["count"] for e in entries}
     observed = _counted(found)
     lines = {_identity(e): e["line"] for e in found}
 
@@ -492,7 +505,7 @@ def main() -> int:
 
     unreviewed = sorted(
         (e["file"], e["rule"], e["sink"])
-        for e in document["entries"]
+        for e in entries
         if e.get("reason", "REVIEW ME") in ("", "REVIEW ME")
     )
     if unreviewed:
