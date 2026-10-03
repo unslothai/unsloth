@@ -19,10 +19,17 @@ from core.inference import video_encode as ve  # noqa: E402
 _THREADING = {"threads", "lookahead_threads", "sliced_threads", "slices", "sync_lookahead"}
 
 
-def _clip(frames = 24, height = 128, width = 192):
+def _clip(
+    frames = 24,
+    height = 128,
+    width = 192,
+):
     yy, xx = np.mgrid[0:height, 0:width]
     return np.stack(
-        [np.stack([(xx + 4 * t) % 256, (yy + 2 * t) % 256, (xx + yy) % 256], -1) for t in range(frames)]
+        [
+            np.stack([(xx + 4 * t) % 256, (yy + 2 * t) % 256, (xx + yy) % 256], -1)
+            for t in range(frames)
+        ]
     ).astype(np.uint8)
 
 
@@ -37,7 +44,12 @@ def _decode(path):
     with av.open(path) as container:
         streams = {s.type: s for s in container.streams}
         video = streams["video"]
-        info = (video.codec_context.name, video.codec_context.pix_fmt, video.average_rate, set(streams))
+        info = (
+            video.codec_context.name,
+            video.codec_context.pix_fmt,
+            video.average_rate,
+            set(streams),
+        )
         frames = np.stack([f.to_ndarray(format = "rgb24") for f in container.decode(video = 0)])
     return info, frames
 
@@ -56,7 +68,10 @@ def test_same_stream_and_settings_as_encode_video(tmp_path, monkeypatch, with_au
     ours, stock = str(tmp_path / "ours.mp4"), str(tmp_path / "stock.mp4")
     assert ve.encode_x264(torch.from_numpy(clip), 24, ours, audio, rate)
     eu.encode_video(
-        torch.from_numpy(clip), 24, stock, **({"audio": audio, "audio_sample_rate": rate} if with_audio else {})
+        torch.from_numpy(clip),
+        24,
+        stock,
+        **({"audio": audio, "audio_sample_rate": rate} if with_audio else {}),
     )
     info_ours, frames_ours = _decode(ours)
     info_stock, frames_stock = _decode(stock)
@@ -85,7 +100,9 @@ def test_float_pil_and_uint8_inputs_encode_the_same_frames(tmp_path):
         path = str(tmp_path / f"{name}.mp4")
         assert ve.encode_x264(value, 24, path)
         decoded[name] = _decode(path)[1]
-    assert np.array_equal(decoded["u8"], decoded["np"]) and np.array_equal(decoded["u8"], decoded["pil"])
+    assert np.array_equal(decoded["u8"], decoded["np"]) and np.array_equal(
+        decoded["u8"], decoded["pil"]
+    )
 
 
 @pytest.mark.parametrize("value", ["0", "false", "off"])
@@ -99,7 +116,10 @@ def test_unsure_input_and_failures_hand_back(tmp_path, monkeypatch):
     # Out of range float: encode_video's own warn-and-use-as-is branch decides.
     assert ve.encode_x264(np.full((2, 16, 16, 3), 2.0, dtype = np.float32), 24, path) is False
     assert ve.encode_x264(np.zeros((2, 16, 16, 4), dtype = np.uint8), 24, path) is False
-    assert ve.encode_x264(np.zeros((2, 16, 16, 3), dtype = np.uint8), 24, path, torch.zeros(2, 10)) is False
+    assert (
+        ve.encode_x264(np.zeros((2, 16, 16, 3), dtype = np.uint8), 24, path, torch.zeros(2, 10))
+        is False
+    )
 
     def _boom(*args, **kwargs):
         raise RuntimeError("encoder open failed")
@@ -108,9 +128,7 @@ def test_unsure_input_and_failures_hand_back(tmp_path, monkeypatch):
     assert ve.encode_x264(np.zeros((2, 16, 16, 3), dtype = np.uint8), 24, path) is False
 
 
-@pytest.mark.parametrize(
-    "x264_ok, expect", [(True, ["frame"]), (False, ["frame", "stock"])]
-)
+@pytest.mark.parametrize("x264_ok, expect", [(True, ["frame"]), (False, ["frame", "stock"])])
 def test_encode_mp4_routes_to_frame_threads_first(monkeypatch, x264_ok, expect):
     from core.inference import video as video_mod
 
@@ -129,7 +147,9 @@ def test_encode_mp4_routes_to_frame_threads_first(monkeypatch, x264_ok, expect):
     monkeypatch.setattr(eu, "encode_video", _stock)
     monkeypatch.setattr(video_mod, "nvenc_gpu", lambda logger = None: None)
     monkeypatch.setattr(video_mod, "encode_x264", _frame)
-    out = video_mod.VideoBackend._encode_mp4(np.zeros((2, 16, 16, 3), dtype = np.float32), 24, None, None)
+    out = video_mod.VideoBackend._encode_mp4(
+        np.zeros((2, 16, 16, 3), dtype = np.float32), 24, None, None
+    )
     assert used == expect and out == (b"frame" if x264_ok else b"stock")
 
 
