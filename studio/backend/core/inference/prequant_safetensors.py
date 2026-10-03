@@ -47,6 +47,7 @@ a repo can host both and each build reads the one it understands.
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Any, Optional
 
@@ -462,7 +463,70 @@ def _header_without_unconstructible_fields(
     return header
 
 
-def load_prequant_safetensors(path: str, *, device: str = "cpu") -> dict:
+_ST_DTYPES = {
+    "BF16": "bfloat16",
+    "F16": "float16",
+    "F32": "float32",
+    "F64": "float64",
+    "F8_E4M3": "float8_e4m3fn",
+    "F8_E5M2": "float8_e5m2",
+    "I8": "int8",
+    "U8": "uint8",
+    "I16": "int16",
+    "I32": "int32",
+    "I64": "int64",
+    "BOOL": "bool",
+}
+
+
+def _mapped_tensors(path: str) -> tuple:
+    """``(header metadata, {name: tensor})`` with every tensor a zero-copy view of a mapping of ``path``.
+
+    ``safe_open(...).get_tensor`` copies each tensor into anonymous memory, so a 34 GB checkpoint costs
+    34 GB of host RAM before the first byte reaches the GPU; the pickle path maps the file instead
+    (``prequant_mmap_enabled``). This is the same for the safetensors container: the pages are read
+    when ``.to(device)`` touches them and the kernel can drop them again. Copy-on-write, so a tensor
+    can be written without touching the file. Raises on anything that is not a well-formed file.
+    """
+    import mmap
+    import struct
+
+    import torch
+
+    with open(path, "rb") as fh:
+        head = fh.read(8)
+        if len(head) != 8:
+            raise ValueError(f"{path} is not a safetensors file")
+        (length,) = struct.unpack("<Q", head)
+        size = os.fstat(fh.fileno()).st_size
+        if length <= 0 or 8 + length > size:
+            raise ValueError(f"{path} has a corrupt safetensors header")
+        header = json.loads(fh.read(length))
+        mapped = mmap.mmap(fh.fileno(), 0, access = mmap.ACCESS_COPY) if size > 8 + length else None
+    metadata = header.pop("__metadata__", None) or {}
+    base = 8 + length
+    tensors = {}
+    for name, info in header.items():
+        dtype = getattr(torch, _ST_DTYPES.get(info.get("dtype"), ""), None)
+        start, end = info["data_offsets"]
+        shape = [int(d) for d in info["shape"]]
+        if dtype is None or not (0 <= start <= end <= size - base):
+            raise ValueError(f"{path}: unreadable tensor entry {name!r}")
+        itemsize = torch.empty((), dtype = dtype).element_size()
+        count = 1
+        for d in shape:
+            count *= d
+        if count * itemsize != end - start:
+            raise ValueError(f"{path}: tensor {name!r} size does not match its shape")
+        if count == 0 or mapped is None:
+            tensors[name] = torch.empty(shape, dtype = dtype)
+            continue
+        flat = torch.frombuffer(mapped, dtype = dtype, count = count, offset = base + start)
+        tensors[name] = flat.reshape(shape)
+    return dict(metadata), tensors
+
+
+def load_prequant_safetensors(path: str, *, device: str = "cpu", mmap: bool = False) -> dict:
     """Read ``path`` into the SAME dict shape the pickle path returns.
 
     Returning ``{"format", "state_dict", "metadata"}`` rather than a new type is deliberate: every
@@ -470,6 +534,9 @@ def load_prequant_safetensors(path: str, *, device: str = "cpu") -> dict:
     activation-floor probe that reads the reconstructed tensors, the rotation biconditional, the
     kernel-preference pin) then runs unchanged on both containers, so the two formats cannot drift
     into having different acceptance rules.
+
+    ``mmap`` maps the file instead of copying it (CPU tensors only), as the pickle path does for an
+    accelerator destination.
     """
     helpers = _torchao_helpers()
     if helpers is None:
@@ -478,12 +545,15 @@ def load_prequant_safetensors(path: str, *, device: str = "cpu") -> dict:
             f"{'.'.join(str(p) for p in MIN_TORCHAO_VERSION)} is required for "
             "torchao.prototype.safetensors.safetensors_support"
         )
-    from safetensors import safe_open
-
     _, unflatten = helpers
-    with safe_open(path, framework = "pt", device = device) as handle:
-        raw = dict(handle.metadata() or {})
-        tensors = {key: handle.get_tensor(key) for key in handle.keys()}
+    if mmap and str(device) == "cpu":
+        raw, tensors = _mapped_tensors(path)
+    else:
+        from safetensors import safe_open
+
+        with safe_open(path, framework = "pt", device = device) as handle:
+            raw = dict(handle.metadata() or {})
+            tensors = {key: handle.get_tensor(key) for key in handle.keys()}
 
     fmt = raw.get(UNSLOTH_FORMAT_KEY)
     if not fmt:
@@ -501,27 +571,36 @@ def load_prequant_safetensors(path: str, *, device: str = "cpu") -> dict:
         for key in [k for k in tensors if k.startswith(UNSLOTH_ROOT_PREFIX)]
     }
 
-    # A newer torchao can record a field an older one's constructor does not take, which is how a
-    # published int8 checkpoint stopped loading. Dropped here when it is inert; see the helper.
-    raw = _header_without_unconstructible_fields(unflatten, tensors, raw, path = path)
+    # int8 / fp8 are rebuilt from the plain tensors and the header by Unsloth's own reader, for the
+    # class THIS torchao uses (v1 int8 on <= 0.17 for an artifact converted from a v1 pickle), so the
+    # load does not depend on torchao's deserializer accepting another release's kwargs. Anything it
+    # does not recognise (nvfp4, mxfp8) returns None and goes through torchao below, as before.
+    from .prequant_native import native_rebuild_enabled, native_unflatten
 
-    # torchao reads its OWN keys out of the same header; ours are namespaced and simply ignored. The second element
-    # is what it could NOT account for: a subclass missing one of its parts (a truncated or hand-edited file) is
-    # skipped there rather than raised, which would reach load_state_dict as a bare missing-key error saying nothing
-    # about the artifact. Name it here instead.
-    rebuilt = unflatten(tensors, raw)
-    state_dict = _first(rebuilt)
-    leftover = rebuilt[1] if isinstance(rebuilt, tuple) and len(rebuilt) > 1 else None
-    if leftover:
-        raise ValueError(
-            f"{path} has {len(leftover)} tensor(s) its header does not account for "
-            f"(e.g. {sorted(leftover)[0]!r}); the checkpoint is incomplete or was edited"
-        )
+    state_dict = native_unflatten(tensors, raw, path = path) if native_rebuild_enabled() else None
+    reader = "native" if state_dict is not None else "torchao"
+    if state_dict is None:
+        # A newer torchao can record a field an older one's constructor does not take, which is how a
+        # published int8 checkpoint stopped loading. Dropped here when it is inert; see the helper.
+        raw = _header_without_unconstructible_fields(unflatten, tensors, raw, path = path)
+
+        # torchao reads its OWN keys out of the same header; ours are namespaced and simply ignored. The second
+        # element is what it could NOT account for: a subclass missing one of its parts (a truncated or hand-edited
+        # file) is skipped there rather than raised, which would reach load_state_dict as a bare missing-key error
+        # saying nothing about the artifact. Name it here instead.
+        rebuilt = unflatten(tensors, raw)
+        state_dict = _first(rebuilt)
+        leftover = rebuilt[1] if isinstance(rebuilt, tuple) and len(rebuilt) > 1 else None
+        if leftover:
+            raise ValueError(
+                f"{path} has {len(leftover)} tensor(s) its header does not account for "
+                f"(e.g. {sorted(leftover)[0]!r}); the checkpoint is incomplete or was edited"
+            )
     if roots:
         # Back under their bare names, so the caller's load_state_dict sees the shape the model
         # declares. A dotted key can never collide with one of these.
         state_dict.update(roots)
-    return {"format": str(fmt), "state_dict": state_dict, "metadata": metadata}
+    return {"format": str(fmt), "state_dict": state_dict, "metadata": metadata, "reader": reader}
 
 
 def scheme_is_flattenable(quant_config: Any, *, features: int = 512) -> Optional[bool]:

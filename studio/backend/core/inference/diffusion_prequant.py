@@ -338,12 +338,12 @@ def _load_prequant_checkpoint(path: str, **kwargs: Any) -> Any:
 
     Dispatched on the file extension rather than on content sniffing: the extension is what the
     resolver asked the Hub for, so a repo hosting both containers cannot serve one and be parsed as
-    the other. ``kwargs`` are the pickle path's (``map_location``, ``mmap``); safetensors has no
-    equivalent knobs and reads to CPU, which is where the pickle path maps too."""
+    the other. ``kwargs`` are the pickle path's (``map_location``, ``mmap``); safetensors reads to
+    CPU, which is where the pickle path maps too, and honours ``mmap`` the same way."""
     from .prequant_safetensors import is_safetensors_checkpoint, load_prequant_safetensors
 
     if is_safetensors_checkpoint(path):
-        return load_prequant_safetensors(path)
+        return load_prequant_safetensors(path, mmap = bool(kwargs.get("mmap")))
     return _torch_load_prequant(path, **kwargs)
 
 
@@ -430,6 +430,45 @@ def local_prequant_path_ready(path: str) -> bool:
     if not _local_prequant_path_allowed(path):
         return False
     return os.path.isfile(os.path.expanduser(path))
+
+
+# An operator-side local copy of the hosted repos, checked BEFORE the Hub: ``<root>/<owner>/<repo>/<filename>``
+# (``os.pathsep`` separates several roots). Lets a host serve converted artifacts (the safetensors siblings of
+# the published pickles, preferred over the pickle they replace) or run offline without touching the Hub cache.
+# Names come from the family tables, never from a request, and anything that would leave the root is ignored.
+PREQUANT_MIRROR_ENV = "UNSLOTH_DIFFUSION_PREQUANT_MIRROR"
+
+
+def prequant_mirror_path(repo_id: Optional[str], name: Optional[str]) -> Optional[str]:
+    """``<mirror>/<repo_id>/<name>`` when a configured mirror holds that file, else None. Never raises."""
+    import os
+
+    raw = (os.environ.get(PREQUANT_MIRROR_ENV) or "").strip()
+    if not raw or not repo_id or not name:
+        return None
+    parts = [*str(repo_id).split("/"), *str(name).split("/")]
+    if any(p in ("", ".", "..") or "\\" in p for p in parts):
+        return None
+    # A converted safetensors copy of a requested pickle wins over the pickle itself: same weights, and it needs
+    # no constructor allowlist. Declared names (MiniMax-H3's ConvRot artifacts) only ever ask for the .pt.
+    wanted = [parts]
+    for suffix in (".pt", ".pth"):
+        if parts[-1].endswith(suffix):
+            wanted.insert(0, [*parts[:-1], parts[-1][: -len(suffix)] + ".safetensors"])
+            break
+    for root in raw.split(os.pathsep):
+        root = root.strip()
+        if not root:
+            continue
+        for rel in wanted:
+            try:
+                base = os.path.realpath(os.path.expanduser(root))
+                candidate = os.path.realpath(os.path.join(base, *rel))
+            except Exception:  # noqa: BLE001 - a bad root is simply not a mirror
+                break
+            if candidate.startswith(base + os.sep) and os.path.isfile(candidate):
+                return candidate
+    return None
 
 
 @dataclass(frozen = True)
@@ -1058,6 +1097,10 @@ def cached_checkpoint_path(
             readable = True
         if not readable:
             continue
+        if getattr(source, "kind", None) == "repo":
+            mirrored = prequant_mirror_path(getattr(source, "location", None), name)
+            if mirrored is not None:
+                return mirrored
         for root in roots:
             hit = _cached_in_root(source, root, name)
             if hit is not None:
@@ -1435,6 +1478,9 @@ def _resolve_checkpoint_path(
             return None
         for index, name in enumerate(names):
             last = index == len(names) - 1
+            mirrored = prequant_mirror_path(source.location, name)
+            if mirrored is not None:
+                return mirrored
             try:
                 return _download_checkpoint_name(
                     source,
