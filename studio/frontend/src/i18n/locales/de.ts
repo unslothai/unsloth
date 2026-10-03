@@ -1277,9 +1277,16 @@ export const de = {
       },
       permissions: {
         sectionTitle: "Berechtigungen",
-        bypassLabel: "Tool-Berechtigungen",
-        bypassDescription:
-          "Wie Unsloth Tool-Aufrufe im Chat (Terminal, Python, Web, MCP) vor der Ausführung freigibt. „Full access“ deaktiviert die Freigaben und die Code-Sandbox.",
+        details: {
+          ask:
+            "Fragt vor jedem Tool-Aufruf nach, auch bei Terminal- und Python-Code, Websuchen, Dateiänderungen und MCP-Tools. Ideal, wenn du jeden Schritt prüfen möchtest.",
+          auto:
+            "Führt gewöhnliche Tool-Aufrufe selbst aus und fragt nur nach, wenn eine Aktion riskant wirkt, etwa beim Lesen von Zugangsdaten, beim Erhöhen von Rechten oder bei zerstörerischen Befehlen.",
+          off:
+            "Führt jeden Tool-Aufruf ohne Nachfrage aus. Python- und Terminal-Code läuft weiterhin in der Sandbox, die begrenzt, auf welche Dateien deines Computers er zugreifen kann.",
+          full:
+            "Führt jeden Tool-Aufruf ohne Nachfrage aus und schaltet die Code-Sandbox ab, sodass Python- und Terminal-Code jede Datei lesen und ändern kann, auf die dein Konto zugreifen kann. Ideal für vertrauenswürdige Aufgaben, die außerhalb der Sandbox arbeiten müssen.",
+        },
       },
     },
     profile: {

@@ -1275,9 +1275,16 @@ export const fr = {
       },
       permissions: {
         sectionTitle: "Autorisations",
-        bypassLabel: "Autorisations des outils",
-        bypassDescription:
-          "Comment Unsloth approuve les appels d'outils de la discussion (terminal, python, web, MCP) avant leur exécution. Le mode « Full access » désactive les demandes d'approbation et le bac à sable d'exécution du code.",
+        details: {
+          ask:
+            "Demande votre accord avant chaque appel d'outil, y compris le code terminal et Python, les recherches web, les modifications de fichiers et les outils MCP. Idéal pour vérifier chaque étape.",
+          auto:
+            "Exécute seul les appels d'outils courants et ne demande votre accord que lorsqu'une action semble risquée, comme lire des identifiants, élever des privilèges ou lancer des commandes destructrices.",
+          off:
+            "Exécute chaque appel d'outil sans demander. Le code Python et terminal reste exécuté dans le bac à sable, qui limite les fichiers auxquels il peut accéder sur votre ordinateur.",
+          full:
+            "Exécute chaque appel d'outil sans demander et désactive le bac à sable du code : le code Python et terminal peut lire et modifier tout fichier accessible à votre compte. Idéal pour les tâches de confiance qui doivent travailler hors du bac à sable.",
+        },
       },
     },
     profile: {

@@ -1229,9 +1229,16 @@ export const zhCN = {
       },
       permissions: {
         sectionTitle: "权限",
-        bypassLabel: "工具权限",
-        bypassDescription:
-          "设置 Unsloth 执行聊天中的工具调用（终端、python、网页、MCP）前的审批方式。“Full access”会关闭审批和代码沙箱。",
+        details: {
+          ask:
+            "每次调用工具前都会询问，包括终端和 Python 代码、网页搜索、编辑文件以及 MCP 工具。适合需要逐步检查的场景。",
+          auto:
+            "常规工具调用会自动执行，只有在操作看起来有风险时才会询问，例如读取凭据、提升权限或执行破坏性命令。",
+          off:
+            "所有工具调用都不再询问。Python 和终端代码仍在沙箱中运行，沙箱会限制它们能访问你电脑上的哪些文件。",
+          full:
+            "所有工具调用都不再询问，并关闭代码沙箱，Python 和终端代码可以读取和修改你的账户能访问的任何文件。适合需要在沙箱外工作的可信任务。",
+        },
       },
     },
     profile: {
