@@ -151,6 +151,7 @@ export interface RunExportParams {
   }[];
   /** LoRA: also emit a GGUF LoRA adapter (llama.cpp `--lora`), and its output float type. */
   loraGguf?: boolean;
+  adapterFormat?: "mlx" | "peft";
   loraGgufOuttype?: string;
   saveDirectory: string;
   destination: ExportDestination;
@@ -516,6 +517,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
             private: params.privateRepo,
             gguf: params.loraGguf ?? false,
             gguf_outtype: params.loraGgufOuttype ?? "q8_0",
+            adapter_format: params.adapterFormat,
           }),
         );
         if (outputPath) {

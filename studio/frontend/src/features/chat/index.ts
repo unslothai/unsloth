@@ -144,6 +144,10 @@ export {
   DRAG_THRESHOLD_PX,
   markDragging,
   DROP_CUE_CLASS,
+  liftCopy,
+  placeCue,
+  placeGhost,
+  type RowGhost,
 } from "./hooks/use-sidebar-drag";
 export {
   useSectionDrag,
@@ -269,6 +273,7 @@ export type { ChatModelLoadedInput } from "./lib/chat-model-loaded";
 export {
   customProviderDisplayName,
   isCustomProviderType,
+  isDecisionConnection,
   isExternalModelId,
   parseExternalModelId,
 } from "./external-providers";
@@ -289,6 +294,7 @@ export {
   isAudioAttachment,
   attachmentBodyText,
   parseAttachmentText,
+  isTextAttachment,
   readAttachmentText,
   repackDocxAttachmentArchive,
   repackDocxPreviewArchive,
@@ -339,6 +345,7 @@ export { pickAndImportChats } from "./utils/import-chats";
 export { useForkInFlight } from "./utils/fork-in-flight";
 export { showForkCreatedToast } from "./utils/fork-toast";
 export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
+export { stopRecoveredRun } from "./utils/chat-generation-recovery";
 export { offerToDeleteKeptSandboxes } from "./utils/offer-kept-sandbox-files";
 export { pasteClipboardFiles } from "./utils/clipboard-files";
 export {
@@ -527,11 +534,20 @@ export {
   composerSubmitIntent,
   composerFollowUpBehavior,
   composerShortcutLabels,
+  composerKeyEventForImeSubmit,
   effectiveSendShortcut,
   followUpSubmitIntent,
+  imeKeydownBlocksComposerSubmit,
   steeringInsertionIndex,
   type ComposerSendShortcut,
   type ComposerFollowUpBehavior,
   type ComposerSubmitIntent,
 } from "./utils/composer-preferences";
 export { isTextAttachmentName } from "./text-attachment-accept";
+
+export {
+  ggufVariantsQuery,
+  runBoundedVariantsRequest,
+} from "./api/gguf-variants-request";
+export type { ChatModelSummary, ChatLoraSummary } from "./types/runtime";
+export { startLlamaCppAutoReload } from "./llama-cpp-auto-reload";

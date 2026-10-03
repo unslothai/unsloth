@@ -26,11 +26,12 @@ import re
 import sys
 import threading
 import time
+import weakref
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Optional
 
-from core.inference.diffusion_auto_policy import format_generation_for_log
+from core.inference.diffusion_auto_policy import build_resolved_record, format_generation_for_log
 from core.inference.diffusion_compat import flux2_inner_dim_for_pick
 from core.inference.diffusion_device import (
     resolve_diffusion_device_target,
@@ -53,6 +54,7 @@ from core.inference.diffusion_families import (
     resolve_local_gguf_child,
     sd_cpp_text_encoders_for,
     supported_family_names,
+    _family_override_resolved,
 )
 from core.inference.diffusion_memory import (
     OFFLOAD_GROUP,
@@ -340,6 +342,14 @@ def sd_cpp_supports_graph_cut(binary: Optional[str]) -> bool:
     if text is None:
         return False
     return all(marker in text for marker in _GRAPH_CUT_HELP_MARKERS)
+
+
+def sd_cpp_supports_sage_attn(binary: Optional[str]) -> bool:
+    """Fails closed: sd-cli exits non-zero on an unknown option (u13b9d92 predates --sage-attn)."""
+    if not binary:
+        return False
+    text = _sd_cpp_probe_output(binary, "--help")
+    return text is not None and "--sage-attn" in text
 
 
 def sd_cpp_lists_accelerator_device(binary: Optional[str]) -> bool:
@@ -801,6 +811,48 @@ def _installer_module():
 # has no asset for would re-resolve (and re-download) on every single load, because the wrong-accelerator binary it
 # keeps still does not match the request.
 _failed_accelerator_upgrades: set[str] = set()
+
+
+# (pin, accelerator class) upgrades that failed this process: keep the old bundle instead of retrying every load.
+_failed_pin_upgrades: set[tuple[str, str]] = set()
+_PIN_UPGRADE_ENV = "UNSLOTH_SD_CPP_AUTO_UPGRADE"
+
+
+def _pin_upgrade_disabled() -> bool:
+    return os.environ.get(_PIN_UPGRADE_ENV, "").strip().lower() in ("0", "false", "no", "off")
+
+
+def _pin_moved(binary: str, accelerator: str) -> bool:
+    """True when ``binary`` is a managed install made for an older pin. Unknown answers False."""
+    if _pin_upgrade_disabled():
+        return False
+    root = owning_managed_root(binary)
+    if root is None:
+        return False
+    if _managed_tree_in_use():
+        return False
+    try:
+        mod = _installer_module()
+        want = mod._pinned_tag()
+        if not want or (want, mod.accelerator_class(accelerator)) in _failed_pin_upgrades:
+            return False
+        return bool(mod.install_is_stale(root))
+    except Exception:  # noqa: BLE001 -- cannot tell -> keep the existing binary
+        return False
+
+
+def _note_failed_pin_upgrade(accelerator: str) -> None:
+    try:
+        mod = _installer_module()
+        want = mod._pinned_tag()
+        if want:
+            _failed_pin_upgrades.add((want, mod.accelerator_class(accelerator)))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _needs_reinstall(binary: str, accelerator: str) -> bool:
+    return _accelerator_changed(binary, accelerator) or _pin_moved(binary, accelerator)
 
 
 def _note_failed_upgrade(accelerator: str) -> None:
@@ -1273,6 +1325,29 @@ def accelerator_runtime_failed(accelerator: Optional[str], card: Optional[str] =
     return _record_diverts(_stored_accelerator_runtime_failures().get(klass), fingerprint, card)
 
 
+def off_torch_build_mismatch(off_torch: Any, binary: Optional[str]) -> Optional[str]:
+    """Why ``binary`` is not provably the off-torch card's build, else None. Any other build ignores
+    CUDA_VISIBLE_DEVICES (Vulkan) or reads it as HIP's mask (ROCm), so it would run on torch's cards
+    past the arbiter and the training guard; an unrecorded one (SD_CLI_PATH) could be either."""
+    if off_torch is None or not binary:
+        return None
+    klass = _installed_accelerator_of(binary)
+    if klass != _accelerator_class_of(off_torch.accelerator):
+        return klass or "unrecorded"
+    return None
+
+
+def _refuse_off_torch_build_mismatch(off_torch: Any, binary: Optional[str]) -> None:
+    klass = off_torch_build_mismatch(off_torch, binary)
+    if klass:
+        raise RuntimeError(
+            f"UNSLOTH_DIFFUSION_SD_CPP_DEVICE={off_torch.label} needs the "
+            f"{off_torch.accelerator} stable-diffusion.cpp build, but the installed one is "
+            f"{klass}. Let the {off_torch.accelerator} build install, or unset the setting, "
+            "then load again."
+        )
+
+
 def usable_or_recorded_failure(
     binary,
     requested,
@@ -1494,7 +1569,33 @@ def _managed_tree_in_use() -> bool:
     Reads the singleton without a lock on purpose: a stale answer either defers an upgrade to the
     next load (harmless) or lets one through in a window the load path guards anyway.
     """
-    return _tree_in_use(_sd_cpp_backend)
+    return _tree_in_use(_sd_cpp_backend) or _external_tree_holder_alive()
+
+
+# Other backends' processes running out of the managed tree (the H3 video sd-server), so an install stands down for
+# them too. Weak: a dropped runtime cannot pin the tree.
+_external_tree_holders: "weakref.WeakSet[Any]" = weakref.WeakSet()
+
+
+def register_tree_holder(holder: Any) -> None:
+    with _tree_state:
+        _external_tree_holders.add(holder)
+
+
+def unregister_tree_holder(holder: Any) -> None:
+    with _tree_state:
+        _external_tree_holders.discard(holder)
+        _tree_state.notify_all()
+
+
+def _external_tree_holder_alive() -> bool:
+    for holder in list(_external_tree_holders):
+        try:
+            if holder.is_alive():
+                return True
+        except Exception:  # noqa: BLE001 -- a broken holder must not wedge installs either way
+            continue
+    return False
 
 
 def _accelerator_changed(binary: str, accelerator: str) -> bool:
@@ -1566,7 +1667,15 @@ def _superseded_legacy_server(binary: Optional[str], accelerator: str) -> bool:
     try:
         mod = _installer_module()
         want = mod.accelerator_class(accelerator)
-        if not _record_mismatch(mod, root, want) or _record_mismatch(mod, current, want):
+        # Superseded = built for another accelerator, or (with the pin upgrade on) for an older pin.
+        legacy_stale = _record_mismatch(mod, root, want) or (
+            not _pin_upgrade_disabled() and mod.install_is_stale(root)
+        )
+        if (
+            not legacy_stale
+            or _record_mismatch(mod, current, want)
+            or mod.install_is_stale(current)
+        ):
             return False
         return mod.installed_ships_server(current) is False
     except Exception:  # noqa: BLE001 -- cannot tell
@@ -1803,14 +1912,14 @@ def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu"
     diffusers."""
     found = find_sd_cpp_binary()
     usable = bool(found) and _usable_or_discard_managed(found)
-    if usable and not _accelerator_changed(found, accelerator):
+    if usable and not _needs_reinstall(found, accelerator):
         return found
     if not allow_install:
         return found
     with _install_lock:
         found = find_sd_cpp_binary()
         usable = bool(found) and _usable_or_discard_managed(found)
-        if usable and not _accelerator_changed(found, accelerator):
+        if usable and not _needs_reinstall(found, accelerator):
             return found
         # A usable binary of the wrong accelerator is still better than none, so an install that cannot deliver the
         # right one (no such asset for this host, no network) keeps it.
@@ -1843,6 +1952,7 @@ def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu"
                     return refound if refound and _usable_or_discard_managed(refound) else None
                 if fallback is not None:
                     _note_failed_upgrade(accelerator)
+                    _note_failed_pin_upgrade(accelerator)
                 return fallback
 
 
@@ -1862,7 +1972,7 @@ def ensure_sd_server_binary(
     # not downloaded again on every later load.
     if usable and _superseded_legacy_server(found, accelerator):
         return None
-    if usable and not _accelerator_changed(found, accelerator):
+    if usable and not _needs_reinstall(found, accelerator):
         return found
     if not allow_install:
         return found
@@ -1871,7 +1981,7 @@ def ensure_sd_server_binary(
         usable = bool(found) and _usable_or_discard_managed(found)
         if usable and _superseded_legacy_server(found, accelerator):
             return None
-        if usable and not _accelerator_changed(found, accelerator):
+        if usable and not _needs_reinstall(found, accelerator):
             return found
         # Keep a usable wrong-accelerator server if the matching one cannot be fetched
         fallback = found if usable else None
@@ -1897,6 +2007,7 @@ def ensure_sd_server_binary(
                     return refound if refound and _usable_or_discard_managed(refound) else None
                 if fallback is not None or find_sd_cpp_binary() is not None:
                     _note_failed_upgrade(accelerator)
+                    _note_failed_pin_upgrade(accelerator)
                 return fallback
         installed = find_sd_server_binary()
         # The finder also probes the tree an older build left beside the Unsloth home, so when the bundle just
@@ -1904,7 +2015,7 @@ def ensure_sd_server_binary(
         # None, not the fallback: an install just completed, so the router's next step resolves the sd-cli it landed,
         # and a one-shot run on the right build beats a resident server on the wrong one. The fallback stays for the
         # failure path above, where no matching binary was fetched at all.
-        if installed and _accelerator_changed(installed, accelerator):
+        if installed and _needs_reinstall(installed, accelerator):
             return None
         return installed or fallback
 
@@ -1920,6 +2031,7 @@ class _SdState:
     family: DiffusionFamily
     device: str
     files: SdCppModelFiles
+    display_repo_id: Optional[str] = None
     vae_format: Optional[str] = None
     native_speed: str = "off"
     offload_flags: tuple[str, ...] = ()
@@ -1930,6 +2042,7 @@ class _SdState:
     mode: str = "server"
     # Token kept so LoRA adapters selected at generate time can be fetched from the Hub.
     hf_token: Optional[str] = None
+    resolved: Optional[dict] = None
     # The GGUF basename this load committed: some variants pick their encoder by filename, and a local *klein-9B*.gguf
     # carries that keyword only in the basename.
     gguf_filename: Optional[str] = None
@@ -1946,6 +2059,12 @@ class _SdState:
     physical_gpu_id: Optional[int] = None
     # This load's card, as the failure record names cards.
     selected_card: Optional[str] = None
+    # UNSLOTH_DIFFUSION_SD_CPP_DEVICE placement: its label, and the env every spawn gets to open only that card.
+    off_torch_device: Optional[str] = None
+    child_env: tuple[tuple[str, str], ...] = ()
+
+    def spawn_env(self) -> Optional[dict[str, str]]:
+        return dict(self.child_env) or None
 
 
 def _offload_with_device_pin_impl(
@@ -2027,6 +2146,7 @@ class _SdLoading:
     expected_bytes: int = 0
     downloaded_bytes: int = 0
     error: Optional[str] = None
+    off_torch_device: Optional[str] = None
 
 
 @dataclass
@@ -2055,6 +2175,9 @@ def _map_guidance(
     ``--cfg-scale``. A distilled 0/1 means CFG off (sd-cli's 1.0); a value > 1 is real CFG."""
     if fam.name in ("flux.1", "flux.2-klein", "flux.2-dev"):
         return None, (float(guidance) if guidance is not None else None)
+    if fam.name == "z-image":
+        # diffusers Z-Image computes pos + g * (pos - neg), so its g is standard CFG minus 1 (sd.cpp's cfg 4 == g 3).
+        return (float(guidance) + 1.0 if guidance is not None and guidance > 0.0 else 1.0), None
     cfg = float(guidance) if (guidance is not None and guidance > 1.0) else 1.0
     return cfg, None
 
@@ -2179,6 +2302,16 @@ class SdCppDiffusionBackend:
     def is_loaded(self) -> bool:
         return self._state is not None
 
+    @property
+    def runs_off_torch_device(self) -> bool:
+        """Everything resident or loading sits on a card torch cannot see. A pending load counts, or
+        training would cancel it; a torch-placed resident beside it still has to be freed."""
+        loading = getattr(self, "_loading", None)
+        if loading is not None and loading.error is not None:
+            loading = None
+        held = [x for x in (self._state, loading) if x is not None]
+        return bool(held) and all(getattr(x, "off_torch_device", None) for x in held)
+
     def _loading_card_store(self) -> threading.local:
         """Lazily, so an instance built with ``__new__`` (the unit-test seam) still answers."""
         store = getattr(self, "_loading_cards", None)
@@ -2258,9 +2391,9 @@ class SdCppDiffusionBackend:
 
         ``preferred_accelerator`` is applied here so all four call sites agree, or
         ``_accelerator_changed`` would reinstall over what the others chose."""
-        from core.inference.diffusion_engine_router import _install_accelerator_for
+        from core.inference.diffusion_engine_router import image_install_accelerator
         return preferred_accelerator(
-            _install_accelerator_for(getattr(resolve_diffusion_device_target(), "backend", "cpu")),
+            image_install_accelerator(getattr(resolve_diffusion_device_target(), "backend", "cpu")),
             card,
         )
 
@@ -2405,6 +2538,7 @@ class SdCppDiffusionBackend:
         # BINARY, which is a separate managed tree with its own install policy; a background load may still install
         # one, exactly as it does today.
         local_files_only: bool = False,
+        display_repo_id: Optional[str] = None,
         gguf_filename: Optional[str] = None,
         base_repo: Optional[str] = None,
         family_override: Optional[str] = None,
@@ -2433,6 +2567,11 @@ class SdCppDiffusionBackend:
         """Validate, then fetch assets on a daemon thread. Returns at once."""
         # Empty/whitespace token = "no token"; "" verbatim breaks the anonymous fallback.
         hf_token = hf_token.strip() if hf_token and hf_token.strip() else None
+        from core.inference.diffusion_engine_router import off_torch_sd_cpp_device
+
+        off_torch = off_torch_sd_cpp_device()
+        if off_torch is not None:
+            gpu_ids, gpu_ordinal = None, None
         # Same fallback the diffusers and video backends take: the route ranks the selection and passes the winner,
         # but a direct caller (an MCP client, a test, a plugin) hands over gpu_ids alone, and without this the native
         # engine is the one engine that would drop the pick silently. Re-ranked only when nobody has, so a
@@ -2504,21 +2643,25 @@ class SdCppDiffusionBackend:
                         if kind != "diffusion_model"
                     )
                 ),
+                off_torch_device = off_torch.label if off_torch is not None else None,
             )
 
         account_thread(
             target = self._run_load,
             kwargs = dict(
                 repo_id = repo_id,
+                display_repo_id = display_repo_id,
                 local_files_only = local_files_only,
                 gguf_filename = gguf_filename,
                 base = base,
                 fam = fam,
+                family_override = family_override,
                 hf_token = hf_token,
                 cpu_offload = cpu_offload,
                 memory_mode = memory_mode,
                 speed_mode = speed_mode,
                 gpu_ordinal = gpu_ordinal,
+                off_torch = off_torch,
                 _load_token = token,
                 _cancel_event = cancel_event,
             ),
@@ -2531,9 +2674,11 @@ class SdCppDiffusionBackend:
         self,
         *,
         repo_id: str,
+        display_repo_id: Optional[str] = None,
         gguf_filename: str,
         base: str,
         fam: DiffusionFamily,
+        family_override: Optional[str] = None,
         hf_token: Optional[str],
         # Cache-only when set: every Hub call below is either skipped or told to resolve from disk, so a load nobody
         # asked for cannot pull bytes. See begin_load for what it does not cover.
@@ -2542,6 +2687,7 @@ class SdCppDiffusionBackend:
         memory_mode: Optional[str] = None,
         speed_mode: Optional[str] = None,
         gpu_ordinal: Optional[int] = None,
+        off_torch: Any = None,
         _load_token: int,
         _cancel_event: Optional[threading.Event] = None,
     ) -> None:
@@ -2668,7 +2814,12 @@ class SdCppDiffusionBackend:
                 llm_vision = paths.get("llm_vision"),
                 qwen2vl = paths.get("qwen2vl"),
             )
-            device = resolve_diffusion_device_target().device
+            device = (
+                off_torch.accelerator
+                if off_torch is not None
+                else resolve_diffusion_device_target().device
+            )
+            spawn_env = off_torch.child_env() if off_torch is not None else None
             # Honor speed everywhere; offload only off-CPU (on CPU weights are resident, so the flags are no-ops)
             offload: tuple[str, ...] = ()
             if device != "cpu":
@@ -2758,6 +2909,7 @@ class SdCppDiffusionBackend:
                                 "load again."
                             )
                         else:
+                            _refuse_off_torch_build_mismatch(off_torch, server_binary)
                             server = SdCppServer(server_binary)
                             # Published INSIDE the claim: _tree_in_use reads _pending_server, so this is the handover
                             # from "a reader holds the tree" to "a starting server does", with no gap between them.
@@ -2794,6 +2946,7 @@ class SdCppDiffusionBackend:
                             ),
                             native_speed = native_speed,
                             threads = _default_threads(),
+                            env = spawn_env,
                         )
                         started_ok = True
                     except SdCppCancelled:
@@ -2853,6 +3006,8 @@ class SdCppDiffusionBackend:
                         "The stable-diffusion.cpp binary was replaced by an install for a "
                         "different accelerator while this model was loading. Try the load again."
                     )
+                if mode == "oneshot":
+                    _refuse_off_torch_build_mismatch(off_torch, getattr(engine, "binary", None))
                 committed_offload_flags = tuple(
                     _offload_with_device_pin_impl(
                         offload,
@@ -2862,6 +3017,7 @@ class SdCppDiffusionBackend:
                 )
                 state = _SdState(
                     repo_id = repo_id,
+                    display_repo_id = display_repo_id,
                     base_repo = base,
                     family = fam,
                     device = device,
@@ -2877,11 +3033,15 @@ class SdCppDiffusionBackend:
                     server = server,
                     mode = mode,
                     hf_token = hf_token,
+                    resolved = build_resolved_record(
+                        {"family_override": _family_override_resolved(family_override, fam)}
+                    ),
                     gguf_filename = gguf_filename,
                     flux2_inner_dim = inner_dim,
                     # Only the one-shot path needs to carry it: it re-resolves sd-cli per image, long after this
                     # decision, and has nothing else to check the answer against.
                     sd_accelerator = engine_accelerator if mode == "oneshot" else None,
+                    # Never on an off-torch card: the parent-visible ids are torch's, so CUDA0 would name one of them.
                     physical_gpu_id = (
                         _resolved_server_physical_gpu_id(
                             server_binary,
@@ -2889,10 +3049,12 @@ class SdCppDiffusionBackend:
                             gpu_ordinal,
                             committed_offload_flags,
                         )
-                        if mode == "server"
+                        if mode == "server" and off_torch is None
                         else None
                     ),
                     selected_card = self._loading_card,
+                    off_torch_device = off_torch.label if off_torch is not None else None,
+                    child_env = tuple(sorted((spawn_env or {}).items())),
                 )
                 superseded = False
                 orphan: Optional[SdCppServer] = None
@@ -2922,7 +3084,9 @@ class SdCppDiffusionBackend:
                     "sd_cpp.loaded: repo=%s gguf=%s device=%s mode=%s speed=%s offload_flags=%s",
                     state.repo_id,
                     state.gguf_filename,
-                    state.device,
+                    f"{state.device} ({state.off_torch_device}, outside torch)"
+                    if state.off_torch_device
+                    else state.device,
                     state.mode,
                     state.native_speed,
                     without_device_backend_flags(state.offload_flags) or "none",
@@ -3604,7 +3768,7 @@ class SdCppDiffusionBackend:
                     "images": images,
                     "seed": int(seed),
                     "seeds": seeds,
-                    "repo_id": state.repo_id,
+                    "repo_id": state.display_repo_id or state.repo_id,
                     # The BUILD, for the recipe: the repo id alone does not say WHICH GGUF quant ran, and two quants
                     # make different pixels.
                     "model_kind": "gguf",
@@ -3621,6 +3785,8 @@ class SdCppDiffusionBackend:
                     "offload_policy": (
                         "active" if without_device_backend_flags(state.offload_flags) else "none"
                     ),
+                    "speed_mode": state.native_speed,
+                    "cpu_offload": bool(without_device_backend_flags(state.offload_flags)),
                     "workflow": workflow if conditioned else "txt2img",
                     "reference_resolution": None,
                     "localized_edit": getattr(localized_edit, "mode", None)
@@ -3822,6 +3988,7 @@ class SdCppDiffusionBackend:
                 offload = without_device_backend_flags(state.offload_flags),
                 native_speed = state.native_speed,
                 threads = state.threads,
+                env = state.spawn_env(),
                 extra_args = list(CPU_BACKEND_FLAGS),
             )
         except Exception:  # noqa: BLE001 -- the original abort is the more useful error
@@ -3940,6 +4107,7 @@ class SdCppDiffusionBackend:
                         native_speed = state.native_speed,
                         threads = state.threads,
                         extra_args = extra_args or None,
+                        env = state.spawn_env(),
                         on_log = self._on_log,
                         cancel_event = cancel,
                     )
@@ -4065,6 +4233,7 @@ class SdCppDiffusionBackend:
             return {
                 "loaded": False,
                 "repo_id": None,
+                "display_repo_id": None,
                 "family": None,
                 "base_repo": None,
                 "device": None,
@@ -4080,6 +4249,7 @@ class SdCppDiffusionBackend:
                 "transformer_quant": None,
                 "attention_backend": None,
                 "transformer_cache": None,
+                "resolved": None,
                 "engine": "sd_cpp",
                 "native_mode": None,
                 "supports_lora": False,
@@ -4119,6 +4289,7 @@ class SdCppDiffusionBackend:
         return {
             "loaded": True,
             "repo_id": state.repo_id,
+            "display_repo_id": state.display_repo_id,
             "family": state.family.name,
             "base_repo": state.base_repo,
             "device": state.device,
@@ -4142,6 +4313,7 @@ class SdCppDiffusionBackend:
             "transformer_quant": None,
             "attention_backend": None,
             "transformer_cache": None,
+            "resolved": state.resolved,
             "engine": "sd_cpp",
             "supports_lora": diffusion_lora.supports_lora(
                 engine = "sd_cpp",
