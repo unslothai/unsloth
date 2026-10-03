@@ -482,7 +482,11 @@ def apply_speed_optims(
     if on_cuda:
         applied["vae_fused"] = _install_fused_vae(pipe, logger)
 
-    if on_cuda and not _cudnn_benchmark_pointless(pipe):
+    if (
+        on_cuda
+        and getattr(family, "cudnn_benchmark", True)
+        and not _cudnn_benchmark_pointless(pipe)
+    ):
         applied["cudnn_benchmark"] = _enable_cudnn_benchmark(logger)
 
     if on_cuda:
@@ -595,6 +599,38 @@ def apply_speed_optims(
             except Exception as exc:  # noqa: BLE001 - the load proceeds eager
                 _warn(logger, "cuda graph capture", exc)
 
+    return applied
+
+
+def engage_pinned_denoisers(
+    pipe: Any,
+    applied: dict,
+    logger: Any = None,
+) -> dict:
+    """Install the int8 GEMM the plan refused once every denoiser group is pinned (before the first forward). Graphs
+    stay off: an oversized request can still stream the groups, and the hooks' copy-stream wait breaks capture."""
+    if getattr(pipe, "_unsloth_cuda_graph_reason", None) == "offload active":
+        try:
+            pipe._unsloth_cuda_graph_reason = "denoiser pinned resident under offload hooks"
+        except Exception:  # noqa: BLE001
+            pass
+    if not applied.get("compiled") or applied.get("int8_gemm"):
+        return applied
+    try:
+        from .diffusion_int8_gemm import install as install_int8_gemm
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, "int8 fused-dequant gemm", exc)
+        return applied
+    for transformer in _denoiser_dits(pipe):
+        try:
+            transformer._unsloth_int8_gemm = install_int8_gemm(
+                transformer, logger, offload_active = False
+            )
+        except Exception as exc:  # noqa: BLE001 - optimisation only
+            _warn(logger, "int8 fused-dequant gemm", exc)
+    applied["int8_gemm"] = any(
+        bool(getattr(t, "_unsloth_int8_gemm", 0)) for t in _denoiser_dits(pipe)
+    )
     return applied
 
 

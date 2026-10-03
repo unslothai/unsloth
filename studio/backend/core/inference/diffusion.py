@@ -132,6 +132,8 @@ from .diffusion_memory import (
     normalize_memory_mode,
     plan_diffusion_memory,
     plan_fits_total_capacity,
+    denoisers_pinned_resident,
+    install_encode_release,
     plan_keeps_transformer_resident,
     prequant_seed_device,
     raise_on_image_activation_shortfall,
@@ -168,6 +170,7 @@ from .diffusion_speed import (
     SPEED_MAX,
     SPEED_OFF,
     apply_speed_optims,
+    engage_pinned_denoisers,
     auto_dynamic_active,
     compile_dynamic,
     compile_eligible,
@@ -242,6 +245,7 @@ from .diffusion_precision import (
     torchao_quantize_importable,
 )
 from .diffusion_te_prequant import te_prequant_pipe_kwargs
+from .diffusion_fast_load import start_load_prefetch, stop_prefetch, te_precast_components
 from .diffusion_flow_shift import apply_comfy_flow_shift
 from .diffusion_text_length import (
     IDEOGRAM4_COMFY_GUIDANCE,
@@ -2028,6 +2032,11 @@ class DiffusionBackend:
         target = resolve_diffusion_device_target(ordinal = ordinal)
         # The INDEXED string, so _resolve_device_target can rebuild a selection an override would erase.
         return target.torch_device, target.dtype
+
+    def _stop_load_prefetch(self) -> None:
+        """End a load's page-cache prefetch (diffusion_fast_load.start_load_prefetch), if one is running."""
+        stop_prefetch(getattr(self, "_load_prefetch", None))
+        self._load_prefetch = None
 
     def _raise_if_load_cancelled(self, token: int) -> None:
         # The epoch alone: unload() bumps _load_token before any teardown, so a load that started
@@ -6300,6 +6309,20 @@ class DiffusionBackend:
                                 }
                                 if hf_token:
                                     pipe_kwargs["token"] = hf_token
+                                # Stopped once the pipeline is built.
+                                self._stop_load_prefetch()
+                                self._load_prefetch = start_load_prefetch(
+                                    fam,
+                                    _base_local_dir or fetch_base,
+                                    prequant_scheme = pipeline_seed_scheme,
+                                    prequant_path_override = transformer_prequant_path,
+                                    prequant_base_repo = base,
+                                    text_encoders_replaced = te_precast_components(
+                                        fam, fetch_base, text_encoder_quant, target
+                                    ),
+                                    cache_dir = hub_cache_dir(),
+                                    logger = logger,
+                                )
                                 if fam.name == HIDREAM_FAMILY_NAME:
                                     # The repo names a Llama text_encoder_4 it does not ship; supply it from the open
                                     # mirror
@@ -6419,17 +6442,20 @@ class DiffusionBackend:
                                     # pipe_kwargs built above (the seed, the bf16 re-plan and the shard restore are the
                                     # same as every other family's), and fetches every OTHER component from the id
                                     # given, so it gets the mirror and the no-download promise.
-                                    pipe = load_krea2_pipeline(
-                                        fetch_base,
-                                        dtype,
-                                        hf_token = hf_token,
-                                        check_cancelled = lambda: self._raise_if_load_cancelled(
-                                            _load_token
-                                        ),
-                                        local_files_only = local_files_only,
-                                        text_encoder = pipe_kwargs.get("text_encoder"),
-                                        transformer = pipe_kwargs.get("transformer"),
-                                    )
+                                    try:
+                                        pipe = load_krea2_pipeline(
+                                            fetch_base,
+                                            dtype,
+                                            hf_token = hf_token,
+                                            check_cancelled = lambda: self._raise_if_load_cancelled(
+                                                _load_token
+                                            ),
+                                            local_files_only = local_files_only,
+                                            text_encoder = pipe_kwargs.get("text_encoder"),
+                                            transformer = pipe_kwargs.get("transformer"),
+                                        )
+                                    finally:
+                                        self._stop_load_prefetch()
                                 else:
                                     # bf16 -> fp16 conversion materialises in host RAM (35 GB for FLUX.1)
                                     small_host = self._small_host_decision(
@@ -6445,9 +6471,12 @@ class DiffusionBackend:
                                         )
                                     # The prefetched snapshot dir keeps from_pretrained off the hub (24 GB per FLUX.1
                                     # otherwise)
-                                    pipe = pipeline_cls.from_pretrained(
-                                        _base_local_dir or fetch_base, **pipe_kwargs
-                                    )
+                                    try:
+                                        pipe = pipeline_cls.from_pretrained(
+                                            _base_local_dir or fetch_base, **pipe_kwargs
+                                        )
+                                    finally:
+                                        self._stop_load_prefetch()
                                 if small_host is not None and small_host.engaged:
                                     plan = self._apply_small_host_route(
                                         pipe,
@@ -7147,6 +7176,11 @@ class DiffusionBackend:
                         pipe._unsloth_cuda_graphs = ()
                         pipe._unsloth_cuda_graph_reason = "offload active"
                         speed_applied["cuda_graph"] = False
+                    # streams the whole-resident denoiser back to the flat room while the encoders run
+                    install_encode_release(pipe, plan, logger)
+                    # the speed layer saw only the plan; placement may have pinned every denoiser group since
+                    if denoisers_pinned_resident(pipe):
+                        engage_pinned_denoisers(pipe, speed_applied, logger)
 
                     # Per-control provenance for status. cpu_offload=False is the unset default, so only True is
                     # explicit.
@@ -7345,6 +7379,7 @@ class DiffusionBackend:
                     _clear_exception_frames(exc)
                     raise
                 finally:
+                    self._stop_load_prefetch()
                     # Pre-commit failure: roll back the process-wide mutations (symmetric with _unload_locked).
                     if not state_committed:
                         # First: its gate sits in front of the CUDA-graph layer uninstalled by identity below.
@@ -9016,6 +9051,8 @@ class DiffusionBackend:
             and _denoiser_hooked(state.pipe),
             logger = logger,
         )
+        if denoisers_pinned_resident(state.pipe):
+            engage_pinned_denoisers(state.pipe, speed_applied, logger)
         if getattr(getattr(state.pipe, "vae", None), "_unsloth_fp16_decode", False):
             speed_applied["vae_fp16_decode"] = True
         object.__setattr__(state, "speed_mode", SPEED_DEFAULT)
