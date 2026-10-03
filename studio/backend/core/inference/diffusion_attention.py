@@ -297,7 +297,11 @@ _SAGE_MIN_COSINE = 0.99
 _SAGE_MAX_REL_L1 = 0.08
 
 
-def _run_sage_probe(device: str, dtype: Any, head_dim: int = 128) -> str:
+def _run_sage_probe(
+    device: str,
+    dtype: Any,
+    head_dim: int = 128,
+) -> str:
     """Empty when ``sageattn`` on ``device`` matches an fp32 reference at ``head_dim``, else why not.
 
     Raises when unaskable (import, device, OOM). Random inputs with a per-channel K offset, as real keys have one: a
@@ -363,7 +367,11 @@ def _sage_probe_head_dims(head_dims: Any) -> tuple[int, ...]:
     return tuple(dims) or (_SAGE_MAX_HEAD_DIM,)
 
 
-def _sage_kernel_runs(target: Any, logger: Any = None, head_dims: Any = None) -> Optional[bool]:
+def _sage_kernel_runs(
+    target: Any,
+    logger: Any = None,
+    head_dims: Any = None,
+) -> Optional[bool]:
     """True when ``sageattn`` passed its self-check on this card at every head dim it would serve.
 
     False when the kernel raised, failed the self-check, or the package cannot be imported (not cached: an install
@@ -421,7 +429,11 @@ def _sage_reroute_reason(query: Any, key: Any, value: Any, attn_mask: Any) -> Op
         return "attn_mask"
     if not all(isinstance(t, torch.Tensor) for t in (query, key, value)):
         return "inputs"
-    if query.dtype not in (torch.float16, torch.bfloat16) or key.dtype != query.dtype or value.dtype != query.dtype:
+    if (
+        query.dtype not in (torch.float16, torch.bfloat16)
+        or key.dtype != query.dtype
+        or value.dtype != query.dtype
+    ):
         return "dtype"
     if query.dim() != 4 or key.dim() != 4 or value.dim() != 4:
         return "rank"
@@ -440,7 +452,6 @@ def _note_reroute(label: str, reason: str, counts: dict, logged: set) -> None:
     count would be a traced side effect, and the routing itself is already decided by the specialised graph."""
     try:
         import torch
-
         if torch.compiler.is_compiling():
             return
     except Exception:  # noqa: BLE001
@@ -449,7 +460,6 @@ def _note_reroute(label: str, reason: str, counts: dict, logged: set) -> None:
     if reason not in logged:
         logged.add(reason)
         import logging
-
         logging.getLogger(__name__).warning(
             "diffusion.attention: %s cannot take this attention call (%s); running it on the default "
             "backend instead",
@@ -599,7 +609,11 @@ def _fa4_reroute_reason(query: Any, key: Any, value: Any, attn_mask: Any) -> Opt
         return "attn_mask"
     if not all(isinstance(t, torch.Tensor) for t in (query, key, value)):
         return "inputs"
-    if query.dtype not in (torch.float16, torch.bfloat16) or key.dtype != query.dtype or value.dtype != query.dtype:
+    if (
+        query.dtype not in (torch.float16, torch.bfloat16)
+        or key.dtype != query.dtype
+        or value.dtype != query.dtype
+    ):
         return "dtype"
     if query.device.type != "cuda":
         return "device"
@@ -611,7 +625,9 @@ def _note_fa4_reroute(reason: str) -> None:
 
 
 def _install_fa4_dispatch_guard() -> bool:
-    return _install_dispatch_guard("flash_4_hub", lambda *a: _fa4_reroute_reason(*a), _note_fa4_reroute)
+    return _install_dispatch_guard(
+        "flash_4_hub", lambda *a: _fa4_reroute_reason(*a), _note_fa4_reroute
+    )
 
 
 # The arch row above only admits SM100+; whether the hub FA4 build actually runs, and runs correctly, on this card and
@@ -624,7 +640,11 @@ _FA4_MIN_COSINE = 0.999
 _FA4_MAX_REL_L1 = 0.02
 
 
-def _run_fa4_probe(device: str, dtype: Any, head_dim: int = 128) -> str:
+def _run_fa4_probe(
+    device: str,
+    dtype: Any,
+    head_dim: int = 128,
+) -> str:
     """Empty when diffusers' flash_4_hub matches fp32 SDPA at ``head_dim`` on ``device``, else why not. Raises on OOM."""
     import torch
     from diffusers.models.attention_dispatch import AttentionBackendName, dispatch_attention_fn
@@ -659,14 +679,24 @@ def _run_fa4_probe(device: str, dtype: Any, head_dim: int = 128) -> str:
     return ""
 
 
-def _fa4_kernel_runs(target: Any, logger: Any = None, head_dims: Any = None) -> Optional[bool]:
+def _fa4_kernel_runs(
+    target: Any,
+    logger: Any = None,
+    head_dims: Any = None,
+) -> Optional[bool]:
     """True when flash_4_hub passed its self-check at every DiT head dim; False with a logged reason; None unaskable."""
     device = str(getattr(target, "torch_device", None) or getattr(target, "device", None) or "")
     if not device.startswith("cuda"):
         return None
     device = _indexed_cuda_device(device)
     dtype = getattr(target, "dtype", None)
-    dims = sorted({int(d) for d in (head_dims or ()) if isinstance(d, int) and not isinstance(d, bool) and d > 0})
+    dims = sorted(
+        {
+            int(d)
+            for d in (head_dims or ())
+            if isinstance(d, int) and not isinstance(d, bool) and d > 0
+        }
+    )
     error = ""
     for head_dim in dims or [128]:
         key = (device, str(dtype), head_dim)
@@ -708,7 +738,6 @@ def _sage_version_too_old() -> Optional[str]:
         floor = "2.1.1"
         try:
             from diffusers.models.attention_dispatch import _REQUIRED_SAGE_VERSION
-
             if isinstance(_REQUIRED_SAGE_VERSION, str) and _REQUIRED_SAGE_VERSION.strip():
                 floor = _REQUIRED_SAGE_VERSION.strip()
         except Exception:  # noqa: BLE001
@@ -720,7 +749,11 @@ def _sage_version_too_old() -> Optional[str]:
     return None
 
 
-def _sage_usable(pipe: Any, target: Any, logger: Any = None) -> bool:
+def _sage_usable(
+    pipe: Any,
+    target: Any,
+    logger: Any = None,
+) -> bool:
     """Whether an explicit ``sage`` request may engage: never on a float32 pipeline, never on a card whose kernel failed
     its self-check at the DiT's head dims, and only with the per-call guard in place. Each refusal is logged."""
     if target is not None and _runs_in_float32(target):
