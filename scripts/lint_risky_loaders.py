@@ -180,6 +180,12 @@ def _first_argument(call: ast.Call, keyword: str):
     return _keyword(call, keyword)
 
 
+# Sinks whose second argument is the file that gets executed, and its keyword.
+_PATH_KEYWORDS = {
+    "spec_from_file_location": "location",
+    "SourceFileLoader": "path",
+    "get_class_in_module": "module_path",
+}
 # The keyword that names the module or file, where it is not `name`.
 _TARGET_KEYWORDS = {
     "runpy.run_path": "path_name",
@@ -192,9 +198,9 @@ def _dynamic_import(call: ast.Call, qualified: str):
     sink = DYNAMIC_IMPORTS.get(qualified) or DYNAMIC_IMPORT_TAILS.get(qualified.split(".")[-1])
     if sink is None:
         return None
-    if sink in ("spec_from_file_location", "SourceFileLoader"):
-        # The module name is a label; the path is what gets executed.
-        keyword = "location" if sink == "spec_from_file_location" else "path"
+    if sink in _PATH_KEYWORDS:
+        # The module or class name is a label; the path is what gets executed.
+        keyword = _PATH_KEYWORDS[sink]
         target = call.args[1] if len(call.args) > 1 else _keyword(call, keyword)
     else:
         target = _first_argument(call, _TARGET_KEYWORDS.get(sink, "name"))
@@ -345,10 +351,31 @@ _FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef)
 _TRUST_SHAPES = (ast.Call, ast.Lambda, ast.Assign, ast.AnnAssign, ast.Dict) + _FUNCTIONS
 
 
-def scan_file(path: Path, relative: str) -> list:
+def _notebook_source(path: Path, relative: str) -> str:
+    """A notebook's code cells as one module; `%magic` / `!command` lines are blanked to keep line numbers."""
     try:
-        tree = ast.parse(path.read_bytes(), filename = str(path))
+        document = json.loads(path.read_text(encoding = "utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise SystemExit(f"{relative}: could not be read ({error.__class__.__name__})")
+    lines = []
+    for cell in document.get("cells") or []:
+        if cell.get("cell_type") != "code":
+            continue
+        source = cell.get("source") or []
+        for line in (source if isinstance(source, str) else "".join(source)).splitlines():
+            lines.append("" if line.lstrip().startswith(("%", "!")) else line)
+        lines.append("")
+    return "\n".join(lines)
+
+
+def scan_file(path: Path, relative: str) -> list:
+    source = _notebook_source(path, relative) if path.suffix == ".ipynb" else path.read_bytes()
+    try:
+        tree = ast.parse(source, filename = str(path))
     except (SyntaxError, ValueError, MemoryError, RecursionError) as error:
+        if path.suffix == ".ipynb":
+            # A notebook mid-edit need not parse as one module; failing the build on it would be noise.
+            return []
         # Unparsed is unchecked, and reporting it clean is the bypass this gate exists to avoid.
         raise SystemExit(f"{relative}: could not be parsed ({error.__class__.__name__})")
     found = []
@@ -410,10 +437,10 @@ def collect(targets: list) -> list:
     seen = set()
     for target in targets:
         root = REPO_ROOT / target
-        if root.is_file() and root.suffix == ".py":
+        if root.is_file() and root.suffix in (".py", ".ipynb"):
             paths = [root]
         elif root.is_dir():
-            paths = sorted(root.rglob("*.py"))
+            paths = sorted(q for suffix in ("*.py", "*.ipynb") for q in root.rglob(suffix))
         else:
             raise SystemExit(
                 f"{target}: scan target does not exist, so nothing under it was checked"

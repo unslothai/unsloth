@@ -61,6 +61,11 @@ REPORTED = {
         "import importlib.machinery\ndef f(p):\n    importlib.machinery.SourceFileLoader('x', p)\n",
         ("dynamic-import", "SourceFileLoader"),
     ),
+    "a computed path into get_class_in_module": (
+        "from transformers.dynamic_module_utils import get_class_in_module\n"
+        "def f(p):\n    get_class_in_module('Model', p)\n",
+        ("dynamic-import", "get_class_in_module"),
+    ),
     "trust_remote_code default": (
         "def load(name, trust_remote_code = True):\n    pass\n",
         ("trust-remote-code", "default"),
@@ -257,6 +262,22 @@ def test_overlapping_paths_scan_a_file_once():
     target = "unsloth_zoo" if (module.REPO_ROOT / "unsloth_zoo").is_dir() else "unsloth/models"
     once = module.collect([target])
     assert module.collect([target, target]) == once
+
+
+def test_notebook_code_cells_are_scanned(tmp_path):
+    notebook = tmp_path / "sample.ipynb"
+    cells = [
+        {
+            "cell_type": "code",
+            "source": ["!pip install x\n", "import pickle\n", "pickle.loads(b)\n"],
+        },
+        {"cell_type": "markdown", "source": ["pickle.loads(b)"]},
+    ]
+    notebook.write_text(json.dumps({"cells": cells}), encoding = "utf-8")
+    hits = _module().scan_file(notebook, "sample.ipynb")
+    assert [(h["rule"], h["sink"], h["line"]) for h in hits] == [
+        ("unsafe-deserialize", "pickle.loads", 3)
+    ]
 
 
 def test_every_baseline_entry_is_reviewed():
