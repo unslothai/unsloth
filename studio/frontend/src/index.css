@@ -2306,7 +2306,7 @@ html[data-chat-font] .aui-root {
 	}
 
 	.sidebar-row-action {
-		@apply absolute top-0 bottom-0 right-0 inline-flex cursor-pointer items-center justify-end pl-2 pr-1.5 opacity-0 pointer-events-none outline-none;
+		@apply absolute top-0 bottom-0 right-0 inline-flex cursor-pointer items-center justify-end pl-2 pr-0.75 opacity-0 pointer-events-none outline-none;
 	}
 	@media (pointer: coarse) {
 		/* Chat and project rows reserve touch padding (#7276); other rows stay hover-revealed to avoid clipped labels. */
@@ -2362,17 +2362,17 @@ html[data-chat-font] .aui-root {
 	.sidebar-row-action.is-disclosure-open {
 		@apply opacity-100 pointer-events-auto;
 	}
-	/* The pin sits just left of the "…" options button, and the 14px trough
+	/* The pin sits just left of the "…" options button, and the 11px trough
 	   between their ~16px icons is the two paddings that face each other: the
-	   pin's pr-1.5 and the options button's pl-2. Drop those, and the pin's
-	   right edge lands exactly on the options button's left edge (30px = its
-	   pr-1.5 plus a size-6 glyph). Closing the gap by moving the pin instead
+	   pin's pr-0.75 and the options button's pl-2. Drop those, and the pin's
+	   right edge lands exactly on the options button's left edge (27px = its
+	   pr-0.75 plus a size-6 glyph). Closing the gap by moving the pin instead
 	   would slide it under that pl-2, and the options button, later in the DOM,
 	   would take the clicks over the pin's own glyph. What is left of the pin's
-	   own padding-right is the whole gap: the glyph boxes meet at 30px, so 2px
+	   own padding-right is the whole gap: the glyph boxes meet at 27px, so 2px
 	   here is 2px between them and 10px between the drawn icons. */
 	.sidebar-row-action.is-unpin-action {
-		right: calc(1.875rem * var(--ui-space-scale, 1));
+		right: calc(1.6875rem * var(--ui-space-scale, 1));
 		padding-right: calc(0.125rem * var(--ui-space-scale, 1));
 		/* The base pl-2 faces the options button, which is what opens the gap between the two
 		   icons. On the pin there is nothing to its left but the title, so that padding is
@@ -2408,23 +2408,23 @@ html[data-chat-font] .aui-root {
 	}
 
 	/* pl: the list's px-1.5 plus a row's pl-3 = 18px, so labels start where row content does.
-	   pr-3, not pr-4: header actions end where a hovered row's "…" does (right-0
-	   + pr-1.5 inside a pill the list inset by px-1.5 = 12px). The desktop
+	   pr 9px: header actions end where a hovered row's "…" does (right-0
+	   + pr-0.75 inside a pill the list inset by px-1.5 = 9px). The desktop
 	   titlebar insets by 5px, so those headers override this in app-sidebar.tsx. */
 	.sidebar-sticky-label {
-		@apply rounded-none bg-sidebar pt-0 pb-[calc(8px*var(--ui-space-scale,1))] pl-[calc(18px*var(--ui-space-scale,1))] pr-3 text-ui-14! leading-ui-17 font-medium normal-case focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
+		@apply rounded-none bg-sidebar pt-0 pb-[calc(8px*var(--ui-space-scale,1))] pl-[calc(18px*var(--ui-space-scale,1))] pr-[calc(9px*var(--ui-space-scale,1))] text-ui-14! leading-ui-17 font-medium normal-case focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
 		/* Muted section-header gray, matching Gemini's "Notebooks"/"Recents".
 		   Lightened from #5f6368 so the label reads as a header, clearly
 		   lighter than the near-black nav items. Follows the contrast slider. */
 		color: color-mix(in oklab, #80868b, var(--contrast-panel-target, var(--contrast-target, transparent)) var(--contrast-text-mix, 0%));
 		letter-spacing: 0;
 	}
-	/* These compound selectors must beat the base label's pr-3 declaration.
+	/* These compound selectors must beat the base label's pr declaration.
 	   Tailwind emits utility classes before this components block, so putting
-	   pr-[calc(11px*var(--ui-space-scale,1))]/pr-[calc(13px*var(--ui-space-scale,1))] on the element would lose the cascade. */
+	   pr-[calc(8px*var(--ui-space-scale,1))] on the element would lose the cascade. */
 	.sidebar-sticky-label.sidebar-sticky-label-desktop {
 		padding-left: calc(17px * var(--ui-space-scale, 1));
-		padding-right: calc(11px * var(--ui-space-scale, 1));
+		padding-right: calc(8px * var(--ui-space-scale, 1));
 	}
 	.sidebar-sticky-label-following {
 		@apply pt-[calc(21px*var(--ui-space-scale,1))];
@@ -3209,13 +3209,18 @@ html[data-chat-font] .aui-root {
 	/* Fixed-width icon slot so every pill's icon occupies the same space and
 	   the labels line up on an even rhythm, regardless of icon size. */
 	.composer-pill-glyph {
-		@apply relative inline-flex w-[var(--ui-icon-size)] shrink-0 items-center justify-center transition-opacity;
+		@apply inline-grid w-[var(--ui-icon-size)] shrink-0 place-items-center transition-opacity;
+	}
+	/* Icon and X share one cell. Not relative + absolute: a positioned slot next to the
+	   spinning plus got its own WebKit layer and jumped a pixel each spin. */
+	.composer-pill-glyph > * {
+		grid-area: 1 / 1;
 	}
 
 	/* On hover the icon swaps for an X inside a soft circle (ChatGPT-style),
 	   filling the icon slot so every pill's X is identical and centered. */
 	.composer-pill-x {
-		@apply pointer-events-none absolute inset-0 m-auto size-[var(--ui-icon-size)] rounded-full bg-primary/15 p-[calc(3px*var(--ui-space-scale,1))] opacity-0 transition-opacity dark:bg-[rgb(255_255_255_/_calc(0.14*var(--contrast-wash-gain,1)))];
+		@apply pointer-events-none size-[var(--ui-icon-size)] rounded-full bg-primary/15 p-[calc(3px*var(--ui-space-scale,1))] opacity-0 transition-opacity dark:bg-[rgb(255_255_255_/_calc(0.14*var(--contrast-wash-gain,1)))];
 	}
 
 	/* Hovering an active pill swaps the icon for an X (click to turn off). */
@@ -4750,23 +4755,70 @@ html[data-chat-font] .aui-root {
 }
 
 .sidebar-row-ghost {
+	--row-ghost-surface: var(--sidebar);
 	position: fixed;
 	top: 0;
 	z-index: 60;
 	display: flex;
 	align-items: center;
 	border-radius: 10px;
-	background: var(--sidebar-accent);
-	box-shadow:
-		0 0 0 1px color-mix(in oklab, var(--foreground) 8%, transparent),
-		0 8px 24px -8px rgb(0 0 0 / 0.35);
 	pointer-events: none;
 	will-change: transform;
+}
+
+.sidebar-section-ghost {
+	--row-ghost-surface: var(--sidebar);
+	display: flex;
+	align-items: center;
+	border-radius: 10px;
+	will-change: transform;
+}
+
+/* A carried row or header: faintly frosted, a shade darker than its list, on a hairline. */
+:is(.sidebar-row-ghost, .sidebar-section-ghost, .model-picker-row-ghost) {
+	background: color-mix(in oklab, color-mix(in oklab, var(--row-ghost-surface), black 4%) 62%, transparent);
+	-webkit-backdrop-filter: blur(0.5px) saturate(1.05);
+	backdrop-filter: blur(0.5px) saturate(1.05);
+	box-shadow:
+		0 0 0 1px rgb(0 0 0 / 0.06),
+		0 4px 12px -4px rgb(0 0 0 / 0.12);
+}
+
+.dark :is(.sidebar-row-ghost, .sidebar-section-ghost, .model-picker-row-ghost) {
+	background: color-mix(in oklab, color-mix(in oklab, var(--row-ghost-surface), black 22%) 62%, transparent);
+	box-shadow:
+		0 0 0 1px rgb(255 255 255 / 0.045),
+		0 6px 16px -6px rgb(0 0 0 / 0.5);
 }
 
 .sidebar-section-ghost > *,
 .sidebar-row-ghost * {
 	pointer-events: none;
+}
+
+/* A Pinned row carried in the model picker (use-pinned-row-drag.ts). */
+.model-picker-row-ghost {
+	--row-ghost-surface: var(--popover);
+	position: fixed;
+	top: 0;
+	z-index: 60;
+	display: flex;
+	align-items: center;
+	pointer-events: none;
+	will-change: transform;
+}
+
+.model-picker-row-ghost * {
+	pointer-events: none;
+}
+
+/* The row fills the pill, which paints the tint. Its margin stays behind: the pill was sized
+   without it, so a Connected row's ml-4 would push the copy off its own pill. */
+.model-picker-row-ghost > * {
+	width: 100%;
+	height: 100%;
+	margin: 0;
+	background: transparent;
 }
 
 /* The drop cue under a carried row's copy, drawn again above it (use-sidebar-drag.ts). */
@@ -4778,7 +4830,7 @@ html[data-chat-font] .aui-root {
 	pointer-events: none;
 }
 
-/* A row's copy is its face as drawn, lit like a hovered row but never like the open chat. */
+/* A row's copy is its face as drawn, never lit like the open chat. */
 .sidebar-row-ghost > [data-sidebar="menu-button"] {
 	width: 100%;
 	height: 100%;
@@ -4958,11 +5010,11 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	margin-inline: var(--scroll-radius, 0px);
 }
 
-/* Firefox has no track to inset, so clip the box back to its radius. 1px out keeps a ring-1.
-   The clip also cuts an outer shadow: dialogs, which carry one, are watched and clipped only while
-   they overflow (lib/scroll-overflow.ts), and shadowed menus and panels scroll an inner viewport. */
+/* Firefox has no track to inset, so clip the box back to its radius. 1px out keeps a ring-1;
+   an outer shadow would be clipped, so surfaces with one scroll an inner viewport instead.
+   overflow-hidden has no scrollbar to clip: chat search and every CommandDialog keep their shadow. */
 @supports (-moz-appearance: none) {
-	:is(.scroll-rounded:not([data-overflow-watched]), .scroll-rounded[data-overflowing], .hub-readme-prose pre) {
+	:is(.scroll-rounded:not(.overflow-hidden), .hub-readme-prose pre) {
 		clip-path: inset(-1px round calc(var(--scroll-radius, 0px) + 1px));
 	}
 }

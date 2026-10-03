@@ -240,13 +240,14 @@ def test_wan_snap_video_size_16():
 
 
 def test_wan_generation_defaults():
-    # Both Wan families default to the pipeline's 50 steps / CFG 5.0.
-    assert default_video_generation_params(None, "Wan-AI/Wan2.2-TI2V-5B-Diffusers") == (50, 5.0)
-    assert default_video_generation_params(None, "Wan-AI/Wan2.2-T2V-A14B-Diffusers") == (50, 5.0)
+    # ComfyUI's templates: TI2V-5B 20 steps / CFG 5, T2V-A14B 20 steps / CFG 3.5 (Lightning LoRA off).
+    assert default_video_generation_params(None, "Wan-AI/Wan2.2-TI2V-5B-Diffusers") == (20, 5.0)
+    assert default_video_generation_params(None, "Wan-AI/Wan2.2-T2V-A14B-Diffusers") == (20, 3.5)
+    assert default_video_generation_params("wan2.2-14b") == (20, 3.5)
     # A GGUF filename carrying the family name still lands on the Wan defaults.
     assert default_video_generation_params(
         "wan2.2-ti2v-5b-Q4_K_M.gguf", "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
-    ) == (50, 5.0)
+    ) == (20, 5.0)
 
 
 def test_generation_defaults_fallback_honors_family():
@@ -256,7 +257,7 @@ def test_generation_defaults_fallback_honors_family():
         "/models/my-clip", "/models/my-clip", fallback = (50, 5.0)
     ) == (50, 5.0)
     # A recognised token still wins over the fallback.
-    assert default_video_generation_params("wan2.2-ti2v-5b", fallback = (8, 1.0)) == (50, 5.0)
+    assert default_video_generation_params("wan2.2-ti2v-5b", fallback = (8, 1.0)) == (20, 5.0)
 
 
 def test_generation_defaults_wan_is_segment_not_substring():
@@ -268,8 +269,8 @@ def test_generation_defaults_wan_is_segment_not_substring():
         "taiwan-clips.gguf", "user/taiwan-clips", fallback = (40, 4.0)
     ) == (40, 4.0)
     # Genuine Wan identifiers (segment-initial, with a version suffix or separator) still match.
-    assert default_video_generation_params("wan2.2-ti2v-5b-Q4_K_M.gguf") == (50, 5.0)
-    assert default_video_generation_params(None, "Wan-AI/Wan2.2-T2V-A14B") == (50, 5.0)
+    assert default_video_generation_params("wan2.2-ti2v-5b-Q4_K_M.gguf") == (20, 5.0)
+    assert default_video_generation_params(None, "Wan-AI/Wan2.2-T2V-A14B") == (20, 3.5)
     # An "ltxv" style name still resolves to LTX (trailing letters stay free).
     assert default_video_generation_params("ltxv-2.3-distilled") == (8, 1.0)
     assert default_video_generation_params("Lightricks/LTXV-2.3") == (40, 4.0)
@@ -332,10 +333,10 @@ def test_hv15_detection_and_flags():
 
 
 def test_hv15_generation_defaults():
-    # The community repacks ship a guider with guidance_scale 6.0 and the pipeline's own 50-step schedule.
+    # The community repacks ship a guider with guidance_scale 6.0; ComfyUI's template samples 20 steps.
     assert default_video_generation_params(
         None, "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v"
-    ) == (50, 6.0)
+    ) == (20, 6.0)
 
 
 def test_hv15_720p_checkpoints_never_route_to_the_480p_family():
