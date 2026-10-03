@@ -2396,6 +2396,8 @@ def refine_plan_from_loaded_weights(
             dit_room = min(max(room, 0), dit)
             if (
                 dit_room < dit
+                # torchao denoisers only: the slack was measured on the int8 route, not the dense eager table
+                and dense_mib is None
                 and (policy == OFFLOAD_STREAMING or stream_te)
                 and _resident_dit_fits(memory, dit, headroom, other)
             ):
