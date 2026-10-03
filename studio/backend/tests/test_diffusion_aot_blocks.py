@@ -141,6 +141,21 @@ def test_fingerprint_tracks_code_classes_and_weights_the_dropped_guards_covered(
     assert aot._code_fingerprint(block) != base
 
 
+def test_hook_check_sees_hooks_added_after_the_first_call():
+    reg = aot.Registry({"fullgraph": True})
+    block = Block()
+    assert reg._hook_free(block)
+    handle = block.fc2.register_forward_pre_hook(lambda m, a: None)
+    assert not reg._hook_free(block)
+    handle.remove()
+    assert reg._hook_free(block)
+    handle = torch.nn.modules.module.register_module_forward_hook(lambda m, i, o: None)
+    try:
+        assert not reg._hook_free(block)
+    finally:
+        handle.remove()
+
+
 class _Processor:
     def __call__(self, x):
         return x

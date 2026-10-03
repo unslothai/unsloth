@@ -173,19 +173,13 @@ def _global_state() -> list:
     ]
 
 
-def _hook_free(module: Any) -> bool:
-    """No hook anywhere in the block or registered globally: a serialised artifact would silently skip one."""
+def _hook_free_global() -> bool:
+    """No module hook registered globally: a serialised artifact would silently skip one (per-block hooks are checked
+    by ``Registry._hook_free``)."""
     import torch.nn.modules.module as mm
 
-    for name in ("_global_forward_hooks", "_global_forward_pre_hooks", "_global_backward_hooks",
-                 "_global_backward_pre_hooks"):
-        if getattr(mm, name, None):
-            return False
-    for m in module.modules():
-        for name in ("_forward_hooks", "_forward_pre_hooks", "_backward_hooks", "_backward_pre_hooks"):
-            if getattr(m, name, None):
-                return False
-    return True
+    return not any(getattr(mm, name, None) for name in ("_global_forward_hooks", "_global_forward_pre_hooks",
+                                                         "_global_backward_hooks", "_global_backward_pre_hooks"))
 
 
 def _capturing() -> bool:
@@ -336,6 +330,7 @@ class Registry:
         # Block classes aot_compile could not serialise: never retried (persisted, so a restart does not either).
         self.refused: set = set()
         self._fingerprints: "weakref.WeakKeyDictionary[Any, str]" = weakref.WeakKeyDictionary()
+        self._hook_dicts: "weakref.WeakKeyDictionary[Any, tuple]" = weakref.WeakKeyDictionary()
         self.stats: dict[str, Any] = {"hits": 0, "misses": 0, "loaded": 0, "load_s": 0.0, "saved": 0}
 
     # ---- loading -----------------------------------------------------------------------------------------------
@@ -381,7 +376,7 @@ class Registry:
             self.load()
         fns = self.entries.get(type(module).__name__)
         # Artifacts trace the class's forward with no hooks: an instance forward or a hook means the normal path.
-        if fns and "forward" not in vars(module) and _hook_free(module):
+        if fns and "forward" not in vars(module) and self._hook_free(module):
             state = _global_state()
             try:
                 code = self.fingerprint(module)
@@ -404,6 +399,17 @@ class Registry:
                 return out
         self.stats["misses"] += 1
         return inner(*args, **kwargs)
+
+    def _hook_free(self, module: Any) -> bool:
+        """No hook in the block or globally, checked on every call without walking the block: hooks are registered
+        into the same per-module dicts, so those are collected once per block instance and only tested for emptiness."""
+        dicts = self._hook_dicts.get(module)
+        if dicts is None:
+            names = ("_forward_hooks", "_forward_pre_hooks", "_backward_hooks", "_backward_pre_hooks")
+            dicts = self._hook_dicts[module] = tuple(
+                d for m in module.modules() for d in (getattr(m, n, None) for n in names) if d is not None
+            )
+        return not any(dicts) and _hook_free_global()
 
     def fingerprint(self, module: Any) -> str:
         """``_code_fingerprint`` once per block instance (a class patched after a block's first call is not seen)."""
@@ -429,7 +435,7 @@ class Registry:
         import torch
 
         try:
-            if _capturing() or not _plain_inputs((args, kwargs)) or not _hook_free(module):
+            if _capturing() or not _plain_inputs((args, kwargs)) or not self._hook_free(module):
                 return False, None
             key = _digest((type(module).__name__, _signature(args), _signature(kwargs)))
             state = _global_state()
