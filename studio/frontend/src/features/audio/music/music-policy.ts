@@ -9,6 +9,7 @@ import type {
   AudioSourceSelection,
 } from "../audio-run-request";
 import { sourceRefOf } from "../audio-run-request";
+import { MUSIC_EDIT_DEFAULT_STRENGTH } from "./music-edit-rules";
 import type {
   MusicCapabilities,
   MusicEditDraft,
@@ -315,8 +316,11 @@ export function buildMusicRunRequest(
       edit: {
         action,
         ranges: usesRanges ? edit.ranges : [],
+        // Send the value the slider shows; the runtime defaults (1.0) differ.
         strength:
-          action === "cover" || action === "restyle" ? edit.strength : null,
+          action === "cover" || action === "restyle"
+            ? (edit.strength ?? MUSIC_EDIT_DEFAULT_STRENGTH[action] ?? null)
+            : null,
         extend_s: action === "extend" ? edit.extendS : null,
       },
     },

@@ -39,6 +39,13 @@ def random_seed() -> int:
     return secrets.randbelow(_SEED_LIMIT)
 
 
+def take_seed(seed: Optional[int], index: int) -> Optional[int]:
+    """Seed of the ``index``-th sequential take; wraps so a valid seed never overflows the spec."""
+    if seed is None:
+        return None
+    return (seed + index) % _SEED_LIMIT if 0 <= seed < _SEED_LIMIT else seed + index
+
+
 def seconds_text(value: float) -> str:
     return f"{float(value):.3f}".rstrip("0").rstrip(".")
 
@@ -282,7 +289,9 @@ def edit_request(
         elif action == "cover":
             request_options["route"] = "cover"
             if strength is not None:
-                request_options["audio_cover_strength"] = float(strength)
+                # strength is how much to change; audio_cover_strength is the share of steps
+                # conditioned on the source (diffusion.cpp), so higher keeps more of it.
+                request_options["audio_cover_strength"] = 1.0 - float(strength)
         else:  # continue: ACE-Step's "complete" adds parts across the whole track.
             request_options["route"] = "complete"
             request_options["duration_seconds"] = float(duration_s or source_seconds)

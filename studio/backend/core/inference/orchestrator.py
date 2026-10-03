@@ -391,6 +391,7 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
         "audio_required_inputs": model_info.get("audio_required_inputs"),
         "audio_clone": model_info.get("audio_clone"),
         "audio_music": model_info.get("audio_music"),
+        "audio_cpp_backend": model_info.get("audio_cpp_backend"),
     }
 
 

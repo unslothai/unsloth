@@ -209,7 +209,7 @@ export function MusicEditInputs({
           onChange={(strength) => onChange({ strength })}
           displayValue={(draft.strength ?? defaultStrength).toFixed(2)}
           disabled={disabled}
-          info={`Lower keeps more of the original. Starts at ${defaultStrength}, the model's default.`}
+          info="Lower keeps more of the original."
         />
       ) : null}
 

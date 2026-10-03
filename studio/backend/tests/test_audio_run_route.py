@@ -805,15 +805,16 @@ def test_edit_refusals_need_the_source(stub):
     assert stub["backend"].calls == []
 
 
-def test_a_source_longer_than_four_minutes_is_refused(stub, monkeypatch):
+def test_a_source_longer_than_the_model_can_return_is_refused(stub, monkeypatch):
     stub["use"](STABLE_AUDIO, _music_info())
     sources = _alice_sources()
     real = audio_inputs.wav_info
-    monkeypatch.setattr(audio_inputs, "wav_info", lambda path: {**real(path), "duration_s": 241.0})
+    monkeypatch.setattr(audio_inputs, "wav_info", lambda path: {**real(path), "duration_s": 121.0})
     with _client(ALICE) as client:
         response = _edit(client, {"clip_id": sources["clip_id"]})
     assert response.status_code == 400
-    assert response.json()["detail"] == "Edit clips up to 4 minutes. Trim it first."
+    # Stable Audio Small returns at most ~120 s, so a longer edit would come back cut.
+    assert response.json()["detail"] == "Edit clips up to 2 minutes. Trim it first."
     assert stub["backend"].calls == []
 
 

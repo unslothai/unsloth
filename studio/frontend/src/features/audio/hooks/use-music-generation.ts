@@ -152,11 +152,13 @@ export function useMusicGeneration({
     selectionExpired(edit.source, Date.now());
   const editProblem =
     rule?.id === "edit"
-      ? sourceStatus.phase === "uploading"
+      ? sourceStatus.phase === "uploading" || sourceStatus.phase === "recording"
         ? "Waiting for the clip to finish uploading."
-        : sourceExpired
-          ? REFERENCE_EXPIRED_MESSAGE
-          : musicEditProblem(rule, edit, edit.source?.durationS ?? null)
+        : sourceStatus.phase === "error"
+          ? sourceStatus.message
+          : sourceExpired
+            ? REFERENCE_EXPIRED_MESSAGE
+            : musicEditProblem(rule, edit, edit.source?.durationS ?? null)
       : null;
   const pageProblem = rule
     ? musicBlocker({ rule, description, lyrics, song, sfx, edit, editProblem })

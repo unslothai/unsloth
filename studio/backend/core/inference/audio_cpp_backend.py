@@ -677,7 +677,7 @@ class AudioCppBackend:
                         lyrics = "" if mode.lyrics == "unused" else (music.get("lyrics") or ""),
                         seconds = seconds,
                         options = options,
-                        seed = None if seed is None else seed + index,
+                        seed = cm.take_seed(seed, index),
                         instrumental = instrumental or mode.instrumental == "always",
                         batch = batch,
                     )
@@ -686,7 +686,11 @@ class AudioCppBackend:
         except cm.MusicRequestError as exc:
             raise RuntimeError(str(exc)) from exc
         server = self._server_for_batch(model, batch, cancel_event)
-        timeout = cm.timeout_seconds(model.family, seconds, variations, server.backend == "cpu")
+        # The route sizes the wait from the full work (extend, continue length); the orchestrator
+        # outlasts that same budget.
+        timeout = float(music.get("timeout_s") or 0) or cm.timeout_seconds(
+            model.family, seconds, variations, server.backend == "cpu"
+        )
         outputs: list[tuple[str, bytes, Optional[int]]] = []
         try:
             for index, request in enumerate(requests):
@@ -697,7 +701,7 @@ class AudioCppBackend:
                     timeout = timeout,
                     cancel_event = cancel_event,
                 )
-                take_seed = None if seed is None else seed + index
+                take_seed = cm.take_seed(seed, index)
                 for output_id, wav in task_outputs(ctype, data):
                     name = output_id if len(requests) == 1 else f"take_{index}"
                     outputs.append((name, wav, take_seed))

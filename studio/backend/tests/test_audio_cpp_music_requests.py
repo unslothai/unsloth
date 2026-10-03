@@ -296,6 +296,12 @@ def test_status_reports_the_music_studio_rules():
     assert stable["modes"][1]["duration"]["default"] == 8.0
     assert stable["modes"][2]["actions"] == ["inpaint", "restyle"]
     assert stable["modes"][2]["max_ranges"] == 8
+    # Medium keeps Studio's 240 s; Small cannot return more than its ~120 s window.
+    assert stable["modes"][0]["duration"]["max"] == 240.0
+    assert stable["modes"][2]["max_source_s"] == 240.0
+    small = cm.music_rules(_model("stable_audio", "Stable-Audio-3-Small-Music-GGUF", strict = False))
+    assert small["modes"][0]["duration"]["max"] == 120.0
+    assert small["modes"][1]["max_source_s"] == 120.0
     assert cm.music_rules(_model("controlfoley"))["modes"][0]["variations"] == {
         "max": 4,
         "how": "sequential",
@@ -456,6 +462,10 @@ def test_sequential_variations_call_once_per_take_with_consecutive_seeds(tmp_pat
         ("take_2", 42, "02.wav"),
     ]
     assert all((run / m["file"]).is_file() for m in manifest)
+    # The top valid seed wraps instead of passing MiDashengLM's 2**31 - 1 limit.
+    top = _backend(_model("midashenglm_gen"))
+    _run(top, mode = "sfx", text = "rain", variations = 2, seed = 2**31 - 2)
+    assert [_request(top, i)["seed"] for i in range(2)] == [str(2**31 - 2), "0"]
 
 
 def test_a_fixed_seed_family_gets_a_recorded_random_seed(tmp_path):
@@ -477,6 +487,10 @@ def test_the_wait_grows_with_the_audio_asked_for_and_is_capped():
     b = _backend(_model("yue2"))
     _run(b, text = "rock", lyrics = "x", duration_s = 60)
     assert b._server.calls[0][2]["timeout"] == t(60)
+    # The route's budget covers work the backend cannot see (extend, continue length).
+    b = _backend(_model("yue2"))
+    _run(b, text = "rock", lyrics = "x", duration_s = 60, timeout_s = 1234.0)
+    assert b._server.calls[0][2]["timeout"] == 1234.0
 
 
 @pytest.fixture
@@ -518,8 +532,9 @@ def test_ace_step_extend_cover_and_continue(source):
         "repainting_start": 10.0,
         "repainting_end": 22.0,
     }
-    _run(b, mode = "edit", text = "jazz", source = source, edit = {"action": "cover", "strength": 0.5})
-    assert _request(b, 1)["options"] == {"route": "cover", "audio_cover_strength": 0.5}
+    # strength is how much to change, so a light cover keeps most source-conditioned steps.
+    _run(b, mode = "edit", text = "jazz", source = source, edit = {"action": "cover", "strength": 0.25})
+    assert _request(b, 1)["options"] == {"route": "cover", "audio_cover_strength": 0.75}
     _run(
         b, mode = "edit", text = "add drums", source = source, duration_s = 30, edit = {"action": "continue"}
     )
@@ -611,3 +626,6 @@ def test_legacy_music_never_asks_past_the_page_maximum():
     b = _backend(_model("midashenglm_gen"))
     b.generate_audio_response("relaxing piano", instructions = "relaxing piano", max_new_tokens = 2048)
     assert _request(b)["options"]["duration_sec"] == 80.0
+    medium = _backend(_model("stable_audio", "Stable-Audio-3-Medium-GGUF", strict = False))
+    medium.generate_audio_response("ambient", instructions = "ambient", max_new_tokens = 4500)
+    assert _request(medium)["duration_seconds"] == 180.0

@@ -795,6 +795,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "audio_required_inputs",
                         "audio_clone",
                         "audio_music",
+                        "audio_cpp_backend",
                     )
                     if k in _entry
                 }

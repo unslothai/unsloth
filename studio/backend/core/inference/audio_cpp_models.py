@@ -151,7 +151,10 @@ class MusicSpec:
 
 _STABLE_AUDIO_SONG = MusicMode("song", duration = (1.0, 120.0, 30.0), variations = "batch")
 _STABLE_AUDIO_SFX = MusicMode("sfx", duration = (1.0, 120.0, 8.0), variations = "batch")
-_STABLE_AUDIO_EDIT = MusicMode("edit", actions = ("inpaint", "restyle"), max_ranges = 8)
+# Small's runtime window is ~120.7 s (sample_size / sample_rate): a longer edit comes back cut.
+_STABLE_AUDIO_EDIT = MusicMode(
+    "edit", actions = ("inpaint", "restyle"), max_ranges = 8, max_source_s = 120.0
+)
 MUSIC_SPECS: dict[str, MusicSpec] = {
     "ace_step": MusicSpec(
         (
@@ -219,7 +222,15 @@ def _stable_audio_music(names: Iterable[str]) -> MusicSpec:
     if re.search(r"(^|[-_ /.])sfx([-_ /.]|$)", text):
         return replace(spec, modes = (_STABLE_AUDIO_SFX,), edit_rate = None)
     if "medium" in text:
-        return replace(spec, modes = (_STABLE_AUDIO_SONG, _STABLE_AUDIO_SFX, _STABLE_AUDIO_EDIT))
+        # Medium generates far past Small's window; keep Studio's 240 s cap.
+        return replace(
+            spec,
+            modes = (
+                replace(_STABLE_AUDIO_SONG, duration = (1.0, 240.0, 30.0)),
+                replace(_STABLE_AUDIO_SFX, duration = (1.0, 240.0, 8.0)),
+                replace(_STABLE_AUDIO_EDIT, max_source_s = 240.0),
+            ),
+        )
     return spec
 
 
