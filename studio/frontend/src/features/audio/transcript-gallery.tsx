@@ -29,10 +29,7 @@ import {
 } from "react";
 import { archiveTranscript, deleteTranscript, listTranscripts } from "./api";
 import { getTranscript } from "./transcribe-api";
-import {
-  downloadTranscript,
-  downloadTranscriptFile,
-} from "./transcript-download";
+import { downloadTranscriptFile } from "./transcript-download";
 import {
   TRANSCRIPT_EXPORT_FORMATS,
   type TranscriptExportFormat,
@@ -47,10 +44,6 @@ async function downloadRecord(
   record: TranscriptRecord,
   format: TranscriptExportFormat,
 ): Promise<void> {
-  if (format === "txt") {
-    await downloadTranscript(record.text, record.title);
-    return;
-  }
   let full = record;
   if ((record.segment_count ?? 0) > 0) {
     try {

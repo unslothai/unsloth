@@ -343,9 +343,11 @@ test("leaving Audio clears an unresolved microphone permission wait", () => {
   // The card unmounts with the page; a permission prompt that resolves afterwards is released.
   assert.match(
     audioSourceCard,
-    /if \(unmounted\.current\) \{\s*for \(const track of stream\.getTracks\(\)\) track\.stop\(\);\s*return;\s*\}/,
+    /if \(unmounted\.current \|\| !activeRef\.current\) \{\s*for \(const track of stream\.getTracks\(\)\) track\.stop\(\);\s*return;\s*\}/,
   );
   assert.match(audioSourceCard, /return \(\) => \{\s*unmounted\.current = true;/);
+  // The page stays mounted when hidden, so hiding it must end a recording too.
+  assert.match(audioSourceCard, /activeRef\.current = active;\s*if \(!active\) stopRecording\(\);/);
 });
 
 test("routed picks wait in the URL until Audio is idle", () => {

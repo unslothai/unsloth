@@ -25,10 +25,3 @@ export async function downloadTranscriptFile(
     return false;
   }
 }
-
-export function downloadTranscript(
-  text: string,
-  title: string,
-): Promise<boolean> {
-  return downloadTranscriptFile(text, title, "txt", "text/plain;charset=utf-8");
-}

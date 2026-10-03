@@ -45,6 +45,9 @@ import { formatSeconds } from "./waveform-peaks";
 /** The gallery clips an input card offers under From history. Provided by the page. */
 const AudioHistoryContext = createContext<readonly AudioGalleryClip[]>([]);
 export const AudioHistoryProvider = AudioHistoryContext.Provider;
+// False while the persistently mounted Audio page is hidden, so no card keeps the mic.
+const AudioActiveContext = createContext(true);
+export const AudioActiveProvider = AudioActiveContext.Provider;
 
 type SourceTab = "upload" | "record" | "history" | "voice";
 
@@ -109,7 +112,8 @@ export function AudioSourceInput({
   expiredMessage?: string;
   usesFirstSeconds?: number | null;
 }) {
-  const source = useAudioSource({ value, onChange, maxRecordSeconds });
+  const active = useContext(AudioActiveContext);
+  const source = useAudioSource({ value, onChange, maxRecordSeconds, active });
   const history = useContext(AudioHistoryContext);
   const [tab, setTab] = useState<SourceTab>("upload");
   const [dragging, setDragging] = useState(false);

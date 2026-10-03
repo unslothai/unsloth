@@ -62,7 +62,10 @@ import { TranscribeOutput } from "./pages/transcribe-output";
 import { TranscribeFooter, TranscribeRail } from "./pages/transcribe-page";
 import { AUDIO_CPP_REPO, audioCppModelFor } from "./audio-cpp-catalog";
 import { selectionExpired } from "./audio-run-request";
-import type { AudioSourceInputHandle } from "./components/audio-source-input";
+import {
+  AudioActiveProvider,
+  type AudioSourceInputHandle,
+} from "./components/audio-source-input";
 import type { AudioSourceStatus } from "./hooks/audio-source-state";
 import { useTranscribeCapabilities } from "./hooks/use-transcribe-capabilities";
 import { useAudioTranscribeStore } from "./stores/audio-transcribe-store";
@@ -959,380 +962,382 @@ export function AudioPage({
           : "No transcription model selected.";
 
   return (
-    <div
-      {...{ [MEDIA_RAIL_ROOT_ATTR]: "" }}
-      style={railRootStyle}
-      ref={pageRootRef}
-      className="@container relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]"
-    >
-      {/* Page-level, so the handle covers the divider through the header too. */}
-      <MediaRailResizeHandle kind="audio" placement="page" className="hidden @[50rem]:block" />
-      {/* Portals to body, and this page stays mounted off-route, so gate it like the composer. */}
-      {active && <GuidedTour {...tour.tourProps} />}
-      {/* Keep the tabs centered over the preview at every width. The model rail holds at its
-          (draggable) width when space permits and shrinks only to preserve the controls. */}
-      <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,var(--media-rail-width,calc(408px*var(--ui-space-scale,1))))_minmax(13rem,1fr)] @max-[30rem]:grid-cols-[minmax(0,1fr)_auto]">
-        <div
-          className={cn(
-            "pointer-events-none flex h-full min-w-0 items-start overflow-hidden @[50rem]:border-r @[50rem]:border-border/60",
-            isMobileShell
-            ? "pl-12"
-            : // Collapsed desktop sidebar: clear the titlebar buttons, as Chat does.
-              !pinned && isTauri
-              ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
-              : "pl-[var(--studio-media-header-left-inset,1.5rem)]",
-          )}
-        >
-          {/* A long resident model name must yield to the mode pill instead of painting over it. */}
-          <div className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2 overflow-hidden pt-[var(--studio-chat-header-padding-top,11px)]">
-            <ModelSelector
-              triggerDataTour="audio-model"
-              models={selectorModels}
-              additionalOnDeviceModels={
-                mode === "transcribe"
-                  ? sttOnDeviceModels
-                  : ttsWorkflow === "speak"
-                    ? trainedTtsModels
-                    : []
-              }
-              rowFilter={selectorRowFilter}
-              loadedModelIdOverride={
-                mode === "transcribe" && sttReady
-                  ? (selectedSttRepo ?? undefined)
-                  : undefined
-              }
-              loaded={
-                mode === "transcribe"
-                  ? sttReady
-                  : showLastPageModel
-                    ? false
-                    : undefined
-              }
-              value={selectorValue}
-              onValueChange={handleModelSelect}
-              onEject={
-                busy === null && selectorValue && !showLastPageModel
-                  ? handleEject
-                  : undefined
-              }
-              variant="ghost"
-              className="!h-[calc(34px*var(--ui-space-scale,1))] max-w-full gap-1 overflow-hidden pl-3 pr-1 @[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"
-              triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"
-              task={HUB_TASKS_BY_MODE[mode]}
-              catalog={AUDIO_CATALOG}
-              // TTS/ASR come from the checkpoint's own tokenizer, not a curated recipe, so any publisher's
-              // audio repo loads here.
-              communityModelPolicy="search-only"
-              hubCapability="audio"
-              placeholder="Select audio model"
-              open={active && selectorOpen}
-              onOpenChange={(o) => setSelectorOpen(active && o)}
-            />
-          </div>
-        </div>
-        <div className="grid h-full min-w-0 grid-cols-[1fr_auto_auto] gap-2 @[50rem]:grid-cols-[1fr_auto_1fr] @[50rem]:gap-0">
-          <div className="pointer-events-auto col-start-2 justify-self-end pt-[var(--studio-chat-header-padding-top,11px)] @[50rem]:justify-self-center">
-            {workflowTab.createTrain ? (
-              <PillTabs
-                ariaLabel="Page mode"
-                // Always "create": Train navigates away, so the pill never latches.
-                value="create"
-                onValueChange={(v) => {
-                  if (v !== "train") return;
-                  toast.info(
-                    "Audio fine-tuning lives on the Train page. Unsloth trains TTS and STT models there. Pick an audio model and appropriate dataset.",
-                    { duration: 8000 },
-                  );
-                  void navigateSelf({ to: "/studio" });
-                }}
-                fit={true}
-                className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-3 @[68rem]:[&>button]:px-11 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>span]:sr-only"
-                tabs={[
-                  {
-                    value: "create",
-                    label: "Create",
-                    icon: (
-                      <HugeiconsIcon icon={SparklesIcon} className="size-3.5" />
-                    ),
-                  },
-                  {
-                    value: "train",
-                    label: "Train",
-                    icon: (
-                      <HugeiconsIcon
-                        icon={TestTubeOutlineIcon}
-                        className="size-3.5"
-                      />
-                    ),
-                  },
-                ]}
-              />
-            ) : null}
-          </div>
-          <div className="pointer-events-none col-start-3 flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
-            <div className="pointer-events-auto flex min-w-0 items-center gap-2">
-              <LibraryPageLink
-                tab="audio"
-                labelClassName="hidden @[50rem]:inline"
-                arrowClassName="hidden @[50rem]:block"
-              />
-            </div>
-          </div>
-        </div>
-      </div>
-      {/* Below 50rem the panes stack and the page scrolls as one column, matching Images and Video:
-          side by side, the rail plus a usable preview needs more width. */}
-      <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden @[50rem]:flex-row @[50rem]:overflow-hidden">
-        <div
-          data-tour="audio-settings"
-          className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[min(var(--media-rail-width,calc(408px*var(--ui-space-scale,1))),calc(100%-13rem))] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0"
-        >
+    <AudioActiveProvider value={active}>
+      <div
+        {...{ [MEDIA_RAIL_ROOT_ATTR]: "" }}
+        style={railRootStyle}
+        ref={pageRootRef}
+        className="@container relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]"
+      >
+        {/* Page-level, so the handle covers the divider through the header too. */}
+        <MediaRailResizeHandle kind="audio" placement="page" className="hidden @[50rem]:block" />
+        {/* Portals to body, and this page stays mounted off-route, so gate it like the composer. */}
+        {active && <GuidedTour {...tour.tourProps} />}
+        {/* Keep the tabs centered over the preview at every width. The model rail holds at its
+            (draggable) width when space permits and shrinks only to preserve the controls. */}
+        <div className="pointer-events-none relative z-40 grid h-[calc(48px*var(--ui-space-scale,1))] shrink-0 grid-cols-[minmax(0,var(--media-rail-width,calc(408px*var(--ui-space-scale,1))))_minmax(13rem,1fr)] @max-[30rem]:grid-cols-[minmax(0,1fr)_auto]">
           <div
-            ref={attachSettingsScroll}
-            onScroll={onSettingsScroll}
             className={cn(
-              "hover-scrollbar flex min-h-0 flex-1 flex-col gap-4 px-10 max-sm:px-5 pt-9 pb-6 @[50rem]:overflow-y-auto",
-              mode === "speak"
-                ? "panel-scroll-fade-action"
-                : "panel-scroll-fade",
-              settingsFadeClass,
+              "pointer-events-none flex h-full min-w-0 items-start overflow-hidden @[50rem]:border-r @[50rem]:border-border/60",
+              isMobileShell
+              ? "pl-12"
+              : // Collapsed desktop sidebar: clear the titlebar buttons, as Chat does.
+                !pinned && isTauri
+                ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
+                : "pl-[var(--studio-media-header-left-inset,1.5rem)]",
             )}
           >
-            {/* Same heading treatment as the Images and Video Create panes, so the media panes stay level (#7986). */}
-            <div className="mb-2 grid gap-1.5">
-              <h2 className="flex items-center gap-2 font-heading text-xl font-medium leading-none text-foreground">
-                <HugeiconsIcon
-                  icon={workflowTab.icon}
-                  className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0"
-                />
-                {workflowTab.heading}
-              </h2>
-              <p className="text-ui-11p5 leading-snug text-muted-foreground">
-                {workflowTab.hint}
-              </p>
-              {/* The always-on capability line: which task the selected model actually does. */}
-              <p className="text-xs leading-snug text-muted-foreground">
-                {capabilityLine}
-              </p>
-            </div>
-
-            <PillTabs
-              dataTour="audio-mode"
-              ariaLabel="Audio workflow"
-              value={pageWorkflow}
-              onValueChange={(v) => {
-                if (isAudioWorkflowId(v)) transitionWorkflow(v);
-              }}
-              fit={true}
-              className="h-[calc(30px*var(--ui-space-scale,1))] self-start [&>button]:h-[calc(30px*var(--ui-space-scale,1))] [&>button]:px-3.5"
-              tabs={AUDIO_WORKFLOWS.map(({ id, label }) => ({
-                value: id,
-                label,
-              }))}
-            />
-
-            {mode === "speak" ? (
-              (() => {
-                const railProps = {
-                  prompt,
-                  setPrompt,
-                  toolPanels: (
-                    <AudioToolPanels
-                      workflow={ttsWorkflow === "music" ? "music" : "speak"}
-                      ctx={toolContext}
-                      values={toolValues}
-                      onChange={handleToolValueChange}
-                      specs={audioOptionSpecs}
-                      disabled={busy === "generating"}
-                      core={{ text: prompt }}
-                    />
-                  ),
-                  audioDevice,
-                  busy,
-                  status,
-                  setAudioDeviceState,
-                  ttsLoaded,
-                  handleEject,
-                  samplingControls,
-                  audioOptionSpecs,
-                  claimedOptions,
-                  advancedOpen,
-                  setAdvancedOpen,
-                  temperature,
-                  mossFrameLimit,
-                  handleTemperatureChange,
-                  musicSeconds,
-                  musicRange,
-                  setMinimaxMaxSeconds,
-                  cudaMusicGeneration,
-                  mossMaxSeconds,
-                  mossMaxSecondsLimit,
-                  setMossMaxSeconds,
-                  maxTokens,
-                  setMaxTokens,
-                  audioOptionValues,
-                  handleAudioOptionChange,
-                  handleAudioOptionsReset,
-                };
-                return ttsWorkflow === "music" ? (
-                  <MusicRail {...railProps} />
-                ) : ttsWorkflow === "clone" ? (
-                  <CloneRail {...railProps} clone={clone} historyClips={clips} />
-                ) : (
-                  <SpeakRail {...railProps} />
-                );
-              })()
-            ) : (
-              <TranscribeRail
-                historyClips={clips}
-                disabled={busy === "transcribing"}
-                sourceHandle={transcribeSourceHandle}
-                onSourceStatusChange={setTranscribeSourceStatus}
-                switches={transcribeOptions}
-                languages={transcribeLanguages}
-                onUseSpeakersModel={useSpeakersModel}
+            {/* A long resident model name must yield to the mode pill instead of painting over it. */}
+            <div className="pointer-events-auto flex min-w-0 max-w-full items-center gap-2 overflow-hidden pt-[var(--studio-chat-header-padding-top,11px)]">
+              <ModelSelector
+                triggerDataTour="audio-model"
+                models={selectorModels}
+                additionalOnDeviceModels={
+                  mode === "transcribe"
+                    ? sttOnDeviceModels
+                    : ttsWorkflow === "speak"
+                      ? trainedTtsModels
+                      : []
+                }
+                rowFilter={selectorRowFilter}
+                loadedModelIdOverride={
+                  mode === "transcribe" && sttReady
+                    ? (selectedSttRepo ?? undefined)
+                    : undefined
+                }
+                loaded={
+                  mode === "transcribe"
+                    ? sttReady
+                    : showLastPageModel
+                      ? false
+                      : undefined
+                }
+                value={selectorValue}
+                onValueChange={handleModelSelect}
+                onEject={
+                  busy === null && selectorValue && !showLastPageModel
+                    ? handleEject
+                    : undefined
+                }
+                variant="ghost"
+                className="!h-[calc(34px*var(--ui-space-scale,1))] max-w-full gap-1 overflow-hidden pl-3 pr-1 @[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"
+                triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"
+                task={HUB_TASKS_BY_MODE[mode]}
+                catalog={AUDIO_CATALOG}
+                // TTS/ASR come from the checkpoint's own tokenizer, not a curated recipe, so any publisher's
+                // audio repo loads here.
+                communityModelPolicy="search-only"
+                hubCapability="audio"
+                placeholder="Select audio model"
+                open={active && selectorOpen}
+                onOpenChange={(o) => setSelectorOpen(active && o)}
               />
-            )}
+            </div>
           </div>
-          {mode === "speak" ? (
-            /* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */
-            <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4">
-              {ttsWorkflow === "clone" ? (
-                <CloneFooter
-                  busy={busy}
-                  generationPresentation={generationPresentation}
-                  handleStopGeneration={handleStopGeneration}
-                  ttsLoaded={pageModelLoaded}
-                  blocker={generateBlocker}
-                  shortcutLabel={shortcutLabel}
-                  error={generateFailure}
-                  elapsedSeconds={elapsedSeconds}
-                  clone={clone}
+          <div className="grid h-full min-w-0 grid-cols-[1fr_auto_auto] gap-2 @[50rem]:grid-cols-[1fr_auto_1fr] @[50rem]:gap-0">
+            <div className="pointer-events-auto col-start-2 justify-self-end pt-[var(--studio-chat-header-padding-top,11px)] @[50rem]:justify-self-center">
+              {workflowTab.createTrain ? (
+                <PillTabs
+                  ariaLabel="Page mode"
+                  // Always "create": Train navigates away, so the pill never latches.
+                  value="create"
+                  onValueChange={(v) => {
+                    if (v !== "train") return;
+                    toast.info(
+                      "Audio fine-tuning lives on the Train page. Unsloth trains TTS and STT models there. Pick an audio model and appropriate dataset.",
+                      { duration: 8000 },
+                    );
+                    void navigateSelf({ to: "/studio" });
+                  }}
+                  fit={true}
+                  className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-3 @[68rem]:[&>button]:px-11 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>span]:sr-only"
+                  tabs={[
+                    {
+                      value: "create",
+                      label: "Create",
+                      icon: (
+                        <HugeiconsIcon icon={SparklesIcon} className="size-3.5" />
+                      ),
+                    },
+                    {
+                      value: "train",
+                      label: "Train",
+                      icon: (
+                        <HugeiconsIcon
+                          icon={TestTubeOutlineIcon}
+                          className="size-3.5"
+                        />
+                      ),
+                    },
+                  ]}
                 />
+              ) : null}
+            </div>
+            <div className="pointer-events-none col-start-3 flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
+              <div className="pointer-events-auto flex min-w-0 items-center gap-2">
+                <LibraryPageLink
+                  tab="audio"
+                  labelClassName="hidden @[50rem]:inline"
+                  arrowClassName="hidden @[50rem]:block"
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+        {/* Below 50rem the panes stack and the page scrolls as one column, matching Images and Video:
+            side by side, the rail plus a usable preview needs more width. */}
+        <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden @[50rem]:flex-row @[50rem]:overflow-hidden">
+          <div
+            data-tour="audio-settings"
+            className="flex w-full shrink-0 flex-col border-b border-border/60 @[50rem]:w-[min(var(--media-rail-width,calc(408px*var(--ui-space-scale,1))),calc(100%-13rem))] @[50rem]:overflow-hidden @[50rem]:border-r @[50rem]:border-b-0"
+          >
+            <div
+              ref={attachSettingsScroll}
+              onScroll={onSettingsScroll}
+              className={cn(
+                "hover-scrollbar flex min-h-0 flex-1 flex-col gap-4 px-10 max-sm:px-5 pt-9 pb-6 @[50rem]:overflow-y-auto",
+                mode === "speak"
+                  ? "panel-scroll-fade-action"
+                  : "panel-scroll-fade",
+                settingsFadeClass,
+              )}
+            >
+              {/* Same heading treatment as the Images and Video Create panes, so the media panes stay level (#7986). */}
+              <div className="mb-2 grid gap-1.5">
+                <h2 className="flex items-center gap-2 font-heading text-xl font-medium leading-none text-foreground">
+                  <HugeiconsIcon
+                    icon={workflowTab.icon}
+                    className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0"
+                  />
+                  {workflowTab.heading}
+                </h2>
+                <p className="text-ui-11p5 leading-snug text-muted-foreground">
+                  {workflowTab.hint}
+                </p>
+                {/* The always-on capability line: which task the selected model actually does. */}
+                <p className="text-xs leading-snug text-muted-foreground">
+                  {capabilityLine}
+                </p>
+              </div>
+
+              <PillTabs
+                dataTour="audio-mode"
+                ariaLabel="Audio workflow"
+                value={pageWorkflow}
+                onValueChange={(v) => {
+                  if (isAudioWorkflowId(v)) transitionWorkflow(v);
+                }}
+                fit={true}
+                className="h-[calc(30px*var(--ui-space-scale,1))] self-start [&>button]:h-[calc(30px*var(--ui-space-scale,1))] [&>button]:px-3.5"
+                tabs={AUDIO_WORKFLOWS.map(({ id, label }) => ({
+                  value: id,
+                  label,
+                }))}
+              />
+
+              {mode === "speak" ? (
+                (() => {
+                  const railProps = {
+                    prompt,
+                    setPrompt,
+                    toolPanels: (
+                      <AudioToolPanels
+                        workflow={ttsWorkflow === "music" ? "music" : "speak"}
+                        ctx={toolContext}
+                        values={toolValues}
+                        onChange={handleToolValueChange}
+                        specs={audioOptionSpecs}
+                        disabled={busy === "generating"}
+                        core={{ text: prompt }}
+                      />
+                    ),
+                    audioDevice,
+                    busy,
+                    status,
+                    setAudioDeviceState,
+                    ttsLoaded,
+                    handleEject,
+                    samplingControls,
+                    audioOptionSpecs,
+                    claimedOptions,
+                    advancedOpen,
+                    setAdvancedOpen,
+                    temperature,
+                    mossFrameLimit,
+                    handleTemperatureChange,
+                    musicSeconds,
+                    musicRange,
+                    setMinimaxMaxSeconds,
+                    cudaMusicGeneration,
+                    mossMaxSeconds,
+                    mossMaxSecondsLimit,
+                    setMossMaxSeconds,
+                    maxTokens,
+                    setMaxTokens,
+                    audioOptionValues,
+                    handleAudioOptionChange,
+                    handleAudioOptionsReset,
+                  };
+                  return ttsWorkflow === "music" ? (
+                    <MusicRail {...railProps} />
+                  ) : ttsWorkflow === "clone" ? (
+                    <CloneRail {...railProps} clone={clone} historyClips={clips} />
+                  ) : (
+                    <SpeakRail {...railProps} />
+                  );
+                })()
               ) : (
-                <TtsFooter
-                  busy={busy}
-                  generationPresentation={generationPresentation}
-                  handleStopGeneration={handleStopGeneration}
-                  handleGenerate={handleGenerate}
-                  ttsLoaded={pageModelLoaded}
-                  prompt={prompt}
-                  lyricsOptional={lyricsOptional}
-                  musicNeedsDescription={musicNeedsDescription}
-                  audioInstructions={audioInstructions}
-                  blocker={generateBlocker}
-                  shortcutLabel={shortcutLabel}
-                  error={generateFailure}
-                  elapsedSeconds={elapsedSeconds}
+                <TranscribeRail
+                  historyClips={clips}
+                  disabled={busy === "transcribing"}
+                  sourceHandle={transcribeSourceHandle}
+                  onSourceStatusChange={setTranscribeSourceStatus}
+                  switches={transcribeOptions}
+                  languages={transcribeLanguages}
+                  onUseSpeakersModel={useSpeakersModel}
                 />
               )}
             </div>
-          ) : (
-            <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4">
-              <TranscribeFooter
-                busy={busy}
-                blocker={transcribeBlocker}
-                notice={transcribeNotice}
-                modelName={transcribeModelName}
-                progress={transcriptionProgress}
-                shortcutLabel={shortcutLabel}
-                stopping={transcriptionStopping}
-                onTranscribe={handleTranscribe}
-                onStop={() => {
-                  setTranscriptionStopping(true);
-                  transcriptionAbort.current?.abort();
-                }}
-              />
-            </div>
-          )}
-        </div>
-
-        <div
-          data-tour="audio-output"
-          className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden @[50rem]:min-h-0"
-        >
-          {mode === "transcribe" ? (
-            <div
-              data-reload-snapshot-sensitive={
-                transcript || transcribedName ? "" : undefined
-              }
-              className="flex min-h-0 flex-1 flex-col gap-3 p-6 px-10 @[50rem]:pt-[calc(60px*var(--ui-space-scale,1))]"
-            >
-              <TranscribeOutput
-                transcriptionStartedAt={transcriptionStartedAt}
-                transcriptionFinishedAt={transcriptionFinishedAt}
-                transcriptionStopping={transcriptionStopping}
-                transcriptionProgress={transcriptionProgress}
-                setTranscriptionStopping={setTranscriptionStopping}
-                transcriptionAbort={transcriptionAbort}
-                transcript={transcript}
-                handleCopyTranscript={handleCopyTranscript}
-                transcribedName={transcribedName}
-                transcriptModel={transcriptModel}
-                transcriptRecord={transcriptRecord}
-                transcriptExported={transcriptExported}
-                transcriptError={transcriptError}
-                busy={busy}
-                active={active}
-                mode={mode}
-                confirmTranscriptReplacement={confirmTranscriptReplacement}
-                transcriptVersion={transcriptVersion}
-                clearTranscript={clearTranscript}
-                transcriptDetails={transcriptDetails}
-                speakerNames={speakerNames}
-                renameSpeaker={renameSpeaker}
-                selectRecord={selectRecord}
-                markExported={markExported}
-              />
-              <output aria-live="polite" aria-atomic="true" className="sr-only">
-                {transcribeAnnouncement}
-              </output>
-            </div>
-          ) : (
-            <div className="flex min-h-0 flex-1 flex-col gap-4 p-6 px-10 @[50rem]:pt-[calc(60px*var(--ui-space-scale,1))]">
-              {(() => {
-                const outputProps = {
-                  clips: visibleClips,
-                  selectedClip,
-                  selectedClipSrc,
-                  srcById,
-                  handleDownloadClip,
-                  handleDeleteClip,
-                  fallbackClip,
-                  handleDownloadFallbackClip,
-                  handleClearGallery: handleClearWorkflowGallery,
-                  historyReorder,
-                  hasMore,
-                  loadMore,
-                  selectedId,
-                  selectClip,
-                  handleTogglePin,
-                  active,
-                  handleArchiveClip,
-                  handleDownloadClipById,
-                  onUseTextAgain: handleUseTextAgain,
-                  handleCopyPrompt,
-                  freshClipId,
-                  onFreshClipFocused: clearFreshClip,
-                  announcement,
-                };
-                return ttsWorkflow === "music" ? (
-                  <MusicOutput {...outputProps} modelReady={pageModelLoaded} />
-                ) : ttsWorkflow === "clone" ? (
-                  <CloneOutput
-                    {...outputProps}
-                    modelReady={pageModelLoaded}
-                    recommendedModels={selectorModels}
-                    onPickModel={handlePickRecommended}
+            {mode === "speak" ? (
+              /* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */
+              <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4">
+                {ttsWorkflow === "clone" ? (
+                  <CloneFooter
+                    busy={busy}
+                    generationPresentation={generationPresentation}
+                    handleStopGeneration={handleStopGeneration}
+                    ttsLoaded={pageModelLoaded}
+                    blocker={generateBlocker}
+                    shortcutLabel={shortcutLabel}
+                    error={generateFailure}
+                    elapsedSeconds={elapsedSeconds}
+                    clone={clone}
                   />
                 ) : (
-                  <SpeakOutput {...outputProps} modelReady={pageModelLoaded} />
-                );
-              })()}
-            </div>
-          )}
+                  <TtsFooter
+                    busy={busy}
+                    generationPresentation={generationPresentation}
+                    handleStopGeneration={handleStopGeneration}
+                    handleGenerate={handleGenerate}
+                    ttsLoaded={pageModelLoaded}
+                    prompt={prompt}
+                    lyricsOptional={lyricsOptional}
+                    musicNeedsDescription={musicNeedsDescription}
+                    audioInstructions={audioInstructions}
+                    blocker={generateBlocker}
+                    shortcutLabel={shortcutLabel}
+                    error={generateFailure}
+                    elapsedSeconds={elapsedSeconds}
+                  />
+                )}
+              </div>
+            ) : (
+              <div className="relative z-10 flex shrink-0 justify-center px-10 pt-0.5 pb-4">
+                <TranscribeFooter
+                  busy={busy}
+                  blocker={transcribeBlocker}
+                  notice={transcribeNotice}
+                  modelName={transcribeModelName}
+                  progress={transcriptionProgress}
+                  shortcutLabel={shortcutLabel}
+                  stopping={transcriptionStopping}
+                  onTranscribe={handleTranscribe}
+                  onStop={() => {
+                    setTranscriptionStopping(true);
+                    transcriptionAbort.current?.abort();
+                  }}
+                />
+              </div>
+            )}
+          </div>
+
+          <div
+            data-tour="audio-output"
+            className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden @[50rem]:min-h-0"
+          >
+            {mode === "transcribe" ? (
+              <div
+                data-reload-snapshot-sensitive={
+                  transcript || transcribedName ? "" : undefined
+                }
+                className="flex min-h-0 flex-1 flex-col gap-3 p-6 px-10 @[50rem]:pt-[calc(60px*var(--ui-space-scale,1))]"
+              >
+                <TranscribeOutput
+                  transcriptionStartedAt={transcriptionStartedAt}
+                  transcriptionFinishedAt={transcriptionFinishedAt}
+                  transcriptionStopping={transcriptionStopping}
+                  transcriptionProgress={transcriptionProgress}
+                  setTranscriptionStopping={setTranscriptionStopping}
+                  transcriptionAbort={transcriptionAbort}
+                  transcript={transcript}
+                  handleCopyTranscript={handleCopyTranscript}
+                  transcribedName={transcribedName}
+                  transcriptModel={transcriptModel}
+                  transcriptRecord={transcriptRecord}
+                  transcriptExported={transcriptExported}
+                  transcriptError={transcriptError}
+                  busy={busy}
+                  active={active}
+                  mode={mode}
+                  confirmTranscriptReplacement={confirmTranscriptReplacement}
+                  transcriptVersion={transcriptVersion}
+                  clearTranscript={clearTranscript}
+                  transcriptDetails={transcriptDetails}
+                  speakerNames={speakerNames}
+                  renameSpeaker={renameSpeaker}
+                  selectRecord={selectRecord}
+                  markExported={markExported}
+                />
+                <output aria-live="polite" aria-atomic="true" className="sr-only">
+                  {transcribeAnnouncement}
+                </output>
+              </div>
+            ) : (
+              <div className="flex min-h-0 flex-1 flex-col gap-4 p-6 px-10 @[50rem]:pt-[calc(60px*var(--ui-space-scale,1))]">
+                {(() => {
+                  const outputProps = {
+                    clips: visibleClips,
+                    selectedClip,
+                    selectedClipSrc,
+                    srcById,
+                    handleDownloadClip,
+                    handleDeleteClip,
+                    fallbackClip,
+                    handleDownloadFallbackClip,
+                    handleClearGallery: handleClearWorkflowGallery,
+                    historyReorder,
+                    hasMore,
+                    loadMore,
+                    selectedId,
+                    selectClip,
+                    handleTogglePin,
+                    active,
+                    handleArchiveClip,
+                    handleDownloadClipById,
+                    onUseTextAgain: handleUseTextAgain,
+                    handleCopyPrompt,
+                    freshClipId,
+                    onFreshClipFocused: clearFreshClip,
+                    announcement,
+                  };
+                  return ttsWorkflow === "music" ? (
+                    <MusicOutput {...outputProps} modelReady={pageModelLoaded} />
+                  ) : ttsWorkflow === "clone" ? (
+                    <CloneOutput
+                      {...outputProps}
+                      modelReady={pageModelLoaded}
+                      recommendedModels={selectorModels}
+                      onPickModel={handlePickRecommended}
+                    />
+                  ) : (
+                    <SpeakOutput {...outputProps} modelReady={pageModelLoaded} />
+                  );
+                })()}
+              </div>
+            )}
+          </div>
         </div>
       </div>
-    </div>
+    </AudioActiveProvider>
   );
 }

@@ -89,10 +89,12 @@ export function useAudioSource({
   value,
   onChange,
   maxRecordSeconds = DEFAULT_RECORD_MAX_SECONDS,
+  active = true,
 }: {
   value: AudioSourceSelection | null;
   onChange: (next: AudioSourceSelection | null) => void;
   maxRecordSeconds?: number;
+  active?: boolean;
 }) {
   const [state, dispatch] = useReducer(
     audioSourceReducer,
@@ -107,6 +109,7 @@ export function useAudioSource({
   const streamRef = useRef<MediaStream | null>(null);
   const discardRecording = useRef(false);
   const unmounted = useRef(false);
+  const activeRef = useRef(active);
   // Every object URL this card made, revoked when replaced or unmounted.
   const objectUrl = useRef<string | null>(null);
   const setObjectUrl = useCallback((blob: Blob | null) => {
@@ -263,8 +266,8 @@ export function useAudioSource({
       });
       return;
     }
-    // The permission prompt cannot be cancelled: release the mic if the card unmounted meanwhile.
-    if (unmounted.current) {
+    // The permission prompt cannot be cancelled: release the mic if the card unmounted or hid meanwhile.
+    if (unmounted.current || !activeRef.current) {
       for (const track of stream.getTracks()) track.stop();
       return;
     }
@@ -318,6 +321,12 @@ export function useAudioSource({
     const recorder = recorderRef.current;
     if (recorder && recorder.state !== "inactive") recorder.stop();
   }, []);
+
+  // Leaving the Audio page ends a recording; what was captured is kept.
+  useEffect(() => {
+    activeRef.current = active;
+    if (!active) stopRecording();
+  }, [active, stopRecording]);
 
   // The recording clock.
   const recordingStartedAt =
