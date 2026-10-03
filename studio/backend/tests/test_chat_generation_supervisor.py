@@ -484,9 +484,7 @@ async def test_progress_comments_hold_the_lease_but_a_stalled_stream_does_not(
 async def test_native_gguf_prefill_progress_holds_the_lease(
     durable_run, monkeypatch, tools, reports_progress, reaped
 ):
-    """The Studio UI never takes the passthrough: its GGUF chat and tool loop run the native
-    generators, which consume prompt_progress and stay silent until the first token. Advancing
-    progress must still renew the lease through the stall loop; a silent generator must not."""
+    """Native GGUF generators are silent until the first token; advancing progress must still renew the lease."""
     from core.inference.llama_cpp import _report_live_llama_timings
 
     entered, release = threading.Event(), threading.Event()
@@ -497,7 +495,6 @@ async def test_native_gguf_prefill_progress_holds_the_lease(
         while not release.wait(0.005):
             if reports_progress:
                 processed += 512
-                # The same hook the real generators feed from each llama-server progress frame.
                 _report_live_llama_timings(
                     perf_callback,
                     {"choices": [], "prompt_progress": {"total": 10**6, "processed": processed}},
