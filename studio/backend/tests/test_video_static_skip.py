@@ -214,15 +214,38 @@ def test_fbcache_load_still_reports_an_active_cache(loop_runtime, monkeypatch):
 
 
 @pytest.mark.parametrize("request_cache", [None, "auto"])
-def test_auto_never_installs_static(loop_runtime, monkeypatch, request_cache):
+def test_auto_installs_the_measured_static_skip_on_wan_5b(loop_runtime, monkeypatch, request_cache):
+    monkeypatch.delenv(dcache.ENV_AUTO_STEP_SKIP, raising = False)
+    seen = _record_speed(monkeypatch)
+    backend = VideoBackend()
+    status = backend.load_pipeline(
+        WAN_5B, model_kind = "pipeline", speed_mode = "default", transformer_cache = request_cache
+    )
+    assert status["transformer_cache"] == "static"
+    entry = status["resolved"]["transformer_cache"]
+    assert entry["value"] == "static" and entry["requested"] is None
+    assert "UNSLOTH_DIFFUSION_AUTO_STEP_SKIP" in entry["reason"]
+    layer = loop_runtime["pipe"].transformer.__dict__["forward"]
+    assert (layer.every, layer.auto, layer.min_steps) == (2, True, dcache.AUTO_STATIC_MIN_STEPS)
+    # Kept graph decisions, and the generate-time FBCache toggle is never armed over it.
+    assert [kw["cache_active"] for kw in seen] == [False]
+    assert backend._state.cache_auto is False
+    backend.generate(prompt = "a sloth", steps = STEPS)
+    assert loop_runtime["pipe"].transformer.computed == 2 * (STEPS - SKIPPED_PER_BRANCH)
+    backend.unload()
+
+
+@pytest.mark.parametrize("request_cache", [None, "auto"])
+def test_auto_kill_switch_restores_the_previous_auto(loop_runtime, monkeypatch, request_cache):
     import core.inference.video as video_mod
 
+    monkeypatch.setenv(dcache.ENV_AUTO_STEP_SKIP, "0")
     monkeypatch.setattr(
         video_mod, "install_static_step_skip", lambda *a, **k: pytest.fail("auto picked static")
     )
     backend = VideoBackend()
     status = backend.load_pipeline(WAN_5B, model_kind = "pipeline", transformer_cache = request_cache)
-    # Auto resolves per speed tier (FBCache on max, else uncached); never to static.
+    # Auto resolves per speed tier (FBCache on max, else uncached), exactly as before.
     assert status["transformer_cache"] in (None, "fbcache")
     backend.unload()
 
@@ -510,7 +533,7 @@ def test_modular_workflow_engages_an_explicit_static_skip(h3_runtime, monkeypatc
 
 
 def test_modular_workflow_auto_follows_the_table_and_the_kill_switch(h3_runtime, monkeypatch):
-    monkeypatch.setattr(dcache, "AUTO_STATIC_SKIP", {"minimax-h3": ("default", 2)})
+    monkeypatch.setattr(dcache, "AUTO_STATIC_SKIP", {"minimaxai/minimax-h3": {"default": 2, "max": 2}})
     backend = VideoBackend()
     status = _load_h3(backend, None)
     entry = status["resolved"]["transformer_cache"]

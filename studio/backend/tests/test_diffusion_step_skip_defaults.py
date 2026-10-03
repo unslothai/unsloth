@@ -13,7 +13,7 @@ import torch
 
 from core.inference import diffusion_cache as dcache
 from core.inference import diffusion_step_skip as ss
-from core.inference.diffusion_families import default_generation_params, generation_variant
+from core.inference.diffusion_families import default_generation_params
 
 from .test_diffusion_backend import _load_into, fake_runtime  # noqa: F401 - fixture
 
@@ -32,41 +32,52 @@ def table(monkeypatch):
     monkeypatch.setattr(
         dcache,
         "AUTO_STATIC_SKIP",
-        {"flux.1": ("default", 2), "qwen-image": ("max", 3), "minimax-h3": ("default", 2)},
+        {
+            "black-forest-labs/flux.1-krea-dev": {"default": 2, "max": 3},
+            "black-forest-labs/flux.1-dev": {"max": 2},
+        },
     )
     monkeypatch.delenv(dcache.ENV_AUTO_STEP_SKIP, raising = False)
 
 
+KREA = "black-forest-labs/FLUX.1-Krea-dev"
+DEV = "black-forest-labs/FLUX.1-dev"
+
+
 @pytest.mark.parametrize(
-    "key, tier, steps, want",
+    "ids, tier, steps, want",
     [
-        ("flux.1", "default", 28, {"every": 2, "min_steps": 20}),
-        ("flux.1", "max", 28, {"every": 2, "min_steps": 20}),
-        ("flux.1", "eager", 28, None),
-        ("flux.1", "off", 28, None),
-        ("flux.1", None, 28, None),
-        ("flux.1", "default", 12, None),  # a short default schedule is never measured
-        ("qwen-image", "default", 20, None),  # max-only entry
-        ("qwen-image", "max", 20, {"every": 3, "min_steps": 20}),
-        ("flux.1-schnell", "max", 28, None),  # unlisted key
-        (None, "max", 28, None),
+        ((KREA,), "default", 28, {"every": 2, "min_steps": 20}),
+        ((KREA,), "max", 28, {"every": 3, "min_steps": 20}),
+        ((KREA,), "eager", 28, None),
+        ((KREA,), "off", 28, None),
+        ((KREA,), None, 28, None),
+        ((KREA,), "default", 12, None),  # a short default schedule is never measured
+        ((DEV,), "default", 28, None),  # max-only row
+        ((DEV,), "max", 28, {"every": 2, "min_steps": 20}),
+        # The unsloth mirror and a local path with the upstream as its base both resolve to the upstream row.
+        (("unsloth/FLUX.1-Krea-dev",), "default", 28, {"every": 2, "min_steps": 20}),
+        (("/models/my-krea", KREA), "default", 28, {"every": 2, "min_steps": 20}),
+        (("black-forest-labs/FLUX.1-schnell",), "max", 28, None),
+        ((None,), "max", 28, None),
+        (KREA, "default", 28, {"every": 2, "min_steps": 20}),  # a bare string
     ],
 )
-def test_plan_follows_the_tier_and_the_default_steps(table, key, tier, steps, want):
-    assert dcache.auto_static_skip_plan(key, tier, steps) == want
+def test_plan_follows_the_tier_and_the_default_steps(table, ids, tier, steps, want):
+    assert dcache.auto_static_skip_plan(ids, tier, steps) == want
 
 
 @pytest.mark.parametrize("value", ["0", "false", "off", "NO"])
 def test_kill_switch_turns_auto_static_off(table, monkeypatch, value):
     monkeypatch.setenv(dcache.ENV_AUTO_STEP_SKIP, value)
-    assert dcache.auto_static_skip_plan("flux.1", "default", 28) is None
+    assert dcache.auto_static_skip_plan((KREA,), "default", 28) is None
     # Auto falls back to what it did before: FBCache on max at 20+ steps, nothing on default.
     assert dcache.resolve_auto_step_cache("max", 28, static_plan = None) == dcache.TC_FBCACHE
     assert dcache.resolve_auto_step_cache("default", 28, static_plan = None) is None
 
 
 def test_static_plan_wins_over_fbcache_on_max(table):
-    plan = dcache.auto_static_skip_plan("flux.1", "max", 28)
+    plan = dcache.auto_static_skip_plan((DEV,), "max", 28)
     assert dcache.resolve_auto_step_cache("max", 28, static_plan = plan) == dcache.TC_STATIC
 
 
@@ -78,29 +89,41 @@ def test_auto_settings_use_the_plan_unless_the_env_pins_every():
     assert ss.auto_static_settings(plan, env = {ss.ENV_EVERY: "2"})["every"] == 2
 
 
-# The shipped table: only checkpoints that were measured, and no distilled sibling reachable through a shared family.
-MEASURED_IMAGE_REPOS = {
-    "black-forest-labs/FLUX.1-dev": "flux.1",
-    "black-forest-labs/FLUX.1-Krea-dev": "flux.1-krea",
-    "Qwen/Qwen-Image": "qwen-image",
-    "Qwen/Qwen-Image-2.1": "qwen-image-2.1",
-    "hunyuanvideo-community/HunyuanImage-2.1-Diffusers": "hunyuanimage",
-    "black-forest-labs/FLUX.2-klein-base-4B": "flux.2-klein-base",
-    "Tongyi-MAI/Z-Image": "z-image",
+# The shipped table: only the checkpoints that were measured, each at its default steps.
+MEASURED = {
+    "Qwen/Qwen-Image-2.1": ("default", "max"),
+    "Qwen/Qwen-Image": ("default", "max"),
+    "black-forest-labs/FLUX.1-Krea-dev": ("default", "max"),
+    "black-forest-labs/FLUX.2-klein-base-4B": ("default", "max"),
+    "Wan-AI/Wan2.2-TI2V-5B-Diffusers": ("default", "max"),
+    "black-forest-labs/FLUX.1-dev": ("max",),
+    "hunyuanvideo-community/HunyuanImage-2.1-Diffusers": ("max",),
+    "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v": ("max",),
+    "MiniMaxAI/MiniMax-H3": ("max",),
 }
-VIDEO_FAMILIES = {"wan2.2-ti2v-5b", "hunyuanvideo-1.5", "minimax-h3"}
-
-
-@pytest.mark.parametrize("repo, key", sorted(MEASURED_IMAGE_REPOS.items()))
-def test_measured_repos_map_to_their_variant_key(repo, key):
-    assert generation_variant(repo) == key
 
 
 def test_shipped_table_lists_only_measured_models():
-    allowed = set(MEASURED_IMAGE_REPOS.values()) | VIDEO_FAMILIES
-    assert set(dcache.AUTO_STATIC_SKIP) <= allowed
-    for tier, every in dcache.AUTO_STATIC_SKIP.values():
-        assert tier in ("default", "max") and int(every) >= 2
+    assert set(dcache.AUTO_STATIC_SKIP) == {k.lower() for k in MEASURED}
+    for repo, tiers in MEASURED.items():
+        entry = dcache.AUTO_STATIC_SKIP[repo.lower()]
+        assert set(entry) == set(tiers)
+        assert all(int(v) >= 2 for v in entry.values())
+        # The default tier never skips more than the max tier.
+        assert entry.get("default", 99) <= entry["max"] or "default" not in entry
+
+
+@pytest.mark.parametrize("repo", sorted(MEASURED))
+def test_every_measured_model_reaches_the_auto_floor_at_its_default_steps(repo):
+    from core.inference.video_families import default_video_generation_params
+
+    steps, _ = default_generation_params(repo)
+    if repo.startswith(("Wan-AI", "hunyuanvideo-community/HunyuanVideo")):
+        steps, _ = default_video_generation_params(repo)
+    if repo == "MiniMaxAI/MiniMax-H3":
+        steps = 30  # the family default; no generation-defaults row
+    assert steps >= dcache.AUTO_STATIC_MIN_STEPS
+    assert dcache.auto_static_skip_plan((repo,), "max", steps) is not None
 
 
 @pytest.mark.parametrize(
@@ -108,14 +131,18 @@ def test_shipped_table_lists_only_measured_models():
     [
         "black-forest-labs/FLUX.1-schnell",
         "black-forest-labs/FLUX.2-klein-4B",
+        "black-forest-labs/FLUX.2-klein-base-9B",
         "Tongyi-MAI/Z-Image-Turbo",
+        "Tongyi-MAI/Z-Image",
+        "Qwen/Qwen-Image-2512",
+        "Qwen/Qwen-Image-Edit-2511",
         "unsloth/Krea-2-Turbo",
     ],
 )
-def test_distilled_siblings_never_auto_skip(repo):
+def test_unmeasured_or_distilled_siblings_never_auto_skip(repo):
     steps, _ = default_generation_params(repo)
     for tier in ("default", "max"):
-        assert dcache.auto_static_skip_plan(generation_variant(repo), tier, steps) is None
+        assert dcache.auto_static_skip_plan((repo,), tier, max(steps, 50)) is None
 
 
 # --------------------------------------------------------------------------------------------- joint outputs (H3)
@@ -178,6 +205,21 @@ def test_a_non_tensor_member_still_declines():
 
 
 # --------------------------------------------------------------------------------------------- image loader
+def _probe_plan(entry):
+    """The real plan function over a one-row table, whatever ids the loader passes (a tmp-path GGUF here)."""
+
+    def plan(ids, tier, steps, env = None):
+        saved = dict(dcache.AUTO_STATIC_SKIP)
+        dcache.AUTO_STATIC_SKIP.clear()
+        dcache.AUTO_STATIC_SKIP["probe/model"] = entry
+        try:
+            return dcache.auto_static_skip_plan(("probe/model",), tier, steps, env)
+        finally:
+            dcache.AUTO_STATIC_SKIP.clear()
+            dcache.AUTO_STATIC_SKIP.update(saved)
+
+    return plan
+
 @pytest.mark.parametrize(
     "speed, killed, want_static",
     [("default", False, True), ("max", False, True), ("eager", False, False), ("default", True, False)],
@@ -187,8 +229,7 @@ def test_auto_load_installs_static_for_a_listed_model(
 ):
     from core.inference import diffusion as dmod
 
-    monkeypatch.setattr(dcache, "AUTO_STATIC_SKIP", {"probe-variant": ("default", 3)})
-    monkeypatch.setattr(dmod, "generation_variant", lambda *a: "probe-variant")
+    monkeypatch.setattr(dmod, "auto_static_skip_plan", _probe_plan({"default": 3, "max": 3}))
     monkeypatch.setattr(dmod, "default_generation_params", lambda *a, **k: (28, 3.5))
     if killed:
         monkeypatch.setenv(dcache.ENV_AUTO_STEP_SKIP, "0")
@@ -222,8 +263,7 @@ def test_auto_load_installs_static_for_a_listed_model(
 def test_explicit_requests_ignore_the_table(fake_runtime, tmp_path, monkeypatch):
     from core.inference import diffusion as dmod
 
-    monkeypatch.setattr(dcache, "AUTO_STATIC_SKIP", {"probe-variant": ("default", 3)})
-    monkeypatch.setattr(dmod, "generation_variant", lambda *a: "probe-variant")
+    monkeypatch.setattr(dmod, "auto_static_skip_plan", _probe_plan({"default": 3, "max": 3}))
     monkeypatch.setattr(
         dmod, "install_static_step_skip", lambda *a, **k: pytest.fail("explicit off installed static")
     )
@@ -237,8 +277,7 @@ def test_explicit_requests_ignore_the_table(fake_runtime, tmp_path, monkeypatch)
 def test_auto_static_declined_falls_back_to_the_previous_auto(fake_runtime, tmp_path, monkeypatch):
     from core.inference import diffusion as dmod
 
-    monkeypatch.setattr(dcache, "AUTO_STATIC_SKIP", {"probe-variant": ("default", 2)})
-    monkeypatch.setattr(dmod, "generation_variant", lambda *a: "probe-variant")
+    monkeypatch.setattr(dmod, "auto_static_skip_plan", _probe_plan({"default": 2, "max": 2}))
     monkeypatch.setattr(dmod, "default_generation_params", lambda *a, **k: (28, 3.5))
     monkeypatch.delenv(dcache.ENV_AUTO_STEP_SKIP, raising = False)
     monkeypatch.setattr(dmod, "install_static_step_skip", lambda *a, **k: None)
@@ -249,3 +288,4 @@ def test_auto_static_declined_falls_back_to_the_previous_auto(fake_runtime, tmp_
     _load_into(backend, tmp_path, speed_mode = "max", transformer_cache = None)
     assert modes == [dcache.TC_FBCACHE]
     backend.unload()
+

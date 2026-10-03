@@ -60,7 +60,6 @@ from .diffusion_families import (
     canonical_base,
     cache_holds_files,
     default_generation_params,
-    generation_variant,
     detect_family_for_pick,
     excluded_model_reason,
     prefer_ungated_mirror,
@@ -6877,9 +6876,7 @@ class DiffusionBackend:
                         )
                         # Measured families take the fixed-schedule skip (keeps fullgraph and the CUDA graph).
                         static_plan = auto_static_skip_plan(
-                            generation_variant(gguf_filename, repo_id, base, fam.name),
-                            effective_speed,
-                            default_steps,
+                            (repo_id, base), effective_speed, default_steps
                         )
                         cache_request = resolve_auto_step_cache(
                             effective_speed, default_steps, static_plan = static_plan

@@ -1188,17 +1188,6 @@ def default_generation_params(*identifiers: Optional[str]) -> tuple[int, float]:
     return _GENERATION_DEFAULT_FALLBACK
 
 
-def generation_variant(*identifiers: Optional[str]) -> Optional[str]:
-    """The ``_GENERATION_DEFAULTS`` key ``default_generation_params`` matched, or None (fallback). Same precedence, so
-    per-variant policy (auto step skip) and the defaults always name the same checkpoint."""
-    for identifier in identifiers:
-        needle = (identifier or "").lower()
-        for key, _steps, _guidance in _GENERATION_DEFAULTS:
-            if key in needle:
-                return key
-    return None
-
-
 def family_prequant_repo(
     fam: DiffusionFamily,
     scheme: str,

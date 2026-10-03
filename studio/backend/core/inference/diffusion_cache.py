@@ -45,15 +45,28 @@ AUTO_STEP_CACHE_TIER = "max"
 _TIER_DEFAULT = "default"
 _TIER_MAX = "max"
 
-# Auto static step skip. Unset / "auto" picks the fixed-schedule skip for the families below, measured against their
-# own no-skip render at the family's default steps (16 prompts per image family, 4 clips per video family, B200; see
-# the per-row numbers). "default": meets the default-on bar (mean LPIPS <= 0.05, max <= 0.10, SSIM / PSNR inside
-# the no-skip run-to-run floor, faster end to end) and engages on the default and max tiers. "max": mean LPIPS
-# <= 0.10, engages on the max tier only. A family not listed keeps the FBCache-on-max behaviour. Keyed by the
-# generation-defaults variant for images (diffusion_families.generation_variant) and the family name for video,
-# so a distilled sibling sharing the family (FLUX.1-schnell, klein 4-step, Z-Image-Turbo) is never matched.
-# Value: (tier, every); every = compute one step in ``every`` through the middle of the schedule.
-AUTO_STATIC_SKIP: dict = {}
+# Auto static step skip. Unset / "auto" picks the fixed-schedule skip for the checkpoints below, each measured against
+# its own no-skip render at the model's default steps (16 prompts per image model, 4 clips per video model, B200,
+# speed tier default; LPIPS alex, mean / worst prompt):
+#   "default": every N on the default AND max tiers. Meets the default-on bar: mean LPIPS <= 0.05, worst prompt
+#              <= 0.10 above that prompt's own run-to-run floor (the no-skip render repeated in a fresh process).
+#   "max":     every N on the max tier only (mean LPIPS <= 0.10). Replaces FBCache there: on every listed model the
+#              static skip measured closer to the no-skip render than FBCache, and it keeps fullgraph and CUDA graphs.
+# A model not listed keeps the previous behaviour (FBCache on max at 20+ steps). Keyed by the UPSTREAM repo id
+# (canonical_base maps the unsloth mirrors back), so a distilled sibling or an unmeasured finetune of the same family
+# (FLUX.1-schnell, klein 4-step, Z-Image-Turbo, Qwen-Image-2512 / Edit, klein-base-9B) never matches.
+AUTO_STATIC_SKIP: dict = {
+    # mean LPIPS every2 / every3 vs no skip (in-process pairs); worst prompt in brackets
+    "qwen/qwen-image-2.1": {"default": 3, "max": 3},  # 0.007 (0.03) / 0.012 (0.05)
+    "qwen/qwen-image": {"default": 2, "max": 3},  # 0.031 (0.13, floor 0.11) / 0.056
+    "black-forest-labs/flux.1-krea-dev": {"default": 2, "max": 3},  # 0.030 (0.09) / 0.060
+    "black-forest-labs/flux.2-klein-base-4b": {"default": 2, "max": 3},  # 0.038 (0.12, floor 0.35) / 0.058
+    "wan-ai/wan2.2-ti2v-5b-diffusers": {"default": 2, "max": 3},  # 0.034 (0.064) / 0.057
+    "black-forest-labs/flux.1-dev": {"max": 2},  # 0.050 (0.29 on a dense-texture prompt, floor 0.06)
+    "hunyuanvideo-community/hunyuanimage-2.1-diffusers": {"max": 2},  # 0.064; every3 0.102
+    "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-480p_t2v": {"max": 2},  # 0.085; every3 0.120
+    "minimaxai/minimax-h3": {"max": 2},  # 0.063; every3 0.109
+}
 
 # Auto static engages only from this many denoise steps, the shortest default schedule it was measured on; a user
 # who drops a 28-step model to 14 steps gets every step computed. Explicit "static" keeps STATIC_MIN_STEPS (12).
@@ -71,8 +84,21 @@ def auto_step_skip_disabled(env: Optional[dict] = None) -> bool:
     return raw in ("0", "false", "off", "no", "none")
 
 
+def auto_static_skip_entry(*identifiers: Optional[str]) -> Optional[dict]:
+    """The AUTO_STATIC_SKIP row for the first identifier (repo id, then resolved base) naming a listed checkpoint."""
+    from .diffusion_families import canonical_base
+
+    for identifier in identifiers:
+        if not identifier:
+            continue
+        entry = AUTO_STATIC_SKIP.get(canonical_base(str(identifier)).strip().lower())
+        if entry is not None:
+            return entry
+    return None
+
+
 def auto_static_skip_plan(
-    key: Optional[str],
+    identifiers: Any,
     speed_mode: Optional[str],
     default_steps: Optional[int],
     env: Optional[dict] = None,
@@ -80,24 +106,20 @@ def auto_static_skip_plan(
     """Settings for an auto static skip (``{"every": n, "min_steps": m}``), or None when auto must not pick it.
 
     ``speed_mode`` is the tier the user ASKED for (an eager downgrade forced by offload does not change what the
-    skip costs in quality)."""
-    if not key or auto_step_skip_disabled(env):
+    skip costs in quality); off / eager are the lossless tiers and never skip."""
+    if auto_step_skip_disabled(env):
         return None
-    entry = AUTO_STATIC_SKIP.get(str(key).strip().lower())
-    if entry is None:
+    if isinstance(identifiers, str) or identifiers is None:
+        identifiers = (identifiers,)
+    entry = auto_static_skip_entry(*identifiers)
+    if not entry or speed_mode not in (_TIER_DEFAULT, _TIER_MAX):
         return None
-    tier, every = entry
-    if speed_mode == _TIER_MAX:
-        allowed = tier in (_TIER_DEFAULT, _TIER_MAX)
-    elif speed_mode == _TIER_DEFAULT:
-        allowed = tier == _TIER_DEFAULT
-    else:
-        allowed = False  # off / eager are the lossless tiers
+    every = entry.get(_TIER_DEFAULT) if speed_mode == _TIER_DEFAULT else entry.get(_TIER_MAX)
     try:
         steps_ok = default_steps is not None and int(default_steps) >= AUTO_STATIC_MIN_STEPS
     except (TypeError, ValueError):
         steps_ok = False
-    if not (allowed and steps_ok):
+    if not every or not steps_ok:
         return None
     return {"every": int(every), "min_steps": AUTO_STATIC_MIN_STEPS}
 

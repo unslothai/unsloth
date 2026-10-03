@@ -56,11 +56,11 @@ from .diffusion_attention import (
     select_attention_backend,
 )
 from .diffusion_cache import (
-    AUTO_STATIC_SKIP,
     FBCACHE_MIN_STEPS,
     TC_AUTO,
     TC_STATIC,
     apply_step_cache,
+    auto_static_skip_entry,
     auto_static_skip_plan,
     auto_step_cache_allowed,
     cache_breaks_graph,
@@ -6277,7 +6277,9 @@ class VideoBackend:
                 gguf_filename, repo_id, base, fallback = (fam.default_steps, fam.default_guidance)
             )
             # A distilled variant of a listed family (LTX distilled, 8 steps) falls under AUTO_STATIC_MIN_STEPS.
-            static_plan = auto_static_skip_plan(fam.name, effective_speed, default_cache_steps)
+            static_plan = auto_static_skip_plan(
+                (repo_id, base), effective_speed, default_cache_steps
+            )
             cache_request = resolve_auto_step_cache(
                 effective_speed, default_cache_steps, static_plan = static_plan
             )
@@ -7469,7 +7471,7 @@ class VideoBackend:
             h3_cache_request = str(transformer_cache)  # the routes refuse it first; a direct call runs uncached
         h3_cache_auto = transformer_cache is None or h3_cache_request == TC_AUTO
         h3_static_plan = (
-            auto_static_skip_plan(fam.name, h3_vae_speed, fam.default_steps)
+            auto_static_skip_plan((repo_id, base), h3_vae_speed, fam.default_steps)
             if h3_cache_auto
             else None
         )
@@ -7493,7 +7495,7 @@ class VideoBackend:
         elif h3_cache_auto:
             h3_cache_reason = (
                 "auto: static step skip engages on the max speed tier only"
-                if AUTO_STATIC_SKIP.get(fam.name)
+                if auto_static_skip_entry(repo_id, base)
                 else "auto: not enabled for this model"
             )
         elif h3_cache_request is not None:
