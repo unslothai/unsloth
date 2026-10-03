@@ -205,7 +205,17 @@ def _code_object_digest(code: Any, h: Any, depth: int = 0) -> None:
         if hasattr(const, "co_code") and depth < 8:
             _code_object_digest(const, h, depth + 1)
         else:
-            h.update(repr(const).encode())
+            h.update(_stable_repr(const).encode())
+
+
+def _stable_repr(value: Any) -> str:
+    """``repr`` that is the same in every process: a frozenset constant (``x in {"a", "b"}``) iterates in string-hash
+    order, which ``PYTHONHASHSEED`` randomises per process."""
+    if isinstance(value, (frozenset, set)):
+        return "{" + ",".join(sorted(_stable_repr(v) for v in value)) + "}"
+    if isinstance(value, tuple):
+        return "(" + ",".join(_stable_repr(v) for v in value) + ")"
+    return repr(value)
 
 
 def _tensor_digest(name: str, t: Any, h: Any, depth: int = 0) -> None:
@@ -390,12 +400,15 @@ class Registry:
         self.loaded = False
         self.failed: Optional[str] = None
         self.entries: dict[str, list[Any]] = {}
-        # Block classes whose first graph went through _compile_now (or was refused by it).
+        # Block classes whose first graph in THIS process went through _compile_now (or was refused by it). A class
+        # with loaded artifacts that serve no call still compiles its first graph through aot_compile: that hits the
+        # FX / autograd caches its first start filled, where the normal path's own key would miss them.
         self.compiled_classes: set = set()
         # Block classes aot_compile could not serialise: never retried (persisted, so a restart does not either).
         self.refused: set = set()
         self._fingerprints: "weakref.WeakKeyDictionary[Any, str]" = weakref.WeakKeyDictionary()
         self._hook_dicts: "weakref.WeakKeyDictionary[Any, tuple]" = weakref.WeakKeyDictionary()
+        self._noted: set = set()
         self.stats: dict[str, Any] = {"hits": 0, "misses": 0, "loaded": 0, "load_s": 0.0, "saved": 0}
 
     # ---- loading -----------------------------------------------------------------------------------------------
@@ -425,7 +438,6 @@ class Registry:
                           type(exc).__name__, str(exc)[:200])
                 continue
             self.entries.setdefault(str(ent.get("cls")), []).append((ent.get("global"), ent.get("code"), fn))
-            self.compiled_classes.add(str(ent.get("cls")))
             n += 1
         self.stats["loaded"] = n
         self.stats["load_s"] = round(time.perf_counter() - t0, 3)
@@ -449,6 +461,7 @@ class Registry:
                     if want == state and want_code == code and fn.guard_check(module, *args, **kwargs):
                         self.stats["hits"] += 1
                         return fn(module, *args, **kwargs)
+                self._note_miss(module, fns, state, code)
             except Exception as exc:  # noqa: BLE001
                 from .diffusion_batched import is_oom_error
 
@@ -475,6 +488,18 @@ class Registry:
                 d for m in module.modules() for d in (getattr(m, n, None) for n in names) if d is not None
             )
         return not any(dicts) and _hook_free_global()
+
+    def _note_miss(self, module: Any, fns: list, state: list, code: str) -> None:
+        """Log once per class why no loaded artifact served it (a new shape is expected; anything else is not)."""
+        cls = type(module).__name__
+        if cls in self._noted:
+            return
+        self._noted.add(cls)
+        why = ("global state" if all(w != state for w, _c, _f in fns)
+               else "code fingerprint" if all(c != code for _w, c, _f in fns)
+               else "guards (new input shape or attribute)")
+        self.stats.setdefault("miss_reasons", {})[cls] = why
+        self._log("info", "diffusion.aot_blocks: no loaded %s graph serves this call (%s)", cls, why)
 
     def fingerprint(self, module: Any) -> str:
         """``_code_fingerprint`` once per block instance (a class patched after a block's first call is not seen)."""

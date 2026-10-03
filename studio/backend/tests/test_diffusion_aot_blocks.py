@@ -177,6 +177,29 @@ def test_instance_bound_methods_carry_their_bound_name_only_while_pickling():
     assert aot._code_fingerprint(block) != fp  # the instance forward's code is fingerprinted
 
 
+def test_fingerprint_is_the_same_in_every_process(tmp_path):
+    """A frozenset constant iterates in per-process string-hash order: the fingerprint must not depend on it."""
+    code = textwrap.dedent(
+        """
+        import sys
+        sys.path.insert(0, sys.argv[1])
+        from core.inference import diffusion_aot_blocks as aot
+        def f(x):
+            return x in {"alpha", "beta", "gamma", "delta", "epsilon"}
+        import hashlib
+        h = hashlib.sha256()
+        aot._code_digest(f, h)
+        print(h.hexdigest())
+        """
+    )
+    outs = {
+        subprocess.run([sys.executable, "-c", code, str(BACKEND)], env = dict(os.environ, PYTHONHASHSEED = str(seed)),
+                       capture_output = True, text = True, timeout = 300).stdout.strip()
+        for seed in (1, 2, 3, 4)
+    }
+    assert len(outs) == 1 and "" not in outs, outs
+
+
 class _Processor:
     def __call__(self, x):
         return x
