@@ -163,6 +163,7 @@ UNTRUSTED_CALLS = frozenset(
         "httpx.put",
         "httpx.patch",
         "httpx.request",
+        "httpx.stream",
         "urlopen",
         "urlretrieve",
         # Hub metadata and datasets.
@@ -241,8 +242,9 @@ UNTRUSTED_PARAM_NAMES = frozenset(
 # `None` for the keyword set means "no keyword form".
 SINKS: dict[str, tuple[tuple[int, ...], frozenset[str]]] = {
     # Dynamic import. The whole class of CWE-470 unsafe reflection.
-    "importlib.import_module": ((0,), frozenset({"name"})),
-    "import_module": ((0,), frozenset({"name"})),
+    # `package` picks the absolute module a relative name resolves against.
+    "importlib.import_module": ((0, 1), frozenset({"name", "package"})),
+    "import_module": ((0, 1), frozenset({"name", "package"})),
     "__import__": ((0,), frozenset({"name"})),
     "importlib.util.spec_from_file_location": ((1,), frozenset({"location"})),
     "spec_from_file_location": ((1,), frozenset({"location"})),
@@ -393,6 +395,21 @@ MODULE_ISH_NAMES = frozenset(
 # Loaders that take a `trust_remote_code`. A True literal here, or a default of True on a
 # first-party function that forwards into one, is consent the user did not give.
 # Sources whose result is a mapping with attacker-chosen keys.
+_DECOMPRESSORS = frozenset(
+    {
+        "gzip.GzipFile",
+        "gzip.open",
+        "gzip.decompress",
+        "bz2.BZ2File",
+        "bz2.open",
+        "bz2.decompress",
+        "lzma.LZMAFile",
+        "lzma.open",
+        "lzma.decompress",
+        "zlib.decompress",
+    }
+)
+
 _DESERIALIZERS = frozenset(
     {
         "json.load",
@@ -2181,7 +2198,7 @@ class _TaintPass(ast.NodeVisitor):
         if (
             source is None
             and isinstance(node.func, ast.Attribute)
-            and node.func.attr in ("get", "post", "put", "patch", "request", "send")
+            and node.func.attr in ("get", "post", "put", "patch", "request", "send", "stream")
             and isinstance(node.func.value, ast.Name)
             and node.func.value.id in self._http_sessions()
         ):
@@ -2309,6 +2326,10 @@ class _TaintPass(ast.NodeVisitor):
                 "enumerate",
                 "copy.copy",
                 "copy.deepcopy",
+                # Byte buffers re-wrap the same bytes: `pickle.loads(bytes(body))`.
+                "bytes",
+                "bytearray",
+                "memoryview",
                 # `next(parse(blob))` is how a generator's first value is taken, and
                 # without it the return summary the yield fix produces was dropped again
                 # at the consumer.
@@ -2381,6 +2402,16 @@ class _TaintPass(ast.NodeVisitor):
             },
         ):
             for argument in node.args:
+                reason = self.tainted(argument)
+                if reason:
+                    return reason
+            return None
+        # Decompression returns the same payload: `pickle.load(gzip.GzipFile(fileobj =
+        # urlopen(url)))`. Keywords too, since the stream is usually passed by name.
+        if _matches_any(names, _DECOMPRESSORS):
+            for argument in list(node.args) + [
+                k.value for k in node.keywords if k.arg in ("fileobj", "filename", "data")
+            ]:
                 reason = self.tainted(argument)
                 if reason:
                     return reason
@@ -3534,7 +3565,7 @@ class _TaintPass(ast.NodeVisitor):
         own = self.facts.functions.get(self.qualname)
         body = own if own is not None else self.facts.tree
         found = set()
-        for statement in ast.walk(body):
+        for statement in _scope_nodes(body):
             pairs = []
             if isinstance(statement, (ast.Assign, ast.AnnAssign)) and statement.value is not None:
                 targets = (
@@ -3662,6 +3693,17 @@ class _TaintPass(ast.NodeVisitor):
         if bound.get(name, NAMED_PARAM_REASON) == NAMED_PARAM_REASON:
             bound[name] = reason
 
+    _FILE_MOVES = frozenset(
+        {
+            "os.replace",
+            "os.rename",
+            "shutil.move",
+            "shutil.copy",
+            "shutil.copy2",
+            "shutil.copyfile",
+        }
+    )
+
     def _note_mutation(self, node: ast.Call) -> None:
         """`settings.update(json.loads(blob))` taints `settings`."""
         # `shutil.unpack_archive(downloaded, target)` writes attacker files into target.
@@ -3672,8 +3714,32 @@ class _TaintPass(ast.NodeVisitor):
             if reason and target is not None:
                 self._assign(target, reason)
             return
+        names = self.facts.canonicals(_call_name(node.func))
+        # `shutil.copyfileobj(urlopen(url), out)` fills the file `out` was opened on.
+        if _matches_any(names, {"shutil.copyfileobj"}):
+            source = node.args[0] if node.args else _keyword(node, "fsrc")
+            handle = node.args[1] if len(node.args) > 1 else _keyword(node, "fdst")
+            reason = self.tainted(source) if source is not None else None
+            if reason and isinstance(handle, ast.Name):
+                path = self._file_handles().get(handle.id)
+                if path is not None:
+                    self._assign(path, reason)
+            return
+        # Moving or copying a file keeps its contents: `os.replace(downloaded, final)`.
+        if _matches_any(names, self._FILE_MOVES):
+            source = node.args[0] if node.args else _keyword(node, "src")
+            target = node.args[1] if len(node.args) > 1 else _keyword(node, "dst")
+            reason = self.tainted(source) if source is not None else None
+            if reason and target is not None:
+                self._assign(target, reason)
+            return
         if not isinstance(node.func, ast.Attribute):
             return
+        # `Path(downloaded).rename(final)` and `.replace(final)` move the same file.
+        if node.func.attr in ("rename", "replace") and len(node.args) == 1 and not node.keywords:
+            reason = self.tainted(node.func.value)
+            if reason and not isinstance(node.args[0], ast.Constant):
+                self._assign(node.args[0], reason)
         # `ZipFile(downloaded).extractall(target)` fills target with archive members, so
         # a later `sys.path.insert(0, target)` imports them.
         if node.func.attr in ("extractall", "extract"):
@@ -4124,6 +4190,8 @@ class _TaintPass(ast.NodeVisitor):
             any(held in MODULE_ISH_NAMES for held in holder_names)
             or (written in self.facts.module_aliases if written else False)
             or any(held in self.facts.module_aliases for held in holder_names)
+            # A class declared in this file: `getattr(Commands, parsed["action"])()`.
+            or (isinstance(holder, ast.Name) and holder.id in self.facts.classes)
         ) or (
             isinstance(holder, ast.Call)
             and _matches_any(
@@ -4188,6 +4256,8 @@ class _TaintPass(ast.NodeVisitor):
         """
         scheduled = self._scheduled_call(node)
         if scheduled is not None:
+            # `Thread(target = subprocess.run, args = (command,))` runs the sink itself.
+            self._check_sink(scheduled)
             if any(self.tainted(argument) for argument in scheduled.args) or any(
                 self.tainted(keyword.value) for keyword in scheduled.keywords
             ):

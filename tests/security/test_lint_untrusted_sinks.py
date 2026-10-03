@@ -6225,3 +6225,67 @@ def test_copied_kwargs_terminate_and_nested_bindings_stay_local(tmp_path):
         "    return AutoModel.from_pretrained(name, **kwargs)\n",
     )
     assert not [f for f in findings if f["sink"] == "trust_remote_code (untrusted **kwargs)"]
+
+
+def test_streams_buffers_decompression_and_file_transfers(tmp_path):
+    """`httpx.stream`, `bytes(...)`, `gzip`, `copyfileobj` and `os.replace` keep the taint."""
+    findings = _scan(
+        tmp_path,
+        "import gzip, httpx, os, pickle, requests, runpy, shutil\n"
+        "from urllib.request import urlopen\n"
+        "from huggingface_hub import hf_hub_download\n"
+        "def a(url):\n"
+        "    with httpx.stream('GET', url) as response:\n"
+        "        return pickle.loads(b''.join(response.iter_bytes()))\n"
+        "def b(url):\n"
+        "    return pickle.loads(bytes(requests.get(url).content))\n"
+        "def c(url):\n"
+        "    return pickle.load(gzip.GzipFile(fileobj = urlopen(url)))\n"
+        "def d(url):\n"
+        "    plugin = 'plugin.py'\n"
+        "    with open(plugin, 'wb') as out:\n"
+        "        shutil.copyfileobj(urlopen(url), out)\n"
+        "    runpy.run_path(plugin)\n"
+        "def e(repo):\n"
+        "    final = 'plugin.py'\n"
+        "    os.replace(hf_hub_download(repo, 'plugin.py'), final)\n"
+        "    runpy.run_path(final)\n",
+    )
+    sinks = {(f["qualname"], f["sink"]) for f in findings}
+    assert {
+        ("a", "pickle.loads"),
+        ("b", "pickle.loads"),
+        ("c", "pickle.load"),
+        ("d", "runpy.run_path"),
+        ("e", "runpy.run_path"),
+    } <= sinks
+
+
+def test_import_packages_class_namespaces_and_sink_callbacks(tmp_path):
+    """`import_module(package = ...)`, `getattr(LocalClass, ...)`, `Thread(target = sink)`."""
+    findings = _scan(
+        tmp_path,
+        "import httpx, json, subprocess, threading\n"
+        "from importlib import import_module\n"
+        "class Commands:\n"
+        "    def run(self):\n"
+        "        return 1\n"
+        "def a(blob):\n"
+        "    return import_module('.plugin', package = json.loads(blob)['package'])\n"
+        "def b(blob):\n"
+        "    return getattr(Commands, json.loads(blob)['action'])()\n"
+        "def c(blob):\n"
+        "    threading.Thread(target = subprocess.run, args = (json.loads(blob)['command'],)).start()\n"
+        "def d(client):\n"
+        "    def inner():\n"
+        "        client = httpx.Client()\n"
+        "        return client\n"
+        "    return import_module(client.get('module'))\n",
+    )
+    sinks = {(f["qualname"], f["sink"]) for f in findings}
+    assert {
+        ("a", "importlib.import_module"),
+        ("b", "getattr(module, ...)"),
+        ("c", "subprocess.run"),
+    } <= sinks
+    assert not [f for f in findings if f["qualname"] == "d" and f["tier"] == "A"]
