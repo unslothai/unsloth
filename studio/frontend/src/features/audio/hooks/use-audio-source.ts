@@ -120,6 +120,13 @@ export function useAudioSource({
   const valueKey = value ? `${value.kind}:${value.id}` : null;
   const previewKey = state.preview.key;
   const phase = state.status.phase;
+  // A new pick replaces an error about an earlier one (a failed upload, then a history clip).
+  const seenKey = useRef(valueKey);
+  useEffect(() => {
+    if (seenKey.current === valueKey) return;
+    seenKey.current = valueKey;
+    if (valueKey && phase === "error") dispatch({ type: "reset" });
+  }, [valueKey, phase]);
   useEffect(() => {
     if (!(value && valueKey)) return;
     if (
