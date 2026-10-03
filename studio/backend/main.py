@@ -2458,7 +2458,7 @@ def _probe_quantised_streaming(supported: Any) -> bool:
 def _quantised_streaming() -> bool:
     """The streaming bit for ``/api/system``. Resolved here only once a load has already loaded every
     module it reads, since a cold warm (UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1) never resolves it.
-    Initialised, not just present: probing mid-load races the load's own diffusers/peft import."""
+    Initialised, not just present: probing mid-load races the load's own diffusers / peft loading."""
     if _quantised_streaming_capability is None and all(
         (module := sys.modules.get(name)) is not None
         and not getattr(getattr(module, "__spec__", None), "_initializing", False)
