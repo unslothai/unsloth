@@ -6351,9 +6351,8 @@ def _widen_pin_ids_for_companion_devices(
     ``inherited_ids``, else the physical index). Cards they name are appended after the
     pinned ones, the winning flag is renumbered to the child's mask, and a main
     ``--device`` is added so ``-ngl -1`` does not spread over the extra cards. Tokens
-    the parent cannot see are left alone. With ``allowed_ids`` (explicit gpu_ids) the
-    mask only widens onto those cards. Returns the mask and a log note, empty when
-    unchanged.
+    the parent cannot see are left alone. ``allowed_ids`` (explicit gpu_ids) limits
+    widening to those cards. Returns the mask and a log note, empty when unchanged.
     """
     if not pin_ids:
         return list(pin_ids), ""
@@ -8578,10 +8577,8 @@ class LlamaCppBackend:
     def _adopt_widened_pin(self, pin_ids: List[int]) -> None:
         """Record a companion-widened explicit pin as the effective one (#12467).
 
-        The effective pin is recorded before the mask widens. /status echoes it and
-        dedupe adopts a request carrying it, so the narrower pin would come back as
-        the stored intent and reload without the companion card. Only an already
-        recorded pin is replaced: a launch that recorded none (forced CPU) stays None.
+        Else /status and dedupe keep the pre-widen pin and a reload drops the companion
+        card. A launch that recorded none (forced CPU) stays None.
         """
         if self._gpu_ids is not None:
             self._gpu_ids = [int(i) for i in pin_ids]
@@ -40872,6 +40869,7 @@ class LlamaCppBackend:
         max_new_tokens: int = 2048,
         repetition_penalty: float = 1.1,
         cancel_event: Optional[threading.Event] = None,
+        stats_holder: Optional[dict] = None,
     ) -> tuple:
         """
         Generate TTS audio via llama-server /completion + codec decode.
@@ -40956,6 +40954,8 @@ class LlamaCppBackend:
             raise RuntimeError("Audio generation cancelled")
 
         data = resp.json()
+        if stats_holder is not None:
+            stats_holder["stats"] = {"truncated": data.get("stop_type") == "limit"}
         token_ids = (
             [p["id"] for p in data.get("completion_probabilities", []) if "id" in p]
             if need_ids

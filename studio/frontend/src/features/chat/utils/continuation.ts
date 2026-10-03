@@ -61,6 +61,17 @@ export function resolveIncompleteReason<T extends IncompleteReason | null>(
   return contextWindowExceeded ? "context_window" : reason;
 }
 
+/** Let a context-window error refine a latched length stop; preserve other latched reasons. */
+export function incompleteReasonAfterError(
+  latched: IncompleteReason | null,
+  fromError: IncompleteReason,
+): IncompleteReason {
+  if (latched === "length" && fromError === "context_window") {
+    return fromError;
+  }
+  return latched ?? fromError;
+}
+
 /** Whether the provider reported this reason rather than the client inferring it; the provider
  *  wins where they disagree. */
 export function isProviderReportedReason(
