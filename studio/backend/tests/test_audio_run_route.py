@@ -593,9 +593,6 @@ def test_speak_in_a_saved_voice_on_a_speak_and_clone_model(stub, tmp_path):
     assert meta["voice_id"] == voice["id"] and meta["workflow"] == "speak"
 
 
-# ---------------------------------------------------------------------------
-# Music studio
-
 STABLE_AUDIO = "audio-cpp/audio.cpp-gguf/Stable-Audio-3-Small-Music-GGUF"
 ACE_STEP = "audio-cpp/audio.cpp-gguf/ACE-Step1.5-GGUF"
 
@@ -676,7 +673,6 @@ def test_music_variations_are_saved_as_one_group(stub, tmp_path):
     music = call["music"]
     assert (music["mode"], music["duration_s"], music["variations"]) == ("song", 10.0, 3)
     assert music["timeout_s"] >= 300 and call["max_new_tokens"] >= 750
-    # The run folder sits in ALICE's inputs and is gone afterwards.
     (run_dir,) = backend.run_dirs
     inputs_root = tmp_path / "accounts" / ALICE.account_id / "audio" / "inputs"
     assert run_dir.parent == inputs_root / "runs" and not run_dir.exists()
@@ -686,7 +682,6 @@ def test_music_variations_are_saved_as_one_group(stub, tmp_path):
     assert [m["settings"]["seed"] for m in metas] == [40, 41, 42]
     assert metas[0]["settings"]["mode"] == "song" and metas[0]["settings"]["duration_s"] == 10.0
     assert metas[0]["settings"]["options"] == {"sampler": "euler"}
-    # Group and role survive the history listing; no server path anywhere.
     items = {i["id"]: i for i in listing["audio"]}
     for clip in body["clips"]:
         assert items[clip["id"]]["group_id"] == body["group_id"]
@@ -707,7 +702,6 @@ def test_a_single_take_is_an_output_with_no_group(stub, tmp_path):
     body = response.json()
     assert response.status_code == 200 and body["group_id"] is None
     assert [c["role"] for c in body["clips"]] == ["output"]
-    # No length given: the mode's default.
     assert backend.calls[0]["music"]["duration_s"] == 30.0
 
 
@@ -727,7 +721,6 @@ def test_a_manifest_entry_outside_the_run_folder_is_never_read(stub, tmp_path):
     with _client(ALICE) as client:
         response = _music(client)
     body = response.json()
-    # Falls back to the audio the worker returned.
     assert response.status_code == 200 and len(body["clips"]) == 1
     assert body["clips"][0]["sample_rate"] == 44100
 
@@ -985,5 +978,4 @@ def test_the_orchestrator_sends_music_and_merges_the_reload_status(monkeypatch):
     )
     (cmd,) = sent
     assert cmd["music"] == music and cmd["output_dir"] == "/acct/audio/inputs/runs/abc"
-    # Only the music status is taken from the worker.
     assert orchestrator.models["m"] == {"is_audio": True, "audio_music": reloaded}

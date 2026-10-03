@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Music's model tools: ACE-Step's musical controls, YuE2's composition planning and Stable
-// Audio's sampler, each in plain words over the runtime's options.
-
 import {
   Select,
   SelectContent,
@@ -34,7 +31,7 @@ import {
 } from "./music-panel-logic";
 import type { AudioToolPanel } from "./types";
 
-/** The Select value meaning "let the model decide"; Radix forbids an empty item value. */
+/** Radix forbids an empty item value. */
 const AUTO = "auto";
 
 function AutoSelect({
@@ -212,7 +209,6 @@ export const stableAudioSamplerPanel: AudioToolPanel<StableAudioSamplerValue> =
     },
   };
 
-/** Music's panels, in rail order. Each family matches at most one. */
 export const MUSIC_TOOL_PANELS = [
   aceStepMusicalPanel,
   yueCompositionPanel,

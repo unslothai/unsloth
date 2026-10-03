@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Music's model tools without their components, so the node test runner can load them.
+// No app imports: the node test runner loads this directly.
 
 import type { AudioOptionSpec } from "../audio-options";
 import type { AudioToolPanel } from "./types";
@@ -15,8 +15,6 @@ function specDefault(
   const value = specs.find((spec) => spec.name === name)?.default;
   return value === undefined ? null : value;
 }
-
-// ---- ACE-Step: Musical controls ---------------------------------------------------------------
 
 export const ACE_STEP_NOTES = [
   "C",
@@ -33,12 +31,10 @@ export const ACE_STEP_NOTES = [
   "B",
 ] as const;
 
-/** "C major", "F# minor": the runtime's own spelling. */
 export const ACE_STEP_KEYS: readonly string[] = ACE_STEP_NOTES.flatMap(
   (note) => [`${note} major`, `${note} minor`],
 );
 
-/** Beats per bar; the runtime reads "4" for 4/4. */
 export const ACE_STEP_TIME_SIGNATURES = [
   { value: "2", label: "2/4" },
   { value: "3", label: "3/4" },
@@ -49,15 +45,10 @@ export const ACE_STEP_TIME_SIGNATURES = [
 export const ACE_STEP_BPM = { min: 30, max: 300, default: 100 } as const;
 
 export interface AceStepMusicalValue {
-  /** null: the model picks the tempo. */
   bpm: number | null;
-  /** "": the model picks the key. */
   keyscale: string;
-  /** "": the model picks. */
   timesignature: string;
-  /** What to keep out of the music. */
   avoid: string;
-  /** "": the model default. */
   sampler: string;
 }
 
@@ -103,8 +94,6 @@ export const aceStepMusicalLogic: MusicPanelLogic<AceStepMusicalValue> = {
   },
 };
 
-// ---- YuE2: Composition ------------------------------------------------------------------------
-
 export type YueCot = "off" | "melody" | "full";
 
 export const YUE_COT_LABELS: Record<YueCot, { label: string; hint: string }> = {
@@ -138,17 +127,13 @@ export const yueCompositionLogic: MusicPanelLogic<YueCompositionValue> = {
   toRequest: (value) => ({ options: { cot: value.cot } }),
 };
 
-// ---- Stable Audio: Sampler ---------------------------------------------------------------------
-
 export const STABLE_AUDIO_SAMPLERS = [
   { value: "pingpong", label: "Ping-pong" },
   { value: "euler", label: "Euler" },
 ] as const;
 
 export interface StableAudioSamplerValue {
-  /** "": the model default. */
   sampler: string;
-  /** null: the model default. */
   steps: number | null;
 }
 
@@ -174,7 +159,6 @@ export const stableAudioSamplerLogic: MusicPanelLogic<StableAudioSamplerValue> =
     },
   };
 
-/** The steps range a model's spec gives, else a safe one. */
 export function stepsRange(specs: AudioOptionSpec[]): {
   min: number;
   max: number;

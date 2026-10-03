@@ -68,7 +68,6 @@ const SOURCE_LABEL: Record<AudioSourceSelection["kind"], string> = {
   voice: "Saved voice",
 };
 
-/** What the card has decoded for the picked source, for a caller that draws its own waveform. */
 export interface AudioSourcePreviewView {
   peaks: number[] | null;
   durationS: number | null;
@@ -113,9 +112,7 @@ export function AudioSourceInput({
   handleRef?: Ref<AudioSourceInputHandle>;
   /** Hears what the card is doing (uploading, failed, expired), for the page's Generate blocker. */
   onStatusChange?: (status: AudioSourceStatus) => void;
-  /** Draws the picked source in place of the plain waveform (Music's Edit picks parts on it). */
   renderWaveform?: (preview: AudioSourcePreviewView) => ReactNode;
-  /** Past this length the card says only the start is used; null when the whole clip is used. */
   maxSeconds?: number | null;
 }) {
   const source = useAudioSource({ value, onChange });

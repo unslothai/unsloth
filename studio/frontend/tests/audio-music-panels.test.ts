@@ -92,7 +92,6 @@ test("ACE-Step sends only what the user set, in the runtime's spelling", () => {
       },
     },
   );
-  // Unknown keys and time signatures never reach the request.
   assert.deepEqual(
     aceStepMusicalLogic.toRequest({
       ...value,

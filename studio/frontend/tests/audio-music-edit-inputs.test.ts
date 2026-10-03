@@ -63,7 +63,6 @@ test("each missing piece is named, in the order it is fixed", () => {
     musicEditProblem(aceRule, draft({ action: null }), 20),
     "Pick what to do with the clip.",
   );
-  // An action the loaded model does not offer counts as none.
   assert.equal(
     musicEditProblem(aceRule, draft({ action: "inpaint" }), 20),
     "Pick what to do with the clip.",
@@ -217,7 +216,6 @@ test("the inputs reuse the source card and keep lyrics out of edit", () => {
   assert.match(ui, /"Add seconds"/);
   assert.match(ui, /Extends the clip by/);
   assert.match(ui, /export \{ musicEditProblem \}/);
-  // The contract sends lyrics only in song mode.
   assert.doesNotMatch(ui, /draft\.lyrics/);
 });
 

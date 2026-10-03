@@ -510,7 +510,6 @@ export function TtsOutput({
     element.focus();
     onFreshClipFocused();
   };
-  // Clips one run made together read as one row ("3 variations") that opens to list them.
   const [openGroups, setOpenGroups] = useState<ReadonlySet<string>>(
     () => new Set(),
   );

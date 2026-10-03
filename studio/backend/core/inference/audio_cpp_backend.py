@@ -191,10 +191,8 @@ class AudioCppBackend:
         self._model: Optional[AudioCppModel] = None
         self._server: Optional[AudioCppServer] = None
         self._server_lock = threading.RLock()
-        # Session options a request raised for the loaded model (Stable Audio's max_batch); kept
-        # across restarts of the same model, cleared when another one loads.
+        # Request-raised session options (Stable Audio max_batch); cleared when another model loads.
         self._session_overrides: dict[str, str] = {}
-        # Status fields a request changed (a reload), for the worker to hand the parent once.
         self._status_patch: Optional[dict[str, Any]] = None
 
     # Loading
@@ -585,10 +583,7 @@ class AudioCppBackend:
         )
         return _audio_from_task_response(ctype, data)
 
-    # Music studio (/audio/run)
-
     def take_status_patch(self) -> Optional[dict[str, Any]]:
-        """Status fields the last request changed (a Stable Audio reload), once; else None."""
         patch, self._status_patch = self._status_patch, None
         return patch
 
@@ -599,10 +594,8 @@ class AudioCppBackend:
             return 1
 
     def _server_for_batch(self, model: AudioCppModel, batch: int, cancel_event) -> AudioCppServer:
-        """The running server, restarted once with room for ``batch`` Stable Audio variations.
-
-        The session's max_batch only grows (to the most a request may ask for), so one reload
-        covers every later batch; a batch the session already fits never restarts it."""
+        """The running server, restarted once with max_batch raised to the cap, so later batches
+        never reload."""
         with self._server_lock:
             if batch <= self._max_batch():
                 return self._running_server(model, cancel_event)
@@ -618,7 +611,6 @@ class AudioCppBackend:
             try:
                 self._start_server(model, cancel_event)
             except BaseException:
-                # The next request starts the session it had, not the one that failed.
                 self._session_overrides = previous
                 raise
             rules = music_rules(model, self._max_batch())
@@ -637,10 +629,8 @@ class AudioCppBackend:
         output_dir: Optional[str],
         cancel_event,
     ) -> Tuple[bytes, int]:
-        """One Music studio run: a song, a sound effect (N variations) or an edit of ``source``.
-
-        Every output goes to ``output_dir`` with an ``outputs.json`` manifest for the route; the
-        first one is returned, as for any other request."""
+        """Every output goes to ``output_dir`` with an ``outputs.json`` manifest; the first is
+        returned."""
         if model.task != "music" or model.music is None:
             raise RuntimeError(f"{model.display_name} does not make music in the Music studio.")
         mode_id = str(music.get("mode") or "song")
@@ -772,7 +762,6 @@ _MANIFEST = "outputs.json"
 
 
 def _with_session_overrides(model: AudioCppModel, overrides: dict[str, str]) -> AudioCppModel:
-    """``model`` with request-raised session options (Stable Audio's max_batch) merged in."""
     if not overrides:
         return model
     session = dict((model.model_options or {}).get("session_options") or {})
@@ -781,8 +770,7 @@ def _with_session_overrides(model: AudioCppModel, overrides: dict[str, str]) -> 
 
 
 def _write_outputs(output_dir: str, outputs) -> None:
-    """Each output as ``NN.wav`` in ``output_dir`` plus the ``outputs.json`` manifest the route
-    reads: ``[{"id", "file", "sample_rate", "duration_s", "seed"}]`` with bare file names."""
+    """Bare file names only: the route refuses any path outside ``output_dir``."""
     directory = Path(output_dir)
     directory.mkdir(parents = True, exist_ok = True)
     manifest = []
@@ -808,7 +796,6 @@ def _audio_from_task_response(content_type: str, data: bytes) -> bytes:
         return task_outputs(content_type, data)[0][1]
     except RuntimeError:
         pass
-    # Older reply shapes: the first base64 WAV anywhere in the JSON.
     if content_type.startswith("audio/") or data[:4] == b"RIFF":
         return data
     try:

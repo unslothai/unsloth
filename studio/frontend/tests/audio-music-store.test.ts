@@ -12,7 +12,6 @@ import {
 const { store } = installLocalStorageFake();
 registerBundlerResolver();
 
-// Saved by an older build: no extendS, no lyrics on edit.
 store.set(
   "unsloth_audio_music_v1",
   JSON.stringify({
@@ -88,7 +87,6 @@ test("Edit in Music opens Edit on the clip and drops ranges drawn on another cli
   assert.equal(state.edit.source?.id, "b");
   assert.equal(state.edit.action, "extend");
   assert.deepEqual(state.edit.ranges, []);
-  // The other modes are untouched.
   assert.equal(state.sfx.prompt, "rain");
 });
 
@@ -102,7 +100,6 @@ test("an empty change prompt starts from the clip's own description", () => {
     durationS: 30,
   });
   assert.equal(useAudioMusicStore.getState().edit.prompt, "lofi beat");
-  // A prompt the user wrote is kept.
   patchDraft("edit", { prompt: "brighter" });
   pushClipToEdit({
     kind: "clip" as const,
@@ -111,7 +108,6 @@ test("an empty change prompt starts from the clip's own description", () => {
     durationS: 30,
   });
   assert.equal(useAudioMusicStore.getState().edit.prompt, "brighter");
-  // The loaded model's edit abilities are not kept across reloads.
   useAudioMusicStore.getState().setLoadedEditActions(["inpaint"]);
   const saved = JSON.parse(store.get("unsloth_audio_music_v1") ?? "{}");
   assert.equal("loadedEditActions" in saved.state, false);

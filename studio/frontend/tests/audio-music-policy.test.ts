@@ -79,7 +79,6 @@ const YUE = {
   ],
 };
 
-/** The parsed capabilities, failing the test when the status is rejected. */
 function caps(raw: unknown) {
   const parsed = parseMusicCapabilities(raw);
   assert.ok(parsed);
@@ -112,7 +111,6 @@ test("status parsing keeps known modes and drops malformed ones", () => {
   );
   assert.equal(parsed.modes[0].variations?.how, "batch");
   assert.deepEqual(parsed.modes[1].actions, ["inpaint", "restyle"]);
-  // A one-variation rule is no variations control at all.
   const single = caps({
     modes: [{ id: "sfx", variations: { max: 1, how: "batch" } }],
   });
@@ -255,7 +253,6 @@ test("variations go only to models that make them", () => {
   );
   assert.equal(body.variations, 3);
   assert.equal("lyrics" in body, false);
-  // Stable Audio only makes instrumentals; the switch is not the user's to send.
   assert.equal("instrumental" in body, false);
   const minimax = caps(MINIMAX).modes[0];
   const single = buildAudioRunBody(
@@ -305,7 +302,6 @@ test("an edit sends the source by id, its ranges and the action's own value", ()
     ),
   );
   assert.deepEqual(restyle.edit, { action: "restyle", strength: 0.9 });
-  // A saved voice is never an edit source.
   const voice = buildAudioRunBody(
     buildMusicRunRequest(
       inputs(edit, {

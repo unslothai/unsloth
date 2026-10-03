@@ -21381,7 +21381,7 @@ def _audio_request_problem(
     label = _audio_model_label(model_name)
     inputs = (run_inputs or {}).get("audio_inputs") or {}
     if run_inputs and run_inputs.get("workflow") == "music":
-        # The route checked the mode's fields against this status; the model may have changed since.
+        # The model may have changed since the route checked the mode.
         if not model_info.get("audio_music"):
             return _audio_music_unavailable(label)
         return None
@@ -21803,8 +21803,7 @@ def _music_mode_rules(rules: Optional[dict], mode: Optional[str]) -> Optional[di
 def _audio_music_body_problem(
     body: AudioRunRequest, rules: Optional[dict], label: str
 ) -> Optional[str]:
-    """Why the loaded model cannot run this Music request as sent, in words for the user; else None.
-    Checks what the request alone decides; the source clip's length is checked once it is found."""
+    """User-facing reason the loaded model cannot run this request, else None."""
     if body.inputs.reference or body.inputs.emotion or body.inputs.reference_text:
         return "Music takes a clip to edit, not a voice reference. Remove the reference."
     if not rules:
@@ -21861,7 +21860,6 @@ def _audio_music_body_problem(
 def _audio_music_source_problem(
     body: AudioRunRequest, rules: dict, source_s: float, song_max: float
 ) -> Optional[str]:
-    """Checks that need the source clip's length."""
     mode = _music_mode_rules(rules, "edit") or {}
     max_source = float(mode.get("max_source_s") or 240.0)
     if source_s > max_source + 0.05:
@@ -21890,7 +21888,7 @@ def _audio_music_settings(
     seed: Optional[int],
     variation: Optional[int],
 ) -> dict[str, Any]:
-    """A Music run's recipe for history: scalar options only, never a file or server path."""
+    """Scalars only: never a file or server path."""
     settings = _audio_run_settings(body, False)
     settings.update(
         {
@@ -21913,8 +21911,7 @@ def _audio_music_settings(
 
 
 def _read_music_outputs(run_dir: Path) -> list[tuple[bytes, int, Optional[int]]]:
-    """``(wav, sample_rate, seed)`` per output the worker listed in ``run_dir/outputs.json``.
-    A listed file outside ``run_dir`` (or not a WAV) is refused, never read."""
+    """A listed file outside ``run_dir`` is never read."""
     from core.inference.audio_task_outputs import wav_header
 
     try:
@@ -21943,8 +21940,6 @@ def _read_music_outputs(run_dir: Path) -> list[tuple[bytes, int, Optional[int]]]
 async def _run_music_workflow(
     body: AudioRunRequest, request: Request, current_subject: str
 ) -> AudioRunResponse:
-    """``/audio/run`` for the Music studio: a song or sound effect (N variations share a group) or
-    an edit of an upload or history clip, prepared here in the caller's account."""
     import base64
     import shutil
 
@@ -21952,7 +21947,6 @@ async def _run_music_workflow(
     from core.inference.audio_cpp_models import MUSIC_SPECS
     from core.inference.audio_cpp_music import frames_for, timeout_seconds
 
-    # Restore an idle-evicted model first, so the checks below read the model that will run.
     await _maybe_auto_switch_model(
         _RELOAD_ONLY_MODEL,
         request,
@@ -22025,7 +22019,7 @@ async def _run_music_workflow(
         run_dir.mkdir(parents = True, exist_ok = True)
         payload = ChatCompletionRequest(
             messages = [{"role": "user", "content": body.text or body.lyrics or ""}],
-            # The orchestrator's deadline scales with this budget; the worker reads seconds above.
+            # Only scales the orchestrator's deadline.
             max_tokens = max(1, min(8192, frames_for(work_s, variations))),
             audio_options = body.options,
             seed = body.seed,
@@ -22097,8 +22091,7 @@ async def run_audio_workflow(
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
-    """Run one Audio page workflow (Clone, Speak in a saved voice, or Music) and save the clips to
-    history.
+    """Run one Audio page workflow (Clone, Speak in a saved voice, or Music); clips go to history.
 
     Audio is named by id (an upload, a history clip or a saved voice) and resolved here, in the
     caller's account, to a prepared 24 kHz mono copy; the worker receives that path, never bytes

@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// What Music's Edit mode asks for per action, and why Generate is off. Free of app imports so the
-// node test runner can load it directly.
-
 import { MIN_RANGE_S } from "../components/waveform-range";
 import type {
   MusicEditAction,
@@ -30,13 +27,11 @@ export const MUSIC_EDIT_ACTION_HINT: Record<MusicEditAction, string> = {
   restyle: "Re-render the whole clip in a new style.",
 };
 
-/** How far past the end a repaint may reach; the part past the end extends the clip. */
 export const REPAINT_BEYOND_END_S = 30;
 
 export const EXTEND_MIN_S = 5;
 export const EXTEND_MAX_S = 120;
 
-/** "How much to change" when the draft leaves it to the model (null), per action. */
 export const MUSIC_EDIT_DEFAULT_STRENGTH: Partial<
   Record<MusicEditAction, number>
 > = {
@@ -52,7 +47,6 @@ export function editUsesStrength(action: MusicEditAction | null): boolean {
   return action === "cover" || action === "restyle";
 }
 
-/** Repaint changes one part; inpaint up to the model's limit. */
 export function editMaxRanges(
   rule: MusicModeRule,
   action: MusicEditAction | null,
@@ -62,17 +56,14 @@ export function editMaxRanges(
   return 0;
 }
 
-/** Seconds a part may run past the end: only a repaint, which then extends the clip. */
 export function editBeyondEndS(action: MusicEditAction | null): number {
   return action === "repaint" ? REPAINT_BEYOND_END_S : 0;
 }
 
-/** The actions the loaded model offers, in the order the status lists them. */
 export function editActions(rule: MusicModeRule): MusicEditAction[] {
   return rule.actions ?? [];
 }
 
-/** "4 minutes", "1 minute", or "90 s" when it is not whole minutes. */
 export function formatEditLimit(seconds: number): string {
   if (seconds >= 60 && seconds % 60 === 0) {
     const minutes = seconds / 60;
@@ -81,7 +72,6 @@ export function formatEditLimit(seconds: number): string {
   return `${Math.round(seconds)} s`;
 }
 
-/** The clip is longer than the model can edit, said as the card shows it. */
 export function editSourceTooLong(
   rule: MusicModeRule,
   sourceDurationS: number | null,
@@ -95,7 +85,6 @@ export function editSourceTooLong(
 // Times come back rounded to a hundredth; allow that much slack.
 const EPSILON = 0.011;
 
-/** What is wrong with the picked parts, or null when they can be sent. */
 export function editRangeProblem(
   rule: MusicModeRule,
   draft: Pick<MusicEditDraft, "action" | "ranges">,
@@ -135,7 +124,6 @@ export function editRangeProblem(
   return null;
 }
 
-/** Why Generate is off in Edit mode, as one sentence, or null when it can run. */
 export function musicEditProblem(
   rule: MusicModeRule,
   draft: MusicEditDraft,
@@ -167,8 +155,6 @@ export function musicEditProblem(
 
 export type SendAction = "edit" | "extend";
 
-/** What a history clip offers for the loaded model: nothing when it cannot edit, Extend only
- *  when its Edit mode extends. */
 export function sendActionsFor(
   editActions: readonly string[],
 ): readonly SendAction[] {

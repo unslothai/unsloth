@@ -37,9 +37,7 @@ export function Waveform({
   /** What the clip is, for screen readers. */
   label: string;
   className?: string;
-  /** Seconds of room drawn after the clip's end, dashed, for a part that may run past it. */
   tailS?: number;
-  /** Drawn over the bars and the tail, such as picked ranges. It handles its own pointer events. */
   overlay?: ReactNode;
 }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);

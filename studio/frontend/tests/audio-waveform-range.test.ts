@@ -58,7 +58,6 @@ test("a range is ordered, clamped and at least 0.25 s", () => {
     start_s: 3,
     end_s: 3 + MIN_RANGE_S,
   });
-  // Too short at the very end grows backwards.
   assert.deepEqual(clampRange({ start_s: 9.95, end_s: 10 }, inside), {
     start_s: 9.75,
     end_s: 10,
@@ -99,7 +98,6 @@ test("max ranges caps the list; one allowed replaces, past the cap is refused", 
     3,
   );
   assert.deepEqual(addRange(three, { start_s: 7, end_s: 8 }, inside), three);
-  // Merging into an existing part still works at the cap.
   assert.deepEqual(addRange(three, { start_s: 4.5, end_s: 6 }, inside).at(-1), {
     start_s: 4,
     end_s: 6,
@@ -131,18 +129,15 @@ test("arrow keys nudge by 0.1 s, Shift+arrow by 1 s", () => {
   assert.deepEqual(moveRange(ranges, 0, "end", 1, inside), [
     { start_s: 2, end_s: 5 },
   ]);
-  // An edge never crosses the other or goes under the minimum width.
   assert.deepEqual(moveRange(ranges, 0, "start", 5, inside), [
     { start_s: 3.75, end_s: 4 },
   ]);
-  // Moving the whole range keeps its width at the walls.
   assert.deepEqual(moveRange(ranges, 0, "both", -5, inside), [
     { start_s: 0, end_s: 2 },
   ]);
   assert.deepEqual(moveRange(ranges, 0, "both", 50, inside), [
     { start_s: 8, end_s: 10 },
   ]);
-  // Moving into a neighbour merges them.
   assert.deepEqual(
     moveRange(
       [
@@ -208,7 +203,6 @@ test("times read as 0:01.2 and ranges have spoken labels", () => {
 
 test("the range select is neutral, static and keyboard reachable", () => {
   const source = readSrc("features/audio/components/waveform-range-select.tsx");
-  // The tint is bg-foreground/10 spelled so the contrast slider can move it.
   assert.match(
     source,
     /var\(--foreground\)_calc\(10%\*var\(--contrast-wash-gain,1\)\)/,

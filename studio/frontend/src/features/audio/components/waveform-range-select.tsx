@@ -53,10 +53,6 @@ type Drag =
       base: WaveRange[];
     };
 
-/** A clip's waveform where parts can be picked: drag across the bars to select a part, drag its
- *  edges to resize, or use "Select a part" and the arrow keys. Each part is listed under the bars
- *  as a focusable chip with its times; Delete removes it. Parts are a tinted box with a ring, and
- *  the times are written out, so colour never carries them alone. Nothing animates. */
 export function WaveformRangeSelect({
   peaks,
   durationS,
@@ -76,7 +72,6 @@ export function WaveformRangeSelect({
   ranges: readonly WaveRange[];
   onChange: (next: WaveRange[]) => void;
   maxRanges: number;
-  /** Seconds a part may run past the clip's end, drawn as a dashed tail; 0 keeps parts inside. */
   beyondEndS?: number;
   disabled?: boolean;
   className?: string;
@@ -115,7 +110,6 @@ export function WaveformRangeSelect({
   const remove = (index: number) => {
     commit(removeRange(ranges, index));
     setFocused(null);
-    // Focus stays in the list: the next chip, else the one before.
     requestAnimationFrame(() => focusChip(index));
   };
 
@@ -136,7 +130,6 @@ export function WaveformRangeSelect({
     commit(moveRange(ranges, index, edge, step, limits));
   };
 
-  // Drags start anywhere on the bars or the tail; the play button and the chips are left alone.
   const onPointerDown = (event: PointerEvent<HTMLDivElement>) => {
     if (!ready || event.button !== 0) return;
     const area = areaRef.current?.parentElement;
@@ -159,7 +152,7 @@ export function WaveformRangeSelect({
         if (Math.abs(event.clientX - current.startX) < DRAG_THRESHOLD_PX)
           return;
         current.active = true;
-        // Captured only once it is a drag, so a plain click still reaches the bars and seeks.
+        // Captured only once it is a drag, so a plain click still seeks.
         event.currentTarget.setPointerCapture(event.pointerId);
       }
       const range = dragToRange(current.anchorS, at, limits);
@@ -183,7 +176,7 @@ export function WaveformRangeSelect({
     drag.current = null;
     const moved = current.kind === "edge" || current.active;
     if (moved) {
-      // The click that ends a drag must not seek; a touch drag may send none, so it lapses.
+      // The click ending a drag must not seek; a touch drag may send none, so it lapses.
       suppressClick.current = true;
       window.setTimeout(() => {
         suppressClick.current = false;
@@ -268,7 +261,6 @@ export function WaveformRangeSelect({
 
   return (
     <div className={cn("grid gap-2", className)}>
-      {/* The pointer handlers sit on the row so a drag keeps going past the bars' edge. */}
       <div
         data-range-root=""
         className={cn(ready && "touch-none select-none")}

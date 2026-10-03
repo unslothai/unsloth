@@ -25,8 +25,6 @@ const SEND_ICON = {
   extend: TimeQuarterPassIcon,
 } as const;
 
-/** Opens Music's Edit mode on a history clip ("Extend in Music" also picks Extend), then moves
- *  the page to Music through the same gate as its tabs. */
 export function sendClipToMusic(
   clip: AudioGalleryClip,
   action: SendAction,
@@ -46,7 +44,6 @@ export function sendClipToMusic(
   if (workspace.workflow !== "music") workspace.requestWorkflow("music");
 }
 
-/** Only music clips can be edited as music. */
 export function canSendToMusic(clip: AudioGalleryClip): boolean {
   return clipWorkflow(clip) === "music";
 }
@@ -56,7 +53,6 @@ function useSendActions(clip: AudioGalleryClip): readonly SendAction[] {
   return canSendToMusic(clip) ? sendActionsFor(editActions) : [];
 }
 
-/** "Edit" and "Extend" for a history row's menu, when the loaded model can. */
 export function MusicSendToMenuItems({ clip }: { clip: AudioGalleryClip }) {
   const actions = useSendActions(clip);
   if (actions.length === 0) return null;
@@ -79,7 +75,6 @@ export function MusicSendToMenuItems({ clip }: { clip: AudioGalleryClip }) {
   );
 }
 
-/** The same two actions on the selected clip's toolbar. */
 export function MusicSendToButtons({ clip }: { clip: AudioGalleryClip }) {
   const actions = useSendActions(clip);
   if (actions.length === 0) return null;

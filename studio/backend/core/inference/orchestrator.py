@@ -3432,15 +3432,13 @@ class InferenceOrchestrator:
                     cmd["reference_text"] = reference_text
                 if speed is not None:
                     cmd["speed"] = float(speed)
-                # Music studio: the run's fields and the account run folder its outputs go to.
                 if music is not None:
                     cmd["music"] = dict(music)
                     try:
                         music_wait = float(music.get("timeout_s") or 0.0)
                     except (TypeError, ValueError):
                         music_wait = 0.0
-                    # The worker waits this long for the runtime; outlast it so its error, not a
-                    # watchdog, reaches the caller.
+                    # Outlast the worker's wait so its error, not the watchdog, reaches the caller.
                     generation_timeout = max(generation_timeout, music_wait + 60.0)
                 if output_dir is not None:
                     cmd["output_dir"] = str(output_dir)
@@ -3507,7 +3505,6 @@ class InferenceOrchestrator:
                             sample_rate = resp["sample_rate"]
                             status_patch = resp.get("status_patch")
                             if isinstance(status_patch, dict):
-                                # Only the music status changes with a request (a reload).
                                 live = self.models.get(expected_model)
                                 if live is not None and "audio_music" in status_patch:
                                     live["audio_music"] = status_patch["audio_music"]

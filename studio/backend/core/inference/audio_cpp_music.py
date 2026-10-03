@@ -1,16 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""audio.cpp music requests, as pure functions of the model and the Music studio's fields.
+"""audio.cpp music request bodies for ``/audio/generate`` and ``/audio/run``.
 
-``song_request`` builds one ``/v1/tasks/run`` request for a song or a sound effect, the same way
-for the legacy ``/audio/generate`` path and ``/audio/run``. ``edit_request`` builds an edit of a
-source clip (ACE-Step repaint, extend, cover, continue; Stable Audio inpaint, restyle).
-
-A strict spec (one with ``schema_version``: HeartMuLa, MiDashengLM, ControlFoley, MiniMax, YuE2)
-makes the runtime refuse any request option it does not declare, so only declared keys are sent
-to those; the CLI's top-level shortcuts (``duration_seconds``, ``lyrics``) become options it would
-otherwise refuse. MiniMax keeps the body it has always had: its session reads both duration keys.
+A strict spec (``schema_version``) refuses undeclared options, so the CLI's top-level shortcuts
+(``duration_seconds``, ``lyrics``) are sent to it only as declared options. MiniMax keeps its old
+body: its session reads both duration keys.
 """
 
 from __future__ import annotations
@@ -29,17 +24,15 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# Seconds of work per second of audio on a GPU (with a CPU ten times that), for the wait on one
-# music request; the floor and ceiling bound it whatever the family.
 _TIMEOUT_FLOOR = 300.0
 _TIMEOUT_CEILING = 4 * 3600.0
 _CPU_FACTOR = 10.0
-# Studio draws seeds in the range every family's spec accepts (MiDashengLM's max is 2**31 - 1).
+# MiDashengLM's spec caps seeds at 2**31 - 1.
 _SEED_LIMIT = 2**31 - 1
 
 
 class MusicRequestError(ValueError):
-    """A music request the model cannot run as asked, in words for the user."""
+    """Message shown to the user as is."""
 
 
 def random_seed() -> int:
@@ -51,7 +44,6 @@ def seconds_text(value: float) -> str:
 
 
 def timeout_seconds(family: Optional[str], seconds: float, variations: int, cpu: bool) -> float:
-    """How long Studio waits for one music request: grows with the audio asked for, bounded."""
     music = MUSIC_SPECS.get(str(family or ""))
     rtf = music.rtf if music is not None else 4.0
     work = rtf * max(0.0, float(seconds)) * max(1, int(variations)) * (_CPU_FACTOR if cpu else 1.0)
@@ -59,12 +51,10 @@ def timeout_seconds(family: Optional[str], seconds: float, variations: int, cpu:
 
 
 def frames_for(seconds: float, variations: int = 1) -> int:
-    """The token budget the orchestrator's deadline scales with: 25 frames per second of audio."""
     return int(math.ceil(max(0.0, float(seconds)) * 25 * max(1, int(variations))))
 
 
 def music_rules(model: AudioCppModel, max_batch: int = 1) -> Optional[dict[str, Any]]:
-    """The ``audio_music`` status a Music page reads; None for a model it does not drive."""
     music = model.music
     if music is None or model.task != "music":
         return None
@@ -101,8 +91,7 @@ def music_rules(model: AudioCppModel, max_batch: int = 1) -> Optional[dict[str, 
             {
                 "max": MUSIC_MAX_VARIATIONS,
                 "how": mode.variations,
-                # How many a request makes without a reload: a batch is bounded by the loaded
-                # session, sequential takes are not.
+                # Variations one request makes without a reload.
                 "loaded": max(1, int(max_batch))
                 if mode.variations == "batch"
                 else MUSIC_MAX_VARIATIONS,
@@ -119,8 +108,6 @@ def _declared(model: AudioCppModel, name: str) -> bool:
 
 
 def _put_option(model: AudioCppModel, request: dict, options: dict, name: str, value: Any) -> None:
-    """A field the CLI also takes top-level: there for a spec the runtime does not check (today's
-    body), else as a declared option, else nowhere."""
     if model.request_keys is None:
         request[name] = value
     elif name in model.request_keys:
@@ -167,7 +154,6 @@ def song_request(
     instrumental: bool = False,
     batch: int = 1,
 ) -> dict[str, Any]:
-    """One song or sound-effect request (the ``request`` of ``{"model", "request"}``)."""
     description = str(description or "").strip()
     lyrics = str(lyrics or "").strip()
     music = model.music
@@ -176,8 +162,7 @@ def song_request(
     if model.family == "minimax_music3":
         if not lyrics:
             raise MusicRequestError("MiniMax Music 3 needs lyrics.")
-        # The caption is the input. The task route maps duration_seconds onto the duration_sec
-        # option; sending both is refused as "conflicting option values", even when equal.
+        # Sending duration_seconds and duration_sec together is refused as conflicting, even equal.
         request.update(
             {"text": description or lyrics, "lyrics": lyrics, "duration_seconds": seconds}
         )
@@ -190,8 +175,7 @@ def song_request(
     if model.family == "yue2":
         if not description:
             raise MusicRequestError("YuE2 needs a style description.")
-        # Without lyrics YuE2 sings anyway: its text input when the option is missing, made-up
-        # words when it is empty. Only an "[Instrumental]" lyric comes back wordless (GPU check).
+        # Missing or empty lyrics still sing; only "[Instrumental]" comes back wordless.
         if instrumental or not lyrics:
             lyrics = (
                 music.instrumental_lyrics
@@ -201,8 +185,7 @@ def song_request(
         request["text"] = lyrics
         request_options["style"] = description
         request_options["lyrics"] = lyrics
-        # YuE2's length is its semantic token budget at 25 frames per second (default 9000, six
-        # minutes), and its default floor of 200 frames would outlast a short request.
+        # Length is the semantic token budget (25 fps); the default 200-frame floor outlasts short asks.
         frames = int(round(seconds * 25))
         request_options["semantic_max_tokens"] = frames
         request_options["semantic_min_tokens"] = min(200, frames)
@@ -228,13 +211,12 @@ def legacy_song_request(
     options: dict,
     seed: Optional[int],
 ) -> dict[str, Any]:
-    """``/audio/generate``'s music form: the description is the instructions, the lyrics the
-    text (the MiniMax convention); a lone prompt with no description is the description."""
+    """Description = instructions, lyrics = text; a lone prompt is the description."""
     description = str(instructions or "").strip()
     lyrics = str(text or "").strip()
     if model.family not in ("minimax_music3", "yue2") and not description:
         description, lyrics = lyrics, ""
-    # Never past what the Music page would allow for this model (MiDashengLM crashes past 81 s).
+    # MiDashengLM crashes past 81 s.
     mode = model.music.modes[0] if model.music is not None and model.music.modes else None
     if mode is not None:
         seconds = min(seconds, mode.duration[1])
@@ -249,7 +231,6 @@ def legacy_song_request(
 
 
 def merge_ranges(ranges: list[tuple[float, float]], limit: float) -> list[tuple[float, float]]:
-    """Ranges clamped to ``[0, limit]``, sorted, overlapping ones merged, empty ones dropped."""
     clamped = sorted(
         (max(0.0, float(s)), min(float(limit), float(e)))
         for s, e in ranges
@@ -275,7 +256,6 @@ def edit_request(
     options: dict,
     seed: Optional[int] = None,
 ) -> dict[str, Any]:
-    """An edit of the server-local ``source`` WAV (prepared at the family's edit rate)."""
     mode = model.music.mode("edit") if model.music is not None else None
     action = str(edit.get("action") or "")
     if mode is None or action not in mode.actions:
@@ -293,7 +273,7 @@ def edit_request(
                 start, end = source_seconds, source_seconds + float(edit.get("extend_s") or 0.0)
             else:
                 (start, end) = ranges[0]
-            # The window's end may pass the clip: ACE-Step pads it, which extends the song.
+            # The window may pass the clip's end: ACE-Step pads it, extending the song.
             request_options.update(
                 {"route": "repaint", "repainting_start": start, "repainting_end": end}
             )

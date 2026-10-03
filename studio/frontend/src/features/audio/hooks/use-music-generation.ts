@@ -36,8 +36,6 @@ import type { AudioGallery } from "./use-audio-gallery";
 import type { AudioModelSlot } from "./use-audio-model-slot";
 import { showRunResult } from "./use-clone-generation";
 
-/** The song form shown before any music model is loaded, so the page reads the same before
- *  and after a load and drafts can start early. Generate stays off until a model loads. */
 const MUSIC_PREVIEW_CAPABILITIES: MusicCapabilities = {
   modes: [
     {
@@ -52,7 +50,6 @@ const MUSIC_PREVIEW_CAPABILITIES: MusicCapabilities = {
   ],
 };
 
-/** How many variations the current mode asks for. */
 function requestedVariations(
   rule: MusicModeRule,
   song: { variations: number },
@@ -63,10 +60,6 @@ function requestedVariations(
   return 1;
 }
 
-/** Music on models that report what they can do (status `audio_music`): the page's modes and
- *  drafts, what holds Generate back, and the /audio/run call. Mirrors useCloneGeneration's flow
- *  so Stop, phases and errors behave the same. Native MiniMax reports nothing and keeps the
- *  original rail and /audio/generate. */
 export function useMusicGeneration({
   status,
   busyRef,
@@ -110,18 +103,13 @@ export function useMusicGeneration({
     "refreshGallery" | "selectClip" | "setFallbackClip" | "setSelectedId"
   > &
   Pick<AudioModelSlot, "pendingTranscribeRelease" | "replayQueuedTtsPick"> & {
-    /** Song's lyrics and description: the page's existing text drafts. */
     lyrics: string;
     description: string;
-    /** Advanced's schema (minus what panels claim) and values, shared with Speak. */
     advancedOptionSpecs: AudioOptionSpec[];
     audioOptionValues: AudioOptionValues;
-    /** What the shown music tool panels set. */
     toolOptions: AudioOptionValues | undefined;
     toolBlocker: string | null;
-    /** The loaded model's display name, for the reload notice. */
     modelName: string | null;
-    /** Whether a music model holds the slot; without one the page previews a song form. */
     musicLoaded: boolean;
   }) {
   const capabilities = useMemo(
@@ -228,7 +216,7 @@ export function useMusicGeneration({
       song,
       sfx,
       edit,
-      // Advanced first, then what the shown panels set, which own their options.
+      // Panel options override Advanced: panels own their options.
       options: {
         ...audioOptionsForRequest(advancedOptionSpecs, audioOptionValues),
         ...toolOptions,
@@ -260,7 +248,6 @@ export function useMusicGeneration({
         setFallbackClip,
         setSelectedId,
       });
-      // A reload changes how many variations the next run makes without one.
       if (reloads) await refreshStatus();
     } catch (error) {
       if (!controller.signal.aborted) {
@@ -312,7 +299,6 @@ export function useMusicGeneration({
   ]);
 
   return {
-    /** Whether the loaded model uses this page's own inputs (else the original music rail). */
     studio: capabilities !== null,
     capabilities,
     rule,
@@ -326,7 +312,6 @@ export function useMusicGeneration({
     handleGenerate,
     generationError,
     setGenerationError,
-    /** What the run is doing, in words, while it runs. */
     runStatus,
     setSourceStatus,
     sourceHandle,

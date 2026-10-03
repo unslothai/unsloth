@@ -8,8 +8,6 @@ import type { AudioGalleryClip } from "../api";
 import { audioModelLabel, formatClipDuration } from "../audio-workspace-utils";
 import { variationLabel } from "../music/variation-groups";
 
-/** One history row for the clips a run made together: "3 variations", the model and the length.
- *  It opens to list each clip under it. */
 export function VariationGroupRow({
   clips,
   open,
@@ -18,7 +16,6 @@ export function VariationGroupRow({
 }: {
   clips: readonly AudioGalleryClip[];
   open: boolean;
-  /** One of its clips is the selected one. */
   selected: boolean;
   onToggle: () => void;
 }) {
@@ -55,7 +52,6 @@ export function VariationGroupRow({
   );
 }
 
-/** Numbered chips on the selected clip to switch between the variations its run made. */
 export function VariationChips({
   siblings,
   selectedId,

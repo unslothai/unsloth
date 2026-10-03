@@ -88,8 +88,6 @@ const HUB_TASKS_BY_MODE = {
   transcribe: ["automatic-speech-recognition"],
 } as const;
 
-/** Music models offered as one-click picks when none is loaded: songs with lyrics, then a fast
- *  instrumental model. */
 const RECOMMENDED_MUSIC_MODELS = ["ACE-Step1.5-GGUF", "Stable-Audio-3-Small-Music-GGUF"];
 
 export function AudioPage({
@@ -439,8 +437,6 @@ export function AudioPage({
     replayQueuedTtsPick,
   });
 
-  // Music on models that report their abilities builds its own /audio/run request; the rest of
-  // Speak and Music keep the generate route above.
   const music = useMusicGeneration({
     status,
     busyRef,
@@ -601,7 +597,6 @@ export function AudioPage({
     (id: string) => void pickRecommendedModel(id),
     [pickRecommendedModel],
   );
-  // Music's first picks, by name, when the catalog offers them on this machine.
   const recommendedMusicActions = musicPageModels(MODELS_BY_MODE.speak, isMac)
     .filter((model) =>
       RECOMMENDED_MUSIC_MODELS.some((name) => model.id.endsWith(`/${name}`)),
@@ -1128,7 +1123,6 @@ export function AudioPage({
                 <TtsFooter
                   busy={busy}
                   generationPresentation={
-                    // Music says what the run is doing: reloading, making N variations, editing.
                     musicStudio && music.runStatus && generationPresentation?.canStop
                       ? { ...generationPresentation, status: music.runStatus }
                       : generationPresentation
@@ -1137,7 +1131,6 @@ export function AudioPage({
                   handleGenerate={handleGenerate}
                   ttsLoaded={pageModelLoaded}
                   prompt={prompt}
-                  // Music's own blocker covers lyrics and the description per mode.
                   lyricsOptional={musicStudio || lyricsOptional}
                   musicNeedsDescription={!musicStudio && musicNeedsDescription}
                   audioInstructions={audioInstructions}

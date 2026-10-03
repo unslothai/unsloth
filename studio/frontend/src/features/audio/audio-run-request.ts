@@ -87,7 +87,6 @@ export function selectionExpired(
 
 export type AudioOptionScalar = boolean | number | string;
 
-/** Music's own request fields (workflow "music"); see PLAN §2a for the server contract. */
 export interface AudioMusicRunFields {
   mode: "song" | "sfx" | "edit";
   lyrics?: string | null;
@@ -100,13 +99,11 @@ export interface AudioMusicRunFields {
     strength?: number | null;
     extend_s?: number | null;
   } | null;
-  /** The clip being edited: an upload or a history clip, never a saved voice. */
   source?: AudioSourceRef | null;
 }
 
 export interface AudioRunRequest {
   workflow: "clone" | "speak" | "music";
-  /** Only with workflow "music". */
   music?: AudioMusicRunFields;
   text: string;
   language?: string | null;
@@ -197,7 +194,6 @@ function finiteSeconds(value: number | null | undefined): number | null {
     : null;
 }
 
-/** Music's keys for the run body: song/sfx length and variations, edit's source and ranges. */
 function musicRunFields(music: AudioMusicRunFields): Record<string, unknown> {
   const out: Record<string, unknown> = { mode: music.mode };
   if (music.mode === "song") {
@@ -219,10 +215,8 @@ function musicRunFields(music: AudioMusicRunFields): Record<string, unknown> {
       out.variations = variations;
     return out;
   }
-  // Edit: the source by id only (no trim, no saved voice) and the action's own values.
   const source = cleanRef(music.source, false);
   if (source && !("voice_id" in source)) {
-    // Music never sends a reference, so the source is the only input.
     out.inputs = { source };
   }
   if (music.edit) {

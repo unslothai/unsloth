@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Every WAV a ``/v1/tasks/run`` response carries, in order.
-
-A task answers with raw audio, or JSON holding base64 WAVs: one ``audio``, or a list of
-``named_audio_outputs`` (Stable Audio's batch variations, a separator's stems). When both are
-present the top-level ``audio`` repeats the first named one, so it is not counted twice (S3).
-Pure: no I/O and no runtime imports, so the route and the worker can share it.
-"""
+"""Every WAV a ``/v1/tasks/run`` reply carries. With ``named_audio_outputs`` present the
+top-level ``audio`` repeats the first one, so it is not counted twice."""
 
 from __future__ import annotations
 
@@ -32,7 +27,6 @@ def _decode(value: Any) -> bytes | None:
 
 
 def task_outputs(content_type: str, data: bytes) -> list[tuple[str, bytes]]:
-    """``[(id, wav_bytes), ...]`` from a ``/v1/tasks/run`` reply; RuntimeError when it has none."""
     if (content_type or "").startswith("audio/") or data[:4] == b"RIFF":
         return [("audio", data)]
     try:
@@ -59,7 +53,6 @@ def task_outputs(content_type: str, data: bytes) -> list[tuple[str, bytes]]:
 
 
 def wav_header(wav_bytes: bytes) -> tuple[int, float]:
-    """``(sample_rate, duration_s)`` read from the WAV itself; a reply may omit its rate."""
     with wave.open(io.BytesIO(wav_bytes)) as w:
         rate = int(w.getframerate())
         frames = int(w.getnframes())

@@ -44,7 +44,6 @@ function instructionsPanel(
     title,
     // Request fields, not spec options, so Advanced keeps every option.
     claims: [],
-    // The Music page asks for the description itself when the model reports what it can do.
     appliesTo: (ctx) =>
       instructionsKindFor(ctx) === kind &&
       !(kind === "music" && ctx.audioMusic === true),

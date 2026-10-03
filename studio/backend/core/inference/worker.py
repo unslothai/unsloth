@@ -1606,7 +1606,6 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
         for key in ("workflow", "audio_inputs", "reference_text", "speed"):
             if cmd.get(key) is not None:
                 extra[key] = cmd[key]
-        # Music studio runs: the mode's fields and the run folder the outputs and manifest go to.
         for key in ("music", "output_dir"):
             if cmd.get(key) is not None:
                 extra[key] = cmd[key]
@@ -1633,8 +1632,6 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
             "wav_base64": base64.b64encode(wav_bytes).decode("ascii"),
             "sample_rate": sample_rate,
         }
-        # A reload the request caused (Stable Audio variations) changes the status the parent
-        # mirrors.
         take_status_patch = getattr(backend, "take_status_patch", None)
         status_patch = take_status_patch() if callable(take_status_patch) else None
         if isinstance(status_patch, dict) and status_patch:

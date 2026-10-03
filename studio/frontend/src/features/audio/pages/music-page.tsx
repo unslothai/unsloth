@@ -359,7 +359,6 @@ function SfxInputs({
   );
 }
 
-/** Music's own inputs for models that report what they can do: the mode, then that mode's fields. */
 export function MusicStudioInputs({
   music,
   lyrics,
@@ -402,7 +401,6 @@ export function MusicStudioInputs({
           </p>
         </div>
       ) : (
-        // One mode: say what this model makes instead of showing a lone tab.
         <div className="grid gap-0.5">
           <span className="text-ui-13 font-medium text-foreground">
             {musicModeLabel(rule)}
@@ -440,8 +438,6 @@ export function MusicStudioInputs({
   );
 }
 
-/** Music runs in the main slot like Speak. Models that report their music abilities get the
- *  page's own modes and fields; native MiniMax keeps the original lyrics-and-description rail. */
 export function MusicRail({
   music,
   historyClips,
@@ -481,7 +477,6 @@ export function MusicOutput({
   modelReady,
   ...props
 }: Omit<ComponentProps<typeof TtsOutput>, "emptyText"> & {
-  /** Whether a model for this page is loaded, so the empty copy asks only for what is missing. */
   modelReady: boolean;
 }) {
   return (

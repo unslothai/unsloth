@@ -7,7 +7,6 @@ import { useRef } from "react";
 import { insertSectionTag, sectionTags } from "../music/music-policy";
 import type { MusicModeRule } from "../music/music-types";
 
-/** Lyrics with a row of section tags that insert at the cursor, in the casing the model expects. */
 export function LyricsEditor({
   id,
   value,
@@ -32,7 +31,7 @@ export function LyricsEditor({
     const cursor = textarea ? textarea.selectionStart : value.length;
     const next = insertSectionTag(value, cursor, tag);
     onChange(next.text);
-    // Put the caret on the line under the new tag once React has written the value.
+    // Move the caret once React has written the value.
     requestAnimationFrame(() => {
       const current = textareaRef.current;
       if (!current) return;

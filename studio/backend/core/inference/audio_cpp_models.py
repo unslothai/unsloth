@@ -115,27 +115,21 @@ class CompanionModel:
     session_option: str
 
 
-# Music studio: what each music family takes per mode (song, sfx, edit). See ``music_rules`` in
-# audio_cpp_backend for the status shape the Music page reads.
 MUSIC_MAX_VARIATIONS = 4
 
 
 @dataclass(frozen = True)
 class MusicMode:
-    """One Music studio tab for a family: the fields it takes and their bounds."""
-
     id: str  # song | sfx | edit
     lyrics: str = "unused"  # required | optional | unused
     description: str = "required"  # required | optional
     instrumental: str = "always"  # toggle | always | never
     section_case: Optional[str] = None  # lower ([verse]) | title ([Verse])
-    # (min, max, default) seconds; the runtime's spec bounds narrow these at resolve time.
+    # (min, max, default) seconds, narrowed to the spec's bounds at resolve time.
     duration: tuple[float, float, float] = (5.0, 240.0, 30.0)
-    # The length is a budget the model may stop short of (MiniMax, YuE2).
     approximate: bool = False
-    # How N variations are made: one batched call (Stable Audio) or N calls; None for one take.
+    # "batch" (one call) | "sequential" (one call each) | None (one take).
     variations: Optional[str] = None
-    # Edit only.
     actions: tuple[str, ...] = ()
     max_ranges: int = 0
     max_source_s: float = 240.0
@@ -144,16 +138,11 @@ class MusicMode:
 @dataclass(frozen = True)
 class MusicSpec:
     modes: tuple[MusicMode, ...]
-    # The request option the description goes to instead of the text input (HeartMuLa tags,
-    # YuE2 style); None sends it as the text.
     description_option: Optional[str] = None
-    # Lyrics sent for an instrumental song (ACE-Step's marker; YuE2's empty string).
     instrumental_lyrics: Optional[str] = None
-    # Rate an edit's source clip is prepared at (stereo); None when the family cannot edit.
     edit_rate: Optional[int] = None
-    # The runtime's default seed is fixed, so Studio draws one when the request has none.
+    # The runtime's default seed is fixed, so repeat runs would be identical.
     fixed_seed: bool = True
-    # Seconds of work per second of audio on a GPU, for the request timeout.
     rtf: float = 4.0
 
     def mode(self, mode_id: Optional[str]) -> Optional[MusicMode]:
@@ -173,7 +162,6 @@ MUSIC_SPECS: dict[str, MusicSpec] = {
         edit_rate = 48000,
         rtf = 2.0,
     ),
-    # Small-Music; Small-SFX and Medium are picked by name in family_policy.
     "stable_audio": MusicSpec(
         (_STABLE_AUDIO_SONG, _STABLE_AUDIO_EDIT),
         edit_rate = 44100,
@@ -185,8 +173,7 @@ MUSIC_SPECS: dict[str, MusicSpec] = {
         description_option = "tags",
     ),
     "midashenglm_gen": MusicSpec(
-        # The spec allows 163.84 s, but the runtime drops the connection past about 81 s
-        # (2048 frames) on GPU 6, so Studio stops at 80.
+        # The spec allows 163.84 s, but the runtime drops the connection past ~81 s (2048 frames).
         (
             MusicMode("song", duration = (1.0, 80.0, 30.0), variations = "sequential"),
             MusicMode("sfx", duration = (1.0, 80.0, 10.0), variations = "sequential"),
@@ -219,7 +206,7 @@ MUSIC_SPECS: dict[str, MusicSpec] = {
             ),
         ),
         description_option = "style",
-        # Empty lyrics still sing (the style, or made-up words); this tag alone stays wordless.
+        # Empty lyrics still sing; only this tag stays wordless.
         instrumental_lyrics = "[Instrumental]",
         rtf = 6.0,
     ),
@@ -227,8 +214,6 @@ MUSIC_SPECS: dict[str, MusicSpec] = {
 
 
 def _stable_audio_music(names: Iterable[str]) -> MusicSpec:
-    """Stable Audio's modes by package: Small-SFX makes effects, Medium makes both, Small-Music
-    makes music; every music package edits."""
     spec = MUSIC_SPECS["stable_audio"]
     text = " ".join(names).lower()
     if re.search(r"(^|[-_ /.])sfx([-_ /.]|$)", text):
@@ -245,7 +230,6 @@ def _is_number(value: Any) -> bool:
 def music_with_spec_bounds(
     music: Optional[MusicSpec], raw_options: Sequence[Any]
 ) -> Optional[MusicSpec]:
-    """``music`` with each duration narrowed to the spec's ``duration_sec`` min and max."""
     if music is None:
         return None
     low = high = None
@@ -332,7 +316,6 @@ class AudioCppFamily:
     clone: Optional[CloneSpec] = None
     # Models it loads beside its own GGUF.
     companions: tuple[CompanionModel, ...] = ()
-    # What the Music studio offers for it (modes, lyrics, duration, edits); None outside music.
     music: Optional[MusicSpec] = field(default = None, hash = False, compare = False)
 
     @property
@@ -573,7 +556,7 @@ _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
         "ace_step",
         "music",
         music = MUSIC_SPECS["ace_step"],
-        # The spec declares no request options; these are the ones the Music page sets (loader.cpp).
+        # The spec declares no request options; these are the ones loader.cpp reads.
         options = (
             _opt("bpm", "int", "Tempo in beats per minute.", min = 30, max = 300),
             _opt("keyscale", "string", "Key and scale, e.g. A minor."),
@@ -1553,7 +1536,6 @@ _MUSIC_DRIVEN_OPTIONS = frozenset(
         "duration",
         "duration_sec",
         "duration_seconds",
-        # Set by the Music studio's edit, batch and length fields.
         "route",
         "task_route",
         "repainting_start",
@@ -1794,10 +1776,8 @@ class AudioCppModel:
     companions: tuple[CompanionModel, ...] = ()
     # Request fields the spec marks required that Studio sends as request fields (Maya1's instruct).
     required_inputs: tuple[str, ...] = ()
-    # Music studio rules, with the spec's duration bounds applied; None outside music.
     music: Optional[MusicSpec] = field(default = None, hash = False, compare = False)
-    # Request option names a strict spec (one with ``schema_version``) declares; the runtime
-    # refuses any other. None when the spec is not strict or unknown, so anything may be sent.
+    # A strict spec (``schema_version``) makes the runtime refuse any undeclared option.
     request_keys: Optional[frozenset[str]] = field(default = None, hash = False, compare = False)
 
     @property
@@ -2163,8 +2143,6 @@ def _raw_request_options(spec: Optional[dict], embedded: Optional[dict]) -> list
 
 
 def _request_keys(spec: Optional[dict], embedded: Optional[dict]) -> Optional[frozenset[str]]:
-    """Request options a strict spec (``schema_version``) declares; None when the runtime does not
-    check them or the spec lists none."""
     if _request_source(spec, embedded).get("schema_version") is None:
         return None
     names = frozenset(

@@ -454,7 +454,7 @@ def sweep(
                 path.unlink(missing_ok = True)
             elif name.startswith(("c-", "v-")) and name.endswith(".wav") and age > ttl:
                 path.unlink(missing_ok = True)
-        # Music run folders the route removes when it is done; one a crash left behind goes here.
+        # Music run folders a crash left behind.
         runs = directory / "runs"
         if runs.is_dir():
             for run in runs.iterdir():

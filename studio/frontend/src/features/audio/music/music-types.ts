@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Music page's shapes: what the status says a music model can do (`audio_music`), and the
-// drafts the page keeps per mode. Free of app imports so the node test runner can load it.
+// No app imports: the node test runner loads this directly.
 
 import type { AudioSourceSelection } from "../audio-run-request";
 
@@ -10,7 +9,6 @@ export type MusicMode = "song" | "sfx" | "edit";
 
 export const MUSIC_MODES: readonly MusicMode[] = ["song", "sfx", "edit"];
 
-/** ACE-Step: repaint, extend, cover, continue. Stable Audio: inpaint, restyle. */
 export type MusicEditAction =
   | "repaint"
   | "extend"
@@ -37,15 +35,12 @@ export interface MusicDurationRule {
   min: number;
   max: number;
   default: number;
-  /** MiniMax and YuE2 treat length as a target, not an exact cut. */
   approximate: boolean;
 }
 
 export interface MusicVariationsRule {
   max: number;
-  /** "batch": one call makes them all (Stable Audio); "sequential": one call each. */
   how: "batch" | "sequential";
-  /** How many one call can make with the server as loaded; more needs a reload. */
   loaded: number;
 }
 
@@ -54,7 +49,6 @@ export interface MusicModeRule {
   lyrics?: "required" | "optional" | "unused";
   description?: "required" | "optional";
   instrumental?: "toggle" | "always" | "never";
-  /** Section tag casing the model was trained on: `[verse]` or `[Verse]`. */
   section_case?: "lower" | "title" | null;
   duration?: MusicDurationRule | null;
   variations?: MusicVariationsRule | null;
@@ -67,7 +61,6 @@ export interface MusicCapabilities {
   modes: MusicModeRule[];
 }
 
-/** Song mode's own values. Lyrics and the description stay in the page's existing drafts. */
 export interface MusicSongDraft {
   instrumental: boolean;
   durationS: number | null;
@@ -84,10 +77,8 @@ export interface MusicEditDraft {
   source: AudioSourceSelection | null;
   action: MusicEditAction | null;
   ranges: MusicRange[];
-  /** Cover strength or "How much to change"; null means the model default. */
   strength: number | null;
   extendS: number;
-  /** What the changed part should sound like. */
   prompt: string;
 }
 
@@ -97,7 +88,6 @@ export interface MusicDrafts {
   edit: MusicEditDraft;
 }
 
-/** Parses the status `audio_music` value; null when absent or malformed (the legacy rail). */
 export function parseMusicCapabilities(
   value: unknown,
 ): MusicCapabilities | null {

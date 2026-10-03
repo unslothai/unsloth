@@ -5170,7 +5170,6 @@ class AudioRunInputs(BaseModel):
     reference: Optional[AudioSourceRef] = None
     reference_text: Optional[str] = Field(None, max_length = 4000)
     emotion: Optional[AudioSourceRef] = None
-    # Music edit: the clip to change (an upload or a history clip; no saved voice, no trim).
     source: Optional[AudioSourceRef] = None
 
 
@@ -5188,15 +5187,11 @@ class AudioMusicRange(BaseModel):
 
 
 class AudioMusicEdit(BaseModel):
-    """What a Music edit does to its source clip."""
-
     model_config = ConfigDict(extra = "forbid")
 
     action: Literal["repaint", "extend", "cover", "continue", "inpaint", "restyle"]
     ranges: List[AudioMusicRange] = Field(default_factory = list, max_length = 8)
-    # cover: audio_cover_strength; restyle: init_noise_level; repaint: repaint_strength.
     strength: Optional[float] = Field(None, ge = 0, le = 1)
-    # extend: seconds added after the clip.
     extend_s: Optional[float] = Field(None, gt = 0, le = 600)
 
 
@@ -5206,12 +5201,10 @@ class AudioRunRequest(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
     workflow: Literal["clone", "speak", "music"]
-    # Music may leave it empty for a song with lyrics; clone and speak may not (checked below).
     text: str
     language: Optional[str] = Field(None, max_length = 64)
     instructions: Optional[str] = Field(None, max_length = 4000)
     inputs: AudioRunInputs = Field(default_factory = AudioRunInputs)
-    # Music only.
     mode: Optional[Literal["song", "sfx", "edit"]] = None
     lyrics: Optional[str] = Field(None, max_length = 20000)
     instrumental: bool = False
@@ -5239,7 +5232,6 @@ class AudioRunRequest(BaseModel):
 
     @model_validator(mode = "after")
     def _workflow_fields(self):
-        # Shape only (422); whether the loaded model takes the mode is the route's 400.
         if self.workflow == "music":
             if self.mode is None:
                 raise ValueError("Pick a music mode: song, sfx or edit.")

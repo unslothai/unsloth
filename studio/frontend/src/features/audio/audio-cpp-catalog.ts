@@ -63,7 +63,6 @@ export const AUDIO_CPP_MODELS: readonly AudioCppModel[] = [
   { id: "audio-cpp/Yue2-3B-GGUF", task: "music" },
   { id: folder("ACE-Step1.5-GGUF"), task: "music" },
   { id: folder("Stable-Audio-3-Small-Music-GGUF"), task: "music" },
-  // Sound effects, offered on Music's Sound effect mode.
   { id: folder("Stable-Audio-3-Small-SFX-GGUF"), task: "music" },
   { id: folder("ControlFoley-GGUF"), task: "music" },
   { id: folder("Qwen3-ASR-0.6B-GGUF"), task: "asr" },

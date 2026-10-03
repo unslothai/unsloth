@@ -79,7 +79,6 @@ def test_a_reply_without_audio_is_an_error(reply):
 
 
 def test_the_sample_rate_comes_from_the_wav_header():
-    # The reply's own sample_rate is ignored (tasks/run may omit or misstate it).
     data = _wav(rate = 48000, frames = 24000)
     ((_id, wav),) = task_outputs(*_json({"audio": _b64(data), "sample_rate": 16000}))
     assert wav_header(wav) == (48000, 0.5)
@@ -94,6 +93,5 @@ def test_the_legacy_single_audio_reader_keeps_its_answer():
         ],
     }
     assert audio_cpp_backend._audio_from_task_response(*_json(reply)) == takes[0]
-    # A nested reply shape older builds answered with still reads.
     nested = {"result": {"wav": _b64(takes[1])}}
     assert audio_cpp_backend._audio_from_task_response(*_json(nested)) == takes[1]

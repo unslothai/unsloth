@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// What the Music page shows and sends for the loaded model, from its status `audio_music`.
-// Free of app imports so the node test runner can load it directly.
+// No app imports: the node test runner loads this directly.
 
 import type {
   AudioOptionScalar,
@@ -31,7 +30,6 @@ export const MUSIC_MODE_HINTS: Record<MusicMode, string> = {
   edit: "Change part of a clip, extend it, or give it a new style.",
 };
 
-/** A mode's tab label: Stable Audio's and MiDashengLM's songs never have vocals. */
 export function musicModeLabel(rule: MusicModeRule): string {
   return rule.id === "song" && rule.instrumental === "always"
     ? "Instrumental"
@@ -44,10 +42,8 @@ export function musicModeHint(rule: MusicModeRule): string {
     : MUSIC_MODE_HINTS[rule.id];
 }
 
-/** Variations a run can ask for, whatever the model allows. */
 export const MUSIC_MAX_VARIATIONS = 4;
 
-/** The mode to show: the one the user picked when the model has it, else the model's first. */
 export function effectiveMusicMode(
   capabilities: MusicCapabilities,
   picked: MusicMode,
@@ -72,8 +68,6 @@ export interface SectionTag {
   tag: string;
 }
 
-/** Section tags in the casing the model was trained on: `[verse]` (MiniMax, ACE-Step) or
- *  `[Verse]` (YuE2). */
 export function sectionTags(
   sectionCase: MusicModeRule["section_case"],
 ): SectionTag[] {
@@ -86,7 +80,6 @@ export function sectionTags(
   }));
 }
 
-/** Puts a section tag on its own line at the cursor, with a blank line before a new section. */
 export function insertSectionTag(
   text: string,
   cursor: number,
@@ -112,13 +105,9 @@ export function insertSectionTag(
 }
 
 export interface InstrumentalChoice {
-  /** Whether the switch is shown. */
   shown: boolean;
-  /** Whether the user can change it. */
   enabled: boolean;
-  /** The value the run uses. */
   value: boolean;
-  /** Why it cannot change, in plain words. */
   reason: string | null;
 }
 
@@ -148,7 +137,6 @@ export function instrumentalChoice(
   }
 }
 
-/** Whether the lyrics editor is shown for this mode and switch. */
 export function lyricsShown(
   rule: MusicModeRule,
   instrumental: boolean,
@@ -164,7 +152,6 @@ export function durationLabel(rule: MusicModeRule): string {
     : "Length (seconds)";
 }
 
-/** The length a run uses: the draft's when set, inside the model's bounds, else its default. */
 export function musicDurationFor(
   rule: MusicModeRule,
   picked: number | null,
@@ -175,7 +162,6 @@ export function musicDurationFor(
   return Math.min(duration.max, Math.max(duration.min, picked));
 }
 
-/** How many variations the model can make in one run, or null when it cannot. */
 export function variationsMax(rule: MusicModeRule): number | null {
   const variations = rule.variations;
   if (!variations || variations.max < 2) return null;
@@ -188,7 +174,6 @@ export function variationsFor(rule: MusicModeRule, picked: number): number {
   return Math.max(1, Math.min(max, Math.floor(picked) || 1));
 }
 
-/** Said before a run that will reload the model to make more variations at once. */
 export function reloadNotice(
   rule: MusicModeRule,
   variations: number,
@@ -201,7 +186,6 @@ export function reloadNotice(
   return `Reloads ${name} to make ${variations} variations at once, about 15 s the first time.`;
 }
 
-/** Example chips for empty fields. */
 export const MUSIC_EXAMPLES = {
   description: [
     "Upbeat acoustic pop, bright female vocals, guitar and light drums, 100 BPM",
@@ -230,7 +214,6 @@ export const MUSIC_EXAMPLES = {
   ],
 } as const;
 
-/** Builds example lyrics in the model's section casing. */
 export function exampleLyrics(
   sectionCase: MusicModeRule["section_case"],
   text: string,
@@ -245,18 +228,14 @@ export function exampleLyrics(
 
 export interface MusicInputs {
   rule: MusicModeRule;
-  /** Song's description (the page's instruction draft). */
   description: string;
-  /** Song's lyrics (the page's text draft). */
   lyrics: string;
   song: MusicSongDraft;
   sfx: MusicSfxDraft;
   edit: MusicEditDraft;
-  /** Why the edit inputs hold Generate back (from musicEditProblem), if they do. */
   editProblem?: string | null;
 }
 
-/** Why Generate is off for the page's own inputs, in plain words; null when it can run. */
 export function musicBlocker(inputs: MusicInputs): string | null {
   const { rule } = inputs;
   if (rule.id === "song") {
@@ -282,8 +261,6 @@ export function musicBlocker(inputs: MusicInputs): string | null {
   return inputs.editProblem ?? null;
 }
 
-/** The /audio/run request for the page's current mode. Options are what Advanced and the tool
- *  panels set; the server drops any the model does not declare. */
 export function buildMusicRunRequest(
   inputs: MusicInputs & {
     options?: Record<string, AudioOptionScalar>;
@@ -347,7 +324,6 @@ export function buildMusicRunRequest(
 }
 
 function editSourceRef(source: AudioSourceSelection | null) {
-  // A saved voice is never music to edit.
   if (!source || source.kind === "voice") return null;
   return sourceRefOf(source);
 }

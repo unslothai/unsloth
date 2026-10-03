@@ -40,19 +40,14 @@ const SOURCE_ID = "music-edit-source";
 const PROMPT_ID = "music-edit-prompt";
 
 export interface MusicEditInputsProps {
-  /** The "edit" mode rule from status (actions, max_ranges, max_source_s). */
   rule: MusicModeRule;
   draft: MusicEditDraft;
   onChange: (patch: Partial<MusicEditDraft>) => void;
   disabled: boolean;
-  /** Hears the source card's status (uploading/failed/expired) for the Generate blocker. */
   onSourceStatusChange?: (status: AudioSourceStatus) => void;
   sourceHandleRef?: Ref<AudioSourceInputHandle>;
 }
 
-/** Music's Edit inputs: the clip, what to do with it, the parts to change when the action needs
- *  them, how much to change, and what the new music should sound like. Every missing piece is
- *  said inline where it is fixed. Wrap it in AudioHistoryProvider so From history lists clips. */
 export function MusicEditInputs({
   rule,
   draft,
@@ -66,7 +61,7 @@ export function MusicEditInputs({
     draft.action && actions.includes(draft.action) ? draft.action : null;
   const sourceDurationS = draft.source?.durationS ?? null;
 
-  // The tabs always show a choice, so a missing or stale action takes the model's first one.
+  // The tabs always show a choice, so a missing or stale action takes the first one.
   const firstAction = actions[0] ?? null;
   useEffect(() => {
     if (action === null && firstAction !== null)

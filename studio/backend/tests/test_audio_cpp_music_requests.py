@@ -22,7 +22,6 @@ from core.inference import audio_cpp_backend, audio_cpp_files, audio_cpp_music a
 from core.inference import audio_cpp_models as acm
 from core.inference.audio_cpp_models import AUDIO_CPP_REPO, AudioCppVariant, RepoFile
 
-# Request option names the runtime specs declare (model_specs/*.json at 63ddff4).
 STRICT_KEYS = {
     "heartmula": frozenset(
         {
@@ -231,10 +230,6 @@ def _keys(node):
             yield from _keys(value)
 
 
-# ---------------------------------------------------------------------------
-# Modes and status
-
-
 def test_each_music_family_offers_its_modes():
     modes = lambda family, folder = None: [m.id for m in _model(family, folder).music.modes]
     assert modes("ace_step") == ["song", "edit"]
@@ -254,7 +249,6 @@ def test_spec_duration_bounds_narrow_the_table():
         "midashenglm_gen",
         spec_options = [{"name": "duration_sec", "type": "float", "min": 0.04, "max": 163.84}],
     )
-    # Studio's own ceiling (80 s, the runtime drops the connection past about 81 s) stays.
     assert mida.music.mode("song").duration == (1.0, 80.0, 30.0)
     assert mida.music.mode("sfx").duration == (1.0, 80.0, 10.0)
     foley = _model(
@@ -272,11 +266,9 @@ def test_request_keys_come_from_strict_specs_only():
         "options": {"request": [{"name": "duration_sec"}, {"name": "seed"}]},
     }
     assert acm._request_keys(strict, None) == frozenset({"duration_sec", "seed"})
-    # ACE-Step and Stable Audio specs carry no schema_version and no request options.
     assert acm._request_keys({"tasks": ["music"]}, None) is None
     assert acm._request_keys(None, None) is None
     assert acm._request_keys({"schema_version": 1, "options": {"request": []}}, None) is None
-    # The runtime's spec wins; a GGUF-embedded one is read when the runtime has none.
     assert acm._request_keys(None, strict) == frozenset({"duration_sec", "seed"})
 
 
@@ -314,13 +306,8 @@ def test_status_reports_the_music_studio_rules():
     yue = cm.music_rules(_model("yue2"))["modes"][0]
     assert (yue["section_case"], yue["instrumental"]) == ("title", "toggle")
     assert cm.music_rules(_model("heartmula"))["modes"][0]["instrumental"] == "never"
-    # A speech model reports none.
     speech = replace(_model("ace_step"), task = "tts", music = None)
     assert audio_cpp_backend.model_info_fields(speech)["audio_music"] is None
-
-
-# ---------------------------------------------------------------------------
-# Song and sfx bodies
 
 
 def test_midashenglm_and_controlfoley_send_duration_sec_never_duration_seconds():
@@ -349,7 +336,6 @@ def test_undeclared_and_edit_only_options_never_reach_a_strict_spec():
         text = "glass",
         options = {"foo": 1, "route": "repaint", "batch_size": "4", "guidance_scale": 3.0},
     )
-    # guidance_scale is not in the test model's option schema (no spec options were given).
     assert _request(b) == {"text": "glass", "options": {"duration_sec": 8.0}, "seed": "7"}
 
 
@@ -367,7 +353,6 @@ def test_yue2_instrumental_sends_the_instrumental_tag_not_its_style():
     b = _backend(_model("yue2"))
     _run(b, text = "ambient piano", lyrics = "[Verse] words", instrumental = True, duration_s = 20)
     request = _request(b)
-    # Empty lyrics sang the style or made-up words on GPU 6; "[Instrumental]" came back wordless.
     assert request["text"] == "[Instrumental]"
     assert request["options"]["lyrics"] == "[Instrumental]"
     assert request["options"]["style"] == "ambient piano"
@@ -443,7 +428,6 @@ def test_max_batch_reloads_once_and_only_when_needed(starts):
     _run(b, text = "house", variations = 2)
     _run(b, text = "house", variations = 1)
     assert len(starts) == 1 and b.take_status_patch() is None
-    # A dead server comes back with the raised session, not the default.
     b._server.alive = lambda: False
     _run(b, text = "house", variations = 4)
     assert starts[-1] == {"stable_audio.max_batch": "4"}
@@ -480,7 +464,6 @@ def test_a_fixed_seed_family_gets_a_recorded_random_seed(tmp_path):
     seed = int(_request(b)["seed"])
     assert 0 <= seed < 2**31
     assert json.loads((tmp_path / "outputs.json").read_text())[0]["seed"] == seed
-    # Stable Audio draws its own; Studio does not pin it.
     sa = _backend(_model("stable_audio", strict = False))
     _run(sa, text = "house", seed = None)
     assert "seed" not in _request(sa)
@@ -494,10 +477,6 @@ def test_the_wait_grows_with_the_audio_asked_for_and_is_capped():
     b = _backend(_model("yue2"))
     _run(b, text = "rock", lyrics = "x", duration_s = 60)
     assert b._server.calls[0][2]["timeout"] == t(60)
-
-
-# ---------------------------------------------------------------------------
-# Edits
 
 
 @pytest.fixture
@@ -606,7 +585,6 @@ def test_the_runtime_refusal_is_typed_for_the_route():
 
 
 def test_legacy_requests_keep_their_bodies_with_the_finding_7_fixes():
-    # A strict family on /audio/generate: the declared duration key, never the CLI shortcut.
     b = _backend(_model("midashenglm_gen"))
     b.generate_audio_response("wind", max_new_tokens = 250)
     assert _request(b) == {"text": "wind", "options": {"duration_sec": 10.0}}
@@ -616,7 +594,6 @@ def test_legacy_requests_keep_their_bodies_with_the_finding_7_fixes():
         "text": "pop",
         "options": {"tags": "pop", "duration_sec": 20.0, "lyrics": "[verse] hi"},
     }
-    # YuE2 with a style and no lyrics is instrumental instead of singing its style.
     yue = _backend(_model("yue2"))
     yue.generate_audio_response("", instructions = "ambient")
     assert _request(yue)["options"]["lyrics"] == "[Instrumental]"
@@ -631,7 +608,6 @@ def test_paths_in_the_manifest_are_bare_names(tmp_path):
 
 
 def test_legacy_music_never_asks_past_the_page_maximum():
-    # /audio/generate's default 2048 tokens is 81.92 s, past where MiDashengLM's runtime crashes.
     b = _backend(_model("midashenglm_gen"))
     b.generate_audio_response("relaxing piano", instructions = "relaxing piano", max_new_tokens = 2048)
     assert _request(b)["options"]["duration_sec"] == 80.0
