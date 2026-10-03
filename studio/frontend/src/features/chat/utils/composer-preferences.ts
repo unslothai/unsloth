@@ -35,6 +35,40 @@ export function imeKeydownBlocksComposerSubmit(
   );
 }
 
+/** Composition tracking for single-line inputs that submit on Enter (rename fields). */
+export type InputImeState = { open: boolean; endedAt: number };
+
+export function newInputImeState(): InputImeState {
+  return { open: false, endedAt: -Infinity };
+}
+
+export function inputImeHandlers(ime: InputImeState) {
+  return {
+    onCompositionStart: () => {
+      ime.open = true;
+    },
+    onCompositionEnd: (event: { timeStamp: number }) => {
+      ime.open = false;
+      ime.endedAt = event.timeStamp;
+    },
+  };
+}
+
+/** True when the keydown belongs to an IME; idle macOS Pinyin Enter (229, #12137) passes. */
+export function imeOwnsInputKeydown(
+  event: ComposerKeyEvent & {
+    timeStamp: number;
+    nativeEvent: { isComposing?: boolean };
+  },
+  ime: InputImeState,
+): boolean {
+  const msSinceCompositionEnd = event.timeStamp - ime.endedAt;
+  ime.endedAt = -Infinity;
+  if (event.nativeEvent.isComposing) return true;
+  if (event.keyCode !== 229) return false;
+  return imeKeydownBlocksComposerSubmit(event, ime.open, msSinceCompositionEnd);
+}
+
 export function composerKeyEventForImeSubmit(
   event: ComposerKeyEvent,
 ): ComposerKeyEvent {

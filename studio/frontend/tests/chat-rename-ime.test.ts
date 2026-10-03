@@ -5,6 +5,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import ts from "typescript";
 import { readSrc } from "./helpers/kit.ts";
+import {
+  imeOwnsInputKeydown,
+  inputImeHandlers,
+  newInputImeState,
+} from "../src/features/chat/utils/composer-preferences.ts";
 
 // Runs the shipped callbacks to catch guards placed after preventDefault or side effects.
 function handler(
@@ -70,7 +75,12 @@ function handler(
 function fixture(file: string, inline: boolean, dirty = true) {
   const effects: string[] = [];
   const skipRenameBlurRef = { current: false };
+  const renameImeRef = { current: newInputImeState() };
+  const ime = inputImeHandlers(renameImeRef.current);
+  let now = 1000;
   const onKey = handler(file, inline, {
+    imeOwnsInputKeydown,
+    renameImeRef,
     renameDirty: dirty,
     skipRenameBlurRef,
     commitRename: () => effects.push("save"),
@@ -81,14 +91,25 @@ function fixture(file: string, inline: boolean, dirty = true) {
     isComposing = false,
     keyCode = key === "Enter" ? 13 : 27,
   ) {
+    now += 1000;
     onKey({
       key,
       keyCode,
+      metaKey: false,
+      ctrlKey: false,
+      shiftKey: false,
+      altKey: false,
+      timeStamp: now,
       nativeEvent: { isComposing, keyCode },
       preventDefault: () => effects.push("prevent"),
     });
   }
-  return { effects, skipRenameBlurRef, key };
+  // WebKit order (bug 165004): compositionend lands just before the committing 229 keydown.
+  function compose(start: boolean) {
+    if (start) ime.onCompositionStart();
+    else ime.onCompositionEnd({ timeStamp: now + 999 });
+  }
+  return { effects, skipRenameBlurRef, key, compose };
 }
 
 for (const [name, file, inline] of [
@@ -103,6 +124,8 @@ for (const [name, file, inline] of [
   ] as const) {
     test(`${name}: IME Enter (${isComposing}, ${keyCode}) keeps editing until a separate Enter`, () => {
       const f = fixture(file, inline);
+      f.compose(true);
+      if (!isComposing) f.compose(false);
       f.key("Enter", isComposing, keyCode);
       assert.deepEqual(f.effects, []);
       assert.equal(f.skipRenameBlurRef.current, false);
@@ -126,9 +149,30 @@ for (const dirty of [true, false]) {
   });
 }
 
+for (const [name, file, inline] of [
+  ["sidebar inline", "components/app-sidebar.tsx", true],
+  ["sidebar dialog", "components/app-sidebar.tsx", false],
+  ["thread sidebar dialog", "features/chat/thread-sidebar.tsx", false],
+] as const) {
+  test(`${name}: idle macOS Pinyin Enter (229, no composition) saves (#12137)`, () => {
+    const f = fixture(file, inline);
+    f.key("Enter", false, 229);
+    assert.equal(f.effects.filter((effect) => effect === "save").length, 1);
+  });
+
+  test(`${name}: open composition keeps a 229 Enter blocked`, () => {
+    const f = fixture(file, inline);
+    f.compose(true);
+    f.key("Enter", false, 229);
+    assert.deepEqual(f.effects, []);
+  });
+}
+
 test("sidebar inline: an unchanged IME Enter does not close the input", () => {
   const f = fixture("components/app-sidebar.tsx", true, false);
+  f.compose(true);
   f.key("Enter", true);
+  f.compose(false);
   f.key("Enter", false, 229);
   assert.deepEqual(f.effects, []);
   f.key("Enter");
