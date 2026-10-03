@@ -203,7 +203,7 @@ export function KeylessApiAccessSection({
               Keyless API access
             </h2>
             <p className="text-xs text-muted-foreground leading-relaxed">
-              Use Unsloth from other apps without creating an API key. Signing
+              Use DeepTenLab from other apps without creating an API key. Signing
               in is unchanged; public URLs and Colab always require a key.
             </p>
           </div>

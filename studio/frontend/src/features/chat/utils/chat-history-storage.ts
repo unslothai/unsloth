@@ -493,7 +493,7 @@ async function importLegacyChatsIfNeeded(): Promise<void> {
   if (legacyChatImportPromise) return legacyChatImportPromise;
 
   legacyChatImportPromise = (async () => {
-    // Fast-path: no Dexie DB -- new user, never had browser-only Unsloth.
+    // Fast-path: no Dexie DB -- new user, never had browser-only DeepTenLab.
     if (await dexieDbAbsent()) {
       markLegacyChatImportDone();
       return;

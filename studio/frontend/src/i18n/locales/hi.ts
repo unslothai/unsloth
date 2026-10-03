@@ -138,7 +138,7 @@ export const hi = {
       troubleshooting: "समस्या निवारण",
       systemStatus: "सिस्टम स्थिति",
       sendFeedback: "फ़ीडबैक भेजें",
-      about: "Unsloth के बारे में",
+      about: "DeepTenLab के बारे में",
     },
     find: {
       label: "पेज में खोजें",
@@ -156,7 +156,7 @@ export const hi = {
     },
     beta: "BETA",
     brand: "unsloth",
-    product: "Unsloth",
+    product: "DeepTenLab",
     accountMenu: "{name} का खाता मेनू",
     updateAvailable: "अपडेट उपलब्ध है",
     resize: {
@@ -165,7 +165,7 @@ export const hi = {
       drag: "आकार बदलने के लिए खींचें",
     },
     aria: {
-      home: "Unsloth होम",
+      home: "DeepTenLab होम",
       closeSidebar: "साइडबार बंद करें",
       openSidebar: "साइडबार खोलें",
       resizeSidebar: "साइडबार का आकार बदलें या छोटा करें",
@@ -362,7 +362,7 @@ export const hi = {
   settings: {
     accounts: {
       title: "खाते",
-      description: "निजी Unsloth खाते बनाएँ। नए उपयोगकर्ता एक बार इस्तेमाल होने वाले सेटअप कोड से साइन इन करते हैं और पासवर्ड चुनते हैं।",
+      description: "निजी DeepTenLab खाते बनाएँ। नए उपयोगकर्ता एक बार इस्तेमाल होने वाले सेटअप कोड से साइन इन करते हैं और पासवर्ड चुनते हैं।",
       username: "उपयोगकर्ता नाम",
       create: "खाता बनाएँ",
       createDescription: "सेटअप कोड साझा करें ताकि वे अपना पासवर्ड खुद चुन सकें।",
@@ -401,7 +401,7 @@ export const hi = {
     title: "सेटिंग्स",
     dialog: {
       title: "सेटिंग्स",
-      description: "अपनी Unsloth प्राथमिकताएँ प्रबंधित करें।",
+      description: "अपनी DeepTenLab प्राथमिकताएँ प्रबंधित करें।",
       closeAriaLabel: "सेटिंग्स बंद करें",
       searchPlaceholder: "सेटिंग्स खोजें…",
       searchNoResults: "कोई सेटिंग नहीं मिली।",
@@ -443,7 +443,7 @@ export const hi = {
       showChatToolFilesDescription: "वे फ़ाइलें जो चैट के दौरान कोड और टूल ने बनाईं।",
       showGeneratedMedia: "जनरेट किया गया मीडिया",
       showGeneratedMediaDescription: "इमेज, वीडियो और ऑडियो पेज से बने इमेज, वीडियो और ऑडियो।",
-      showFineTunesDescription: "वे मॉडल जिन्हें आपने Unsloth में ट्रेन या एक्सपोर्ट किया।",
+      showFineTunesDescription: "वे मॉडल जिन्हें आपने DeepTenLab में ट्रेन या एक्सपोर्ट किया।",
       deletingSection: "हटाना",
       confirmDelete: "हटाने से पहले पुष्टि करें",
       confirmDeleteDescription: "लाइब्रेरी से फ़ाइलें और फ़ोल्डर हटाने से पहले पूछें।",
@@ -459,13 +459,13 @@ export const hi = {
       storageHidden: "{size} सामग्री सेटिंग्स में छिपा है",
       storageError: "लाइब्रेरी का स्टोरेज नहीं पढ़ा जा सका।",
       locationsSection: "डिस्क पर फ़ाइलें",
-      locationsDescription: "Unsloth हर तरह की फ़ाइल कहाँ रखता है। लाइब्रेरी फ़ोल्डर Unsloth के अंदर लेबल हैं, डिस्क पर फ़ोल्डर नहीं। फ़ाइन-ट्यून और एक्सपोर्ट अपनी जगह रहते हैं, क्योंकि ट्रेनिंग और चैट उन्हें पाथ से ढूँढते हैं।",
+      locationsDescription: "DeepTenLab हर तरह की फ़ाइल कहाँ रखता है। लाइब्रेरी फ़ोल्डर DeepTenLab के अंदर लेबल हैं, डिस्क पर फ़ोल्डर नहीं। फ़ाइन-ट्यून और एक्सपोर्ट अपनी जगह रहते हैं, क्योंकि ट्रेनिंग और चैट उन्हें पाथ से ढूँढते हैं।",
       locationUploads: "लाइब्रेरी अपलोड",
       locationExports: "एक्सपोर्ट",
       revealFailed: "फ़ाइल मैनेजर नहीं खुल सका",
       locationReset: "रीसेट करें",
       locationMoveTitle: "{name} को नए फ़ोल्डर में ले जाएँ",
-      locationMoveDescription: "कोई भी फ़ोल्डर चुनें। अगर उसमें पहले से फ़ाइलें हैं, तो Unsloth उसके अंदर अपना फ़ोल्डर बनाता है। यहाँ पहले से मौजूद सब कुछ भी साथ जाएगा।",
+      locationMoveDescription: "कोई भी फ़ोल्डर चुनें। अगर उसमें पहले से फ़ाइलें हैं, तो DeepTenLab उसके अंदर अपना फ़ोल्डर बनाता है। यहाँ पहले से मौजूद सब कुछ भी साथ जाएगा।",
       locationMoveAction: "यहाँ ले जाएँ",
       locationMoving: "{name} ले जाया जा रहा है…",
       locationMoved: "{name} ले जाया गया",
@@ -552,7 +552,7 @@ export const hi = {
         },
         logOut: {
           label: "लॉग आउट",
-          description: "Unsloth से साइन आउट करें",
+          description: "DeepTenLab से साइन आउट करें",
         },
         approveToolRequest: {
           label: "अनुरोध स्वीकारें",
@@ -793,8 +793,8 @@ export const hi = {
       openLogsFolder: "लॉग फ़ोल्डर खोलें",
       openLogsFolderFailed: "लॉग फ़ोल्डर नहीं खोला जा सका।",
       exportFailed: "लॉग डाउनलोड नहीं किए जा सके।",
-      exportTooOld: "चल रहा Unsloth बैकएंड लॉग निर्यात करने के लिए बहुत पुराना है। उस बैकएंड को अपडेट करें और पुनः आरंभ करें।",
-      exportForbidden: "सभी लॉग डाउनलोड करने के लिए साइन-इन किया हुआ Unsloth सत्र चाहिए। केवल API कुंजी पर्याप्त नहीं है।",
+      exportTooOld: "चल रहा DeepTenLab बैकएंड लॉग निर्यात करने के लिए बहुत पुराना है। उस बैकएंड को अपडेट करें और पुनः आरंभ करें।",
+      exportForbidden: "सभी लॉग डाउनलोड करने के लिए साइन-इन किया हुआ DeepTenLab सत्र चाहिए। केवल API कुंजी पर्याप्त नहीं है।",
       keywords: "डिबग डिबगिंग लॉग त्रुटि गड़बड़ी क्रैश ट्रेसबैक निदान समस्या निवारण debug log logs error",
     },
     voice: {
@@ -898,7 +898,7 @@ export const hi = {
           "डिवाइस के नाम दिखाने के लिए माइक्रोफ़ोन की अनुमति दें",
         allowMicrophone: "माइक्रोफ़ोन की अनुमति दें",
         micAccessBlocked:
-          "माइक्रोफ़ोन एक्सेस रोक दिया गया है। इस Unsloth पेज के लिए माइक्रोफ़ोन एक्सेस की अनुमति दें, फिर दोबारा कोशिश करें।",
+          "माइक्रोफ़ोन एक्सेस रोक दिया गया है। इस DeepTenLab पेज के लिए माइक्रोफ़ोन एक्सेस की अनुमति दें, फिर दोबारा कोशिश करें।",
         micAccessBlockedDesktop:
           "माइक्रोफ़ोन एक्सेस रोक दिया गया है। दोबारा कोशिश करें और अनुमति दें चुनें, या सिस्टम की प्राइवेसी सेटिंग में माइक्रोफ़ोन चालू करें।",
         micAccessUnsupported:
@@ -1003,7 +1003,7 @@ export const hi = {
     },
     general: {
       title: "सामान्य",
-      description: "Unsloth के लिए वैश्विक प्राथमिकताएं।",
+      description: "DeepTenLab के लिए वैश्विक प्राथमिकताएं।",
       account: "खाता",
       huggingFaceToken: "Hugging Face टोकन",
       huggingFaceTokenDescription:
@@ -1014,7 +1014,7 @@ export const hi = {
       checkingToken: "टोकन की जाँच हो रही है...",
       tokenValidated: "टोकन सत्यापित है",
       password: "पासवर्ड",
-      passwordDescription: "इस Unsloth खाते के लिए पासवर्ड बदलें।",
+      passwordDescription: "इस DeepTenLab खाते के लिए पासवर्ड बदलें।",
       passwordDialog: {
         trigger: "पासवर्ड बदलें",
         title: "पासवर्ड बदलें",
@@ -1023,7 +1023,7 @@ export const hi = {
         setTrigger: "रिमोट पासवर्ड सेट करें",
         setTitle: "रिमोट पासवर्ड सेट करें",
         setDescription:
-          "वह पासवर्ड चुनें जिससे रिमोट ब्राउज़र unsloth के रूप में साइन इन करते हैं (कम से कम {minLength} अक्षर)। Unsloth डेस्कटॉप ऐप स्वतः साइन इन करता रहेगा।",
+          "वह पासवर्ड चुनें जिससे रिमोट ब्राउज़र unsloth के रूप में साइन इन करते हैं (कम से कम {minLength} अक्षर)। DeepTenLab डेस्कटॉप ऐप स्वतः साइन इन करता रहेगा।",
         setSubmit: "पासवर्ड सेट करें",
         setting: "सेट हो रहा है...",
         setDone: "पासवर्ड सेट हो गया।",
@@ -1089,7 +1089,7 @@ export const hi = {
           "निष्क्रियता पर अनलोड होने से पहले KV कैश सहेजता है, ताकि दोबारा शुरू की गई चैट को इतिहास फिर से न पढ़ना पड़े। डिस्क पर 10 GB तक।",
         apiOnly: "केवल API द्वारा लोड किए गए मॉडल अनलोड करें",
         apiOnlyDescription:
-          "निष्क्रियता पर अनलोड करते समय Unsloth से आपके द्वारा लोड किया गया मॉडल मेमोरी में बना रहता है, और केवल वही मॉडल हटाए जाते हैं जिन्हें किसी API अनुरोध ने लोड किया था।",
+          "निष्क्रियता पर अनलोड करते समय DeepTenLab से आपके द्वारा लोड किया गया मॉडल मेमोरी में बना रहता है, और केवल वही मॉडल हटाए जाते हैं जिन्हें किसी API अनुरोध ने लोड किया था।",
       },
       previewSharing: {
         sectionTitle: "पूर्वावलोकन साझाकरण",
@@ -1134,13 +1134,13 @@ export const hi = {
       },
       startup: {
         sectionTitle: "स्टार्टअप",
-        launchAtLogin: "लॉगिन पर Unsloth चलाएं",
+        launchAtLogin: "लॉगिन पर DeepTenLab चलाएं",
         launchAtLoginDescription:
-          "लॉगिन करने पर Unsloth को बैकग्राउंड में शुरू करता है। इसे खोलने तक यह मेनू बार या सिस्टम ट्रे में रहता है।",
+          "लॉगिन करने पर DeepTenLab को बैकग्राउंड में शुरू करता है। इसे खोलने तक यह मेनू बार या सिस्टम ट्रे में रहता है।",
 
         closeToTray: "सिस्टम ट्रे में बंद करें",
         closeToTrayDescription:
-          "मुख्य विंडो बंद करने पर Unsloth और उसके सर्वर को बैकग्राउंड में चलते रहने दें।",
+          "मुख्य विंडो बंद करने पर DeepTenLab और उसके सर्वर को बैकग्राउंड में चलते रहने दें।",
         closeToTraySaveError: "सिस्टम ट्रे में बंद करने की सेटिंग अपडेट नहीं हो सकी।",
         loadError: "लॉगिन पर चलाने की सेटिंग लोड नहीं हो सकी।",
         saveError: "लॉगिन पर चलाने की सेटिंग अपडेट नहीं हो सकी।",
@@ -1148,9 +1148,9 @@ export const hi = {
       hub: {
         source: "मॉडल स्रोत",
         sourceDescription: "मॉडल हब कहाँ खोजता और डाउनलोड करता है। अगर आपके नेटवर्क पर Hugging Face ब्लॉक या धीमा है तो ModelScope चुनें।",
-        sourceFallback: "ModelScope शुरू नहीं हो सका, इसलिए Hugging Face इस्तेमाल हो रहा है। Unsloth के लॉग देखें।",
+        sourceFallback: "ModelScope शुरू नहीं हो सका, इसलिए Hugging Face इस्तेमाल हो रहा है। DeepTenLab के लॉग देखें।",
         autoSourceTitle: "मॉडल स्रोत ModelScope पर बदल दिया गया",
-        autoSourceDescription: "आपके क्षेत्र में Hugging Face अक्सर धीमा या ब्लॉक रहता है, इसलिए Unsloth अब ModelScope से मॉडल डाउनलोड करता है।",
+        autoSourceDescription: "आपके क्षेत्र में Hugging Face अक्सर धीमा या ब्लॉक रहता है, इसलिए DeepTenLab अब ModelScope से मॉडल डाउनलोड करता है।",
         autoSourceAction: "मॉडल स्रोत सेटिंग्स खोलें",
         sectionTitle: "मॉडल हब",
         endpoint: "Hugging Face एंडपॉइंट",
@@ -1249,22 +1249,35 @@ export const hi = {
         action: "प्राथमिकताएं रीसेट करें",
         confirmTitle: "सभी स्थानीय प्राथमिकताएं रीसेट करें?",
         confirmDescription:
-          "केवल-स्थानीय प्राथमिकताएं साफ़ करता है और Unsloth को फिर से लोड करता है। चैट, API एक्सेस, और DB-समर्थित सेटिंग्स बनी रहती हैं।",
+          "केवल-स्थानीय प्राथमिकताएं साफ़ करता है और DeepTenLab को फिर से लोड करता है। चैट, API एक्सेस, और DB-समर्थित सेटिंग्स बनी रहती हैं।",
         confirmAction: "रीसेट करें और फिर से लोड करें",
       },
       permissions: {
         sectionTitle: "अनुमतियां",
-        bypassLabel: "टूल अनुमतियां",
-        bypassDescription:
-          "चैट के टूल कॉल (टर्मिनल, python, वेब, MCP) चलाने से पहले Unsloth उन्हें कैसे मंज़ूरी देता है। “Full access” मोड से मंज़ूरी और कोड सैंडबॉक्स बंद हो जाते हैं।",
+        names: {
+          ask: "अनुमति मांगें",
+          auto: "मेरी ओर से स्वीकृत करें",
+          off: "अपने आप चलाएं",
+          full: "पूरी पहुंच",
+        },
+        details: {
+          ask:
+            "हर टूल कॉल से पहले पूछता है, जिसमें टर्मिनल और Python कोड, वेब सर्च, फ़ाइल बदलाव और MCP टूल शामिल हैं। बाहरी प्रोवाइडर द्वारा चलाए गए टूल नहीं रुकते। तब सबसे अच्छा, जब आप हर कदम की समीक्षा करना चाहें।",
+          auto:
+            "सामान्य टूल कॉल अपने आप चलाता है और सिर्फ़ तब पूछता है जब कोई काम जोखिम भरा लगे, जैसे क्रेडेंशियल पढ़ना, अधिकार बढ़ाना या विनाशकारी कमांड चलाना।",
+          off:
+            "हर टूल कॉल बिना पूछे चलाता है। Python और टर्मिनल कोड फिर भी सैंडबॉक्स में चलता है, जो सीमित करता है कि वह आपके कंप्यूटर की किन फ़ाइलों तक पहुंच सकता है।",
+          full:
+            "हर टूल कॉल बिना पूछे चलाता है और कोड सैंडबॉक्स बंद कर देता है, ताकि Python और टर्मिनल कोड आपके खाते की पहुंच वाली कोई भी फ़ाइल पढ़ और बदल सके। उन भरोसेमंद कामों के लिए सबसे अच्छा, जिन्हें सैंडबॉक्स के बाहर काम करना हो।",
+        },
       },
     },
     profile: {
       title: "प्रोफ़ाइल",
-      description: "Unsloth में आपकी प्रोफ़ाइल कैसे दिखती है।",
+      description: "DeepTenLab में आपकी प्रोफ़ाइल कैसे दिखती है।",
       changePicture: "प्रोफ़ाइल चित्र बदलें",
       displayName: "प्रदर्शन नाम",
-      nickname: "Unsloth आपको क्या कहकर बुलाए?",
+      nickname: "DeepTenLab आपको क्या कहकर बुलाए?",
       nicknamePlaceholder: "उपनाम",
       nicknameSaved: "पसंदीदा नाम सहेजा गया",
       avatarShape: "प्रोफ़ाइल चित्र की आकृति",
@@ -1291,10 +1304,10 @@ export const hi = {
       stats: {
         title: "आपके आँकड़े",
         subtitle:
-          "नीचे सब कुछ आपके अपने इतिहास से गिना जाता है। कुछ भी इकट्ठा नहीं किया जाता और न ही Unsloth को भेजा जाता है।",
+          "नीचे सब कुछ आपके अपने इतिहास से गिना जाता है। कुछ भी इकट्ठा नहीं किया जाता और न ही DeepTenLab को भेजा जाता है।",
         retry: "फिर कोशिश करें",
         privacyNote:
-          "आँकड़े आपके Unsloth इंस्टॉल के स्थानीय चैट, API उपयोग और ट्रेनिंग इतिहास से गिने जाते हैं। आँकड़ों के लिए API प्रॉम्प्ट, जवाब या कुंजियाँ कभी संग्रहीत नहीं होतीं। Unsloth या किसी तीसरे पक्ष को कुछ नहीं भेजा जाता।",
+          "आँकड़े आपके DeepTenLab इंस्टॉल के स्थानीय चैट, API उपयोग और ट्रेनिंग इतिहास से गिने जाते हैं। आँकड़ों के लिए API प्रॉम्प्ट, जवाब या कुंजियाँ कभी संग्रहीत नहीं होतीं। DeepTenLab या किसी तीसरे पक्ष को कुछ नहीं भेजा जाता।",
         emptyChats:
           "अभी तक चैट या API उपयोग नहीं है। बातचीत शुरू करें या प्रमाणित स्थानीय API अनुरोध करें।",
         lifetimeTokens: "अब तक के कुल टोकन",
@@ -1323,7 +1336,7 @@ export const hi = {
         tokensIn: "भेजे गए टोकन",
         tokensOut: "बनाए गए टोकन",
         totalTokens: "कुल टोकन",
-        studioChatTokens: "Unsloth Chat टोकन",
+        studioChatTokens: "DeepTenLab Chat टोकन",
         apiTokens: "API टोकन",
         cachedTokens: "कैश किए गए टोकन",
         cachedValue: "{tokens} (इनपुट का {percent}%)",
@@ -1354,7 +1367,7 @@ export const hi = {
     },
     appearance: {
       title: "रूप-रंग",
-      description: "इस डिवाइस पर Unsloth कैसा दिखता है।",
+      description: "इस डिवाइस पर DeepTenLab कैसा दिखता है।",
       theme: {
         title: "विज़ुअल स्टाइल",
         label: "मोड",
@@ -1365,7 +1378,7 @@ export const hi = {
       },
       palette: {
         label: "थीम",
-        description: "लाइट और डार्क मोड में पूरे Unsloth में दिखने वाले रंग।",
+        description: "लाइट और डार्क मोड में पूरे DeepTenLab में दिखने वाले रंग।",
         standard: "मानक",
         classic: "क्लासिक",
         minimal: "मिनिमल",
@@ -1441,7 +1454,7 @@ export const hi = {
         },
         uiFontSize: {
           label: "UI फ़ॉन्ट का आकार",
-          description: "Unsloth UI के लिए उपयोग होने वाला आधार आकार समायोजित करें।",
+          description: "DeepTenLab UI के लिए उपयोग होने वाला आधार आकार समायोजित करें।",
         },
         codeFontSize: {
           label: "कोड फ़ॉन्ट का आकार",
@@ -1470,7 +1483,7 @@ export const hi = {
       language: {
         title: "भाषा",
         label: "प्रदर्शन भाषा",
-        description: "Unsloth द्वारा उपयोग की जाने वाली भाषा।",
+        description: "DeepTenLab द्वारा उपयोग की जाने वाली भाषा।",
         autoDetect: "स्वतः पहचान",
       },
       layout: {
@@ -1497,7 +1510,7 @@ export const hi = {
     },
     resources: {
       title: "सिस्टम",
-      description: "इस Unsloth सर्वर के हार्डवेयर और स्टोरेज की निगरानी करें।",
+      description: "इस DeepTenLab सर्वर के हार्डवेयर और स्टोरेज की निगरानी करें।",
       liveUpdates: "लाइव अपडेट",
       floatingWindow: "फ्लोटिंग विंडो",
       disableOverlay: "ओवरले अक्षम करें",
@@ -1564,7 +1577,7 @@ export const hi = {
           description: "अपना llama-server बिल्ड इस्तेमाल करें।",
           hint: "वह llama.cpp फ़ोल्डर चुनें जिसमें llama-server हो, या ऐसा बिल्ड जहाँ यह build/bin में हो। कस्टम रनटाइम GGUF चैट, एम्बेडिंग और समर्थित वॉइस मॉडल के लिए इस्तेमाल होता है। पर्यावरण चर को फिर भी प्राथमिकता मिलती है।",
           automatic: "स्वचालित (बंडल किया हुआ)",
-          bundled: "Unsloth द्वारा इंस्टॉल किया गया llama.cpp रनटाइम इस्तेमाल करता है।",
+          bundled: "DeepTenLab द्वारा इंस्टॉल किया गया llama.cpp रनटाइम इस्तेमाल करता है।",
           active: "अगली बार मॉडल लोड होने पर आपका कस्टम llama-server इस्तेमाल होगा।",
           environmentManaged: "{variable} पर्यावरण चर द्वारा प्रबंधित।",
           missingBinary: "इस फ़ोल्डर में llama-server अब उपलब्ध नहीं है। दूसरा फ़ोल्डर चुनें या बंडल रनटाइम इस्तेमाल करें।",
@@ -1587,7 +1600,7 @@ export const hi = {
         },
         unsupported: {
           notInstalled: "कोई प्रबंधित llama.cpp इंस्टॉल नहीं मिला, इसलिए बदलने के लिए कोई बैकएंड नहीं है।",
-          localLink: "llama.cpp आपकी अपनी लिंक की हुई लोकल डायरेक्टरी है, इसलिए Unsloth उसे नहीं बदलेगा।",
+          localLink: "llama.cpp आपकी अपनी लिंक की हुई लोकल डायरेक्टरी है, इसलिए DeepTenLab उसे नहीं बदलेगा।",
           sourceBuild: "यह llama.cpp सोर्स से बनाया गया है, इसलिए इसका बैकएंड यहाँ से नहीं बदला जा सकता।",
           customPath: "एक कस्टम llama.cpp फ़ोल्डर चुना गया है। उसका बिल्ड कंप्यूट बैकएंड तय करता है।",
           unresolved: "उपलब्ध बैकएंड की जाँच नहीं हो सकी। अपना कनेक्शन देखकर दोबारा कोशिश करें।",
@@ -1635,7 +1648,7 @@ export const hi = {
           label: "कैश फ़ाइलें",
           description:
             "कैश में {size}, जिनमें से {reclaimable} अभी साफ़ किया जा सकता है।",
-          hint: "पैकेज डाउनलोड, कंपाइल किए गए कर्नेल और ट्रांसफ़र कैश जिन्हें Unsloth ज़रूरत पड़ने पर दोबारा बना लेता है। डाउनलोड किए गए मॉडल, प्रोजेक्ट, चैट, सेटिंग्स और आपका Hugging Face टोकन यहाँ कभी साफ़ नहीं किए जाते।",
+          hint: "पैकेज डाउनलोड, कंपाइल किए गए कर्नेल और ट्रांसफ़र कैश जिन्हें DeepTenLab ज़रूरत पड़ने पर दोबारा बना लेता है। डाउनलोड किए गए मॉडल, प्रोजेक्ट, चैट, सेटिंग्स और आपका Hugging Face टोकन यहाँ कभी साफ़ नहीं किए जाते।",
           keywords:
             "कैश साफ़ करना हटाना खाली जगह डिस्क अस्थायी कंपाइल cache caches purge prune clear clean free space disk uv pip npm bun triton inductor cuda numba matplotlib vllm compiled xet temporary",
           measuring: "कैश का आकार मापा जा रहा है...",
@@ -1651,7 +1664,7 @@ export const hi = {
           confirmDescription: "इससे लगभग {size} खाली होगा।",
           confirmOneTitle: "{name} साफ़ करें?",
           safety:
-            "अगली बार ज़रूरत पड़ने पर Unsloth कैश दोबारा बना लेता है। डाउनलोड किए गए मॉडल, प्रोजेक्ट, चैट, सेटिंग्स और आपके Hugging Face टोकन को छुआ नहीं जाता।",
+            "अगली बार ज़रूरत पड़ने पर DeepTenLab कैश दोबारा बना लेता है। डाउनलोड किए गए मॉडल, प्रोजेक्ट, चैट, सेटिंग्स और आपके Hugging Face टोकन को छुआ नहीं जाता।",
           hubCost:
             "यह मॉडल कैश है। इसे साफ़ करने पर अगली बार उपयोग करते समय वे मॉडल फिर से डाउनलोड होंगे।",
           datasetsCost:
@@ -1672,7 +1685,7 @@ export const hi = {
             numba: "Numba कंपाइल कैश",
             matplotlib: "Matplotlib फ़ॉन्ट कैश",
             vllm: "vLLM कैश",
-            unslothCompiled: "Unsloth कंपाइल किए गए मॉड्यूल",
+            unslothCompiled: "DeepTenLab कंपाइल किए गए मॉड्यूल",
             hfXet: "Hugging Face ट्रांसफ़र कैश",
             hfAssets: "Hugging Face एसेट कैश",
             hfDatasets: "Hugging Face डेटासेट कैश",
@@ -1715,7 +1728,7 @@ export const hi = {
       description:
         "unsloth start की मदद से Claude Code और Codex जैसे कोडिंग एजेंट को लोकल मॉडल से जोड़ें।",
       intro:
-        "Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode और दूसरे एजेंट को Unsloth द्वारा लोकली सर्व किए गए मॉडल से जोड़ता है, पूरी तरह ऑफ़लाइन। यह एक OpenAI-संगत सर्वर चलाता है और आपके एजेंट की कॉन्फ़िगरेशन फ़ाइलों को कभी नहीं छूता।",
+        "Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode और दूसरे एजेंट को DeepTenLab द्वारा लोकली सर्व किए गए मॉडल से जोड़ता है, पूरी तरह ऑफ़लाइन। यह एक OpenAI-संगत सर्वर चलाता है और आपके एजेंट की कॉन्फ़िगरेशन फ़ाइलों को कभी नहीं छूता।",
       readDocs: "दस्तावेज़ पढ़ें",
       copy: "कॉपी करें",
       copied: "कॉपी किया गया",
@@ -1741,17 +1754,17 @@ export const hi = {
       // English is the baseline until translated: the three-part sentence is assembled around an
       // inline link and needs restructuring first.
       automaticSettingsNote:
-        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
+        "DeepTenLab automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
         "You can also adjust any configuration. See further below or",
       configurationDocs: "docs",
       configurationFlagsSuffix: "for flags.",
       modelNote:
-        "Codex को llama-server द्वारा सर्व किया गया GGUF मॉडल चाहिए। दूसरे एजेंट Transformers-आधारित मॉडल भी उपयोग कर सकते हैं; Unsloth में पहले से लोड किए गए मॉडल का उपयोग करने के लिए --model हटा दें।",
+        "Codex को llama-server द्वारा सर्व किया गया GGUF मॉडल चाहिए। दूसरे एजेंट Transformers-आधारित मॉडल भी उपयोग कर सकते हैं; DeepTenLab में पहले से लोड किए गए मॉडल का उपयोग करने के लिए --model हटा दें।",
       subagent: {
         title: "लोकल मॉडल को सबएजेंट के रूप में उपयोग करें",
         description:
-          "{agent} को उसके मौजूदा मॉडल पर ही रहने दें और चुने हुए काम इस लोकल Unsloth मॉडल को सौंपें।",
+          "{agent} को उसके मौजूदा मॉडल पर ही रहने दें और चुने हुए काम इस लोकल DeepTenLab मॉडल को सौंपें।",
         setupCommand: "सेटअप कमांड",
         copySetupCommand: "सबएजेंट सेटअप कमांड कॉपी करें",
         usagePrompt: "फिर {agent} में यह टाइप करें:",
@@ -1762,7 +1775,7 @@ export const hi = {
       quickstart: {
         title: "कमांड बनाएं",
         description:
-          "Unsloth में अभी लोड किए गए मॉडल के साथ एजेंट चलाएं। पहले एक मॉडल लोड करें, फिर claude की जगह नीचे दिए गए किसी भी समर्थित एजेंट का नाम रखें।",
+          "DeepTenLab में अभी लोड किए गए मॉडल के साथ एजेंट चलाएं। पहले एक मॉडल लोड करें, फिर claude की जगह नीचे दिए गए किसी भी समर्थित एजेंट का नाम रखें।",
         noneDetected: "आपके PATH में कोई समर्थित एजेंट CLI नहीं मिला।",
         installed: "इंस्टॉल है",
       },
@@ -1781,9 +1794,9 @@ export const hi = {
       options: {
         title: "सामान्य विकल्प",
         description:
-          "Unsloth के फ़्लैग पहले पढ़े जाते हैं; जो पहचान में नहीं आता वह सीधे एजेंट को भेज दिया जाता है।",
+          "DeepTenLab के फ़्लैग पहले पढ़े जाते हैं; जो पहचान में नहीं आता वह सीधे एजेंट को भेज दिया जाता है।",
         model:
-          "मॉडल चुनता है। --model न देने पर unsloth start वही मॉडल उपयोग करता है जो Unsloth में लोड है, और कोई लोड न हो तो त्रुटि देता है।",
+          "मॉडल चुनता है। --model न देने पर unsloth start वही मॉडल उपयोग करता है जो DeepTenLab में लोड है, और कोई लोड न हो तो त्रुटि देता है।",
         contextLength:
           "मांगी गई कॉन्टेक्स्ट लंबाई सेट करता है (उपनाम: --max-seq-length)।",
         ggufVariant: "GGUF क्वांटाइज़ेशन वेरिएंट चुनता है।",
@@ -1793,11 +1806,11 @@ export const hi = {
         serve: "अपने आप चलने वाला लोकल सर्वर चालू या बंद करता है।",
         launch: "एजेंट चलाता है, या सिर्फ़ कमांड और एनवायरनमेंट दिखाता है।",
         persist:
-          "Unsloth द्वारा प्रबंधित एजेंट स्टोरेज को रनों के बीच बनाए रखता है।",
+          "DeepTenLab द्वारा प्रबंधित एजेंट स्टोरेज को रनों के बीच बनाए रखता है।",
         asSubagent:
-          "मूल एजेंट को उसके मौजूदा मॉडल पर रखता है और Unsloth को लोकल सबएजेंट के रूप में दर्ज करता है (Claude Code, Codex और OpenCode)।",
+          "मूल एजेंट को उसके मौजूदा मॉडल पर रखता है और DeepTenLab को लोकल सबएजेंट के रूप में दर्ज करता है (Claude Code, Codex और OpenCode)।",
         apiKey:
-          "आपकी Unsloth API key लेता है (या UNSLOTH_API_KEY सेट करें)।",
+          "आपकी DeepTenLab API key लेता है (या UNSLOTH_API_KEY सेट करें)।",
         reasoning:
           "चैट में रीज़निंग इस्तेमाल करें: on, off या auto। Auto मॉडल के चैट टेम्पलेट के अनुसार चलता है, जो आम तौर पर on होता है।",
         reasoningEffort:
@@ -1806,14 +1819,14 @@ export const hi = {
           "मंज़ूरी के प्रॉम्प्ट छोड़ देता है। केवल भरोसेमंद वातावरण में उपयोग करें।",
       },
       remote: {
-        title: "रिमोट Unsloth से जुड़ें",
+        title: "रिमोट DeepTenLab से जुड़ें",
         description:
-          "चलाने से पहले ये सेट करके unsloth start को कहीं और चल रहे Unsloth की ओर भेजें (या --api-key सीधे दें):",
+          "चलाने से पहले ये सेट करके unsloth start को कहीं और चल रहे DeepTenLab की ओर भेजें (या --api-key सीधे दें):",
       },
       passthrough: {
         title: "एजेंट को आर्ग्युमेंट भेजना",
         description:
-          "Unsloth के फ़्लैग के बाद दिए गए आर्ग्युमेंट सीधे एजेंट को भेजे जाते हैं, इसलिए resume जैसे एजेंट के अपने कमांड काम करते रहते हैं:",
+          "DeepTenLab के फ़्लैग के बाद दिए गए आर्ग्युमेंट सीधे एजेंट को भेजे जाते हैं, इसलिए resume जैसे एजेंट के अपने कमांड काम करते रहते हैं:",
       },
       dryRun: {
         title: "चलाए बिना देखें",
@@ -2196,11 +2209,11 @@ export const hi = {
     remoteLan: {
       title: "रिमोट और LAN",
       description:
-        "इस Unsloth तक अपने दूसरे डिवाइस से पहुँचें, अपने लोकल नेटवर्क या एक अस्थायी सार्वजनिक URL से।",
+        "इस DeepTenLab तक अपने दूसरे डिवाइस से पहुँचें, अपने लोकल नेटवर्क या एक अस्थायी सार्वजनिक URL से।",
     },
     apiKeys: {
       title: "API",
-      description: "OpenAI-संगत API के माध्यम से Unsloth तक पहुंचें।",
+      description: "OpenAI-संगत API के माध्यम से DeepTenLab तक पहुंचें।",
       readDocs: "API दस्तावेज़ पढ़ें",
       noAccess: "अभी तक कोई API एक्सेस नहीं।",
       accessTokens: "एक्सेस टोकन",
@@ -2228,7 +2241,7 @@ export const hi = {
       osWindows: "Windows",
       secureHttps: "सुरक्षित HTTPS",
       secureHttpsHint:
-        "0.0.0.0 वाला पोर्ट अब भी विश्व स्तर पर पहुँचा जा सकता है। पूरी सुरक्षा के लिए Unsloth को --secure के साथ शुरू करें, ताकि केवल यह HTTPS लिंक उपलब्ध हो।",
+        "0.0.0.0 वाला पोर्ट अब भी विश्व स्तर पर पहुँचा जा सकता है। पूरी सुरक्षा के लिए DeepTenLab को --secure के साथ शुरू करें, ताकि केवल यह HTTPS लिंक उपलब्ध हो।",
       copyTunnelUrl: "टनल URL कॉपी करें",
       copySnippet: "स्निपेट कॉपी करें",
       copy: "कॉपी करें",
@@ -2300,7 +2313,7 @@ export const hi = {
     about: {
       title: "परिचय",
       description: "दस्तावेज़, रिलीज़ नोट्स, प्रतिक्रिया, और बिल्ड जानकारी।",
-      studioVersion: "Unsloth संस्करण",
+      studioVersion: "DeepTenLab संस्करण",
       packageVersion: "पैकेज संस्करण",
       desktopAppVersion: "डेस्कटॉप ऐप संस्करण",
       desktopAppVersionUnavailable: "उपलब्ध नहीं",
@@ -2319,27 +2332,27 @@ export const hi = {
       reportIssue: "समस्या रिपोर्ट करें",
       license: {
         sectionTitle: "लाइसेंस",
-        studioLabel: "Unsloth",
+        studioLabel: "DeepTenLab",
         studioLicense: "AGPL-3.0",
         studioDescription: "GNU AGPL v3.0 के तहत ओपन सोर्स।",
-        libraryLabel: "Unsloth Core",
+        libraryLabel: "DeepTenLab Core",
         libraryLicense: "Apache-2.0",
         libraryDescription: "Apache 2.0 के तहत लाइसेंस प्राप्त।",
       },
       dangerZone: "खतरनाक क्षेत्र",
-      shutDownStudio: "Unsloth शट डाउन करें",
+      shutDownStudio: "DeepTenLab शट डाउन करें",
       shutDownStudioDescription:
-        "Unsloth सर्वर को रोकता है और आपके सत्र को समाप्त करता है।",
+        "DeepTenLab सर्वर को रोकता है और आपके सत्र को समाप्त करता है।",
       shutDown: "शट डाउन करें",
       update: {
-        title: "Unsloth अपडेट करें",
+        title: "DeepTenLab अपडेट करें",
         commandText: "{label} का टेक्स्ट",
         copied: "कॉपी किया गया",
         copyCommand: "कमांड कॉपी करें",
         commandCopied: "{label} कॉपी किया गया",
         copyNamedCommand: "{label} कॉपी करें",
-        checkingInstall: "जांच रहे हैं कि Unsloth कैसे इंस्टॉल किया गया था...",
-        installIntro: "Unsloth इंस्टॉल या अपडेट करने के लिए:",
+        checkingInstall: "जांच रहे हैं कि DeepTenLab कैसे इंस्टॉल किया गया था...",
+        installIntro: "DeepTenLab इंस्टॉल या अपडेट करने के लिए:",
         localUpdateHeading: "स्थानीय अपडेट",
         installCommandUnix: "macOS/Linux इंस्टॉल कमांड",
         installCommandWindows: "Windows इंस्टॉल कमांड",
@@ -2353,7 +2366,7 @@ export const hi = {
           "सोर्स या VCS पैकेज इंस्टॉल का पता चला। मूल स्थानीय पथ या Git URL से पुनः इंस्टॉल करें।",
         repoCheckoutFallback:
           "यदि आपके पास अभी भी रेपो checkout है, तो उससे स्थानीय इंस्टॉलर चलाएं:",
-        restartAfterUpdate: "अपडेट करने के बाद Unsloth को पुनः आरंभ करें।",
+        restartAfterUpdate: "अपडेट करने के बाद DeepTenLab को पुनः आरंभ करें।",
         desktopManaged:
           "डेस्कटॉप ऐप नए ऐप संस्करणों की अपने-आप जाँच करता है। आप यहाँ कभी भी अपडेट की जाँच कर सकते हैं या अपडेट कर सकते हैं।",
         desktopReady: "डेस्कटॉप ऐप अपडेट",
@@ -2373,7 +2386,7 @@ export const hi = {
         desktopCheckFailedDescription:
           "अपना कनेक्शन जाँचें और फिर से कोशिश करें।",
         desktopCurrent: "डेस्कटॉप ऐप नवीनतम संस्करण पर है",
-        desktopCurrentDescription: "Unsloth अपने-आप जाँच करता रहेगा।",
+        desktopCurrentDescription: "DeepTenLab अपने-आप जाँच करता रहेगा।",
         checkForUpdates: "अपडेट की जाँच करें",
         checkAgain: "फिर से जाँचें",
         retryCheck: "फिर से कोशिश करें",
@@ -2381,7 +2394,7 @@ export const hi = {
         updateNow: "अभी अपडेट करें",
         openReleasePage: "रिलीज़ पेज खोलें",
         unknownInstall:
-          "यह पता नहीं लगाया जा सका कि Unsloth कैसे इंस्टॉल किया गया था। इंस्टॉलर या PyPI इंस्टॉल के लिए, ऊपर दिए गए कमांड का उपयोग करें।",
+          "यह पता नहीं लगाया जा सका कि DeepTenLab कैसे इंस्टॉल किया गया था। इंस्टॉलर या PyPI इंस्टॉल के लिए, ऊपर दिए गए कमांड का उपयोग करें।",
         localCheckout:
           "स्थानीय checkout इंस्टॉल के लिए, उस checkout से स्थानीय इंस्टॉलर चलाएं:",
         docs: "इंस्टॉल दस्तावेज़:",
@@ -2884,7 +2897,7 @@ export const hi = {
       },
       startFailed: "ट्रेनिंग शुरू करने में विफल",
       startUnconfirmed:
-        "Unsloth यह पुष्टि नहीं कर सका कि ट्रेनिंग शुरू हुई या नहीं। बैकग्राउंड में स्थिति जांची जा रही है।",
+        "DeepTenLab यह पुष्टि नहीं कर सका कि ट्रेनिंग शुरू हुई या नहीं। बैकग्राउंड में स्थिति जांची जा रही है।",
       stopFailed: "ट्रेनिंग रोकने में विफल",
       trainingStillActiveTitle: "ट्रेनिंग अभी भी सक्रिय है",
       stopBeforeConfig: "पहले ट्रेनिंग रोकें, फिर कॉन्फ़िगरेशन पर लौटें।",
@@ -3138,7 +3151,7 @@ export const hi = {
     noMatch: "“{query}” से मेल खाने वाला कोई कौशल नहीं",
     clearSearch: "खोज साफ़ करें",
     readOnlyClaude: "केवल पढ़ने के लिए: ~/.claude/skills में मिला। फ़ाइल वहीं संपादित करें।",
-    readOnlyBundled: "केवल पढ़ने के लिए: Unsloth के साथ बंडल्ड।",
+    readOnlyBundled: "केवल पढ़ने के लिए: DeepTenLab के साथ बंडल्ड।",
     readOnlyLinked: "केवल पढ़ने के लिए: यह प्रविष्टि एक लिंक है। फ़ाइलें उनके वास्तविक स्थान पर संपादित करें।",
     characters: "{count} अक्षर",
     unsaved: "असहेजे बदलाव",
@@ -3152,12 +3165,13 @@ export const hi = {
     sectionClaude: "Claude कौशल",
     sectionClaudeHint: "~/.claude/skills में मिले। यहाँ केवल पढ़ने के लिए; फ़ाइलें वहीं संपादित करें।",
     sectionBundled: "बंडल्ड",
-    sectionBundledHint: "Unsloth के साथ आते हैं। केवल पढ़ने के लिए।",
+    sectionBundledHint: "DeepTenLab के साथ आते हैं। केवल पढ़ने के लिए।",
     linked: "लिंक",
     discardTitle: "बदलाव छोड़ दें?",
     discardDescription: "{name} में असहेजे बदलाव खो जाएँगे।",
     discard: "छोड़ें",
     mentions: "कौशल",
+    manage: "कौशल प्रबंधित करें",
   },
   library: {
     tabs: {
@@ -3295,7 +3309,7 @@ export const hi = {
       audioTitle: "अभी कोई ऑडियो नहीं",
       audioDescription: "ऑडियो पेज पर जनरेट की गई स्पीच यहाँ दिखती है।",
       modelsTitle: "अभी कोई फ़ाइन-ट्यून किया गया मॉडल नहीं",
-      modelsDescription: "Unsloth में आप जो मॉडल ट्रेन या एक्सपोर्ट करते हैं, वे यहाँ दिखते हैं।",
+      modelsDescription: "DeepTenLab में आप जो मॉडल ट्रेन या एक्सपोर्ट करते हैं, वे यहाँ दिखते हैं।",
       createFolder: "फ़ोल्डर बनाएँ",
       generateVideo: "वीडियो जनरेट करें",
       generateAudio: "ऑडियो जनरेट करें",

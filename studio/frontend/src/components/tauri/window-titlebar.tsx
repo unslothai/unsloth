@@ -513,7 +513,7 @@ export function WindowTitlebar({
             label="Close window"
             // No optimistic overlay here. Rust raises it only once the quit confirmations
             // have passed, and one of those can be a dialog asking whether to keep
-            // training: painting "Closing Unsloth Desktop..." behind that question would
+            // training: painting "Closing DeepTenLab Desktop..." behind that question would
             // answer it before the user does. The wait this covers is the reap, and Rust's
             // app-closing arrives well ahead of that.
             onClick={() => runWindowAction((appWindow) => appWindow.close())}

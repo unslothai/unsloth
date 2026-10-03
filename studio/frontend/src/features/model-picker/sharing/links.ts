@@ -202,7 +202,7 @@ function browserLink(params: URLSearchParams, address: string): string {
     url.username ||
     url.password
   ) {
-    throw new Error("Use an HTTP or HTTPS Unsloth Web address.");
+    throw new Error("Use an HTTP or HTTPS DeepTenLab Web address.");
   }
   url.pathname = "/chat";
   // Force document navigation from /chat: link intake ignores same-document hash changes.

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useEffect, useRef, useState, type SyntheticEvent } from "react";
+import { Link } from "@tanstack/react-router";
 import {
   Add01Icon,
   Search01Icon,
@@ -183,6 +184,9 @@ function OwnerAccountsTab() {
         <p className="max-w-lg text-xs text-muted-foreground">
           {t("settings.accounts.description")}
         </p>
+        <Link to="/admin" className="w-fit text-xs underline underline-offset-2">
+          Open admin panel
+        </Link>
       </header>
 
       <div className="flex items-center gap-3">

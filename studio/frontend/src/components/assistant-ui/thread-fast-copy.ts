@@ -256,7 +256,7 @@ function patchClipboardDeltas(root: Element): Array<() => void> {
   }
 
   // EmitsImageAltText: the clipboard carries the alt text, which is not in the DOM as text. THE
-  // HOLDER MUST NOT HAVE A BOX. Unsloth's message images are display:block, so an inline holder
+  // HOLDER MUST NOT HAVE A BOX. DeepTenLab's message images are display:block, so an inline holder
   // beside one sits between two blocks, the engine wraps it in an anonymous block, and the alt text
   // arrives with a leading newline the real clipboard does not have (measured on the real thread as
   // 40,650 characters against 40,648, two images each contributing one extra break). Taking the
@@ -269,7 +269,7 @@ function patchClipboardDeltas(root: Element): Array<() => void> {
     if (!alt) continue;
     // ONLY AN IMAGE THE NATIVE ITERATOR WOULD EMIT. Chromium skips an image that is not rendered or
     // not selectable, so inserting alt text unconditionally ADDS text the clipboard never carried:
-    // `display: none`, `visibility: hidden`, `user-select: none` and Unsloth's own `ImagePreview`,
+    // `display: none`, `visibility: hidden`, `user-select: none` and DeepTenLab's own `ImagePreview`,
     // which carries an `invisible` class until the image loads, all diverge.
     if (!nativeWouldEmitAlt(image)) continue;
     const had = image.getAttribute("style");

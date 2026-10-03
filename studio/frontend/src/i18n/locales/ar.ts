@@ -135,7 +135,7 @@ export const ar = {
       troubleshooting: "استكشاف الأخطاء وإصلاحها",
       systemStatus: "حالة النظام",
       sendFeedback: "إرسال ملاحظات",
-      about: "حول Unsloth",
+      about: "حول DeepTenLab",
     },
     find: {
       label: "البحث في الصفحة",
@@ -153,7 +153,7 @@ export const ar = {
     },
     beta: "BETA",
     brand: "unsloth",
-    product: "Unsloth",
+    product: "DeepTenLab",
     accountMenu: "قائمة حساب {name}",
     updateAvailable: "يتوفر تحديث",
     resize: {
@@ -162,7 +162,7 @@ export const ar = {
       drag: "اسحب لتغيير الحجم",
     },
     aria: {
-      home: "الصفحة الرئيسية لـ Unsloth",
+      home: "الصفحة الرئيسية لـ DeepTenLab",
       closeSidebar: "إغلاق الشريط الجانبي",
       openSidebar: "فتح الشريط الجانبي",
       resizeSidebar: "تغيير حجم الشريط الجانبي أو طيه",
@@ -359,7 +359,7 @@ export const ar = {
   settings: {
     accounts: {
       title: "الحسابات",
-      description: "أنشئ حسابات Unsloth خاصة. يسجّل المستخدمون الجدد الدخول برمز إعداد يُستخدم مرة واحدة ثم يختارون كلمة مرور.",
+      description: "أنشئ حسابات DeepTenLab خاصة. يسجّل المستخدمون الجدد الدخول برمز إعداد يُستخدم مرة واحدة ثم يختارون كلمة مرور.",
       username: "اسم المستخدم",
       create: "إنشاء حساب",
       createDescription: "شارك رمز إعداد ليختار صاحب الحساب كلمة مروره بنفسه.",
@@ -398,7 +398,7 @@ export const ar = {
     title: "الإعدادات",
     dialog: {
       title: "الإعدادات",
-      description: "إدارة تفضيلات Unsloth الخاصة بك.",
+      description: "إدارة تفضيلات DeepTenLab الخاصة بك.",
       closeAriaLabel: "إغلاق الإعدادات",
       searchPlaceholder: "ابحث في الإعدادات…",
       searchNoResults: "لم يُعثر على أي إعداد.",
@@ -440,7 +440,7 @@ export const ar = {
       showChatToolFilesDescription: "الملفات التي أنشأتها الشيفرة والأدوات أثناء المحادثات.",
       showGeneratedMedia: "الوسائط المولدة",
       showGeneratedMediaDescription: "الصور والفيديو والصوت من صفحات الصور والفيديو والصوت.",
-      showFineTunesDescription: "النماذج التي درّبتها أو صدّرتها في Unsloth.",
+      showFineTunesDescription: "النماذج التي درّبتها أو صدّرتها في DeepTenLab.",
       deletingSection: "الحذف",
       confirmDelete: "التأكيد قبل الحذف",
       confirmDeleteDescription: "السؤال قبل حذف الملفات والمجلدات من المكتبة.",
@@ -456,13 +456,13 @@ export const ar = {
       storageHidden: "{size} مخفية في إعدادات المحتوى",
       storageError: "تعذّرت قراءة تخزين المكتبة.",
       locationsSection: "الملفات على القرص",
-      locationsDescription: "المكان الذي يحفظ فيه Unsloth كل نوع من الملفات. مجلدات المكتبة تسميات داخل Unsloth وليست مجلدات على القرص. تبقى النماذج المضبوطة والتصديرات في مكانها لأن التدريب والمحادثات تشير إليها بمسارها.",
+      locationsDescription: "المكان الذي يحفظ فيه DeepTenLab كل نوع من الملفات. مجلدات المكتبة تسميات داخل DeepTenLab وليست مجلدات على القرص. تبقى النماذج المضبوطة والتصديرات في مكانها لأن التدريب والمحادثات تشير إليها بمسارها.",
       locationUploads: "ملفات المكتبة المرفوعة",
       locationExports: "التصديرات",
       revealFailed: "تعذر فتح مدير الملفات",
       locationReset: "إعادة التعيين",
       locationMoveTitle: "نقل {name} إلى مجلد جديد",
-      locationMoveDescription: "اختر أي مجلد. إذا كان يحتوي على ملفات بالفعل، ينشئ Unsloth مجلدًا خاصًا به داخله. وسينتقل أيضًا كل ما هو موجود هنا.",
+      locationMoveDescription: "اختر أي مجلد. إذا كان يحتوي على ملفات بالفعل، ينشئ DeepTenLab مجلدًا خاصًا به داخله. وسينتقل أيضًا كل ما هو موجود هنا.",
       locationMoveAction: "النقل إلى هنا",
       locationMoving: "جارٍ نقل {name}…",
       locationMoved: "تم نقل {name}",
@@ -549,7 +549,7 @@ export const ar = {
         },
         logOut: {
           label: "تسجيل الخروج",
-          description: "تسجيل الخروج من Unsloth",
+          description: "تسجيل الخروج من DeepTenLab",
         },
         approveToolRequest: {
           label: "الموافقة على الطلب",
@@ -790,8 +790,8 @@ export const ar = {
       openLogsFolder: "فتح مجلد السجلات",
       openLogsFolderFailed: "تعذّر فتح مجلد السجلات.",
       exportFailed: "تعذّر تنزيل السجلات.",
-      exportTooOld: "خادم Unsloth العامل أقدم من أن يدعم تصدير السجلات. حدِّثه وأعد تشغيله.",
-      exportForbidden: "يتطلب تنزيل كل السجلات جلسة Unsloth مسجّل الدخول إليها. لا يكفي مفتاح API.",
+      exportTooOld: "خادم DeepTenLab العامل أقدم من أن يدعم تصدير السجلات. حدِّثه وأعد تشغيله.",
+      exportForbidden: "يتطلب تنزيل كل السجلات جلسة DeepTenLab مسجّل الدخول إليها. لا يكفي مفتاح API.",
       keywords: "تصحيح الأخطاء سجل السجلات خطأ أخطاء تعطل تتبع تشخيص استكشاف الأخطاء debug log logs error",
     },
     voice: {
@@ -894,7 +894,7 @@ export const ar = {
           "اسمح بالوصول إلى الميكروفون لعرض أسماء الأجهزة",
         allowMicrophone: "السماح بالميكروفون",
         micAccessBlocked:
-          "تم حظر الوصول إلى الميكروفون. اسمح بالوصول إلى الميكروفون لصفحة Unsloth هذه ثم أعد المحاولة.",
+          "تم حظر الوصول إلى الميكروفون. اسمح بالوصول إلى الميكروفون لصفحة DeepTenLab هذه ثم أعد المحاولة.",
         micAccessBlockedDesktop:
           "تم حظر الوصول إلى الميكروفون. أعد المحاولة واختر السماح، أو مكّن الميكروفون من إعدادات الخصوصية في النظام.",
         micAccessUnsupported:
@@ -998,7 +998,7 @@ export const ar = {
     },
     general: {
       title: "عام",
-      description: "التفضيلات العامة لـ Unsloth.",
+      description: "التفضيلات العامة لـ DeepTenLab.",
       account: "الحساب",
       huggingFaceToken: "رمز وصول Hugging Face",
       huggingFaceTokenDescription:
@@ -1009,7 +1009,7 @@ export const ar = {
       checkingToken: "جارٍ التحقق من رمز الوصول...",
       tokenValidated: "تم التحقق من الرمز",
       password: "كلمة المرور",
-      passwordDescription: "تغيير كلمة المرور لحساب Unsloth هذا.",
+      passwordDescription: "تغيير كلمة المرور لحساب DeepTenLab هذا.",
       passwordDialog: {
         trigger: "تغيير كلمة المرور",
         title: "تغيير كلمة المرور",
@@ -1018,7 +1018,7 @@ export const ar = {
         setTrigger: "تعيين كلمة مرور الوصول عن بُعد",
         setTitle: "تعيين كلمة مرور الوصول عن بُعد",
         setDescription:
-          "اختر كلمة المرور التي تسجّل بها المتصفحات البعيدة الدخول باسم unsloth (بحد أدنى {minLength} حرفًا). سيواصل تطبيق Unsloth لسطح المكتب تسجيل الدخول تلقائيًا.",
+          "اختر كلمة المرور التي تسجّل بها المتصفحات البعيدة الدخول باسم unsloth (بحد أدنى {minLength} حرفًا). سيواصل تطبيق DeepTenLab لسطح المكتب تسجيل الدخول تلقائيًا.",
         setSubmit: "تعيين كلمة المرور",
         setting: "جارٍ التعيين...",
         setDone: "تم تعيين كلمة المرور.",
@@ -1086,7 +1086,7 @@ export const ar = {
           "يحفظ ذاكرة KV المؤقتة قبل التفريغ التلقائي عند الخمول، حتى لا تعيد المحادثات المستأنفة قراءة السجل. بحد أقصى 10 جيجابايت على القرص.",
         apiOnly: "تفريغ النماذج التي حمّلتها واجهة API فقط",
         apiOnlyDescription:
-          "يُبقي التفريغ التلقائي عند الخمول النموذج الذي حمّلته من Unsloth في الذاكرة، ولا يفرّغ سوى النماذج التي حمّلها طلب عبر واجهة API.",
+          "يُبقي التفريغ التلقائي عند الخمول النموذج الذي حمّلته من DeepTenLab في الذاكرة، ولا يفرّغ سوى النماذج التي حمّلها طلب عبر واجهة API.",
       },
       previewSharing: {
         sectionTitle: "مشاركة المعاينة",
@@ -1131,13 +1131,13 @@ export const ar = {
       },
       startup: {
         sectionTitle: "بدء التشغيل",
-        launchAtLogin: "تشغيل Unsloth عند تسجيل الدخول",
+        launchAtLogin: "تشغيل DeepTenLab عند تسجيل الدخول",
         launchAtLoginDescription:
-          "يبدأ Unsloth في الخلفية عند تسجيل الدخول، ويبقى في شريط القوائم أو علبة النظام حتى تفتحه.",
+          "يبدأ DeepTenLab في الخلفية عند تسجيل الدخول، ويبقى في شريط القوائم أو علبة النظام حتى تفتحه.",
 
         closeToTray: "الإغلاق إلى علبة النظام",
         closeToTrayDescription:
-          "إبقاء Unsloth وخادمه قيد التشغيل في الخلفية عند إغلاق النافذة الرئيسية.",
+          "إبقاء DeepTenLab وخادمه قيد التشغيل في الخلفية عند إغلاق النافذة الرئيسية.",
         closeToTraySaveError: "تعذّر تحديث إعداد الإغلاق إلى علبة النظام.",
         loadError: "تعذر تحميل إعداد التشغيل عند تسجيل الدخول.",
         saveError: "تعذر تحديث إعداد التشغيل عند تسجيل الدخول.",
@@ -1145,9 +1145,9 @@ export const ar = {
       hub: {
         source: "مصدر النماذج",
         sourceDescription: "المكان الذي يبحث فيه مركز النماذج ويُنزّل منه. اختر ModelScope إذا كان Hugging Face محظورًا أو بطيئًا على شبكتك.",
-        sourceFallback: "تعذّر تشغيل ModelScope، لذلك يُستخدم Hugging Face. راجع سجلات Unsloth.",
+        sourceFallback: "تعذّر تشغيل ModelScope، لذلك يُستخدم Hugging Face. راجع سجلات DeepTenLab.",
         autoSourceTitle: "تم تبديل مصدر النماذج إلى ModelScope",
-        autoSourceDescription: "غالبًا ما يكون Hugging Face بطيئًا أو محجوبًا في منطقتك، لذلك يقوم Unsloth الآن بتنزيل النماذج من ModelScope.",
+        autoSourceDescription: "غالبًا ما يكون Hugging Face بطيئًا أو محجوبًا في منطقتك، لذلك يقوم DeepTenLab الآن بتنزيل النماذج من ModelScope.",
         autoSourceAction: "فتح إعدادات مصدر النماذج",
         sectionTitle: "مركز النماذج",
         endpoint: "نقطة نهاية Hugging Face",
@@ -1246,22 +1246,35 @@ export const ar = {
         action: "إعادة تعيين التفضيلات",
         confirmTitle: "إعادة تعيين جميع التفضيلات المحلية؟",
         confirmDescription:
-          "يمسح التفضيلات المحلية فقط ويعيد تحميل Unsloth. تُحفظ المحادثات ووصول API والإعدادات المخزّنة في قاعدة البيانات.",
+          "يمسح التفضيلات المحلية فقط ويعيد تحميل DeepTenLab. تُحفظ المحادثات ووصول API والإعدادات المخزّنة في قاعدة البيانات.",
         confirmAction: "إعادة التعيين وإعادة التحميل",
       },
       permissions: {
         sectionTitle: "الأذونات",
-        bypassLabel: "أذونات الأدوات",
-        bypassDescription:
-          "كيفية موافقة Unsloth على استدعاءات أدوات المحادثة (الطرفية، python، الويب، MCP) قبل تشغيلها. وضع «Full access» يعطّل الموافقات وصندوق عزل الشيفرة.",
+        names: {
+          ask: "طلب الموافقة",
+          auto: "الموافقة نيابةً عني",
+          off: "التشغيل تلقائيًا",
+          full: "وصول كامل",
+        },
+        details: {
+          ask:
+            "يطلب الموافقة قبل كل استدعاء أداة، بما في ذلك شيفرة الطرفية وPython وعمليات البحث في الويب وتعديل الملفات وأدوات MCP. الأدوات التي يشغّلها مزوّد خارجي لا تتوقف لطلب الموافقة. الأنسب عندما تريد مراجعة كل خطوة.",
+          auto:
+            "يشغّل استدعاءات الأدوات المعتادة تلقائيًا ولا يطلب الموافقة إلا عندما يبدو الإجراء خطرًا، مثل قراءة بيانات الاعتماد أو رفع الصلاحيات أو تشغيل أوامر مدمّرة.",
+          off:
+            "يشغّل كل استدعاءات الأدوات دون سؤال. تظل شيفرة Python والطرفية تعمل داخل صندوق العزل، الذي يحدّ من الملفات التي يمكنها الوصول إليها على جهازك.",
+          full:
+            "يشغّل كل استدعاءات الأدوات دون سؤال ويوقف صندوق عزل الشيفرة، فيمكن لشيفرة Python والطرفية قراءة أي ملف يصل إليه حسابك وتغييره. الأنسب للمهام الموثوقة التي تحتاج إلى العمل خارج صندوق العزل.",
+        },
       },
     },
     profile: {
       title: "الملف الشخصي",
-      description: "كيفية ظهور ملفك الشخصي في Unsloth.",
+      description: "كيفية ظهور ملفك الشخصي في DeepTenLab.",
       changePicture: "تغيير صورة الملف الشخصي",
       displayName: "الاسم المعروض",
-      nickname: "بماذا يجب أن يناديك Unsloth؟",
+      nickname: "بماذا يجب أن يناديك DeepTenLab؟",
       nicknamePlaceholder: "الاسم المفضّل",
       nicknameSaved: "تم حفظ الاسم المفضّل",
       avatarShape: "شكل صورة الملف الشخصي",
@@ -1288,10 +1301,10 @@ export const ar = {
       stats: {
         title: "إحصاءاتك",
         subtitle:
-          "كل ما يلي محسوب من سجلك الخاص. لا يُجمَع أي شيء ولا يُرسَل إلى Unsloth.",
+          "كل ما يلي محسوب من سجلك الخاص. لا يُجمَع أي شيء ولا يُرسَل إلى DeepTenLab.",
         retry: "إعادة المحاولة",
         privacyNote:
-          "تُحسب الإحصاءات من سجل المحادثات واستخدام API والتدريب المحلي في نسخة Unsloth لديك. لا تُحفظ مطالبات API أو ردوده أو مفاتيحه للإحصاءات، ولا يُرسل شيء إلى Unsloth أو أي طرف ثالث.",
+          "تُحسب الإحصاءات من سجل المحادثات واستخدام API والتدريب المحلي في نسخة DeepTenLab لديك. لا تُحفظ مطالبات API أو ردوده أو مفاتيحه للإحصاءات، ولا يُرسل شيء إلى DeepTenLab أو أي طرف ثالث.",
         emptyChats:
           "لا يوجد استخدام للمحادثات أو API بعد. ابدأ محادثة أو أرسل طلب API محليًا ومصادقًا عليه لتظهر إحصاءاتك هنا.",
         lifetimeTokens: "إجمالي التوكنات",
@@ -1320,7 +1333,7 @@ export const ar = {
         tokensIn: "التوكنات المُرسَلة",
         tokensOut: "التوكنات المُولَّدة",
         totalTokens: "إجمالي التوكنات",
-        studioChatTokens: "توكنات محادثة Unsloth",
+        studioChatTokens: "توكنات محادثة DeepTenLab",
         apiTokens: "توكنات API",
         cachedTokens: "التوكنات المخزّنة مؤقتًا",
         cachedValue: "{tokens} ({percent}% من المُدخَلات)",
@@ -1351,7 +1364,7 @@ export const ar = {
     },
     appearance: {
       title: "المظهر",
-      description: "كيفية ظهور Unsloth على هذا الجهاز.",
+      description: "كيفية ظهور DeepTenLab على هذا الجهاز.",
       theme: {
         title: "النمط المرئي",
         label: "الوضع",
@@ -1362,7 +1375,7 @@ export const ar = {
       },
       palette: {
         label: "السمة",
-        description: "الألوان المستخدمة في Unsloth في الوضعين الفاتح والداكن.",
+        description: "الألوان المستخدمة في DeepTenLab في الوضعين الفاتح والداكن.",
         standard: "قياسية",
         classic: "كلاسيكية",
         minimal: "بسيطة",
@@ -1438,7 +1451,7 @@ export const ar = {
         },
         uiFontSize: {
           label: "حجم خط الواجهة",
-          description: "اضبط الحجم الأساسي المستخدم في واجهة Unsloth.",
+          description: "اضبط الحجم الأساسي المستخدم في واجهة DeepTenLab.",
         },
         codeFontSize: {
           label: "حجم خط الشيفرة",
@@ -1467,7 +1480,7 @@ export const ar = {
       language: {
         title: "اللغة",
         label: "لغة العرض",
-        description: "اللغة التي يستخدمها Unsloth.",
+        description: "اللغة التي يستخدمها DeepTenLab.",
         autoDetect: "اكتشاف تلقائي",
       },
       layout: {
@@ -1494,7 +1507,7 @@ export const ar = {
     },
     resources: {
       title: "النظام",
-      description: "راقب عتاد خادم Unsloth هذا ومساحة تخزينه.",
+      description: "راقب عتاد خادم DeepTenLab هذا ومساحة تخزينه.",
       liveUpdates: "التحديثات المباشرة",
       floatingWindow: "نافذة عائمة",
       disableOverlay: "تعطيل التراكب",
@@ -1561,7 +1574,7 @@ export const ar = {
           description: "استخدم إصدار llama-server الخاص بك.",
           hint: "اختر مجلد llama.cpp الذي يحتوي على llama-server، أو إصدارًا يوجد فيه ضمن build/bin. يُستخدم وقت التشغيل المخصّص لمحادثة GGUF والتضمينات ونماذج الصوت المدعومة. تبقى لمتغيرات البيئة الأولوية.",
           automatic: "تلقائي (مضمّن)",
-          bundled: "يستخدم وقت تشغيل llama.cpp الذي ثبّته Unsloth.",
+          bundled: "يستخدم وقت تشغيل llama.cpp الذي ثبّته DeepTenLab.",
           active: "سيُستخدم llama-server المخصّص عند تحميل النموذج التالي.",
           environmentManaged: "تديره متغير البيئة {variable}.",
           missingBinary: "لم يعد llama-server متاحًا في هذا المجلد. اختر مجلدًا آخر أو استخدم وقت التشغيل المضمّن.",
@@ -1584,7 +1597,7 @@ export const ar = {
         },
         unsupported: {
           notInstalled: "لم يُعثر على تثبيت llama.cpp مُدار، لذا لا توجد خلفية لتبديلها.",
-          localLink: "llama.cpp مجلد محلي ربطته بنفسك، ولن يستبدله Unsloth.",
+          localLink: "llama.cpp مجلد محلي ربطته بنفسك، ولن يستبدله DeepTenLab.",
           sourceBuild: "بُني هذا الإصدار من llama.cpp من الشيفرة المصدرية، لذا لا يمكن تبديل خلفيته من هنا.",
           customPath: "تم تحديد مجلد llama.cpp مخصّص. يحدد هذا الإصدار خلفية الحوسبة.",
           unresolved: "تعذّر التحقق من الخلفيات المتاحة. تحقّق من اتصالك وحاول مرة أخرى.",
@@ -1632,7 +1645,7 @@ export const ar = {
           label: "ملفات ذاكرة التخزين المؤقت",
           description:
             "{size} في ذاكرات التخزين المؤقت، يمكن مسح {reclaimable} منها الآن.",
-          hint: "تنزيلات الحزم والنوى المُصرَّفة وذاكرات النقل المؤقتة التي تعيد Unsloth بناءها عند الحاجة إليها. لا يتم هنا مسح النماذج المُنزَّلة أو المشاريع أو المحادثات أو الإعدادات أو رمز Hugging Face الخاص بك.",
+          hint: "تنزيلات الحزم والنوى المُصرَّفة وذاكرات النقل المؤقتة التي تعيد DeepTenLab بناءها عند الحاجة إليها. لا يتم هنا مسح النماذج المُنزَّلة أو المشاريع أو المحادثات أو الإعدادات أو رمز Hugging Face الخاص بك.",
           keywords:
             "ذاكرة مؤقت تخزين كاش مسح تنظيف تفريغ مساحة قرص مؤقتة مُصرَّف cache caches purge prune clear clean free space disk uv pip npm bun triton inductor cuda numba matplotlib vllm compiled xet temporary",
           measuring: "جارٍ قياس أحجام ذاكرات التخزين المؤقت...",
@@ -1648,7 +1661,7 @@ export const ar = {
           confirmDescription: "سيؤدي ذلك إلى تحرير نحو {size}.",
           confirmOneTitle: "هل تريد مسح {name}؟",
           safety:
-            "تعيد Unsloth بناء ذاكرة التخزين المؤقت في المرة التالية التي تحتاج إليها. لن تُمَس النماذج المُنزَّلة أو المشاريع أو المحادثات أو الإعدادات أو رمز Hugging Face الخاص بك.",
+            "تعيد DeepTenLab بناء ذاكرة التخزين المؤقت في المرة التالية التي تحتاج إليها. لن تُمَس النماذج المُنزَّلة أو المشاريع أو المحادثات أو الإعدادات أو رمز Hugging Face الخاص بك.",
           hubCost:
             "هذه هي ذاكرة النماذج المؤقتة. مسحها يعني تنزيل تلك النماذج من جديد عند استخدامها في المرة القادمة.",
           datasetsCost:
@@ -1669,7 +1682,7 @@ export const ar = {
             numba: "ذاكرة تصريف Numba المؤقتة",
             matplotlib: "ذاكرة خطوط Matplotlib المؤقتة",
             vllm: "ذاكرة vLLM المؤقتة",
-            unslothCompiled: "وحدات Unsloth المُصرَّفة",
+            unslothCompiled: "وحدات DeepTenLab المُصرَّفة",
             hfXet: "ذاكرة نقل Hugging Face المؤقتة",
             hfAssets: "ذاكرة أصول Hugging Face المؤقتة",
             hfDatasets: "ذاكرة مجموعات بيانات Hugging Face المؤقتة",
@@ -1712,7 +1725,7 @@ export const ar = {
       description:
         "اربط وكلاء البرمجة مثل Claude Code وCodex بنموذج محلي باستخدام unsloth start.",
       intro:
-        "يربط Claude Code وCodex وDeepSeek Harness وHermes وOpenClaw وOpenCode وغيرها من الوكلاء بنموذج يقدّمه Unsloth محليًا، دون اتصال بالإنترنت تمامًا. يشغّل خادمًا متوافقًا مع OpenAI ولا يمسّ ملفات إعدادات وكيلك إطلاقًا.",
+        "يربط Claude Code وCodex وDeepSeek Harness وHermes وOpenClaw وOpenCode وغيرها من الوكلاء بنموذج يقدّمه DeepTenLab محليًا، دون اتصال بالإنترنت تمامًا. يشغّل خادمًا متوافقًا مع OpenAI ولا يمسّ ملفات إعدادات وكيلك إطلاقًا.",
       readDocs: "قراءة التوثيق",
       copy: "نسخ",
       copied: "تم النسخ",
@@ -1738,17 +1751,17 @@ export const ar = {
       // English is the baseline until translated: the three-part sentence is assembled around an
       // inline link and needs restructuring first.
       automaticSettingsNote:
-        "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
+        "DeepTenLab automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
         "You can also adjust any configuration. See further below or",
       configurationDocs: "docs",
       configurationFlagsSuffix: "for flags.",
       modelNote:
-        "يتطلب Codex نموذج GGUF يقدّمه llama-server. أما الوكلاء الآخرون فيمكنهم استخدام النماذج المبنية على transformers أيضًا؛ احذف ‎--model لاستخدام النموذج المُحمَّل بالفعل في Unsloth.",
+        "يتطلب Codex نموذج GGUF يقدّمه llama-server. أما الوكلاء الآخرون فيمكنهم استخدام النماذج المبنية على transformers أيضًا؛ احذف ‎--model لاستخدام النموذج المُحمَّل بالفعل في DeepTenLab.",
       subagent: {
         title: "استخدام نموذج محلي كوكيل فرعي",
         description:
-          "أبقِ {agent} على نموذجه الحالي وفوّض مهام محددة إلى نموذج Unsloth المحلي هذا.",
+          "أبقِ {agent} على نموذجه الحالي وفوّض مهام محددة إلى نموذج DeepTenLab المحلي هذا.",
         setupCommand: "أمر الإعداد",
         copySetupCommand: "نسخ أمر إعداد الوكيل الفرعي",
         usagePrompt: "ثم اكتب في {agent}:",
@@ -1759,7 +1772,7 @@ export const ar = {
       quickstart: {
         title: "بناء أمر",
         description:
-          "شغّل وكيلًا على النموذج المُحمَّل حاليًا في Unsloth. حمّل نموذجًا أولًا، ثم استبدل claude بأي وكيل مدعوم أدناه.",
+          "شغّل وكيلًا على النموذج المُحمَّل حاليًا في DeepTenLab. حمّل نموذجًا أولًا، ثم استبدل claude بأي وكيل مدعوم أدناه.",
         noneDetected: "لم يُعثر في متغيّر PATH لديك على أي واجهة أوامر لوكيل مدعوم.",
         installed: "مثبّت",
       },
@@ -1778,9 +1791,9 @@ export const ar = {
       options: {
         title: "الخيارات الشائعة",
         description:
-          "تُحلَّل رايات Unsloth أولًا؛ وأي شيء لا يتعرّف عليه يُمرَّر كما هو إلى الوكيل.",
+          "تُحلَّل رايات DeepTenLab أولًا؛ وأي شيء لا يتعرّف عليه يُمرَّر كما هو إلى الوكيل.",
         model:
-          "يختار نموذجًا. بدون ‎--model يستخدم unsloth start النموذج المُحمَّل حاليًا في Unsloth، ويُظهر خطأ إن لم يكن هناك أي نموذج محمَّل.",
+          "يختار نموذجًا. بدون ‎--model يستخدم unsloth start النموذج المُحمَّل حاليًا في DeepTenLab، ويُظهر خطأ إن لم يكن هناك أي نموذج محمَّل.",
         contextLength:
           "يحدد طول السياق المطلوب (اسم بديل: ‎--max-seq-length).",
         ggufVariant: "يختار نسخة تكميم GGUF.",
@@ -1789,10 +1802,10 @@ export const ar = {
           "يفعّل أو يعطّل التوازي التنسوري عبر عدة أجهزة GPU.",
         serve: "يفعّل أو يعطّل الخادم المحلي التلقائي.",
         launch: "يشغّل الوكيل، أو يكتفي بطباعة الأمر والبيئة.",
-        persist: "يحتفظ بمساحة تخزين الوكيل التي يديرها Unsloth بين عمليات التشغيل.",
+        persist: "يحتفظ بمساحة تخزين الوكيل التي يديرها DeepTenLab بين عمليات التشغيل.",
         asSubagent:
-          "يبقي الوكيل الأصلي على نموذجه الحالي ويسجّل Unsloth كوكيل فرعي محلي (Claude Code وCodex وOpenCode).",
-        apiKey: "يمرّر مفتاح API الخاص بـ Unsloth (أو اضبط UNSLOTH_API_KEY).",
+          "يبقي الوكيل الأصلي على نموذجه الحالي ويسجّل DeepTenLab كوكيل فرعي محلي (Claude Code وCodex وOpenCode).",
+        apiKey: "يمرّر مفتاح API الخاص بـ DeepTenLab (أو اضبط UNSLOTH_API_KEY).",
         reasoning:
           "استخدام الاستدلال في المحادثة: on أو off أو auto. ويتبع auto قالب المحادثة الخاص بالنموذج، وهو غالبًا on.",
         reasoningEffort:
@@ -1800,14 +1813,14 @@ export const ar = {
         yolo: "يتخطى طلبات الموافقة. استخدمه في البيئات الموثوقة فقط.",
       },
       remote: {
-        title: "الاتصال بنسخة بعيدة من Unsloth",
+        title: "الاتصال بنسخة بعيدة من DeepTenLab",
         description:
-          "وجّه unsloth start إلى نسخة من Unsloth تعمل في مكان آخر بضبط ما يلي قبل التشغيل (أو مرّر ‎--api-key مباشرة):",
+          "وجّه unsloth start إلى نسخة من DeepTenLab تعمل في مكان آخر بضبط ما يلي قبل التشغيل (أو مرّر ‎--api-key مباشرة):",
       },
       passthrough: {
         title: "تمرير وسائط إلى الوكيل",
         description:
-          "الوسائط التي تأتي بعد رايات Unsloth تُمرَّر إلى الوكيل نفسه، لذا تظل أوامره الأصلية مثل resume تعمل:",
+          "الوسائط التي تأتي بعد رايات DeepTenLab تُمرَّر إلى الوكيل نفسه، لذا تظل أوامره الأصلية مثل resume تعمل:",
       },
       dryRun: {
         title: "المعاينة دون تشغيل",
@@ -2190,11 +2203,11 @@ export const ar = {
     remoteLan: {
       title: "الوصول عن بُعد والشبكة المحلية",
       description:
-        "الوصول إلى Unsloth من أجهزتك الأخرى عبر شبكتك المحلية أو عنوان URL عام مؤقت.",
+        "الوصول إلى DeepTenLab من أجهزتك الأخرى عبر شبكتك المحلية أو عنوان URL عام مؤقت.",
     },
     apiKeys: {
       title: "API",
-      description: "الوصول إلى Unsloth عبر واجهة API المتوافقة مع OpenAI.",
+      description: "الوصول إلى DeepTenLab عبر واجهة API المتوافقة مع OpenAI.",
       readDocs: "قراءة وثائق API",
       noAccess: "لا يوجد وصول إلى API بعد.",
       accessTokens: "توكنات الوصول",
@@ -2222,7 +2235,7 @@ export const ar = {
       osWindows: "Windows",
       secureHttps: "HTTPS آمن",
       secureHttpsHint:
-        "لا يزال المنفذ على العنوان 0.0.0.0 متاحًا عالميًا. للحصول على أمان كامل، شغّل Unsloth باستخدام --secure لإتاحة رابط HTTPS هذا فقط.",
+        "لا يزال المنفذ على العنوان 0.0.0.0 متاحًا عالميًا. للحصول على أمان كامل، شغّل DeepTenLab باستخدام --secure لإتاحة رابط HTTPS هذا فقط.",
       copyTunnelUrl: "نسخ رابط النفق",
       copySnippet: "نسخ المقتطف",
       copy: "نسخ",
@@ -2294,7 +2307,7 @@ export const ar = {
     about: {
       title: "حول",
       description: "الوثائق وملاحظات الإصدار والآراء ومعلومات النسخة.",
-      studioVersion: "إصدار Unsloth",
+      studioVersion: "إصدار DeepTenLab",
       packageVersion: "إصدار الحزمة",
       desktopAppVersion: "إصدار تطبيق سطح المكتب",
       desktopAppVersionUnavailable: "غير متاح",
@@ -2313,27 +2326,27 @@ export const ar = {
       reportIssue: "الإبلاغ عن مشكلة",
       license: {
         sectionTitle: "الترخيص",
-        studioLabel: "Unsloth",
+        studioLabel: "DeepTenLab",
         studioLicense: "AGPL-3.0",
         studioDescription: "مفتوح المصدر بموجب GNU AGPL v3.0.",
-        libraryLabel: "Unsloth Core",
+        libraryLabel: "DeepTenLab Core",
         libraryLicense: "Apache-2.0",
         libraryDescription: "مرخّص بموجب Apache 2.0.",
       },
       dangerZone: "منطقة الخطر",
-      shutDownStudio: "إيقاف تشغيل Unsloth",
+      shutDownStudio: "إيقاف تشغيل DeepTenLab",
       shutDownStudioDescription:
-        "يوقف خادم Unsloth وينهي جلستك.",
+        "يوقف خادم DeepTenLab وينهي جلستك.",
       shutDown: "إيقاف التشغيل",
       update: {
-        title: "تحديث Unsloth",
+        title: "تحديث DeepTenLab",
         commandText: "نص {label}",
         copied: "تم النسخ",
         copyCommand: "نسخ الأمر",
         commandCopied: "تم نسخ {label}",
         copyNamedCommand: "نسخ {label}",
-        checkingInstall: "جارٍ التحقق من طريقة تثبيت Unsloth...",
-        installIntro: "لتثبيت أو تحديث Unsloth:",
+        checkingInstall: "جارٍ التحقق من طريقة تثبيت DeepTenLab...",
+        installIntro: "لتثبيت أو تحديث DeepTenLab:",
         localUpdateHeading: "تحديث محلي",
         installCommandUnix: "أمر التثبيت على macOS أو Linux",
         installCommandWindows: "أمر التثبيت على Windows",
@@ -2347,7 +2360,7 @@ export const ar = {
           "تم اكتشاف تثبيت من المصدر أو حزمة VCS. أعد التثبيت من المسار المحلي الأصلي أو رابط Git.",
         repoCheckoutFallback:
           "إذا كانت لا تزال لديك نسخة المستودع، شغّل المثبّت المحلي منها:",
-        restartAfterUpdate: "أعد تشغيل Unsloth بعد التحديث.",
+        restartAfterUpdate: "أعد تشغيل DeepTenLab بعد التحديث.",
         desktopManaged:
           "يتحقق تطبيق سطح المكتب تلقائيًا من توفر إصدارات جديدة. ويمكنك أيضًا التحقق من وجود تحديثات أو تثبيتها هنا في أي وقت.",
         desktopReady: "تحديثات تطبيق سطح المكتب",
@@ -2365,7 +2378,7 @@ export const ar = {
         desktopCheckFailed: "تعذّر التحقق من وجود تحديثات",
         desktopCheckFailedDescription: "تحقق من اتصالك ثم حاول مرة أخرى.",
         desktopCurrent: "تطبيق سطح المكتب محدّث",
-        desktopCurrentDescription: "سيواصل Unsloth التحقق تلقائيًا.",
+        desktopCurrentDescription: "سيواصل DeepTenLab التحقق تلقائيًا.",
         checkForUpdates: "التحقق من وجود تحديثات",
         checkAgain: "التحقق مرة أخرى",
         retryCheck: "إعادة المحاولة",
@@ -2373,7 +2386,7 @@ export const ar = {
         updateNow: "التحديث الآن",
         openReleasePage: "فتح صفحة الإصدار",
         unknownInstall:
-          "تعذّر اكتشاف طريقة تثبيت Unsloth. لعمليات تثبيت المثبّت أو PyPI، استخدم الأوامر أعلاه.",
+          "تعذّر اكتشاف طريقة تثبيت DeepTenLab. لعمليات تثبيت المثبّت أو PyPI، استخدم الأوامر أعلاه.",
         localCheckout:
           "لعمليات تثبيت النسخة المحلية، شغّل المثبّت المحلي من تلك النسخة:",
         docs: "وثائق التثبيت:",
@@ -2877,7 +2890,7 @@ export const ar = {
       },
       startFailed: "فشل بدء التدريب",
       startUnconfirmed:
-        "تعذّر على Unsloth تأكيد بدء التدريب. جارٍ التحقق من الحالة في الخلفية.",
+        "تعذّر على DeepTenLab تأكيد بدء التدريب. جارٍ التحقق من الحالة في الخلفية.",
       stopFailed: "فشل إيقاف التدريب",
       trainingStillActiveTitle: "لا يزال التدريب نشطًا",
       stopBeforeConfig: "أوقف التدريب أولًا، ثم عُد إلى التكوين.",
@@ -3068,7 +3081,7 @@ export const ar = {
       preparing: "جارٍ التحضير",
       left: "{eta} متبقٍ",
       downloaded: "تم تنزيل {size}",
-      terminalStart: "> يبدأ تدريب Unsloth...",
+      terminalStart: "> يبدأ تدريب DeepTenLab...",
       preparingResources: "> جارٍ تحضير النموذج ومجموعة البيانات...",
       gettingReady: "> نُجهّز كل شيء لعملية التدريب...",
       waitingForFirstStep: "> {message} | في انتظار الخطوة الأولى... ({step})",
@@ -3131,7 +3144,7 @@ export const ar = {
     noMatch: 'لا توجد مهارات تطابق "{query}"',
     clearSearch: "مسح البحث",
     readOnlyClaude: "للقراءة فقط: موجودة في ‎~/.claude/skills. عدّل الملف هناك.",
-    readOnlyBundled: "للقراءة فقط: مضمّنة مع Unsloth.",
+    readOnlyBundled: "للقراءة فقط: مضمّنة مع DeepTenLab.",
     readOnlyLinked: "للقراءة فقط: هذا الإدخال رابط. عدّل الملفات في مكانها الأصلي.",
     characters: "{count} حرفًا",
     unsaved: "تغييرات غير محفوظة",
@@ -3145,12 +3158,13 @@ export const ar = {
     sectionClaude: "مهارات Claude",
     sectionClaudeHint: "موجودة في ‎~/.claude/skills. للقراءة فقط هنا؛ عدّل الملفات هناك.",
     sectionBundled: "مضمّنة",
-    sectionBundledHint: "تأتي مع Unsloth. للقراءة فقط.",
+    sectionBundledHint: "تأتي مع DeepTenLab. للقراءة فقط.",
     linked: "رابط",
     discardTitle: "هل تريد تجاهل التغييرات؟",
     discardDescription: "ستُفقد التعديلات غير المحفوظة على {name}.",
     discard: "تجاهل",
     mentions: "المهارات",
+    manage: "إدارة المهارات",
   },
   library: {
     tabs: {
@@ -3288,7 +3302,7 @@ export const ar = {
       audioTitle: "لا يوجد صوت بعد",
       audioDescription: "يظهر هنا الكلام الذي تنشئه في صفحة الصوت.",
       modelsTitle: "لا توجد نماذج مضبوطة بعد",
-      modelsDescription: "تظهر هنا النماذج التي تدربها أو تصدّرها في Unsloth.",
+      modelsDescription: "تظهر هنا النماذج التي تدربها أو تصدّرها في DeepTenLab.",
       createFolder: "إنشاء مجلد",
       generateVideo: "إنشاء فيديو",
       generateAudio: "إنشاء صوت",

@@ -236,7 +236,7 @@ export function LlamaBackendSection() {
 
   const job = status?.job;
   const envLocked = status?.envBackend != null;
-  // Null means the marker holds a choice a newer Unsloth wrote. Show it as
+  // Null means the marker holds a choice a newer DeepTenLab wrote. Show it as
   // unknown rather than as Automatic, and let it be replaced deliberately.
   const unknownRecorded = status?.backendRequest === null;
   const value = selected ?? status?.backendRequest ?? "unknown";

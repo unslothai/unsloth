@@ -357,7 +357,7 @@ const ACCOUNT_MENU_PAD_X = 11;
 const SUBMENU_GAP_PX = 6;
 
 // Whether cmd or ctrl adds a row to the selection. This is the user's own keyboard, not the host
-// Unsloth runs on, so it reads the browser rather than the platform store: a Mac browser on a Linux
+// DeepTenLab runs on, so it reads the browser rather than the platform store: a Mac browser on a Linux
 // host still uses cmd. Ctrl is left alone on macOS, where ctrl click is the right click chord.
 const SELECT_WITH_META =
   typeof navigator !== "undefined" &&
@@ -4997,11 +4997,11 @@ export function AppSidebar() {
                       base + (root scale - 1) * 8px. Exact base sizes at 16px. */}
                   <img
                     src="/circle-logo-small.png"
-                    alt="Unsloth"
+                    alt="DeepTenLab"
                     className="relative top-px -left-px h-[calc(22px+0.5rem*var(--ui-font-scale,1))] w-[calc(22px+0.5rem*var(--ui-font-scale,1))] shrink-0 rounded-full object-cover"
                   />
                   <span className="relative -top-px truncate font-heading text-[calc(13px+0.5rem*var(--ui-font-scale,1))] font-semibold tracking-[0em] leading-tight text-black dark:text-foreground dark:tracking-[0.02em]">
-                    unsloth
+                    DeepTenLab
                   </span>
                   <span className="nav-badge ml-0.5 inline-flex shrink-0 items-center justify-center rounded-full border border-nav-beta-border px-[calc(5px*var(--ui-space-scale,1))] pt-[calc(3px*var(--ui-space-scale,1))] pb-[calc(2px*var(--ui-space-scale,1))] text-[calc(0.5rem*var(--ui-font-scale,1))] font-medium leading-none tracking-[0.04em] text-nav-fg-muted antialiased subpixel-antialiased shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:shadow-[0_1px_2px_var(--background)]">
                     {t("shell.beta")}
@@ -5679,7 +5679,7 @@ export function AppSidebar() {
                       pr on the button reserves room for the settings cog */}
                   <div className="flex min-w-0 flex-1 flex-col gap-px leading-tight group-data-[collapsible=icon]:hidden">
                     <span className="truncate font-heading text-ui-13p5 tracking-[0.025em] dark:tracking-[0.04em] font-semibold text-nav-fg">{displayTitle}</span>
-                    <span className="truncate text-ui-11p5 tracking-nav text-muted-foreground">Unsloth</span>
+                    <span className="truncate text-ui-11p5 tracking-nav text-muted-foreground">DeepTenLab</span>
                   </div>
                 </SidebarMenuButton>
               )}

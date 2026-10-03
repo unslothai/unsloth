@@ -5,7 +5,7 @@ import { useAppShellReadySignal } from "@/components/app-readiness";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { apiMonitorTourSteps } from "./tour";
 
-// Full-page monitor for Unsloth's OpenAI-compatible API server. Settings still owns
+// Full-page monitor for DeepTenLab's OpenAI-compatible API server. Settings still owns
 // configuration (keys, auto-switch, examples); this page owns observability.
 
 import { Button } from "@/components/ui/button";
@@ -727,7 +727,7 @@ export function ApiMonitorPage(): ReactElement {
             API
           </h1>
           <p className="text-sm text-muted-foreground">
-            Live traffic through Unsloth&apos;s OpenAI-compatible server.
+            Live traffic through DeepTenLab&apos;s OpenAI-compatible server.
           </p>
         </div>
         <div data-tour="api-toolbar" className="flex flex-wrap items-center gap-2">
@@ -995,7 +995,7 @@ export function ApiMonitorPage(): ReactElement {
                 {entries.length > 0
                   ? "No requests match this filter."
                   : loggingDisabled
-                    ? "Recording is off: UNSLOTH_STUDIO_DISABLE_API_MONITOR is set. Requests and model loads still run normally, they are just not listed here. Unset the variable and restart Unsloth to re-enable."
+                    ? "Recording is off: UNSLOTH_STUDIO_DISABLE_API_MONITOR is set. Requests and model loads still run normally, they are just not listed here. Unset the variable and restart DeepTenLab to re-enable."
                     : "No API traffic yet. Point a client at the base URL above to see requests here."}
               </p>
             ) : (

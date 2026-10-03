@@ -339,7 +339,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       // reset-password"), which the installer puts on PATH on every platform.
       // Do NOT rewrite it to a relative Windows path like
       // ".\unsloth_studio\Scripts\unsloth.exe ..." -- that only resolves inside
-      // the Unsloth home dir and fails with CommandNotFoundException elsewhere.
+      // the DeepTenLab home dir and fails with CommandNotFoundException elsewhere.
       // Show the backend message as-is.
       const msg = err instanceof Error ? err.message : "Auth failed.";
       setError(msg);

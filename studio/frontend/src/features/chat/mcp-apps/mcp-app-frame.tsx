@@ -235,7 +235,7 @@ export function McpAppFrame(props: McpAppFrameProps) {
         case "ui/initialize":
           return {
             protocolVersion: "2026-01-26",
-            hostInfo: { name: "Unsloth", version: "1.0.0" },
+            hostInfo: { name: "DeepTenLab", version: "1.0.0" },
             hostCapabilities: {
               openLinks: {},
               serverTools: { listChanged: false },

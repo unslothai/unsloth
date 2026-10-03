@@ -15,8 +15,8 @@ export function offerToDeleteKeptSandboxes(keptThreadIds: string[]): void {
     {
       description:
         keptThreadIds.length === 1
-          ? "Its sandbox folder is no longer reachable from Unsloth."
-          : "Their sandbox folders are no longer reachable from Unsloth.",
+          ? "Its sandbox folder is no longer reachable from DeepTenLab."
+          : "Their sandbox folders are no longer reachable from DeepTenLab.",
       action: {
         label: "Delete files",
         onClick: () => {

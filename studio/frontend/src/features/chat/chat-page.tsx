@@ -2681,7 +2681,7 @@ export function ChatPage({
     const storedWebFetchToolsEnabled =
       threadScopedOverride("webFetchToolsEnabled") ??
       loadOptionalBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY);
-    // Unsloth runs Search and Code itself for any provider that advertises the capability, so a self-hosted
+    // DeepTenLab runs Search and Code itself for any provider that advertises the capability, so a self-hosted
     // connection has no hosted builtin to key off. Keying the pill state on the hosted flags alone discarded the
     // saved preference on every reload and sent enable_tools: false.
     const supportsStudioToolsHere =

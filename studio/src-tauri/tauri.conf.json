@@ -1,5 +1,5 @@
 {
-  "productName": "Unsloth",
+  "productName": "DeepTenLab",
   "identifier": "ai.unsloth.studio",
   "build": {
     "beforeDevCommand": {
@@ -21,7 +21,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Unsloth",
+        "title": "DeepTenLab",
         "width": 760,
         "height": 560,
         "center": true,
@@ -53,9 +53,9 @@
   "bundle": {
     "active": true,
     "createUpdaterArtifacts": true,
-    "publisher": "Unsloth AI",
+    "publisher": "DeepTenLab",
     "homepage": "https://unsloth.ai/",
-    "copyright": "© 2026 Unsloth AI. All rights reserved.",
+    "copyright": "© 2026 DeepTenLab. All rights reserved.",
     "license": "AGPL-3.0-only",
     "targets": ["app", "appimage", "deb", "dmg", "nsis"],
     "icon": [

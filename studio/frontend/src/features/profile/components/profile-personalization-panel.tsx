@@ -91,7 +91,7 @@ export function ProfilePersonalizationPanel() {
   const sessionSub = decodeJwtSubject(getAuthToken()) ?? "";
   // Fallback only: the draft being typed still wins over this.
   const loginName = loginDisplayName(sessionSub);
-  const previewName = draftName.trim() || loginName || "Unsloth";
+  const previewName = draftName.trim() || loginName || "DeepTenLab";
 
   useEffect(() => {
     const previous = lastDisplayNameRef.current;
@@ -388,7 +388,7 @@ export function ProfilePersonalizationPanel() {
                 }
               }}
               autoComplete="off"
-              placeholder={loginName || "Unsloth"}
+              placeholder={loginName || "DeepTenLab"}
               className="h-9 w-full rounded-full text-sm"
             />
           </div>

@@ -2715,7 +2715,7 @@ const LOCAL_SORT_OPTIONS: HubOption<LocalSortKey>[] = [
   { value: "downloaded", label: "Downloaded" },
 ];
 
-// Format filter dropdown for the Unsloth listing; the plain labels are reused in the empty-state copy.
+// Format filter dropdown for the DeepTenLab listing; the plain labels are reused in the empty-state copy.
 const FORMAT_FILTER_LABELS: Record<FormatFilter, string> = {
   all: "All",
   gguf: "GGUF",
@@ -3165,7 +3165,7 @@ export function HubModelPicker({
   const [fineTunedCollapsed, setFineTunedCollapsed] = useState(false);
   const [lmStudioCollapsed, setLmStudioCollapsed] = useState(false);
   const [localDirCollapsed, setLocalDirCollapsed] = useState(false);
-  // The Fine-tuned section header; the train icon on the Unsloth header scrolls here.
+  // The Fine-tuned section header; the train icon on the DeepTenLab header scrolls here.
   const fineTunedSectionRef = useRef<HTMLDivElement>(null);
   const scrollToFineTuned = useCallback(() => {
     setFineTunedCollapsed(false);
@@ -3179,7 +3179,7 @@ export function HubModelPicker({
       });
     });
   }, []);
-  // The Other models header; the directions icon on the Unsloth header scrolls here.
+  // The Other models header; the directions icon on the DeepTenLab header scrolls here.
   const otherModelsSectionRef = useRef<HTMLDivElement>(null);
   const scrollToOtherModels = useCallback(() => {
     setOtherModelsCollapsed(false);
@@ -3501,7 +3501,7 @@ export function HubModelPicker({
   const hostClass = useHostClass();
   const denseQuantSchemes = useDenseQuantSchemes();
 
-  // Drop models Unsloth cannot run for chat. A task-scoped picker wants exactly the tasks the
+  // Drop models DeepTenLab cannot run for chat. A task-scoped picker wants exactly the tasks the
   // chat classifier calls unsupported, so it gates on the task.
   const isChatSupported = useCallback(
     (r: HfModelResult) => {
@@ -3607,7 +3607,7 @@ export function HubModelPicker({
   // Independent sort for each local section's inline dropdown.
   const [downloadedSort, setDownloadedSort] = useState<LocalSortKey>("recent");
   const [customSort, setCustomSort] = useState<LocalSortKey>("recent");
-  // Format filter toggle for the Unsloth listing.
+  // Format filter toggle for the DeepTenLab listing.
   const [chosenFormatFilter, setFormatFilter] = useState<FormatFilter>("all");
   const npuCatalog = useNpuCatalog(npu);
   const formatFilter: FormatFilter =
@@ -3648,7 +3648,7 @@ export function HubModelPicker({
   const curatedOfferable = useCallback(
     (id: string) => {
       if (!catalog) return true;
-      // Downloaded weights keep their row: hiding what is already on disk reads as Unsloth having lost the model.
+      // Downloaded weights keep their row: hiding what is already on disk reads as DeepTenLab having lost the model.
       if (downloadedSet.has(id.toLowerCase())) return true;
       const hit = artifactForRepoId(id, catalog);
       return hit ? curatedArtifactIsOfferable(hit.artifact.repoId, hostClass) : true;
@@ -4274,7 +4274,7 @@ export function HubModelPicker({
       activeCatalogArtifactIds,
     ],
   );
-  // Local ./models entries. Chat-only Unsloth runs GGUF anywhere and MLX on Mac, so raw
+  // Local ./models entries. Chat-only DeepTenLab runs GGUF anywhere and MLX on Mac, so raw
   // checkpoints there are hidden; a task-scoped picker is exempt, since the image backend
   // loads local pipelines.
   const sortedLocalDir = useMemo(
@@ -4438,7 +4438,7 @@ export function HubModelPicker({
         ) {
           // Loading it here would evict the chat model for a repo neither surface can run.
           toast.error(
-            `${id} is not a speech model Unsloth can run yet. The Audio page lists the families it supports.`,
+            `${id} is not a speech model DeepTenLab can run yet. The Audio page lists the families it supports.`,
             { duration: 7000 },
           );
           return;
@@ -4612,7 +4612,7 @@ export function HubModelPicker({
     hfToken: hfToken || undefined,
   });
 
-  // Pinned entries surface in their own section above the Unsloth heading: GGUF quants pin
+  // Pinned entries surface in their own section above the DeepTenLab heading: GGUF quants pin
   // individually with their repo still listed below, non-GGUF repos pin whole.
   const pinnedIds = usePinnedModelsStore((s) => s.pinned);
   const togglePinned = usePinnedModelsStore((s) => s.togglePinned);
@@ -5087,7 +5087,7 @@ export function HubModelPicker({
   );
 
   const hfIds = useMemo(() => {
-    // Only the Unsloth tab searches the HF listing.
+    // Only the DeepTenLab tab searches the HF listing.
     if (!showHfSection || section !== "recommended") return [];
     return searchIdsFrom(results, isUnslothOwned);
   }, [results, showHfSection, section, searchIdsFrom, isUnslothOwned]);
@@ -5119,7 +5119,7 @@ export function HubModelPicker({
     isTaskRuntimeSupported,
   ]);
 
-  /** Unsloth first, then community: one list so rows, keyboard order and the empty state cannot drift apart. */
+  /** DeepTenLab first, then community: one list so rows, keyboard order and the empty state cannot drift apart. */
   const searchRowIds = useMemo(
     () => [...hfIds, ...communitySearchIds],
     [hfIds, communitySearchIds],
@@ -5264,7 +5264,7 @@ export function HubModelPicker({
       return keys;
     }
 
-    // Pinned rows sit above the Unsloth heading on the On Device tab. They render before the
+    // Pinned rows sit above the DeepTenLab heading on the On Device tab. They render before the
     // cache scan settles, so their keys do not wait for it either.
     if (section === "downloaded" && !pinnedCollapsed && pinnedRows.length > 0) {
       keys.push(
@@ -5280,7 +5280,7 @@ export function HubModelPicker({
       );
     }
 
-    // Downloaded (Unsloth) rows (query-filtered) on the On Device tab only.
+    // Downloaded (DeepTenLab) rows (query-filtered) on the On Device tab only.
     if (
       section === "downloaded" &&
       (cachedReady || unslothAdditionalOnDeviceModels.length > 0) &&
@@ -5631,7 +5631,7 @@ export function HubModelPicker({
     [onSelect, isKnownGgufRepo, cachedIdFor, pipelineTagById],
   );
 
-  // On Device owns the downloaded and custom-folder models; the Unsloth tab searches the HF
+  // On Device owns the downloaded and custom-folder models; the DeepTenLab tab searches the HF
   // listing. Both filter locally by the query.
   const showDownloaded = section === "downloaded";
   const showCustom = section === "downloaded";
@@ -5703,7 +5703,7 @@ export function HubModelPicker({
       <span className="truncate">{label}</span>
     </span>
   );
-  // On Device rows are already on disk, so the device-fit filter only applies to the Unsloth listing.
+  // On Device rows are already on disk, so the device-fit filter only applies to the DeepTenLab listing.
   const sectionSortDropdown =
     section === "recommended" ? (
       <HubOptionMenu
@@ -6233,7 +6233,7 @@ export function HubModelPicker({
     );
   };
 
-  // Shared row renderers so Downloaded (Unsloth) and Other models render alike.
+  // Shared row renderers so Downloaded (DeepTenLab) and Other models render alike.
   const renderDownloadedGgufRow = (c: (typeof visibleCachedGguf)[number]) => {
     const optionKey = makeModelOptionKey("downloaded-gguf", c.repo_id);
     const isSelected = value === c.repo_id;
@@ -6850,7 +6850,7 @@ export function HubModelPicker({
                   </div>
                 ) : null}
 
-                {/* Pinned quants and models sit above the Unsloth heading, filtered by the query like the
+                {/* Pinned quants and models sit above the DeepTenLab heading, filtered by the query like the
                     sections below. */}
                 {showDownloaded && pinnedRows.length > 0 ? (
                   <>
@@ -6893,7 +6893,7 @@ export function HubModelPicker({
                   </>
                 ) : null}
 
-                {/* Downloaded (Unsloth) stays visible (filtered) while searching. */}
+                {/* Downloaded (DeepTenLab) stays visible (filtered) while searching. */}
                 {showDownloaded &&
                 (unslothCachedGguf.length > 0 ||
                   unslothCachedModelRows.length > 0 ||
@@ -6976,7 +6976,7 @@ export function HubModelPicker({
                       }
                     >
                       {/* Rows drop the unsloth/ prefix; the heading carries it for the group. */}
-                      Unsloth
+                      DeepTenLab
                     </ListLabel>
                     {!downloadedCollapsed &&
                       unslothCachedGguf.map(renderDownloadedGgufRow)}
@@ -7741,7 +7741,7 @@ export function HubModelPicker({
                   <>
                     {/* Below the NPU group, the curated list needs its own heading. */}
                     {showNpuBrowse ? (
-                      <ListLabel divider={!npuBrowseFolded}>Unsloth</ListLabel>
+                      <ListLabel divider={!npuBrowseFolded}>DeepTenLab</ListLabel>
                     ) : null}
                     {recommendedRows.length === 0 &&
                     recommendedEmpty === "loading" ? (

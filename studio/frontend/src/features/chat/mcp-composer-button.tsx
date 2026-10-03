@@ -66,7 +66,7 @@ type McpPreset = {
 const MCP_PRESETS: readonly McpPreset[] = [
   {
     id: "unsloth-docs",
-    displayName: "Unsloth Docs",
+    displayName: "DeepTenLab Docs",
     url: "https://unsloth.ai/docs/~gitbook/mcp",
   },
   {
@@ -208,7 +208,7 @@ export function McpComposerButton({
         ...MCP_PRESETS,
         {
           id: "unsloth-decisions",
-          displayName: "Unsloth Decisions",
+          displayName: "DeepTenLab Decisions",
           url: decisionsUrl,
         },
       ]

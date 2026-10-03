@@ -286,7 +286,7 @@ function budgetIsMeaningful(config: PerModelConfig | undefined): boolean {
   const sessionPin = useChatRuntimeStore.getState().selectedGpuIds;
   if (sessionPin != null && sessionPin.length > 0) return false;
   if (!config) return true;
-  // Pass-through args are appended after Unsloth's own flags, so an -ngl or a device pin in that box
+  // Pass-through args are appended after DeepTenLab's own flags, so an -ngl or a device pin in that box
   // is what the launch actually uses. Reading only the structured fields left the bar charting a
   // CPU-offloaded run against every GPU on the host.
   if (extraArgsOwnPlacement(config.llamaExtraArgs)) return false;

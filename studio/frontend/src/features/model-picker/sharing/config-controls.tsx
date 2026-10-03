@@ -44,7 +44,7 @@ export function SharedRunConfigReview({
         <LazyImportBoundary
           fallback={
             <p role="alert" className="mb-5 text-ui-12 text-muted-foreground">
-              The link settings summary could not load. Reload Unsloth and
+              The link settings summary could not load. Reload DeepTenLab and
               reopen the link to review it.
             </p>
           }

@@ -1982,7 +1982,7 @@ function AutoHealToolCallsToggle() {
           Auto-Healing Tool Calls
         </span>
         <InfoHint>
-          Unsloth auto-fixes broken tool calls so inference output is never
+          DeepTenLab auto-fixes broken tool calls so inference output is never
           broken.
         </InfoHint>
       </div>
@@ -2031,7 +2031,7 @@ function ConfirmToolCallsToggle() {
             Confirm tool calls
           </span>
           <InfoHint>
-            When on, every local Unsloth tool call pauses for your approval
+            When on, every local DeepTenLab tool call pauses for your approval
             before it runs (the "Ask for approval" level). When off, tool calls
             run without prompts inside the sandbox (the "Run automatically"
             level).
@@ -2064,14 +2064,14 @@ function BypassPermissionsToggle() {
           Tool permissions
         </span>
         <InfoHint>
-          Choose how Unsloth approves tool calls before they run. Full access
+          Choose how DeepTenLab approves tool calls before they run. Full access
           disables confirmations and the code sandbox.
         </InfoHint>
       </div>
       {/* Full width, styled like the panel selects/preset input. */}
       <PermissionModeDropdown triggerClassName="h-9 w-full justify-between rounded-full border-0 bg-[var(--panel-input-surface)] px-3.5 text-ui-13 font-medium text-nav-fg shadow-none hover:bg-[var(--panel-input-surface)]" />
       {permissionMode === "full" ? (
-        <span className="text-ui-11 text-bypass">
+        <span className="text-ui-11 text-muted-foreground">
           Tool calls run with no confirmation and no sandbox.
         </span>
       ) : null}

@@ -2,8 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * A relative link in a release body means "somewhere in the Unsloth
- * repository", but inside Unsloth it would resolve against Unsloth's own origin.
+ * A relative link in a release body means "somewhere in the DeepTenLab
+ * repository", but inside DeepTenLab it would resolve against DeepTenLab's own origin.
  * Rewriting to absolute repository URLs makes them behave the way GitHub
  * renders the release page.
  */

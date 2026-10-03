@@ -17347,6 +17347,16 @@ async def _load_model_impl(
     anonymous_hf_access: bool = False,
     speech_codec_path: Optional[str] = None,
 ):
+    # Every load funnels through here (explicit /load, OpenAI auto-switch, preview), so the
+    # owner's blocklist is enforced once, for non-owner accounts only.
+    from auth import model_policy as _model_policy
+    from utils.account_context import is_owner_context as _is_owner_context
+
+    if not _is_owner_context() and _model_policy.is_model_blocked(request.model_path):
+        raise HTTPException(
+            status_code = 403, detail = "The installation owner has blocked this model."
+        )
+
     from core.inference.npu_backend import is_npu_model_path
 
     if is_npu_model_path(request.model_path):

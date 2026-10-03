@@ -2421,7 +2421,7 @@ type ChatRuntimeStore = {
   ragOcrScanned: boolean;
   // Describe figures/charts at ingest time (vision model required).
   ragCaptionFigures: boolean;
-  /** When on, local Unsloth tool calls pause for an explicit allow/deny before they run. */
+  /** When on, local DeepTenLab tool calls pause for an explicit allow/deny before they run. */
   confirmToolCalls: boolean;
   /** Tool calls run with no confirmation gate AND no python/terminal sandbox (secrets still
    *  stripped). Outranks confirmToolCalls; kept in sync with permissionMode "full". */
@@ -4934,7 +4934,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
               specDrafterKind: null,
             }
           : {}),
-        // Switching to a provider that cannot run Unsloth's tool loop disables Deep Research; a
+        // Switching to a provider that cannot run DeepTenLab's tool loop disables Deep Research; a
         // capable one keeps the user's choice.
         ...(clampsDeepResearch ? { deepResearchEnabled: false } : {}),
       };
@@ -5987,7 +5987,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     })),
 }));
 
-// Mirror token edits made through the shared store (e.g. Unsloth's field).
+// Mirror token edits made through the shared store (e.g. DeepTenLab's field).
 const unsubscribeHfTokenMirror = mirrorHfTokenInto(useChatRuntimeStore);
 if (import.meta.hot) {
   import.meta.hot.dispose(unsubscribeHfTokenMirror);

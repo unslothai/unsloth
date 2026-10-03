@@ -9,7 +9,7 @@ import { useUserProfileStore } from "../stores/user-profile-store";
 // the brand lower case. Only that id maps; a chosen username stays as chosen.
 // Shared, not copied: every surface falling back to the login id must agree.
 export function loginDisplayName(sessionSub: string | null): string {
-  return sessionSub === OWNER_USERNAME ? "Unsloth" : (sessionSub ?? "");
+  return sessionSub === OWNER_USERNAME ? "DeepTenLab" : (sessionSub ?? "");
 }
 
 export function useEffectiveProfile() {
@@ -24,7 +24,7 @@ export function useEffectiveProfile() {
   const addressName = nickname.trim() || dn.split(/\s+/)[0] || login;
   return {
     sessionSub,
-    displayTitle: dn || login || "Unsloth",
+    displayTitle: dn || login || "DeepTenLab",
     addressName,
     avatarDataUrl,
   };

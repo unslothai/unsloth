@@ -152,10 +152,10 @@ async function redirectToAuth(passwordChangeRequired = false): Promise<void> {
 
 /** Copy shown when the backend really is unreachable and the launcher agrees. */
 export const BACKEND_NOT_RUNNING_MESSAGE =
-  "Unsloth isn't running -- please relaunch it.";
+  "DeepTenLab isn't running -- please relaunch it.";
 /** Copy shown when the webview could not reach the backend but the launcher says it is up. */
 export const BACKEND_NOT_ANSWERING_MESSAGE =
-  "Unsloth is running but did not answer in time. It may still be starting up. Please try again in a moment.";
+  "DeepTenLab is running but did not answer in time. It may still be starting up. Please try again in a moment.";
 
 /** `check_backend_present` and NOT `check_health`: the latter reports a probe that ran out of budget exactly as a refused connection. */
 // The port is carried WITH the promise: `setApiBase` can move it inside the 10s budget.

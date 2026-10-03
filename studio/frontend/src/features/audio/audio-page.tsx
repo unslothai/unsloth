@@ -2911,7 +2911,7 @@ export function AudioPage({
               onValueChange={(v) => {
                 if (v !== "train") return;
                 toast.info(
-                  "Audio fine-tuning lives on the Train page. Unsloth trains TTS and STT models there. Pick an audio model and appropriate dataset.",
+                  "Audio fine-tuning lives on the Train page. DeepTenLab trains TTS and STT models there. Pick an audio model and appropriate dataset.",
                   { duration: 8000 },
                 );
                 void navigateSelf({ to: "/studio" });
@@ -3211,7 +3211,7 @@ export function AudioPage({
                   hint={
                     recordingSupported
                       ? "Record a clip and it is transcribed when you stop."
-                      : "This browser cannot record. Open Unsloth over https or on localhost, or upload a file below."
+                      : "This browser cannot record. Open DeepTenLab over https or on localhost, or upload a file below."
                   }
                 >
                   <Button

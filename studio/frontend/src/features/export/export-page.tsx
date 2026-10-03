@@ -1557,7 +1557,7 @@ export function ExportPage() {
                     {torchaoUnavailable && (
                       <div className="text-ui-11 text-muted-foreground">
                         Portable FP8/INT8 (torchao) export needs torchao, which
-                        is not installed here. Update Unsloth, or use
+                        is not installed here. Update DeepTenLab, or use
                         16-bit or GGUF.
                       </div>
                     )}
@@ -1776,8 +1776,8 @@ export function ExportPage() {
                             className="text-xs text-muted-foreground"
                           >
                             Absolute path to a .dat or .gguf imatrix file on the
-                            machine running Unsloth. Leave blank to
-                            auto-download the upstream Unsloth imatrix for the
+                            machine running DeepTenLab. Leave blank to
+                            auto-download the upstream DeepTenLab imatrix for the
                             base model, if one exists.
                           </p>
                         </div>

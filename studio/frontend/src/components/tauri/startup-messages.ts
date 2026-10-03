@@ -1,4 +1,4 @@
-export const INITIAL_STARTUP_MESSAGE = "Starting Unsloth...";
+export const INITIAL_STARTUP_MESSAGE = "Starting DeepTenLab...";
 export const MODELS_STARTUP_MESSAGE = "Loading models...";
 export const SERVER_STARTUP_MESSAGE = "Nearly done...";
 export const UPDATE_STARTUP_MESSAGE = "Finishing update...";
@@ -19,7 +19,7 @@ const INSTALL_PHASE_MESSAGES: readonly InstallProgressMessage[] = [
     subtitle: "Creating your local environment.",
   },
   {
-    title: "Installing Unsloth...",
+    title: "Installing DeepTenLab...",
     subtitle: "Setting up local AI tools...",
   },
   {

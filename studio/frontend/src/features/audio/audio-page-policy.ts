@@ -29,7 +29,7 @@ export function audioCppRuntimeProblem(
   if (model.needsEspeak && !runtime.espeak) {
     return (
       `${audioCppDisplayName(model.id)} needs an audio runtime built with eSpeak-ng, and the ` +
-      "installed one has none. Run `unsloth studio update` to install the Unsloth bundle."
+      "installed one has none. Run `unsloth studio update` to install the DeepTenLab bundle."
     );
   }
   return null;

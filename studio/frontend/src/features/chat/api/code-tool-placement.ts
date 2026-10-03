@@ -2,14 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /** Which side of the connection the Code pill runs code on. `code_execution` runs in the
- *  provider's own sandbox and is billed by them; `python` / `terminal` are Unsloth's tools and
- *  run on the machine Unsloth is installed on. They are two different trust boundaries, so which
- *  one a stored toggle means must not change underneath the user. Until Unsloth's tool loop
+ *  provider's own sandbox and is billed by them; `python` / `terminal` are DeepTenLab's tools and
+ *  run on the machine DeepTenLab is installed on. They are two different trust boundaries, so which
+ *  one a stored toggle means must not change underneath the user. Until DeepTenLab's tool loop
  *  reached the general external providers, only openai_codex carried studio_tools, so the pill on
  *  an OpenAI or Anthropic connection always resolved to the provider's sandbox; now the same
  *  persisted `true` would resolve to local execution. The rule: a connection with its own sandbox
  *  keeps it, and a model there that cannot use it runs nothing rather than falling back to the
- *  user's machine. Unsloth's local tools are for connections with no sandbox at all. */
+ *  user's machine. DeepTenLab's local tools are for connections with no sandbox at all. */
 
 export interface CodeToolPlacementInput {
   /** The composer's Code pill (persisted as unsloth_chat_code_tools_enabled). */
@@ -21,7 +21,7 @@ export interface CodeToolPlacementInput {
 }
 
 export interface CodeToolNames {
-  /** Unsloth tool names, executed on this machine by the Unsloth tool loop. */
+  /** DeepTenLab tool names, executed on this machine by the DeepTenLab tool loop. */
   local: string[];
   /** Provider builtin names, executed and billed by the provider. */
   hosted: string[];
@@ -44,7 +44,7 @@ export function selectCodeToolNames(input: CodeToolPlacementInput): CodeToolName
 export function codeToolCanRun(input: {
   hostedCodeExecutionForThisTurn: boolean;
   providerHostsCodeExecution: boolean;
-  /** This provider AND model can run Unsloth's own tools through the loop. */
+  /** This provider AND model can run DeepTenLab's own tools through the loop. */
   supportsStudioTools: boolean;
 }): boolean {
   const names = selectCodeToolNames({

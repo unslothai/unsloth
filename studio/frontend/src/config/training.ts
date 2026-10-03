@@ -145,7 +145,7 @@ export const DEFAULT_HYPERPARAMS = {
   contextLength: 2048,
   visionImageSize: null as number | null,
   learningRate: LR_DEFAULT_LORA,
-  // null = let backend auto-compute (lr/10 per Unsloth CPT recipe). Only used by CPT.
+  // null = let backend auto-compute (lr/10 per DeepTenLab CPT recipe). Only used by CPT.
   embeddingLearningRate: null as number | null,
   optimizerType: "adamw_8bit",
   lrSchedulerType: "linear",

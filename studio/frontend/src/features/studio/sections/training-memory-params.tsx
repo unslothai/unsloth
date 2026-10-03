@@ -232,7 +232,7 @@ export function TrainingMemoryParams(): ReactElement {
             {isMac ? (
               <SelectItem value="mlx">MLX</SelectItem>
             ) : (
-              <SelectItem value="unsloth">Unsloth</SelectItem>
+              <SelectItem value="unsloth">DeepTenLab</SelectItem>
             )}
           </SelectContent>
         </Select>

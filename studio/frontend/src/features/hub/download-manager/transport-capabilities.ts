@@ -26,7 +26,7 @@ export const DOWNLOAD_TRANSPORT_CAPABILITIES_FALLBACK: DownloadTransportCapabili
   http: { available: true, reason: null },
   xet: {
     available: null,
-    reason: "Couldn't verify Xet support with the Unsloth backend.",
+    reason: "Couldn't verify Xet support with the DeepTenLab backend.",
   },
   // Unknown backend state: stay on Xet, the download-time ladder still falls back to HTTP.
   auto_resolves_to: "xet",

@@ -490,7 +490,7 @@ function SliderField({
   );
 }
 
-// Matches the field-label style used across Unsloth.
+// Matches the field-label style used across DeepTenLab.
 function Field({
   label,
   hint,

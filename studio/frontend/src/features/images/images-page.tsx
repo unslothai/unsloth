@@ -732,7 +732,7 @@ function SliderField({
   );
 }
 
-// Matches the field-label style used across Unsloth.
+// Matches the field-label style used across DeepTenLab.
 // Prompt boxes: smaller radius, scrollbar inset from the corners.
 const IMAGE_PROMPT_BOX = "image-prompt-box rounded-lg";
 

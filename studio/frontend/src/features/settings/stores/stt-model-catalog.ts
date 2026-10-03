@@ -64,7 +64,7 @@ export const ENGLISH_ONLY_STT_MODELS: ReadonlySet<SttModel> = new Set(
 export type DefaultSttModel = (typeof STT_MODELS)[number];
 /** A curated id or a user-selected Hugging Face `owner/model` repository. */
 export type SttModel = string;
-/** Whisper repos downloaded through Unsloth's existing Model Hub manager. */
+/** Whisper repos downloaded through DeepTenLab's existing Model Hub manager. */
 export const STT_MODEL_REPOS: Record<DefaultSttModel, string> = {
   tiny: "unsloth/whisper-tiny",
   base: "unsloth/whisper-base",

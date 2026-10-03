@@ -7,8 +7,8 @@ name = "unsloth-studio"
 # app version comes from this field rather than from there. The stale CalVer
 # below is also the wrong shape: release builds always write SemVer, e.g. 0.1.52-beta.
 version = "2026.4.8"
-description = "Unsloth Desktop App"
-authors = ["Unsloth AI"]
+description = "DeepTenLab Desktop App"
+authors = ["DeepTenLab"]
 edition = "2021"
 # std::fs::File::lock, used for the desktop ownership id.
 rust-version = "1.89"
