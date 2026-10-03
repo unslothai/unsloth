@@ -277,6 +277,12 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.keyboardShortcuts.actions.renameChat.label",
     "settings.keyboardShortcuts.actions.openKeyboardShortcuts.label",
   ],
+  // The Windows rows render only on Windows, so only the rows every platform shows are indexed.
+  sandbox: [
+    "settings.sandbox.toolsSection",
+    "settings.sandbox.python",
+    "settings.sandbox.terminal",
+  ],
   debugging: [
     "settings.debugging.logSection",
     "settings.debugging.source",
