@@ -8,6 +8,7 @@ Reuses the harness in test_export_gguf_discovery.py; the converter itself is stu
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -21,15 +22,18 @@ if str(_TESTS_DIR) not in sys.path:
 from test_export_gguf_discovery import _backend, _gguf  # noqa: E402
 
 
+_HF_TOKENIZER = {"added_tokens": [{"id": 7, "content": "<|im_end|>"}], "model": {"vocab": {}}}
+
+
 class _Tokenizer:
     def save_pretrained(self, path):
-        for name in (
-            "tokenizer.json",
-            "tokenizer_config.json",
-            "chat_template.jinja",
-            "special_tokens_map.json",
-        ):
-            (Path(path) / name).write_text(f"hf {name}")
+        path = Path(path)
+        (path / "tokenizer.json").write_text(json.dumps(_HF_TOKENIZER))
+        (path / "tokenizer_config.json").write_text(
+            '{"eos_token": "<|im_end|>", "bos_token": null}'
+        )
+        for name in ("chat_template.jinja", "special_tokens_map.json"):
+            (path / name).write_text(f"hf {name}")
 
 
 class _Model:
@@ -59,7 +63,7 @@ def _fake_converter(
         calls.append(Path(gguf_path).name)
         out_dir.mkdir(parents = True, exist_ok = True)
         (out_dir / "model.q4nx").write_bytes(b"q4nx")
-        (out_dir / "tokenizer.json").write_text("from gguf")
+        (out_dir / "tokenizer.json").write_text('{"added_tokens": []}')
 
     monkeypatch.setattr(export_mod.q4nx, "convert_gguf_to_q4nx", convert)
 
@@ -78,15 +82,16 @@ def test_q4nx_folder_matches_the_flm_layout(monkeypatch, tmp_path):
     assert success is True, message
     assert calls == ["Model.Q4_1.gguf"]
     q4nx = save_dir / "npu-q4nx"
+    # No config.json: copied over a catalog model it would drop FLM's flm_version.
     assert sorted(p.name for p in q4nx.iterdir()) == [
         "chat_template.jinja",
-        "config.json",
         "model.q4nx",
         "tokenizer.json",
         "tokenizer_config.json",
     ]
-    assert (q4nx / "tokenizer.json").read_text() == "hf tokenizer.json"
-    assert (q4nx / "config.json").read_text() == '{"model_type": "qwen3"}'
+    assert json.loads((q4nx / "tokenizer.json").read_text()) == _HF_TOKENIZER
+    tokenizer_config = json.loads((q4nx / "tokenizer_config.json").read_text())
+    assert tokenizer_config["eos_token_id"] == [7]
     assert output_path == str(save_dir.resolve())
 
 
@@ -134,17 +139,37 @@ def test_source_follows_the_selection_order(monkeypatch, tmp_path):
     assert export_mod.q4nx.source_gguf(ggufs, ["q8_0"]) is None
 
 
-def test_converter_runs_in_this_interpreter(monkeypatch, tmp_path):
-    export_mod, _b, _s, _c = _backend(monkeypatch, tmp_path, object())
-    script = tmp_path / "conv" / "convert.py"
-    script.parent.mkdir()
-    script.write_text("")
+def _stub_installer(
+    export_mod,
+    monkeypatch,
+    tmp_path,
+    architecture = "qwen3",
+):
+    """Installer stub recording which pinned converter each architecture asked for."""
+    real = export_mod.q4nx._installer()
+    installed = []
 
     class _Installer:
+        converter_for_architecture = staticmethod(real.converter_for_architecture)
+
         @staticmethod
-        def install(root):
+        def install(root, name):
+            installed.append(name)
+            script = tmp_path / name / "convert.py"
+            script.parent.mkdir(exist_ok = True)
             return script
 
+    monkeypatch.setattr(export_mod.q4nx, "_installer", lambda: _Installer)
+    monkeypatch.setattr(export_mod.q4nx, "_gguf_architecture", lambda _p: architecture)
+    return installed
+
+
+@pytest.mark.parametrize(
+    "architecture, converter", [("qwen3", "q4nx"), ("llama", "q4nx"), ("qwen35", "q4k")]
+)
+def test_converter_runs_in_this_interpreter(monkeypatch, tmp_path, architecture, converter):
+    export_mod, _b, _s, _c = _backend(monkeypatch, tmp_path, object())
+    installed = _stub_installer(export_mod, monkeypatch, tmp_path, architecture)
     ran = {}
 
     def run(cmd, cwd, **_kw):
@@ -152,30 +177,25 @@ def test_converter_runs_in_this_interpreter(monkeypatch, tmp_path):
         (Path(cmd[-1]) / "model.q4nx").write_bytes(b"q4nx")
         return subprocess.CompletedProcess(cmd, 0, stderr = "")
 
-    monkeypatch.setattr(export_mod.q4nx, "_installer", lambda: _Installer)
     monkeypatch.setattr(export_mod.q4nx.subprocess, "run", run)
     out = tmp_path / "out"
     export_mod.q4nx.convert_gguf_to_q4nx("/x/M.Q4_1.gguf", out)
 
-    assert ran["cmd"] == [sys.executable, str(script), "-i", "/x/M.Q4_1.gguf", "-o", str(out)]
-    assert ran["cwd"] == str(script.parent)
+    assert installed == [converter]
+    assert ran["cmd"][:2] == [sys.executable, "-c"]
+    assert ran["cmd"][3:] == ["/x/M.Q4_1.gguf", str(out)]
+    assert ran["cwd"] == str(tmp_path / converter)
 
 
 def test_converter_failure_names_its_last_stderr_line(monkeypatch, tmp_path):
     export_mod, _b, _s, _c = _backend(monkeypatch, tmp_path, object())
-    script = tmp_path / "convert.py"
-
-    class _Installer:
-        @staticmethod
-        def install(root):
-            return script
+    _stub_installer(export_mod, monkeypatch, tmp_path)
 
     def run(cmd, cwd, **_kw):
         return subprocess.CompletedProcess(
             cmd, 1, stderr = "Traceback ...\nValueError: Unsupported model architecture: mistral3\n"
         )
 
-    monkeypatch.setattr(export_mod.q4nx, "_installer", lambda: _Installer)
     monkeypatch.setattr(export_mod.q4nx.subprocess, "run", run)
 
     with pytest.raises(RuntimeError, match = "Unsupported model architecture: mistral3"):
@@ -209,11 +229,13 @@ def test_existing_gguf_takes_companions_from_the_base_model(monkeypatch, tmp_pat
     export_mod, _b, _s, _c = _backend(monkeypatch, tmp_path, object())
     _fake_converter(export_mod, monkeypatch, calls := [])
     monkeypatch.setattr(export_mod.q4nx, "_gguf_chat_template", lambda _p: "{{ gguf }}")
+    tokenizer = json.dumps({"added_tokens": [{"id": 3, "content": "x"}]})
     base = _base_folder(
         tmp_path,
         {
-            "config.json": "{}",
-            "tokenizer.json": "hf",
+            "config.json": '{"eos_token_id": 5}',
+            "generation_config.json": '{"eos_token_id": [5, 6]}',
+            "tokenizer.json": tokenizer,
             "tokenizer_config.json": '{"eos_token": "x"}',
         },
     )
@@ -223,7 +245,10 @@ def test_existing_gguf_takes_companions_from_the_base_model(monkeypatch, tmp_pat
 
     assert out == tmp_path / "exports" / "Qwen3-0.6B-Q4_1-q4nx"
     assert calls == ["Qwen3-0.6B-Q4_1.gguf"]
-    assert (out / "tokenizer.json").read_text() == "hf"
+    assert (out / "tokenizer.json").read_text() == tokenizer
+    assert not (out / "config.json").exists()
+    # FLM exits without an eos_token_id array; the tokenizer's eos comes first, then the configs'.
+    assert json.loads((out / "tokenizer_config.json").read_text())["eos_token_id"] == [3, 5, 6]
     # Neither the base folder nor its tokenizer_config carries a template, so the GGUF's is used.
     assert (out / "chat_template.jinja").read_text() == "{{ gguf }}"
 
@@ -232,12 +257,36 @@ def test_existing_gguf_keeps_a_template_already_in_tokenizer_config(monkeypatch,
     export_mod, _b, _s, _c = _backend(monkeypatch, tmp_path, object())
     _fake_converter(export_mod, monkeypatch, [])
     base = _base_folder(
-        tmp_path, {"config.json": "{}", "tokenizer_config.json": '{"chat_template": "{{ hf }}"}'}
+        tmp_path,
+        {"config.json": '{"eos_token_id": 2}', "tokenizer_config.json": '{"chat_template": "t"}'},
     )
 
     out = export_mod.q4nx.convert_existing_gguf(_gguf(tmp_path / "m.gguf"), str(base), tmp_path)
 
     assert not (out / "chat_template.jinja").exists()
+
+
+def test_a_bos_token_gets_the_id_flm_requires(monkeypatch, tmp_path):
+    q4nx = _backend(monkeypatch, tmp_path, object())[0].q4nx
+    (tmp_path / "tokenizer.json").write_text(
+        json.dumps({"added_tokens": [{"id": 128000, "content": "<|begin_of_text|>"}]})
+    )
+    (tmp_path / "tokenizer_config.json").write_text(
+        '{"bos_token": "<|begin_of_text|>", "eos_token": "<|eot_id|>"}'
+    )
+
+    q4nx.write_flm_tokenizer_config(tmp_path, {"eos_token_id": [128001, 128008, 128009]})
+
+    config = json.loads((tmp_path / "tokenizer_config.json").read_text())
+    assert config["bos_token_id"] == 128000
+    assert config["eos_token_id"] == [128001, 128008, 128009]
+
+
+def test_no_eos_id_anywhere_fails(monkeypatch, tmp_path):
+    q4nx = _backend(monkeypatch, tmp_path, object())[0].q4nx
+    (tmp_path / "tokenizer_config.json").write_text('{"eos_token": "<unknown>"}')
+    with pytest.raises(RuntimeError, match = "end-of-sequence"):
+        q4nx.write_flm_tokenizer_config(tmp_path, None, {})
 
 
 def test_existing_gguf_without_tokenizer_config_fails_before_converting(monkeypatch, tmp_path):

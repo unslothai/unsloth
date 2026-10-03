@@ -6,6 +6,11 @@
 
 The converter is pure Python and runs in Studio's own environment (torch, gguf, einops,
 safetensors), so this only fetches and verifies its source archive at a pinned commit.
+
+Two commits are pinned. "q4nx" writes the Q4_0 / Q4_1 layout FastFlowLM's aie2p catalog
+models use (it reproduces Qwen3-0.6B-NPU2/model.q4nx byte for byte); the later "q4k" commit
+adds the Q4_K layout of the Qwen3.5 / 3.6 catalog but re-packs Q4_0 / Q4_1 in an order those
+older engines read as noise.
 """
 
 from __future__ import annotations
@@ -39,12 +44,24 @@ class Q4nxInstallCancelled(RuntimeError):
     pass
 
 
-def load_pins(path: Path = PINS_PATH) -> dict:
+def _read_pins(path: Path) -> dict:
     with open(path, encoding = "utf-8") as handle:
         pins = json.load(handle)
-    if pins.get("schema_version") != 1:
+    if pins.get("schema_version") != 2:
         raise RuntimeError(f"{path} has an unsupported schema_version.")
     return pins
+
+
+def load_pins(path: Path = PINS_PATH, name: str = "q4nx") -> dict:
+    """The named converter's pin, flattened with the repo."""
+    pins = _read_pins(path)
+    return {"repo": pins["repo"], "name": name, **pins["converters"][name]}
+
+
+def converter_for_architecture(architecture: str, path: Path = PINS_PATH) -> str:
+    """Name of the pinned converter for a GGUF ``general.architecture``."""
+    q4k = _read_pins(path).get("q4k_architectures", [])
+    return "q4k" if (architecture or "").lower() in q4k else "q4nx"
 
 
 def archive_url(pins: dict) -> str:
@@ -97,12 +114,13 @@ def _download(
 def install(
     root: Path,
     *,
+    name: str = "q4nx",
     cancel: Optional[threading.Event] = None,
     pins_path: Path = PINS_PATH,
     url: Optional[str] = None,
 ) -> Path:
-    """Install the pinned converter under root/<commit>, reusing a matching install."""
-    pins = load_pins(pins_path)
+    """Install the named pinned converter under root/<commit>, reusing a matching install."""
+    pins = load_pins(pins_path, name)
     root = Path(root)
     target = install_dir(root, pins)
     with core.install_lock(core.install_lock_path(target)):
@@ -155,8 +173,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         default = Path.home() / ".unsloth" / "studio" / "q4nx_converter",
         help = "Directory that holds one subdirectory per pinned converter commit.",
     )
+    parser.add_argument("--name", choices = ("q4nx", "q4k"), default = "q4nx")
     args = parser.parse_args(argv)
-    print(install(args.root))
+    print(install(args.root, name = args.name))
     return 0
 
 

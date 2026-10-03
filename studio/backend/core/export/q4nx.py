@@ -27,6 +27,9 @@ SOURCE_QUANTS = ("q4_0", "q4_1", "q4_k_m")
 # What FLM loads next to model.q4nx; it hard-exits without tokenizer_config.json, and reads the
 # chat template from it or from chat_template.jinja, where transformers 5 saves it.
 TOKENIZER_FILES = ("tokenizer.json", "tokenizer_config.json", "chat_template.jinja")
+# Read for token ids only. No config.json is written: FLM's own carries the flm_version its
+# catalog checks, and one without it makes FLM delete the folder's weights and re-pull stock.
+CONFIG_FILES = ("config.json", "generation_config.json")
 # Third-party imports of the pinned converter; it runs in this env.
 CONVERTER_MODULES = ("torch", "gguf", "einops", "safetensors", "numpy", "mpmath")
 
@@ -61,15 +64,33 @@ def require_converter_deps() -> None:
         )
 
 
+def _gguf_architecture(gguf_path: str) -> str:
+    import gguf
+    field = gguf.GGUFReader(gguf_path).fields.get("general.architecture")
+    return field.contents() if field is not None else ""
+
+
+# convert.py's __main__ overwrites sys.argv at the older pin, and importing it first is circular
+# (q4nx.models.phi4 imports convert), so drive the package's own entry point.
+_RUN_CONVERTER = (
+    "import sys; from q4nx import create_converter; "
+    "create_converter(sys.argv[1], '').convert(q4nx_path = sys.argv[2], weights_type = 'language')"
+)
+
+
 def convert_gguf_to_q4nx(gguf_path: str, out_dir: Path) -> None:
     from utils.paths.storage_roots import studio_root
 
     require_converter_deps()
-    script = _installer().install(studio_root() / "q4nx_converter")
+    installer = _installer()
+    name = installer.converter_for_architecture(_gguf_architecture(gguf_path))
+    script = installer.install(studio_root() / "q4nx_converter", name = name)
     out_dir.mkdir(parents = True, exist_ok = True)
-    logger.info(f"Converting {os.path.basename(gguf_path)} to Q4NX for the AMD NPU in {out_dir}")
+    logger.info(
+        f"Converting {os.path.basename(gguf_path)} to Q4NX ({name}) for the AMD NPU in {out_dir}"
+    )
     result = subprocess.run(
-        [sys.executable, str(script), "-i", gguf_path, "-o", str(out_dir)],
+        [sys.executable, "-c", _RUN_CONVERTER, gguf_path, str(out_dir)],
         cwd = str(script.parent),
         stderr = subprocess.PIPE,
         text = True,
@@ -107,33 +128,88 @@ def _gguf_chat_template(gguf_path: Path) -> Optional[str]:
     return field.contents() if field is not None else None
 
 
+def _token_ids(value) -> List[int]:
+    values = value if isinstance(value, list) else [value]
+    return [v for v in values if isinstance(v, int) and not isinstance(v, bool)]
+
+
+def _vocab_id(tokenizer_json: dict, token) -> Optional[int]:
+    if isinstance(token, dict):
+        token = token.get("content")
+    if not isinstance(token, str):
+        return None
+    for added in tokenizer_json.get("added_tokens") or []:
+        if added.get("content") == token:
+            return added.get("id")
+    vocab = (tokenizer_json.get("model") or {}).get("vocab")
+    return vocab.get(token) if isinstance(vocab, dict) else None
+
+
+def write_flm_tokenizer_config(out_dir: Path, *configs: Optional[dict]) -> None:
+    """Add the ids FastFlowLM exits without: an ``eos_token_id`` array, and ``bos_token_id``
+    whenever ``bos_token`` is set. HF tokenizer configs name only the token strings.
+
+    ``configs`` are the model's config.json / generation_config.json, whose stop ids
+    FastFlowLM's own uploads also list (Llama 3.2: 128001, 128008, 128009).
+    """
+    path = out_dir / "tokenizer_config.json"
+    tokenizer_config = json.loads(path.read_text(encoding = "utf-8"))
+    tokenizer_path = out_dir / "tokenizer.json"
+    tokenizer_json = (
+        json.loads(tokenizer_path.read_text(encoding = "utf-8")) if tokenizer_path.is_file() else {}
+    )
+    eos = _token_ids(_vocab_id(tokenizer_json, tokenizer_config.get("eos_token")))
+    eos += _token_ids(tokenizer_config.get("eos_token_id"))
+    for config in configs:
+        eos += _token_ids((config or {}).get("eos_token_id"))
+    if not eos:
+        raise RuntimeError("FastFlowLM needs the end-of-sequence token id, and none was found.")
+    tokenizer_config["eos_token_id"] = list(dict.fromkeys(eos))
+    if tokenizer_config.get("bos_token") is not None and not _token_ids(
+        tokenizer_config.get("bos_token_id")
+    ):
+        bos = _token_ids(_vocab_id(tokenizer_json, tokenizer_config["bos_token"]))
+        for config in configs:
+            bos += _token_ids((config or {}).get("bos_token_id"))
+        if not bos:
+            raise RuntimeError("FastFlowLM needs the bos_token id, and none was found.")
+        tokenizer_config["bos_token_id"] = bos[0]
+    path.write_text(
+        json.dumps(tokenizer_config, indent = 2, ensure_ascii = False) + "\n", encoding = "utf-8"
+    )
+
+
+def _read_json(path: Optional[Path]) -> Optional[dict]:
+    return json.loads(path.read_text(encoding = "utf-8")) if path is not None else None
+
+
 def convert_existing_gguf(
     gguf_path: Path,
     base_model: str,
     save_directory: Path,
     token = None,
 ) -> Path:
-    """Convert a GGUF already on disk; config and tokenizer files come from ``base_model``.
+    """Convert a GGUF already on disk; tokenizer files come from ``base_model``.
 
     ``base_model`` is the original (non-GGUF) Hub repo or a local model folder. Returns the
-    folder FastFlowLM loads.
+    folder to copy over a FastFlowLM catalog model of the same family and size.
     """
     out_dir = Path(save_directory) / f"{gguf_path.stem}-q4nx"
     found = {
         name: _fetch_base_file(base_model, name, token)
-        for name in ("config.json", *TOKENIZER_FILES)
+        for name in (*CONFIG_FILES, *TOKENIZER_FILES)
     }
-    missing = [n for n in ("config.json", "tokenizer_config.json") if found[n] is None]
-    if missing:
-        raise RuntimeError(f"{base_model} has no {' or '.join(missing)}, which FastFlowLM needs.")
+    if found["tokenizer_config.json"] is None:
+        raise RuntimeError(f"{base_model} has no tokenizer_config.json, which FastFlowLM needs.")
     convert_gguf_to_q4nx(str(gguf_path), out_dir)
-    for name, path in found.items():
+    for name in TOKENIZER_FILES:
         # The HF tokenizer.json replaces the one the converter rebuilds from the GGUF.
-        if path is not None:
-            shutil.copyfile(path, out_dir / name)
+        if found[name] is not None:
+            shutil.copyfile(found[name], out_dir / name)
     if found["chat_template.jinja"] is None:
         config = json.loads((out_dir / "tokenizer_config.json").read_text(encoding = "utf-8"))
         template = config.get("chat_template") or _gguf_chat_template(gguf_path)
         if template and not config.get("chat_template"):
             (out_dir / "chat_template.jinja").write_text(template, encoding = "utf-8")
+    write_flm_tokenizer_config(out_dir, *(_read_json(found[name]) for name in CONFIG_FILES))
     return out_dir

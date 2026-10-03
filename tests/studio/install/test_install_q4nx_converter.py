@@ -60,14 +60,14 @@ def served(tmp_path):
 
     def pins(digest: str = sha, commit: str = COMMIT) -> Path:
         path = tmp_path / "pins.json"
+        pin = {"commit": commit, "archive_sha256": digest, "archive_size": archive.stat().st_size}
         path.write_text(
             json.dumps(
                 {
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "repo": "ROCm/FLM_Q4NX_Converter",
-                    "commit": commit,
-                    "archive_sha256": digest,
-                    "archive_size": archive.stat().st_size,
+                    "converters": {"q4nx": pin, "q4k": {**pin, "commit": "e" * 40}},
+                    "q4k_architectures": ["qwen35", "qwen35moe"],
                 }
             )
         )
@@ -111,9 +111,34 @@ def test_a_new_pin_replaces_the_install(tmp_path, served):
     assert qc.installed_converter(tmp_path / "root", repinned) is None
 
 
-def test_shipped_pin_is_a_full_commit_and_digest():
-    pins = qc.load_pins()
+def test_each_named_converter_installs_into_its_own_commit_dir(tmp_path, served):
+    pins, url, _ = served
+    path = pins()
+    q4nx = qc.install(tmp_path / "root", name = "q4nx", pins_path = path, url = url)
+    q4k = qc.install(tmp_path / "root", name = "q4k", pins_path = path, url = url)
+    assert (q4nx.parent.name, q4k.parent.name) == (COMMIT[:12], "e" * 12)
+
+
+def test_only_qwen35_architectures_take_the_q4k_converter(tmp_path, served):
+    pins, _, _ = served
+    path = pins()
+    assert qc.converter_for_architecture("qwen35", path) == "q4k"
+    assert qc.converter_for_architecture("qwen35moe", path) == "q4k"
+    for architecture in ("qwen3", "llama", "gemma3", "lfm2", "phi3", "qwen2", ""):
+        assert qc.converter_for_architecture(architecture, path) == "q4nx"
+
+
+@pytest.mark.parametrize("name", ["q4nx", "q4k"])
+def test_shipped_pins_are_full_commits_and_digests(name):
+    pins = qc.load_pins(name = name)
     assert pins["repo"] == "ROCm/FLM_Q4NX_Converter"
     assert re.fullmatch(r"[0-9a-f]{40}", pins["commit"])
     assert re.fullmatch(r"[0-9a-f]{64}", pins["archive_sha256"])
     assert qc.archive_url(pins).endswith(f"/tar.gz/{pins['commit']}")
+
+
+def test_shipped_q4nx_pin_predates_the_q4_1_repack():
+    # d1d5232 re-packed Q4_0 / Q4_1 in an order FastFlowLM's aie2p engines read as noise; the
+    # q4nx pin must stay on the commit that reproduces Qwen3-0.6B-NPU2/model.q4nx.
+    assert qc.load_pins(name = "q4nx")["commit"].startswith("dd0993c")
+    assert qc.load_pins(name = "q4k")["commit"].startswith("d1d5232")

@@ -1745,15 +1745,14 @@ class ExportBackend:
             return False, f"GGUF export failed: {str(e)}", None
 
     def _write_q4nx_companions(self, q4nx_dir: Path, config: Optional[bytes]) -> None:
-        """Lay out the folder like FastFlowLM's own uploads: HF config and tokenizer files."""
-        if config is not None:
-            (q4nx_dir / "config.json").write_bytes(config)
+        """The tokenizer files FastFlowLM loads next to model.q4nx (see q4nx.CONFIG_FILES)."""
         with tempfile.TemporaryDirectory(prefix = "_tmp_tokenizer_", dir = q4nx_dir) as scratch:
             self.current_tokenizer.save_pretrained(scratch)
             for name in q4nx.TOKENIZER_FILES:
                 # The converter rebuilds tokenizer.json from the GGUF; the HF one is what FLM ships.
                 if (Path(scratch) / name).is_file():
                     shutil.copyfile(Path(scratch) / name, q4nx_dir / name)
+        q4nx.write_flm_tokenizer_config(q4nx_dir, json.loads(config) if config else None)
 
     def _save_mlx_adapter(
         self,
