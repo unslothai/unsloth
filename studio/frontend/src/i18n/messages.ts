@@ -8,6 +8,7 @@ import type { InterpolationValues, MessageKey, MessageTree } from "./types";
 export const LOCALES = {
   en: { label: "English", nativeLabel: "English" },
   "zh-CN": { label: "Chinese (Simplified)", nativeLabel: "简体中文" },
+  he: { label: "Hebrew", nativeLabel: "עברית" },
   ja: { label: "Japanese", nativeLabel: "日本語" },
   ko: { label: "Korean", nativeLabel: "한국어" },
   es: { label: "Spanish", nativeLabel: "Español" },
@@ -34,6 +35,7 @@ type LazyLocale = Exclude<Locale, "en">;
 
 const localeLoaders: Record<LazyLocale, () => Promise<unknown>> = {
   "zh-CN": () => import("./locales/zh-CN"),
+  he: () => import("./locales/he"),
   ja: () => import("./locales/ja"),
   ko: () => import("./locales/ko"),
   es: () => import("./locales/es"),
