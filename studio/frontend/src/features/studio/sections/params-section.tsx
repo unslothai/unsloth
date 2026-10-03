@@ -51,6 +51,7 @@ export function ParamsSection({
     useShallow((state) => ({
       projectName: state.projectName,
       trainingMethod: state.trainingMethod,
+      isDecision: state.modelType === "decision",
       epochs: state.epochs,
       contextLength: state.contextLength,
       learningRate: state.learningRate,
@@ -269,86 +270,88 @@ export function ParamsSection({
             </div>
           </div>
 
-          <div className="flex flex-col gap-2">
-            <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-              {t("studio.params.contextLength")}
-              <Tooltip>
-                <TooltipTrigger asChild={true}>
-                  <button
-                    type="button"
-                    className="text-foreground/70 hover:text-foreground"
-                  >
-                    <HugeiconsIcon
-                      icon={InformationCircleIcon}
-                      className="size-3"
-                    />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent>
-                  {t("studio.params.contextLengthTooltip")}{" "}
-                  <a
-                    href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-primary underline"
-                  >
-                    {t("studio.params.readMore")}
-                  </a>
-                </TooltipContent>
-              </Tooltip>
-            </span>
-            <div ref={contextAnchorRef}>
-              <Combobox
-                items={contextItems}
-                filteredItems={contextItems}
-                filter={null}
-                value={String(store.contextLength)}
-                onValueChange={(value) => {
-                  if (value && trySetContextLength(value)) {
-                    setContextInput(value);
-                  }
-                }}
-                onInputValueChange={setContextInput}
-                itemToStringValue={(id) => Number(id).toLocaleString()}
-                autoHighlight={false}
-              >
-                <ComboboxInput
-                  placeholder={String(store.contextLength)}
-                  className="w-full font-mono"
-                  onBlur={() => {
-                    trySetContextLength(contextInput);
-                    setContextInput(String(store.contextLength));
+          {!store.isDecision && (
+            <div className="flex flex-col gap-2">
+              <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                {t("studio.params.contextLength")}
+                <Tooltip>
+                  <TooltipTrigger asChild={true}>
+                    <button
+                      type="button"
+                      className="text-foreground/70 hover:text-foreground"
+                    >
+                      <HugeiconsIcon
+                        icon={InformationCircleIcon}
+                        className="size-3"
+                      />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {t("studio.params.contextLengthTooltip")}{" "}
+                    <a
+                      href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/lora-hyperparameters-guide"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-primary underline"
+                    >
+                      {t("studio.params.readMore")}
+                    </a>
+                  </TooltipContent>
+                </Tooltip>
+              </span>
+              <div ref={contextAnchorRef}>
+                <Combobox
+                  items={contextItems}
+                  filteredItems={contextItems}
+                  filter={null}
+                  value={String(store.contextLength)}
+                  onValueChange={(value) => {
+                    if (value && trySetContextLength(value)) {
+                      setContextInput(value);
+                    }
                   }}
-                  onKeyDown={(event) => {
-                    if (event.key !== "Enter") {
-                      return;
-                    }
-                    const value = trySetContextLength(contextInput);
-                    if (value === null) {
-                      return;
-                    }
-                    if (!contextItems.includes(contextInput.trim())) {
-                      event.stopPropagation();
-                      event.preventDefault();
-                    }
-                    setContextInput(String(value));
-                  }}
-                />
-                <ComboboxContent anchor={contextAnchorRef}>
-                  <ComboboxEmpty>
-                    {t("studio.params.customContextLength")}
-                  </ComboboxEmpty>
-                  <ComboboxList className="p-1">
-                    {(id: string) => (
-                      <ComboboxItem key={id} value={id} className="font-mono">
-                        {Number(id).toLocaleString()}
-                      </ComboboxItem>
-                    )}
-                  </ComboboxList>
-                </ComboboxContent>
-              </Combobox>
+                  onInputValueChange={setContextInput}
+                  itemToStringValue={(id) => Number(id).toLocaleString()}
+                  autoHighlight={false}
+                >
+                  <ComboboxInput
+                    placeholder={String(store.contextLength)}
+                    className="w-full font-mono"
+                    onBlur={() => {
+                      trySetContextLength(contextInput);
+                      setContextInput(String(store.contextLength));
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key !== "Enter") {
+                        return;
+                      }
+                      const value = trySetContextLength(contextInput);
+                      if (value === null) {
+                        return;
+                      }
+                      if (!contextItems.includes(contextInput.trim())) {
+                        event.stopPropagation();
+                        event.preventDefault();
+                      }
+                      setContextInput(String(value));
+                    }}
+                  />
+                  <ComboboxContent anchor={contextAnchorRef}>
+                    <ComboboxEmpty>
+                      {t("studio.params.customContextLength")}
+                    </ComboboxEmpty>
+                    <ComboboxList className="p-1">
+                      {(id: string) => (
+                        <ComboboxItem key={id} value={id} className="font-mono">
+                          {Number(id).toLocaleString()}
+                        </ComboboxItem>
+                      )}
+                    </ComboboxList>
+                  </ComboboxContent>
+                </Combobox>
+              </div>
             </div>
-          </div>
+          )}
 
           <div className="flex flex-col gap-2">
             <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">

@@ -3719,6 +3719,38 @@ def is_embedding_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         return is_emb
 
 
+def is_decision_model(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
+    subfolder: Optional[str] = None,
+) -> bool:
+    if is_local_path(model_name):
+        folder = Path(normalize_path(model_name))
+        return all(
+            (folder / name).is_file() for name in ("rl_agent_config.json", "model.safetensors")
+        ) and all((folder / name).is_dir() for name in ("encoder", "tokenizer"))
+    from utils.utils import hf_cache_snapshot_dir, hf_env_offline
+
+    if not (local_files_only or hf_env_offline()):
+        try:
+            info = _hub_model_info(model_name, hf_token)
+            marker = f"{subfolder}/rl_agent_config.json" if subfolder else "rl_agent_config.json"
+            return any(
+                getattr(sibling, "rfilename", None) == marker for sibling in info.siblings or ()
+            )
+        except Exception as e:
+            logger.warning(f"Could not determine if {model_name} is a decision model: {e}")
+    if not cache_reads_authorized(hf_token, repo_id = model_name):
+        return False
+    # The Decision API caches only the checkpoint subfolder it serves.
+    snapshot = hf_cache_snapshot_dir(model_name)
+    return snapshot is not None and any(
+        path.is_file()
+        for path in (snapshot / "rl_agent_config.json", *snapshot.glob("*/rl_agent_config.json"))
+    )
+
+
 def _has_model_weight_files(model_dir: Path) -> bool:
     """Return True when a directory contains loadable model weights."""
 

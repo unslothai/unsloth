@@ -260,6 +260,7 @@ try:
         _is_imatrix_path,
         _is_mtp_drafter,
         is_audio_input_type,
+        is_decision_model,
     )
     from core.inference import get_inference_backend
     from utils.paths import (
@@ -292,6 +293,7 @@ except ImportError:
         _is_imatrix_path,
         _is_mtp_drafter,
         is_audio_input_type,
+        is_decision_model,
     )
     from core.inference import get_inference_backend
     from utils.paths import (
@@ -345,7 +347,10 @@ def derive_model_type(
     is_vision: bool,
     audio_type: Optional[str],
     is_embedding: bool = False,
+    is_decision: bool = False,
 ) -> ModelType:
+    if is_decision:
+        return "decision"
     if is_embedding:
         return "embeddings"
     if audio_type is not None:
@@ -2201,6 +2206,9 @@ def _model_config_inspection_target(
         with_load_subdirs(model_name, ("config.json", "adapter_config.json")),
     )
     if snapshot is None:
+        # A cached Laya checkpoint has no config.json; the probes read it by repo id.
+        if is_decision_model(model_name, hf_token, local_files_only = True):
+            return model_name
         raise HTTPException(
             status_code = 404,
             detail = "Selected cached model is no longer available.",
@@ -2332,6 +2340,18 @@ async def get_model_config(
                 local_files_only = probe_local_only,
             )
             is_embedding = is_embedding_model(inspection_target, hf_token = hf_token)
+            is_decision = is_decision_model(
+                model_name, hf_token = hf_token, local_files_only = probe_local_only
+            )
+            decision_checkpoints = None
+            if is_decision:
+                from core.systemone.catalog import CHECKPOINTS, LAYA_REPO
+                config_dict = load_model_defaults(LAYA_REPO)
+                decision_checkpoints = [
+                    {"name": c.name, "subfolder": c.subfolder, "description": c.description}
+                    for c in CHECKPOINTS.values()
+                    if c.source == model_name
+                ] or None
             audio_type, audio_type_definitive = detect_audio_type_checked(
                 _audio_probe_target(inspection_target),
                 hf_token = hf_token,
@@ -2379,12 +2399,14 @@ async def get_model_config(
                 config = config_dict,
                 is_vision = is_vision,
                 is_embedding = is_embedding,
+                is_decision = is_decision,
+                decision_checkpoints = decision_checkpoints,
                 is_lora = is_lora,
                 is_audio = audio_type is not None,
                 audio_type = audio_type,
                 audio_type_known = audio_type_definitive,
                 has_audio_input = is_audio_input_type(audio_type),
-                model_type = derive_model_type(is_vision, audio_type, is_embedding),
+                model_type = derive_model_type(is_vision, audio_type, is_embedding, is_decision),
                 base_model = base_model,
                 max_position_embeddings = max_position_embeddings,
                 # Keyed on the target, not the flag: the bare repo id an anonymous caller

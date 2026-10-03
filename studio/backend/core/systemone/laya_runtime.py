@@ -76,6 +76,14 @@ def _device() -> str:
     return candidate if device_can_allocate(candidate) else "cpu"
 
 
+def _training_active() -> bool:
+    try:
+        from core.training import get_training_backend
+        return bool(get_training_backend().is_training_active())
+    except Exception:
+        return False
+
+
 def _mlx_available() -> bool:
     try:
         import unsloth_zoo.mlx.decision  # noqa: F401
@@ -201,7 +209,7 @@ def is_cached(checkpoint: Checkpoint) -> bool:
 def download_plan(checkpoint: Checkpoint) -> dict[str, Any]:
     cached = is_cached(checkpoint)
     plan = {"repo": None, "files": [], "size_bytes": 0, "cached": cached, "error": None}
-    if checkpoint.name == LOCAL_NAME:
+    if checkpoint.name == LOCAL_NAME or checkpoint.is_local:
         if not cached:
             plan["error"] = f"No complete Laya checkpoint at {checkpoint.source}"
         return plan
@@ -291,12 +299,16 @@ class _MLXAgent:
 
 
 def _load_checkpoint(checkpoint: Checkpoint):
+    from utils.systemone_settings import get_device as preferred_device
+
     root = _checkpoint_dir(checkpoint)
     _laya()
 
     # Evict only once the new checkpoint is on disk, so a long or failed download leaves the resident model serving.
     _evict()
-    device = _device()
+    # While training holds the GPU, a GPU model loads on CPU, as dictation does; see _misplaced.
+    for_training = _training_active() and preferred_device() == "gpu"
+    device = "cpu" if for_training else _device()
     folder = root / checkpoint.subfolder if checkpoint.subfolder else root
     fp16_checkpoint = checkpoint.name in CHECKPOINTS or _stored_fp16(folder)
     if device == "mlx":
@@ -310,7 +322,11 @@ def _load_checkpoint(checkpoint: Checkpoint):
     agent = _load_laya(
         str(root), subfolder = checkpoint.subfolder, device = "cpu", embedding_dtype = weights
     )
+    # Training may have started while this built.
+    if device != "cpu" and _training_active():
+        device, for_training = "cpu", True
     _place(agent, torch.device(device), fp16_checkpoint)
+    agent.__dict__["_unsloth_for_training"] = for_training
     return agent, str(agent.device.type)
 
 
@@ -555,10 +571,19 @@ def _load(checkpoint: Checkpoint) -> None:
     )
 
 
+def _misplaced() -> bool:
+    # The resident model follows the same rule: off the GPU while training holds it, back on it after.
+    if getattr(_agent, "_unsloth_for_training", False):
+        return not _training_active()
+    return _device_name not in (None, "cpu") and _training_active()
+
+
 def _ensure_loading(checkpoint: Checkpoint) -> threading.Thread | None:
     global _loader, _loading
+    # Asked before _state_lock: the training backend takes its own lock.
+    misplaced = _misplaced()
     with _state_lock:
-        if _loaded == checkpoint and _agent is not None:
+        if _loaded == checkpoint and _agent is not None and not misplaced:
             return None
         if _failure and _failure[0] == checkpoint and time.monotonic() < _failure[2]:
             raise Unavailable(

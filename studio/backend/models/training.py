@@ -585,6 +585,10 @@ class TrainingStartRequest(BaseModel):
     is_embedding: bool = Field(
         False, description = "Whether model is an embedding/sentence-transformer model"
     )
+    is_decision: bool = Field(False, description = "Whether model is a Laya decision model")
+    model_subfolder: Optional[str] = Field(
+        None, description = "Checkpoint subfolder of a decision model repo"
+    )
 
     enable_wandb: bool = Field(False, description = "Enable Weights & Biases logging")
     wandb_token: Optional[str] = Field(None, description = "W&B token")

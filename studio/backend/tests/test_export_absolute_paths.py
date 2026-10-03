@@ -184,6 +184,7 @@ def _install_lightweight_backend_stubs(monkeypatch):
     utils_model_config._is_imatrix_path = lambda *args, **kwargs: False
     utils_model_config._is_mtp_drafter = lambda *args, **kwargs: False
     utils_model_config.is_audio_input_type = lambda *args, **kwargs: None
+    utils_model_config.is_decision_model = lambda *args, **kwargs: False
     monkeypatch.setitem(
         sys.modules,
         "utils.models.model_config",

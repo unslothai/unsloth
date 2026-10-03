@@ -56,6 +56,50 @@ CHECKPOINTS = {
 DEFAULT_ALIASES = frozenset({"default", "laya", "jev-latest", "jev-preview", "openjev-latest"})
 LOCAL_NAME = "laya-local"
 CONNECTION_PREFIX = "connection:"
+FINE_TUNE_PREFIX = "laya-ft:"
+
+
+def _owner_outputs() -> Path:
+    from utils.account_context import OWNER, run_as
+    from utils.paths import outputs_root
+    return run_as(OWNER, outputs_root).resolve()
+
+
+def _fine_tune_in(root: Path, folder_name: str) -> Checkpoint | None:
+    from .laya_runtime import is_cached
+
+    # Dot folders include runs staged for deletion (.<name>.deleting-<id>).
+    if not folder_name or folder_name.startswith("."):
+        return None
+    folder = root / folder_name
+    try:
+        if folder.resolve().parent != root:
+            return None
+    except (OSError, RuntimeError, ValueError):
+        # A NUL byte or a symlink loop in a caller's name.
+        return None
+    checkpoint = Checkpoint(
+        FINE_TUNE_PREFIX + folder_name, str(folder), None, "Laya fine-tuned in Studio."
+    )
+    return checkpoint if is_cached(checkpoint) else None
+
+
+def fine_tune(name: str) -> Checkpoint | None:
+    if not name.startswith(FINE_TUNE_PREFIX):
+        return None
+    folder_name = name[len(FINE_TUNE_PREFIX) :]
+    if "/" in folder_name or "\\" in folder_name:
+        return None
+    return _fine_tune_in(_owner_outputs(), folder_name)
+
+
+def fine_tunes() -> list[Checkpoint]:
+    root = _owner_outputs()
+    try:
+        folders = sorted(p.name for p in root.iterdir() if p.is_dir())
+    except OSError:
+        return []
+    return [c for name in folders if (c := _fine_tune_in(root, name)) is not None]
 
 
 @dataclass(frozen = True)
@@ -107,6 +151,8 @@ def default_checkpoint() -> Checkpoint | Connection:
         return CHECKPOINTS[configured]
     if connection := parse_connection(configured):
         return connection
+    if (checkpoint := fine_tune(configured)) is not None:
+        return checkpoint
     subfolder = os.environ.get("UNSLOTH_SYSTEMONE_SUBFOLDER", "").strip() or None
     return Checkpoint(LOCAL_NAME, configured, subfolder, "Local Laya checkpoint.")
 
@@ -118,4 +164,12 @@ def resolve(model: str) -> Checkpoint | Connection | None:
     if name == LOCAL_NAME or name.startswith(CONNECTION_PREFIX):
         checkpoint = default_checkpoint()
         return checkpoint if checkpoint.name == name else None
-    return CHECKPOINTS.get(name)
+    if name in CHECKPOINTS:
+        return CHECKPOINTS[name]
+    from utils.account_context import is_owner_context
+
+    checkpoint = fine_tune(name)
+    # Other accounts reach only the fine-tune the owner configured, not the owner's other outputs.
+    if checkpoint is None or is_owner_context() or checkpoint == default_checkpoint():
+        return checkpoint
+    return None
