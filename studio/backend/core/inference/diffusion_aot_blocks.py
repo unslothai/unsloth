@@ -244,6 +244,7 @@ class Registry:
         self.entries: dict[str, list[Any]] = {}
         self.known: set = set()
         self.recorded: dict[str, _Sample] = {}
+        self.queued: set = set()
         self.stats: dict[str, Any] = {"hits": 0, "misses": 0, "loaded": 0, "load_s": 0.0, "saved": 0, "rejected": 0}
 
     # ---- loading -----------------------------------------------------------------------------------------------
@@ -436,6 +437,8 @@ def install(transformer: Any, compile_kwargs: dict[str, Any], logger: Any = None
     if not enabled() or not supported():
         return None
     if not (compile_kwargs or {}).get("fullgraph"):
+        if logger is not None:
+            logger.info("diffusion.aot_blocks: off for this load (the block compile is not fullgraph)")
         return None
     try:
         names = set(getattr(transformer, "_repeated_blocks", None) or ())
@@ -462,6 +465,8 @@ def install(transformer: Any, compile_kwargs: dict[str, Any], logger: Any = None
         if not count:
             return None
         transformer._unsloth_aot_blocks = reg
+        if logger is not None:
+            logger.info("diffusion.aot_blocks: armed on %d compiled block(s) of %s", count, type(transformer).__name__)
         return reg
     except Exception as exc:  # noqa: BLE001 - optimisation only
         if logger is not None:
@@ -499,10 +504,13 @@ def schedule_save(pipe: Any, name: str = "diffusion") -> int:
     for reg in registries(pipe):
         for key in reg.pending():
             sample = reg.recorded.get(key)
-            if sample is None:
+            if sample is None or key in reg.queued:
                 continue
             if render_thread.submit_idle(name, lambda r = reg, k = key: r.save_one(k), device = sample.device):
+                reg.queued.add(key)
                 queued += 1
+        if queued:
+            reg._log("info", "diffusion.aot_blocks: queued %d block graph(s) to persist after this render", queued)
     return queued
 
 

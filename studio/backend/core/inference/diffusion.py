@@ -1937,15 +1937,6 @@ def _progress_latch_enabled() -> bool:
     )
 
 
-def _aot_blocks_status(pipe: Any) -> Any:
-    try:
-        from . import diffusion_aot_blocks
-
-        return diffusion_aot_blocks.describe(pipe)
-    except Exception:  # noqa: BLE001 - diagnostics only
-        return None
-
-
 def _bg_compile_module(
     pipe: Any,
     *,
@@ -10186,7 +10177,6 @@ class DiffusionBackend:
             "speed_mode": state.speed_mode,
             "speed_optims": speed_optims,
             "bg_compile": state.bg_compile.describe() if state.bg_compile is not None else None,
-            "aot_blocks": _aot_blocks_status(state.pipe),
             "text_encoder_quant": state.text_encoder_quant,
             "transformer_quant": state.transformer_quant,
             **_nvfp4_backend_fields(_transformer_quant_backend(state), owner = self),
