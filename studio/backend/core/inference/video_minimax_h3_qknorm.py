@@ -1,23 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3 fused q/k RMSNorm + partial RoPE: one pass over q and k per block (``UNSLOTH_H3_QK_ROPE=0`` = off).
+"""MiniMax-H3 fused q/k RMSNorm + partial RoPE, one read and one write per row (``UNSLOTH_H3_QK_ROPE=0`` = off).
 
-Every H3 block normalises q and k per head (``RMSNorm(128)``) and then rotates the leading 96 of the 128 channels
-(split-half RoPE, ``cat(-x2, x1)``) before attention. Inductor lowers that chain as separate reductions plus rope
-kernels that re-read the input, measured at 5-6x the memory roofline at H3's shape (~19.3k rows x 56 heads): on an
-RTX PRO 6000 the q/k prologue is ~4 ms of every block. This op reads each row once and writes it once, contiguous
-``(B, S, H, D)``, which is the layout the strided attention processor hands to SDPA.
-
-Numerics follow the eager chain exactly, step by step: the norm in float32 with ONE rounding to bfloat16 at the end
-(torch's ``_fused_rms_norm`` decomposition: ``x * rsqrt(mean(x^2) + eps) * w``), cos / sin rounded to the activation
-dtype first, then every rope product and the sum rounded to the activation dtype, as the bfloat16 eager ops do.
-The only freedom left is the order of the 128-term sum of squares, so a row's rstd can differ from torch's in the
-last float32 bit; the oracle bounds that at one bfloat16 rounding step and the end-to-end check is LPIPS.
-
-Opaque ``torch.library`` custom op with a fake kernel, so the regional compile treats it as one node. The Triton
-kernel is used on NVIDIA CUDA only; anything else (CPU, ROCm, a failed launch, an unexpected layout) runs the eager
-reference, which is the stock math.
+Rounds where the eager bf16 chain rounds; only the order of the sum of squares is free, so rstd can differ in the
+last fp32 bit (bounded at one bf16 step by the tests). Opaque custom op with a fake kernel; Triton on NVIDIA CUDA
+only, the stock math everywhere else.
 """
 
 from __future__ import annotations
@@ -35,7 +23,7 @@ def qk_rope_enabled() -> bool:
 
 
 def reference_qk_norm_rope(x: Any, weight: Any, cos: Any, sin: Any, eps: float) -> Any:
-    """The stock math (RMSNorm module then diffusers' ``_apply_rotary_emb``), contiguous output."""
+    """The stock math (RMSNorm then diffusers' ``_apply_rotary_emb``), contiguous."""
     import torch
     import torch.nn.functional as F
 
@@ -61,9 +49,7 @@ def _kernel() -> Any:
     except Exception:  # noqa: BLE001 -- older Triton layout
         from triton.language.extra.cuda import libdevice
 
-    # torch's norm uses the CUDA rsqrt intrinsic (Inductor emits libdevice.rsqrt): match it, not 1/sqrt. Every
-    # product / sum whose result eager rounds to the activation dtype is pinned with *_rn: Triton otherwise contracts
-    # ``(a*b).to(bf16).to(f32) + c`` into an FMA and drops the intermediate rounding (measured: 29% of elements off).
+    # rsqrt as torch's norm (not 1/sqrt); *_rn because Triton otherwise FMA-contracts away eager's bf16 roundings.
     _rsqrt = libdevice.rsqrt
     _mul = libdevice.mul_rn
     _add = libdevice.add_rn
@@ -91,7 +77,6 @@ def _kernel() -> Any:
         s = rows // n_heads
         h = rows % n_heads
         cols = tl.arange(0, D)
-        # split-half partner inside the rotary part, identity beyond it
         partner = tl.where(cols < HALF, cols + HALF, tl.where(cols < 2 * HALF, cols - HALF, cols))
         base = s * stride_s + h * stride_h
         mask = row_ok[:, None]
@@ -103,7 +88,6 @@ def _kernel() -> Any:
         wpart = tl.load(w_ptr + partner).to(tl.float32)
         ms = tl.sum(x * x, axis = 1) / D
         rstd = _rsqrt(ms + eps)
-        # one rounding to the activation dtype, as the eager norm does
         xn = _mul(_mul(x, rstd[:, None]), w[None, :]).to(out_ptr.dtype.element_ty)
         pn = _mul(_mul(xpart, rstd[:, None]), wpart[None, :]).to(out_ptr.dtype.element_ty)
         rot_cols = cols < 2 * HALF
@@ -112,7 +96,6 @@ def _kernel() -> Any:
         sn = tl.load(sin_ptr + s[:, None] * cos_stride + cols[None, :], mask = cmask, other = 0.0)
         c = c.to(out_ptr.dtype.element_ty).to(tl.float32)
         sn = sn.to(out_ptr.dtype.element_ty).to(tl.float32)
-        # rotate_half: first half pairs with -x2, second half with +x1
         sign = tl.where(cols < HALF, -1.0, 1.0)
         a = _mul(xn.to(tl.float32), c).to(out_ptr.dtype.element_ty).to(tl.float32)
         b = _mul(pn.to(tl.float32) * sign[None, :], sn).to(out_ptr.dtype.element_ty).to(tl.float32)
@@ -140,7 +123,7 @@ def _triton_ok(x: Any) -> bool:
     )
 
 
-# rows per program / warps: tuned at H3's shape (scripts in the change's evidence); overridable for sweeps only
+# tuned at H3's shape
 _ROWS = 16
 _WARPS = 4
 
@@ -201,21 +184,21 @@ def _supported_layout(x: Any, weight: Any, cos: Any) -> bool:
 
 
 def qk_norm_rope_impl(x: Any, weight: Any, cos: Any, sin: Any, eps: float) -> Any:
-    """Eager entry: the Triton kernel where it applies, the stock math everywhere else."""
+    """Triton where it applies, the stock math elsewhere."""
     if _triton_ok(x) and _supported_layout(x, weight, cos):
         try:
             return _launch(x, weight, cos, sin, eps)
-        except Exception:  # noqa: BLE001 -- a failed launch falls back to the stock math
+        except Exception:  # noqa: BLE001
             pass
     return reference_qk_norm_rope(x, weight, cos, sin, eps)
 
 
 @lru_cache(maxsize = None)
 def qk_norm_rope_op() -> Any:
-    """The registered custom op (one registration per process)."""
+    """Registered once per process."""
     import torch
 
-    # Explicit schema: this module's annotations are strings (``from __future__ import annotations``).
+    # explicit schema: the annotations here are strings
     @torch.library.custom_op(
         _OP,
         mutates_args = (),
@@ -232,9 +215,7 @@ def qk_norm_rope_op() -> Any:
 
 
 def qk_norm_rope(x: Any, weight: Any, cos: Any, sin: Any, eps: float) -> Any:
-    """Eager convenience entry. Compiled code must call ``torch.ops.unsloth_h3.qk_norm_rope`` directly (after
-    ``qk_norm_rope_op()`` registered it): dynamo traces through this wrapper's ``lru_cache`` into the registration
-    and graph-breaks there."""
+    """Eager only: compiled code calls ``torch.ops.unsloth_h3.qk_norm_rope`` (dynamo graph-breaks in here)."""
     import torch
 
     qk_norm_rope_op()
