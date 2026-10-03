@@ -150,6 +150,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { useChatPickerInventory } from "../../inventory/use-chat-picker-inventory";
+import { modelConfigTarget } from "../../model-config/model-config-handoff";
 import {
   type CommunityModelPolicy,
   allowedHiddenModelIdMatches,
@@ -1023,7 +1024,7 @@ const downloadedRowShellClassName = (
 // One gutter for every row, gear or no gear, so the columns never shift by a button; the
 // buttons show on hover or while their menu is open.
 const ROW_ACTIONS_CLASS =
-  "mr-0.5 flex w-[calc(38px*var(--ui-space-scale,1))] shrink-0 items-center justify-end -space-x-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 has-[[data-state=open]]:opacity-100 [@media(hover:none)]:opacity-100";
+  "mr-0.5 flex w-[calc(38px*var(--ui-space-scale,1))] shrink-0 items-center justify-end -space-x-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 has-[[data-state=open]]:opacity-100 has-[[data-run-settings-saved]]:opacity-100 [@media(hover:none)]:opacity-100";
 
 // Drop line for a pinned-row drag. A border snaps to whole pixels, so every row matches.
 const PINNED_DROP_CUE_BASE =
@@ -2319,6 +2320,20 @@ function GgufVariantExpander({
         const unusableLocal = isLocalPath && v.partial === true;
         const keyBase = `${repoId}:${v.filename}`;
         const variantOptionKey = makeModelOptionKey("gguf-variant", keyBase);
+        const configMeta: ModelSelectorChangeMeta = {
+          source: sourceOverride ?? (isLocalPath ? "local" : "hub"),
+          isLora: false,
+          loadId,
+          ggufVariant: v.quant,
+          isDownloaded: true,
+          expectedBytes,
+          contextLength: variantContext,
+          isGguf: true,
+          isVision: variantVisionHint,
+        };
+        const configTarget = v.downloaded
+          ? modelConfigTarget(repoId, configMeta)
+          : undefined;
         const rowButton = (
           <button
             type="button"
@@ -2425,19 +2440,8 @@ function GgufVariantExpander({
               <ModelLoadSettingsAction
                 ariaLabel={`Inference settings for ${repoId} ${v.quant}`}
                 className="relative left-0.5"
-                onConfigure={() =>
-                  onConfigure(repoId, {
-                    source: sourceOverride ?? (isLocalPath ? "local" : "hub"),
-                    isLora: false,
-                    loadId,
-                    ggufVariant: v.quant,
-                    isDownloaded: true,
-                    expectedBytes,
-                    contextLength: variantContext,
-                    isGguf: true,
-                    isVision: variantVisionHint,
-                  })
-                }
+                onConfigure={() => onConfigure(repoId, configMeta)}
+                savedFor={configTarget}
               />
             )}
             {(v.downloaded || v.partial === true) &&
@@ -2448,6 +2452,7 @@ function GgufVariantExpander({
                 <ModelRowMenu
                   ariaLabel={`More options for ${repoId} ${v.quant}`}
                   iconClassName="size-3"
+                  runSettings={onConfigure ? configTarget : undefined}
                   cachePath={
                     isLocalPath ? undefined : { repoId, variant: v.quant }
                   }
@@ -5971,6 +5976,18 @@ export function HubModelPicker({
     const hasVision =
       pinnedQuantValidation.visionByRepo.get(entry.repoId) ??
       sortedCachedGguf.find((c) => c.repo_id === entry.repoId)?.has_vision;
+    const configMeta: ModelSelectorChangeMeta = {
+      source: "hub",
+      isLora: false,
+      ggufVariant: entry.quant,
+      isDownloaded: true,
+      isGguf: true,
+      isVision: pinnedVisionHint,
+      pipelineTag: diffusionTaskById.get(entry.repoId.toLowerCase()) ?? null,
+    };
+    const configTarget = onConfigure
+      ? modelConfigTarget(entry.repoId, configMeta)
+      : undefined;
     return (
       <div
         key={optionKey}
@@ -6025,23 +6042,14 @@ export function HubModelPicker({
           {onConfigure && (
             <ModelLoadSettingsAction
               ariaLabel={`Inference settings for ${entry.repoId} ${entry.quant}`}
-              onConfigure={() =>
-                onConfigure(entry.repoId, {
-                  source: "hub",
-                  isLora: false,
-                  ggufVariant: entry.quant,
-                  isDownloaded: true,
-                  isGguf: true,
-                  isVision: pinnedVisionHint,
-                  pipelineTag:
-                    diffusionTaskById.get(entry.repoId.toLowerCase()) ?? null,
-                })
-              }
+              onConfigure={() => onConfigure(entry.repoId, configMeta)}
+              savedFor={configTarget}
             />
           )}
           <ModelRowMenu
             ariaLabel={`More options for ${entry.repoId} ${entry.quant}`}
             cachePath={{ repoId: entry.repoId, variant: entry.quant }}
+            runSettings={configTarget}
             pin={{
               pinned: true,
               pinLabel: "Pin",
@@ -6131,6 +6139,9 @@ export function HubModelPicker({
       isVision: sole.hasVision === false ? false : undefined,
       pipelineTag: c.task ?? null,
     };
+    const configTarget = onConfigure
+      ? modelConfigTarget(c.repo_id, selectMeta)
+      : undefined;
     return (
       <div
         key={c.repo_id}
@@ -6178,11 +6189,13 @@ export function HubModelPicker({
             <ModelLoadSettingsAction
               ariaLabel={`Inference settings for ${c.repo_id} ${variant.quant}`}
               onConfigure={() => onConfigure(c.repo_id, selectMeta)}
+              savedFor={configTarget}
             />
           )}
           <ModelRowMenu
             ariaLabel={`More options for ${c.repo_id} ${variant.quant}`}
             cachePath={{ repoId: c.repo_id, variant: variant.quant }}
+            runSettings={configTarget}
             pin={{
               pinned: isPinned,
               pinLabel: "Pin",
@@ -6382,6 +6395,22 @@ export function HubModelPicker({
     // that fails on the missing shards, so the pick reports what is actually there and the
     // download flow picks it up from the same place the Hub would.
     const isPartial = c.partial === true;
+    const configMeta: ModelSelectorChangeMeta = {
+      source: "hub",
+      isLora: false,
+      // Run spreads this meta straight back into a select, so it carries the
+      // row's rule: no load identity for a snapshot that is not all there.
+      // The config page keys its settings off the repo id, not this field.
+      loadId: isPartial ? undefined : c.load_id,
+      isDownloaded: !isPartial,
+      isGguf: false,
+      pipelineTag: c.task ?? null,
+      audioType: c.audio_type ?? null,
+      familyOverrideRequired: c.opaque === true,
+    };
+    const configTarget = onConfigure
+      ? modelConfigTarget(c.repo_id, configMeta)
+      : undefined;
     return (
       <div key={c.repo_id} className={downloadedRowShellClassName(isSelected)}>
         <div className="min-w-0 flex-1">
@@ -6426,26 +6455,14 @@ export function HubModelPicker({
           {onConfigure && (
             <ModelLoadSettingsAction
               ariaLabel={`Inference settings for ${c.repo_id}`}
-              onConfigure={() =>
-                onConfigure(c.repo_id, {
-                  source: "hub",
-                  isLora: false,
-                  // Run spreads this meta straight back into a select, so it carries the
-                  // row's rule: no load identity for a snapshot that is not all there.
-                  // The config page keys its settings off the repo id, not this field.
-                  loadId: isPartial ? undefined : c.load_id,
-                  isDownloaded: !isPartial,
-                  isGguf: false,
-                  pipelineTag: c.task ?? null,
-                  audioType: c.audio_type ?? null,
-                  familyOverrideRequired: c.opaque === true,
-                })
-              }
+              onConfigure={() => onConfigure(c.repo_id, configMeta)}
+              savedFor={configTarget}
             />
           )}
           <ModelRowMenu
             ariaLabel={`More options for ${c.repo_id}`}
             cachePath={{ repoId: c.repo_id }}
+            runSettings={configTarget}
             pin={{
               pinned: pinnedSet.has(pinKey(c.repo_id)),
               pinLabel: "Pin",
