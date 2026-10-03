@@ -235,6 +235,34 @@ def test_auto_installs_the_measured_static_skip_on_wan_5b(loop_runtime, monkeypa
     backend.unload()
 
 
+def test_auto_skip_leaves_a_keyframe_clip_unskipped(loop_runtime, monkeypatch):
+    monkeypatch.delenv(dcache.ENV_AUTO_STEP_SKIP, raising = False)
+    backend = VideoBackend()
+    backend.load_pipeline(WAN_5B, model_kind = "pipeline", speed_mode = "default")
+    real = VideoBackend._resolve_keyframes
+
+    def with_first_frame(*args, **kwargs):
+        first, last, width, height, conditioning = real(*args, **kwargs)
+        return object(), last, width, height, conditioning
+
+    monkeypatch.setattr(VideoBackend, "_resolve_keyframes", staticmethod(with_first_frame))
+    armed = []
+    import core.inference.video as video_mod
+
+    real_reset = video_mod.reset_static_step_skip
+    monkeypatch.setattr(
+        video_mod,
+        "reset_static_step_skip",
+        lambda p, steps, **k: armed.append(steps) or real_reset(p, steps, **k),
+    )
+    try:
+        backend.generate(prompt = "a sloth", steps = STEPS)
+    except Exception:  # noqa: BLE001 - the fake pipe may not take an image; the arming is what is under test
+        pass
+    assert armed and armed[0] is None
+    backend.unload()
+
+
 @pytest.mark.parametrize("request_cache", [None, "auto"])
 def test_auto_kill_switch_restores_the_previous_auto(loop_runtime, monkeypatch, request_cache):
     import core.inference.video as video_mod

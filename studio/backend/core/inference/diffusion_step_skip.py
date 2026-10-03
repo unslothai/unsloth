@@ -582,6 +582,12 @@ def mark_step_end(pipe: Any) -> None:
         skip.step_end()
 
 
+def static_skip_is_auto(pipe: Any) -> bool:
+    """Whether the installed layer came from the auto policy (measured per workflow) rather than an explicit ask."""
+    skip = _find(pipe)
+    return bool(skip is not None and skip.auto)
+
+
 def static_skip_stats(pipe: Any) -> Optional[dict]:
     skip = _find(pipe)
     return skip.describe() if skip is not None else None

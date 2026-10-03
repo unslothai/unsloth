@@ -225,6 +225,7 @@ from .diffusion_step_skip import (
     install_static_step_skip,
     mark_step_end,
     reset_static_step_skip,
+    static_skip_is_auto,
     static_skip_stats,
     static_skip_view,
     uninstall_static_step_skip,
@@ -9676,9 +9677,12 @@ class DiffusionBackend:
                                 state.cuda_graphs, cache_breaks_graph(state.transformer_cache)
                             )
                         if static_skip:
+                            # An AUTO skip was measured on text-to-image only: every other workflow (edit, reference,
+                            # img2img, inpaint, upscale, ControlNet) computes every step. Explicit "static" applies to all.
+                            auto_only_txt2img = workflow != "txt2img" and static_skip_is_auto(state.pipe)
                             reset_static_step_skip(
                                 state.pipe,
-                                denoise_steps,
+                                None if auto_only_txt2img else denoise_steps,
                                 step_signal = "callback_on_step_end" in chunk_kwargs,
                                 keep_stats = static_chunks_run > 0,
                                 owner = current_account_id(),

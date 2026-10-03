@@ -74,6 +74,7 @@ from .diffusion_step_skip import (
     install_static_step_skip,
     mark_step_end,
     reset_static_step_skip,
+    static_skip_is_auto,
     static_skip_stats,
     static_skip_view,
     uninstall_static_step_skip,
@@ -8677,9 +8678,15 @@ class VideoBackend:
                                 + f" {FBCACHE_MIN_STEPS}"
                             )
                 if static_skip:
+                    # An AUTO skip was measured on text-to-video only: a keyframe / reference clip computes every step.
+                    conditioned = bool(first_pil is not None or last_pil is not None or references)
+                    auto_unmeasured = conditioned and static_skip_is_auto(_skip_pipe(state, pipe))
                     # Without a step callback (HunyuanVideo-1.5) steps count per CFG branch from cache_context names.
                     reset_static_step_skip(
-                        _skip_pipe(state, pipe), steps, step_signal = has_step_callback, owner = current_account_id()
+                        _skip_pipe(state, pipe),
+                        None if auto_unmeasured else steps,
+                        step_signal = has_step_callback,
+                        owner = current_account_id(),
                     )
                 elif state.transformer_cache:
                     self._reset_step_cache(pipe)

@@ -289,3 +289,31 @@ def test_auto_static_declined_falls_back_to_the_previous_auto(fake_runtime, tmp_
     assert modes == [dcache.TC_FBCACHE]
     backend.unload()
 
+
+
+# --------------------------------------------------------------------------------------------- generate scope
+@pytest.mark.parametrize("auto", [True, False])
+def test_auto_skip_runs_on_txt2img_only_explicit_everywhere(fake_runtime, tmp_path, monkeypatch, auto):
+    from core.inference import diffusion as dmod
+
+    from .test_diffusion_backend import _loaded_backend, _tiny_png_b64
+
+    (tmp_path / "model.gguf").write_bytes(b"x")
+    backend = _loaded_backend(tmp_path)
+    pipe = backend._state.pipe
+    pipe.transformer = types.SimpleNamespace(forward = lambda *a, **k: None, __dict__ = {})
+    layer = types.SimpleNamespace(auto = auto)
+    monkeypatch.setattr(dmod, "static_skip_is_auto", lambda p: layer.auto)
+    armed = []
+    monkeypatch.setattr(
+        dmod, "reset_static_step_skip", lambda p, steps, **k: armed.append(steps) or True
+    )
+    monkeypatch.setattr(dmod, "effective_request_strength", lambda *a, **k: None)
+    object.__setattr__(backend._state, "transformer_cache", dcache.TC_STATIC)
+    backend.generate(prompt = "a car", steps = 28, seed = 1)
+    assert armed[0] == 28
+    armed.clear()
+    backend.generate(prompt = "a car", steps = 28, seed = 1, init_image = _tiny_png_b64(), strength = 1.0)
+    # img2img: an AUTO layer computes every step; an explicit one keeps its schedule.
+    assert armed[0] == (None if auto else 28)
+    backend.unload()
