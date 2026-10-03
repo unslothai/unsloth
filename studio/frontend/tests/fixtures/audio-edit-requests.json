@@ -1,10 +1,5 @@
 {
   "_comment": "Golden Edit requests shared by tests/audio-edit-adapters.test.ts and backend tests/test_audio_edit_requests.py. run_body is POST /api/inference/audio/run; runtime is what the server posts to audio.cpp, with <model>, <recording> and <result of call N> standing in for server values.",
-  "placeholders": {
-    "model": "<model>",
-    "recording": "<recording>",
-    "previous": "<result of call {n}>"
-  },
   "cases": [
     {
       "name": "dots two subs",

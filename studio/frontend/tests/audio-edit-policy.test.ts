@@ -43,7 +43,6 @@ const ready: Input = {
   sourceError: null,
   sourceDurationS: 4.7,
   transcribing: false,
-  sttAvailable: true,
   transcript: EDIT_EXAMPLE.original,
   edited: EDIT_EXAMPLE.edited,
   mode: "words",
@@ -98,10 +97,6 @@ test("Edit's blockers come in rail order, each with its action", () => {
   const transcribed = { ...fits, transcribing: false };
   assert.equal(editBlocker(transcribed)?.reason, EDIT_TRANSCRIPT_EMPTY);
   assert.deepEqual(actionIds(transcribed), ["transcribe", "type-transcript"]);
-  assert.deepEqual(actionIds({ ...transcribed, sttAvailable: false }), [
-    "open-transcribe",
-    "type-transcript",
-  ]);
   const typed = {
     ...transcribed,
     transcript: EDIT_EXAMPLE.original,

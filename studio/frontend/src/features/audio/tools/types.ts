@@ -54,7 +54,6 @@ export interface EditCoreInputs {
   mode: "words" | "delivery";
   speed: number;
   pitchSteps: number;
-  advanced?: AudioOptionValues;
 }
 
 export interface AudioToolPanelProps<V> {

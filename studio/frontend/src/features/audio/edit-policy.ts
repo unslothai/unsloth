@@ -49,7 +49,6 @@ export type EditBlockerActionId =
   | "choose-recording"
   | "transcribe"
   | "type-transcript"
-  | "open-transcribe"
   | "focus-changes";
 
 interface EditBlockerAction {
@@ -70,7 +69,6 @@ interface EditBlockerInput {
   sourceError?: string | null;
   sourceDurationS: number | null;
   transcribing: boolean;
-  sttAvailable: boolean;
   transcript: string;
   edited: string;
   mode: EditMode;
@@ -109,22 +107,10 @@ export function editBlocker(input: EditBlockerInput): EditBlocker | null {
   if (input.mode === "words") {
     if (input.transcribing) return blocker("transcribing", EDIT_TRANSCRIBING);
     if (!input.transcript.trim()) {
-      return blocker(
-        "transcript",
-        EDIT_TRANSCRIPT_EMPTY,
-        input.sttAvailable
-          ? [
-              { id: "transcribe", label: "Transcribe it" },
-              { id: "type-transcript", label: "Type it" },
-            ]
-          : [
-              {
-                id: "open-transcribe",
-                label: "Open Transcribe to get a speech-to-text model",
-              },
-              { id: "type-transcript", label: "Type it" },
-            ],
-      );
+      return blocker("transcript", EDIT_TRANSCRIPT_EMPTY, [
+        { id: "transcribe", label: "Transcribe it" },
+        { id: "type-transcript", label: "Type it" },
+      ]);
     }
     const changes = countChanges(input.transcript, input.edited);
     if (changes === null) return blocker("too-long", EDIT_TOO_LONG);

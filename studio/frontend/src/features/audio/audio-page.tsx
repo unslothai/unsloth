@@ -469,10 +469,6 @@ export function AudioPage({
     audioOptionValues,
     sttRepo: cloneSttRepo,
   });
-  const openTranscribe = useCallback(
-    () => void transitionWorkflow("transcribe"),
-    [transitionWorkflow],
-  );
   const edit = useEditGeneration({
     status,
     busyRef,
@@ -493,7 +489,6 @@ export function AudioPage({
     audioOptionSpecs,
     audioOptionValues,
     sttRepo: cloneSttRepo,
-    onOpenTranscribe: openTranscribe,
   });
 
   const { navigateSelf } = useAudioHandoff({

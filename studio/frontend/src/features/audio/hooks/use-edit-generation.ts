@@ -76,7 +76,6 @@ export function useEditGeneration({
   audioOptionSpecs,
   audioOptionValues,
   sttRepo,
-  onOpenTranscribe,
 }: Pick<
   AudioHostState,
   | "status"
@@ -98,7 +97,6 @@ export function useEditGeneration({
     audioOptionSpecs: AudioOptionSpec[];
     audioOptionValues: AudioOptionValues;
     sttRepo: string | null;
-    onOpenTranscribe: () => void;
   }) {
   const source = useAudioEditStore((state) => state.source);
   const transcript = useAudioEditStore((state) => state.transcript);
@@ -176,9 +174,8 @@ export function useEditGeneration({
       mode,
       speed: delivery.speed,
       pitchSteps: delivery.pitchSteps,
-      advanced: advancedRequest,
     }),
-    [transcript, edited, mode, delivery, advancedRequest],
+    [transcript, edited, mode, delivery],
   );
   const toolRequest = useMemo(
     () =>
@@ -231,8 +228,6 @@ export function useEditGeneration({
     sourceError: sourceStatus.phase === "error" ? sourceStatus.message : null,
     sourceDurationS: source?.durationS ?? null,
     transcribing: transcriber.transcribing,
-    // The page falls back to the Settings > Voice model, so there is always one to try.
-    sttAvailable: true,
     transcript,
     edited,
     mode,
@@ -256,15 +251,12 @@ export function useEditGeneration({
         case "type-transcript":
           document.getElementById(EDIT_TRANSCRIPT_FIELD_ID)?.focus();
           return;
-        case "open-transcribe":
-          onOpenTranscribe();
-          return;
         case "focus-changes":
           changesRef.current?.focus();
           return;
       }
     },
-    [sourceExpired, transcribe, onOpenTranscribe],
+    [sourceExpired, transcribe],
   );
   const blocker: GenerateBlocker | null = inputBlocker
     ? {
