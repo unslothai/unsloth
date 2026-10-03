@@ -23,6 +23,7 @@ import { audioCppModelFor, audioCppWorkflowsFor } from "../audio-cpp-catalog";
 import { sourceFileUrl } from "../audio-run-request";
 import { macTtsCatalogChoiceIsRunnable } from "../catalog";
 import { ABCompare } from "../components/ab-compare";
+import { Field } from "../components/field";
 import {
   AudioHistoryProvider,
   AudioSourceInput,
@@ -76,10 +77,6 @@ type RailProps = Omit<
   | "audioOptionSpecs"
 >;
 
-function formatSemitones(value: number): string {
-  return `${value > 0 ? "+" : ""}${value} st`;
-}
-
 /** Convert's own inputs: the recording, the voice it should take, the mode and the pitch. */
 function ConvertInputs({
   convert,
@@ -111,13 +108,11 @@ function ConvertInputs({
 
       <div data-tour="audio-convert-target">
         {caps?.target === "builtin" ? (
-          <div className="grid gap-1.5">
-            <label
-              htmlFor="convert-builtin-voice"
-              className="text-ui-13 font-medium text-foreground"
-            >
-              Target voice
-            </label>
+          <Field
+            label="Target voice"
+            htmlFor="convert-builtin-voice"
+            hint="This model converts to its built-in voices only."
+          >
             <Select
               value={convert.builtinVoice}
               onValueChange={store.setBuiltinVoice}
@@ -138,10 +133,7 @@ function ConvertInputs({
                 ))}
               </SelectContent>
             </Select>
-            <p className="text-ui-11p5 leading-snug text-muted-foreground">
-              This model converts to its built-in voices only.
-            </p>
-          </div>
+          </Field>
         ) : (
           <AudioSourceInput
             id="convert-target"
@@ -207,7 +199,7 @@ function ConvertInputs({
               max={12}
               step={1}
               disabled={disabled}
-              displayValue={formatSemitones(convert.pitch)}
+              displayValue={`${convert.pitch > 0 ? "+" : ""}${convert.pitch} st`}
               info="Semitones. +12 is an octave up; try -12 to +12 when the target voice is much lower or higher."
               onChange={(next) => store.setPitch(Math.round(next))}
             />

@@ -98,8 +98,7 @@ export const seedVcPanel: AudioToolPanel<SeedVcValue> = {
   ...seedVcLogic,
   Component: ({ value, onChange, disabled, ctx }) => {
     const singing = ctx.convertMode === "singing";
-    const route = seedVcRoute(value, ctx);
-    const v2 = route === "v2_vc";
+    const v2 = seedVcRoute(value, ctx) === "v2_vc";
     return (
       <PanelSection
         title="Seed-VC"
@@ -303,25 +302,23 @@ export const chatterboxConvertPanel: AudioToolPanel<ChatterboxConvertValue> = {
 
 // ---- Vevo2 -----------------------------------------------------------------------------------
 
+const VEVO2_HINTS = {
+  singing: "Singing keeps the recording's own style.",
+  target:
+    "Takes the target's accent and delivery too. Needs what's said in the recording.",
+  source: "Changes only the voice; the recording's delivery stays.",
+} as const;
+
 export const vevo2StylePanel: AudioToolPanel<Vevo2StyleValue> = {
   ...vevo2StyleLogic,
-  Component: ({ value, onChange, disabled, ctx }) =>
-    ctx.convertMode === "singing" ? (
-      <PanelSection
-        title="Vevo2"
-        hint="Singing keeps the recording's own style."
-      >
-        {null}
-      </PanelSection>
-    ) : (
-      <PanelSection
-        title="Vevo2"
-        hint={
-          value.style === "target"
-            ? "Takes the target's accent and delivery too. Needs what's said in the recording."
-            : "Changes only the voice; the recording's delivery stays."
-        }
-      >
+  Component: ({ value, onChange, disabled, ctx }) => (
+    <PanelSection
+      title="Vevo2"
+      hint={
+        VEVO2_HINTS[ctx.convertMode === "singing" ? "singing" : value.style]
+      }
+    >
+      {ctx.convertMode === "singing" ? null : (
         <PillTabs
           ariaLabel="Style"
           value={value.style}
@@ -337,8 +334,9 @@ export const vevo2StylePanel: AudioToolPanel<Vevo2StyleValue> = {
             { value: "target", label: "Take target style" },
           ]}
         />
-      </PanelSection>
-    ),
+      )}
+    </PanelSection>
+  ),
 };
 
 /** Convert's panels, in rail order. Each family matches at most one. */

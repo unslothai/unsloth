@@ -5,7 +5,7 @@
 // what it plays and keeps the moment and whether it was playing, so the listener hears the change.
 
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
-import { type Ref, useCallback, useEffect, useRef } from "react";
+import { type Ref, useCallback, useRef } from "react";
 import { type ABPlayback, nextPlayback } from "./ab-compare-state";
 
 export interface ABSide {
@@ -25,7 +25,6 @@ export function ABCompare({
   onSideChange,
   ariaLabel,
   playerRef,
-  autoFocus = false,
 }: {
   a: ABSide;
   b: ABSide;
@@ -34,8 +33,6 @@ export function ABCompare({
   /** Names the toggle, e.g. "Compare source and converted". */
   ariaLabel: string;
   playerRef?: Ref<HTMLAudioElement>;
-  /** Focus the player once it mounts, for a fresh result. */
-  autoFocus?: boolean;
 }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   // Hands the one player to the page too (to focus a fresh result), also when it remounts.
@@ -59,10 +56,6 @@ export function ABCompare({
         : side;
   const current = shownSide === "a" ? a : b;
   const src = current.unavailable ? undefined : current.src;
-
-  useEffect(() => {
-    if (autoFocus) audioRef.current?.focus();
-  }, [autoFocus]);
 
   const switchTo = useCallback(
     (next: string) => {
