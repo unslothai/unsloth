@@ -132,6 +132,8 @@ _TOOL_TRUNCATED = (
     "output limit."
 )
 
+_TOOL_CHOICE_NONE = "Unsloth did not execute this tool call because tool_choice was set to 'none'."
+
 # Card text for a call the controller skipped. The client already painted a card from the provider's own tool_calls
 # delta, so it needs a short result; the long model-facing nudge stays in the conversation.
 _TOOL_SKIPPED = {
@@ -1566,6 +1568,20 @@ async def stream_with_studio_tools(
                     # what happened.
                     arguments = {},
                     result = _TOOL_TRUNCATED,
+                    provenance = _unrun_provenance(name, round_id + 1),
+                ):
+                    yield card_line
+        if tool_choice == "none" and not truncated:
+            # A provider may ignore tool_choice; its structured delta has already reached the client.
+            # Close the announced card without executing the call or adding a tool result to model history.
+            for raw_call in turn.calls(used_call_ids, painted_card_ids):
+                refused_id = raw_call.get("card_id") or raw_call.get("stream_id") or raw_call["id"]
+                name = raw_call["function"]["name"]
+                for card_line in _unrun_call_card(
+                    tool_name = name,
+                    tool_call_id = refused_id,
+                    arguments = raw_call.get("arguments"),
+                    result = _TOOL_CHOICE_NONE,
                     provenance = _unrun_provenance(name, round_id + 1),
                 ):
                     yield card_line
