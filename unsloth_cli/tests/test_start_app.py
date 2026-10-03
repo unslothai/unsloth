@@ -523,3 +523,19 @@ def test_app_revokes_the_key_it_minted_when_setup_fails(studio):
     assert config.read_text() == '{"models": []}\n'
     assert studio["minted"] == 1
     assert ("DELETE", f"{BASE}/api/auth/api-keys/7", None) in studio["calls"]
+
+
+def test_app_revokes_the_key_it_minted_when_saving_fails(studio, monkeypatch):
+    config = studio["home"] / ".openclaw" / "openclaw.json"
+    config.parent.mkdir()
+    config.write_text("{}\n")
+
+    def read_only(path, text):
+        raise PermissionError(path)
+
+    monkeypatch.setattr(start, "_write_app_file", read_only)
+
+    result = CliRunner().invoke(start.start_app, ["openclaw", "--app"])
+
+    assert result.exit_code == 1
+    assert ("DELETE", f"{BASE}/api/auth/api-keys/7", None) in studio["calls"]

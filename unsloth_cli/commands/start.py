@@ -5677,12 +5677,12 @@ def _add_app_provider(
         new_text = _set_app_values(
             text, target.path, target.updates(text, target.path, base, key, entry)
         )
+        new_state = {"path": str(target.path), "base": base, "key": key, "key_id": key_id}
+        _save_app_config(target, state_path, state, new_state, text, new_text)
     except BaseException:
         _revoke_new_app_key(base, key_id, state)
         _shutdown_auto_served()
         raise
-    new_state = {"path": str(target.path), "base": base, "key": key, "key_id": key_id}
-    _save_app_config(target, state_path, state, new_state, text, new_text)
     typer.echo(
         f"Added {entry['id']} from Unsloth at {base} to the {target.label}. Your default "
         "model is unchanged: pick Unsloth in the app's model picker (restart the app if it "
