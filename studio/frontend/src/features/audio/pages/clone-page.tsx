@@ -74,20 +74,14 @@ type RailProps = Omit<
 >;
 
 /** Picking a source fills in what it already knows: a history clip's text, a voice's transcript
- *  and language. A transcript the user typed for another clip is replaced only when it came from
- *  the old source. */
+ *  and language. Another clip says other words, so its text replaces whatever was there. */
 function adoptReference(next: AudioSourceSelection | null) {
   const store = useAudioCloneStore.getState();
   const previous = store.reference;
   store.setReference(next);
   if (!next) return;
-  const typedForPrevious =
-    store.referenceText.trim() !== "" &&
-    store.referenceText !== (previous?.transcript ?? "");
-  if (next.transcript && !typedForPrevious) {
-    store.setReferenceText(next.transcript);
-  } else if (!next.transcript && !typedForPrevious) {
-    store.setReferenceText("");
+  if (previous?.kind !== next.kind || previous?.id !== next.id) {
+    store.setReferenceText(next.transcript ?? "");
   }
   if (next.language && !store.language) store.setLanguage(next.language);
 }

@@ -161,6 +161,10 @@ export function useCloneGeneration({
     language,
     onText: (next) => useAudioCloneStore.getState().setReferenceText(next),
   });
+  // A transcription still running for the previous reference must not fill in the new one's text.
+  const referenceKey = reference ? `${reference.kind}:${reference.id}` : null;
+  const cancelTranscribe = transcriber.cancel;
+  useEffect(() => cancelTranscribe(), [referenceKey, cancelTranscribe]);
 
   const toolContext = useMemo(
     () =>

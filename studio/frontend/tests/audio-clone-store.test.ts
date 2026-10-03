@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   installLocalStorageFake,
+  readSrc,
   registerBundlerResolver,
 } from "./helpers/kit.ts";
 
@@ -91,4 +92,17 @@ test("tool values stay bounded, oldest first", () => {
   assert.equal(keys.length, 200);
   assert.equal(keys.at(-1), "m259:clone:p");
   assert.ok(!keys.includes("m0:clone:p"));
+});
+
+test("another reference replaces the transcript; a running transcription is cancelled", () => {
+  const page = readSrc("features/audio/pages/clone-page.tsx");
+  assert.match(
+    page,
+    /if \(previous\?\.kind !== next\.kind \|\| previous\?\.id !== next\.id\) \{\s*store\.setReferenceText\(next\.transcript \?\? ""\);/,
+  );
+  const hook = readSrc("features/audio/hooks/use-clone-generation.ts");
+  assert.match(
+    hook,
+    /useEffect\(\(\) => cancelTranscribe\(\), \[referenceKey, cancelTranscribe\]\)/,
+  );
 });
