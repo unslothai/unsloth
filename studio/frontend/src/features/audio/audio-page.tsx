@@ -33,7 +33,11 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useIsMobileShell } from "@/hooks/use-mobile";
 
-import type { AudioGalleryClip } from "./api";
+import {
+  type AudioGalleryClip,
+  fetchAudioBlob,
+  uploadAudioInput,
+} from "./api";
 import {
   type AudioBusy,
   type AudioGenerationPhase,
@@ -94,13 +98,32 @@ const HUB_TASKS_BY_MODE = {
 function reuseConvertInputs(clip: AudioGalleryClip) {
   const store = useAudioConvertStore.getState();
   const sourceId = clip.source_clip_id ?? clip.source_input_id ?? null;
+  const name = clip.source_name ?? "Recording";
   if (sourceId) {
     store.setSource({
       kind: clip.source_clip_id ? "clip" : "input",
       id: sourceId,
-      name: clip.source_name ?? "Recording",
+      name,
       durationS: null,
     });
+  }
+  // An upload expires within a day; the clip kept what it converted, so upload that copy again.
+  if (!clip.source_clip_id && clip.source_saved) {
+    void fetchAudioBlob(
+      `/api/inference/audio/gallery/${encodeURIComponent(clip.id)}/source/file`,
+    )
+      .then((blob) => uploadAudioInput(blob, name))
+      .then((record) => {
+        if (useAudioConvertStore.getState().source?.id !== sourceId) return;
+        store.setSource({
+          kind: "input",
+          id: record.id,
+          name,
+          durationS: record.duration_s,
+          expiresAt: record.expires_at,
+        });
+      })
+      .catch(() => undefined);
   }
   const target = clip.voice_id
     ? { kind: "voice" as const, id: clip.voice_id }

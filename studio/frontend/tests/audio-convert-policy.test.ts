@@ -328,3 +328,12 @@ test("the Convert source card states Convert's own length cap", () => {
   const card = readSrc("features/audio/components/audio-source-input.tsx");
   assert.match(card, /durationS > maxSeconds/);
 });
+
+test("Use again re-uploads a conversion's kept source instead of its expiring upload id", () => {
+  const page = readSrc("features/audio/audio-page.tsx");
+  assert.match(page, /if \(!clip\.source_clip_id && clip\.source_saved\) \{/);
+  assert.match(
+    page,
+    /\/source\/file`,\s*\)\s*\.then\(\(blob\) => uploadAudioInput\(blob, name\)\)/,
+  );
+});
