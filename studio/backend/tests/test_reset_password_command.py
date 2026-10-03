@@ -204,3 +204,49 @@ def test_the_unauthenticated_401_body_names_no_host_path(auth, monkeypatch, tmp_
         assert "alice" not in detail, multi_user
         # Still actionable, which is the whole point of the hint.
         assert "unsloth studio reset-password" in detail, multi_user
+
+
+def _request_from(host: str | None, headers: dict | None = None):
+    from types import SimpleNamespace
+    client = SimpleNamespace(host = host) if host is not None else None
+    return SimpleNamespace(client = client, headers = headers or {})
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "::1"])
+def test_a_loopback_login_failure_points_at_the_local_terminal(monkeypatch, auth, host):
+    monkeypatch.setattr(auth.policy, "installation_is_multi_user", lambda: False)
+    detail = auth._login_failure_detail(_request_from(host))
+    assert "run this in your terminal" in detail
+    assert "unsloth studio reset-password" in detail
+
+
+@pytest.mark.parametrize("host", ["203.0.113.5", "192.168.1.20", "2001:db8::7", None])
+def test_a_remote_login_failure_names_the_host_machine_not_the_browser(monkeypatch, auth, host):
+    """A browser on another machine cannot run the command where it sits (#11388). The hint
+    says which machine, and still names no path on it."""
+    monkeypatch.setattr(auth.policy, "installation_is_multi_user", lambda: False)
+    detail = auth._login_failure_detail(_request_from(host))
+    assert "on the machine Unsloth Studio is running on" in detail
+    assert "your terminal" not in detail
+    assert "unsloth studio reset-password" in detail
+    assert "/" not in detail.split("reset-password")[0].replace("username", "")
+
+
+def test_the_login_route_hands_its_request_to_the_hint(auth):
+    """The wording keys on the caller, so the route must pass the request through."""
+    import inspect
+
+    source = inspect.getsource(auth.login)
+    assert "_login_failure_detail(request)" in source
+    assert "_login_failure_detail()" not in source
+
+
+def test_a_tunnelled_visitor_is_remote_even_though_the_socket_peer_is_loopback(monkeypatch, auth):
+    """The managed Cloudflare tunnel terminates at 127.0.0.1 and names the visitor in
+    CF-Connecting-IP. That visitor is exactly who must not be told "your terminal"."""
+    monkeypatch.setattr(auth.policy, "installation_is_multi_user", lambda: False)
+    detail = auth._login_failure_detail(
+        _request_from("127.0.0.1", {"cf-connecting-ip": "198.51.100.9"})
+    )
+    assert "on the machine Unsloth Studio is running on" in detail
+    assert "your terminal" not in detail
