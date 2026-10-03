@@ -792,12 +792,11 @@ def _act_quant(x2d: Any, weight: Any) -> tuple:
         _choose_quant_func_and_quantize_tensor,
     )
 
-    act = _choose_quant_func_and_quantize_tensor(
-        x2d,
-        weight.act_quant_kwargs,
-        scale = weight.act_quant_scale,
-        zero_point = weight.act_quant_zero_point,
-    )
+    kwargs = {"scale": weight.act_quant_scale}
+    # torchao <= 0.16 has no activation zero point (neither the attribute nor the kwarg).
+    if hasattr(weight, "act_quant_zero_point"):
+        kwargs["zero_point"] = weight.act_quant_zero_point
+    act = _choose_quant_func_and_quantize_tensor(x2d, weight.act_quant_kwargs, **kwargs)
     return act.qdata, act.scale
 
 
