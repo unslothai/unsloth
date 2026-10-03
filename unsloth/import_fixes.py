@@ -6640,13 +6640,11 @@ def fix_cudnn_sdpa_d256_masked_backward():
 
 
 def _rocm_windows_broken_sdpa_backends():
-    """The fused SDPA backends ("flash", "mem_efficient") that fail on a Windows ROCm GPU here.
+    """Fused SDPA backends ("flash", "mem_efficient") failing on a Windows ROCm GPU here.
 
-    On torch 2.11.0+rocm7.14.1, gfx1151, every flash and memory-efficient call fails with
-    hipErrorInvalidValue, forward or backward. The failed launch is not raised by the call nor by
-    synchronize(), only by the next checked kernel launch, so each probe ends in a checked op and is
-    also compared against the math kernel. A backend with no kernel for the probe ("No available
-    kernel") is left alone: the dispatcher already skips it where it cannot run.
+    A failed launch there (torch 2.11.0+rocm7.14.1, gfx1151: hipErrorInvalidValue on every call)
+    is not raised by the call or by synchronize(), only by the next checked launch, so each probe
+    ends in one and is compared against math. "No available kernel" is not a failure.
     """
     if sys.platform != "win32":
         return []
@@ -6666,12 +6664,14 @@ def _rocm_windows_broken_sdpa_backends():
             torch.randn(1, 2, 16, 64, device = device, dtype = torch.bfloat16, generator = g)
             for _ in range(3)
         )
-        with sdpa_kernel([backend]):
+        q.requires_grad_(True)
+        with torch.enable_grad(), sdpa_kernel([backend]):
             out = F.scaled_dot_product_attention(q, k, v, is_causal = True)
-        # A checked launch, then a host read: a failed launch above raises here, not later.
-        out = out.float()
-        out.sum().item()
-        return out
+            out = out.float()  # checked launch: a failed attention launch raises here
+            out.sum().backward()
+        dq = q.grad.float()
+        dq.sum().item()
+        return torch.cat([out.detach().flatten(), dq.flatten()])
 
     broken = []
     for name, backend in (
@@ -6684,8 +6684,7 @@ def _rocm_windows_broken_sdpa_backends():
                 with torch.cuda.device(device):
                     reference = attend(device, SDPBackend.MATH)
             except Exception:
-                # Math itself fails: this probe cannot tell anything about the fused kernels.
-                continue
+                continue  # math fails too: nothing to learn about the fused kernels
             try:
                 with torch.cuda.device(device):
                     ok = torch.allclose(attend(device, backend), reference, atol = 2e-2, rtol = 2e-2)
@@ -6698,12 +6697,9 @@ def _rocm_windows_broken_sdpa_backends():
 
 
 def fix_rocm_windows_fused_sdpa():
-    """Turn off the fused SDPA backends that fail on this Windows ROCm GPU, so attention uses math.
+    """Turn off fused SDPA backends that fail on this Windows ROCm GPU, so attention uses math.
 
-    On Windows ROCm (torch 2.11.0+rocm7.14.1, gfx1151) flash and memory-efficient attention fail
-    with hipErrorInvalidValue on every call, which stops training and inference of any model whose
-    attention reaches them. Probe-gated, so it turns itself off once the kernels work.
-    UNSLOTH_ALLOW_ROCM_FUSED_SDPA=1 opts out.
+    Probe-gated, so it is a no-op once the kernels work. UNSLOTH_ALLOW_ROCM_FUSED_SDPA=1 opts out.
     """
     if os.environ.get("UNSLOTH_ALLOW_ROCM_FUSED_SDPA", "0") == "1":
         return
