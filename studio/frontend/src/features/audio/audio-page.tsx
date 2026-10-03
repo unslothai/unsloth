@@ -482,6 +482,12 @@ export function AudioPage({
   const sendHandlersFor = useCallback(
     (clip: AudioGalleryClip): ClipSendHandlers => ({
       transcribe: () => {
+        // Switching mid-run stops the run, and the stopped run still holds the page busy, so the
+        // transcription would be refused and the clip silently dropped.
+        if (busyRef.current !== null) {
+          toast.info("Wait for the current audio task to finish, then send the clip.");
+          return;
+        }
         void (async () => {
           try {
             const blob = await fetchClipBlob(clip.url);
@@ -500,7 +506,7 @@ export function AudioPage({
         })();
       },
     }),
-    [transitionWorkflow, handleTranscribeFile],
+    [transitionWorkflow, handleTranscribeFile, busyRef],
   );
   const handleUseTextAgain = useCallback(
     (clip: AudioGalleryClip) => {

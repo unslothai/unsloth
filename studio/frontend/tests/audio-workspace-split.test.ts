@@ -177,3 +177,12 @@ test("the Max tokens stop warning from main lives in the generation hook", () =>
 test("auto-selecting a page's history keeps another page's unsaved clip", () => {
   assert.match(gallery, /if \(first\) selectClip\(first\.id, fallbackClip !== null\);/);
 });
+
+test("Send to waits for a running task instead of stopping it and dropping the clip", () => {
+  // A switch mid-run stops the run, but the page stays busy until the stopped run settles, so the
+  // transcription was refused and the clip silently dropped.
+  assert.match(
+    host,
+    /transcribe: \(\) => \{[\s\S]*?if \(busyRef\.current !== null\) \{\s*toast\.info\([^)]*\);\s*return;\s*\}\s*void \(async \(\) => \{/,
+  );
+});
