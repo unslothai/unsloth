@@ -2804,3 +2804,41 @@ def test_the_download_plan_probes_with_the_user_token():
 
     src = inspect.getsource(DiffusionBackend.download_plan)
     assert '{**load_kwargs, "base_repo": base, "hf_token": hf_token}' in src
+
+
+def test_a_full_fingerprint_pass_is_remembered_per_unchanged_file(monkeypatch, tmp_path):
+    import os
+
+    import core.inference.diffusion_compile_cache as cc
+    import core.inference.diffusion_prequant as pq
+
+    monkeypatch.setenv(cc._ENV_DIR, str(tmp_path / "cache"))
+    monkeypatch.delenv(pq.FINGERPRINT_MODE_ENV, raising = False)
+    ckpt_file = tmp_path / "w.safetensors"
+    ckpt_file.write_bytes(b"weights")
+    expected = {"a.weight": "x", "b.weight": "y"}
+    meta = {"fingerprint": {"modules": expected}}
+    calls: list = []
+
+    def fingerprint(state_dict, *, select = None):
+        calls.append(select)
+        return {"modules": dict(state_dict)}
+
+    monkeypatch.setattr(pq, "packed_weight_fingerprint", fingerprint)
+    assert pq._verify_packed_fingerprint(expected, meta, path = ckpt_file)
+    assert pq._verify_packed_fingerprint(expected, meta, path = ckpt_file)
+    assert len(calls) == 1  # the second load of the unchanged file skips the md5 pass
+    # A changed file (size / mtime) is checked in full again, and a mismatch is never remembered.
+    ckpt_file.write_bytes(b"weights, rebuilt")
+    os.utime(ckpt_file, ns = (1, 1))
+    assert not pq._verify_packed_fingerprint(
+        {"a.weight": "x", "b.weight": "z"}, meta, path = ckpt_file
+    )
+    assert not pq._verify_packed_fingerprint(
+        {"a.weight": "x", "b.weight": "z"}, meta, path = ckpt_file
+    )
+    assert len(calls) == 3
+    # Without a path (or outside full mode) nothing is remembered.
+    assert pq._verify_packed_fingerprint(expected, meta)
+    assert pq._verify_packed_fingerprint(expected, meta)
+    assert len(calls) == 5

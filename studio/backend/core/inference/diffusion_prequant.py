@@ -593,11 +593,23 @@ def resolve_prequant_source(
         # safetensors spelling ahead of the pickle. Order-preserving dedup so a family that declares
         # exactly what the chain would derive does not make the downloader ask twice for it.
         declared = (preferred,) if preferred else ()
-        # opt-in rotated artifact goes first; the plain chain stays behind it (not yet hosted, or offline)
-        from .diffusion_transformer_quant import convrot_prequant_filename, int8_convrot_enabled
+        # rotated artifact first (default on per family, else opt-in), only in the repo it is published to; the plain
+        # chain stays behind it (not yet hosted, offline, or an older cache)
+        from .diffusion_transformer_quant import (
+            convrot_prequant_filename,
+            convrot_prequant_repo,
+            int8_convrot_enabled,
+        )
 
-        rotated = convrot_prequant_filename(scheme, getattr(fam, "name", None))
-        if rotated and int8_convrot_enabled():
+        fam_name = getattr(fam, "name", None)
+        rotated = convrot_prequant_filename(scheme, fam_name)
+        rotated_repo = convrot_prequant_repo(scheme, fam_name)
+        if (
+            rotated
+            and rotated_repo
+            and str(repo_id).strip().lower() == rotated_repo.lower()
+            and int8_convrot_enabled(fam_name)
+        ):
             declared = (rotated,) + declared
         names: list[str] = []
         for name in declared + derived:
@@ -887,18 +899,80 @@ def _fingerprint_sampled(fqn: str) -> bool:
     return hashlib.md5(fqn.encode("utf-8")).digest()[0] % FINGERPRINT_SAMPLE_RATE == 0
 
 
+def _verified_marker(path: Any, expected: dict) -> Optional[tuple]:
+    """(marker file, identity) for a checkpoint whose full check passed before: same real file, size, mtime and
+    recorded fingerprint. None when the file cannot be identified (then every load checks in full)."""
+    import hashlib
+    import json
+    import os
+
+    try:
+        real = os.path.realpath(str(path))
+        st = os.stat(real)
+        from .diffusion_compile_cache import cache_root
+
+        recorded = hashlib.md5(json.dumps(expected, sort_keys = True).encode("utf-8")).hexdigest()
+        identity = {
+            "path": real,
+            "size": st.st_size,
+            "mtime_ns": st.st_mtime_ns,
+            "fingerprint": recorded,
+        }
+        name = hashlib.md5(real.encode("utf-8")).hexdigest() + ".json"
+        return cache_root() / "prequant_verified" / name, identity
+    except Exception:  # noqa: BLE001 -- unidentifiable: check in full
+        return None
+
+
+def _already_verified(marker: Optional[tuple]) -> bool:
+    import json
+    if marker is None:
+        return False
+    try:
+        return json.loads(marker[0].read_text()) == marker[1]
+    except Exception:  # noqa: BLE001 -- absent or unreadable marker: check in full
+        return False
+
+
+def _remember_verified(marker: Optional[tuple]) -> None:
+    import json
+    import os
+
+    if marker is None:
+        return
+    try:
+        marker[0].parent.mkdir(parents = True, exist_ok = True)
+        tmp = marker[0].with_suffix(".tmp")
+        tmp.write_text(json.dumps(marker[1], sort_keys = True))
+        os.replace(tmp, marker[0])
+    except Exception:  # noqa: BLE001 -- the next load just checks in full again
+        pass
+
+
 def _verify_packed_fingerprint(
     state_dict: Any,
     metadata: Any,
     *,
     logger: Any = None,
+    path: Any = None,
 ) -> bool:
-    """Check the artifact's packed fingerprint: a mismatch drops to dense, a missing or uncomputable block passes."""
+    """Check the artifact's packed fingerprint: a mismatch drops to dense, a missing or uncomputable block passes.
+
+    A full pass is remembered per file (real path, size, mtime, recorded fingerprint) in the Studio cache, so later
+    loads of the same unchanged file skip the md5 of every weight; any change to the file checks in full again."""
     block = (metadata or {}).get("fingerprint")
     expected = (block or {}).get("modules") if isinstance(block, dict) else None
     if not expected:
         return True
     mode = _fingerprint_mode()
+    marker = _verified_marker(path, expected) if path is not None and mode == "full" else None
+    if _already_verified(marker):
+        if logger is not None:
+            logger.info(
+                "diffusion.prequant: fingerprint verified on an earlier load of this unchanged file (%d weights)",
+                len(expected),
+            )
+        return True
     if mode == "off":
         if logger is not None:
             logger.debug(
@@ -937,6 +1011,7 @@ def _verify_packed_fingerprint(
                 len(expected),
                 mode,
             )
+        _remember_verified(marker)
         return True
     if logger is not None:
         logger.error(
@@ -1204,7 +1279,9 @@ def load_prequantized_transformer(
             return None
         state_dict = ckpt["state_dict"]
         # The only check reading what the artifact HOLDS: corruption after build passes the rest.
-        if not _verify_packed_fingerprint(state_dict, ckpt.get("metadata") or {}, logger = logger):
+        if not _verify_packed_fingerprint(
+            state_dict, ckpt.get("metadata") or {}, logger = logger, path = path
+        ):
             return None
         _pin_kernel_preference(state_dict, logger)
 
