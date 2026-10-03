@@ -268,7 +268,11 @@ def _install_run_reexec(monkeypatch, events):
     studio_mod = _studio()
     monkeypatch.setattr(sys, "prefix", "/nonexistent/outer/venv")
     fake_venv = Path("/fake/studio/venv/unsloth_studio")
-    fake_python, fake_bin = _host_studio_layout(fake_venv)
+    # This fixture pins BOTH platform probes to Linux below, so the fake venv must be the
+    # POSIX layout run() then resolves; the host layout would name unsloth.exe on a Windows
+    # runner while run() looks for bin/unsloth, and the entry-point check would exit first.
+    fake_python = fake_venv / "bin" / "python"
+    fake_bin = fake_python.parent / "unsloth"
     monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_python)
     # A built frontend dist is present by default so the public-launch UI check
     # passes deterministically (independent of whether the repo dist was built);
