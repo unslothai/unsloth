@@ -1343,6 +1343,10 @@ def purge_cache(key: str) -> dict:
             outcome.freed_bytes += root_outcome.freed_bytes
             outcome.removed_entries += root_outcome.removed_entries
             outcome.errors.extend(root_outcome.errors)
+            if definition.key == "hf_hub":
+                # audio.cpp's link farm beside the hub hardlinks its blobs, so they would stay on disk.
+                from core.inference.audio_cpp_files import prune_link_farm
+                prune_link_farm(root)
         return _purge_result(definition, outcome)
     finally:
         _release_downloads(reserved)
