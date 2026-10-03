@@ -4606,6 +4606,14 @@ class _TaintPass(ast.NodeVisitor):
             for argument in node.args[:1]:
                 if isinstance(argument, ast.Dict):
                     pairs += [(k, v) for k, v in zip(argument.keys, argument.values) if k]
+                else:
+                    # A parsed mapping picks the variable names itself.
+                    reason = self._parsed_mapping(argument)
+                    if reason:
+                        self._record(
+                            node, "process env (untrusted value)", reason, _short(argument)
+                        )
+                        return
         for key, value in pairs:
             if isinstance(key, ast.Constant) and key.value in _EXEC_ENV_KEYS:
                 reason = self.tainted(value)
@@ -5538,6 +5546,22 @@ def _unpinned_code_fetches(facts: _FileFacts, reached: frozenset) -> list[dict]:
     changed only the helper, the sink's allowance stayed valid, and nothing was reported.
     """
     findings: list[dict] = []
+    # `REVISION = "main"` at module scope, forwarded as `revision = REVISION`: the same
+    # moving branch as a local bound to it, unless a function rebinds the name.
+    module_unpinned = {
+        target.id
+        for statement in _module_statements(facts.tree)
+        if isinstance(statement, (ast.Assign, ast.AnnAssign))
+        and isinstance(statement.value, ast.Constant)
+        and not (
+            isinstance(statement.value.value, str)
+            and re.fullmatch(r"[0-9a-f]{40}", statement.value.value)
+        )
+        for target in (
+            statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+        )
+        if isinstance(target, ast.Name)
+    }
     for qualname, node in sorted(facts.functions.items()):
         if not reached:
             continue
@@ -5577,6 +5601,7 @@ def _unpinned_code_fetches(facts: _FileFacts, reached: frozenset) -> list[dict]:
             for target in child.targets
             if isinstance(target, ast.Name)
         }
+        unpinned_params |= module_unpinned - _scope_locals(node)
         fetches: list[ast.Call] = []
         for child in ast.walk(node):
             if not isinstance(child, ast.Call):

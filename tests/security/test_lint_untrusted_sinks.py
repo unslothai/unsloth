@@ -58,7 +58,7 @@ def test_the_self_test_passes():
 # for local pytest, so someone running the suite still sees a baseline that drifted.
 @pytest.mark.skipif(
     os.environ.get("GITHUB_ACTIONS") == "true",
-    reason = "lint-ci.yml runs the same whole-repository scan as a dedicated step",
+    reason = "lint-ci.yml runs the same whole-repository scan as its own job",
 )
 @pytest.mark.timeout(1800)
 def test_the_checker_runs_clean_against_its_baseline():
@@ -6792,3 +6792,25 @@ def test_find_spec_package_unquote_env_calls_dict_union_and_nested_revisions(tmp
         ("e", "trust_remote_code (untrusted **kwargs)"),
     } <= sinks
     assert ("f", "unpinned code fetch") not in sinks
+
+
+def test_module_revision_constants_and_parsed_environ_updates(tmp_path):
+    """`REVISION = "main"` at module scope is unpinned; a commit constant is a pin;
+    `os.environ.update(parsed)` lets the document pick variable names."""
+    findings = _scan(
+        tmp_path,
+        "import json, os, sys\n"
+        "from huggingface_hub import snapshot_download\n"
+        "REVISION = 'main'\n"
+        "PINNED = '0123456789abcdef0123456789abcdef01234567'\n"
+        "def a(repo):\n"
+        "    sys.path.insert(0, snapshot_download(repo, revision = REVISION))\n"
+        "def b(repo):\n"
+        "    sys.path.insert(0, snapshot_download(repo, revision = PINNED))\n"
+        "def c(blob):\n"
+        "    os.environ.update(json.loads(blob))\n",
+    )
+    sinks = {(f["qualname"], f["sink"]) for f in findings}
+    assert ("a", "unpinned code fetch") in sinks
+    assert ("b", "unpinned code fetch") not in sinks
+    assert ("c", "process env (untrusted value)") in sinks
