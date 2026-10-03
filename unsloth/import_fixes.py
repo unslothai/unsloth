@@ -6653,7 +6653,9 @@ def _rocm_windows_broken_sdpa_backends():
         import torch.nn.functional as F
         from torch.nn.attention import SDPBackend, sdpa_kernel
 
-        if not getattr(torch.version, "hip", None) or not torch.cuda.is_available():
+        # Some AMD wheels tag only __version__, so torch.version.hip alone misses them.
+        is_rocm = bool(getattr(torch.version, "hip", None)) or _is_rocm_torch_build()
+        if not is_rocm or not torch.cuda.is_available():
             return []
     except Exception:
         return []
