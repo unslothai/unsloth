@@ -108,6 +108,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         EVICT: tl.constexpr,
         FINAL_ROUND: tl.constexpr,
         FP32_SCALE: tl.constexpr,
+        PIN_RN: tl.constexpr,
     ):
         # torchao Int8Tensor linear epilogue: (int32 * x_scale).to(bf16) * w_scale (+ bias), then .to(bf16).
         # FINAL_ROUND=False leaves the last rounding to the caller (it commutes with a row max).
@@ -118,22 +119,24 @@ def _kernels() -> Optional[types.SimpleNamespace]:
             # int32 -> fp32 -> bf16 rounds twice; Triton folds a plain cast chain into one rounding.
             c = _rbf16(tl.extra.cuda.libdevice.int2float_rn(c))
         y = _rbf16(c * xs)
-        # *_rn: ptxas fuses packed f32x2 mul + add into an FMA on sm_100 even with fp fusion off.
-        y = tl.extra.cuda.libdevice.mul_rn(
-            y,
-            tl.load(ws_ptr + offs, mask = mask, other = 0.0, eviction_policy = "evict_last").to(
-                tl.float32
-            ),
+        w = tl.load(ws_ptr + offs, mask = mask, other = 0.0, eviction_policy = "evict_last").to(
+            tl.float32
         )
+        # PIN_RN (sm_100+): ptxas fuses packed f32x2 mul + add into an FMA even with fp fusion off; elsewhere it costs.
+        if PIN_RN:
+            y = tl.extra.cuda.libdevice.mul_rn(y, w)
+        else:
+            y = y * w
         if not WS_FP32:
             y = _rbf16(y)
         if HAS_BIAS:
-            y = tl.extra.cuda.libdevice.add_rn(
-                y,
-                tl.load(b_ptr + offs, mask = mask, other = 0.0, eviction_policy = "evict_last").to(
-                    tl.float32
-                ),
+            b = tl.load(b_ptr + offs, mask = mask, other = 0.0, eviction_policy = "evict_last").to(
+                tl.float32
             )
+            if PIN_RN:
+                y = tl.extra.cuda.libdevice.add_rn(y, b)
+            else:
+                y = y + b
         if FINAL_ROUND:
             y = _rbf16(y)
         return y
@@ -158,6 +161,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         HAS_BIAS: tl.constexpr,
         WS_FP32: tl.constexpr,
         FP32_SCALE: tl.constexpr,
+        PIN_RN: tl.constexpr,
         HAS_PREFIX: tl.constexpr,
         HEAD_DIM: tl.constexpr,
         CHUNK: tl.constexpr,
@@ -175,7 +179,18 @@ def _kernels() -> Optional[types.SimpleNamespace]:
             offs = k + base
             m = offs < N
             y = _pre(
-                crow, xs, ws_ptr, b_ptr, offs, m, HAS_BIAS, WS_FP32, "evict_last", False, FP32_SCALE
+                crow,
+                xs,
+                ws_ptr,
+                b_ptr,
+                offs,
+                m,
+                HAS_BIAS,
+                WS_FP32,
+                "evict_last",
+                False,
+                FP32_SCALE,
+                PIN_RN,
             )
             vmax = tl.maximum(vmax, tl.where(m, y, float("-inf")))
         # bf16 rounding is monotone, so max(round(v)) == round(max(v)): round once, after the reduction.
@@ -199,6 +214,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
                             "evict_last",
                             True,
                             FP32_SCALE,
+                            PIN_RN,
                         )
                     )
                 )
@@ -256,6 +272,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
                         "evict_first",
                         True,
                         FP32_SCALE,
+                        PIN_RN,
                     )
                 )
             )
@@ -285,6 +302,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         WS_FP32: tl.constexpr,
         EVICT: tl.constexpr,
         FP32_SCALE: tl.constexpr,
+        PIN_RN: tl.constexpr,
     ):
         g = _pre(
             crow + g0,
@@ -298,6 +316,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
             EVICT,
             True,
             FP32_SCALE,
+            PIN_RN,
         )
         v = _pre(
             crow + v0,
@@ -311,6 +330,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
             EVICT,
             True,
             FP32_SCALE,
+            PIN_RN,
         )
         return _rbf16(_rbf16(_silu(g)) * v)
 
@@ -331,6 +351,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         HAS_BIAS: tl.constexpr,
         WS_FP32: tl.constexpr,
         FP32_SCALE: tl.constexpr,
+        PIN_RN: tl.constexpr,
         CHUNK: tl.constexpr,
     ):
         # c row = the fused GEMM output; the gate half starts at column G0, the value half at V0 (both N wide).
@@ -358,6 +379,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
                 WS_FP32,
                 "evict_first",
                 FP32_SCALE,
+                PIN_RN,
             )
             tl.store(hrow + offs, h.to(tl.bfloat16), mask = m, eviction_policy = "evict_last")
             acc = tl.maximum(acc, tl.where(m, tl.abs(h), 0.0))
@@ -400,6 +422,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         HAS_BIAS: tl.constexpr,
         WS_FP32: tl.constexpr,
         FP32_SCALE: tl.constexpr,
+        PIN_RN: tl.constexpr,
         CHUNK: tl.constexpr,
     ):
         row = tl.program_id(0).to(tl.int64)
@@ -420,6 +443,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
                 "evict_first",
                 True,
                 FP32_SCALE,
+                PIN_RN,
             )
             tl.store(o_ptr + row * N + offs, y.to(tl.bfloat16), mask = m)
 
@@ -430,6 +454,18 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         dq_bf16 = dq_bf16,
         triton = triton,
     )
+
+
+@lru_cache(maxsize = 8)
+def _pin_rn_index(index: int) -> bool:
+    import torch
+    return torch.cuda.get_device_capability(index)[0] >= 10
+
+
+def _pin_rn(device: Any) -> bool:
+    """Packed f32x2 mul / add (which ptxas contracts) exist from sm_100 on."""
+    import torch
+    return _pin_rn_index(device.index if device.index is not None else torch.cuda.current_device())
 
 
 def _scale_dtype(xs: Any) -> Any:
@@ -473,6 +509,7 @@ def _launch(c: Any, xs: Any, ws: Any, bias: Any, prefix: Any) -> tuple:
             HAS_BIAS = bias is not None,
             WS_FP32 = ws.dtype == torch.float32,
             FP32_SCALE = xs.dtype == torch.float32,
+            PIN_RN = _pin_rn(xs.device),
             HAS_PREFIX = prefix is not None,
             HEAD_DIM = d,
             CHUNK = 2048,
@@ -511,6 +548,7 @@ def _launch_swiglu(
             HAS_BIAS = bias is not None,
             WS_FP32 = ws.dtype == torch.float32,
             FP32_SCALE = xs.dtype == torch.float32,
+            PIN_RN = _pin_rn(xs.device),
             CHUNK = 2048,
             num_warps = 8,
             enable_fp_fusion = False,
@@ -693,6 +731,7 @@ def _epilogue_matches_torchao(
                 HAS_BIAS = True,
                 WS_FP32 = True,
                 FP32_SCALE = x_scale.dtype == torch.float32,
+                PIN_RN = _pin_rn(x_scale.device),
                 CHUNK = 2048,
                 num_warps = 8,
                 enable_fp_fusion = False,
