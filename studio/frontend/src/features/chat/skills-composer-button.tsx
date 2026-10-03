@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { Scroll01Icon, Settings02Icon } from "@hugeicons/core-free-icons";
+import { Scroll01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ChevronDownIcon } from "lucide-react";
 import { useState } from "react";
@@ -11,6 +11,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
@@ -18,7 +19,6 @@ import { useT } from "@/i18n";
 import { MenuTickIcon } from "@/lib/tick-icon";
 
 import {
-  type SkillRecord,
   refreshSkillsCatalog,
   setSkillEnabled,
   useSkillsCatalog,
@@ -37,10 +37,8 @@ export function SkillsComposerButton({
   const [dialogOpen, setDialogOpen] = useState(false);
   const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set());
 
-  // Runnable skills only. Yours first, then bundled ones (skill-creator) by Manage skills.
+  // Runnable skills only: shadowed or invalid ones stay in Manage skills.
   const usable = skills.filter((skill) => skill.valid && !skill.shadowed);
-  const own = usable.filter((skill) => skill.source !== "bundled");
-  const bundled = usable.filter((skill) => skill.source === "bundled");
   const enabledCount = usable.filter((skill) => skill.enabled).length;
 
   async function toggle(name: string, enabled: boolean) {
@@ -60,25 +58,6 @@ export function SkillsComposerButton({
       });
     }
   }
-
-  const renderRow = (skill: SkillRecord) => (
-    <DropdownMenuItem
-      key={`${skill.source}:${skill.name}`}
-      disabled={pending.has(skill.name)}
-      // Stays open to toggle several.
-      onSelect={(event) => {
-        event.preventDefault();
-        void toggle(skill.name, !skill.enabled);
-      }}
-      aria-label={t(skill.enabled ? "skills.disable" : "skills.enable", { name: skill.name })}
-      className={skill.enabled ? "text-primary font-medium" : undefined}
-    >
-      <span className="truncate">{skill.name}</span>
-      {skill.enabled ? (
-        <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
-      ) : null}
-    </DropdownMenuItem>
-  );
 
   return (
     <>
@@ -120,20 +99,36 @@ export function SkillsComposerButton({
             avoidCollisions={true}
             className="unsloth-plus-menu mcp-menu w-[calc(232px*var(--ui-space-scale,1))]"
           >
-            {own.length > 0 ? (
-              <div className="max-h-[calc(280px*var(--ui-space-scale,1))] overflow-y-auto">
-                {own.map(renderRow)}
-              </div>
-            ) : null}
-            {own.length > 0 ? <DropdownMenuSeparator /> : null}
-            {bundled.map(renderRow)}
+            <DropdownMenuLabel>{t("skills.title")}</DropdownMenuLabel>
+            <div className="max-h-[calc(280px*var(--ui-space-scale,1))] overflow-y-auto">
+              {usable.map((skill) => (
+                <DropdownMenuItem
+                  key={`${skill.source}:${skill.name}`}
+                  disabled={pending.has(skill.name)}
+                  // Stays open to toggle several.
+                  onSelect={(event) => {
+                    event.preventDefault();
+                    void toggle(skill.name, !skill.enabled);
+                  }}
+                  aria-label={t(skill.enabled ? "skills.disable" : "skills.enable", {
+                    name: skill.name,
+                  })}
+                  className={skill.enabled ? "text-primary font-medium" : undefined}
+                >
+                  <span className="truncate">{skill.name}</span>
+                  {skill.enabled ? (
+                    <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
+                  ) : null}
+                </DropdownMenuItem>
+              ))}
+            </div>
+            <DropdownMenuSeparator />
             <DropdownMenuItem
               onSelect={() => {
                 setMenuOpen(false);
                 setDialogOpen(true);
               }}
             >
-              <HugeiconsIcon icon={Settings02Icon} strokeWidth={2} />
               {t("skills.manage")}
             </DropdownMenuItem>
           </DropdownMenuContent>
