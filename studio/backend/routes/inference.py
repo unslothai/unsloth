@@ -16633,8 +16633,8 @@ def _unload_may_evict(model_path: str) -> bool:
 @studio_router.get("/active-generations")
 async def get_active_generations(
     fastapi_request: Request,
-    model: Optional[str] = None,
     current_subject: str = Depends(get_current_subject),
+    model: Optional[str] = None,
 ):
     """Conversations currently generating, plus how many can decode at once.
 

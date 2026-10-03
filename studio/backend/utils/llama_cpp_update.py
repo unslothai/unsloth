@@ -663,8 +663,13 @@ def _run_llama_phase(
             except Exception as exc:
                 logger.debug("llama update: load coordination failed", error = str(exc))
         try:
-            from core.inference.model_slots import unload_llama_slots
-            if unload_llama_slots():
+            from core.inference import model_slots
+
+            # Each kept model's in-flight load drains under its own lock, as the primary's did above.
+            for slot in list(model_slots.slots):
+                with slot.llama._serial_load_lock:
+                    slot.llama._llama_update_in_progress = True
+            if model_slots.unload_llama_slots():
                 model_was_active = True
         except Exception as exc:
             logger.debug("llama update: could not stop models kept alongside", error = str(exc))
