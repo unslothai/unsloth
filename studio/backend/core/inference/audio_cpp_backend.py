@@ -116,7 +116,8 @@ def model_info_fields(model: AudioCppModel) -> dict[str, Any]:
         "audio_workflow_tasks": audio_cpp_convert.workflow_tasks(model),
         "audio_convert": audio_cpp_convert.convert_caps(model),
         # Internal: the rates the /audio/run route prepares a conversion's source and target at.
-        "audio_convert_rules": audio_cpp_convert.convert_rules(model),
+        "audio_convert_rules": model.convert
+        and {"source_rate": model.convert.source_rate, "target_rate": model.convert.target_rate},
         **server_runtime_fields(model, None),
     }
 
@@ -328,7 +329,10 @@ class AudioCppBackend:
                 or _request_defaults(self._server.model) != _request_defaults(model)
             ):
                 logger.info("audio.cpp: (re)starting the server for %s", model.id)
-                self._start_server(model, cancel_event)
+                try:
+                    self._start_server(model, cancel_event)
+                finally:
+                    self._record_runtime()
             return self._server
 
     # Generation
@@ -361,58 +365,49 @@ class AudioCppBackend:
         if model is None:
             raise RuntimeError("No active audio model")
         _raise_if_cancelled(cancel_event)
+        cloning = workflow != "convert" and (workflow == "clone" or bool(audio_inputs))
         if workflow == "convert":
+            if model.convert is None:
+                raise RuntimeError(f"{model.display_name} cannot convert a voice.")
+            convert = convert or {}
+            mode = str(convert.get("mode") or "speech")
             try:
-                return self._generate_convert(
-                    model, audio_inputs or {}, convert or {}, audio_options, seed, cancel_event
+                served, options = audio_cpp_convert.served_model(
+                    model, mode, validate_options(model.convert_options, audio_options)
                 )
-            finally:
-                self._record_runtime()
-        cloning = workflow == "clone" or bool(audio_inputs)
-        if cloning and model.clone is None:
-            raise RuntimeError(f"{model.display_name} cannot clone a voice.")
-        options = validate_options(model.clone_options if cloning else model.options, audio_options)
-        try:
-            return self._generate(
-                model,
-                text,
-                cloning,
-                options,
-                audio_inputs = audio_inputs,
-                reference_text = reference_text,
-                instructions = instructions,
-                language = language,
-                speed = speed,
-                seed = seed,
-                temperature = temperature,
-                top_p = top_p,
-                max_new_tokens = max_new_tokens,
-                cancel_event = cancel_event,
+                request = audio_cpp_convert.convert_request(
+                    model,
+                    mode = mode,
+                    source = (audio_inputs or {}).get("source"),
+                    target = (audio_inputs or {}).get("target"),
+                    voice = convert.get("voice"),
+                    pitch = convert.get("pitch"),
+                    pitch_auto = bool(convert.get("pitch_auto")),
+                    style = str(convert.get("style") or "source"),
+                    source_text = convert.get("source_text"),
+                    options = {name: _option_string(value) for name, value in options.items()},
+                    seed = seed,
+                )
+            except audio_cpp_convert.ConvertRequestError as exc:
+                raise RuntimeError(str(exc)) from exc
+        else:
+            if cloning and model.clone is None:
+                raise RuntimeError(f"{model.display_name} cannot clone a voice.")
+            served = model
+            options = validate_options(
+                model.clone_options if cloning else model.options, audio_options
             )
-        finally:
-            self._record_runtime()
-
-    def _generate(
-        self,
-        model: AudioCppModel,
-        text: str,
-        cloning: bool,
-        options: dict,
-        *,
-        audio_inputs: Optional[dict],
-        reference_text: Optional[str],
-        instructions: Optional[str],
-        language: Optional[str],
-        speed: Optional[float],
-        seed: Optional[int],
-        temperature: float,
-        top_p: float,
-        max_new_tokens: int,
-        cancel_event,
-    ) -> Tuple[bytes, int]:
-        server = self._running_server(model, cancel_event)
+        server = self._running_server(served, cancel_event)
         try:
-            if cloning:
+            if workflow == "convert":
+                ctype, data = server.post_json(
+                    "/v1/tasks/run",
+                    {"model": server.model_id, "request": request},
+                    timeout = _GENERATE_TIMEOUT_SECONDS,
+                    cancel_event = cancel_event,
+                )
+                wav = _audio_from_task_response(ctype, data)
+            elif cloning:
                 wav = self._generate_clone(
                     server,
                     model,
@@ -457,59 +452,6 @@ class AudioCppBackend:
         _raise_if_cancelled(cancel_event)
         return wav, _wav_sample_rate(wav)
 
-    def _generate_convert(
-        self,
-        model: AudioCppModel,
-        audio_inputs: dict,
-        convert: dict,
-        audio_options: Optional[dict],
-        seed: Optional[int],
-        cancel_event,
-    ) -> Tuple[bytes, int]:
-        """Convert ``audio_inputs["source"]`` to the voice of ``audio_inputs["target"]`` (or a
-        built-in voice), both server-local WAV paths the route prepared at the family's rates."""
-        if model.convert is None:
-            raise RuntimeError(f"{model.display_name} cannot convert a voice.")
-        mode = str(convert.get("mode") or "speech")
-        options = validate_options(model.convert_options, audio_options)
-        try:
-            served, options = audio_cpp_convert.served_model(model, mode, options)
-            request = audio_cpp_convert.convert_request(
-                model,
-                mode = mode,
-                source = audio_inputs.get("source"),
-                target = audio_inputs.get("target"),
-                voice = convert.get("voice"),
-                pitch = convert.get("pitch"),
-                pitch_auto = bool(convert.get("pitch_auto")),
-                style = str(convert.get("style") or "source"),
-                source_text = convert.get("source_text"),
-                options = {name: _option_string(value) for name, value in options.items()},
-                seed = seed,
-            )
-        except audio_cpp_convert.ConvertRequestError as exc:
-            raise RuntimeError(str(exc)) from exc
-        server = self._running_server(served, cancel_event)
-        try:
-            ctype, data = server.post_json(
-                "/v1/tasks/run",
-                {"model": server.model_id, "request": request},
-                timeout = _GENERATE_TIMEOUT_SECONDS,
-                cancel_event = cancel_event,
-            )
-        except AudioCppRequestCancelledError:
-            self._restart_after_cancel()
-            _raise_if_cancelled(cancel_event)
-            raise
-        except AudioCppRequestError as exc:
-            from core.inference.audio_errors import AudioRuntimeError
-            raise AudioRuntimeError(
-                f"The audio runtime could not generate audio: {exc.detail}", status = exc.status
-            ) from exc
-        wav = _audio_from_task_response(ctype, data)
-        _raise_if_cancelled(cancel_event)
-        return wav, _wav_sample_rate(wav)
-
     def runtime_fields(self) -> dict[str, Any]:
         """Status fields that follow the running server (see ``server_runtime_fields``)."""
         model = self._model
@@ -530,6 +472,7 @@ class AudioCppBackend:
         # request starts a fresh one.
         with self._server_lock:
             self._stop_server_locked()
+            self._record_runtime()
 
     @staticmethod
     def _generate_speech(

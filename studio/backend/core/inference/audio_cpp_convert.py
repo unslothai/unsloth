@@ -55,14 +55,6 @@ def convert_caps(model: AudioCppModel) -> Optional[dict[str, Any]]:
     }
 
 
-def convert_rules(model: AudioCppModel) -> Optional[dict[str, Any]]:
-    """Internal: the rates the /audio/run route prepares the source and target at."""
-    convert = model.convert
-    if convert is None:
-        return None
-    return {"source_rate": convert.source_rate, "target_rate": convert.target_rate}
-
-
 def workflow_tasks(model: AudioCppModel) -> dict[str, str]:
     """The server task each workflow runs under; Convert's other modes as ``convert:<mode>``."""
     tasks = {workflow: binding.server_task for workflow, binding in model.workflows.items()}

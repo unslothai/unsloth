@@ -1357,28 +1357,16 @@ class _InferenceRuntimeFields(BaseModel):
         ),
     )
     audio_options_by_workflow: Optional[Dict[str, List[Dict[str, Any]]]] = Field(
-        None,
-        description = (
-            "Options per Audio page workflow where they differ from audio_options (convert)."
-        ),
+        None, description = "Options per Audio workflow where they differ from audio_options."
     )
     audio_workflow_tasks: Optional[Dict[str, str]] = Field(
-        None,
-        description = (
-            "audio.cpp server task each workflow runs under, e.g. {'clone': 'clon', 'convert': "
-            "'vc', 'convert:singing': 'svc'}; a task other than audio_server_task reloads."
-        ),
+        None, description = "audio.cpp server task per workflow, e.g. {'convert:singing': 'svc'}."
     )
     audio_server_task: Optional[str] = Field(
         None, description = "audio.cpp server task the running server was started with."
     )
     audio_convert: Optional[Dict[str, Any]] = Field(
-        None,
-        description = (
-            "What the model offers on Convert: {modes, target (audio|builtin), builtin_voices, "
-            "pitch per mode, style, route_reloads, source_max_seconds}; None when it does not "
-            "convert."
-        ),
+        None, description = "What the model offers on Convert; None when it does not convert."
     )
     audio_convert_route: Optional[str] = Field(
         None, description = "Seed-VC route the running server was started with."
@@ -5145,11 +5133,7 @@ class AudioGalleryItem(BaseModel):
     target_builtin: Optional[str] = Field(
         None, description = "Built-in voice a conversion converted to"
     )
-    source_saved: bool = Field(
-        False,
-        description = "A conversion kept a copy of the upload it converted, served at "
-        "/audio/gallery/{id}/source/file",
-    )
+    source_saved: bool = Field(False, description = "Served at /audio/gallery/{id}/source/file")
 
 
 _AUDIO_ID_PATTERN = r"^[A-Za-z0-9_-]{1,128}$"
@@ -5159,25 +5143,11 @@ _AUDIO_FILE_OPTION_WORDS = frozenset(
 )
 
 
-# Request fields that carry a file, refused by name even where no word above gives them away.
-_AUDIO_FILE_OPTION_NAMES = frozenset(
-    {
-        "target_voice",
-        "source_audio",
-        "style_ref",
-        "prosody_ref",
-        "voice_model_path",
-        "retrieval_index_path",
-        "pitch_path",
-        "noise_path",
-    }
-)
-
-
 def _names_a_file(name: str) -> bool:
-    if name.lower() in _AUDIO_FILE_OPTION_NAMES:
-        return True
-    return any(word in _AUDIO_FILE_OPTION_WORDS for word in re.split(r"[^a-z0-9]+", name.lower()))
+    # Vevo2's target_voice is a file, but neither of its words gives that away.
+    return name.lower() == "target_voice" or any(
+        word in _AUDIO_FILE_OPTION_WORDS for word in re.split(r"[^a-z0-9]+", name.lower())
+    )
 
 
 class AudioTrim(BaseModel):

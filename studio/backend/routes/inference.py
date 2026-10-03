@@ -21884,56 +21884,41 @@ async def _run_audio_convert(
     )
 
     params = body.convert.model_dump()
-    source_ref = body.inputs.source
-    target_ref = body.inputs.target
-    if source_ref is None:
+    refs = {"source": body.inputs.source, "target": body.inputs.target}
+    if refs["source"] is None:
         raise HTTPException(status_code = 400, detail = "Add the recording to convert.")
+    resolved: dict[str, Any] = {}
     try:
-        source = await asyncio.to_thread(
-            audio_inputs.resolve_source, source_ref.model_dump(exclude_none = True)
-        )
-        target = (
-            await asyncio.to_thread(
-                audio_inputs.resolve_source, target_ref.model_dump(exclude_none = True)
-            )
-            if target_ref is not None
-            else None
-        )
+        for role, ref in refs.items():
+            if ref is not None:
+                resolved[role] = await asyncio.to_thread(
+                    audio_inputs.resolve_source, ref.model_dump(exclude_none = True)
+                )
     except audio_inputs.AudioInputError as exc:
         raise _audio_source_error(exc) from None
-    source_trim = source_ref.trim.model_dump() if source_ref.trim is not None else None
-    target_trim = (
-        target_ref.trim.model_dump() if target_ref is not None and target_ref.trim else None
-    )
+    source, target = resolved["source"], resolved.get("target")
+    max_seconds = {"source": CONVERT_SOURCE_MAX_SECONDS, "target": CONVERT_TARGET_MAX_SECONDS}
     seen: dict[str, Any] = {}
 
     def _prepare(model_info: dict) -> dict[str, str]:
         seen["model_info"] = model_info
-        seen["paths"] = paths = {}
         rules = model_info.get("audio_convert_rules") or {}
         try:
-            paths["source"] = str(
-                audio_inputs.prepared_path(
-                    source,
-                    int(rules.get("source_rate") or 16000),
-                    "mono",
-                    source_trim,
-                    max_seconds = CONVERT_SOURCE_MAX_SECONDS,
-                )
-            )
-            if target is not None:
-                paths["target"] = str(
+            seen["paths"] = {
+                role: str(
                     audio_inputs.prepared_path(
-                        target,
-                        int(rules.get("target_rate") or 16000),
+                        item,
+                        int(rules.get(f"{role}_rate") or 16000),
                         "mono",
-                        target_trim,
-                        max_seconds = CONVERT_TARGET_MAX_SECONDS,
+                        refs[role].trim.model_dump() if refs[role].trim is not None else None,
+                        max_seconds = max_seconds[role],
                     )
                 )
+                for role, item in resolved.items()
+            }
         except audio_inputs.AudioInputError as exc:
             raise _audio_source_error(exc) from None
-        return paths
+        return seen["paths"]
 
     source_text = (body.inputs.source_text or "").strip() or None
     payload = ChatCompletionRequest(
@@ -21950,32 +21935,26 @@ async def _run_audio_convert(
             "workflow": "convert",
             "audio_inputs": None,
             "convert": {**params, "source_text": source_text},
-            "convert_inputs": ("source",) + (("target",) if target is not None else ()),
+            "convert_inputs": tuple(resolved),
             "prepare_audio_inputs": _prepare,
         },
     )
-    caps = (seen.get("model_info") or {}).get("audio_convert") or {}
     builtin = None
     if target is not None:
         target_name = target.name
     else:
-        voices = caps.get("builtin_voices") or []
-        voice = next((v for v in voices if v.get("id") == params.get("voice")), None)
-        voice = voice or (voices[0] if voices else {"id": params.get("voice"), "label": "Built-in"})
-        builtin = voice.get("id")
-        target_name = voice.get("label") or builtin
-    options = _audio_run_settings(body, False)["options"]
+        voices = ((seen.get("model_info") or {}).get("audio_convert") or {}).get("builtin_voices")
+        voices = voices or [{"id": params.get("voice"), "label": "Built-in"}]
+        voice = next((v for v in voices if v.get("id") == params.get("voice")), voices[0])
+        builtin, target_name = voice.get("id"), voice.get("label") or voice.get("id")
     extra_meta: dict[str, Any] = {
         "role": "output",
         "source_name": source.name,
         "reference_name": target_name,
         "target_builtin": builtin,
         "settings": {
-            "mode": params.get("mode"),
-            "pitch": params.get("pitch"),
-            "pitch_auto": params.get("pitch_auto"),
-            "style": params.get("style"),
-            "options": options,
+            **{key: params.get(key) for key in ("mode", "pitch", "pitch_auto", "style")},
+            "options": _audio_run_settings(body, False)["options"],
         },
     }
     if source.kind == "clip":

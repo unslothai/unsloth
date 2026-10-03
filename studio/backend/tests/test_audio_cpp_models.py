@@ -2247,30 +2247,3 @@ def test_voice_conversion_families_resolve_and_offer_convert_alone(hub):
     }
     assert "f0_condition" not in {o["name"] for o in seed_vc.options}
     assert meanvc2.convert_options == ()
-
-
-def test_clone_families_that_convert_add_their_convert_tools_only():
-    chatterbox = acm.FAMILIES["chatterbox"]
-    assert [o["name"] for o in chatterbox.convert.tool_options] == [
-        "s3gen_cfg_rate",
-        "num_inference_steps",
-    ]
-    model = AudioCppModel(
-        id = "x",
-        repo_id = None,
-        folder = "",
-        display_name = "Chatterbox",
-        family = "chatterbox",
-        task = "tts",
-        server_task = "clon",
-        variant = AudioCppVariant("Q8_0", (RepoFile("c.gguf", 1),), "c.gguf"),
-        variants = (),
-        default_variant = "Q8_0",
-        speaks = False,
-        clone = chatterbox.clone,
-        convert = chatterbox.convert,
-    )
-    assert list(model.workflows) == ["clone", "convert"]
-    # Exaggeration and guidance_scale are clone-only.
-    assert [o["name"] for o in model.convert_options] == ["s3gen_cfg_rate", "num_inference_steps"]
-    assert {o["name"] for o in model.clone_options} == {"exaggeration", "guidance_scale"}

@@ -198,9 +198,13 @@ def test_rvc_converts_to_a_builtin_voice_by_options_voice_id(started):
     assert started == []
 
 
-def test_rvc_refuses_a_target_clip():
-    with pytest.raises(acc.ConvertRequestError, match = "built-in voices"):
-        acc.convert_request(_model("rvc"), mode = "speech", source = SOURCE, target = TARGET)
+@pytest.mark.parametrize(
+    "family, target, match",
+    [("rvc", TARGET, "built-in voices"), ("meanvc2", None, "Add the target voice.")],
+)
+def test_a_target_the_family_cannot_take_is_refused(family, target, match):
+    with pytest.raises(acc.ConvertRequestError, match = match):
+        acc.convert_request(_model(family), mode = "speech", source = SOURCE, target = target)
 
 
 def test_meanvc2_sends_audio_voice_ref_and_seed():
@@ -208,8 +212,6 @@ def test_meanvc2_sends_audio_voice_ref_and_seed():
         _model("meanvc2"), mode = "speech", source = SOURCE, target = TARGET, pitch = 4, seed = 7
     )
     assert request == {"audio": SOURCE, "voice_ref": TARGET, "seed": "7"}
-    with pytest.raises(acc.ConvertRequestError, match = "Add the target voice."):
-        acc.convert_request(_model("meanvc2"), mode = "speech", source = SOURCE, target = None)
 
 
 def test_seed_vc_speech_sends_no_pitch_and_its_route_by_model_entry(started):
