@@ -33,6 +33,7 @@ import type { AudioGalleryClip } from "../api";
 import {
   type AudioSourceSelection,
   REFERENCE_MAX_SECONDS,
+  clipReference,
 } from "../audio-run-request";
 import {
   type AudioSourceStatus,
@@ -45,6 +46,9 @@ import { formatSeconds } from "./waveform-peaks";
 
 const AudioHistoryContext = createContext<readonly AudioGalleryClip[]>([]);
 export const AudioHistoryProvider = AudioHistoryContext.Provider;
+// False while the persistently mounted Audio page is hidden, so no card keeps the mic.
+const AudioActiveContext = createContext(true);
+export const AudioActiveProvider = AudioActiveContext.Provider;
 
 type SourceTab = "upload" | "record" | "history" | "voice";
 
@@ -89,6 +93,10 @@ export function AudioSourceInput({
   allowSavedVoice = true,
   handleRef,
   onStatusChange,
+  maxRecordSeconds,
+  expiredMessage = REFERENCE_EXPIRED_MESSAGE,
+  usesFirstSeconds = REFERENCE_MAX_SECONDS,
+  recordHint = "Read a sentence or two in a quiet room.",
 }: {
   id: string;
   label: string;
@@ -100,8 +108,14 @@ export function AudioSourceInput({
   allowSavedVoice?: boolean;
   handleRef?: Ref<AudioSourceInputHandle>;
   onStatusChange?: (status: AudioSourceStatus) => void;
+  maxRecordSeconds?: number;
+  /** The card's copy defaults to a clone reference; other pages pass their own. */
+  expiredMessage?: string;
+  usesFirstSeconds?: number | null;
+  recordHint?: string;
 }) {
-  const source = useAudioSource({ value, onChange });
+  const active = useContext(AudioActiveContext);
+  const source = useAudioSource({ value, onChange, maxRecordSeconds, active });
   const history = useContext(AudioHistoryContext);
   const [tab, setTab] = useState<SourceTab>("upload");
   const [dragging, setDragging] = useState(false);
@@ -226,7 +240,7 @@ export function AudioSourceInput({
 
       {status.phase === "expired" ? (
         <div className="grid gap-2">
-          <AlertLine>{REFERENCE_EXPIRED_MESSAGE}</AlertLine>
+          <AlertLine>{expiredMessage}</AlertLine>
           <Button
             type="button"
             variant="outline"
@@ -288,9 +302,11 @@ export function AudioSourceInput({
             <output className="text-ui-11p5 text-muted-foreground">
               Loading the clip…
             </output>
-          ) : durationS !== null && durationS > REFERENCE_MAX_SECONDS ? (
+          ) : usesFirstSeconds !== null &&
+            durationS !== null &&
+            durationS > usesFirstSeconds ? (
             <p className="text-ui-11p5 leading-snug text-muted-foreground">
-              Uses the first {REFERENCE_MAX_SECONDS} s.
+              Uses the first {usesFirstSeconds} s.
             </p>
           ) : null}
         </div>
@@ -376,7 +392,7 @@ export function AudioSourceInput({
                     </span>
                   </>
                 ) : (
-                  "Read a sentence or two in a quiet room."
+                  recordHint
                 )}
               </output>
             </div>
@@ -387,22 +403,13 @@ export function AudioSourceInput({
                 Clips you generate on Speak, Clone or Music show up here.
               </p>
             ) : (
-              <ul className="hover-scrollbar grid max-h-[calc(196px*var(--ui-space-scale,1))] gap-0.5 overflow-y-auto">
+              <ul className="hover-scrollbar grid min-w-0 max-h-[calc(196px*var(--ui-space-scale,1))] grid-cols-[minmax(0,1fr)] gap-0.5 overflow-y-auto">
                 {history.map((clip) => (
-                  <li key={clip.id}>
+                  <li key={clip.id} className="min-w-0">
                     <button
                       type="button"
                       disabled={disabled}
-                      onClick={() =>
-                        onChange({
-                          kind: "clip",
-                          id: clip.id,
-                          name: clip.prompt || "Generated clip",
-                          durationS: clip.duration_s,
-                          transcript: clip.prompt || null,
-                          language: null,
-                        })
-                      }
+                      onClick={() => onChange(clipReference(clip))}
                       className="flex w-full min-w-0 items-center gap-2 rounded-full px-3 py-1.5 text-left text-ui-13 transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >
                       <span className="min-w-0 flex-1 truncate">
