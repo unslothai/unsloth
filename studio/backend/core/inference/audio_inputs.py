@@ -30,6 +30,8 @@ BYTE_CAP = 2 * 1024 * 1024 * 1024
 REFERENCE_MAX_SECONDS = 30.0
 REFERENCE_RATE = 24000
 _MAX_CHANNELS = 2
+# Caps the stored rate so a 30 minute upload stays under ~350 MB however it was encoded.
+MAX_RATE = 48000
 _NAME_MAX = 255
 _STALE_TMP_SECONDS = 60 * 60
 
@@ -172,7 +174,7 @@ def transcode(
             try:
                 for frame in container.decode(container.streams.audio[0]):
                     if resampler is None:
-                        rate = rate or int(frame.sample_rate or 0)
+                        rate = rate or min(int(frame.sample_rate or 0), MAX_RATE)
                         if rate <= 0:
                             raise AudioInputError(400, "This audio has no sample rate.")
                         channels = (

@@ -116,6 +116,7 @@ def _video_without_audio() -> bytes:
         ("mp3", "libmp3lame", 44100, "mono", "voice.mp3", 1),
         ("wav", "pcm_s16le", 16000, "mono", "voice.wav", 1),
         ("wav", "pcm_s16le", 24000, "5.1", "surround.wav", 2),
+        ("flac", "flac", 96000, "stereo", "hires.flac", 2),
     ],
 )
 def test_an_upload_decodes_dedupes_and_deletes(client, fmt, codec, rate, layout, name, channels):
@@ -125,6 +126,7 @@ def test_an_upload_decodes_dedupes_and_deletes(client, fmt, codec, rate, layout,
     record = response.json()
     assert set(record) == set("id name duration_s sample_rate channels url expires_at".split())
     got = (record["name"], record["sample_rate"], record["channels"], round(record["duration_s"]))
+    rate = min(rate, audio_inputs.MAX_RATE)
     assert got == (name, rate, channels, 2)
     assert record["url"] == f"{INPUTS}/{record['id']}/file"
     served = client.get(record["url"])

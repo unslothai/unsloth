@@ -21455,13 +21455,13 @@ async def _generate_tts_wav(
             language = payload.audio_language,
             seed = payload.seed,
             **({"audio_options": payload.audio_options} if payload.audio_options else {}),
-            stats_holder = stats_holder,
             **{
                 key: value
                 for key, value in (run_inputs or {}).items()
                 if key in ("workflow", "audio_inputs", "reference_text", "speed")
                 and value is not None
             },
+            stats_holder = stats_holder,
         )
 
     if audio_type not in supported_audio_types:

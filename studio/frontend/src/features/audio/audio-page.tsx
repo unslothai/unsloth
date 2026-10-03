@@ -845,10 +845,10 @@ export function AudioPage({
                   : ttsWorkflow === "clone"
                     ? []
                     : trainedTtsModels.filter(
-                        (model) =>
-                          isMusicGenerationModel(model.id, model.audioType) ===
-                          (ttsWorkflow === "music"),
-                      )
+                      (model) =>
+                        isMusicGenerationModel(model.id, model.audioType) ===
+                        (ttsWorkflow === "music"),
+                    )
               }
               rowFilter={selectorRowFilter}
               loadedModelIdOverride={
@@ -1017,7 +1017,11 @@ export function AudioPage({
                   return ttsWorkflow === "music" ? (
                     <MusicRail {...railProps} />
                   ) : ttsWorkflow === "clone" ? (
-                    <CloneRail {...railProps} clone={clone} historyClips={clips} />
+                    <CloneRail
+                      {...railProps}
+                      clone={clone}
+                      historyClips={clips}
+                    />
                   ) : (
                     <SpeakRail {...railProps} />
                   );
