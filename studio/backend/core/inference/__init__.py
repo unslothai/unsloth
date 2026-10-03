@@ -16,7 +16,15 @@ actually accessed, so standalone helpers stay unit-testable without the full
 inference stack.
 """
 
+import os
 from typing import TYPE_CHECKING
+
+# Same ROCm AOTriton opt-in as unsloth/__init__.py and studio/backend/main.py, here so every entry point into the
+# inference code gets it (in-process callers, workers, tests), not only the server. Without it torch on RDNA3.5 /
+# gfx1151 refuses its fused flash / efficient SDPA and every attention call runs the math backend (measured on
+# Strix Halo: ~6.6x slower per step on Z-Image-Turbo 1024^2). torch reads it once, at the first SDPA dispatch, and
+# ignores it on non-ROCm builds. `setdefault` keeps an explicit user value, including "0".
+os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
 
 __all__ = [
     "InferenceBackend",
