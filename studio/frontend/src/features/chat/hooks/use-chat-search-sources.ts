@@ -17,12 +17,14 @@ export interface LibrarySearchEntry {
 }
 
 export interface ChatSearchSources {
+  /** The Library has loaded once, so empty lists are really empty. */
+  ready: boolean;
   files: LibrarySearchEntry[];
   /** Fine-tuned models live in the Library, not the Hub. */
   fineTunes: LibrarySearchEntry[];
 }
 
-const EMPTY: ChatSearchSources = { files: [], fineTunes: [] };
+const EMPTY: ChatSearchSources = { ready: false, files: [], fineTunes: [] };
 
 /** Library items for search. The store loads on first open, not with the app. */
 export function useChatSearchSources(open: boolean): ChatSearchSources {
@@ -52,15 +54,23 @@ export function useChatSearchSources(open: boolean): ChatSearchSources {
           }
           const newest = (a: LibrarySearchEntry, b: LibrarySearchEntry) =>
             libraryTime(b.item) - libraryTime(a.item);
-          setSources({ files: files.sort(newest), fineTunes: fineTunes.sort(newest) });
+          setSources((prev) => ({
+            ready: prev.ready || isSettled(useLibraryStore.getState().status),
+            files: files.sort(newest),
+            fineTunes: fineTunes.sort(newest),
+          }));
         };
         publish(useLibraryStore.getState().items);
         unsubscribe = useLibraryStore.subscribe((state, prev) => {
-          if (state.items !== prev.items) publish(state.items);
+          if (state.items !== prev.items || state.status !== prev.status) {
+            publish(state.items);
+          }
         });
         void useLibraryStore.getState().refresh().catch(() => {});
       })
-      .catch(() => {});
+      .catch(() => {
+        if (!cancelled) setSources((prev) => ({ ...prev, ready: true }));
+      });
 
     return () => {
       cancelled = true;
@@ -70,6 +80,8 @@ export function useChatSearchSources(open: boolean): ChatSearchSources {
 
   return sources;
 }
+
+const isSettled = (status: string) => status === "ready" || status === "error";
 
 /** Last opened or changed. */
 export function libraryTime(item: LibraryItem): number {

@@ -43,6 +43,8 @@ export interface ChatSearchItem {
   // Prebuilt so filtering never re-lowercases per keystroke.
   searchText: string;
   createdAt: number;
+  /** Last activity (`updatedAt ?? createdAt`; the latest of a compare pair), as the sidebar ranks chats. */
+  updatedAt?: number;
   projectId?: string | null;
   /** Forked from another chat (branch icon, as in the Library). */
   isFork?: boolean;
@@ -162,7 +164,13 @@ export async function buildChatSearchIndex(): Promise<ChatSearchIndexBuild> {
     if (t.pairId) {
       if (seenPairs.has(t.pairId)) {
         const existing = itemThreadIds.get(t.pairId);
-        if (existing) existing.threadIds.push(t.id);
+        if (existing) {
+          existing.threadIds.push(t.id);
+          existing.item.updatedAt = Math.max(
+            existing.item.updatedAt ?? 0,
+            t.updatedAt ?? t.createdAt,
+          );
+        }
         continue;
       }
       seenPairs.add(t.pairId);
@@ -172,6 +180,7 @@ export async function buildChatSearchIndex(): Promise<ChatSearchIndexBuild> {
           id: t.pairId,
           title: t.title,
           createdAt: t.createdAt,
+          updatedAt: t.updatedAt ?? t.createdAt,
           projectId: t.projectId ?? null,
         },
         threadIds: [t.id],
@@ -183,6 +192,7 @@ export async function buildChatSearchIndex(): Promise<ChatSearchIndexBuild> {
           id: t.id,
           title: t.title,
           createdAt: t.createdAt,
+          updatedAt: t.updatedAt ?? t.createdAt,
           projectId: t.projectId ?? null,
           isFork: Boolean(t.forkedFromThreadId),
         },

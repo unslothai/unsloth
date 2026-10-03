@@ -164,7 +164,7 @@ export function ChatSearchDialog() {
   const opener = useChatSearchStore((s) => s.opener);
   const navigate = useNavigate();
   const { items, loading } = useChatSearchIndex(isOpen);
-  const { projects } = useChatProjects();
+  const { projects, hasLoaded: projectsLoaded } = useChatProjects();
   const sources = useChatSearchSources(isOpen);
   const { cachedRows, localRows, downloadedReady } = useHubInventory({
     kind: "models",
@@ -195,6 +195,7 @@ export function ChatSearchDialog() {
       setQuery("");
       setTab("all");
       setMoved(false);
+      setSelected("");
       setRowLimit(INITIAL_ROW_COUNT);
       setCompactList(isCompactChatSearchList(true, chatSearchIndexHasRows()));
     }
@@ -256,9 +257,9 @@ export function ChatSearchDialog() {
 
   const matchAll = useCallback(
     (search: string): Record<ChatSearchKind, Row[]> => ({
-      chats: selectVisibleChats(items, search).map((item) =>
-        chatRow(item, t, navigate),
-      ),
+      chats: selectVisibleChats(items, search)
+        .map((item) => chatRow(item, t, navigate))
+        .sort((a, b) => b.time - a.time),
       projects: filterRows(rowsByKind.projects, search),
       files: filterRows(rowsByKind.files, search),
       models: filterRows(rowsByKind.models, search),
@@ -268,8 +269,9 @@ export function ChatSearchDialog() {
   const matched = useMemo(() => matchAll(activeQuery), [matchAll, activeQuery]);
 
   const hasQuery = queryTokens(activeQuery).length > 0;
+  // Live query, not the deferred one: Enter must never run an action the input no longer matches.
   const visibleActions = ACTIONS.filter((action) =>
-    haystackMatches(t(action.labelKey).toLowerCase(), queryTokens(activeQuery)),
+    haystackMatches(t(action.labelKey).toLowerCase(), queryTokens(query)),
   );
 
   // All: one headed group per kind. A kind's tab: one list.
@@ -287,6 +289,10 @@ export function ChatSearchDialog() {
   const firstKey =
     groups.find((group) => group.rows.length > 0)?.rows[0].key ??
     (showActions ? `action:${visibleActions[0].id}` : "");
+  const shownKeys = new Set([
+    ...groups.flatMap((group) => group.rows.map((row) => row.key)),
+    ...(showActions ? visibleActions.map((action) => `action:${action.id}`) : []),
+  ]);
 
   const activate = (row: Row) => {
     // The list can trail the input by a render; only open rows the live query still matches.
@@ -302,6 +308,7 @@ export function ChatSearchDialog() {
   const switchTab = (next: ChatSearchTab) => {
     setTab(next);
     setMoved(false);
+    setSelected("");
   };
 
   const onInputKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
@@ -314,12 +321,14 @@ export function ChatSearchDialog() {
     switchTab(next);
   };
 
-  const sourceLoading =
-    tab === "models"
-      ? !downloadedReady
-      : tab === "chats" || tab === "all"
-        ? loading
-        : false;
+  const loadingByTab: Record<ChatSearchTab, boolean> = {
+    chats: loading,
+    projects: !projectsLoaded,
+    files: !sources.ready,
+    models: !downloadedReady || !sources.ready,
+    all: loading || !projectsLoaded || !sources.ready || !downloadedReady,
+  };
+  const sourceLoading = loadingByTab[tab];
   const emptyText = sourceLoading
     ? t("shell.search.loading")
     : hasQuery
@@ -342,7 +351,7 @@ export function ChatSearchDialog() {
       <Command
         className="rounded-3xl p-0"
         shouldFilter={false}
-        value={moved && selected ? selected : firstKey}
+        value={moved && shownKeys.has(selected) ? selected : firstKey}
         onValueChange={setSelected}
         onKeyDown={(e) => {
           if (NAVIGATION_KEYS.has(e.key)) setMoved(true);
@@ -362,6 +371,7 @@ export function ChatSearchDialog() {
             onValueChange={(value) => {
               setQuery(value);
               setMoved(false);
+              setSelected("");
             }}
             onKeyDown={onInputKeyDown}
             className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
@@ -396,6 +406,10 @@ export function ChatSearchDialog() {
               // Keep focus in the input.
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => switchTab(entry)}
+              // cmdk's root runs the highlighted row on Enter; a focused tab must only switch.
+              onKeyDown={(e) => {
+                if (e.key === "Enter") e.stopPropagation();
+              }}
               className={cn(
                 "shrink-0 rounded-full px-3 py-1 text-ui-13 font-medium transition-colors",
                 entry === tab
@@ -536,7 +550,7 @@ function chatRow(
     key: `chat:${item.id}`,
     kind: "chats",
     title: item.title || t("shell.search.untitledChat"),
-    time: item.createdAt,
+    time: item.updatedAt ?? item.createdAt,
     haystack: item.searchText,
     icon:
       item.type === "compare"

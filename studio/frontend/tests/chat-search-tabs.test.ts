@@ -70,6 +70,14 @@ test("Recents are the newest rows of every kind together", () => {
   assert.deepEqual(recents.map((r) => r.title), ["f", "c2", "p"]);
 });
 
+test("Recents ranks a kind that is not listed newest first", () => {
+  // Oldest first, as if listed by creation, with the oldest one used most recently.
+  const chats = [40, 50, 60, 70, 80].map((t) => row("chats", `c${t}`, t));
+  chats.push(row("chats", "created first, used today", 90));
+  const recents = recentRows({ chats, projects: [], files: [], models: [] }, 1);
+  assert.deepEqual(recents.map((r) => r.title), ["created first, used today"]);
+});
+
 test("the dialog keeps chat search's surface, header, rows and shortcut", () => {
   assert.match(DIALOG, /<CommandDialog[\s\S]*className="chat-search-surface /);
   assert.ok(DIALOG.includes('className="flex items-center gap-3 border-b border-border/40 px-4 py-3"'));
@@ -90,4 +98,21 @@ test("Models lists every complete download the Hub knows of, plus the Library's 
   assert.match(DIALOG, /localRows\s*\.filter\(\(row\) => !row\.partial\)/);
   assert.match(DIALOG, /search: \{ tab: "downloaded", model: id \}/);
   assert.match(DIALOG, /sources\.fineTunes\.map/);
+});
+
+test("Enter never runs a stale action or row, and a focused tab only switches", () => {
+  // Actions follow the live query, not the deferred one.
+  assert.ok(DIALOG.includes("haystackMatches(t(action.labelKey).toLowerCase(), queryTokens(query)),"));
+  // cmdk's root runs the highlighted row on Enter, so the tabs stop it, as the close button does.
+  assert.match(DIALOG, /onClick=\{\(\) => switchTab\(entry\)\}[\s\S]{0,200}?if \(e\.key === "Enter"\) e\.stopPropagation\(\);/);
+  // A kept selection must still be on screen, and is cleared with the pin.
+  assert.match(DIALOG, /value=\{moved && shownKeys\.has\(selected\) \? selected : firstKey\}/);
+  assert.equal(DIALOG.match(/setMoved\(false\);\n\s*setSelected\(""\);/g)?.length, 3);
+});
+
+test("empty states wait for their source, and chats rank by last activity", () => {
+  assert.match(SOURCES, /ready: prev\.ready \|\| isSettled\(useLibraryStore\.getState\(\)\.status\)/);
+  assert.match(DIALOG, /files: !sources\.ready,/);
+  assert.match(DIALOG, /projects: !projectsLoaded,/);
+  assert.match(DIALOG, /time: item\.updatedAt \?\? item\.createdAt,/);
 });
