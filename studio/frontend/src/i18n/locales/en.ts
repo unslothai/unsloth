@@ -1135,6 +1135,8 @@ export const en = {
         showWhisperUpdates: "whisper.cpp update notifications",
         showWhisperUpdatesDescription:
           "Notify when a newer whisper.cpp build is available for speech-to-text models. Turn off if you never transcribe audio.",
+        showUnslothUpdates: "Automatic update checks",
+        showUnslothUpdatesDescription: "Check automatically for newer Unsloth app and backend releases. Manual checks stay available in About.",
       },
       startup: {
         sectionTitle: "Startup",
