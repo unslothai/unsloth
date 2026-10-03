@@ -44,6 +44,8 @@ from core.inference.chat_template_helpers import (
     normalize_reasoning_snapshots,
     prompt_opens_reasoning_channel,
     strip_open_reasoning_prefill,
+    ThoughtUnresumableError,
+    trailing_assistant_resume_kind,
     trailing_assistant_text,
     vlm_prompt_issue as _vlm_prompt_issue,
 )
@@ -922,6 +924,14 @@ def _mlx_fused_moe_router(model):
     return _mlx_optional_fusion("fused_moe_router", model)
 
 
+def _mlx_fused_moe_routed_experts(model):
+    return _mlx_optional_fusion("fused_moe_routed_experts", model)
+
+
+def _mlx_fused_residual_norm_handoff(model):
+    return _mlx_optional_fusion("fused_residual_norm_handoff", model)
+
+
 def _vlm_generation_context():
     import mlx.core as mx
     from mlx_vlm.generate import generation_stream
@@ -1082,6 +1092,23 @@ def _ascii_registry_key(value):
     return value.lower()
 
 
+def _resumes_thought(messages, continue_final_message) -> bool:
+    return bool(continue_final_message) and (
+        trailing_assistant_resume_kind(messages) == "reasoning_content"
+    )
+
+
+def _think_prefix(prompt, special_tokens, messages, continue_final_message, **kwargs) -> str:
+    """``detect_think_prefill``; refuses a resumed thought whose ``</think>`` decoding would strip."""
+    from core.inference.chat_template_helpers import detect_think_prefill
+
+    resumes = _resumes_thought(messages, continue_final_message)
+    prefix = detect_think_prefill(prompt, special_tokens, resumes_thought = resumes, **kwargs)
+    if resumes and not prefix:
+        raise ThoughtUnresumableError()
+    return prefix
+
+
 def _render_registered_vlm_prompt(
     processor,
     model,
@@ -1123,6 +1150,9 @@ def _render_registered_vlm_prompt(
         config = dict(config) if isinstance(config, dict) else dict(config.__dict__)
         config["model_type"] = canonical
 
+    # mlx-vlm's formatters carry no reasoning opener to reopen a thought on.
+    if _resumes_thought(messages, continue_final_message):
+        return None
     # Recovery path: sweeps the caller's original list rather than reusing a copy (#7066).
     swept = neutralize_control_markup_in_messages(messages, None, markup_for_tokenizer(processor))
     partial = trailing_assistant_text(swept) if continue_final_message else None
@@ -5164,8 +5194,6 @@ class MLXInferenceBackend:
         from mlx_lm import stream_generate
         from mlx_lm.sample_utils import make_sampler
 
-        from core.inference.chat_template_helpers import detect_think_prefill
-
         render_result = self._render_text_prompt(
             messages,
             tools = tools,
@@ -5188,9 +5216,11 @@ class MLXInferenceBackend:
         ) and decoder_preserves_token(
             self._tokenizer, "</think>", reasoning_control_tokens(reasoning_channel_markers)
         )
-        think_prefix = detect_think_prefill(
+        think_prefix = _think_prefix(
             prompt,
             getattr(self._tokenizer, "all_special_tokens", None),
+            messages,
+            continue_final_message,
             preserves_think_close = think_close_survives,
         )
         constraint = _build_grammar_constraint(
@@ -5285,6 +5315,8 @@ class MLXInferenceBackend:
             _mlx_fused_decode_conv_silu(self._model),
             _mlx_fused_residual_norm(self._model),
             _mlx_fused_moe_router(self._model),
+            _mlx_fused_moe_routed_experts(self._model),
+            _mlx_fused_residual_norm_handoff(self._model),
         ):
             (
                 gen_prompt,
@@ -5469,8 +5501,6 @@ class MLXInferenceBackend:
     ) -> "_TextRowPlan":
         from mlx_lm.sample_utils import make_sampler
 
-        from core.inference.chat_template_helpers import detect_think_prefill
-
         render_result = self._render_text_prompt(
             messages,
             tools = tools,
@@ -5483,9 +5513,11 @@ class MLXInferenceBackend:
         reasoning_channel_markers = render_result.reasoning_channel_markers
         _resumed_partial = bool(continue_final_message and trailing_assistant_text(messages))
 
-        think_prefix = detect_think_prefill(
+        think_prefix = _think_prefix(
             prompt,
             getattr(self._tokenizer, "all_special_tokens", None),
+            messages,
+            continue_final_message,
             preserves_think_close = (
                 bool(tools) or tool_protocol_active or reasoning_channel_markers is not None
             )
@@ -5745,10 +5777,11 @@ class MLXInferenceBackend:
             continue_final_message = continue_final_message,
         )
 
-        from core.inference.chat_template_helpers import detect_think_prefill
-
-        think_prefix = detect_think_prefill(
-            prompt, getattr(chat_target, "all_special_tokens", None)
+        think_prefix = _think_prefix(
+            prompt,
+            getattr(chat_target, "all_special_tokens", None),
+            messages,
+            continue_final_message,
         )
         normalizer = (
             make_reasoning_normalizer(
@@ -5862,9 +5895,11 @@ class MLXInferenceBackend:
         from core.inference.chat_template_helpers import detect_think_prefill
 
         # Detected once: the decoder keeps the delimiters the normalizer below consumes.
-        prefill = detect_think_prefill(
+        prefill = _think_prefix(
             prompt,
             getattr(chat_target, "all_special_tokens", None),
+            messages,
+            continue_final_message,
             # The same activation the decoder below uses: in unrestricted mode ``tools`` is
             # empty while the protocol is live, so ``bool(tools)`` said the closer would be
             # stripped, the opener was suppressed, and the stream ran on to an orphan
@@ -6037,6 +6072,8 @@ class MLXInferenceBackend:
                 generation_scope.enter_context(_mlx_fused_decode_conv_silu(self._model))
                 generation_scope.enter_context(_mlx_fused_residual_norm(self._model))
                 generation_scope.enter_context(_mlx_fused_moe_router(self._model))
+                generation_scope.enter_context(_mlx_fused_moe_routed_experts(self._model))
+                generation_scope.enter_context(_mlx_fused_residual_norm_handoff(self._model))
                 final_response = None
                 clip_path = None
                 try:
@@ -6538,6 +6575,8 @@ class MLXInferenceBackend:
             generation_scope.enter_context(_mlx_fused_decode_conv_silu(self._model))
             generation_scope.enter_context(_mlx_fused_residual_norm(self._model))
             generation_scope.enter_context(_mlx_fused_moe_router(self._model))
+            generation_scope.enter_context(_mlx_fused_moe_routed_experts(self._model))
+            generation_scope.enter_context(_mlx_fused_residual_norm_handoff(self._model))
             final_response = None
             try:
                 with closing(

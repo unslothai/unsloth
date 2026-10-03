@@ -91,7 +91,7 @@ def test_compiling_below_the_hooks_does_not_recompile_when_the_hook_state_change
     assert _graphs() == before, "a hook-state change recompiled the block"
 
 
-def test_the_old_placement_recompiles_on_the_same_change(monkeypatch):
+def test_the_old_placement_recompiles_on_the_same_change(monkeypatch, traced_offload_hooks):
     """Control: Module.compile traces the hooks, so the same flip compiles new graphs (the 9 s first steps)."""
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     torch._dynamo.reset()

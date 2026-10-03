@@ -90,6 +90,8 @@ COPY studio_home.sh /usr/local/bin/unsloth-studio-home
 # base's baked bundle so the installer skips a second ~400MB download; the
 # .unsloth-studio-owned marker satisfies setup.sh's ownership assertion.
 # UNSLOTH_LLAMA_KEEP_PREBUILT=1 keeps it: no GPU is visible here, so setup.sh's detection would install the CPU bundle over it.
+# UNSLOTH_AUDIO_CPP_ACCELERATOR does the same for audio.cpp: amd64 names the CUDA bundle outright
+# (arm64 has no audio.cpp bundle; auto leaves it to setup's non-fatal "no prebuilt" line).
 #
 # UNSLOTH_TORCH_INDEX_FAMILY pins the Studio venv's torch index (no nvidia-smi at
 # build time would land on cpu/cu126). cu128 on both arches, mirroring the base.
@@ -106,7 +108,8 @@ COPY studio_home.sh /usr/local/bin/unsloth-studio-home
 # UNSLOTH_ALLOW_CPU=1 is inline for install.sh only: the build has no GPU, and the image ENV must not carry it (see above).
 RUN set -eux \
  && case "${TARGETARCH:-amd64}" in \
-        amd64|arm64) TORCH_FAMILY="cu128" ;; \
+        amd64) TORCH_FAMILY="cu128"; AUDIO_CPP_ACCELERATOR="cuda" ;; \
+        arm64) TORCH_FAMILY="cu128"; AUDIO_CPP_ACCELERATOR="auto" ;; \
         *) echo "ERROR: unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
     esac \
  && mkdir -p "${UNSLOTH_STUDIO_HOME}" \
@@ -122,6 +125,7 @@ RUN set -eux \
     UNSLOTH_ZOO_REF="${UNSLOTH_STUDIO_ZOO_REF}" \
     UNSLOTH_LLAMA_TAG="${LLAMA_PREBUILT_TAG}" \
     UNSLOTH_LLAMA_KEEP_PREBUILT=1 \
+    UNSLOTH_AUDIO_CPP_ACCELERATOR="${AUDIO_CPP_ACCELERATOR}" \
     UNSLOTH_PYTHON=3.12 \
     UNSLOTH_ALLOW_CPU=1 \
     bash install.sh --local \
