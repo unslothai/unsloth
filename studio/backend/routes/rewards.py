@@ -34,6 +34,8 @@ class RewardRecord(BaseModel):
     shadowed: bool = False
     error: Optional[str] = None
     rule: Optional[dict[str, Any]] = None
+    entry: Optional[str] = None
+    code: Optional[str] = None
 
 
 class RewardImportRequest(BaseModel):
@@ -62,17 +64,26 @@ class RewardPreviewRequest(BaseModel):
     rewards: list[RewardPreviewItem] = Field(..., min_length = 1, max_length = 16)
     completion: StrictStr = Field(..., max_length = 64 * 1024)
     reference: Optional[StrictStr] = Field(None, max_length = 16 * 1024)
+    # Row 1 of the dataset, so a Python reward sees the same columns it gets in training.
+    row: Optional[dict[StrictStr, StrictStr]] = Field(None, max_length = 64)
+    prompt: Optional[StrictStr] = Field(None, max_length = 16 * 1024)
 
 
 class RewardPreviewScore(BaseModel):
     name: str
-    score: float
-    weighted: float
+    score: Optional[float]
+    weighted: Optional[float]
+
+
+class RewardPreviewIsolation(BaseModel):
+    backend: str
+    os_isolation: bool
 
 
 class RewardPreviewResponse(BaseModel):
     scores: list[RewardPreviewScore]
     total: float
+    isolation: Optional[RewardPreviewIsolation] = None
 
 
 def _http_error(exc: RewardError) -> HTTPException:
@@ -105,20 +116,29 @@ def import_reward_route(
 def preview_rewards(
     payload: RewardPreviewRequest, current_subject: str = Depends(get_current_subject)
 ) -> dict[str, Any]:
-    scores = []
     try:
+        specs = []
         for item in payload.rewards:
             if item.markdown is not None:
-                spec = parse_reward_markdown(item.markdown)
+                specs.append(parse_reward_markdown(item.markdown))
             elif item.name:
-                spec = get_reward(item.name)
+                specs.append(get_reward(item.name))
             else:
                 raise RewardError("Each preview item needs a name or markdown.")
-            [result] = preview_scores([spec], payload.completion, payload.reference)
-            scores.append({**result, "weighted": result["score"] * item.weight})
+        results, isolation = preview_scores(
+            specs, payload.completion, payload.reference, payload.row, payload.prompt
+        )
     except RewardError as exc:
         raise _http_error(exc) from exc
-    return {"scores": scores, "total": sum(s["weighted"] for s in scores)}
+    scores = [
+        {**r, "weighted": None if r["score"] is None else r["score"] * item.weight}
+        for r, item in zip(results, payload.rewards)
+    ]
+    return {
+        "scores": scores,
+        "total": sum(s["weighted"] for s in scores if s["weighted"] is not None),
+        "isolation": isolation,
+    }
 
 
 @router.get("/{name}/export", response_model = RewardExport)

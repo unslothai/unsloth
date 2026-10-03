@@ -29,6 +29,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  type RewardPreviewResponse,
   type RewardRecord,
   type RuleType,
   deleteReward,
@@ -51,10 +52,12 @@ import {
   Delete02Icon,
   EqualSignIcon,
   FileImportIcon,
-  InformationCircleIcon,
   MoreVerticalIcon,
+  PythonIcon,
   RegexIcon,
   RulerIcon,
+  Shield01Icon,
+  SourceCodeIcon,
   TestTube01Icon,
   TextIcon,
   Upload01Icon,
@@ -89,6 +92,21 @@ function RewardSummaryLine({
   if (!record) {
     return <span className="text-destructive">{t("rl.rewards.invalid")}</span>;
   }
+  if (record.kind === "python") {
+    return (
+      <span title={record.description}>
+        <span className="font-mono">
+          {t("rl.rewards.summary.python", { entry: record.entry ?? "reward" })}
+        </span>
+        {record.description && (
+          <span className="text-muted-foreground/70">
+            {" · "}
+            {record.description}
+          </span>
+        )}
+      </span>
+    );
+  }
   const summary = summarizeRule(record.rule);
   if (!summary.type) {
     return <span>{record.description}</span>;
@@ -108,9 +126,21 @@ function RewardSummaryLine({
   );
 }
 
-function ScoreChip({ value }: { value: number | undefined }): ReactElement {
+function ScoreChip({
+  value,
+}: {
+  value: number | null | undefined;
+}): ReactElement {
+  const t = useT();
   if (value === undefined) {
     return <span className="w-14" />;
+  }
+  if (value === null) {
+    return (
+      <span className="w-14 rounded-md bg-muted px-1.5 py-0.5 text-center text-ui-10 text-muted-foreground">
+        {t("rl.rewards.scoreNone")}
+      </span>
+    );
   }
   return (
     <span
@@ -210,10 +240,10 @@ function ImportRewardDialog({
             setError(null);
           }}
         />
-        {head?.name && !isPython && (
+        {head?.name && (
           <div className="flex items-start gap-2 rounded-lg border border-border/70 px-3 py-2 text-xs">
             <HugeiconsIcon
-              icon={TextIcon}
+              icon={isPython ? PythonIcon : TextIcon}
               className="mt-0.5 size-3.5 shrink-0 text-muted-foreground"
             />
             <div className="min-w-0">
@@ -234,7 +264,7 @@ function ImportRewardDialog({
         {isPython && (
           <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
             <HugeiconsIcon
-              icon={InformationCircleIcon}
+              icon={Shield01Icon}
               className="mt-0.5 size-3.5 shrink-0"
             />
             <p>{t("rl.rewards.importPython")}</p>
@@ -253,14 +283,55 @@ function ImportRewardDialog({
             {t("rl.rewards.overwrite")}
           </Label>
         </div>
-        {error && !isPython && (
-          <p className="text-ui-11p5 text-destructive">{error}</p>
-        )}
+        {error && <p className="text-ui-11p5 text-destructive">{error}</p>}
         <DialogFooter>
           <Button type="button" onClick={submit}>
             {t("rl.rewards.importAction")}
           </Button>
         </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// Row 1 the way training passes it: unmapped columns as-is, the answer as "answer".
+function trainingRow(
+  previewRow: Record<string, unknown> | null,
+  mapping: Record<string, string>,
+  reference: string,
+): Record<string, string> {
+  const row: Record<string, string> = {};
+  for (const [column, value] of Object.entries(previewRow ?? {})) {
+    if (!mapping[column]) {
+      row[column] = previewCell(value);
+    }
+  }
+  row.answer = reference;
+  return row;
+}
+
+function CodeDialog({
+  record,
+  onOpenChange,
+}: {
+  record: RewardRecord | null;
+  onOpenChange: (open: boolean) => void;
+}): ReactElement {
+  const t = useT();
+  return (
+    <Dialog open={record !== null} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>
+            {t("rl.rewards.codeTitle", { name: record?.name ?? "" })}
+          </DialogTitle>
+          <DialogDescription>
+            {t("rl.rewards.codeDescription")}
+          </DialogDescription>
+        </DialogHeader>
+        <pre className="max-h-[60vh] overflow-auto rounded-lg border border-border/70 bg-muted/40 p-3 font-mono text-ui-11p5 leading-relaxed">
+          {record?.code}
+        </pre>
       </DialogContent>
     </Dialog>
   );
@@ -289,7 +360,12 @@ export function RewardsSection(): ReactElement {
   const [copied, setCopied] = useState<string | null>(null);
   const [completion, setCompletion] = useState(SAMPLE_COMPLETION);
   const [referenceEdit, setReferenceEdit] = useState<string | null>(null);
-  const [preview, setPreview] = useState<Record<string, number> | null>(null);
+  const [preview, setPreview] = useState<Record<string, number | null> | null>(
+    null,
+  );
+  const [isolation, setIsolation] =
+    useState<RewardPreviewResponse["isolation"]>(null);
+  const [codeFor, setCodeFor] = useState<RewardRecord | null>(null);
   const [previewTotal, setPreviewTotal] = useState<number | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
 
@@ -304,13 +380,14 @@ export function RewardsSection(): ReactElement {
     ? previewCell(previewRow?.[answerColumn])
     : "";
   const reference = referenceEdit ?? (rowReference || "72");
+  const promptColumn = Object.entries(mapping).find(
+    ([, role]) => role === "prompt",
+  )?.[0];
 
   const active = library.filter((r) => !r.shadowed);
   const byName = new Map(active.map((r) => [r.name, r]));
   const selectedNames = new Set(rewards.map((r) => r.name));
-  const addable = active.filter(
-    (r) => r.valid && r.kind === "rule" && !selectedNames.has(r.name),
-  );
+  const addable = active.filter((r) => r.valid && !selectedNames.has(r.name));
 
   const setWeight = (name: string, weight: number) =>
     setRewards(rewards.map((r) => (r.name === name ? { ...r, weight } : r)));
@@ -322,16 +399,27 @@ export function RewardsSection(): ReactElement {
       return;
     }
     try {
-      const res = await previewRewards(rewards, completion, reference || null);
+      const row = trainingRow(previewRow, mapping, reference);
+      const prompt = promptColumn
+        ? previewCell(previewRow?.[promptColumn])
+        : "";
+      const res = await previewRewards(
+        rewards,
+        completion,
+        reference || null,
+        row,
+        prompt || null,
+      );
       setPreview(
         Object.fromEntries(res.scores.map((s) => [s.name, s.weighted])),
       );
       setPreviewTotal(res.total);
+      setIsolation(res.isolation);
       setPreviewError(null);
     } catch (err) {
       setPreviewError(err instanceof Error ? err.message : String(err));
     }
-  }, [rewards, completion, reference]);
+  }, [rewards, completion, reference, previewRow, promptColumn, mapping]);
 
   // Score live, a beat after the last edit.
   useEffect(() => {
@@ -378,6 +466,7 @@ export function RewardsSection(): ReactElement {
         {rewards.map((selection) => {
           const record = byName.get(selection.name);
           const type = summarizeRule(record?.rule).type;
+          const isPython = record?.kind === "python";
           return (
             <div
               key={selection.name}
@@ -385,7 +474,9 @@ export function RewardsSection(): ReactElement {
             >
               <span className="flex size-8 items-center justify-center rounded-lg bg-muted/70 text-muted-foreground">
                 <HugeiconsIcon
-                  icon={type ? RULE_ICON[type] : TextIcon}
+                  icon={
+                    isPython ? PythonIcon : type ? RULE_ICON[type] : TextIcon
+                  }
                   className="size-4"
                 />
               </span>
@@ -404,6 +495,11 @@ export function RewardsSection(): ReactElement {
                       ? t("rl.rewards.user")
                       : t("rl.rewards.bundled")}
                   </span>
+                  {isPython && (
+                    <span className="rounded-full bg-sky-100 px-1.5 text-ui-10 text-sky-700 dark:bg-sky-950/50 dark:text-sky-300">
+                      {t("rl.rewards.python")}
+                    </span>
+                  )}
                 </p>
                 <p className="truncate text-ui-11p5 text-muted-foreground/85">
                   <RewardSummaryLine record={record} />
@@ -443,6 +539,15 @@ export function RewardsSection(): ReactElement {
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
+                  {isPython && record && (
+                    <DropdownMenuItem onSelect={() => setCodeFor(record)}>
+                      <HugeiconsIcon
+                        icon={SourceCodeIcon}
+                        className="size-3.5"
+                      />
+                      {t("rl.rewards.viewCode")}
+                    </DropdownMenuItem>
+                  )}
                   <DropdownMenuItem onSelect={() => copyReward(selection.name)}>
                     <HugeiconsIcon icon={Copy01Icon} className="size-3.5" />
                     {copied === selection.name
@@ -517,9 +622,6 @@ export function RewardsSection(): ReactElement {
           <HugeiconsIcon icon={Upload01Icon} className="size-3.5" />
           {t("rl.rewards.import")}
         </Button>
-        <span className="text-ui-11p5 text-muted-foreground/85">
-          {t("rl.rewards.pythonLocked")}
-        </span>
       </div>
 
       <div className="flex flex-col gap-2.5 rounded-xl border border-border/70 p-3">
@@ -564,11 +666,32 @@ export function RewardsSection(): ReactElement {
             />
           </div>
         </div>
+        {isolation && !previewError && (
+          <p
+            className={cn(
+              "flex items-center gap-1.5 text-ui-11p5",
+              isolation.os_isolation
+                ? "text-emerald-700 dark:text-emerald-300"
+                : "text-amber-700 dark:text-amber-300",
+            )}
+          >
+            <HugeiconsIcon icon={Shield01Icon} className="size-3.5 shrink-0" />
+            {isolation.os_isolation
+              ? t("rl.rewards.isolationOs", { backend: isolation.backend })
+              : t("rl.rewards.isolationSoftware")}
+          </p>
+        )}
         {previewError && (
-          <p className="text-ui-11p5 text-destructive">{previewError}</p>
+          <p className="whitespace-pre-wrap break-words font-mono text-ui-11p5 text-destructive">
+            {previewError}
+          </p>
         )}
       </div>
 
+      <CodeDialog
+        record={codeFor}
+        onOpenChange={(open) => !open && setCodeFor(null)}
+      />
       <ImportRewardDialog
         open={importOpen}
         onOpenChange={setImportOpen}

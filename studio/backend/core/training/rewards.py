@@ -5,11 +5,13 @@
 
 A reward lives in ``rewards/<name>/REWARD.md``: YAML frontmatter (name, kind, description) followed
 by a YAML body describing the rule. Rule rewards are pure data scored here, so an imported one runs
-no user code. ``kind: python`` is reserved for sandboxed code rewards and is refused for now.
+no user code. ``kind: python`` rewards are a Python function in the body, run by
+``python_rewards`` in a sandboxed worker, never in this process.
 """
 
 from __future__ import annotations
 
+import ast
 import json
 import math
 import re
@@ -62,6 +64,7 @@ def _user_root() -> Path:
 def _split_markdown(raw: str) -> tuple[dict, dict]:
     if len(raw.encode("utf-8")) > MAX_REWARD_MD_BYTES:
         raise RewardError("REWARD.md exceeds the 64 KB limit.")
+    raw = raw.replace("\r\n", "\n")
     if not raw.startswith("---"):
         raise RewardError("REWARD.md must start with YAML frontmatter.")
     parts = raw.split("\n---", 1)
@@ -70,9 +73,9 @@ def _split_markdown(raw: str) -> tuple[dict, dict]:
     head, body = parts[0][3:], parts[1]
     try:
         meta = yaml.safe_load(head) or {}
-        # A Python body is code, not YAML: refuse it before trying to parse it.
+        # A Python body is code, not YAML.
         if isinstance(meta, dict) and meta.get("kind") == "python":
-            raise RewardError("Python rewards are not supported yet; only rule rewards can run.")
+            return meta, {"code": body.lstrip("-").strip("\n")}
         rule = yaml.safe_load(body.lstrip("-\n")) or {}
     except yaml.YAMLError as exc:
         raise RewardError("REWARD.md contains invalid YAML.") from exc
@@ -189,13 +192,21 @@ def parse_reward_markdown(raw: str, folder_name: Optional[str] = None) -> dict:
     if folder_name and name != folder_name:
         raise RewardError(f"Frontmatter name '{name}' does not match folder '{folder_name}'.")
     kind = meta.get("kind", "rule")
-    if kind == "python":
-        raise RewardError("Python rewards are not supported yet; only rule rewards can run.")
-    if kind != "rule":
-        raise RewardError("kind must be 'rule'.")
+    if kind not in ("rule", "python"):
+        raise RewardError("kind must be 'rule' or 'python'.")
     description = meta.get("description", "")
     if not isinstance(description, str):
         raise RewardError("description must be a string.")
+    if kind == "python":
+        entry = meta.get("entry", "reward")
+        return {
+            "name": name,
+            "kind": kind,
+            "description": description.strip(),
+            "entry": entry,
+            "code": validate_python(rule["code"], entry),
+            "rule": None,
+        }
     return {
         "name": name,
         "kind": kind,
@@ -204,16 +215,37 @@ def parse_reward_markdown(raw: str, folder_name: Optional[str] = None) -> dict:
     }
 
 
+_FENCE_RE = re.compile(r"^```(?:python|py)?[ \t]*\n(.*?)\n```[ \t]*$", re.DOTALL)
+
+
+def validate_python(code: Any, entry: Any) -> str:
+    """Syntax and shape only; the code itself never runs in this process."""
+    if not isinstance(entry, str) or not entry.isidentifier():
+        raise RewardError("entry must be the name of a Python function.")
+    if not isinstance(code, str):
+        raise RewardError("A Python reward needs code in the body.")
+    fenced = _FENCE_RE.match(code.strip())
+    code = (fenced.group(1) if fenced else code).strip("\n")
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as exc:
+        raise RewardError(f"Python syntax error on line {exc.lineno}: {exc.msg}") from exc
+    if not any(
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == entry
+        for node in tree.body
+    ):
+        raise RewardError(f"The code does not define a top-level function named '{entry}'.")
+    return code + "\n"
+
+
 def render_reward_markdown(spec: dict) -> str:
-    head = yaml.safe_dump(
-        {
-            "name": spec["name"],
-            "kind": spec.get("kind", "rule"),
-            "description": spec.get("description", ""),
-        },
-        sort_keys = False,
-        allow_unicode = True,
-    )
+    kind = spec.get("kind", "rule")
+    meta = {"name": spec["name"], "kind": kind, "description": spec.get("description", "")}
+    if kind == "python":
+        meta["entry"] = spec["entry"]
+    head = yaml.safe_dump(meta, sort_keys = False, allow_unicode = True)
+    if kind == "python":
+        return f"---\n{head}---\n```python\n{spec['code']}```\n"
     body = yaml.safe_dump(spec["rule"], sort_keys = False, allow_unicode = True)
     return f"---\n{head}---\n{body}"
 
@@ -435,5 +467,27 @@ def preview_scores(
     specs: list[dict],
     text: str,
     reference: Any = None,
-) -> list[dict]:
-    return [{"name": s["name"], "score": score_rule(s["rule"], text, reference)} for s in specs]
+    row: Optional[dict] = None,
+    prompt: Optional[str] = None,
+) -> tuple[list[dict], Optional[dict]]:
+    """Scores in ``specs`` order, plus the isolation the Python ones ran under (None if none did)."""
+    python = [s for s in specs if s.get("kind") == "python"]
+    python_scores: dict = {}
+    isolation = None
+    if python:
+        from core.training.python_rewards import PythonRewardError, preview_python_scores
+
+        if row is None and reference is not None:
+            row = {"answer": reference}
+        try:
+            python_scores, isolation = preview_python_scores(python, text, row or {}, prompt)
+        except PythonRewardError as exc:
+            raise RewardError(str(exc)) from exc
+    out = []
+    for s in specs:
+        if s.get("kind") == "python":
+            score = python_scores.get(s["name"])
+        else:
+            score = score_rule(s["rule"], text, reference)
+        out.append({"name": s["name"], "score": score})
+    return out, isolation
