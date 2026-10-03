@@ -5,11 +5,12 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { PauseIcon, PlayIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { WAVEFORM_BARS, formatSeconds } from "./waveform-peaks";
 
 const SEEK_STEP_SECONDS = 5;
 
+/** The position is also spoken, so colour never carries it alone. */
 export function Waveform({
   peaks,
   durationS,
@@ -17,6 +18,7 @@ export function Waveform({
   label,
   className,
 }: {
+  /** 0..1; null draws a flat placeholder while decoding. */
   peaks: readonly number[] | null;
   durationS: number | null;
   src: string | null;
@@ -40,7 +42,7 @@ export function Waveform({
     if (src === null) audioRef.current?.pause();
   }, [src]);
 
-  const toggle = () => {
+  const toggle = useCallback(() => {
     const audio = audioRef.current;
     if (!(audio && src)) return;
     if (audio.paused) {
@@ -48,15 +50,18 @@ export function Waveform({
     } else {
       audio.pause();
     }
-  };
+  }, [src]);
 
-  const seekTo = (seconds: number) => {
-    const audio = audioRef.current;
-    if (!(audio && src) || duration <= 0) return;
-    const next = Math.min(duration, Math.max(0, seconds));
-    audio.currentTime = next;
-    setPosition(next);
-  };
+  const seekTo = useCallback(
+    (seconds: number) => {
+      const audio = audioRef.current;
+      if (!(audio && src) || duration <= 0) return;
+      const next = Math.min(duration, Math.max(0, seconds));
+      audio.currentTime = next;
+      setPosition(next);
+    },
+    [src, duration],
+  );
 
   return (
     <div className={cn("flex items-center gap-2", className)}>

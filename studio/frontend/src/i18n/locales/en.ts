@@ -264,6 +264,45 @@ export const en = {
       chat: "Chat",
       searchChats: "Search chats...",
     },
+    search: {
+      placeholder: "Search",
+      tabs: {
+        all: "All",
+        chats: "Chats",
+        projects: "Projects",
+        files: "Files",
+        models: "Models",
+      },
+      recents: "Recents",
+      actions: "Actions",
+      newChat: "New chat",
+      newTemporaryChat: "New temporary chat",
+      fineTune: "Fine-tune a model",
+      generateImage: "Generate an image",
+      generateVideo: "Generate a video",
+      untitledChat: "Untitled chat",
+      compare: "Compare",
+      loading: "Loading…",
+      empty: {
+        all: "Nothing to search yet.",
+        chats: "No chats yet.",
+        projects: "No projects yet.",
+        files: "No files in your Library yet.",
+        models: "No downloaded models yet.",
+      },
+      noMatches: "No results.",
+      when: {
+        today: "Today",
+        pastWeek: "Past week",
+        pastMonth: "Past month",
+        older: "Older",
+      },
+      footer: {
+        close: "Close",
+        changeType: "Change type",
+        open: "Open",
+      },
+    },
     notFound: {
       title: "Page not found",
       description: "{path} does not exist.",
@@ -1120,9 +1159,22 @@ export const en = {
       },
       permissions: {
         sectionTitle: "Permissions",
-        bypassLabel: "Tool permissions",
-        bypassDescription:
-          "How Unsloth approves chat tool calls (terminal, python, web, MCP) before they run. Full access disables approvals and the code sandbox.",
+        names: {
+          ask: "Ask for approval",
+          auto: "Approve for me",
+          off: "Run automatically",
+          full: "Full access",
+        },
+        details: {
+          ask:
+            "Asks before every tool call, including terminal and Python code, web searches, file edits and MCP tools. Tools run by an external provider are not paused. Best when you want to review each step.",
+          auto:
+            "Runs routine tool calls on its own and only asks when an action looks risky, such as reading credentials, escalating privileges or running destructive commands.",
+          off:
+            "Runs every tool call without asking. Python and terminal code still run in the sandbox, which limits which files they can reach on your computer.",
+          full:
+            "Runs every tool call without asking and turns off the code sandbox, so Python and terminal code can read and change any file your account can access. Best for trusted tasks that need to work outside the sandbox.",
+        },
       },
       notifications: {
         sectionTitle: "Notifications",
@@ -3136,6 +3188,7 @@ export const en = {
     discardDescription: "Edits to {name} that are not saved will be lost.",
     discard: "Discard",
     mentions: "Skills",
+    manage: "Manage skills",
   },
   // The Library page, its file viewer, and the menus and toasts that act on its files.
   library: {

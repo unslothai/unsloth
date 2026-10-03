@@ -7,7 +7,11 @@ import { loadGalleryUntil } from "@/lib/gallery-deep-link";
 import { toast } from "@/lib/toast";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useAudioWorkspaceStore } from "../stores/audio-workspace-store";
-import { audioWorkflowForTask, clipWorkflow, isAudioWorkflowId } from "../workflows";
+import {
+  audioWorkflowForTask,
+  clipWorkflow,
+  isAudioWorkflowId,
+} from "../workflows";
 import type { AudioHostState } from "./audio-host-state";
 import { type AudioGallery, galleryCache } from "./use-audio-gallery";
 import type { AudioModelSlot } from "./use-audio-model-slot";
@@ -26,8 +30,14 @@ export function useAudioHandoff({
   loadingMoreRef,
   selectClip,
 }: Pick<AudioHostState, "active" | "busy" | "busyRef" | "mode" | "modeRef"> &
-  Pick<AudioModelSlot, "handleModelSelect" | "transitionMode" | "transitionWorkflow"> &
-  Pick<AudioGallery, "refreshGallery" | "loadMore" | "loadingMoreRef" | "selectClip">) {
+  Pick<
+    AudioModelSlot,
+    "handleModelSelect" | "transitionMode" | "transitionWorkflow"
+  > &
+  Pick<
+    AudioGallery,
+    "refreshGallery" | "loadMore" | "loadingMoreRef" | "selectClip"
+  >) {
   const navigateSelf = useNavigate();
   const routeSearch = useSearch({ strict: false }) as {
     model?: string;
@@ -64,9 +74,17 @@ export function useAudioHandoff({
         .commitWorkflow(audioWorkflowForTask(task) ?? intended);
       return;
     }
-    const key = `${wanted}|${routeSearch.quant ?? ""}|${routeSearch.ggufQuant ?? ""}|${routeSearch.task ?? ""}|${routeSearch.audioType ?? ""}|${routeSearch.loadId ?? ""}`;
+    const key = `${wanted}|${routeSearch.quant ?? ""}|${routeSearch.ggufQuant ?? ""}|${routeSearch.task ?? ""}|${routeSearch.audioType ?? ""}|${routeSearch.loadId ?? ""}|${routeSearch.workflow ?? ""}`;
     if (handledRouteModel.current === key) return;
     if (busyRef.current !== null) return;
+    // Open the named page first: a staged or failed load otherwise left the user on another page.
+    const routedWorkflow = routeSearch.workflow;
+    if (
+      isAudioWorkflowId(routedWorkflow) &&
+      !transitionWorkflow(routedWorkflow)
+    ) {
+      return;
+    }
     handledRouteModel.current = key;
     handleModelSelect(wanted, {
       source: "hub",
@@ -128,7 +146,8 @@ export function useAudioHandoff({
       if (found) {
         selectClip(routedItem);
         const clip = galleryCache.clips.find((c) => c.id === routedItem);
-        if (clip && modeRef.current === "speak") transitionWorkflow(clipWorkflow(clip));
+        if (clip && modeRef.current === "speak")
+          transitionWorkflow(clipWorkflow(clip));
       } else {
         toast(translate("library.toast.clipNotFound"), {
           description: translate("library.toast.notFoundDescription"),

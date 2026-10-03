@@ -35,6 +35,7 @@ import {
   isMusicGenerationModel,
   musicGenerationRequiresCuda,
 } from "../catalog";
+import { TTS_MAX_TOKENS } from "../audio-workspace-constants";
 import type { AudioHostState } from "./audio-host-state";
 import { galleryCache } from "./use-audio-gallery";
 import { useAudioCloneStore } from "../stores/audio-clone-store";
@@ -415,6 +416,12 @@ export function useSpeechGeneration({
           : {}),
         signal: controller.signal,
       });
+      if (generated.choices[0]?.finish_reason === "length")
+        toast.warning(
+          maxTokens < TTS_MAX_TOKENS
+            ? "Speech stopped at the Max tokens limit before the end of the text. Raise Max tokens under Advanced to hear the rest."
+            : "Speech stopped at the Max tokens limit before the end of the text. Split the text into shorter parts to hear the rest.",
+        );
       updateGenerationPhase("finishing");
       const refreshed = await refreshGallery();
       const generatedClip = persistedClipForGeneration(
@@ -431,6 +438,7 @@ export function useSpeechGeneration({
           prompt: text,
           model: generated.model,
           saved: true,
+          workflow,
         });
         selectClip(generated.clip_id, true);
       } else {
@@ -441,6 +449,7 @@ export function useSpeechGeneration({
           prompt: text,
           model: generated.model,
           saved: false,
+          workflow,
         });
       }
     } catch (error) {

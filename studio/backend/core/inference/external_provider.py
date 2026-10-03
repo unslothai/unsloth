@@ -9,6 +9,7 @@ import base64
 import contextlib
 import io
 import json as _json
+import math
 import mimetypes
 import random
 import re
@@ -1987,8 +1988,11 @@ class ExternalProviderClient:
                                                         continue
                                                     for ann in envelope.get("annotations") or []:
                                                         _record_or_url_citation(ann)
-                        if self.provider_type == "lemonade" and line.startswith("{"):
-                            line = _bare_json_error_as_sse(line) or line
+                        if self.provider_type == "lemonade":
+                            if line.startswith("{"):
+                                line = _bare_json_error_as_sse(line) or line
+                            else:
+                                line = _with_fastflowlm_timings(line)
                         # Verbatim relay, minus Unsloth's own UI control protocol: the frames this server writes to
                         # paint tool cards ride the same stream, so an endpoint that echoes them forges a card for a
                         # tool that never ran.
@@ -7322,6 +7326,72 @@ def _bare_json_error_as_sse(line: str) -> Optional[str]:
     if not isinstance(error, dict):
         error = {"message": str(error), "type": "provider_error"}
     return "data: " + _json.dumps({"error": error})
+
+
+def _seconds_or_rate(value: Any) -> Optional[float]:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        value = float(value)
+    except OverflowError:
+        return None
+    return value if math.isfinite(value) and value >= 0 else None
+
+
+def _count(value: Any) -> Optional[int]:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _fastflowlm_timings(usage: Any) -> Optional[dict[str, Any]]:
+    """Convert FastFlowLM usage metrics to llama-server timings for the UI and API monitor."""
+    if not isinstance(usage, dict):
+        return None
+    prefill_s = _seconds_or_rate(usage.get("prefill_duration_ttft"))
+    decode_s = _seconds_or_rate(usage.get("decoding_duration"))
+    if prefill_s is None and decode_s is None:
+        return None
+    timings: dict[str, Any] = {}
+    prompt_tokens = _count(usage.get("prompt_tokens"))
+    details = usage.get("prompt_tokens_details")
+    cached = _count(details.get("cached_tokens")) if isinstance(details, dict) else None
+    if prefill_s is not None:
+        timings["prompt_ms"] = prefill_s * 1000.0
+        if prompt_tokens is not None:
+            # FastFlowLM counts a cached prefix in prompt_tokens but not in its prefill speed.
+            timings["prompt_n"] = max(prompt_tokens - (cached or 0), 0)
+        rate = _seconds_or_rate(usage.get("prefill_speed_tps"))
+        if rate is not None:
+            timings["prompt_per_second"] = rate
+        if cached is not None:
+            timings["cache_n"] = cached
+    if decode_s is not None:
+        timings["predicted_ms"] = decode_s * 1000.0
+        completion_tokens = _count(usage.get("completion_tokens"))
+        if completion_tokens is not None:
+            timings["predicted_n"] = completion_tokens
+        rate = _seconds_or_rate(usage.get("decoding_speed_tps"))
+        if rate is not None:
+            timings["predicted_per_second"] = rate
+    return timings
+
+
+def _with_fastflowlm_timings(line: str) -> str:
+    """Add timings to FastFlowLM's final usage chunk."""
+    if '"decoding_duration"' not in line and '"prefill_duration_ttft"' not in line:
+        return line
+    if not line.startswith("data:"):
+        return line
+    try:
+        chunk = _json.loads(line[len("data:") :])
+    except ValueError:
+        return line
+    if not isinstance(chunk, dict) or "timings" in chunk:
+        return line
+    timings = _fastflowlm_timings(chunk.get("usage"))
+    if timings is None:
+        return line
+    chunk["timings"] = timings
+    return "data: " + _json.dumps(chunk)
 
 
 def _error_sse_line(

@@ -614,6 +614,17 @@ export function isGeminiCustomOpenAICompatBase(
   }
 }
 
+/** Native Gemini rejects oversized input before generation: Infinity attributes length stops
+ *  to Max Tokens. Other providers and custom gateways have unknown windows. */
+export function externalStopWindow(
+  providerType: string | null | undefined,
+  baseUrl: string | null | undefined,
+): number | null {
+  return providerType === "gemini" && !isGeminiCustomOpenAICompatBase(baseUrl)
+    ? Number.POSITIVE_INFINITY
+    : null;
+}
+
 /** Whether this Gemini image model supports googleSearch. Documented on the Gemini 3 image
  *  family; older ids reject it with "Search as tool is not enabled for this model". */
 function geminiImageModelAllowsGoogleSearch(modelId: string): boolean {

@@ -7501,9 +7501,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             body = b"".join([chunk async for chunk in response.body_iterator])
 
             assert upstream_bodies[0]["return_progress"] is True
-            # Dropped progress stands in with ``: prefill-progress`` (lease renewal), not stall keep-alive.
-            assert (b": prefill-progress" in body) is not client_progress
-            assert (b": keep-alive" in body) is False
+            assert (b": keep-alive" in body) is not client_progress
             assert upstream_bodies[0]["stream_options"]["include_usage"] is True
             assert b'"usage"' not in body
             assert (b"prompt_progress" in body) is client_progress
