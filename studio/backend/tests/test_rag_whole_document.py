@@ -532,6 +532,31 @@ def test_build_rag_autoinject_on_grounds_attachment_beside_project_hits(rag_conn
     assert injected.index("OVER_BUDGET_PASSAGE") < injected.index("PROJECT_PASSAGE")
 
 
+def test_build_rag_autoinject_on_attachment_beside_project_keeps_lean_top_k(rag_conn, monkeypatch):
+    monkeypatch.setattr(inf_tools, "_thread_has_chunks", lambda thread_id: True)
+
+    def fake_search(**kw):
+        if kw.get("min_dense_score") is None:
+            name, doc = "thread", "d1"
+        else:
+            name, doc = "project", "d2"
+        sources = [
+            {"citationId": i, "documentId": doc, "filename": f"{name}.txt", "text": f"{name}-{i}"}
+            for i in range(1, kw["top_k"] + 1)
+        ]
+        return tool.render_sources(sources), sources
+
+    monkeypatch.setattr(tool, "search_for_autoinject", fake_search)
+    result = inf_tools.build_rag_autoinject(
+        _convo("Summarize this document"),
+        {"thread_id": "t1", "project_id": "p1", "autoinject": True},
+    )
+    injected = _injected_text(result)
+    assert injected.count("<chunk id=") == inf_tools._autoinject_top_k()
+    assert "thread-1" in injected and "project-1" in injected
+    assert injected.index("thread-1") < injected.index("project-1")
+
+
 @pytest.mark.parametrize("autoinject", [True, False])
 def test_build_rag_autoinject_skips_thread_fallback_without_attachment(
     rag_conn, monkeypatch, autoinject

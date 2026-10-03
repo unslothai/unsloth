@@ -14873,7 +14873,9 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
                     if thread_found and found:
                         thread_docs = {s.get("documentId") for s in thread_found[1]}
                         if not any(s.get("documentId") in thread_docs for s in found[1]):
-                            merged = thread_found[1] + found[1]
+                            # Still the lean top_k in total, so the unbudgeted path never doubles the injection.
+                            n_proj = min(len(found[1]), top_k // 2)
+                            merged = thread_found[1][: top_k - n_proj] + found[1][:n_proj]
                             found = (render_sources(merged), merged)
                     elif thread_found:
                         found = thread_found
