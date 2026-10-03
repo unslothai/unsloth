@@ -341,7 +341,9 @@ export function useCloneGeneration({
         const expired =
           error instanceof AudioApiError &&
           error.status === 404 &&
-          state.reference.kind === "input";
+          state.reference.kind === "input" &&
+          // With an emotion clip too, the 404 may be that clip's: keep the server's message.
+          !patch.inputs?.emotion;
         if (expired) {
           setExpiredReferenceId(state.reference.id);
           referenceHandle.current?.markExpired();
