@@ -136,3 +136,28 @@ def test_inventory_rows_of_clone_families_list_clone(tmp_path, folder, family, w
     found = cc._gguf_path_audio_workflows(path.parent, (f"someone/{folder}",))
     row = CachedGgufRepo(repo_id = "r", task = "text-to-speech", audio_workflows = found)
     assert found == row.audio_workflows == workflows
+    # A local folder row (models dir, LM Studio, custom folder) gets the same answer.
+    local = LocalModelInfo(
+        id = str(path.parent), display_name = folder, path = str(path.parent), source = "models_dir"
+    )
+    assert cc.local_audio_workflows(local, "audiocpp_tts") == workflows
+    assert cc.local_audio_workflows(local, "orpheus") is None
+
+
+def test_an_umbrella_snapshot_lists_every_downloaded_familys_workflows(tmp_path):
+    # audio-cpp/audio.cpp-gguf is one cached row: its workflows were the first GGUF's alone.
+    from hub.services.models import catalog_classification as cc
+
+    from .test_audio_cpp_models import _gguf_bytes
+
+    for folder, family in (
+        ("Qwen3-TTS-12Hz-0.6B-Base-GGUF", "qwen3_tts"),
+        ("Kokoro-82M-GGUF", "kokoro_tts"),
+    ):
+        path = tmp_path / folder / f"{folder.lower()}-q8_0.gguf"
+        path.parent.mkdir(parents = True)
+        path.write_bytes(_gguf_bytes(family = family))
+    assert cc._gguf_path_audio_workflows(tmp_path, ("audio-cpp/audio.cpp-gguf",)) == [
+        "speak",
+        "clone",
+    ]
