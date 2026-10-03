@@ -4033,6 +4033,7 @@ def _load_h3_native_offload(
     accelerator = True,
     memory_mode = None,
     speed_mode = None,
+    devices = None,
 ):
     """Run the native H3 load against a stubbed sd-cli and hand back its committed offload flags.
 
@@ -4060,7 +4061,8 @@ def _load_h3_native_offload(
         lambda *, allow_install, accelerator: "/existing/sd-cli",
     )
     # One probe helper serves both --list-devices and --help, so the ggml device line rides along or the CPU case is unreachable.
-    devices = "CUDA0\tNVIDIA GeForce RTX 4070 Ti\n" if accelerator else "CPU\tAMD Ryzen 9\n"
+    if devices is None:
+        devices = "CUDA0\tNVIDIA GeForce RTX 4070 Ti\n" if accelerator else "CPU\tAMD Ryzen 9\n"
     monkeypatch.setattr(sd_cpp_backend, "_sd_cpp_probe_output", lambda *_a: devices + help_text)
 
     class _Engine:
@@ -4169,14 +4171,29 @@ def test_h3_native_sage_attention_needs_the_flag_and_honours_the_veto(monkeypatc
     assert "--sage-attn" not in offload
 
 
+def _cuda_devices(*caps):
+    """sd-cli --list-devices on a CUDA build: ggml_cuda_init's stderr lines, then the device table."""
+    lines = [f"ggml_cuda_init: found {len(caps)} CUDA devices (Total VRAM: 1 MiB):"]
+    lines += [
+        f"  Device {i}: NVIDIA Card {i}, compute capability {cc}, VMM: yes, VRAM: 1 MiB"
+        for i, cc in enumerate(caps)
+    ]
+    lines += [f"CUDA{i}\tNVIDIA Card {i}" for i in range(len(caps))]
+    return "\n".join(lines) + "\n"
+
+
+_BF16 = {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": "1024"}
+
+
 def test_h3_native_speed_max_takes_the_bf16_cublas_path(monkeypatch, tmp_path):
-    """speed_mode=max also hands sd-cli GGML_CUDA_QUANT_CUBLAS_MIN_BATCH; every other mode launches with no extra env."""
+    """With the capability unreadable (no ggml_cuda_init lines), the older rule holds: speed_mode=max
+    hands sd-cli GGML_CUDA_QUANT_CUBLAS_MIN_BATCH, every other mode launches with no extra env."""
     monkeypatch.delenv("UNSLOTH_H3_SAGE_ATTN", raising = False)
     monkeypatch.delenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", raising = False)
     state, _offload = _load_h3_native_offload(
         monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = "max"
     )
-    assert dict(state.pipe.env) == {"GGML_CUDA_QUANT_CUBLAS_MIN_BATCH": "1024"}
+    assert dict(state.pipe.env) == _BF16
     for mode in (None, "default", "off"):
         state, _offload = _load_h3_native_offload(
             monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = mode
@@ -4194,6 +4211,129 @@ def test_h3_native_speed_max_takes_the_bf16_cublas_path(monkeypatch, tmp_path):
         monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = "max"
     )
     assert state.pipe.env == ()
+
+
+@pytest.mark.parametrize("cc", ["8.0", "8.6", "8.9", "9.0", "10.0", "12.0"])
+def test_h3_native_bf16_cublas_is_the_default_on_sm80_plus(monkeypatch, tmp_path, cc):
+    """A CUDA card the build reports as sm80+ takes the BF16 cuBLAS path in every speed mode, sage or not."""
+    monkeypatch.delenv("UNSLOTH_H3_SAGE_ATTN", raising = False)
+    monkeypatch.delenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", raising = False)
+    for mode in (None, "default", "off", "max"):
+        state, offload = _load_h3_native_offload(
+            monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = mode, devices = _cuda_devices(cc)
+        )
+        assert dict(state.pipe.env) == _BF16, (cc, mode)
+        assert ("--sage-attn" in offload) == (mode == "max")
+    # Vetoing sage no longer drops the matmul path: they are separate levers now.
+    monkeypatch.setenv("UNSLOTH_H3_SAGE_ATTN", "0")
+    state, offload = _load_h3_native_offload(
+        monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = "max", devices = _cuda_devices(cc)
+    )
+    assert "--sage-attn" not in offload and dict(state.pipe.env) == _BF16
+
+
+@pytest.mark.parametrize("value", ["0", "1024", "4096"])
+def test_h3_native_bf16_cublas_user_value_wins(monkeypatch, tmp_path, value):
+    """An exported GGML_CUDA_QUANT_CUBLAS_MIN_BATCH (0 = MMQ) is inherited untouched, never overridden."""
+    monkeypatch.setenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", value)
+    for mode in (None, "max"):
+        state, _offload = _load_h3_native_offload(
+            monkeypatch,
+            tmp_path,
+            help_text = _SAGE_HELP,
+            speed_mode = mode,
+            devices = _cuda_devices("10.0"),
+        )
+        assert state.pipe.env == (), (value, mode)
+
+
+@pytest.mark.parametrize("cc", ["7.5", "7.0", "6.1"])
+def test_h3_native_bf16_cublas_skipped_below_sm80(monkeypatch, tmp_path, cc):
+    """The fork never takes the route below sm80 (no BF16 tensor cores), so those cards launch unchanged in
+    every mode, max included."""
+    monkeypatch.delenv("UNSLOTH_H3_SAGE_ATTN", raising = False)
+    monkeypatch.delenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", raising = False)
+    for mode in (None, "default", "max"):
+        state, _offload = _load_h3_native_offload(
+            monkeypatch, tmp_path, help_text = _SAGE_HELP, speed_mode = mode, devices = _cuda_devices(cc)
+        )
+        assert state.pipe.env == (), (cc, mode)
+
+
+def test_h3_native_bf16_cublas_reads_the_pinned_card(monkeypatch, tmp_path):
+    """Mixed host: the gate reads the card the load is pinned to, not the first or the best one."""
+    from core.inference import sd_cpp_backend
+
+    monkeypatch.delenv("UNSLOTH_H3_SAGE_ATTN", raising = False)
+    monkeypatch.delenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", raising = False)
+    text = _cuda_devices("12.0", "7.5")
+    monkeypatch.setattr(sd_cpp_backend, "_sd_cpp_probe_output", lambda *_a: text)
+    assert sd_cpp_backend.sd_cpp_cuda_compute_capability("/x/sd-cli", "CUDA0") == (12, 0)
+    assert sd_cpp_backend.sd_cpp_cuda_compute_capability("/x/sd-cli", "CUDA1") == (7, 5)
+    assert sd_cpp_backend.sd_cpp_cuda_compute_capability("/x/sd-cli", "CUDA7") is None
+    # No pin: sd.cpp picks a card itself, so the lowest decides.
+    assert sd_cpp_backend.sd_cpp_cuda_compute_capability("/x/sd-cli", None) == (7, 5)
+    assert sd_cpp_backend.sd_cpp_cuda_compute_capability("/x/sd-cli", "Vulkan0") is None
+    assert sd_cpp_backend.sd_cpp_cuda_compute_capability(None, "CUDA0") is None
+
+
+@pytest.mark.parametrize(
+    "devices",
+    [
+        # HIP build: ggml_cuda_init says ROCm, device names are ROCm<i>.
+        "ggml_cuda_init: found 1 ROCm devices:\n  Device 0: AMD Radeon Graphics, gfx1151 (0x1151), "
+        "compute capability 11.5, VMM: no\nROCm0\tAMD Radeon Graphics\n",
+        "Vulkan0\tAMD Radeon RX 7900 XTX (RADV NAVI31)\n",
+        "MTL0\tApple M3 Max\n",
+    ],
+)
+def test_h3_native_bf16_cublas_never_on_non_cuda_builds(monkeypatch, tmp_path, devices):
+    from core.inference import sd_cpp_backend
+
+    monkeypatch.delenv("UNSLOTH_H3_SAGE_ATTN", raising = False)
+    monkeypatch.delenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", raising = False)
+    monkeypatch.setattr(sd_cpp_backend, "_sd_cpp_probe_output", lambda *_a: devices)
+    assert sd_cpp_backend.sd_cpp_cuda_compute_capability("/x/sd-cli", None) is None
+    assert sd_cpp_backend.sd_cpp_cuda_compute_capability("/x/sd-cli", "ROCm0") is None
+    state, _offload = _load_h3_native_offload(
+        monkeypatch, tmp_path, help_text = _SAGE_HELP, devices = devices
+    )
+    assert state.pipe.env == ()
+
+
+def test_h3_native_bf16_cublas_never_on_the_cpu_build(monkeypatch, tmp_path):
+    monkeypatch.delenv("UNSLOTH_H3_SAGE_ATTN", raising = False)
+    monkeypatch.delenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", raising = False)
+    for mode in (None, "max"):
+        state, _offload = _load_h3_native_offload(
+            monkeypatch, tmp_path, help_text = _SAGE_HELP, accelerator = False, speed_mode = mode
+        )
+        assert state.pipe.env == (), mode
+
+
+def test_h3_native_status_names_the_matmul_route(monkeypatch, tmp_path):
+    """The speed_mode reason says BF16 cuBLAS exactly when sd-cli gets a nonzero value for it."""
+    monkeypatch.delenv("UNSLOTH_H3_SAGE_ATTN", raising = False)
+    monkeypatch.delenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", raising = False)
+
+    def reason(**kw):
+        state, _offload = _load_h3_native_offload(monkeypatch, tmp_path, help_text = _SAGE_HELP, **kw)
+        return state.resolved["speed_mode"]["reason"]
+
+    assert reason(devices = _cuda_devices("10.0")) == "sd.cpp BF16 cuBLAS matmuls"
+    assert (
+        reason(devices = _cuda_devices("10.0"), speed_mode = "max")
+        == "sd.cpp SageAttention + BF16 cuBLAS"
+    )
+    assert reason(devices = _cuda_devices("7.5")) == "sd.cpp exact kernels"
+    assert reason(devices = _cuda_devices("7.5"), speed_mode = "max") == "sd.cpp SageAttention"
+    assert reason(accelerator = False) == "sd.cpp exact kernels"
+    monkeypatch.setenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", "0")
+    assert reason(devices = _cuda_devices("10.0"), speed_mode = "max") == "sd.cpp SageAttention"
+    monkeypatch.setenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", "2048")
+    assert reason(devices = _cuda_devices("8.6")) == "sd.cpp BF16 cuBLAS matmuls"
+    # The fork never takes the route below sm80, whatever the user exported.
+    assert reason(devices = _cuda_devices("7.5")) == "sd.cpp exact kernels"
 
 
 def test_h3_native_generate_hands_the_runtime_env_to_sd_cli(monkeypatch):
