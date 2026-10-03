@@ -2201,7 +2201,7 @@ def _openai_llama_admission_messages_for_estimate(
                 _non_mcp = _names_a_non_mcp_tool(message_dict) or (
                     isinstance(_correlated, str)
                     and bool(_correlated)
-                    and not _correlated.startswith("mcp__")
+                    and not is_image_tool(_correlated)
                 )
                 if vision and not _non_mcp:
                     # Only entries that could become a picture: _flatten_result
@@ -3897,6 +3897,7 @@ from core.inference.mcp_images import (
     MAX_MODEL_IMAGES as _MCP_MAX_MODEL_IMAGES,
     count_probably_decodable as _mcp_count_probably_decodable,
     image_marker_parts as mcp_image_marker_parts,
+    is_image_tool,
     flattened_rgb as _mcp_flattened_rgb,
     resolve_tool_names as _mcp_resolve_tool_names,
     pixels_in_marker_order as mcp_pixels_in_marker_order,
@@ -6238,6 +6239,7 @@ async def _select_request_tools(
     tools_on: bool,
     mcp_allowed: bool,
     checkpoint_fitted: bool = False,
+    supports_vision: bool = False,
 ) -> list[dict]:
     """Resolve the tool list for a chat request: built-ins filtered by the
     caller's opt-in (empty when MCP-only), the RAG tool dropped without a
@@ -6263,7 +6265,10 @@ async def _select_request_tools(
         # Copy so the shared module-global tool list can't be mutated by callers.
         tools = list(ALL_TOOLS)
     tools = [
-        tool for tool in tools if tool["function"]["name"] not in {"read_skill", "create_skill"}
+        tool
+        for tool in tools
+        if tool["function"]["name"] not in {"read_skill", "create_skill"}
+        and (supports_vision or tool["function"]["name"] != "view_image")
     ]
     # Inline on purpose: an await here escapes the api_monitor cancel handling; the cache bounds it.
     enabled_skills = _enabled_agent_skills() if tools_on else []
@@ -9424,7 +9429,7 @@ def _names_a_non_mcp_tool(message) -> bool:
     the envelope only ever came from an MCP server.
     """
     name = message.get("name") if isinstance(message, dict) else getattr(message, "name", None)
-    return isinstance(name, str) and bool(name) and not name.startswith("mcp__")
+    return isinstance(name, str) and bool(name) and not is_image_tool(name)
 
 
 # Mirrors NON_VISION_PROVIDER_TYPES in studio/frontend/src/features/chat/
@@ -9535,7 +9540,7 @@ def _request_has_promotable_mcp_images(payload, *, exact: bool = True) -> bool:
         if not isinstance(content, str) or not present(content):
             continue
         name = getattr(message, "name", None) or names.get(index)
-        if isinstance(name, str) and name and not name.startswith("mcp__"):
+        if isinstance(name, str) and name and not is_image_tool(name):
             continue
         return True
     return False
@@ -25551,6 +25556,10 @@ async def _proxy_to_external_provider(
         # otherwise pin it to False and discard that picture on a capable model.
         _may_receive_image = (
             image_requested
+            or (
+                _effective_enable_tools(payload) is True
+                and (payload.enabled_tools is None or "view_image" in payload.enabled_tools)
+            )
             # A tool can hand this loop a picture on a later turn...
             or bool(getattr(payload, "mcp_enabled", False))
             # ...and a conversation that already carries one needs the capability
@@ -25623,6 +25632,7 @@ async def _proxy_to_external_provider(
         if _explicit_studio_tool_loop_requested(payload):
             studio_tool_payloads = await _select_request_tools(
                 payload,
+                supports_vision = model_supports_vision,
                 tools_on = _effective_enable_tools(payload) is True,
                 mcp_allowed = bool(payload.mcp_enabled),
             )
@@ -25993,6 +26003,9 @@ async def _proxy_to_external_provider(
     if studio_tool_loop:
         external_studio_tools = await _select_request_tools(
             payload,
+            supports_vision = _external_takes_mcp_images(
+                provider_type, _supports_vision, model, _pinfo
+            ),
             tools_on = _effective_enable_tools(payload) is True,
             mcp_allowed = bool(payload.mcp_enabled),
         )
@@ -28400,6 +28413,7 @@ async def produce_openai_chat_completions(
             set_mcp_listing_context_tokens(getattr(llama_backend, "context_length", None))
             tools_to_use = await _select_request_tools(
                 payload,
+                supports_vision = bool(llama_backend.is_vision),
                 tools_on = _tools_on,
                 mcp_allowed = _mcp_allowed,
                 # Only this branch runs the checkpoint fit. The process-wide policy says a
@@ -30507,7 +30521,10 @@ async def produce_openai_chat_completions(
 
         set_mcp_listing_context_tokens(_monitor_context_length())
         _sf_tools_to_use = await _select_request_tools(
-            payload, tools_on = _sf_tools_on, mcp_allowed = _sf_mcp_allowed
+            payload,
+            tools_on = _sf_tools_on,
+            mcp_allowed = _sf_mcp_allowed,
+            supports_vision = bool(_sf_model_info.get("is_vision")),
         )
         _reject_missing_forced_tool(payload.tool_choice, _sf_tools_to_use)
         # Mirror the GGUF path: refuse to enter the tool loop when nothing
@@ -36509,7 +36526,7 @@ _STUDIO_ANTHROPIC_TOOL_ALIASES = {
 # asks then. render_html is excluded because a networked canvas prompts in auto,
 # and this channel invokes the loop without confirm; auto/ask reject, off/full run.
 _ANTHROPIC_UNPROMPTED_SAFE_TOOLS = frozenset(
-    {"web_search", "search_knowledge_base", "search_conversation", "read_skill"}
+    {"web_search", "search_knowledge_base", "search_conversation", "read_skill", "view_image"}
 )
 
 
@@ -36580,10 +36597,16 @@ def _anthropic_requested_studio_tools(tools: Optional[list]) -> set[str]:
 
 
 def _select_anthropic_server_tools(
-    all_tools: list[dict], requested_studio_tools: set[str], enabled_tools: Optional[list[str]]
+    all_tools: list[dict],
+    requested_studio_tools: set[str],
+    enabled_tools: Optional[list[str]],
+    *,
+    supports_vision: bool = True,
 ) -> list[dict]:
     """Select Unsloth tools requested through Anthropic tools and extensions."""
-    available = list(all_tools)
+    available = [
+        tool for tool in all_tools if supports_vision or tool["function"]["name"] != "view_image"
+    ]
     if _enabled_agent_skills():
         from core.inference.tools import READ_SKILL_TOOL
         available.append(READ_SKILL_TOOL)
@@ -37256,7 +37279,12 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
                     detail = "Cannot count tokens until enabled MCP tools have been discovered.",
                 )
         _tools_to_use = (
-            await _select_request_tools(payload, tools_on = _tools_on, mcp_allowed = False)
+            await _select_request_tools(
+                payload,
+                tools_on = _tools_on,
+                mcp_allowed = False,
+                supports_vision = bool(entry.get("is_vision")),
+            )
         ) + _mcp_tools
         # Nothing surviving means the completion skips the tool loop, so follow it back
         # to the plain render rather than passing an empty catalog.
@@ -37634,7 +37662,10 @@ async def chat_count_tokens(
             )
     if not _takes_passthrough and (_tools_on or _mcp_on) and llama_backend.supports_tools:
         tools_to_use = await _select_request_tools(
-            payload, tools_on = _tools_on, mcp_allowed = _mcp_allowed
+            payload,
+            tools_on = _tools_on,
+            mcp_allowed = _mcp_allowed,
+            supports_vision = bool(llama_backend.is_vision),
         )
         # Appended in the position _select_request_tools would have used, so the order matches.
         tools_to_use = tools_to_use + _mcp_tools
@@ -37852,6 +37883,7 @@ async def anthropic_count_tokens(
                 _ANTHROPIC_COUNT_TOOLS,
                 _count_studio_tools,
                 payload.enabled_tools,
+                supports_vision = bool(llama_backend.is_vision),
             )
         )
         _count_server_tools = bool(_count_selected_server_tools)
@@ -38248,6 +38280,11 @@ async def anthropic_messages(
     # enable_tools=false). Explicit False always wins. Same predicate as the
     # permission gate above: deciding "did this request select server tools"
     # twice is what let the gate reject requests the router then served.
+    selected_server_tools = [
+        tool
+        for tool in selected_server_tools
+        if llama_backend.is_vision or tool["function"]["name"] != "view_image"
+    ]
     server_tools = (
         bool(selected_server_tools)
         and llama_backend.supports_tools
