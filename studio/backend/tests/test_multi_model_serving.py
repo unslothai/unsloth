@@ -1424,6 +1424,31 @@ def test_training_stops_on_a_kept_model_that_would_not_unload(backends, monkeypa
         training_vram.free_kept_models_for_training("test")
 
 
+def test_training_sees_and_retries_a_kept_model_that_failed_to_unload(backends, monkeypatch):
+    primary, extra = backends
+    primary.unload_model()
+
+    def refuse():
+        raise RuntimeError("llama-server ignored SIGKILL")
+
+    monkeypatch.setattr(extra.llama, "unload_model", refuse)
+    with pytest.raises(RuntimeError):
+        model_slots.drop(extra)
+    assert model_slots.slots == [] and model_slots.stuck == [extra]
+    _hold_chat_claim(monkeypatch)
+    inf._release_chat_for_zero_vram_primary()
+    assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
+    # Out of routing, but its server may still hold VRAM: training counts it and stops on it.
+    assert training_vram.summarize_resident_chat()["gguf"] == "org/B-GGUF"
+    monkeypatch.setattr(training_vram, "summarize_resident_stt", lambda: {"any": False})
+    with pytest.raises(training_vram.ManagedEngineStillRunning):
+        training_vram.coordinate_models_for_training(lambda: (False, {}))
+    # Once it stops, the retry clears it.
+    monkeypatch.delattr(extra.llama, "unload_model")
+    assert training_vram.free_kept_models_for_training("test") == ["kept:org/B-GGUF"]
+    assert model_slots.stuck == [] and not extra.llama.is_active
+
+
 def test_a_partly_offloaded_model_plans_only_the_vram_its_cards_had():
     from core.inference.llama_cpp import _gpu_plan_mib
 

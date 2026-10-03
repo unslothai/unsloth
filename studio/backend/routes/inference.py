@@ -11466,7 +11466,7 @@ def _release_chat_for_zero_vram_primary() -> None:
     """A primary that holds no VRAM drops CHAT, unless a model kept alongside still holds it."""
     from core.inference.gpu_arbiter import CHAT, release, release_if
 
-    if not model_slots.slots and model_slots.loading is None:
+    if not model_slots.slots and not model_slots.stuck and model_slots.loading is None:
         release(CHAT)
         return
     release_if(CHAT, lambda: not model_slots.holds_vram())
@@ -18658,7 +18658,9 @@ async def _load_model_impl(
 
         # Point of no return for the Unsloth path: cancel only once nothing can still reject the load.
         _raise_if_scoped_load_cancelled()
-        retire_kept = request.engine != "auto" and replacing and bool(model_slots.slots)
+        retire_kept = (
+            request.engine != "auto" and replacing and bool(model_slots.slots or model_slots.stuck)
+        )
         if retire_kept:
             _gate_kept_models(request, cancel = False)
         if serving and on_reload_confirmed is not None:

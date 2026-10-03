@@ -71,12 +71,16 @@ def summarize_resident_chat() -> Dict[str, Any]:
 
     try:
         from core.inference import model_slots
+
         filling_slot = model_slots.loading
-        for slot in list(model_slots.slots):
+        # A stuck slot's server would not stop, so it may still hold VRAM whatever it reports.
+        stuck = list(model_slots.stuck)
+        for slot in [*model_slots.slots, *stuck]:
             pending = next(iter(getattr(slot.orchestrator, "loading_models", ()) or ()), None)
             filling = filling_slot is not None and filling_slot[0] is slot
             name = (
-                slot.orchestrator.active_model_name
+                (slot in stuck and (slot.llama.model_identifier or "gguf"))
+                or slot.orchestrator.active_model_name
                 or pending
                 or (
                     slot.llama.is_active
@@ -513,7 +517,7 @@ def free_kept_models_for_training(reason: str) -> List[str]:
 
     kept = [
         slot.orchestrator.active_model_name or slot.llama.model_identifier or "gguf"
-        for slot in list(model_slots.slots)
+        for slot in [*model_slots.slots, *model_slots.stuck]
     ]
     if kept:
         logger.info("Unloading %d model(s) kept alongside for training (%s)", len(kept), reason)
@@ -717,7 +721,7 @@ def coordinate_models_for_training(
     from core.inference import model_slots
 
     # Models kept alongside go before the one in use.
-    if model_slots.slots:
+    if model_slots.slots or model_slots.stuck:
         freed += free_kept_models_for_training(reason = "insufficient training memory")
         keep, _info = can_keep()
         if keep:
