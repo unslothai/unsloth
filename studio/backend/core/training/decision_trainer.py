@@ -385,6 +385,15 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
         else:
             arguments["eval_strategy"] = "epoch"
         send("eval_configured")
+    report_to = []
+    if config.get("enable_tensorboard"):
+        from utils.paths import resolve_tensorboard_dir
+
+        report_to.append("tensorboard")
+        # transformers 5 ignores logging_dir; its TensorBoard callback reads this instead.
+        os.environ["TENSORBOARD_LOGGING_DIR"] = str(
+            resolve_tensorboard_dir(config.get("tensorboard_dir"))
+        )
     if config["enable_wandb"]:
         try:
             import wandb
@@ -392,9 +401,10 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
             if config.get("wandb_token"):
                 os.environ["WANDB_API_KEY"] = config["wandb_token"]
             wandb.init(project = config.get("wandb_project") or "unsloth-training")
-            arguments["report_to"] = ["wandb"]
+            report_to.append("wandb")
         except Exception as exc:
             warn(f"Weights & Biases logging is off: {exc}")
+    arguments["report_to"] = report_to or "none"
 
     base_metrics = None
     if eval_items:

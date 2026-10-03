@@ -342,6 +342,30 @@ def test_lora_run_merges_into_the_served_layout(base, studio_home, client, monke
 
 
 @needs_worker
+@pytest.mark.skipif(
+    importlib.util.find_spec("tensorboard") is None
+    and importlib.util.find_spec("tensorboardX") is None,
+    reason = "needs tensorboard",
+)
+def test_tensorboard_logs_a_decision_run(base, studio_home):
+    from utils.paths import tensorboard_root
+
+    rows = [_row(i) for i in range(60)]
+    events = _train(
+        _config(
+            base,
+            _dataset(studio_home, rows),
+            max_steps = 2,
+            enable_tensorboard = True,
+            tensorboard_dir = "decision-tb",
+        )
+    )
+
+    assert not _of(events, "error"), _of(events, "error")
+    assert list((tensorboard_root() / "decision-tb").rglob("events.out.tfevents.*"))
+
+
+@needs_worker
 def test_an_unusable_eval_file_falls_back_to_the_hold_out(base, studio_home):
     held = studio_home / "held"
     held.mkdir()
