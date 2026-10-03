@@ -11,9 +11,10 @@ const modeStep: TourStep = {
   body: (
     <>
       Speak turns text into speech, Clone speaks in the voice from a short
-      recording, Music makes songs and sound effects, and Transcribe turns a
-      recording into text. Each lists only the models that can do it, so the
-      picker above follows the page.
+      recording, Music makes songs and sound effects, Separate splits a track
+      into vocals and instruments, and Transcribe turns a recording into text.
+      Each lists only the models that can do it, so the picker above follows the
+      page.
     </>
   ),
 };
@@ -24,6 +25,8 @@ const MODEL_STEP_BODY: Record<AudioWorkflowId, string> = {
   clone:
     "Models that can speak in the voice of a short recording you give them.",
   music: "Music models. Loading one replaces the model in the main slot.",
+  separate:
+    "Source separation models. Loading one replaces the model in the main slot.",
   transcribe:
     "Speech recognition models. They run beside your chat model, not in its place.",
 };
@@ -71,6 +74,35 @@ export function buildAudioTourSteps({
         ),
       },
       outputStep,
+    ];
+  }
+
+  if (workflow === "separate") {
+    return [
+      modeStep,
+      modelStep(workflow),
+      {
+        id: "source",
+        target: "audio-separate-source",
+        title: "Track",
+        body: (
+          <>
+            Upload, record or pick the track to split. It is converted to 44.1
+            kHz for the model.
+          </>
+        ),
+      },
+      {
+        id: "output",
+        target: "audio-output",
+        title: "Stems",
+        body: (
+          <>
+            Each stem gets its own row with solo, mute and volume, all playing
+            in sync. Download one stem or all of them.
+          </>
+        ),
+      },
     ];
   }
 

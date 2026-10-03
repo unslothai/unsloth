@@ -218,7 +218,7 @@ export async function deleteAudioClip(id: string): Promise<void> {
 
 /** Deletes the clips that are not archived; with a workflow, only that workflow's clips. */
 export async function clearAudioGallery(
-  workflow?: "speak" | "clone" | "music",
+  workflow?: "speak" | "clone" | "music" | "separate",
 ): Promise<number> {
   const query = workflow ? `?workflow=${workflow}` : "";
   const response = await authFetch(`/api/inference/audio/gallery${query}`, {

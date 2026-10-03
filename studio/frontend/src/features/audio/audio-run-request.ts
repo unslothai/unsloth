@@ -88,12 +88,15 @@ export function selectionExpired(
 export type AudioOptionScalar = boolean | number | string;
 
 export interface AudioRunRequest {
-  workflow: "clone" | "speak";
-  text: string;
+  workflow: "clone" | "speak" | "separate";
+  /** Required for clone and speak; separate takes none. */
+  text?: string;
   language?: string | null;
   instructions?: string | null;
   inputs?: {
     reference?: (AudioSourceRef & { trim?: AudioTrim }) | null;
+    /** The track Separate splits. */
+    source?: (AudioSourceRef & { trim?: AudioTrim }) | null;
     reference_text?: string | null;
     emotion?: AudioSourceRef | null;
   };
@@ -133,10 +136,8 @@ function cleanRef(
 export function buildAudioRunBody(
   request: AudioRunRequest,
 ): Record<string, unknown> {
-  const body: Record<string, unknown> = {
-    workflow: request.workflow,
-    text: request.text,
-  };
+  const body: Record<string, unknown> = { workflow: request.workflow };
+  if (request.workflow !== "separate") body.text = request.text ?? "";
   const language = request.language?.trim();
   if (language) body.language = language;
   const instructions = request.instructions?.trim();
@@ -144,6 +145,8 @@ export function buildAudioRunBody(
   const inputs: Record<string, unknown> = {};
   const reference = cleanRef(request.inputs?.reference);
   if (reference) inputs.reference = reference;
+  const source = cleanRef(request.inputs?.source);
+  if (source) inputs.source = source;
   const referenceText = request.inputs?.reference_text?.trim();
   if (referenceText) inputs.reference_text = referenceText;
   // Trim belongs to the reference only.

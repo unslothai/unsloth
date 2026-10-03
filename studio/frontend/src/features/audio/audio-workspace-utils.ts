@@ -3,6 +3,7 @@
 
 import {
   AUDIO_CPP_MUSIC_AUDIO_TYPE,
+  AUDIO_CPP_SEP_AUDIO_TYPE,
   AUDIO_CPP_TTS_AUDIO_TYPE,
   audioCppDisplayName,
   isAudioCppFolderId,
@@ -23,6 +24,7 @@ export function audioModelLabel(id: string): string {
 export function loadedAudioKind(audioType: string | null | undefined): string {
   if (audioType === AUDIO_CPP_TTS_AUDIO_TYPE) return "speech";
   if (audioType === AUDIO_CPP_MUSIC_AUDIO_TYPE) return "music";
+  if (audioType === AUDIO_CPP_SEP_AUDIO_TYPE) return "separation";
   return audioType ?? "audio";
 }
 

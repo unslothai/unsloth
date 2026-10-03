@@ -90,6 +90,7 @@ export function AudioSourceInput({
   allowSavedVoice = true,
   handleRef,
   onStatusChange,
+  usesFirstSeconds = REFERENCE_MAX_SECONDS,
 }: {
   id: string;
   label: string;
@@ -102,6 +103,8 @@ export function AudioSourceInput({
   handleRef?: Ref<AudioSourceInputHandle>;
   /** Hears what the card is doing (uploading, failed, expired), for the page's Generate blocker. */
   onStatusChange?: (status: AudioSourceStatus) => void;
+  /** How much of a longer clip the page uses, said on the card; null when it uses all of it. */
+  usesFirstSeconds?: number | null;
 }) {
   const source = useAudioSource({ value, onChange });
   const history = useContext(AudioHistoryContext);
@@ -302,9 +305,11 @@ export function AudioSourceInput({
             <output className="text-ui-11p5 text-muted-foreground">
               Loading the clip…
             </output>
-          ) : durationS !== null && durationS > REFERENCE_MAX_SECONDS ? (
+          ) : usesFirstSeconds !== null &&
+            durationS !== null &&
+            durationS > usesFirstSeconds ? (
             <p className="text-ui-11p5 leading-snug text-muted-foreground">
-              Uses the first {REFERENCE_MAX_SECONDS} s.
+              Uses the first {usesFirstSeconds} s.
             </p>
           ) : null}
         </div>

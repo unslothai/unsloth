@@ -3,7 +3,11 @@
 
 // Free of app imports so the node test runner can load it directly.
 
-import { audioCppModelFor, audioCppWorkflowsFor } from "./audio-cpp-catalog";
+import {
+  AUDIO_CPP_SEP_AUDIO_TYPE,
+  audioCppModelFor,
+  audioCppWorkflowsFor,
+} from "./audio-cpp-catalog";
 import {
   type AudioWorkflowId,
   audioWorkflowForAudioType,
@@ -28,6 +32,9 @@ export function audioRowMatchesWorkflow(
   if (row.audioWorkflows && row.audioWorkflows.length > 0) {
     return row.audioWorkflows.includes(workflow);
   }
+  if (row.audioType === AUDIO_CPP_SEP_AUDIO_TYPE) {
+    return workflow === "separate";
+  }
   const byTask = audioWorkflowForTask(row.task);
   if (byTask === "transcribe" || byTask === "music") {
     return byTask === workflow;
@@ -42,6 +49,10 @@ export function audioRowMatchesWorkflow(
   }
   if (catalogTask === "asr") {
     return workflow === "transcribe";
+  }
+  if (workflow === "separate") {
+    // Only models the backend or the catalog marks as separating list on Separate.
+    return false;
   }
   if (byTask === "speak" || catalogTask === "tts" || row.audioType) {
     // Speech models clone only when the backend says so; an older row stays on Speak.

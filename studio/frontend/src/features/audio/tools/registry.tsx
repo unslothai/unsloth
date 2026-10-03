@@ -6,6 +6,7 @@ import type { AudioWorkflowId } from "../workflows";
 import { CLONE_TOOL_PANELS } from "./clone-panels";
 import { InstructionsField, MossLanguageField } from "./instructions-panels";
 import { instructionsKindFor, panelApplies } from "./select";
+import { SEPARATE_TOOL_PANELS } from "./separate-panels";
 import { SPEAK_TOOL_PANELS } from "./speak-panels";
 import type {
   AnyAudioToolPanel,
@@ -110,6 +111,7 @@ export const AUDIO_TOOL_PANELS: readonly AnyAudioToolPanel[] = [
   ...INSTRUCTION_PANELS,
   ...SPEAK_TOOL_PANELS.slice(1),
   ...CLONE_TOOL_PANELS,
+  ...SEPARATE_TOOL_PANELS,
 ];
 
 export function audioToolPanelsFor(

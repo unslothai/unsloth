@@ -7,12 +7,18 @@ import {
   AiVoiceIcon,
   MusicNote03Icon,
   SpeechToTextIcon,
+  SplitIcon,
   VoiceIdIcon,
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 import { AUDIO_CPP_MUSIC_AUDIO_TYPE } from "./audio-cpp-catalog";
 
-export type AudioWorkflowId = "speak" | "clone" | "music" | "transcribe";
+export type AudioWorkflowId =
+  | "speak"
+  | "clone"
+  | "music"
+  | "separate"
+  | "transcribe";
 
 /** Which model slot a workflow runs in: Speak, Clone and Music share the main inference slot, Transcribe uses the STT sidecar. */
 export type AudioWorkflowSlot = "speak" | "transcribe";
@@ -52,6 +58,15 @@ export const AUDIO_WORKFLOWS: ReadonlyArray<{
     heading: "Create music",
     icon: MusicNote03Icon,
     hint: "Songs, instrumentals and sound effects",
+    slot: "speak",
+    createTrain: false,
+  },
+  {
+    id: "separate",
+    label: "Separate",
+    heading: "Separate audio",
+    icon: SplitIcon,
+    hint: "Split a track into vocals and instruments",
     slot: "speak",
     createTrain: false,
   },
@@ -111,11 +126,12 @@ export function audioWorkflowForAudioType(
 export function clipWorkflow(clip: {
   workflow?: string | null;
   audio_type?: string | null;
-}): "speak" | "clone" | "music" {
+}): "speak" | "clone" | "music" | "separate" {
   if (
     clip.workflow === "speak" ||
     clip.workflow === "clone" ||
-    clip.workflow === "music"
+    clip.workflow === "music" ||
+    clip.workflow === "separate"
   ) {
     return clip.workflow;
   }
