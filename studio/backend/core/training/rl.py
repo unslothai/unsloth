@@ -20,7 +20,11 @@ RL_ROLES = {
     "orpo": ("prompt", "chosen", "rejected", "system"),
     "grpo": ("prompt", "answer", "system"),
 }
-_REQUIRED_ROLES = {"dpo": ("prompt", "chosen", "rejected"), "orpo": ("prompt", "chosen", "rejected"), "grpo": ("prompt",)}
+_REQUIRED_ROLES = {
+    "dpo": ("prompt", "chosen", "rejected"),
+    "orpo": ("prompt", "chosen", "rejected"),
+    "grpo": ("prompt",),
+}
 _AUTO_ROLE_NAMES = {
     "prompt": ("prompt", "question", "instruction", "problem", "query", "input"),
     "answer": ("answer", "solution", "final_answer", "target", "label"),
@@ -61,7 +65,6 @@ def install_fsdp_import_stub() -> bool:
 
     try:
         import torch.distributed.fsdp  # noqa: F401
-
         return False
     except Exception:
         for name in [n for n in sys.modules if n.startswith("torch.distributed.fsdp")]:
@@ -75,7 +78,6 @@ def install_fsdp_import_stub() -> bool:
     sys.modules["torch.distributed.fsdp"] = stub
     try:
         import torch.distributed as dist
-
         dist.fsdp = stub
     except Exception:
         pass
@@ -89,7 +91,11 @@ def rl_log_metrics(logs: dict) -> Optional[dict]:
     for key, value in logs.items():
         if not isinstance(key, str) or not key.startswith(_RL_LOG_PREFIXES):
             continue
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+        ):
             continue
         out[key] = float(value)
     return out or None
@@ -101,7 +107,9 @@ def normalize_objective(value: Any) -> str:
 
 
 def resolve_role_columns(
-    columns: list[str], objective: str, mapping: Optional[dict] = None
+    columns: list[str],
+    objective: str,
+    mapping: Optional[dict] = None,
 ) -> dict[str, str]:
     """role -> column. Explicit mapping wins; otherwise match common column names."""
     roles = RL_ROLES[objective]
@@ -180,7 +188,12 @@ def format_rl_dataset(
     return dataset.map(convert, **kwargs), roles
 
 
-def render_prompts_without_thinking(dataset, tokenizer, enable_thinking: bool, num_proc: Optional[int] = None):
+def render_prompts_without_thinking(
+    dataset,
+    tokenizer,
+    enable_thinking: bool,
+    num_proc: Optional[int] = None,
+):
     """TRL's GRPOTrainer applies the chat template with no kwargs, so a Qwen3-style template always
     opens a thinking block and short completion budgets run out inside it. Render the prompts to
     text here with ``enable_thinking`` set; TRL then passes the strings through untouched."""
@@ -191,7 +204,10 @@ def render_prompts_without_thinking(dataset, tokenizer, enable_thinking: bool, n
     def render(row: dict) -> dict:
         return {
             "prompt": tokenizer.apply_chat_template(
-                row["prompt"], tokenize = False, add_generation_prompt = True, enable_thinking = enable_thinking
+                row["prompt"],
+                tokenize = False,
+                add_generation_prompt = True,
+                enable_thinking = enable_thinking,
             )
         }
 
@@ -245,7 +261,6 @@ def build_rl_trainer(
     if objective in PREFERENCE_OBJECTIVES:
         try:
             from unsloth import PatchDPOTrainer
-
             PatchDPOTrainer()
         except ImportError:
             pass
@@ -278,7 +293,9 @@ def build_rl_trainer(
                 eval_dataset, _ = render_prompts_without_thinking(
                     eval_dataset, tokenizer, bool(settings["enable_thinking"])
                 )
-        loss_type, sampling_level = GRPO_VARIANTS.get(settings.get("variant") or "dapo", GRPO_VARIANTS["dapo"])
+        loss_type, sampling_level = GRPO_VARIANTS.get(
+            settings.get("variant") or "dapo", GRPO_VARIANTS["dapo"]
+        )
         variant_args = _config_kwargs(
             trl.GRPOConfig,
             {

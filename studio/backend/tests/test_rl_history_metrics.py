@@ -19,7 +19,9 @@ def db(tmp_path, monkeypatch):
 
 
 def _run(run_id = "r1"):
-    studio_db.create_run(run_id, "unsloth/Qwen3-0.6B", "openai/gsm8k", "{}", "2026-10-02T00:00:00", 3)
+    studio_db.create_run(
+        run_id, "unsloth/Qwen3-0.6B", "openai/gsm8k", "{}", "2026-10-02T00:00:00", 3
+    )
 
 
 def test_rl_metrics_round_trip_into_history(db):
@@ -27,8 +29,16 @@ def test_rl_metrics_round_trip_into_history(db):
     studio_db.insert_metrics_batch(
         "r1",
         [
-            {"step": 1, "loss": 0.0, "rl": {"reward": 0.5, "kl": 0.0, "rewards/exact_answer/mean": 1.0}},
-            {"step": 2, "loss": 0.1, "rl": {"reward": float("nan"), "kl": math.inf, "reward_std": 0.3}},
+            {
+                "step": 1,
+                "loss": 0.0,
+                "rl": {"reward": 0.5, "kl": 0.0, "rewards/exact_answer/mean": 1.0},
+            },
+            {
+                "step": 2,
+                "loss": 0.1,
+                "rl": {"reward": float("nan"), "kl": math.inf, "reward_std": 0.3},
+            },
             {"step": 3, "loss": 0.2},
         ],
     )
@@ -54,7 +64,9 @@ def test_sft_runs_have_no_rl_history(db):
 def test_an_old_database_gains_the_column(tmp_path, monkeypatch):
     path = tmp_path / "studio.db"
     conn = sqlite3.connect(path)
-    conn.execute("CREATE TABLE training_metrics (id INTEGER PRIMARY KEY, run_id TEXT, step INTEGER)")
+    conn.execute(
+        "CREATE TABLE training_metrics (id INTEGER PRIMARY KEY, run_id TEXT, step INTEGER)"
+    )
     conn.commit()
     conn.close()
     monkeypatch.setattr(studio_db, "studio_db_path", lambda: path)

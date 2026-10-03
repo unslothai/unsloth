@@ -9,7 +9,15 @@ import pytest
 from datasets import Dataset
 from pydantic import ValidationError
 
-from core.training.rl import build_rl_trainer, install_fsdp_import_stub, render_prompts_without_thinking, format_rl_dataset, resolve_role_columns, rl_lengths, rl_log_metrics
+from core.training.rl import (
+    build_rl_trainer,
+    install_fsdp_import_stub,
+    render_prompts_without_thinking,
+    format_rl_dataset,
+    resolve_role_columns,
+    rl_lengths,
+    rl_log_metrics,
+)
 from models.training import TrainingStartRequest
 
 BASE = {"model_name": "unsloth/Qwen3-4B-Base", "training_type": "LoRA/QLoRA", "format_type": "auto"}
@@ -35,7 +43,10 @@ def test_grpo_mapping_system_prompt_and_kept_reward_columns():
 
 def test_preference_rows_strip_the_user_turn_from_full_conversations():
     # ultrafeedback_binarized stores chosen/rejected as the whole conversation.
-    convo = lambda reply: [{"role": "user", "content": "q"}, {"role": "assistant", "content": reply}]
+    convo = lambda reply: [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": reply},
+    ]
     ds = Dataset.from_list([{"prompt": "q", "chosen": convo("good"), "rejected": convo("bad")}])
     out, _ = format_rl_dataset(ds, "dpo")
     assert out[0]["chosen"] == [{"role": "assistant", "content": "good"}]
@@ -51,7 +62,9 @@ def test_missing_roles_name_the_columns_found():
 def test_rl_lengths_fit_inside_max_seq_length():
     assert rl_lengths("grpo", 1024, {}) == (256, 768)
     assert rl_lengths("dpo", 1024, {}) == (512, 512)
-    prompt, completion = rl_lengths("grpo", 512, {"max_prompt_length": 10_000, "max_completion_length": 10_000})
+    prompt, completion = rl_lengths(
+        "grpo", 512, {"max_prompt_length": 10_000, "max_completion_length": 10_000}
+    )
     assert prompt + completion <= 512
 
 
@@ -83,8 +96,14 @@ def test_request_defaults_to_sft_so_saved_configs_load_unchanged():
         ({"objective": "grpo"}, "at least one reward"),
         ({"objective": "dpo", "training_type": "Continued Pretraining"}, "Continued Pretraining"),
         ({"objective": "orpo", "is_dataset_image": True}, "text datasets"),
-        ({"objective": "grpo", "grpo_rewards": [{"name": "a"}, {"name": "a"}]}, "only be selected once"),
-        ({"objective": "grpo", "grpo_rewards": [{"name": "a"}], "grpo_num_generations": 1}, "greater than or equal"),
+        (
+            {"objective": "grpo", "grpo_rewards": [{"name": "a"}, {"name": "a"}]},
+            "only be selected once",
+        ),
+        (
+            {"objective": "grpo", "grpo_rewards": [{"name": "a"}], "grpo_num_generations": 1},
+            "greater than or equal",
+        ),
     ],
 )
 def test_request_refuses_unsupported_rl_combinations(extra, message):
@@ -111,12 +130,21 @@ class _FakeGRPOConfig:
 
 @pytest.mark.parametrize(
     "variant, loss_type, level",
-    [(None, "dapo", "token"), ("dr_grpo", "dr_grpo", "token"), ("bnpo", "bnpo", "token"), ("gspo", "dr_grpo", "sequence")],
+    [
+        (None, "dapo", "token"),
+        ("dr_grpo", "dr_grpo", "token"),
+        ("bnpo", "bnpo", "token"),
+        ("gspo", "dr_grpo", "sequence"),
+    ],
 )
 def test_grpo_variant_reaches_the_trl_config(monkeypatch, variant, loss_type, level):
     fake = types.SimpleNamespace(GRPOConfig = _FakeGRPOConfig, GRPOTrainer = lambda **kw: kw)
     monkeypatch.setitem(sys.modules, "trl", fake)
-    spec = {"name": "exact", "weight": 2.0, "rule": {"type": "length", "max_chars": 9, "score": {"over": -1.0, "under": 0.0}}}
+    spec = {
+        "name": "exact",
+        "weight": 2.0,
+        "rule": {"type": "length", "max_chars": 9, "score": {"over": -1.0, "under": 0.0}},
+    }
     kw = build_rl_trainer(
         "grpo",
         model = None,
@@ -135,7 +163,9 @@ def test_grpo_variant_reaches_the_trl_config(monkeypatch, variant, loss_type, le
 
 def test_request_refuses_unknown_grpo_variant():
     with pytest.raises(ValidationError):
-        TrainingStartRequest(**{**BASE, "objective": "grpo", "grpo_rewards": [{"name": "x"}], "grpo_variant": "ppo"})
+        TrainingStartRequest(
+            **{**BASE, "objective": "grpo", "grpo_rewards": [{"name": "x"}], "grpo_variant": "ppo"}
+        )
 
 
 def test_fsdp_stub_only_when_the_real_module_cannot_import(monkeypatch):
@@ -160,8 +190,18 @@ def test_fsdp_stub_only_when_the_real_module_cannot_import(monkeypatch):
 
 
 def test_system_prompt_fills_rows_without_one_and_keeps_their_own():
-    ds = Dataset.from_list([{"question": "2+2?", "answer": "4", "system": ""}, {"question": "3+3?", "answer": "6", "system": "Be terse."}])
-    out, _ = format_rl_dataset(ds, "grpo", {"question": "prompt", "answer": "answer", "system": "system"}, system_prompt = "Use <answer> tags.")
+    ds = Dataset.from_list(
+        [
+            {"question": "2+2?", "answer": "4", "system": ""},
+            {"question": "3+3?", "answer": "6", "system": "Be terse."},
+        ]
+    )
+    out, _ = format_rl_dataset(
+        ds,
+        "grpo",
+        {"question": "prompt", "answer": "answer", "system": "system"},
+        system_prompt = "Use <answer> tags.",
+    )
     assert out[0]["prompt"][0] == {"role": "system", "content": "Use <answer> tags."}
     assert out[1]["prompt"][0] == {"role": "system", "content": "Be terse."}
     plain, _ = format_rl_dataset(Dataset.from_list([{"question": "q", "answer": "a"}]), "grpo")

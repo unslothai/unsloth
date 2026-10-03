@@ -29,7 +29,11 @@ def client(user_root):
     return TestClient(app)
 
 
-def _md(name: str, body: str, kind: str = "rule") -> str:
+def _md(
+    name: str,
+    body: str,
+    kind: str = "rule",
+) -> str:
     return f"---\nname: {name}\nkind: {kind}\ndescription: test\n---\n{body}"
 
 
@@ -53,13 +57,38 @@ def test_bundled_rewards_score_a_correct_and_a_wrong_reply(user_root):
 @pytest.mark.parametrize(
     "body, text, reference, expected",
     [
-        ("type: regex\nmode: search\npattern: 'foo'\nscore: {match: 1, miss: -1}", "a foo b", None, 1.0),
+        (
+            "type: regex\nmode: search\npattern: 'foo'\nscore: {match: 1, miss: -1}",
+            "a foo b",
+            None,
+            1.0,
+        ),
         ("type: regex\npattern: 'foo'\nscore: {match: 1, miss: -1}", "a foo b", None, -1.0),
-        ("type: exact_match\nnormalize: [strip, lower, remove_commas]\nscore: {match: 2}", " 1,000 ", "1000", 2.0),
-        ("type: exact_match\nextract: {regex: 'is (\\d+)'}\nscore: {match: 2}", "it is 7", "7", 2.0),
+        (
+            "type: exact_match\nnormalize: [strip, lower, remove_commas]\nscore: {match: 2}",
+            " 1,000 ",
+            "1000",
+            2.0,
+        ),
+        (
+            "type: exact_match\nextract: {regex: 'is (\\d+)'}\nscore: {match: 2}",
+            "it is 7",
+            "7",
+            2.0,
+        ),
         ("type: numeric\nbands: [{within: 0.0, score: 1}]\nelse: -1", "0", "0", 1.0),
-        ("type: json_schema\nschema: {required: [tool]}\nscore: {match: 1, miss: -1}", '```json\n{"tool": "x"}\n```', None, 1.0),
-        ("type: json_schema\nschema: {required: [tool]}\nscore: {match: 1, miss: -1}", "{nope", None, -1.0),
+        (
+            "type: json_schema\nschema: {required: [tool]}\nscore: {match: 1, miss: -1}",
+            '```json\n{"tool": "x"}\n```',
+            None,
+            1.0,
+        ),
+        (
+            "type: json_schema\nschema: {required: [tool]}\nscore: {match: 1, miss: -1}",
+            "{nope",
+            None,
+            -1.0,
+        ),
         ("type: length\nmax_chars: 3\nscore: {over: -1, under: 0}", "abcd", None, -1.0),
     ],
 )
@@ -94,7 +123,10 @@ def test_bundled_rewards_read_gsm8k_style_references(user_root):
 
 def test_make_reward_func_reads_the_reference_column_and_conversational_completions():
     spec = rewards.parse_reward_markdown(
-        _md("exact", "type: exact_match\nextract: {between: ['<answer>', '</answer>']}\nscore: {match: 2}")
+        _md(
+            "exact",
+            "type: exact_match\nextract: {between: ['<answer>', '</answer>']}\nscore: {match: 2}",
+        )
     )
     func = rewards.make_reward_func(spec)
     assert func.__name__ == "exact"
@@ -118,7 +150,10 @@ def test_import_export_roundtrip_and_shadowing(client, user_root):
     assert rewards.get_reward("exact-answer")["rule"]["score"]["match"] == 9.0
 
     exported = client.get("/api/rewards/exact-answer/export").json()["markdown"]
-    assert rewards.parse_reward_markdown(exported)["rule"] == rewards.get_reward("exact-answer")["rule"]
+    assert (
+        rewards.parse_reward_markdown(exported)["rule"]
+        == rewards.get_reward("exact-answer")["rule"]
+    )
 
     assert client.delete("/api/rewards/exact-answer").status_code == 204
     assert client.delete("/api/rewards/strict-xml-format").status_code == 404

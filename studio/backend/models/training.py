@@ -597,7 +597,9 @@ class TrainingStartRequest(BaseModel):
         description = "DPO/ORPO beta, or the GRPO KL coefficient. Null uses the objective's default.",
     )
     rl_max_prompt_length: Optional[int] = Field(
-        None, ge = 16, description = "Prompt token budget for DPO/ORPO/GRPO. Null derives it from max_seq_length."
+        None,
+        ge = 16,
+        description = "Prompt token budget for DPO/ORPO/GRPO. Null derives it from max_seq_length.",
     )
     grpo_num_generations: int = Field(4, ge = 2, le = 16, description = "Completions sampled per prompt")
     grpo_max_completion_length: Optional[int] = Field(
@@ -605,19 +607,27 @@ class TrainingStartRequest(BaseModel):
     )
     grpo_temperature: float = Field(1.0, gt = 0, le = 2.0, allow_inf_nan = False)
     grpo_variant: Literal["dapo", "dr_grpo", "bnpo", "grpo", "gspo"] = Field(
-        "dapo", description = "GRPO loss variant; dapo is the TRL and Unsloth default, gspo uses sequence-level ratios"
+        "dapo",
+        description = "GRPO loss variant; dapo is the TRL and Unsloth default, gspo uses sequence-level ratios",
     )
     rl_system_prompt: Optional[str] = Field(
-        None, max_length = 8000, description = "System prompt for rows without one (GRPO notebooks set the answer format here)"
+        None,
+        max_length = 8000,
+        description = "System prompt for rows without one (GRPO notebooks set the answer format here)",
     )
     grpo_enable_thinking: Optional[bool] = Field(
-        False, description = "For chat templates with a thinking switch (Qwen3): open a thinking block or not. Null keeps the template default."
+        False,
+        description = "For chat templates with a thinking switch (Qwen3): open a thinking block or not. Null keeps the template default.",
     )
     grpo_mask_truncated_completions: bool = Field(
         False, description = "Leave completions cut off at the length limit out of the loss"
     )
     grpo_epsilon_high: Optional[float] = Field(
-        None, gt = 0, le = 1, allow_inf_nan = False, description = "Upper clip bound (DAPO clip-higher). Null uses epsilon."
+        None,
+        gt = 0,
+        le = 1,
+        allow_inf_nan = False,
+        description = "Upper clip bound (DAPO clip-higher). Null uses epsilon.",
     )
     grpo_rewards: List[RewardSelection] = Field(
         default_factory = list, max_length = 16, description = "Library rewards for GRPO"
@@ -699,7 +709,9 @@ class TrainingStartRequest(BaseModel):
             raise ValueError(f"{objective.upper()} does not support dataset streaming yet.")
         if objective == "grpo" and not self.grpo_rewards:
             raise ValueError("GRPO needs at least one reward.")
-        if objective == "grpo" and len({r.name for r in self.grpo_rewards}) != len(self.grpo_rewards):
+        if objective == "grpo" and len({r.name for r in self.grpo_rewards}) != len(
+            self.grpo_rewards
+        ):
             raise ValueError("Each GRPO reward can only be selected once.")
         return self
 

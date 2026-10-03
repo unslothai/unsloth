@@ -3136,8 +3136,12 @@ class TrainingBackend:
                 rl_metrics = event.get("rl_metrics")
                 self._progress.rl_metrics = rl_metrics
                 _rl_step = event.get("step", 0)
-                if rl_metrics and _rl_step > 0 and (
-                    not self.rl_metric_history or _rl_step > self.rl_metric_history[-1]["step"]
+                if (
+                    rl_metrics
+                    and _rl_step > 0
+                    and (
+                        not self.rl_metric_history or _rl_step > self.rl_metric_history[-1]["step"]
+                    )
                 ):
                     self.rl_metric_history.append({"step": _rl_step, **rl_metrics})
                 _peak = event.get("peak_memory_gb")

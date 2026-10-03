@@ -122,7 +122,9 @@ def preview_rewards(
 
 
 @router.get("/{name}/export", response_model = RewardExport)
-def export_reward_route(name: str, current_subject: str = Depends(get_current_subject)) -> dict[str, Any]:
+def export_reward_route(
+    name: str, current_subject: str = Depends(get_current_subject)
+) -> dict[str, Any]:
     try:
         return {"name": name, "markdown": export_reward(name)}
     except RewardError as exc:

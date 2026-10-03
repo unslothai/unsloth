@@ -3436,7 +3436,12 @@ class UnslothTrainer:
         )
         if eval_dataset is not None:
             eval_dataset, _ = format_rl_dataset(
-                eval_dataset, objective, custom_format_mapping, keep_columns, num_proc, system_prompt
+                eval_dataset,
+                objective,
+                custom_format_mapping,
+                keep_columns,
+                num_proc,
+                system_prompt,
             )
         elif split_eval:
             split_result = self._resolve_eval_split_from_dataset(formatted)
