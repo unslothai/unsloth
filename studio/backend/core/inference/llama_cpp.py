@@ -593,14 +593,23 @@ def _net_of_held_vram(gpu_mem, held: dict[int, int]):
 
 
 _serving_backends: "weakref.WeakSet[LlamaCppBackend]" = weakref.WeakSet()
+# A WeakSet is not safe to iterate while another thread adds or drops a backend.
+_serving_backends_lock = threading.Lock()
 
 
 def register_serving_backend(backend) -> None:
-    _serving_backends.add(backend)
+    with _serving_backends_lock:
+        _serving_backends.add(backend)
 
 
 def unregister_serving_backend(backend) -> None:
-    _serving_backends.discard(backend)
+    with _serving_backends_lock:
+        _serving_backends.discard(backend)
+
+
+def _serving_backends_snapshot() -> list:
+    with _serving_backends_lock:
+        return list(_serving_backends)
 
 
 class GgufDownloadCancelled(RuntimeError):
@@ -33583,7 +33592,7 @@ class LlamaCppBackend:
     def _other_planned_vram_mib(self) -> dict[int, int]:
         """MiB per GPU the other serving backends' running servers hold."""
         held: dict[int, int] = {}
-        serving = list(_serving_backends)
+        serving = _serving_backends_snapshot()
         if self not in serving:
             return held
         for backend in serving:
