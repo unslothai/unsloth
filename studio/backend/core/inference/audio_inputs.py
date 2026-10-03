@@ -453,6 +453,13 @@ def sweep(
                 path.unlink(missing_ok = True)
             elif name.startswith(("c-", "v-")) and name.endswith(".wav") and age > ttl:
                 path.unlink(missing_ok = True)
+        # Music run folders the route removes when it is done; one a crash left behind goes here.
+        runs = directory / "runs"
+        if runs.is_dir():
+            import shutil
+            for run in runs.iterdir():
+                if run.is_dir() and now - _mtime(run) > _STALE_TMP_SECONDS:
+                    shutil.rmtree(run, ignore_errors = True)
         return removed
     except Exception as exc:  # noqa: BLE001 - housekeeping never fails a request
         logger.warning("audio_inputs.sweep_failed: %s", exc)

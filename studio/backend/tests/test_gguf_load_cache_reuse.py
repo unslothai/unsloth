@@ -1081,6 +1081,8 @@ class TestLoadHubDownloadExclusion:
             # Constant None: llama-server never clones a voice or needs a description.
             "audio_reference_text",
             "audio_required_inputs",
+            # Constant None: llama-server never serves a Music studio model.
+            "audio_music",
         }
         unresolved = sorted(
             name
