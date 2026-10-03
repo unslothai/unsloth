@@ -6682,3 +6682,73 @@ def test_local_helpers_shadowed_flags_class_clients_and_nested_aliases_are_quiet
     )
     flagged = {f["qualname"] for f in findings if f["tier"] == "A"}
     assert not flagged & {"a", "b", "Local.load", "d"}
+
+
+def test_exec_argv_eval_aliases_archive_members_and_environ_writes(tmp_path):
+    """argv of exec launchers, aliased eval gated, tar members, `ns = module`,
+    inline copyfileobj targets, computed thread args, aiohttp text(), os.environ."""
+    findings = _scan(
+        tmp_path,
+        "import io, json, os, pickle, requests, runpy, shutil, subprocess, tarfile, threading\n"
+        "import transformers\n"
+        "from importlib import import_module\n"
+        "from huggingface_hub import snapshot_download\n"
+        "def a(blob):\n"
+        "    os.execv('/bin/sh', ['sh', '-c', json.loads(blob)['cmd']])\n"
+        "def b(blob):\n"
+        "    runner = eval\n"
+        "    return runner(json.loads(blob)['code'])\n"
+        "def c(url):\n"
+        "    archive = tarfile.open(fileobj = io.BytesIO(requests.get(url).content))\n"
+        "    return pickle.load(archive.extractfile('payload.pkl'))\n"
+        "def d(blob):\n"
+        "    ns = transformers\n"
+        "    return getattr(ns, json.loads(blob)['class'])\n"
+        "def e(url):\n"
+        "    shutil.copyfileobj(requests.get(url).raw, open('/tmp/plugin.py', 'wb'))\n"
+        "    runpy.run_path('/tmp/plugin.py')\n"
+        "def f(blob):\n"
+        "    threading.Thread(target = subprocess.run, args = json.loads(blob)['call']).start()\n"
+        "async def g(session, url):\n"
+        "    response = await session.get(url)\n"
+        "    return import_module(await requests.get(url).text())\n"
+        "def h(repo):\n"
+        "    os.environ['PYTHONPATH'] = snapshot_download(repo)\n",
+    )
+    by = {(f["qualname"], f["sink"]): f for f in findings}
+    assert ("a", "os.execv") in by
+    assert by[("b", "eval")]["gated"] is True
+    assert ("c", "pickle.load") in by
+    assert ("d", "getattr(module, ...)") in by
+    assert ("e", "runpy.run_path") in by
+    assert ("f", "subprocess.run") in by
+    assert ("g", "importlib.import_module") in by
+    assert ("h", "process env (untrusted value)") in by
+
+
+def test_remote_code_flags_scoped_to_class_parameters_and_callbacks(tmp_path):
+    """Another class's True flag and a False parameter do not prove an opt-in, and a
+    loader started on a thread with a parsed kwargs pack is reported."""
+    findings = _scan(
+        tmp_path,
+        "import json, threading\n"
+        "from transformers import AutoModel\n"
+        "ENABLED = True\n"
+        "class A:\n"
+        "    def __init__(self):\n"
+        "        self.allow = True\n"
+        "class B:\n"
+        "    def __init__(self):\n"
+        "        self.allow = False\n"
+        "    def load(self, name):\n"
+        "        return AutoModel.from_pretrained(name, trust_remote_code = self.allow)\n"
+        "def load(name, ENABLED = False):\n"
+        "    kwargs = {'trust_remote_code': ENABLED}\n"
+        "    return kwargs\n"
+        "def start(repo, blob):\n"
+        "    threading.Thread(target = AutoModel.from_pretrained, args = (repo,),\n"
+        "                     kwargs = json.loads(blob)).start()\n",
+    )
+    remote = {(f["qualname"], f["sink"]) for f in findings if "trust_remote_code" in f["sink"]}
+    assert not [q for q, _ in remote if q in ("B.load", "load")]
+    assert ("start", "trust_remote_code (untrusted **kwargs)") in remote

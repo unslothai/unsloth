@@ -318,26 +318,29 @@ SINKS: dict[str, tuple[tuple[int, ...], frozenset[str]]] = {
     # The exec family replaces this process with the named program, so a tainted path
     # here IS execution with no shell in between. `os.posix_spawn` takes the same
     # argument shape; the spawn family puts a mode first, so the path sits at 1.
+    # The argument vector is watched too: `os.execv("/bin/sh", ["sh", "-c", cmd])`
+    # runs cmd through a fixed interpreter. The list forms are variadic, so the first
+    # few positions stand in for them.
     # The keyword sets are the names each one accepts: `os.execv` is positional-only,
     # the rest are plain Python functions or take `path` by keyword.
-    "os.execv": ((0,), frozenset()),
-    "os.execve": ((0,), frozenset({"path"})),
-    "os.execvp": ((0,), frozenset({"file"})),
-    "os.execvpe": ((0,), frozenset({"file"})),
-    "os.execl": ((0,), frozenset({"file"})),
-    "os.execle": ((0,), frozenset({"file"})),
-    "os.execlp": ((0,), frozenset({"file"})),
-    "os.execlpe": ((0,), frozenset({"file"})),
-    "os.posix_spawn": ((0,), frozenset()),
-    "os.posix_spawnp": ((0,), frozenset()),
-    "os.spawnv": ((1,), frozenset({"file"})),
-    "os.spawnve": ((1,), frozenset({"file"})),
-    "os.spawnvp": ((1,), frozenset({"file"})),
-    "os.spawnvpe": ((1,), frozenset({"file"})),
-    "os.spawnl": ((1,), frozenset({"file"})),
-    "os.spawnle": ((1,), frozenset({"file"})),
-    "os.spawnlp": ((1,), frozenset({"file"})),
-    "os.spawnlpe": ((1,), frozenset({"file"})),
+    "os.execv": ((0, 1), frozenset()),
+    "os.execve": ((0, 1), frozenset({"path", "argv"})),
+    "os.execvp": ((0, 1), frozenset({"file", "args"})),
+    "os.execvpe": ((0, 1), frozenset({"file", "args"})),
+    "os.execl": ((0, 1, 2, 3, 4, 5), frozenset({"file"})),
+    "os.execle": ((0, 1, 2, 3, 4), frozenset({"file"})),
+    "os.execlp": ((0, 1, 2, 3, 4, 5), frozenset({"file"})),
+    "os.execlpe": ((0, 1, 2, 3, 4), frozenset({"file"})),
+    "os.posix_spawn": ((0, 1), frozenset()),
+    "os.posix_spawnp": ((0, 1), frozenset()),
+    "os.spawnv": ((1, 2), frozenset({"file", "args"})),
+    "os.spawnve": ((1, 2), frozenset({"file", "args"})),
+    "os.spawnvp": ((1, 2), frozenset({"file", "args"})),
+    "os.spawnvpe": ((1, 2), frozenset({"file", "args"})),
+    "os.spawnl": ((1, 2, 3, 4, 5, 6), frozenset({"file"})),
+    "os.spawnle": ((1, 2, 3, 4, 5), frozenset({"file"})),
+    "os.spawnlp": ((1, 2, 3, 4, 5, 6), frozenset({"file"})),
+    "os.spawnlpe": ((1, 2, 3, 4, 5), frozenset({"file"})),
     # Deserialisers that construct arbitrary objects.
     # `file` is the keyword both loaders take, and an empty set meant the named
     # spelling was inspected neither positionally nor by keyword.
@@ -724,12 +727,18 @@ def _scope_nodes(root: ast.AST):
                 pending.append(child)
 
 
-def _true_self_attributes(facts) -> frozenset:
-    """Attribute names this file binds as `self.<name> = True`."""
-    cached = facts.__dict__.get("_true_self_attributes")
+def _true_self_attributes(facts, klass: str = "") -> frozenset:
+    """Attribute names class `klass` in this file binds as `self.<name> = True`."""
+    table = facts.__dict__.setdefault("_true_self_attributes", {})
+    cached = table.get(klass)
     if cached is None:
         found = set()
-        for node in ast.walk(facts.tree):
+        roots = [
+            node
+            for node in ast.walk(facts.tree)
+            if isinstance(node, ast.ClassDef) and node.name == klass
+        ]
+        for node in (child for root in roots for child in ast.walk(root)):
             if isinstance(node, (ast.Assign, ast.AnnAssign)) and (
                 isinstance(node.value, ast.Constant) and node.value.value is True
             ):
@@ -741,7 +750,7 @@ def _true_self_attributes(facts) -> frozenset:
                     and isinstance(target.value, ast.Name)
                     and target.value.id == "self"
                 )
-        cached = facts.__dict__["_true_self_attributes"] = frozenset(found)
+        cached = table[klass] = frozenset(found)
     return cached
 
 
@@ -2402,6 +2411,13 @@ class _TaintPass(ast.NodeVisitor):
             "replace",
             "rsplit",
             "splitlines",
+            # Archive members carry the archive's bytes and names.
+            "extractfile",
+            "getnames",
+            "namelist",
+            "getmembers",
+            # `await response.text()` on an aiohttp response.
+            "text",
             "partition",
             "setdefault",
             # Container views. Without these a dict comprehension over `cfg.items()`
@@ -2884,6 +2900,8 @@ class _TaintPass(ast.NodeVisitor):
         if reason:
             for target in node.targets:
                 self._assign(target, reason, node.value)
+        for target in node.targets:
+            self._check_environ_write(target, node.value, node)
         self._note_true(node)
         self._note_construction(node)
         self._note_sink_alias(node)
@@ -3829,6 +3847,14 @@ class _TaintPass(ast.NodeVisitor):
         cache[self.qualname] = frozenset(found)
         return cache[self.qualname]
 
+    def _inline_handle_path(self, call: ast.Call) -> ast.AST | None:
+        """The path behind an inline `open(p, ...)` or `Path(p).open(...)`, else None."""
+        if isinstance(call.func, ast.Attribute) and call.func.attr == "open":
+            return call.func.value
+        if _matches_any(self.facts.canonicals(_call_name(call.func)), {"open", "io.open"}):
+            return call.args[0] if call.args else _keyword(call, "file")
+        return None
+
     def _file_handles(self) -> dict:
         """Handle name -> the path it was opened on, for `open(p)` and `p.open()`."""
         cache = self.facts.__dict__.setdefault("_file_handle_cache", {})
@@ -3966,10 +3992,13 @@ class _TaintPass(ast.NodeVisitor):
             source = node.args[0] if node.args else _keyword(node, "fsrc")
             handle = node.args[1] if len(node.args) > 1 else _keyword(node, "fdst")
             reason = self.tainted(source) if source is not None else None
-            if reason and isinstance(handle, ast.Name):
+            path = None
+            if isinstance(handle, ast.Name):
                 path = self._file_handles().get(handle.id)
-                if path is not None:
-                    self._assign(path, reason)
+            elif isinstance(handle, ast.Call):
+                path = self._inline_handle_path(handle)
+            if reason and path is not None:
+                self._assign(path, reason)
             return
         # `urlretrieve(url, plugin)` writes the response to `plugin`.
         if _matches_any(names, {"urlretrieve", "urllib.request.urlretrieve"}):
@@ -4010,13 +4039,7 @@ class _TaintPass(ast.NodeVisitor):
         # `open(plugin, "wb").write(body)` and `Path(p).open("wb").write(body)`.
         receiver = node.func.value
         if node.func.attr in ("write", "writelines") and isinstance(receiver, ast.Call):
-            path = None
-            if isinstance(receiver.func, ast.Attribute) and receiver.func.attr == "open":
-                path = receiver.func.value
-            elif _matches_any(
-                self.facts.canonicals(_call_name(receiver.func)), {"open", "io.open"}
-            ):
-                path = receiver.args[0] if receiver.args else _keyword(receiver, "file")
+            path = self._inline_handle_path(receiver)
             for argument in node.args[:1]:
                 reason = self.tainted(argument)
                 if reason and path is not None:
@@ -4466,6 +4489,9 @@ class _TaintPass(ast.NodeVisitor):
             or any(held in self.facts.module_aliases for held in holder_names)
             # A class declared in this file: `getattr(Commands, parsed["action"])()`.
             or (isinstance(holder, ast.Name) and holder.id in self.facts.classes)
+            # `ns = transformers` or `ns = import_module("transformers")`, then
+            # `getattr(ns, ...)`: the local holds the same module.
+            or (isinstance(holder, ast.Name) and self._names_module(holder.id))
         ) or (
             isinstance(holder, ast.Call)
             and _matches_any(
@@ -4486,6 +4512,20 @@ class _TaintPass(ast.NodeVisitor):
             for key in self._attr_keys(node.func):
                 held = held + tuple(self.state.attr_sink_aliases.get(key) or ())
         return held
+
+    def _names_module(self, name: str) -> bool:
+        """Whether the single local binding of `name` is a module or a literal import."""
+        value = self._local_binding(name)
+        if isinstance(value, (ast.Name, ast.Attribute)):
+            head = _call_name(value).split(".")[0]
+            return head in self.facts.module_aliases or head in MODULE_ISH_NAMES
+        return isinstance(value, ast.Call) and (
+            _matches_any(
+                self.facts.canonicals(_call_name(value.func)),
+                {"importlib.import_module", "import_module"},
+            )
+            is not None
+        )
 
     def _local_binding(self, name: str) -> ast.AST | None:
         """The value of the single plain assignment to `name` in this scope, if any."""
@@ -4551,6 +4591,19 @@ class _TaintPass(ast.NodeVisitor):
                 self._record(node, "child process env (untrusted mapping)", reason, _short(env))
                 return
 
+    def _check_environ_write(self, target: ast.AST, value: ast.AST, node: ast.AST) -> None:
+        """`os.environ["PYTHONPATH"] = downloaded`: every later child inherits it."""
+        if not (
+            isinstance(target, ast.Subscript)
+            and _matches_any(self.facts.canonicals(_call_name(target.value)), {"os.environ"})
+            and isinstance(target.slice, ast.Constant)
+            and target.slice.value in _EXEC_ENV_KEYS
+        ):
+            return
+        reason = self.tainted(value)
+        if reason:
+            self._record(node, "process env (untrusted value)", reason, _short(value))
+
     def _check_relative_cwd(self, node: ast.Call) -> None:
         """`subprocess.run(["./setup"], cwd = snapshot_download(repo))` runs a downloaded file."""
         called = _call_name(node.func)
@@ -4581,6 +4634,7 @@ class _TaintPass(ast.NodeVisitor):
         """Every sink check, on a call a thread, executor or `map` makes on our behalf."""
         self._check_child_env(invoked)
         self._check_relative_cwd(invoked)
+        self._check_remote_code(invoked)
         self._check_yaml_load(invoked)
         self._check_sink(invoked)
         self._check_torch_load(invoked)
@@ -4602,6 +4656,9 @@ class _TaintPass(ast.NodeVisitor):
                 packed = self._local_binding(packed.id)
             if isinstance(packed, (ast.Tuple, ast.List)):
                 args = list(packed.elts)
+            elif packed is not None:
+                # A computed iterable: its taint reaches the first parameter at least.
+                args = [_keyword(node, "args")]
             named = _keyword(node, "kwargs")
             if isinstance(named, ast.Name):
                 named = self._local_binding(named.id)
@@ -4879,7 +4936,10 @@ class _TaintPass(ast.NodeVisitor):
                     isinstance(keyword.value, ast.Attribute)
                     and isinstance(keyword.value.value, ast.Name)
                     and keyword.value.value.id == "self"
-                    and keyword.value.attr in _true_self_attributes(self.facts)
+                    and keyword.value.attr
+                    in _true_self_attributes(
+                        self.facts, self.qualname.rsplit(".", 1)[0].rsplit(".", 1)[-1]
+                    )
                 )
             )
             # The flag read out of parsed data: the document decides, not the user.
@@ -4900,6 +4960,20 @@ class _TaintPass(ast.NodeVisitor):
                     f"{name}(trust_remote_code = True)",
                     tier = "A",
                 )
+
+    def _aliases_builtin_exec(self, node: ast.Call) -> bool:
+        """`runner = eval; runner(code)`: a local name standing in for the builtin.
+
+        The literal checker only sees the bare `exec`/`eval`/`compile` call, so these are
+        gated here. Module functions of the same name (`re.compile`, `torch.compile`,
+        `mx.eval`) and imports of them are not the builtin and stay ungated.
+        """
+        if not isinstance(node.func, ast.Name) or node.func.id in ("exec", "eval", "compile"):
+            return False
+        return not any(
+            "." in name and not name.startswith("builtins.")
+            for name in self.facts.canonicals(node.func.id)
+        )
 
     def _record(
         self,
@@ -4923,7 +4997,7 @@ class _TaintPass(ast.NodeVisitor):
                 "tier": tier,
                 "hash": _norm_hash(node),
                 "context": self.facts.contexts.get(self.qualname, ""),
-                "gated": sink not in SINKS_GATED_ELSEWHERE,
+                "gated": sink not in SINKS_GATED_ELSEWHERE or self._aliases_builtin_exec(node),
             }
         )
 
@@ -5114,7 +5188,13 @@ def _remote_code_defaults(facts: _FileFacts) -> list[dict]:
             return value.value is True
         if isinstance(value, ast.Name):
             owner = owners.get(id(node), "<module>")
-            return value.id in true_by_owner.get(owner, facts.module_true_names)
+            if owner in true_by_owner:
+                return value.id in true_by_owner[owner]
+            # No simple assignments here, but a parameter or other local of the same
+            # name still shadows the module's True.
+            if owner in facts.functions and value.id in _scope_locals(facts.functions[owner]):
+                return False
+            return value.id in facts.module_true_names
         return False
 
     def record(

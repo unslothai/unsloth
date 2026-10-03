@@ -1,7 +1,12 @@
 {
   "comment": "Reviewed sinks that a value from a downloaded artefact can reach. Regenerate with: python scripts/lint_untrusted_sinks.py --update",
   "entries": {
+    "docker/unsloth_nb_compat.py::activate::process env (untrusted value)::4ff3777bf7785fac::275b548215fa6126": 1,
     "docker/unsloth_nb_compat.py::activate::sys.path.insert::5371cda675d0cc57::275b548215fa6126": 1,
+    "docker/unsloth_pip_shim.py::_uninstall::os.execv::d2889c1310408a26::6666715a3f0ecb2b": 1,
+    "docker/unsloth_pip_shim.py::_uninstall::os.execve::cee720d4e5dd3ce8::6666715a3f0ecb2b": 1,
+    "docker/unsloth_pip_shim.py::main::os.execv::d2889c1310408a26::f5c30458840529f5": 1,
+    "docker/unsloth_pip_shim.py::main::os.execve::cee720d4e5dd3ce8::f5c30458840529f5": 1,
     "scripts/check_frontend_dep_removal.py::run::subprocess.run::5198d9910540f87f::3e492839b89bb196": 1,
     "scripts/scan_packages.py::_pip_download_with_deps::subprocess.run::582f5f81df9ad3f4::46eaaa70e2e0daa3": 1,
     "scripts/scan_packages.py::_resolve_per_spec_with_deps::subprocess.run::0dab39c2a2332ff7::ac2880e6a09f5d2b": 2,
@@ -94,6 +99,7 @@
     "studio/install_python_stack.py::run::subprocess.run::6108e46d8b6c7d13::eef8f9c0f8d24e4b": 1,
     "unsloth/models/_utils.py::_requested_float32::getattr(module, ...)::f2e8efae287d3fd6::9bcdda7471442a44": 1,
     "unsloth/models/_utils.py::_resolve_remote_model_class::get_class_from_dynamic_module::1bf1ae2e2285284f::e1a660b88479f807": 1,
+    "unsloth/models/_utils.py::_resolve_remote_model_class::getattr(module, ...)::5be8fb0f8050f274::e1a660b88479f807": 1,
     "unsloth/models/_utils.py::_resolve_remote_model_class::importlib.import_module::ed81224ea9382685::e1a660b88479f807": 1,
     "unsloth/models/_utils.py::_resolve_text_causal_lm_class::get_class_from_dynamic_module::b7a268bb9c7ebe2c::c2920e71229fb914": 1,
     "unsloth/models/_utils.py::offload_to_disk::torch.load(weights_only = False)::7de1f016ac2d1555::51943afd3cd82306": 1,
