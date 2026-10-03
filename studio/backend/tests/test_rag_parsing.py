@@ -54,6 +54,34 @@ def test_pdf_extracts_markdown_table(tmp_path, monkeypatch):
     assert "#" in text or "|" in text  # Markdown markup (heading or table pipes)
 
 
+def test_pdf_markdown_keeps_text_drawn_over_a_picture(tmp_path, monkeypatch):
+    pytest.importorskip("pymupdf4llm")
+    import pymupdf
+
+    from core.rag import config, parsers
+
+    monkeypatch.setattr(config, "PDF_MARKDOWN", True)
+    doc = pymupdf.open()
+    page = doc.new_page()
+    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 60, 300), False)
+    pix.set_rect(pix.irect, (40, 70, 120))
+    page.insert_image(pymupdf.Rect(0, 0, 170, page.rect.height), pixmap = pix)
+    for i, line in enumerate(["jane.doe@example.com", "Kubernetes", "Spanish"]):
+        page.insert_text((15, 80 + i * 22), line, fontsize = 11, color = (1, 1, 1))
+    page.insert_text((190, 60), "Experience", fontsize = 16)
+    for i in range(30):
+        page.insert_text((190, 90 + i * 22), f"Led project {i} for customers.", fontsize = 10)
+    pdf = tmp_path / "resume.pdf"
+    doc.save(str(pdf))
+    doc.close()
+
+    text = "\n".join(p.text for p in parsers.parse(str(pdf)))
+    assert "# Experience" in text
+    assert "Led project 29" in text
+    for sidebar in ("jane.doe@example.com", "Kubernetes", "Spanish"):
+        assert sidebar in text
+
+
 def test_pdf_markdown_off_uses_plain_text(tmp_path, monkeypatch):
     # The toggle (RAG_PDF_MARKDOWN=0) falls back to flat PyMuPDF text: content is still
     # there, but with no Markdown markup.
@@ -114,7 +142,12 @@ def test_pdf_markdown_receives_page_limit(monkeypatch):
 
     monkeypatch.setitem(__import__("sys").modules, "pymupdf4llm", _FakePymupdf4llm)
     assert parsers._pdf_markdown(_Doc(), range(2)) == ["page", "page"]
-    assert captured == {"page_chunks": True, "show_progress": False, "pages": [0, 1]}
+    assert captured == {
+        "page_chunks": True,
+        "show_progress": False,
+        "ignore_images": True,
+        "pages": [0, 1],
+    }
 
 
 def test_pdf_markdown_passes_only_supported_legacy_kwargs(monkeypatch):
@@ -135,7 +168,7 @@ def test_pdf_markdown_passes_only_supported_legacy_kwargs(monkeypatch):
 
     monkeypatch.setitem(__import__("sys").modules, "pymupdf4llm", _FakePymupdf4llm)
     assert parsers._pdf_markdown(_Doc()) == ["plain markdown"]
-    assert captured == {"page_chunks": True, "show_progress": False}
+    assert captured == {"page_chunks": True, "show_progress": False, "ignore_images": True}
 
 
 def test_pdf_markdown_falls_back_when_lib_missing(tmp_path, monkeypatch):

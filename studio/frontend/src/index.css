@@ -3121,7 +3121,7 @@ html[data-chat-font] .aui-root {
 	}
 
 	.composer-pill-btn {
-		@apply flex cursor-pointer items-center gap-1.5 rounded-full py-1.5 pl-2 pr-2.5 text-ui-14 font-medium text-muted-foreground/70 dark:text-foreground transition-colors hover:bg-primary/10 dark:hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40;
+		@apply flex cursor-pointer select-none items-center gap-1.5 rounded-full py-1.5 pl-2 pr-2.5 text-ui-14 font-medium text-muted-foreground/70 dark:text-foreground transition-colors hover:bg-primary/10 dark:hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40;
 	}
 
 	/* Caret pills (RAG, MCP): the chevron carries its own whitespace, so the
@@ -3182,28 +3182,19 @@ html[data-chat-font] .aui-root {
 	.composer-pill-btn[data-active="true"] {
 		color: var(--primary);
 	}
+	/* A pill keeps its hover fill while its menu is open. */
+	.composer-pill-btn[data-state="open"] {
+		@apply bg-primary/10 dark:bg-accent;
+	}
 	/* Permission-level pill: higher-contrast grey than the resting pills so
 	   the active level stays legible (darker in light mode, lighter in dark).
-	   Full access keeps the danger yellow below. */
-	.composer-pill-btn.composer-pill-permissions:not([data-variant="danger"]) {
+	   Full access looks like every other level. */
+	.composer-pill-btn.composer-pill-permissions {
 		color: color-mix(in oklab, var(--foreground) 60%, transparent);
 	}
-	.dark .composer-pill-btn.composer-pill-permissions:not([data-variant="danger"]) {
+	.dark .composer-pill-btn.composer-pill-permissions {
 		/* Full ink, like the rest of the composer's controls. */
 		color: var(--foreground);
-	}
-	/* Bypass permissions badge: bright yellow text, no resting fill; the
-	   rounded hover pill picks up the yellow accent like other toggles. */
-	.composer-pill-btn[data-variant="danger"] {
-		background-color: transparent;
-		color: var(--bypass);
-	}
-	.composer-pill-btn[data-variant="danger"]:hover {
-		background-color: color-mix(in oklab, var(--bypass) 7%, transparent);
-	}
-	/* Match the hover-X circle to the yellow accent instead of the green primary. */
-	.composer-pill-btn[data-variant="danger"] .composer-pill-x {
-		background-color: color-mix(in oklab, var(--bypass) 13%, transparent);
 	}
 
 	/* Fixed-width icon slot so every pill's icon occupies the same space and
@@ -3571,6 +3562,11 @@ html[data-chat-font] .aui-root {
 	.unsloth-composer-plus:focus-visible {
 		outline: none;
 		box-shadow: 0 0 0 1px var(--ring-soft);
+	}
+	/* A menu refocusing its pill after a click is not keyboard focus. */
+	html[data-input-modality="pointer"]
+		:is(.composer-pill-btn, .unsloth-thinking-pill, .unsloth-composer-plus):focus-visible {
+		box-shadow: none;
 	}
 
 	/* Clickable controls never show the browser's blue outline (Radix re-focuses
@@ -3977,6 +3973,14 @@ html[data-chat-font] .aui-root {
 		svg:not(.unsloth-tick) {
 		width: var(--ui-icon-size) !important;
 		height: var(--ui-icon-size) !important;
+	}
+
+	/* Permission menu tick, 2px above the icons. Outranks the rule above. */
+	:is([data-slot="dropdown-menu-content"], .unsloth-plus-menu)
+		[data-slot="dropdown-menu-item"]
+		svg.permission-mode-tick:not(.unsloth-tick) {
+		width: calc(var(--ui-icon-size) + 2px) !important;
+		height: calc(var(--ui-icon-size) + 2px) !important;
 	}
 
 	/* The rule above pins svg size with !important, straight off --ui-icon-size, so a glyph
@@ -4774,7 +4778,6 @@ html[data-chat-font] .aui-root {
 	will-change: transform;
 }
 
-/* A carried row or header: faintly frosted, a shade darker than its list, on a hairline. */
 :is(.sidebar-row-ghost, .sidebar-section-ghost, .model-picker-row-ghost) {
 	background: color-mix(in oklab, color-mix(in oklab, var(--row-ghost-surface), black 4%) 62%, transparent);
 	-webkit-backdrop-filter: blur(0.5px) saturate(1.05);
@@ -4796,7 +4799,6 @@ html[data-chat-font] .aui-root {
 	pointer-events: none;
 }
 
-/* A Pinned row carried in the model picker (use-pinned-row-drag.ts). */
 .model-picker-row-ghost {
 	--row-ghost-surface: var(--popover);
 	position: fixed;
@@ -4812,8 +4814,7 @@ html[data-chat-font] .aui-root {
 	pointer-events: none;
 }
 
-/* The row fills the pill, which paints the tint. Its margin stays behind: the pill was sized
-   without it, so a Connected row's ml-4 would push the copy off its own pill. */
+/* Margin dropped: the pill was sized without it, so a Connected row's ml-4 would offset the copy. */
 .model-picker-row-ghost > * {
 	width: 100%;
 	height: 100%;

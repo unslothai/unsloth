@@ -130,8 +130,7 @@ class VideoFamily:
     modular_workflow: Optional[str] = None
     # Released video and audio sigma shifts, when configurable.
     default_flow_shift: Optional[float] = None
-    # Static sigma shift ComfyUI samples this family with by default; the loader rebuilds the scheduler at it. None =
-    # keep the shipped scheduler. Distinct from default_flow_shift, which also exposes a user control.
+    # ComfyUI's static sigma shift (None = shipped); unlike default_flow_shift, no user control.
     comfy_flow_shift: Optional[float] = None
     default_audio_flow_shift: Optional[float] = None
     # First/last-frame conditioning: the request may carry keyframe images.
@@ -320,7 +319,6 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         transformer2_class = "WanTransformer3DModel",
         is_moe = True,
         cfg2_kwarg = "guidance_scale_2",
-        # ComfyUI's A14B template without the Lightning LoRA: 20 steps at CFG 3.5 on both experts.
         default_steps = 20,
         default_guidance = 3.5,
         # 81 frames at 16 fps ~5s (81 = 4*20 + 1), the A14B card's default clip.
@@ -817,13 +815,10 @@ def validate_video_reference_conditioning(
 _VIDEO_GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("distilled", 8, 1.0),
     ("ltx", 40, 4.0),
-    # ComfyUI's templates for the same models (our baseline). Wan2.2-T2V-A14B: 20 steps at CFG 3.5 (Lightning LoRA
-    # off); before the generic Wan key.
+    # T2V-A14B before the generic Wan key.
     ("a14b", 20, 3.5),
     ("wan2.2-14b", 20, 3.5),
-    # Wan2.2-TI2V-5B: 20 steps at CFG 5.
     ("wan", 20, 5.0),
-    # HunyuanVideo-1.5: 20 steps with the guider's shipped CFG 6.0.
     ("hunyuanvideo", 20, 6.0),
 )
 
