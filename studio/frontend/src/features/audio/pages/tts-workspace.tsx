@@ -43,6 +43,17 @@ import type { AudioHostState } from "../hooks/audio-host-state";
 import type { AudioGallery } from "../hooks/use-audio-gallery";
 import type { AudioModelSlot } from "../hooks/use-audio-model-slot";
 import type { SpeechGeneration } from "../hooks/use-speech-generation";
+// Music variations and Send to: grouped history rows, sibling chips, Edit/Extend in Music.
+import { useState } from "react";
+import {
+  MusicSendToButtons,
+  MusicSendToMenuItems,
+} from "../components/music-send-to";
+import {
+  VariationChips,
+  VariationGroupRow,
+} from "../components/variation-history";
+import { historyRows, variationSiblings } from "../music/variation-groups";
 
 export interface GenerateAction {
   label: string;
@@ -501,6 +512,17 @@ export function TtsOutput({
     element.focus();
     onFreshClipFocused();
   };
+  // Clips one run made together read as one row ("3 variations") that opens to list them.
+  const [openGroups, setOpenGroups] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const toggleGroup = (groupId: string) =>
+    setOpenGroups((open) => {
+      const next = new Set(open);
+      if (!next.delete(groupId)) next.add(groupId);
+      return next;
+    });
+  const siblings = variationSiblings(clips, selectedClip?.id ?? null);
   return (
     <>
       <output aria-live="polite" aria-atomic="true" className="sr-only">
@@ -512,6 +534,11 @@ export function TtsOutput({
             <p className="line-clamp-2 text-ui-13 text-muted-foreground">
               {selectedClip.prompt}
             </p>
+            <VariationChips
+              siblings={siblings}
+              selectedId={selectedClip.id}
+              onSelect={selectClip}
+            />
             {/* Auth-protected bytes, so mount a fresh player only once this clip's object URL exists: reusing
                 one media element while src is changing left History switches showing broken controls. */}
             {selectedClipSrc ? (
@@ -532,13 +559,18 @@ export function TtsOutput({
               </div>
             )}
             <div className="flex items-center gap-2 text-ui-11p5 text-muted-foreground">
-              <span title={selectedClip.model}>{audioModelLabel(selectedClip.model)}</span>
+              <span title={selectedClip.model} className="min-w-0 truncate">
+                {audioModelLabel(selectedClip.model)}
+              </span>
               <span>·</span>
-              <span>{formatClipDuration(selectedClip.duration_s)}</span>
+              <span className="shrink-0">
+                {formatClipDuration(selectedClip.duration_s)}
+              </span>
               {clipBadge?.(selectedClip) ? (
                 <ClipBadge text={clipBadge(selectedClip) ?? ""} />
               ) : null}
               <span className="flex-1" />
+              <MusicSendToButtons clip={selectedClip} />
               <Button
                 variant="ghost"
                 size="sm"
@@ -630,7 +662,16 @@ export function TtsOutput({
               }
             }}
           >
-            {clips.map((clip) => (
+            {historyRows(clips, openGroups).map(({ clip, header, nested }) =>
+              header ? (
+                <VariationGroupRow
+                  key={`group:${header.groupId}`}
+                  clips={header.clips}
+                  open={header.open}
+                  selected={header.clips.some((item) => item.id === selectedId)}
+                  onToggle={() => toggleGroup(header.groupId)}
+                />
+              ) : (
               // Shell, not a button: the pin badge and dots menu are buttons and cannot nest.
               <div
                 key={clip.id}
@@ -639,6 +680,7 @@ export function TtsOutput({
                   "group relative flex items-center gap-1 rounded-md pr-1 transition-colors hover:bg-muted",
                   clip.id === selectedId && "bg-muted",
                   historyReorder.draggingId === clip.id && "opacity-40",
+                  nested && "ml-4",
                 )}
               >
                 {historyReorder.cue?.id === clip.id && (
@@ -711,6 +753,7 @@ export function TtsOutput({
                         />
                         Copy text
                       </DropdownMenuItem>
+                      <MusicSendToMenuItems clip={clip} />
                     </>
                   }
                 />

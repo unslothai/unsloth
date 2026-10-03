@@ -23,6 +23,9 @@ export interface AudioModelContext {
   requiredInputs?: readonly string[];
   /** Status `audio_reference_text`: null when the model does not clone. */
   referenceTextMode?: AudioReferenceTextMode | null;
+  /** Whether the Music page's own inputs apply (status `audio_music`): the description is then a
+   *  page field rather than a tool panel. */
+  audioMusic?: boolean;
 }
 
 /** The part of a generation request a panel contributes. */

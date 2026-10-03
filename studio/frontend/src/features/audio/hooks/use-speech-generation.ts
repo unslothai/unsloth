@@ -555,6 +555,8 @@ export function useSpeechGeneration({
     handleToolValueChange,
     /** Why a shown panel holds Generate back, in words for the blocker line. */
     toolBlocker: toolRequest.error,
+    /** The options the shown panels set, for runs that build their own request (Music). */
+    toolOptions: toolRequest.patch.options,
     claimedOptions,
     advancedOptionSpecs,
   };

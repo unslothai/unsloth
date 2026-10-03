@@ -20,6 +20,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
+  type ReactNode,
   type Ref,
   createContext,
   useContext,
@@ -67,6 +68,14 @@ const SOURCE_LABEL: Record<AudioSourceSelection["kind"], string> = {
   voice: "Saved voice",
 };
 
+/** What the card has decoded for the picked source, for a caller that draws its own waveform. */
+export interface AudioSourcePreviewView {
+  peaks: number[] | null;
+  durationS: number | null;
+  src: string | null;
+  label: string;
+}
+
 export interface AudioSourceInputHandle {
   /** Moves focus to the card, for "Add reference audio" actions. */
   focus: () => void;
@@ -90,6 +99,8 @@ export function AudioSourceInput({
   allowSavedVoice = true,
   handleRef,
   onStatusChange,
+  renderWaveform,
+  maxSeconds = REFERENCE_MAX_SECONDS,
 }: {
   id: string;
   label: string;
@@ -102,6 +113,10 @@ export function AudioSourceInput({
   handleRef?: Ref<AudioSourceInputHandle>;
   /** Hears what the card is doing (uploading, failed, expired), for the page's Generate blocker. */
   onStatusChange?: (status: AudioSourceStatus) => void;
+  /** Draws the picked source in place of the plain waveform (Music's Edit picks parts on it). */
+  renderWaveform?: (preview: AudioSourcePreviewView) => ReactNode;
+  /** Past this length the card says only the start is used; null when the whole clip is used. */
+  maxSeconds?: number | null;
 }) {
   const source = useAudioSource({ value, onChange });
   const history = useContext(AudioHistoryContext);
@@ -273,12 +288,21 @@ export function AudioSourceInput({
               </span>
             ) : null}
           </div>
-          <Waveform
-            peaks={preview.peaks}
-            durationS={durationS}
-            src={preview.url}
-            label={name || label}
-          />
+          {renderWaveform ? (
+            renderWaveform({
+              peaks: preview.peaks,
+              durationS,
+              src: preview.url,
+              label: name || label,
+            })
+          ) : (
+            <Waveform
+              peaks={preview.peaks}
+              durationS={durationS}
+              src={preview.url}
+              label={name || label}
+            />
+          )}
           {status.phase === "uploading" ? (
             <div className="grid gap-1">
               <Progress
@@ -302,9 +326,11 @@ export function AudioSourceInput({
             <output className="text-ui-11p5 text-muted-foreground">
               Loading the clip…
             </output>
-          ) : durationS !== null && durationS > REFERENCE_MAX_SECONDS ? (
+          ) : maxSeconds !== null &&
+            durationS !== null &&
+            durationS > maxSeconds ? (
             <p className="text-ui-11p5 leading-snug text-muted-foreground">
-              Uses the first {REFERENCE_MAX_SECONDS} s.
+              Uses the first {maxSeconds} s.
             </p>
           ) : null}
         </div>

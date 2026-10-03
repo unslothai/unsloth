@@ -8,6 +8,7 @@ import {
   type NativeAudioInstructionsKind,
   nativeAudioInstructionsKind,
 } from "../audio-page-policy";
+import { parseMusicCapabilities } from "../music/music-types";
 import type { AudioWorkflowId } from "../workflows";
 import type {
   AnyAudioToolPanel,
@@ -60,6 +61,7 @@ export function audioModelContextFor(
     audio_workflows?: readonly string[] | null;
     audio_required_inputs?: readonly string[] | null;
     audio_reference_text?: string | null;
+    audio_music?: unknown;
   } | null,
   page: {
     musicGeneration: boolean;
@@ -85,6 +87,7 @@ export function audioModelContextFor(
       REFERENCE_TEXT_MODES.has(referenceText)
         ? (referenceText as AudioReferenceTextMode)
         : null,
+    audioMusic: parseMusicCapabilities(status?.audio_music) !== null,
   };
 }
 

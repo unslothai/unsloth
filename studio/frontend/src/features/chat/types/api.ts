@@ -385,6 +385,10 @@ export interface InferenceStatusResponse {
   audio_reference_text?: "required" | "optional" | "unused" | null;
   /** Request inputs the loaded model's spec marks required (Maya1: "instruct", its voice description). */
   audio_required_inputs?: string[] | null;
+  /** What the loaded music model can do on the Music page (modes, lyrics, length, variations,
+   *  edit actions). Unknown-shaped on purpose: the Music page validates it with parseMusicCapabilities.
+   *  Null for non-music models and for native MiniMax, which keeps the original music rail. */
+  audio_music?: unknown;
   has_audio_input?: boolean;
   has_video_input?: boolean;
   loading: string[];

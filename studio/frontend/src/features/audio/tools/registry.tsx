@@ -5,6 +5,7 @@ import type { NativeAudioInstructionsKind } from "../audio-page-policy";
 import type { AudioWorkflowId } from "../workflows";
 import { CLONE_TOOL_PANELS } from "./clone-panels";
 import { InstructionsField, MossLanguageField } from "./instructions-panels";
+import { MUSIC_TOOL_PANELS } from "./music-panels";
 import { instructionsKindFor, panelApplies } from "./select";
 import { SPEAK_TOOL_PANELS } from "./speak-panels";
 import type {
@@ -43,7 +44,10 @@ function instructionsPanel(
     title,
     // Request fields, not spec options, so Advanced keeps every option.
     claims: [],
-    appliesTo: (ctx) => instructionsKindFor(ctx) === kind,
+    // The Music page asks for the description itself when the model reports what it can do.
+    appliesTo: (ctx) =>
+      instructionsKindFor(ctx) === kind &&
+      !(kind === "music" && ctx.audioMusic === true),
     initial: () => ({ instructions: "", language: "" }),
     Component: ({ value, onChange, ctx }) => (
       <>
@@ -110,6 +114,7 @@ export const AUDIO_TOOL_PANELS: readonly AnyAudioToolPanel[] = [
   ...INSTRUCTION_PANELS,
   ...SPEAK_TOOL_PANELS.slice(1),
   ...CLONE_TOOL_PANELS,
+  ...MUSIC_TOOL_PANELS,
 ];
 
 export function audioToolPanelsFor(

@@ -35,7 +35,7 @@ import {
 } from "./panel-logic";
 import type { AudioToolPanel } from "./types";
 
-function PanelSection({
+export function PanelSection({
   title,
   hint,
   children,

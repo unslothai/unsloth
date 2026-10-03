@@ -39,7 +39,11 @@ import {
   type AudioGenerationPhase,
   audioGenerationPresentation,
 } from "./audio-page-policy";
-import { type CreateMode, deviceSizeBytes } from "./audio-workspace-utils";
+import {
+  audioModelLabel,
+  type CreateMode,
+  deviceSizeBytes,
+} from "./audio-workspace-utils";
 import { audioCapabilityLine, audioModelsForTask } from "./catalog";
 import { galleryCache, useAudioGallery, useWorkflowHistory } from "./hooks/use-audio-gallery";
 import { useAudioHandoff } from "./hooks/use-audio-handoff";
@@ -54,6 +58,7 @@ import {
   CloneRail,
   clonePageModels,
 } from "./pages/clone-page";
+import { useMusicGeneration } from "./hooks/use-music-generation";
 import { MusicOutput, MusicRail, musicPageModels } from "./pages/music-page";
 import { SpeakOutput, SpeakRail, speakPageModels } from "./pages/speak-page";
 import { type GenerateBlocker, TtsFooter } from "./pages/tts-workspace";
@@ -82,6 +87,10 @@ const HUB_TASKS_BY_MODE = {
   speak: ["text-to-speech", "text-to-audio"],
   transcribe: ["automatic-speech-recognition"],
 } as const;
+
+/** Music models offered as one-click picks when none is loaded: songs with lyrics, then a fast
+ *  instrumental model. */
+const RECOMMENDED_MUSIC_MODELS = ["ACE-Step1.5-GGUF", "Stable-Audio-3-Small-Music-GGUF"];
 
 export function AudioPage({
   active = true,
@@ -398,7 +407,7 @@ export function AudioPage({
     audioOptionValues,
     handleAudioOptionChange,
     handleAudioOptionsReset,
-    handleGenerate,
+    handleGenerate: handleSpeechGenerate,
     generationError,
     setGenerationError,
     toolContext,
@@ -406,6 +415,9 @@ export function AudioPage({
     handleToolValueChange,
     toolBlocker,
     claimedOptions,
+    setAudioInstructions,
+    advancedOptionSpecs,
+    toolOptions,
   } = useSpeechGeneration({
     // Clone keeps its own drafts and runs through its own hook; this one serves Speak and Music.
     workflow: ttsWorkflow === "music" ? "music" : "speak",
@@ -426,6 +438,37 @@ export function AudioPage({
     pendingTranscribeRelease,
     replayQueuedTtsPick,
   });
+
+  // Music on models that report their abilities builds its own /audio/run request; the rest of
+  // Speak and Music keep the generate route above.
+  const music = useMusicGeneration({
+    status,
+    busyRef,
+    setBusy,
+    updateGenerationPhase,
+    generateAbort,
+    setMode,
+    setAdvancedOpen,
+    refreshStatus,
+    activeRef,
+    modeRef,
+    refreshGallery,
+    selectClip: selectGeneratedClip,
+    setFallbackClip,
+    setSelectedId,
+    pendingTranscribeRelease,
+    replayQueuedTtsPick,
+    lyrics: prompt,
+    description: audioInstructions,
+    advancedOptionSpecs,
+    audioOptionValues,
+    toolOptions,
+    toolBlocker,
+    modelName: status?.active_model ? audioModelLabel(status.active_model) : null,
+    musicLoaded: ttsLoaded && musicGeneration,
+  });
+  const musicStudio = ttsWorkflow === "music" && music.studio;
+  const handleGenerate = musicStudio ? music.handleGenerate : handleSpeechGenerate;
 
   // The clip's Transcribe button uses Transcribe's model, else one already on disk, so it works
   // without a trip to Settings.
@@ -558,6 +601,20 @@ export function AudioPage({
     (id: string) => void pickRecommendedModel(id),
     [pickRecommendedModel],
   );
+  // Music's first picks, by name, when the catalog offers them on this machine.
+  const recommendedMusicActions = musicPageModels(MODELS_BY_MODE.speak, isMac)
+    .filter((model) =>
+      RECOMMENDED_MUSIC_MODELS.some((name) => model.id.endsWith(`/${name}`)),
+    )
+    .sort(
+      (a, b) =>
+        RECOMMENDED_MUSIC_MODELS.findIndex((name) => a.id.endsWith(`/${name}`)) -
+        RECOMMENDED_MUSIC_MODELS.findIndex((name) => b.id.endsWith(`/${name}`)),
+    )
+    .map((model) => ({
+      label: `use ${model.name}`,
+      onClick: () => handlePickRecommended(model.id),
+    }));
   const recommendedCloneActions = clonePageModels(MODELS_BY_MODE.speak, isMac)
     .slice(0, 2)
     .map((model) => ({
@@ -581,7 +638,9 @@ export function AudioPage({
               actions:
                 ttsWorkflow === "clone"
                   ? [chooseModelAction, ...recommendedCloneActions]
-                  : [chooseModelAction],
+                  : ttsWorkflow === "music"
+                    ? [chooseModelAction, ...recommendedMusicActions]
+                    : [chooseModelAction],
             }
           : !pageModelLoaded && ttsWorkflow === "clone"
             ? {
@@ -622,6 +681,7 @@ export function AudioPage({
                     reason: "The loaded model makes speech.",
                     actions: [
                       { label: "Choose a music model", onClick: openSelector },
+                      ...recommendedMusicActions,
                       {
                         label: "open Speak",
                         onClick: () => transitionWorkflow("speak"),
@@ -630,6 +690,8 @@ export function AudioPage({
                   }
             : ttsWorkflow === "clone"
               ? clone.blocker
+              : musicStudio
+              ? music.blocker
               : !prompt.trim() && !lyricsOptional
               ? {
                   reason:
@@ -647,7 +709,11 @@ export function AudioPage({
                   : null;
   // A failed run's reason stays under Generate with a way out, until the next run or a new model.
   const pageGenerationError =
-    ttsWorkflow === "clone" ? clone.generationError : generationError;
+    ttsWorkflow === "clone"
+      ? clone.generationError
+      : musicStudio
+        ? music.generationError
+        : generationError;
   const generateFailure: GenerateBlocker | null = pageGenerationError
     ? {
         // Runtime reasons often end without a stop, which would run into the action.
@@ -658,14 +724,22 @@ export function AudioPage({
       }
     : null;
   const setCloneGenerationError = clone.setGenerationError;
+  const setMusicGenerationError = music.setGenerationError;
   useEffect(() => {
     setGenerationError(null);
     setCloneGenerationError(null);
-  }, [status?.active_model, setGenerationError, setCloneGenerationError]);
+    setMusicGenerationError(null);
+  }, [
+    status?.active_model,
+    setGenerationError,
+    setCloneGenerationError,
+    setMusicGenerationError,
+  ]);
   useEffect(() => {
     if (busy === "generating") setGenerationError(null);
     if (busy === "generating") setCloneGenerationError(null);
-  }, [busy, setGenerationError, setCloneGenerationError]);
+    if (busy === "generating") setMusicGenerationError(null);
+  }, [busy, setGenerationError, setCloneGenerationError, setMusicGenerationError]);
   // How long the current run has taken, shown beside its phase.
   const [elapsedSeconds, setElapsedSeconds] = useState<number | null>(null);
   useEffect(() => {
@@ -1009,7 +1083,13 @@ export function AudioPage({
                   handleAudioOptionsReset,
                 };
                 return ttsWorkflow === "music" ? (
-                  <MusicRail {...railProps} />
+                  <MusicRail
+                    {...railProps}
+                    music={music}
+                    historyClips={clips}
+                    description={audioInstructions}
+                    setDescription={setAudioInstructions}
+                  />
                 ) : ttsWorkflow === "clone" ? (
                   <CloneRail {...railProps} clone={clone} historyClips={clips} />
                 ) : (
@@ -1047,13 +1127,19 @@ export function AudioPage({
               ) : (
                 <TtsFooter
                   busy={busy}
-                  generationPresentation={generationPresentation}
+                  generationPresentation={
+                    // Music says what the run is doing: reloading, making N variations, editing.
+                    musicStudio && music.runStatus && generationPresentation?.canStop
+                      ? { ...generationPresentation, status: music.runStatus }
+                      : generationPresentation
+                  }
                   handleStopGeneration={handleStopGeneration}
                   handleGenerate={handleGenerate}
                   ttsLoaded={pageModelLoaded}
                   prompt={prompt}
-                  lyricsOptional={lyricsOptional}
-                  musicNeedsDescription={musicNeedsDescription}
+                  // Music's own blocker covers lyrics and the description per mode.
+                  lyricsOptional={musicStudio || lyricsOptional}
+                  musicNeedsDescription={!musicStudio && musicNeedsDescription}
                   audioInstructions={audioInstructions}
                   blocker={generateBlocker}
                   shortcutLabel={shortcutLabel}
