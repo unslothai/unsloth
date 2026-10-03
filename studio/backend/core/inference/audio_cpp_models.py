@@ -359,9 +359,7 @@ _CLONE_FAMILIES: tuple[AudioCppFamily, ...] = (
                     max = 3.0,
                     default = 0.7,
                 ),
-                _tool(
-                    "num_inference_steps", "int", "Decoder steps.", min = 1, max = 100, default = 10
-                ),
+                _tool("num_inference_steps", "int", "Decoder steps.", min = 1, max = 100, default = 10),
             ),
         ),
     ),

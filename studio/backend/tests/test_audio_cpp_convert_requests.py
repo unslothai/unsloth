@@ -102,7 +102,11 @@ class _Server:
     model_id = "studio-test"
     backend = "cpu"
 
-    def __init__(self, model, fail = None):
+    def __init__(
+        self,
+        model,
+        fail = None,
+    ):
         self.model = model
         self.calls: list[tuple[str, dict]] = []
         self.fail = fail
@@ -147,7 +151,13 @@ def _backend(model, started):
     return backend
 
 
-def _convert(backend, inputs = None, options = None, seed = 7, **convert):
+def _convert(
+    backend,
+    inputs = None,
+    options = None,
+    seed = 7,
+    **convert,
+):
     wav, rate = backend.generate_audio_response(
         "ignored",
         workflow = "convert",
@@ -250,9 +260,7 @@ def test_seed_vc_singing_reloads_under_svc_and_sends_its_pitch(started):
     assert backend.models[model.id]["audio_server_task"] == "svc"
     assert backend.models[model.id]["audio_convert_route"] == "v1_svc"
     # A speech route sent in singing is dropped: v1_svc is the only singing route.
-    request = _convert(
-        backend, mode = "singing", pitch = -3, options = {"route": "v1_xlsr_hift_vc"}
-    )
+    request = _convert(backend, mode = "singing", pitch = -3, options = {"route": "v1_xlsr_hift_vc"})
     assert request["options"] == {"semitone_shift": "-3"}
     assert len(started) == 1
     _convert(backend)

@@ -121,9 +121,7 @@ def model_info_fields(model: AudioCppModel) -> dict[str, Any]:
     }
 
 
-def server_runtime_fields(
-    model: AudioCppModel, running: Optional[AudioCppModel]
-) -> dict[str, Any]:
+def server_runtime_fields(model: AudioCppModel, running: Optional[AudioCppModel]) -> dict[str, Any]:
     """The task (and Seed-VC route) of the server running now; ``model``'s own with none running.
 
     A Convert run reloads a cloning or speech session under vc or svc, so the page reads these to
@@ -505,7 +503,6 @@ class AudioCppBackend:
             raise
         except AudioCppRequestError as exc:
             from core.inference.audio_errors import AudioRuntimeError
-
             raise AudioRuntimeError(
                 f"The audio runtime could not generate audio: {exc.detail}", status = exc.status
             ) from exc

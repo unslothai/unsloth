@@ -43,7 +43,9 @@ def gallery_dir() -> Path:
 
 
 def save(
-    wav_bytes: bytes, meta: dict[str, Any], source_wav: Optional[Path] = None
+    wav_bytes: bytes,
+    meta: dict[str, Any],
+    source_wav: Optional[Path] = None,
 ) -> dict[str, Any]:
     """Persist WAV bytes plus their recipe sidecar; return the record.
 
@@ -430,9 +432,7 @@ def move(audio_id: str, after_id: Optional[str]) -> Optional[dict[str, Any]]:
         # The whole shelf in listing order, so neighbours past the client's loaded window are known.
         try:
             paths = [
-                p
-                for p in _clip_wavs(gallery_dir())
-                if not gallery_flags.is_archived(flags, p.stem)
+                p for p in _clip_wavs(gallery_dir()) if not gallery_flags.is_archived(flags, p.stem)
             ]
         except OSError:
             paths = []

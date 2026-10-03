@@ -151,9 +151,7 @@ def test_status_and_load_carry_the_convert_fields():
     assert dumped["audio_workflow_tasks"]["convert:singing"] == "svc"
     assert (dumped["audio_server_task"], dumped["audio_convert_route"]) == ("svc", "v1_svc")
     assert dumped["audio_options_by_workflow"]["convert"][0]["name"] == "length_adjust"
-    load = LoadResponse(
-        status = "loaded", model = "m", display_name = "m", inference = {}, **fields
-    )
+    load = LoadResponse(status = "loaded", model = "m", display_name = "m", inference = {}, **fields)
     assert load.audio_convert == caps and load.audio_server_task == "svc"
     plain = InferenceStatusResponse(is_audio = True, audio_type = AUDIO_CPP_TTS_AUDIO_TYPE)
     assert plain.audio_convert is None and plain.audio_workflow_tasks is None

@@ -566,9 +566,7 @@ def test_every_task_family_binds_its_workflows():
         assert binding.endpoint == endpoint_for[workflow]
         assert binding.server_task == family.default_server_task
     assert set(_CLONE_TABLE) == {f.family for f in acm.FAMILIES.values() if f.clone is not None}
-    assert set(_CONVERT_TABLE) == {
-        f.family for f in acm.FAMILIES.values() if f.convert is not None
-    }
+    assert set(_CONVERT_TABLE) == {f.family for f in acm.FAMILIES.values() if f.convert is not None}
     # Chatterbox-Turbo is its own family and still speaks.
     assert list(acm.FAMILIES["chatterbox_turbo"].workflows) == ["speak"]
     assert acm.FAMILIES["chatterbox_turbo"].default_server_task == "tts"

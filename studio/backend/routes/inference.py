@@ -21846,7 +21846,6 @@ def _audio_run_response(
     record: Optional[dict], wav_bytes: bytes, sample_rate: int, model_name: str
 ) -> AudioRunResponse:
     import base64
-
     if record is None:
         return AudioRunResponse(
             clips = [],
