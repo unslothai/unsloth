@@ -167,8 +167,13 @@ def test_guarded_masked_call_traces_without_a_graph_break(monkeypatch):
     q, k, v = _qkv()
     mask = torch.ones((1, 1, 1, q.shape[1]), dtype = torch.bool)
     mask[..., :2] = False
+    # The registered (guarded) function itself, not dispatch_attention_fn: on torch 2.6 and 2.11 Dynamo cannot trace
+    # diffusers' own AttentionBackendName(...) lookup, with or without this guard.
+    guarded = dispatch._AttentionBackendRegistry._backends[dispatch.AttentionBackendName.SAGE]
     torch._dynamo.reset()
-    compiled = torch.compile(_dispatch_sage, backend = "eager", fullgraph = True)
+    compiled = torch.compile(
+        lambda q, k, v, m: guarded(query = q, key = k, value = v, attn_mask = m), backend = "eager", fullgraph = True
+    )
     torch.testing.assert_close(compiled(q, k, v, mask), _native(q, k, v, mask))
     torch._dynamo.reset()
 
@@ -298,3 +303,31 @@ def test_probe_head_dims_ignore_dims_sage_cannot_serve():
     assert att._sage_probe_head_dims({64, 256}) == (64,)
     assert att._sage_probe_head_dims(set()) == (128,)
     assert att._sage_probe_head_dims({True, 96, 128}) == (96, 128)
+
+
+# --- ROCm: Sage is never chosen, explicitly or automatically ---------------------------------------------------
+# AMD measured SageAttention slower than AOTriton SDPA on gfx1151 (Wan2.2 T2V -36%, I2V -16%,
+# https://rocm.blogs.amd.com/software-tools-optimization/comfyui-fa-backends/README.html), and the upstream kernels
+# are CUDA-only, so a ROCm target keeps the default backend.
+
+
+@pytest.mark.parametrize("hip, version", [("7.2.1", "2.9.1+rocm7.2.1"), (None, "2.10.0a0+rocm7.10.0a20251116")])
+def test_sage_is_never_selected_on_rocm(monkeypatch, hip, version):
+    from core.inference.diffusion_attention import select_attention_backend
+
+    monkeypatch.setattr(torch.version, "hip", hip, raising = False)
+    monkeypatch.setattr(torch, "__version__", version)
+    rocm = types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16)
+    for speed in (True, False):
+        assert select_attention_backend(rocm, "sage", speed_active = speed) is None
+        assert select_attention_backend(rocm, "auto", speed_active = speed) != "sage"
+
+
+def test_auto_never_selects_sage_on_nvidia(monkeypatch):
+    from core.inference.diffusion_attention import select_attention_backend
+
+    monkeypatch.setattr(att, "_is_cuda_nvidia", lambda target: True)
+    for cap in ((7, 5), (8, 0), (8, 9), (9, 0), (10, 0), (12, 0)):
+        monkeypatch.setattr(att, "_cuda_capability", lambda cap = cap: cap)
+        for speed in (True, False):
+            assert select_attention_backend(_target(), "auto", speed_active = speed) != "sage"
