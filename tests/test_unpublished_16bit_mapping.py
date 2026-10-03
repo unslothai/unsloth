@@ -1,14 +1,4 @@
-"""Rows in ``unsloth/models/mapper.py`` must not resolve a 16bit load or merge to an
-``unsloth/`` repo that was never published.
-
-``get_model_name(..., load_in_4bit = False)`` returns the first name of a row, and
-``MAP_TO_UNSLOTH_16bit`` sends the upstream name there too, so a dead first name breaks
-16bit loading and ``save_pretrained_merged`` (``could not be read locally or on Hugging
-Face``) even though the row already lists a working upstream. Same shape as the Apertus
-70B row: drop the unpublished name and keep the upstream.
-
-``mapper.py`` has no imports, so it is exec'd directly without importing ``unsloth``.
-"""
+"""16bit loads and merges take a row's first name, so it must not be an unpublished ``unsloth/`` repo."""
 
 import os
 
@@ -16,7 +6,7 @@ import pytest
 
 MAPPER_PATH = os.path.join(os.path.dirname(__file__), os.pardir, "unsloth", "models", "mapper.py")
 
-# key -> (unpublished 16bit name, upstream the row should resolve to)
+# key -> (unpublished name, upstream)
 ROWS = {
     "unsloth/mistral-7b-instruct-v0.1-bnb-4bit": (
         "unsloth/mistral-7b-instruct-v0.1",
@@ -57,7 +47,6 @@ def test_row_resolves_16bit_to_upstream(key):
     assert namespace["INT_TO_FLOAT_MAPPER"][key] == upstream
     assert namespace["INT_TO_FLOAT_MAPPER"][key.lower()] == upstream
     assert upstream.lower() not in namespace["MAP_TO_UNSLOTH_16bit"]
-    # 4bit loads of the upstream name still reach the row.
     assert namespace["FLOAT_TO_INT_MAPPER"][upstream] == key
 
 
