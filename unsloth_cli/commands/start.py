@@ -5496,11 +5496,10 @@ def _load_app_config(path: Path, text: Optional[str]) -> Optional[dict]:
     elif path.suffix == ".yaml":
         import yaml
         data = yaml.safe_load(text)
-    elif path.suffix == ".jsonc":
+    else:
+        # OpenCode reads JSONC and OpenClaw JSON5, so accept comments and trailing commas in either.
         text = _JSONC_COMMENT.sub(lambda m: m.group(1) or "", text)
         data = json.loads(_JSONC_TRAILING_COMMA.sub(lambda m: m.group(1) or "", text))
-    else:
-        data = json.loads(text)
     if not isinstance(data, dict):
         raise ValueError("not a settings object")
     return data
@@ -5754,11 +5753,9 @@ def _codex_app_owner_alive(owner: object) -> bool:
     try:
         pid = int(owner["pid"])
         if owner["started"] is None:
-            # psutil is optional; signal 0 only probes on POSIX (on Windows os.kill terminates).
-            if os.name == "nt":
-                return False
-            os.kill(pid, 0)
-            return True
+            # psutil is optional, so fall back to the PID alone.
+            from unsloth_cli.commands.studio import _pid_alive
+            return _pid_alive(pid)
         import psutil
 
         return abs(psutil.Process(pid).create_time() - float(owner["started"])) < 1.0
@@ -5914,9 +5911,16 @@ def _opencode_app_target(
     def updates(text, path, base, key, entry):
         provider = _opencode_provider(base, key, entry, max_tokens, request_body)
         changes = [(("provider", _OPENCODE_PROVIDER), provider)]
-        enabled = (_parse_app_config(path, text) or {}).get("enabled_providers")
+        config = _parse_app_config(path, text) or {}
+        enabled = config.get("enabled_providers")
         if isinstance(enabled, list) and _OPENCODE_PROVIDER not in enabled:
             changes.append((("enabled_providers",), [*enabled, _OPENCODE_PROVIDER]))
+        # disabled_providers wins over enabled_providers.
+        disabled = config.get("disabled_providers")
+        if isinstance(disabled, list) and _OPENCODE_PROVIDER in disabled:
+            changes.append(
+                (("disabled_providers",), [p for p in disabled if p != _OPENCODE_PROVIDER])
+            )
         return changes
 
     return _AppTarget("opencode", "OpenCode app", path, updates)

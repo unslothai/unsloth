@@ -415,6 +415,33 @@ def test_opencode_app_reads_a_commented_jsonc(studio, monkeypatch):
     assert "unsloth-studio" in data["provider"]
 
 
+def test_opencode_app_reenables_a_disabled_unsloth(studio, monkeypatch):
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising = False)
+    monkeypatch.setattr(start, "_opencode_command", lambda *_: ("opencode", False))
+    config = studio["home"] / ".config" / "opencode" / "opencode.json"
+    config.parent.mkdir(parents = True)
+    config.write_text(json.dumps({"disabled_providers": ["openai", "unsloth-studio"]}) + "\n")
+
+    assert CliRunner().invoke(start.start_app, ["opencode", "--app"]).exit_code == 0
+
+    data = json.loads(config.read_text())
+    assert data["disabled_providers"] == ["openai"]
+    assert "unsloth-studio" in data["provider"]
+
+
+def test_openclaw_app_reads_a_commented_config(studio):
+    config = studio["home"] / ".openclaw" / "openclaw.json"
+    config.parent.mkdir()
+    config.write_text('{\n  // mine\n  "agents": {"defaults": {"model": "openai/gpt-5.5",}},\n}\n')
+
+    result = CliRunner().invoke(start.start_app, ["openclaw", "--app"])
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(config.read_text())
+    assert data["agents"]["defaults"] == {"model": "openai/gpt-5.5"}
+    assert data["models"]["providers"]["unsloth"]["apiKey"] == APP_KEY
+
+
 def test_opencode_app_keeps_each_config_dirs_backup_and_key(studio, monkeypatch, tmp_path):
     monkeypatch.setattr(start, "_opencode_command", lambda *_: ("opencode", False))
     originals = {}
@@ -438,7 +465,8 @@ def test_codex_app_owner_without_psutil(monkeypatch):
     monkeypatch.setitem(sys.modules, "psutil", None)
     owner = start._codex_app_owner()
     assert owner == {"pid": os.getpid(), "started": None}
-    assert start._codex_app_owner_alive(owner) is (os.name != "nt")
+    # A live --app session must stay recognisable, or a second run would switch it back.
+    assert start._codex_app_owner_alive(owner) is True
 
 
 def test_hermes_app_adds_unsloth_to_the_active_profile(studio):
