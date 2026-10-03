@@ -589,7 +589,6 @@ def test_pinned_denoiser_reads_real_group_offload_hooks(monkeypatch):
 
 
 def test_torchao_groups_stay_on_device_after_release_and_restore(monkeypatch):
-    """Restore must check torchao inner tensors; the wrapper can report cuda while data sits on the host."""
     torch, _ = _cuda_offload_model()
     pytest.importorskip("torchao")
     from diffusers.hooks import apply_group_offloading
@@ -598,7 +597,9 @@ def test_torchao_groups_stay_on_device_after_release_and_restore(monkeypatch):
     monkeypatch.delenv("UNSLOTH_DIFFUSION_PARTIAL_RESIDENT", raising = False)
     cfg = Int8DynamicActivationInt8WeightConfig(set_inductor_config = False)
     if not hasattr(cfg, "version"):
-        pytest.skip("torchao without config versions")
+        pytest.skip(
+            "torchao predates versioned configs; the v2 int8 layout this test pins is unavailable"
+        )
     cfg.version = 2
     torch.manual_seed(0)
     net = (

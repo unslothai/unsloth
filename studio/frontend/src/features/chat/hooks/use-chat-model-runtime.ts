@@ -167,6 +167,7 @@ import {
   normalizeMaxSeqLength,
   residentIsServedByMlx,
   resolveInitialConfig,
+  savedContextPin,
   type PerModelConfig,
   loadedContextFields,
 } from "@/features/model-picker";
@@ -3535,10 +3536,10 @@ export function useChatModelRuntime() {
       ) {
         return;
       }
-      // Context length is the one setting FastFlowLM takes; null (Auto) sends 0 for its default.
-      const contextLength = (
-        reload?.config ?? resolveInitialConfig(modelPath).config
-      ).customContextLength;
+      // Honor legacy maxSeqLength pins too; null uses FastFlowLM's default.
+      const contextLength = savedContextPin(
+        reload?.config ?? resolveInitialConfig(modelPath).config,
+      );
       if (loadingModelRef.current ?? store.loadingModelPick) {
         toast.info("Another model is already loading", {
           description: "Wait for it to finish or cancel it first.",
