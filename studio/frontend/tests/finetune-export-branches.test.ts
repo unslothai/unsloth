@@ -89,7 +89,6 @@ async function fineTuneMessages(
   openedEarlier: string[] = [],
 ) {
   const build = loadBuilder(chats);
-  // Chats opened earlier keep a runtime whose thread() reads the chat on screen.
   const unregisters = liveBranch
     ? [...openedEarlier, "open"].map((remoteId) =>
         liveThreadHead.registerLiveThreadView({
