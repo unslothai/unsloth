@@ -64,7 +64,6 @@ EXCLUDED_PARTS = frozenset(
     }
 )
 
-# Fully qualified callee -> sink label, after resolving the file's imports.
 DYNAMIC_IMPORTS = {
     "importlib.import_module": "import_module",
     "importlib.__import__": "__import__",
@@ -99,7 +98,6 @@ PICKLE_LIKE = {
 SAFE_YAML_LOADERS = {"SafeLoader", "CSafeLoader", "BaseLoader", "CBaseLoader"}
 
 HUB_DOWNLOADS = {"snapshot_download", "hf_hub_download"}
-# What turns a downloaded directory into running code in the same function.
 CODE_LOADERS = {
     "sys.path.insert",
     "sys.path.append",
@@ -295,7 +293,6 @@ def _unpinned_fetches(function: ast.AST, calls: list) -> list:
             and [e.value for e in arguments.elts[:2]] == ["git", "clone"]
         ):
             if pinned is None:
-                # Only walked for the rare function that clones, never per function.
                 pinned = any(word in text for text in _strings(function) for word in PIN_WORDS)
             if not pinned:
                 found.append((call, "git-clone-unpinned"))
@@ -325,7 +322,6 @@ def scan_file(path: Path, relative: str) -> list:
     found = []
     imports = []
     calls_by_owner: dict = {}
-    # One traversal for every rule: walking the tree once per rule tripled the runtime.
     stack = [(tree, tree)]
     while stack:
         node, owner = stack.pop()
