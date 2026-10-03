@@ -295,6 +295,8 @@ const CLONE_REFRESHES_AFTER_STOP =
   /if \(!expired\) toast\.error\(message\);\s*\}\s*(?:\/\/[^\n]*\n\s*)*await refreshStatus\(\);\s*\} finally/;
 const CONVERT_REFRESHES_AFTER_STOPPED_SWITCH =
   /\} else if \(switchNotice\) \{\s*(?:\/\/[^\n]*\n\s*)*await refreshStatus\(\);\s*\}\s*\} finally/;
+const CONVERT_REFRESHES_ON_ARRIVAL =
+  /useEffect\(\(\) => \{\s*if \(active && ttsWorkflow === "convert" && initialReadySent\.current\) \{\s*void refreshStatus\(\);\s*\}\s*\}, \[active, ttsWorkflow, refreshStatus\]\);/;
 const CONVERTS_ONLY =
   /const loadedConvertsOnly =\s*!!status\?\.audio_workflows\?\.includes\("convert"\) &&\s*!status\.audio_workflows\.includes\("clone"\);/;
 const SPEAK_BLOCKER_OPENS_CONVERT =
@@ -308,6 +310,9 @@ test("Convert's reload notice reads a status refreshed after a Clone run, a stop
   assert.match(clone, CLONE_REFRESHES_AFTER_STOP);
   const convert = readSrc("features/audio/hooks/use-convert-generation.ts");
   assert.match(convert, CONVERT_REFRESHES_AFTER_STOPPED_SWITCH);
+  // A stopped Clone run can restart audio.cpp after Stop returns; arriving on Convert reads it again.
+  const page = readSrc("features/audio/audio-page.tsx");
+  assert.match(page, CONVERT_REFRESHES_ON_ARRIVAL);
 });
 
 test("Speak sends a convert-only model to Convert, not to Clone", () => {

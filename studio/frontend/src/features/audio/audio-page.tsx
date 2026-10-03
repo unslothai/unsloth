@@ -305,6 +305,14 @@ export function AudioPage({
     handleCopyPrompt,
   } = useAudioGallery({ active });
 
+  // Convert reads the running server task to say whether its next run reloads. A Clone run, even a
+  // stopped one, can restart audio.cpp after its request returns, so read it again on arriving.
+  useEffect(() => {
+    if (active && ttsWorkflow === "convert" && initialReadySent.current) {
+      void refreshStatus();
+    }
+  }, [active, ttsWorkflow, refreshStatus]);
+
   // Resync on activation: another tab may have loaded/unloaded models meanwhile.
   useEffect(() => {
     if (!active) return;
