@@ -71,7 +71,9 @@ export const MAX_TOTAL_MCP_IMAGE_CHARS = 12_000_000;
 // MAX_MCP_IMAGE_MIME_CHARS, to prevent oversized mimeType values bypassing it.
 export const MAX_MCP_IMAGE_MIME_CHARS = 256;
 
-const MCP_TOOL_PREFIX = "mcp__";
+export function isImageToolName(name: unknown): boolean {
+  return typeof name === "string" && (name === "view_image" || name.startsWith("mcp__"));
+}
 
 interface EnvelopeCarrier {
   role?: string;
@@ -165,7 +167,7 @@ export function boundMcpImageEnvelopes<T extends EnvelopeCarrier>(
     if (
       typeof message.name === "string" &&
       message.name &&
-      !message.name.startsWith(MCP_TOOL_PREFIX)
+      !isImageToolName(message.name)
     ) {
       out[i] = { ...message, content: text };
       continue;

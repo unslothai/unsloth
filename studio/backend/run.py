@@ -348,11 +348,15 @@ def _print_localhost_ipv6_mismatch_warning(local_url: str, port: int) -> None:
     )
 
 
-def _verify_global_reachability(display_host: str, port: int) -> None:
+def _verify_global_reachability(
+    display_host: str,
+    port: int,
+    wsl_nat: bool = False,
+) -> None:
     """Probe check-host.net to confirm display_host:port is reachable from the public internet. Synchronous so
     output lands between the banner URLs and the stop hint. Bounded at ~15s; failures swallowed (verifier
     failing is not Unsloth failing). Only meaningful for a wildcard bind, and skipped entirely by
-    UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK."""
+    UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK. ``wsl_nat`` skips the LAN note (the WSL hint replaces it)."""
     global _public_reachable
     # Reset to "unknown" each run; set True/False only when the probe decides.
     _public_reachable = None
@@ -381,6 +385,8 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
         addr = ipaddress.ip_address(display_host)
         if addr.is_loopback or addr.is_private or addr.is_link_local:
             _public_reachable = False
+            if wsl_nat:
+                return
             print(
                 f"{dim}  Note: {display_host} is a private/LAN address -- "
                 f"reachable on this network only, not from the public internet."
@@ -536,6 +542,30 @@ def _network_share_host_for_bind(host: str) -> str:
     return host
 
 
+def _is_wsl_nat() -> bool:
+    from lan_access import _wsl_networking_mode
+
+    # "unknown" = WSL too old for wslinfo, which is NAT; "none" has no network at all.
+    if _wsl_networking_mode() not in ("nat", "unknown"):
+        return False
+    # Lazy import (every wildcard bind gets here); Docker Desktop containers also read "unknown".
+    from utils.paths.file_manager import _in_container
+
+    return not _in_container()
+
+
+def _print_wsl_windows_hint(port: int) -> None:
+    """WSL2 NAT: Windows reaches a wildcard bind via localhost forwarding (#11187)."""
+    dim = "\033[38;5;245m" if _stdout_color_ok() else ""
+    reset = "\033[0m" if dim else ""
+    print(
+        f"{dim}  WSL2: open http://localhost:{port} in a Windows browser. Other devices on your "
+        f"network can't reach WSL's NAT address; set networkingMode=mirrored in "
+        f"%UserProfile%\\.wslconfig for LAN access.{reset}",
+        flush = True,
+    )
+
+
 def _loopback_bind_host_for(host: str) -> str:
     return wildcard_loopback_host(host) or "127.0.0.1"
 
@@ -628,7 +658,10 @@ def _emit_startup_output(
     if localhost_mismatch_url:
         _print_localhost_ipv6_mismatch_warning(localhost_mismatch_url, port)
     elif wildcard_bind:
-        _verify_global_reachability(display_host, port)
+        wsl_nat = _is_wsl_nat()
+        if wsl_nat:
+            _print_wsl_windows_hint(port)
+        _verify_global_reachability(display_host, port, wsl_nat = wsl_nat)
         _print_cloudflare_line(loopback_host = _loopback_bind_host_for(host))
     _emit_tool_policy_notice(lan_addresses[0] if lan_addresses else host, False, enable_tools)
     print_studio_stop_hint()
@@ -1491,6 +1524,7 @@ def _graceful_shutdown(server = None):
         logger.warning("Error shutting down training subprocess: %s", e)
 
     try:
+        from core.inference.model_slots import unload_extra_models
         from routes.inference import _llama_cpp_backend, cancel_pending_loads
 
         # Before the kill: a load still in the lifecycle gate or in preflight is not yet
@@ -1506,6 +1540,7 @@ def _graceful_shutdown(server = None):
             # teardown = True: an app-level stop, not the retry ladder reaping a child it
             # is about to replace. Only the former may end an in-flight health wait.
             _llama_cpp_backend._kill_process(teardown = True)
+        unload_extra_models()
     except Exception as e:
         logger.warning("Error shutting down llama-server: %s", e)
 
