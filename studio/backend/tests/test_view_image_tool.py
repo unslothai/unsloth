@@ -79,6 +79,12 @@ def test_relative_and_absolute_paths(workdir, absolute):
     assert split_images(view_image(path, str(workdir)))[1]
 
 
+@pytest.mark.parametrize("path", ["/mnt/data/image.png", "/workspace/image.png"])
+def test_code_interpreter_prefix_maps_to_workdir(workdir, path):
+    assert split_images(view_image(path, str(workdir)))[1]
+    assert view_image("/mnt/data/../../etc/passwd", str(workdir)).startswith("Error:")
+
+
 @pytest.mark.parametrize("bypass", [False, True])
 def test_cannot_read_outside_even_with_full_access(workdir, bypass):
     outside = workdir.parent / "outside.png"
@@ -124,7 +130,7 @@ def test_cancelled_read(workdir):
     assert "cancelled" in view_image("image.png", str(workdir), cancel)
 
 
-@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason = "POSIX FIFO")
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason = "os.mkfifo is POSIX-only")
 def test_fifo_is_refused_without_blocking(workdir):
     os.mkfifo(workdir / "pipe.png")
     assert view_image("pipe.png", str(workdir)).startswith("Error:")

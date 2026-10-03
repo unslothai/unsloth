@@ -29,6 +29,18 @@ VIEW_IMAGE_TOOL = {
 }
 
 
+def _strip_habit_prefix(path: str, root: str) -> str:
+    # python's shim saves /mnt/data/x.png as ./x.png (edit_file resolves it the same way).
+    from .tools import _MISSING_PATH_PREFIXES
+
+    if not os.path.isabs(path) or os.path.commonpath([root, os.path.realpath(path)]) == root:
+        return path
+    for prefix in _MISSING_PATH_PREFIXES:
+        if path == prefix or path.startswith(prefix + "/"):
+            return path[len(prefix) :].lstrip("/") or "."
+    return path
+
+
 def view_image(
     path,
     workdir: str,
@@ -40,6 +52,7 @@ def view_image(
         return "Error: image viewing was cancelled."
     root = os.path.realpath(workdir)
     try:
+        path = _strip_habit_prefix(path, root)
         target = os.path.realpath(os.path.join(root, path))
         if os.path.commonpath([root, target]) != root:
             return "Error: image is outside this conversation's working directory."
