@@ -33,9 +33,13 @@ def _strip_habit_prefix(path: str, root: str) -> str:
     # python's shim saves /mnt/data/x.png as ./x.png (edit_file resolves it the same way).
     from .tools import _MISSING_PATH_PREFIXES
 
-    # Not gated on isabs: Windows does not count a drive-less "/mnt/data" as absolute.
-    if os.path.isabs(path) and os.path.commonpath([root, os.path.realpath(path)]) == root:
-        return path
+    # Not gated on isabs: Windows does not count a drive-less "/mnt/data" as absolute, and resolves it
+    # on the cwd's drive, where commonpath with a workdir on another drive raises.
+    try:
+        if os.path.isabs(path) and os.path.commonpath([root, os.path.realpath(path)]) == root:
+            return path
+    except ValueError:
+        pass
     for prefix in _MISSING_PATH_PREFIXES:
         if path == prefix or path.startswith(prefix + "/"):
             return path[len(prefix) :].lstrip("/") or "."
