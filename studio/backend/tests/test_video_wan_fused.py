@@ -333,6 +333,26 @@ def test_self_check_out_of_memory_retries_instead_of_disabling(monkeypatch):
 
 
 @needs_cuda
+def test_self_check_out_of_memory_twice_keeps_stock(monkeypatch):
+    blk = _block(dim = 128, ffn = 256, heads = 2, device = "cuda", dtype = torch.float16)
+    x, enc, temb, rot = _inputs(blk, 1, 32, 128, "cuda", torch.float16)
+    calls = []
+
+    def _always_oom(*args):
+        calls.append(1)
+        raise torch.OutOfMemoryError("CUDA out of memory")
+
+    monkeypatch.setattr(wf, "_fused_forward", _always_oom)
+    with torch.no_grad():
+        want = WanTransformerBlock.forward(blk, x, enc, temb, rot)
+        assert wf.install(torch.float16, "cuda") is True
+        got = [blk(x, enc, temb, rot) for _ in range(4)]
+    assert all(torch.equal(want, g) for g in got)
+    assert len(calls) == 2 and wf.counts() == {"fused": 0, "stock": 4}
+    assert list(wf._VERIFIED.values()) == [False]
+
+
+@needs_cuda
 def test_grad_and_non_fp16_inputs_take_the_stock_path():
     blk = _block(dim = 128, ffn = 256, heads = 2, device = "cuda", dtype = torch.float16)
     x, enc, temb, rot = _inputs(blk, 1, 32, 128, "cuda", torch.float16)

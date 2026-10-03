@@ -33,6 +33,8 @@ _LOCK = threading.Lock()
 _STATE: dict = {}
 # (device index, temb rank, has norm2 affine) -> True once the fused block matched the stock block bit for bit
 _VERIFIED: dict = {}
+# keys whose self-check already ran out of memory once; a second OOM keeps stock for the load
+_VERIFY_OOM: set = set()
 # fused block calls since install (engagement evidence for tests and the A/B harness)
 _COUNTS = {"fused": 0, "stock": 0}
 
@@ -489,7 +491,7 @@ class _Fallback(Exception):
 
 def _verify(block: Any, args: tuple, stock: Callable) -> Optional[bool]:
     """Run the fused and stock block once on the same inputs; trust the fused path only on a bit-for-bit match.
-    None (undecided, retried on the next call) when the check itself ran out of memory."""
+    None when the check itself ran out of memory (retried once on the next call)."""
     import torch
     try:
         # A streamed group's onload can still be in flight on the copy stream (diffusers' first group offload pass);
@@ -525,9 +527,11 @@ def _make_forward(stock: Callable) -> Callable:
         ok = _VERIFIED.get(key)
         if ok is None:
             ok = _verify(self, (hidden_states, encoder_hidden_states, temb, rotary_emb), stock)
-            if ok is None:
+            if ok is None and key not in _VERIFY_OOM:
+                _VERIFY_OOM.add(key)
                 _COUNTS["stock"] += 1
                 return stock(self, hidden_states, encoder_hidden_states, temb, rotary_emb)
+            ok = bool(ok)
             _VERIFIED[key] = ok
             logger = _STATE.get("logger")
             if logger is not None:
@@ -636,6 +640,7 @@ def install(
             _STATE["attn_call"] = proc_cls.__call__
         _STATE["logger"] = logger
         _VERIFIED.clear()
+        _VERIFY_OOM.clear()
         _COUNTS["fused"] = _COUNTS["stock"] = 0
         cls.forward = _make_forward(stock)
     if logger is not None:
@@ -670,6 +675,7 @@ def uninstall() -> None:
         for key in ("logger", "module", "attn_call"):
             _STATE.pop(key, None)
         _VERIFIED.clear()
+        _VERIFY_OOM.clear()
         if stock is None or cls is None:
             return
         if getattr(cls.forward, "_unsloth_wan_fused", False):
