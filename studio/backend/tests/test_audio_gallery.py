@@ -839,7 +839,6 @@ def test_an_edit_keeps_its_workflow_and_a_scoped_clear_takes_its_source_clips():
 
 def test_the_clear_route_accepts_the_edit_workflow():
     from routes.inference import clear_gallery_audio
-
     gallery.save(_wav(), _meta(workflow = "edit", role = "source", audio_type = "recording"))
     assert asyncio.run(clear_gallery_audio(workflow = "edit", current_subject = "tester")) == {
         "removed": 1

@@ -32,9 +32,7 @@ from core.inference.audio_cpp_models import (
 )
 from core.inference.audio_errors import AudioGenerationCancelledError
 
-FIXTURE = (
-    Path(__file__).resolve().parents[2] / "frontend/tests/fixtures/audio-edit-requests.json"
-)
+FIXTURE = Path(__file__).resolve().parents[2] / "frontend/tests/fixtures/audio-edit-requests.json"
 SOURCE = "/srv/accounts/a/audio/inputs/0123.24000.mono.wav"
 REF = "/srv/accounts/a/audio/inputs/4567.24000.mono.m30.wav"
 ORIGINAL = "Okay, I'm Cemo and what you just heard wasn't a human voice."
@@ -91,7 +89,13 @@ class _Recorder:
     model_id = MODEL_ID
     backend = "cpu"
 
-    def __init__(self, model, field = None, cancel_after = None, cancel_event = None):
+    def __init__(
+        self,
+        model,
+        field = None,
+        cancel_after = None,
+        cancel_event = None,
+    ):
         self.model = model
         self.field = field
         self.calls: list[tuple[str, dict]] = []
@@ -148,8 +152,10 @@ def started(monkeypatch, tmp_path):
 
 def _backend(model, server = None):
     backend = acb.AudioCppBackend()
-    backend._server = server if server is not None else _Recorder(
-        model, model.edit.source_field if model.edit else None
+    backend._server = (
+        server
+        if server is not None
+        else _Recorder(model, model.edit.source_field if model.edit else None)
     )
     backend._model = model
     backend.models = {model.id: {"is_audio": True}}
@@ -391,7 +397,7 @@ def test_speak_with_a_saved_voice_still_clones_and_edit_never_does(started, monk
         workflow = "edit",
         audio_inputs = {"source": SOURCE},
         reference_text = ORIGINAL,
-        edit = {"mode": "words", "markup": "a <sub targ=\"robot\">human</sub> voice."},
+        edit = {"mode": "words", "markup": 'a <sub targ="robot">human</sub> voice.'},
     )
     ((path, body),) = backend._server.calls
     assert path == "/v1/tasks/run" and body["source_audio"] == SOURCE
@@ -434,7 +440,7 @@ def test_status_fields_carry_the_edit_rules():
 def test_markup_sides_and_check_markup():
     markup = (
         "Okay, I'm <sub targ=\"Sam\">Cemo</sub> and what you just heard wasn't a "
-        "<sub targ=\"robot\">human</sub> voice."
+        '<sub targ="robot">human</sub> voice.'
     )
     assert audio_edit.markup_sides(markup) == (ORIGINAL, EDITED)
     assert audio_edit.check_markup(markup, ORIGINAL, EDITED) is None
@@ -446,8 +452,8 @@ def test_markup_sides_and_check_markup():
     # Anything but the three tags, or a tag left open, is refused.
     for bad in (
         "a <b>human</b> voice",
-        "a <sub targ=\"robot\">human voice",
-        "a <sub targ=\"x\" onload=\"y\">human</sub>",
+        'a <sub targ="robot">human voice',
+        'a <sub targ="x" onload="y">human</sub>',
         "a > b",
     ):
         assert audio_edit.markup_sides(bad) is None

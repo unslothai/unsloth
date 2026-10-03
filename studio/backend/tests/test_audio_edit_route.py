@@ -37,13 +37,19 @@ ORIGINAL = "Okay, I'm Cemo and what you just heard wasn't a human voice."
 EDITED = "Okay, I'm Sam and what you just heard wasn't a robot voice."
 MARKUP = (
     "Okay, I'm <sub targ=\"Sam\">Cemo</sub> and what you just heard wasn't a "
-    "<sub targ=\"robot\">human</sub> voice."
+    '<sub targ="robot">human</sub> voice.'
 )
 DOTS = "audio-cpp/audio.cpp-gguf/DotTTS-Edit-GGUF"
 FIRERED = "audio-cpp/audio.cpp-gguf/FireRedAudio-GGUF"
 
 
-def _edit_info(family, workflows, style, delivery = False, max_changes = None):
+def _edit_info(
+    family,
+    workflows,
+    style,
+    delivery = False,
+    max_changes = None,
+):
     return {
         "is_audio": True,
         "audio_type": "audiocpp_tts",
@@ -72,7 +78,12 @@ def _firered(stub):
     )
 
 
-def _edit(client, source = None, edit = None, **body):
+def _edit(
+    client,
+    source = None,
+    edit = None,
+    **body,
+):
     payload = {
         "workflow": "edit",
         "text": EDITED,
@@ -316,9 +327,7 @@ def test_the_same_upload_reuses_its_source_clip(stub):
     with _client(ALICE) as client:
         first = _edit(client, {"input_id": input_id}).json()
         second = _edit(client, {"input_id": input_id}).json()
-        trimmed = _edit(
-            client, {"input_id": input_id, "trim": {"start_s": 0.1}}
-        ).json()
+        trimmed = _edit(client, {"input_id": input_id, "trim": {"start_s": 0.1}}).json()
     assert first["clips"][1]["id"] == second["clips"][1]["id"]
     assert first["group_id"] != second["group_id"]
     # Another trim is other audio.

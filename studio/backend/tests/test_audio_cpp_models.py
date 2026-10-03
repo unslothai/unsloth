@@ -607,7 +607,11 @@ def test_edit_families_bind_the_edit_workflow():
     firered = acm.FAMILIES["firered_audio"]
     assert list(firered.workflows) == ["clone", "edit"]
     assert firered.workflows["edit"].server_task == "tts"
-    assert (firered.edit.source_field, firered.edit.max_changes, firered.edit.delivery_template) == (
+    assert (
+        firered.edit.source_field,
+        firered.edit.max_changes,
+        firered.edit.delivery_template,
+    ) == (
         "audio",
         5,
         "acoustic_edit",

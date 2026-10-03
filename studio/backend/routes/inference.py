@@ -21822,9 +21822,7 @@ def _audio_run_clip(record: dict[str, Any], role: str) -> dict[str, Any]:
 
 
 async def _run_audio_edit(
-    body: AudioRunRequest,
-    request: Request,
-    current_subject: str,
+    body: AudioRunRequest, request: Request, current_subject: str
 ) -> AudioRunResponse:
     """Edit speech: the recording is resolved in the caller's account and prepared as 24 kHz mono
     (never cut: over 30 s is refused); an uploaded one is kept in history as the run's source."""
@@ -21836,9 +21834,7 @@ async def _run_audio_edit(
     if source_ref is None:
         raise HTTPException(status_code = 400, detail = "Add a recording to edit.")
     if source_ref.voice_id:
-        raise HTTPException(
-            status_code = 400, detail = "Pick a recording or a history clip to edit."
-        )
+        raise HTTPException(status_code = 400, detail = "Pick a recording or a history clip to edit.")
     ref = source_ref.model_dump(exclude_none = True)
     trim = ref.get("trim")
     limit = audio_edit.EDIT_SOURCE_MAX_SECONDS + 0.05
