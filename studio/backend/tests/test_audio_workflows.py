@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Which Audio page workflows a loaded model, an inventory row or a gallery clip belongs to."""
+"""Which Audio page workflows an inventory row or a gallery clip belongs to."""
 
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ import pytest
 from core.inference import audio_workflows as aw
 from core.inference.audio_cpp_models import AUDIO_CPP_MUSIC_AUDIO_TYPE, AUDIO_CPP_TTS_AUDIO_TYPE
 from hub.schemas.inventory import CachedGgufRepo, CachedModelRepo, LocalModelInfo
-from models.inference import InferenceStatusResponse, LoadResponse
 
 
 def test_music_audio_types_match_the_frontend_set():
@@ -28,44 +27,6 @@ def test_music_audio_types_match_the_frontend_set():
         if item.strip()
     }
     assert frontend == set(aw.MUSIC_AUDIO_TYPES) == {"minimax_music3", "audiocpp_music"}
-
-
-def test_a_status_reports_no_workflows_for_a_model_that_is_not_audio():
-    status = InferenceStatusResponse(active_model = "unsloth/Qwen3-0.6B-GGUF")
-    assert status.audio_workflows == []
-    assert InferenceStatusResponse().audio_workflows == []
-
-
-@pytest.mark.parametrize(
-    "audio_type, workflows",
-    [
-        (AUDIO_CPP_TTS_AUDIO_TYPE, ["speak"]),
-        (AUDIO_CPP_MUSIC_AUDIO_TYPE, ["music"]),
-        ("minimax_music3", ["music"]),
-        ("snac", ["speak"]),
-        ("higgs_tts2", ["speak"]),
-        ("whisper", ["transcribe"]),
-        (None, ["speak"]),
-    ],
-)
-def test_a_status_reports_the_workflow_of_its_audio_type(audio_type, workflows):
-    status = InferenceStatusResponse(is_audio = True, audio_type = audio_type)
-    assert status.audio_workflows == workflows
-    assert status.model_dump()["audio_workflows"] == workflows
-
-
-def test_a_load_response_derives_workflows_and_keeps_an_explicit_value():
-    load = LoadResponse(
-        status = "loaded",
-        model = "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF",
-        display_name = "Kokoro",
-        inference = {},
-        is_audio = True,
-        audio_type = AUDIO_CPP_TTS_AUDIO_TYPE,
-    )
-    assert load.audio_workflows == ["speak"]
-    explicit = InferenceStatusResponse(is_audio = True, audio_workflows = ["music"])
-    assert explicit.audio_workflows == ["music"]
 
 
 @pytest.mark.parametrize(
@@ -99,4 +60,3 @@ def test_workflow_for_audio_type_is_speak_or_music():
     assert aw.workflow_for_audio_type("snac") == "speak"
     assert aw.workflow_for_audio_type("unknown") == "speak"
     assert aw.workflow_for_audio_type(None) == "speak"
-    assert aw.AUDIO_WORKFLOW_IDS == ("speak", "music", "transcribe")

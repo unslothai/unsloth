@@ -4,10 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { installLocalStorageFake } from "./helpers/kit.ts";
-
-const { store } = installLocalStorageFake();
-const { AUDIO_WORKSPACE_STORAGE_KEY, useAudioWorkspaceStore } = await import(
+const { useAudioWorkspaceStore } = await import(
   "../src/features/audio/stores/audio-workspace-store.ts"
 );
 
@@ -16,7 +13,6 @@ test("the workspace opens on Speak with nothing requested", () => {
   assert.equal(state.workflow, "speak");
   assert.equal(state.requestedWorkflow, null);
   assert.equal(state.navExpanded, false);
-  assert.deepEqual(state.lastModelByWorkflow, {});
 });
 
 test("a first look at the loaded model opens its page only until something chooses one", () => {
@@ -38,24 +34,4 @@ test("a request does not move the committed workflow until the page takes it", (
   assert.equal(store.getState().workflow, "music");
   assert.equal(store.getState().requestedWorkflow, null);
   store.getState().commitWorkflow("speak");
-});
-
-test("only the last model per workflow is persisted", () => {
-  const state = useAudioWorkspaceStore.getState();
-  state.rememberModel("transcribe", "moonshine/tiny");
-  state.rememberModel("speak", "kokoro");
-  state.setNavExpanded(true);
-  state.commitWorkflow("transcribe");
-  const saved = JSON.parse(store.get(AUDIO_WORKSPACE_STORAGE_KEY) ?? "{}");
-  assert.equal(AUDIO_WORKSPACE_STORAGE_KEY, "unsloth_audio_workspace");
-  assert.equal(saved.version, 1);
-  assert.deepEqual(saved.state, {
-    lastModelByWorkflow: { transcribe: "moonshine/tiny", speak: "kokoro" },
-  });
-});
-
-test("remembering the same model again leaves the state untouched", () => {
-  const before = useAudioWorkspaceStore.getState().lastModelByWorkflow;
-  useAudioWorkspaceStore.getState().rememberModel("speak", "kokoro");
-  assert.equal(useAudioWorkspaceStore.getState().lastModelByWorkflow, before);
 });

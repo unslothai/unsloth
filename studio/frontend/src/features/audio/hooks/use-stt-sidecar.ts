@@ -32,7 +32,6 @@ import {
   sttRepoIdForSidecarKey,
   sttSidecarKeyFor,
 } from "../catalog";
-import { useAudioWorkspaceStore } from "../stores/audio-workspace-store";
 import type { AudioHostState } from "./audio-host-state";
 
 /** Transcribe's model: the STT sidecar pick, its residency and the load that prepares it. */
@@ -277,7 +276,6 @@ export function useSttSidecar({
         }
         if (isCurrent()) {
           setLastSttRepo(repoId);
-          useAudioWorkspaceStore.getState().rememberModel("transcribe", repoId);
           toast.success("Transcription model ready", { id: toastId });
           return true;
         }

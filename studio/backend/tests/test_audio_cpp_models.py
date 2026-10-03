@@ -436,7 +436,7 @@ def test_a_spec_fallback_family_the_runtime_lacks_is_refused(hub, monkeypatch, t
     samsone = acm.resolve(f"{AUDIO_CPP_REPO}/Samsone-GGUF", network = False)
     assert (samsone.task, samsone.unsupported) == ("asr", None)
     crisper = acm.resolve(f"{AUDIO_CPP_REPO}/CrisperWhisper2.0-GGUF", network = False)
-    assert crisper.task == "" and crisper.workflows == {}
+    assert crisper.task == ""
     assert crisper.unsupported == (
         "CrisperWhisper2.0-GGUF needs a newer audio runtime than the one installed."
     )
@@ -481,39 +481,6 @@ def test_qwen3_tts_package_kind_comes_from_its_name(hub):
     )
     assert not any(o["name"] == "voice" for o in design.options)
     assert "reference voice" in base.unsupported
-
-
-def test_every_task_family_binds_exactly_one_workflow():
-    workflow_for = {"tts": "speak", "music": "music", "asr": "transcribe"}
-    endpoint_for = {"speak": "speech", "music": "tasks", "transcribe": "transcriptions"}
-    for family in acm.FAMILIES.values():
-        bindings = family.workflows
-        if not family.task:
-            assert bindings == {}, family.family
-            continue
-        ((workflow, binding),) = bindings.items()
-        assert workflow == workflow_for[family.task], family.family
-        assert binding.endpoint == endpoint_for[workflow]
-        assert binding.server_task == family.default_server_task
-    assert acm.FAMILIES["kokoro_tts"].workflows["speak"].server_task == "tts"
-    assert acm.FAMILIES["moss_voicegen"].workflows["speak"].server_task == "vdes"
-    assert acm.FAMILIES["ace_step"].workflows["music"] == acm.WorkflowBinding(
-        "gen", "tasks", None, ("text", "lyrics", "duration_seconds")
-    )
-    assert acm.FAMILIES["moonshine_asr"].workflows["transcribe"].inputs == ("audio",)
-    design = acm.family_policy("qwen3_tts", names = ["Qwen3-TTS-12Hz-1.7B-VoiceDesign-GGUF"])
-    assert design.workflows["speak"].server_task == "vdes"
-    assert acm.family_policy("htdemucs").workflows == {}
-
-
-def test_a_resolved_model_carries_its_workflow_binding(hub):
-    snap = _snapshot(hub)
-    folder = "Qwen3-TTS-12Hz-1.7B-VoiceDesign-GGUF"
-    _put(snap, f"{folder}/{folder.lower()}-q8_0.gguf", _gguf_bytes(family = "qwen3_tts"))
-    model = acm.resolve(f"{AUDIO_CPP_REPO}/{folder}", network = False)
-    assert list(model.workflows) == ["speak"] and model.workflows["speak"].server_task == "vdes"
-    _put(snap, "HTDemucs-GGUF/htdemucs-q8_0.gguf", _gguf_bytes(family = "htdemucs"))
-    assert acm.resolve(f"{AUDIO_CPP_REPO}/HTDemucs-GGUF", network = False).workflows == {}
 
 
 def test_sub_folders_and_same_quant_files_become_named_variants(hub):

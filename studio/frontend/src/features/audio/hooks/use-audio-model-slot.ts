@@ -331,9 +331,9 @@ export function useAudioModelSlot({
           const loadedWorkflow = isMusicGenerationModel(repoId, res.audio_type)
             ? "music"
             : "speak";
-          const workspace = useAudioWorkspaceStore.getState();
-          workspace.rememberModel(loadedWorkflow, repoId);
-          if (modeRef.current === "speak") workspace.commitWorkflow(loadedWorkflow);
+          if (modeRef.current === "speak") {
+            useAudioWorkspaceStore.getState().commitWorkflow(loadedWorkflow);
+          }
           // Only the native runtime and GGUF can be held in RAM.
           if (
             wantsCpu &&

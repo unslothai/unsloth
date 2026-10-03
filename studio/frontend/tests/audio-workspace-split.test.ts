@@ -46,7 +46,7 @@ test("only the page commits a workflow; the sidebar's request goes through the s
 test("a loaded model opens the page that fits it", () => {
   assert.match(
     slot,
-    /const loadedWorkflow = isMusicGenerationModel\(repoId, res\.audio_type\)\s*\? "music"\s*: "speak";[\s\S]{0,200}?rememberModel\(loadedWorkflow, repoId\);\s*if \(modeRef\.current === "speak"\) workspace\.commitWorkflow\(loadedWorkflow\);/,
+    /const loadedWorkflow = isMusicGenerationModel\(repoId, res\.audio_type\)\s*\? "music"\s*: "speak";[\s\S]{0,200}?if \(modeRef\.current === "speak"\) \{\s*useAudioWorkspaceStore\.getState\(\)\.commitWorkflow\(loadedWorkflow\);/,
   );
   // Opening Audio with a music model already resident lands on Music, until something chooses.
   assert.match(host, /adoptWorkflow\("music"\)/);

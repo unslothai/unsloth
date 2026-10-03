@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The instruction and language fields that used to sit inline in the Audio rail, unchanged.
-
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import type { NativeAudioInstructionsKind } from "../audio-page-policy";
-import { Field } from "../components/field";
+import { Field } from "./field";
 
 /** The free-text instruction a model takes beside its text: a music description, a Higgs scene,
  *  a voice design, or MOSS Local style guidance. */

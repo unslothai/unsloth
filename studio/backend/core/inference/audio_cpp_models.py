@@ -67,36 +67,6 @@ class AudioCppPackageVariant:
 
 
 @dataclass(frozen = True)
-class WorkflowBinding:
-    """How a Studio audio workflow reaches audiocpp_server: the task token, the endpoint and the
-    request fields the workflow sends."""
-
-    server_task: str
-    # ``speech`` (/v1/audio/speech), ``tasks`` (/v1/tasks/run) or ``transcriptions``
-    # (/v1/audio/transcriptions).
-    endpoint: str
-    route: Optional[str] = None
-    inputs: tuple[str, ...] = ()
-
-
-def _bindings_for(task: str, server_task: Optional[str]) -> dict[str, WorkflowBinding]:
-    """The workflows a Studio task offers, keyed by workflow id; empty when Studio has none."""
-    if task == "tts":
-        return {
-            "speak": WorkflowBinding(
-                server_task or "tts", "speech", None, ("text", "instruct", "language", "voice")
-            )
-        }
-    if task == "music":
-        return {
-            "music": WorkflowBinding("gen", "tasks", None, ("text", "lyrics", "duration_seconds"))
-        }
-    if task == "asr":
-        return {"transcribe": WorkflowBinding("asr", "transcriptions", None, ("audio",))}
-    return {}
-
-
-@dataclass(frozen = True)
 class AudioCppFamily:
     family: str
     # Studio task: ``tts`` (speech), ``music`` (generation) or ``asr``; empty when Studio has no feature for it.
@@ -124,10 +94,6 @@ class AudioCppFamily:
         if self.server_task:
             return self.server_task
         return "gen" if self.task == "music" else self.task
-
-    @property
-    def workflows(self) -> dict[str, WorkflowBinding]:
-        return _bindings_for(self.task, self.default_server_task)
 
 
 def _minimax_package(key: str, lm: str, rvq: str, flow: str) -> AudioCppPackageVariant:
@@ -1396,10 +1362,6 @@ class AudioCppModel:
     @property
     def hub_task(self) -> Optional[str]:
         return HUB_TASKS.get(self.task)
-
-    @property
-    def workflows(self) -> dict[str, WorkflowBinding]:
-        return _bindings_for(self.task, self.server_task)
 
     @property
     def key(self) -> str:

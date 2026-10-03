@@ -20,7 +20,6 @@ from pydantic import (
     model_validator,
 )
 
-from core.inference.audio_workflows import status_audio_workflows
 from core.inference.llama_server_args import (
     BATCH_MAX,
     BATCH_MIN,
@@ -1332,20 +1331,6 @@ class _InferenceRuntimeFields(BaseModel):
             "description, default, min, max, values, required}. Send chosen values as audio_options."
         ),
     )
-    audio_workflows: Optional[List[str]] = Field(
-        None,
-        description = (
-            "Audio page workflows (speak, music, transcribe) the loaded model serves; [] for a "
-            "model that is not an audio model. Derived from is_audio and audio_type when not given."
-        ),
-    )
-
-    @model_validator(mode = "after")
-    def derive_audio_workflows(self):
-        if self.audio_workflows is None:
-            self.audio_workflows = status_audio_workflows(self.is_audio, self.audio_type)
-        return self
-
     has_video_input: bool = Field(
         False,
         description = (

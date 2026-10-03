@@ -38,6 +38,7 @@ import {
   type AudioBusy,
   type AudioGenerationPhase,
   audioGenerationPresentation,
+  instructionsFieldKind,
 } from "./audio-page-policy";
 import { type CreateMode, deviceSizeBytes } from "./audio-workspace-utils";
 import { audioCapabilityLine, audioModelsForTask } from "./catalog";
@@ -53,7 +54,7 @@ import { type GenerateBlocker, TtsFooter } from "./pages/tts-workspace";
 import { TranscribeOutput, TranscribeRail } from "./pages/transcribe-page";
 import { type AudioPickerRow, audioRowMatchesWorkflow } from "./picker-filter";
 import { useAudioWorkspaceStore } from "./stores/audio-workspace-store";
-import { AudioToolPanels } from "./tools/tool-panel-host";
+import { InstructionsField, MossLanguageField } from "./components/instructions-fields";
 import {
   AUDIO_WORKFLOWS,
   type AudioWorkflowId,
@@ -602,29 +603,7 @@ export function AudioPage({
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [active]);
-  const toolContext = useMemo(
-    () => ({
-      audioType: status?.audio_type ?? null,
-      audioFamily: status?.audio_family ?? null,
-      musicGeneration: ttsWorkflow === "music",
-      cudaMusicGeneration,
-      musicNeedsDescription,
-    }),
-    [
-      status?.audio_type,
-      status?.audio_family,
-      ttsWorkflow,
-      cudaMusicGeneration,
-      musicNeedsDescription,
-    ],
-  );
-  const handleToolPanelChange = useCallback(
-    (value: { instructions: string; language: string }) => {
-      setAudioInstructions(value.instructions);
-      setAudioLanguage(value.language);
-    },
-    [setAudioInstructions, setAudioLanguage],
-  );
+  const instructionsKind = instructionsFieldKind(ttsWorkflow, status?.audio_type);
 
   const selectorModels =
     mode === "speak"
@@ -853,19 +832,22 @@ export function AudioPage({
                 const railProps = {
                   prompt,
                   setPrompt,
-                  toolPanels: (
-                    <AudioToolPanels
-                      workflow={ttsWorkflow}
-                      ctx={toolContext}
-                      value={{
-                        instructions: audioInstructions,
-                        language: audioLanguage,
-                      }}
-                      onChange={handleToolPanelChange}
-                      specs={audioOptionSpecs}
-                      disabled={busy === "generating"}
-                    />
-                  ),
+                  toolPanels: instructionsKind ? (
+                    <>
+                      <InstructionsField
+                        instructionsKind={instructionsKind}
+                        musicNeedsDescription={musicNeedsDescription}
+                        audioInstructions={audioInstructions}
+                        setAudioInstructions={setAudioInstructions}
+                      />
+                      {instructionsKind === "style" ? (
+                        <MossLanguageField
+                          audioLanguage={audioLanguage}
+                          setAudioLanguage={setAudioLanguage}
+                        />
+                      ) : null}
+                    </>
+                  ) : null,
                   audioDevice,
                   busy,
                   isRecording,

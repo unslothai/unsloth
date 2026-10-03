@@ -8136,7 +8136,6 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         # llama-server never serves an audio GGUF; those load through the audio worker.
         audio_family = None,
         audio_options = None,
-        audio_workflows = None,
         # Older/custom backend doubles predate this additive runtime field.
         preserve_thinking_default = bool(getattr(llama_backend, "preserve_thinking_default", False)),
         speculative_type = llama_backend.requested_spec_mode,
