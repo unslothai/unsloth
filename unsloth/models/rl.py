@@ -3592,11 +3592,8 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             )
 
 
-# TRL 1.10+ raises TypeError unless train_dataset is a datasets Dataset / IterableDataset, but earlier TRL took a plain
-# list, which the vision notebooks pass (PIL conversations + skip_prepare_dataset=True). Dataset.from_list is no drop-in
-# fix: it re-encodes every image to bytes. DPO / KTO / Reward always map text datasets, so they keep TRL's error.
-# GRPO / RLOO only stream datasets' IterableDataset, and a torch Dataset may be a torch IterableDataset, so it is
-# not widened there.
+# TRL 1.10+ rejects the list train_dataset the vision notebooks pass; Dataset.from_list is no fix (re-encodes images).
+# GRPO / RLOO only stream datasets' IterableDataset, so torch datasets (possibly iterable) stay rejected there.
 _LIST_TRAIN_DATASET_TYPES = {
     "sft_trainer": "list, tuple, torch.utils.data.Dataset",
     "grpo_trainer": "list, tuple",
@@ -3614,7 +3611,6 @@ def _allow_list_train_dataset(function, source, trainer_file):
     if function == "__init__":
         return _TRL_TRAIN_DATASET_TYPE_CHECK.sub(rf"\1(\2, {extra_types})\3", source)
     if function == "_reject_skip_prepare_without_labels":
-        # get_dataset_column_names reads .column_names, which a list does not have.
         return source.replace(
             "cols = get_dataset_column_names(dataset)",
             "cols = _unsloth_dataset_column_names(dataset)",

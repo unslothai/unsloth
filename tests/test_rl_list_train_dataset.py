@@ -103,7 +103,6 @@ BAD = ({"train": []}, "text", 3)  # a DatasetDict is a dict
     "trainer_file, init, accepted, rejected",
     [
         ("sft_trainer", SFT_INIT, (*LIST_ROWS, TorchDataset(), TorchStream()), BAD),
-        # GRPO / RLOO only stream datasets' IterableDataset, so torch datasets keep TRL's error.
         ("grpo_trainer", GRPO_INIT, LIST_ROWS, (*BAD, TorchDataset(), TorchStream())),
         ("rloo_trainer", GRPO_INIT, LIST_ROWS, (*BAD, TorchDataset(), TorchStream())),
     ],
@@ -111,9 +110,9 @@ BAD = ({"train": []}, "text", 3)  # a DatasetDict is a dict
 )
 def test_list_like_datasets_are_accepted(trainer_file, init, accepted, rejected):
     with pytest.raises(TypeError):
-        _build(init)(None, LIST_ROWS[0])  # TRL's own check
+        _build(init)(None, LIST_ROWS[0])
     patched = allow_list("__init__", init, trainer_file)
-    assert allow_list("__init__", patched, trainer_file) == patched  # idempotent
+    assert allow_list("__init__", patched, trainer_file) == patched
     fn = _build(patched)
     for good in (*accepted, Dataset(), IterableDataset()):
         assert fn(None, good) == "ok"
@@ -151,7 +150,7 @@ class _WithColumns:
         (TorchStream(), ["prompt"]),
         ([], []),
         ((), []),
-        ([("a", "b")], []),  # rows without keys
+        ([("a", "b")], []),
     ],
     ids = [
         "column_names",
@@ -181,11 +180,11 @@ def test_matches_installed_trl():
             continue
         text = Path(spec.origin).read_text(encoding = "utf-8")
         if "must be a `Dataset` or `IterableDataset`" not in text:
-            continue  # TRL < 1.10 has no check: nothing to widen.
+            continue
         widened = f"{_rl['_LIST_TRAIN_DATASET_TYPES'][trainer_file]})"
         assert widened in allow_list("__init__", text, trainer_file), name
         checked += 1
-        # tests/conftest.py imports unsloth, which swaps in the compiled trainers: they must carry it too.
+        # tests/conftest.py imports unsloth, which swaps in the compiled trainers.
         if "unsloth" in sys.modules:
             compiled = [c for c in getattr(trl, name).__mro__ if c.__name__ == f"_Unsloth{name}"]
             assert compiled, name

@@ -303,7 +303,6 @@ def _unsloth_install_pretrain_detector(model):
 
 
 def _unsloth_dataset_column_names(dataset):
-    # datasets splits carry column_names; a list, tuple or torch Dataset does not, so read the first row's keys.
     columns = getattr(dataset, "column_names", None)
     if columns is not None:
         return columns
