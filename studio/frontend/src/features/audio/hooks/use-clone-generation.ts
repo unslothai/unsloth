@@ -73,8 +73,7 @@ export async function showRunResult({
         model: response.model,
         saved: true,
       });
-    } catch {
-    }
+    } catch {}
     selectClip(clip.id, true);
     return;
   }
@@ -150,11 +149,8 @@ export function useCloneGeneration({
 
   const transcriber = useReferenceTranscribe({
     sttRepo,
-    language,
-    onText: (next, from) => {
-      const store = useAudioCloneStore.getState();
-      if (store.reference?.id === from.id) store.setReferenceText(next);
-    },
+    onText: (next, source) =>
+      useAudioCloneStore.getState().applyTranscript(source, next),
   });
 
   const toolContext = useMemo(
@@ -343,7 +339,9 @@ export function useCloneGeneration({
         const expired =
           error instanceof AudioApiError &&
           error.status === 404 &&
-          state.reference.kind === "input";
+          state.reference.kind === "input" &&
+          // With an emotion clip too, the 404 may be that clip's: keep the server's message.
+          !patch.inputs?.emotion;
         if (expired) {
           setExpiredReferenceId(state.reference.id);
           referenceHandle.current?.markExpired();

@@ -92,3 +92,17 @@ test("tool values stay bounded, oldest first", () => {
   assert.equal(keys.at(-1), "m259:clone:p");
   assert.ok(!keys.includes("m0:clone:p"));
 });
+
+test("a transcript lands only on the clip it was made from, and stays with it", () => {
+  const state = useAudioCloneStore.getState();
+  const a = { kind: "input" as const, id: "a", name: "a.wav", durationS: 3 };
+  const b = { kind: "input" as const, id: "b", name: "b.wav", durationS: 3 };
+  state.setReference(a);
+  state.setReferenceText("");
+  useAudioCloneStore.getState().applyTranscript(b, "stale words");
+  assert.equal(useAudioCloneStore.getState().referenceText, "");
+  useAudioCloneStore.getState().applyTranscript(a, "clip a words");
+  const after = useAudioCloneStore.getState();
+  assert.equal(after.referenceText, "clip a words");
+  assert.equal(after.reference?.transcript, "clip a words");
+});

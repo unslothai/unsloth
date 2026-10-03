@@ -8,14 +8,13 @@ import { transcribeAudioInput } from "../api";
 import { type AudioSourceSelection, sourceRefOf } from "../audio-run-request";
 import { sttEngineForRepoId, sttSidecarKeyFor } from "../catalog";
 
-/** Fills "What's said in the clip" without adding it to the transcript list. */
+/** Fills "What's said in the clip" without adding it to the transcript list. No language hint:
+ *  the page's language is the output's, and a cross-lingual reference is not in it. */
 export function useReferenceTranscribe({
   sttRepo,
-  language,
   onText,
 }: {
   sttRepo: string | null;
-  language: string;
   onText: (text: string, reference: AudioSourceSelection) => void;
 }) {
   const [transcribing, setTranscribing] = useState(false);
@@ -27,7 +26,7 @@ export function useReferenceTranscribe({
   const transcribe = useCallback(
     async (reference: AudioSourceSelection | null) => {
       if (!reference) return;
-      // A newer clip wins: its result must never land on the clip picked after it.
+      // A newer clip wins, so its own transcription is never skipped.
       abort.current?.abort();
       const controller = new AbortController();
       abort.current = controller;
@@ -42,7 +41,6 @@ export function useReferenceTranscribe({
             model,
             engine: sttRepo ? sttEngineForRepoId(sttRepo) : sttEngineFor(model),
             device: voice.sttDevice,
-            ...(language ? { language } : {}),
           },
           controller.signal,
         );
@@ -69,7 +67,7 @@ export function useReferenceTranscribe({
         }
       }
     },
-    [sttRepo, language],
+    [sttRepo],
   );
 
   useEffect(() => () => abort.current?.abort(), []);
