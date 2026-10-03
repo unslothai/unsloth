@@ -615,7 +615,7 @@ export function TtsOutput({
                     className="size-3.5 shrink-0 text-muted-foreground"
                   />
                   <span className="min-w-0 flex-1 truncate">{clip.prompt}</span>
-                  <span className="hidden shrink-0 truncate text-ui-11p5 text-muted-foreground @[30rem]:inline">
+                  <span className="hidden min-w-0 max-w-[45%] shrink truncate text-ui-11p5 text-muted-foreground @[30rem]:block">
                     {audioModelLabel(clip.model)} ·{" "}
                     {formatRelativeShort(clip.created_at)}
                   </span>
