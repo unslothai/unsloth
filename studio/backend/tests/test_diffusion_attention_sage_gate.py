@@ -50,11 +50,11 @@ def _isolated(monkeypatch):
     monkeypatch.setattr(att, "_active_attention_backend", lambda: "native")
     monkeypatch.setattr(att, "warn_if_sdpa_math_only", lambda *a, **k: False)
     monkeypatch.setattr(att, "_indexed_cuda_device", lambda device: device)
-    monkeypatch.setattr(att, "_sage_version_too_old", lambda: None)
+    monkeypatch.setattr(att, "_sage_version_too_old", lambda: None, raising = False)
     backends = dispatch._AttentionBackendRegistry._backends
     saved = backends[dispatch.AttentionBackendName.SAGE]
     saved_fa4 = backends[dispatch.AttentionBackendName.FLASH_4_HUB]
-    monkeypatch.setattr(att, "_FA4_PROBE_CACHE", {})
+    monkeypatch.setattr(att, "_FA4_PROBE_CACHE", {}, raising = False)
     yield
     backends[dispatch.AttentionBackendName.SAGE] = saved
     backends[dispatch.AttentionBackendName.FLASH_4_HUB] = saved_fa4
@@ -398,7 +398,7 @@ def test_engaged_backend_is_tagged_on_every_dit(monkeypatch):
 # 1.0.6 is the SageAttention 1 Triton kernel: diffusers refuses it, and on a B200 it is 4.7-6x slower than cuDNN.
 
 
-_REAL_SAGE_VERSION_TOO_OLD = att._sage_version_too_old
+_REAL_SAGE_VERSION_TOO_OLD = getattr(att, "_sage_version_too_old", None)
 
 
 @pytest.mark.parametrize("installed, refused", [("1.0.6", True), ("2.0.1", True), ("2.1.1", False), ("2.2.0", False)])
@@ -408,6 +408,7 @@ def test_sage_version_floor(monkeypatch, installed, refused):
     real = md.version
     monkeypatch.setattr(md, "version", lambda name: installed if name == "sageattention" else real(name))
     monkeypatch.setattr(dispatch, "_REQUIRED_SAGE_VERSION", "2.1.1", raising = False)
+    assert callable(_REAL_SAGE_VERSION_TOO_OLD)
     reason = _REAL_SAGE_VERSION_TOO_OLD()
     assert bool(reason) is refused
     if refused:
