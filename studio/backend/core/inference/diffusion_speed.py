@@ -53,13 +53,15 @@ SPEED_MAX = "max"
 SPEED_MODES = (SPEED_OFF, SPEED_EAGER, SPEED_DEFAULT, SPEED_MAX)
 
 
-# (attribute, snapshot key). All but the first are what torchao's recommended_inductor_config_setter() flips.
+# (attribute, snapshot key). The first and last are Studio's own; the rest are what torchao's
+# recommended_inductor_config_setter() flips.
 _INDUCTOR_FLAGS = (
     ("emulate_precision_casts", "inductor_emulate_precision_casts"),
     ("coordinate_descent_tuning", "inductor_coordinate_descent_tuning"),
     ("coordinate_descent_check_all_directions", "inductor_coordinate_descent_check_all_directions"),
     ("force_fuse_int_mm_with_mul", "inductor_force_fuse_int_mm_with_mul"),
     ("fx_graph_cache", "inductor_fx_graph_cache"),
+    ("dynamic_scale_rblock", "inductor_dynamic_scale_rblock"),
 )
 _INDUCTOR_TRITON_FLAGS = (("unique_kernel_names", "inductor_triton_unique_kernel_names"),)
 _DYNAMO_MODULE = "torch._dynamo.config"
@@ -888,6 +890,13 @@ def _compile_repeated_blocks(
         inductor_cfg = _inductor_config()
         if inductor_cfg is not None and hasattr(inductor_cfg, "emulate_precision_casts"):
             compile_config.set_knob(_INDUCTOR_MODULE, "emulate_precision_casts", True)
+        # One R0_BLOCK per reduction: see diffusion_compile_config.DYNAMIC_SCALE_RBLOCK_ENV.
+        if (
+            inductor_cfg is not None
+            and hasattr(inductor_cfg, "dynamic_scale_rblock")
+            and compile_config.reduction_blocks_pinned()
+        ):
+            compile_config.set_knob(_INDUCTOR_MODULE, "dynamic_scale_rblock", False)
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "compile_repeated_blocks", exc)
         return False

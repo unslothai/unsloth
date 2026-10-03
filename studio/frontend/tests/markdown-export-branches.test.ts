@@ -147,7 +147,10 @@ async function markdownOutputs(
   const exporters = loadExporters(stored, downloads, sources);
   const unregister = liveBranch
     ? liveThreadHead.registerLiveThreadView({
-        threadListItem: () => ({ getState: () => ({ remoteId: "thread" }) }),
+        threads: () => ({ getState: () => ({ mainThreadId: "thread" }) }),
+        threadListItem: () => ({
+          getState: () => ({ id: "thread", remoteId: "thread" }),
+        }),
         thread: () => ({
           getState: () => ({ messages: liveBranch.map((id) => ({ id })) }),
         }),

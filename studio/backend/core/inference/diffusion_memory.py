@@ -2398,8 +2398,7 @@ def refine_plan_from_loaded_weights(
 
 
 def _placed_on(tensor: Any, device_type: str, is_torchao: Callable[[Any], bool]) -> bool:
-    """Whether ``tensor``'s storage is on ``device_type``. A torchao subclass is judged by its inner tensors: after a
-    streamed offload its wrapper can still report the onload device while its data and scales sit on the host."""
+    """torchao subclasses are judged by inner tensors: after a streamed offload the wrapper can report the wrong device."""
     if is_torchao(tensor):
         try:
             names, _ = tensor.__tensor_flatten__()
@@ -3358,12 +3357,39 @@ def install_group_offload_hooks_eager() -> bool:
     return patched
 
 
+def _install_group_offload_torchao_host_copy(go: Any) -> bool:
+    """Give aliased torchao host copies a separate wrapper so ``swap_tensors`` cannot move them to CUDA."""
+    group_cls = getattr(go, "ModuleGroup", None)
+    original = getattr(group_cls, "_to_cpu", None)
+    is_torchao = getattr(go, "_is_torchao_tensor", None)
+    if (
+        original is None
+        or not callable(is_torchao)
+        or getattr(original, "_unsloth_host_copy", False)
+    ):
+        return False
+
+    def _to_cpu(tensor: Any, low_cpu_mem_usage: bool) -> Any:
+        copy = original(tensor, low_cpu_mem_usage)
+        if copy is not tensor or not is_torchao(tensor):
+            return copy
+        names, ctx = tensor.__tensor_flatten__()
+        return type(tensor).__tensor_unflatten__(
+            {name: getattr(tensor, name) for name in names}, ctx, tensor.size(), tensor.stride()
+        )
+
+    _to_cpu._unsloth_host_copy = True
+    group_cls._to_cpu = staticmethod(_to_cpu)
+    return True
+
+
 def install_group_offload_buffer_restore() -> bool:
-    """diffusers stream group offload restores only parameters, leaving buffers (native int8 weights) on the GPU."""
+    """Fix buffer restoration and torchao host-copy aliasing in diffusers stream group offload."""
     try:
         from diffusers.hooks import group_offloading as go
     except Exception:  # noqa: BLE001 - no group offload in this diffusers
         return False
+    _install_group_offload_torchao_host_copy(go)
     group_cls = getattr(go, "ModuleGroup", None)
     original = getattr(group_cls, "_offload_to_memory", None)
     if original is None or getattr(original, "_unsloth_buffer_restore", False):
@@ -3427,6 +3453,7 @@ def _pin_top_level_group(
             or getattr(group, "offload_to_disk_path", None)
             or getattr(getattr(group, "onload_device", None), "type", None) != "cuda"
             or getattr(group, "_unsloth_pinned_top", False)
+            or getattr(group, "_unsloth_top_no_copy_back", False)
         ):
             return False
         tensors: list = []
@@ -3502,6 +3529,87 @@ def _pin_top_level_group(
     except Exception as exc:  # noqa: BLE001 - diffusers keeps its own (slower) path
         if logger is not None:
             logger.debug("diffusion.memory: top-level group left as diffusers built it (%s)", exc)
+        return False
+
+
+def _skip_top_level_copy_back(module: Any, logger: Any = None) -> bool:
+    """Fallback when ``_pin_top_level_group`` cannot pin: offload re-points to the group's existing host tensors
+    instead of copying the (inference-constant) weights back on the compute stream. Same kill switch as the pinned path."""
+    if (os.environ.get(PIN_TOP_GROUP_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
+        return False
+    try:
+        import torch
+        from diffusers.hooks import group_offloading as go
+
+        registry = getattr(module, "_diffusers_hook", None)
+        get_hook = getattr(registry, "get_hook", None)
+        hook = (
+            get_hook(getattr(go, "_GROUP_OFFLOADING", "group_offloading"))
+            if callable(get_hook)
+            else None
+        )
+        group = getattr(hook, "group", None)
+        if (
+            group is None
+            or getattr(group, "stream", None) is not None
+            or getattr(group, "offload_to_disk_path", None)
+            or getattr(getattr(group, "onload_device", None), "type", None) != "cuda"
+            or getattr(group, "_unsloth_pinned_top", False)
+            or getattr(group, "_unsloth_top_no_copy_back", False)
+        ):
+            return False
+        tensors: list = []
+        seen: set = set()
+        for tensor in (
+            [p for m in group.modules for p in m.parameters()]
+            + [b for m in group.modules for b in m.buffers()]
+            + list(group.parameters or [])
+            + list(group.buffers or [])
+        ):
+            if id(tensor) not in seen:
+                seen.add(id(tensor))
+                tensors.append(tensor)
+        is_torchao = getattr(go, "_is_torchao_tensor", None)
+        if not tensors or (callable(is_torchao) and any(is_torchao(t) for t in tensors)):
+            return False
+        if any(type(t) not in (torch.Tensor, torch.nn.Parameter) for t in tensors):
+            return False
+        host = {t: (t.data if t.data.device.type == "cpu" else t.data.cpu()) for t in tensors}
+        device = group.onload_device
+
+        def onload_() -> None:
+            for tensor, cpu in list(host.items()):
+                current = tensor.data
+                if current.device.type == "cpu" and current.data_ptr() != cpu.data_ptr():
+                    # replaced while offloaded (a .to() conversion, an adapter fused on the host): upload that instead
+                    cpu = current
+                    host[tensor] = cpu
+                tensor.data = cpu.to(device)
+
+        def offload_() -> None:
+            for tensor, cpu in host.items():
+                tensor.data = cpu
+
+        disable = getattr(getattr(torch, "compiler", None), "disable", None)
+        if callable(disable):
+            onload_, offload_ = disable(onload_), disable(offload_)
+        offload_()
+        group.onload_ = onload_
+        group.offload_ = offload_
+        group._unsloth_top_no_copy_back = True
+        if logger is not None:
+            logger.info(
+                "diffusion.memory: %s top-level weights (%d MiB) not pinnable here; offload re-points to the host "
+                "copy instead of copying them back",
+                type(module).__name__,
+                sum(int(t.numel()) * int(t.element_size()) for t in tensors) >> 20,
+            )
+        return True
+    except Exception as exc:  # noqa: BLE001 - diffusers keeps its own path
+        if logger is not None:
+            logger.debug(
+                "diffusion.memory: top-level group copy-back left as diffusers built it (%s)", exc
+            )
         return False
 
 
@@ -3633,8 +3741,8 @@ def _apply_group_offload(
                     module, **_torchao_group_offload_kwargs(module, gkwargs, pinned_mib)
                 )
             installed += 1
-            if use_stream:
-                _pin_top_level_group(module, logger, pinned_mib)
+            if use_stream and not _pin_top_level_group(module, logger, pinned_mib):
+                _skip_top_level_copy_back(module, logger)
         if resident_transformer_mib:
             room = int(resident_transformer_mib)
             for module in streamed.values():
@@ -3667,6 +3775,9 @@ def _apply_group_offload(
                 _pin_vision_embedding_device(module)
                 if te_room > 0:
                     te_room -= _keep_groups_resident(module, te_room, onload, logger)
+                if getattr(pipe, "_unsloth_small_host", None):
+                    from .diffusion_small_host import install_encoder_prefetch
+                    install_encoder_prefetch(module, onload, logger)
             except Exception as exc:  # noqa: BLE001 -- degrade this encoder, never fail the load
                 if not stream_transformer and installed == 0:
                     # Resident encoder here would OOM; fall back to model offload, which rejects partial hooks.
@@ -4291,8 +4402,12 @@ def _apply_streaming_offload(
             if pin and defer and kwargs.get("use_stream") and kwargs.get("low_cpu_mem_usage"):
                 _defer_pinning(pipe, module, onload, logger)
             installed += 1
-            if use_stream and offload_type == "block_level":
-                _pin_top_level_group(module, logger, pinned_mib)
+            if (
+                use_stream
+                and offload_type == "block_level"
+                and not _pin_top_level_group(module, logger, pinned_mib)
+            ):
+                _skip_top_level_copy_back(module, logger)
             if offload_type == "leaf_level":
                 _pin_vision_embedding_device(module)
         if resident_transformer_mib:
