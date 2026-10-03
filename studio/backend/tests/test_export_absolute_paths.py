@@ -208,6 +208,7 @@ def _install_lightweight_backend_stubs(monkeypatch):
         "ExportBaseModelRequest",
         "ExportGGUFRequest",
         "ExportLoRAAdapterRequest",
+        "LlmCompressorExportProbeResponse",
     ):
         setattr(models_pkg, name, object)
     models_pkg.LocalModelInfo = _LocalModelInfo
