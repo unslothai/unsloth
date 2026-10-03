@@ -15,6 +15,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import List, Optional
 
@@ -117,10 +118,16 @@ def convert_gguf_to_q4nx(gguf_path: str, out_dir: Path) -> None:
 
 
 def _fetch_base_file(base_model: str, name: str, token) -> Optional[Path]:
-    local = Path(base_model)
+    local = Path(base_model).expanduser()
     if local.is_dir():
+        from core.training.account_jobs import account_path
+
         candidate = local / name
-        return candidate if candidate.is_file() else None
+        if not candidate.is_file():
+            return None
+        # Only the folder was account-checked; a file in it may link to another account's.
+        account_path(candidate)
+        return candidate
     from huggingface_hub import hf_hub_download
     from huggingface_hub.errors import EntryNotFoundError
 
@@ -184,6 +191,15 @@ def write_flm_tokenizer_config(out_dir: Path, *configs: Optional[dict]) -> None:
     )
 
 
+_FOLDER_LOCKS: dict = {}
+_FOLDER_LOCKS_GUARD = threading.Lock()
+
+
+def _folder_lock(out_dir: Path) -> threading.Lock:
+    with _FOLDER_LOCKS_GUARD:
+        return _FOLDER_LOCKS.setdefault(os.path.abspath(out_dir), threading.Lock())
+
+
 def _read_json(path: Optional[Path]) -> Optional[dict]:
     return json.loads(path.read_text(encoding = "utf-8")) if path is not None else None
 
@@ -206,15 +222,17 @@ def convert_existing_gguf(
     }
     if found["tokenizer_config.json"] is None:
         raise RuntimeError(f"{base_model} has no tokenizer_config.json, which FastFlowLM needs.")
-    convert_gguf_to_q4nx(str(gguf_path), out_dir)
-    for name in TOKENIZER_FILES:
-        # The HF tokenizer.json replaces the one the converter rebuilds from the GGUF.
-        if found[name] is not None:
-            shutil.copyfile(found[name], out_dir / name)
-    if found["chat_template.jinja"] is None:
-        config = json.loads((out_dir / "tokenizer_config.json").read_text(encoding = "utf-8"))
-        template = config.get("chat_template") or _gguf_chat_template(gguf_path)
-        if template and not config.get("chat_template"):
-            (out_dir / "chat_template.jinja").write_text(template, encoding = "utf-8")
-    write_flm_tokenizer_config(out_dir, *(_read_json(found[name]) for name in CONFIG_FILES))
+    # A retried request (or a second tab) must not interleave with one still converting here.
+    with _folder_lock(out_dir):
+        convert_gguf_to_q4nx(str(gguf_path), out_dir)
+        for name in TOKENIZER_FILES:
+            # The HF tokenizer.json replaces the one the converter rebuilds from the GGUF.
+            if found[name] is not None:
+                shutil.copyfile(found[name], out_dir / name)
+        if found["chat_template.jinja"] is None:
+            config = json.loads((out_dir / "tokenizer_config.json").read_text(encoding = "utf-8"))
+            template = config.get("chat_template") or _gguf_chat_template(gguf_path)
+            if template and not config.get("chat_template"):
+                (out_dir / "chat_template.jinja").write_text(template, encoding = "utf-8")
+        write_flm_tokenizer_config(out_dir, *(_read_json(found[name]) for name in CONFIG_FILES))
     return out_dir

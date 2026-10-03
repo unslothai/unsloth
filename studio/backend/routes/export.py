@@ -542,6 +542,13 @@ async def convert_q4nx(
             detail = "Give either a local gguf_path or a repo_id with a filename.",
         )
     token = _resolve_export_hf_token(request.hf_token, allow_ambient = allow_ambient)
+    base_model = request.base_model.strip()
+    # The shared HF cache can hold another account's private repo: check this caller's access.
+    hub_repos = [request.repo_id] if request.repo_id else []
+    if not Path(base_model).expanduser().is_dir():
+        hub_repos.append(base_model)
+    for repo in hub_repos:
+        await asyncio.to_thread(account_access.authorize_download, repo, "model", token)
 
     def run() -> str:
         from core.export import q4nx
@@ -557,7 +564,7 @@ async def convert_q4nx(
             source = Path(hf_hub_download(request.repo_id, request.filename, token = token))
         out = q4nx.convert_existing_gguf(
             source,
-            request.base_model.strip(),
+            base_model,
             Path(resolve_export_write_dir(request.save_directory)),
             token = token,
         )

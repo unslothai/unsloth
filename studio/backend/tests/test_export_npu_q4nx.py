@@ -330,6 +330,41 @@ def test_no_eos_id_anywhere_fails(monkeypatch, tmp_path):
         q4nx.write_flm_tokenizer_config(tmp_path, None, {})
 
 
+def test_conversions_into_one_folder_do_not_overlap(monkeypatch, tmp_path):
+    import threading
+    import time
+
+    export_mod, _b, _s, _c = _backend(monkeypatch, tmp_path, object())
+    active, overlaps = [0], []
+
+    def convert(gguf_path, out_dir):
+        active[0] += 1
+        overlaps.append(active[0])
+        time.sleep(0.2)
+        out_dir.mkdir(parents = True, exist_ok = True)
+        (out_dir / "model.q4nx").write_bytes(b"q4nx")
+        active[0] -= 1
+
+    monkeypatch.setattr(export_mod.q4nx, "convert_gguf_to_q4nx", convert)
+    monkeypatch.setattr(export_mod.q4nx, "_gguf_chat_template", lambda _p: None)
+    base = _base_folder(
+        tmp_path, {"config.json": '{"eos_token_id": 2}', "tokenizer_config.json": "{}"}
+    )
+    gguf = _gguf(tmp_path / "m.gguf")
+    threads = [
+        threading.Thread(
+            target = export_mod.q4nx.convert_existing_gguf, args = (gguf, str(base), tmp_path / "out")
+        )
+        for _ in range(3)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert overlaps == [1, 1, 1]
+
+
 def test_existing_gguf_without_tokenizer_config_fails_before_converting(monkeypatch, tmp_path):
     export_mod, _b, _s, _c = _backend(monkeypatch, tmp_path, object())
     _fake_converter(export_mod, monkeypatch, calls := [])
