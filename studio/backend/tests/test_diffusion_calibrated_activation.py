@@ -339,6 +339,8 @@ def test_an_fp32_promoted_family_keeps_the_flat_plan(monkeypatch):
     import core.inference.diffusion as d
     from core.inference.diffusion_families import detect_family
 
+    import core.inference.diffusion_fp16_guard as guard
+
     monkeypatch.setattr(d, "sdpa_subquadratic_confirmed", lambda target: True)
     zimage = detect_family("unsloth/Z-Image-Turbo-GGUF")
     assert zimage.name == "z-image" and zimage.fp16_incompatible
@@ -347,7 +349,11 @@ def test_an_fp32_promoted_family_keeps_the_flat_plan(monkeypatch):
     def on(dtype):
         return types.SimpleNamespace(backend = "cuda", vendor = "nvidia", dtype = dtype)
 
+    # Whether Z-Image promotes depends on the installed diffusers matching its fp16 guard recipe: pin both outcomes.
+    monkeypatch.setattr(guard, "fp16_promotes_to_fp32", lambda fam: True)
     assert d._calibrated_activation(zimage, on(torch.float16)) is None
+    monkeypatch.setattr(guard, "fp16_promotes_to_fp32", lambda fam: False)
+    assert d._calibrated_activation(zimage, on(torch.float16)) is not None
     assert d._calibrated_activation(zimage, on(torch.float32)) is None
     assert d._calibrated_activation(zimage, on(torch.bfloat16)) is not None
     assert d._calibrated_activation(flux, on(torch.float16)) is not None
