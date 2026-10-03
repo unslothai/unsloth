@@ -114,14 +114,8 @@ export function moveGalleryItem<T extends FlaggableItem>(
   return [...rest.slice(0, at), { ...moved, pinned }, ...rest.slice(at)];
 }
 
-/**
- * The `afterId` to send for a move made in a filtered view of a shared shelf (one page's history).
- *
- * The view reports its neighbour from the visible rows, but the shelf decides the pin from its own
- * neighbours, which can be hidden rows: dropping a clip at the top of an unpinned view whose shelf
- * starts with another page's pin pinned it. This picks the shelf gap between the same visible
- * neighbours that gives the pin state the view showed, so the visible order and pin both hold.
- */
+/** The shelf `afterId` for a move in a filtered view, keeping the pin state the view showed: hidden
+ *  neighbours decide the pin, so a drop beside another page's pin used to pin the clip. */
 export function scopedMoveAfterId<T extends FlaggableItem>(
   items: T[],
   inView: (item: T) => boolean,

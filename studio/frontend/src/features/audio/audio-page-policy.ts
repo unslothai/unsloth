@@ -450,15 +450,7 @@ export function expectedGgufDownloadBytes(variant: AutoGgufVariant): number {
     : variant.size_bytes;
 }
 
-/** Fold a freshly fetched first page into the list already on screen. The page is authoritative
- *  for the newest `page.length` clips and any scrollback below it is kept; replacing outright
- *  collapsed a paginated History on every delete and reselected a different clip.
- *  `removedId` drops a clip this client just deleted; `hasMore` is the server's own report. */
-/**
- * Fetch the first `wanted` gallery rows in pages of at most `maxPage`, as one page: the rows in order,
- * with the last page's `has_more` and cursor fields, so the caller can treat it like a single response.
- * Stops early when the server runs out, a page comes back empty, or `cancelled()` turns true.
- */
+/** The first `wanted` gallery rows fetched in pages of at most `maxPage`, merged into one page. */
 export async function fetchGalleryWindow<
   C extends { id: string },
   P extends { audio: C[]; has_more: boolean },
@@ -487,6 +479,10 @@ export async function fetchGalleryWindow<
   return { ...page, audio };
 }
 
+/** Fold a freshly fetched first page into the list already on screen. The page is authoritative
+ *  for the newest `page.length` clips and any scrollback below it is kept; replacing outright
+ *  collapsed a paginated History on every delete and reselected a different clip.
+ *  `removedId` drops a clip this client just deleted; `hasMore` is the server's own report. */
 export function mergeGalleryPage<T extends { id: string }>(
   page: readonly T[],
   cached: readonly T[],

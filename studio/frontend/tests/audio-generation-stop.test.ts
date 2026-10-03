@@ -168,6 +168,6 @@ test("the response fallback is dropped once its gallery record arrives", () => {
   // stale data URL, labelled as saved, as though the delete had not happened.
   assert.match(
     source,
-    /fallbackClipRef\.current &&\s*galleryCache\.selectedId &&\s*merged\.some\(\(c\) => c\.id === galleryCache\.selectedId\)\s*\)\s*\{\s*setFallbackClip\(null\);/,
+    /fallbackClipRef\.current\?\.saved &&\s*galleryCache\.selectedId &&\s*merged\.some\(\(c\) => c\.id === galleryCache\.selectedId\)\s*\)\s*\{\s*setFallbackClip\(null\);/,
   );
 });

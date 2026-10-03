@@ -46,7 +46,6 @@ export const galleryCache: {
   nextCursor: AudioGalleryCursor | null;
   selectedId: string | null;
   srcById: BlobUrlCache;
-  /** Waveform bar heights by clip, decoded once from the bytes fetched for playback. */
   peaksById: Map<string, number[] | null>;
 } = {
   clips: [],
@@ -136,8 +135,7 @@ export function useAudioGallery({
       const writeEpoch = orderWrites.current.epoch;
       const wanted = Math.max(PAGE_SIZE, windowSize);
       try {
-        // A window past the route's cap is fetched in capped pages: refetching only the first page
-        // shrank a topped-up history and dropped a selected clip below it.
+        // Capped pages: refetching only the first page shrank a topped-up history.
         const page = await fetchGalleryWindow(
           (limit, cursor) => listAudioGallery(0, limit, cursor),
           audioGalleryCursor,
@@ -164,8 +162,9 @@ export function useAudioGallery({
         }
         setClips(merged);
         setHasMore(galleryCache.hasMore);
+        // Only a saved fallback is the selected clip; an unsaved one is the only copy.
         if (
-          fallbackClipRef.current &&
+          fallbackClipRef.current?.saved &&
           galleryCache.selectedId &&
           merged.some((c) => c.id === galleryCache.selectedId)
         ) {
@@ -363,7 +362,6 @@ export function useAudioGallery({
     async (id: string, viewAfterId: string | null) => {
       const moving = galleryCache.clips.find((c) => c.id === id);
       if (!moving) return;
-      // History shows one page's clips, so translate its neighbour into the shared gallery's.
       const workflow = clipWorkflow(moving);
       const afterId = scopedMoveAfterId(
         galleryCache.clips,
@@ -575,8 +573,9 @@ export function useWorkflowHistory({
   useEffect(() => {
     if (!enabled || selectedClip || pageFallbackClip) return;
     const first = visibleClips[0];
-    if (first) selectClip(first.id);
-  }, [enabled, selectedClip, pageFallbackClip, visibleClips, selectClip]);
+    // Keep another page's unsaved clip: it is the only copy.
+    if (first) selectClip(first.id, fallbackClip !== null);
+  }, [enabled, selectedClip, pageFallbackClip, fallbackClip, visibleClips, selectClip]);
 
   useEffect(() => {
     if (
@@ -589,8 +588,7 @@ export function useWorkflowHistory({
     void loadMore();
   }, [enabled, visibleClips, hasMore, loadMore, loadingMoreRef]);
 
-  // Scrolling to the bottom loads until this page gains a row. A gallery page made only of the other
-  // page's clips added nothing visible, so the list kept its height and no further scroll could fire.
+  // Load until this page gains a row: an all-other-page batch adds no height, so no scroll fires again.
   const visibleLoad = useRef(false);
   const current = useRef({ workflow, enabled });
   current.current = { workflow, enabled };

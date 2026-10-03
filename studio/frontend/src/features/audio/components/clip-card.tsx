@@ -17,13 +17,8 @@ import { audioModelLabel, formatClipDuration } from "../audio-workspace-utils";
 import { AUDIO_WORKFLOWS, type AudioWorkflowId } from "../workflows";
 import { Waveform } from "./waveform";
 
-/** Pages a clip can be sent to, keyed by workflow; only pages with a handler are offered. */
 export type ClipSendHandlers = Partial<Record<AudioWorkflowId, () => void>>;
 
-/**
- * "Send to" for a clip's menu, listing the Audio pages from the shared workflow list that can take it.
- * Pages added later appear here once they register a handler.
- */
 export function ClipSendToMenu({
   current,
   handlers,
@@ -63,10 +58,7 @@ export function ClipSendToMenu({
 
 const CARD_CLASS = "w-full max-w-xl gap-3 px-5 py-4";
 
-/**
- * The selected clip: its text, model and age, then a waveform player with download and the clip menu.
- * It never autoplays. A clip a run just made takes focus on its play button once.
- */
+/** Never autoplays; a clip a run just made takes focus on its play button once. */
 export function ClipCard({
   title,
   model,
@@ -84,13 +76,10 @@ export function ClipCard({
   model: string;
   createdAt?: string;
   durationS: number | null;
-  /** Object URL of the clip's bytes; until it exists the bars are drawn but cannot play. */
   src: string | null;
   peaks: readonly number[] | null;
   onDownload: (() => void) | null;
-  /** The clip's ⋯ menu. */
   menu?: ReactNode;
-  /** Extra state after the model line, such as "not saved to the gallery". */
   status?: string;
   focusOnMount?: boolean;
   onFocused?: () => void;
@@ -135,7 +124,6 @@ export function ClipCard({
   );
 }
 
-/** Stands where the result will appear while a run works: its text, the phase, elapsed time and Stop. */
 export function PendingClipCard({
   title,
   status,
@@ -156,7 +144,7 @@ export function PendingClipCard({
           <p className="line-clamp-2 text-ui-13 text-muted-foreground">
             {title}
           </p>
-          {/* The footer announces progress; this mirrors it without a second live region. */}
+          {/* No live region: the footer already announces progress. */}
           <p className="text-ui-11p5 text-muted-foreground">
             {status}
             {elapsedSeconds !== null ? (

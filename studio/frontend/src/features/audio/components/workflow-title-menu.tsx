@@ -16,10 +16,6 @@ import {
   isAudioWorkflowId,
 } from "../workflows";
 
-/**
- * The rail heading doubles as the page switcher: icon, heading and a chevron that opens every Audio
- * page with its hint. A tab row truncated every label once the pages grew past three.
- */
 export function WorkflowTitleMenu({
   workflow,
   onSelect,
