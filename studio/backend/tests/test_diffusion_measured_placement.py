@@ -497,7 +497,6 @@ def test_generate_releases_and_restores_resident_groups():
 
 
 def test_torchao_groups_stay_on_device_after_release_and_restore(monkeypatch):
-    """Restore must check torchao inner tensors; the wrapper can report cuda while data sits on the host."""
     torch, _ = _cuda_offload_model()
     pytest.importorskip("torchao")
     from diffusers.hooks import apply_group_offloading
