@@ -39,18 +39,29 @@ def _fast_classes():
 
 
 @pytest.mark.parametrize("which", [0, 1])
-@pytest.mark.parametrize("arg", ["default", True])
-def test_for_training_never_arms_a_layer_without_a_checkpoint_function(which, arg):
+def test_default_keeps_checkpointing_off_when_it_was_off_at_load(which):
     fast = _fast_classes()[which]
     model = _tiny_qwen3()
     model._unsloth_gradient_checkpointing = False
-    if arg == "default":
-        fast.for_training(model)
-    else:
-        fast.for_training(model, use_gradient_checkpointing = arg)
+    fast.for_training(model)
     assert all(not layer.gradient_checkpointing for layer in _decoder_layers(model))
     ids = torch.randint(0, 64, (1, 8))
     model(input_ids = ids, labels = ids).loss.backward()
+
+
+@pytest.mark.parametrize("which", [0, 1])
+@pytest.mark.parametrize("arg", [True, "unsloth"])
+def test_explicit_enable_arms_a_model_loaded_without_checkpointing(which, arg):
+    fast = _fast_classes()[which]
+    model = _tiny_qwen3()
+    model._unsloth_gradient_checkpointing = False
+    fast.for_training(model, use_gradient_checkpointing = arg)
+    layers = _decoder_layers(model)
+    assert layers and all(layer.gradient_checkpointing == arg for layer in layers)
+    assert all(callable(layer._gradient_checkpointing_func) for layer in layers)
+    ids = torch.randint(0, 64, (1, 8))
+    model(input_ids = ids, labels = ids).loss.backward()
+    assert all(p.grad is not None for p in model.model.layers.parameters())
 
 
 @pytest.mark.parametrize("which", [0, 1])

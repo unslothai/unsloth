@@ -30,6 +30,7 @@ from ._utils import (
     is_bfloat16_supported,
     get_quant_type,
     resolve_model_class,
+    arm_gradient_checkpointing,
     resolve_training_gradient_checkpointing,
     set_module_gradient_checkpointing,
 )
@@ -4358,6 +4359,8 @@ class FastLlamaModel:
         use_gradient_checkpointing = resolve_training_gradient_checkpointing(
             model, use_gradient_checkpointing
         )
+        if use_gradient_checkpointing:
+            arm_gradient_checkpointing(model)
 
         for param in model.parameters():
             if hasattr(param, "_fast_lora"):

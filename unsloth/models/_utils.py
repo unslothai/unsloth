@@ -6823,6 +6823,26 @@ def _gradient_checkpointing_layer_class():
     return GradientCheckpointingLayer
 
 
+def arm_gradient_checkpointing(model):
+    """A model loaded with checkpointing off has no checkpoint function on its layers; asking
+    for_training to turn checkpointing on installs it the way loading with it on does."""
+    layer_class = _gradient_checkpointing_layer_class()
+    if layer_class is None or not any(
+        isinstance(m, layer_class) and getattr(m, "_gradient_checkpointing_func", None) is None
+        for m in model.modules()
+    ):
+        return False
+    base = model.get_base_model() if hasattr(model, "get_base_model") else model
+    try:
+        base.gradient_checkpointing_enable()
+    except Exception as e:
+        logger.warning(
+            f"Unsloth: could not turn on gradient checkpointing ({e}); training without it."
+        )
+        return False
+    return True
+
+
 def set_module_gradient_checkpointing(module, value):
     """Set `module.gradient_checkpointing`, but never turn on a transformers checkpointing layer that
     gradient_checkpointing_enable() never armed: it has no `_gradient_checkpointing_func` and its

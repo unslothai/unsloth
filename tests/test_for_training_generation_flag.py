@@ -61,6 +61,7 @@ def _for_training(module, class_name):
         in (
             "resolve_training_gradient_checkpointing",
             "_gradient_checkpointing_layer_class",
+            "arm_gradient_checkpointing",
             "set_module_gradient_checkpointing",
         )
     ]

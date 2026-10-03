@@ -118,6 +118,7 @@ from ._utils import (
     _select_moe_detection_targets,
     set_task_config_attr,
     _unsloth_freeze_norm_running_stats,
+    arm_gradient_checkpointing,
     resolve_training_gradient_checkpointing,
     set_module_gradient_checkpointing,
 )
@@ -4362,6 +4363,8 @@ class FastBaseModel:
         use_gradient_checkpointing = resolve_training_gradient_checkpointing(
             model, use_gradient_checkpointing
         )
+        if use_gradient_checkpointing:
+            arm_gradient_checkpointing(model)
 
         for param in model.parameters():
             if hasattr(param, "_fast_lora"):
