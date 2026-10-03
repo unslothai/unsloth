@@ -109,7 +109,8 @@ export function cloneBlocker(
       reason: "Waiting for the reference to finish uploading.",
     };
   }
-  if (input.referenceError && !input.reference) {
+  // A failed replacement hides the kept clip, so Generate waits until it is dismissed.
+  if (input.referenceError) {
     return { kind: "reference-error", reason: input.referenceError };
   }
   if (!input.reference) {
