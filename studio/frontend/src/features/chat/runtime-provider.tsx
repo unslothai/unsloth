@@ -246,6 +246,7 @@ import {
 } from "./utils/run-checkpoint-scheduler";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
 import { sanitizeThreadScopedSettings } from "./utils/thread-scoped-settings";
+import { estimateMessagesTokenCount } from "./utils/estimate-chat-tokens";
 import { VideoAttachmentAdapter } from "./video-attachment-adapter";
 
 const pendingHistoryAppendByMessageId = new Map<string, Promise<void>>();
@@ -2689,6 +2690,22 @@ function useStudioRuntimeAdapters(
           store.setThreadContextUsage(remoteId, restoredUsage);
           if (store.activeThreadId === remoteId) {
             store.setContextUsage(restoredUsage);
+          }
+        } else {
+          const estimatedTokens = estimateMessagesTokenCount(msgs);
+          if (estimatedTokens != null && estimatedTokens > 0) {
+            const estimatedUsage = {
+              promptTokens: estimatedTokens,
+              completionTokens: 0,
+              totalTokens: estimatedTokens,
+              cachedTokens: 0,
+              cacheWriteTokens: 0,
+              estimated: true,
+            };
+            store.setThreadContextUsage(remoteId, estimatedUsage);
+            if (store.activeThreadId === remoteId) {
+              store.setContextUsage(estimatedUsage);
+            }
           }
         }
         // Only when nothing was restored: saved usage is the last completion's exact totals, and
