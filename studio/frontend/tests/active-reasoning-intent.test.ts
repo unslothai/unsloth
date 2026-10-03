@@ -31,6 +31,10 @@ function activeConfig(patch: Record<string, unknown> = {}) {
           select(state),
       },
       "@/config/env": { usePlatformStore: () => ({ deviceType: "cpu" }) },
+      "@/features/npu": {
+        isNpuModelId: (value: string | null | undefined) =>
+          Boolean(value?.startsWith("lemonade:")),
+      },
       react: { useMemo: (factory: () => unknown) => factory() },
       "../model-config/per-model-config": {
         isServedByLlamaCpp: () => !(state.params as { engine?: string }).engine,

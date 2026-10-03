@@ -454,7 +454,7 @@ class TestStudioLocalhostIpv6Warning:
         monkeypatch.setattr(
             run_module,
             "_verify_global_reachability",
-            lambda display_host, port: calls["reachability"].append((display_host, port)),
+            lambda display_host, port, **_: calls["reachability"].append((display_host, port)),
         )
         return calls
 
