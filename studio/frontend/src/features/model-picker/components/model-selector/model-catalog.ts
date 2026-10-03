@@ -180,7 +180,6 @@ const AUDIO_GGUF_DESCRIPTIONS: Record<AudioCppTask, string> = {
   asr: "Speech-to-text",
 };
 
-/** Speech models that only clone or convert say so instead of "Text-to-speech". */
 function audioGgufDescription(model: AudioCppModel): string {
   const workflows = model.workflows;
   if (!workflows || workflows.includes("speak")) {

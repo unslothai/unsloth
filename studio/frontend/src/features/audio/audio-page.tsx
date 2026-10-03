@@ -91,7 +91,6 @@ const HUB_TASKS_BY_MODE = {
   transcribe: ["automatic-speech-recognition"],
 } as const;
 
-/** Puts a conversion's recording and target voice back on Convert, as far as the clip recorded them. */
 function reuseConvertInputs(clip: AudioGalleryClip) {
   const store = useAudioConvertStore.getState();
   const sourceId = clip.source_clip_id ?? clip.source_input_id ?? null;
@@ -513,7 +512,6 @@ export function AudioPage({
     audioOptionValues,
     sttRepo: cloneSttRepo,
   });
-  // A run that reloads the model says which one while it is out.
   const generationPresentation = audioGenerationPresentation(
     generationPhase,
     convert.runningNotice ?? undefined,
@@ -597,7 +595,6 @@ export function AudioPage({
     },
     [transitionWorkflow, setPrompt],
   );
-  // Any clip can be the recording Convert changes.
   const handleSendToConvert = useCallback(
     (clip: AudioGalleryClip) => {
       if (!transitionWorkflow("convert")) return;

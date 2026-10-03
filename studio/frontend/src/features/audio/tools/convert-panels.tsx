@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Convert's model tools: one panel per family, in plain words over the runtime's options.
-
 import {
   Select,
   SelectContent,
@@ -60,7 +58,6 @@ function PanelSection({
   );
 }
 
-/** The panel's less-used controls, folded away until asked for; the panel's value keeps it open. */
 function MoreSettings({
   open,
   onOpenChange,
@@ -91,8 +88,6 @@ function MoreSettings({
     </div>
   );
 }
-
-// ---- Seed-VC ---------------------------------------------------------------------------------
 
 export const seedVcPanel: AudioToolPanel<SeedVcValue> = {
   ...seedVcLogic,
@@ -225,8 +220,6 @@ export const seedVcPanel: AudioToolPanel<SeedVcValue> = {
   },
 };
 
-// ---- RVC -------------------------------------------------------------------------------------
-
 export const rvcPanel: AudioToolPanel<RvcValue> = {
   ...rvcLogic,
   Component: ({ value, onChange, disabled }) => (
@@ -264,8 +257,6 @@ export const rvcPanel: AudioToolPanel<RvcValue> = {
     </PanelSection>
   ),
 };
-
-// ---- Chatterbox ------------------------------------------------------------------------------
 
 export const chatterboxConvertPanel: AudioToolPanel<ChatterboxConvertValue> = {
   ...chatterboxConvertLogic,
@@ -339,7 +330,6 @@ export const vevo2StylePanel: AudioToolPanel<Vevo2StyleValue> = {
   ),
 };
 
-/** Convert's panels, in rail order. Each family matches at most one. */
 export const CONVERT_TOOL_PANELS = [
   seedVcPanel,
   rvcPanel,

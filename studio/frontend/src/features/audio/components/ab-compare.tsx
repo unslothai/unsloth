@@ -1,18 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// One player for two versions of a clip (before and after a conversion or an edit). A toggle swaps
-// what it plays and keeps the moment and whether it was playing, so the listener hears the change.
-
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
 import { type Ref, useCallback, useRef } from "react";
 import { type ABPlayback, nextPlayback } from "./ab-compare-state";
 
 export interface ABSide {
   label: string;
-  /** The side's playable URL; absent while it loads or when it is unavailable. */
   src?: string;
-  /** Why this side cannot play ("Source no longer available"); its tab is then disabled. */
   unavailable?: string;
 }
 
@@ -30,12 +25,10 @@ export function ABCompare({
   b: ABSide;
   side: ABSideId;
   onSideChange: (side: ABSideId) => void;
-  /** Names the toggle, e.g. "Compare source and converted". */
   ariaLabel: string;
   playerRef?: Ref<HTMLAudioElement>;
 }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  // Hands the one player to the page too (to focus a fresh result), also when it remounts.
   const setAudio = useCallback(
     (element: HTMLAudioElement | null) => {
       audioRef.current = element;
@@ -44,10 +37,8 @@ export function ABCompare({
     },
     [playerRef],
   );
-  // The moment to carry over, captured when the side changes and applied on the new metadata.
   const pendingRef = useRef<ABPlayback | null>(null);
 
-  // A side that cannot play is never the one shown when the other can.
   const shownSide: ABSideId =
     side === "a" && a.unavailable && !b.unavailable
       ? "b"
@@ -84,7 +75,7 @@ export function ABCompare({
     const { seek, resume } = nextPlayback(pending, audio.duration);
     if (seek > 0) audio.currentTime = seek;
     if (resume) {
-      // Autoplay rules may refuse; the listener can still press play.
+      // Autoplay rules may refuse.
       audio.play().catch(() => undefined);
     }
   }, []);
@@ -112,7 +103,6 @@ export function ABCompare({
           src={src}
           preload="metadata"
           onLoadedMetadata={handleLoadedMetadata}
-          // The focus ring follows the player's pill instead of boxing it.
           className="w-full rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         />
       ) : (

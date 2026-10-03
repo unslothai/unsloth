@@ -498,22 +498,18 @@ export function TtsOutput({
     freshClipId: string | null;
     onFreshClipFocused: () => void;
     announcement: string;
-    /** A short tag after a clip's text, such as the voice a clone used; `place` says which row asks. */
+    /** A short tag after a clip's text, such as the voice a clone used. */
     clipBadge?: (
       clip: AudioGalleryClip,
       place: "selected" | "history",
     ) => string | null;
-    /** Replaces the selected clip's player (Convert's Source | Converted switch); focusRef marks a fresh clip. */
     renderPlayer?: (
       clip: AudioGalleryClip,
       src: string,
       focusRef: ((element: HTMLAudioElement | null) => void) | undefined,
     ) => ReactNode;
-    /** The history menu's first item, which puts a clip's inputs back on its page. */
     useAgainLabel?: string;
-    /** Whether the history menu offers Copy text (a conversion has no text of its own). */
     showCopyText?: boolean;
-    /** Adds "Convert this voice" to the history menu, which opens Convert with the clip as the recording. */
     onSendToConvert?: (clip: AudioGalleryClip) => void;
   }) {
   const focusFreshClip = (element: HTMLAudioElement | null) => {

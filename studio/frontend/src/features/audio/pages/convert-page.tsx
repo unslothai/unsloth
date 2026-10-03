@@ -44,7 +44,6 @@ function convertRank(id: string): number {
   return index === -1 ? CONVERT_MODEL_ORDER.length : index;
 }
 
-/** Convert's picker rows: catalog models that can convert a voice, the recommended ones first. */
 export function convertPageModels(
   models: ModelOption[],
   isMac: boolean,
@@ -77,7 +76,6 @@ type RailProps = Omit<
   | "audioOptionSpecs"
 >;
 
-/** Convert's own inputs: the recording, the voice it should take, the mode and the pitch. */
 function ConvertInputs({
   convert,
   historyClips,
@@ -210,7 +208,6 @@ function ConvertInputs({
   );
 }
 
-/** Take target style rebuilds the delivery from the words, so it asks for them under the style choice. */
 function SourceTextField({
   convert,
   disabled,
@@ -279,14 +276,12 @@ function SourceTextField({
   );
 }
 
-/** Convert's rail: its inputs, then the model's tools, the device and Advanced, as on Clone. */
 export function ConvertRail({
   convert,
   historyClips,
   ...props
 }: RailProps & {
   convert: ConvertGeneration;
-  /** Gallery clips offered under From history. */
   historyClips: readonly AudioGalleryClip[];
 }) {
   const disabled = props.busy === "generating";
@@ -328,7 +323,6 @@ export function ConvertRail({
   );
 }
 
-/** Generate, with a line under it when the run will reload the model first. */
 export function ConvertFooter({
   convert,
   ...props
@@ -363,12 +357,11 @@ export function ConvertFooter({
   );
 }
 
-/** The selected conversion's source, fetched once its clip is selected; a 404 means it is gone. */
 function useSourceSide(clip: AudioGalleryClip | null): {
   src?: string;
   unavailable?: string;
 } {
-  // The copy saved with the clip outlives the upload; a history clip source is a clip of its own.
+  // The saved copy outlives the upload it was made from.
   const savedUrl = clip?.source_saved
     ? `/api/inference/audio/gallery/${encodeURIComponent(clip.id)}/source/file`
     : null;
@@ -406,7 +399,6 @@ function useSourceSide(clip: AudioGalleryClip | null): {
   return side;
 }
 
-/** Convert's output: the selected conversion with a Source | Converted switch, then history. */
 export function ConvertOutput({
   modelReady,
   recommendedModels = [],
@@ -416,9 +408,7 @@ export function ConvertOutput({
   ComponentProps<typeof TtsOutput>,
   "emptyText" | "clipBadge" | "emptyActions" | "renderPlayer"
 > & {
-  /** Whether a model that converts is loaded, so the empty copy asks only for what is missing. */
   modelReady: boolean;
-  /** Models offered as one-click picks while none that converts is loaded. */
   recommendedModels?: readonly ModelOption[];
   onPickModel?: (id: string) => void;
 }) {
@@ -429,8 +419,7 @@ export function ConvertOutput({
   return (
     <TtsOutput
       {...props}
-      // The title already names the target; in history the badge tells runs apart by model (the
-      // selected clip's line names it already).
+      // The selected clip's line already names the model.
       clipBadge={(clip, place) =>
         place === "history" ? audioModelLabel(clip.model) : null
       }

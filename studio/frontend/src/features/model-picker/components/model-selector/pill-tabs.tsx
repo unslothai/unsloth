@@ -8,7 +8,6 @@ export interface PillTab {
   value: string;
   label: string;
   icon?: ReactNode;
-  /** Block this tab alone, e.g. a side of a comparison that cannot play. */
   disabled?: boolean;
 }
 
@@ -83,7 +82,7 @@ export function PillTabs({
             e.preventDefault();
             const step = e.key === "ArrowRight" ? 1 : -1;
             let next = (index + step + tabs.length) % tabs.length;
-            // Skip blocked tabs; with none open, stay put.
+            // Skip disabled tabs; stay put when none is open.
             while (tabs[next].disabled && next !== index) {
               next = (next + step + tabs.length) % tabs.length;
             }
