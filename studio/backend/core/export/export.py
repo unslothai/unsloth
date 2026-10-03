@@ -1086,8 +1086,16 @@ class ExportBackend:
                 # Prefer the llm-compressor-main shadow (transformers 5.x): the shipped 0.10.x cannot quantize newer
                 # models.
                 _shadow_pp = None
+                _shadow_offered = False
                 try:
-                    from utils.transformers_version import llmcompressor_shadow_pythonpath
+                    from utils.transformers_version import (
+                        _env_offline,
+                        _llmcompressor_main_disabled,
+                        llmcompressor_shadow_pythonpath,
+                    )
+
+                    # Same rule as the consent probe: the dialog names the shadow whenever it can be provisioned.
+                    _shadow_offered = not _llmcompressor_main_disabled() and not _env_offline()
                     _shadow_pp = llmcompressor_shadow_pythonpath(
                         allow_provision = install_missing_dependencies,
                     )
@@ -1096,6 +1104,9 @@ class ExportBackend:
                 if _shadow_pp:
                     os.environ[_us._COMPRESSED_QUANTIZE_PYTHONPATH_ENV] = _shadow_pp
                 else:
+                    # Consent for the shadow does not cover installing into this interpreter instead.
+                    if _shadow_offered:
+                        install_missing_dependencies = False
                     # The workspace 0.10.x cannot exceed its transformers ceiling, so fail fast for sidecar models.
                     os.environ.pop(_us._COMPRESSED_QUANTIZE_PYTHONPATH_ENV, None)
                     _exceeds, _tf_ver = _us._transformers_exceeds_llm_compressor_ceiling()
