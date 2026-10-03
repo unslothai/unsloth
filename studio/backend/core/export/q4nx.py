@@ -30,7 +30,6 @@ TOKENIZER_FILES = ("tokenizer.json", "tokenizer_config.json", "chat_template.jin
 # Read for token ids only. No config.json is written: FLM's own carries the flm_version its
 # catalog checks, and one without it makes FLM delete the folder's weights and re-pull stock.
 CONFIG_FILES = ("config.json", "generation_config.json")
-# Third-party imports of the pinned converter; it runs in this env.
 CONVERTER_MODULES = ("torch", "gguf", "einops", "safetensors", "numpy", "mpmath")
 
 
@@ -98,7 +97,6 @@ def convert_gguf_to_q4nx(gguf_path: str, out_dir: Path) -> None:
         errors = "replace",
     )
     if result.returncode != 0:
-        # The traceback's last line names the cause, e.g. an architecture the converter lacks.
         tail = (result.stderr or "").strip().splitlines()
         raise RuntimeError(
             f"The Q4NX converter exited with code {result.returncode}"
@@ -146,11 +144,8 @@ def _vocab_id(tokenizer_json: dict, token) -> Optional[int]:
 
 
 def write_flm_tokenizer_config(out_dir: Path, *configs: Optional[dict]) -> None:
-    """Add the ids FastFlowLM exits without: an ``eos_token_id`` array, and ``bos_token_id``
-    whenever ``bos_token`` is set. HF tokenizer configs name only the token strings.
-
-    ``configs`` are the model's config.json / generation_config.json, whose stop ids
-    FastFlowLM's own uploads also list (Llama 3.2: 128001, 128008, 128009).
+    """Add the ids FastFlowLM exits without (an ``eos_token_id`` array, ``bos_token_id`` with a
+    ``bos_token``); its uploads list the configs' stop ids too (Llama 3.2: 128001, 128008, 128009).
     """
     path = out_dir / "tokenizer_config.json"
     tokenizer_config = json.loads(path.read_text(encoding = "utf-8"))
