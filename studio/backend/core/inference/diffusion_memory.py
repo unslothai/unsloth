@@ -2677,9 +2677,8 @@ def install_encode_release(
     plan: Any,
     logger: Any = None,
 ) -> int:
-    """Whole-resident tier: while a text encoder runs, stream the denoiser groups past the flat room (the partial
-    placement's encode state) and pin them back when it returns. A cached prompt skips the encoder. Returns the number
-    of encoders hooked."""
+    """While a text encoder runs, stream the whole-resident denoiser back to the flat room (the partial placement's
+    encode state); pin it back on return. Returns the number of encoders hooked."""
     estimates = getattr(plan, "estimates", None) or {}
     encode_room = estimates.get("encode_resident_transformer_mib")
     whole = getattr(plan, "resident_transformer_mib", None)
