@@ -696,3 +696,156 @@ def test_list_route_resolves_a_cursor_sent_without_its_pin_rank():
     )
     ids = [c.id for c in page1.audio] + [c.id for c in page2.audio]
     assert sorted(ids) == sorted(c["id"] for c in clips)
+
+
+def test_a_new_clip_records_its_workflow():
+    from routes.inference import _persist_tts_clip
+
+    speech = _persist_tts_clip(_wav(), 24000, "hi", "kokoro", "audiocpp_tts")
+    song = _persist_tts_clip(_wav(), 44100, "a song", "ace-step", "audiocpp_music")
+    sidecars = {
+        clip["id"]: json.loads(
+            (gallery.gallery_dir() / f"{clip['id']}.json").read_text(encoding = "utf-8")
+        )
+        for clip in (speech, song)
+    }
+    assert sidecars[speech["id"]]["workflow"] == "speak"
+    assert sidecars[song["id"]]["workflow"] == "music"
+    assert {r["id"]: r["workflow"] for r in gallery.list_audio()} == {
+        speech["id"]: "speak",
+        song["id"]: "music",
+    }
+
+
+def test_an_old_clip_takes_its_workflow_from_its_audio_type():
+    from models.inference import AudioGalleryItem
+
+    speech = gallery.save(_wav(), _meta())
+    song = gallery.save(_wav(), _meta(audio_type = "minimax_music3"))
+    listed = {r["id"]: r for r in gallery.list_audio()}
+    assert listed[speech["id"]]["workflow"] == "speak"
+    assert listed[song["id"]]["workflow"] == "music"
+    assert AudioGalleryItem(**listed[song["id"]]).workflow == "music"
+    assert gallery.set_flags(song["id"], pinned = True)["workflow"] == "music"
+
+
+def test_a_scoped_clear_keeps_the_other_workflows_clips():
+    speech = _save_with_mtime("speech", 100.0)
+    song = gallery.save(_wav(), _meta(audio_type = "audiocpp_music"))
+    gallery.set_flags(song["id"], pinned = True)
+    assert gallery.clear(workflow = "speak") == 1
+    assert gallery.audio_path(speech["id"]) is None
+    remaining = gallery.list_audio()
+    assert [r["id"] for r in remaining] == [song["id"]] and remaining[0]["pinned"] is True
+    assert gallery.clear(workflow = "music") == 1
+    assert gallery.list_audio() == []
+
+
+def test_a_scoped_clear_with_archived_keeps_the_other_workflows_flags():
+    shelved_song = gallery.save(_wav(), _meta(audio_type = "audiocpp_music"))
+    gallery.set_flags(shelved_song["id"], archived = True)
+    _save_with_mtime("speech", 100.0)
+    assert gallery.clear(include_archived = True, workflow = "speak") == 1
+    assert [r["id"] for r in gallery.list_audio(archived = True)] == [shelved_song["id"]]
+
+
+def test_the_clear_route_scopes_to_a_workflow():
+    from routes.inference import clear_gallery_audio
+
+    gallery.save(_wav(), _meta())
+    song = gallery.save(_wav(), _meta(audio_type = "audiocpp_music"))
+    assert asyncio.run(clear_gallery_audio(workflow = "speak", current_subject = "tester")) == {
+        "removed": 1
+    }
+    assert [r["id"] for r in gallery.list_audio()] == [song["id"]]
+    assert asyncio.run(clear_gallery_audio(current_subject = "tester")) == {"removed": 1}
+
+
+def test_a_clone_clip_keeps_its_workflow_and_run_fields_and_survives_a_speak_clear():
+    from models.inference import AudioGalleryItem
+    from routes.inference import _persist_tts_clip
+
+    run = {"voice_id": "v" * 32, "settings": {"reference_text_used": True}, "source_clip_id": None}
+    speech = gallery.save(_wav(), _meta())
+    clone = _persist_tts_clip(_wav(), 24000, "hi", "qwen3-base", "audiocpp_tts", run, "clone")
+    meta = json.loads((gallery.gallery_dir() / f"{clone['id']}.json").read_text(encoding = "utf-8"))
+    assert meta["workflow"] == "clone" and "source_clip_id" not in meta
+    (item,) = [AudioGalleryItem(**r) for r in gallery.list_audio() if r["id"] == clone["id"]]
+    assert (
+        item.workflow == "clone"
+        and item.voice_id == "v" * 32
+        and item.settings["reference_text_used"] is True
+    )
+    # Its audio type alone would read as speak.
+    assert gallery.set_flags(clone["id"], pinned = True)["workflow"] == "clone"
+    assert gallery.clear(workflow = "speak") == 1
+    assert gallery.audio_path(speech["id"]) is None
+    assert [r["id"] for r in gallery.list_audio()] == [clone["id"]]
+
+
+def test_a_convert_clip_keeps_its_workflow_meta_and_scoped_clear():
+    from models.inference import AudioGalleryItem
+    from routes.inference import clear_gallery_audio, _persist_tts_clip
+
+    speech = gallery.save(_wav(), _meta())
+    convert = _persist_tts_clip(
+        _wav(),
+        16000,
+        "take.wav → Manthos",
+        "rvc",
+        "audiocpp_tts",
+        {
+            "role": "output",
+            "source_input_id": "i" * 32,
+            "source_name": "take.wav",
+            "reference_name": "Manthos",
+            "target_builtin": "manthos",
+            "settings": {"mode": "speech", "pitch": 3, "pitch_auto": False, "options": {}},
+        },
+        "convert",
+    )
+    listed = {r["id"]: r for r in gallery.list_audio()}
+    item = AudioGalleryItem(**listed[convert["id"]])
+    assert item.workflow == "convert" and item.prompt == "take.wav → Manthos"
+    assert (item.source_input_id, item.source_name) == ("i" * 32, "take.wav")
+    assert (item.reference_name, item.target_builtin) == ("Manthos", "manthos")
+    assert gallery.set_flags(convert["id"], pinned = True)["workflow"] == "convert"
+    assert asyncio.run(clear_gallery_audio(workflow = "convert", current_subject = "tester")) == {
+        "removed": 1
+    }
+    assert [r["id"] for r in gallery.list_audio()] == [speech["id"]]
+
+
+def test_a_kept_source_goes_with_its_clip(tmp_path):
+    source = tmp_path / "source.wav"
+    source.write_bytes(_wav())
+    kept = gallery.save(_wav(), _meta(), source)
+    plain = gallery.save(_wav(), _meta())
+    assert kept["source_saved"] is True and "source_saved" not in plain
+    copy = gallery.gallery_dir() / f"{kept['id']}.source.wav"
+    assert copy.read_bytes() == source.read_bytes()
+    assert gallery.owned_source_path(kept["id"]) == copy
+    assert gallery.owned_source_path(plain["id"]) is None
+    # Never a clip of its own, in the listing or a move.
+    assert sorted(r["id"] for r in gallery.list_audio()) == sorted([kept["id"], plain["id"]])
+    assert gallery.move(plain["id"], None)["id"] == plain["id"]
+    # Archiving keeps it with the clip; a clear that spares archived clips leaves it.
+    gallery.set_flags(kept["id"], archived = True)
+    assert gallery.clear() == 1 and copy.is_file()
+    assert gallery.clear(include_archived = True) == 1
+    assert not copy.exists()
+    again = gallery.save(_wav(), _meta(), source)
+    assert gallery.delete(again["id"])
+    assert not (gallery.gallery_dir() / f"{again['id']}.source.wav").exists()
+
+
+def test_the_inputs_and_voices_folders_never_list_as_clips():
+    gallery.save(_wav(), _meta())
+    for folder in ("inputs", "voices"):
+        directory = gallery.gallery_dir() / folder
+        directory.mkdir(exist_ok = True)
+        (directory / "abc.wav").write_bytes(_wav())
+        (directory / "abc.json").write_text(json.dumps(_meta()), encoding = "utf-8")
+    assert len(gallery.list_audio()) == 1
+    assert gallery.clear() == 1
+    assert (gallery.gallery_dir() / "inputs" / "abc.wav").is_file()

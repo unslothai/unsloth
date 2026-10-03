@@ -4,9 +4,33 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { readSrc } from "./helpers/kit.ts";
+import { readAudioWorkspaceSource } from "./helpers/audio-workspace.ts";
 
-const source = readSrc("features/audio/audio-page.tsx");
+const source = readAudioWorkspaceSource();
+
+const { audioGenerationPresentation } = await import(
+  "../src/features/audio/audio-page-policy.ts"
+);
+
+test("a run that reloads the model first can be stopped while it switches", () => {
+  assert.deepEqual(audioGenerationPresentation("switching"), {
+    status: "Switching model…",
+    actionLabel: "Stop",
+    canStop: true,
+  });
+  assert.deepEqual(
+    audioGenerationPresentation("switching", "Switching Chatterbox to Convert…"),
+    {
+      status: "Switching Chatterbox to Convert…",
+      actionLabel: "Stop",
+      canStop: true,
+    },
+  );
+  assert.equal(
+    audioGenerationPresentation("generating", "Switching…")?.status,
+    "Generating audio…",
+  );
+});
 
 test("generation exposes Stop only while the request controller can abort", () => {
   assert.match(
@@ -138,7 +162,7 @@ test("a saved clip the refresh missed keeps its response audio mounted", () => {
     source,
     /const selectClip = useCallback\(\s*\(id: string, keepFallback = false\) => \{[\s\S]*if \(!keepFallback\) setFallbackClip\(null\);/,
   );
-  assert.match(source, /saved: true,\s*\}\);\s*selectClip\(generated\.clip_id, true\);/);
+  assert.match(source, /saved: true,\s*workflow,\s*\}\);\s*selectClip\(generated\.clip_id, true\);/);
 });
 
 test("deleting a clip drops the row without waiting on the refresh", () => {
@@ -168,6 +192,6 @@ test("the response fallback is dropped once its gallery record arrives", () => {
   // stale data URL, labelled as saved, as though the delete had not happened.
   assert.match(
     source,
-    /fallbackClipRef\.current &&\s*galleryCache\.selectedId &&\s*merged\.some\(\(c\) => c\.id === galleryCache\.selectedId\)\s*\)\s*\{\s*setFallbackClip\(null\);/,
+    /fallbackClipRef\.current\?\.saved &&\s*galleryCache\.selectedId &&\s*merged\.some\(\(c\) => c\.id === galleryCache\.selectedId\)\s*\)\s*\{\s*setFallbackClip\(null\);/,
   );
 });

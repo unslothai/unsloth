@@ -8,6 +8,7 @@
 import { normalizeDenseQuantSchemes } from "../../../../lib/dense-quant-schemes.ts";
 import {
   AUDIO_CPP_MODELS,
+  type AudioCppModel,
   type AudioCppTask,
   audioCppDisplayName,
 } from "../../../audio/audio-cpp-catalog.ts";
@@ -179,6 +180,18 @@ const AUDIO_GGUF_DESCRIPTIONS: Record<AudioCppTask, string> = {
   asr: "Speech-to-text",
 };
 
+function audioGgufDescription(model: AudioCppModel): string {
+  const workflows = model.workflows;
+  if (!workflows || workflows.includes("speak")) {
+    return AUDIO_GGUF_DESCRIPTIONS[model.task];
+  }
+  const clones = workflows.includes("clone");
+  const converts = workflows.includes("convert");
+  if (clones && converts) return "Voice cloning and conversion";
+  if (converts) return "Voice conversion";
+  return "Voice cloning";
+}
+
 // Recommended audio GGUFs the backend runs on its audio runtime. They are plain GGUF rows, so the
 // quant ladder, fit and downloads work as for any other; the backend routes them by GGUF header.
 // Music lives in Speak like MiniMax Music 3, since both load into the main audio slot.
@@ -186,7 +199,7 @@ const audioGgufGroups = (tasks: readonly AudioCppTask[]): CatalogGroup[] =>
   AUDIO_CPP_MODELS.filter((model) => tasks.includes(model.task)).map((model) => ({
     canonicalId: model.id,
     displayName: audioCppDisplayName(model.id),
-    description: AUDIO_GGUF_DESCRIPTIONS[model.task],
+    description: audioGgufDescription(model),
     scope: "audio",
     task: model.task === "asr" ? "stt" : "tts",
     artifacts: [gguf(model.id)],

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 import uuid
 from collections import deque
@@ -12,6 +13,7 @@ from typing import Annotated, Any, Dict, Literal, Optional, List, Union
 
 from pydantic import (
     BaseModel,
+    ConfigDict,
     Discriminator,
     Field,
     PrivateAttr,
@@ -20,6 +22,7 @@ from pydantic import (
     model_validator,
 )
 
+from core.inference.audio_workflows import status_audio_workflows
 from core.inference.llama_server_args import (
     BATCH_MAX,
     BATCH_MIN,
@@ -1359,6 +1362,50 @@ class _InferenceRuntimeFields(BaseModel):
             "description, default, min, max, values, required}. Send chosen values as audio_options."
         ),
     )
+    audio_workflows: Optional[List[str]] = Field(
+        None,
+        description = (
+            "Audio page workflows (speak, clone, music, transcribe) the loaded model serves; [] "
+            "for a model that is not an audio model. Derived from is_audio and audio_type when "
+            "not given."
+        ),
+    )
+    audio_reference_text: Optional[Literal["required", "optional", "unused"]] = Field(
+        None,
+        description = (
+            "For a model that clones: whether a request needs the reference clip's transcript. "
+            "None for a model that does not clone."
+        ),
+    )
+    audio_required_inputs: Optional[List[str]] = Field(
+        None,
+        description = (
+            "Request fields the model refuses to run without (Maya1: ['instruct'], a voice "
+            "description sent as instructions)."
+        ),
+    )
+    audio_options_by_workflow: Optional[Dict[str, List[Dict[str, Any]]]] = Field(
+        None, description = "Options per Audio workflow where they differ from audio_options."
+    )
+    audio_workflow_tasks: Optional[Dict[str, str]] = Field(
+        None, description = "audio.cpp server task per workflow, e.g. {'convert:singing': 'svc'}."
+    )
+    audio_server_task: Optional[str] = Field(
+        None, description = "audio.cpp server task the running server was started with."
+    )
+    audio_convert: Optional[Dict[str, Any]] = Field(
+        None, description = "What the model offers on Convert; None when it does not convert."
+    )
+    audio_convert_route: Optional[str] = Field(
+        None, description = "Seed-VC route the running server was started with."
+    )
+
+    @model_validator(mode = "after")
+    def derive_audio_workflows(self):
+        if self.audio_workflows is None:
+            self.audio_workflows = status_audio_workflows(self.is_audio, self.audio_type)
+        return self
+
     has_video_input: bool = Field(
         False,
         description = (
@@ -5104,10 +5151,227 @@ class AudioGalleryItem(BaseModel):
     created_at: str
     pinned: bool = Field(False, description = "Pinned to the top of history")
     archived: bool = Field(False, description = "Moved to the archived shelf, hidden from history")
+    workflow: Optional[str] = Field(
+        None, description = "Audio page workflow that made the clip: speak, clone, convert or music"
+    )
     order_at: Optional[float] = Field(
         None,
         description = "Unpinned sort key (epoch-second scale): the manual key once dragged, else the file mtime",
     )
+    role: Optional[str] = Field(None, description = "The clip's part in its run, e.g. output")
+    source_clip_id: Optional[str] = Field(
+        None, description = "History clip the run took its reference from"
+    )
+    voice_id: Optional[str] = Field(None, description = "Saved voice the run spoke in")
+    settings: Optional[Dict[str, Any]] = Field(
+        None, description = "Language, options, speed and whether a transcript was used"
+    )
+    reference_name: Optional[str] = Field(None, description = "Name of the reference clip or voice")
+    source_input_id: Optional[str] = Field(
+        None, description = "Uploaded input a conversion took its recording from"
+    )
+    source_name: Optional[str] = Field(None, description = "Name of the recording a run converted")
+    target_builtin: Optional[str] = Field(
+        None, description = "Built-in voice a conversion converted to"
+    )
+    target_clip_id: Optional[str] = Field(
+        None, description = "History clip a conversion took its target voice from"
+    )
+    target_input_id: Optional[str] = Field(
+        None, description = "Uploaded input a conversion took its target voice from"
+    )
+    source_saved: bool = Field(False, description = "Served at /audio/gallery/{id}/source/file")
+
+
+_AUDIO_ID_PATTERN = r"^[A-Za-z0-9_-]{1,128}$"
+# A run names audio by id only. Option names with these words carry a location...
+_AUDIO_FILE_OPTION_WORDS = frozenset({"path", "paths", "file", "files", "dir", "url", "uri"})
+# ...and a text value under a name ending in these is a clip (source_audio, voice_ref), while
+# min_new_audio_steps, audio_chunk_mode or a boolean no_ref are settings.
+_AUDIO_CLIP_OPTION_ENDINGS = frozenset({"audio", "wav", "ref"})
+
+
+def _names_a_file(name: str, value: Any) -> bool:
+    words = re.split(r"[^a-z0-9]+", name.lower())
+    # Vevo2's target_voice is a file, but neither of its words gives that away.
+    if name.lower() == "target_voice" or any(word in _AUDIO_FILE_OPTION_WORDS for word in words):
+        return True
+    return isinstance(value, str) and words[-1] in _AUDIO_CLIP_OPTION_ENDINGS
+
+
+class AudioSourceRef(BaseModel):
+    """Audio named by id: an uploaded input, a history clip or a saved voice. Exactly one."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    input_id: Optional[str] = Field(None, pattern = _AUDIO_ID_PATTERN)
+    clip_id: Optional[str] = Field(None, pattern = _AUDIO_ID_PATTERN)
+    voice_id: Optional[str] = Field(None, pattern = _AUDIO_ID_PATTERN)
+
+    @model_validator(mode = "after")
+    def _exactly_one(self):
+        named = [v for v in (self.input_id, self.clip_id, self.voice_id) if v]
+        if len(named) != 1:
+            raise ValueError("Name exactly one of input_id, clip_id or voice_id.")
+        return self
+
+
+class AudioRunInputs(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    reference: Optional[AudioSourceRef] = None
+    reference_text: Optional[str] = Field(None, max_length = 4000)
+    emotion: Optional[AudioSourceRef] = None
+    source: Optional[AudioSourceRef] = None
+    target: Optional[AudioSourceRef] = None
+    source_text: Optional[str] = Field(None, max_length = 4000)
+
+
+class AudioConvertParams(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    mode: Literal["speech", "singing"] = "speech"
+    pitch: Optional[int] = Field(None, ge = -12, le = 12)
+    pitch_auto: bool = False
+    style: Literal["source", "target"] = "source"
+    voice: Optional[Literal["default", "manthos", "chocola", "fraise"]] = None
+
+
+class AudioRunRequest(BaseModel):
+    """``POST /audio/run``: one Audio page run. Audio is named by id; the server picks the files."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    workflow: Literal["clone", "speak", "convert"]
+    text: Optional[str] = Field(None, min_length = 1)
+    language: Optional[str] = Field(None, max_length = 64)
+    instructions: Optional[str] = Field(None, max_length = 4000)
+    inputs: AudioRunInputs = Field(default_factory = AudioRunInputs)
+    options: Optional[Dict[str, Any]] = Field(
+        None, description = "Per-model options, as listed in audio_options or by a tool panel"
+    )
+    speed: Optional[float] = Field(None, ge = 0.25, le = 4.0)
+    seed: Optional[int] = Field(None, ge = -(2**63), le = 2**64 - 1)
+    max_tokens: Optional[int] = Field(None, ge = 1)
+    convert: Optional[AudioConvertParams] = None
+
+    @model_validator(mode = "after")
+    def _fields_of_the_workflow(self):
+        inputs = self.inputs
+        if self.workflow == "convert":
+            if self.text is not None:
+                raise ValueError("A conversion takes no text.")
+            if inputs.reference is not None or inputs.emotion is not None:
+                raise ValueError("A conversion takes inputs.source and inputs.target.")
+            if self.convert is None:
+                self.convert = AudioConvertParams()
+            return self
+        if self.text is None:
+            raise ValueError("text is required.")
+        if self.convert is not None or any(
+            v is not None for v in (inputs.source, inputs.target, inputs.source_text)
+        ):
+            raise ValueError("convert and the source and target inputs are for workflow convert.")
+        return self
+
+    @field_validator("options")
+    @classmethod
+    def _no_file_options(cls, value):
+        if value is None:
+            return value
+        for name, option in value.items():
+            if _names_a_file(str(name), option):
+                raise ValueError(f"Option '{name}' is not accepted; name audio by id in inputs.")
+            if isinstance(option, (dict, list)):
+                raise ValueError(f"Option '{name}' must be a single value.")
+        return value
+
+
+class AudioRunClip(BaseModel):
+    id: str
+    role: str = "output"
+    url: str
+    sample_rate: int
+    duration_s: float
+    workflow: str
+
+
+class AudioRunAudio(BaseModel):
+    data: str
+    format: str = "wav"
+    sample_rate: int
+
+
+class AudioRunResponse(BaseModel):
+    clips: List[AudioRunClip] = Field(default_factory = list)
+    model: str
+    audio: Optional[AudioRunAudio] = Field(
+        None, description = "The audio inline, only when saving it to history failed"
+    )
+
+
+class AudioInputRecord(BaseModel):
+    id: str
+    name: str
+    duration_s: float
+    sample_rate: int
+    channels: int
+    url: str
+    expires_at: str
+
+
+class AudioInputTranscribeRequest(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    model: str = Field(..., min_length = 1, max_length = 512)
+    engine: Optional[str] = Field(None, max_length = 64)
+    device: Optional[Literal["auto", "cpu", "gpu"]] = None
+    language: Optional[str] = Field(None, max_length = 64)
+    purpose: Literal["reference", "convert"] = "reference"
+
+
+class AudioInputTranscript(BaseModel):
+    text: str
+    language: Optional[str] = None
+    model: str
+
+
+class AudioVoice(BaseModel):
+    id: str
+    name: str
+    transcript: Optional[str] = None
+    language: Optional[str] = None
+    duration_s: float
+    sample_rate: int
+    created_at: str
+    url: str
+
+
+class AudioVoiceCreate(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    source: AudioSourceRef
+    name: str = Field(..., min_length = 1, max_length = 80)
+    transcript: Optional[str] = Field(None, max_length = 4000)
+    language: Optional[str] = Field(None, max_length = 64)
+
+    @model_validator(mode = "after")
+    def _from_input_or_clip(self):
+        if self.source.voice_id:
+            raise ValueError("A voice is saved from an input or a history clip.")
+        return self
+
+
+class AudioVoicePatch(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    name: Optional[str] = Field(None, min_length = 1, max_length = 80)
+    transcript: Optional[str] = Field(None, max_length = 4000)
+    language: Optional[str] = Field(None, max_length = 64)
+
+
+class AudioVoiceListResponse(BaseModel):
+    voices: List[AudioVoice] = Field(default_factory = list)
 
 
 class AudioGalleryFlagsPatch(BaseModel):
