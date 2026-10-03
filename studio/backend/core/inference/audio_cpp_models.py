@@ -166,12 +166,8 @@ _STABLE_AUDIO_EDIT = MusicMode("edit", actions = ("inpaint", "restyle"), max_ran
 MUSIC_SPECS: dict[str, MusicSpec] = {
     "ace_step": MusicSpec(
         (
-            MusicMode(
-                "song", lyrics = "optional", instrumental = "toggle", section_case = "lower"
-            ),
-            MusicMode(
-                "edit", actions = ("repaint", "extend", "cover", "continue"), max_ranges = 1
-            ),
+            MusicMode("song", lyrics = "optional", instrumental = "toggle", section_case = "lower"),
+            MusicMode("edit", actions = ("repaint", "extend", "cover", "continue"), max_ranges = 1),
         ),
         instrumental_lyrics = "[Instrumental]",
         edit_rate = 48000,
@@ -624,7 +620,9 @@ _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
                 max = 100,
                 default = 8,
             ),
-            _opt("guidance_scale", "float", "Classifier-free guidance scale.", min = 0.0, default = 1.0),
+            _opt(
+                "guidance_scale", "float", "Classifier-free guidance scale.", min = 0.0, default = 1.0
+            ),
             _opt("apg_scale", "float", "Adaptive projected guidance scale.", min = 0.0, default = 1.0),
             _opt("negative_prompt", "string", "What to avoid."),
         ),

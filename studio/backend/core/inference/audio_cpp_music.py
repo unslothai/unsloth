@@ -145,7 +145,9 @@ def _finish(model: AudioCppModel, request: dict, options: dict, seed: Optional[i
     if model.request_keys is not None:
         dropped = sorted(name for name in options if name not in model.request_keys)
         if dropped:
-            logger.info("audio.cpp: %s does not declare %s; not sending them", model.family, dropped)
+            logger.info(
+                "audio.cpp: %s does not declare %s; not sending them", model.family, dropped
+            )
             options = {k: v for k, v in options.items() if k in model.request_keys}
     if options:
         request["options"] = options
@@ -176,7 +178,9 @@ def song_request(
             raise MusicRequestError("MiniMax Music 3 needs lyrics.")
         # The caption is the input. The task route maps duration_seconds onto the duration_sec
         # option; sending both is refused as "conflicting option values", even when equal.
-        request.update({"text": description or lyrics, "lyrics": lyrics, "duration_seconds": seconds})
+        request.update(
+            {"text": description or lyrics, "lyrics": lyrics, "duration_seconds": seconds}
+        )
         request_options["lyrics"] = lyrics
         if request_options:
             request["options"] = request_options
@@ -189,7 +193,11 @@ def song_request(
         # Without lyrics YuE2 sings anyway: its text input when the option is missing, made-up
         # words when it is empty. Only an "[Instrumental]" lyric comes back wordless (GPU check).
         if instrumental or not lyrics:
-            lyrics = music.instrumental_lyrics if music and music.instrumental_lyrics else "[Instrumental]"
+            lyrics = (
+                music.instrumental_lyrics
+                if music and music.instrumental_lyrics
+                else "[Instrumental]"
+            )
         request["text"] = lyrics
         request_options["style"] = description
         request_options["lyrics"] = lyrics

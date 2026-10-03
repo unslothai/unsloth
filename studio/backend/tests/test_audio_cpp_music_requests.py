@@ -93,7 +93,12 @@ FOLDERS = {
 }
 
 
-def _wav(seconds = 0.1, rate = 44100, channels = 2, fill = 0) -> bytes:
+def _wav(
+    seconds = 0.1,
+    rate = 44100,
+    channels = 2,
+    fill = 0,
+) -> bytes:
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
         w.setnchannels(channels)
@@ -114,7 +119,12 @@ def _reply(n = 1):
     return "application/json", json.dumps(body).encode()
 
 
-def _model(family, folder = None, strict = True, spec_options = ()):
+def _model(
+    family,
+    folder = None,
+    strict = True,
+    spec_options = (),
+):
     folder = folder or FOLDERS[family]
     policy = acm.family_policy(family, None, (folder,))
     files = (RepoFile(f"{folder}/{folder.lower()}-q8_0.gguf", 4),)
@@ -137,7 +147,12 @@ def _model(family, folder = None, strict = True, spec_options = ()):
 
 
 class _Server:
-    def __init__(self, model, replies = None, backend = "cuda"):
+    def __init__(
+        self,
+        model,
+        replies = None,
+        backend = "cuda",
+    ):
         self.model = model
         self.model_id = "studio-test"
         self.backend = backend
@@ -169,7 +184,11 @@ def starts(monkeypatch):
     return started
 
 
-def _backend(model, replies = None, backend = "cuda"):
+def _backend(
+    model,
+    replies = None,
+    backend = "cuda",
+):
     b = audio_cpp_backend.AudioCppBackend()
     b._server = _Server(model, replies, backend)
     b._model = model
@@ -178,7 +197,14 @@ def _backend(model, replies = None, backend = "cuda"):
     return b
 
 
-def _run(b, seed = 7, output_dir = None, options = None, source = None, **music):
+def _run(
+    b,
+    seed = 7,
+    output_dir = None,
+    options = None,
+    source = None,
+    **music,
+):
     music.setdefault("mode", "song")
     return b.generate_audio_response(
         music.get("text", ""),
@@ -241,7 +267,10 @@ def test_spec_duration_bounds_narrow_the_table():
 
 
 def test_request_keys_come_from_strict_specs_only():
-    strict = {"schema_version": 1, "options": {"request": [{"name": "duration_sec"}, {"name": "seed"}]}}
+    strict = {
+        "schema_version": 1,
+        "options": {"request": [{"name": "duration_sec"}, {"name": "seed"}]},
+    }
     assert acm._request_keys(strict, None) == frozenset({"duration_sec", "seed"})
     # ACE-Step and Stable Audio specs carry no schema_version and no request options.
     assert acm._request_keys({"tasks": ["music"]}, None) is None
@@ -295,7 +324,11 @@ def test_status_reports_the_music_studio_rules():
 
 
 def test_midashenglm_and_controlfoley_send_duration_sec_never_duration_seconds():
-    for family, mode in (("midashenglm_gen", "sfx"), ("controlfoley", "sfx"), ("midashenglm_gen", "song")):
+    for family, mode in (
+        ("midashenglm_gen", "sfx"),
+        ("controlfoley", "sfx"),
+        ("midashenglm_gen", "song"),
+    ):
         b = _backend(_model(family))
         _run(b, mode = mode, text = "rain on a tin roof", duration_s = 12, lyrics = "la la")
         request = _request(b)
@@ -357,7 +390,13 @@ def test_minimax_gguf_keeps_its_body_through_the_studio():
 
 def test_ace_step_song_and_instrumental():
     b = _backend(_model("ace_step", strict = False))
-    _run(b, text = "synth pop", lyrics = "[verse] la", duration_s = 45, options = {"bpm": 100, "timesignature": "3"})
+    _run(
+        b,
+        text = "synth pop",
+        lyrics = "[verse] la",
+        duration_s = 45,
+        options = {"bpm": 100, "timesignature": "3"},
+    )
     assert _request(b) == {
         "text": "synth pop",
         "duration_seconds": 45.0,
@@ -470,8 +509,13 @@ def source(tmp_path) -> str:
 
 def test_ace_step_repaint_has_no_duration_and_may_pass_the_end(source):
     b = _backend(_model("ace_step", strict = False))
-    _run(b, mode = "edit", text = "brighter", source = source,
-         edit = {"action": "repaint", "ranges": [{"start_s": 5.0, "end_s": 14.0}], "strength": 0.4})
+    _run(
+        b,
+        mode = "edit",
+        text = "brighter",
+        source = source,
+        edit = {"action": "repaint", "ranges": [{"start_s": 5.0, "end_s": 14.0}], "strength": 0.4},
+    )
     request = _request(b)
     assert request == {
         "text": "brighter",
@@ -497,7 +541,9 @@ def test_ace_step_extend_cover_and_continue(source):
     }
     _run(b, mode = "edit", text = "jazz", source = source, edit = {"action": "cover", "strength": 0.5})
     assert _request(b, 1)["options"] == {"route": "cover", "audio_cover_strength": 0.5}
-    _run(b, mode = "edit", text = "add drums", source = source, duration_s = 30, edit = {"action": "continue"})
+    _run(
+        b, mode = "edit", text = "add drums", source = source, duration_s = 30, edit = {"action": "continue"}
+    )
     assert _request(b, 2)["options"] == {"route": "complete", "duration_seconds": 30.0}
 
 
@@ -509,7 +555,13 @@ def test_stable_audio_inpaint_sorts_and_merges_ranges(source):
         {"start_s": 1.5, "end_s": 1.8},
         {"start_s": 9.5, "end_s": 30.0},
     ]
-    _run(b, mode = "edit", text = "add birds", source = source, edit = {"action": "inpaint", "ranges": ranges})
+    _run(
+        b,
+        mode = "edit",
+        text = "add birds",
+        source = source,
+        edit = {"action": "inpaint", "ranges": ranges},
+    )
     request = _request(b)
     assert request["options"] == {
         "audio_input_kind": "inpaint_audio",

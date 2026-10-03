@@ -623,7 +623,12 @@ def _music_info(family = "stable_audio", folder = "Stable-Audio-3-Small-Music-GG
 class _MusicBackend(_Backend):
     """Writes ``takes`` outputs and the manifest into the run folder, as the worker does."""
 
-    def __init__(self, name, info, takes = 1):
+    def __init__(
+        self,
+        name,
+        info,
+        takes = 1,
+    ):
         super().__init__(name, info)
         self.takes = takes
         self.run_dirs: list[Path] = []
@@ -727,8 +732,17 @@ def test_a_manifest_entry_outside_the_run_folder_is_never_read(stub, tmp_path):
     assert body["clips"][0]["sample_rate"] == 44100
 
 
-def _edit(client, source, action = "inpaint", ranges = None, **body):
-    edit = {"action": action, "ranges": ranges if ranges is not None else [{"start_s": 0.02, "end_s": 0.08}]}
+def _edit(
+    client,
+    source,
+    action = "inpaint",
+    ranges = None,
+    **body,
+):
+    edit = {
+        "action": action,
+        "ranges": ranges if ranges is not None else [{"start_s": 0.02, "end_s": 0.08}],
+    }
     edit.update(body.pop("edit", {}))
     return _music(
         client, mode = "edit", text = "add birds", inputs = {"source": source}, edit = edit, **body
@@ -802,9 +816,7 @@ def test_a_source_longer_than_four_minutes_is_refused(stub, monkeypatch):
     stub["use"](STABLE_AUDIO, _music_info())
     sources = _alice_sources()
     real = audio_inputs.wav_info
-    monkeypatch.setattr(
-        audio_inputs, "wav_info", lambda path: {**real(path), "duration_s": 241.0}
-    )
+    monkeypatch.setattr(audio_inputs, "wav_info", lambda path: {**real(path), "duration_s": 241.0})
     with _client(ALICE) as client:
         response = _edit(client, {"clip_id": sources["clip_id"]})
     assert response.status_code == 400
@@ -817,7 +829,11 @@ def test_ace_step_extend_past_the_song_limit_is_refused(stub):
     sources = _alice_sources()
     with _client(ALICE) as client:
         response = _edit(
-            client, {"clip_id": sources["clip_id"]}, action = "extend", ranges = [], edit = {"extend_s": 300}
+            client,
+            {"clip_id": sources["clip_id"]},
+            action = "extend",
+            ranges = [],
+            edit = {"extend_s": 300},
         )
     assert response.status_code == 400 and "Add fewer seconds" in response.json()["detail"]
 
@@ -901,11 +917,19 @@ def test_the_worker_and_orchestrator_carry_music_fields_only_when_present(monkey
     backend = _Backend2()
     _handle_generate_audio(
         backend,
-        {"request_id": "r1", "text": "hi", "workflow": "music", "music": music, "output_dir": "/x/runs/1"},
+        {
+            "request_id": "r1",
+            "text": "hi",
+            "workflow": "music",
+            "music": music,
+            "output_dir": "/x/runs/1",
+        },
         responses,
         threading.Event(),
     )
-    _handle_generate_audio(backend, {"request_id": "r2", "text": "hi"}, responses, threading.Event())
+    _handle_generate_audio(
+        backend, {"request_id": "r2", "text": "hi"}, responses, threading.Event()
+    )
     assert seen[0]["music"] == music and seen[0]["output_dir"] == "/x/runs/1"
     assert not {"music", "output_dir"} & set(seen[1])
     sent = []

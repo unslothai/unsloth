@@ -16,7 +16,12 @@ from core.inference import audio_cpp_backend
 from core.inference.audio_task_outputs import task_outputs, wav_header
 
 
-def _wav(rate = 44100, frames = 441, channels = 2, fill = 0) -> bytes:
+def _wav(
+    rate = 44100,
+    frames = 441,
+    channels = 2,
+    fill = 0,
+) -> bytes:
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
         w.setnchannels(channels)
