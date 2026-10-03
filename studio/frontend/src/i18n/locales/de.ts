@@ -2,9 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import type { en } from "./en";
+import { en } from "./en.ts";
 
 export const de = {
+  // English fallback until this experimental feature is translated.
+  managedEngines: en.managedEngines,
   composerSettings: {
     title: "Nachrichteneingabe",
     plainText: "Eingabe als Klartext",
@@ -145,6 +147,13 @@ export const de = {
       close: "Suche schließen",
       truncated: "Diese Seite ist zu lang, um vollständig durchsucht zu werden.",
     },
+    zoom: {
+      label: "Zoom",
+      zoomOut: "Verkleinern",
+      zoomIn: "Vergrößern",
+      reset: "Zurücksetzen",
+      announce: "Zoom {percent} %",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -205,6 +214,53 @@ export const de = {
       help: "Hilfe",
       logOut: "Abmelden",
       shutdown: "Herunterfahren",
+    },
+    commandPalette: {
+      placeholder: "Befehl eingeben oder suchen...",
+      noResults: "Keine Ergebnisse gefunden.",
+      navigation: "Navigation",
+      actions: "Aktionen",
+      chat: "Chat",
+      searchChats: "Chats durchsuchen...",
+    },
+    search: {
+      placeholder: "Suchen",
+      tabs: {
+        all: "Alle",
+        chats: "Chats",
+        projects: "Projekte",
+        files: "Dateien",
+        models: "Modelle",
+      },
+      recents: "Zuletzt verwendet",
+      actions: "Aktionen",
+      newChat: "Neuer Chat",
+      newTemporaryChat: "Neuer temporärer Chat",
+      fineTune: "Modell feinabstimmen",
+      generateImage: "Bild generieren",
+      generateVideo: "Video generieren",
+      untitledChat: "Unbenannter Chat",
+      compare: "Vergleich",
+      loading: "Wird geladen…",
+      empty: {
+        all: "Noch nichts zu durchsuchen.",
+        chats: "Noch keine Chats.",
+        projects: "Noch keine Projekte.",
+        files: "Noch keine Dateien in deiner Bibliothek.",
+        models: "Noch keine heruntergeladenen Modelle.",
+      },
+      noMatches: "Keine Ergebnisse.",
+      when: {
+        today: "Heute",
+        pastWeek: "Letzte Woche",
+        pastMonth: "Letzter Monat",
+        older: "Älter",
+      },
+      footer: {
+        close: "Schließen",
+        changeType: "Typ wechseln",
+        open: "Öffnen",
+      },
     },
     notFound: {
       title: "Seite nicht gefunden",
@@ -482,6 +538,10 @@ export const de = {
         openKeyboardShortcuts: {
           label: "Tastenkürzel",
           description: "Diese Kürzelliste öffnen",
+        },
+        openCommandPalette: {
+          label: "Befehlspalette",
+          description: "Die Befehlspalette öffnen",
         },
         searchChats: {
           label: "Chats durchsuchen",
@@ -1217,9 +1277,22 @@ export const de = {
       },
       permissions: {
         sectionTitle: "Berechtigungen",
-        bypassLabel: "Tool-Berechtigungen",
-        bypassDescription:
-          "Wie Unsloth Tool-Aufrufe im Chat (Terminal, Python, Web, MCP) vor der Ausführung freigibt. „Full access“ deaktiviert die Freigaben und die Code-Sandbox.",
+        names: {
+          ask: "Zustimmung einholen",
+          auto: "Für mich freigeben",
+          off: "Automatisch ausführen",
+          full: "Vollzugriff",
+        },
+        details: {
+          ask:
+            "Fragt vor jedem Tool-Aufruf nach, auch bei Terminal- und Python-Code, Websuchen, Dateiänderungen und MCP-Tools. Tools, die ein externer Anbieter ausführt, werden nicht angehalten. Ideal, wenn du jeden Schritt prüfen möchtest.",
+          auto:
+            "Führt gewöhnliche Tool-Aufrufe selbst aus und fragt nur nach, wenn eine Aktion riskant wirkt, etwa beim Lesen von Zugangsdaten, beim Erhöhen von Rechten oder bei zerstörerischen Befehlen.",
+          off:
+            "Führt jeden Tool-Aufruf ohne Nachfrage aus. Python- und Terminal-Code läuft weiterhin in der Sandbox, die begrenzt, auf welche Dateien deines Computers er zugreifen kann.",
+          full:
+            "Führt jeden Tool-Aufruf ohne Nachfrage aus und schaltet die Code-Sandbox ab, sodass Python- und Terminal-Code jede Datei lesen und ändern kann, auf die dein Konto zugreifen kann. Ideal für vertrauenswürdige Aufgaben, die außerhalb der Sandbox arbeiten müssen.",
+        },
       },
     },
     profile: {
@@ -1342,20 +1415,13 @@ export const de = {
           wide: "Breit",
           full: "Volle Breite",
         },
-        composerAttachments: {
-          label: "Anhänge im Eingabefeld",
-          description:
-            "Große Karten, die das Eingabefeld vergrößern, oder eine kompakte Reihe von Kacheln.",
-          cards: "Große Karten",
-          compact: "Kompakte Kacheln",
-        },
         sentAttachments: {
           label: "Anhänge in gesendeten Nachrichten",
           description:
-            "Eine Liste mit dem Typ jeder Datei oder kleine Chips. „Automatisch“ wechselt ab sieben Dateien zu Chips.",
+            "Standard zeigt jede Datei mit ihrem Typ, Kompakt passt mehr in eine Zeile. „Automatisch“ wechselt ab sieben Dateien zu Kompakt.",
           auto: "Automatisch",
-          list: "Liste",
-          chips: "Chips",
+          list: "Standard",
+          chips: "Kompakt",
         },
         reset: "Zurücksetzen",
         resetAll: "Anpassungen zurücksetzen",
@@ -1580,6 +1646,7 @@ export const de = {
         noRamReserveDescription: "Weniger RAM für die Modellgewichte belegen.",
         noRamReserveHint: "Überspringt auf unterstützten Windows-Builds das speicherabgebildete Laden, wenn das Modell vollständig auf die GPU ausgelagert ist, sodass dessen Seiten nicht im Speicher gehalten werden. Andernfalls bleibt das speicherabgebildete Laden erhalten. Erforderliche CPU-Puffer können weiterhin RAM belegen. Entfernt --no-mmap und --mlock.",
         mlockVetoed: "--mlock bleibt aus: das Fixieren des Modells würde RAM für das gesamte Modell reservieren. Das automatische Entladen im Leerlauf bleibt deaktiviert.",
+        mlockNotApplicable: "Vollständig auf der GPU: nichts im System-RAM zu sperren. Automatisches Entladen im Leerlauf bleibt aus.",
         memlockCapped: "Dieses System begrenzt gesperrten Speicher auf {limit}. Ein größeres Modell wird nicht vollständig fixiert; erhöhen Sie das Limit mit ulimit -l.",
         reloadRequired: "Modell neu laden, um die neuen Speicheroptionen anzuwenden.",
         loadError: "Modellspeicher-Einstellungen konnten nicht geladen werden",
@@ -1824,9 +1891,6 @@ export const de = {
         "Eingefügter Text ab {count} Zeichen wird als .txt-Datei angehängt. Kürzerer Text bleibt im Nachrichtenfeld.",
       pastedTextOffDescription:
         "Eingefügter Text bleibt unabhängig von seiner Länge im Nachrichtenfeld.",
-      projectsSection: "Projektbereich anzeigen",
-      projectsSectionDescription:
-        "Gruppiert Projekt-Chats unter einer Überschrift für Projekte. Deaktiviere dies, um sie stattdessen unter den zuletzt verwendeten Chats aufzulisten.",
       title: "Chat",
       description: "Passen Sie an, wie sich der Chat auf diesem Gerät verhält.",
       modelSelection: {
@@ -1863,6 +1927,11 @@ export const de = {
       autoScrollManual: "Manuell",
       autoScrollKeywords:
         "scrollen automatisch mitscrollen folgen unten springen Streaming generieren Ansicht sperren scroll autoscroll follow",
+      scrollToBottomButton: "Schaltfläche „Nach unten scrollen“",
+      scrollToBottomButtonDescription:
+        "Eine Schaltfläche anzeigen, um nach dem Hochscrollen zur neuesten Nachricht zurückzuspringen.",
+      scrollToBottomButtonKeywords:
+        "scrollen unten springen neueste Pfeil Schaltfläche ausblenden scroll bottom button",
       showResponseModel: "Antwortmodell anzeigen",
       showResponseModelDescription:
         "Modellmetadaten in Antworten des Assistenten anzeigen.",
@@ -1935,6 +2004,22 @@ export const de = {
           "Aktiviere „{setting}“ unter Einstellungen → Chat, damit Canvases externe Ressourcen laden können, oder erlaube es nur für dieses Canvas.",
         blockedSettingsAction: "Einstellungen öffnen",
         blockedDismiss: "Schließen",
+        errorTitle: "Dieses Canvas hat einen Fehler ausgelöst",
+        errorTitlePlural: "Dieses Canvas hat {count} Fehler ausgelöst",
+        errorHint: "„Mit dem Modell beheben“ legt den Fehler ins Nachrichtenfeld. Gesendet wird erst, wenn du sendest.",
+        errorBannerAction: "Mit dem Modell beheben",
+        errorConsoleAction: "Konsole öffnen",
+        errorConsoleHideAction: "Konsole ausblenden",
+        errorLocation: "Zeile {line}, Spalte {column}",
+        errorLine: "Zeile {line}",
+        consoleTitle: "Konsole",
+        reloadCanvas: "Erneut ausfuehren",
+        consoleMessageCount: "{count} Meldung",
+        consoleMessageCountPlural: "{count} Meldungen",
+        consoleClear: "Konsole leeren",
+        consoleClose: "Konsole schließen",
+        consoleEmpty: "Noch keine Konsolenausgabe.",
+        consoleCapped: "Nur die letzten {count} Eintraege bleiben erhalten; aeltere Ausgaben wurden verworfen.",
       },
       data: "Daten",
       exportHistory: "Chatverlauf exportieren",
@@ -2224,11 +2309,13 @@ export const de = {
       revoking: "Wird widerrufen...",
       decisionApi: {
         title: "Entscheidungs-API",
-        description: "Beantworte Ja/Nein-, Auswahl- und Bewertungsfragen zu Text mit einem lokalen Laya-Modell. Funktioniert mit dem TypeSafe-SDK.",
+        description: "Beantworte Ja/Nein-, Auswahl- und Bewertungsfragen zu Text mit einem Modell auf diesem Rechner oder einem Entscheidungsmodell aus den Verbindungen. Funktioniert mit dem TypeSafe-SDK.",
         enable: "Anfragen beantworten",
         enableDescription: "Stellt /v1/systemone bereit. Beim Einschalten wird das Modell heruntergeladen.",
+        enableRemoteDescription: "Stellt /v1/systemone bereit.",
         lockedByEnv: "Festgelegt durch {name}.",
         model: "Modell",
+        thisMachine: "Dieser Rechner",
         modelMultilingual: "Multilingual",
         modelEnglish: "Englisch",
         modelTypedDecisions: "Typisierte Entscheidungen",
@@ -2253,6 +2340,10 @@ export const de = {
         downloadFailed: "Der Download konnte nicht gestartet werden.",
         saveFailed: "Die Einstellung der Entscheidungs-API konnte nicht gespeichert werden.",
         loadError: "Die Einstellungen der Entscheidungs-API konnten nicht geladen werden.",
+        sendsTo: "Anfragen gehen an {provider}.",
+        connectionMissing: "Diese Verbindung gibt es nicht mehr oder sie hat keine Entscheidungsmodelle. Wähle ein anderes Modell.",
+        addConnection: "Für ein gehostetes Entscheidungsmodell füge TypeSafe, Liquid AI oder OpenRouter unter Verbindungen hinzu.",
+        openConnections: "Verbindungen öffnen",
       },
       usageNoModel:
         "Laden Sie ein Modell oder laden Sie eines herunter, um ausführbare Beispiele zu sehen. Dieser Server kennt noch kein Modell, das in den Beispielen verwendet werden könnte.",
@@ -3142,6 +3233,7 @@ export const de = {
     discardDescription: "Nicht gespeicherte Änderungen an {name} gehen verloren.",
     discard: "Verwerfen",
     mentions: "Fähigkeiten",
+    manage: "Fähigkeiten verwalten",
   },
   library: {
     tabs: {

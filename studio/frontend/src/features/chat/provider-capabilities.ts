@@ -685,13 +685,10 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
     repetitionPenalty: false,
     presencePenalty: false,
   },
-  // Anthropic accepts top_k on 3.x and 4.5/4.6, but 4.7 400s on it, so the panel surfaces it
-  // and the backend strips per-model. Presence/frequency penalty is not in the Messages API.
-  // Claude 4.7 is Opus, Sonnet and Haiku alike. Stripping lives in _stream_anthropic in
-  // core/inference/external_provider.py.
+  // _stream_anthropic never sends top_p. Presence/frequency penalty is not in the Messages API.
   anthropic: {
     temperature: true,
-    topP: true,
+    topP: false,
     topK: true,
     minP: false,
     repetitionPenalty: false,
@@ -746,6 +743,10 @@ const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
 
 const DEFAULT_EXTERNAL_CAPABILITIES = OPENAI_COMPAT_BASE;
 
+// Mirrors _anthropic_sampling_params_removed in external_provider.py; a backend test checks they agree.
+const ANTHROPIC_SAMPLING_REMOVED_MODEL =
+  /^claude-(?:mythos-preview(?:-|$)|[a-z]+-(?:[5-9]|\d{2,})(?:[-.]|$)|opus-4[-.](?:0?[7-9]|[1-9]\d)(?:[-.]|$))/;
+
 const OPENAI_RESPONSES_FIXED_SAMPLING_MODEL =
   /^(?:gpt-5(?:[.-]|$)|gpt-4\.5(?:[.-]|$)|o\d+(?:[.-]|$)|codex-mini(?:[.-]|$)|gpt-6-astra(?:[.-]|$))/;
 
@@ -772,6 +773,16 @@ export function getProviderCapabilities(
       return PROVIDER_CAPABILITIES.openai;
     }
     return CUSTOM_RESPONSES_CAPABILITIES;
+  }
+  if (
+    providerType === "anthropic" &&
+    ANTHROPIC_SAMPLING_REMOVED_MODEL.test(modelId?.trim().toLowerCase() ?? "")
+  ) {
+    return {
+      ...PROVIDER_CAPABILITIES.anthropic,
+      temperature: false,
+      topK: false,
+    };
   }
   return PROVIDER_CAPABILITIES[providerType] ?? DEFAULT_EXTERNAL_CAPABILITIES;
 }

@@ -35,10 +35,15 @@ function permissionUi(loginMode: string, permissionMode: string) {
       },
       "lucide-react": {
         ChevronDown: "ChevronDown",
-        CircleAlert: "CircleAlert",
         Hand: "Hand",
         ShieldCheck: "ShieldCheck",
       },
+      "radix-ui": { DropdownMenu: { Item: "DropdownMenuPrimitive.Item" } },
+      "@/features/settings": {
+        useSettingsDialogStore: (selector: (state: unknown) => unknown) =>
+          selector({ openDialog: () => {} }),
+      },
+      "@/i18n": { useT: () => (key: string) => key },
       "@/features/auth/account-session": {
         useFullAccessAllowed: () => loginMode !== "multi",
       },
@@ -47,6 +52,8 @@ function permissionUi(loginMode: string, permissionMode: string) {
       "@/components/ui/dropdown-menu": { DropdownMenuItem: "DropdownMenuItem" },
       "@/lib/chevron-icons": {},
       "@/lib/sparkles-icon": { SparklesGlyph: "SparklesGlyph" },
+      "@/lib/shield-alert-icon": { ShieldAlertGlyph: "ShieldAlertGlyph" },
+      "@hugeicons/core-free-icons": {},
       "@/lib/tick-icon": {},
       "@/lib/utils": { cn: () => "" },
       "@hugeicons/react": {},

@@ -2,9 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import type { en } from "./en";
+import { en } from "./en.ts";
 
 export const ar = {
+  // English fallback until this experimental feature is translated.
+  managedEngines: en.managedEngines,
   composerSettings: {
     title: "كتابة الرسائل",
     plainText: "محرر نص عادي",
@@ -142,6 +144,13 @@ export const ar = {
       close: "إغلاق البحث",
       truncated: "هذه الصفحة أطول من أن يتم البحث فيها بالكامل.",
     },
+    zoom: {
+      label: "التكبير",
+      zoomOut: "تصغير",
+      zoomIn: "تكبير",
+      reset: "إعادة تعيين",
+      announce: "التكبير {percent}%",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -202,6 +211,53 @@ export const ar = {
       help: "مساعدة",
       logOut: "تسجيل الخروج",
       shutdown: "إيقاف التشغيل",
+    },
+    commandPalette: {
+      placeholder: "اكتب أمرًا أو ابحث...",
+      noResults: "لم يُعثر على أي نتائج.",
+      navigation: "التنقل",
+      actions: "الإجراءات",
+      chat: "الدردشة",
+      searchChats: "ابحث في الدردشات...",
+    },
+    search: {
+      placeholder: "بحث",
+      tabs: {
+        all: "الكل",
+        chats: "المحادثات",
+        projects: "المشاريع",
+        files: "الملفات",
+        models: "النماذج",
+      },
+      recents: "العناصر الأخيرة",
+      actions: "الإجراءات",
+      newChat: "محادثة جديدة",
+      newTemporaryChat: "محادثة مؤقتة جديدة",
+      fineTune: "ضبط نموذج",
+      generateImage: "إنشاء صورة",
+      generateVideo: "إنشاء فيديو",
+      untitledChat: "محادثة بلا عنوان",
+      compare: "مقارنة",
+      loading: "جارٍ التحميل...",
+      empty: {
+        all: "لا يوجد شيء للبحث فيه بعد.",
+        chats: "لا توجد محادثات بعد.",
+        projects: "لا توجد مشاريع بعد.",
+        files: "لا توجد ملفات في مكتبتك بعد.",
+        models: "لا توجد نماذج منزّلة بعد.",
+      },
+      noMatches: "لا توجد نتائج.",
+      when: {
+        today: "اليوم",
+        pastWeek: "الأسبوع الماضي",
+        pastMonth: "الشهر الماضي",
+        older: "أقدم",
+      },
+      footer: {
+        close: "إغلاق",
+        changeType: "تغيير النوع",
+        open: "فتح",
+      },
     },
     notFound: {
       title: "الصفحة غير موجودة",
@@ -478,6 +534,10 @@ export const ar = {
         openKeyboardShortcuts: {
           label: "اختصارات لوحة المفاتيح",
           description: "فتح قائمة الاختصارات هذه",
+        },
+        openCommandPalette: {
+          label: "لوحة الأوامر",
+          description: "فتح لوحة الأوامر",
         },
         searchChats: {
           label: "بحث في المحادثات",
@@ -1191,9 +1251,22 @@ export const ar = {
       },
       permissions: {
         sectionTitle: "الأذونات",
-        bypassLabel: "أذونات الأدوات",
-        bypassDescription:
-          "كيفية موافقة Unsloth على استدعاءات أدوات المحادثة (الطرفية، python، الويب، MCP) قبل تشغيلها. وضع «Full access» يعطّل الموافقات وصندوق عزل الشيفرة.",
+        names: {
+          ask: "طلب الموافقة",
+          auto: "الموافقة نيابةً عني",
+          off: "التشغيل تلقائيًا",
+          full: "وصول كامل",
+        },
+        details: {
+          ask:
+            "يطلب الموافقة قبل كل استدعاء أداة، بما في ذلك شيفرة الطرفية وPython وعمليات البحث في الويب وتعديل الملفات وأدوات MCP. الأدوات التي يشغّلها مزوّد خارجي لا تتوقف لطلب الموافقة. الأنسب عندما تريد مراجعة كل خطوة.",
+          auto:
+            "يشغّل استدعاءات الأدوات المعتادة تلقائيًا ولا يطلب الموافقة إلا عندما يبدو الإجراء خطرًا، مثل قراءة بيانات الاعتماد أو رفع الصلاحيات أو تشغيل أوامر مدمّرة.",
+          off:
+            "يشغّل كل استدعاءات الأدوات دون سؤال. تظل شيفرة Python والطرفية تعمل داخل صندوق العزل، الذي يحدّ من الملفات التي يمكنها الوصول إليها على جهازك.",
+          full:
+            "يشغّل كل استدعاءات الأدوات دون سؤال ويوقف صندوق عزل الشيفرة، فيمكن لشيفرة Python والطرفية قراءة أي ملف يصل إليه حسابك وتغييره. الأنسب للمهام الموثوقة التي تحتاج إلى العمل خارج صندوق العزل.",
+        },
       },
     },
     profile: {
@@ -1316,20 +1389,13 @@ export const ar = {
           wide: "واسع",
           full: "العرض الكامل",
         },
-        composerAttachments: {
-          label: "المرفقات في حقل الكتابة",
-          description:
-            "بطاقات كبيرة تُوسّع حقل الكتابة، أو صف مضغوط من المربعات الصغيرة.",
-          cards: "بطاقات كبيرة",
-          compact: "مربعات مضغوطة",
-        },
         sentAttachments: {
           label: "المرفقات في الرسائل المرسلة",
           description:
-            "قائمة تعرض نوع كل ملف، أو شارات صغيرة. يتحوّل الوضع التلقائي إلى الشارات عند تجاوز ستة ملفات.",
+            "يعرض الوضع القياسي نوع كل ملف، ويعرض الوضع المضغوط ملفات أكثر في كل سطر. يتحوّل الوضع التلقائي إلى المضغوط عند تجاوز ستة ملفات.",
           auto: "تلقائي",
-          list: "قائمة",
-          chips: "شارات",
+          list: "قياسي",
+          chips: "مضغوط",
         },
         reset: "إعادة تعيين",
         resetAll: "إعادة تعيين التخصيص",
@@ -1551,6 +1617,7 @@ export const ar = {
         noRamReserveDescription: "يقلل ذاكرة النظام المحجوزة لأوزان النموذج.",
         noRamReserveHint: "يتخطى التحميل المعتمد على تعيين الذاكرة في إصدارات ويندوز المدعومة عندما يكون النموذج محمّلاً بالكامل على كرت الرسوميات، فلا تبقى صفحاته مقيمة. وإلا يُبقي التحميل المعتمد على تعيين الذاكرة. قد تستهلك مخازن المعالج المطلوبة ذاكرة النظام. ويحذف ‎--no-mmap‎ و‎--mlock‎.",
         mlockVetoed: "يبقى ‎--mlock‎ معطَّلاً: تثبيت النموذج سيحجز ذاكرة تكفي حجمه كاملاً. ولا يزال التفريغ التلقائي عند الخمول معطَّلاً.",
+        mlockNotApplicable: "بالكامل على وحدة GPU: لا شيء في ذاكرة النظام لقفله. يبقى التفريغ التلقائي عند الخمول معطَّلاً.",
         memlockCapped: "يحدّ هذا النظام الذاكرة المقفلة عند {limit}. لن يُثبَّت نموذج أكبر بالكامل؛ ارفع الحد باستخدام ulimit -l.",
         reloadRequired: "أعد تحميل النموذج لتطبيق خيارات الذاكرة الجديدة.",
         loadError: "تعذّر تحميل إعدادات ذاكرة النموذج",
@@ -1786,9 +1853,6 @@ export const ar = {
         "يصبح النص الملصق الذي يبلغ {count} حرفًا أو أكثر مرفقًا بصيغة .txt. يبقى النص الأقصر في مربع الرسالة.",
       pastedTextOffDescription:
         "يبقى كل النص الملصق في مربع الرسالة، مهما كان طوله.",
-      projectsSection: "إظهار قسم المشاريع",
-      projectsSectionDescription:
-        "يجمع محادثات المشروع تحت عنوان المشاريع. أوقف هذا الخيار لعرضها ضمن الأخيرة بدلاً من ذلك.",
       title: "المحادثة",
       description: "خصّص طريقة عمل المحادثة على هذا الجهاز.",
       modelSelection: {
@@ -1825,6 +1889,11 @@ export const ar = {
       autoScrollManual: "يدوي",
       autoScrollKeywords:
         "تمرير تلقائي متابعة أسفل قفز بث إنشاء تثبيت scroll autoscroll follow",
+      scrollToBottomButton: "زر التمرير إلى الأسفل",
+      scrollToBottomButtonDescription:
+        "إظهار زر للعودة إلى أحدث رسالة بعد التمرير لأعلى.",
+      scrollToBottomButtonKeywords:
+        "تمرير أسفل أحدث سهم زر إخفاء scroll bottom button",
       showResponseModel: "إظهار نموذج الاستجابة",
       showResponseModelDescription:
         "إظهار البيانات الوصفية للنموذج في ردود المساعد.",
@@ -1897,6 +1966,22 @@ export const ar = {
           "فعّل «{setting}» في الإعدادات ← الدردشة للسماح لـ Canvas بتحميل الموارد الخارجية، أو اسمح بذلك لهذا الـ Canvas فقط.",
         blockedSettingsAction: "فتح الإعدادات",
         blockedDismiss: "تجاهل",
+        errorTitle: "واجه هذا الـ Canvas خطأ",
+        errorTitlePlural: "واجه هذا الـ Canvas {count} أخطاء",
+        errorHint: "«الإصلاح مع النموذج» يضع الخطأ في مربع الرسالة. لا يُرسل شيء حتى ترسله أنت.",
+        errorBannerAction: "الإصلاح مع النموذج",
+        errorConsoleAction: "فتح وحدة التحكم",
+        errorConsoleHideAction: "إخفاء وحدة التحكم",
+        errorLocation: "السطر {line}، العمود {column}",
+        errorLine: "السطر {line}",
+        consoleTitle: "وحدة التحكم",
+        reloadCanvas: "تشغيل مرة أخرى",
+        consoleMessageCount: "{count} رسالة",
+        consoleMessageCountPlural: "{count} رسائل",
+        consoleClear: "مسح وحدة التحكم",
+        consoleClose: "إغلاق وحدة التحكم",
+        consoleEmpty: "لا يوجد إخراج في وحدة التحكم بعد.",
+        consoleCapped: "يتم الاحتفاظ بآخر {count} إدخال فقط؛ وأُسقط ما قبلها.",
       },
       data: "البيانات",
       exportHistory: "تصدير سجل المحادثات",
@@ -2180,11 +2265,13 @@ export const ar = {
       revoking: "جارٍ الإلغاء...",
       decisionApi: {
         title: "واجهة القرارات البرمجية",
-        description: "أجب عن أسئلة نعم/لا والاختيار من متعدد والتقييم حول النص باستخدام نموذج Laya محلي. يعمل مع حزمة TypeSafe.",
+        description: "أجب عن أسئلة نعم/لا والاختيار من متعدد والتقييم حول النص باستخدام نموذج على هذا الجهاز أو نموذج قرارات من الاتصالات. يعمل مع حزمة TypeSafe.",
         enable: "خدمة الطلبات",
         enableDescription: "يقدّم /v1/systemone. عند التشغيل يُنزَّل النموذج.",
+        enableRemoteDescription: "يقدّم /v1/systemone.",
         lockedByEnv: "مضبوط بواسطة {name}.",
         model: "النموذج",
+        thisMachine: "هذا الجهاز",
         modelMultilingual: "متعدد اللغات",
         modelEnglish: "إنجليزي",
         modelTypedDecisions: "قرارات مُصنَّفة",
@@ -2209,6 +2296,10 @@ export const ar = {
         downloadFailed: "تعذّر بدء التنزيل.",
         saveFailed: "تعذّر حفظ إعداد واجهة القرارات.",
         loadError: "تعذّر تحميل إعدادات واجهة القرارات.",
+        sendsTo: "تُرسَل الطلبات إلى {provider}.",
+        connectionMissing: "هذا الاتصال لم يعد موجودًا أو لا يحتوي على نماذج قرارات. اختر نموذجًا آخر.",
+        addConnection: "لاستخدام نموذج قرارات مستضاف، أضف TypeSafe أو Liquid AI أو OpenRouter في الاتصالات.",
+        openConnections: "فتح الاتصالات",
       },
       usageNoModel:
         "حمّل نموذجًا أو نزّله لعرض أمثلة قابلة للتشغيل. لا يوجد في هذا الخادم أي نموذج يمكن استخدامه في الأمثلة بعد.",
@@ -3073,6 +3164,7 @@ export const ar = {
     discardDescription: "ستُفقد التعديلات غير المحفوظة على {name}.",
     discard: "تجاهل",
     mentions: "المهارات",
+    manage: "إدارة المهارات",
   },
   library: {
     tabs: {
