@@ -597,8 +597,10 @@ def test_build_rag_autoinject_on_zero_top_k_still_grounds_attachment(rag_conn, m
 
     def fake_search(**kw):
         name, doc = ("thread", "d1") if kw.get("min_dense_score") is None else ("project", "d2")
+        # Zero is falsy to the search, which then returns its configured default count.
         sources = [
-            {"citationId": 1, "documentId": doc, "filename": f"{name}.txt", "text": f"{name}-1"}
+            {"citationId": i, "documentId": doc, "filename": f"{name}.txt", "text": f"{name}-{i}"}
+            for i in range(1, (kw["top_k"] or 10) + 1)
         ]
         return tool.render_sources(sources), sources
 
@@ -607,7 +609,9 @@ def test_build_rag_autoinject_on_zero_top_k_still_grounds_attachment(rag_conn, m
         _convo("Summarize this document"),
         {"thread_id": "t1", "project_id": "p1", "autoinject": True, "default_top_k": 0},
     )
-    assert "thread-1" in _injected_text(result)
+    injected = _injected_text(result)
+    assert "thread-1" in injected
+    assert injected.count("<chunk id=") == inf_tools._autoinject_top_k()
 
 
 def test_build_rag_autoinject_off_does_not_inject_project_alone(rag_conn, monkeypatch):

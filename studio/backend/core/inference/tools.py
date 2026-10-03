@@ -14887,7 +14887,7 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
                         cited = thread_docs or {s.get("documentId") for s in thread_found[1]}
                         if not any(s.get("documentId") in cited for s in found[1]):
                             # Still the lean top_k in total, so the unbudgeted path never doubles the injection.
-                            limit = top_k or len(thread_found[1])
+                            limit = top_k or lean_k
                             n_proj = min(len(found[1]), limit // 2)
                             merged = thread_found[1][: limit - n_proj] + found[1][:n_proj]
                             found = (render_sources(merged), merged)
