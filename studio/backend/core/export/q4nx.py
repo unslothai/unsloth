@@ -77,6 +77,16 @@ _RUN_CONVERTER = (
 )
 
 
+def _prepare_out_dir(out_dir: Path) -> None:
+    # Only the save directory is account-checked; a planted symlink here would redirect writes.
+    if out_dir.is_symlink():
+        raise RuntimeError(f"Refusing to write Q4NX output through the symlink {out_dir}")
+    out_dir.mkdir(parents = True, exist_ok = True)
+    # A re-conversion into the same folder must not keep the last model's companions.
+    for name in ("model.q4nx", "config.json", *TOKENIZER_FILES):
+        (out_dir / name).unlink(missing_ok = True)
+
+
 def convert_gguf_to_q4nx(gguf_path: str, out_dir: Path) -> None:
     from utils.paths.storage_roots import studio_root
 
@@ -84,7 +94,7 @@ def convert_gguf_to_q4nx(gguf_path: str, out_dir: Path) -> None:
     installer = _installer()
     name = installer.converter_for_architecture(_gguf_architecture(gguf_path))
     script = installer.install(studio_root() / "q4nx_converter", name = name)
-    out_dir.mkdir(parents = True, exist_ok = True)
+    _prepare_out_dir(out_dir)
     logger.info(
         f"Converting {os.path.basename(gguf_path)} to Q4NX ({name}) for the AMD NPU in {out_dir}"
     )

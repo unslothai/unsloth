@@ -187,6 +187,47 @@ def test_converter_runs_in_this_interpreter(monkeypatch, tmp_path, architecture,
     assert ran["cwd"] == str(tmp_path / converter)
 
 
+def _fake_run(export_mod, monkeypatch):
+    ran = []
+
+    def run(cmd, cwd, **_kw):
+        ran.append(cmd)
+        (Path(cmd[-1]) / "model.q4nx").write_bytes(b"q4nx")
+        return subprocess.CompletedProcess(cmd, 0, stderr = "")
+
+    monkeypatch.setattr(export_mod.q4nx.subprocess, "run", run)
+    return ran
+
+
+def test_a_symlinked_output_folder_is_refused(monkeypatch, tmp_path):
+    export_mod, _b, _s, _c = _backend(monkeypatch, tmp_path, object())
+    _stub_installer(export_mod, monkeypatch, tmp_path)
+    ran = _fake_run(export_mod, monkeypatch)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    link = tmp_path / "exports" / "M.Q4_1-q4nx"
+    link.parent.mkdir()
+    link.symlink_to(elsewhere, target_is_directory = True)
+
+    with pytest.raises(RuntimeError, match = "symlink"):
+        export_mod.q4nx.convert_gguf_to_q4nx("/x/M.Q4_1.gguf", link)
+    assert ran == [] and list(elsewhere.iterdir()) == []
+
+
+def test_a_reconversion_drops_the_previous_companions(monkeypatch, tmp_path):
+    export_mod, _b, _s, _c = _backend(monkeypatch, tmp_path, object())
+    _stub_installer(export_mod, monkeypatch, tmp_path)
+    _fake_run(export_mod, monkeypatch)
+    out = tmp_path / "out"
+    out.mkdir()
+    for stale in ("chat_template.jinja", "config.json", "tokenizer_config.json"):
+        (out / stale).write_text("previous model")
+
+    export_mod.q4nx.convert_gguf_to_q4nx("/x/M.Q4_1.gguf", out)
+
+    assert sorted(p.name for p in out.iterdir()) == ["model.q4nx"]
+
+
 def test_converter_failure_names_its_last_stderr_line(monkeypatch, tmp_path):
     export_mod, _b, _s, _c = _backend(monkeypatch, tmp_path, object())
     _stub_installer(export_mod, monkeypatch, tmp_path)
