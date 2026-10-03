@@ -25,6 +25,7 @@ test("the compare draws its bars from the server's file, since the CSP blocks fe
 
 test("a long recording is refused on Edit, so the card does not promise to use its first 30 s", () => {
   assert.match(page, /id="edit-recording"[\s\S]*?usesFirstSeconds=\{null\}/);
+  assert.match(page, /maxRecordSeconds=\{EDIT_SOURCE_MAX_SECONDS\}/);
 });
 
 test("a history pick fills the transcript only with speech, not a Music description or a file name", async () => {

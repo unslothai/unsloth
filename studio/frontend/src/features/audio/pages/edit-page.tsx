@@ -11,6 +11,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { type ComponentProps, useEffect, useState } from "react";
 import { type AudioGalleryClip, fetchAudioBlob } from "../api";
 import { audioCppModelFor, audioCppWorkflowsFor } from "../audio-cpp-catalog";
+import { EDIT_SOURCE_MAX_SECONDS } from "../audio-run-request";
 import { macTtsCatalogChoiceIsRunnable } from "../catalog";
 import { ABCompare } from "../components/ab-compare";
 import {
@@ -112,6 +113,7 @@ function EditInputs({
           disabled={disabled}
           allowSavedVoice={false}
           usesFirstSeconds={null}
+          maxRecordSeconds={EDIT_SOURCE_MAX_SECONDS}
           handleRef={edit.sourceHandle}
           onStatusChange={edit.setSourceStatus}
         />
