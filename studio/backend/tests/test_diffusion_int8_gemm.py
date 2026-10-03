@@ -271,8 +271,7 @@ def test_small_m_and_misaligned_keep_stock(forced):
 
 @needs_cuda
 def test_pinned_group_offloaded_denoiser_takes_the_gemm_and_survives_release(forced, monkeypatch):
-    """16 GB Qwen-Image-2.1: every group pinned, the GEMM engages after placement, bit-identical to stock torchao,
-    through release and restore."""
+    """Every group pinned: the GEMM engages after placement, bit-identical to torchao through release and restore."""
     pytest.importorskip("diffusers.hooks")
     from diffusers.hooks import apply_group_offloading
     import types as _types
