@@ -5888,7 +5888,8 @@ def _codex_app_session(base: str, explicit_key: Optional[str], entry: dict) -> N
         _open_codex_app()
         typer.echo(
             f"The Codex app is on {entry['id']} from Unsloth at {base} until this command exits "
-            "(Ctrl+C)."
+            "(Ctrl+C). If the app was already open, quit and reopen it: it reads the model list "
+            "only at startup."
         )
         _hold_codex_app(base)
     finally:
@@ -6601,7 +6602,17 @@ def hermes(
     )
     if app:
         target = _hermes_app_target(server_options.request_body())
-        return _add_app_provider(target, base, api_key, entry)
+        _add_app_provider(target, base, api_key, entry)
+        window = entry.get("context_length") or entry.get("max_context_length")
+        if window and int(window) < _HERMES_MIN_CONTEXT:
+            # The app's compaction settings are global, so they can't be scaled to this model.
+            typer.echo(
+                f"Warning: {entry['id']} serves {int(window):,} tokens, below Hermes' "
+                f"{_HERMES_MIN_CONTEXT:,} floor, so long chats in the app can overflow before "
+                f"Hermes compacts. Load it with --max-seq-length {_HERMES_MIN_CONTEXT} to avoid this.",
+                err = True,
+            )
+        return
     with _session_config("hermes", launch, persist = persist) as home:
         # HERMES_HOME relocates hermes' whole home dir (config.yaml, sessions, state) like CODEX_HOME, so the user's ~/.hermes is left untouched for the session.
         write_hermes_config(base, entry, home / "config.yaml", server_options.request_body())

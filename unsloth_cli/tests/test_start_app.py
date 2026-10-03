@@ -496,6 +496,8 @@ def test_hermes_app_adds_unsloth_to_the_active_profile(studio):
     assert config.read_text().startswith(original)
     assert not (root / "config.yaml").exists()
     assert ("POST", f"{BASE}/api/auth/api-keys", {"name": "Hermes app"}) in studio["calls"]
+    # 32,768 is below the floor the provider claims, so the user is told how to avoid overflow.
+    assert "--max-seq-length 65536" in result.output
 
 
 def test_app_refuses_a_config_it_cannot_parse(studio):
