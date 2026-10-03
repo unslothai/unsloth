@@ -207,6 +207,7 @@ export const ru = {
       showLess: "Показать меньше",
       settings: "Настройки",
       api: "API",
+      benchmarks: "Бенчмарки",
       lightMode: "Светлая тема",
       darkMode: "Тёмная тема",
       guidedTour: "Обзор интерфейса",

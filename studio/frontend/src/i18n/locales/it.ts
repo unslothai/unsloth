@@ -169,6 +169,7 @@ export const it = {
       showLess: "Mostra meno",
       settings: "Impostazioni",
       api: "API",
+      benchmarks: "Benchmark",
       lightMode: "Tema chiaro",
       darkMode: "Tema scuro",
       guidedTour: "Tour guidato",
