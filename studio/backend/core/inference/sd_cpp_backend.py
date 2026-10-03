@@ -425,17 +425,14 @@ def sd_cpp_device_name_for_ordinal(binary: Optional[str], ordinal: Optional[int]
     return None
 
 
-# ggml-cuda's own init log, printed on stderr by every CUDA build of sd-cli when it lists its devices. A HIP build
-# prints "ROCm devices" instead, so only a CUDA build ever matches.
+# ggml-cuda's init log on stderr; a HIP build says "ROCm devices", so only CUDA builds match.
 _CUDA_INIT_RE = re.compile(r"ggml_cuda_init: found \d+ CUDA devices")
 _CUDA_DEVICE_CC_RE = re.compile(
     r"^\s*Device (\d+): .*?, compute capability (\d+)\.(\d+)", re.MULTILINE
 )
 
 
-# The last --list-devices answer per binary path, with the (size, mtime_ns) it was read from. Remembered, never reused
-# for the accelerator verdict itself (a re-check has to ask again); it only spares the capability read below a
-# second subprocess for the answer the verdict just got.
+# Last --list-devices answer per binary + (size, mtime_ns); only the capability read reuses it, never the verdict.
 _LAST_DEVICE_LISTING: dict = {}
 
 
@@ -462,12 +459,9 @@ def sd_cpp_cuda_compute_capability(
     *,
     probe: bool = True,
 ) -> Optional[tuple[int, int]]:
-    """The compute capability the CUDA build ``binary`` itself reports for ``device_name``
-    (``CUDA<i>``), read from the ``ggml_cuda_init`` lines ``--list-devices`` prints. With no device
-    pinned, the LOWEST across its CUDA devices, since sd.cpp then picks one itself. None whenever
-    it is not certain: unreadable probe, not a CUDA build (ROCm, Vulkan, Metal, CPU), or a device
-    it does not list. ``probe = False`` reads only the listing the last accelerator verdict took of
-    this same file, and never spawns the binary."""
+    """Compute capability the CUDA build reports for ``device_name`` (``CUDA<i>``); the lowest card
+    when unpinned. None when unsure (unreadable, non-CUDA build, unlisted device). ``probe = False``
+    only reads the listing the last accelerator verdict took of this file."""
     if not binary:
         return None
     text = None

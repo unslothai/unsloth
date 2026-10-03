@@ -1267,9 +1267,7 @@ H3_NATIVE_RESIDENT_ENV = "UNSLOTH_H3_NATIVE_RESIDENT"
 # Unsloth sd.cpp fork: quantized matmuls with >= this many rows run BF16 cuBLAS instead of int8 MMQ. Unset/0 = MMQ.
 H3_QUANT_CUBLAS_ENV = "GGML_CUDA_QUANT_CUBLAS_MIN_BATCH"
 H3_QUANT_CUBLAS_MIN_BATCH = "1024"
-# The fork only takes that route on NVIDIA with BF16 tensor cores (sm80+) and runs MMQ elsewhere, so this is the floor
-# below which handing it the env can change nothing. Measured at default speed (no sage), 960x544x124, 4 steps,
-# UD-Q3_K_XL, BF16 route vs MMQ: faster and closer to an F32-dequant reference on every sm80+ card tried.
+# The fork's own floor (bf16_mma_hardware_available); below it the env changes nothing.
 H3_QUANT_CUBLAS_MIN_CC = (8, 0)
 
 
@@ -1279,13 +1277,8 @@ def h3_quant_cublas_env(
     sage: bool,
     environ: Optional[dict] = None,
 ) -> tuple[tuple[str, str], ...]:
-    """The env a native H3 GPU load hands sd-cli for the fork's BF16 cuBLAS route.
-
-    ``cuda_cc`` is the compute capability the CUDA build reported for the card it will run on (None: not a CUDA
-    build, or it could not tell). A known sm80+ card takes the route in every speed mode; any other known card, and
-    every non-CUDA build, launches unchanged. An unknown capability keeps the older rule, where only the sage opt-in
-    (speed_mode=max) asked for it. A value the user exported (0 included) always wins: nothing is added.
-    """
+    """sd-cli env for the BF16 cuBLAS route: known sm80+ always, known older never, unknown
+    (``cuda_cc`` None) only with sage. A user-exported value (0 included) always wins."""
     environ = os.environ if environ is None else environ
     if H3_QUANT_CUBLAS_ENV in environ:
         return ()

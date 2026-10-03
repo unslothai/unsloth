@@ -3527,10 +3527,7 @@ class VideoBackend:
                 native_device_name = sd_cpp_device_named(
                     binary, selected_name, position = selected_position
                 )
-            # What the CUDA build itself reports for the card it will run on, so the BF16 cuBLAS gate below reads the
-            # same number the fork's own dispatch does. None on the CPU fallback and on every non-CUDA build.
-            # Read off the listing the accelerator re-check above just took, so it costs no extra subprocess; a CPU or
-            # MPS target never took one and stays None.
+            # Same number the fork's dispatch reads, off the re-check's listing (no extra subprocess).
             from .sd_cpp_backend import sd_cpp_cuda_compute_capability
 
             native_cuda_cc = (
@@ -3574,8 +3571,7 @@ class VideoBackend:
         if h3_sage:
             native_offload += ("--sage-attn",)
         if native_device != "cpu":
-            # The fork's BF16 cuBLAS path for quantized DiT matmuls, in every speed mode on a CUDA card that measured
-            # faster and more accurate with it; a user-exported value (0 included) wins.
+            # BF16 cuBLAS for quantized DiT matmuls on sm80+; a user-exported value (0 included) wins.
             from .video_minimax_h3 import h3_quant_cublas_env
             native_env += h3_quant_cublas_env(native_cuda_cc, sage = h3_sage)
         from .video_minimax_h3 import H3_QUANT_CUBLAS_ENV
