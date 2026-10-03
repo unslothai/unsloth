@@ -2283,6 +2283,31 @@ def _loaded_component_mib(pipe: Any) -> Optional[dict[str, tuple[int, str]]]:
         return None
 
 
+RESIDENT_DIT_ENV = "UNSLOTH_DIFFUSION_RESIDENT_DIT"
+# Whole-resident tier slack: 10% of the card, min 1 GiB, instead of the flat reserve + base overhead sized for an
+# unmeasured activation. Free memory is read after CUDA init and the measured peak covers encode, steps and decode, so
+# the slack only covers fragmentation and lazily loaded kernels.
+_RESIDENT_DIT_SLACK_FRACTION = 0.10
+_RESIDENT_DIT_SLACK_MIN_MIB = 1024
+
+
+def _resident_dit_slack_mib(memory: Any) -> int:
+    base = getattr(memory, "total_mib", None) or getattr(memory, "free_mib", None) or 0
+    return max(_RESIDENT_DIT_SLACK_MIN_MIB, int(int(base) * _RESIDENT_DIT_SLACK_FRACTION))
+
+
+def _resident_dit_fits(memory: Any, dit_mib: int, headroom_mib: int, other_mib: int) -> bool:
+    """Whole denoiser + non-encoder companions + measured peak x margin + slack within free memory, encoders streamed."""
+    if _env_off(RESIDENT_DIT_ENV):
+        return False
+    free = getattr(memory, "free_mib", None)
+    if free is None:
+        return False
+    return int(dit_mib) + int(other_mib) + int(headroom_mib) + _resident_dit_slack_mib(
+        memory
+    ) <= int(free)
+
+
 def _denoiser_compute_bytes(pipe: Any) -> Optional[int]:
     """Denoiser compute element size for the dense table: 2 (fp16), 4 (fp32); None for bf16 / unreadable."""
     try:
@@ -2360,14 +2385,28 @@ def refine_plan_from_loaded_weights(
         room = budget - floor
         if policy == OFFLOAD_GROUP and not stream_te:
             room -= encoders  # resident companions
+        whole_dit = False
         if not bool(getattr(plan, "stream_transformer", True)):
             room -= dit
             dit_room = 0
         else:
             dit_room = min(max(room, 0), dit)
+            if (
+                dit_room < dit
+                # torchao denoisers only: the slack was measured on the int8 route, not the dense eager table
+                and dense_mib is None
+                and (policy == OFFLOAD_STREAMING or stream_te)
+                and _resident_dit_fits(memory, dit, headroom, other)
+            ):
+                # pin it whole; during the encode it drops back to the flat room (install_encode_release)
+                encode_room = int(dit_room)
+                dit_room, room, whole_dit = dit, dit, True
         te_room = max(0, room - dit_room) if stream_te and policy == OFFLOAD_GROUP else 0
         if dit_room <= 0 and te_room <= 0:
             return plan
+        if whole_dit:
+            estimates["resident_dit_slack_mib"] = _resident_dit_slack_mib(memory)
+            estimates["encode_resident_transformer_mib"] = encode_room
         new = replace(
             plan,
             resident_transformer_mib = int(dit_room) if dit_room > 0 else None,
@@ -2380,7 +2419,13 @@ def refine_plan_from_loaded_weights(
             reasons = plan.reasons
             + (
                 f"{int(dit_room)} MiB of the {dit} MiB transformer and {int(te_room)} MiB of the {encoders} MiB "
-                f"encoders stay resident (measured peak {headroom} MiB); the rest streams",
+                f"encoders stay resident (measured peak {headroom} MiB); the rest streams"
+                + (
+                    f" (whole transformer within free memory less a {_resident_dit_slack_mib(memory)} MiB slack;"
+                    f" {encode_room} MiB of it while the encoders run)"
+                    if whole_dit
+                    else ""
+                ),
             ),
         )
         if logger is not None:
@@ -2414,9 +2459,11 @@ def _keep_groups_resident(
     room_mib: int,
     device: Any,
     logger: Any = None,
+    only: Optional[set] = None,
 ) -> int:
     """Make whole offload groups of a streamed ``module`` resident within ``room_mib`` (top-level group first, then
-    blocks in order); their onload / offload become no-ops and the rest keeps streaming. Returns the MiB kept."""
+    blocks in order); their onload / offload become no-ops and the rest keeps streaming. Returns the MiB kept.
+    ``only`` (group ids): a restore pins back what its own release streamed, not an enclosing release's groups."""
     if room_mib is None or int(room_mib) <= 0 or _env_off(PARTIAL_RESIDENT_ENV):
         return 0
     try:
@@ -2484,8 +2531,8 @@ def _keep_groups_resident(
             if getattr(group, "_unsloth_resident", False):
                 left -= need
                 continue
-            if need > left:
-                # too large: it streams; a later, smaller group may still fit
+            if need > left or (only is not None and id(group) not in only):
+                # too large (a later, smaller group may still fit), or another release's group
                 continue
             cpu = getattr(group, "cpu_param_dict", None) or {}
             for t in tensors:
@@ -2548,10 +2595,13 @@ def release_resident_groups(
     pipe: Any,
     need_mib: int,
     logger: Any = None,
+    denoisers_only: bool = False,
+    reason: str = "an oversized request",
 ) -> Optional[Callable[[], None]]:
     """Stream resident offload groups again until ``need_mib`` is freed (text encoders first, then the denoiser's
-    blocks from the last); returns a callable restoring them, or None when nothing was resident. A request larger
-    than the measured placement reserved (reference images, a bigger canvas, a batch) then runs as the flat plan."""
+    blocks from the last); returns a callable pinning exactly those groups again, or None when nothing was resident.
+    A request larger than the measured placement reserved (reference images, a bigger canvas, a batch) then runs as
+    the flat plan. ``denoisers_only`` leaves the text encoders' groups alone (the prompt encode needs them)."""
     try:
         import torch
 
@@ -2559,12 +2609,14 @@ def release_resident_groups(
             m
             for m in (getattr(pipe, "components", {}) or {}).values()
             if getattr(m, "_unsloth_resident_room", None)
+            and not (denoisers_only and _is_text_encoder_module(pipe, m))
         ]
         if not modules or int(need_mib) <= 0:
             return None
         modules.sort(key = lambda m: 0 if _is_text_encoder_module(pipe, m) else 1)
         left = int(need_mib) * 1024 * 1024
         released: list = []
+        streamed: set = set()
         for module in modules:
             for group in reversed(_offload_groups(module) or []):
                 if left <= 0:
@@ -2576,6 +2628,7 @@ def release_resident_groups(
                 if isinstance(state, dict):
                     state["streamed"] = 1
                 _release_group(group)
+                streamed.add(id(group))
                 left -= int(getattr(group, "_unsloth_resident_bytes", 0))
                 if module not in released:
                     released.append(module)
@@ -2590,8 +2643,9 @@ def release_resident_groups(
             torch.cuda.synchronize(device)
         if logger is not None:
             logger.info(
-                "diffusion.memory: streaming %d MiB of resident groups for an oversized request",
+                "diffusion.memory: streaming %d MiB of resident groups for %s",
                 (int(need_mib) * 1024 * 1024 - max(left, 0)) >> 20,
+                reason,
             )
 
         def restore() -> None:
@@ -2601,6 +2655,7 @@ def release_resident_groups(
                     module._unsloth_resident_room,
                     module._unsloth_resident_device,
                     logger,
+                    only = streamed,
                 )
 
         return restore
@@ -2615,6 +2670,85 @@ def _is_text_encoder_module(pipe: Any, module: Any) -> bool:
         if component is module:
             return str(name).startswith("text_encoder")
     return False
+
+
+def install_encode_release(
+    pipe: Any,
+    plan: Any,
+    logger: Any = None,
+) -> int:
+    """While a text encoder runs, stream the whole-resident denoiser back to the flat room (the partial placement's
+    encode state); pin it back on return. Returns the number of encoders hooked."""
+    estimates = getattr(plan, "estimates", None) or {}
+    encode_room = estimates.get("encode_resident_transformer_mib")
+    whole = getattr(plan, "resident_transformer_mib", None)
+    if encode_room is None or not whole:
+        return 0
+    surplus = int(whole) - max(int(encode_room), 0)
+    if surplus <= 0:
+        return 0
+    try:
+        import weakref
+
+        import torch
+
+        try:
+            pipe_ref = weakref.ref(pipe)  # the hooks live on the encoder, which the pipe owns
+        except TypeError:
+            pipe_ref = lambda: pipe  # noqa: E731 - not weak-referenceable
+        disable = getattr(getattr(torch, "compiler", None), "disable", None)
+        pending: list = []
+
+        def _before(module: Any, args: Any) -> None:
+            owner = pipe_ref()
+            if owner is None or pending:
+                return  # nested encoder call: the outer one already released
+            restore = release_resident_groups(
+                owner, surplus, logger, denoisers_only = True, reason = "the prompt encode"
+            )
+            pending.append(restore)
+            if restore is not None and torch.cuda.is_available():
+                # freed blocks sit in the default stream's pool; the encoder onloads on the copy stream
+                torch.cuda.empty_cache()
+
+        def _after(module: Any, args: Any, output: Any) -> None:
+            if not pending:
+                return
+            restore = pending.pop()
+            if restore is not None:
+                restore()
+
+        before = disable(_before) if callable(disable) else _before
+        after = disable(_after) if callable(disable) else _after
+        hooked = 0
+        for name, module in (getattr(pipe, "components", {}) or {}).items():
+            if not str(name).startswith("text_encoder") or not isinstance(module, torch.nn.Module):
+                continue
+            handles = (
+                module.register_forward_pre_hook(before),
+                # always_call: an encode that raises (cancel, OOM) still pins the denoiser back
+                module.register_forward_hook(after, always_call = True),
+            )
+            module._unsloth_encode_release = handles
+            hooked += 1
+        if hooked and logger is not None:
+            logger.info(
+                "diffusion.memory: the prompt encode streams %d MiB of the resident transformer (%d MiB stay), "
+                "pinned again before step 0",
+                surplus,
+                max(int(encode_room), 0),
+            )
+        return hooked
+    except Exception as exc:  # noqa: BLE001 - fall back to the partial placement rather than risk the encode
+        if logger is not None:
+            logger.warning(
+                "diffusion.memory: encode release not installed (%s); the transformer streams past the flat room",
+                exc,
+            )
+        release_resident_groups(
+            pipe, surplus, logger, denoisers_only = True, reason = "the partial placement"
+        )
+        return 0
 
 
 def measured_request_extra_mib(

@@ -133,6 +133,7 @@ from .diffusion_memory import (
     plan_diffusion_memory,
     plan_fits_total_capacity,
     denoisers_pinned_resident,
+    install_encode_release,
     plan_keeps_transformer_resident,
     prequant_seed_device,
     raise_on_image_activation_shortfall,
@@ -7155,6 +7156,8 @@ class DiffusionBackend:
                         pipe._unsloth_cuda_graphs = ()
                         pipe._unsloth_cuda_graph_reason = "offload active"
                         speed_applied["cuda_graph"] = False
+                    # streams the whole-resident denoiser back to the flat room while the encoders run
+                    install_encode_release(pipe, plan, logger)
                     # the speed layer saw only the plan; placement may have pinned every denoiser group since
                     if denoisers_pinned_resident(pipe):
                         engage_pinned_denoisers(pipe, speed_applied, logger)
