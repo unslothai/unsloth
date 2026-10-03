@@ -5451,15 +5451,9 @@ def patch_torch_missing_attribute_error():
     if getattr(original, "__unsloth_patched__", False):
         return True
 
-    # torch's own __getattr__ answers has_cuda / has_cudnn / has_mps / has_mkldnn
-    # with a UserWarning at stacklevel=2. Through this wrapper that stacklevel
-    # lands on our frame instead of the caller's, which also defeats the
-    # module="torch" filter in torch.overrides.get_ignored_functions: dynamo reads
-    # all four aliases there, and Colab printed the four warnings against
-    # import_fixes.py. So answer those names here, with torch's message, at
-    # stacklevel=2 of this frame. Warned directly rather than captured and
-    # replayed: catch_warnings is process-global and resets the once-per-location
-    # registries on every access.
+    # torch warns for these aliases at stacklevel=2, which through this wrapper
+    # names our frame and defeats get_ignored_functions' module="torch" filter.
+    # Warn here instead: catch_warnings + replay is process-global and resets registries.
     deprecated_attrs = torch.__dict__.get("_deprecated_attrs", {})
 
     @functools.wraps(original)

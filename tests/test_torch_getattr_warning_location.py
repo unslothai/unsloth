@@ -13,14 +13,7 @@
 #
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
-"""torch's deprecation warnings keep their location through the __getattr__ wrapper.
-
-patch_torch_missing_attribute_error wraps torch.__getattr__, and torch warns for
-has_cuda / has_cudnn / has_mps / has_mkldnn at stacklevel=2. Through the wrapper
-that pointed at `return original(name)` in import_fixes.py, so the module="torch"
-filter in torch.overrides.get_ignored_functions stopped matching and every Colab
-run printed four warnings that plain torch hides.
-"""
+"""torch's has_cuda / has_mps / ... warnings keep the caller's location through the wrapper."""
 
 import types
 import warnings
@@ -45,8 +38,7 @@ def patched_torch():
         torch.__getattr__ = previous
 
 
-# Every torch from 2.6 through 2.13 carries these four in torch._deprecated_attrs.
-# A torch without them would leave the wrapper's branch dead, so fail rather than skip.
+# torch 2.6 through 2.13; fail rather than skip if the table changes.
 _ALIASES = ("has_cuda", "has_cudnn", "has_mkldnn", "has_mps")
 
 
