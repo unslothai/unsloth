@@ -9,12 +9,14 @@ without loading a model into the export worker.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import json
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 from pathlib import Path
 from typing import List, Optional
@@ -78,14 +80,25 @@ _RUN_CONVERTER = (
 )
 
 
-def _prepare_out_dir(out_dir: Path) -> None:
+@contextlib.contextmanager
+def staged_output(out_dir: Path):
+    """Yield a fresh folder to build into; its files replace ``out_dir``'s only on success,
+    so a failed re-conversion keeps the previous export."""
     # Only the save directory is account-checked; a planted symlink here would redirect writes.
     if out_dir.is_symlink():
         raise RuntimeError(f"Refusing to write Q4NX output through the symlink {out_dir}")
-    out_dir.mkdir(parents = True, exist_ok = True)
-    # A re-conversion into the same folder must not keep the last model's companions.
-    for name in ("model.q4nx", "config.json", *TOKENIZER_FILES):
-        (out_dir / name).unlink(missing_ok = True)
+    out_dir.parent.mkdir(parents = True, exist_ok = True)
+    staging = Path(tempfile.mkdtemp(prefix = f".{out_dir.name}-", dir = out_dir.parent))
+    try:
+        yield staging
+        out_dir.mkdir(exist_ok = True)
+        # The last model's companions must not survive beside the new weights.
+        for name in ("model.q4nx", "config.json", *TOKENIZER_FILES):
+            (out_dir / name).unlink(missing_ok = True)
+        for path in staging.iterdir():
+            os.replace(path, out_dir / path.name)
+    finally:
+        shutil.rmtree(staging, ignore_errors = True)
 
 
 def convert_gguf_to_q4nx(gguf_path: str, out_dir: Path) -> None:
@@ -95,7 +108,7 @@ def convert_gguf_to_q4nx(gguf_path: str, out_dir: Path) -> None:
     installer = _installer()
     name = installer.converter_for_architecture(_gguf_architecture(gguf_path))
     script = installer.install(studio_root() / "q4nx_converter", name = name)
-    _prepare_out_dir(out_dir)
+    out_dir.mkdir(parents = True, exist_ok = True)
     logger.info(
         f"Converting {os.path.basename(gguf_path)} to Q4NX ({name}) for the AMD NPU in {out_dir}"
     )
@@ -223,16 +236,16 @@ def convert_existing_gguf(
     if found["tokenizer_config.json"] is None:
         raise RuntimeError(f"{base_model} has no tokenizer_config.json, which FastFlowLM needs.")
     # A retried request (or a second tab) must not interleave with one still converting here.
-    with _folder_lock(out_dir):
-        convert_gguf_to_q4nx(str(gguf_path), out_dir)
+    with _folder_lock(out_dir), staged_output(out_dir) as staging:
+        convert_gguf_to_q4nx(str(gguf_path), staging)
         for name in TOKENIZER_FILES:
             # The HF tokenizer.json replaces the one the converter rebuilds from the GGUF.
             if found[name] is not None:
-                shutil.copyfile(found[name], out_dir / name)
+                shutil.copyfile(found[name], staging / name)
         if found["chat_template.jinja"] is None:
-            config = json.loads((out_dir / "tokenizer_config.json").read_text(encoding = "utf-8"))
+            config = json.loads((staging / "tokenizer_config.json").read_text(encoding = "utf-8"))
             template = config.get("chat_template") or _gguf_chat_template(gguf_path)
             if template and not config.get("chat_template"):
-                (out_dir / "chat_template.jinja").write_text(template, encoding = "utf-8")
-        write_flm_tokenizer_config(out_dir, *(_read_json(found[name]) for name in CONFIG_FILES))
+                (staging / "chat_template.jinja").write_text(template, encoding = "utf-8")
+        write_flm_tokenizer_config(staging, *(_read_json(found[name]) for name in CONFIG_FILES))
     return out_dir

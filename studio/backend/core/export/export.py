@@ -1642,9 +1642,9 @@ class ExportBackend:
                     try:
                         if source is None:
                             raise RuntimeError("no Q4_0, Q4_1 or Q4_K_M GGUF was written")
-                        q4nx_dir = Path(abs_save_dir) / "npu-q4nx"
-                        q4nx.convert_gguf_to_q4nx(source, q4nx_dir)
-                        self._write_q4nx_companions(q4nx_dir, exported_config)
+                        with q4nx.staged_output(Path(abs_save_dir) / "npu-q4nx") as staging:
+                            q4nx.convert_gguf_to_q4nx(source, staging)
+                            self._write_q4nx_companions(staging, exported_config)
                     except Exception as exception:
                         logger.error(f"Q4NX conversion failed: {exception}")
                         return (

@@ -187,22 +187,8 @@ def test_converter_runs_in_this_interpreter(monkeypatch, tmp_path, architecture,
     assert ran["cwd"] == str(tmp_path / converter)
 
 
-def _fake_run(export_mod, monkeypatch):
-    ran = []
-
-    def run(cmd, cwd, **_kw):
-        ran.append(cmd)
-        (Path(cmd[-1]) / "model.q4nx").write_bytes(b"q4nx")
-        return subprocess.CompletedProcess(cmd, 0, stderr = "")
-
-    monkeypatch.setattr(export_mod.q4nx.subprocess, "run", run)
-    return ran
-
-
 def test_a_symlinked_output_folder_is_refused(monkeypatch, tmp_path):
     export_mod, _b, _s, _c = _backend(monkeypatch, tmp_path, object())
-    _stub_installer(export_mod, monkeypatch, tmp_path)
-    ran = _fake_run(export_mod, monkeypatch)
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     link = tmp_path / "exports" / "M.Q4_1-q4nx"
@@ -210,22 +196,41 @@ def test_a_symlinked_output_folder_is_refused(monkeypatch, tmp_path):
     link.symlink_to(elsewhere, target_is_directory = True)
 
     with pytest.raises(RuntimeError, match = "symlink"):
-        export_mod.q4nx.convert_gguf_to_q4nx("/x/M.Q4_1.gguf", link)
-    assert ran == [] and list(elsewhere.iterdir()) == []
+        with export_mod.q4nx.staged_output(link) as staging:
+            (staging / "model.q4nx").write_bytes(b"q4nx")
+    assert list(elsewhere.iterdir()) == []
 
 
-def test_a_reconversion_drops_the_previous_companions(monkeypatch, tmp_path):
+def test_a_reconversion_replaces_the_previous_model_files(monkeypatch, tmp_path):
     export_mod, _b, _s, _c = _backend(monkeypatch, tmp_path, object())
-    _stub_installer(export_mod, monkeypatch, tmp_path)
-    _fake_run(export_mod, monkeypatch)
     out = tmp_path / "out"
     out.mkdir()
-    for stale in ("chat_template.jinja", "config.json", "tokenizer_config.json"):
+    for stale in ("chat_template.jinja", "config.json", "model.q4nx", "notes.txt"):
         (out / stale).write_text("previous model")
 
-    export_mod.q4nx.convert_gguf_to_q4nx("/x/M.Q4_1.gguf", out)
+    with export_mod.q4nx.staged_output(out) as staging:
+        (staging / "model.q4nx").write_bytes(b"new")
 
-    assert sorted(p.name for p in out.iterdir()) == ["model.q4nx"]
+    assert sorted(p.name for p in out.iterdir()) == ["model.q4nx", "notes.txt"]
+    assert (out / "model.q4nx").read_bytes() == b"new"
+    assert [p.name for p in tmp_path.iterdir() if p.name.startswith(".out-")] == []
+
+
+def test_a_failed_reconversion_keeps_the_previous_export(monkeypatch, tmp_path):
+    export_mod, _b, _s, _c = _backend(monkeypatch, tmp_path, object())
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "model.q4nx").write_bytes(b"previous")
+    (out / "tokenizer_config.json").write_text("previous")
+
+    with pytest.raises(RuntimeError, match = "converter died"):
+        with export_mod.q4nx.staged_output(out) as staging:
+            (staging / "model.q4nx").write_bytes(b"partial")
+            raise RuntimeError("converter died")
+
+    assert (out / "model.q4nx").read_bytes() == b"previous"
+    assert (out / "tokenizer_config.json").read_text() == "previous"
+    assert [p.name for p in tmp_path.iterdir() if p.name.startswith(".out-")] == []
 
 
 def test_converter_failure_names_its_last_stderr_line(monkeypatch, tmp_path):
