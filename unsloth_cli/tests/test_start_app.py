@@ -539,3 +539,38 @@ def test_app_revokes_the_key_it_minted_when_saving_fails(studio, monkeypatch):
 
     assert result.exit_code == 1
     assert ("DELETE", f"{BASE}/api/auth/api-keys/7", None) in studio["calls"]
+
+
+def test_codex_app_switches_back_a_config_rewritten_with_crlf(studio):
+    config = _codex_config(studio)
+    studio["while_running"] = lambda: config.write_bytes(
+        config.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+    )
+
+    assert CliRunner().invoke(start.start_app, ["codex", "--app"]).exit_code == 0
+
+    parsed = _parse_toml(config.read_text())
+    assert "model_providers" not in parsed
+    assert parsed["model"] == "gpt-5.5"
+
+
+@pytest.mark.parametrize(
+    "agent, flags",
+    [("openclaw", ["--temperature", "0.3"]), ("codex", ["--reasoning-effort", "high"])],
+)
+def test_app_leaves_request_flags_to_the_server(studio, monkeypatch, agent, flags):
+    # The app never sees these flags, so they must stay on the server rather than be dropped.
+    seen = {}
+    real_connect = start._connect
+
+    def connect(*args, **kwargs):
+        seen["options"] = kwargs["server_options"]
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(start, "_connect", connect)
+    monkeypatch.setattr(start, "_agent_version_at_least", lambda *args: True)
+
+    result = CliRunner().invoke(start.start_app, [agent, "--app", *flags])
+
+    assert result.exit_code == 0, result.output
+    assert seen["options"].sent_by_agent() == frozenset()

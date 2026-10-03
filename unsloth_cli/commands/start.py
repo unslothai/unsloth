@@ -5725,9 +5725,14 @@ def _codex_app_restore(text: str, state: dict) -> tuple:
     skipped = []
     chunks = re.split(r"(?m)^(?=\[)", text)
     ours = _codex_provider_table(state["base"], state["key"]).strip()
-    if any(chunk.strip() == ours for chunk in chunks):
+
+    def is_ours(chunk: str) -> bool:
+        # An editor on Windows may have rewritten the file with CRLF line endings.
+        return chunk.replace("\r\n", "\n").strip() == ours
+
+    if any(is_ours(chunk) for chunk in chunks):
         table = state["previous"].get("table") or ""
-        text = "".join(table if chunk.strip() == ours else chunk for chunk in chunks)
+        text = "".join(table if is_ours(chunk) else chunk for chunk in chunks)
     else:
         skipped.append(_PROVIDER_HEADER)
     for name, line in _codex_app_lines(state["model"]).items():
@@ -6178,7 +6183,8 @@ def codex(
         min_p = min_p,
         repetition_penalty = repetition_penalty,
         presence_penalty = presence_penalty,
-        carried = _REASONING_FIELDS if codex_effort else frozenset(),
+        # The app reads no per-launch flags, so the server applies them.
+        carried = _REASONING_FIELDS if codex_effort and not app else frozenset(),
     )
     base, key, entry = _connect(
         api_key,
@@ -6303,7 +6309,7 @@ def openclaw(
         min_p = min_p,
         repetition_penalty = repetition_penalty,
         presence_penalty = presence_penalty,
-        carried = _ALL_REQUEST_FIELDS,
+        carried = frozenset() if app else _ALL_REQUEST_FIELDS,
     )
     base, key, entry = _connect(
         api_key,
