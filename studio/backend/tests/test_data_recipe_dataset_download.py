@@ -621,6 +621,57 @@ def test_to_jsonable_maps_pandas_missing_sentinels_to_none():
         assert to_preview_jsonable(sentinel) is None
 
 
+def test_to_jsonable_maps_non_finite_numbers_to_none():
+    np = pytest.importorskip("numpy")
+    from core.data_recipe.jsonable import to_jsonable, to_preview_jsonable
+
+    for value in (float("nan"), float("inf"), -math.inf, np.float64("nan"), np.float32("nan")):
+        assert to_jsonable(value) is None
+        assert to_preview_jsonable(value) is None
+    assert to_jsonable(np.float32(0.5)) == 0.5
+    assert to_jsonable(1.5) == 1.5
+
+
+def test_job_dataset_route_returns_a_missing_number_as_null(monkeypatch):
+    """A seed row without a numeric column comes out of pandas as NaN. Starlette will not encode
+    NaN, so the page 500'd and the preview table showed nothing."""
+    pd = pytest.importorskip("pandas")
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from core.data_recipe.jsonable import to_preview_jsonable_row
+
+    jobs_route = pytest.importorskip(
+        "routes.data_recipe.jobs",
+        reason = "studio backend routes unavailable",
+    )
+
+    frame = pd.DataFrame({"question": ["Q1", "Q2"], "score": [1.0, None]})
+    rows = to_preview_jsonable_row(frame.to_dict(orient = "records"))
+
+    class _FakeManager:
+        def get_dataset(
+            self,
+            job_id: str,
+            *,
+            limit: int,
+            offset: int = 0,
+        ):
+            return {"dataset": rows[offset : offset + limit], "total": len(rows)}
+
+    monkeypatch.setattr(jobs_route, "get_job_manager", lambda: _FakeManager())
+    app = FastAPI()
+    app.include_router(jobs_route.router)
+
+    response = TestClient(app, raise_server_exceptions = False).get("/jobs/job-1/dataset")
+
+    assert response.status_code == 200
+    assert response.json()["dataset"] == [
+        {"question": "Q1", "score": 1.0},
+        {"question": "Q2", "score": None},
+    ]
+
+
 def test_build_dataset_download_writes_a_missing_timestamp_as_null(tmp_path: Path, monkeypatch):
     pytest.importorskip("pyarrow")
     pd = pytest.importorskip("pandas")
