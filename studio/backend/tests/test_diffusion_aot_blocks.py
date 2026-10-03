@@ -107,6 +107,7 @@ _SCRIPT = textwrap.dedent(
     pipe = types.SimpleNamespace(transformer = model)
     aot.bind(pipe, types.SimpleNamespace(dir = os.environ["KEYDIR"]))
     with torch.inference_mode():
+        x, t = x.clone(), t.clone()  # a pipeline's latents are inference tensors, like every block output
         out = model(x, t)
         saved = [reg.save_one(k) for k in reg.pending()]
     torch.save(out.cpu(), os.environ["OUT"])
@@ -139,8 +140,10 @@ def test_restart_serves_blocks_from_the_artifact_without_tracing_and_bit_identic
     if not aot.supported():
         pytest.skip("this torch has no aot_compile")
     first = _run(tmp_path, "first")
-    assert first["saved"] == [True], first
-    assert first["stats"]["misses"] == 3 and first["frames"] >= 1
+    # The first block compiles through aot_compile and is persisted at once; the other two reuse its graph.
+    assert first["stats"]["compiled"] == 1 and first["stats"]["saved"] == 1, first
+    assert first["stats"]["hits"] == 2 and first["stats"]["misses"] == 0, first
+    assert first["saved"] == [], first
     man = json.loads(next((tmp_path / "key").rglob("manifest.json")).read_text())
     assert len(man["entries"]) == 1 and man["entries"][0]["cls"] == "Block"
     restart = _run(tmp_path, "restart")
@@ -152,7 +155,7 @@ def test_restart_serves_blocks_from_the_artifact_without_tracing_and_bit_identic
     hooked = _run(tmp_path, "hooked", {"HOOK": "1"})
     assert hooked["stats"]["hits"] == 2 and hooked["stats"]["misses"] == 1, hooked
     assert not torch.equal(torch.load(tmp_path / "first.pt"), torch.load(tmp_path / "hooked.pt"))
-    # Kill switch: the same restart traces again, same bits.
+    # Kill switch: the normal torch.compile path, same bits as the aot_compile path.
     off = _run(tmp_path, "off", {"UNSLOTH_DIFFUSION_AOT_BLOCKS": "0"})
     assert off["frames"] >= 1
     assert torch.equal(torch.load(tmp_path / "first.pt"), torch.load(tmp_path / "off.pt"))
@@ -170,10 +173,11 @@ def test_a_graph_the_normal_path_did_not_compile_is_not_persisted(tmp_path, monk
     # The registry believes the blocks compiled dynamic=True: its re-trace lowers a graph nobody ran.
     reg = aot.install(model, {"fullgraph": True, "dynamic": True})
     aot.bind(_fake_pipe(model), types.SimpleNamespace(dir = str(tmp_path / "key")))
+    reg.compiled_classes.add("Block")  # a later signature: the normal path compiles it and the idle save re-traces
     x = torch.randn(1, 128, 64, device = "cuda", dtype = torch.bfloat16)
     t = torch.randn(1, 64, device = "cuda", dtype = torch.bfloat16)
     with torch.inference_mode():
-        model(x, t)
+        model(x.clone(), t.clone())
         assert [reg.save_one(k) for k in reg.pending()] == [False]
     assert not list((tmp_path / "key").rglob("*.aot"))
     torch._dynamo.reset()

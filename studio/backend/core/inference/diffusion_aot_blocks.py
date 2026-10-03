@@ -12,15 +12,15 @@ compiled inductor graph; ``load_compiled_function`` brings it back without traci
 Lifecycle, all on the render thread (the one thread every regional compile already runs on, so nothing here compiles
 on a second thread):
 - ``install`` puts a dispatcher in front of every compiled repeated block, inert until ``bind`` gives it the load's
-  compile-bundle dir. It serves a call from a loaded artifact whose guards pass, else from the normal
-  ``torch.compile`` path, unchanged. Artifacts load lazily on the first block call, or earlier from ``preload`` (a
-  job queued on the render thread while the load is still running).
-- The first call of a (block class, input signature) the artifacts do not cover is RECORDED (detached clones).
-  ``schedule_save`` queues one render-thread job per recording after the render; each job yields to a queued render,
-  so a render never waits behind more than one of them.
-- A save ``aot_compile``s the block from the recorded inputs and keeps the artifact ONLY when inductor answered every
-  graph it compiled from the FX graph cache with zero misses: the proof that the artifact runs exactly the kernels
-  the normal path just ran. Anything else is dropped and that signature keeps the normal path.
+  compile-bundle dir. It serves a call from a loaded artifact whose guards pass. Artifacts load lazily on the first
+  block call, or earlier from ``preload`` (a job queued on the render thread while the load is still running).
+- The FIRST graph of each block class (every graph, for a static compile) is compiled through ``aot_compile`` of the
+  class's ``forward`` instead of the module's ``torch.compile`` wrapper: the same code, inputs and settings, so the
+  same graph and the same dynamo bookkeeping, and the result is persisted right away (no idle time needed).
+- A later new signature under automatic dynamic takes the normal ``torch.compile`` path (so dynamo generalises it as
+  before) and is RECORDED; ``schedule_save`` persists it from a render-thread job that yields to a queued render,
+  and keeps it ONLY when inductor served every graph of that re-trace from the FX graph cache with zero misses: the
+  proof that the artifact runs exactly the kernels the normal path just ran.
 
 Artifacts live under the compile bundle's key dir (its LRU eviction removes them), in a sub-dir keyed on the Studio
 diffusion sources, the env knobs and the compile kwargs: ``aot_compile`` drops guards on globals, so a patch that
@@ -193,6 +193,12 @@ def _hook_free(module: Any) -> bool:
     return True
 
 
+def _capturing() -> bool:
+    import torch
+
+    return bool(torch.cuda.is_available() and torch.cuda.is_current_stream_capturing())
+
+
 def _digest(sig: Any) -> str:
     return hashlib.sha256(repr(sig).encode()).hexdigest()[:32]
 
@@ -226,7 +232,7 @@ class _Sample:
         cfg = getattr(getattr(torch, "compiler", None), "config", None)
         self.dynamic_sources = getattr(cfg, "dynamic_sources", None)
         self.unbacked_sources = getattr(cfg, "unbacked_sources", None)
-        self.device = torch.cuda.current_device()
+        self.device = torch.cuda.current_device() if torch.cuda.is_available() else None
         self.global_state = _global_state()
 
 
@@ -245,6 +251,8 @@ class Registry:
         self.known: set = set()
         self.recorded: dict[str, _Sample] = {}
         self.queued: set = set()
+        # Block classes whose first graph went through _compile_now (or was refused by it).
+        self.compiled_classes: set = set()
         self.stats: dict[str, Any] = {"hits": 0, "misses": 0, "loaded": 0, "load_s": 0.0, "saved": 0, "rejected": 0}
 
     # ---- loading -----------------------------------------------------------------------------------------------
@@ -271,6 +279,7 @@ class Registry:
                           type(exc).__name__, str(exc)[:200])
                 continue
             self.entries.setdefault(str(ent.get("cls")), []).append((ent.get("global"), fn))
+            self.compiled_classes.add(str(ent.get("cls")))
             self.known.add(str(ent.get("sig")))
             n += 1
         self.stats["loaded"] = n
@@ -286,7 +295,8 @@ class Registry:
         if not self.loaded:
             self.load()
         fns = self.entries.get(type(module).__name__)
-        if fns and _hook_free(module):
+        # Artifacts trace the class's forward with no hooks: an instance forward or a hook means the normal path.
+        if fns and "forward" not in vars(module) and _hook_free(module):
             state = _global_state()
             try:
                 for want, fn in fns:
@@ -302,20 +312,76 @@ class Registry:
                 self.failed = f"{type(exc).__name__}: {str(exc)[:200]}"
                 self._log("warning", "diffusion.aot_blocks: disabled for this load (%s)", self.failed)
                 exc.__traceback__ = None
+        if self._compile_first_allowed(module):
+            done, out = self._compile_now(module, args, kwargs)
+            if done:
+                return out
         self.stats["misses"] += 1
         out = inner(*args, **kwargs)
         self._maybe_record(module, args, kwargs)
         return out
 
+    def _compile_first_allowed(self, module: Any) -> bool:
+        """The first graph of a block class (or any graph of a static compile) is compiled through ``aot_compile``.
+
+        That IS the compile the normal path would run (same forward code, same inputs, so the same automatic-dynamic
+        bookkeeping), and it leaves a serialisable result. A later new signature of a class under automatic dynamic
+        takes the normal path, so dynamo generalises it exactly as before; that one is persisted by an idle save."""
+        if self.failed is not None or self.dir is None or "forward" in vars(module):
+            return False
+        return self.compile_kwargs.get("dynamic") is False or type(module).__name__ not in self.compiled_classes
+
+    def _compile_now(self, module: Any, args: tuple, kwargs: dict) -> tuple[bool, Any]:
+        import torch
+
+        try:
+            if _capturing() or not _recordable((args, kwargs)) or not _hook_free(module):
+                return False, None
+            key = _digest((type(module).__name__, _signature(args), _signature(kwargs)))
+            state = _global_state()
+            t0 = time.perf_counter()
+            saved_aot = torch._dynamo.config.enable_aot_compile
+            torch._dynamo.config.enable_aot_compile = True
+            try:
+                fn = _compiler(type(module).forward, self.compile_kwargs).aot_compile(((module,) + tuple(args), kwargs))
+            finally:
+                torch._dynamo.config.enable_aot_compile = saved_aot
+            if not fn.guard_check(module, *args, **kwargs):
+                return False, None
+            fn.disable_guard_check()
+        except Exception as exc:  # noqa: BLE001 - the normal path compiles this one (and its guard falls back to eager)
+            from .diffusion_batched import is_oom_error
+
+            if is_oom_error(exc):
+                raise
+            self._log("info", "diffusion.aot_blocks: %s compiles on the normal path (%s: %s)", type(module).__name__,
+                      type(exc).__name__, str(exc).splitlines()[0][:200] if str(exc) else "")
+            self.compiled_classes.add(type(module).__name__)
+            exc.__traceback__ = None
+            return False, None
+        cls = type(module).__name__
+        self.compiled_classes.add(cls)
+        self.entries.setdefault(cls, []).append((state, fn))
+        self.known.add(key)
+        self.stats["compiled"] = self.stats.get("compiled", 0) + 1
+        self._log("info", "diffusion.aot_blocks: compiled a %s graph in %.1f s", cls, time.perf_counter() - t0)
+        try:
+            res = type(fn).serialize(fn)
+            self._persist(key, cls, getattr(res, "serialized_data", res), state)
+        except Exception as exc:  # noqa: BLE001 - this process still uses it; only the next start pays the trace
+            self._log("warning", "diffusion.aot_blocks: could not serialise a %s graph (%s: %s)", cls,
+                      type(exc).__name__, str(exc)[:200])
+        return True, fn(module, *args, **kwargs)
+
     def _maybe_record(self, module: Any, args: tuple, kwargs: dict) -> None:
         try:
             import torch
 
-            if torch.cuda.is_current_stream_capturing():
+            if _capturing():
                 return
             if len(self.recorded) >= _MAX_RECORDED or not _recordable((args, kwargs)):
                 return
-            if not _hook_free(module):
+            if not _hook_free(module) or "forward" in vars(module):
                 return
             key = _digest((type(module).__name__, _signature(args), _signature(kwargs)))
             if key in self.known or key in self.recorded:
@@ -344,6 +410,9 @@ class Registry:
             self.stats["rejected"] += 1
             self._log("info", "diffusion.aot_blocks: not persisting a %s graph (%s)", sample.cls, why)
             return False
+        return self._persist(key, sample.cls, data, sample.global_state)
+
+    def _persist(self, key: str, cls: str, data: bytes, global_state: list) -> bool:
         try:
             self.dir.mkdir(parents = True, exist_ok = True)
             fname = f"b-{key[:16]}.aot"
@@ -354,11 +423,11 @@ class Registry:
                     man = {"format": _FORMAT, "entries": []}
                 man["entries"] = [e for e in man.get("entries", []) if e.get("sig") != key]
                 man["entries"].append(
-                    {"cls": sample.cls, "sig": key, "file": fname, "bytes": len(data), "global": sample.global_state}
+                    {"cls": cls, "sig": key, "file": fname, "bytes": len(data), "global": global_state}
                 )
                 _atomic_write(self.dir / _MANIFEST, json.dumps(man, indent = 1).encode())
             self.stats["saved"] += 1
-            self._log("info", "diffusion.aot_blocks: persisted a %s graph (%d KB)", sample.cls, len(data) // 1024)
+            self._log("info", "diffusion.aot_blocks: persisted a %s graph (%d KB)", cls, len(data) // 1024)
             return True
         except Exception as exc:  # noqa: BLE001 - persistence is best-effort
             self._log("warning", "diffusion.aot_blocks: save failed (%s: %s)", type(exc).__name__, exc)
@@ -402,19 +471,29 @@ def _pristine_dynamo_state(sample: _Sample):
         torch._dynamo.config.enable_aot_compile = saved_aot
 
 
-def _aot_compile_sample(sample: _Sample, compile_kwargs: dict[str, Any]) -> tuple[bool, Optional[bytes], str]:
+def _compiler(fn: Callable, compile_kwargs: dict[str, Any]) -> Any:
+    """``torch.compile`` with the regional compile's settings, around the block class's ``forward``: the code object
+    the normal path traces, so dynamo's per-code bookkeeping lands where it would have."""
     import torch
-    from torch._dynamo.utils import counters
 
     kwargs: dict[str, Any] = {"fullgraph": True, "dynamic": compile_kwargs.get("dynamic")}
     if compile_kwargs.get("mode"):
         kwargs["mode"] = compile_kwargs["mode"]
-    cf = torch.compile(torch.nn.Module._call_impl, **kwargs)
+    return torch.compile(fn, **kwargs)
+
+
+def _aot_compile_sample(sample: _Sample, compile_kwargs: dict[str, Any]) -> tuple[bool, Optional[bytes], str]:
+    import torch
+    from torch._dynamo.utils import counters
+
     before = {k: counters["inductor"].get(k, 0) for k in ("fxgraph_cache_hit", "fxgraph_cache_miss",
                                                            "fxgraph_cache_bypass")}
     mode = torch.inference_mode() if sample.inference else torch.no_grad()
-    torch.cuda.set_device(sample.device)
+    if sample.device is not None:
+        torch.cuda.set_device(sample.device)
     with _pristine_dynamo_state(sample), mode:
+        # Built inside: torch.compile only attaches .aot_compile while enable_aot_compile is on.
+        cf = _compiler(type(sample.module).forward, compile_kwargs)
         fn = cf.aot_compile(((sample.module,) + tuple(sample.args), sample.kwargs))
         guard_ok = bool(fn.guard_check(sample.module, *sample.args, **sample.kwargs))
     delta = {k: counters["inductor"].get(k, 0) - v for k, v in before.items()}
