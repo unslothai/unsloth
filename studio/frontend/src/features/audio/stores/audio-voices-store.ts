@@ -11,8 +11,6 @@ import {
 } from "../api";
 import type { AudioVoiceCreateRequest } from "../audio-run-request";
 
-/** The account's saved voices, shared by Clone, Speak and every voice picker. Not persisted: the
- *  server is the record, so a reload simply lists them again. */
 interface AudioVoicesState {
   voices: AudioVoice[];
   loaded: boolean;
@@ -22,11 +20,7 @@ interface AudioVoicesState {
   save: (request: AudioVoiceCreateRequest) => Promise<AudioVoice>;
   rename: (
     id: string,
-    patch: {
-      name?: string;
-      transcript?: string | null;
-      language?: string | null;
-    },
+    patch: Pick<AudioVoice, "name" | "transcript" | "language">,
   ) => Promise<void>;
   remove: (id: string) => Promise<void>;
 }
@@ -62,21 +56,9 @@ export const useAudioVoicesStore = create<AudioVoicesState>()((set, get) => ({
   },
   rename: async (id, patch) => {
     const before = get().voices;
-    // Shown at once; put back if the server refuses.
     set({
       voices: before.map((voice) =>
-        voice.id === id
-          ? {
-              ...voice,
-              ...(patch.name !== undefined ? { name: patch.name } : {}),
-              ...(patch.transcript !== undefined
-                ? { transcript: patch.transcript }
-                : {}),
-              ...(patch.language !== undefined
-                ? { language: patch.language }
-                : {}),
-            }
-          : voice,
+        voice.id === id ? { ...voice, ...patch } : voice,
       ),
     });
     try {

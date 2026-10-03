@@ -67,7 +67,6 @@ test("a clip without a workflow falls back to its audio type", () => {
   assert.equal(clipWorkflow({ workflow: "music", audio_type: "snac" }), "music");
   assert.equal(clipWorkflow({ workflow: "clone", audio_type: "audiocpp_tts" }), "clone");
   assert.equal(clipWorkflow({ workflow: "edit", audio_type: "audiocpp_tts" }), "edit");
-  // An unknown stored value is not trusted over the audio type.
   assert.equal(clipWorkflow({ workflow: "separate", audio_type: "audiocpp_music" }), "music");
   assert.equal(audioWorkflowForAudioType(null), "speak");
 });
@@ -85,22 +84,18 @@ test("the music audio types match the backend's list", () => {
 });
 
 test("a loaded model keeps the open page when it can run it, else opens its own", () => {
-  // VoxCPM2 speaks and clones: loading it on Clone stays on Clone.
   assert.equal(
     workflowForLoadedModel({ current: "clone", audioWorkflows: ["speak", "clone"], music: false }),
     "clone",
   );
-  // A clone-only model loaded from Speak opens Clone.
   assert.equal(
     workflowForLoadedModel({ current: "speak", audioWorkflows: ["clone"], music: false }),
     "clone",
   );
-  // The sidecar's page is never a main-slot answer.
   assert.equal(
     workflowForLoadedModel({ current: "speak", audioWorkflows: ["transcribe"], music: true }),
     "music",
   );
-  // An older backend sends no list: the audio type decides.
   assert.equal(workflowForLoadedModel({ current: "clone", audioWorkflows: null, music: false }), "speak");
   assert.equal(workflowForLoadedModel({ current: "speak", audioWorkflows: [], music: true }), "music");
 });

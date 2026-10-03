@@ -339,7 +339,7 @@ def test_status_fields_carry_the_edit_rules(family, workflows, rules):
     fields = acb.model_info_fields(_model(family))
     if workflows:
         assert fields["audio_workflows"] == workflows
-    expected = rules and dict(zip(("style", "delivery", "max_changes"), rules), input_rate = 24000)
+    expected = rules and dict(zip(("style", "delivery", "max_changes"), rules))
     assert fields["audio_edit"] == expected
 
 

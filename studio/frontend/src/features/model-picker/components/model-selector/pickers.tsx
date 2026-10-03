@@ -2898,7 +2898,6 @@ function localModelMatchesFormat(
   );
 }
 
-/** A downloaded row as a task page's `rowFilter` sees it. */
 export type ModelPickerRowFilter = (row: {
   id: string;
   task?: string | null;
@@ -2964,8 +2963,6 @@ export function HubModelPicker({
   communityModelPolicy?: CommunityModelPolicy;
   opaqueKind?: "diffusers_pipeline" | "diffusers_modular_pipeline";
   npu?: NpuPickerSource;
-  /** Narrows the downloaded Hub rows (cached GGUF and cached repos) further than `task` can, as
-   *  the Audio pages do to split speech from music. Undefined keeps every row. */
   rowFilter?: ModelPickerRowFilter;
 }) {
   const gpu = useGpuInfo();
@@ -4490,7 +4487,6 @@ export function HubModelPicker({
                     task: pickedTask ?? undefined,
                     audioType: meta.audioType ?? undefined,
                     loadId: meta.loadId ?? undefined,
-                    // The page opens on this workflow; a music model tagged text-to-speech lands on Music.
                     workflow:
                       audioWorkflowForPick({
                         id,

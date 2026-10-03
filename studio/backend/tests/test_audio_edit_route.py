@@ -59,7 +59,6 @@ def _edit_info(
             "style": style,
             "delivery": delivery,
             "max_changes": max_changes,
-            "input_rate": 24000,
         },
     }
 
@@ -149,22 +148,13 @@ def test_an_edit_needs_a_recording_and_not_a_saved_voice(stub):
     assert stub["backend"].calls == []
 
 
-def test_a_recording_over_30_seconds_is_refused_unless_trimmed(stub):
+def test_a_recording_over_30_seconds_is_refused(stub):
     _dots(stub)
     input_id = _input(ALICE, 31.0)
     with _client(ALICE) as client:
         long = _edit(client, {"input_id": input_id})
-        assert (
-            _detail(long) == "Edit works on recordings up to 30 s. Record or upload a shorter take."
-        )
-        assert stub["backend"].calls == []
-        trimmed = _edit(client, {"input_id": input_id, "trim": {"start_s": 2.0, "end_s": 12.0}})
-    assert trimmed.status_code == 200, trimmed.text
-    (call,) = stub["backend"].calls
-    from core.inference import audio_inputs
-
-    info = audio_inputs.wav_info(Path(call["audio_inputs"]["source"]))
-    assert 9.9 <= info["duration_s"] <= 10.1
+    assert _detail(long) == "Edit works on recordings up to 30 s. Record or upload a shorter take."
+    assert stub["backend"].calls == []
 
 
 def test_a_model_that_cannot_edit_is_a_400(stub, monkeypatch):
@@ -260,14 +250,14 @@ def test_an_edit_run_hands_the_worker_paths_and_keeps_the_source(stub, tmp_path)
         {"mode": "words", "markup": MARKUP},
     )
     assert call["text"] == EDITED and "speed" not in call
-    assert body["text"] is None and body["audio"] is None
+    assert body["audio"] is None
     output, original = body["clips"]
     assert (output["role"], output["workflow"]) == ("output", "edit")
     assert (original["role"], original["workflow"]) == ("source", "edit")
     assert files == [200, 200]
     out_meta = json.loads(_sidecar(tmp_path, output["id"]))
     src_meta = json.loads(_sidecar(tmp_path, original["id"]))
-    assert out_meta["group_id"] == src_meta["group_id"] == body["group_id"]
+    assert src_meta["role"] == "source"
     assert out_meta["source_clip_id"] == original["id"]
     assert out_meta["prompt"] == EDITED and out_meta["reference_name"] == "me.webm"
     assert out_meta["settings"] == {
@@ -293,12 +283,10 @@ def test_the_same_upload_reuses_its_source_clip(stub):
     with _client(ALICE) as client:
         first = _edit(client, {"input_id": input_id}).json()
         second = _edit(client, {"input_id": input_id}).json()
-        trimmed = _edit(client, {"input_id": input_id, "trim": {"start_s": 0.1}}).json()
     assert first["clips"][1]["id"] == second["clips"][1]["id"]
-    assert first["group_id"] != second["group_id"]
-    assert trimmed["clips"][1]["id"] != first["clips"][1]["id"]
+    assert first["clips"][0]["id"] != second["clips"][0]["id"]
     clips = run_as(ALICE, audio_gallery.list_audio)
-    assert sum(c.get("role") == "source" for c in clips) == 2
+    assert sum(c.get("role") == "source" for c in clips) == 1
 
 
 def test_a_history_clip_source_makes_no_copy(stub, tmp_path):

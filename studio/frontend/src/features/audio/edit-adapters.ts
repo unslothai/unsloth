@@ -8,7 +8,6 @@ import type {
   AudioRunEditPart,
   AudioRunRequest,
   AudioSourceRef,
-  AudioTrim,
 } from "./audio-run-request";
 import {
   EDIT_DIFF_MAX_WORDS,
@@ -42,7 +41,7 @@ export interface EditDelivery {
 }
 
 export interface EditRunInput {
-  source?: (AudioSourceRef & { trim?: AudioTrim }) | null;
+  source?: AudioSourceRef | null;
   transcript: string;
   edited: string;
   mode: EditMode;

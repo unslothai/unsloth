@@ -229,16 +229,20 @@ def _audio_cpp_workflows(
 def _gguf_path_audio_workflows(
     path: str | Path, id_hints: tuple[Optional[str], ...] = ()
 ) -> Optional[list[str]]:
-    """``_audio_cpp_workflows`` of the first audio.cpp GGUF at ``path`` (a file or a folder)."""
+    """The union of ``_audio_cpp_workflows`` over the audio.cpp GGUFs at ``path`` (a file or a
+    folder): the umbrella repo is one row holding every downloaded family."""
+    from core.inference.audio_workflows import AUDIO_WORKFLOW_IDS
+
     model_path = Path(path)
+    found: set[str] = set()
     try:
         paths = [model_path] if model_path.is_file() else _iter_gguf_paths(model_path)
         for gguf_path in paths:
             if is_audio_cpp_gguf_architecture(_gguf_architecture(str(gguf_path))):
-                return _audio_cpp_workflows(gguf_path, id_hints + (gguf_path.name,))
+                found.update(_audio_cpp_workflows(gguf_path, id_hints + (gguf_path.name,)) or ())
     except Exception:
         return None
-    return None
+    return [w for w in AUDIO_WORKFLOW_IDS if w in found] or None
 
 
 def _gguf_file_task(path: str | Path, name_hints: tuple[Optional[str], ...]) -> Optional[str]:

@@ -30,7 +30,6 @@ test("a picked file uploads with progress, draws at once, then is ready", () => 
     name: "voice.wav",
     progress: 0,
   });
-  // Drawn from the local decode before the upload finishes.
   state = audioSourceReducer(state, {
     type: "preview",
     key: "local",
@@ -50,7 +49,6 @@ test("a picked file uploads with progress, draws at once, then is ready", () => 
   assert.equal(state.status.phase === "uploading" && state.status.progress, 1);
   state = audioSourceReducer(state, { type: "upload-done", key: "input:abc" });
   assert.equal(state.status.phase, "ready");
-  // The drawing carries over to the uploaded id, so it is not fetched again.
   assert.equal(state.preview.key, "input:abc");
   assert.deepEqual(state.preview.peaks, [0.2, 1]);
 });
@@ -60,7 +58,6 @@ test("a local decode that finishes after a fast upload still draws the card", ()
     type: "upload-start",
     name: "voice.wav",
   });
-  // The upload wins the race against the browser's decode.
   state = audioSourceReducer(state, { type: "upload-done", key: "input:abc" });
   state = audioSourceReducer(state, {
     type: "preview",
@@ -72,7 +69,6 @@ test("a local decode that finishes after a fast upload still draws the card", ()
   assert.equal(state.preview.key, "input:abc");
   assert.deepEqual(state.preview.peaks, [0.5, 1]);
   assert.equal(state.preview.durationS, 4.7);
-  // A later pick moves on, and an old local decode no longer draws over it.
   state = audioSourceReducer(state, { type: "load-start", key: "voice:v1" });
   state = audioSourceReducer(state, {
     type: "preview",
@@ -161,7 +157,6 @@ test("a too-large or empty file is refused before any upload, at the server's 20
     audioFileProblem({ size: 10, type: "", name: "take.m4a" }),
     null,
   );
-  // The hook checks before uploading.
   assert.ok(
     hook.indexOf("audioFileProblem(") < hook.indexOf("uploadAudioInput(file"),
   );
@@ -201,13 +196,11 @@ test("the whole card is the drop target, with every way in", () => {
   for (const tab of ["Upload", "Record", "From history", "Saved voice"]) {
     assert.ok(card.includes(`label: "${tab}"`), tab);
   }
-  // The shared card: squircle, 4xl radius, a one-pixel ring and no shadow.
   assert.match(
     card,
     /corner-squircle grid gap-3 rounded-4xl bg-card p-4 ring-1/,
   );
   assert.doesNotMatch(card, /shadow-/);
-  // Duration and waveform come from a local decode, started before the upload.
   assert.ok(
     hook.indexOf('void drawBlob("local", file)') <
       hook.indexOf("await uploadAudioInput("),

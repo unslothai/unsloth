@@ -78,7 +78,6 @@ import {
   useImageWorkflowStore,
 } from "@/features/images/stores/image-workflow-store";
 import { WORKFLOW_TABS, type WorkflowId } from "@/features/images/workflows";
-// Same reason: the Audio index re-exports AudioPage.
 import { useAudioWorkspaceStore } from "@/features/audio/stores/audio-workspace-store";
 import {
   AUDIO_WORKFLOWS,
@@ -705,7 +704,6 @@ const INVENTORY_SENSITIVE_REASONS = new Set([
   "detection_failed",
 ]);
 
-/** One workflow in the list under the Images or Audio row. */
 function WorkflowChoice({
   tab,
   active,
@@ -748,7 +746,6 @@ const IMAGES_DISCLOSURE_REVEAL =
 const AUDIO_DISCLOSURE_REVEAL =
   "group-hover/audio-item:opacity-100 group-hover/audio-item:pointer-events-auto";
 
-/** Expands a media row's workflow list on rows that do not list it outright, i.e. off that page. */
 function MediaNavDisclosure({
   expanded,
   setExpanded,
@@ -756,7 +753,6 @@ function MediaNavDisclosure({
 }: {
   expanded: boolean;
   setExpanded: (expanded: boolean) => void;
-  /** The row-hover classes that show the chevron. */
   revealClassName: string;
 }) {
   return (
@@ -788,7 +784,6 @@ function MediaNavDisclosure({
   );
 }
 
-/** A media page's workflows as rows under its nav row. `listed` is null when the list is hidden. */
 function MediaWorkflowList<Id extends string>({
   tabs,
   current,
@@ -874,10 +869,6 @@ function AudioNavDisclosure() {
 
 const audioWorkflowAlwaysEnabled = () => true;
 
-/**
- * The Audio workflows under their nav row, listed on the Audio page and folded elsewhere like
- * Images. Every row stays enabled: each workflow picks its own model on arrival.
- */
 function AudioWorkflowList({
   active,
   collapsed,
@@ -890,7 +881,6 @@ function AudioWorkflowList({
   const workflow = useAudioWorkspaceStore((s) => s.workflow);
   const requested = useAudioWorkspaceStore((s) => s.requestedWorkflow);
   const expanded = useAudioWorkspaceStore((s) => s.navExpanded);
-  // A pick the page has not taken yet shows as current, so the click answers at once.
   const current = active ? (requested ?? workflow) : null;
   return (
     <MediaWorkflowList
@@ -951,7 +941,6 @@ function MoreMenuItem({
   );
 }
 
-/** The Audio row in the "More" flyout: a MoreMenuItem that opens the workflows to its side. */
 function AudioMoreSubmenu({
   icon,
   label,
@@ -985,7 +974,6 @@ function AudioMoreSubmenu({
         title={tooltip}
         onPointerEnter={disabled ? undefined : onIntent}
         onFocus={disabled ? undefined : onIntent}
-        // The item gap, so the row lines up with its MoreMenuItem neighbours.
         className={cn("gap-2.5", active && "bg-accent/60")}
       >
         <HugeiconsIcon icon={icon} strokeWidth={1.75} />
@@ -2871,7 +2859,6 @@ export function AppSidebar() {
   const imagesWorkflowsListed =
     sidebarRowsLabelled &&
     !(navRows.images.active && imagesPageMode === "train");
-  // Audio has no Train view to hide its list behind, so labelled rows always list it on the page.
   const audioWorkflowsListed = sidebarRowsLabelled;
   // Sidebar and More-flyout picks only ask; the Audio page switches once it is free to.
   const pickAudioWorkflow = (workflowId: AudioWorkflowId) => {
@@ -5366,7 +5353,6 @@ export function AppSidebar() {
                     icon={row.icon}
                     label={row.label}
                     badge={row.badge}
-                    // While the workflows are listed, the current one carries the highlight, not the Images or Audio row.
                     active={
                       (id === "images" && imagesWorkflowsListed) ||
                       (id === "audio" && audioWorkflowsListed)
@@ -5507,7 +5493,6 @@ export function AppSidebar() {
                         const row = navRows[id];
                         // Same pending handling as the inline rows above.
                         const rowState = resolveNavRowState(row);
-                        // Audio opens its workflows to the side rather than landing on whichever was last open.
                         if (id === "audio") {
                           return (
                             <AudioMoreSubmenu

@@ -51,7 +51,6 @@ export interface GenerateAction {
 
 export interface GenerateBlocker {
   reason: string;
-  /** The fix first, then any alternative. */
   actions?: GenerateAction[];
 }
 
@@ -76,7 +75,6 @@ function GenerateActions({ actions }: { actions?: GenerateAction[] }) {
   );
 }
 
-/** Speak and Music share the main-slot rail: the text, the model's tools, the device and Advanced. */
 export function TtsRailFields({
   musicGeneration,
   prompt,
@@ -135,18 +133,14 @@ export function TtsRailFields({
 > &
   Pick<AudioHostState, "audioDevice" | "busy" | "status" | "setAdvancedOpen"> &
   Pick<AudioModelSlot, "handleEject"> & {
-    /** Music copy and controls, for the Music page. */
     musicGeneration: boolean;
     toolPanels: ReactNode;
     isRecording: boolean;
     setAudioDeviceState: (next: string) => void;
     advancedOpen: boolean;
-    /** The page's own inputs in place of the Text field (Clone's reference, transcript and text). */
     inputs?: ReactNode;
-    /** Spec options a shown tool panel renders itself, which Advanced leaves out. */
     claimedOptions?: ReadonlySet<string>;
   }) {
-  // Advanced lists only what no shown tool panel renders itself.
   const audioOptionSpecs = claimedOptions?.size
     ? allAudioOptionSpecs.filter((spec) => !claimedOptions.has(spec.name))
     : allAudioOptionSpecs;
@@ -185,13 +179,11 @@ export function TtsRailFields({
         <PillTabs
           ariaLabel="Load model into"
           value={audioDevice === "cpu" ? "cpu" : "auto"}
-          // The eject below applies the change and cannot interrupt a load.
           disabled={busy !== null || isRecording}
           onValueChange={(value) => {
             const next = value === "cpu" ? "cpu" : "auto";
             if (next === audioDevice) return;
-            // MiniMax needs CUDA, and the backend's refusal cannot save a
-            // model already ejected here.
+            // MiniMax needs CUDA; the backend refusal cannot save an already-ejected model.
             if (next === "cpu" && status?.audio_type === "minimax_music3") {
               toast.info(
                 "MiniMax Music 3 needs a GPU, so it cannot be held in CPU RAM.",
@@ -217,7 +209,6 @@ export function TtsRailFields({
             : "New loads use the GPU when there is one, and the CPU otherwise."}
         </p>
       </div>
-      {/* GGUF runtime speech keeps its own sampling and length; its options come from the model. */}
       {musicGeneration ||
       samplingControls ||
       audioOptionSpecs.length > 0 ? (
@@ -306,7 +297,6 @@ export function TtsRailFields({
   );
 }
 
-/** The rail footer: generation progress and the one primary action, Generate or Stop. */
 export function TtsFooter({
   busy,
   generationPresentation,
@@ -333,15 +323,10 @@ export function TtsFooter({
 > &
   Pick<AudioHostState, "busy" | "handleStopGeneration"> & {
     generationPresentation: ReturnType<typeof audioGenerationPresentation>;
-    /** Why Generate is off, said under it, with the fix when there is one. */
     blocker: GenerateBlocker | null;
-    /** Mod+Enter, as the platform spells it. */
     shortcutLabel: string;
-    /** The last run's failure, kept under the button until the next run. */
     error: GenerateBlocker | null;
-    /** Seconds since the run started, while it runs. */
     elapsedSeconds: number | null;
-    /** A quieter action beside Generate (Clone's Save voice…). */
     secondaryAction?: ReactNode;
   }) {
   return (
@@ -423,7 +408,8 @@ export function TtsFooter({
   );
 }
 
-function ClipBadge({ text }: { text: string }) {
+function ClipBadge({ text }: { text: string | null | undefined }) {
+  if (!text) return null;
   return (
     <span
       title={text}
@@ -434,7 +420,6 @@ function ClipBadge({ text }: { text: string }) {
   );
 }
 
-/** The Speak and Music output pane: the selected clip's player, then this page's history. */
 export function TtsOutput({
   clips,
   selectedClip,
@@ -481,20 +466,16 @@ export function TtsOutput({
   | "handleCopyPrompt"
 > &
   Pick<AudioHostState, "active"> & {
-    /** This page's clips only. */
     clips: AudioGalleryClip[];
     selectedClip: AudioGalleryClip | null;
     selectedClipSrc: string | undefined;
     handleClearGallery: () => Promise<void>;
     onUseTextAgain: (clip: AudioGalleryClip) => void;
     emptyText: string;
-    /** What to do from an empty page, under its text (Clone's recommended models). */
     emptyActions?: ReactNode;
-    /** The clip a run just made: its player takes focus once, and the change is announced. */
     freshClipId: string | null;
     onFreshClipFocused: () => void;
     announcement: string;
-    /** A short tag after a clip's text, such as the voice a clone used. */
     clipBadge?: (clip: AudioGalleryClip) => string | null;
     /** Replaces the plain player; `focusRef` goes on its first control. */
     selectedPlayer?: (
@@ -537,7 +518,6 @@ export function TtsOutput({
                 ref={selectedClip.id === freshClipId ? focusFreshClip : undefined}
                 controls={true}
                 src={selectedClipSrc}
-                // The focus ring follows the player's pill instead of boxing it.
                 className="w-full rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               />
             ) : (
@@ -552,9 +532,7 @@ export function TtsOutput({
               <span title={selectedClip.model}>{audioModelLabel(selectedClip.model)}</span>
               <span>·</span>
               <span>{formatClipDuration(selectedClip.duration_s)}</span>
-              {clipBadge?.(selectedClip) ? (
-                <ClipBadge text={clipBadge(selectedClip) ?? ""} />
-              ) : null}
+              <ClipBadge text={clipBadge?.(selectedClip)} />
               <span className="flex-1" />
               <Button
                 variant="ghost"
@@ -635,7 +613,6 @@ export function TtsOutput({
           </div>
           <div
             {...historyReorder.stripProps}
-            // py-1 keeps the first and last drop lines inside the scroller.
             className="hover-scrollbar flex max-h-40 flex-col gap-1 overflow-y-auto py-1"
             onScroll={(event) => {
               const el = event.currentTarget;
@@ -677,9 +654,7 @@ export function TtsOutput({
                     className="size-3.5 shrink-0 text-muted-foreground"
                   />
                   <span className="min-w-0 flex-1 truncate">{clip.prompt}</span>
-                  {clipBadge?.(clip) ? (
-                    <ClipBadge text={clipBadge(clip) ?? ""} />
-                  ) : null}
+                  <ClipBadge text={clipBadge?.(clip)} />
                   <span className="shrink-0 text-ui-11p5 text-muted-foreground">
                     {formatClipDuration(clip.duration_s)}
                   </span>

@@ -177,39 +177,23 @@ def request_problem(
     return "Load a model that can edit speech."
 
 
-def source_seconds(path: Path, trim: Optional[dict[str, Any]]) -> Optional[float]:
-    """Length of ``path`` after ``trim`` from the WAV header; None when unreadable."""
-    from core.inference.audio_inputs import wav_info
-
+def wav_seconds(path: Path) -> Optional[float]:
+    """Length of a WAV from its header; None when unreadable."""
+    import wave
     try:
-        duration = float(wav_info(path)["duration_s"])
+        with wave.open(str(path)) as w:
+            return w.getnframes() / w.getframerate()
     except Exception:  # noqa: BLE001 - the caller measures the prepared copy instead
         return None
-    start = float((trim or {}).get("start_s") or 0.0)
-    end = (trim or {}).get("end_s")
-    end = min(duration, float(end)) if end is not None else duration
-    return max(0.0, end - start)
-
-
-def _clean_trim(trim: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
-    if not trim:
-        return None
-    start = float(trim.get("start_s") or 0.0)
-    end = trim.get("end_s")
-    if not start and end is None:
-        return None
-    return {"start_s": start, "end_s": float(end) if end is not None else None}
 
 
 def save_source_clip(
-    source,
-    prepared_path: Path,
-    reference_text: Optional[str],
-    trim: Optional[dict[str, Any]],
-    group_id: str,
+    source, prepared_path: Path, reference_text: Optional[str]
 ) -> Optional[dict[str, Any]]:
     """Keep an uploaded recording in history beside its edit, so A/B outlives the upload. Reuses a
-    source clip of the same audio and trim; None for a history clip or an upload with no record."""
+    source clip of the same audio; None for a history clip or an upload with no record."""
+    import wave
+
     from core.inference import audio_gallery, audio_inputs
 
     if getattr(source, "kind", None) != "input":
@@ -218,7 +202,6 @@ def save_source_clip(
     sha = (sidecar or {}).get("sha256")
     if not sha:
         return None
-    clean_trim = _clean_trim(trim)
     directory = audio_gallery.gallery_dir()
     try:
         sidecars = list(directory.glob("*.json"))
@@ -231,24 +214,21 @@ def save_source_clip(
             and meta.get("role") == "source"
             and meta.get("workflow") == "edit"
             and meta.get("source_sha256") == sha
-            and meta.get("trim") == clean_trim
             and audio_gallery.owned_audio_path(path.stem) is not None
         ):
             return audio_gallery._record(path.stem, meta)
-    info = audio_inputs.wav_info(prepared_path)
+    with wave.open(str(prepared_path)) as w:
+        sample_rate, duration_s = w.getframerate(), round(w.getnframes() / w.getframerate(), 3)
     meta: dict[str, Any] = {
         "prompt": " ".join(str(reference_text or "").split()) or source.name,
         "model": "Recording",
         "audio_type": "recording",
         "workflow": "edit",
         "role": "source",
-        "group_id": group_id,
         "source_sha256": sha,
         "reference_name": source.name,
-        "sample_rate": info["sample_rate"],
-        "duration_s": info["duration_s"],
+        "sample_rate": sample_rate,
+        "duration_s": duration_s,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
-    if clean_trim is not None:
-        meta["trim"] = clean_trim
     return audio_gallery.save(Path(prepared_path).read_bytes(), meta)

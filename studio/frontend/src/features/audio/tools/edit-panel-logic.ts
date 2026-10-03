@@ -8,9 +8,9 @@ import {
   EDIT_ADAPTERS,
   type EditAdapter,
 } from "../edit-adapters";
-import type { AudioToolPanelLogic } from "./panel-logic";
+import type { AudioToolPanel } from "./types";
 
-export type EditPanelLogic = AudioToolPanelLogic<null> & {
+export type EditPanelLogic = Omit<AudioToolPanel<null>, "Component"> & {
   adapter: EditAdapter;
 };
 

@@ -25,10 +25,7 @@ test("a clone run sends ids only, with the contract's keys", () => {
     language: "English",
     instructions: "  ",
     inputs: {
-      reference: {
-        input_id: "a".repeat(32),
-        trim: { start_s: 0, end_s: 12.5 },
-      },
+      reference: { input_id: "a".repeat(32) },
       reference_text: " Okay, I'm Cemo. ",
       emotion: { clip_id: "c1" },
     },
@@ -41,10 +38,7 @@ test("a clone run sends ids only, with the contract's keys", () => {
     text: "Hello",
     language: "English",
     inputs: {
-      reference: {
-        input_id: "a".repeat(32),
-        trim: { start_s: 0, end_s: 12.5 },
-      },
+      reference: { input_id: "a".repeat(32) },
       reference_text: "Okay, I'm Cemo.",
       emotion: { clip_id: "c1" },
     },
@@ -124,7 +118,6 @@ test("api.ts sends run and voice bodies only through the builders", () => {
   assert.match(api, /body: JSON\.stringify\(buildAudioRunBody\(request\)\)/);
   assert.match(api, /body: JSON\.stringify\(buildVoiceCreateBody\(request\)\)/);
   assert.match(api, /"\/api\/inference\/audio\/run"/);
-  // Uploads are the raw bytes, never base64 in JSON.
   assert.match(api, /xhr\.send\(blob\)/);
   assert.match(api, /body: blob,/);
   assert.doesNotMatch(api, /voice_ref/);
@@ -155,7 +148,7 @@ test("an edit run sends the source by id and only the edit part's allowed keys",
     workflow: "edit",
     text: "A robot voice.",
     inputs: {
-      source: { input_id: "in_1", trim: { start_s: 0, end_s: 4 } },
+      source: { input_id: "in_1" },
       reference_text: "A human voice.",
     },
     edit: { mode: "words", markup: 'A <sub targ="robot">human</sub> voice.' },
