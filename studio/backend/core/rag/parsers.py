@@ -834,7 +834,7 @@ def _decode_text(data: bytes, *, html: bool = False) -> str:
                 and (other.chaos, other.coherence) == (match.chaos, match.coherence)
                 for other in results
             )
-            paired = len(guess) - len(guess.encode("ascii", "ignore")) < high
+            paired = len(guess) < len(data)
             single_byte = match.encoding in ("cp1252", "cp1251", "cp1253", "cp1255", "cp1256")
             if not tied and (single_byte or paired):
                 return guess
