@@ -17189,7 +17189,6 @@ async def load_model_gated(
             async with nullcontext() if new_slot else inference_lifecycle_gate():
                 _raise_if_sidecar_swap_in_progress()
                 if extra is None and request.engine != "auto" and model_slots.slots:
-                    # vLLM and SGLang size their reservation from the whole GPU.
                     await asyncio.to_thread(model_slots.unload_extra_models)
                 # The 409 gate runs inside _load_model_impl, under the lifecycle gate, atomic with teardown.
                 if new_slot:
@@ -17229,8 +17228,7 @@ async def load_model_gated(
                             if exc.capped:
                                 request = request.model_copy(update = {"force_alongside": True})
                                 continue
-                            # It fits nowhere beside the loaded models: replace the active one, as
-                            # a load without alongside always has.
+                            # Fits nowhere beside the others: replace the active model, as before.
                             await asyncio.to_thread(model_slots.drop, extra)
                             model_slots.loading, extra = None, None
                             routed_slot.set(None)
@@ -17313,7 +17311,7 @@ async def _select_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
         return slot
     from utils.multi_model_settings import get_multi_model_enabled
 
-    # Off by default in Settings: the load then replaces the loaded model, as before.
+    # Off unless turned on in Settings.
     if not await asyncio.to_thread(get_multi_model_enabled):
         return None
     orchestrator = _peek_inference_backend()

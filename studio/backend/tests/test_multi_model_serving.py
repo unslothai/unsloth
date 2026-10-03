@@ -151,7 +151,6 @@ def test_a_load_picks_its_slot(backends):
     # The NPU backend is one per process: it takes the primary's seat even alongside.
     npu = LoadRequest(model_path = "lemonade:qwen3-0.6b-FLM", alongside = True)
     assert _selected(npu) is None
-    # vLLM and SGLang reserve their GPU share up front.
     assert _selected(alongside.model_copy(update = {"engine": "vllm"})) is None
     primary.unload_model()
     assert _selected(alongside) is None

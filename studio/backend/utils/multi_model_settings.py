@@ -8,12 +8,10 @@ from __future__ import annotations
 from typing import Any
 
 MULTI_MODEL_SETTING_KEY = "keep_multiple_models_loaded"
-# Off: a load replaces the loaded model, as it always has.
 DEFAULT_MULTI_MODEL_ENABLED = False
 
 
 def get_multi_model_enabled() -> bool:
-    """Read the persisted switch, defaulting to off when it is missing or unreadable."""
     try:
         from storage.studio_db import get_app_setting
         stored = get_app_setting(MULTI_MODEL_SETTING_KEY, None)

@@ -4,7 +4,6 @@
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
-/** Whether loading a model keeps the loaded ones. Off unless turned on in Settings. */
 export async function loadMultiModelEnabled(
   fallbackMessage: string,
 ): Promise<boolean> {
