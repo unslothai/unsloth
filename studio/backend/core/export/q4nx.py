@@ -84,14 +84,20 @@ _RUN_CONVERTER = (
 def staged_output(out_dir: Path):
     """Yield a fresh folder to build into; its files replace ``out_dir``'s only on success,
     so a failed re-conversion keeps the previous export."""
+
     # Only the save directory is account-checked; a planted symlink here would redirect writes.
-    if out_dir.is_symlink():
-        raise RuntimeError(f"Refusing to write Q4NX output through the symlink {out_dir}")
+    def refuse_symlink():
+        if out_dir.is_symlink():
+            raise RuntimeError(f"Refusing to write Q4NX output through the symlink {out_dir}")
+
+    refuse_symlink()
     out_dir.parent.mkdir(parents = True, exist_ok = True)
     staging = Path(tempfile.mkdtemp(prefix = f".{out_dir.name}-", dir = out_dir.parent))
     try:
         yield staging
         out_dir.mkdir(exist_ok = True)
+        # Again at publish: the conversion is long enough for the folder to be swapped.
+        refuse_symlink()
         # The last model's companions must not survive beside the new weights.
         for name in ("model.q4nx", "config.json", *TOKENIZER_FILES):
             (out_dir / name).unlink(missing_ok = True)

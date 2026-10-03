@@ -201,6 +201,20 @@ def test_a_symlinked_output_folder_is_refused(monkeypatch, tmp_path):
     assert list(elsewhere.iterdir()) == []
 
 
+def test_a_symlink_planted_during_conversion_is_refused_at_publish(monkeypatch, tmp_path):
+    export_mod, _b, _s, _c = _backend(monkeypatch, tmp_path, object())
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "model.q4nx").write_bytes(b"someone else's")
+    out = tmp_path / "exports" / "M.Q4_1-q4nx"
+
+    with pytest.raises(RuntimeError, match = "symlink"):
+        with export_mod.q4nx.staged_output(out) as staging:
+            (staging / "model.q4nx").write_bytes(b"q4nx")
+            out.symlink_to(elsewhere, target_is_directory = True)
+    assert (elsewhere / "model.q4nx").read_bytes() == b"someone else's"
+
+
 def test_a_reconversion_replaces_the_previous_model_files(monkeypatch, tmp_path):
     export_mod, _b, _s, _c = _backend(monkeypatch, tmp_path, object())
     out = tmp_path / "out"
