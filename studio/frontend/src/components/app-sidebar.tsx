@@ -895,17 +895,22 @@ export function AppSidebar() {
   } = useSidebar();
   const navigate = useNavigate();
   const router = useRouter();
-  const [navigateFromRow] = useState(() =>
+  const [rowNavigation] = useState(() =>
     createNavigationCoalescer<NavigateOptions>({
       navigate: (options) => navigate(options),
       currentHref: () => router.latestLocation.href,
       hrefOf: (options) => router.buildLocation(options).href,
-      entryShown: () => {
-        const shown = router.state.resolvedLocation;
-        return !shown || shown.href === router.latestLocation.href;
-      },
+      currentEntry: () => router.latestLocation.state.__TSR_key,
       asReplace: (options) => ({ ...options, replace: true }),
     }),
+  );
+  const navigateFromRow = rowNavigation.go;
+  useEffect(
+    () =>
+      router.subscribe("onResolved", (event) =>
+        rowNavigation.rendered(event.toLocation.state.__TSR_key),
+      ),
+    [router, rowNavigation],
   );
   const imagesPageMode = useImageWorkflowStore((s) => s.pageMode);
 
