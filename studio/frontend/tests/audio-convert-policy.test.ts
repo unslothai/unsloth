@@ -275,3 +275,15 @@ test("Convert transcribes its source as far as it converts", () => {
     /\.\.\.\(language \? \{ language \} : \{\}\),\s*purpose,/,
   );
 });
+
+test("only the expired-upload 404 expires uploads, and a re-upload clears it", () => {
+  const hook = readSrc("features/audio/hooks/use-convert-generation.ts");
+  assert.match(
+    hook,
+    /error\.status === 404 &&\s*error\.message === REFERENCE_EXPIRED_MESSAGE/,
+  );
+  assert.match(
+    hook,
+    /for \(const id of \[sourceId, targetId\]\) \{\s*if \(id\) \{\s*next\.delete\(id\);/,
+  );
+});

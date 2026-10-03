@@ -115,6 +115,23 @@ export function useConvertGeneration({
   const [expiredIds, setExpiredIds] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
+  // Uploading the same audio again returns the same id, which is live again.
+  const sourceId = source?.id ?? null;
+  const targetId = target?.id ?? null;
+  useEffect(() => {
+    setExpiredIds((previous) => {
+      if (![sourceId, targetId].some((id) => id && previous.has(id))) {
+        return previous;
+      }
+      const next = new Set(previous);
+      for (const id of [sourceId, targetId]) {
+        if (id) {
+          next.delete(id);
+        }
+      }
+      return next;
+    });
+  }, [sourceId, targetId]);
   const [runningNotice, setRunningNotice] = useState<string | null>(null);
 
   const transcriber = useReferenceTranscribe({
@@ -394,9 +411,11 @@ export function useConvertGeneration({
     } catch (error) {
       if (!controller.signal.aborted) {
         updateGenerationPhase("finishing");
-        // 404: an upload expired; history clips and voices do not.
+        // Only the expired-upload 404: a deleted clip or voice says otherwise and leaves uploads alone.
         const gone =
-          error instanceof AudioApiError && error.status === 404
+          error instanceof AudioApiError &&
+          error.status === 404 &&
+          error.message === REFERENCE_EXPIRED_MESSAGE
             ? [sourceSelection, targetSelection].filter(
                 (item): item is AudioSourceSelection => item?.kind === "input",
               )
