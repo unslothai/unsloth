@@ -2284,11 +2284,9 @@ def _loaded_component_mib(pipe: Any) -> Optional[dict[str, tuple[int, str]]]:
 
 
 RESIDENT_DIT_ENV = "UNSLOTH_DIFFUSION_RESIDENT_DIT"
-# Device slack the whole-resident denoiser tier keeps free beyond weights + measured peak x margin: 10% of the card,
-# at least 1 GiB. It replaces the flat plan's stacked reserve (10%, min 2 GiB) + base overhead (2 GiB), both sized for
-# an UNMEASURED activation: free memory is read after the CUDA context exists, and the measured peak already covers the
-# scheduler, embeddings, encoder, every step and the VAE decode. What it leaves to cover is allocator fragmentation and
-# lazily loaded kernel images. Qwen-Image-2.1 int8 on a 12 GB-capped A100: see the PR's measured NVML peak.
+# Whole-resident tier slack: 10% of the card, min 1 GiB, instead of the flat reserve + base overhead sized for an
+# unmeasured activation. Free memory is read after CUDA init and the measured peak covers encode, steps and decode, so
+# the slack only covers fragmentation and lazily loaded kernels.
 _RESIDENT_DIT_SLACK_FRACTION = 0.10
 _RESIDENT_DIT_SLACK_MIN_MIB = 1024
 
@@ -2299,8 +2297,7 @@ def _resident_dit_slack_mib(memory: Any) -> int:
 
 
 def _resident_dit_fits(memory: Any, dit_mib: int, headroom_mib: int, other_mib: int) -> bool:
-    """Whether the whole denoiser plus the non-encoder companions plus the measured peak x margin fit free memory less
-    ``_resident_dit_slack_mib``, every encoder streamed (they run once, before step 0, inside the measured peak)."""
+    """Whole denoiser + non-encoder companions + measured peak x margin + slack within free memory, encoders streamed."""
     if _env_off(RESIDENT_DIT_ENV):
         return False
     free = getattr(memory, "free_mib", None)
@@ -2401,9 +2398,7 @@ def refine_plan_from_loaded_weights(
                 and (policy == OFFLOAD_STREAMING or stream_te)
                 and _resident_dit_fits(memory, dit, headroom, other)
             ):
-                # Pinning the whole denoiser beats streaming part of it every step; the encoders all stream. While
-                # they run (once, before step 0) the denoiser drops back to the flat room (install_encode_release),
-                # so the prompt encode sees the same device state as the partial placement.
+                # pin it whole; during the encode it drops back to the flat room (install_encode_release)
                 encode_room = int(dit_room)
                 dit_room, room, whole_dit = dit, dit, True
         te_room = max(0, room - dit_room) if stream_te and policy == OFFLOAD_GROUP else 0
@@ -2468,8 +2463,7 @@ def _keep_groups_resident(
 ) -> int:
     """Make whole offload groups of a streamed ``module`` resident within ``room_mib`` (top-level group first, then
     blocks in order); their onload / offload become no-ops and the rest keeps streaming. Returns the MiB kept.
-    ``only`` (group ids) restricts which streamed groups may be pinned: a restore pins back what its release streamed,
-    not what an enclosing release streamed."""
+    ``only`` (group ids): a restore pins back what its own release streamed, not an enclosing release's groups."""
     if room_mib is None or int(room_mib) <= 0 or _env_off(PARTIAL_RESIDENT_ENV):
         return 0
     try:
@@ -2538,7 +2532,7 @@ def _keep_groups_resident(
                 left -= need
                 continue
             if need > left or (only is not None and id(group) not in only):
-                # too large (a later, smaller group may still fit), or not this restore's to pin: it streams
+                # too large (a later, smaller group may still fit), or another release's group
                 continue
             cpu = getattr(group, "cpu_param_dict", None) or {}
             for t in tensors:
@@ -2683,13 +2677,9 @@ def install_encode_release(
     plan: Any,
     logger: Any = None,
 ) -> int:
-    """For the whole-resident denoiser tier: while a text encoder runs, stream the denoiser groups past the flat room
-    again, and pin them back when it returns (before step 0).
-
-    The encoders run once per prompt, before the denoiser, so this is the device state the partial placement had
-    during the encode; the denoiser then runs fully resident. A cached prompt never reaches the encoder and costs
-    nothing. Composes with an oversized request's release: each restore pins back only the groups it streamed.
-    Returns the number of encoders hooked."""
+    """Whole-resident tier: while a text encoder runs, stream the denoiser groups past the flat room (the partial
+    placement's encode state) and pin them back when it returns. A cached prompt skips the encoder. Returns the number
+    of encoders hooked."""
     estimates = getattr(plan, "estimates", None) or {}
     encode_room = estimates.get("encode_resident_transformer_mib")
     whole = getattr(plan, "resident_transformer_mib", None)
@@ -2719,8 +2709,7 @@ def install_encode_release(
             )
             pending.append(restore)
             if restore is not None and torch.cuda.is_available():
-                # the released weights' blocks belong to the default stream's pool; the encoder onloads on the copy
-                # stream, so hand them back to the driver rather than leave them cached out of its reach
+                # freed blocks sit in the default stream's pool; the encoder onloads on the copy stream
                 torch.cuda.empty_cache()
 
         def _after(module: Any, args: Any, output: Any) -> None:

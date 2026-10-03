@@ -151,9 +151,7 @@ def test_16gb_encoder_room_and_kill_switch(q21_pipe, monkeypatch):
 
 
 def test_12gb_keeps_the_whole_transformer_resident_encoders_streamed(q21_pipe, monkeypatch):
-    """12 GB: the flat margins (2 GiB reserve + 2 GiB base overhead) leave room for only part of the int8 DiT, which
-    then streams ~2.6 GB per step. With every encoder streamed, the whole DiT + VAE + measured peak x margin fit free
-    memory less the 10% slack, so it is pinned whole."""
+    """12 GB: the flat margins fit only part of the int8 DiT; with encoders streamed the whole DiT fits the slack."""
     monkeypatch.delenv(dm.RESIDENT_DIT_ENV, raising = False)
     plan = _flat_plan(9550, 12288)
     assert plan.offload_policy == dm.OFFLOAD_STREAMING
@@ -643,8 +641,7 @@ def test_torchao_groups_stay_on_device_after_release_and_restore(monkeypatch):
 
 
 def _encode_release_pipe(monkeypatch):
-    """A real group-offloaded denoiser pinned whole, and a text encoder that records how much of the denoiser is on
-    the device while it runs."""
+    """A real group-offloaded denoiser pinned whole; the encoder records which blocks are on the device."""
     torch, net = _cuda_offload_model()
     from diffusers.hooks import apply_group_offloading
 
