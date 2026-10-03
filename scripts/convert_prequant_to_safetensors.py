@@ -48,7 +48,10 @@ def sha256_of(path: str, chunk: int = 64 << 20) -> str:
 
 
 def _record_v1_facts(facts: list):
-    """Wrap the legacy decoder so each v1 weight's facts are recorded before it is rebuilt (torchao >= 0.18)."""
+    """Wrap the legacy decoder so each v1 weight's facts are recorded before it is rebuilt (torchao >= 0.18).
+
+    Patches a module global for the duration of one read, so conversions must not run concurrently in one
+    process (this is a single-threaded CLI)."""
     from core.inference import prequant_legacy_int8 as legacy
 
     original = legacy._rebuild_weight
@@ -93,8 +96,6 @@ def _v1_facts_of(w, standins = None) -> dict:
 
 def _to_int8_tensor_dict(state_dict: dict, facts: list) -> dict:
     """torchao <= 0.17 hands back v1 objects: record their facts and rebuild them as Int8Tensor to flatten."""
-    import torch
-
     from core.inference.prequant_legacy_int8 import (
         LEGACY_INT8_CLASS_NAMES,
         _ACT_QUANT,
@@ -135,9 +136,14 @@ def _same(a, b) -> bool:
     import torch
 
     if isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor):
-        return a.dtype == b.dtype and tuple(a.shape) == tuple(b.shape) and torch.equal(a, b)
+        if a.dtype != b.dtype or tuple(a.shape) != tuple(b.shape):
+            return False
+        # Raw bytes, not torch.equal: -0.0 == 0.0 and NaN != NaN would otherwise decide.
+        return a.numel() == 0 or torch.equal(
+            a.detach().contiguous().cpu().view(torch.uint8), b.detach().contiguous().cpu().view(torch.uint8)
+        )
     if isinstance(a, tuple) and isinstance(b, tuple):
-        return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b))
+        return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b, strict = True))
     if isinstance(a, dict) and isinstance(b, dict):
         return a.keys() == b.keys() and all(_same(a[k], b[k]) for k in a)
     return a == b
@@ -251,6 +257,9 @@ def convert(src: str, out_dir: str, *, repo: str | None, revision: str | None, s
         flat_sd = _to_int8_tensor_dict(state_dict, facts)
         int8_source = None
         if facts:
+            int8 = sum(type(v).__name__ == "Int8Tensor" for v in flat_sd.values())
+            if len(facts) != int8:
+                raise ValueError(f"{src}: {int8} int8 weights but {len(facts)} came from torchao v1")
             distinct = {json.dumps(f, sort_keys = True, default = str) for f in facts}
             if distinct != {json.dumps(INT8_V1_FACTS, sort_keys = True)}:
                 raise ValueError(f"{src}: v1 int8 weights do not match the supported v1 layout: {sorted(distinct)[:3]}")
@@ -262,6 +271,9 @@ def convert(src: str, out_dir: str, *, repo: str | None, revision: str | None, s
         helpers = ps._torchao_helpers()
         if helpers is None:
             raise RuntimeError("torchao >= 0.16 is required to write the flattened layout")
+        undotted = ps.unsupported_state_dict_keys(flat_sd)
+        if undotted:
+            raise ValueError(f"{src}: root-level quantized weights cannot be flattened: {undotted[:8]}")
         roots = ps._root_level_keys(flat_sd)
         quantizable = {k: v for k, v in flat_sd.items() if k not in set(roots)}
         flat, torchao_metadata = helpers[0](quantizable)
@@ -281,7 +293,7 @@ def convert(src: str, out_dir: str, *, repo: str | None, revision: str | None, s
     bad = compare_state_dicts(state_dict, back["state_dict"])
     if bad:
         raise AssertionError(f"{dst}: {len(bad)} tensors differ from {src}, e.g. {bad[:3]}")
-    if back["format"] != fmt or back["metadata"] != json.loads(json.dumps(metadata, default = str)):
+    if back["format"] != fmt or back["metadata"] != metadata:
         raise AssertionError(f"{dst}: format or metadata changed in the round trip")
     rec = {
         "src": src,

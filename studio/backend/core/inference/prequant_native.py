@@ -174,7 +174,7 @@ def _decode(value: Any, api: dict, what: str) -> Any:
             return api["PerRow"](dim = dim)
         except TypeError:
             if dim != -1:
-                raise _Unsupported(f"{what}: PerRow(dim={dim}) on a torchao without dim")
+                raise _Unsupported(f"{what}: PerRow(dim={dim}) on a torchao without dim") from None
             return api["PerRow"]()
     if kind == "PerTensor":
         return api["PerTensor"]()
@@ -208,13 +208,18 @@ def _rebuild_int8(name: str, entry: dict, tensors: dict, used: set, api: dict, v
         raise ValueError(f"int8 weight {name!r}: missing {missing[0]!r}; the checkpoint is incomplete")
     qdata, scale = tensors[keys["qdata"]], tensors[keys["scale"]]
     zero_point = tensors.get(keys["zero_point"]) if "zero_point" in keys else None
+    # Only the layout Unsloth ships is modelled here (2-D, symmetric, one scale per output row). Any other valid
+    # torchao int8 weight (per-tensor, 3-D experts) goes to torchao's own reader rather than being refused.
     if qdata.dtype != torch.int8 or qdata.dim() != 2:
-        raise ValueError(f"int8 weight {name!r}: qdata is not a 2-D int8 tensor")
+        raise _Unsupported(f"{name}: int8 qdata {qdata.dtype} {tuple(qdata.shape)}")
     n, k = qdata.shape
     if not scale.is_floating_point() or scale.numel() != n:
-        raise ValueError(f"int8 weight {name!r}: scale is not one float per output row")
+        raise _Unsupported(f"{name}: int8 scale {tuple(scale.shape)}")
     if list(data.get("block_size") or []) != [1, k]:
         raise _Unsupported(f"{name}: int8 block size {data.get('block_size')}")
+    known = {"block_size", "dtype", "act_quant_kwargs", "reduce_range"}
+    if any(v not in _INERT for k2, v in data.items() if k2 not in known):
+        raise _Unsupported(f"{name}: int8 attributes {sorted(set(data) - known)}")
     if zero_point is not None and bool(torch.any(zero_point != 0)):
         raise _Unsupported(f"{name}: asymmetric int8")
     dtype = _decode(data.get("dtype"), api, name)
@@ -279,20 +284,15 @@ def _rebuild_fp8(name: str, entry: dict, tensors: dict, used: set, api: dict) ->
     if missing:
         raise ValueError(f"fp8 weight {name!r}: missing {missing[0]!r}; the checkpoint is incomplete")
     qdata, scale = tensors[keys["qdata"]], tensors[keys["scale"]]
+    # As for int8: anything but a 2-D per-row or per-tensor weight is torchao's to read.
     if qdata.dtype not in (torch.float8_e4m3fn, torch.float8_e5m2) or qdata.dim() != 2:
-        raise ValueError(f"fp8 weight {name!r}: qdata is not a 2-D float8 tensor")
+        raise _Unsupported(f"{name}: fp8 qdata {qdata.dtype} {tuple(qdata.shape)}")
     n, k = qdata.shape
     block = list(data.get("block_size") or [])
-    if block == [1, k]:
-        if scale.numel() != n:
-            raise ValueError(f"fp8 weight {name!r}: per-row scale has {scale.numel()} entries for {n} rows")
-    elif block == [n, k]:
-        if scale.numel() != 1:
-            raise ValueError(f"fp8 weight {name!r}: per-tensor scale has {scale.numel()} entries")
-    else:
-        raise _Unsupported(f"{name}: fp8 block size {block}")
-    if not scale.is_floating_point():
-        raise ValueError(f"fp8 weight {name!r}: scale is not floating point")
+    if not scale.is_floating_point() or not (
+        (block == [1, k] and scale.numel() == n) or (block == [n, k] and scale.numel() == 1)
+    ):
+        raise _Unsupported(f"{name}: fp8 block size {block} with scale {tuple(scale.shape)}")
     known = {"block_size", "mm_config", "act_quant_kwargs", "kernel_preference", "dtype"}
     extra = {k2: v for k2, v in data.items() if k2 not in known}
     if any(v not in _INERT for v in extra.values()):
@@ -306,7 +306,7 @@ def _rebuild_fp8(name: str, entry: dict, tensors: dict, used: set, api: dict) ->
     for d in keys.values():
         used.add(d)
     kwargs = {"block_size": block, "mm_config": mm_config, "act_quant_kwargs": act, "dtype": dtype}
-    if pref is not None:
+    if "kernel_preference" in data:
         kwargs["kernel_preference"] = pref
     return api["Float8Tensor"](qdata, scale, **kwargs)
 
@@ -333,8 +333,9 @@ def native_unflatten(tensors: dict, raw: dict, *, path: str = "") -> Optional[di
     """``tensors`` + ``raw`` header -> state dict, or None when torchao's reader has to do it.
 
     ``tensors`` is not modified when this returns None. Raises ValueError for a checkpoint that is
-    recognised but malformed (truncated, a weight with no scale, a live field this torchao lacks):
-    torchao's reader would fail the same file, later and less clearly.
+    recognised but incomplete (a listed tensor or a weight part missing, a tensor the header does not
+    list, a live field this torchao lacks): torchao's reader would fail the same file, later and less
+    clearly. A weight of a layout this module does not model returns None instead.
     """
     api = _torchao_api()
     if api is None:
@@ -353,7 +354,7 @@ def native_unflatten(tensors: dict, raw: dict, *, path: str = "") -> Optional[di
             try:
                 entry = json.loads(raw.get(name) or "null")
             except Exception:  # noqa: BLE001
-                raise _Unsupported(f"{name}: unreadable entry")
+                raise _Unsupported(f"{name}: unreadable entry") from None
             if not isinstance(entry, dict):
                 raise _Unsupported(f"{name}: no entry")
             kind = entry.get("_type")

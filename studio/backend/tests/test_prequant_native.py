@@ -6,9 +6,8 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import json
-import os
-import sys
 from pathlib import Path
 
 import pytest
@@ -97,7 +96,7 @@ def _same(a, b):
     if isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor):
         return a.dtype == b.dtype and a.shape == b.shape and torch.equal(a, b)
     if isinstance(a, (tuple, list)) and isinstance(b, (tuple, list)):
-        return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b))
+        return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b, strict = True))
     if isinstance(a, dict) and isinstance(b, dict):
         return a.keys() == b.keys() and all(_same(a[k], b[k]) for k in a)
     return a == b
@@ -247,6 +246,104 @@ def test_a_live_field_this_torchao_lacks_is_refused_and_an_inert_one_is_dropped(
         pn.native_unflatten(dict(flat), live)
 
 
+@needs_helpers
+@needs_int8tensor
+def test_layouts_the_native_reader_does_not_model_go_to_torchao():
+    from torchao.quantization import Float8Tensor, PerRow, PerTensor
+    from torchao.quantization.quantize_.workflows.int8.int8_tensor import Int8Tensor, QuantizeTensorToInt8Kwargs
+
+    flatten, _ = ps._torchao_helpers()
+    per_tensor = Int8Tensor.from_hp(
+        torch.randn(16, 32, dtype = torch.bfloat16), PerTensor(), act_quant_kwargs = QuantizeTensorToInt8Kwargs(granularity = PerRow())
+    )
+    experts = Float8Tensor.from_hp(torch.randn(2, 16, 32, dtype = torch.bfloat16), granularity = PerRow())
+    for weight in (per_tensor, experts):
+        flat, meta = flatten({"blk.w.weight": weight})
+        assert pn.native_unflatten(dict(flat), dict(meta)) is None
+    # an int8 field this reader does not know is torchao's call too, never silently dropped
+    flat, meta = flatten({"blk.w.weight": _int8_tensor()})
+    entry = json.loads(meta["blk.w.weight"])
+    entry["_data"]["future_live_field"] = "per_block_128"
+    assert pn.native_unflatten(dict(flat), dict(meta, **{"blk.w.weight": json.dumps(entry)})) is None
+
+
+def test_overlapping_tensor_bytes_are_refused(tmp_path):
+    header = {"x": {"dtype": "F32", "shape": [4], "data_offsets": [0, 16]}, "y": {"dtype": "F32", "shape": [4], "data_offsets": [0, 16]}}
+    raw = json.dumps(header).encode()
+    raw += b" " * (-len(raw) % 8)
+    path = tmp_path / "overlap.safetensors"
+    path.write_bytes(len(raw).to_bytes(8, "little") + raw + bytes(16))
+    with pytest.raises(ValueError):
+        ps._mapped_tensors(str(path))
+
+
+@pytest.mark.skipif(not hasattr(torch, "float8_e8m0fnu"), reason = "needs float8_e8m0fnu")
+def test_the_mapped_read_takes_mxfp8_scale_dtypes(tmp_path):
+    from safetensors.torch import save_file
+
+    t = torch.ones(8, 4).to(torch.float8_e8m0fnu)
+    save_file({"a.b": t}, str(tmp_path / "e.safetensors"))
+    _, tensors = ps._mapped_tensors(str(tmp_path / "e.safetensors"))
+    assert tensors["a.b"].dtype == torch.float8_e8m0fnu and torch.equal(tensors["a.b"].view(torch.uint8), t.view(torch.uint8))
+
+
+def _mirror(tmp_path, monkeypatch, *files):
+    root = tmp_path / "mirror"
+    out = []
+    for rel in files:
+        path = root / rel
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_bytes(b"x")
+        out.append(path)
+    monkeypatch.setenv(pq.PREQUANT_MIRROR_ENV, str(root))
+    return out
+
+
+def test_a_mirrored_sibling_this_host_cannot_read_is_not_served(tmp_path, monkeypatch):
+    _mirror(tmp_path, monkeypatch, "unsloth/Model-INT8/Model-INT8.safetensors")
+    monkeypatch.setattr(ps, "safetensors_prequant_supported", lambda: False)
+    monkeypatch.setattr(pq, "_register_prequant_safe_globals", lambda: True)
+    monkeypatch.setattr(pq, "_download_checkpoint_name", lambda *a, **k: "/hub/Model-INT8.pt")
+    src = pq.PrequantSource(
+        kind = "repo", location = "unsloth/Model-INT8", filename = "Model-INT8.pt", declared_filenames = ("Model-INT8.pt",)
+    )
+    assert pq._resolve_checkpoint_path(src, None, None, scheme = "int8") == "/hub/Model-INT8.pt"
+    cached = pq.cached_checkpoint_path(src)
+    assert cached is None or not ps.is_safetensors_checkpoint(cached)
+
+
+def test_any_mirrored_name_wins_before_the_hub_is_asked(tmp_path, monkeypatch):
+    (pt,) = _mirror(tmp_path, monkeypatch, "unsloth/Model-INT8/Model-INT8.pt")
+    monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True)
+    calls = []
+    monkeypatch.setattr(pq, "_download_checkpoint_name", lambda source, name, *a, **k: calls.append(name) or f"/hub/{name}")
+    src = pq.PrequantSource(
+        kind = "repo", location = "unsloth/Model-INT8", filename = "Model-INT8.safetensors", fallback_filenames = ("Model-INT8.pt",)
+    )
+    assert pq._resolve_checkpoint_path(src, None, None, scheme = "int8") == str(pt.resolve()) and calls == []
+
+
+def test_the_text_encoder_mirror_is_used_when_the_hub_is_unreachable(tmp_path, monkeypatch):
+    import huggingface_hub
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    import core.inference.diffusion_te_prequant as te
+
+    (pt,) = _mirror(tmp_path, monkeypatch, "unsloth/Model-FP8/Model-text_encoder-FP8.pt")
+
+    def offline(*a, **k):
+        raise LocalEntryNotFoundError("connection error")
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", offline)
+    src = te.TePrequantSource(
+        kind = "repo",
+        location = "unsloth/Model-FP8",
+        filename = "Model-text_encoder-FP8.safetensors",
+        fallback_filenames = ("Model-text_encoder-FP8.pt",),
+    )
+    assert te._resolve_checkpoint_path(src, None, cache_dir = str(tmp_path / "hub")) == str(pt.resolve())
+
+
 def test_the_mirror_is_read_before_the_hub_and_cannot_escape_its_root(tmp_path, monkeypatch):
     root = tmp_path / "mirror"
     target = root / "unsloth" / "Model-FP8" / "Model-INT8.safetensors"
@@ -322,6 +419,15 @@ def test_the_dense_fast_path_reason_names_a_load_time_failure(monkeypatch):
         diffusion._dense_fast_path_reason(object(), "int8", "org/base", "pipeline", None, None)
         == "engaged on the dense fast path"
     )
+
+
+def test_every_load_starts_without_the_previous_loads_failure_note():
+    import core.inference.diffusion as diffusion
+
+    src = inspect.getsource(diffusion.DiffusionBackend.load_pipeline)
+    reset = src.find("self._prequant_fallback_note = None")
+    read = src.find('getattr(self, "_prequant_fallback_note", None)')
+    assert 0 <= reset < read
 
 
 def _converter():
@@ -407,3 +513,47 @@ def test_the_converter_writes_a_text_encoder_with_tied_weights(tmp_path):
         assert back["state_dict"][key].dtype == sd[key].dtype and torch.equal(
             back["state_dict"][key].float(), sd[key].float()
         )
+
+
+def test_the_converters_comparison_sees_every_kind_of_difference():
+    conv = _converter()
+    w = _int8_tensor()
+    assert conv.compare_state_dicts({"a.w": w, "b": torch.zeros(2)}, {"a.w": w, "b": torch.zeros(2)}) == []
+    assert conv.compare_state_dicts({"a.w": w}, {"a.w": _int8_tensor(seed = 1)}) == ["a.w"]
+    assert conv.compare_state_dicts({"b": torch.zeros(2)}, {"b": -torch.zeros(2)}) == ["b"]
+    assert conv.compare_state_dicts({"b": torch.zeros(2)}, {"b": torch.zeros(2, dtype = torch.float64)}) == ["b"]
+    assert conv.compare_state_dicts({"b": torch.zeros(2)}, {"c": torch.zeros(2)}) == ["b", "c"]
+    nan = torch.tensor([float("nan")])
+    assert conv.compare_state_dicts({"b": nan}, {"b": nan.clone()}) == []
+
+
+def test_the_converter_refuses_v1_weights_off_the_supported_layout_and_restores_the_decoder(
+    tmp_path, monkeypatch, no_foreign_legacy_registrations
+):
+    import core.inference.prequant_legacy_int8 as li
+
+    conv = _converter()
+    original = li._rebuild_weight
+    restore = conv._record_v1_facts([])
+    assert li._rebuild_weight is not original
+    restore()
+    assert li._rebuild_weight is original
+
+    def odd_facts(w, standins = None):
+        return dict(pn.INT8_V1_FACTS, quant_kwargs = {"reduce_range": False})
+
+    monkeypatch.setattr(conv, "_v1_facts_of", odd_facts)
+    src = tmp_path / "Model-INT8.pt"
+    if _V1:
+        from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+
+        model = torch.nn.Sequential(torch.nn.Linear(64, 32, bias = False)).to(torch.bfloat16)
+        quantize_(model, Int8DynamicActivationInt8WeightConfig())
+        torch.save({"format": pq.PREQUANT_FORMAT, "metadata": {"scheme": "int8"}, "state_dict": {"blk.p.weight": model[0].weight}}, str(src))
+    elif li.legacy_int8_decode_supported():
+        _legacy_writer()._write_legacy_checkpoint(monkeypatch, src)
+    else:
+        pytest.skip("no v1 classes and no legacy decoder")
+    with pytest.raises(ValueError, match = "supported v1 layout"):
+        conv.convert(str(src), str(tmp_path / "out"), repo = None, revision = None, sha = None)
+    assert li._rebuild_weight is original

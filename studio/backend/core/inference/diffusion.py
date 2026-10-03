@@ -5334,6 +5334,8 @@ class DiffusionBackend:
                     self._active_generate_cancel.set()
             self._reserve_teardown_locked()
         with self._model_transition_slot():
+            # Per load: a previous load's pre-quant failure must never reach this one's status.
+            self._prequant_fallback_note = None
             with self._lock:
                 try:
                     self._raise_if_load_cancelled(_load_token)
@@ -6389,9 +6391,22 @@ class DiffusionBackend:
                                         )
                                     else:
                                         # The plan was priced on the seed landing, so re-plan at bf16 without it.
+                                        # Named in the status too: the dense path's reason would otherwise only
+                                        # say "dense fast path".
+                                        from utils.native_path_leases import redact_native_paths
+
+                                        from .diffusion_prequant import last_prequant_failure
+
+                                        failure = last_prequant_failure()
+                                        self._prequant_fallback_note = (
+                                            redact_native_paths(failure)
+                                            if failure
+                                            else "the checkpoint was unavailable"
+                                        )
                                         logger.warning(
                                             "diffusion.denoiser_prequant: no pre-quantized denoiser was "
-                                            "seeded; re-planning memory at the released bf16 size"
+                                            "seeded (%s); re-planning memory at the released bf16 size",
+                                            self._prequant_fallback_note,
                                         )
                                         pipeline_seed_scheme = None
                                         plan = bf16_pipeline_plan

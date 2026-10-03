@@ -439,8 +439,17 @@ def local_prequant_path_ready(path: str) -> bool:
 PREQUANT_MIRROR_ENV = "UNSLOTH_DIFFUSION_PREQUANT_MIRROR"
 
 
-def prequant_mirror_path(repo_id: Optional[str], name: Optional[str]) -> Optional[str]:
-    """``<mirror>/<repo_id>/<name>`` when a configured mirror holds that file, else None. Never raises."""
+def prequant_mirror_path(
+    repo_id: Optional[str],
+    name: Optional[str],
+    readable: Any = None,
+) -> Optional[str]:
+    """``<mirror>/<repo_id>/<name>`` when a configured mirror holds that file, else None. Never raises.
+
+    A converted safetensors copy of a requested pickle wins over the pickle itself (same weights, no
+    constructor allowlist), but only when ``readable(<sibling name>)`` says this install can open it:
+    otherwise a host without torchao's flatten helpers would be handed a file it then refuses, after
+    planning had already counted it as cached. ``readable`` defaults to "yes"."""
     import os
 
     raw = (os.environ.get(PREQUANT_MIRROR_ENV) or "").strip()
@@ -449,12 +458,16 @@ def prequant_mirror_path(repo_id: Optional[str], name: Optional[str]) -> Optiona
     parts = [*str(repo_id).split("/"), *str(name).split("/")]
     if any(p in ("", ".", "..") or "\\" in p for p in parts):
         return None
-    # A converted safetensors copy of a requested pickle wins over the pickle itself: same weights, and it needs
-    # no constructor allowlist. Declared names (MiniMax-H3's ConvRot artifacts) only ever ask for the .pt.
     wanted = [parts]
     for suffix in (".pt", ".pth"):
         if parts[-1].endswith(suffix):
-            wanted.insert(0, [*parts[:-1], parts[-1][: -len(suffix)] + ".safetensors"])
+            sibling = parts[-1][: -len(suffix)] + ".safetensors"
+            try:
+                ok = readable is None or bool(readable(sibling))
+            except Exception:  # noqa: BLE001 - an unanswerable question is a no
+                ok = False
+            if ok:
+                wanted.insert(0, [*parts[:-1], sibling])
             break
     for root in raw.split(os.pathsep):
         root = root.strip()
@@ -468,6 +481,15 @@ def prequant_mirror_path(repo_id: Optional[str], name: Optional[str]) -> Optiona
                 break
             if candidate.startswith(base + os.sep) and os.path.isfile(candidate):
                 return candidate
+    return None
+
+
+def _first_mirrored(repo_id: Optional[str], names: Sequence[str], readable: Any) -> Optional[str]:
+    """The mirror's copy of the first of ``names`` it holds, checked for ALL names before any Hub call."""
+    for name in names:
+        hit = prequant_mirror_path(repo_id, name, readable)
+        if hit is not None:
+            return hit
     return None
 
 
@@ -1088,19 +1110,21 @@ def cached_checkpoint_path(
     ``hf_hub_download`` falls back to huggingface_hub's import-time constant. Never raises."""
     roots = (cache_dir, None) if cache_dir else (None,)
     wanted = set(names) if names is not None else None
-    for name in candidate_filenames_of(source):
-        if wanted is not None and name not in wanted:
-            continue
+
+    def _readable(name: str) -> bool:
         try:
-            readable = restricted_prequant_load_supported(None, name)
+            return bool(restricted_prequant_load_supported(None, name))
         except Exception:  # noqa: BLE001 - a pure lookup that never raises, as documented above
-            readable = True
-        if not readable:
-            continue
-        if getattr(source, "kind", None) == "repo":
-            mirrored = prequant_mirror_path(getattr(source, "location", None), name)
-            if mirrored is not None:
-                return mirrored
+            return True
+
+    candidates = [
+        n for n in candidate_filenames_of(source) if (wanted is None or n in wanted) and _readable(n)
+    ]
+    if getattr(source, "kind", None) == "repo":
+        mirrored = _first_mirrored(getattr(source, "location", None), candidates, _readable)
+        if mirrored is not None:
+            return mirrored
+    for name in candidates:
         for root in roots:
             hit = _cached_in_root(source, root, name)
             if hit is not None:
@@ -1476,11 +1500,15 @@ def _resolve_checkpoint_path(
             names = readable or names
         if not names:
             return None
+        # The operator's mirror answers before the Hub is asked for ANY name: a Hub copy of an earlier name
+        # would otherwise be downloaded and the mirror never used.
+        mirrored = _first_mirrored(
+            source.location, names, lambda n: restricted_prequant_load_supported(scheme, n)
+        )
+        if mirrored is not None:
+            return mirrored
         for index, name in enumerate(names):
             last = index == len(names) - 1
-            mirrored = prequant_mirror_path(source.location, name)
-            if mirrored is not None:
-                return mirrored
             try:
                 return _download_checkpoint_name(
                     source,

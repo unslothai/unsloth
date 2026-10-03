@@ -468,64 +468,90 @@ _ST_DTYPES = {
     "F16": "float16",
     "F32": "float32",
     "F64": "float64",
+    "C64": "complex64",
     "F8_E4M3": "float8_e4m3fn",
     "F8_E5M2": "float8_e5m2",
+    "F8_E8M0": "float8_e8m0fnu",
     "I8": "int8",
     "U8": "uint8",
     "I16": "int16",
+    "U16": "uint16",
     "I32": "int32",
+    "U32": "uint32",
     "I64": "int64",
+    "U64": "uint64",
     "BOOL": "bool",
 }
 
+# safetensors refuses headers past 100 MB; a pre-quant header is a few MB at most.
+_MAX_HEADER_BYTES = 100 << 20
+
 
 def _mapped_tensors(path: str) -> tuple:
-    """``(header metadata, {name: tensor})`` with every tensor a zero-copy view of a mapping of ``path``.
+    """``(header metadata, {name: tensor})`` with every tensor a view of a private mapping of ``path``.
 
     ``safe_open(...).get_tensor`` copies each tensor into anonymous memory, so a 34 GB checkpoint costs
     34 GB of host RAM before the first byte reaches the GPU; the pickle path maps the file instead
-    (``prequant_mmap_enabled``). This is the same for the safetensors container: the pages are read
-    when ``.to(device)`` touches them and the kernel can drop them again. Copy-on-write, so a tensor
-    can be written without touching the file. Raises on anything that is not a well-formed file.
+    (``prequant_mmap_enabled``). This maps it with the same primitive ``torch.load(mmap = True)`` uses
+    (``UntypedStorage.from_file``, private), so the two containers cost the same on every OS: pages are
+    read when ``.to(device)`` touches them, and a write never reaches the file. The header is checked
+    the way safetensors checks it (known dtypes, non-negative integer shapes, byte ranges that tile the
+    data section exactly, a bounded header); anything else raises and the caller re-reads unmapped.
     """
-    import mmap
     import struct
 
     import torch
 
+    size = os.path.getsize(path)
     with open(path, "rb") as fh:
         head = fh.read(8)
         if len(head) != 8:
             raise ValueError(f"{path} is not a safetensors file")
         (length,) = struct.unpack("<Q", head)
-        size = os.fstat(fh.fileno()).st_size
-        if length <= 0 or 8 + length > size:
+        if length <= 0 or length > _MAX_HEADER_BYTES or 8 + length > size:
             raise ValueError(f"{path} has a corrupt safetensors header")
         header = json.loads(fh.read(length))
-        mapped = mmap.mmap(fh.fileno(), 0, access = mmap.ACCESS_COPY) if size > 8 + length else None
+    if not isinstance(header, dict):
+        raise ValueError(f"{path} has a corrupt safetensors header")
     metadata = header.pop("__metadata__", None) or {}
     base = 8 + length
-    tensors = {}
+    entries = []
     for name, info in header.items():
-        dtype = getattr(torch, _ST_DTYPES.get(info.get("dtype"), ""), None)
-        start, end = info["data_offsets"]
-        shape = [int(d) for d in info["shape"]]
-        if dtype is None or not (0 <= start <= end <= size - base):
-            raise ValueError(f"{path}: unreadable tensor entry {name!r}")
-        itemsize = torch.empty((), dtype = dtype).element_size()
+        try:
+            dtype = getattr(torch, _ST_DTYPES[info["dtype"]])
+            start, end = (int(v) for v in info["data_offsets"])
+            shape = list(info["shape"])
+        except Exception:  # noqa: BLE001 - unknown dtype (on this torch) or a malformed entry
+            raise ValueError(f"{path}: unreadable tensor entry {name!r}") from None
+        if not all(isinstance(d, int) and not isinstance(d, bool) and d >= 0 for d in shape):
+            raise ValueError(f"{path}: tensor {name!r} has an invalid shape")
         count = 1
         for d in shape:
             count *= d
+        itemsize = torch.empty((), dtype = dtype).element_size()
         if count * itemsize != end - start:
             raise ValueError(f"{path}: tensor {name!r} size does not match its shape")
-        if count == 0 or mapped is None:
+        entries.append((start, end, name, dtype, shape, itemsize))
+    entries.sort(key = lambda e: (e[0], e[1]))
+    cursor = 0
+    for start, end, name, *_ in entries:
+        if start != cursor:
+            raise ValueError(f"{path}: tensor {name!r} overlaps another or leaves a gap")
+        cursor = end
+    if cursor != size - base:
+        raise ValueError(f"{path}: the data section does not match its header")
+    storage = torch.UntypedStorage.from_file(path, shared = False, nbytes = size) if size > base else None
+    tensors = {}
+    for start, end, name, dtype, shape, itemsize in entries:
+        offset = base + start
+        if start == end or storage is None:
             tensors[name] = torch.empty(shape, dtype = dtype)
-            continue
-        flat = torch.frombuffer(mapped, dtype = dtype, count = count, offset = base + start)
-        if (base + start) % itemsize:
+        elif offset % itemsize == 0:
+            tensors[name] = torch.empty(0, dtype = dtype).set_(storage, offset // itemsize, shape)
+        else:
             # safetensors packs tensors back to back, so one can start off its dtype's alignment: copy that one.
-            flat = flat.clone()
-        tensors[name] = flat.reshape(shape)
+            raw = torch.empty(0, dtype = torch.uint8).set_(storage, offset, (end - start,))
+            tensors[name] = raw.clone().view(dtype).reshape(shape)
     return dict(metadata), tensors
 
 
