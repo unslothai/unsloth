@@ -4331,7 +4331,9 @@ def test_h3_native_status_names_the_matmul_route(monkeypatch, tmp_path):
     monkeypatch.setenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", "0")
     assert reason(devices = _cuda_devices("10.0"), speed_mode = "max") == "sd.cpp SageAttention"
     monkeypatch.setenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", "2048")
-    assert reason(devices = _cuda_devices("7.5")) == "sd.cpp BF16 cuBLAS matmuls"
+    assert reason(devices = _cuda_devices("8.6")) == "sd.cpp BF16 cuBLAS matmuls"
+    # The fork never takes the route below sm80, whatever the user exported.
+    assert reason(devices = _cuda_devices("7.5")) == "sd.cpp exact kernels"
 
 
 def test_h3_native_generate_hands_the_runtime_env_to_sd_cli(monkeypatch):
