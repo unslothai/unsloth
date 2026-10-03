@@ -192,6 +192,18 @@ def test_projections_with_a_hook_or_bias_are_not_fused(quantized):
     assert quantized.token_refiner.refiner_blocks[0].attn.fused_projections
 
 
+def test_padded_projections_are_not_fused(quantized):
+    from core.inference.diffusion_quant_pad import PadToMinM
+    from core.inference.diffusion_transformer_quant import apply_small_m_padding
+
+    assert apply_small_m_padding(quantized, "int8", "minimax-h3")
+    refiner = quantized.token_refiner.refiner_blocks[0].attn
+    assert isinstance(refiner.to_q, PadToMinM)
+    assert A.fuse_h3_qkv_(quantized) == 2
+    assert not refiner.fused_projections and isinstance(refiner.to_q, PadToMinM)
+    assert quantized.transformer_blocks[0].attn.fused_projections
+
+
 def test_mixed_rotation_is_not_fused(quantized):
     attn = quantized.transformer_blocks[0].attn
     attn.to_k.convrot_groupsize = 64
