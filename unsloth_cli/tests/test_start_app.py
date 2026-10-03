@@ -576,3 +576,13 @@ def test_app_leaves_request_flags_to_the_server(studio, monkeypatch, agent, flag
 
     assert result.exit_code == 0, result.output
     assert seen["options"].sent_by_agent() == frozenset()
+
+
+def test_hermes_app_uses_the_windows_hermes_home(studio, monkeypatch, tmp_path):
+    local = tmp_path / "LocalAppData"
+    monkeypatch.setattr(start.sys, "platform", "win32")
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+
+    target = start._hermes_app_target()
+
+    assert target.path == local / "hermes" / "config.yaml"

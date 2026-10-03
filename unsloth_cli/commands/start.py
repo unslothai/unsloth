@@ -5994,6 +5994,10 @@ def _openclaw_app_target(max_tokens: Optional[int] = None) -> _AppTarget:
 def _hermes_app_target(request_body: Optional[dict] = None) -> _AppTarget:
     # Hermes Desktop follows the sticky active profile.
     home = Path.home() / ".hermes"
+    if sys.platform == "win32":
+        # Hermes' Windows default home (hermes_constants._get_platform_default_hermes_home).
+        local = os.environ.get("LOCALAPPDATA", "").strip()
+        home = (Path(local) if local else Path.home() / "AppData" / "Local") / "hermes"
     try:
         profile = (home / "active_profile").read_text(encoding = "utf-8").strip()
     except OSError:
