@@ -758,7 +758,10 @@ def install_encoder_prefetch(
 
         if torch.device(device).type != "cuda" or not torch.cuda.is_available():
             return 0
-        from .diffusion_memory import _offload_groups
+        from .diffusion_memory import GROUP_OFFLOAD_PIN_ENV, _offload_groups
+
+        if _env(GROUP_OFFLOAD_PIN_ENV) in ("0", "off", "false", "no"):
+            return 0  # the ring is pinned memory: the user's "pin nothing" override wins
 
         groups = [
             g
@@ -770,6 +773,7 @@ def install_encoder_prefetch(
         if not groups:
             return 0
         pf = _EncoderPrefetcher(module, groups, device)
+        pf._ensure_stage()  # a pinned allocation failing here keeps diffusers' onload, not a failed render
         disable = getattr(getattr(torch, "compiler", None), "disable", None)
         for group in groups:
 

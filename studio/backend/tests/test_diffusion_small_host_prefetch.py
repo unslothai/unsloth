@@ -22,6 +22,7 @@ import core.inference.diffusion_small_host as sh
 @pytest.fixture(autouse = True)
 def _clean_env(monkeypatch):
     monkeypatch.delenv(sh.ENCODER_PREFETCH_ENV, raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_GROUP_OFFLOAD_PIN", raising = False)
 
 
 # ------------------------------------------------------------------------------------------------ fused int8 dequant
@@ -336,6 +337,41 @@ def _mapped_streamed(enc, path):
         low_cpu_mem_usage = True,
     )
     return enc
+
+
+def _small_linear_stack():
+    torch.manual_seed(0)
+    return (
+        torch.nn.Sequential(*[torch.nn.Linear(64, 64) for _ in range(3)]).to(torch.bfloat16).eval()
+    )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+def test_pin_opt_out_keeps_diffusers_onload(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_GROUP_OFFLOAD_PIN", "0")
+    enc = _mapped_streamed(_small_linear_stack(), tmp_path / "enc.safetensors")
+    assert sh.install_encoder_prefetch(enc, "cuda") == 0
+    assert getattr(enc, sh.ENCODER_PREFETCH_ATTR, None) is None
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
+def test_failed_ring_pin_keeps_diffusers_onload(tmp_path, monkeypatch):
+    enc = _mapped_streamed(_small_linear_stack(), tmp_path / "enc.safetensors")
+    real_empty = torch.empty
+
+    def empty(*a, **k):
+        if k.get("pin_memory"):
+            raise RuntimeError("CUDA error: out of memory")
+        return real_empty(*a, **k)
+
+    monkeypatch.setattr(torch, "empty", empty)
+    assert sh.install_encoder_prefetch(enc, "cuda") == 0
+    monkeypatch.setattr(torch, "empty", real_empty)
+    assert getattr(enc, sh.ENCODER_PREFETCH_ATTR, None) is None
+    ref = _small_linear_stack().cuda()
+    x = torch.randn(2, 64, dtype = torch.bfloat16, device = "cuda")
+    with torch.no_grad():
+        assert torch.equal(enc(x), ref(x))
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
