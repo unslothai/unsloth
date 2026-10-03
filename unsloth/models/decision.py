@@ -668,6 +668,8 @@ class FastDecisionModel:
         model.train()
         if not use_gradient_checkpointing:
             model.encoder.gradient_checkpointing_disable()
+        elif not model.encoder.is_gradient_checkpointing:
+            _gradient_checkpointing(model, use_gradient_checkpointing)
         return model
 
     @staticmethod

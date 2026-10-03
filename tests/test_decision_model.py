@@ -470,6 +470,15 @@ def test_trainer_leaves_the_callers_arguments_alone(checkpoint, tmp_path, monkey
     assert {"marker_pos", "marker_mask", "target"} <= set(batch)
 
 
+def test_for_training_turns_gradient_checkpointing_back_on(checkpoint):
+    model, _ = FastDecisionModel.from_pretrained(str(checkpoint), use_gradient_checkpointing = False)
+    assert not model.encoder.is_gradient_checkpointing
+    FastDecisionModel.for_training(model)
+    assert model.training and model.encoder.is_gradient_checkpointing
+    FastDecisionModel.for_training(model, use_gradient_checkpointing = False)
+    assert not model.encoder.is_gradient_checkpointing
+
+
 def test_trainer_uses_one_gpu_and_the_set_batch_on_a_multi_gpu_machine(checkpoint, tmp_path):
     model, tokenizer = FastDecisionModel.from_pretrained(
         str(checkpoint), use_gradient_checkpointing = False
