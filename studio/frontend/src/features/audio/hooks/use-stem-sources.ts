@@ -58,8 +58,12 @@ function groupKey(stems: readonly StemSourceInput[]): string {
 }
 
 /** Own cache, not the gallery's budgeted LRU, which would evict stems mid-playback. */
-export function useStemSources(stems: readonly StemSourceInput[]): StemSources {
+export function useStemSources(
+  stems: readonly StemSourceInput[],
+  attempt = 0,
+): StemSources {
   const key = groupKey(stems);
+  const stateKey = `${attempt}\u0002${key}`;
   const [state, setState] = useState<{ key: string } & StemSources>({
     key: "",
     ...EMPTY,
@@ -84,7 +88,7 @@ export function useStemSources(stems: readonly StemSourceInput[]): StemSources {
     const publish = () => {
       if (cancelled) return;
       setState({
-        key,
+        key: stateKey,
         srcById: cache.toRecord(),
         peaksById: { ...peaksById },
         failedIds: [...failedIds],
@@ -131,7 +135,7 @@ export function useStemSources(stems: readonly StemSourceInput[]): StemSources {
       cancelled = true;
       cache.clear();
     };
-  }, [key]);
+  }, [key, stateKey]);
 
-  return state.key === key ? state : EMPTY;
+  return state.key === stateKey ? state : EMPTY;
 }

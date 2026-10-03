@@ -309,7 +309,8 @@ function SelectedSeparation({
     () => group.stems.map((clip) => ({ clipId: clip.id, url: clip.url })),
     [group.stems],
   );
-  const sources = useStemSources(inputs);
+  const [attempt, setAttempt] = useState(0);
+  const sources = useStemSources(inputs, attempt);
   // Stable while the group and its fetched audio are, so the transport keeps its players.
   const stems = useMemo(
     () =>
@@ -324,34 +325,53 @@ function SelectedSeparation({
     [group.stems, sources.srcById, sources.peaksById],
   );
   return (
-    <StemMixer
-      groupId={group.groupId}
-      title={group.title}
-      subtitle={audioModelLabel(group.model)}
-      stems={stems}
-      autoFocus={autoFocus}
-      active={active}
-      sendTargets={SEND_TARGETS}
-      onDownloadStem={(clipId) => {
-        const clip = group.stems.find((item) => item.id === clipId);
-        const src = sources.srcById[clipId];
-        if (!clip || !src) return;
-        const anchor = document.createElement("a");
-        anchor.href = src;
-        anchor.download = stemFileName(group.title, stemLabel(clip.role ?? ""));
-        anchor.click();
-      }}
-      onDownloadAll={() => void downloadGroup(group)}
-      onSend={(target, clipId) => {
-        const clip = group.stems.find((item) => item.id === clipId);
-        if (!clip) return;
-        onSendStem(
-          target,
-          clip,
-          `${group.title.replace(/\.[a-z0-9]{2,4}$/i, "")} - ${stemLabel(clip.role ?? "")}`,
-        );
-      }}
-    />
+    <>
+      <StemMixer
+        groupId={group.groupId}
+        title={group.title}
+        subtitle={audioModelLabel(group.model)}
+        stems={stems}
+        autoFocus={autoFocus}
+        active={active}
+        sendTargets={SEND_TARGETS}
+        onDownloadStem={(clipId) => {
+          const clip = group.stems.find((item) => item.id === clipId);
+          const src = sources.srcById[clipId];
+          if (!clip || !src) return;
+          const anchor = document.createElement("a");
+          anchor.href = src;
+          anchor.download = stemFileName(
+            group.title,
+            stemLabel(clip.role ?? ""),
+          );
+          anchor.click();
+        }}
+        onDownloadAll={() => void downloadGroup(group)}
+        onSend={(target, clipId) => {
+          const clip = group.stems.find((item) => item.id === clipId);
+          if (!clip) return;
+          onSendStem(
+            target,
+            clip,
+            `${group.title.replace(/\.[a-z0-9]{2,4}$/i, "")} - ${stemLabel(clip.role ?? "")}`,
+          );
+        }}
+      />
+      {sources.failedIds.length > 0 ? (
+        <p role="alert" className="mt-2 text-ui-11p5 text-muted-foreground">
+          Could not load {sources.failedIds.length} of {group.stems.length}{" "}
+          stems.{" "}
+          <Button
+            variant="link"
+            size="sm"
+            className="h-auto p-0"
+            onClick={() => setAttempt((n) => n + 1)}
+          >
+            Try again
+          </Button>
+        </p>
+      ) : null}
+    </>
   );
 }
 

@@ -338,5 +338,8 @@ test("the host renders Separate's rail, footer and output and the page reuses th
   assert.match(page, /groupSeparationClips\(clips, hasMore\)/);
   assert.match(page, /aria-live="polite"/);
   // No inline fetch of the stems for playback: the mixer's own sources pin the group.
-  assert.match(page, /useStemSources\(inputs\)/);
+  assert.match(page, /useStemSources\(inputs, attempt\)/);
+  // A failed stem fetch says so and retries instead of loading forever.
+  assert.match(page, /sources\.failedIds\.length > 0/);
+  assert.match(page, /setAttempt\(\(n\) => n \+ 1\)/);
 });
