@@ -6321,8 +6321,7 @@ class DiffusionBackend:
                                 }
                                 if hf_token:
                                     pipe_kwargs["token"] = hf_token
-                                # Warm the page cache with the denoiser checkpoint and the components from_pretrained
-                                # reads next, in parallel; stopped once the pipeline is built.
+                                # Stopped once the pipeline is built.
                                 self._stop_load_prefetch()
                                 self._load_prefetch = start_load_prefetch(
                                     fam,
@@ -7360,7 +7359,6 @@ class DiffusionBackend:
                     _clear_exception_frames(exc)
                     raise
                 finally:
-                    # A load that failed before its pipeline was built leaves no page-cache reads behind.
                     self._stop_load_prefetch()
                     # Pre-commit failure: roll back the process-wide mutations (symmetric with _unload_locked).
                     if not state_committed:

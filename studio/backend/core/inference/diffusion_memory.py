@@ -2727,7 +2727,6 @@ def apply_memory_plan(
             _fallback_to_model_offload()
             policy = OFFLOAD_MODEL
     else:
-        # Same placement call; the plain host tensors it moves arrive through a pinned ring (byte-identical).
         from .diffusion_fast_load import fast_upload
 
         components = getattr(pipe, "components", None)

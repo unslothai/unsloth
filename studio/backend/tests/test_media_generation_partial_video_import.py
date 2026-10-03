@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A load posted while another thread is still importing core.inference.video must not 500.
-
-The post-warm worker imports core.inference.video right after the torch warm. Until that import
-finishes, sys.modules holds a module without its functions, and the image load route's foreign
-generation gate read ``generation_account_in_flight`` off it:
-``AttributeError: partially initialized module 'core.inference.video' ... (most likely due to a circular import)``.
-"""
+"""A load posted while another thread is still importing core.inference.video must not 500 (AttributeError)."""
 
 import sys
 import types

@@ -1,21 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Cold-start I/O for the image load path. Two levers, each byte-for-byte neutral:
-
-``start_load_prefetch`` warms the page cache with the files the load is about to read (the hosted
-int8 / fp8 denoiser checkpoint first, then the base repo's text encoder, VAE and dense denoiser
-shards). The load reads them one after another, and the checkpoint through ``mmap`` page faults, which
-on a B200 host's NVMe RAID run at about 3 GiB/s; 8 threads each reading one contiguous slice of every
-file in 64 MiB requests read the same file at about 17 GiB/s. A no-op when everything is cached.
-
-``fast_upload`` moves a module's plain CPU tensors to the GPU through a pinned staging ring (8 copy
-threads, one side stream): pageable ``Tensor.to`` from host memory runs at 2-5 GiB/s, the ring at
-about 20 GiB/s. It hands the existing ``.to`` call precomputed copies through a ``TorchFunctionMode``,
-so placement semantics (parameter re-wrapping, tied weights, buffers) stay the module's own; tensor
-subclasses (torchao weights) and anything the ring does not cover take the stock path unchanged.
-
-Kill switches: ``UNSLOTH_DIFFUSION_PREFETCH=0`` and ``UNSLOTH_DIFFUSION_FAST_UPLOAD=0``.
+"""Cold-start I/O for the image load path, byte-for-byte neutral: ``start_load_prefetch`` warms the page
+cache with the files the load reads next (parallel slice reads beat mmap page faults); ``fast_upload``
+moves plain host tensors through a pinned ring and hands them to the existing ``.to`` via a
+``TorchFunctionMode``, so placement semantics stay the module's own. Kill switches
+``UNSLOTH_DIFFUSION_PREFETCH=0`` / ``UNSLOTH_DIFFUSION_FAST_UPLOAD=0``.
 """
 
 from __future__ import annotations
@@ -39,7 +29,6 @@ _PREFETCH_THREAD_PREFIX = "unsloth-image-prefetch"
 _UPLOAD_THREADS = 8
 _UPLOAD_CHUNK_BYTES = 16 << 20
 _UPLOAD_BUFFERS = 16
-# Small tensors are not worth a ring slot; the stock copy handles them.
 _UPLOAD_MIN_TENSOR_BYTES = 1 << 20
 _UPLOAD_MIN_TOTAL_BYTES = 256 << 20
 
@@ -57,11 +46,6 @@ def prefetch_enabled() -> bool:
 
 def fast_upload_enabled() -> bool:
     return _switch_on(FAST_UPLOAD_ENV)
-
-
-# --------------------------------------------------------------------------------------------------
-# Page-cache prefetch
-# --------------------------------------------------------------------------------------------------
 
 
 class LoadPrefetch:
@@ -339,11 +323,6 @@ def start_load_prefetch(
         if logger is not None:
             logger.debug("diffusion.prefetch: skipped (%r)", exc)
         return None
-
-
-# --------------------------------------------------------------------------------------------------
-# Pinned-ring upload
-# --------------------------------------------------------------------------------------------------
 
 
 def _upload_candidates(modules: Sequence[Any], device: Any) -> list[Any]:
