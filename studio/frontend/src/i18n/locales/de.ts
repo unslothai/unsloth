@@ -223,6 +223,45 @@ export const de = {
       chat: "Chat",
       searchChats: "Chats durchsuchen...",
     },
+    search: {
+      placeholder: "Suchen",
+      tabs: {
+        all: "Alle",
+        chats: "Chats",
+        projects: "Projekte",
+        files: "Dateien",
+        models: "Modelle",
+      },
+      recents: "Zuletzt verwendet",
+      actions: "Aktionen",
+      newChat: "Neuer Chat",
+      newTemporaryChat: "Neuer temporärer Chat",
+      fineTune: "Modell feinabstimmen",
+      generateImage: "Bild generieren",
+      generateVideo: "Video generieren",
+      untitledChat: "Unbenannter Chat",
+      compare: "Vergleich",
+      loading: "Wird geladen…",
+      empty: {
+        all: "Noch nichts zu durchsuchen.",
+        chats: "Noch keine Chats.",
+        projects: "Noch keine Projekte.",
+        files: "Noch keine Dateien in deiner Bibliothek.",
+        models: "Noch keine heruntergeladenen Modelle.",
+      },
+      noMatches: "Keine Ergebnisse.",
+      when: {
+        today: "Heute",
+        pastWeek: "Letzte Woche",
+        pastMonth: "Letzter Monat",
+        older: "Älter",
+      },
+      footer: {
+        close: "Schließen",
+        changeType: "Typ wechseln",
+        open: "Öffnen",
+      },
+    },
     notFound: {
       title: "Seite nicht gefunden",
       description: "{path} existiert nicht.",
@@ -1238,9 +1277,22 @@ export const de = {
       },
       permissions: {
         sectionTitle: "Berechtigungen",
-        bypassLabel: "Tool-Berechtigungen",
-        bypassDescription:
-          "Wie Unsloth Tool-Aufrufe im Chat (Terminal, Python, Web, MCP) vor der Ausführung freigibt. „Full access“ deaktiviert die Freigaben und die Code-Sandbox.",
+        names: {
+          ask: "Zustimmung einholen",
+          auto: "Für mich freigeben",
+          off: "Automatisch ausführen",
+          full: "Vollzugriff",
+        },
+        details: {
+          ask:
+            "Fragt vor jedem Tool-Aufruf nach, auch bei Terminal- und Python-Code, Websuchen, Dateiänderungen und MCP-Tools. Tools, die ein externer Anbieter ausführt, werden nicht angehalten. Ideal, wenn du jeden Schritt prüfen möchtest.",
+          auto:
+            "Führt gewöhnliche Tool-Aufrufe selbst aus und fragt nur nach, wenn eine Aktion riskant wirkt, etwa beim Lesen von Zugangsdaten, beim Erhöhen von Rechten oder bei zerstörerischen Befehlen.",
+          off:
+            "Führt jeden Tool-Aufruf ohne Nachfrage aus. Python- und Terminal-Code läuft weiterhin in der Sandbox, die begrenzt, auf welche Dateien deines Computers er zugreifen kann.",
+          full:
+            "Führt jeden Tool-Aufruf ohne Nachfrage aus und schaltet die Code-Sandbox ab, sodass Python- und Terminal-Code jede Datei lesen und ändern kann, auf die dein Konto zugreifen kann. Ideal für vertrauenswürdige Aufgaben, die außerhalb der Sandbox arbeiten müssen.",
+        },
       },
     },
     profile: {
@@ -3181,6 +3233,7 @@ export const de = {
     discardDescription: "Nicht gespeicherte Änderungen an {name} gehen verloren.",
     discard: "Verwerfen",
     mentions: "Fähigkeiten",
+    manage: "Fähigkeiten verwalten",
   },
   library: {
     tabs: {
