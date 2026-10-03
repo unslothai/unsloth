@@ -102,7 +102,22 @@ test("an undefined rowFilter leaves the picker rows untouched", () => {
     "features/model-picker/components/model-selector/pickers.tsx",
   );
   const guards = pickers.match(/\(!rowFilter \|\|\s*rowFilter\(\{/g) ?? [];
-  assert.equal(guards.length, 2);
+  // Cached GGUF, cached repos, LM Studio, ./models and custom folders; Hub search rows stay unfiltered.
+  assert.equal(guards.length, 5);
+  // Each On Device list applies it, so a custom-folder speech model is not offered on the Music page.
+  for (const list of [
+    "sortedCachedGguf",
+    "sortedCachedModels",
+    "sortedLmStudio",
+    "sortedLocalDir",
+    "sortedCustomFolderModels",
+  ]) {
+    const start = pickers.indexOf(`const ${list} = useMemo(`);
+    assert.ok(start >= 0, list);
+    const body = pickers.slice(start, pickers.indexOf("\n  );\n", start));
+    assert.match(body, /\(!rowFilter \|\|\s*rowFilter\(\{/, list);
+    assert.match(body, /rowFilter,\n\s*\]/, `${list} deps`);
+  }
   const selector = readSrc(
     "features/model-picker/components/model-selector.tsx",
   );
