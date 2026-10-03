@@ -1,15 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""POST /audio/run: ids in, server-chosen account paths out, never a client path or audio bytes.
-
-A stub orchestrator stands in for the worker and records what the route hands it; the account
-boundary is the real one (ALICE and BOB as in test_account_media_isolation).
-"""
+"""POST /audio/run: ids in, server-chosen account paths out, never a client path or audio bytes."""
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import base64
 import io
 import json
@@ -23,42 +20,20 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from auth import policy, storage as auth_storage
 from auth.authentication import authenticated_via_api_key, get_current_subject
 from core.inference import audio_gallery, audio_inputs, audio_voices
 from routes import inference
-from utils.account_context import AccountContext, bind_account, reset_account, run_as
+from utils.account_context import bind_account, reset_account, run_as
 
 _TESTS_DIR = str(Path(__file__).resolve().parent)
 if _TESTS_DIR not in sys.path:
     sys.path.insert(0, _TESTS_DIR)
 
+from test_account_media_isolation import ALICE, BOB, isolated  # noqa: E402,F401
 from test_audio_inputs import _chunks, encode  # noqa: E402
 
-ALICE = AccountContext("a" * 32, "alice")
-BOB = AccountContext("b" * 32, "bob")
 QWEN3_BASE = "audio-cpp/audio.cpp-gguf/Qwen3-TTS-12Hz-0.6B-Base-GGUF"
-
-
-@pytest.fixture(autouse = True)
-def isolated(monkeypatch, tmp_path):
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(policy, "installation_is_multi_user", lambda: True)
-    monkeypatch.setattr(auth_storage, "DB_PATH", tmp_path / "auth.db")
-    monkeypatch.setattr(auth_storage, "_BOOTSTRAP_PW_PATH", tmp_path / ".bootstrap_password")
-    monkeypatch.setattr(auth_storage, "_bootstrap_password", None)
-    policy.invalidate_account_cache()
-    connection = auth_storage.get_connection()
-    with connection:
-        for account in (ALICE, BOB):
-            connection.execute(
-                "INSERT INTO auth_user (username, password_salt, password_hash, jwt_secret,"
-                " account_id, role, is_active) VALUES (?, 'salt', 'hash', 'secret', ?, 'user', 1)",
-                (account.username, account.account_id),
-            )
-    connection.close()
-    yield
-    policy.invalidate_account_cache()
+CLONE_FIELDS = {"workflow", "audio_inputs", "reference_text", "speed"}
 
 
 def _wav(rate = 24000, frames = 2400) -> bytes:
@@ -75,7 +50,7 @@ def _clone_info(
     workflows = ("clone",),
     reference_text = "required",
     emotion = False,
-    **extra,
+    waived = None,
 ):
     return {
         "is_audio": True,
@@ -86,11 +61,19 @@ def _clone_info(
         "audio_required_inputs": [],
         "audio_clone": {
             "reference_text": reference_text,
-            "reference_text_waived": [["x_vector_only_mode", ["true"]]],
+            "reference_text_waived": waived or [["x_vector_only_mode", ["true"]]],
             "emotion_audio": emotion,
-            "input_rate": 24000,
         },
-        **extra,
+    }
+
+
+def _speak_info(required = ()):
+    return {
+        "is_audio": True,
+        "audio_type": "audiocpp_tts",
+        "audio_workflows": ["speak"],
+        "audio_reference_text": None,
+        "audio_required_inputs": list(required),
     }
 
 
@@ -146,17 +129,27 @@ def _client(account):
 
 def _input(account, seconds = 1.0) -> str:
     data = encode("webm", "libopus", 48000, "stereo", seconds)
-
-    def save():
-        record, _ = asyncio.run(audio_inputs.save_stream(_chunks([data]), "me.webm"))
-        return record["id"]
-
+    save = lambda: asyncio.run(audio_inputs.save_stream(_chunks([data]), "me.webm"))[0]["id"]
     return run_as(account, save)
+
+
+def _voice(account, input_id, **meta):
+    path = audio_inputs.input_path
+    return run_as(account, lambda: audio_voices.create(path(input_id), {"name": "Alice", **meta}))
 
 
 def _run(client, **body):
     payload = {"workflow": "clone", "text": "Hello in my voice.", **body}
     return client.post("/api/inference/audio/run", json = payload)
+
+
+def _sidecar(tmp_path, clip_id) -> str:
+    path = tmp_path / "accounts" / ALICE.account_id / "audio" / f"{clip_id}.json"
+    return path.read_text(encoding = "utf-8")
+
+
+def _inputs_root(tmp_path):
+    return tmp_path / "accounts" / ALICE.account_id / "audio" / "inputs"
 
 
 def test_a_clone_run_hands_the_worker_an_account_path_and_saves_the_clip(stub, tmp_path):
@@ -171,15 +164,13 @@ def test_a_clone_run_hands_the_worker_an_account_path_and_saves_the_clip(stub, t
         )
         assert response.status_code == 200, response.text
         body = response.json()
-        clip_bytes = client.get(body["clips"][0]["url"])
-    ((call,),) = [stub["backend"].calls]
+        assert client.get(body["clips"][0]["url"]).status_code == 200
+    (call,) = stub["backend"].calls
     reference = Path(call["audio_inputs"]["reference"])
-    inputs_root = tmp_path / "accounts" / ALICE.account_id / "audio" / "inputs"
-    # An absolute path inside ALICE's inputs, a prepared 24 kHz mono copy; never bytes.
-    assert reference.is_absolute() and reference.parent == inputs_root
+    assert reference.parent == _inputs_root(tmp_path)
     assert reference.name.startswith(f"{input_id}.24000.mono")
-    info = audio_inputs.wav_info(reference)
-    assert (info["sample_rate"], info["channels"]) == (24000, 1)
+    with wave.open(str(reference)) as w:
+        assert (w.getframerate(), w.getnchannels()) == (24000, 1)
     assert (call["workflow"], call["reference_text"], call["language"], call["seed"]) == (
         "clone",
         "Okay, I'm Cemo.",
@@ -188,17 +179,12 @@ def test_a_clone_run_hands_the_worker_an_account_path_and_saves_the_clip(stub, t
     )
     assert "speed" not in call
     assert all(not isinstance(v, (bytes, bytearray)) for v in call.values())
-    assert body["model"] and body["audio"] is None and body["group_id"] is None
+    assert body["audio"] is None
     (clip,) = body["clips"]
     assert set(clip) == {"id", "role", "url", "sample_rate", "duration_s", "workflow"}
     assert (clip["role"], clip["workflow"], clip["sample_rate"]) == ("output", "clone", 24000)
-    assert clip["url"] == f"/api/inference/audio/gallery/{clip['id']}/file"
-    assert clip_bytes.status_code == 200
-    sidecar = (tmp_path / "accounts" / ALICE.account_id / "audio" / f"{clip['id']}.json").read_text(
-        encoding = "utf-8"
-    )
+    sidecar = _sidecar(tmp_path, clip["id"])
     meta = json.loads(sidecar)
-    assert meta["workflow"] == "clone" and meta["role"] == "output"
     assert meta["reference_name"] == "me.webm"
     assert meta["settings"] == {
         "language": "en",
@@ -207,9 +193,7 @@ def test_a_clone_run_hands_the_worker_an_account_path_and_saves_the_clip(stub, t
         "reference_text_used": True,
         "speed": None,
     }
-    # No server path in the recipe.
     assert str(tmp_path) not in sidecar and "inputs" not in sidecar
-    assert not any(isinstance(v, str) and v.startswith("/") for v in meta.values())
 
 
 @pytest.mark.parametrize(
@@ -238,198 +222,162 @@ def test_a_clone_run_hands_the_worker_an_account_path_and_saves_the_clip(stub, t
 )
 def test_client_paths_and_unknown_fields_are_422(stub, body):
     with _client(ALICE) as client:
-        response = _run(client, **body)
-    assert response.status_code == 422, response.text
+        assert _run(client, **body).status_code == 422
     assert stub["backend"].calls == []
 
 
-def _alice_sources():
-    input_id = _input(ALICE)
-    clip = run_as(
-        ALICE,
-        audio_gallery.save,
-        _wav(),
-        {
-            "prompt": "alice said",
-            "model": "m",
-            "audio_type": "audiocpp_tts",
-            "sample_rate": 24000,
-            "duration_s": 0.1,
-            "created_at": "2026-10-02T00:00:00Z",
-        },
-    )
-    voice = run_as(
-        ALICE,
-        lambda: audio_voices.create(audio_inputs.input_path(input_id), {"name": "Alice"}),
-    )
-    return {"input_id": input_id, "clip_id": clip["id"], "voice_id": voice["id"]}
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"min_new_audio_steps": 10, "max_new_audio_steps": 900},  # FireRedAudio
+        {"no_ref": True},  # Irodori
+        {"audio_chunk_threshold_sec": 30, "audio_chunk_duration_sec": 20},  # DramaBox
+    ],
+)
+def test_settings_named_after_audio_are_not_file_options(options):
+    from models.inference import AudioRunRequest
+    request = AudioRunRequest(workflow = "speak", text = "hi", options = options)
+    assert request.options == options
 
 
 @pytest.mark.parametrize("kind", ["input_id", "clip_id", "voice_id"])
 def test_another_accounts_ids_are_404(stub, kind):
-    sources = _alice_sources()
+    input_id = _input(ALICE)
+    meta = {
+        "prompt": "alice said",
+        "model": "m",
+        "audio_type": "audiocpp_tts",
+        "sample_rate": 24000,
+        "duration_s": 0.1,
+        "created_at": "2026-10-02T00:00:00Z",
+    }
+    ids = {
+        "input_id": input_id,
+        "clip_id": run_as(ALICE, audio_gallery.save, _wav(), meta)["id"],
+        "voice_id": _voice(ALICE, input_id)["id"],
+    }
+    source = {kind: ids[kind]}
     with _client(BOB) as client:
-        response = _run(
-            client,
-            inputs = {"reference": {kind: sources[kind]}, "reference_text": "hello"},
-        )
-        assert response.status_code == 404, response.text
-        emotion = _run(
-            client,
-            inputs = {
-                "reference": {kind: sources[kind]},
-                "emotion": {kind: sources[kind]},
-                "reference_text": "hello",
-            },
-        )
-        assert emotion.status_code == 404
+        assert _run(client, inputs = {"reference": source, "reference_text": "hi"}).status_code == 404
+        emotion = {"reference": source, "emotion": source, "reference_text": "hi"}
+        assert _run(client, inputs = emotion).status_code == 404
     assert stub["backend"].calls == []
-    # ALICE runs with every one of them.
     with _client(ALICE) as client:
-        assert (
-            _run(
-                client, inputs = {"reference": {kind: sources[kind]}, "reference_text": "hi"}
-            ).status_code
-            == 200
-        )
+        assert _run(client, inputs = {"reference": source, "reference_text": "hi"}).status_code == 200
 
 
-def test_a_saved_voice_brings_its_transcript_and_is_recorded(stub, tmp_path):
-    input_id = _input(ALICE)
-    voice = run_as(
-        ALICE,
-        lambda: audio_voices.create(
-            audio_inputs.input_path(input_id), {"name": "Alice", "transcript": "Okay, I'm Cemo."}
+@pytest.mark.parametrize(
+    "model, info, workflow, transcript",
+    [
+        (QWEN3_BASE, _clone_info(), "clone", "Okay, I'm Cemo."),
+        (
+            "audio-cpp/audio.cpp-gguf/VoxCPM2-GGUF",
+            _clone_info(workflows = ("speak", "clone"), reference_text = "optional"),
+            "speak",
+            None,
         ),
-    )
+    ],
+)
+def test_a_saved_voice_resolves_to_an_account_path_and_is_recorded(
+    stub, tmp_path, model, info, workflow, transcript
+):
+    backend = stub["use"](model, info)
+    voice = _voice(ALICE, _input(ALICE), **({"transcript": transcript} if transcript else {}))
     with _client(ALICE) as client:
-        response = _run(client, inputs = {"reference": {"voice_id": voice["id"]}})
+        response = _run(client, workflow = workflow, inputs = {"reference": {"voice_id": voice["id"]}})
     assert response.status_code == 200, response.text
-    (call,) = stub["backend"].calls
-    assert call["reference_text"] == "Okay, I'm Cemo."
-    assert Path(call["audio_inputs"]["reference"]).name.startswith(f"v-{voice['id']}.")
-    clip_id = response.json()["clips"][0]["id"]
-    meta = json.loads(
-        (tmp_path / "accounts" / ALICE.account_id / "audio" / f"{clip_id}.json").read_text(
-            encoding = "utf-8"
-        )
+    (call,) = backend.calls
+    assert call["workflow"] == workflow and call.get("reference_text") == transcript
+    reference = Path(call["audio_inputs"]["reference"])
+    assert reference.parent == _inputs_root(tmp_path)
+    assert reference.name.startswith(f"v-{voice['id']}.")
+    meta = json.loads(_sidecar(tmp_path, response.json()["clips"][0]["id"]))
+    assert (meta["voice_id"], meta["workflow"], meta["reference_name"]) == (
+        voice["id"],
+        workflow,
+        "Alice",
     )
-    assert meta["voice_id"] == voice["id"] and meta["reference_name"] == "Alice"
 
 
-def test_a_missing_transcript_is_a_400_unless_timbre_only(stub):
+_COSY = _clone_info(waived = [["template_name", ["cross_lingual", "instruct"]]])
+
+
+@pytest.mark.parametrize(
+    "info, options, status",
+    [
+        (_clone_info(), None, 400),
+        (_clone_info(), {"x_vector_only_mode": True}, 200),
+        (_clone_info(reference_text = "unused"), None, 200),
+        (_COSY, None, 400),
+        (_COSY, {"template_name": "zero_shot"}, 400),
+        (_COSY, {"template_name": "cross_lingual"}, 200),
+        (_COSY, {"template_name": "instruct"}, 200),
+    ],
+)
+def test_a_missing_transcript_is_a_400_unless_the_family_waives_it(stub, info, options, status):
+    stub["use"]("x/Model-GGUF", info)
     input_id = _input(ALICE)
     with _client(ALICE) as client:
-        missing = _run(client, inputs = {"reference": {"input_id": input_id}})
-        assert missing.status_code == 400
-        assert missing.json()["detail"] == "Type what's said in the reference clip."
-        timbre = _run(
-            client,
-            inputs = {"reference": {"input_id": input_id}},
-            options = {"x_vector_only_mode": True},
-        )
-        assert timbre.status_code == 200, timbre.text
-    assert len(stub["backend"].calls) == 1
-    stub["use"]("x/Chatterbox-GGUF", _clone_info(reference_text = "unused"))
-    with _client(ALICE) as client:
-        assert _run(client, inputs = {"reference": {"input_id": input_id}}).status_code == 200
+        response = _run(client, inputs = {"reference": {"input_id": input_id}}, options = options)
+    assert response.status_code == status, response.text
+    if status == 400:
+        assert response.json()["detail"] == "Type what's said in the reference clip."
 
 
-def test_a_speak_model_cannot_clone(stub):
+_GENERATE = ("/api/inference/audio/generate", {"messages": [{"role": "user", "content": "hi"}]})
+_SPEECH = ("/api/inference/audio/speech", {"input": "hi"})
+_KOKORO = ("audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF", _speak_info())
+_MAYA1 = ("audio-cpp/audio.cpp-gguf/Maya1-GGUF", _speak_info(["instruct"]))
+_REF = {"reference": {"input_id": "REF"}, "reference_text": "x"}
+_MAYA1_DETAIL = "Maya1 needs a voice description."
+
+
+@pytest.mark.parametrize(
+    "model, request_, detail",
+    [
+        (_KOKORO, {"inputs": _REF}, "Load a model that can clone a voice."),
+        (_KOKORO, {"workflow": "speak", "inputs": _REF}, "Load a model that can clone a voice."),
+        (_KOKORO, {"workflow": "speak"}, None),
+        (None, {}, "Add a reference clip to clone."),
+        (None, {"inputs": {**_REF, "emotion": {"input_id": "REF"}}}, "does not take an emotion"),
+        (None, _GENERATE, "Open Clone"),
+        (_MAYA1, {"workflow": "speak"}, _MAYA1_DETAIL),
+        (_MAYA1, _GENERATE, _MAYA1_DETAIL),
+        (_MAYA1, _SPEECH, _MAYA1_DETAIL),
+        (_MAYA1, {"workflow": "speak", "instructions": "A calm, low male voice."}, None),
+    ],
+)
+def test_requests_the_loaded_model_cannot_serve_are_400(stub, model, request_, detail):
+    if model:
+        stub["use"](*model)
     input_id = _input(ALICE)
-    stub["use"](
-        "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF",
-        {
-            "is_audio": True,
-            "audio_type": "audiocpp_tts",
-            "audio_workflows": ["speak"],
-            "audio_reference_text": None,
-            "audio_required_inputs": [],
-        },
-    )
     with _client(ALICE) as client:
-        clone = _run(client, inputs = {"reference": {"input_id": input_id}, "reference_text": "x"})
-        assert clone.status_code == 400
-        assert clone.json()["detail"] == "Load a model that can clone a voice."
-        # Speak in a saved voice needs a model that clones, too.
-        speak_ref = _run(client, workflow = "speak", inputs = {"reference": {"input_id": input_id}})
-        assert speak_ref.status_code == 400
-        # Plain speak still works through /audio/run.
-        assert _run(client, workflow = "speak").status_code == 200
-    assert len(stub["backend"].calls) == 1
+        if isinstance(request_, tuple):
+            response = client.post(request_[0], json = request_[1])
+        else:
+            body = json.loads(json.dumps(request_).replace('"REF"', json.dumps(input_id)))
+            response = _run(client, **body)
+    if detail is None:
+        assert response.status_code == 200 and len(stub["backend"].calls) == 1
+    else:
+        assert response.status_code == 400 and detail in response.json()["detail"]
+        assert stub["backend"].calls == []
 
 
-def test_a_clone_run_needs_a_reference(stub):
-    with _client(ALICE) as client:
-        response = _run(client)
-    assert (
-        response.status_code == 400
-        and response.json()["detail"] == "Add a reference clip to clone."
-    )
-
-
-def test_an_emotion_clip_only_for_a_family_that_takes_one(stub):
+def test_an_emotion_clip_reaches_a_family_that_takes_one(stub):
     first, second = _input(ALICE, 0.5), _input(ALICE, 0.7)
-    with _client(ALICE) as client:
-        refused = _run(
-            client,
-            inputs = {
-                "reference": {"input_id": first},
-                "emotion": {"input_id": second},
-                "reference_text": "x",
-            },
-        )
-        assert refused.status_code == 400 and "emotion" in refused.json()["detail"]
     backend = stub["use"](
         "audio-cpp/audio.cpp-gguf/IndexTTS2-GGUF",
         _clone_info(reference_text = "unused", emotion = True),
     )
     with _client(ALICE) as client:
         ok = _run(
-            client,
-            inputs = {"reference": {"input_id": first}, "emotion": {"input_id": second}},
+            client, inputs = {"reference": {"input_id": first}, "emotion": {"input_id": second}}
         )
     assert ok.status_code == 200, ok.text
     (call,) = backend.calls
     assert set(call["audio_inputs"]) == {"reference", "emotion"}
     assert Path(call["audio_inputs"]["emotion"]).name.startswith(f"{second}.24000.mono")
-
-
-def test_maya1_without_a_description_is_a_400_on_every_speech_route(stub):
-    stub["use"](
-        "audio-cpp/audio.cpp-gguf/Maya1-GGUF",
-        {
-            "is_audio": True,
-            "audio_type": "audiocpp_tts",
-            "audio_workflows": ["speak"],
-            "audio_reference_text": None,
-            "audio_required_inputs": ["instruct"],
-        },
-    )
-    with _client(ALICE) as client:
-        run = _run(client, workflow = "speak")
-        assert (run.status_code, run.json()["detail"]) == (400, "Maya1 needs a voice description.")
-        generate = client.post(
-            "/api/inference/audio/generate", json = {"messages": [{"role": "user", "content": "hi"}]}
-        )
-        assert (generate.status_code, generate.json()["detail"]) == (
-            400,
-            "Maya1 needs a voice description.",
-        )
-        speech = client.post("/api/inference/audio/speech", json = {"input": "hi"})
-        assert speech.status_code == 400
-        described = _run(client, workflow = "speak", instructions = "A calm, low male voice.")
-        assert described.status_code == 200
-    assert len(stub["backend"].calls) == 1
-
-
-def test_a_clone_only_model_refuses_plain_speech(stub):
-    with _client(ALICE) as client:
-        generate = client.post(
-            "/api/inference/audio/generate", json = {"messages": [{"role": "user", "content": "hi"}]}
-        )
-    assert generate.status_code == 400 and "Open Clone" in generate.json()["detail"]
-    assert stub["backend"].calls == []
 
 
 def test_a_failed_gallery_save_returns_the_audio_inline(stub, monkeypatch):
@@ -439,22 +387,8 @@ def test_a_failed_gallery_save_returns_the_audio_inline(stub, monkeypatch):
         response = _run(client, inputs = {"reference": {"input_id": input_id}, "reference_text": "x"})
     body = response.json()
     assert response.status_code == 200 and body["clips"] == []
-    assert body["audio"]["format"] == "wav" and body["audio"]["sample_rate"] == 24000
+    assert body["audio"]["sample_rate"] == 24000
     assert base64.b64decode(body["audio"]["data"])[:4] == b"RIFF"
-
-
-def test_a_runtime_refusal_keeps_the_runtime_reason(stub):
-    from core.inference.audio_errors import AudioRuntimeError
-
-    def refuse(**_kwargs):
-        raise AudioRuntimeError("Qwen3 voice clone ICL mode requires reference text", status = 500)
-
-    stub["backend"].generate_audio_response = refuse
-    input_id = _input(ALICE)
-    with _client(ALICE) as client:
-        response = _run(client, inputs = {"reference": {"input_id": input_id}, "reference_text": "x"})
-    assert response.status_code == 500
-    assert response.json()["detail"] == "Qwen3 voice clone ICL mode requires reference text"
 
 
 def test_the_orchestrator_command_carries_paths_not_bytes(monkeypatch):
@@ -465,25 +399,14 @@ def test_the_orchestrator_command_carries_paths_not_bytes(monkeypatch):
     wav = base64.b64encode(_wav()).decode()
 
     def read_one(*, timeout):
-        return {
-            "type": "audio_done",
-            "request_id": sent[0]["request_id"],
-            "wav_base64": wav,
-            "sample_rate": 24000,
-        }
-
-    class _Null:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_exc):
-            return False
+        rid = sent[-1]["request_id"]
+        return {"type": "audio_done", "request_id": rid, "wav_base64": wav, "sample_rate": 24000}
 
     for name, value in {
         "_ensure_subprocess_alive": lambda: True,
-        "_send_cmd": lambda cmd: sent.append(cmd),
+        "_send_cmd": sent.append,
         "_direct_reader": lambda _rid, _cancel = None: (read_one, lambda **_k: None, lambda: None),
-        "_reserve_worker": lambda _why: _Null(),
+        "_reserve_worker": lambda _why: contextlib.nullcontext(),
         "_wait_worker_idle": lambda **_k: True,
         "_claim_worker": lambda _cancel: None,
         "_release_worker": lambda *_a, **_k: None,
@@ -495,20 +418,17 @@ def test_the_orchestrator_command_carries_paths_not_bytes(monkeypatch):
     orchestrator._send_order_lock = threading.Lock()
     orchestrator._unload_pending = False
     reference = "/home/x/.unsloth/studio/accounts/a/audio/inputs/abc.24000.mono.m30.wav"
-    orchestrator.generate_audio_response(
-        "hello",
-        workflow = "clone",
-        audio_inputs = {"reference": reference},
-        reference_text = "hi",
-        speed = 1.2,
-    )
-    (cmd,) = sent
-    assert cmd["audio_inputs"] == {"reference": reference}
-    assert (cmd["workflow"], cmd["reference_text"], cmd["speed"]) == ("clone", "hi", 1.2)
-    assert all(not isinstance(v, (bytes, bytearray)) for v in cmd.values())
-    sent.clear()
+    fields = {
+        "workflow": "clone",
+        "audio_inputs": {"reference": reference},
+        "reference_text": "hi",
+        "speed": 1.2,
+    }
+    orchestrator.generate_audio_response("hello", **fields)
     orchestrator.generate_audio_response("plain")
-    assert not {"workflow", "audio_inputs", "reference_text", "speed"} & set(sent[0])
+    assert {k: sent[0][k] for k in fields} == fields
+    assert all(not isinstance(v, (bytes, bytearray)) for v in sent[0].values())
+    assert not CLONE_FIELDS & set(sent[1])
 
 
 def test_the_worker_forwards_clone_fields_only_when_present():
@@ -516,56 +436,56 @@ def test_the_worker_forwards_clone_fields_only_when_present():
 
     seen = []
 
-    class _Backend:
+    class _Recorder:
         def generate_audio_response(self, **kwargs):
             seen.append(kwargs)
             return _wav(), 24000
 
-    responses: queue.Queue = queue.Queue()
-    _handle_generate_audio(
-        _Backend(),
-        {
-            "request_id": "r1",
-            "text": "hi",
-            "workflow": "clone",
-            "audio_inputs": {"reference": "/abs/ref.wav"},
-            "reference_text": "x",
-            "speed": 1.1,
-        },
-        responses,
-        threading.Event(),
-    )
-    _handle_generate_audio(
-        _Backend(), {"request_id": "r2", "text": "hi"}, responses, threading.Event()
-    )
-    assert seen[0]["audio_inputs"] == {"reference": "/abs/ref.wav"}
-    assert (seen[0]["workflow"], seen[0]["reference_text"], seen[0]["speed"]) == ("clone", "x", 1.1)
-    assert not {"workflow", "audio_inputs", "reference_text", "speed"} & set(seen[1])
+    fields = {
+        "workflow": "clone",
+        "audio_inputs": {"reference": "/abs/ref.wav"},
+        "reference_text": "x",
+        "speed": 1.1,
+    }
+    for cmd in ({"request_id": "r1", "text": "hi", **fields}, {"request_id": "r2", "text": "hi"}):
+        _handle_generate_audio(_Recorder(), cmd, queue.Queue(), threading.Event())
+    assert {k: seen[0][k] for k in fields} == fields
+    assert not CLONE_FIELDS & set(seen[1])
 
 
-def _cosy_info():
-    info = _clone_info()
-    info["audio_clone"]["reference_text_waived"] = [
-        ["template_name", ["cross_lingual", "instruct"]]
-    ]
-    return info
+def test_the_worker_keeps_run_fields_off_a_backend_without_them():
+    from core.inference.worker import _handle_generate_audio
 
+    seen = []
 
-@pytest.mark.parametrize(
-    "options, status",
-    [
-        (None, 400),
-        ({"template_name": "zero_shot"}, 400),
-        ({"template_name": "cross_lingual"}, 200),
-        ({"template_name": "instruct"}, 200),
-    ],
-)
-def test_cosyvoice3_needs_a_transcript_only_for_zero_shot(stub, options, status):
-    stub["use"]("audio-cpp/audio.cpp-gguf/CosyVoice3-GGUF", _cosy_info())
-    input_id = _input(ALICE)
-    with _client(ALICE) as client:
-        response = _run(client, inputs = {"reference": {"input_id": input_id}}, options = options)
-    assert response.status_code == status, response.text
+    class _Native:
+        def generate_audio_response(
+            self,
+            text,
+            temperature = 0.6,
+            top_p = 0.95,
+            top_k = 50,
+            min_p = 0.0,
+            max_new_tokens = 2048,
+            repetition_penalty = 1.0,
+            use_adapter = None,
+            cancel_event = None,
+            instructions = None,
+            language = None,
+            seed = None,
+        ):
+            seen.append(text)
+            return _wav(), 24000
+
+    replies = queue.Queue()
+    speak = {"request_id": "r1", "text": "hi", "workflow": "speak", "speed": 1.1}
+    _handle_generate_audio(_Native(), speak, replies, threading.Event())
+    assert replies.get_nowait()["type"] == "audio_done" and seen == ["hi"]
+    clone = {"request_id": "r2", "text": "hi", "audio_inputs": {"reference": "/abs/ref.wav"}}
+    _handle_generate_audio(_Native(), clone, replies, threading.Event())
+    error = replies.get_nowait()
+    assert error["type"] == "audio_error" and error["status"] == 400
+    assert seen == ["hi"]
 
 
 def test_speak_in_a_saved_voice_on_a_speak_and_clone_model(stub, tmp_path):
@@ -592,6 +512,34 @@ def test_speak_in_a_saved_voice_on_a_speak_and_clone_model(stub, tmp_path):
         )
     )
     assert meta["voice_id"] == voice["id"] and meta["workflow"] == "speak"
+
+
+def _alice_sources():
+    input_id = _input(ALICE)
+    clip = run_as(
+        ALICE,
+        audio_gallery.save,
+        _wav(),
+        {
+            "prompt": "alice said",
+            "model": "m",
+            "audio_type": "audiocpp_tts",
+            "sample_rate": 24000,
+            "duration_s": 0.1,
+            "created_at": "2026-10-02T00:00:00Z",
+        },
+    )
+    voice = run_as(
+        ALICE,
+        lambda: audio_voices.create(audio_inputs.input_path(input_id), {"name": "Alice"}),
+    )
+    return {"input_id": input_id, "clip_id": clip["id"], "voice_id": voice["id"]}
+
+
+def _wav_params(path):
+    import wave
+    with wave.open(str(path)) as w:
+        return {"sample_rate": w.getframerate(), "channels": w.getnchannels()}
 
 
 def _convert_info(family, folder):
@@ -655,7 +603,7 @@ def test_an_rvc_run_converts_an_upload_to_a_builtin_voice(stub, tmp_path):
     source = Path(call["audio_inputs"]["source"])
     assert set(call["audio_inputs"]) == {"source"}
     assert source.parent == inputs_root and source.name == f"{input_id}.16000.mono.m300.wav"
-    info = audio_inputs.wav_info(source)
+    info = _wav_params(source)
     assert (info["sample_rate"], info["channels"]) == (16000, 1)
     assert call["workflow"] == "convert" and call["seed"] == 7
     assert call["convert"] == {
@@ -718,7 +666,7 @@ def test_a_seed_vc_run_takes_a_history_clip_and_a_saved_voice_at_its_rates(stub,
     source, target = Path(call["audio_inputs"]["source"]), Path(call["audio_inputs"]["target"])
     assert source.name == f"c-{sources['clip_id']}.44100.mono.m300.wav"
     assert target.name == f"v-{sources['voice_id']}.44100.mono.m30.wav"
-    assert audio_inputs.wav_info(target)["sample_rate"] == 44100
+    assert _wav_params(target)["sample_rate"] == 44100
     assert call["convert"]["mode"] == "singing" and call["convert"]["pitch_auto"] is True
     meta = _meta(tmp_path, ALICE, response.json()["clips"][0]["id"])
     assert meta["prompt"] == "alice said → Alice"

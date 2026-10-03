@@ -243,19 +243,17 @@ def test_a_failed_replacement_load_leaves_residency_with_the_resident_model(monk
 
 def _save_input(account):
     import asyncio
+    import io
+    import wave
 
     from core.inference import audio_inputs
 
-    async def chunks():
-        import io
-        import wave
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+        w.writeframes(b"\x01\x00" * 16000)
 
-        buf = io.BytesIO()
-        with wave.open(buf, "wb") as w:
-            w.setnchannels(1)
-            w.setsampwidth(2)
-            w.setframerate(16000)
-            w.writeframes(b"\x01\x00" * 16000)
+    async def chunks():
         yield buf.getvalue()
 
     return run_as(account, lambda: asyncio.run(audio_inputs.save_stream(chunks(), "me.wav"))[0])
@@ -271,74 +269,49 @@ def _save_voice(account):
 
 
 @pytest.mark.parametrize("account,other", [(ALICE, BOB), (BOB, ALICE)])
-def test_audio_inputs_do_not_resolve_another_accounts_ids(account, other, monkeypatch):
+def test_audio_inputs_voices_and_clips_do_not_resolve_another_accounts_ids(
+    account, other, monkeypatch
+):
+    from core.inference import audio_inputs, audio_voices
+
     async def fake_transcribe(*_args, **_kwargs):
         return {"text": "private words", "language": None}
 
     monkeypatch.setattr(inference, "_transcribe_audio_result", fake_transcribe)
     record = _save_input(account)
-    root = "/api/inference/audio/inputs"
-    with _client(other) as client:
-        assert client.get(f"{root}/{record['id']}/file").status_code == 404
-        assert (
-            client.post(f"{root}/{record['id']}/transcribe", json = {"model": "m"}).status_code == 404
-        )
-        assert client.delete(f"{root}/{record['id']}").status_code == 404
-    with _client(account) as client:
-        assert client.get(f"{root}/{record['id']}/file").status_code == 200
-        assert (
-            client.post(f"{root}/{record['id']}/transcribe", json = {"model": "m"}).json()["text"]
-            == "private words"
-        )
-        assert client.delete(f"{root}/{record['id']}").json() == {"removed": True}
-
-
-@pytest.mark.parametrize("account,other", [(ALICE, BOB), (BOB, ALICE)])
-def test_saved_voices_do_not_resolve_another_accounts_ids(account, other, monkeypatch):
-    async def fake_transcribe(*_args, **_kwargs):
-        return {"text": "private words", "language": None}
-
-    monkeypatch.setattr(inference, "_transcribe_audio_result", fake_transcribe)
-    voice = _save_voice(account)
+    path = run_as(account, audio_inputs.input_path, record["id"])
+    voice = run_as(account, audio_voices.create, path, {"name": "p"})
     clip = run_as(account, _save, "audio")
-    root = "/api/inference/audio/voices"
+    inputs = f"/api/inference/audio/inputs/{record['id']}"
+    voices = "/api/inference/audio/voices"
+    source = "/api/inference/audio/inputs/source/transcribe"
+    model = {"model": "m"}
     with _client(other) as client:
-        assert voice["id"] not in client.get(root).text
-        assert client.get(f"{root}/{voice['id']}/file").status_code == 404
-        assert client.patch(f"{root}/{voice['id']}", json = {"name": "mine"}).status_code == 404
-        assert client.delete(f"{root}/{voice['id']}").status_code == 404
-        transcribe = "/api/inference/audio/inputs/source/transcribe"
-        assert (
-            client.post(
-                transcribe, params = {"voice_id": voice["id"]}, json = {"model": "m"}
-            ).status_code
-            == 404
-        )
-        assert (
-            client.post(transcribe, params = {"clip_id": clip["id"]}, json = {"model": "m"}).status_code
-            == 404
-        )
-        # A voice cannot be saved from another account's clip either.
-        assert (
-            client.post(
-                root, json = {"source": {"clip_id": clip["id"]}, "name": "stolen"}
-            ).status_code
-            == 404
-        )
+        assert client.get(f"{inputs}/file").status_code == 404
+        assert client.post(f"{inputs}/transcribe", json = model).status_code == 404
+        assert client.delete(inputs).status_code == 404
+        assert voice["id"] not in client.get(voices).text
+        assert client.get(f"{voices}/{voice['id']}/file").status_code == 404
+        assert client.patch(f"{voices}/{voice['id']}", json = {"name": "x"}).status_code == 404
+        assert client.delete(f"{voices}/{voice['id']}").status_code == 404
+        for params in ({"voice_id": voice["id"]}, {"clip_id": clip["id"]}):
+            assert client.post(source, params = params, json = model).status_code == 404
+        stolen = {"source": {"clip_id": clip["id"]}, "name": "stolen"}
+        assert client.post(voices, json = stolen).status_code == 404
     with _client(account) as client:
-        assert [v["id"] for v in client.get(root).json()["voices"]] == [voice["id"]]
-        assert client.get(f"{root}/{voice['id']}/file").status_code == 200
+        assert [v["id"] for v in client.get(voices).json()["voices"]] == [voice["id"]]
+        assert client.get(f"{voices}/{voice['id']}/file").status_code == 200
+        assert client.get(f"{inputs}/file").status_code == 200
+        assert client.post(f"{inputs}/transcribe", json = model).json()["text"] == "private words"
+        assert client.delete(inputs).json() == {"removed": True}
 
 
 def test_inputs_and_voices_live_in_the_accounts_audio_folder(tmp_path):
     from core.inference import audio_inputs, audio_voices
 
-    assert run_as(BOB, audio_inputs.inputs_dir) == (
-        tmp_path / "accounts" / BOB.account_id / "audio" / "inputs"
-    )
-    assert run_as(BOB, audio_voices.voices_dir) == (
-        tmp_path / "accounts" / BOB.account_id / "audio" / "voices"
-    )
+    bob = tmp_path / "accounts" / BOB.account_id / "audio"
+    assert run_as(BOB, audio_inputs.inputs_dir) == bob / "inputs"
+    assert run_as(BOB, audio_voices.voices_dir) == bob / "voices"
     assert run_as(OWNER, audio_inputs.inputs_dir) == tmp_path / "audio" / "inputs"
 
 

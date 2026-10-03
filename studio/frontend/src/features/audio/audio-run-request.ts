@@ -1,41 +1,48 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The request shapes of /audio/inputs, /audio/run and /audio/voices, and the audio a page picked.
-// Free of app imports so the node test runner can load it directly. Clients only ever send ids:
-// the server resolves them to its own files, so nothing here may carry a path or the audio itself.
+// No app imports: the node test runner loads this directly. Clients send ids only, never paths or audio.
 
 /** Mirrors AUDIO_INPUT_MAX_BYTES in studio/backend/utils/upload_limits.py. */
 export const AUDIO_INPUT_MAX_BYTES = 200 * 1024 * 1024;
 
-/** The server clamps references to this many seconds before cloning. */
 export const REFERENCE_MAX_SECONDS = 30;
 
-/** One piece of audio the server already holds, by exactly one id. */
 export type AudioSourceRef =
   | { input_id: string }
   | { clip_id: string }
   | { voice_id: string };
 
-export interface AudioTrim {
-  start_s: number;
-  end_s: number;
-}
-
-export type AudioSourceKind = "input" | "clip" | "voice";
-
-/** The audio a page picked, as the page keeps it across reloads. */
 export interface AudioSourceSelection {
-  kind: AudioSourceKind;
+  kind: "input" | "clip" | "voice";
   id: string;
-  /** The file name, the clip's text, or the voice's name. */
   name: string;
   durationS: number | null;
-  /** Uploads expire on the server; history clips and saved voices do not. */
   expiresAt?: string | null;
-  /** What the clip says when it is already known: a history clip's text, a voice's transcript. */
   transcript?: string | null;
   language?: string | null;
+}
+
+/** A gallery clip as a source: its text doubles as the transcript. */
+export function clipReference(
+  clip: {
+    id: string;
+    prompt: string;
+    duration_s: number | null;
+  },
+  workflow?: string,
+): AudioSourceSelection {
+  // Only Speak and Clone prompts are what the clip says; Convert and Music prompts are labels.
+  const spoken =
+    workflow === undefined || workflow === "speak" || workflow === "clone";
+  return {
+    kind: "clip",
+    id: clip.id,
+    name: clip.prompt || "Generated clip",
+    durationS: clip.duration_s,
+    transcript: spoken ? clip.prompt || null : null,
+    language: null,
+  };
 }
 
 export function sourceRefOf(selection: AudioSourceSelection): AudioSourceRef {
@@ -49,7 +56,6 @@ export function sourceRefOf(selection: AudioSourceSelection): AudioSourceRef {
   }
 }
 
-/** Where the server serves a source's audio. */
 export function sourceFileUrl(selection: AudioSourceSelection): string {
   const id = encodeURIComponent(selection.id);
   switch (selection.kind) {
@@ -62,7 +68,6 @@ export function sourceFileUrl(selection: AudioSourceSelection): string {
   }
 }
 
-/** The transcribe route takes an upload by path, and a history clip or saved voice by query. */
 export function transcribeUrl(ref: AudioSourceRef): string {
   if ("input_id" in ref) {
     return `/api/inference/audio/inputs/${encodeURIComponent(ref.input_id)}/transcribe`;
@@ -74,7 +79,6 @@ export function transcribeUrl(ref: AudioSourceRef): string {
   return `/api/inference/audio/inputs/source/transcribe?${query}`;
 }
 
-/** Whether an upload is past the server's keep-until time. */
 export function selectionExpired(
   selection: AudioSourceSelection | null,
   nowMs: number,
@@ -102,7 +106,7 @@ export interface AudioConvertParams {
 export interface AudioConvertRunRequest {
   workflow: "convert";
   inputs: {
-    source: AudioSourceRef & { trim?: AudioTrim };
+    source: AudioSourceRef;
     target?: AudioSourceRef | null;
     source_text?: string | null;
   };
@@ -119,20 +123,18 @@ export interface AudioTextRunRequest {
   language?: string | null;
   instructions?: string | null;
   inputs?: {
-    reference?: (AudioSourceRef & { trim?: AudioTrim }) | null;
+    reference?: AudioSourceRef | null;
     reference_text?: string | null;
     emotion?: AudioSourceRef | null;
   };
-  options?: Record<string, AudioOptionScalar>;
+  options?: Record<string, boolean | number | string>;
   speed?: number | null;
   seed?: number | null;
   max_tokens?: number | null;
 }
 
-/** A source ref with only its one id and an optional trim, whatever else the caller's object held. */
 function cleanRef(
-  ref: (AudioSourceRef & { trim?: AudioTrim }) | null | undefined,
-  allowTrim = true,
+  ref: AudioSourceRef | null | undefined,
 ): Record<string, unknown> | null {
   if (!ref) return null;
   const out: Record<string, unknown> = {};
@@ -140,18 +142,7 @@ function cleanRef(
     const value = (ref as Record<string, unknown>)[key];
     if (typeof value === "string" && value) out[key] = value;
   }
-  if (Object.keys(out).length !== 1) return null;
-  const trim = (ref as { trim?: AudioTrim }).trim;
-  if (
-    allowTrim &&
-    trim &&
-    Number.isFinite(trim.start_s) &&
-    Number.isFinite(trim.end_s) &&
-    trim.end_s > trim.start_s
-  ) {
-    out.trim = { start_s: trim.start_s, end_s: trim.end_s };
-  }
-  return out;
+  return Object.keys(out).length === 1 ? out : null;
 }
 
 function cleanOptions(
@@ -177,7 +168,7 @@ function buildConvertRunBody(
   const inputs: Record<string, unknown> = {};
   const source = cleanRef(request.inputs?.source);
   if (source) inputs.source = source;
-  const target = cleanRef(request.inputs?.target, false);
+  const target = cleanRef(request.inputs?.target);
   if (target) inputs.target = target;
   const sourceText = request.inputs?.source_text?.trim();
   if (sourceText) inputs.source_text = sourceText;
@@ -209,8 +200,7 @@ function buildConvertRunBody(
   return body;
 }
 
-/** The JSON body of POST /audio/run: the allowed keys only, empty values left out. The route
- *  forbids extra keys, so anything else a caller spread in would be a 422 anyway. */
+/** Allowed keys only, empty values dropped: the route 422s on extra keys. */
 export function buildAudioRunBody(
   request: AudioRunRequest,
 ): Record<string, unknown> {
@@ -228,8 +218,7 @@ export function buildAudioRunBody(
   if (reference) inputs.reference = reference;
   const referenceText = request.inputs?.reference_text?.trim();
   if (referenceText) inputs.reference_text = referenceText;
-  // Trim belongs to the reference only.
-  const emotion = cleanRef(request.inputs?.emotion, false);
+  const emotion = cleanRef(request.inputs?.emotion);
   if (emotion) inputs.emotion = emotion;
   if (Object.keys(inputs).length > 0) body.inputs = inputs;
   const options = cleanOptions(request.options);
@@ -244,13 +233,12 @@ export function buildAudioRunBody(
 }
 
 export interface AudioVoiceCreateRequest {
-  source: AudioSourceRef & { trim?: AudioTrim };
+  source: AudioSourceRef;
   name: string;
   transcript?: string | null;
   language?: string | null;
 }
 
-/** The body of POST /audio/voices, trimmed to the contract's limits. */
 export function buildVoiceCreateBody(
   request: AudioVoiceCreateRequest,
 ): Record<string, unknown> {

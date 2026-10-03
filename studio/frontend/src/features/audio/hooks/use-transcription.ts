@@ -36,7 +36,6 @@ import type {
 import type { AudioHostState } from "./audio-host-state";
 import type { SttSidecar } from "./use-stt-sidecar";
 
-/** Transcribe's work: the transcript and its recovery draft, the recorder, and the transcription run. */
 export function useTranscription({
   active,
   activeRef,
@@ -77,8 +76,7 @@ export function useTranscription({
   const [transcriptError, setTranscriptError] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [micRequestPending, setMicRequestPending] = useState(false);
-  /** Safari and other WebKit builds ship no MediaRecorder, and an http LAN origin is not a secure
-   *  context, so navigator.mediaDevices is undefined. Same check the chat composer uses. */
+  /** WebKit lacks MediaRecorder, and http LAN origins have no navigator.mediaDevices. */
   const recordingSupported = useMemo(
     () => StudioModelDictationAdapter.isSupported(),
     [],
@@ -96,8 +94,6 @@ export function useTranscription({
     recordStreamRef.current = null;
   }, []);
   const stopAndDiscardRecording = useCallback(() => {
-    // Also invalidates a getUserMedia request that has not resolved yet; its eventual stream is
-    // stopped before a MediaRecorder can be created.
     micRequestGeneration.current += 1;
     micPendingGeneration.current = null;
     setMicRequestPending(false);
@@ -311,8 +307,6 @@ export function useTranscription({
       }
       recordStreamRef.current = stream;
       const recorder = createAudioRecorder(stream);
-      // WAV is uncompressed, so on the PCM path the byte cap is reached long before the 30 minute one.
-      // Express it as a duration the timer below already enforces.
       const maxSeconds =
         recorder instanceof PcmRecorder
           ? Math.min(
@@ -323,8 +317,6 @@ export function useTranscription({
       const chunks: Blob[] = [];
       let recordedBytes = 0;
       let limitHit: "duration" | "size" | null = null;
-      // The sidecar rejects anything past 30 minutes, and a timeslice keeps the chunks in our array
-      // rather than inside the browser, so an over-long recording can be stopped at the limit.
       const stopAtLimit = (reason: "duration" | "size") => {
         if (limitHit) return;
         limitHit = reason;
@@ -336,7 +328,6 @@ export function useTranscription({
         try {
           recorder.stop();
         } catch {
-          // Already stopping; the stop handler still runs.
         }
       };
       const durationTimer = window.setTimeout(
@@ -345,7 +336,6 @@ export function useTranscription({
       );
       recorder.addEventListener("dataavailable", (event) => {
         if (event.data.size > 0) {
-          // Stop before appending the chunk that crosses the limit, so what is uploaded is always inside it.
           if (recordedBytes + event.data.size > RECORDING_MAX_BYTES) {
             stopAtLimit("size");
             return;
@@ -368,13 +358,11 @@ export function useTranscription({
           void runTranscription(blob, "Recording", confirmedVersion);
       });
       recorderRef.current = recorder;
-      // A timeslice is what makes the byte cap observable: with none, some browsers hold the whole
-      // recording internally and only emit it on stop.
+      // A timeslice makes the byte cap observable; without one some browsers emit only on stop.
       recorder.start(RECORDING_CHUNK_MS);
       setIsRecording(true);
     } catch {
-      // getUserMedia may have succeeded even if MediaRecorder construction failed, so release that
-      // stream instead of leaving the mic live with no recorder UI to stop it.
+      // Release the stream if MediaRecorder construction failed, or the mic stays live.
       recorderRef.current = null;
       setIsRecording(false);
       stopRecordStream();

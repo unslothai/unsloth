@@ -20,6 +20,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
+  type ReactNode,
   type Ref,
   createContext,
   useContext,
@@ -32,6 +33,7 @@ import type { AudioGalleryClip } from "../api";
 import {
   type AudioSourceSelection,
   REFERENCE_MAX_SECONDS,
+  clipReference,
 } from "../audio-run-request";
 import {
   type AudioSourceStatus,
@@ -43,29 +45,17 @@ import { VoicePicker } from "./voice-picker";
 import { Waveform } from "./waveform";
 import { formatSeconds } from "./waveform-peaks";
 
-const SPOKEN_PROMPT_WORKFLOWS: ReadonlySet<string> = new Set([
-  "speak",
-  "clone",
-]);
-
 /** The gallery clips an input card offers under From history. Provided by the page. */
 const AudioHistoryContext = createContext<readonly AudioGalleryClip[]>([]);
 export const AudioHistoryProvider = AudioHistoryContext.Provider;
+// False while the persistently mounted Audio page is hidden, so no card keeps the mic.
+const AudioActiveContext = createContext(true);
+export const AudioActiveProvider = AudioActiveContext.Provider;
 
 type SourceTab = "upload" | "record" | "history" | "voice";
 
-const AUDIO_ACCEPT = "audio/*,.wav,.mp3,.flac,.ogg,.oga,.opus,.m4a,.aac,.webm";
-const NATIVE_AUDIO_EXTS = [
-  "wav",
-  "mp3",
-  "flac",
-  "ogg",
-  "oga",
-  "opus",
-  "m4a",
-  "aac",
-  "webm",
-];
+const AUDIO_EXTS = "wav mp3 flac ogg oga opus m4a aac webm mp4".split(" ");
+const AUDIO_ACCEPT = `audio/*,${AUDIO_EXTS.map((ext) => `.${ext}`).join(",")}`;
 
 const SOURCE_LABEL: Record<AudioSourceSelection["kind"], string> = {
   input: "Upload",
@@ -74,17 +64,26 @@ const SOURCE_LABEL: Record<AudioSourceSelection["kind"], string> = {
 };
 
 export interface AudioSourceInputHandle {
-  /** Moves focus to the card, for "Add reference audio" actions. */
   focus: () => void;
-  /** Opens the file picker. */
   browse: () => void;
-  /** Shows the card's expired state, for an upload the server no longer has. */
   markExpired: () => void;
 }
 
-/** One audio input as the shared card: drop a file anywhere on it, pick one, record, reuse a
- *  history clip or a saved voice. A picked file shows its length and waveform as soon as it
- *  decodes, while it uploads. */
+function AlertLine({ children }: { children: ReactNode }) {
+  return (
+    <p
+      role="alert"
+      className="flex items-start gap-1.5 text-ui-12 leading-snug text-foreground"
+    >
+      <HugeiconsIcon
+        icon={Alert02Icon}
+        className="mt-0.5 size-3.5 shrink-0 text-destructive"
+      />
+      {children}
+    </p>
+  );
+}
+
 export function AudioSourceInput({
   id,
   label,
@@ -96,7 +95,10 @@ export function AudioSourceInput({
   allowSavedVoice = true,
   handleRef,
   onStatusChange,
-  maxSeconds = REFERENCE_MAX_SECONDS,
+  maxRecordSeconds,
+  expiredMessage = REFERENCE_EXPIRED_MESSAGE,
+  usesFirstSeconds = REFERENCE_MAX_SECONDS,
+  recordHint = "Read a sentence or two in a quiet room.",
 }: {
   id: string;
   label: string;
@@ -107,12 +109,15 @@ export function AudioSourceInput({
   allowHistory?: boolean;
   allowSavedVoice?: boolean;
   handleRef?: Ref<AudioSourceInputHandle>;
-  /** Hears what the card is doing (uploading, failed, expired), for the page's Generate blocker. */
   onStatusChange?: (status: AudioSourceStatus) => void;
-  /** How much of the clip a run uses: a clone reference 30 s, a Convert source its own cap. */
-  maxSeconds?: number;
+  maxRecordSeconds?: number;
+  /** The card's copy defaults to a clone reference; other pages pass their own. */
+  expiredMessage?: string;
+  usesFirstSeconds?: number | null;
+  recordHint?: string;
 }) {
-  const source = useAudioSource({ value, onChange });
+  const active = useContext(AudioActiveContext);
+  const source = useAudioSource({ value, onChange, maxRecordSeconds, active });
   const history = useContext(AudioHistoryContext);
   const [tab, setTab] = useState<SourceTab>("upload");
   const [dragging, setDragging] = useState(false);
@@ -135,7 +140,7 @@ export function AudioSourceInput({
     markExpired: source.expire,
   }));
 
-  // Tauri hands drops over as paths; read them through the native side as the image picker does.
+  // Tauri hands drops over as paths.
   const nativeDropRef = useNativeDropTarget({
     enabled: !disabled,
     onDragOver: setDragging,
@@ -144,7 +149,7 @@ export function AudioSourceInput({
       const path = paths[0];
       if (!path) return;
       const extension = path.split(".").pop()?.toLowerCase() ?? "";
-      if (!NATIVE_AUDIO_EXTS.includes(extension)) {
+      if (!AUDIO_EXTS.includes(extension)) {
         source.fail(
           "This is not an audio file. Pick a WAV, MP3, FLAC, OGG or M4A file.",
         );
@@ -165,10 +170,7 @@ export function AudioSourceInput({
   ];
 
   const durationS = preview.durationS ?? value?.durationS ?? null;
-  const name =
-    uploading && status.phase === "uploading"
-      ? status.name
-      : (value?.name ?? "");
+  const name = status.phase === "uploading" ? status.name : (value?.name ?? "");
 
   return (
     // biome-ignore lint/a11y/noNoninteractiveTabindex: the card takes focus so "Add reference audio" can bring the user to it.
@@ -240,16 +242,7 @@ export function AudioSourceInput({
 
       {status.phase === "expired" ? (
         <div className="grid gap-2">
-          <p
-            role="alert"
-            className="flex items-start gap-1.5 text-ui-12 leading-snug text-foreground"
-          >
-            <HugeiconsIcon
-              icon={Alert02Icon}
-              className="mt-0.5 size-3.5 shrink-0 text-destructive"
-            />
-            {REFERENCE_EXPIRED_MESSAGE}
-          </p>
+          <AlertLine>{expiredMessage}</AlertLine>
           <Button
             type="button"
             variant="outline"
@@ -311,11 +304,13 @@ export function AudioSourceInput({
             <output className="text-ui-11p5 text-muted-foreground">
               Loading the clip…
             </output>
-          ) : durationS !== null && durationS > maxSeconds ? (
+          ) : usesFirstSeconds !== null &&
+            durationS !== null &&
+            durationS > usesFirstSeconds ? (
             <p className="text-ui-11p5 leading-snug text-muted-foreground">
-              {maxSeconds % 60 === 0 && maxSeconds >= 60
-                ? `Uses the first ${maxSeconds / 60} min.`
-                : `Uses the first ${maxSeconds} s.`}
+              {usesFirstSeconds % 60 === 0 && usesFirstSeconds >= 60
+                ? `Uses the first ${usesFirstSeconds / 60} min.`
+                : `Uses the first ${usesFirstSeconds} s.`}
             </p>
           ) : null}
         </div>
@@ -323,16 +318,7 @@ export function AudioSourceInput({
         <div className="grid gap-3">
           {status.phase === "error" ? (
             <div className="grid gap-2">
-              <p
-                role="alert"
-                className="flex items-start gap-1.5 text-ui-12 leading-snug text-foreground"
-              >
-                <HugeiconsIcon
-                  icon={Alert02Icon}
-                  className="mt-0.5 size-3.5 shrink-0 text-destructive"
-                />
-                {status.message}
-              </p>
+              <AlertLine>{status.message}</AlertLine>
               <div className="flex flex-wrap gap-2">
                 <Button
                   type="button"
@@ -410,7 +396,7 @@ export function AudioSourceInput({
                     </span>
                   </>
                 ) : (
-                  "Read a sentence or two in a quiet room."
+                  recordHint
                 )}
               </output>
             </div>
@@ -428,19 +414,7 @@ export function AudioSourceInput({
                       type="button"
                       disabled={disabled}
                       onClick={() =>
-                        onChange({
-                          kind: "clip",
-                          id: clip.id,
-                          name: clip.prompt || "Generated clip",
-                          durationS: clip.duration_s,
-                          // Only Speak and Clone clips say their prompt; Convert and Music prompts are labels.
-                          transcript: SPOKEN_PROMPT_WORKFLOWS.has(
-                            clipWorkflow(clip),
-                          )
-                            ? clip.prompt || null
-                            : null,
-                          language: null,
-                        })
+                        onChange(clipReference(clip, clipWorkflow(clip)))
                       }
                       className="flex w-full min-w-0 items-center gap-2 rounded-full px-3 py-1.5 text-left text-ui-13 transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >

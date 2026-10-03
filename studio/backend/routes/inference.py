@@ -18715,8 +18715,6 @@ async def _load_model_impl(
             has_video_input = _model_info.get("has_video_input", False),
             audio_family = _model_info.get("audio_family"),
             audio_options = _model_info.get("audio_options"),
-            # audio.cpp names its workflows (a clone-only model offers no Speak); others derive
-            # them.
             audio_workflows = _model_info.get("audio_workflows"),
             audio_reference_text = _model_info.get("audio_reference_text"),
             audio_required_inputs = _model_info.get("audio_required_inputs"),
@@ -21475,12 +21473,6 @@ def _audio_model_label(model_name: Optional[str]) -> str:
     return label or "This model"
 
 
-def _audio_option_text(value: Any) -> str:
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    return str(value).strip().lower()
-
-
 def _audio_request_problem(
     model_info: dict,
     model_name: Optional[str],
@@ -21488,10 +21480,7 @@ def _audio_request_problem(
     payload: ChatCompletionRequest,
     run_inputs: Optional[dict],
 ) -> Optional[str]:
-    """Why the loaded model cannot serve this request as asked, in words for the user; else None.
-
-    Checked before generation so a missing transcript or description is a 400 naming it, not a
-    runtime failure, and a clone-only model is never sent a request with no voice to clone."""
+    """Why the loaded model cannot serve this request, in words for the user; else None."""
     workflows = model_info.get("audio_workflows")
     label = _audio_model_label(model_name)
     inputs = (run_inputs or {}).get("audio_inputs") or {}
@@ -21517,12 +21506,8 @@ def _audio_request_problem(
             rules.get("reference_text") == "required"
             and not str((run_inputs or {}).get("reference_text") or "").strip()
         ):
-            options = payload.audio_options or {}
-            waived = any(
-                name in options and _audio_option_text(options[name]) in values
-                for name, values in rules.get("reference_text_waived") or []
-            )
-            if not waived:
+            from core.inference.audio_cpp_models import option_matches
+            if not option_matches(rules.get("reference_text_waived") or [], payload.audio_options):
                 return "Type what's said in the reference clip."
     elif (
         workflows is not None
@@ -21584,11 +21569,9 @@ async def _generate_tts_wav(
     stats_holder: Optional[dict] = None,
 ) -> tuple[bytes, int, str, Optional[str]]:
     """Shared core of /audio/generate, /audio/speech and /audio/run. Returns
-    (wav_bytes, sample_rate, model_name, audio_type).
-
-    ``run_inputs`` (/audio/run only) carries ``workflow``, ``audio_inputs`` (role -> server-local
-    WAV path the route resolved in the caller's account), ``reference_text``, ``speed`` and
-    ``convert``; a conversion fills ``audio_inputs`` via ``prepare_audio_inputs(model_info)``."""
+    (wav_bytes, sample_rate, model_name, audio_type). ``run_inputs`` is /audio/run's ``workflow``,
+    ``audio_inputs`` (role -> server-local WAV path), ``reference_text``, ``speed`` and ``convert``;
+    a conversion fills ``audio_inputs`` via ``prepare_audio_inputs(model_info)``."""
     # A named target must be budgeted against its own context after preflight.
     if requested_model == _RELOAD_ONLY_MODEL:
         _raise_if_prompt_leaves_no_speech_budget(text)
@@ -21757,7 +21740,6 @@ async def _generate_tts_wav(
             if isinstance(e, AudioBackendUnsupportedError):
                 logger.info("Audio generation unsupported on this backend: %s", e.detail)
                 raise HTTPException(status_code = 501, detail = e.message)
-            # The runtime said why ("CosyVoice3 requires reference audio"): show that, sanitized.
             if isinstance(e, AudioRuntimeError):
                 status_code, detail = audio_runtime_http_error(e)
                 logger.warning("Audio generation refused by the runtime: %s", e)
@@ -21797,8 +21779,7 @@ def _persist_tts_clip(
     source_wav: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
     """Best-effort gallery save: persistence never fails the request that produced
-    the audio. Blocking, so callers run it off the event loop. ``extra_meta`` adds run
-    fields (role, voice_id, settings); it never carries a server path."""
+    the audio. Blocking, so callers run it off the event loop."""
     from core.inference import audio_gallery
     from core.inference.audio_workflows import workflow_for_audio_type
 
@@ -21935,7 +21916,7 @@ def _audio_source_error(exc) -> HTTPException:
 
 
 def _audio_run_settings(body: AudioRunRequest, reference_text_used: bool) -> dict[str, Any]:
-    """The run's recipe for history: scalar options only, never a file or server path."""
+    """The run's recipe for history: scalar options only."""
     options = {
         str(name): value
         for name, value in (body.options or {}).items()
@@ -22014,8 +21995,6 @@ async def _run_audio_convert(
                     audio_inputs.prepared_path(
                         item,
                         int(rules.get(f"{role}_rate") or 16000),
-                        "mono",
-                        refs[role].trim.model_dump() if refs[role].trim is not None else None,
                         max_seconds = max_seconds[role],
                     )
                 )
@@ -22091,37 +22070,28 @@ async def run_audio_workflow(
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
-    """Run one Audio page workflow (Clone, Speak in a saved voice, or Convert) and save the clip to
-    history.
-
-    Audio is named by id (an upload, a history clip or a saved voice) and resolved here, in the
-    caller's account, to a prepared 24 kHz mono copy; the worker receives that path, never bytes
-    and never a path the client chose."""
+    """Clone, Speak in a saved voice, or Convert, and save the clip to history. Audio is named by id and
+    resolved here in the caller's account; the worker gets a prepared copy's path, never bytes."""
     from core.inference import audio_inputs
 
     if body.workflow == "convert":
         return await _run_audio_convert(body, request, current_subject)
-    reference_ref = body.inputs.reference
-    if body.workflow == "clone" and reference_ref is None:
+    if body.workflow == "clone" and body.inputs.reference is None:
         raise HTTPException(status_code = 400, detail = "Add a reference clip to clone.")
-    paths: dict[str, str] = {}
-    reference_source = None
+    prepared = {}
     try:
-        if reference_ref is not None:
-            reference_source, reference_path = await asyncio.to_thread(
-                audio_inputs.prepare_reference, reference_ref.model_dump(exclude_none = True)
-            )
-            paths["reference"] = str(reference_path)
-        if body.inputs.emotion is not None:
-            _emotion_source, emotion_path = await asyncio.to_thread(
-                audio_inputs.prepare_reference, body.inputs.emotion.model_dump(exclude_none = True)
-            )
-            paths["emotion"] = str(emotion_path)
+        for role in ("reference", "emotion"):
+            ref = getattr(body.inputs, role)
+            if ref is not None:
+                prepared[role] = await asyncio.to_thread(
+                    audio_inputs.prepare_reference, ref.model_dump(exclude_none = True)
+                )
     except audio_inputs.AudioInputError as exc:
         raise _audio_source_error(exc) from None
+    paths = {role: str(path) for role, (_source, path) in prepared.items()}
+    reference_source = prepared["reference"][0] if "reference" in prepared else None
     reference_text = (body.inputs.reference_text or "").strip() or None
     if reference_text is None and reference_source is not None and reference_source.kind == "voice":
-        # A saved voice carries its own transcript.
         from core.inference import audio_voices
         voice = await asyncio.to_thread(audio_voices.get, reference_source.id)
         reference_text = ((voice or {}).get("transcript") or "").strip() or None
@@ -44309,7 +44279,6 @@ async def clear_gallery_audio(
     from core.inference.gallery_flags import FlagsUnavailable
 
     try:
-        # A workflow scopes the clear to that page's clips.
         removed = await asyncio.to_thread(audio_gallery.clear, workflow = workflow)
     except FlagsUnavailable as exc:
         logger.warning("audio_gallery.clear_blocked: %s", exc)
@@ -44321,9 +44290,6 @@ async def clear_gallery_audio(
     return {"removed": removed}
 
 
-# Audio inputs: clips the user gives the Audio page, named by id, kept for a day.
-
-
 @studio_router.post("/audio/inputs", status_code = 201, response_model = AudioInputRecord)
 async def upload_audio_input(
     request: Request,
@@ -44331,10 +44297,8 @@ async def upload_audio_input(
     name: str = Query("audio", max_length = 255),
     current_subject: str = Depends(get_current_subject),
 ):
-    """Store a raw audio body (any container) for the Audio page, decoded once to WAV.
-
-    The body is streamed to disk and refused with 413 the moment it passes the cap; the same audio
-    uploaded again returns the existing record with 200."""
+    """Store a raw audio body (any container), decoded once to WAV; a re-upload of the same audio
+    returns the existing record with 200."""
     from core.inference import audio_inputs
     from utils.upload_limits import AUDIO_INPUT_MAX_BYTES
 
@@ -44383,11 +44347,8 @@ async def transcribe_audio_input(
     voice_id: Optional[str] = Query(None, max_length = 128),
     current_subject: str = Depends(get_current_subject),
 ):
-    """What is said in an input (or, with the path id ``source``, a history clip or saved voice).
-
-    Runs on the dictation sidecar and saves nothing: unlike /audio/transcribe/raw?stream=true no
-    transcript lands in history. A clone reference is cut to its first 30 s, so the transcript
-    covers what is cloned."""
+    """What is said in an input (or, with the path id ``source``, a history clip or saved voice),
+    over the first 30 s a clone uses. Saves nothing to the transcript history."""
     from core.inference import audio_inputs
     from core.inference.audio_cpp_convert import CONVERT_SOURCE_MAX_SECONDS
 
@@ -44405,7 +44366,7 @@ async def transcribe_audio_input(
             cap = CONVERT_SOURCE_MAX_SECONDS
         else:
             cap = None if source.kind == "voice" else audio_inputs.REFERENCE_MAX_SECONDS
-        path = audio_inputs.prepared_path(source, 16000, "mono", None, max_seconds = cap)
+        path = audio_inputs.prepared_path(source, 16000, max_seconds = cap)
         return path.read_bytes()
 
     try:
@@ -44422,9 +44383,6 @@ async def transcribe_audio_input(
     )
 
 
-# Saved voices: a reference clip and its transcript, kept until deleted.
-
-
 @studio_router.get("/audio/voices", response_model = AudioVoiceListResponse)
 async def list_audio_voices(current_subject: str = Depends(get_current_subject)):
     from core.inference import audio_voices
@@ -44438,11 +44396,9 @@ async def create_audio_voice(
     from core.inference import audio_inputs, audio_voices
     def _create() -> dict:
         source = audio_inputs.resolve_source(body.source.model_dump(exclude_none = True))
-        trim = body.source.trim.model_dump() if body.source.trim else None
         return audio_voices.create(
             source.path,
             {"name": body.name, "transcript": body.transcript, "language": body.language},
-            trim,
         )
 
     try:

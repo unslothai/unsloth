@@ -101,7 +101,10 @@ function ConvertInputs({
           allowSavedVoice={false}
           handleRef={convert.sourceHandle}
           onStatusChange={convert.setSourceStatus}
-          maxSeconds={caps?.source_max_seconds ?? 300}
+          usesFirstSeconds={caps?.source_max_seconds ?? 300}
+          maxRecordSeconds={caps?.source_max_seconds ?? 300}
+          expiredMessage="This recording expired. Add it again."
+          recordHint="Speak or sing what to convert."
         />
       </div>
 
@@ -143,6 +146,8 @@ function ConvertInputs({
             disabled={disabled}
             handleRef={convert.targetHandle}
             onStatusChange={convert.setTargetStatus}
+            usesFirstSeconds={30}
+            expiredMessage="This voice clip expired. Add it again."
           />
         )}
       </div>

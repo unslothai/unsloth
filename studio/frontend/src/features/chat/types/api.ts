@@ -252,7 +252,6 @@ export interface LoadModelResponse {
   diffusion_requested_ngl?: number | null;
   is_audio?: boolean;
   audio_type?: string | null;
-  /** Audio page workflows the loaded model can run, as in the status response. */
   audio_workflows?: string[] | null;
   has_audio_input?: boolean;
   has_video_input?: boolean;
@@ -380,8 +379,6 @@ export interface InferenceStatusResponse {
   audio_options?: unknown;
   /** Audio page workflows the loaded model can run ("speak", "clone", "music", "transcribe"); empty when it is not an audio model. */
   audio_workflows?: string[] | null;
-  /** Clone: whether the model needs the reference clip's transcript ("required"), can use it
-   *  ("optional") or ignores it ("unused"); null when the model does not clone. */
   audio_reference_text?: "required" | "optional" | "unused" | null;
   audio_options_by_workflow?: Record<string, unknown> | null;
   /** e.g. {"clone": "clon", "convert": "vc", "convert:singing": "svc"}; a task other than audio_server_task reloads. */
@@ -389,7 +386,7 @@ export interface InferenceStatusResponse {
   audio_server_task?: string | null;
   audio_convert_route?: string | null;
   audio_convert?: AudioConvertCaps | null;
-  /** Request inputs the loaded model's spec marks required (Maya1: "instruct", its voice description). */
+  /** e.g. Maya1: "instruct" (its voice description). */
   audio_required_inputs?: string[] | null;
   has_audio_input?: boolean;
   has_video_input?: boolean;

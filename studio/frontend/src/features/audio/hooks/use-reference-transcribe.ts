@@ -8,34 +8,15 @@ import { transcribeAudioInput } from "../api";
 import { type AudioSourceSelection, sourceRefOf } from "../audio-run-request";
 import { sttEngineForRepoId, sttSidecarKeyFor } from "../catalog";
 
-/** The speech-to-text model the page uses: Transcribe's pick, else the dictation model from
- *  Settings > Voice. */
-export function referenceSttModel(sttRepo: string | null): {
-  model: string;
-  engine: string;
-} {
-  if (sttRepo) {
-    return {
-      model: sttSidecarKeyFor(sttRepo),
-      engine: sttEngineForRepoId(sttRepo),
-    };
-  }
-  const model = useVoiceSettingsStore.getState().sttModel;
-  return { model, engine: sttEngineFor(model) };
-}
-
-/** Fills "What's said in the clip" from the reference, without adding it to the transcript list. */
+/** Fills "What's said in the clip" without adding it to the transcript list. No language hint:
+ *  the page's language is the output's, and a cross-lingual reference is not in it. */
 export function useReferenceTranscribe({
   sttRepo,
-  language,
   onText,
   purpose = "reference",
 }: {
-  /** Transcribe's selected or last speech-to-text repo, if any. */
   sttRepo: string | null;
-  /** The clone language, as a hint; empty lets the model detect it. */
-  language: string;
-  onText: (text: string) => void;
+  onText: (text: string, reference: AudioSourceSelection) => void;
   /** "convert" transcribes up to Convert's cap instead of the 30 s clone reference. */
   purpose?: "reference" | "convert";
 }) {
@@ -53,13 +34,14 @@ export function useReferenceTranscribe({
       setTranscribing(true);
       setError(null);
       try {
-        const target = referenceSttModel(sttRepo);
+        const voice = useVoiceSettingsStore.getState();
+        const model = sttRepo ? sttSidecarKeyFor(sttRepo) : voice.sttModel;
         const result = await transcribeAudioInput(
           sourceRefOf(reference),
           {
-            ...target,
-            device: useVoiceSettingsStore.getState().sttDevice,
-            ...(language ? { language } : {}),
+            model,
+            engine: sttRepo ? sttEngineForRepoId(sttRepo) : sttEngineFor(model),
+            device: voice.sttDevice,
             purpose,
           },
           controller.signal,
@@ -67,7 +49,7 @@ export function useReferenceTranscribe({
         if (controller.signal.aborted) return;
         const text = result.text.trim();
         if (text) {
-          onTextRef.current(text);
+          onTextRef.current(text, reference);
         } else {
           setError(
             "No speech was heard in the clip. Type what's said instead.",
@@ -85,24 +67,10 @@ export function useReferenceTranscribe({
         setTranscribing(false);
       }
     },
-    [sttRepo, language, purpose],
+    [sttRepo, purpose],
   );
-
-  const cancel = useCallback(() => {
-    abort.current?.abort();
-    abort.current = null;
-    setTranscribing(false);
-  }, []);
 
   useEffect(() => () => abort.current?.abort(), []);
 
-  return {
-    transcribe,
-    transcribing,
-    error,
-    clearError: () => setError(null),
-    cancel,
-  };
+  return { transcribe, transcribing, error };
 }
-
-export type ReferenceTranscribe = ReturnType<typeof useReferenceTranscribe>;

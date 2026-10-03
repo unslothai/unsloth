@@ -136,14 +136,18 @@ export function useConvertGeneration({
 
   const transcriber = useReferenceTranscribe({
     sttRepo,
-    language: "",
     purpose: "convert",
-    onText: (next) => useAudioConvertStore.getState().setSourceText(next),
+    // A transcript that finishes after the recording changed belongs to the old one.
+    onText: (next, recording) => {
+      const store = useAudioConvertStore.getState();
+      if (
+        store.source?.kind === recording.kind &&
+        store.source.id === recording.id
+      ) {
+        store.setSourceText(next);
+      }
+    },
   });
-  // A transcription still running for the previous recording must not fill in the new one's text.
-  const sourceKey = source ? `${source.kind}:${source.id}` : null;
-  const cancelTranscribe = transcriber.cancel;
-  useEffect(() => cancelTranscribe(), [sourceKey, cancelTranscribe]);
 
   const toolContext = useMemo(
     () =>
@@ -402,6 +406,7 @@ export function useConvertGeneration({
         text: `${sourceSelection.name} → ${
           targetSelection?.name ?? state.builtinVoice
         }`,
+        workflow: "convert",
         refreshGallery,
         selectClip,
         setFallbackClip,

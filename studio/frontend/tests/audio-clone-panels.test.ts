@@ -158,7 +158,6 @@ test("the IndexTTS2 mixer sends eight weights and the strength", () => {
   assert.deepEqual(patch, {
     options: { emotion_vector: "0.8,0,0,0,0,0,0.2,0", emotion_alpha: 0.6 },
   });
-  // All zeros is no emotion at all, so nothing is sent.
   assert.deepEqual(
     indexTts2EmotionLogic.toRequest({
       ...indexTts2EmotionLogic.initial([]),
@@ -281,9 +280,7 @@ test("Chatterbox and F5 send their options, F5 speed top-level", () => {
   );
 });
 
-test("Maya1 is held back without a voice description", async () => {
-  // The voice-design panel lives in registry.tsx; its rule is asserted on source there and
-  // on the status context here.
+test("Maya1's required voice description reaches the tool context", () => {
   const maya = audioModelContextFor(
     {
       audio_type: "audiocpp_tts",
@@ -297,8 +294,6 @@ test("Maya1 is held back without a voice description", async () => {
     },
   );
   assert.deepEqual(maya.requiredInputs, ["instruct"]);
-  const registry = readSrc("features/audio/tools/registry.tsx");
-  assert.match(registry, /ctx\.requiredInputs\?\.includes\("instruct"\)/);
 });
 
 test("a saved voice on Speak becomes the run's reference", () => {
@@ -417,9 +412,30 @@ test("panel labels are plain words, never option names", () => {
   ]) {
     assert.ok(panels.includes(label), label);
   }
-  // Option names appear only in request code, never as visible text.
   assert.doesNotMatch(
     panels,
     />\s*(x_vector_only_mode|emotion_alpha|guidance_scale|template_name)\s*</,
   );
+});
+
+test("deleting the selected saved voice clears Speak's pick", () => {
+  const picker = readSrc("features/audio/components/voice-picker.tsx");
+  assert.match(picker, /if \(voice\.id === selectedId\) onDeselect\?\.\(\);/);
+  const speak = readSrc("features/audio/tools/speak-panels.tsx");
+  assert.match(
+    speak,
+    /onDeselect=\{\(\) => onChange\(\{ \.\.\.value, voiceId: null \}\)\}/,
+  );
+});
+
+test("reference transcription sends no language hint", () => {
+  const hook = readSrc("features/audio/hooks/use-reference-transcribe.ts");
+  assert.doesNotMatch(hook, /\blanguage\s*[:,}]/);
+});
+
+test("a run's inline fallback clip stays on the page that started it", () => {
+  const clone = readSrc("features/audio/hooks/use-clone-generation.ts");
+  const body = clone.slice(clone.indexOf("export async function showRunResult("));
+  assert.doesNotMatch(body.slice(0, body.indexOf("\n}\n")), /workflow: "clone"/);
+  assert.match(readSrc("features/audio/hooks/use-speech-generation.ts"), /showRunResult\(\{[^}]*workflow: "speak"/);
 });

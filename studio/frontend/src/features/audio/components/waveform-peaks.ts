@@ -1,13 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Bar heights for a waveform, from decoded samples. Free of app imports so the node test runner
-// can load it directly.
+// Free of app imports so the node test runner can load it directly.
 
 export const WAVEFORM_BARS = 72;
 
-/** One height per bar in 0..1: the loudest sample in that slice across channels, scaled so the
- *  loudest bar reaches 1. Silence stays at 0, so the bars read flat rather than amplified noise. */
+/** Per-bar peak across channels, normalised so the loudest bar is 1; silence stays 0. */
 export function computePeaks(
   channels: readonly Float32Array[],
   bars: number = WAVEFORM_BARS,
@@ -38,7 +36,6 @@ export function computePeaks(
   return peaks.map((peak) => Math.min(1, peak / loudest));
 }
 
-/** Seconds as m:ss, or h:mm:ss past an hour. */
 export function formatSeconds(seconds: number | null | undefined): string {
   if (seconds === null || seconds === undefined || !Number.isFinite(seconds))
     return "0:00";

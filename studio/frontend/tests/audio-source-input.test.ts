@@ -24,16 +24,16 @@ test("a picked file uploads with progress, draws at once, then is ready", () => 
   let state = audioSourceReducer(INITIAL_AUDIO_SOURCE_STATE, {
     type: "upload-start",
     name: "voice.wav",
+    key: "local:1",
   });
   assert.deepEqual(state.status, {
     phase: "uploading",
     name: "voice.wav",
     progress: 0,
   });
-  // Drawn from the local decode before the upload finishes.
   state = audioSourceReducer(state, {
     type: "preview",
-    key: "local",
+    key: "local:1",
     peaks: [0.2, 1],
     durationS: 4.7,
     url: "blob:x",
@@ -50,7 +50,6 @@ test("a picked file uploads with progress, draws at once, then is ready", () => 
   assert.equal(state.status.phase === "uploading" && state.status.progress, 1);
   state = audioSourceReducer(state, { type: "upload-done", key: "input:abc" });
   assert.equal(state.status.phase, "ready");
-  // The drawing carries over to the uploaded id, so it is not fetched again.
   assert.equal(state.preview.key, "input:abc");
   assert.deepEqual(state.preview.peaks, [0.2, 1]);
 });
@@ -59,12 +58,12 @@ test("a local decode that finishes after a fast upload still draws the card", ()
   let state = audioSourceReducer(INITIAL_AUDIO_SOURCE_STATE, {
     type: "upload-start",
     name: "voice.wav",
+    key: "local:1",
   });
-  // The upload wins the race against the browser's decode.
   state = audioSourceReducer(state, { type: "upload-done", key: "input:abc" });
   state = audioSourceReducer(state, {
     type: "preview",
-    key: "local",
+    key: "local:1",
     peaks: [0.5, 1],
     durationS: 4.7,
     url: "blob:x",
@@ -72,11 +71,10 @@ test("a local decode that finishes after a fast upload still draws the card", ()
   assert.equal(state.preview.key, "input:abc");
   assert.deepEqual(state.preview.peaks, [0.5, 1]);
   assert.equal(state.preview.durationS, 4.7);
-  // A later pick moves on, and an old local decode no longer draws over it.
   state = audioSourceReducer(state, { type: "load-start", key: "voice:v1" });
   state = audioSourceReducer(state, {
     type: "preview",
-    key: "local",
+    key: "local:1",
     peaks: [0.1],
     durationS: 1,
     url: "blob:y",
@@ -85,10 +83,35 @@ test("a local decode that finishes after a fast upload still draws the card", ()
   assert.equal(state.preview.peaks, null);
 });
 
+test("a slow decode of an earlier pick does not draw on the next one", () => {
+  let state = audioSourceReducer(INITIAL_AUDIO_SOURCE_STATE, {
+    type: "upload-start",
+    name: "first.wav",
+    key: "local:1",
+  });
+  state = audioSourceReducer(state, { type: "upload-done", key: "input:a" });
+  state = audioSourceReducer(state, {
+    type: "upload-start",
+    name: "second.wav",
+    key: "local:2",
+  });
+  state = audioSourceReducer(state, {
+    type: "preview",
+    key: "local:1",
+    peaks: [0.9],
+    durationS: 9,
+    url: "blob:first",
+  });
+  assert.equal(state.preview.key, "local:2");
+  assert.equal(state.preview.peaks, null);
+  assert.equal(state.preview.url, null);
+});
+
 test("a failed upload shows its reason; an expired one says so", () => {
   const uploading = audioSourceReducer(INITIAL_AUDIO_SOURCE_STATE, {
     type: "upload-start",
     name: "a.mp3",
+    key: "local:1",
   });
   assert.deepEqual(
     audioSourceReducer(uploading, {
@@ -161,7 +184,6 @@ test("a too-large or empty file is refused before any upload, at the server's 20
     audioFileProblem({ size: 10, type: "", name: "take.m4a" }),
     null,
   );
-  // The hook checks before uploading.
   assert.ok(
     hook.indexOf("audioFileProblem(") < hook.indexOf("uploadAudioInput(file"),
   );
@@ -201,35 +223,73 @@ test("the whole card is the drop target, with every way in", () => {
   for (const tab of ["Upload", "Record", "From history", "Saved voice"]) {
     assert.ok(card.includes(`label: "${tab}"`), tab);
   }
-  // The shared card: squircle, 4xl radius, a one-pixel ring and no shadow.
   assert.match(
     card,
     /corner-squircle grid gap-3 rounded-4xl bg-card p-4 ring-1/,
   );
   assert.doesNotMatch(card, /shadow-/);
-  // Duration and waveform come from a local decode, started before the upload.
   assert.ok(
     hook.indexOf('void drawBlob("local", file)') <
       hook.indexOf("await uploadAudioInput("),
   );
-  assert.match(hook, /decodeAudioData/);
+  assert.match(hook, /await decodePeaks\(blob\)/);
 });
 
-test("a history pick carries a transcript only from Speak and Clone clips", () => {
+test("a superseded microphone request releases its stream", () => {
+  const hook = readSrc("features/audio/hooks/use-audio-source.ts");
   assert.match(
-    card,
-    /SPOKEN_PROMPT_WORKFLOWS[^=]*=\s*new Set\(\[\s*"speak",\s*"clone",?\s*\]\)/,
+    hook,
+    /if \(recorderRef\.current \|\| acquiring\.current\) return;/,
+  );
+  assert.match(
+    hook,
+    /if \(ticket !== acquisition\.current \|\| !activeRef\.current\) \{\s*for \(const track of stream\.getTracks\(\)\) track\.stop\(\);/,
+  );
+  // Leaving the Audio page ends a recording.
+  assert.match(
+    hook,
+    /activeRef\.current = active;\s*if \(!active\) stopRecording\(\);/,
   );
   assert.match(
     card,
-    /transcript: SPOKEN_PROMPT_WORKFLOWS\.has\(\s*clipWorkflow\(clip\),?\s*\)\s*\?\s*clip\.prompt \|\| null\s*:\s*null/,
+    /useAudioSource\(\{ value, onChange, maxRecordSeconds, active \}\)/,
   );
+  assert.match(
+    hook,
+    /const abortAll = useCallback\(\(\) => \{\s*acquisition\.current \+= 1;/,
+  );
+});
+
+test("the chooser accepts MP4 like the drop check does", () => {
+  const input = readSrc("features/audio/components/audio-source-input.tsx");
+  assert.match(input, /const AUDIO_EXTS = "[^"]*\bmp4\b/);
+});
+
+test("picking a new source clears an earlier error", () => {
+  const hook = readSrc("features/audio/hooks/use-audio-source.ts");
+  assert.match(
+    hook,
+    /seenKey\.current = valueKey;\s*if \(valueKey && \(phase === "error" \|\| phase === "expired"\)\)\s*dispatch\(\{ type: "reset" \}\);/,
+  );
+});
+
+test("a history pick carries a transcript only from Speak and Clone clips", async () => {
+  assert.match(card, /onChange\(clipReference\(clip, clipWorkflow\(clip\)\)\)/);
+  const { clipReference } = await import(
+    "../src/features/audio/audio-run-request.ts"
+  );
+  const clip = { id: "c", prompt: "Hello there.", duration_s: 2 };
+  assert.equal(clipReference(clip, "speak").transcript, "Hello there.");
+  assert.equal(clipReference(clip, "clone").transcript, "Hello there.");
+  // Convert and Music prompts are labels, not what the clip says.
+  assert.equal(clipReference(clip, "convert").transcript, null);
+  assert.equal(clipReference(clip, "music").transcript, null);
 });
 
 test("a new selection clears the old one's error or expiry so it loads", () => {
   assert.match(
     hook,
-    /if \(changed && \(phase === "error" \|\| phase === "expired"\)\) \{\s*dispatch\(\{ type: "reset" \}\);/,
+    /if \(valueKey && \(phase === "error" \|\| phase === "expired"\)\)\s*dispatch\(\{ type: "reset" \}\);/,
   );
   const failed = audioSourceReducer(INITIAL_AUDIO_SOURCE_STATE, {
     type: "fail",
@@ -241,17 +301,9 @@ test("a new selection clears the old one's error or expiry so it loads", () => {
   );
 });
 
-test("a microphone granted after the card unmounted is released, not recorded", () => {
-  assert.match(
-    hook,
-    /if \(!mounted\.current\) \{\s*for \(const track of stream\.getTracks\(\)\) track\.stop\(\);\s*return;/,
-  );
-  assert.match(hook, /return \(\) => \{\s*mounted\.current = false;/);
-});
-
 test("an upload that replaces a selection clears it, so a failed upload cannot run the old one", () => {
   assert.match(
     hook,
-    /dispatch\(\{ type: "upload-start", name: fileName \}\);\s*(\/\/[^\n]*\n\s*)?onChangeRef\.current\(null\);/,
+    /dispatch\(\{ type: "upload-start", name: fileName, key: localKey \}\);\s*(\/\/[^\n]*\n\s*)?onChangeRef\.current\(null\);/,
   );
 });

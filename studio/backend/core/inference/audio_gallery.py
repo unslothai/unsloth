@@ -212,7 +212,6 @@ def _record(
         flags = gallery_flags.read(gallery_dir())
     return {
         **meta,
-        # Clips saved before the field existed take it from their audio type.
         "workflow": _workflow(meta),
         "id": audio_id,
         "url": f"/api/inference/audio/gallery/{audio_id}/file",
@@ -504,7 +503,6 @@ def clear(include_archived: bool = False, workflow: Optional[str] = None) -> int
                 _sidecar_path(path.stem).unlink()
             except OSError:
                 pass
-        # A scoped clear keeps the other workflow's flags, so it never resets the store.
         if include_archived and workflow is None and not gallery_flags.is_trusted(directory):
             gallery_flags.reset_locked(directory)
         else:

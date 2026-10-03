@@ -25,10 +25,7 @@ test("a clone run sends ids only, with the contract's keys", () => {
     language: "English",
     instructions: "  ",
     inputs: {
-      reference: {
-        input_id: "a".repeat(32),
-        trim: { start_s: 0, end_s: 12.5 },
-      },
+      reference: { input_id: "a".repeat(32) },
       reference_text: " Okay, I'm Cemo. ",
       emotion: { clip_id: "c1" },
     },
@@ -41,10 +38,7 @@ test("a clone run sends ids only, with the contract's keys", () => {
     text: "Hello",
     language: "English",
     inputs: {
-      reference: {
-        input_id: "a".repeat(32),
-        trim: { start_s: 0, end_s: 12.5 },
-      },
+      reference: { input_id: "a".repeat(32) },
       reference_text: "Okay, I'm Cemo.",
       emotion: { clip_id: "c1" },
     },
@@ -79,7 +73,7 @@ test("a convert run sends the source, the target and the convert settings, and n
   const body = buildAudioRunBody({
     workflow: "convert",
     inputs: {
-      source: { clip_id: "c1", trim: { start_s: 1, end_s: 9 } },
+      source: { clip_id: "c1" },
       target: { voice_id: "v1" },
       source_text: "  Hello there.  ",
     },
@@ -90,7 +84,7 @@ test("a convert run sends the source, the target and the convert settings, and n
   assert.deepEqual(body, {
     workflow: "convert",
     inputs: {
-      source: { clip_id: "c1", trim: { start_s: 1, end_s: 9 } },
+      source: { clip_id: "c1" },
       target: { voice_id: "v1" },
       source_text: "Hello there.",
     },
@@ -210,7 +204,6 @@ test("api.ts sends run and voice bodies only through the builders", () => {
   assert.match(api, /body: JSON\.stringify\(buildAudioRunBody\(request\)\)/);
   assert.match(api, /body: JSON\.stringify\(buildVoiceCreateBody\(request\)\)/);
   assert.match(api, /"\/api\/inference\/audio\/run"/);
-  // Uploads are the raw bytes, never base64 in JSON.
   assert.match(api, /xhr\.send\(blob\)/);
   assert.match(api, /body: blob,/);
   assert.doesNotMatch(api, /voice_ref/);

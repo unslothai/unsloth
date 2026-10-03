@@ -31,6 +31,7 @@ from core.inference.audio_cpp_models import (
     AudioCppModelError,
     CloneSpec,
     forget,
+    option_matches,
     require_runnable,
     resolve,
     validate_options,
@@ -93,7 +94,7 @@ _LANGUAGE_NAMES = {
     "it": "Italian",
 }
 _SPEAKER_LINE_RE = re.compile(r"^\s*Speaker\s*\d+\s*:", re.IGNORECASE | re.MULTILINE)
-# F5's speed range; the runtime takes any float but outside it the speech is unusable.
+# F5's usable speed range.
 _MIN_SPEED, _MAX_SPEED = 0.5, 2.0
 
 
@@ -106,7 +107,6 @@ def model_info_fields(model: AudioCppModel) -> dict[str, Any]:
         "audio_workflows": list(model.workflows),
         "audio_reference_text": model.clone.reference_text if model.clone else None,
         "audio_required_inputs": list(model.required_inputs),
-        # Internal: what the /audio/run route checks before a clone request reaches the worker.
         "audio_clone": clone_rules(model),
         "audio_options_by_workflow": (
             {"convert": [dict(option) for option in model.convert_options]}
@@ -140,13 +140,11 @@ def clone_rules(model: AudioCppModel) -> Optional[dict[str, Any]]:
             [name, list(values)] for name, values in clone.reference_text_waived
         ],
         "emotion_audio": clone.emotion_audio,
-        "input_rate": clone.input_rate,
     }
 
 
 def language_name(language: Optional[str]) -> Optional[str]:
-    """``en`` -> ``English`` for runtimes that read language names; None for Auto or an unknown
-    code."""
+    """``en`` -> ``English``; None for Auto or an unknown code."""
     text = str(language or "").strip()
     if not text or text.lower() == "auto":
         return None
@@ -161,8 +159,7 @@ def language_name(language: Optional[str]) -> Optional[str]:
 
 
 def speech_input(model: AudioCppModel, text: str) -> str:
-    """The speech text as the family wants it: VibeVoice refuses a script with no ``Speaker N:``
-    line."""
+    """VibeVoice refuses a script with no ``Speaker N:`` line."""
     if model.family == "vibevoice" and not _SPEAKER_LINE_RE.search(text or ""):
         return f"Speaker 1: {text}"
     return text
@@ -174,13 +171,6 @@ def _option_string(value: Any) -> str:
     if isinstance(value, float) and value.is_integer():
         return str(int(value)) if abs(value) < 1e15 else repr(value)
     return str(value)
-
-
-def _reference_text_dropped(clone: CloneSpec, options: dict) -> bool:
-    for name, values in clone.reference_text_dropped:
-        if name in options and _option_string(options[name]).lower() in values:
-            return True
-    return False
 
 
 class AudioCppBackend:
@@ -440,8 +430,6 @@ class AudioCppBackend:
             raise
         except AudioCppRequestError as exc:
             from core.inference.audio_errors import AudioRuntimeError
-
-            # Typed so the route can show the runtime's reason ("CosyVoice3 requires reference audio").
             raise AudioRuntimeError(
                 f"The audio runtime could not generate audio: {exc.detail}", status = exc.status
             ) from exc
@@ -554,10 +542,10 @@ class AudioCppBackend:
         options: dict,
         cancel_event,
     ) -> bytes:
-        """Speak ``text`` in the voice of ``audio_inputs["reference"]``, a server-local WAV path.
+        """Speak ``text`` in the voice of ``audio_inputs["reference"]`` (a server-local WAV path).
 
-        The speech endpoint takes the path as ``voice_ref``. An emotion clip has no field there, so
-        that request goes to /v1/tasks/run with the clip as top-level ``audio`` (S1)."""
+        An emotion clip has no field on the speech endpoint, so that request goes to /v1/tasks/run
+        with the clip as top-level ``audio``."""
         clone = model.clone or CloneSpec()
         reference = audio_inputs.get("reference")
         if not reference:
@@ -577,7 +565,7 @@ class AudioCppBackend:
         if (
             transcript
             and clone.reference_text != "unused"
-            and not _reference_text_dropped(clone, request_options)
+            and not option_matches(clone.reference_text_dropped, options)
         ):
             body["reference_text"] = transcript
         if language and str(language).strip():

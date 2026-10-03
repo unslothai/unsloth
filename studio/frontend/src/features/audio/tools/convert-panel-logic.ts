@@ -5,8 +5,9 @@
 
 import type { AudioOptionSpec } from "../audio-options";
 import type { ConvertStyle } from "../audio-run-request";
-import type { AudioToolPanelLogic } from "./panel-logic";
-import type { AudioModelContext } from "./types";
+import type { AudioModelContext, AudioToolPanel } from "./types";
+
+type AudioToolPanelLogic<V> = Omit<AudioToolPanel<V>, "Component">;
 
 const clamp = (value: number, min: number, max: number) =>
   Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : min;

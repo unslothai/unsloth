@@ -547,7 +547,6 @@ export interface CachedGgufRepo {
    *  Images picker can show only diffusion GGUFs. */
   task?: string | null;
   audio_type?: string | null;
-  /** Audio page workflows this row can run ("speak", "music", "transcribe"); absent for non-audio rows. */
   audio_workflows?: string[] | null;
   /** True when some quant has a download manifest or cancel marker. Optional for older-backend compatibility. */
   has_variant_state?: boolean;
@@ -658,7 +657,6 @@ export interface LocalModelInfo {
   task?: string | null;
   /** Detected output-audio architecture or codec used by Audio runtime policy. */
   audio_type?: string | null;
-  /** Audio page workflows this row can run ("speak", "music", "transcribe"); absent for non-audio rows. */
   audio_workflows?: string[] | null;
 }
 
@@ -698,7 +696,6 @@ export interface CachedModelRepo {
   task?: string | null;
   /** Detected output-audio architecture or codec used by Audio runtime policy. */
   audio_type?: string | null;
-  /** Audio page workflows this row can run ("speak", "music", "transcribe"); absent for non-audio rows. */
   audio_workflows?: string[] | null;
   /** True when the snapshot is incomplete: such a repo must not count as downloaded, or a click
    *  re-downloads the full weights. */

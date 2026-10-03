@@ -8,18 +8,13 @@ import {
   isAudioCppFolderId,
 } from "./audio-cpp-catalog";
 
-/** What to call a model on screen. A Hub repo is its id; a checkpoint trained here is an output
- *  directory, and the full path in a toast reads as a bug. */
 export function audioModelLabel(id: string): string {
-  // A package folder of the shared GGUF repo is known by its folder name, as the Hub shows it.
   if (isAudioCppFolderId(id)) return audioCppDisplayName(id);
   if (!/^(?:[a-zA-Z]:[\\/]|[\\/]|~)/.test(id)) return id;
   const leaf = id.split(/[\\/]/).filter(Boolean).pop() ?? id;
-  // Training stamps the output directory with an epoch; it means nothing to a reader.
   return leaf.replace(/_\d{10,}$/, "");
 }
 
-/** The load toast's kind: the codec or runtime name, except for the GGUF runtime's internal ones. */
 export function loadedAudioKind(audioType: string | null | undefined): string {
   if (audioType === AUDIO_CPP_TTS_AUDIO_TYPE) return "speech";
   if (audioType === AUDIO_CPP_MUSIC_AUDIO_TYPE) return "music";
