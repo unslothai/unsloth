@@ -330,6 +330,16 @@ test("the host renders Separate's rail, footer and output and the page reuses th
   assert.match(host, /ttsWorkflow === "separate" \? \(\s*<SeparateOutput/);
   assert.match(host, /ttsWorkflow === "separate"\s*\? separate\.blocker/);
   assert.match(host, /reason: "The loaded model separates audio\."/);
+  // Trained speech checkpoints are not separation models.
+  assert.match(
+    host,
+    /ttsWorkflow === "clone" \|\| ttsWorkflow === "separate"\s*\? \[\]/,
+  );
+  // A stem sent to Transcribe mid-run would be dropped when the run stops.
+  assert.match(
+    host,
+    /target\.workflow === "transcribe"\) \{[^}]*busyRef\.current !== null/,
+  );
   const page = readSrc("features/audio/pages/separate-page.tsx");
   assert.match(page, /<AudioSourceInput\s+id="separate-source"/);
   assert.match(page, /Converted to 44\.1 kHz automatically/);

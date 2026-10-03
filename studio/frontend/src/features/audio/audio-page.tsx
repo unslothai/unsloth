@@ -614,6 +614,11 @@ export function AudioPage({
         return;
       }
       if (target.workflow === "transcribe") {
+        // As in sendHandlersFor: switching mid-run would stop the run and drop the stem.
+        if (busyRef.current !== null) {
+          toast.info("Wait for the current audio task to finish, then send the stem.");
+          return;
+        }
         let file: File;
         try {
           const blob = await fetchAudioBlob(clip.url);
@@ -967,7 +972,7 @@ export function AudioPage({
               additionalOnDeviceModels={
                 mode === "transcribe"
                   ? sttOnDeviceModels
-                  : ttsWorkflow === "clone"
+                  : ttsWorkflow === "clone" || ttsWorkflow === "separate"
                     ? []
                     : trainedTtsModels.filter(
                       (model) =>

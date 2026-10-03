@@ -5101,6 +5101,7 @@ class AudioGalleryItem(BaseModel):
         None,
         description = "Unpinned sort key (epoch-second scale): the manual key once dragged, else the file mtime",
     )
+    group_id: Optional[str] = Field(None, description = "Clips made by one run share this id")
     role: Optional[str] = Field(None, description = "The clip's part in its run, e.g. output")
     source_clip_id: Optional[str] = Field(
         None, description = "History clip the run took its reference from"

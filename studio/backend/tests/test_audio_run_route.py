@@ -615,6 +615,10 @@ def test_a_separation_prepares_44k_and_saves_every_stem_as_one_group(sep, tmp_pa
     with _client(ALICE) as client:
         listed = client.get("/api/inference/audio/gallery").text
     assert str(tmp_path) not in listed and ".separate-" not in listed
+    # The listing keeps the group, so history shows the run as one item.
+    stems = [c for c in json.loads(listed)["audio"] if c["workflow"] == "separate"]
+    assert len(stems) == 6 and {c["group_id"] for c in stems} == {body["group_id"]}
+    assert {c["role"] for c in stems} == set(SIX_STEMS)
 
 
 def test_a_mono_track_reaches_the_runtime_as_44k_mono(sep):
