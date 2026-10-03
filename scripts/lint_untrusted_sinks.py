@@ -246,6 +246,10 @@ SINKS: dict[str, tuple[tuple[int, ...], frozenset[str]]] = {
     "__import__": ((0,), frozenset({"name"})),
     "importlib.util.spec_from_file_location": ((1,), frozenset({"location"})),
     "spec_from_file_location": ((1,), frozenset({"location"})),
+    # The loaders behind it, used directly: `SourceFileLoader(name, path).load_module()`.
+    "importlib.machinery.SourceFileLoader": ((1,), frozenset({"path"})),
+    "importlib.machinery.SourcelessFileLoader": ((1,), frozenset({"path"})),
+    "importlib.machinery.ExtensionFileLoader": ((1,), frozenset({"path"})),
     "load_source": ((1,), frozenset()),
     # `path` is the keyword this takes, and an empty set meant the named spelling was
     # inspected neither positionally nor by keyword.
@@ -321,6 +325,7 @@ SINKS: dict[str, tuple[tuple[int, ...], frozenset[str]]] = {
     "pickle.Unpickler": ((0,), frozenset({"file"})),
     # joblib pickles under the hood, reducers and all.
     "joblib.load": ((0,), frozenset({"filename"})),
+    "pandas.read_pickle": ((0,), frozenset({"filepath_or_buffer"})),
     # Running a file or module by path executes it outright.
     "runpy.run_path": ((0,), frozenset({"path_name"})),
     "runpy.run_module": ((0,), frozenset({"mod_name"})),
@@ -2305,6 +2310,10 @@ class _TaintPass(ast.NodeVisitor):
                 "PureWindowsPath",
                 # In-memory streams over downloaded bytes: `pickle.load(io.BytesIO(...))`.
                 "io.BytesIO",
+                # Decoding a payload does not make its bytes anyone else's.
+                "base64.b64decode",
+                "base64.urlsafe_b64decode",
+                "base64.decodebytes",
                 "io.StringIO",
                 "os.path.basename",
                 "os.path.normpath",
@@ -3550,6 +3559,15 @@ class _TaintPass(ast.NodeVisitor):
         """`settings.update(json.loads(blob))` taints `settings`."""
         if not isinstance(node.func, ast.Attribute):
             return
+        # `plugin.write_bytes(response.content)` fills the file at that path, so a
+        # later `runpy.run_path(plugin)` executes the untrusted bytes.
+        if node.func.attr in ("write_bytes", "write_text"):
+            for argument in node.args[:1]:
+                reason = self.tainted(argument)
+                if reason:
+                    self._assign(node.func.value, reason)
+                    return
+            return
         if node.func.attr not in self._MUTATORS:
             return
         for argument in list(node.args) + [k.value for k in node.keywords]:
@@ -3818,6 +3836,21 @@ class _TaintPass(ast.NodeVisitor):
             return f"{module}.{constructed}" if module else ""
         return constructed
 
+    def _check_namespace_call(self, node: ast.Call) -> None:
+        """`globals()[name]()` or `vars(module)[name]()`: getattr by mapping."""
+        if not isinstance(node.func, ast.Subscript):
+            return
+        holder = node.func.value
+        namespace = (
+            isinstance(holder, ast.Call)
+            and _call_name(holder.func) in ("globals", "vars", "locals")
+        ) or (isinstance(holder, ast.Attribute) and holder.attr == "__dict__")
+        if not namespace:
+            return
+        reason = self.tainted(node.func.slice)
+        if reason:
+            self._record(node, "getattr(module, ...)", reason, _short(node.func.slice))
+
     def _sink_identities(self, argument: ast.expr) -> tuple:
         """The sinks an argument expression refers to, without calling it."""
         if isinstance(argument, ast.IfExp):
@@ -3882,6 +3915,7 @@ class _TaintPass(ast.NodeVisitor):
                     held = held + tuple(self.state.attr_sink_aliases.get(key) or ())
             candidates = [aliased for aliased in held if aliased not in _NOT_TABLE_SINKS]
         if not candidates:
+            self._check_namespace_call(node)
             self._check_getattr(node)
             return
         offset = self.alias_offsets.get(_call_name(node.func), 0)
@@ -4750,8 +4784,8 @@ def _unpinned_code_fetches(facts: _FileFacts, reached: frozenset) -> list[dict]:
             for child in ast.walk(node)
             if isinstance(child, ast.Assign)
             and (
-                # A call or lookup is data choosing the branch, as at the keyword itself.
-                isinstance(child.value, (ast.Call, ast.Subscript))
+                # Anything computed is data choosing the branch, as at the keyword itself.
+                not isinstance(child.value, (ast.Name, ast.Attribute, ast.Constant))
                 or (
                     isinstance(child.value, ast.Constant)
                     and not (
@@ -4790,9 +4824,9 @@ def _unpinned_code_fetches(facts: _FileFacts, reached: frozenset) -> list[dict]:
                 and not (
                     isinstance(keyword.value, ast.Name) and keyword.value.id in unpinned_params
                 )
-                # A revision computed by a call or a lookup (`cfg["revision"]`) is data
+                # Anything computed (a call, a lookup, concatenation, an f-string) is data
                 # choosing the branch, not a pin anyone wrote down.
-                and not isinstance(keyword.value, (ast.Call, ast.Subscript))
+                and isinstance(keyword.value, (ast.Name, ast.Attribute, ast.Constant))
                 for keyword in child.keywords
             ):
                 continue
@@ -5094,6 +5128,9 @@ def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
             "__import__",
             "spec_from_file_location",
             "importlib.util.spec_from_file_location",
+            "importlib.machinery.SourceFileLoader",
+            "importlib.machinery.SourcelessFileLoader",
+            "importlib.machinery.ExtensionFileLoader",
         }
     )
 

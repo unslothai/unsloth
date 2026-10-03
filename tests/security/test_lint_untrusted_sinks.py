@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -50,12 +51,15 @@ def test_the_self_test_passes():
     assert L._self_test() == 0
 
 
-# This one scans the whole repository in a subprocess, which takes minutes. The backend
-# suite runs under `--timeout=330`, and that cap is what failed this test rather than
-# anything about the result, so the marker raises it for this test alone. The
-# authoritative run of the same command is the `lint-ci.yml` step, which has no pytest
-# cap; this test exists so that someone running pytest locally still sees a baseline
-# that has drifted.
+# This one scans the whole repository in a subprocess, which takes minutes. The
+# authoritative run of the same command is the `lint-ci.yml` step, so under GitHub
+# Actions it is skipped: running it again inside every other pytest job duplicated a
+# five minute scan and pushed the workflow guard job past its own timeout. It stays
+# for local pytest, so someone running the suite still sees a baseline that drifted.
+@pytest.mark.skipif(
+    os.environ.get("GITHUB_ACTIONS") == "true",
+    reason = "lint-ci.yml runs the same whole-repository scan as a dedicated step",
+)
 @pytest.mark.timeout(1800)
 def test_the_checker_runs_clean_against_its_baseline():
     """The committed baseline has to match the tree, or the gate is noise on every PR."""
@@ -859,7 +863,7 @@ def test_only_the_fetch_that_reaches_the_import_is_a_code_fetch(tmp_path):
         "import importlib, os, sys\n"
         "from huggingface_hub import snapshot_download\n"
         "def load(repo, weights_repo):\n"
-        "    code = snapshot_download(repo, revision = 'a' * 40)\n"
+        "    code = snapshot_download(repo, revision = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')\n"
         "    weights = snapshot_download(weights_repo)\n"
         "    sys.path.insert(0, os.path.join(code, 'src'))\n"
         "    importlib.import_module('vendored')\n"
@@ -5639,7 +5643,7 @@ def test_pure_path_constructors_keep_taint(tmp_path):
         "from pathlib import PurePath\n"
         "from huggingface_hub import snapshot_download\n"
         "def add(repo):\n"
-        "    sys.path.append(str(PurePath(snapshot_download(repo, revision = 'a' * 40)).parent))\n",
+        "    sys.path.append(str(PurePath(snapshot_download(repo, revision = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')).parent))\n",
     )
     assert "sys.path.append" in _sinks(findings)
 
@@ -5924,7 +5928,7 @@ def test_normcase_shell_executable_and_local_revision_aliases(tmp_path):
         "import asyncio, json, os, sys\n"
         "from huggingface_hub import snapshot_download\n"
         "def a(repo):\n"
-        "    sys.path.append(os.path.normcase(snapshot_download(repo, revision = 'ab' * 20)))\n"
+        "    sys.path.append(os.path.normcase(snapshot_download(repo, revision = 'abababababababababababababababababababab')))\n"
         "async def b(blob):\n"
         "    await asyncio.create_subprocess_shell('echo ok', executable = json.loads(blob)['shell'])\n"
         "def c(repo):\n"
@@ -6025,11 +6029,11 @@ def test_runpy_joblib_and_native_loaders_are_sinks(tmp_path):
         "import ctypes, joblib, runpy\n"
         "from huggingface_hub import hf_hub_download\n"
         "def a(repo):\n"
-        "    runpy.run_path(hf_hub_download(repo, 'plugin.py', revision = 'ab' * 20))\n"
+        "    runpy.run_path(hf_hub_download(repo, 'plugin.py', revision = 'abababababababababababababababababababab'))\n"
         "def b(repo):\n"
-        "    return joblib.load(hf_hub_download(repo, 'model.joblib', revision = 'ab' * 20))\n"
+        "    return joblib.load(hf_hub_download(repo, 'model.joblib', revision = 'abababababababababababababababababababab'))\n"
         "def c(repo):\n"
-        "    return ctypes.CDLL(hf_hub_download(repo, 'plugin.so', revision = 'ab' * 20))\n",
+        "    return ctypes.CDLL(hf_hub_download(repo, 'plugin.so', revision = 'abababababababababababababababababababab'))\n",
     )
     assert {"runpy.run_path", "joblib.load", "ctypes.CDLL"} <= _sinks(findings)
 
@@ -6101,3 +6105,41 @@ def test_an_unparsable_file_fails_closed_and_a_declared_encoding_is_honoured(tmp
     )
     findings = L.scan([latin], roots = [tmp_path])
     assert "importlib.import_module" in _sinks(findings)
+
+
+def test_file_loaders_read_pickle_and_base64_payloads(tmp_path):
+    """`SourceFileLoader`, `pandas.read_pickle` and a base64-wrapped network pickle."""
+    findings = _scan(
+        tmp_path,
+        "import base64, pandas, pickle, requests\n"
+        "from importlib.machinery import SourceFileLoader\n"
+        "from huggingface_hub import hf_hub_download\n"
+        "def a(repo):\n"
+        "    return SourceFileLoader('p', hf_hub_download(repo, 'p.py', revision = 'abababababababababababababababababababab')).load_module()\n"
+        "def b(repo):\n"
+        "    return pandas.read_pickle(hf_hub_download(repo, 'x.pkl', revision = 'abababababababababababababababababababab'))\n"
+        "def c(url):\n"
+        "    return pickle.loads(base64.b64decode(requests.get(url).content))\n",
+    )
+    assert {"importlib.machinery.SourceFileLoader", "pandas.read_pickle", "pickle.loads"} <= _sinks(
+        findings
+    )
+
+
+def test_namespace_calls_computed_revisions_and_written_files(tmp_path):
+    """`globals()[name]()`, `revision = "ma" + "in"`, and `write_bytes` then `run_path`."""
+    findings = _scan(
+        tmp_path,
+        "import json, requests, runpy, sys\n"
+        "from pathlib import Path\n"
+        "from huggingface_hub import snapshot_download\n"
+        "def a(blob):\n"
+        "    return globals()[json.loads(blob)['function']]()\n"
+        "def b(repo):\n"
+        "    sys.path.insert(0, snapshot_download(repo, revision = 'ma' + 'in'))\n"
+        "def c(url):\n"
+        "    plugin = Path('plugin.py')\n"
+        "    plugin.write_bytes(requests.get(url).content)\n"
+        "    runpy.run_path(plugin)\n",
+    )
+    assert {"getattr(module, ...)", "unpinned code fetch", "runpy.run_path"} <= _sinks(findings)
