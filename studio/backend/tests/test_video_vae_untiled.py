@@ -167,3 +167,21 @@ def test_estimate_that_ran_out_of_memory_is_not_retried_untiled(monkeypatch):
     # a smaller clip still tries untiled
     vae.decode(torch.zeros(1, 48, 2, 44, 80))
     assert vae.calls[-2:] == [False, True]
+
+
+def test_wrapper_survives_a_compile_fallback_replacing_the_slot(monkeypatch):
+    # _guard_compiled_decode writes its eager decode back into vae.decode when the compile fails mid-call.
+    vae = FakeVAE()
+    monkeypatch.setattr(U, "_free_bytes", lambda device: 100 * 2**30)
+    eager = vae.decode
+
+    def compiled_then_fails(z, *args, **kwargs):
+        vae.decode = eager
+        return eager(z, *args, **kwargs)
+
+    vae.decode = compiled_then_fails
+    U.install_untiled_decode(_pipe(vae), WAN)
+    wrapper = vae.decode
+    assert wrapper(Z) == ("untiled",)
+    assert vae.decode is wrapper
+    assert vae.decode(Z) == ("untiled",)

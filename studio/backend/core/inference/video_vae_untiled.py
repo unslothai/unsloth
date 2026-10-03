@@ -87,7 +87,7 @@ def install_untiled_decode(
     # Smallest estimate that has run out of memory; larger ones go straight to tiled instead of repeating the OOM.
     oom_need: list = []
 
-    def untiled_when_fits(z: Any, *args: Any, **kwargs: Any) -> Any:
+    def gated(z: Any, *args: Any, **kwargs: Any) -> Any:
         if not getattr(vae, "use_tiling", False):
             return decode(z, *args, **kwargs)
         need = untiled_decode_bytes(
@@ -131,6 +131,14 @@ def install_untiled_decode(
         if logger is not None:
             logger.warning("video.vae_untiled: untiled decode ran out of memory; decoding tiled")
         return decode(z, *args, **kwargs)
+
+    def untiled_when_fits(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return gated(*args, **kwargs)
+        finally:
+            # A failed VAE compile restores its eager decode into this slot; the guarded inner call already runs eager.
+            if vae.__dict__.get("decode") is not untiled_when_fits:
+                vae.decode = untiled_when_fits
 
     untiled_when_fits._unsloth_untiled_decode = True
     untiled_when_fits._unsloth_untiled_stats = stats
