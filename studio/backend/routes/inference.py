@@ -870,7 +870,7 @@ def _is_prefill_progress_only(data) -> bool:
 
 
 class _ProgressKeepalive:
-    """Dropped progress still resets the relay's idle timer, so stand in for the keepalive it starved."""
+    """Stand in ``: prefill-progress`` for dropped progress: feeds the relay idle timer and the durable lease."""
 
     def __init__(self, interval_s: Optional[float]):
         self._interval_s = interval_s
@@ -1907,6 +1907,8 @@ _OPENAI_ADMISSION_SSE_WAIT = ": admission-wait\n\n"
 _OPENAI_ADMISSION_SSE_DONE = ": admission-done\n\n"
 # A server-side tool still running, unlike a stall keep-alive: durable runs renew their lease on it.
 _OPENAI_TOOL_HEARTBEAT_SSE = ": tool-heartbeat\n\n"
+# Prefill advancing with nothing to stream; renews the lease like the tool heartbeat.
+_OPENAI_PREFILL_PROGRESS_SSE = ": prefill-progress\n\n"
 _OPENAI_LLAMA_ADMISSION_POLL_S = 0.25
 # Cap on waiting for a cancelled teardown task. Request.is_disconnected() can swallow
 # cancel() (#7617), so teardown abandons the task rather than hold the response, and
@@ -7084,6 +7086,41 @@ def _monitor_perf_callback(monitor_id: Optional[str], context_length):
     return _callback
 
 
+class _PrefillProgressSignal:
+    """Counts advancing ``prompt_progress`` so the stall loop can send ``: prefill-progress``.
+
+    Native GGUF generators yield nothing until the first token, and ``: keep-alive`` does not renew the lease."""
+
+    def __init__(self, inner):
+        self._inner = inner
+        self._last_processed = None
+        self._advances = 0
+        self._seen = 0
+        self.wants_timings = inner is not None
+
+    @property
+    def needs_phase(self) -> bool:
+        return self._inner is not None and getattr(self._inner, "needs_phase", True)
+
+    def __call__(self, sample: dict) -> None:
+        progress = sample.get("prompt_progress")
+        if isinstance(progress, dict):
+            processed = progress.get("processed")
+            # Any change counts, so a new prefill round (lower count) renews too; a repeat does not.
+            if processed is not None and processed != self._last_processed:
+                self._last_processed = processed
+                self._advances += 1
+        if self._inner is not None:
+            self._inner(sample)
+
+    def advanced(self) -> bool:
+        advances = self._advances
+        if advances == self._seen:
+            return False
+        self._seen = advances
+        return True
+
+
 def _monitor_call_text(name: Any, arguments: Any = None) -> str:
     call_name = str(name or "tool")
     if arguments is None or arguments == "":
@@ -12015,6 +12052,95 @@ def _inherited_ctx_size() -> int:
         return max(0, int(raw))
     except ValueError:
         return 0
+
+
+class _EstimateContextFloor(NamedTuple):
+    """Minimum Auto context and whether GPU layers can move to the CPU."""
+
+    ctx: int
+    can_offload: bool
+
+
+def _estimate_context_floor(
+    n_ctx: Optional[int],
+    llama_extra_args: Optional[list[str]],
+    gpu_memory_mode: Optional[str],
+    gpu_layers: Optional[int],
+    breakdown: Any,
+) -> Optional[_EstimateContextFloor]:
+    """The loader's Auto context floor, or None for a pinned context.
+
+    Manual with Auto layers floors at --fit-ctx; fixed layers can still shrink context (common/fit.cpp).
+    """
+    from core.inference.llama_cpp import (
+        _FIT_FLOOR_MIN_CTX,
+        _FIT_MIN_CTX,
+        _LLAMA_FIT_MIN_CTX,
+        LlamaCppBackend,
+        _env_asks_for_the_native_context,
+        _env_fixes_gpu_layers,
+    )
+    from core.inference.llama_server_args import (
+        _GPU_LAYER_FLAGS,
+        _last_flag_value,
+        fit_ctx_in,
+        fit_is_effectively_on,
+        parse_ctx_override,
+        parse_gpu_layers_override,
+    )
+    from utils.hardware import is_apple_silicon
+
+    if (n_ctx or 0) > 0 or not breakdown.kv_on_gpu or not breakdown.kv_estimable:
+        return None
+    extras = list(llama_extra_args or [])
+    try:
+        # Keep -c 0 pinned even on Metal: checking its fit budget would require MLX.
+        if parse_ctx_override(extras) is not None:
+            return None
+        # The last -ngl wins. llama.cpp also takes "auto" and "all" here.
+        layer_arg = _last_flag_value(extras, _GPU_LAYER_FLAGS)
+    except ValueError:
+        return None
+    if _inherited_ctx_size() > 0:
+        return None
+    if gpu_memory_mode != "manual":
+        # The launch's own --fit on precedes the extras, so only they can turn it off.
+        try:
+            fitter_runs = fit_is_effectively_on(["--fit", "on", *extras], os.environ)
+        except ValueError:
+            return None
+        # Arguments beat the environment; only auto/-1 let the fitter move layers.
+        layers_fixed = _env_fixes_gpu_layers(
+            os.environ if layer_arg is None else {"LLAMA_ARG_N_GPU_LAYERS": layer_arg}
+        )
+        floor_ctx = _FIT_FLOOR_MIN_CTX if is_apple_silicon() else _FIT_MIN_CTX
+        return _EstimateContextFloor(floor_ctx, fitter_runs and not layers_fixed)
+    # Manual /load folds -ngl into gpu_layers and strips --fit.
+    try:
+        layer_override = parse_gpu_layers_override(extras)
+    except ValueError:
+        return None
+    if layer_override is not None:
+        gpu_layers = layer_override
+    if gpu_layers is not None and gpu_layers >= 0:
+        return None
+    # Manual clears inherited fit/layer settings. Use argv, then the launcher's
+    # 8192 when supported, then llama.cpp's 4096.
+    try:
+        fit_ctx = fit_ctx_in(extras)
+    except ValueError:
+        return None
+    if fit_ctx is None and LlamaCppBackend.probe_server_capabilities().get("supports_fit_ctx"):
+        fit_ctx = _FIT_MIN_CTX
+    if fit_ctx is None:
+        # Without --fit-ctx, an inherited zero keeps native context.
+        if _env_asks_for_the_native_context():
+            return None
+        fit_ctx = _LLAMA_FIT_MIN_CTX
+    # Negative wraps unsigned; zero resolves to native context. Neither shrinks.
+    if fit_ctx <= 0:
+        return None
+    return _EstimateContextFloor(fit_ctx, True)
 
 
 def _launch_required_ubatch_for_config(
@@ -19914,7 +20040,10 @@ async def estimate_memory(
     if account_access.managed_account() and not native_access_deferred:
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
     from core.inference.llama_cpp import _args_place_tensors_on_cpu
-    from core.inference.llama_server_args import _effective_tensor_parallel
+    from core.inference.llama_server_args import (
+        _effective_tensor_parallel,
+        strip_split_mode_only,
+    )
 
     request = _resolve_llama_cpp_config(request)
     if _custom_llama_config(request):
@@ -20018,11 +20147,38 @@ async def estimate_memory(
         # Price the files on this disk, not the repository they came from.
         config = _localized_estimate_config(config, gguf_path)
 
-        breakdown = _gguf_memory_breakdown(
+        # A CPU-only launch drops the split flags, so a pin charges no per-device buffers.
+        pinned_gpu_ids = (
+            None
+            if _gguf_offloaded_layer_fraction(
+                request.gpu_memory_mode,
+                request.gpu_layers,
+                None,
+                request.llama_extra_args,
+                device_pin_governs = bool(request.selected_gpu_ids),
+            )
+            == 0.0
+            else request.selected_gpu_ids or None
+        )
+        # Resolved as the breakdown does: extras --split-mode wins, Manual fixed layers drop tensor.
+        tensor_split = (
+            _effective_tensor_parallel(request.llama_extra_args, bool(request.tensor_parallel))
+            and _tensor_split_possible(request.selected_gpu_ids or None)
+            and _manual_keeps_tensor_split(
+                request.gpu_memory_mode,
+                request.gpu_layers,
+                request.llama_extra_args,
+            )
+        )
+        # The probed inventory is the pool: a Vulkan build's _effective_gpu_count sees none of it.
+        device_count = _guard_device_count(
+            pinned_gpu_ids, _cached_inference_devices(), tensor_parallel = tensor_split
+        )
+        price = functools.partial(
+            _gguf_memory_breakdown,
             config,
             gguf_path,
             hf_token = request.hf_token,
-            n_ctx = request.n_ctx or 0,
             llama_extra_args = request.llama_extra_args,
             speculative_type = request.speculative_type,
             n_parallel = resolved_slots,
@@ -20031,46 +20187,7 @@ async def estimate_memory(
             n_batch = request.n_batch,
             n_ubatch = request.n_ubatch,
             ctx_checkpoints = request.ctx_checkpoints,
-            # A layer split across pinned cards replicates the context-linear
-            # compute term and adds per-device pipeline overhead, so the count
-            # matters there too, not just in tensor mode. Automatic placement
-            # stays at one: _guard_device_count makes the same call.
-            n_devices = _guard_device_count(
-                # A pin names cards for a launch that puts something on them. At an
-                # effective layer count of zero the launch is CPU-only and the loader
-                # drops the split flags, so charging the pinned count added per-device
-                # pipeline overhead and replicated the context-linear compute term for
-                # buffers no card allocates: on a two-card pin, 1039 -> 2105 MiB at 4k
-                # and 1417 -> 5129 MiB at 262k. Asked of the same function the panel
-                # prices placement with, so the two cannot disagree.
-                None
-                if _gguf_offloaded_layer_fraction(
-                    request.gpu_memory_mode,
-                    request.gpu_layers,
-                    None,
-                    request.llama_extra_args,
-                    device_pin_governs = bool(request.selected_gpu_ids),
-                )
-                == 0.0
-                else request.selected_gpu_ids or None,
-                # Tensor mode replicates its buffers over the whole pool, and on a
-                # Vulkan build _effective_gpu_count sees none of it. The probed
-                # inventory is the pool; None falls through to the CUDA count as before.
-                _cached_inference_devices(),
-                # Same resolution the breakdown prices with: an extras --split-mode
-                # decides the mode, not the toggle alone, and one card cannot split.
-                tensor_parallel = _effective_tensor_parallel(
-                    request.llama_extra_args, bool(request.tensor_parallel)
-                )
-                and _tensor_split_possible(request.selected_gpu_ids or None)
-                # And the Manual drops, about the layer count rather than the pool: a
-                # tensor count here sizes per-device buffers for a CPU layer split.
-                and _manual_keeps_tensor_split(
-                    request.gpu_memory_mode,
-                    request.gpu_layers,
-                    request.llama_extra_args,
-                ),
-            ),
+            n_devices = device_count,
             disable_vision = bool(request.disable_vision),
             gpu_memory_mode = request.gpu_memory_mode,
             gpu_layers = request.gpu_layers,
@@ -20081,8 +20198,37 @@ async def estimate_memory(
             # otherwise and this must read the same way.
             device_pin_governs = bool(request.selected_gpu_ids),
         )
+        breakdown = price(n_ctx = request.n_ctx or 0)
         if breakdown is None:
             return EstimateMemoryResponse(available = False, reason = "unsizable")
+        context_floor = _estimate_context_floor(
+            request.n_ctx,
+            request.llama_extra_args,
+            request.gpu_memory_mode,
+            request.gpu_layers,
+            breakdown,
+        )
+        floor = None
+        if context_floor is not None and breakdown.n_ctx > context_floor.ctx:
+            floor = price(n_ctx = context_floor.ctx)
+            # A tensor launch can fall back to a layer split on the same cards
+            # (preserve_multi_gpu_on_layer), which replicates compute buffers: take the larger.
+            if floor is not None and tensor_split:
+                layer = price(
+                    n_ctx = context_floor.ctx,
+                    tensor_parallel = False,
+                    # As tensor_fallback.py relaunches.
+                    llama_extra_args = [
+                        *(strip_split_mode_only(request.llama_extra_args) or []),
+                        "--split-mode",
+                        "layer",
+                    ],
+                    n_devices = device_count,
+                )
+                if layer is not None and layer.gpu_bytes > floor.gpu_bytes:
+                    floor = layer
+        elif context_floor is not None:
+            floor = breakdown
         # Shaped through the canonical MemoryEstimate, the same one
         # GET /models/kv-cache-estimate goes through, so the two routes cannot
         # drift apart in vocabulary. The projection is what preserves THIS
@@ -20097,6 +20243,11 @@ async def estimate_memory(
             # below does not carry the field, and inventing a value would put a
             # wrong number on the canonical route for the sake of a non-null.
             quant_file_bytes = 0,
+            gpu_floor_bytes = (
+                None if floor is None else min(int(floor.gpu_bytes), int(breakdown.gpu_bytes))
+            ),
+            floor_can_offload = context_floor is not None and context_floor.can_offload,
+            context_is_pinned = context_floor is None,
             moe_offload_unmodelled = bool(
                 (request.gpu_memory_mode == "manual" and (request.n_cpu_moe or 0) > 0)
                 # Outside Manual the extras keep their expert-placement flags: /load
@@ -21288,6 +21439,7 @@ async def _generate_tts_wav(
     *,
     speech_api_default_max_tokens: bool = False,
     requested_model: str = _RELOAD_ONLY_MODEL,
+    stats_holder: Optional[dict] = None,
 ) -> tuple[bytes, int, str, Optional[str]]:
     """Shared core of /audio/generate and /audio/speech. Returns
     (wav_bytes, sample_rate, model_name, audio_type)."""
@@ -21349,6 +21501,7 @@ async def _generate_tts_wav(
             ),
             repetition_penalty = payload.repetition_penalty,
             cancel_event = _audio_cancel,
+            stats_holder = stats_holder,
         )
     else:
         backend = await asyncio.to_thread(get_inference_backend)
@@ -21381,6 +21534,7 @@ async def _generate_tts_wav(
             language = payload.audio_language,
             seed = payload.seed,
             **({"audio_options": payload.audio_options} if payload.audio_options else {}),
+            stats_holder = stats_holder,
         )
 
     if audio_type not in supported_audio_types:
@@ -21558,6 +21712,7 @@ async def generate_audio(
         raise HTTPException(status_code = 400, detail = "No user message found.")
     text = last_user_msg["content"]
 
+    tts_stats: dict = {}
     wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
         text,
         payload,
@@ -21567,7 +21722,9 @@ async def generate_audio(
         # request model, and without this it stops the hook at its falsey check before
         # the idle-stash restore, failing a request the sibling route serves.
         requested_model = _switch_model_for_payload(payload) or _RELOAD_ONLY_MODEL,
+        stats_holder = tts_stats,
     )
+    truncated = bool((tts_stats.get("stats") or {}).get("truncated"))
     persisted_clip = await asyncio.to_thread(
         _persist_tts_clip, wav_bytes, sample_rate, text, model_name, audio_type
     )
@@ -21587,7 +21744,7 @@ async def generate_audio(
                         "role": "assistant",
                         "content": text,
                     },
-                    "finish_reason": "stop",
+                    "finish_reason": "length" if truncated else "stop",
                 }
             ],
         }
@@ -24350,6 +24507,8 @@ def _extract_content_parts(
             # A reasoning-only turn has no visible content, but still needs a
             # message for templates that consume reasoning_content.
             combined_text = ""
+        elif msg.role == "assistant" and msg.tool_calls:
+            combined_text = ""
 
         if combined_text is None:
             continue
@@ -24364,9 +24523,7 @@ def _extract_content_parts(
         # Carried through: promote_history reads it to decide whether an envelope
         # came from an MCP server, and dropping it here made an unnamed tool
         # message that bypasses the check entirely. Resolved from the call when the
-        # result itself is unnamed: this rebuild drops tool_call_id and the calls,
-        # so the correlation has to happen here or the local path cannot run the
-        # provenance gate at all.
+        # result itself is unnamed.
         if msg.name:
             chat_message["name"] = msg.name
         if msg.role == "tool":
@@ -24375,13 +24532,22 @@ def _extract_content_parts(
                 chat_message["name"] = _tool_name
         if msg.role == "assistant" and msg.reasoning_content:
             chat_message["reasoning_content"] = msg.reasoning_content
+        if msg.tool_calls:
+            chat_message["tool_calls"] = msg.tool_calls
+        if msg.tool_call_id:
+            chat_message["tool_call_id"] = msg.tool_call_id
         chat_messages.append(chat_message)
+
+    # Gated so a history without tool calls renders exactly as before.
+    if any(m.get("tool_calls") for m in chat_messages):
+        chat_messages = _strip_provider_synthetic_tool_history(chat_messages)
 
     # A user's own attachment outranks an assistant-generated one, as the frontend's
     # legacy image_base64 field does. An assistant-only history still falls back.
     return (
         "\n\n".join(p for p in system_parts if p),
-        chat_messages,
+        # Mappings, not JSON strings: Qwen3.5's template renders string arguments as nothing.
+        _structured_tool_history_for_local_template(chat_messages),
         served_images if structured else (latest_user_image_b64 or latest_image_b64),
     )
 
@@ -28286,11 +28452,14 @@ async def produce_openai_chat_completions(
                 )
             )
 
-        _gguf_perf_callback = (
+        _gguf_monitor_callback = (
             _monitor_perf_callback(monitor_id, llama_backend.context_length)
             if not _wants_multiple_choices(payload)
             else None
         )
+        # Only a stream has a stall loop to feed; elsewhere the monitor callback (or None) stands.
+        _gguf_prefill_signal = _PrefillProgressSignal(_gguf_monitor_callback)
+        _gguf_perf_callback = _gguf_prefill_signal if payload.stream else _gguf_monitor_callback
 
         def _gguf_chat_delta_line(delta: ChoiceDelta, finish_reason = None) -> str:
             if delta.reasoning_content is not None and delta.content is None:
@@ -28779,7 +28948,11 @@ async def produce_openai_chat_completions(
                                 )
                                 if done_tasks:
                                     break
-                                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                                yield (
+                                    _OPENAI_PREFILL_PROGRESS_SSE
+                                    if _gguf_prefill_signal.advanced()
+                                    else _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                                )
                                 approval_flush_pending = False
                                 wait_timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S
                             event = next_task.result()
@@ -29474,7 +29647,11 @@ async def produce_openai_chat_completions(
                                 )
                                 if done_tasks:
                                     break
-                                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                                yield (
+                                    _OPENAI_PREFILL_PROGRESS_SSE
+                                    if _gguf_prefill_signal.advanced()
+                                    else _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                                )
                             cumulative = next_task.result()
                         finally:
                             if next_task.done():
@@ -33383,7 +33560,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                             )
                         ):
                             if progress_keepalive.due():
-                                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE.encode()
+                                yield _OPENAI_PREFILL_PROGRESS_SSE.encode()
                             continue
                         out = _cmpl_stream_event_out(event, _include_usage)
                         if out is not None:
@@ -40775,7 +40952,7 @@ def _structured_tool_history_for_local_template(messages: list[dict]) -> list[di
                 if isinstance(args, str):
                     try:
                         parsed = json.loads(args)
-                    except ValueError:
+                    except (ValueError, RecursionError):
                         parsed = None
                     if isinstance(parsed, dict):
                         tc = {**tc, "function": {**fn, "arguments": parsed}}
@@ -40918,6 +41095,10 @@ def _build_openai_passthrough_body(
         if llama_backend is not None
         else None
     )
+    response_format = _response_format_for_llama_server(_extract_response_format(payload))
+    if tools and tool_choice != "none" and _response_format_constrains_decoding(payload):
+        logger.warning("Ignoring response_format: callable tools cannot run under a schema")
+        response_format = None
     body = _build_passthrough_payload(
         messages,
         tools,
@@ -40934,7 +41115,7 @@ def _build_openai_passthrough_body(
         frequency_penalty = payload.frequency_penalty,
         logit_bias = payload.logit_bias,
         tool_choice = tool_choice,
-        response_format = _response_format_for_llama_server(_extract_response_format(payload)),
+        response_format = response_format,
         chat_template_kwargs = tpl_kwargs,
         backend_ctx = backend_ctx,
         seed = payload.seed,
@@ -41810,7 +41991,7 @@ async def _openai_passthrough_stream_admitted(
                     if not client_wants_progress and _is_prefill_progress_only(chunk_data):
                         _monitor_openai_sse_line(monitor_id, raw_line, llama_backend.context_length)
                         if progress_keepalive.due():
-                            yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                            yield _OPENAI_PREFILL_PROGRESS_SSE
                         continue
                     # With healing active, a content-bearing line may be replaced by
                     # held/promoted chunks; otherwise the single (already

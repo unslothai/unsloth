@@ -121,6 +121,11 @@ import {
 import { readThreadCreationClaim } from "../utils/chat-thread-creation-claim";
 import { ggufCompactionRequestFields } from "../utils/auto-compaction";
 import {
+  lengthIncompleteReason,
+  lengthStopCause,
+  windowEvidenceCount,
+} from "./generation-length";
+import {
   studioToolHistoryRequestFields,
   type ToolHistoryMessage,
 } from "../utils/studio-tool-history";
@@ -200,6 +205,7 @@ import { syncModelCapabilities } from "../hooks/use-chat-model-runtime";
 import {
   clampReasoningEffortToLevels,
   externalMaxOutputTokensNeedsConnectionCap,
+  externalStopWindow,
   getExternalMaxOutputTokens,
   getPublishedExternalMaxOutputTokens,
   getGroundedExternalMaxOutputTokens,
@@ -321,6 +327,7 @@ import {
   createContinuationMerger,
   hasRenderableContent,
   incompleteLabel,
+  incompleteReasonAfterError,
   type IncompleteReason,
   noteRunStartedThisSession,
   readIncompleteInfo,
@@ -5619,6 +5626,8 @@ export function createOpenAIStreamAdapter(
       let incompleteReason: IncompleteReason | null = null;
       // MLX reports finish_reason "stop" even at the cap, so an exhausted budget is its only truncation signal.
       let requestedMaxTokens: number | undefined;
+      // Served window: null if unknown, Infinity if only the output cap can bind.
+      let servedContextLength: number | null = null;
       const isMlxRequest = !isExternalRequest && activeModel?.isMlx === true;
       const reasoningDurationTracker = createReasoningDurationTracker();
       if (resumedThought) {
@@ -6110,6 +6119,8 @@ export function createOpenAIStreamAdapter(
         usage?: ServerUsage;
         timings?: ServerTimings;
       } | null = null;
+      // llama.cpp output count, including reasoning.
+      let windowCount: number | null = null;
 
       // Colab-style proxies can swallow fetch aborts, so also POST /inference/cancel explicitly.
       const onAbortCancel = () => {
@@ -6717,6 +6728,16 @@ export function createOpenAIStreamAdapter(
             }
             clearSelectedImageEditReference();
             requestedMaxTokens = requestPayload.max_tokens;
+            // Ignore local settings for external requests; otherwise use loaded values.
+            // Match RAG's fallback order, treating maxSeqLength 0 as unknown.
+            servedContextLength = isExternalRequest
+              ? externalStopWindow(
+                  externalProvider?.providerType,
+                  externalProvider?.baseUrl,
+                )
+              : (runtime.loadedCustomContextLength ??
+                runtime.loadedContextLength ??
+                (params.maxSeqLength || null));
             await ThreadAutosaveHandle.awaitFirstSave(resolvedThreadId);
             if (generationDecision === "pending") {
               // Keyed on `enabled_tools`, never on `requestPayload.tools`: see durable-gate.ts. Keying this on
@@ -6851,27 +6872,7 @@ export function createOpenAIStreamAdapter(
                 : streamChatCompletions(
                     requestPayload,
                     runSignal,
-                    // Only when the request targets the LOCAL model. loadedContextLength
-                    // stays populated for a resident GGUF even while an external model is
-                    // selected, so an external request with a 16K cap was being measured
-                    // against an unrelated 4096-token local window and reported as having
-                    // unlimited Max Tokens and no context left.
-                    // `maxSeqLength` last, and coerced from 0: a local safetensors or
-                    // MLX request on this path has neither GGUF field set, and reading
-                    // that as "no window" makes every context-length stop look like a
-                    // user-set Max Tokens one -- advice to raise a value already at the
-                    // model's maximum. Same order the RAG `context_length` above uses.
-                    // `loadedCustomContextLength`, not `customContextLength`: the
-                    // latter is the EDITABLE field, and the store's own definition of a
-                    // pending edit is the two differing. A model still serving at 4096
-                    // while the field reads 8192 would make its 4096 stop look
-                    // user-imposed, and the toast would advise raising Max Tokens
-                    // instead of reloading at the larger context.
-                    isExternalRequest
-                      ? null
-                      : (runtime.loadedCustomContextLength ??
-                        runtime.loadedContextLength ??
-                        (params.maxSeqLength || null)),
+                    servedContextLength,
                   );
             // Per run, not per module: two turns must not share a cycle.
             const canPublish = createStreamPublishGate();
@@ -7402,13 +7403,16 @@ export function createOpenAIStreamAdapter(
                 continue;
               }
 
+              const chunkTimings = (chunk as Record<string, unknown>).timings as
+                | ServerTimings
+                | undefined;
+              // Timings can arrive without usage.
+              windowCount = windowEvidenceCount(chunkTimings) ?? windowCount;
               // OpenAI usage may arrive in an empty trailing chunk or on the terminal Codex chunk.
               if (chunk.usage) {
                 serverMetadata = {
                   usage: chunk.usage,
-                  timings: (chunk as Record<string, unknown>).timings as
-                    | ServerTimings
-                    | undefined,
+                  timings: chunkTimings,
                 };
                 if (chunk.choices?.length === 0) continue;
               }
@@ -8182,6 +8186,16 @@ export function createOpenAIStreamAdapter(
         ) {
           incompleteReason = "length";
         }
+        if (incompleteReason === "length") {
+          incompleteReason = lengthIncompleteReason(
+            lengthStopCause({
+              cap: requestedMaxTokens ?? null,
+              contextLength: servedContextLength,
+              promptTokens: meta?.usage?.prompt_tokens ?? null,
+              completionTokens: windowCount,
+            }),
+          );
+        }
 
         // Before the lookup below: its network time is not generation time.
         const finishedAt = Date.now();
@@ -8483,15 +8497,16 @@ export function createOpenAIStreamAdapter(
                 // said why the model stopped.
                 incomplete: {
                   reason: resolveIncompleteReason(
-                    // An explicit Stop latched incompleteReason = "cancelled" at the abort
-                    // handler; that outranks the error-derived guess below.
-                    incompleteReason ??
-                        (err instanceof GenerationLengthError
-                            ? ("length" as const)
-                            : err instanceof ChatGenerationTerminalError &&
-                                  err.generationStatus === "cancelled"
-                              ? ("cancelled" as const)
-                              : ("interrupted" as const)),
+                    // Preserve cancellation while refining length stops.
+                    incompleteReasonAfterError(
+                      incompleteReason,
+                      err instanceof GenerationLengthError
+                        ? lengthIncompleteReason(err.stopCause)
+                        : err instanceof ChatGenerationTerminalError &&
+                            err.generationStatus === "cancelled"
+                          ? "cancelled"
+                          : "interrupted",
+                    ),
                     contextWindowExceeded,
                   ),
                 },

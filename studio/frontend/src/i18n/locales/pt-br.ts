@@ -2475,6 +2475,7 @@ export const ptBR = {
       context: "Contexto",
       lr: "LR",
       hardware: "Hardware",
+      vram: "VRAM",
       noGpu: "Nenhuma GPU detectada",
       hfToken: "Token do HF",
       saved: "Salvo",
