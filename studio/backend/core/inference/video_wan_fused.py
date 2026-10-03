@@ -33,7 +33,7 @@ _LOCK = threading.Lock()
 _STATE: dict = {}
 # (device index, temb rank, has norm2 affine) -> True once the fused block matched the stock block bit for bit
 _VERIFIED: dict = {}
-# keys whose self-check already ran out of memory once; a second OOM keeps stock for the load
+# keys whose self-check ran out of memory once (a second OOM caches stock)
 _VERIFY_OOM: set = set()
 # fused block calls since install (engagement evidence for tests and the A/B harness)
 _COUNTS = {"fused": 0, "stock": 0}
@@ -494,8 +494,7 @@ def _verify(block: Any, args: tuple, stock: Callable) -> Optional[bool]:
     None when the check itself ran out of memory (retried once on the next call)."""
     import torch
     try:
-        # A streamed group's onload can still be in flight on the copy stream (diffusers' first group offload pass);
-        # a reference computed from half-copied weights would disable the fused path for the whole load.
+        # a streamed group's onload can still be in flight on the copy stream: a half-copied reference fails the check
         torch.cuda.synchronize(args[0].device)
         with torch.no_grad():
             ref = stock(block, *args)
@@ -557,8 +556,7 @@ def _make_forward(stock: Callable) -> Callable:
         except torch.OutOfMemoryError:
             raise
         except Exception as exc:  # noqa: BLE001
-            # A Triton JIT / launch failure on a shape the self-check did not cover (a new specialization): stock for
-            # this key from now on, instead of failing the render.
+            # JIT / launch failure on a specialization the self-check missed: stock for this key, not a failed render
             _VERIFIED[key] = False
             logger = _STATE.get("logger")
             if logger is not None:
