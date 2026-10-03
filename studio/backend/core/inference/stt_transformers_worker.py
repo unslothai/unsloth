@@ -46,13 +46,6 @@ _CANCEL_GRACE_SECONDS = 10.0
 _SHUTDOWN_TIMEOUT_SECONDS = 10.0
 _POLL_SECONDS = 0.1
 _TIMESTAMPS_PER_SECOND = 50
-_STT_SKIP_BEFORE_SECONDS = "_stt_skip_before_seconds"
-_STT_PREVIOUS_TEXT = "_stt_previous_text"
-_STT_TIMESTAMP_OVERLAP = "_stt_timestamp_overlap"
-_STT_TOKEN_ALIGNMENT = "_stt_token_alignment"
-_STT_TOKEN_TIMESTAMP_TOLERANCE_SECONDS = 0.5
-_STT_TOKEN_ALIGNMENT_TOLERANCE_SECONDS = 0.3
-_STT_TIMESTAMP_STATE_TOKENS = 64
 
 # Errors the child may report that the parent must re-raise as themselves; any other failure crosses as a RuntimeError
 # carrying the child's message.
@@ -144,17 +137,9 @@ def transcribe_window(
 
     segment = np.frombuffer(pcm, dtype = np.float32)
     kwargs = dict(generate_kwargs)
-    skip_before = float(kwargs.pop(_STT_SKIP_BEFORE_SECONDS, 0))
-    previous_text = kwargs.pop(_STT_PREVIOUS_TEXT, "")
-    use_timestamp_overlap = bool(kwargs.pop(_STT_TIMESTAMP_OVERLAP, False))
-    use_token_alignment = bool(kwargs.pop(_STT_TOKEN_ALIGNMENT, False))
     return_timestamps = bool(kwargs.get("return_timestamps"))
-    return_token_timestamps = bool(return_timestamps and use_token_alignment)
     if return_timestamps:
         kwargs["force_unique_generate_call"] = True
-    if return_token_timestamps:
-        kwargs["return_token_timestamps"] = True
-        kwargs["return_dict_in_generate"] = True
     if cancel_event is not None:
         from transformers import StoppingCriteriaList
         kwargs["stopping_criteria"] = StoppingCriteriaList([_CancelCriteria(cancel_event)])
@@ -172,59 +157,15 @@ def transcribe_window(
         features = features.to(target_dtype)
     if return_timestamps:
         kwargs["attention_mask"] = inputs.attention_mask.to(model.device)
-    if return_token_timestamps:
-        hop_length = getattr(getattr(processor, "feature_extractor", None), "hop_length", 160)
-        kwargs["num_frames"] = len(segment) // hop_length
     with torch.no_grad():
         generated = model.generate(features, **kwargs)
     consumed = len(segment)
-    if kwargs.get("return_timestamps"):
-        sequences = generated["sequences"] if return_token_timestamps else generated
-        raw_tokens = [int(token) for token in sequences[0]]
+    if return_timestamps:
+        raw_tokens = [int(token) for token in generated[0]]
         indices, end = _complete_segment_indices(raw_tokens, model.generation_config)
         if end:
             consumed = end * _TARGET_SAMPLE_RATE // _TIMESTAMPS_PER_SECOND
-        if not use_timestamp_overlap:
-            tokens = [raw_tokens[index] for index in indices]
-            processor._stt_timestamp_state = None
-            generated = [tokens]
-            text = processor.batch_decode(generated, skip_special_tokens = True)
-            return (text[0] if text else ""), consumed
-        if return_token_timestamps:
-            text_indices = [
-                index
-                for index in indices
-                if raw_tokens[index] < model.generation_config.eos_token_id
-            ]
-            current_tokens = [raw_tokens[index] for index in text_indices]
-            token_timestamps = generated["token_timestamps"][0]
-            current_timestamps = [float(token_timestamps[index]) for index in text_indices]
-        else:
-            current_tokens, current_timestamps = _segment_token_timestamps(
-                raw_tokens, indices, model.generation_config
-            )
-        previous_state = getattr(processor, "_stt_timestamp_state", None)
-        if skip_before > 0 and previous_text:
-            tokens, state_tokens, state_timestamps = _merge_timestamped_overlap(
-                current_tokens,
-                current_timestamps,
-                skip_before,
-                previous_text,
-                previous_state,
-                processor,
-            )
-        else:
-            tokens = current_tokens
-            state_tokens = current_tokens
-            state_timestamps = current_timestamps
-        processor._stt_timestamp_state = {
-            "tokens": state_tokens[-_STT_TIMESTAMP_STATE_TOKENS:],
-            "timestamps": state_timestamps[-_STT_TIMESTAMP_STATE_TOKENS:],
-            "consumed": consumed / _TARGET_SAMPLE_RATE,
-        }
-        generated = [tokens]
-    else:
-        processor._stt_timestamp_state = None
+        generated = [[raw_tokens[index] for index in indices]]
     text = processor.batch_decode(generated, skip_special_tokens = True)
     return (text[0] if text else ""), consumed
 
@@ -247,183 +188,11 @@ def _complete_segment_indices(tokens: list, generation_config) -> tuple:
     )
 
 
-def _segment_token_timestamps(tokens: list, indices: list, generation_config) -> tuple:
-    timestamp_begin = generation_config.no_timestamps_token_id + 1
-    segment_start = 0.0
-    segment_tokens: list[int] = []
-    text_tokens: list[int] = []
-    token_timestamps: list[float] = []
-    for index in indices:
-        token = tokens[index]
-        if token >= timestamp_begin:
-            segment_end = (token - timestamp_begin) / _TIMESTAMPS_PER_SECOND
-            if segment_tokens:
-                step = max(segment_end - segment_start, 0) / (len(segment_tokens) + 1)
-                text_tokens.extend(segment_tokens)
-                token_timestamps.extend(
-                    segment_start + step * position
-                    for position in range(1, len(segment_tokens) + 1)
-                )
-                segment_tokens = []
-            segment_start = segment_end
-        elif token < generation_config.eos_token_id:
-            segment_tokens.append(token)
-    if segment_tokens:
-        text_tokens.extend(segment_tokens)
-        token_timestamps.extend([segment_start] * len(segment_tokens))
-    return text_tokens, token_timestamps
-
-
-def _supports_timestamp_rewind(generation_config) -> bool:
-    alignment_heads = getattr(generation_config, "alignment_heads", None)
-    return (
-        _supports_segment_timestamps(generation_config)
-        and isinstance(alignment_heads, (list, tuple))
-        and bool(alignment_heads)
-    )
-
-
 def _supports_segment_timestamps(generation_config) -> bool:
     return all(
         isinstance(getattr(generation_config, field, None), int)
         for field in ("no_timestamps_token_id", "eos_token_id")
     )
-
-
-def _merge_timestamped_overlap(
-    current_tokens: list,
-    current_timestamps: list,
-    skip_before: float,
-    previous_text: str,
-    previous_state,
-    processor,
-) -> tuple:
-    previous_tokens = processor.tokenizer.encode(previous_text, add_special_tokens = False)
-    if not isinstance(previous_state, dict):
-        return previous_tokens + current_tokens, current_tokens, current_timestamps
-    previous_state_tokens = previous_state.get("tokens")
-    previous_state_timestamps = previous_state.get("timestamps")
-    previous_consumed = previous_state.get("consumed")
-    if (
-        not isinstance(previous_state_tokens, list)
-        or not isinstance(previous_state_timestamps, list)
-        or len(previous_state_tokens) != len(previous_state_timestamps)
-        or not isinstance(previous_consumed, (int, float))
-    ):
-        return previous_tokens + current_tokens, current_tokens, current_timestamps
-    common_suffix = 0
-    for previous_token, state_token in zip(
-        reversed(previous_tokens), reversed(previous_state_tokens)
-    ):
-        if previous_token != state_token:
-            break
-        common_suffix += 1
-    if common_suffix < 2:
-        return previous_tokens + current_tokens, current_tokens, current_timestamps
-    previous_state_tokens = previous_state_tokens[-common_suffix:]
-    previous_state_timestamps = previous_state_timestamps[-common_suffix:]
-
-    previous_relative = [timestamp - previous_consumed for timestamp in previous_state_timestamps]
-    current_relative = [timestamp - skip_before for timestamp in current_timestamps]
-    previous_start = next(
-        (
-            index
-            for index, timestamp in enumerate(previous_relative)
-            if timestamp >= -skip_before - _STT_TOKEN_TIMESTAMP_TOLERANCE_SECONDS
-        ),
-        len(previous_state_tokens),
-    )
-    current_end = 0
-    for timestamp in current_relative:
-        if timestamp > _STT_TOKEN_TIMESTAMP_TOLERANCE_SECONDS:
-            break
-        current_end += 1
-    previous_overlap = previous_state_tokens[previous_start:]
-    previous_overlap_times = previous_relative[previous_start:]
-    current_overlap = current_tokens[:current_end]
-    current_overlap_times = current_relative[:current_end]
-    # only merge tokens that both decodes place at the same acoustic position
-    matches = _timestamp_aligned_lcs(
-        previous_overlap,
-        previous_overlap_times,
-        current_overlap,
-        current_overlap_times,
-    )
-    if len(matches) < 2 or matches[0][1] > 1 or matches[-1][0] < len(previous_overlap) - 2:
-        return previous_tokens + current_tokens, current_tokens, current_timestamps
-
-    merged_overlap: list[int] = []
-    merged_overlap_times: list[float] = []
-    previous_index = 0
-    current_index = 0
-    # preserve unmatched tokens from both decodes while collapsing aligned tokens
-    for previous_match, current_match in matches:
-        merged_overlap.extend(previous_overlap[previous_index:previous_match])
-        merged_overlap_times.extend(
-            timestamp + skip_before
-            for timestamp in previous_overlap_times[previous_index:previous_match]
-        )
-        merged_overlap.extend(current_overlap[current_index:current_match])
-        merged_overlap_times.extend(current_timestamps[current_index:current_match])
-        merged_overlap.append(current_overlap[current_match])
-        merged_overlap_times.append(current_timestamps[current_match])
-        previous_index = previous_match + 1
-        current_index = current_match + 1
-    merged_overlap.extend(previous_overlap[previous_index:])
-    merged_overlap_times.extend(
-        timestamp + skip_before for timestamp in previous_overlap_times[previous_index:]
-    )
-    merged_overlap.extend(current_overlap[current_index:])
-    merged_overlap_times.extend(current_timestamps[current_index:current_end])
-
-    state_prefix = previous_state_tokens[:previous_start]
-    state_prefix_times = [
-        timestamp - previous_consumed + skip_before
-        for timestamp in previous_state_timestamps[:previous_start]
-    ]
-    state_tokens = state_prefix + merged_overlap + current_tokens[current_end:]
-    state_timestamps = state_prefix_times + merged_overlap_times + current_timestamps[current_end:]
-    previous_prefix = previous_tokens[: len(previous_tokens) - len(previous_state_tokens)]
-    output_tokens = previous_prefix + state_tokens
-    return output_tokens, state_tokens, state_timestamps
-
-
-def _timestamp_aligned_lcs(
-    left_tokens: list, left_timestamps: list, right_tokens: list, right_timestamps: list
-) -> list:
-    lengths = [[0] * (len(right_tokens) + 1) for _ in range(len(left_tokens) + 1)]
-    for left_index, left_token in enumerate(left_tokens, 1):
-        for right_index, right_token in enumerate(right_tokens, 1):
-            aligned = (
-                left_token == right_token
-                and abs(left_timestamps[left_index - 1] - right_timestamps[right_index - 1])
-                <= _STT_TOKEN_ALIGNMENT_TOLERANCE_SECONDS
-            )
-            if aligned:
-                lengths[left_index][right_index] = lengths[left_index - 1][right_index - 1] + 1
-            else:
-                lengths[left_index][right_index] = max(
-                    lengths[left_index - 1][right_index], lengths[left_index][right_index - 1]
-                )
-    matches = []
-    left_index = len(left_tokens)
-    right_index = len(right_tokens)
-    while left_index and right_index:
-        aligned = (
-            left_tokens[left_index - 1] == right_tokens[right_index - 1]
-            and abs(left_timestamps[left_index - 1] - right_timestamps[right_index - 1])
-            <= _STT_TOKEN_ALIGNMENT_TOLERANCE_SECONDS
-        )
-        if aligned:
-            matches.append((left_index - 1, right_index - 1))
-            left_index -= 1
-            right_index -= 1
-        elif lengths[left_index - 1][right_index] >= lengths[left_index][right_index - 1]:
-            left_index -= 1
-        else:
-            right_index -= 1
-    matches.reverse()
-    return matches
 
 
 def _error_response(exc: BaseException) -> dict:
@@ -513,7 +282,6 @@ def run_stt_worker(
                 generation_config = getattr(model, "generation_config", None)
                 is_multilingual = getattr(generation_config, "is_multilingual", None)
                 supports_timestamps = _supports_segment_timestamps(generation_config)
-                supports_token_timestamps = _supports_timestamp_rewind(generation_config)
                 _send(
                     resp_queue,
                     {
@@ -523,7 +291,6 @@ def run_stt_worker(
                             is_multilingual if isinstance(is_multilingual, bool) else None
                         ),
                         "supports_timestamps": supports_timestamps,
-                        "supports_token_timestamps": supports_token_timestamps,
                     },
                 )
             elif kind == "transcribe":
@@ -699,7 +466,6 @@ class WhisperWorker:
         self.generation_config = SimpleNamespace(
             is_multilingual = response.get("is_multilingual"),
             supports_timestamps = response.get("supports_timestamps") is True,
-            supports_token_timestamps = response.get("supports_token_timestamps") is True,
         )
 
     def transcribe_window(
@@ -941,7 +707,6 @@ class InProcessWhisperEngine:
         self.generation_config = SimpleNamespace(
             is_multilingual = is_multilingual if isinstance(is_multilingual, bool) else None,
             supports_timestamps = _supports_segment_timestamps(generation_config),
-            supports_token_timestamps = _supports_timestamp_rewind(generation_config),
         )
         logger.info("STT model loaded in process on the CPU from %s", snapshot_path)
 

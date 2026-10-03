@@ -60,7 +60,6 @@ _STT_WINDOW_SILENCE_LOOKBACK_SECONDS = 3
 _STT_ENERGY_FRAME_SECONDS = 0.02
 _STT_MIN_SILENCE_SECONDS = 0.1
 _STT_SILENCE_ENERGY_RATIO = 0.01
-_STT_TIMESTAMP_REWIND_SECONDS = 1
 
 # Non-weight files WhisperProcessor/WhisperForConditionalGeneration may load. Weight selection is built from pinned Hub
 # metadata. A custom repo id is attacker-controllable, so only safetensors weights are accepted: a pytorch_model.bin is
@@ -1682,66 +1681,35 @@ class WhisperSttSidecar:
             effective_generate_kwargs.pop("language", None)
         window = _STT_WINDOW_SECONDS * _TARGET_SAMPLE_RATE
         parts: list[str] = []
+        supports_timestamps = getattr(generation_config, "supports_timestamps", True) is not False
         start = 0
-        skip_before = 0
         while start < len(decoded_audio):
             if cancel_event is not None and cancel_event.is_set():
                 raise SttTranscriptionCancelledError("Transcription cancelled.")
             end = min(start + window, len(decoded_audio))
             window_generate_kwargs = dict(effective_generate_kwargs)
-            use_timestamps = skip_before > 0
-            supports_timestamps = (
-                getattr(generation_config, "supports_timestamps", True) is not False
-            )
-            supports_token_timestamps = (
-                getattr(generation_config, "supports_token_timestamps", supports_timestamps)
-                is not False
-            )
-            if end < len(decoded_audio) and not use_timestamps:
+            if end < len(decoded_audio):
                 quiet_end = _stt_quiet_window_end(decoded_audio, start, window)
                 if quiet_end is not None:
                     end = quiet_end
                 elif supports_timestamps:
-                    use_timestamps = True
-            if use_timestamps:
-                window_generate_kwargs["return_timestamps"] = True
-                window_generate_kwargs["_stt_timestamp_overlap"] = True
-                window_generate_kwargs["_stt_skip_before_seconds"] = (
-                    skip_before / _TARGET_SAMPLE_RATE
-                )
-                if supports_token_timestamps:
-                    window_generate_kwargs["_stt_token_alignment"] = True
-                if skip_before and parts:
-                    window_generate_kwargs["_stt_previous_text"] = parts[-1]
+                    # Whisper's long-form seek: keep only finished segments and resume where the last one ended.
+                    window_generate_kwargs["return_timestamps"] = True
             segment = decoded_audio[start:end]
             pcm = np.ascontiguousarray(segment, dtype = np.float32).tobytes()
             text, consumed = engine.transcribe_window(pcm, window_generate_kwargs, cancel_event)
-            if skip_before and parts:
-                if consumed > skip_before:
-                    parts[-1] = text
-            else:
-                parts.append(text)
-            processed = max(start + consumed, start + skip_before)
+            parts.append(text)
+            start += consumed
             if on_progress is not None:
                 on_progress(
                     {
                         "text": " ".join(part.strip() for part in parts if part.strip()),
-                        "processed_seconds": min(processed, len(decoded_audio))
-                        / _TARGET_SAMPLE_RATE,
+                        "processed_seconds": min(start, len(decoded_audio)) / _TARGET_SAMPLE_RATE,
                         "duration": len(decoded_audio) / _TARGET_SAMPLE_RATE,
                     }
                 )
             if cancel_event is not None and cancel_event.is_set():
                 raise SttTranscriptionCancelledError("Transcription cancelled.")
-            if use_timestamps and processed < len(decoded_audio):
-                rewind = _STT_TIMESTAMP_REWIND_SECONDS * _TARGET_SAMPLE_RATE
-                if consumed <= rewind:
-                    rewind = 0
-                start = processed - rewind
-                skip_before = rewind
-            else:
-                start = processed
-                skip_before = 0
         return " ".join(part.strip() for part in parts if part.strip()).strip()
 
     def transcribe(

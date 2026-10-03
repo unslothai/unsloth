@@ -54,8 +54,6 @@ class _FakeProcessor:
         self.seen_rate = None
         self.features = _FakeTensor()
         self.attention_mask = _FakeTensor()
-        self.num_frames = [3000]
-        self.tokenizer = SimpleNamespace(encode = lambda *_args, **_kwargs: [])
 
     def __call__(
         self,
@@ -63,15 +61,12 @@ class _FakeProcessor:
         sampling_rate = None,
         return_tensors = None,
         return_attention_mask = False,
-        return_token_timestamps = False,
     ):
         self.seen_audio = audio
         self.seen_rate = sampling_rate
         result = SimpleNamespace(input_features = self.features)
         if return_attention_mask:
             result.attention_mask = self.attention_mask
-        if return_token_timestamps:
-            result.num_frames = self.num_frames
         return result
 
     def batch_decode(self, _generated, **_kwargs):
@@ -278,22 +273,15 @@ _EOS = 50257
 
 
 class _TimestampedModel(_FakeModel):
-    def __init__(
-        self,
-        tokens,
-        token_timestamps = None,
-    ) -> None:
+    def __init__(self, tokens) -> None:
         super().__init__()
         self.generation_config = SimpleNamespace(
             is_multilingual = True, no_timestamps_token_id = _TIMESTAMP_BEGIN - 1, eos_token_id = _EOS
         )
         self.tokens = tokens
-        self.token_timestamps = token_timestamps or [0] * len(tokens)
 
     def generate(self, _features, **kwargs):
         self.generate_kwargs = kwargs
-        if kwargs.get("return_token_timestamps"):
-            return {"sequences": [self.tokens], "token_timestamps": [self.token_timestamps]}
         return [self.tokens]
 
 
@@ -305,20 +293,6 @@ class _RecordingProcessor(_FakeProcessor):
 
 def _at(seconds):
     return _TIMESTAMP_BEGIN + round(seconds * 50)
-
-
-def test_segment_timestamps_supply_approximate_token_alignment():
-    generation_config = SimpleNamespace(
-        no_timestamps_token_id = _TIMESTAMP_BEGIN - 1, eos_token_id = _EOS
-    )
-    tokens = [_at(0), 10, 11, _at(1), _at(1), 12, _at(2)]
-
-    text_tokens, token_timestamps = worker_module._segment_token_timestamps(
-        tokens, list(range(len(tokens))), generation_config
-    )
-
-    assert text_tokens == [10, 11, 12]
-    assert token_timestamps == pytest.approx([1 / 3, 2 / 3, 1.5])
 
 
 @pytest.mark.parametrize(
@@ -344,109 +318,8 @@ def test_child_resumes_a_long_clip_after_its_last_complete_segment(
     assert result == ("decoded", consumed)
     assert processor.decoded == [head + kept]
     assert model.generate_kwargs["force_unique_generate_call"] is True
-
-
-def test_child_merges_the_timestamped_overlap_without_losing_new_tokens(monkeypatch):
-    tokens = [50258, 50259, 50359, _at(0), 10, 77, 11, 12, _at(2.0), _at(2.0), 33]
-    model = _TimestampedModel(tokens, [0, 0, 0, 0, 0.3, 0.5, 0.8, 1.46, 2.0, 2.0, 2.2])
-    processor = _RecordingProcessor()
-    processor.tokenizer.encode = lambda *_args, **_kwargs: [99, 10, 11]
-    processor._stt_timestamp_state = {
-        "tokens": [99, 10, 11],
-        "timestamps": [0, 1.3, 1.8],
-        "consumed": 2,
-    }
-    _install_fake_transformers(monkeypatch, model = model, processor = processor)
-    pcm = np.zeros(480000, dtype = np.float32).tobytes()
-
-    result = worker_module.transcribe_window(
-        model,
-        processor,
-        pcm,
-        {
-            "return_timestamps": True,
-            "_stt_timestamp_overlap": True,
-            "_stt_token_alignment": True,
-            "_stt_skip_before_seconds": 1,
-            "_stt_previous_text": "previous text",
-        },
-    )
-
-    assert result == ("decoded", 32000)
-    assert processor.decoded == [[99, 10, 77, 11, 12]]
-    assert processor.attention_mask.moved_to == ["cuda"]
-    assert model.generate_kwargs["return_token_timestamps"] is True
-    assert model.generate_kwargs["return_dict_in_generate"] is True
     assert model.generate_kwargs["attention_mask"] is processor.attention_mask
-    assert model.generate_kwargs["num_frames"] == 3000
-
-
-def test_child_keeps_an_unmatched_token_despite_an_early_alignment(monkeypatch):
-    tokens = [50258, 50259, 50359, _at(0), 10, 11, _at(2.0)]
-    model = _TimestampedModel(tokens, [0, 0, 0, 0, 0, 1.04, 2.0])
-    processor = _RecordingProcessor()
-    processor.tokenizer.encode = lambda *_args, **_kwargs: [98, 99]
-    processor._stt_timestamp_state = {
-        "tokens": [98, 99],
-        "timestamps": [1.0, 1.5],
-        "consumed": 2,
-    }
-    _install_fake_transformers(monkeypatch, model = model, processor = processor)
-
-    worker_module.transcribe_window(
-        model,
-        processor,
-        np.zeros(480000, dtype = np.float32).tobytes(),
-        {
-            "return_timestamps": True,
-            "_stt_timestamp_overlap": True,
-            "_stt_token_alignment": True,
-            "_stt_skip_before_seconds": 1,
-            "_stt_previous_text": "previous text",
-        },
-    )
-
-    assert processor.decoded == [[98, 99, 10, 11]]
-
-
-def test_timestamp_overlap_preserves_a_token_omitted_by_the_redecode():
-    processor = _RecordingProcessor()
-    processor.tokenizer.encode = lambda *_args, **_kwargs: [10, 11, 12, 13]
-
-    merged, _state_tokens, _state_timestamps = worker_module._merge_timestamped_overlap(
-        [10, 12, 13, 14],
-        [0.3, 0.7, 0.9, 1.2],
-        1,
-        "previous text",
-        {
-            "tokens": [10, 11, 12, 13],
-            "timestamps": [1.3, 1.5, 1.7, 1.9],
-            "consumed": 2,
-        },
-        processor,
-    )
-
-    assert merged == [10, 11, 12, 13, 14]
-
-
-def test_timestamp_overlap_preserves_a_genuine_repeated_phrase():
-    processor = _RecordingProcessor()
-    processor.tokenizer.encode = lambda *_args, **_kwargs: [10, 11]
-
-    merged, _state_tokens, _state_timestamps = worker_module._merge_timestamped_overlap(
-        [10, 11],
-        [1.1, 1.4],
-        1,
-        "previous text",
-        {
-            "tokens": [10, 11],
-            "timestamps": [0.6, 0.9],
-            "consumed": 1,
-        },
-        processor,
-    )
-
-    assert merged == [10, 11, 10, 11]
+    assert processor.attention_mask.moved_to == ["cuda"]
 
 
 # ---------------------------------------------------------------------------
@@ -522,7 +395,6 @@ def test_child_reports_the_loaded_model_then_transcribes_then_exits(monkeypatch)
             "device": "cuda",
             "is_multilingual": False,
             "supports_timestamps": False,
-            "supports_token_timestamps": False,
         },
         {"type": "text", "text": "hello", "consumed": 16000},
         {"type": "shutdown_ack"},
@@ -1194,7 +1066,6 @@ def test_the_in_process_fallback_reports_the_checkpoint_language_support(monkeyp
     # The sidecar reads this to drop the kwargs an English-only model rejects.
     assert engine.generation_config.is_multilingual is False
     assert engine.generation_config.supports_timestamps is False
-    assert engine.generation_config.supports_token_timestamps is False
     engine.close()
     assert engine.is_alive() is False
 
