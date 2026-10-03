@@ -150,7 +150,8 @@ function SeparateInputs({
           usesFirstSeconds={null}
           expiredMessage={SEPARATE_TRACK_EXPIRED_MESSAGE}
           recordHint="Play the track near the mic, up to 10 minutes."
-          maxRecordSeconds={SEPARATE_MAX_SECONDS}
+          // A second under the cap: the timer fires late, and the server allows no overrun.
+          maxRecordSeconds={SEPARATE_MAX_SECONDS - 1}
           handleRef={separate.sourceHandle}
           onStatusChange={separate.setSourceStatus}
         />

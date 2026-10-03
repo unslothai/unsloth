@@ -325,7 +325,11 @@ test("a loaded separation model is a main-slot audio model", () => {
 
 test("the host renders Separate's rail, footer and output and the page reuses the shared input", () => {
   const host = readSrc("features/audio/audio-page.tsx");
-  assert.match(host, /ttsWorkflow === "separate" \? \(\s*<SeparateRail/);
+  // Leaving Audio stops a Separate recording and releases the mic, as on Clone.
+  assert.match(
+    host,
+    /ttsWorkflow === "separate" \? \(\s*<AudioActiveProvider value=\{active\}>\s*<SeparateRail/,
+  );
   assert.match(host, /ttsWorkflow === "separate" \? \(\s*<SeparateFooter/);
   assert.match(host, /ttsWorkflow === "separate" \? \(\s*<SeparateOutput/);
   assert.match(host, /ttsWorkflow === "separate"\s*\? separate\.blocker/);
@@ -346,7 +350,7 @@ test("the host renders Separate's rail, footer and output and the page reuses th
   assert.match(page, /allowSavedVoice=\{false\}/);
   // The track card speaks of a track, not a clone reference, and records up to the cap.
   assert.match(page, /expiredMessage=\{SEPARATE_TRACK_EXPIRED_MESSAGE\}/);
-  assert.match(page, /maxRecordSeconds=\{SEPARATE_MAX_SECONDS\}/);
+  assert.match(page, /maxRecordSeconds=\{SEPARATE_MAX_SECONDS - 1\}/);
   assert.match(page, /recordHint="[^"]*track[^"]*"/);
   assert.match(page, /<StemMixer/);
   assert.match(page, /groupSeparationClips\(clips, hasMore\)/);

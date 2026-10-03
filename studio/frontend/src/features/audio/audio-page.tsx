@@ -1153,13 +1153,15 @@ export function AudioPage({
                   return ttsWorkflow === "music" ? (
                     <MusicRail {...railProps} />
                   ) : ttsWorkflow === "separate" ? (
-                    <SeparateRail
-                      {...railProps}
-                      separate={separate}
-                      historyClips={clips}
-                      pageModelLoaded={pageModelLoaded}
-                      pageModelId={lastPageModel}
-                    />
+                    <AudioActiveProvider value={active}>
+                      <SeparateRail
+                        {...railProps}
+                        separate={separate}
+                        historyClips={clips}
+                        pageModelLoaded={pageModelLoaded}
+                        pageModelId={lastPageModel}
+                      />
+                    </AudioActiveProvider>
                   ) : ttsWorkflow === "clone" ? (
                     <AudioActiveProvider value={active}>
                       <CloneRail
