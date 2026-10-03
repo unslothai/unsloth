@@ -302,6 +302,18 @@ def _unsloth_install_pretrain_detector(model):
     return model
 
 
+def _unsloth_dataset_column_names(dataset):
+    # datasets splits carry column_names; a list, tuple or torch Dataset does not, so read the first row's keys.
+    columns = getattr(dataset, "column_names", None)
+    if columns is not None:
+        return columns
+    try:
+        row = dataset[0] if isinstance(dataset, (list, tuple)) else next(iter(dataset))
+    except (IndexError, StopIteration):
+        return []
+    return list(row.keys()) if hasattr(row, "keys") else []
+
+
 def _unsloth_reset_stray_compile_cache(self):
     # A manual forward/backward under torch.compile BEFORE trainer.train() caches a forward plus AOTAutograd backward graph in a one-off context, and reusing it poisons training with NaN/zero gradients, so drop the cache. Module-level, so the SFT auto-packing wrapper and the plain-Trainer loop can run it too.
     import os

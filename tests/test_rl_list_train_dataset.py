@@ -6,39 +6,43 @@
 trainers must accept it again, while DPO / KTO / Reward keep TRL's check."""
 
 import ast
+import importlib.util
 import inspect
 import re
+import sys
 import textwrap
 from pathlib import Path
 
 import pytest
 import torch
 
-SOURCE_PATH = Path(__file__).resolve().parents[1] / "unsloth" / "models" / "rl.py"
-NAMES = (
-    "_LIST_TRAIN_DATASET_TRAINERS",
-    "_TRL_TRAIN_DATASET_TYPE_CHECK",
-    "_allow_list_train_dataset",
+MODELS = Path(__file__).resolve().parents[1] / "unsloth" / "models"
+
+
+def _lift(path, names, namespace):
+    tree = ast.parse(path.read_text(encoding = "utf-8"))
+    nodes = [
+        node
+        for node in tree.body
+        if (isinstance(node, ast.FunctionDef) and node.name in names)
+        or (
+            isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id in names for t in node.targets)
+        )
+    ]
+    exec(compile(ast.Module(body = nodes, type_ignores = []), str(path), "exec"), namespace)
+    return namespace
+
+
+_rl = _lift(
+    MODELS / "rl.py",
+    ("_LIST_TRAIN_DATASET_TYPES", "_TRL_TRAIN_DATASET_TYPE_CHECK", "_allow_list_train_dataset"),
+    {"re": re},
 )
-
-
-def _load():
-    text = SOURCE_PATH.read_text(encoding = "utf-8")
-    tree = ast.parse(text)
-    nodes = []
-    for node in tree.body:
-        if isinstance(node, ast.FunctionDef) and node.name in NAMES:
-            nodes.append(node)
-        elif isinstance(node, ast.Assign) and any(
-            isinstance(t, ast.Name) and t.id in NAMES for t in node.targets
-        ):
-            nodes.append(node)
-    namespace = {"re": re}
-    exec(compile(ast.Module(body = nodes, type_ignores = []), str(SOURCE_PATH), "exec"), namespace)
-    return namespace["_allow_list_train_dataset"]
-
-
-allow_list = _load()
+allow_list = _rl["_allow_list_train_dataset"]
+column_names = _lift(MODELS / "_utils.py", ("_unsloth_dataset_column_names",), {})[
+    "_unsloth_dataset_column_names"
+]
 
 
 class Dataset:
@@ -54,7 +58,14 @@ class TorchDataset(torch.utils.data.Dataset):
         return 1
 
     def __getitem__(self, i):
+        if i >= 1:
+            raise IndexError(i)
         return {"messages": []}
+
+
+class TorchStream(torch.utils.data.IterableDataset):
+    def __iter__(self):
+        return iter([{"prompt": "x"}])
 
 
 SFT_INIT = """
@@ -84,25 +95,29 @@ def _build(source):
     return namespace["__init__"]
 
 
+LIST_ROWS = ([{"messages": []}], ({"messages": []},))
+BAD = ({"train": []}, "text", 3)  # a DatasetDict is a dict
+
+
 @pytest.mark.parametrize(
-    "trainer_file, init",
-    [("sft_trainer", SFT_INIT), ("grpo_trainer", GRPO_INIT), ("rloo_trainer", GRPO_INIT)],
+    "trainer_file, init, accepted, rejected",
+    [
+        ("sft_trainer", SFT_INIT, (*LIST_ROWS, TorchDataset(), TorchStream()), BAD),
+        # GRPO / RLOO only stream datasets' IterableDataset, so torch datasets keep TRL's error.
+        ("grpo_trainer", GRPO_INIT, LIST_ROWS, (*BAD, TorchDataset(), TorchStream())),
+        ("rloo_trainer", GRPO_INIT, LIST_ROWS, (*BAD, TorchDataset(), TorchStream())),
+    ],
     ids = ["sft", "grpo", "rloo"],
 )
-def test_list_like_datasets_are_accepted(trainer_file, init):
+def test_list_like_datasets_are_accepted(trainer_file, init, accepted, rejected):
+    with pytest.raises(TypeError):
+        _build(init)(None, LIST_ROWS[0])  # TRL's own check
     patched = allow_list("__init__", init, trainer_file)
-    assert patched != init
+    assert allow_list("__init__", patched, trainer_file) == patched  # idempotent
     fn = _build(patched)
-    for good in (
-        [{"messages": []}],
-        ({"messages": []},),
-        TorchDataset(),
-        Dataset(),
-        IterableDataset(),
-    ):
+    for good in (*accepted, Dataset(), IterableDataset()):
         assert fn(None, good) == "ok"
-    # Anything else (a DatasetDict is a dict) still gets TRL's error.
-    for bad in ({"train": []}, "text", 3):
+    for bad in rejected:
         with pytest.raises(TypeError, match = "must be a `Dataset`"):
             fn(None, bad)
 
@@ -116,20 +131,45 @@ def test_other_functions_untouched():
     assert allow_list("compute_loss", SFT_INIT, "sft_trainer") == SFT_INIT
 
 
-def test_skip_prepare_label_guard_reads_list_columns():
+def test_skip_prepare_label_guard_uses_the_helper():
     source = "def f(dataset):\n    cols = get_dataset_column_names(dataset)\n    return cols\n"
     patched = allow_list("_reject_skip_prepare_without_labels", source, "sft_trainer")
-    namespace = {"get_dataset_column_names": lambda d: d.column_names}
-    exec(patched.replace("def f", "def _reject_skip_prepare_without_labels"), namespace)
-    fn = namespace["_reject_skip_prepare_without_labels"]
-    assert fn([{"input_ids": [1], "completion_mask": [1]}]) == ["input_ids", "completion_mask"]
-    assert fn([]) == []
+    assert "cols = _unsloth_dataset_column_names(dataset)" in patched
+
+
+class _WithColumns:
+    column_names = ["input_ids", "labels"]
+
+
+@pytest.mark.parametrize(
+    "dataset, expected",
+    [
+        (_WithColumns(), ["input_ids", "labels"]),
+        ([{"input_ids": [1], "completion_mask": [1]}], ["input_ids", "completion_mask"]),
+        (({"messages": []},), ["messages"]),
+        (TorchDataset(), ["messages"]),
+        (TorchStream(), ["prompt"]),
+        ([], []),
+        ((), []),
+        ([("a", "b")], []),  # rows without keys
+    ],
+    ids = [
+        "column_names",
+        "list",
+        "tuple",
+        "torch",
+        "torch_stream",
+        "empty_list",
+        "empty_tuple",
+        "non_mapping",
+    ],
+)
+def test_dataset_column_names(dataset, expected):
+    assert column_names(dataset) == expected
 
 
 def test_matches_installed_trl():
     trl = pytest.importorskip("trl")
-    import importlib.util
-
     checked = 0
     for trainer_file, name in (
         ("sft_trainer", "SFTTrainer"),
@@ -142,16 +182,14 @@ def test_matches_installed_trl():
         text = Path(spec.origin).read_text(encoding = "utf-8")
         if "must be a `Dataset` or `IterableDataset`" not in text:
             continue  # TRL < 1.10 has no check: nothing to widen.
-        assert "list, tuple, torch.utils.data.Dataset)" in allow_list(
-            "__init__", text, trainer_file
-        ), name
+        widened = f"{_rl['_LIST_TRAIN_DATASET_TYPES'][trainer_file]})"
+        assert widened in allow_list("__init__", text, trainer_file), name
         checked += 1
-        # When unsloth already patched trl (tests/conftest.py imports it), the compiled parent must carry it too.
-        compiled = [c for c in getattr(trl, name).__mro__ if c.__name__ == f"_Unsloth{name}"]
-        if compiled:
-            assert "list, tuple, torch.utils.data.Dataset)" in inspect.getsource(
-                compiled[0].__init__
-            ), name
+        # tests/conftest.py imports unsloth, which swaps in the compiled trainers: they must carry it too.
+        if "unsloth" in sys.modules:
+            compiled = [c for c in getattr(trl, name).__mro__ if c.__name__ == f"_Unsloth{name}"]
+            assert compiled, name
+            assert widened in inspect.getsource(compiled[0].__init__), name
     if checked == 0:
         pytest.skip(
             reason = f"trl {trl.__version__} predates the 1.10 train_dataset type check, nothing to widen"

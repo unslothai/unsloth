@@ -383,6 +383,10 @@ try:
     from unsloth.models._utils import _unsloth_reset_stray_compile_cache
 except Exception:
     def _unsloth_reset_stray_compile_cache(self): pass
+try:
+    from unsloth.models._utils import _unsloth_dataset_column_names
+except Exception:
+    def _unsloth_dataset_column_names(dataset): return dataset.column_names
 # Drops/renames config arguments the installed TRL no longer accepts, so a
 # script pinned to an older TRL keeps working after an upgrade. Falls back to
 # the historical raw passthrough so this can never break trainer construction.
@@ -2786,14 +2790,14 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             "__tokenizer = processing_class if 'processing_class' in locals() else tokenizer\n"
             "from unsloth_zoo.vision_utils import UnslothVisionDataCollator\n"
             "if not isinstance(data_collator, UnslothVisionDataCollator):\n"
-            "    if isinstance(data_collator, DataCollatorForSeq2Seq) and 'labels' not in train_dataset.column_names:\n"
+            "    if isinstance(data_collator, DataCollatorForSeq2Seq) and 'labels' not in _unsloth_dataset_column_names(train_dataset):\n"
             "        data_collator = TransformersDataCollatorForLanguageModeling(\n"
             "            __tokenizer,\n"
             "            mlm = False,\n"
             "            mlm_probability = 0.0,\n"
             "            pad_to_multiple_of = getattr(args, 'pad_to_multiple_of', None),\n"
             "        )\n"
-            "    elif isinstance(data_collator, TransformersDataCollatorForLanguageModeling) and 'labels' in train_dataset.column_names:\n"
+            "    elif isinstance(data_collator, TransformersDataCollatorForLanguageModeling) and 'labels' in _unsloth_dataset_column_names(train_dataset):\n"
             "        data_collator = DataCollatorForSeq2Seq(\n"
             "            __tokenizer,\n"
             "            pad_to_multiple_of = getattr(args, 'pad_to_multiple_of', None),\n"
@@ -3590,26 +3594,30 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
 
 # TRL 1.10+ raises TypeError unless train_dataset is a datasets Dataset / IterableDataset, but earlier TRL took a plain
 # list, which the vision notebooks pass (PIL conversations + skip_prepare_dataset=True). Dataset.from_list is no drop-in
-# fix: it re-encodes every image to bytes. DPO / KTO / Reward always map the dataset, so they keep TRL's error.
-_LIST_TRAIN_DATASET_TRAINERS = frozenset(("sft_trainer", "grpo_trainer", "rloo_trainer"))
+# fix: it re-encodes every image to bytes. DPO / KTO / Reward always map text datasets, so they keep TRL's error.
+# GRPO / RLOO only stream datasets' IterableDataset, and a torch Dataset may be a torch IterableDataset, so it is
+# not widened there.
+_LIST_TRAIN_DATASET_TYPES = {
+    "sft_trainer": "list, tuple, torch.utils.data.Dataset",
+    "grpo_trainer": "list, tuple",
+    "rloo_trainer": "list, tuple",
+}
 _TRL_TRAIN_DATASET_TYPE_CHECK = re.compile(
     r"(elif\s+not\s+isinstance\(\s*train_dataset\s*,\s*)\(?\s*(Dataset(?:\s*,\s*IterableDataset)?)\s*\)?(\s*\)\s*:)"
 )
 
 
 def _allow_list_train_dataset(function, source, trainer_file):
-    if trainer_file not in _LIST_TRAIN_DATASET_TRAINERS:
+    extra_types = _LIST_TRAIN_DATASET_TYPES.get(trainer_file)
+    if extra_types is None:
         return source
     if function == "__init__":
-        return _TRL_TRAIN_DATASET_TYPE_CHECK.sub(
-            r"\1(\2, list, tuple, torch.utils.data.Dataset)\3", source
-        )
+        return _TRL_TRAIN_DATASET_TYPE_CHECK.sub(rf"\1(\2, {extra_types})\3", source)
     if function == "_reject_skip_prepare_without_labels":
         # get_dataset_column_names reads .column_names, which a list does not have.
         return source.replace(
             "cols = get_dataset_column_names(dataset)",
-            "cols = (get_dataset_column_names(dataset) if hasattr(dataset, 'column_names') "
-            "else list(next(iter(dataset), {}).keys()))",
+            "cols = _unsloth_dataset_column_names(dataset)",
         )
     return source
 
