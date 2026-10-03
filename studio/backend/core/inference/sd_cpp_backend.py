@@ -2175,9 +2175,6 @@ def _map_guidance(
     ``--cfg-scale``. A distilled 0/1 means CFG off (sd-cli's 1.0); a value > 1 is real CFG."""
     if fam.name in ("flux.1", "flux.2-klein", "flux.2-dev"):
         return None, (float(guidance) if guidance is not None else None)
-    if fam.name == "z-image":
-        # diffusers Z-Image computes pos + g * (pos - neg), so its g is standard CFG minus 1 (sd.cpp's cfg 4 == g 3).
-        return (float(guidance) + 1.0 if guidance is not None and guidance > 0.0 else 1.0), None
     cfg = float(guidance) if (guidance is not None and guidance > 1.0) else 1.0
     return cfg, None
 
