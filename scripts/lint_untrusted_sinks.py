@@ -284,7 +284,7 @@ SINKS: dict[str, tuple[tuple[int, ...], frozenset[str]]] = {
     # `sys.path.append` through the import table, so the bare spelling only ever matched
     # an unrelated local list called `path`, and reporting `path = []; path.append(parsed)`
     # blocked ordinary code.
-    "site.addsitedir": ((0,), frozenset()),
+    "site.addsitedir": ((0,), frozenset({"sitedir"})),
     # The builtins the other linter covers. Kept so one report shows every sink, and
     # excluded from this gate's failure set to avoid two scripts failing on one line.
     "exec": ((0,), frozenset()),
@@ -298,7 +298,7 @@ SINKS: dict[str, tuple[tuple[int, ...], frozenset[str]]] = {
     "pty.spawn": ((0,), frozenset({"argv"})),
     # Windows: opens the path through its file association, so an executable runs.
     "os.startfile": ((0,), frozenset({"path"})),
-    "os.popen": ((0,), frozenset()),
+    "os.popen": ((0,), frozenset({"cmd"})),
     # The async spellings run a program exactly as the blocking ones do.
     "asyncio.create_subprocess_exec": ((0,), frozenset({"program", "executable"})),
     "asyncio.create_subprocess_shell": ((0,), frozenset({"cmd", "executable"})),
@@ -595,9 +595,14 @@ def _matches(name: str, table) -> str | None:
     """
     if not name:
         return None
-    if id(table) not in _CACHEABLE_TABLES:
+    if id(table) in _CACHEABLE_TABLES:
+        key = (name, id(table))
+    elif len(table) <= 32:
+        # A set literal built at the call site: keyed by its contents, which a reused
+        # address cannot alias, so these hot per-call checks stop missing every time.
+        key = (name, tuple(table))
+    else:
         return _matches_uncached(name, table)
-    key = (name, id(table))
     if key in _MATCHES:
         return _MATCHES[key]
     answer = _matches_uncached(name, table)
@@ -2281,7 +2286,7 @@ class _TaintPass(ast.NodeVisitor):
         return _scope_locals(node) if node is not None else frozenset()
 
     def _tainted_call(self, node: ast.Call) -> str | None:
-        names = self.facts.canonicals(_call_name(node.func))
+        names = self._callee_names(node)
         # `getattr(cfg, "module")` is `cfg.module` spelled as a call.
         if (
             _matches_any(names, {"getattr", "builtins.getattr"})
@@ -3702,6 +3707,21 @@ class _TaintPass(ast.NodeVisitor):
     # handled, so a config filled in this way arrived clean at the sink.
     _MUTATORS = frozenset({"update", "extend", "append", "add", "insert", "setdefault"})
 
+    def _callee_names(self, node: ast.Call):
+        """Canonical spellings of a call's callee, computed once per call node.
+
+        A dozen checks ask this of every call on every fixpoint pass. The entry keeps
+        the callee node itself so a synthesized call that reuses a freed id is never
+        handed another call's answer.
+        """
+        cache = self.facts.__dict__.setdefault("_callee_name_cache", {})
+        entry = cache.get(id(node.func))
+        if entry is not None and entry[0] is node.func:
+            return entry[1]
+        names = self.facts.canonicals(_call_name(node.func))
+        cache[id(node.func)] = (node.func, names)
+        return names
+
     def visit_Call(self, node: ast.Call) -> None:
         self._note_mutation(node)
         self._note_config_read(node)
@@ -3736,7 +3756,7 @@ class _TaintPass(ast.NodeVisitor):
         Deserialisation is the execution here, so the result does not have to be used.
         `safe_load` and the safe loaders stay plain sources.
         """
-        names = self.facts.canonicals(_call_name(node.func))
+        names = self._callee_names(node)
         unsafe = _matches_any(names, {"yaml.unsafe_load", "yaml.unsafe_load_all"})
         if unsafe is None and _matches_any(names, {"yaml.load", "yaml.load_all"}):
             loader = next((k.value for k in node.keywords if k.arg == "Loader"), None)
@@ -3896,7 +3916,7 @@ class _TaintPass(ast.NodeVisitor):
         The default has been False since NumPy 1.16.3, so only an explicit opt-in that
         is not a literal False or None is reported.
         """
-        if _matches_any(self.facts.canonicals(_call_name(node.func)), {"numpy.load"}) is None:
+        if _matches_any(self._callee_names(node), {"numpy.load"}) is None:
             return
         allow = _keyword(node, "allow_pickle")
         if allow is None and len(node.args) > 2:
@@ -3983,14 +4003,14 @@ class _TaintPass(ast.NodeVisitor):
     def _note_mutation(self, node: ast.Call) -> None:
         """`settings.update(json.loads(blob))` taints `settings`."""
         # `shutil.unpack_archive(downloaded, target)` writes attacker files into target.
-        if _matches_any(self.facts.canonicals(_call_name(node.func)), {"shutil.unpack_archive"}):
+        if _matches_any(self._callee_names(node), {"shutil.unpack_archive"}):
             archive = node.args[0] if node.args else _keyword(node, "filename")
             target = node.args[1] if len(node.args) > 1 else _keyword(node, "extract_dir")
             reason = self.tainted(archive) if archive is not None else None
             if reason and target is not None:
                 self._assign(target, reason)
             return
-        names = self.facts.canonicals(_call_name(node.func))
+        names = self._callee_names(node)
         # `shutil.copyfileobj(urlopen(url), out)` fills the file `out` was opened on.
         if _matches_any(names, {"shutil.copyfileobj"}):
             source = node.args[0] if node.args else _keyword(node, "fsrc")
@@ -4396,7 +4416,7 @@ class _TaintPass(ast.NodeVisitor):
         return bool(owner) and head.rpartition(".")[2] == owner.rpartition(".")[2]
 
     def _check_sink(self, node: ast.Call) -> None:
-        names = self.facts.canonicals(_call_name(node.func))
+        names = self._callee_names(node)
         matched = _matches_any(names, SINKS)
         candidates = [matched] if matched is not None else []
         if not candidates:
@@ -4477,6 +4497,11 @@ class _TaintPass(ast.NodeVisitor):
         ) is not None or "getattr" in self._held_sinks(called, node)
         if not is_getattr or len(node.args) < 2:
             return
+        # Taint first: deciding whether the holder is a namespace costs far more, and
+        # almost every getattr in the tree reads a fixed or clean attribute name.
+        reason = self.tainted(node.args[1])
+        if not reason:
+            return
         holder = node.args[0]
         holder_names = (
             [candidate.split(".")[0] for candidate in self.facts.canonicals(_call_name(holder))]
@@ -4505,9 +4530,7 @@ class _TaintPass(ast.NodeVisitor):
         )
         if not is_module_ish:
             return
-        reason = self.tainted(node.args[1])
-        if reason:
-            self._record(node, "getattr(module, ...)", reason, _short(node.args[1]))
+        self._record(node, "getattr(module, ...)", reason, _short(node.args[1]))
 
     def _held_sinks(self, called: str, node: ast.Call) -> tuple:
         """Sinks the call target can be, from the local table and the shared one."""
@@ -4533,13 +4556,20 @@ class _TaintPass(ast.NodeVisitor):
 
     def _local_binding(self, name: str) -> ast.AST | None:
         """The value of the single plain assignment to `name` in this scope, if any."""
-        own = self.facts.functions.get(self.qualname)
-        values = [
-            node.value
-            for node in _scope_nodes(own if own is not None else self.facts.tree)
-            if isinstance(node, ast.Assign)
-            and any(isinstance(t, ast.Name) and t.id == name for t in node.targets)
-        ]
+        cache = self.facts.__dict__.setdefault("_local_binding_cache", {})
+        table = cache.get(self.qualname)
+        if table is None:
+            # One walk per scope, not one per lookup: this is asked for every getattr,
+            # thread and env launcher on every fixpoint pass.
+            table = {}
+            own = self.facts.functions.get(self.qualname)
+            for node in _scope_nodes(own if own is not None else self.facts.tree):
+                if isinstance(node, ast.Assign):
+                    for target in node.targets:
+                        if isinstance(target, ast.Name):
+                            table.setdefault(target.id, []).append(node.value)
+            cache[self.qualname] = table
+        values = table.get(name, ())
         return values[0] if len(values) == 1 else None
 
     def _check_child_env(self, node: ast.Call) -> None:
@@ -4597,7 +4627,7 @@ class _TaintPass(ast.NodeVisitor):
 
     def _check_environ_call(self, node: ast.Call) -> None:
         """`os.putenv(KEY, v)`, `os.environ.update(KEY = v)`, `os.environ.setdefault(KEY, v)`."""
-        names = self.facts.canonicals(_call_name(node.func))
+        names = self._callee_names(node)
         pairs: list = []
         if _matches_any(names, {"os.putenv", "os.environ.setdefault"}) and len(node.args) >= 2:
             pairs = [(node.args[0], node.args[1])]
@@ -4626,9 +4656,14 @@ class _TaintPass(ast.NodeVisitor):
         if not (
             isinstance(target, ast.Subscript)
             and _matches_any(self.facts.canonicals(_call_name(target.value)), {"os.environ"})
-            and isinstance(target.slice, ast.Constant)
-            and target.slice.value in _EXEC_ENV_KEYS
         ):
+            return
+        # An untrusted key can name any variable, PATH and LD_PRELOAD included.
+        reason = self.tainted(target.slice)
+        if reason:
+            self._record(node, "process env (untrusted value)", reason, _short(target.slice))
+            return
+        if not (isinstance(target.slice, ast.Constant) and target.slice.value in _EXEC_ENV_KEYS):
             return
         reason = self.tainted(value)
         if reason:
@@ -4677,7 +4712,7 @@ class _TaintPass(ast.NodeVisitor):
         those arguments, as do `executor.submit(execute, ...)`, `asyncio.to_thread` and
         `loop.run_in_executor(None, execute, ...)`.
         """
-        names = self.facts.canonicals(_call_name(node.func))
+        names = self._callee_names(node)
         callee, args, keywords = None, [], []
         if _matches_any(names, {"threading.Thread", "multiprocessing.Process"}):
             callee = _keyword(node, "target")
@@ -4730,10 +4765,7 @@ class _TaintPass(ast.NodeVisitor):
             ):
                 self._propagate_into_callee(scheduled)
             return
-        if (
-            _matches_any(self.facts.canonicals(_call_name(node.func)), {"map", "filter"}) is None
-            or len(node.args) < 2
-        ):
+        if _matches_any(self._callee_names(node), {"map", "filter"}) is None or len(node.args) < 2:
             return
         # One positional slot per iterable, in order, which is how `map` calls the
         # callback: putting a tainted second iterable in slot 0 tainted the wrong
@@ -4808,19 +4840,55 @@ class _TaintPass(ast.NodeVisitor):
                 self._record(node, sink, reason, _short(argument))
                 return
 
+    def _mapping_bindings(self) -> tuple:
+        """Per scope, built once: plain bindings, and every way a mapping is filled.
+
+        The second table holds, per name, the values `name = v`, `name: T = v`,
+        `name |= v` and `name.update(v)` bring in: a parsed mapping arriving through any
+        of them chooses its keys. Walking the scope on every lookup was the hot path of
+        the whole scan.
+        """
+        cache = self.facts.__dict__.setdefault("_mapping_binding_cache", {})
+        tables = cache.get(self.qualname)
+        if tables is not None:
+            return tables
+        plain: dict = {}
+        filled: dict = {}
+        own = self.facts.functions.get(self.qualname)
+        for child in _scope_nodes(own if own is not None else self.facts.tree):
+            if isinstance(child, ast.Assign):
+                for target in child.targets:
+                    if isinstance(target, ast.Name):
+                        plain.setdefault(target.id, []).append(child.value)
+                        filled.setdefault(target.id, []).append(child.value)
+            elif isinstance(child, ast.AnnAssign) and child.value is not None:
+                if isinstance(child.target, ast.Name):
+                    filled.setdefault(child.target.id, []).append(child.value)
+            elif (
+                isinstance(child, ast.AugAssign)
+                and isinstance(child.op, ast.BitOr)
+                and isinstance(child.target, ast.Name)
+            ):
+                filled.setdefault(child.target.id, []).append(child.value)
+            elif (
+                isinstance(child, ast.Call)
+                and isinstance(child.func, ast.Attribute)
+                and child.func.attr == "update"
+                and isinstance(child.func.value, ast.Name)
+                and child.args
+            ):
+                filled.setdefault(child.func.value.id, []).append(child.args[0])
+        cache[self.qualname] = (plain, filled)
+        return cache[self.qualname]
+
     def _parsed_value(self, value: ast.AST) -> str | None:
         """A value looked up in a parsed mapping, directly or through one local."""
         if isinstance(value, ast.Name):
-            own = self.facts.functions.get(self.qualname)
-            body = own if own is not None else self.facts.tree
-            for child in _scope_nodes(body):
-                if isinstance(child, ast.Assign) and any(
-                    isinstance(t, ast.Name) and t.id == value.id for t in child.targets
-                ):
-                    if isinstance(child.value, (ast.Subscript, ast.Call)):
-                        reason = self._parsed_value(child.value)
-                        if reason:
-                            return reason
+            for bound in self._mapping_bindings()[0].get(value.id, ()):
+                if isinstance(bound, (ast.Subscript, ast.Call)):
+                    reason = self._parsed_value(bound)
+                    if reason:
+                        return reason
             return None
         if isinstance(value, ast.Subscript):
             return self._parsed_mapping(value.value)
@@ -4846,42 +4914,10 @@ class _TaintPass(ast.NodeVisitor):
             if value.id in seen:
                 return None
             seen = seen | {value.id}
-            own = self.facts.functions.get(self.qualname)
-            body = own if own is not None else self.facts.tree
-            for child in _scope_nodes(body):
-                targets = (
-                    child.targets
-                    if isinstance(child, ast.Assign)
-                    else [child.target]
-                    if isinstance(child, ast.AnnAssign) and child.value is not None
-                    else []
-                )
-                if any(isinstance(t, ast.Name) and t.id == value.id for t in targets):
-                    reason = self._parsed_mapping(child.value, seen)
-                    if reason:
-                        return reason
-                # `kwargs |= parsed` is the operator spelling of the same merge.
-                if (
-                    isinstance(child, ast.AugAssign)
-                    and isinstance(child.op, ast.BitOr)
-                    and isinstance(child.target, ast.Name)
-                    and child.target.id == value.id
-                ):
-                    reason = self._parsed_mapping(child.value, seen)
-                    if reason:
-                        return reason
-                # `kwargs.update(parsed)` merges the document's keys into `kwargs`.
-                if (
-                    isinstance(child, ast.Call)
-                    and isinstance(child.func, ast.Attribute)
-                    and child.func.attr == "update"
-                    and isinstance(child.func.value, ast.Name)
-                    and child.func.value.id == value.id
-                    and child.args
-                ):
-                    reason = self._parsed_mapping(child.args[0], seen)
-                    if reason:
-                        return reason
+            for bound in self._mapping_bindings()[1].get(value.id, ()):
+                reason = self._parsed_mapping(bound, seen)
+                if reason:
+                    return reason
             return None
         if isinstance(value, ast.Subscript):
             return self._parsed_mapping(value.value, seen)
@@ -4926,7 +4962,7 @@ class _TaintPass(ast.NodeVisitor):
                 ast.Call(func = node.args[0], args = node.args[1:], keywords = node.keywords),
                 node,
             )
-        names = list(self.facts.canonicals(_call_name(node.func)))
+        names = list(self._callee_names(node))
         # `loader = AutoModel.from_pretrained` then `loader(..., trust_remote_code =
         # True)`. Loaders are not in the sink table, so no alias was ever recorded and
         # the explicit opt-in read as a call to nothing in particular.

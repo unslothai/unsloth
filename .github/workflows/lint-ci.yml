@@ -639,11 +639,12 @@ jobs:
     # literal. Dynamic import, sys.path, module getattr, trust_remote_code and unpinned
     # code fetches. New sites only; reviewed ones live in
     # scripts/untrusted_sinks_baseline.json. Its own job so the whole-repository scan
-    # (about five minutes on a runner) never competes with the apt retries above for
-    # source-lint's budget, and runs in parallel with it.
+    # (eight to twelve minutes on a runner: the interprocedural fixpoint runs to
+    # convergence over every first-party file) never competes with the apt retries
+    # above for source-lint's budget, and runs in parallel with it.
     name: Untrusted-sink gate (whole repository)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -654,5 +655,5 @@ jobs:
           python-version: '3.12'
 
       - name: No new untrusted value reaching an execution sink
-        timeout-minutes: 15
+        timeout-minutes: 25
         run: python scripts/lint_untrusted_sinks.py

@@ -69,6 +69,7 @@
     "studio/backend/routes/training.py::start_training::trust_remote_code = True (dict item)::81b2dbc83d544567::d531a94028ad7cd1": 1,
     "studio/backend/utils/coding_agents.py::is_deepseek_harness_executable::subprocess.run::4a515966b7be4bdb::a41b268a4b628f3a": 1,
     "studio/backend/utils/hardware/gpu_query.py::run_nvidia_smi::subprocess.run::f5a70e565f93aa0c::d1b4592b1a86b9ac": 1,
+    "studio/backend/utils/hub_settings.py::apply_hub_settings::process env (untrusted value)::61aa4832dc7030b5::6cf85d2d38886513": 1,
     "studio/backend/utils/models/model_config.py::_is_vision_model_subprocess::subprocess.run::3076f9d91a3f52b3::a63b248e924f4ca1": 1,
     "studio/backend/utils/node_runtime.py::_probe_version::subprocess.run::6b8f8bb6e94d382b::cc408d9840effbf7": 1,
     "studio/backend/utils/prebuilt/update_flow.py::resolve_prebuilt_for_host::subprocess.run::580102e53ad216eb::0081a0daaa1cafb0": 1,

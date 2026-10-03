@@ -6814,3 +6814,25 @@ def test_module_revision_constants_and_parsed_environ_updates(tmp_path):
     assert ("a", "unpinned code fetch") in sinks
     assert ("b", "unpinned code fetch") not in sinks
     assert ("c", "process env (untrusted value)") in sinks
+
+
+def test_popen_and_addsitedir_keywords_and_untrusted_environ_keys(tmp_path):
+    """`os.popen(cmd = ...)`, `site.addsitedir(sitedir = ...)`, `os.environ[parsed] = ...`."""
+    findings = _scan(
+        tmp_path,
+        "import json, os, site\n"
+        "from huggingface_hub import snapshot_download\n"
+        "def a(blob):\n"
+        "    return os.popen(cmd = json.loads(blob)['command'])\n"
+        "def b(repo):\n"
+        "    site.addsitedir(sitedir = snapshot_download(repo))\n"
+        "def c(blob):\n"
+        "    cfg = json.loads(blob)\n"
+        "    os.environ[cfg['key']] = cfg['value']\n",
+    )
+    sinks = {(f["qualname"], f["sink"]) for f in findings}
+    assert {
+        ("a", "os.popen"),
+        ("b", "site.addsitedir"),
+        ("c", "process env (untrusted value)"),
+    } <= sinks
