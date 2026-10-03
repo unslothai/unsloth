@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { NewBadge } from "@/components/new-badge";
 import { SegmentedTabsList } from "@/components/segmented-tabs";
 import {
   Collapsible,
@@ -26,12 +27,13 @@ import { useTrainingConfigStore } from "@/features/training";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactElement, useState } from "react";
+import { type ReactElement, useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { ParamsRow, ParamsSliderRow } from "./params-section-controls";
+import { RlParamsSection } from "./rl/rl-params-section";
 import { TrainingMemoryParams } from "./training-memory-params";
 
-type HyperparameterTab = "optimization" | "schedule" | "memory";
+type HyperparameterTab = "optimization" | "schedule" | "memory" | "rl";
 type StudioT = ReturnType<typeof useT>;
 
 function formatOptimizerLabel(
@@ -115,11 +117,33 @@ export function TrainingHyperparametersSection({
   );
   const selectedOptimizer =
     isMac && isCudaAliasOptimizer ? "adamw" : store.optimizerType;
-  const tabs = [
+  const objective = useTrainingConfigStore((s) => s.trainingObjective);
+  // Picking an RL objective opens its settings; going back to SFT leaves a tab that no longer exists.
+  useEffect(() => {
+    setTab((current) =>
+      objective !== "sft" ? "rl" : current === "rl" ? "optimization" : current,
+    );
+  }, [objective]);
+  const baseTabs = [
     { value: "optimization", label: t("studio.params.optimization") },
     { value: "schedule", label: t("studio.params.schedule") },
     { value: "memory", label: t("studio.params.memory") },
   ] as const;
+  const tabs =
+    objective === "sft"
+      ? baseTabs
+      : ([
+          ...baseTabs,
+          {
+            value: "rl",
+            label: (
+              <span className="flex items-center justify-center gap-1.5">
+                {objective.toUpperCase()}
+                <NewBadge />
+              </span>
+            ),
+          },
+        ] as const);
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
@@ -389,6 +413,12 @@ export function TrainingHyperparametersSection({
           </TabsContent>
 
           <TrainingMemoryParams />
+
+          {objective !== "sft" && (
+            <TabsContent value="rl" className="mt-3 flex flex-col gap-3">
+              <RlParamsSection objective={objective} inTab={true} />
+            </TabsContent>
+          )}
         </Tabs>
       </CollapsibleContent>
     </Collapsible>

@@ -94,8 +94,10 @@ function NumberField({
 
 export function RlParamsSection({
   objective,
+  inTab = false,
 }: {
   objective: Exclude<TrainingObjective, "sft">;
+  inTab?: boolean;
 }): ReactElement {
   const t = useT();
   const s = useTrainingConfigStore(
@@ -121,11 +123,19 @@ export function RlParamsSection({
   const auto = t("rl.params.auto");
 
   return (
-    <div className="flex flex-col gap-1 border-t border-border/70 pt-4">
-      <p className="mb-1 flex items-center gap-1.5 text-ui-11 font-medium uppercase tracking-[0.05em] text-muted-foreground/70">
-        {t("rl.params.title", { objective: objective.toUpperCase() })}
-        <NewBadge />
-      </p>
+    <div
+      className={
+        inTab
+          ? "flex flex-col gap-1"
+          : "flex flex-col gap-1 border-t border-border/70 pt-4"
+      }
+    >
+      {!inTab && (
+        <p className="mb-1 flex items-center gap-1.5 text-ui-11 font-medium uppercase tracking-[0.05em] text-muted-foreground/70">
+          {t("rl.params.title", { objective: objective.toUpperCase() })}
+          <NewBadge />
+        </p>
+      )}
       {objective === "grpo" && (
         <>
           <ParamsRow

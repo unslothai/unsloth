@@ -96,13 +96,22 @@ export function PromptFormatSection(): ReactElement {
         aria-label={t("rl.prompt.presetLabel")}
         className="w-full"
       >
-        <ToggleGroupItem value="notebook" className="flex-1">
+        <ToggleGroupItem
+          value="notebook"
+          className="flex-1 data-[state=on]:border-primary/40 data-[state=on]:bg-primary/10 data-[state=on]:text-primary"
+        >
           {t("rl.prompt.presets.notebook")}
         </ToggleGroupItem>
-        <ToggleGroupItem value="none" className="flex-1">
+        <ToggleGroupItem
+          value="none"
+          className="flex-1 data-[state=on]:border-primary/40 data-[state=on]:bg-primary/10 data-[state=on]:text-primary"
+        >
           {t("rl.prompt.presets.none")}
         </ToggleGroupItem>
-        <ToggleGroupItem value="custom" className="flex-1">
+        <ToggleGroupItem
+          value="custom"
+          className="flex-1 data-[state=on]:border-primary/40 data-[state=on]:bg-primary/10 data-[state=on]:text-primary"
+        >
           {t("rl.prompt.presets.custom")}
         </ToggleGroupItem>
       </ToggleGroup>

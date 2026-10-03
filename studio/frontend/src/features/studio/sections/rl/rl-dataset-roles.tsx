@@ -263,7 +263,7 @@ export function RlDatasetRoles({
       )}
       {columns && columns.length > 0 && (
         <div className="flex flex-col">
-          <div className="grid grid-cols-[minmax(0,9rem)_minmax(0,1fr)_calc(180px*var(--ui-space-scale,1))] gap-3 pb-1.5 text-ui-10 uppercase tracking-[0.05em] text-muted-foreground/70">
+          <div className="grid grid-cols-[minmax(0,9rem)_minmax(0,1fr)_calc(220px*var(--ui-space-scale,1))] gap-3 pb-1.5 text-ui-10 uppercase tracking-[0.05em] text-muted-foreground/70">
             <span>{t("rl.dataset.columnHeader")}</span>
             <span>{t("rl.dataset.sampleHeader")}</span>
             <span>{t("rl.dataset.roleHeader")}</span>
@@ -274,7 +274,7 @@ export function RlDatasetRoles({
             return (
               <div
                 key={column}
-                className="grid grid-cols-[minmax(0,9rem)_minmax(0,1fr)_calc(180px*var(--ui-space-scale,1))] items-center gap-3 border-t border-border/50 py-2"
+                className="grid grid-cols-[minmax(0,9rem)_minmax(0,1fr)_calc(220px*var(--ui-space-scale,1))] items-center gap-3 border-t border-border/50 py-2"
               >
                 <span className="truncate font-mono text-xs text-foreground">
                   {column}

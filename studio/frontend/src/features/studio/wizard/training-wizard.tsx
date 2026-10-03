@@ -367,7 +367,7 @@ export function TrainingWizard({
         }
       >
         <ParamsSection mode={paramMode} />
-        {objective !== "sft" && (
+        {objective !== "sft" && paramMode === "simple" && (
           <div className="mt-5">
             <RlParamsSection objective={objective} />
           </div>
