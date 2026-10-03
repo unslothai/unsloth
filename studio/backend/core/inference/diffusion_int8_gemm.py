@@ -19,6 +19,13 @@ Per-arch gate: sm80 / sm89 / sm120 on (measured), everything else stock. sm75: T
 sm100: Triton int8 is slower than cuBLAS. ROCm (weight-only int8 there) and CPU never reach it.
 
 Kill switch: ``UNSLOTH_DIFFUSION_INT8_GEMM=0``; ``=1`` also enables it on an unmeasured arch (still probe-gated).
+
+ConvRot Linears (MiniMax-H3) run ``ConvRotLinear.forward``'s own rotation first, so eager output stays bit-identical;
+kill switch ``UNSLOTH_DIFFUSION_INT8_GEMM_CONVROT=0``.
+
+A block-streamed denoiser installs against its onload device (``install(..., device = ...)``): group offload's
+``swap_tensors`` keeps each Parameter's identity and the forward reads the payload off the live Parameter, so every
+call sees the onloaded copy. Kill switch ``UNSLOTH_DIFFUSION_INT8_GEMM_STREAMED=0``.
 """
 
 from __future__ import annotations
@@ -30,6 +37,8 @@ from functools import lru_cache
 from typing import Any, Optional
 
 INT8_GEMM_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM"
+INT8_GEMM_CONVROT_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_CONVROT"
+INT8_GEMM_STREAMED_ENV = "UNSLOTH_DIFFUSION_INT8_GEMM_STREAMED"
 _MIN_TRITON = (3, 2)
 # torch._int_mm needs M > 16; below that the stock path (safe_int_mm padding) stays in charge.
 _MIN_ROWS = 17
@@ -70,6 +79,16 @@ def int8_gemm_mode() -> str:
     if raw in ("1", "on", "true", "yes", "force"):
         return "force"
     return "auto"
+
+
+def convrot_enabled() -> bool:
+    raw = (os.environ.get(INT8_GEMM_CONVROT_ENV) or "").strip().lower()
+    return raw not in ("0", "off", "false", "no")
+
+
+def streamed_enabled() -> bool:
+    raw = (os.environ.get(INT8_GEMM_STREAMED_ENV) or "").strip().lower()
+    return raw not in ("0", "off", "false", "no")
 
 
 def _triton_version_ok(version: Optional[str] = None) -> bool:
@@ -263,7 +282,7 @@ def _run(a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
     _CALLS[0] += 1
     a = a if a.stride(-1) == 1 else a.contiguous()
     cfg = _DEVICE_CFG.get(a.device.index)
-    if cfg is not None and w.stride(-1) == 1 and _aligned(a, w):
+    if cfg is not None and w.stride(-1) == 1 and w.device == a.device and _aligned(a, w):
         try:
             return _launch(a, w, xs, ws, bias, cfg)
         except Exception:  # noqa: BLE001 - a failed launch keeps the stock math
@@ -507,7 +526,7 @@ def _linear_forward(self: Any, x: Any) -> Any:
     rec = self.__dict__.get(_REC)
     if rec is None or x.dtype != torch.bfloat16 or not x.is_cuda:
         return type(self).forward(self, x)
-    kind, _wq, _ws, weight = rec
+    kind, group, _ws, weight = rec
     if self.weight is not weight:  # weight replaced since install (reload / LoRA bake): stock
         return type(self).forward(self, x)
     # Payload off the live parameter, never a cached alias: a moved weight must not leave a stale device or pin a copy.
@@ -519,9 +538,14 @@ def _linear_forward(self: Any, x: Any) -> Any:
     if wq.device != x.device:
         return type(self).forward(self, x)
     lead = x.shape[:-1]
-    x2d = x.reshape(-1, x.shape[-1])
-    if x2d.shape[0] < _MIN_ROWS:
+    if x.numel() < _MIN_ROWS * x.shape[-1]:
         return type(self).forward(self, x)
+    if group is not None:
+        from .diffusion_convrot import build_convrot_hadamard, rotate_convrot_activation
+        x = rotate_convrot_activation(
+            x, build_convrot_hadamard(group, device = x.device, dtype = x.dtype), group
+        )
+    x2d = x.reshape(-1, x.shape[-1])
     if kind == "v1":
         xq, xs = _act_quant_v1(x2d)
     else:
@@ -553,11 +577,31 @@ def linear_from_q(q: Any, xs: Any, weight: Any, bias: Any) -> Optional[Any]:
     return _OP_HANDLE(q, parts[0], xs.reshape(-1), parts[1], bias)
 
 
+def _rotation_group(module: Any) -> Optional[int]:
+    """The ConvRot group the forward above can reproduce, else None."""
+    try:
+        from .diffusion_convrot import convrot_linear_class, is_power_of_four
+
+        if type(module) is not convrot_linear_class():
+            return None
+        group = module.convrot_groupsize
+        if not is_power_of_four(group) or module.in_features % group:
+            return None
+        return int(group)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _eligible(module: Any) -> Optional[tuple]:
+    """(kind, rotation group or None, scale, weight) for a Linear the fused GEMM can run, else None."""
     from torch import nn
 
-    if type(module) is not nn.Linear:  # a subclass (ConvRotLinear) transforms the input first
-        return None
+    group = None
+    if type(module) is not nn.Linear:
+        # any other subclass transforms its input in a way this forward would skip
+        group = _rotation_group(module) if convrot_enabled() else None
+        if group is None:
+            return None
     w = module.weight
     bias = module.bias
     import torch
@@ -570,10 +614,10 @@ def _eligible(module: Any) -> Optional[tuple]:
         return None
     parts = _v1_parts(w)
     if parts is not None and parts[1].dtype == torch.bfloat16:
-        return ("v1",) + parts + (w,)
+        return ("v1", group, parts[1], w)
     parts = _v2_parts(w)
     if parts is not None and parts[1].dtype in (torch.bfloat16, torch.float32):
-        return ("v2",) + parts + (w,)
+        return ("v2", group, parts[1], w)
     return None
 
 
@@ -588,9 +632,19 @@ def install(
     transformer: Any,
     logger: Any = None,
     offload_active: bool = False,
+    device: Any = None,
 ) -> int:
-    """Idempotent; returns the (candidate) count. Must run before the first compiled forward."""
-    if int8_gemm_mode() == "off" or transformer is None or offload_active:
+    """Idempotent; returns the (candidate) count. Must run before the first compiled forward.
+
+    ``device``: the onload device of a block-streamed denoiser, whose weights sit on the host between blocks; the
+    probe runs there and the swap happens now. Without it an offloaded denoiser keeps the stock path."""
+    if int8_gemm_mode() == "off" or transformer is None:
+        return 0
+    if device is not None:
+        if not streamed_enabled():
+            return 0
+        return _finalize(transformer, logger, device = device)
+    if offload_active:
         return 0
     from .diffusion_int8_fused import resident_cuda_device, run_on_first_call
 
@@ -614,8 +668,12 @@ def install(
     return n
 
 
-def _finalize(transformer: Any, logger: Any = None) -> int:
-    count = _swap(transformer, logger)
+def _finalize(
+    transformer: Any,
+    logger: Any = None,
+    device: Any = None,
+) -> int:
+    count = _swap(transformer, logger, device = device)
     try:
         transformer._unsloth_int8_gemm = count  # the deferred install recorded the candidate count
     except Exception:  # noqa: BLE001
@@ -623,14 +681,31 @@ def _finalize(transformer: Any, logger: Any = None) -> int:
     return count
 
 
-def _swap(transformer: Any, logger: Any = None) -> int:
+def _swap(
+    transformer: Any,
+    logger: Any = None,
+    device: Any = None,
+) -> int:
     global _OP_HANDLE
     from .diffusion_int8_fused import resident_cuda_device
 
-    dev = resident_cuda_device(transformer)
+    import torch
+
+    if device is not None:
+        try:
+            dev = torch.device(device)
+        except Exception:  # noqa: BLE001
+            return 0
+        if (
+            dev.type != "cuda"
+            or getattr(torch.version, "hip", None)
+            or not torch.cuda.is_available()
+        ):
+            return 0
+    else:
+        dev = resident_cuda_device(transformer)
     if dev is None:
         return 0
-    import torch
 
     index = dev.index if dev.index is not None else torch.cuda.current_device()
     recs = [(m, _eligible(m)) for m in transformer.modules()]
@@ -650,10 +725,10 @@ def _swap(transformer: Any, logger: Any = None) -> int:
                 continue
             module.__dict__[_REC] = (
                 rec[0],
-                None,
+                rec[1],
                 None,
                 rec[3],
-            )  # kind + the Parameter, no payload alias
+            )  # kind, rotation, the Parameter; no payload alias
             module.__dict__[_MARK] = module.__dict__.get("forward", _NO_PREV)
             module.forward = types.MethodType(_linear_forward, module)
             count += 1

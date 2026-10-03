@@ -9621,6 +9621,53 @@ def test_every_rebuilt_speed_target_carries_the_backend():
         assert "backend" in fields, f"video.py:{call.lineno} target lacks backend: {sorted(fields)}"
 
 
+def test_h3_speed_optims_get_the_denoisers_own_placement():
+    """A denoiser pinned under H3's offload policy must not read as offloaded."""
+    import ast
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parents[1] / "core" / "inference" / "video.py"
+    text = source.read_text(encoding = "utf-8")
+    tree = ast.parse(text)
+    h3 = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_load_h3_modular_pipeline"
+    )
+    calls = [
+        n
+        for n in ast.walk(h3)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "apply_speed_optims"
+    ]
+    assert len(calls) == 1
+    kw = {k.arg: k.value for k in calls[0].keywords}
+    assert "denoiser_offloaded" in kw
+    expr = ast.unparse(kw["denoiser_offloaded"])
+    names = {n.id for n in ast.walk(kw["denoiser_offloaded"]) if isinstance(n, ast.Name)}
+    assert (
+        {"denoiser_pinned", "denoiser_streamed"}
+        <= names
+        <= {"denoiser_pinned", "denoiser_streamed", "bool"}
+    ), expr
+    for pinned, streamed, offloaded in (
+        (True, None, False),
+        (True, "group", True),
+        (False, None, True),
+    ):
+        got = eval(
+            compile(ast.Expression(kw["denoiser_offloaded"]), "<h3>", "eval"),
+            {"bool": bool},
+            {"denoiser_pinned": pinned, "denoiser_streamed": streamed},
+        )
+        assert bool(got) is offloaded, (expr, pinned, streamed)
+    installs = [
+        n
+        for n in ast.walk(h3)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "install_int8_gemm"
+    ]
+    assert len(installs) == 1 and "device" in {k.arg for k in installs[0].keywords}
+
+
 class _GraphHandle:
     """Stands in for a captured denoiser graph: only reset() matters to generate()."""
 

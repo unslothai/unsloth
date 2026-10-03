@@ -393,3 +393,127 @@ def test_status_drops_int8_gemm_once_the_deferred_probe_swapped_nothing():
     dit._unsloth_int8_gemm = 0
     assert int8_gemm_live(pipe, ("compiled", "int8_gemm")) == ["compiled"]
     assert int8_gemm_live(pipe, ("compiled",)) == ["compiled"]
+
+
+def _convrot(lin, group = 256):
+    from core.inference.diffusion_convrot import _install_rotation
+    _install_rotation(lin, group)
+    return lin
+
+
+def test_convrot_linear_is_eligible_with_its_group(monkeypatch):
+    monkeypatch.delenv(g8.INT8_GEMM_CONVROT_ENV, raising = False)
+    scale = torch.ones(256, dtype = torch.bfloat16)
+    monkeypatch.setattr(g8, "_v1_parts", lambda w: (torch.zeros(256, 512, dtype = torch.int8), scale))
+    lin = _convrot(torch.nn.Linear(512, 256, bias = False))
+    rec = g8._eligible(lin)
+    assert rec is not None and rec[:2] == ("v1", 256) and rec[3] is lin.weight
+    monkeypatch.setenv(g8.INT8_GEMM_CONVROT_ENV, "0")
+    assert g8._eligible(lin) is None
+    assert g8._eligible(torch.nn.Linear(512, 256, bias = False))[:2] == ("v1", None)
+
+
+def test_other_linear_subclasses_and_bad_groups_stay_stock(monkeypatch):
+    monkeypatch.delenv(g8.INT8_GEMM_CONVROT_ENV, raising = False)
+    monkeypatch.setattr(
+        g8,
+        "_v1_parts",
+        lambda w: (torch.zeros(256, 512, dtype = torch.int8), torch.ones(256, dtype = torch.bfloat16)),
+    )
+
+    class Other(torch.nn.Linear):
+        pass
+
+    assert g8._eligible(Other(512, 256, bias = False)) is None
+    lin = _convrot(torch.nn.Linear(512, 256, bias = False))
+    lin.convrot_groupsize = 1024  # does not divide in_features: the forward could not rotate it
+    assert g8._eligible(lin) is None
+
+
+@needs_cuda
+@pytest.mark.parametrize("version", [None, 2])
+def test_convrot_linear_swap_is_bit_identical_eager_and_compiled(forced, monkeypatch, version):
+    """MiniMax-H3's rotated int8 Linear (and its fused QKV): rotation, act quant, fused GEMM == ConvRotLinear.forward."""
+    from torch._dynamo.utils import counters
+
+    monkeypatch.delenv(g8.INT8_GEMM_CONVROT_ENV, raising = False)
+    stock = _convrot(_int8_linear(1024, 768, False, version))
+    fused = _convrot(_int8_linear(1024, 768, False, version))
+    holder = torch.nn.Sequential(fused)
+    assert g8.install(holder) == 1 and g8.is_installed(fused)
+    x = torch.randn(2, 300, 1024, device = "cuda", dtype = torch.bfloat16) * 3
+    x[0, 7, :5] *= 200  # an outlier row, what the rotation exists for
+    with torch.inference_mode():
+        before = g8.call_count()
+        assert torch.equal(fused(x), stock(x))
+        assert g8.call_count() == before + 1
+        counters.clear()
+        torch._dynamo.reset()
+        with torch._inductor.config.patch(emulate_precision_casts = True):
+            out = torch.compile(fused, fullgraph = True)(x)
+            assert not counters["graph_break"]
+            assert torch.equal(out, torch.compile(stock, fullgraph = True)(x))
+    g8.uninstall(holder)
+    assert not g8.is_installed(fused)
+
+
+@needs_cuda
+def test_convrot_kill_switch_keeps_rotated_linears_stock(forced, monkeypatch):
+    monkeypatch.setenv(g8.INT8_GEMM_CONVROT_ENV, "0")
+    rotated = _convrot(_int8_linear(1024, 768, False, None))
+    plain = _int8_linear(1024, 768, False, None)
+    holder = torch.nn.Sequential(rotated, plain)
+    assert g8.install(holder) == 1
+    assert g8.is_installed(plain) and not g8.is_installed(rotated)
+
+
+@needs_cuda
+@pytest.mark.parametrize("use_stream, version", [(False, None), (False, 2), (True, 2)])
+def test_block_streamed_denoiser_installs_against_its_onload_device(
+    forced, monkeypatch, use_stream, version
+):
+    """Group-offloaded int8 blocks (H3 on 40 GB): installed while on the host, the fused GEMM follows each onload."""
+    hooks = pytest.importorskip("diffusers.hooks")
+    monkeypatch.delenv(g8.INT8_GEMM_CONVROT_ENV, raising = False)
+    monkeypatch.delenv(g8.INT8_GEMM_STREAMED_ENV, raising = False)
+
+    class Holder(torch.nn.Module):
+        def __init__(self, lin):
+            super().__init__()
+            self.blocks = torch.nn.ModuleList([torch.nn.Sequential(lin)])
+
+        def forward(self, x):
+            return self.blocks[0](x)
+
+    stock = _convrot(_int8_linear(1024, 768, False, version))
+    fused = _convrot(_int8_linear(1024, 768, False, version))
+    holder = Holder(fused).requires_grad_(False).cpu()
+    hooks.apply_group_offloading(
+        holder,
+        onload_device = torch.device("cuda"),
+        offload_device = torch.device("cpu"),
+        offload_type = "block_level",
+        num_blocks_per_group = 1,
+        use_stream = use_stream,
+    )
+    assert fused.weight.device.type == "cpu"
+    assert (
+        g8.install(holder, offload_active = True) == 0
+    )  # no onload device: an offloaded denoiser stays stock
+    assert g8.install(holder, device = "cuda") == 1 and g8.is_installed(fused)
+    x = torch.randn(300, 1024, device = "cuda", dtype = torch.bfloat16) * 3
+    with torch.no_grad():  # group offload's swap_tensors onload cannot run on inference tensors
+        before = g8.call_count()
+        out = holder(x)
+        assert g8.call_count() == before + 1
+        assert torch.equal(out, stock(x))
+        assert torch.equal(holder(x), out)
+    if not use_stream:  # the stream path keeps the last group resident until the next onload
+        assert fused.weight.device.type == "cpu"
+
+
+@needs_cuda
+def test_streamed_kill_switch(forced, monkeypatch):
+    monkeypatch.setenv(g8.INT8_GEMM_STREAMED_ENV, "0")
+    holder = torch.nn.Sequential(_int8_linear(1024, 768, False, None))
+    assert g8.install(holder, device = "cuda") == 0 and not g8.is_installed(holder[0])
