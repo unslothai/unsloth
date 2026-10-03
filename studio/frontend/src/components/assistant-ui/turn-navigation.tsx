@@ -247,19 +247,17 @@ function previewText(content: readonly PreviewPart[], maxChars: number) {
   return text.length > maxChars ? `${text.slice(0, maxChars)}…` : text;
 }
 
+type PreviewMessage = {
+  id: string;
+  role: string;
+  content: readonly PreviewPart[];
+};
+
 // skips tool-only steps so the card is not blank
 function turnReplyText(
-  messages: readonly {
-    id: string;
-    role: string;
-    content: readonly PreviewPart[];
-  }[],
-  openerId: string,
+  messages: readonly PreviewMessage[],
+  start: number,
 ): string {
-  const start = messages.findIndex((message) => message.id === openerId);
-  if (start < 0) {
-    return "";
-  }
   for (let index = start + 1; index < messages.length; index++) {
     const message = messages[index];
     if (message.role === "user") {
@@ -308,6 +306,12 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
   );
   const bookmarked = useMemo(() => new Set(bookmarkedIds), [bookmarkedIds]);
   const anchorRef = useRef<HTMLDivElement>(null);
+  const railRef = useRef<HTMLElement>(null);
+  // rebuilt only when the messages array changes, so a hover is one lookup
+  const messageIndexRef = useRef<{
+    messages: readonly PreviewMessage[] | null;
+    index: Map<string, number>;
+  }>({ messages: null, index: new Map() });
   const previewId = useId();
   const [preview, setPreview] = useState<TurnPreview | null>(null);
   const hideTimerRef = useRef<number | undefined>(undefined);
@@ -391,13 +395,22 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
       cancelHide();
       setActiveMarker(marker);
       const messages = aui.thread().getState().messages;
-      const opener = messages.find((candidate) => candidate.id === openerId);
+      if (messageIndexRef.current.messages !== messages) {
+        messageIndexRef.current = {
+          messages,
+          index: new Map(messages.map((message, index) => [message.id, index])),
+        };
+      }
+      const start = messageIndexRef.current.index.get(openerId);
       const box = marker.getBoundingClientRect();
       setPreview({
         openerId,
         turn: Number(marker.dataset.turn),
-        prompt: opener ? previewText(opener.content, PROMPT_PREVIEW_CHARS) : "",
-        reply: turnReplyText(messages, openerId),
+        prompt:
+          start === undefined
+            ? ""
+            : previewText(messages[start].content, PROMPT_PREVIEW_CHARS),
+        reply: start === undefined ? "" : turnReplyText(messages, start),
         markerTop:
           box.top + box.height / 2 - anchor.getBoundingClientRect().top,
       });
@@ -477,6 +490,36 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
     },
     [magnify],
   );
+  // the rail is overflow-hidden so the wheel reaches the thread; it follows the thread instead
+  const turnCount = openerIds.length;
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    const rail = railRef.current;
+    if (!viewport || !rail || turnCount < MIN_NAVIGATOR_TURNS) {
+      return;
+    }
+    let frame = 0;
+    const sync = () => {
+      frame = 0;
+      const railRange = rail.scrollHeight - rail.clientHeight;
+      if (railRange <= 0) {
+        return;
+      }
+      const range = viewport.scrollHeight - viewport.clientHeight;
+      rail.scrollTop = range > 0 ? (viewport.scrollTop / range) * railRange : 0;
+    };
+    const schedule = () => {
+      if (!frame) {
+        frame = requestAnimationFrame(sync);
+      }
+    };
+    sync();
+    viewport.addEventListener("scroll", schedule, { passive: true });
+    return () => {
+      viewport.removeEventListener("scroll", schedule);
+      cancelAnimationFrame(frame);
+    };
+  }, [viewportRef, turnCount]);
   const hidePreview = useCallback(() => {
     cancelHide();
     hideTimerRef.current = window.setTimeout(() => {
@@ -579,7 +622,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
   }
 
   const previewBookmarked = preview ? bookmarked.has(preview.openerId) : false;
-  // sticky so wheel scrolling over the rail still reaches the thread
+  // sticky, and the rail is not a scroller, so wheel scrolling over it reaches the thread
   return (
     <div
       ref={anchorRef}
@@ -597,11 +640,12 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
         <nav
           aria-label={t("turns.navigator")}
           style={{ height: `min(${openerIds.length * 0.75 + 0.5}rem, 40dvh)` }}
+          ref={railRef}
           onKeyDown={onRailKeyDown}
           onPointerMove={onRailPointerMove}
           onPointerLeave={clearMagnify}
           onScroll={onRailScroll}
-          className="aui-turn-navigator group/rail pointer-events-auto absolute top-0 right-[-1.125rem] hidden w-8 -translate-y-1/2 flex-col overflow-y-auto py-1 [contain:layout_paint] [scrollbar-width:none] @[1.5rem]/turn-gutter:flex [&::-webkit-scrollbar]:hidden"
+          className="aui-turn-navigator group/rail pointer-events-auto absolute top-0 right-[-1.125rem] hidden w-8 -translate-y-1/2 flex-col overflow-y-hidden py-1 [contain:layout_paint] @[1.5rem]/turn-gutter:flex"
         >
           {markers}
         </nav>
