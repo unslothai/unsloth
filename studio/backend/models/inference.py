@@ -5320,7 +5320,6 @@ class AudioInputTranscribeRequest(BaseModel):
     engine: Optional[str] = Field(None, max_length = 64)
     device: Optional[Literal["auto", "cpu", "gpu"]] = None
     language: Optional[str] = Field(None, max_length = 64)
-    # A Convert source is transcribed as far as it is converted, a clone reference as far as cloned.
     purpose: Literal["reference", "convert"] = "reference"
 
 

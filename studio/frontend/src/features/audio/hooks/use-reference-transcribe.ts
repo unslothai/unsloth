@@ -36,7 +36,7 @@ export function useReferenceTranscribe({
   /** The clone language, as a hint; empty lets the model detect it. */
   language: string;
   onText: (text: string) => void;
-  /** "convert" transcribes as much as Convert converts, not the clone reference's 30 s. */
+  /** "convert" transcribes up to Convert's cap instead of the 30 s clone reference. */
   purpose?: "reference" | "convert";
 }) {
   const [transcribing, setTranscribing] = useState(false);

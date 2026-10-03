@@ -361,8 +361,7 @@ export function useCloneGeneration({
         setFallbackClip,
         setSelectedId,
       });
-      // The run can restart audio.cpp under another task (Chatterbox: clon after vc), which
-      // Convert reads to say whether its next run reloads.
+      // The run can restart audio.cpp under another task (Chatterbox: clon after vc).
       await refreshStatus();
     } catch (error) {
       if (!controller.signal.aborted) {
