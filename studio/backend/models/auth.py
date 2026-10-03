@@ -29,6 +29,15 @@ class RefreshTokenRequest(BaseModel):
     refresh_token: str = Field(..., description = "Refresh token from a previous login or refresh")
 
 
+class OIDCHandoffRequest(BaseModel):
+    handoff: str = Field(..., min_length = 32, max_length = 256)
+
+
+class OIDCConfigResponse(BaseModel):
+    enabled: bool
+    display_name: Optional[str] = None
+
+
 class AuthStatusResponse(BaseModel):
     """Indicate whether the seeded admin auth flow is ready."""
 

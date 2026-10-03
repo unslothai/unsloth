@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+services:
+  unsloth-studio:
+    image: your-unsloth-studio-image:latest
+    environment:
+      UNSLOTH_OIDC_ENABLED: "true"
+      UNSLOTH_OIDC_ISSUER: "https://keycloak.example.com/realms/company"
+      UNSLOTH_OIDC_CLIENT_ID: "unsloth"
+      UNSLOTH_OIDC_CLIENT_SECRET: "${UNSLOTH_OIDC_CLIENT_SECRET}"
+      UNSLOTH_OIDC_SCOPES: "openid profile email"
+      UNSLOTH_OIDC_REDIRECT_URI: "https://unsloth.example.com/api/auth/oidc/callback"
+      UNSLOTH_OIDC_DISPLAY_NAME: "Company SSO"
+      UNSLOTH_OIDC_AUTO_CREATE_USERS: "true"
+    volumes:
+      - unsloth-state:/root/.unsloth
+
+volumes:
+  unsloth-state:
