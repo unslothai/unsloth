@@ -3121,7 +3121,7 @@ html[data-chat-font] .aui-root {
 	}
 
 	.composer-pill-btn {
-		@apply flex cursor-pointer items-center gap-1.5 rounded-full py-1.5 pl-2 pr-2.5 text-ui-14 font-medium text-muted-foreground/70 dark:text-foreground transition-colors hover:bg-primary/10 dark:hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40;
+		@apply flex cursor-pointer select-none items-center gap-1.5 rounded-full py-1.5 pl-2 pr-2.5 text-ui-14 font-medium text-muted-foreground/70 dark:text-foreground transition-colors hover:bg-primary/10 dark:hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40;
 	}
 
 	/* Caret pills (RAG, MCP): the chevron carries its own whitespace, so the
@@ -3562,6 +3562,11 @@ html[data-chat-font] .aui-root {
 	.unsloth-composer-plus:focus-visible {
 		outline: none;
 		box-shadow: 0 0 0 1px var(--ring-soft);
+	}
+	/* A menu refocusing its pill after a click is not keyboard focus. */
+	html[data-input-modality="pointer"]
+		:is(.composer-pill-btn, .unsloth-thinking-pill, .unsloth-composer-plus):focus-visible {
+		box-shadow: none;
 	}
 
 	/* Clickable controls never show the browser's blue outline (Radix re-focuses
