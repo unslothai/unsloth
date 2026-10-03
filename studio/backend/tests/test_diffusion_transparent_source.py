@@ -53,3 +53,9 @@ def test_rgba_and_mask_decodes_keep_their_alpha_and_values():
     data = _data_url(_black_ink_on_transparent())
     assert decode_b64_image(data, mode = "RGBA").getpixel((5, 5)) == (0, 0, 0, 0)
     assert decode_b64_image(data, mode = "L").getpixel((5, 5)) == 0
+
+
+def test_an_opaque_rgba_canvas_export_decodes_like_rgb():
+    img = PIL.new("RGBA", (64, 48), (10, 200, 30, 255))
+    img.paste((200, 0, 120, 255), (16, 12, 48, 36))
+    assert decode_b64_image(_data_url(img)).tobytes() == img.convert("RGB").tobytes()
