@@ -32,6 +32,7 @@ from models.inference import (
 )
 from routes import training_vram
 from state import active_generations
+from utils import multi_model_settings
 from utils.account_context import AccountContext, run_as
 
 ALICE = AccountContext("a" * 32, "alice")
@@ -79,6 +80,7 @@ def backends(monkeypatch):
     monkeypatch.setattr(inf, "LlamaCppBackend", FakeLlama)
     monkeypatch.setattr(inf, "InferenceOrchestrator", FakeOrchestrator)
     monkeypatch.setattr(inf, "_raise_if_sidecar_swap_in_progress", lambda: None)
+    monkeypatch.setattr(multi_model_settings, "get_multi_model_enabled", lambda: True)
     return primary, extra
 
 
@@ -149,8 +151,33 @@ def test_a_load_picks_its_slot(backends):
     # The NPU backend is one per process: it takes the primary's seat even alongside.
     npu = LoadRequest(model_path = "lemonade:qwen3-0.6b-FLM", alongside = True)
     assert _selected(npu) is None
+    # vLLM and SGLang reserve their GPU share up front.
+    assert _selected(alongside.model_copy(update = {"engine": "vllm"})) is None
     primary.unload_model()
     assert _selected(alongside) is None
+
+
+def test_alongside_is_off_until_settings_turns_it_on(backends, monkeypatch):
+    monkeypatch.setattr(multi_model_settings, "get_multi_model_enabled", lambda: False)
+    assert _selected(LoadRequest(model_path = "org/C-GGUF", alongside = True)) is None
+    # A model already kept alongside still reloads in its own slot.
+    served = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0", alongside = True)
+    assert _selected(served) is backends[1]
+
+
+def test_the_multi_model_setting_defaults_off(monkeypatch):
+    stored = {}
+    import storage.studio_db as studio_db
+
+    monkeypatch.setattr(
+        studio_db, "get_app_setting", lambda key, fallback: stored.get(key, fallback)
+    )
+    monkeypatch.setattr(studio_db, "upsert_app_settings", stored.update)
+    assert multi_model_settings.get_multi_model_enabled() is False
+    assert multi_model_settings.set_multi_model_enabled(True) is True
+    assert multi_model_settings.get_multi_model_enabled() is True
+    with pytest.raises(ValueError):
+        multi_model_settings.set_multi_model_enabled("yes")
 
 
 def test_unload_drops_only_the_named_extra_slot(backends, monkeypatch):
@@ -382,14 +409,16 @@ def test_eviction_takes_as_many_lru_slots_as_the_shortfall_needs(backends, monke
     assert [s.llama.model_identifier for s in model_slots.slots] == ["org/B-GGUF", "org/C-GGUF"]
 
 
-def test_a_short_fit_with_nothing_left_to_evict_is_a_409(backends, monkeypatch):
-    _, extra = backends
-    _gated_load_fakes(monkeypatch, short_fits = [1, 1])
+def test_a_model_that_fits_nowhere_beside_the_others_replaces_the_active_one(backends, monkeypatch):
+    primary, extra = backends
+    extra.request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0")
+    loaded = LoadResponse.model_construct(status = "loaded", model = "org/C-GGUF", display_name = "C")
+    _gated_load_fakes(monkeypatch, short_fits = [1, 1], response = loaded)
     request = LoadRequest(model_path = "org/C-GGUF", alongside = True)
-    with pytest.raises(HTTPException) as excinfo:
-        asyncio.run(inf.load_model_gated(request, None, "s"))
-    assert excinfo.value.status_code == 409 and "8 GB free" in excinfo.value.detail
+    response = asyncio.run(inf.load_model_gated(request, None, "s"))
+    assert response.evicted == ["org/B-GGUF:Q8_0", "org/A-GGUF"]
     assert model_slots.slots == [] and not extra.llama.is_active
+    assert primary.model_identifier == "org/C-GGUF" and primary.is_loaded
 
 
 def test_a_capped_context_is_taken_only_once_nothing_is_left_to_evict(backends, monkeypatch):
@@ -579,6 +608,15 @@ def test_training_sizes_and_frees_the_models_kept_alongside(backends, monkeypatc
     extra.orchestrator.loading_models = set()
     assert training_vram.free_chat_models_for_training("test") == ["kept:org/B-GGUF"]
     assert model_slots.slots == [] and not extra.llama.is_active
+
+
+def test_training_frees_the_kept_models_before_the_active_one(backends, monkeypatch):
+    primary, extra = backends
+    verdicts = [False, True]
+    monkeypatch.setattr(training_vram, "summarize_resident_stt", lambda: {"any": False})
+    freed = training_vram.coordinate_models_for_training(lambda: (verdicts.pop(0), {}))
+    assert freed == ["kept:org/B-GGUF"] and verdicts == []
+    assert model_slots.slots == [] and primary.is_active
 
 
 def test_another_quant_of_a_loaded_model_replaces_it_in_place(backends):

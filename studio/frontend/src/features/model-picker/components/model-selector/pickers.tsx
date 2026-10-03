@@ -2978,9 +2978,7 @@ export function HubModelPicker({
   // resident. Same predicate as the header tick.
   const selectedCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const residentCheckpoint = useChatRuntimeStore((s) => s.residentCheckpoint);
-  const keepModelsLoaded = useChatRuntimeStore((s) => s.keepModelsLoaded);
   const loadedModels = useChatRuntimeStore((s) => s.loadedModels);
-  const setKeepModelsLoaded = useChatRuntimeStore((s) => s.setKeepModelsLoaded);
   const isChatPicker = task === undefined;
   const chatLoadedModelId = chatModelLoaded({
     checkpoint: selectedCheckpoint,
@@ -6896,9 +6894,7 @@ export function HubModelPicker({
               // On Device pulls the heading block tight to the controls; Recommended keeps more top room
               // above its first row.
               showDownloaded ? "pt-0" : "pt-[calc(4px*var(--ui-space-scale,1))]",
-              onEject || isChatPicker
-                ? "pb-[calc(60px*var(--ui-space-scale,1))]"
-                : "pb-4",
+              onEject ? "pb-[calc(60px*var(--ui-space-scale,1))]" : "pb-4",
             )}
           >
             {loadedRows.length > 0 ? (
@@ -8298,40 +8294,8 @@ export function HubModelPicker({
             )}
           </div>
         </div>
-        <div
-          className={cn(
-            "pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-between rounded-b-[inherit] px-3.5 pb-[calc(19px*var(--ui-space-scale,1))]",
-            isChatPicker && "bg-popover pt-2",
-          )}
-        >
-          {isChatPicker ? (
-            <Tooltip>
-              <TooltipTrigger asChild={true}>
-                <button
-                  type="button"
-                  role="checkbox"
-                  aria-checked={keepModelsLoaded}
-                  onClick={() => setKeepModelsLoaded(!keepModelsLoaded)}
-                  className="pointer-events-auto flex cursor-pointer select-none items-center gap-1.5 rounded-md bg-popover px-3 py-2 text-xs text-muted-foreground transition-colors hover:text-foreground"
-                >
-                  <Checkbox
-                    checked={keepModelsLoaded}
-                    tabIndex={-1}
-                    aria-hidden={true}
-                    className="pointer-events-none size-3.5 rounded-full [&_svg]:!size-2.5"
-                  />
-                  Keep other models loaded
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="top">
-                Loading a model keeps the loaded ones in memory, so you can switch
-                between them and call each one by name from the API.
-              </TooltipContent>
-            </Tooltip>
-          ) : (
-            <span />
-          )}
-          {onEject ? (
+        {onEject ? (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-end pr-3.5 pb-[calc(19px*var(--ui-space-scale,1))]">
             <button
               type="button"
               onClick={() => (ejectsAll ? onEjectAll?.() : onEject())}
@@ -8341,8 +8305,8 @@ export function HubModelPicker({
               <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
               {ejectsAll ? "Eject all" : "Eject model"}
             </button>
-          ) : null}
-        </div>
+          </div>
+        ) : null}
       </div>
       <TransportConflictDialog
         conflict={updateTransportConflict}

@@ -94,6 +94,11 @@ from utils.hub_settings import (
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES, chat_template_byte_length
 from utils.reasoning_budget import validate_reasoning_budget_message
 from utils.coding_agents import CODING_AGENTS, detect_installed_coding_agents
+from utils.multi_model_settings import (
+    DEFAULT_MULTI_MODEL_ENABLED,
+    get_multi_model_enabled,
+    set_multi_model_enabled,
+)
 from utils.model_memory_settings import (
     DEFAULT_KEEP_RESIDENT,
     DEFAULT_NO_RAM_RESERVE,
@@ -543,6 +548,15 @@ def delete_custom_generation_preset(
         raise HTTPException(status_code = 422, detail = "Invalid preset name")
     delete_media_generation_preset(kind, name)
     return {"deleted": True}
+
+
+class MultiModelPayload(BaseModel):
+    enabled: StrictBool
+
+
+class MultiModelResponse(BaseModel):
+    enabled: bool
+    default_enabled: bool = DEFAULT_MULTI_MODEL_ENABLED
 
 
 class UploadLimitPayload(BaseModel):
@@ -1350,6 +1364,30 @@ def update_llama_cpp_path(
             log = logger,
         ) from exc
     return _llama_cpp_path_response()
+
+
+@_shared_settings_router.get("/multi-model", response_model = MultiModelResponse)
+def get_multi_model(current_subject: str = Depends(get_current_subject)) -> MultiModelResponse:
+    return MultiModelResponse(enabled = get_multi_model_enabled())
+
+
+@_owner_settings_router.put("/multi-model", response_model = MultiModelResponse)
+def update_multi_model(
+    payload: MultiModelPayload, current_subject: str = Depends(get_current_subject)
+) -> MultiModelResponse:
+    """Keep the loaded models when another loads. Takes effect on the next load."""
+    try:
+        enabled = set_multi_model_enabled(payload.enabled)
+    except Exception as exc:
+        raise log_and_http_error(
+            exc,
+            500,
+            safe_error_detail(exc, fallback = "Could not save the multiple models setting."),
+            event = "settings.update_multi_model_failed",
+            log = logger,
+        ) from exc
+    logger.info("settings.multi_model_updated subject=%s enabled=%s", current_subject, enabled)
+    return MultiModelResponse(enabled = enabled)
 
 
 @_shared_settings_router.get("/upload-limit", response_model = UploadLimitResponse)

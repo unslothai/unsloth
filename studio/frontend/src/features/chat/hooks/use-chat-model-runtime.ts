@@ -49,6 +49,7 @@ import { loadModelMemorySettings } from "@/features/settings/api/model-memory";
 import { loadVramBudgetSettings } from "@/features/settings/api/vram-budget";
 import {
   listOpenAIModels,
+  loadMultiModelEnabled,
   loadOpenAIAutoSwitchSettings,
 } from "@/features/settings";
 import {
@@ -890,6 +891,22 @@ export function useChatModelRuntime() {
     (state) => state.setLastModelLoadError,
   );
   const clearCheckpoint = useChatRuntimeStore((state) => state.clearCheckpoint);
+
+  // Settings owns "Keep multiple models loaded"; until it answers, loads replace as before.
+  useEffect(() => {
+    let cancelled = false;
+    loadMultiModelEnabled("Failed to read the multiple models setting").then(
+      (enabled) => {
+        if (!cancelled) {
+          useChatRuntimeStore.getState().setKeepModelsLoaded(enabled);
+        }
+      },
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const [loadingModel, setLoadingModel] = useState<{
     id: string;
@@ -2465,16 +2482,18 @@ export function useChatModelRuntime() {
               // With chats generating, skip this preliminary unload: it cancels them ahead of /load's
               // preflight, so a rejected target truncates replies for a model that never loads. Idle,
               // unload first and free VRAM early.
-              // Custom mode leaves replacement to /load, which preflights before evicting; replacing
-              // one of several still unloads first, since its /load keeps the other models.
-              if (replacesOneOfSeveral || (!forceCancelActive && loadLlamaCppConfig?.mode !== "custom")) {
-                await unloadModel({
-                  model_path: currentCheckpoint,
-                  force_cancel_active: forceCancelActive,
-                });
-                // Only a real /unload removes the resident model. The forced path leaves
-                // it to /load, so cancellation must not treat it as gone.
-                loadRun.residentModelUnloaded = true;
+              if (!forceCancelActive || replacesOneOfSeveral) {
+                // Custom mode leaves replacement to /load, which preflights before evicting; replacing
+                // one of several still unloads first, since its /load keeps the other models.
+                if (replacesOneOfSeveral || loadLlamaCppConfig?.mode !== "custom") {
+                  await unloadModel({
+                    model_path: currentCheckpoint,
+                    force_cancel_active: forceCancelActive,
+                  });
+                  // Only a real /unload removes the resident model. The forced path leaves
+                  // it to /load, so cancellation must not treat it as gone.
+                  loadRun.residentModelUnloaded = true;
+                }
               }
               // Set either way: /load can still leave no model resident, and an unneeded rollback hits
               // already_loaded before the gate.

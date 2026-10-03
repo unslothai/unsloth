@@ -504,8 +504,14 @@ def free_chat_models_for_training(reason: str) -> List[str]:
     except Exception as e:
         logger.warning("Could not unload GGUF chat model: %s", e)
 
+    freed += free_kept_models_for_training(reason)
+    return freed
+
+
+def free_kept_models_for_training(reason: str) -> List[str]:
     try:
         from core.inference import model_slots
+
         kept = [
             slot.orchestrator.active_model_name or slot.llama.model_identifier or "gguf"
             for slot in list(model_slots.slots)
@@ -513,11 +519,10 @@ def free_chat_models_for_training(reason: str) -> List[str]:
         if kept:
             logger.info("Unloading %d model(s) kept alongside for training (%s)", len(kept), reason)
             model_slots.unload_extra_models()
-            freed.extend(f"kept:{name}" for name in kept)
+        return [f"kept:{name}" for name in kept]
     except Exception as e:
         logger.warning("Could not unload models kept alongside: %s", e)
-
-    return freed
+        return []
 
 
 def _stt_sidecar_holds_no_vram(sidecar) -> bool:
@@ -706,6 +711,16 @@ def coordinate_models_for_training(
         keep, _info = can_keep()
         if keep:
             logger.info("Keeping chat model loaded after freeing STT: %s", resident_chat)
+            return freed
+
+    from core.inference import model_slots
+
+    # Models kept alongside go before the one in use.
+    if model_slots.slots:
+        freed += free_kept_models_for_training(reason = "insufficient training memory")
+        keep, _info = can_keep()
+        if keep:
+            logger.info("Keeping the active chat model loaded after freeing the others")
             return freed
 
     freed += free_chat_models_for_training(

@@ -17188,6 +17188,9 @@ async def load_model_gated(
                 )
             async with nullcontext() if new_slot else inference_lifecycle_gate():
                 _raise_if_sidecar_swap_in_progress()
+                if extra is None and request.engine != "auto" and model_slots.slots:
+                    # vLLM and SGLang size their reservation from the whole GPU.
+                    await asyncio.to_thread(model_slots.unload_extra_models)
                 # The 409 gate runs inside _load_model_impl, under the lifecycle gate, atomic with teardown.
                 if new_slot:
                     reload_gate = None
@@ -17223,10 +17226,33 @@ async def load_model_gated(
                                 model_slots.evict, extra, exc.short_mib, exc.gpu_indices
                             )
                         if not dropped:
-                            if not exc.capped:
-                                raise HTTPException(status_code = 409, detail = str(exc)) from exc
-                            request = request.model_copy(update = {"force_alongside": True})
-                            continue
+                            if exc.capped:
+                                request = request.model_copy(update = {"force_alongside": True})
+                                continue
+                            # It fits nowhere beside the loaded models: replace the active one, as
+                            # a load without alongside always has.
+                            await asyncio.to_thread(model_slots.drop, extra)
+                            model_slots.loading, extra = None, None
+                            routed_slot.set(None)
+                            replaced = _primary_model_label()
+                            request = request.model_copy(
+                                update = {"alongside": False, "force_alongside": False}
+                            )
+                            async with inference_lifecycle_gate() if new_slot else nullcontext():
+                                response = await _run_tracked_load_model_impl(
+                                    request,
+                                    fastapi_request,
+                                    current_subject,
+                                    attempt = attempt,
+                                    current_request_counted = current_request_counted,
+                                    on_reload_confirmed = functools.partial(
+                                        _raise_or_cancel_active_generations,
+                                        force = request.force_cancel_active,
+                                        action = "Loading a model",
+                                    ),
+                                )
+                            evicted += [replaced] if replaced else []
+                            break
                         evicted += [_model_key(s.request) for s in dropped if s.request is not None]
                         logger.info(
                             "Unloaded %d model(s) loaded alongside to fit %s",
@@ -17261,6 +17287,13 @@ async def load_model_gated(
         _finish_load_attempt(attempt)
 
 
+def _primary_model_label() -> Optional[str]:
+    llama = get_llama_cpp_backend()
+    if getattr(llama, "is_loaded", False):
+        return _llama_public_model_id(llama)
+    return getattr(_peek_inference_backend(), "active_model_name", None)
+
+
 async def _select_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
     """The extra slot already serving the model, or a new one for ``alongside``. None is the primary."""
     from core.inference.npu_backend import is_npu_model_path
@@ -17278,7 +17311,15 @@ async def _select_load_slot(request: LoadRequest) -> Optional[_ExtraSlot]:
             return slot
     if slot is not None or not request.alongside:
         return slot
+    from utils.multi_model_settings import get_multi_model_enabled
+
+    # Off by default in Settings: the load then replaces the loaded model, as before.
+    if not await asyncio.to_thread(get_multi_model_enabled):
+        return None
     orchestrator = _peek_inference_backend()
+    # vLLM and SGLang reserve a fixed share of the GPU up front, so neither shares it with a kept model.
+    if request.engine != "auto" or getattr(orchestrator, "_managed_engine", None) is not None:
+        return None
     occupied = _llama_cpp_backend.is_active or getattr(orchestrator, "active_model_name", None)
     if not occupied or await asyncio.to_thread(_loaded_satisfies, requested):
         return None
