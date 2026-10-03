@@ -120,7 +120,7 @@ def test_servable_call_reaches_the_sage_kernel(monkeypatch):
     def _fake_sage(query, key, value, attn_mask = None, is_causal = False, scale = None, return_lse = False,
                    _parallel_config = None):
         calls.append(tuple(query.shape))
-        return "sage-ran"
+        return torch.full_like(query, 7.0)
 
     backends[dispatch.AttentionBackendName.SAGE] = _fake_sage
     assert att._install_sage_dispatch_guard() is True
@@ -139,7 +139,8 @@ def test_servable_call_reaches_the_sage_kernel(monkeypatch):
     qc, kc, vc = (t.as_subclass(_OnCuda) for t in (q, k, v))
     assert att._sage_reroute_reason(qc, kc, vc, None) is None
     monkeypatch.setattr(att, "_sage_reroute_reason", lambda *a: None)
-    assert _dispatch_sage(q, k, v) == "sage-ran" and calls == [tuple(q.shape)]
+    out = _dispatch_sage(q, k, v)
+    assert calls == [tuple(q.shape)] and bool((out == 7.0).all())
 
 
 def test_guard_is_installed_once(monkeypatch):
