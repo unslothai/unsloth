@@ -17189,6 +17189,8 @@ async def load_model_gated(
             async with nullcontext() if new_slot else inference_lifecycle_gate():
                 _raise_if_sidecar_swap_in_progress()
                 if extra is None and request.engine != "auto" and model_slots.slots:
+                    # Another account's chats are its own to stop: refuse before touching its model.
+                    await asyncio.to_thread(account_access.require_idle_other_accounts)
                     for slot in list(model_slots.slots):
                         _raise_or_cancel_slot_generations(
                             slot, force = request.force_cancel_active, action = "Loading a model"
@@ -17222,7 +17224,13 @@ async def load_model_gated(
                             on_reload_confirmed = reload_gate,
                         )
                         break
-                    except GpuMemoryShortError as exc:
+                    except (GpuMemoryShortError, HTTPException) as exc:
+                        if not isinstance(exc, GpuMemoryShortError):
+                            # A non-GGUF load reports no fit up front: its out-of-memory failure
+                            # makes room the same way, one idle kept model at a time.
+                            if extra is None or not _ran_out_of_memory(exc):
+                                raise
+                            exc = GpuMemoryShortError(str(exc.detail))
                         # No chat may start on a victim between its pick and teardown.
                         async with inference_lifecycle_gate() if new_slot else nullcontext():
                             dropped = await asyncio.to_thread(
@@ -17287,6 +17295,10 @@ async def load_model_gated(
         with _scoped_load_attempts_lock:
             _pending_load_attempts.pop(attempt.token, None)
         _finish_load_attempt(attempt)
+
+
+def _ran_out_of_memory(exc: HTTPException) -> bool:
+    return exc.status_code == 500 and "out of memory" in str(exc.detail).lower()
 
 
 def _primary_model_label() -> Optional[str]:

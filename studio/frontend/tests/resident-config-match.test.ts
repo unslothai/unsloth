@@ -1973,13 +1973,13 @@ test("a pick asks the status about its own model and keeps or replaces the other
   assert.equal(USE_CHAT_MODEL_RUNTIME.match(/await readPickStatus\(\)/g)?.length, 2);
   assert.match(
     USE_CHAT_MODEL_RUNTIME,
-    /const keepsOthers = keepModelsLoaded && !forceReload;[\s\S]*?const touchesOnlySelected =\s*!keepsOthers && !isExternalModelId\(paramsNow\.checkpoint\) && loadedNow\.length > 1;\s*const replacesOneOfSeveral = touchesOnlySelected && !forceReload;/,
+    /const keepsOthers = keepModelsLoaded && !forceReload;[\s\S]*?const touchesOnlySelected =\s*forceReload && !isExternalModelId\(paramsNow\.checkpoint\) && loadedNow\.length > 1;/,
   );
   assert.match(USE_CHAT_MODEL_RUNTIME, /touchesOnlySelected \? \(paramsNow\.checkpoint \?\? undefined\) : undefined,/);
   assert.match(USE_CHAT_MODEL_RUNTIME, /stopQueuedRuns\(stopDecision, keepsOthers \|\| touchesOnlySelected\);/);
   assert.match(USE_CHAT_MODEL_RUNTIME, /if \(!keepsOthers && !touchesOnlySelected\) \{\s*requestLocalPromptQueueStop\(\);/);
   assert.match(USE_CHAT_MODEL_RUNTIME, /if \(currentCheckpoint && !keepsOthers\)/);
-  assert.match(USE_CHAT_MODEL_RUNTIME, /if \(!forceCancelActive \|\| replacesOneOfSeveral\) \{/);
+  assert.match(USE_CHAT_MODEL_RUNTIME, /if \(!forceCancelActive && !touchesOnlySelected\) \{/);
   assert.equal(
     USE_CHAT_MODEL_RUNTIME.match(/alongside: keepModelsLoaded \|\| touchesOnlySelected,/g)?.length,
     2,
@@ -2019,9 +2019,9 @@ test("cancelling a load clears the selection unless kept models stay loaded and 
   );
 });
 
-test("reloading a kept model with the box off keeps it beside the primary, not in the primary seat", () => {
-  // forceReload leaves replacesOneOfSeveral false; its preliminary unload frees the slot, so
-  // alongside: false would send the reload to the primary seat and replace the other model.
-  assert.doesNotMatch(USE_CHAT_MODEL_RUNTIME, /alongside: keepModelsLoaded \|\| replacesOneOfSeveral/);
-  assert.match(USE_CHAT_MODEL_RUNTIME, /const replacesOneOfSeveral = touchesOnlySelected && !forceReload;/);
+test("reloading one of several stays in its own slot; a new pick with the setting off replaces as before", () => {
+  // No preliminary unload for the reload: /load finds the model's slot and replaces it there, so
+  // the server's setting gate never sends it to the primary seat.
+  assert.doesNotMatch(USE_CHAT_MODEL_RUNTIME, /replacesOneOfSeveral/);
+  assert.match(USE_CHAT_MODEL_RUNTIME, /const touchesOnlySelected =\s*forceReload &&/);
 });

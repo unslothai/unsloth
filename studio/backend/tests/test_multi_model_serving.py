@@ -1189,3 +1189,54 @@ def test_a_gpu_handoff_stops_on_a_kept_model_that_would_not_unload(backends, mon
     model_slots.slots.append(extra)
     with pytest.raises(RuntimeError, match = "kept alongside"):
         model_slots.unload_extra_models(strict = True)
+
+
+def test_a_non_gguf_load_out_of_memory_makes_room_then_replaces(backends, monkeypatch):
+    primary, extra = backends
+    extra.request = LoadRequest(model_path = "org/B-GGUF", gguf_variant = "Q8_0")
+    monkeypatch.setattr(inf, "release_chat_gpu_claim", lambda: None)
+    failures = [HTTPException(500, "Failed to load model: CUDA out of memory")] * 2
+    seen = []
+
+    async def load(request, *args, **kwargs):
+        seen.append((request.model_path, request.alongside))
+        if request.alongside and failures:
+            raise failures.pop()
+        primary.model_identifier, primary.is_loaded = request.model_path, True
+        return LoadResponse.model_construct(status = "loaded", model = request.model_path)
+
+    monkeypatch.setattr(inf, "_run_tracked_load_model_impl", load)
+    response = asyncio.run(
+        inf.load_model_gated(LoadRequest(model_path = "org/C", alongside = True), None, "s")
+    )
+    assert response.evicted == ["org/B-GGUF:Q8_0", "org/A-GGUF"] and model_slots.slots == []
+    assert seen == [("org/C", True), ("org/C", True), ("org/C", False)]
+    other = HTTPException(500, "Failed to load model: no such repo")
+    failures[:] = [other]
+    with pytest.raises(HTTPException):
+        asyncio.run(
+            inf.load_model_gated(LoadRequest(model_path = "org/D", alongside = True), None, "s")
+        )
+
+
+def test_a_managed_engine_load_leaves_another_accounts_models_alone(backends, monkeypatch):
+    _, extra = backends
+    _gated_load_fakes(monkeypatch, short_fits = [])
+
+    def busy():
+        raise HTTPException(409, "another account is generating")
+
+    monkeypatch.setattr(inf.account_access, "require_idle_other_accounts", busy)
+    forced = LoadRequest(model_path = "org/C", engine = "vllm", force_cancel_active = True)
+    with pytest.raises(HTTPException):
+        asyncio.run(inf.load_model_gated(forced, None, "s"))
+    assert model_slots.slots == [extra] and extra.llama.is_active
+
+
+def test_turning_the_setting_off_unloads_only_idle_kept_models(backends):
+    _, extra = backends
+    busy = _slot("org/D-GGUF")
+    busy.generations.add(threading.Event())
+    model_slots.slots.append(busy)
+    assert model_slots.unload_idle() == 1
+    assert model_slots.slots == [busy] and not extra.llama.is_active

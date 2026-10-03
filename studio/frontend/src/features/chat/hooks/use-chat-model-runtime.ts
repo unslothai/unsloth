@@ -1814,10 +1814,9 @@ export function useChatModelRuntime() {
         useChatRuntimeStore.getState();
       const keepsOthers = keepModelsLoaded && !forceReload;
       const switchingNote = keepsOthers ? "Keeping the loaded models." : "Switching models.";
-      // Replacing or reloading one of several touches only its own slot, so only its chats stop.
+      // Reloading one of several touches only its own slot, so only its chats stop.
       const touchesOnlySelected =
-        !keepsOthers && !isExternalModelId(paramsNow.checkpoint) && loadedNow.length > 1;
-      const replacesOneOfSeveral = touchesOnlySelected && !forceReload;
+        forceReload && !isExternalModelId(paramsNow.checkpoint) && loadedNow.length > 1;
       try {
         stopDecision = keepsOthers
           ? {
@@ -2482,16 +2481,11 @@ export function useChatModelRuntime() {
               // With chats generating, skip this preliminary unload: it cancels them ahead of /load's
               // preflight, so a rejected target truncates replies for a model that never loads. Idle,
               // unload first and free VRAM early.
-              if (!forceCancelActive || replacesOneOfSeveral) {
-                // Custom mode leaves replacement to /load, which preflights before evicting; replacing
-                // one of several still unloads first, since its /load keeps the other models.
-                if (replacesOneOfSeveral || loadLlamaCppConfig?.mode !== "custom") {
-                  await unloadModel({
-                    model_path: currentCheckpoint,
-                    force_cancel_active: forceCancelActive,
-                  });
-                  // Only a real /unload removes the resident model. The forced path leaves
-                  // it to /load, so cancellation must not treat it as gone.
+              // A reload of one of several stays in its own slot: /load replaces it there.
+              if (!forceCancelActive && !touchesOnlySelected) {
+                if (loadLlamaCppConfig?.mode !== "custom") {
+                  await unloadModel({ model_path: currentCheckpoint });
+                  // Custom mode leaves replacement to /load, which preflights before evicting.
                   loadRun.residentModelUnloaded = true;
                 }
               }

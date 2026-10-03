@@ -153,9 +153,14 @@ def evict(
     short_mib: int,
     gpu_indices = None,
 ) -> list[ExtraSlot]:
-    """Unload the idle slots ``eviction_victims`` picks, skipping any a request reached meanwhile."""
+    """Unload the idle slots ``eviction_victims`` picks."""
+    return evict_these(eviction_victims(exclude, short_mib, gpu_indices))
+
+
+def evict_these(victims) -> list[ExtraSlot]:
+    """Unload ``victims``, skipping any a request reached since they were picked."""
     dropped = []
-    for victim in eviction_victims(exclude, short_mib, gpu_indices):
+    for victim in victims:
         if claim_victim(victim):
             drop(victim)
             dropped.append(victim)
@@ -236,6 +241,13 @@ def unload_extra_models(
         )
 
     return _drop_where(doomed, strict)
+
+
+def unload_idle() -> int:
+    """Drop every kept model no request is using or loading."""
+    filling = loading[0] if loading else None
+    idle = [s for s in list(slots) if s is not filling and not s.generations and not s.refs]
+    return len(evict_these(idle))
 
 
 def unload_llama_slots() -> int:

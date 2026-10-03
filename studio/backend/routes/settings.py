@@ -1378,6 +1378,11 @@ def update_multi_model(
     """Keep the loaded models when another loads. Takes effect on the next load."""
     try:
         enabled = set_multi_model_enabled(payload.enabled)
+        if not enabled:
+            from core.inference import model_slots
+
+            # Back to one model: the idle kept ones go now, a busy one once it is ejected.
+            model_slots.unload_idle()
     except Exception as exc:
         raise log_and_http_error(
             exc,
