@@ -15,7 +15,7 @@ export function useReferenceTranscribe({
   onText,
 }: {
   sttRepo: string | null;
-  onText: (text: string) => void;
+  onText: (text: string, reference: AudioSourceSelection) => void;
 }) {
   const [transcribing, setTranscribing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -45,7 +45,7 @@ export function useReferenceTranscribe({
         if (controller.signal.aborted) return;
         const text = result.text.trim();
         if (text) {
-          onTextRef.current(text);
+          onTextRef.current(text, reference);
         } else {
           setError(
             "No speech was heard in the clip. Type what's said instead.",
