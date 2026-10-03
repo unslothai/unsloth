@@ -3178,6 +3178,7 @@ export const ru = {
     discardDescription: "Несохранённые изменения в {name} будут потеряны.",
     discard: "Отменить",
     mentions: "Навыки",
+    manage: "Управлять навыками",
   },
   library: {
     tabs: {

@@ -3179,6 +3179,7 @@ export const ptBR = {
     discardDescription: "As alterações não salvas em {name} serão perdidas.",
     discard: "Descartar",
     mentions: "Habilidades",
+    manage: "Gerenciar habilidades",
   },
   library: {
     tabs: {

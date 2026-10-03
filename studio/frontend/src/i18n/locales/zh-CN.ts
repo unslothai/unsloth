@@ -3059,6 +3059,7 @@ export const zhCN = {
     discardDescription: "对 {name} 未保存的修改将会丢失。",
     discard: "放弃",
     mentions: "技能",
+    manage: "管理技能",
   },
   library: {
     tabs: {

@@ -3158,6 +3158,7 @@ export const hi = {
     discardDescription: "{name} में असहेजे बदलाव खो जाएँगे।",
     discard: "छोड़ें",
     mentions: "कौशल",
+    manage: "कौशल प्रबंधित करें",
   },
   library: {
     tabs: {

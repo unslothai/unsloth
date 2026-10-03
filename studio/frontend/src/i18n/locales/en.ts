@@ -3175,6 +3175,7 @@ export const en = {
     discardDescription: "Edits to {name} that are not saved will be lost.",
     discard: "Discard",
     mentions: "Skills",
+    manage: "Manage skills",
   },
   // The Library page, its file viewer, and the menus and toasts that act on its files.
   library: {

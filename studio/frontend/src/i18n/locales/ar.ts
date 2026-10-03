@@ -3151,6 +3151,7 @@ export const ar = {
     discardDescription: "ستُفقد التعديلات غير المحفوظة على {name}.",
     discard: "تجاهل",
     mentions: "المهارات",
+    manage: "إدارة المهارات",
   },
   library: {
     tabs: {

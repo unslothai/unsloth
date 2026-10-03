@@ -3217,6 +3217,7 @@ export const es = {
     discardDescription: "Los cambios en {name} que no se hayan guardado se perderán.",
     discard: "Descartar",
     mentions: "Habilidades",
+    manage: "Gestionar habilidades",
   },
   library: {
     tabs: {
