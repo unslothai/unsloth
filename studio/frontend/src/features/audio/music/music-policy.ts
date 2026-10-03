@@ -189,14 +189,32 @@ export function reloadNotice(
 
 export const MUSIC_EXAMPLES = {
   description: [
-    "Upbeat acoustic pop, bright female vocals, guitar and light drums, 100 BPM",
-    "Lo-fi hip hop beat, warm vinyl crackle, mellow piano, relaxed",
-    "Epic orchestral trailer music, big drums, rising strings",
+    {
+      label: "Acoustic pop",
+      text: "Upbeat acoustic pop, bright female vocals, guitar and light drums, 100 BPM",
+    },
+    {
+      label: "Lo-fi hip hop",
+      text: "Lo-fi hip hop beat, warm vinyl crackle, mellow piano, relaxed",
+    },
+    {
+      label: "Orchestral",
+      text: "Epic orchestral trailer music, big drums, rising strings",
+    },
   ],
   instrumental: [
-    "Warm lo-fi hip hop beat, vinyl crackle, mellow piano, relaxed",
-    "Uplifting house music with bright synths, 124 BPM",
-    "Epic orchestral trailer music, big drums, rising strings",
+    {
+      label: "Lo-fi",
+      text: "Warm lo-fi hip hop beat, vinyl crackle, mellow piano, relaxed",
+    },
+    {
+      label: "House",
+      text: "Uplifting house music with bright synths, 124 BPM",
+    },
+    {
+      label: "Orchestral",
+      text: "Epic orchestral trailer music, big drums, rising strings",
+    },
   ],
   lyrics: [
     {
@@ -205,9 +223,9 @@ export const MUSIC_EXAMPLES = {
     },
   ],
   sfx: [
-    "Heavy rain on a tin roof with distant thunder",
-    "Footsteps on gravel, slow walk",
-    "A door creaking open in an empty hall",
+    { label: "Rain", text: "Heavy rain on a tin roof with distant thunder" },
+    { label: "Footsteps", text: "Footsteps on gravel, slow walk" },
+    { label: "Creaky door", text: "A door creaking open in an empty hall" },
   ],
   edit: [
     "Same melody with a saxophone lead",

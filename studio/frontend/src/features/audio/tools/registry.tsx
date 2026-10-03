@@ -6,7 +6,11 @@ import type { AudioWorkflowId } from "../workflows";
 import { CLONE_TOOL_PANELS } from "./clone-panels";
 import { InstructionsField, MossLanguageField } from "./instructions-panels";
 import { MUSIC_TOOL_PANELS } from "./music-panels";
-import { instructionsKindFor, panelApplies } from "./select";
+import {
+  instructionsKindFor,
+  legacyMusicDescription,
+  panelApplies,
+} from "./select";
 import { SPEAK_TOOL_PANELS } from "./speak-panels";
 import type {
   AnyAudioToolPanel,
@@ -46,7 +50,7 @@ function instructionsPanel(
     claims: [],
     appliesTo: (ctx) =>
       instructionsKindFor(ctx) === kind &&
-      !(kind === "music" && ctx.audioMusic === true),
+      (kind !== "music" || legacyMusicDescription(ctx)),
     initial: () => ({ instructions: "", language: "" }),
     Component: ({ value, onChange, ctx }) => (
       <>
