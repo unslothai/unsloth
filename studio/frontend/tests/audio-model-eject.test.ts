@@ -203,7 +203,7 @@ test("a dictation model this page did not load survives a mode switch", () => {
   );
   assert.match(
     source,
-    /await loadSttModel\(sidecarKey, engine, controller\.signal\);\s*sttLoadedByThisPage\.current = sidecarKey;/,
+    /await loadSttModel\(\s*sidecarKey,\s*engine,\s*controller\.signal,\s*undefined,\s*ggufVariant,\s*\);\s*sttLoadedByThisPage\.current = sidecarKey;/,
   );
 });
 

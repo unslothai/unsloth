@@ -35,34 +35,18 @@ test("scroll-rounded insets the track in Chromium and WebKit and clips in Firefo
         `${targets} \\{\\s*scrollbar-width: auto;\\s*scrollbar-color: auto;`,
     ),
   );
-  // Watched surfaces (dialogs, which carry a shadow the clip would cut) take it only while they
-  // overflow; everything else always does.
-  assert.ok(
-    css.includes(
-      "@supports (-moz-appearance: none) {\n\t:is(.scroll-rounded:not([data-overflow-watched]), .scroll-rounded[data-overflowing], .hub-readme-prose pre) {\n\t\tclip-path: inset(-1px round calc(var(--scroll-radius, 0px) + 1px));",
+  assert.match(
+    css,
+    new RegExp(
+      String.raw`@supports \(-moz-appearance: none\) \{\s*` +
+        String.raw`:is\(\.scroll-rounded:not\(\.overflow-hidden\), \.hub-readme-prose pre\) \{\s*` +
+        String.raw`clip-path: inset\(-1px round calc\(var\(--scroll-radius, 0px\) \+ 1px\)\);`,
     ),
   );
+  // No watcher: every .scroll-rounded box that scrolls takes the clip, dialogs included.
+  assert.doesNotMatch(css, /data-overflow-watched|data-overflowing/);
   // Phone-width dialogs go square, and the clip must follow.
   assert.ok(css.includes(String.raw`.scroll-rounded.max-sm\:rounded-none { --scroll-radius: 0px; }`));
-});
-
-test("dialogs flag their overflow so Firefox clips them only while they scroll", () => {
-  for (const file of ["components/ui/dialog.tsx", "components/ui/alert-dialog.tsx"]) {
-    const source = readSrc(file);
-    assert.match(source, /const contentRef = useScrollOverflowRef\(ref\);/, file);
-    assert.match(source, /ref=\{contentRef\}/, file);
-  }
-  const lib = readSrc("lib/scroll-overflow.ts");
-  assert.match(lib, /element\.setAttribute\("data-overflow-watched", ""\);/);
-  assert.match(lib, /element\.toggleAttribute\("data-overflowing", overflowing\);/);
-  // Any overflow counts: one pixel over already draws a scrollbar.
-  assert.match(
-    lib,
-    /element\.scrollHeight > element\.clientHeight \|\|\s*element\.scrollWidth > element\.clientWidth;/,
-  );
-  // Content growing inside a capped box leaves the box the same size, so the children are watched.
-  assert.match(lib, /for \(const child of element\.children\) sizes\.observe\(child\);/);
-  assert.match(lib, /children\.observe\(element, \{ childList: true \}\);/);
 });
 
 test("dialogs and inline rounded scrollers use it", () => {
@@ -77,6 +61,30 @@ test("dialogs and inline rounded scrollers use it", () => {
     ["components/tauri/log-details.tsx", "scroll-rounded rounded-lg"],
   ] as const) {
     assert.ok(readSrc(file).includes(needle), `${file}: ${needle}`);
+  }
+});
+
+// Chat search is borderless with a clear overlay, so its shadow is its only edge. CommandDialog hides
+// its overflow (the list scrolls inside), which keeps it out of the Firefox clip.
+test("command dialogs keep their shadow in Firefox", () => {
+  const command = readSrc("components/ui/command.tsx");
+  assert.match(command, /rounded-4xl! max-sm:rounded-none! top-1\/3 translate-y-0 overflow-hidden p-0/);
+  const search = readSrc("features/chat/components/chat-search-dialog.tsx");
+  assert.match(search, /<CommandDialog[\s\S]*className="chat-search-surface /);
+  assert.doesNotMatch(search, /className="chat-search-surface [^"]*overflow-(y-)?(auto|scroll)/);
+});
+
+// Recipe dialogs float over the canvas on a clear overlay with shadow-border, so they scroll an inner
+// viewport too: the shadowed box hides its overflow and stays out of the Firefox clip.
+test("recipe dialogs scroll an inner viewport, keeping their shadow", () => {
+  const shared = readSrc("features/recipe-studio/dialogs/shared/recipe-dialog-content.tsx");
+  assert.match(shared, /overlayClassName="bg-transparent"/);
+  assert.match(shared, /"corner-squircle flex max-h-\[[^"]*\] flex-col overflow-hidden p-0 sm:max-w-2xl shadow-border"/);
+  assert.match(shared, /"grid min-h-0 gap-6 overflow-y-auto overflow-x-hidden scroll-rounded rounded-4xl px-7 pt-8 pb-7"/);
+  for (const file of ["config-dialog", "import-dialog", "processors-dialog", "preview-dialog"]) {
+    const source = readSrc(`features/recipe-studio/dialogs/${file}.tsx`);
+    assert.match(source, /<RecipeDialogContent\b/, file);
+    assert.doesNotMatch(source, /<DialogContent\b/, file);
   }
 });
 

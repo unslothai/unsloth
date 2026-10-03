@@ -356,7 +356,7 @@ test("a custom config locks the managed rows and keeps the editor outside them",
   // Hidden behind Advanced settings unless custom mode is already on.
   assert.match(
     page,
-    /!resolvedIsDiffusion &&\s*\(showAdvanced \|\| customActive\)/,
+    /!resolvedIsDiffusion &&\s*!audioRuntimeGguf &&\s*\(showAdvanced \|\| customActive\)/,
   );
   assert.ok(page.indexOf("{customActive && <VisionRow") > fieldsetEnd);
 });
