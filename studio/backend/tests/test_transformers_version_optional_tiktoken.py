@@ -1048,9 +1048,7 @@ def test_an_unlockable_filesystem_is_not_waited_out(tmp_path, monkeypatch) -> No
     main_thread = threading.current_thread()
 
     def record(seconds):
-        # The patch is process-wide, and the lock is waited on this thread. A background
-        # thread from an earlier test in the same worker sleeping 50 ms during the window
-        # landed in `slept` and failed the row for a wait the lock never made.
+        # sleep patch is process-wide; ignore stray background threads from earlier tests.
         if threading.current_thread() is main_thread:
             slept.append(seconds)
         else:
