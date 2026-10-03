@@ -480,11 +480,12 @@ def main() -> int:
     if arguments.paths:
         # A scoped run judges only the entries under the paths it scanned.
         scopes = [_relative(REPO_ROOT / path) for path in arguments.paths]
-        entries = [
-            e
-            for e in entries
-            if any(e["file"] == p or e["file"].startswith(p.rstrip("/") + "/") for p in scopes)
-        ]
+        if "." not in scopes:
+            entries = [
+                e
+                for e in entries
+                if any(e["file"] == p or e["file"].startswith(p.rstrip("/") + "/") for p in scopes)
+            ]
     allowed = {_identity(e): e["count"] for e in entries}
     observed = _counted(found)
     lines = {_identity(e): e["line"] for e in found}

@@ -232,6 +232,21 @@ def test_a_scoped_run_ignores_entries_outside_its_paths():
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_a_root_scope_keeps_every_entry(tmp_path, monkeypatch):
+    module = _module()
+    sample = tmp_path / "pkg" / "sample.py"
+    sample.parent.mkdir()
+    sample.write_text("import pickle\ndef f(b):\n    pickle.loads(b)\n", encoding = "utf-8")
+    entry = dict(module.scan_file(sample, "pkg/sample.py")[0], count = 1, reason = "reviewed")
+    entry.pop("line")
+    baseline = tmp_path / "baseline.json"
+    baseline.write_text(json.dumps({"targets": ["pkg"], "entries": [entry]}), encoding = "utf-8")
+    monkeypatch.setattr(module, "BASELINE_PATH", baseline)
+    monkeypatch.setattr(module, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(sys, "argv", ["lint_risky_loaders.py", "--paths", "."])
+    assert module.main() == 0
+
+
 def test_every_baseline_entry_is_reviewed():
     entries = json.loads(BASELINE.read_text(encoding = "utf-8"))["entries"]
     assert entries
