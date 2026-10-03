@@ -13,6 +13,7 @@ import {
   canTransitionAudioMode,
   exactGgufLoadSelector,
   expectedGgufDownloadBytes,
+  fetchGalleryWindow,
   isGgufTtsTarget,
   isTtsAudioType,
   macTtsPickAction,
@@ -713,7 +714,7 @@ test("the gallery-changed subscription asks for the window that is loaded", () =
   );
   assert.match(
     audioPageSource,
-    /const wanted = Math\.max\(PAGE_SIZE, windowSize\);\s*const asked = Math\.min\(wanted, MAX_PAGE_SIZE\);/,
+    /const wanted = Math\.max\(PAGE_SIZE, windowSize\);[\s\S]*?fetchGalleryWindow\([\s\S]*?wanted,\s*MAX_PAGE_SIZE,/,
   );
 });
 
@@ -735,14 +736,57 @@ test("returning to a visible audio tab refreshes the loaded window", () => {
   );
 });
 
-test("a window past the route cap resets the strip instead of stranding the restore", () => {
-  // Asking for more than the route returns leaves the middle of the window unfetched, and keeping
-  // the old scrollback keeps a cursor starting BELOW that middle, so a clip restored into it is
-  // in neither the merged list nor any page still reachable.
+type WindowClip = { id: string };
+type WindowPage = { audio: WindowClip[]; has_more: boolean; next: number | null };
+function windowShelf(size: number) {
+  const shelf = Array.from({ length: size }, (_, n) => ({ id: `c${n}` }));
+  const calls: { limit: number; cursor: number | null }[] = [];
+  const fetchPage = async (limit: number, cursor: number | null): Promise<WindowPage> => {
+    calls.push({ limit, cursor });
+    const from = cursor ?? 0;
+    const audio = shelf.slice(from, from + limit);
+    const end = from + audio.length;
+    return { audio, has_more: end < shelf.length, next: end < shelf.length ? end : null };
+  };
+  return { shelf, calls, fetchPage };
+}
+
+test("a window past the route cap is fetched in capped pages, not cut to the first one", async () => {
+  // A history topped up past 200 clips was refreshed with only the first 200 on focus, which
+  // dropped the selected clip below them and jumped the selection to the newest clip.
+  const { shelf, calls, fetchPage } = windowShelf(303);
+  const page = await fetchGalleryWindow(fetchPage, (p) => p.next, 250, 200);
+  assert.deepEqual(calls, [{ limit: 200, cursor: null }, { limit: 50, cursor: 200 }]);
+  assert.deepEqual(page.audio.map((c) => c.id), shelf.slice(0, 250).map((c) => c.id));
+  // The cursor and has_more come from the last page, so scrolling continues below the window.
+  assert.equal(page.has_more, true);
+  assert.equal(page.next, 250);
+});
+
+test("a window fetch stops when the server runs out or the refresh is superseded", async () => {
+  const short = windowShelf(230);
+  const page = await fetchGalleryWindow(short.fetchPage, (p) => p.next, 400, 200);
+  assert.equal(page.audio.length, 230);
+  assert.equal(page.has_more, false);
+  assert.equal(short.calls.length, 2);
+
+  const one = windowShelf(30);
+  const small = await fetchGalleryWindow(one.fetchPage, (p) => p.next, 50, 200);
+  assert.equal(small.audio.length, 30);
+  assert.equal(one.calls.length, 1);
+
+  const big = windowShelf(600);
+  const stopped = await fetchGalleryWindow(big.fetchPage, (p) => p.next, 500, 200, () => true);
+  assert.equal(big.calls.length, 1);
+  assert.equal(stopped.audio.length, 200);
+});
+
+test("the gallery refresh fetches its whole window before merging", () => {
   assert.match(
     audioPageSource,
-    /wanted > asked\s*\?\s*\{ clips: \[\.\.\.page\.audio\], stitched: false \}\s*:\s*mergeGalleryPage\(/,
+    /const page = await fetchGalleryWindow\([\s\S]*?\);[\s\S]*?const \{ clips: merged, stitched \} = mergeGalleryPage\(\s*page\.audio,/,
   );
+  assert.doesNotMatch(audioPageSource, /wanted > asked/);
 });
 
 test("a capped restore refresh invalidates a page fetched from the older cursor", () => {
@@ -812,4 +856,14 @@ test("selecting CPU never ejects a resident MiniMax, which cannot load on CPU", 
   assert.ok(guard > -1, "no MiniMax guard on the placement control");
   assert.ok(guard < eject, "the guard must return before the eject");
   assert.match(handler.slice(guard, eject), /return;/);
+});
+
+test("history scrolling loads until the page gains a row, not one gallery page", () => {
+  // A gallery page holding only the other page's clips added no visible row, so the list kept its
+  // height and no later scroll event could ask for more.
+  assert.match(audioPageSource, /loadMore: loadMoreVisible,/);
+  assert.match(
+    audioPageSource,
+    /const loadMoreVisible = useCallback\(async \(\) => \{[\s\S]*?await loadGalleryUntil\(\{\s*has: \(\) => countVisible\(\) > before,/,
+  );
 });

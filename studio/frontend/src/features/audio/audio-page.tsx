@@ -458,6 +458,7 @@ export function AudioPage({
     visibleClips,
     selectedClip,
     selectedClipSrc,
+    loadMoreVisible,
   } = useWorkflowHistory({
     workflow: ttsWorkflow,
     enabled: active && mode === "speak",
@@ -956,7 +957,7 @@ export function AudioPage({
                   handleClearGallery: handleClearWorkflowGallery,
                   historyReorder,
                   hasMore,
-                  loadMore,
+                  loadMore: loadMoreVisible,
                   selectedId,
                   selectClip,
                   handleTogglePin,

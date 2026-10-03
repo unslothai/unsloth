@@ -114,6 +114,38 @@ export function moveGalleryItem<T extends FlaggableItem>(
   return [...rest.slice(0, at), { ...moved, pinned }, ...rest.slice(at)];
 }
 
+/**
+ * The `afterId` to send for a move made in a filtered view of a shared shelf (one page's history).
+ *
+ * The view reports its neighbour from the visible rows, but the shelf decides the pin from its own
+ * neighbours, which can be hidden rows: dropping a clip at the top of an unpinned view whose shelf
+ * starts with another page's pin pinned it. This picks the shelf gap between the same visible
+ * neighbours that gives the pin state the view showed, so the visible order and pin both hold.
+ */
+export function scopedMoveAfterId<T extends FlaggableItem>(
+  items: T[],
+  inView: (item: T) => boolean,
+  id: string,
+  afterId: string | null,
+): string | null {
+  const view = items.filter(inView);
+  const intended = moveGalleryItem(view, id, afterId);
+  if (intended === view) return afterId;
+  const at = intended.findIndex((i) => i.id === id);
+  const wantPinned = Boolean(intended[at]?.pinned);
+  const above = intended[at - 1];
+  const below = intended[at + 1];
+  const rest = items.filter((i) => i.id !== id);
+  const first = above ? rest.findIndex((i) => i.id === above.id) : -1;
+  const last = below ? rest.findIndex((i) => i.id === below.id) : rest.length;
+  for (let gap = first; gap < last; gap++) {
+    const candidate = gap < 0 ? null : rest[gap].id;
+    const moved = moveGalleryItem(items, id, candidate).find((i) => i.id === id);
+    if (Boolean(moved?.pinned) === wantPinned) return candidate;
+  }
+  return afterId;
+}
+
 /** The pinned ids in their current order, to hand back to `restorePinOrder` on a failed unpin. */
 export function pinnedOrder<T extends FlaggableItem>(items: T[]): string[] {
   return items.filter((i) => i.pinned).map((i) => i.id);

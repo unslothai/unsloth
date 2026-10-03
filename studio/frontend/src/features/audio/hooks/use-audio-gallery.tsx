@@ -6,11 +6,13 @@ import { useSettingsDialogStore } from "@/features/settings";
 import { useStripReorder } from "@/hooks/use-strip-reorder";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { loadGalleryUntil } from "@/lib/gallery-deep-link";
 import {
   applyPin,
   moveGalleryItem,
   pinnedOrder,
   restorePinOrder,
+  scopedMoveAfterId,
   serializeById,
   sortGalleryItems,
   subscribeGalleryChanged,
@@ -27,7 +29,7 @@ import {
   moveAudioClip,
   setAudioClipFlags,
 } from "../api";
-import { mergeGalleryPage } from "../audio-page-policy";
+import { fetchGalleryWindow, mergeGalleryPage } from "../audio-page-policy";
 import {
   CLIP_BLOB_BUDGET_BYTES,
   MAX_PAGE_SIZE,
@@ -119,25 +121,28 @@ export function useAudioGallery({
       const generation = ++galleryRefreshGeneration.current;
       const writeEpoch = orderWrites.current.epoch;
       const wanted = Math.max(PAGE_SIZE, windowSize);
-      const asked = Math.min(wanted, MAX_PAGE_SIZE);
       try {
-        const page = await listAudioGallery(0, asked);
+        // A window past the route's cap is fetched in capped pages: refetching only the first page
+        // shrank a topped-up history and dropped a selected clip below it.
+        const page = await fetchGalleryWindow(
+          (limit, cursor) => listAudioGallery(0, limit, cursor),
+          audioGalleryCursor,
+          wanted,
+          MAX_PAGE_SIZE,
+          () => generation !== galleryRefreshGeneration.current,
+        );
         // The caller's own fetch: a generation whose clip persisted must not be told otherwise.
         if (generation !== galleryRefreshGeneration.current) return page.audio;
         if (orderWrites.current.inFlight > 0 || orderWrites.current.epoch !== writeEpoch) {
           orderWrites.current.deferred = true;
           return page.audio;
         }
-        // Past the route's cap, stitched scrollback keeps a cursor below it, stranding restored clips.
-        const { clips: merged, stitched } =
-          wanted > asked
-            ? { clips: [...page.audio], stitched: false }
-            : mergeGalleryPage(
-                page.audio,
-                galleryCache.clips,
-                removedId,
-                page.has_more,
-              );
+        const { clips: merged, stitched } = mergeGalleryPage(
+          page.audio,
+          galleryCache.clips,
+          removedId,
+          page.has_more,
+        );
         galleryCache.clips = merged;
         if (!stitched) {
           galleryCache.hasMore = page.has_more;
@@ -341,7 +346,17 @@ export function useAudioGallery({
   }, [beginOrderWrite, endOrderWrite]);
 
   const handleMoveClip = useCallback(
-    async (id: string, afterId: string | null) => {
+    async (id: string, viewAfterId: string | null) => {
+      const moving = galleryCache.clips.find((c) => c.id === id);
+      if (!moving) return;
+      // History shows one page's clips, so translate its neighbour into the shared gallery's.
+      const workflow = clipWorkflow(moving);
+      const afterId = scopedMoveAfterId(
+        galleryCache.clips,
+        (c) => clipWorkflow(c) === workflow,
+        id,
+        viewAfterId,
+      );
       const next = moveGalleryItem(galleryCache.clips, id, afterId);
       if (next === galleryCache.clips) return;
       const guessedPinned = Boolean(next.find((c) => c.id === id)?.pinned);
@@ -557,5 +572,33 @@ export function useWorkflowHistory({
     void loadMore();
   }, [enabled, visibleClips, hasMore, loadMore, loadingMoreRef]);
 
-  return { visibleClips, selectedClip, selectedClipSrc };
+  // Scrolling to the bottom loads until this page gains a row. A gallery page made only of the other
+  // page's clips added nothing visible, so the list kept its height and no further scroll could fire.
+  const visibleLoad = useRef(false);
+  const current = useRef({ workflow, enabled });
+  current.current = { workflow, enabled };
+  const loadMoreVisible = useCallback(async () => {
+    if (visibleLoad.current) return;
+    visibleLoad.current = true;
+    const countVisible = () =>
+      galleryCache.clips.filter((clip) => clipWorkflow(clip) === workflow)
+        .length;
+    const before = countVisible();
+    try {
+      await loadGalleryUntil({
+        has: () => countVisible() > before,
+        count: () => galleryCache.clips.length,
+        hasMore: () => galleryCache.hasMore,
+        refresh: async () => {},
+        loadMore,
+        busy: () => loadingMoreRef.current,
+        cancelled: () =>
+          !current.current.enabled || current.current.workflow !== workflow,
+      });
+    } finally {
+      visibleLoad.current = false;
+    }
+  }, [workflow, loadMore, loadingMoreRef]);
+
+  return { visibleClips, selectedClip, selectedClipSrc, loadMoreVisible };
 }
