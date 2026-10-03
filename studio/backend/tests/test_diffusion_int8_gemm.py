@@ -81,10 +81,12 @@ def test_dense_linear_is_not_eligible():
 
 def test_probe_shapes_stay_on_the_16_byte_grid():
     """A probe K off 16 compiles the spilling kernel variant; its local memory stays reserved for the process."""
+    ns = [n for _m, n, _k, _b, _x in g8._PROBE_SHAPES]
     ks = [k for _m, _n, k, _b, _x in g8._PROBE_SHAPES]
-    assert all(k % 16 == 0 for k in ks)
+    assert all(n % 16 == 0 for n in ns) and all(k % 16 == 0 for k in ks)
     for bk in (64, 128):  # every shipped BLOCK_K still sees a ragged K
         assert any(k % bk for k in ks)
+    assert any(n % 128 for n in ns)  # and BLOCK_N a ragged N
 
 
 def test_misaligned_operands_take_the_stock_epilogue(monkeypatch):
@@ -113,7 +115,11 @@ def test_misaligned_operands_take_the_stock_epilogue(monkeypatch):
     assert run(torch.zeros(32, 1024, dtype = torch.int8), flat[8:].view(64, 1024)) == "stock"
     wide = torch.zeros(64, 1032, dtype = torch.int8)[:, :1024]  # row stride 1032: off 16
     assert run(torch.zeros(32, 1024, dtype = torch.int8), wide) == "stock"
-    assert len(launched) == 1 and len(stock) == 4
+    assert (
+        run(torch.zeros(32, 1024, dtype = torch.int8), torch.zeros(72, 1024, dtype = torch.int8))
+        == "stock"
+    )
+    assert len(launched) == 1 and len(stock) == 5
 
 
 def _cuda_ready() -> bool:
@@ -237,7 +243,7 @@ def test_no_compiled_variant_spills_to_local_memory(forced):
     """Local memory a kernel spills to is reserved by the driver for every resident thread of the device and kept for
     the process (0.7 GB on B200, 1.4 GB on A100 for the K-off-16 variant), outside PyTorch's allocator."""
     g = torch.Generator().manual_seed(0)
-    for m, k, n in ((4096, 3072, 3072), (300, 1040, 520), (300, 1000, 384)):
+    for m, k, n in ((4096, 3072, 3072), (300, 1040, 528), (300, 1040, 520), (300, 1000, 384)):
         a = torch.randint(-127, 128, (m, k), generator = g, dtype = torch.int8).cuda()
         w = torch.randint(-127, 128, (n, k), generator = g, dtype = torch.int8).cuda()
         xs = (torch.rand(m, generator = g) * 0.02).to(torch.bfloat16).cuda()
