@@ -228,3 +228,11 @@ test("the chooser accepts MP4 like the drop check does", () => {
   const input = readSrc("features/audio/components/audio-source-input.tsx");
   assert.match(input, /const AUDIO_EXTS = "[^"]*\bmp4\b/);
 });
+
+test("picking a new source clears an earlier error", () => {
+  const hook = readSrc("features/audio/hooks/use-audio-source.ts");
+  assert.match(
+    hook,
+    /seenKey\.current = valueKey;\s*if \(valueKey && phase === "error"\) dispatch\(\{ type: "reset" \}\);/,
+  );
+});
