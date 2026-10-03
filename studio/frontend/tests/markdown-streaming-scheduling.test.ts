@@ -118,6 +118,28 @@ test("token updates keep Streamdown's expensive configuration props stable", () 
   }
 });
 
+test("the virtualized reasoning transcript shares the paint-coalesced stream", () => {
+  const markdownSource = source.getText();
+  const implStart = markdownSource.indexOf("const MarkdownTextSourceImpl = ({");
+  const implEnd = markdownSource.indexOf(
+    "export const MarkdownText",
+    implStart,
+  );
+  assert.ok(implStart >= 0 && implEnd > implStart);
+  const impl = markdownSource.slice(implStart, implEnd);
+
+  assert.ok(
+    impl.includes("useCoalescedStreamingText("),
+    "reasoning transcript text must use the same frame coalescer",
+  );
+  assert.equal(
+    impl.indexOf("text={displayText}") >
+      impl.indexOf("useCoalescedStreamingText("),
+    true,
+    "the renderer must receive coalesced text",
+  );
+});
+
 test("stream updates are paint-coalesced without a time or length throttle", () => {
   const markdownSource = source.getText();
   const hookStart = markdownSource.indexOf(
