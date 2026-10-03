@@ -311,8 +311,7 @@ def _fusable_parts(module: Any) -> Optional[tuple]:
         return None
     from torch import nn
 
-    # A wrapper (PadToMinM on the token refiner) carries a contract the fused nn.Linear would drop: unpadded, a short
-    # prompt's compiled refiner hits _int_mm's M > 16 assert.
+    # never a wrapper: an unpadded token refiner (PadToMinM) hits _int_mm's M > 16 assert on a short compiled prompt
     if not all(isinstance(p, nn.Linear) for p in parts):
         return None
     if not all(_per_token_int8(getattr(p, "weight", None)) for p in parts):
