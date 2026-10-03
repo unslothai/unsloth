@@ -6752,3 +6752,43 @@ def test_remote_code_flags_scoped_to_class_parameters_and_callbacks(tmp_path):
     remote = {(f["qualname"], f["sink"]) for f in findings if "trust_remote_code" in f["sink"]}
     assert not [q for q, _ in remote if q in ("B.load", "load")]
     assert ("start", "trust_remote_code (untrusted **kwargs)") in remote
+
+
+def test_find_spec_package_unquote_env_calls_dict_union_and_nested_revisions(tmp_path):
+    """`find_spec(".x", pkg)`, `unquote`, `os.putenv`/`environ.update`, `kwargs |= parsed`,
+    and a nested helper's `revision = "main"` not unpinning the outer commit."""
+    findings = _scan(
+        tmp_path,
+        "import importlib.util, json, os, requests, sys\n"
+        "from importlib import import_module\n"
+        "from urllib.parse import unquote\n"
+        "from transformers import AutoModel\n"
+        "from huggingface_hub import snapshot_download\n"
+        "def a(url):\n"
+        "    return importlib.util.find_spec('.plugin', requests.get(url).text)\n"
+        "def b(url):\n"
+        "    return import_module(unquote(requests.get(url).text))\n"
+        "def c(url):\n"
+        "    os.putenv('LD_PRELOAD', requests.get(url).text)\n"
+        "def d(repo):\n"
+        "    os.environ.update(PYTHONPATH = snapshot_download(repo))\n"
+        "def e(name, blob):\n"
+        "    kwargs = {'local_files_only': True}\n"
+        "    kwargs |= json.loads(blob)\n"
+        "    return AutoModel.from_pretrained(name, **kwargs)\n"
+        "def f(repo):\n"
+        "    revision = '0123456789abcdef0123456789abcdef01234567'\n"
+        "    def helper():\n"
+        "        revision = 'main'\n"
+        "        return revision\n"
+        "    sys.path.insert(0, snapshot_download(repo, revision = revision))\n",
+    )
+    sinks = {(f["qualname"], f["sink"]) for f in findings}
+    assert {
+        ("a", "importlib.util.find_spec"),
+        ("b", "importlib.import_module"),
+        ("c", "process env (untrusted value)"),
+        ("d", "process env (untrusted value)"),
+        ("e", "trust_remote_code (untrusted **kwargs)"),
+    } <= sinks
+    assert ("f", "unpinned code fetch") not in sinks

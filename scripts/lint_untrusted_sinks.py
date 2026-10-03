@@ -255,7 +255,7 @@ SINKS: dict[str, tuple[tuple[int, ...], frozenset[str]]] = {
     "import_module": ((0, 1), frozenset({"name", "package"})),
     "__import__": ((0,), frozenset({"name"})),
     # Probing a dotted name imports its parent package, running that `__init__.py`.
-    "importlib.util.find_spec": ((0,), frozenset({"name"})),
+    "importlib.util.find_spec": ((0, 1), frozenset({"name", "package"})),
     "importlib.util.spec_from_file_location": ((1,), frozenset({"location"})),
     "spec_from_file_location": ((1,), frozenset({"location"})),
     # The loaders behind it, used directly: `SourceFileLoader(name, path).load_module()`.
@@ -2548,6 +2548,9 @@ class _TaintPass(ast.NodeVisitor):
                 "binascii.a2b_base64",
                 "bytes.fromhex",
                 "bytearray.fromhex",
+                "urllib.parse.unquote",
+                "urllib.parse.unquote_plus",
+                "urllib.parse.unquote_to_bytes",
                 "io.StringIO",
                 "os.path.basename",
                 "os.path.normpath",
@@ -3710,6 +3713,7 @@ class _TaintPass(ast.NodeVisitor):
         self._check_numpy_load(node)
         self._check_child_env(node)
         self._check_relative_cwd(node)
+        self._check_environ_call(node)
         self._check_remote_code(node)
         self.generic_visit(node)
 
@@ -4591,6 +4595,24 @@ class _TaintPass(ast.NodeVisitor):
                 self._record(node, "child process env (untrusted mapping)", reason, _short(env))
                 return
 
+    def _check_environ_call(self, node: ast.Call) -> None:
+        """`os.putenv(KEY, v)`, `os.environ.update(KEY = v)`, `os.environ.setdefault(KEY, v)`."""
+        names = self.facts.canonicals(_call_name(node.func))
+        pairs: list = []
+        if _matches_any(names, {"os.putenv", "os.environ.setdefault"}) and len(node.args) >= 2:
+            pairs = [(node.args[0], node.args[1])]
+        elif _matches_any(names, {"os.environ.update"}):
+            pairs = [(ast.Constant(value = k.arg), k.value) for k in node.keywords if k.arg]
+            for argument in node.args[:1]:
+                if isinstance(argument, ast.Dict):
+                    pairs += [(k, v) for k, v in zip(argument.keys, argument.values) if k]
+        for key, value in pairs:
+            if isinstance(key, ast.Constant) and key.value in _EXEC_ENV_KEYS:
+                reason = self.tainted(value)
+                if reason:
+                    self._record(node, "process env (untrusted value)", reason, _short(value))
+                    return
+
     def _check_environ_write(self, target: ast.AST, value: ast.AST, node: ast.AST) -> None:
         """`os.environ["PYTHONPATH"] = downloaded`: every later child inherits it."""
         if not (
@@ -4827,6 +4849,16 @@ class _TaintPass(ast.NodeVisitor):
                     else []
                 )
                 if any(isinstance(t, ast.Name) and t.id == value.id for t in targets):
+                    reason = self._parsed_mapping(child.value, seen)
+                    if reason:
+                        return reason
+                # `kwargs |= parsed` is the operator spelling of the same merge.
+                if (
+                    isinstance(child, ast.AugAssign)
+                    and isinstance(child.op, ast.BitOr)
+                    and isinstance(child.target, ast.Name)
+                    and child.target.id == value.id
+                ):
                     reason = self._parsed_mapping(child.value, seen)
                     if reason:
                         return reason
@@ -5528,7 +5560,8 @@ def _unpinned_code_fetches(facts: _FileFacts, reached: frozenset) -> list[dict]:
         # that is not a commit is the same moving branch as the literal itself.
         unpinned_params |= {
             target.id
-            for child in ast.walk(node)
+            # Own scope only: a nested helper's `revision = "main"` is its own local.
+            for child in _scope_nodes(node)
             if isinstance(child, ast.Assign)
             and (
                 # Anything computed is data choosing the branch, as at the keyword itself.
