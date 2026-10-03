@@ -209,7 +209,10 @@ class LocalModelInfo(BaseModel):
     )
     audio_workflows: Optional[List[str]] = Field(
         None,
-        description = "Audio page workflows (speak, music, transcribe) this row serves; null when not audio",
+        description = (
+            "Audio page workflows (speak, clone, music, transcribe) this row serves; null when "
+            "not audio"
+        ),
     )
     base_model: Optional[str] = Field(
         None,

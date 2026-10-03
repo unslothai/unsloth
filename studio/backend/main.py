@@ -1314,6 +1314,7 @@ if _DOCS_ASSETS_DIR.is_dir():
 # Cap request bodies on protected POSTs; upload routes get explicit multipart headroom.
 import json as _json_for_413  # noqa: E402
 from utils.upload_limits import (  # noqa: E402
+    AUDIO_INPUT_MAX_BYTES,
     STT_AUDIO_JSON_MAX_BYTES,
     STT_AUDIO_RAW_MAX_BYTES,
     LIBRARY_UPLOAD_MAX_BYTES,
@@ -1360,6 +1361,9 @@ _VIDEO_MULTIPART_UPLOAD_PATHS = (
     "/api/inference/videos",
 )
 _LIBRARY_UPLOAD_PATH = "/api/library/uploads"
+# A raw audio body the route streams to disk and caps itself; buffering it here would hold
+# up to 200 MiB in memory before the route ran.
+_AUDIO_INPUT_UPLOAD_PATH = "/api/inference/audio/inputs"
 _BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
     *_DATASET_UPLOAD_PASSTHROUGH_PREFIXES,
     _DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX,
@@ -1367,6 +1371,7 @@ _BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
 # Matched by EXACT path (multipart uploads only), so sibling JSON sub-routes keep the normal cap.
 _BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS = (
     _DIFFUSION_DATASET_UPLOAD_PATH,
+    _AUDIO_INPUT_UPLOAD_PATH,
     *_STT_MULTIPART_UPLOAD_PATHS,
     *_VIDEO_MULTIPART_UPLOAD_PATHS,
     _LIBRARY_UPLOAD_PATH,
@@ -1390,6 +1395,8 @@ def _get_upload_passthrough_request_max_bytes(path: str) -> int:
         )
     if path.rstrip("/") == _LIBRARY_UPLOAD_PATH:
         return upload_request_limit_bytes(LIBRARY_UPLOAD_MAX_BYTES)
+    if path.rstrip("/") == _AUDIO_INPUT_UPLOAD_PATH:
+        return AUDIO_INPUT_MAX_BYTES
     # The trailing-slash variant reaches this middleware BEFORE the router's redirect_slashes
     # 307, so it must resolve to the same cap. JSON sub-routes keep extra path components.
     if (

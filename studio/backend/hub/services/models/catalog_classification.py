@@ -206,6 +206,41 @@ def _audio_cpp_classification(
     return task, audio_type
 
 
+def _audio_cpp_workflows(
+    path: Optional[str | Path], name_hints: tuple[Optional[str], ...]
+) -> Optional[list[str]]:
+    """The Audio page workflows an audio.cpp GGUF serves (a clone-only family lists ``clone``
+    alone), from the same family policy the loader uses; None when it is not a runnable one."""
+    try:
+        from core.inference import audio_cpp_models as acm
+    except Exception:
+        return None
+    header = acm.read_local_header(path) if path is not None else None
+    names = tuple(str(hint) for hint in name_hints if hint)
+    family = (header.family if header is not None else None) or acm.family_from_names(names)
+    if not family:
+        return None
+    policy = acm.family_policy(family, header.spec if header is not None else None, names)
+    if policy.unsupported or not policy.task:
+        return None
+    return list(policy.workflows) or None
+
+
+def _gguf_path_audio_workflows(
+    path: str | Path, id_hints: tuple[Optional[str], ...] = ()
+) -> Optional[list[str]]:
+    """``_audio_cpp_workflows`` of the first audio.cpp GGUF at ``path`` (a file or a folder)."""
+    model_path = Path(path)
+    try:
+        paths = [model_path] if model_path.is_file() else _iter_gguf_paths(model_path)
+        for gguf_path in paths:
+            if is_audio_cpp_gguf_architecture(_gguf_architecture(str(gguf_path))):
+                return _audio_cpp_workflows(gguf_path, id_hints + (gguf_path.name,))
+    except Exception:
+        return None
+    return None
+
+
 def _gguf_file_task(path: str | Path, name_hints: tuple[Optional[str], ...]) -> Optional[str]:
     """``_arch_to_task`` for a file on disk, which can also read an audio.cpp family."""
     arch = _gguf_architecture(str(path))

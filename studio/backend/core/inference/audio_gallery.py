@@ -208,7 +208,7 @@ def _record(
 
 def _workflow(meta: dict[str, Any]) -> str:
     workflow = meta.get("workflow")
-    if workflow in ("speak", "music"):
+    if workflow in ("speak", "clone", "music"):
         return workflow
     return workflow_for_audio_type(meta.get("audio_type"))
 
@@ -431,8 +431,8 @@ def clear(include_archived: bool = False, workflow: Optional[str] = None) -> int
     orphan WAVs are preserved, since list_audio already hides them.
 
     Archived clips are spared unless ``include_archived``, and sparing them raises
-    FlagsUnavailable when the flag store cannot be read. A ``workflow`` (speak or music) spares
-    the other workflow's clips."""
+    FlagsUnavailable when the flag store cannot be read. A ``workflow`` (speak, clone or music)
+    spares the other workflows' clips."""
     removed = 0
     directory = gallery_dir()
     with gallery_flags.exclusive(directory, require_file_lock = not include_archived):

@@ -790,6 +790,10 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "audio_family",
                         "audio_options",
                         "gguf_variant",
+                        "audio_workflows",
+                        "audio_reference_text",
+                        "audio_required_inputs",
+                        "audio_clone",
                     )
                     if k in _entry
                 }
@@ -1597,6 +1601,10 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
         logger.info("Starting audio generation for request_id=%s", request_id)
         # Only audio.cpp models take per-model options; other backends never see the keyword.
         extra = {"audio_options": cmd["audio_options"]} if cmd.get("audio_options") else {}
+        # Clone requests carry server-local reference paths the route resolved for the account.
+        for key in ("workflow", "audio_inputs", "reference_text", "speed"):
+            if cmd.get(key) is not None:
+                extra[key] = cmd[key]
         wav_bytes, sample_rate = backend.generate_audio_response(
             text = cmd["text"],
             temperature = cmd.get("temperature", 0.6),
