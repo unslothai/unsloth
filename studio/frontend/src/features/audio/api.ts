@@ -92,6 +92,8 @@ export interface AudioGalleryClip {
   archived?: boolean;
   /** The server's unpinned sort key: the drag key, else the file mtime. */
   order_at?: number | null;
+  /** The Audio workflow that made the clip. Older servers omit it; read it through clipWorkflow. */
+  workflow?: string | null;
 }
 
 export interface AudioGalleryListResponse {
@@ -195,21 +197,28 @@ export async function deleteAudioClip(id: string): Promise<void> {
   if (!response.ok) throw new Error(await readFastApiError(response));
 }
 
-export async function clearAudioGallery(): Promise<number> {
-  const response = await authFetch("/api/inference/audio/gallery", {
+export async function clearAudioGallery(
+  workflow?: "speak" | "music",
+): Promise<number> {
+  const query = workflow ? `?workflow=${workflow}` : "";
+  const response = await authFetch(`/api/inference/audio/gallery${query}`, {
     method: "DELETE",
   });
   const body = await parseJson<{ removed: number }>(response);
   return body.removed;
 }
 
-export async function fetchClipObjectUrl(
-  url: string,
-): Promise<{ url: string; bytes: number }> {
+export async function fetchClipBlob(url: string): Promise<Blob> {
   const response = await authFetch(url);
   if (!response.ok) throw new Error(await readFastApiError(response));
-  const blob = await response.blob();
-  return { url: URL.createObjectURL(blob), bytes: blob.size };
+  return response.blob();
+}
+
+export async function fetchClipObjectUrl(
+  url: string,
+): Promise<{ url: string; bytes: number; blob: Blob }> {
+  const blob = await fetchClipBlob(url);
+  return { url: URL.createObjectURL(blob), bytes: blob.size, blob };
 }
 
 export async function transcribeWithProgress(

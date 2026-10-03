@@ -5,8 +5,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
+import { readAudioWorkspaceSource } from "./helpers/audio-workspace.ts";
 
-const source = readSrc("features/audio/audio-page.tsx");
+const source = readAudioWorkspaceSource();
 const adapterSource = readSrc("features/chat/adapters/studio-model-dictation-adapter.ts");
 
 test("Audio exposes the shared picker eject action only while idle", () => {
@@ -175,15 +176,17 @@ test("leaving Transcribe releases the sidecar it loaded", () => {
 
 test("selected and fallback clip actions remain named and downloadable", () => {
   assert.match(source, /aria-label="Download audio clip"/);
-  assert.match(source, /aria-label="Delete audio clip"/);
+  // Delete sits in the clip card's menu, the same one each history row uses.
+  assert.match(
+    source,
+    /onDelete=\{\(\) => void handleDeleteClip\(clip\.id\)\}/,
+  );
+  assert.match(source, /menu=\{clipMenu\(selectedClip, "row"\)\}/);
   assert.match(
     source,
     /const handleDownloadFallbackClip[\s\S]*anchor\.download = "generated-audio\.wav"/,
   );
-  assert.match(
-    source,
-    /onClick=\{handleDownloadFallbackClip\}[\s\S]*Download WAV/,
-  );
+  assert.match(source, /onDownload=\{handleDownloadFallbackClip\}/);
 });
 
 test("a dictation model this page did not load survives a mode switch", () => {

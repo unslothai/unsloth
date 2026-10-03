@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from core.inference import gallery_flags
+from core.inference.audio_workflows import workflow_for_audio_type
 from loggers import get_logger
 from utils.account_context import is_owner_context
 from utils.paths import ensure_account_dir, studio_root
@@ -193,6 +194,7 @@ def _record(
         flags = gallery_flags.read(gallery_dir())
     return {
         **meta,
+        "workflow": _workflow(meta),
         "id": audio_id,
         "url": f"/api/inference/audio/gallery/{audio_id}/file",
         **gallery_flags.flags_for(flags, audio_id),
@@ -201,6 +203,13 @@ def _record(
             flags, audio_id, _mtime(gallery_dir() / f"{audio_id}.wav")
         ),
     }
+
+
+def _workflow(meta: dict[str, Any]) -> str:
+    workflow = meta.get("workflow")
+    if workflow in ("speak", "music"):
+        return workflow
+    return workflow_for_audio_type(meta.get("audio_type"))
 
 
 def audio_path(audio_id: str) -> Optional[Path]:
@@ -416,12 +425,13 @@ def delete(audio_id: str) -> bool:
     return True
 
 
-def clear(include_archived: bool = False) -> int:
+def clear(include_archived: bool = False, workflow: Optional[str] = None) -> int:
     """Delete every Unsloth-owned pair (readable sidecar); return the count removed. Foreign and
     orphan WAVs are preserved, since list_audio already hides them.
 
     Archived clips are spared unless ``include_archived``, and sparing them raises
-    FlagsUnavailable when the flag store cannot be read."""
+    FlagsUnavailable when the flag store cannot be read. A ``workflow`` (speak or music) spares
+    the other workflow's clips."""
     removed = 0
     directory = gallery_dir()
     with gallery_flags.exclusive(directory, require_file_lock = not include_archived):
@@ -432,7 +442,10 @@ def clear(include_archived: bool = False) -> int:
             return 0
         cleared: list[str] = []
         for path in paths:
-            if _read_meta(_sidecar_path(path.stem)) is None:
+            meta = _read_meta(_sidecar_path(path.stem))
+            if meta is None:
+                continue
+            if workflow is not None and _workflow(meta) != workflow:
                 continue
             if not include_archived and gallery_flags.is_archived(flags, path.stem):
                 continue
@@ -446,7 +459,7 @@ def clear(include_archived: bool = False) -> int:
                 _sidecar_path(path.stem).unlink()
             except OSError:
                 pass
-        if include_archived and not gallery_flags.is_trusted(directory):
+        if include_archived and workflow is None and not gallery_flags.is_trusted(directory):
             gallery_flags.reset_locked(directory)
         else:
             gallery_flags.forget_locked(directory, cleared)

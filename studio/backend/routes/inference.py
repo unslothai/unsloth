@@ -100,6 +100,8 @@ from hub.services.models.ollama import (
 from core.inference.audio_errors import (
     AudioBackendUnsupportedError,
     AudioGenerationCancelledError,
+    AudioRuntimeError,
+    audio_runtime_http_error,
 )
 from core.inference import context_refusal
 from core.inference.context_window import (
@@ -22004,6 +22006,10 @@ async def _generate_tts_wav(
             if isinstance(e, AudioBackendUnsupportedError):
                 logger.info("Audio generation unsupported on this backend: %s", e.detail)
                 raise HTTPException(status_code = 501, detail = e.message)
+            if isinstance(e, AudioRuntimeError):
+                status_code, detail = audio_runtime_http_error(e)
+                logger.warning("Audio generation refused by the runtime: %s", e)
+                raise HTTPException(status_code = status_code, detail = detail)
             if audio_type == "minimax_music3" and _MINIMAX_PROMPT_OVERFLOW.fullmatch(str(e)):
                 raise HTTPException(status_code = 400, detail = str(e))
             logger.error(f"Audio generation error: {e}", exc_info = True)
@@ -22034,6 +22040,8 @@ def _persist_tts_clip(
     """Best-effort gallery save: persistence never fails the request that produced
     the audio. Blocking, so callers run it off the event loop."""
     from core.inference import audio_gallery
+    from core.inference.audio_workflows import workflow_for_audio_type
+
     try:
         return audio_gallery.save(
             wav_bytes,
@@ -22041,6 +22049,7 @@ def _persist_tts_clip(
                 "prompt": text,
                 "model": model_name,
                 "audio_type": audio_type or "unknown",
+                "workflow": workflow_for_audio_type(audio_type),
                 "sample_rate": sample_rate,
                 "duration_s": _wav_duration_seconds(wav_bytes, sample_rate),
                 "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -44325,12 +44334,15 @@ async def delete_gallery_audio(audio_id: str, current_subject: str = Depends(get
 
 
 @studio_router.delete("/audio/gallery")
-async def clear_gallery_audio(current_subject: str = Depends(get_current_subject)):
+async def clear_gallery_audio(
+    workflow: Optional[Literal["speak", "music"]] = None,
+    current_subject: str = Depends(get_current_subject),
+):
     from core.inference import audio_gallery
     from core.inference.gallery_flags import FlagsUnavailable
 
     try:
-        removed = await asyncio.to_thread(audio_gallery.clear)
+        removed = await asyncio.to_thread(audio_gallery.clear, workflow = workflow)
     except FlagsUnavailable as exc:
         logger.warning("audio_gallery.clear_blocked: %s", exc)
         raise HTTPException(

@@ -5104,6 +5104,9 @@ class AudioGalleryItem(BaseModel):
     created_at: str
     pinned: bool = Field(False, description = "Pinned to the top of history")
     archived: bool = Field(False, description = "Moved to the archived shelf, hidden from history")
+    workflow: Optional[str] = Field(
+        None, description = "Audio page workflow that made the clip: speak or music"
+    )
     order_at: Optional[float] = Field(
         None,
         description = "Unpinned sort key (epoch-second scale): the manual key once dragged, else the file mtime",

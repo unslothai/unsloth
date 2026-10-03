@@ -263,7 +263,10 @@ class AudioCppBackend:
             _raise_if_cancelled(cancel_event)
             raise
         except AudioCppRequestError as exc:
-            raise RuntimeError(f"The audio runtime could not generate audio: {exc.detail}") from exc
+            from core.inference.audio_errors import AudioRuntimeError
+            raise AudioRuntimeError(
+                f"The audio runtime could not generate audio: {exc.detail}", status = exc.status
+            ) from exc
         _raise_if_cancelled(cancel_event)
         return wav, _wav_sample_rate(wav)
 
