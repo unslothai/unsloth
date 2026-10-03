@@ -45,10 +45,14 @@ def patched_torch():
         torch.__getattr__ = previous
 
 
+# Every torch from 2.6 through 2.13 carries these four in torch._deprecated_attrs.
+# A torch without them would leave the wrapper's branch dead, so fail rather than skip.
+_ALIASES = ("has_cuda", "has_cudnn", "has_mkldnn", "has_mps")
+
+
 def _deprecated_names(torch):
-    names = sorted(getattr(torch, "_deprecated_attrs", {}))
-    if not names:
-        pytest.skip("this torch has no deprecated top-level aliases")
+    names = tuple(sorted(getattr(torch, "_deprecated_attrs", {})))
+    assert names == _ALIASES, f"torch._deprecated_attrs changed: {names}"
     return names
 
 
@@ -72,13 +76,10 @@ def test_get_ignored_functions_stays_silent(patched_torch):
     assert deprecated == [], [f"{w.filename}:{w.lineno} {w.message}" for w in deprecated]
 
 
-@pytest.mark.parametrize("index", range(4))
-def test_direct_access_warns_at_the_caller(patched_torch, index):
+@pytest.mark.parametrize("name", _ALIASES)
+def test_direct_access_warns_at_the_caller(patched_torch, name):
     torch = patched_torch
-    names = _deprecated_names(torch)
-    if index >= len(names):
-        pytest.skip("fewer deprecated aliases in this torch")
-    name = names[index]
+    _deprecated_names(torch)
     with warnings.catch_warnings(record = True) as caught:
         warnings.simplefilter("always")
         value = _access_from("user_code", "<user_code>", name)
