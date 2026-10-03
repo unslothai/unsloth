@@ -63,7 +63,11 @@ import {
   usesNativeAudioRuntime,
 } from "../catalog";
 import { useAudioWorkspaceStore } from "../stores/audio-workspace-store";
-import { type AudioWorkflowId, slotForWorkflow } from "../workflows";
+import {
+  type AudioWorkflowId,
+  slotForWorkflow,
+  workflowForLoadedModel,
+} from "../workflows";
 import type { AudioHostState } from "./audio-host-state";
 import type { SttSidecar } from "./use-stt-sidecar";
 import type { Transcription } from "./use-transcription";
@@ -327,10 +331,13 @@ export function useAudioModelSlot({
               duration: offloadNotice ? 8000 : undefined,
             },
           );
-          // The page follows what it just loaded: a music model opens Music, a speech model Speak.
-          const loadedWorkflow = isMusicGenerationModel(repoId, res.audio_type)
-            ? "music"
-            : "speak";
+          // The page follows what it just loaded: a music model opens Music, a clone-only model Clone,
+          // and a model that can run the open page keeps it.
+          const loadedWorkflow = workflowForLoadedModel({
+            current: useAudioWorkspaceStore.getState().workflow,
+            audioWorkflows: res.audio_workflows,
+            music: isMusicGenerationModel(repoId, res.audio_type),
+          });
           const workspace = useAudioWorkspaceStore.getState();
           workspace.rememberModel(loadedWorkflow, repoId);
           if (modeRef.current === "speak") workspace.commitWorkflow(loadedWorkflow);
@@ -1076,12 +1083,46 @@ export function useAudioModelSlot({
     };
   }, [active, isMac]);
 
+  // A one-click pick from outside the picker (Clone's recommended models): resolve the quant the
+  // picker would, then take the same path, so an undownloaded model downloads first.
+  const pickRecommendedModel = useCallback(
+    async (id: string) => {
+      if (busyRef.current !== null) return;
+      try {
+        const listing = await listGgufVariants(id, hfApiToken(getHfToken()));
+        const variant = selectAutoGgufVariant(
+          listing.variants,
+          listing.default_variant,
+        );
+        if (!variant) {
+          toast.error(`${id} does not publish a runnable GGUF file.`);
+          return;
+        }
+        await handleModelSelect(id, {
+          source: "hub",
+          isLora: false,
+          isGguf: true,
+          ggufFilename: variant.filename,
+          ggufVariant: variant.quant,
+          isDownloaded: variant.downloaded === true && !variant.partial,
+          expectedBytes: expectedGgufDownloadBytes(variant),
+        });
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : `Could not inspect ${id}.`,
+        );
+      }
+    },
+    [busyRef, handleModelSelect],
+  );
+
   return {
     replayQueuedTtsPick,
     transitionMode,
     transitionWorkflow,
     pendingTranscribeRelease,
     handleModelSelect,
+    pickRecommendedModel,
     handleEject,
     trainedTtsModels,
   };

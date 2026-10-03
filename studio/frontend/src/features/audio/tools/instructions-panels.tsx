@@ -13,11 +13,14 @@ import { Field } from "../components/field";
 export function InstructionsField({
   instructionsKind,
   musicNeedsDescription,
+  voiceRequired = false,
   audioInstructions,
   setAudioInstructions,
 }: {
   instructionsKind: NativeAudioInstructionsKind;
   musicNeedsDescription: boolean;
+  /** Maya1: the model cannot speak without a voice description. */
+  voiceRequired?: boolean;
   audioInstructions: string;
   setAudioInstructions: (value: string) => void;
 }) {
@@ -40,7 +43,9 @@ export function InstructionsField({
           : instructionsKind === "scene"
             ? "Optional Higgs TTS 2 scene guidance such as room acoustics, recording conditions, or background ambience."
             : instructionsKind === "voice"
-              ? "Optional. Used by Qwen3-TTS VoiceDesign, Qwen3-TTS CustomVoice and VoxCPM2; other models ignore it."
+              ? voiceRequired
+                ? "Required by this model. Describe the voice, accent, age and delivery."
+                : "Optional. Used by Qwen3-TTS VoiceDesign, Qwen3-TTS CustomVoice and VoxCPM2; other models ignore it."
               : "Optional MOSS Local guidance such as speaking style, emotion, pace, or delivery."
       }
       htmlFor="audio-instructions"

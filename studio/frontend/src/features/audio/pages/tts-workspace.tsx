@@ -90,7 +90,7 @@ export function TtsRailFields({
   ttsLoaded,
   handleEject,
   samplingControls,
-  audioOptionSpecs,
+  audioOptionSpecs: allAudioOptionSpecs,
   advancedOpen,
   setAdvancedOpen,
   temperature,
@@ -108,6 +108,8 @@ export function TtsRailFields({
   audioOptionValues,
   handleAudioOptionChange,
   handleAudioOptionsReset,
+  inputs,
+  claimedOptions,
 }: Pick<
   SpeechGeneration,
   | "prompt"
@@ -139,30 +141,40 @@ export function TtsRailFields({
     isRecording: boolean;
     setAudioDeviceState: (next: string) => void;
     advancedOpen: boolean;
+    /** The page's own inputs in place of the Text field (Clone's reference, transcript and text). */
+    inputs?: ReactNode;
+    /** Spec options a shown tool panel renders itself, which Advanced leaves out. */
+    claimedOptions?: ReadonlySet<string>;
   }) {
+  // Advanced lists only what no shown tool panel renders itself.
+  const audioOptionSpecs = claimedOptions?.size
+    ? allAudioOptionSpecs.filter((spec) => !claimedOptions.has(spec.name))
+    : allAudioOptionSpecs;
   return (
     <>
-      <Field
-        label={musicGeneration ? "Lyrics" : "Text"}
-        htmlFor="audio-prompt"
-        hint={
-          musicGeneration
-            ? "Lyrics may use sections such as [verse] and [chorus]. The completed song lands in the gallery."
-            : "What the model should say. Generation runs on the loaded TTS model and lands in the gallery."
-        }
-      >
-        <Textarea
-          id="audio-prompt"
-          value={prompt}
-          onChange={(event) => setPrompt(event.target.value)}
-          placeholder={
+      {inputs ?? (
+        <Field
+          label={musicGeneration ? "Lyrics" : "Text"}
+          htmlFor="audio-prompt"
+          hint={
             musicGeneration
-              ? "[verse]\nMorning light through the pines…\n\n[chorus]\n…"
-              : "Type the sentence to speak…"
+              ? "Lyrics may use sections such as [verse] and [chorus]. The completed song lands in the gallery."
+              : "What the model should say. Generation runs on the loaded TTS model and lands in the gallery."
           }
-          className="min-h-28"
-        />
-      </Field>
+        >
+          <Textarea
+            id="audio-prompt"
+            value={prompt}
+            onChange={(event) => setPrompt(event.target.value)}
+            placeholder={
+              musicGeneration
+                ? "[verse]\nMorning light through the pines…\n\n[chorus]\n…"
+                : "Type the sentence to speak…"
+            }
+            className="min-h-28"
+          />
+        </Field>
+      )}
       {toolPanels}
       {/* Field inlined: its label needs a form control to point
           at, and PillTabs is a tablist with its own name. */}
@@ -309,6 +321,7 @@ export function TtsFooter({
   shortcutLabel,
   error,
   elapsedSeconds,
+  secondaryAction,
 }: Pick<
   SpeechGeneration,
   | "handleGenerate"
@@ -328,6 +341,8 @@ export function TtsFooter({
     error: GenerateBlocker | null;
     /** Seconds since the run started, while it runs. */
     elapsedSeconds: number | null;
+    /** A quieter action beside Generate (Clone's Save voice…). */
+    secondaryAction?: ReactNode;
   }) {
   return (
     <div className="flex w-full max-w-sm flex-col gap-2">
@@ -352,37 +367,41 @@ export function TtsFooter({
           />
         </>
       ) : null}
-      <Button
-        className="relative z-10 mx-auto h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
-        onClick={
-          generationPresentation?.canStop
-            ? handleStopGeneration
-            : handleGenerate
-        }
-        disabled={
-          generationPresentation
-            ? !generationPresentation.canStop
-            : busy !== null ||
-              !ttsLoaded ||
-              (!prompt.trim() && !lyricsOptional) ||
-              (musicNeedsDescription && !audioInstructions.trim())
-        }
-        variant={
-          generationPresentation?.canStop ? "destructive" : "default"
-        }
-        aria-describedby={blocker ? "audio-generate-blocker" : undefined}
-        aria-keyshortcuts="Control+Enter Meta+Enter"
-        title={generationPresentation ? undefined : `Generate (${shortcutLabel})`}
-      >
-        {generationPresentation?.canStop ? (
-          <>
-            <HugeiconsIcon icon={StopIcon} className="mr-2 size-4" />
-            Stop
-          </>
-        ) : (
-          (generationPresentation?.actionLabel ?? "Generate")
-        )}
-      </Button>
+      <div className="flex flex-wrap items-center justify-center gap-2">
+        {secondaryAction}
+        <Button
+          className="relative z-10 mx-auto h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+          onClick={
+            generationPresentation?.canStop
+              ? handleStopGeneration
+              : handleGenerate
+          }
+          disabled={
+            generationPresentation
+              ? !generationPresentation.canStop
+              : busy !== null ||
+                !ttsLoaded ||
+                (!prompt.trim() && !lyricsOptional) ||
+                (musicNeedsDescription && !audioInstructions.trim()) ||
+                blocker !== null
+          }
+          variant={generationPresentation?.canStop ? "destructive" : "default"}
+          aria-describedby={blocker ? "audio-generate-blocker" : undefined}
+          aria-keyshortcuts="Control+Enter Meta+Enter"
+          title={
+            generationPresentation ? undefined : `Generate (${shortcutLabel})`
+          }
+        >
+          {generationPresentation?.canStop ? (
+            <>
+              <HugeiconsIcon icon={StopIcon} className="mr-2 size-4" />
+              Stop
+            </>
+          ) : (
+            (generationPresentation?.actionLabel ?? "Generate")
+          )}
+        </Button>
+      </div>
       {blocker && !generationPresentation ? (
         <p
           id="audio-generate-blocker"
@@ -404,6 +423,17 @@ export function TtsFooter({
   );
 }
 
+function ClipBadge({ text }: { text: string }) {
+  return (
+    <span
+      title={text}
+      className="max-w-[40%] shrink-0 truncate rounded-4xl bg-muted px-2 py-0.5 text-ui-11 text-muted-foreground"
+    >
+      {text}
+    </span>
+  );
+}
+
 /** The Speak and Music output pane: the selected clip's player, then this page's history. */
 export function TtsOutput({
   clips,
@@ -415,6 +445,7 @@ export function TtsOutput({
   fallbackClip,
   handleDownloadFallbackClip,
   emptyText,
+  emptyActions,
   handleClearGallery,
   historyReorder,
   hasMore,
@@ -430,6 +461,7 @@ export function TtsOutput({
   freshClipId,
   onFreshClipFocused,
   announcement,
+  clipBadge,
 }: Pick<
   AudioGallery,
   | "srcById"
@@ -455,10 +487,14 @@ export function TtsOutput({
     handleClearGallery: () => Promise<void>;
     onUseTextAgain: (clip: AudioGalleryClip) => void;
     emptyText: string;
+    /** What to do from an empty page, under its text (Clone's recommended models). */
+    emptyActions?: ReactNode;
     /** The clip a run just made: its player takes focus once, and the change is announced. */
     freshClipId: string | null;
     onFreshClipFocused: () => void;
     announcement: string;
+    /** A short tag after a clip's text, such as the voice a clone used. */
+    clipBadge?: (clip: AudioGalleryClip) => string | null;
   }) {
   const focusFreshClip = (element: HTMLAudioElement | null) => {
     if (!element) return;
@@ -499,6 +535,9 @@ export function TtsOutput({
               <span title={selectedClip.model}>{audioModelLabel(selectedClip.model)}</span>
               <span>·</span>
               <span>{formatClipDuration(selectedClip.duration_s)}</span>
+              {clipBadge?.(selectedClip) ? (
+                <ClipBadge text={clipBadge(selectedClip) ?? ""} />
+              ) : null}
               <span className="flex-1" />
               <Button
                 variant="ghost"
@@ -557,7 +596,10 @@ export function TtsOutput({
             </div>
           </div>
         ) : (
-          <p className="text-ui-13 text-muted-foreground">{emptyText}</p>
+          <div className="grid justify-items-center gap-3">
+            <p className="text-ui-13 text-muted-foreground">{emptyText}</p>
+            {emptyActions}
+          </div>
         )}
       </div>
       {clips.length > 0 ? (
@@ -617,9 +659,10 @@ export function TtsOutput({
                     icon={AudioWave01Icon}
                     className="size-3.5 shrink-0 text-muted-foreground"
                   />
-                  <span className="min-w-0 flex-1 truncate">
-                    {clip.prompt}
-                  </span>
+                  <span className="min-w-0 flex-1 truncate">{clip.prompt}</span>
+                  {clipBadge?.(clip) ? (
+                    <ClipBadge text={clipBadge(clip) ?? ""} />
+                  ) : null}
                   <span className="shrink-0 text-ui-11p5 text-muted-foreground">
                     {formatClipDuration(clip.duration_s)}
                   </span>

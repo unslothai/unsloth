@@ -7,13 +7,14 @@ import {
   AiVoiceIcon,
   MusicNote03Icon,
   SpeechToTextIcon,
+  VoiceIdIcon,
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 import { AUDIO_CPP_MUSIC_AUDIO_TYPE } from "./audio-cpp-catalog";
 
-export type AudioWorkflowId = "speak" | "music" | "transcribe";
+export type AudioWorkflowId = "speak" | "clone" | "music" | "transcribe";
 
-/** Which model slot a workflow runs in: Speak and Music share the main inference slot, Transcribe uses the STT sidecar. */
+/** Which model slot a workflow runs in: Speak, Clone and Music share the main inference slot, Transcribe uses the STT sidecar. */
 export type AudioWorkflowSlot = "speak" | "transcribe";
 
 /** The Audio workflows, shared by the page, the sidebar list and the More-flyout submenu. */
@@ -33,6 +34,15 @@ export const AUDIO_WORKFLOWS: ReadonlyArray<{
     heading: "Text to speech",
     icon: AiVoiceIcon,
     hint: "Turn text into speech with a built-in or designed voice",
+    slot: "speak",
+    createTrain: true,
+  },
+  {
+    id: "clone",
+    label: "Clone",
+    heading: "Clone a voice",
+    icon: VoiceIdIcon,
+    hint: "Speak in the voice from a short recording",
     slot: "speak",
     createTrain: true,
   },
@@ -101,9 +111,50 @@ export function audioWorkflowForAudioType(
 export function clipWorkflow(clip: {
   workflow?: string | null;
   audio_type?: string | null;
-}): "speak" | "music" {
-  if (clip.workflow === "speak" || clip.workflow === "music") {
+}): "speak" | "clone" | "music" {
+  if (
+    clip.workflow === "speak" ||
+    clip.workflow === "clone" ||
+    clip.workflow === "music"
+  ) {
     return clip.workflow;
   }
   return audioWorkflowForAudioType(clip.audio_type);
+}
+
+/** The page a just-loaded main-slot model opens: the current page when the model can run it, else
+ *  the first page the backend lists for it, else Music or Speak by its audio type. */
+export function workflowForLoadedModel({
+  current,
+  audioWorkflows,
+  music,
+}: {
+  current: AudioWorkflowId;
+  audioWorkflows: readonly string[] | null | undefined;
+  music: boolean;
+}): AudioWorkflowId {
+  const runnable = (audioWorkflows ?? []).filter(
+    (id): id is AudioWorkflowId =>
+      isAudioWorkflowId(id) && slotForWorkflow(id) === "speak",
+  );
+  if (runnable.includes(current)) return current;
+  if (runnable.length > 0) return runnable[0];
+  return music ? "music" : "speak";
+}
+
+/** Whether the loaded main-slot model can run this page. Older backends send no list, so the
+ *  audio type decides between Music and Speak, and nothing older clones. */
+export function loadedModelRunsWorkflow({
+  workflow,
+  audioWorkflows,
+  music,
+}: {
+  workflow: AudioWorkflowId;
+  audioWorkflows: readonly string[] | null | undefined;
+  music: boolean;
+}): boolean {
+  if (audioWorkflows && audioWorkflows.length > 0) {
+    return audioWorkflows.includes(workflow);
+  }
+  return workflow === (music ? "music" : "speak");
 }

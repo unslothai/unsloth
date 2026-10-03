@@ -7,12 +7,13 @@ import type { AudioWorkflowId } from "../workflows";
 const modeStep: TourStep = {
   id: "mode",
   target: "audio-mode",
-  title: "Speak, Music or Transcribe",
+  title: "Pick a page",
   body: (
     <>
-      Speak turns text into speech, Music makes songs and sound effects, and
-      Transcribe turns a recording into text. Each lists only the models that
-      can do it, so the picker above follows the page.
+      Speak turns text into speech, Clone speaks in the voice from a short
+      recording, Music makes songs and sound effects, and Transcribe turns a
+      recording into text. Each lists only the models that can do it, so the
+      picker above follows the page.
     </>
   ),
 };
@@ -20,6 +21,8 @@ const modeStep: TourStep = {
 const MODEL_STEP_BODY: Record<AudioWorkflowId, string> = {
   speak:
     "Text-to-speech models, including voices you fine-tuned under On Device.",
+  clone:
+    "Models that can speak in the voice of a short recording you give them.",
   music: "Music models. Loading one replaces the model in the main slot.",
   transcribe:
     "Speech recognition models. They run beside your chat model, not in its place.",
@@ -66,6 +69,42 @@ export function buildAudioTourSteps({
             upload a wav, mp3, m4a or webm file instead.
           </>
         ),
+      },
+      outputStep,
+    ];
+  }
+
+  if (workflow === "clone") {
+    return [
+      modeStep,
+      modelStep(workflow),
+      {
+        id: "reference",
+        target: "audio-clone-reference",
+        title: "Reference clip",
+        body: (
+          <>
+            Upload, record or pick a few seconds of the voice to copy. A saved
+            voice works too.
+          </>
+        ),
+      },
+      {
+        id: "transcript",
+        target: "audio-clone-transcript",
+        title: "What's said in the clip",
+        body: (
+          <>
+            Some models need the clip's words to match its voice. Type them or
+            press Transcribe.
+          </>
+        ),
+      },
+      {
+        id: "text",
+        target: "audio-clone-text",
+        title: "Text to speak",
+        body: <>What the cloned voice should say.</>,
       },
       outputStep,
     ];

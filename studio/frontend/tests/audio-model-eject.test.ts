@@ -13,12 +13,12 @@ const adapterSource = readSrc("features/chat/adapters/studio-model-dictation-ada
 test("Audio exposes the shared picker eject action only while idle", () => {
   assert.match(
     source,
-    /onEject=\{busy === null && selectorValue \? handleEject : undefined\}/,
+    /onEject=\{\s*busy === null && selectorValue && !showLastPageModel\s*\? handleEject\s*: undefined\s*\}/,
   );
   assert.match(source, /if \(busy !== null \|\| isRecording\)/);
   assert.match(
     source,
-    /loaded=\{mode === "transcribe" \? sttReady : undefined\}/,
+    /loaded=\{\s*mode === "transcribe"\s*\? sttReady\s*: showLastPageModel\s*\? false\s*: undefined\s*\}/,
   );
 });
 

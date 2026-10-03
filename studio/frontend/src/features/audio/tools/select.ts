@@ -3,12 +3,20 @@
 
 // Which tool panels a model gets. Free of JSX so the node test runner can load it.
 
+import type { AudioOptionSpec } from "../audio-options";
 import {
   type NativeAudioInstructionsKind,
   nativeAudioInstructionsKind,
 } from "../audio-page-policy";
 import type { AudioWorkflowId } from "../workflows";
-import type { AudioModelContext, AudioToolPanel } from "./types";
+import type {
+  AnyAudioToolPanel,
+  AudioModelContext,
+  AudioReferenceTextMode,
+  AudioRunPatch,
+  AudioToolPanel,
+  CoreInputs,
+} from "./types";
 
 /** Which instruction field the model takes, the same rule the rail always used. */
 export function instructionsKindFor(
@@ -36,4 +44,107 @@ export function claimedOptionNames(
   panels: readonly Pick<AudioToolPanel<unknown>, "claims">[],
 ): Set<string> {
   return new Set(panels.flatMap((panel) => panel.claims));
+}
+
+const REFERENCE_TEXT_MODES: ReadonlySet<string> = new Set([
+  "required",
+  "optional",
+  "unused",
+]);
+
+/** The tool context for the loaded model on one page, read from its status fields. */
+export function audioModelContextFor(
+  status: {
+    audio_type?: string | null;
+    audio_family?: string | null;
+    audio_workflows?: readonly string[] | null;
+    audio_required_inputs?: readonly string[] | null;
+    audio_reference_text?: string | null;
+  } | null,
+  page: {
+    musicGeneration: boolean;
+    cudaMusicGeneration: boolean;
+    musicNeedsDescription: boolean;
+  },
+): AudioModelContext {
+  const referenceText = status?.audio_reference_text;
+  return {
+    audioType: status?.audio_type ?? null,
+    audioFamily: status?.audio_family ?? null,
+    musicGeneration: page.musicGeneration,
+    cudaMusicGeneration: page.cudaMusicGeneration,
+    musicNeedsDescription: page.musicNeedsDescription,
+    audioWorkflows: Array.isArray(status?.audio_workflows)
+      ? status.audio_workflows
+      : [],
+    requiredInputs: Array.isArray(status?.audio_required_inputs)
+      ? status.audio_required_inputs
+      : [],
+    referenceTextMode:
+      typeof referenceText === "string" &&
+      REFERENCE_TEXT_MODES.has(referenceText)
+        ? (referenceText as AudioReferenceTextMode)
+        : null,
+  };
+}
+
+/** Where a panel's value is kept: per model, page and panel, so models never share settings. */
+export function toolValueKey(
+  model: string | null | undefined,
+  workflow: AudioWorkflowId,
+  panelId: string,
+): string {
+  return `${model ?? ""}:${workflow}:${panelId}`;
+}
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** A panel's value: what was kept for it laid over its defaults, so a value saved by an older
+ *  build still has every field the panel reads. */
+export function panelValue<V>(
+  panel: Pick<AudioToolPanel<V>, "id" | "initial">,
+  values: Readonly<Record<string, unknown>>,
+  specs: AudioOptionSpec[],
+): V {
+  const initial = panel.initial(specs);
+  const stored = values[panel.id];
+  if (stored === undefined) return initial;
+  if (isPlainObject(initial) && isPlainObject(stored)) {
+    return { ...initial, ...stored } as V;
+  }
+  return stored as V;
+}
+
+/** Every shown panel's part of the request, merged in rail order, and the first reason one of
+ *  them holds Generate back. */
+export function collectToolRequest(
+  panels: readonly AnyAudioToolPanel[],
+  values: Readonly<Record<string, unknown>>,
+  core: CoreInputs,
+  ctx: AudioModelContext,
+  specs: AudioOptionSpec[] = [],
+): { patch: AudioRunPatch; error: string | null } {
+  const patch: AudioRunPatch = {};
+  let error: string | null = null;
+  for (const panel of panels) {
+    const value = panelValue(panel, values, specs);
+    error ??= panel.validate?.(value, core, ctx) ?? null;
+    const part = panel.toRequest(value);
+    if (part.options) patch.options = { ...patch.options, ...part.options };
+    if (part.inputs) patch.inputs = { ...patch.inputs, ...part.inputs };
+    for (const key of [
+      "instructions",
+      "language",
+      "route",
+      "text",
+      "speed",
+      "referenceTextMode",
+    ] as const) {
+      if (part[key] !== undefined) {
+        (patch as Record<string, unknown>)[key] = part[key];
+      }
+    }
+  }
+  return { patch, error };
 }

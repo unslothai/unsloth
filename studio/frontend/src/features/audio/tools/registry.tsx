@@ -3,9 +3,15 @@
 
 import type { NativeAudioInstructionsKind } from "../audio-page-policy";
 import type { AudioWorkflowId } from "../workflows";
+import { CLONE_TOOL_PANELS } from "./clone-panels";
 import { InstructionsField, MossLanguageField } from "./instructions-panels";
 import { instructionsKindFor, panelApplies } from "./select";
-import type { AudioModelContext, AudioToolPanel } from "./types";
+import { SPEAK_TOOL_PANELS } from "./speak-panels";
+import type {
+  AnyAudioToolPanel,
+  AudioModelContext,
+  AudioToolPanel,
+} from "./types";
 
 /** The instruction text and language the rail keeps for whichever model is loaded. */
 export interface InstructionsValue {
@@ -15,6 +21,14 @@ export interface InstructionsValue {
 
 export const MUSIC_DESCRIPTION_REQUIRED =
   "Add a music description. This model needs one beside the lyrics.";
+
+export const VOICE_DESCRIPTION_REQUIRED =
+  "Describe the voice. This model needs a voice description.";
+
+/** Maya1 and other models whose spec marks the voice description required. */
+function needsVoiceDescription(ctx: AudioModelContext): boolean {
+  return ctx.requiredInputs?.includes("instruct") === true;
+}
 
 function instructionsPanel(
   id: string,
@@ -36,6 +50,7 @@ function instructionsPanel(
         <InstructionsField
           instructionsKind={kind}
           musicNeedsDescription={ctx.musicNeedsDescription}
+          voiceRequired={kind === "voice" && needsVoiceDescription(ctx)}
           audioInstructions={value.instructions}
           setAudioInstructions={(instructions) =>
             onChange({ ...value, instructions })
@@ -60,23 +75,48 @@ function instructionsPanel(
     validate: (value, _core, ctx) =>
       kind === "music" && ctx.musicNeedsDescription && !value.instructions.trim()
         ? MUSIC_DESCRIPTION_REQUIRED
-        : null,
+        : kind === "voice" &&
+            needsVoiceDescription(ctx) &&
+            !value.instructions.trim()
+          ? VOICE_DESCRIPTION_REQUIRED
+          : null,
   };
 }
 
-/** Model tools, in rail order. Each model matches at most one of today's panels. */
-export const AUDIO_TOOL_PANELS: readonly AudioToolPanel<InstructionsValue>[] = [
-  // Qwen3-TTS VoiceDesign and CustomVoice and VoxCPM2 read it; other GGUF speech models ignore it.
-  instructionsPanel("voice-design", "voice", "Voice design", ["speak"]),
-  instructionsPanel("higgs-scene", "scene", "Scene", ["speak"]),
-  instructionsPanel("moss-style", "style", "Style", ["speak"]),
-  // MiniMax Music 3 and YuE2 require it; other music models fall back to the lyrics.
-  instructionsPanel("music-description", "music", "Description", ["music"]),
+/** The instruction panels the rail always had, whose value is the page's instruction draft. */
+export const INSTRUCTION_PANELS: readonly AudioToolPanel<InstructionsValue>[] =
+  [
+    // Qwen3-TTS VoiceDesign and CustomVoice and VoxCPM2 read it; other GGUF speech models ignore it.
+    instructionsPanel("voice-design", "voice", "Voice design", ["speak"]),
+    instructionsPanel("higgs-scene", "scene", "Scene", ["speak"]),
+    instructionsPanel("moss-style", "style", "Style", ["speak"]),
+    // MiniMax Music 3 and YuE2 require it; other music models fall back to the lyrics.
+    instructionsPanel("music-description", "music", "Description", ["music"]),
+  ];
+
+const INSTRUCTION_PANEL_IDS: ReadonlySet<string> = new Set(
+  INSTRUCTION_PANELS.map((panel) => panel.id),
+);
+
+/** Whether a panel's value is the page's instruction draft rather than a kept tool value. */
+export function isInstructionPanel(id: string): boolean {
+  return INSTRUCTION_PANEL_IDS.has(id);
+}
+
+/** Model tools, in rail order: the saved-voice choice first, then the instruction fields, then
+ *  family tools. */
+export const AUDIO_TOOL_PANELS: readonly AnyAudioToolPanel[] = [
+  SPEAK_TOOL_PANELS[0],
+  ...INSTRUCTION_PANELS,
+  ...SPEAK_TOOL_PANELS.slice(1),
+  ...CLONE_TOOL_PANELS,
 ];
 
 export function audioToolPanelsFor(
   workflow: AudioWorkflowId,
   ctx: AudioModelContext,
-): readonly AudioToolPanel<InstructionsValue>[] {
-  return AUDIO_TOOL_PANELS.filter((panel) => panelApplies(panel, workflow, ctx));
+): readonly AnyAudioToolPanel[] {
+  return AUDIO_TOOL_PANELS.filter((panel) =>
+    panelApplies(panel, workflow, ctx),
+  );
 }

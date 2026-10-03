@@ -3,10 +3,11 @@
 
 import type { ComponentProps } from "react";
 import type { ModelOption } from "@/features/model-picker/components/model-selector/types";
+import { audioCppModelSpeaks } from "../audio-cpp-catalog";
 import { isMusicGenerationModel, macTtsCatalogChoiceIsRunnable } from "../catalog";
 import { TtsOutput, TtsRailFields } from "./tts-workspace";
 
-/** Speak's picker rows: the speech models, without the music ones Music lists. */
+/** Speak's picker rows: the speech models, without the music ones Music lists or the clone-only ones Clone lists. */
 export function speakPageModels(
   models: ModelOption[],
   isMac: boolean,
@@ -14,6 +15,7 @@ export function speakPageModels(
   return models.filter(
     (model) =>
       !isMusicGenerationModel(model.id, model.audioType) &&
+      audioCppModelSpeaks(model.id) &&
       (!isMac || macTtsCatalogChoiceIsRunnable(model.id)),
   );
 }

@@ -14,8 +14,12 @@ const { audioModelsForTask, isMusicGenerationModel } = await import(
   "../src/features/audio/catalog.ts"
 );
 
-type Workflow = "speak" | "music" | "transcribe";
-const WORKFLOWS: Workflow[] = ["speak", "music", "transcribe"];
+const { audioCppModelSpeaks } = await import(
+  "../src/features/audio/audio-cpp-catalog.ts"
+);
+
+type Workflow = "speak" | "clone" | "music" | "transcribe";
+const WORKFLOWS: Workflow[] = ["speak", "clone", "music", "transcribe"];
 
 function workflowsFor(row: Parameters<typeof audioRowMatchesWorkflow>[0]) {
   return WORKFLOWS.filter((workflow) => audioRowMatchesWorkflow(row, workflow));
@@ -45,6 +49,49 @@ test("a speech row lists only on Speak", () => {
     }),
     ["speak"],
   );
+});
+
+test("a clone-only speech model lists only on Clone", () => {
+  assert.deepEqual(
+    workflowsFor({
+      id: "audio-cpp/audio.cpp-gguf/Chatterbox-GGUF",
+      task: "text-to-speech",
+      audioWorkflows: ["clone"],
+    }),
+    ["clone"],
+  );
+  // Before the backend row says so, the catalog entry does.
+  assert.deepEqual(
+    workflowsFor({
+      id: "audio-cpp/audio.cpp-gguf/Qwen3-TTS-12Hz-0.6B-Base-GGUF",
+      task: "text-to-speech",
+      audioType: "audiocpp_tts",
+    }),
+    ["clone"],
+  );
+  assert.deepEqual(
+    workflowsFor({
+      id: "audio-cpp/audio.cpp-gguf/VoxCPM2-GGUF",
+      task: "text-to-speech",
+    }),
+    ["speak", "clone"],
+  );
+});
+
+test("Speak's catalog rows leave out the clone-only models", () => {
+  const speakIds = audioModelsForTask("tts")
+    .map((model) => model.id)
+    .filter((id) => audioCppModelSpeaks(id));
+  assert.ok(speakIds.includes("audio-cpp/audio.cpp-gguf/VoxCPM2-GGUF"));
+  assert.ok(speakIds.includes("audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF"));
+  for (const cloneOnly of [
+    "audio-cpp/audio.cpp-gguf/Chatterbox-GGUF",
+    "audio-cpp/audio.cpp-gguf/Qwen3-TTS-12Hz-0.6B-Base-GGUF",
+    "audio-cpp/audio.cpp-gguf/IndexTTS2-GGUF",
+    "audio-cpp/audio.cpp-gguf/CosyVoice3-GGUF",
+  ]) {
+    assert.ok(!speakIds.includes(cloneOnly), cloneOnly);
+  }
 });
 
 test("a music GGUF (text-to-audio, no audio type) lists only on Music", () => {

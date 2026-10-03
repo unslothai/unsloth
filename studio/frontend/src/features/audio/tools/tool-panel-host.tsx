@@ -3,35 +3,41 @@
 
 import type { AudioOptionSpec } from "../audio-options";
 import type { AudioWorkflowId } from "../workflows";
-import { type InstructionsValue, audioToolPanelsFor } from "./registry";
-import type { AudioModelContext } from "./types";
+import { audioToolPanelsFor } from "./registry";
+import { panelValue } from "./select";
+import type { AudioModelContext, CoreInputs } from "./types";
 
-/** Renders the loaded model's tools for this page, where the rail always showed them. */
+/** Renders the loaded model's tools for this page, where the rail always showed them. Each panel
+ *  gets its own value by id, or its defaults when nothing was kept for it yet. */
 export function AudioToolPanels({
   workflow,
   ctx,
-  value,
+  values,
   onChange,
   specs,
   disabled,
+  core,
 }: {
   workflow: AudioWorkflowId;
   ctx: AudioModelContext;
-  value: InstructionsValue;
-  onChange: (value: InstructionsValue) => void;
+  values: Readonly<Record<string, unknown>>;
+  onChange: (panelId: string, value: unknown) => void;
   specs: AudioOptionSpec[];
   disabled: boolean;
+  /** The page's own inputs, for panels that preview their effect on them. */
+  core?: CoreInputs;
 }) {
   return (
     <>
-      {audioToolPanelsFor(workflow, ctx).map(({ id, Component }) => (
-        <Component
-          key={id}
-          value={value}
-          onChange={onChange}
+      {audioToolPanelsFor(workflow, ctx).map((panel) => (
+        <panel.Component
+          key={panel.id}
+          value={panelValue(panel, values, specs)}
+          onChange={(value: unknown) => onChange(panel.id, value)}
           specs={specs}
           disabled={disabled}
           ctx={ctx}
+          core={core}
         />
       ))}
     </>

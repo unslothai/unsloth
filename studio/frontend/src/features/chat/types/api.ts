@@ -252,6 +252,8 @@ export interface LoadModelResponse {
   diffusion_requested_ngl?: number | null;
   is_audio?: boolean;
   audio_type?: string | null;
+  /** Audio page workflows the loaded model can run, as in the status response. */
+  audio_workflows?: string[] | null;
   has_audio_input?: boolean;
   has_video_input?: boolean;
   inference?: {
@@ -376,8 +378,13 @@ export interface InferenceStatusResponse {
   /** The loaded GGUF audio model's generation options, as its spec declares them. Unknown-shaped
    *  on purpose: the Audio page validates it with parseAudioOptions. */
   audio_options?: unknown;
-  /** Audio page workflows the loaded model can run ("speak", "music", "transcribe"); empty when it is not an audio model. */
+  /** Audio page workflows the loaded model can run ("speak", "clone", "music", "transcribe"); empty when it is not an audio model. */
   audio_workflows?: string[] | null;
+  /** Clone: whether the model needs the reference clip's transcript ("required"), can use it
+   *  ("optional") or ignores it ("unused"); null when the model does not clone. */
+  audio_reference_text?: "required" | "optional" | "unused" | null;
+  /** Request inputs the loaded model's spec marks required (Maya1: "instruct", its voice description). */
+  audio_required_inputs?: string[] | null;
   has_audio_input?: boolean;
   has_video_input?: boolean;
   loading: string[];

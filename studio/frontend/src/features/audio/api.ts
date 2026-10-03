@@ -1,8 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { authFetch } from "@/features/auth";
-import { readFastApiError } from "@/lib/format-fastapi-error";
+import { authFetch, getAuthToken } from "@/features/auth";
+import { apiUrl } from "@/lib/api-base";
+import {
+  formatApiErrorBody,
+  readFastApiError,
+} from "@/lib/format-fastapi-error";
+import {
+  type AudioRunRequest,
+  type AudioSourceRef,
+  type AudioVoiceCreateRequest,
+  buildAudioRunBody,
+  buildVoiceCreateBody,
+  transcribeUrl,
+} from "./audio-run-request";
 
 async function parseJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
@@ -93,6 +105,14 @@ export interface AudioGalleryClip {
   order_at?: number | null;
   /** The Audio workflow that made the clip. Older servers omit it; read it through clipWorkflow. */
   workflow?: string | null;
+  /** Clips one run made together share a group. */
+  group_id?: string | null;
+  role?: string | null;
+  source_clip_id?: string | null;
+  voice_id?: string | null;
+  settings?: Record<string, unknown> | null;
+  /** The reference clip's name, for clones. */
+  reference_name?: string | null;
 }
 
 export interface AudioGalleryListResponse {
@@ -198,7 +218,7 @@ export async function deleteAudioClip(id: string): Promise<void> {
 
 /** Deletes the clips that are not archived; with a workflow, only that workflow's clips. */
 export async function clearAudioGallery(
-  workflow?: "speak" | "music",
+  workflow?: "speak" | "clone" | "music",
 ): Promise<number> {
   const query = workflow ? `?workflow=${workflow}` : "";
   const response = await authFetch(`/api/inference/audio/gallery${query}`, {
@@ -294,5 +314,237 @@ export async function deleteTranscript(id?: string): Promise<void> {
         method: "DELETE",
       },
     ),
+  );
+}
+
+/** A failed audio request, with the HTTP status so a caller can tell an expired upload (404)
+ *  from a refusal. */
+export class AudioApiError extends Error {
+  readonly status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "AudioApiError";
+    this.status = status;
+  }
+}
+
+async function parseAudioJson<T>(response: Response): Promise<T> {
+  if (!response.ok) {
+    throw new AudioApiError(await readFastApiError(response), response.status);
+  }
+  return (await response.json()) as T;
+}
+
+/** A stored upload, as POST /audio/inputs returns it. */
+export interface AudioInputRecord {
+  id: string;
+  name: string;
+  duration_s: number;
+  sample_rate: number;
+  channels: number;
+  url: string;
+  expires_at: string;
+}
+
+/** Sends the raw bytes with upload progress. XHR is the one browser API that reports it; a 401
+ *  (an expired access token) is retried through authFetch, which refreshes the session. */
+function uploadWithProgress(
+  url: string,
+  blob: Blob,
+  onProgress: (fraction: number | null) => void,
+  signal?: AbortSignal,
+): Promise<{ status: number; body: unknown }> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", apiUrl(url));
+    const token = getAuthToken();
+    if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    xhr.setRequestHeader(
+      "Content-Type",
+      blob.type || "application/octet-stream",
+    );
+    xhr.responseType = "json";
+    xhr.upload.onprogress = (event) =>
+      onProgress(event.lengthComputable ? event.loaded / event.total : null);
+    xhr.onload = () => resolve({ status: xhr.status, body: xhr.response });
+    xhr.onerror = () =>
+      reject(
+        new Error("The upload failed. Check the connection and try again."),
+      );
+    xhr.onabort = () => reject(new DOMException("Aborted", "AbortError"));
+    if (signal) {
+      if (signal.aborted) {
+        reject(new DOMException("Aborted", "AbortError"));
+        return;
+      }
+      signal.addEventListener("abort", () => xhr.abort(), { once: true });
+    }
+    xhr.send(blob);
+  });
+}
+
+/** Uploads audio the page will use as an input. The server decodes and keeps it for a day. */
+export async function uploadAudioInput(
+  blob: Blob,
+  name: string,
+  options: {
+    onProgress?: (fraction: number | null) => void;
+    signal?: AbortSignal;
+  } = {},
+): Promise<AudioInputRecord> {
+  const url = `/api/inference/audio/inputs?name=${encodeURIComponent(name.slice(0, 255))}`;
+  if (options.onProgress && typeof XMLHttpRequest !== "undefined") {
+    const { status, body } = await uploadWithProgress(
+      url,
+      blob,
+      options.onProgress,
+      options.signal,
+    );
+    if (status >= 200 && status < 300) return body as AudioInputRecord;
+    if (status !== 401) {
+      throw new AudioApiError(
+        formatApiErrorBody(body) ?? `Upload failed (${status})`,
+        status,
+      );
+    }
+  }
+  const response = await authFetch(url, {
+    method: "POST",
+    headers: { "Content-Type": blob.type || "application/octet-stream" },
+    body: blob,
+    signal: options.signal,
+  });
+  return parseAudioJson<AudioInputRecord>(response);
+}
+
+/** Any audio the server serves to this account, as bytes. */
+export async function fetchAudioBlob(
+  url: string,
+  signal?: AbortSignal,
+): Promise<Blob> {
+  const response = await authFetch(url, { signal });
+  if (!response.ok) {
+    throw new AudioApiError(await readFastApiError(response), response.status);
+  }
+  return response.blob();
+}
+
+export async function deleteAudioInput(id: string): Promise<void> {
+  await parseAudioJson(
+    await authFetch(`/api/inference/audio/inputs/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
+  );
+}
+
+export interface TranscribeInputResponse {
+  text: string;
+  language: string | null;
+  model: string;
+}
+
+/** Transcribes a reference without saving it to the transcript list. */
+export async function transcribeAudioInput(
+  ref: AudioSourceRef,
+  body: { model: string; engine?: string; device?: string; language?: string },
+  signal?: AbortSignal,
+): Promise<TranscribeInputResponse> {
+  const response = await authFetch(transcribeUrl(ref), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  });
+  return parseAudioJson<TranscribeInputResponse>(response);
+}
+
+export interface AudioRunClip {
+  id: string;
+  role: string;
+  url: string;
+  sample_rate: number;
+  duration_s: number;
+  workflow: string;
+}
+
+export interface AudioRunResponse {
+  clips: AudioRunClip[];
+  group_id: string | null;
+  text: string | null;
+  model: string;
+  /** Only when the gallery could not save the result. */
+  audio: GeneratedAudio | null;
+}
+
+/** Runs a workflow on its inputs (Clone, or Speak with a saved voice). */
+export async function runAudio(
+  request: AudioRunRequest,
+  signal?: AbortSignal,
+): Promise<AudioRunResponse> {
+  const response = await authFetch("/api/inference/audio/run", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(buildAudioRunBody(request)),
+    signal,
+  });
+  return parseAudioJson<AudioRunResponse>(response);
+}
+
+export interface AudioVoice {
+  id: string;
+  name: string;
+  transcript: string | null;
+  language: string | null;
+  duration_s: number;
+  sample_rate: number;
+  created_at: string;
+  url: string;
+}
+
+export function voiceFileUrl(id: string): string {
+  return `/api/inference/audio/voices/${encodeURIComponent(id)}/file`;
+}
+
+export async function listVoices(): Promise<AudioVoice[]> {
+  const body = await parseAudioJson<{ voices: AudioVoice[] }>(
+    await authFetch("/api/inference/audio/voices"),
+  );
+  return body.voices;
+}
+
+export async function createVoice(
+  request: AudioVoiceCreateRequest,
+): Promise<AudioVoice> {
+  return parseAudioJson<AudioVoice>(
+    await authFetch("/api/inference/audio/voices", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(buildVoiceCreateBody(request)),
+    }),
+  );
+}
+
+export async function updateVoice(
+  id: string,
+  patch: {
+    name?: string;
+    transcript?: string | null;
+    language?: string | null;
+  },
+): Promise<AudioVoice> {
+  return parseAudioJson<AudioVoice>(
+    await authFetch(`/api/inference/audio/voices/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    }),
+  );
+}
+
+export async function deleteVoice(id: string): Promise<void> {
+  await parseAudioJson(
+    await authFetch(`/api/inference/audio/voices/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
   );
 }

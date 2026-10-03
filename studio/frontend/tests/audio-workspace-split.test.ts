@@ -46,7 +46,7 @@ test("only the page commits a workflow; the sidebar's request goes through the s
 test("a loaded model opens the page that fits it", () => {
   assert.match(
     slot,
-    /const loadedWorkflow = isMusicGenerationModel\(repoId, res\.audio_type\)\s*\? "music"\s*: "speak";[\s\S]{0,200}?rememberModel\(loadedWorkflow, repoId\);\s*if \(modeRef\.current === "speak"\) workspace\.commitWorkflow\(loadedWorkflow\);/,
+    /const loadedWorkflow = workflowForLoadedModel\(\{\s*current: useAudioWorkspaceStore\.getState\(\)\.workflow,\s*audioWorkflows: res\.audio_workflows,\s*music: isMusicGenerationModel\(repoId, res\.audio_type\),\s*\}\);[\s\S]{0,200}?rememberModel\(loadedWorkflow, repoId\);\s*if \(modeRef\.current === "speak"\) workspace\.commitWorkflow\(loadedWorkflow\);/,
   );
   // Opening Audio with a music model already resident lands on Music, until something chooses.
   assert.match(host, /adoptWorkflow\("music"\)/);
@@ -94,7 +94,12 @@ test("Generate says why it is off and runs from Mod+Enter anywhere on the page",
   // A failed run keeps its reason under Generate until the next run.
   assert.match(host, /if \(busy === "generating"\) setGenerationError\(null\);/);
   assert.match(host, /!pageRootRef\.current\?\.contains\(event\.target\)/);
-  assert.match(host, /if \(canGenerate\) void handleGenerate\(\);/);
+  // Clone runs through its own hook; the shortcut follows the page.
+  assert.match(
+    host,
+    /const handlePageGenerate =\s*ttsWorkflow === "clone" \? clone\.handleGenerate : handleGenerate;/,
+  );
+  assert.match(host, /if \(canGenerate\) void handlePageGenerate\(\);/);
 });
 
 test("each page tours its own model and settings", () => {
