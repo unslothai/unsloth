@@ -169,6 +169,8 @@ UNTRUSTED_CALLS = frozenset(
         "httpx.delete",
         "httpx.head",
         "httpx.options",
+        "urllib3.request",
+        "aiohttp.request",
         "httpx.stream",
         "urlopen",
         "urlretrieve",
@@ -304,7 +306,8 @@ SINKS: dict[str, tuple[tuple[int, ...], frozenset[str]]] = {
     "subprocess.call": ((0,), frozenset({"args", "executable"})),
     "subprocess.check_call": ((0,), frozenset({"args", "executable"})),
     "subprocess.check_output": ((0,), frozenset({"args", "executable"})),
-    "subprocess.Popen": ((0,), frozenset({"args", "executable"})),
+    # Popen(args, bufsize, executable, ...): the program can sit in slot 2.
+    "subprocess.Popen": ((0, 2), frozenset({"args", "executable"})),
     # Both run their argument through the shell.
     "subprocess.getoutput": ((0,), frozenset({"cmd"})),
     "subprocess.getstatusoutput": ((0,), frozenset({"cmd"})),
@@ -409,6 +412,8 @@ MODULE_ISH_NAMES = frozenset(
 # Sources whose result is a mapping with attacker-chosen keys.
 # Key prefix for literal file paths in a scope's taint table; never a valid identifier.
 _LITERAL_PATH = "\0path:"
+# Same idea for attributes written on an object no class definition describes.
+_LOCAL_ATTR = "\0attr:"
 
 # Variables that make the loader or interpreter run code chosen by their value.
 _EXEC_ENV_KEYS = frozenset(
@@ -431,7 +436,25 @@ _PATH_WRAPPERS = frozenset(
     {"Path", "pathlib.Path", "PurePath", "pathlib.PurePath", "str", "os.fspath"}
 )
 
-_ENV_LAUNCHERS = frozenset(
+# Launcher -> positional index of its environment argument (None: keyword only).
+_ENV_LAUNCHERS = {
+    "subprocess.run": None,
+    "subprocess.Popen": None,
+    "subprocess.call": None,
+    "subprocess.check_call": None,
+    "subprocess.check_output": None,
+    "asyncio.create_subprocess_exec": None,
+    "asyncio.create_subprocess_shell": None,
+    "os.execve": 2,
+    "os.execvpe": 2,
+    "os.spawnve": 3,
+    "os.spawnvpe": 3,
+    "os.posix_spawn": 2,
+    "os.posix_spawnp": 2,
+}
+
+# Launchers whose `cwd` decides which file a relative program path names.
+_CWD_LAUNCHERS = frozenset(
     {
         "subprocess.run",
         "subprocess.Popen",
@@ -439,7 +462,6 @@ _ENV_LAUNCHERS = frozenset(
         "subprocess.check_call",
         "subprocess.check_output",
         "asyncio.create_subprocess_exec",
-        "asyncio.create_subprocess_shell",
     }
 )
 
@@ -1972,6 +1994,10 @@ class _TaintPass(ast.NodeVisitor):
                 return own
             return self._imported_global(node.id)
         if isinstance(node, ast.Attribute):
+            if isinstance(node.value, ast.Name):
+                local = self.local_reasons.get(_LOCAL_ATTR + f"{node.value.id}.{node.attr}")
+                if local:
+                    return local
             for key in self._attr_keys(node):
                 attribute_reason = self.state.tainted_attrs.get(key)
                 if attribute_reason:
@@ -2494,7 +2520,8 @@ class _TaintPass(ast.NodeVisitor):
                 "json.dumps",
             },
         ):
-            for argument in node.args:
+            # Keywords too: `json.dumps(obj = ...)`, `io.BytesIO(initial_bytes = ...)`.
+            for argument in list(node.args) + [k.value for k in node.keywords]:
                 reason = self.tainted(argument)
                 if reason:
                     return reason
@@ -2794,6 +2821,17 @@ class _TaintPass(ast.NodeVisitor):
                     self.state.tainted_globals, f"{self.facts.relative}::{target.id}", reason
                 )
         elif isinstance(target, ast.Attribute):
+            # `cfg = SimpleNamespace(); cfg.module = parsed`: no class to key it on, so
+            # it is kept on this scope under the receiver's name.
+            # An imported module is not such an object: `sys.path` is module state.
+            if (
+                isinstance(target.value, ast.Name)
+                and target.value.id not in self.facts.imports
+                and not self._attr_keys(target)
+            ):
+                key = _LOCAL_ATTR + f"{target.value.id}.{target.attr}"
+                if self.local_reasons.get(key, NAMED_PARAM_REASON) == NAMED_PARAM_REASON:
+                    self.local_reasons[key] = reason
             for key in self._attr_keys(target):
                 # Same tier-A-wins rule as locals and parameters. Writing unconditionally
                 # let one method's tier-B assignment to self.command overwrite another
@@ -3632,6 +3670,7 @@ class _TaintPass(ast.NodeVisitor):
         self._check_torch_load(node)
         self._check_numpy_load(node)
         self._check_child_env(node)
+        self._check_relative_cwd(node)
         self._check_remote_code(node)
         self.generic_visit(node)
 
@@ -3684,7 +3723,14 @@ class _TaintPass(ast.NodeVisitor):
             self._record(node, f"{unsafe}(unsafe loader)", reason, _short(stream))
 
     _HTTP_SESSIONS = frozenset(
-        {"requests.Session", "requests.session", "httpx.Client", "httpx.AsyncClient"}
+        {
+            "requests.Session",
+            "requests.session",
+            "httpx.Client",
+            "httpx.AsyncClient",
+            "urllib3.PoolManager",
+            "aiohttp.ClientSession",
+        }
     )
 
     def _is_http_client(self, receiver: ast.AST) -> bool:
@@ -3917,7 +3963,6 @@ class _TaintPass(ast.NodeVisitor):
             node.func.attr in ("rename", "replace")
             and len(node.args) + len(node.keywords) == 1
             and target is not None
-            and not isinstance(target, ast.Constant)
         ):
             reason = self.tainted(node.func.value)
             if reason:
@@ -4414,9 +4459,20 @@ class _TaintPass(ast.NodeVisitor):
         Only a mapping that IS parsed data, so its keys are attacker-chosen
         (`LD_PRELOAD`, `PATH`); an env built key by key keeps code-chosen keys.
         """
-        if _matches_any(self.facts.canonicals(_call_name(node.func)), _ENV_LAUNCHERS) is None:
+        called = _call_name(node.func)
+        launcher = _matches_any(self.facts.canonicals(called), set(_ENV_LAUNCHERS))
+        if launcher is None:
+            # `launch = subprocess.run` then `launch(cmd, env = ...)`.
+            launcher = next(
+                (held for held in self._held_sinks(called, node) if held in _ENV_LAUNCHERS),
+                None,
+            )
+        if launcher is None:
             return
+        position = _ENV_LAUNCHERS[launcher]
         env = _keyword(node, "env")
+        if env is None and position is not None and len(node.args) > position:
+            env = node.args[position]
         if env is None:
             return
         reason = self._parsed_mapping(env) or self._parsed_value(env)
@@ -4426,6 +4482,16 @@ class _TaintPass(ast.NodeVisitor):
         # Built key by key: an untrusted key picks the variable, and an untrusted value
         # under a loader or interpreter variable picks the code that runs.
         literal = self._local_binding(env.id) if isinstance(env, ast.Name) else env
+        # `dict(LD_PRELOAD = value)` is the keyword spelling of the same literal.
+        if (
+            isinstance(literal, ast.Call)
+            and _call_name(literal.func) == "dict"
+            and not literal.args
+        ):
+            literal = ast.Dict(
+                keys = [ast.Constant(value = k.arg) if k.arg else None for k in literal.keywords],
+                values = [k.value for k in literal.keywords],
+            )
         if not isinstance(literal, ast.Dict):
             return
         for key, value in zip(literal.keys, literal.values):
@@ -4438,8 +4504,29 @@ class _TaintPass(ast.NodeVisitor):
                 self._record(node, "child process env (untrusted mapping)", reason, _short(env))
                 return
 
+    def _check_relative_cwd(self, node: ast.Call) -> None:
+        """`subprocess.run(["./setup"], cwd = snapshot_download(repo))` runs a downloaded file."""
+        if _matches_any(self.facts.canonicals(_call_name(node.func)), _CWD_LAUNCHERS) is None:
+            return
+        cwd = _keyword(node, "cwd")
+        program = node.args[0] if node.args else _keyword(node, "args")
+        if isinstance(program, (ast.List, ast.Tuple)):
+            program = program.elts[0] if program.elts else None
+        if (
+            cwd is None
+            or not isinstance(program, ast.Constant)
+            or not isinstance(program.value, str)
+            or not program.value.startswith(("./", ".\\", "../", "..\\"))
+        ):
+            return
+        reason = self.tainted(cwd)
+        if reason:
+            self._record(node, "relative program (untrusted cwd)", reason, _short(cwd))
+
     def _check_callback_sinks(self, invoked: ast.Call) -> None:
         """Every sink check, on a call a thread, executor or `map` makes on our behalf."""
+        self._check_child_env(invoked)
+        self._check_relative_cwd(invoked)
         self._check_yaml_load(invoked)
         self._check_sink(invoked)
         self._check_torch_load(invoked)

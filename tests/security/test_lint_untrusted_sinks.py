@@ -6517,3 +6517,81 @@ def test_merged_mappings_and_constructed_child_envs(tmp_path):
     assert ("c", "child process env (untrusted mapping)") in sinks
     assert ("d", "child process env (untrusted mapping)") in sinks
     assert ("e", "child process env (untrusted mapping)") not in sinks
+
+
+def test_untracked_attributes_popen_slot_cwd_and_more_clients(tmp_path):
+    """`cfg.module = parsed`, `Popen(..., executable)` slot 2, relative program in a
+    downloaded cwd, urllib3/aiohttp clients, literal `Path.rename`, keyword wrappers."""
+    findings = _scan(
+        tmp_path,
+        "import io, json, pickle, requests, runpy, subprocess, urllib3\n"
+        "from importlib import import_module\n"
+        "from pathlib import Path\n"
+        "from types import SimpleNamespace\n"
+        "from huggingface_hub import hf_hub_download, snapshot_download\n"
+        "def a(blob):\n"
+        "    cfg = SimpleNamespace()\n"
+        "    cfg.module = json.loads(blob)['module']\n"
+        "    return import_module(cfg.module)\n"
+        "def b(url):\n"
+        "    subprocess.Popen(['ignored'], -1, requests.get(url).text)\n"
+        "def c(repo):\n"
+        "    subprocess.run(['./setup'], cwd = snapshot_download(repo))\n"
+        "def d(url):\n"
+        "    return pickle.loads(urllib3.PoolManager().request('GET', url).data)\n"
+        "def e(repo):\n"
+        "    Path(hf_hub_download(repo, 'plugin.py')).rename('/tmp/plugin.py')\n"
+        "    runpy.run_path('/tmp/plugin.py')\n"
+        "def f(url):\n"
+        "    return pickle.load(io.BytesIO(initial_bytes = requests.get(url).content))\n"
+        "def g(repo):\n"
+        "    subprocess.run(['python', 'x.py'], cwd = snapshot_download(repo))\n",
+    )
+    sinks = {(f["qualname"], f["sink"]) for f in findings}
+    assert {
+        ("a", "importlib.import_module"),
+        ("b", "subprocess.Popen"),
+        ("c", "relative program (untrusted cwd)"),
+        ("d", "pickle.loads"),
+        ("e", "runpy.run_path"),
+        ("f", "pickle.load"),
+    } <= sinks
+    assert not [q for q, _ in sinks if q == "g"]
+
+
+def test_child_env_on_exec_family_callbacks_dict_calls_and_aliases(tmp_path):
+    """`os.execve(..., env)`, thread callbacks, `dict(LD_PRELOAD = ...)`, launcher aliases."""
+    findings = _scan(
+        tmp_path,
+        "import json, os, requests, subprocess, threading\n"
+        "def a(url):\n"
+        "    os.execve('/usr/bin/id', ['/usr/bin/id'], {'LD_PRELOAD': requests.get(url).text})\n"
+        "def b(blob):\n"
+        "    threading.Thread(target = subprocess.run, args = (['/usr/bin/id'],),\n"
+        "                     kwargs = {'env': json.loads(blob)}).start()\n"
+        "def c(url):\n"
+        "    env = dict(LD_PRELOAD = requests.get(url).text)\n"
+        "    subprocess.run(['/usr/bin/id'], env = env)\n"
+        "def d(blob):\n"
+        "    launch = subprocess.run\n"
+        "    launch(['/usr/bin/id'], env = json.loads(blob))\n",
+    )
+    env_sites = {
+        f["qualname"] for f in findings if f["sink"] == "child process env (untrusted mapping)"
+    }
+    assert {"a", "b", "c", "d"} <= env_sites
+
+
+def test_restoring_a_module_attribute_from_its_own_copy_is_quiet(tmp_path):
+    """`saved = sys.path.copy()`, then `sys.path[:] = saved` after a tainted insert."""
+    findings = _scan(
+        tmp_path,
+        "import json, sys\n"
+        "def swap(blob):\n"
+        "    saved = sys.path.copy()\n"
+        "    try:\n"
+        "        sys.path.insert(0, json.loads(blob)['dir'])\n"
+        "    finally:\n"
+        "        sys.path[:] = saved\n",
+    )
+    assert {f["sink"] for f in findings if f["qualname"] == "swap"} == {"sys.path.insert"}
