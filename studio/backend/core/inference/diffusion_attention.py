@@ -281,25 +281,60 @@ def _cudnn_attention_supported() -> bool:
 
 
 # sageattn dispatches on an exact arch match whose set varies by build (2.2.0: sm80/86/89/90/120; community builds add
-# sm75/87/100) and diffusers only checks the version, so ask the kernel. (device, dtype) -> "" or its error.
-_SAGE_PROBE_CACHE: dict[tuple[str, str], str] = {}
+# sm75/87) and diffusers only checks the version, so ask the kernel. A static capability row cannot say which build is
+# installed (it would refuse a working community sm75 build, or allow sm100, which no 2.x release dispatches), so the
+# per-device run below is the gate. (device, dtype, head_dim) -> "" or why the kernel is not used.
+_SAGE_PROBE_CACHE: dict[tuple[str, str, int], str] = {}
+
+# Upstream sageattn pads head_dim 64..128 and raises above 128, and takes fp16/bf16 only.
+_SAGE_MAX_HEAD_DIM = 128
+_SAGE_DTYPE_NAMES = ("float16", "bfloat16", "fp16", "bf16", "half")
+# Self-check bounds against an fp32 reference on random inputs. SageAttention2 lands near cos 0.9999 / rel-L1 0.01-0.03
+# on such data (INT8 QK, FP8/FP16 PV); a kernel that ran on the wrong arch or with a broken build is far outside.
+_SAGE_MIN_COSINE = 0.99
+_SAGE_MAX_REL_L1 = 0.08
 
 
-def _run_sage_probe(device: str, dtype: Any) -> str:
-    """Empty when a tiny ``sageattn`` ran on ``device``, else its error; raises when unaskable (import, device, OOM)."""
+def _run_sage_probe(device: str, dtype: Any, head_dim: int = 128) -> str:
+    """Empty when ``sageattn`` on ``device`` matches an fp32 reference at ``head_dim``, else why not.
+
+    Raises when unaskable (import, device, OOM). Random inputs with a per-channel K offset, as real keys have one: a
+    zero tensor only proves the launch, not the numbers."""
     import torch
     from sageattention import sageattn
 
     if dtype not in (torch.float16, torch.bfloat16):
         dtype = torch.float16
-    q = torch.zeros((1, 128, 2, 128), device = device, dtype = dtype)
+    shape = (1, 128, 2, int(head_dim))
+    gen = torch.Generator(device = "cpu").manual_seed(0)
+    q, k, v = (torch.randn(shape, generator = gen) for _ in range(3))
+    k = k + 2.0 * torch.randn((1, 1, 1, shape[-1]), generator = gen)
+    q, k, v = (t.to(device = device, dtype = dtype) for t in (q, k, v))
     try:
-        sageattn(q, q, q, tensor_layout = "NHD")
-        torch.cuda.synchronize(device)
+        out = sageattn(q, k, v, tensor_layout = "NHD")
+        if str(device).startswith("cuda"):
+            torch.cuda.synchronize(device)
     except torch.cuda.OutOfMemoryError:
         raise
     except Exception as exc:  # noqa: BLE001
         return f"{type(exc).__name__}: {exc}"
+    try:
+        ref = torch.nn.functional.scaled_dot_product_attention(
+            *(t.float().transpose(1, 2) for t in (q, k, v))
+        ).transpose(1, 2)
+        got = out.float()
+        if tuple(got.shape) != tuple(ref.shape):
+            return f"self-check: output shape {tuple(got.shape)} != {tuple(ref.shape)}"
+        if not bool(torch.isfinite(got).all()):
+            return "self-check: non-finite output"
+        cos = float(torch.nn.functional.cosine_similarity(got.flatten(), ref.flatten(), dim = 0))
+        rel = float((got - ref).abs().mean() / ref.abs().mean().clamp_min(1e-12))
+    except torch.cuda.OutOfMemoryError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - output of the wrong kind is a failed check, not an unaskable probe
+        return f"self-check: {type(exc).__name__}: {exc}"
+    if cos < _SAGE_MIN_COSINE or rel > _SAGE_MAX_REL_L1:
+        return f"self-check: cosine {cos:.4f}, relative L1 {rel:.4f} vs fp32 at head_dim {head_dim}"
     return ""
 
 
@@ -314,27 +349,184 @@ def _indexed_cuda_device(device: str) -> str:
         return device
 
 
-def _sage_kernel_runs(target: Any, logger: Any = None) -> Optional[bool]:
-    """False only when the kernel raised; None (unaskable, not cached) keeps the requested backend."""
+def _sage_probe_head_dims(head_dims: Any) -> tuple[int, ...]:
+    """The head dims Sage would actually serve (<= 128; larger ones run native per call), 128 when none are known."""
+    dims = sorted(
+        {
+            int(d)
+            for d in (head_dims or ())
+            if isinstance(d, int) and not isinstance(d, bool) and 0 < d <= _SAGE_MAX_HEAD_DIM
+        }
+    )
+    return tuple(dims) or (_SAGE_MAX_HEAD_DIM,)
+
+
+def _sage_kernel_runs(target: Any, logger: Any = None, head_dims: Any = None) -> Optional[bool]:
+    """True when ``sageattn`` passed its self-check on this card at every head dim it would serve.
+
+    False when the kernel raised, failed the self-check, or the package cannot be imported (not cached: an install
+    later in this process may fix it). None (unaskable, not cached) keeps the requested backend."""
     device = str(getattr(target, "torch_device", None) or getattr(target, "device", None) or "")
     if not device.startswith("cuda"):
         return None
     device = _indexed_cuda_device(device)
     dtype = getattr(target, "dtype", None)
-    key = (device, str(dtype))
-    error = _SAGE_PROBE_CACHE.get(key)
-    if error is None:
-        try:
-            error = _run_sage_probe(device, dtype)
-        except Exception:  # noqa: BLE001
-            return None
-        error = _SAGE_PROBE_CACHE.setdefault(key, error)
+    error = ""
+    for head_dim in _sage_probe_head_dims(head_dims):
+        key = (device, str(dtype), head_dim)
+        error = _SAGE_PROBE_CACHE.get(key)
+        if error is None:
+            try:
+                error = _run_sage_probe(device, dtype, head_dim)
+            except ImportError as exc:
+                error = f"sageattention could not be imported ({type(exc).__name__}: {exc})"
+                break
+            except Exception:  # noqa: BLE001
+                return None
+            error = _SAGE_PROBE_CACHE.setdefault(key, error)
+        if error:
+            break
     if error and logger is not None:
         logger.warning(
             "diffusion.attention: SageAttention does not run on this GPU (%s); using the default backend",
             error,
         )
     return not error
+
+
+def _runs_in_float32(target: Any) -> bool:
+    """The pipeline dtype is fp32 (video families promote fp16 to fp32 on cards without bf16): Sage never applies."""
+    dtype = getattr(target, "dtype", None)
+    if dtype is None:
+        return False
+    name = str(dtype).replace("torch.", "").lower()
+    return name in ("float32", "fp32", "float")
+
+
+# Calls the Sage kernel cannot take, routed to the native backend per call instead of raising mid-generation:
+# diffusers' sage backend raises on any attn_mask, and sageattn on head_dim > 128 or a non-fp16/bf16 dtype. Every test
+# below reads only shapes, dtypes and whether a mask was passed, so torch.compile specialises on it (no graph break).
+_SAGE_GUARD_ATTR = "_unsloth_sage_guard"
+_SAGE_ROUTED: dict[str, int] = {}
+_SAGE_ROUTED_LOGGED: set[str] = set()
+
+
+def _sage_reroute_reason(query: Any, key: Any, value: Any, attn_mask: Any) -> Optional[str]:
+    """Why this call cannot run on Sage, or None when it can."""
+    import torch
+
+    if attn_mask is not None:
+        return "attn_mask"
+    if not all(isinstance(t, torch.Tensor) for t in (query, key, value)):
+        return "inputs"
+    if query.dtype not in (torch.float16, torch.bfloat16) or key.dtype != query.dtype or value.dtype != query.dtype:
+        return "dtype"
+    if query.dim() != 4 or key.dim() != 4 or value.dim() != 4:
+        return "rank"
+    head_dim = query.shape[-1]
+    if head_dim > _SAGE_MAX_HEAD_DIM or key.shape[-1] != head_dim or value.shape[-1] != head_dim:
+        return "head_dim"
+    if key.shape[2] == 0 or query.shape[2] % key.shape[2] != 0:
+        return "heads"
+    if query.device.type != "cuda":
+        return "device"
+    return None
+
+
+def _note_sage_reroute(reason: str) -> None:
+    """Count (and log once per reason) a call that ran native instead of Sage. Eager only: under torch.compile the
+    count would be a traced side effect, and the routing itself is already decided by the specialised graph."""
+    try:
+        import torch
+
+        if torch.compiler.is_compiling():
+            return
+    except Exception:  # noqa: BLE001
+        pass
+    _SAGE_ROUTED[reason] = _SAGE_ROUTED.get(reason, 0) + 1
+    if reason not in _SAGE_ROUTED_LOGGED:
+        _SAGE_ROUTED_LOGGED.add(reason)
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "diffusion.attention: SageAttention cannot take this attention call (%s); running it on the default "
+            "backend instead",
+            reason,
+        )
+
+
+def _install_sage_dispatch_guard() -> bool:
+    """Wrap diffusers' registered ``sage`` backend so calls Sage cannot take run native. Idempotent.
+
+    False when diffusers' registry is not where this expects it: the caller then does not engage Sage at all, since
+    without the guard a masked call would raise mid-generation."""
+    try:
+        from diffusers.models.attention_dispatch import (
+            AttentionBackendName,
+            _AttentionBackendRegistry,
+        )
+
+        backends = _AttentionBackendRegistry._backends
+        sage_fn = backends[AttentionBackendName.SAGE]
+        native_fn = backends[AttentionBackendName.NATIVE]
+    except Exception:  # noqa: BLE001
+        return False
+    if getattr(sage_fn, _SAGE_GUARD_ATTR, False):
+        return True
+    if not callable(sage_fn) or not callable(native_fn):
+        return False
+
+    def _guarded_sage(*args: Any, **kwargs: Any) -> Any:
+        names = ("query", "key", "value", "attn_mask")
+        bound = dict(zip(names, args))
+        bound.update({n: kwargs[n] for n in names if n in kwargs})
+        reason = _sage_reroute_reason(
+            bound.get("query"), bound.get("key"), bound.get("value"), bound.get("attn_mask")
+        )
+        if reason is None:
+            return sage_fn(*args, **kwargs)
+        _note_sage_reroute(reason)
+        return native_fn(*args, **kwargs)
+
+    setattr(_guarded_sage, _SAGE_GUARD_ATTR, True)
+    _guarded_sage.__wrapped__ = sage_fn  # type: ignore[attr-defined]
+    try:
+        backends[AttentionBackendName.SAGE] = _guarded_sage
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
+def _sage_usable(pipe: Any, target: Any, logger: Any = None) -> bool:
+    """Whether an explicit ``sage`` request may engage: never on a float32 pipeline, never on a card whose kernel failed
+    its self-check at the DiT's head dims, and only with the per-call guard in place. Each refusal is logged."""
+    if target is not None and _runs_in_float32(target):
+        if logger is not None:
+            logger.warning(
+                "diffusion.attention: SageAttention needs fp16 or bf16 and this pipeline runs in float32; "
+                "using the default backend"
+            )
+        return False
+    head_dims = _dit_head_dims(pipe)
+    if head_dims and min(head_dims) > _SAGE_MAX_HEAD_DIM:
+        if logger is not None:
+            logger.warning(
+                "diffusion.attention: SageAttention serves head_dim <= %d and this model uses %s; "
+                "using the default backend",
+                _SAGE_MAX_HEAD_DIM,
+                ",".join(str(d) for d in sorted(head_dims)),
+            )
+        return False
+    if target is not None and _sage_kernel_runs(target, logger, head_dims) is False:
+        return False
+    if not _install_sage_dispatch_guard():
+        if logger is not None:
+            logger.warning(
+                "diffusion.attention: this diffusers build does not expose the sage backend the way Unsloth expects, "
+                "so masked attention calls could not be routed around it; using the default backend"
+            )
+        return False
+    return True
 
 
 # Optional kernels installable on demand: dispatcher name -> (probe module, pip package). Wheels only
@@ -785,7 +977,7 @@ def apply_attention_backend(
         return None
     if backend is not None:
         _ensure_attention_backend_installed(backend, logger)
-        if backend == "sage" and target is not None and _sage_kernel_runs(target, logger) is False:
+        if backend == "sage" and not _sage_usable(pipe, target, logger):
             backend = None
         if (
             backend == "_native_cudnn"
