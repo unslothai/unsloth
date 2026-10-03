@@ -388,7 +388,6 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
     report_to = []
     if config.get("enable_tensorboard"):
         from utils.paths import resolve_tensorboard_dir
-
         report_to.append("tensorboard")
         # transformers 5 ignores logging_dir; its TensorBoard callback reads this instead.
         os.environ["TENSORBOARD_LOGGING_DIR"] = str(
