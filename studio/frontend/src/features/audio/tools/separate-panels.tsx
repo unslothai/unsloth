@@ -1,13 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Separate's model tools.
-
 import { Switch } from "@/components/ui/switch";
 import { type OverlapValue, roformerOverlapLogic } from "../separate-policy";
 import type { AudioToolPanel } from "./types";
-
-// ---- BS-RoFormer, Mel-Band RoFormer: Overlap -------------------------------------------------
 
 export const roformerOverlapPanel: AudioToolPanel<OverlapValue> = {
   ...roformerOverlapLogic,

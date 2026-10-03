@@ -1,13 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Stems out of a ``/v1/tasks/run`` separation answer saved to disk, without loading it.
+"""Stems out of a saved separation answer, decoded in chunks from an mmap.
 
-A 180 s track comes back as about 42 MB of base64 per stem in one JSON document (spike S3), so
-``json.loads`` on the whole body would hold the text, the parsed strings and the decoded audio
-at once. Here the file is memory-mapped, the base64 strings are located by scanning, the rest of
-the document is parsed with each of them replaced by a short placeholder, and every stem is
-decoded in chunks straight into its own WAV file.
+Not ``json.loads``: ~42 MB of base64 per stem for a 180 s track would be held three times over.
 """
 
 from __future__ import annotations
@@ -146,13 +142,11 @@ def _decode_span(mm: mmap.mmap, start: int, end: int, dest: Path, chunk: int) ->
             del text
             pos = stop
         if carry.strip(b"="):
-            # Unpadded tail.
             out.write(binascii.a2b_base64(carry + b"=" * (-len(carry) % 4)))
 
 
 def riff_info(path: Path) -> dict[str, Any]:
-    """``sample_rate``, ``channels`` and ``frames`` of a RIFF/WAVE file (PCM, float or extensible),
-    read from its header. Raises ValueError for anything else."""
+    """``sample_rate``, ``channels``, ``frames`` from a RIFF/WAVE header; ValueError otherwise."""
     with open(path, "rb") as f:
         header = f.read(12)
         if len(header) < 12 or header[:4] != b"RIFF" or header[8:12] != b"WAVE":
@@ -195,13 +189,9 @@ def extract_named_outputs(
     *,
     chunk: int = 4 << 20,
 ) -> list[dict[str, Any]]:
-    """Decode every ``named_audio_outputs[*]`` stem of the answer at ``json_path`` into
-    ``out_dir/<id>.wav``; return ``[{id, path, sample_rate, channels, duration_s}]`` in the
-    runtime's order.
+    """Decode ``named_audio_outputs[*]`` into ``out_dir/<id>.wav``, all or none.
 
-    A top-level ``audio`` is ignored: in a batch answer it repeats the first named output.
-    Raises ``SeparationOutputError`` when the list is missing, empty or any stem is not a WAV;
-    files written before that are removed."""
+    Top-level ``audio`` is ignored: in a batch answer it repeats the first named output."""
     json_path = Path(json_path)
     out_dir = Path(out_dir)
     try:

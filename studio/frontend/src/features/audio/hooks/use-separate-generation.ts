@@ -33,8 +33,7 @@ import { showRunResult } from "./use-clone-generation";
 export const SEPARATE_TRACK_EXPIRED_MESSAGE =
   "This track expired. Add it again.";
 
-/** Separate: its track (kept in the separate store), the model's tools, what holds Generate back,
- *  and the run. Mirrors useCloneGeneration so Stop, phases and errors behave the same. */
+/** Mirrors useCloneGeneration so Stop, phases and errors behave the same. */
 export function useSeparateGeneration({
   status,
   busyRef,
@@ -83,14 +82,11 @@ export function useSeparateGeneration({
   });
   const sourceHandle = useRef<AudioSourceInputHandle | null>(null);
   const [expiredSourceId, setExpiredSourceId] = useState<string | null>(null);
-  // The last run's group and size, for the announcement and focus.
   const [lastResult, setLastResult] = useState<{
     groupId: string | null;
     stems: number;
   } | null>(null);
-  // Whether the run in flight reloads the model for a new overlap.
   const [reloading, setReloading] = useState(false);
-  // The track and model of the run in flight, shown in the output until its stems arrive.
   const [pendingRun, setPendingRun] = useState<{
     title: string;
     model: string | null;
@@ -139,7 +135,6 @@ export function useSeparateGeneration({
     model !== null &&
     overlapReloads(lastOverlapByModel[model], overlap);
 
-  // An upload can pass its keep-until time while the page sits open.
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (source?.kind !== "input" || !source.expiresAt) return;
@@ -183,7 +178,7 @@ export function useSeparateGeneration({
       },
     ],
   };
-  // Model blockers (none loaded, cannot separate) are the host's and come first.
+  // Model blockers come first.
   const blocker: GenerateBlocker | null = inputBlocker
     ? {
         reason: inputBlocker.reason,
@@ -298,7 +293,6 @@ export function useSeparateGeneration({
     replayQueuedTtsPick,
   ]);
 
-  // A new track clears a failure that was about the old one.
   useEffect(() => {
     if (source) setGenerationError(null);
   }, [source]);

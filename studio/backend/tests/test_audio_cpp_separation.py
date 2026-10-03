@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The exact request audio.cpp receives for a separation (spike S3), and how the backend runs it.
-
-A fake server records every call and writes S3's answer shape; no runtime runs. The body is only
-the model and the track, the overlap goes in the server's session options, and changing it is
-the only thing that restarts the server.
-"""
+"""The exact request audio.cpp receives for a separation, against a recording fake server."""
 
 from __future__ import annotations
 
@@ -154,7 +149,6 @@ def test_the_body_is_exactly_the_model_and_the_track(started, tmp_path):
     for output in outputs:
         assert Path(output["path"]).parent == out and Path(output["path"]).is_file()
         assert (output["sample_rate"], output["channels"], output["duration_s"]) == (44100, 2, 0.01)
-    # The streamed answer is gone once decoded.
     assert not (out / ".response.json").exists()
 
 
@@ -168,7 +162,7 @@ def test_htdemucs_ignores_overlap_and_never_restarts(started, tmp_path):
 
 def test_roformer_overlap_is_a_session_option_that_restarts_only_on_change(started, tmp_path):
     backend = _backend(_model("bs_roformer", "BS-RoFormer-ep368-GGUF"))
-    backend._start_server(backend._model)  # the load
+    backend._start_server(backend._model)
     assert len(started) == 1
     backend.separate_audio(SOURCE, str(_out(tmp_path)))
     assert len(started) == 1
@@ -177,7 +171,6 @@ def test_roformer_overlap_is_a_session_option_that_restarts_only_on_change(start
     assert started[1][0].model_options["session_options"] == {"num_overlap": "1"}
     backend.separate_audio(SOURCE, str(_out(tmp_path)), {"num_overlap": 1})
     assert len(started) == 2
-    # Back to the default overlap is a change too.
     backend.separate_audio(SOURCE, str(_out(tmp_path)))
     assert len(started) == 3
     assert started[2][0].model_options.get("session_options") == {}

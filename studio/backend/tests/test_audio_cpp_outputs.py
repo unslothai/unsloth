@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Stems out of a saved ``/v1/tasks/run`` separation answer (spike S3's shape), decoded from disk."""
+"""Stems out of a saved ``/v1/tasks/run`` separation answer, decoded from disk."""
 
 from __future__ import annotations
 
@@ -129,7 +129,6 @@ def test_escaped_slashes_inside_base64_decode(tmp_path):
 
 
 def test_a_top_level_audio_is_not_counted_twice(tmp_path):
-    # Stable Audio's batch answer: top-level audio repeats audio_0.
     first = _wav()
     payload = {
         "audio": _b64(first),

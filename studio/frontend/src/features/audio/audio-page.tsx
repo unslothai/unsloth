@@ -571,7 +571,6 @@ export function AudioPage({
     },
     [transitionWorkflow, setPrompt],
   );
-  // A stem goes to another page as its input: Clone takes it as the reference, Transcribe runs on it.
   const handleSendStem = useCallback(
     async (target: SendTarget, clip: AudioGalleryClip, name: string) => {
       if (target.workflow === "clone") {

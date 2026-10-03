@@ -6,8 +6,7 @@ import { useEffect, useState } from "react";
 import { fetchAudioBlob } from "../api";
 import { computePeaks } from "../components/waveform-peaks";
 
-// Bar heights by clip id. Peaks are tiny, so they outlive the group that made them: going back
-// to an earlier separation redraws at once. Insertion order is the LRU order.
+// Outlives groups so going back redraws at once; insertion order is the LRU order.
 const PEAKS_CAP = 64;
 const peaksByClip = new Map<string, readonly number[]>();
 
@@ -27,8 +26,7 @@ function cachedPeaks(clipId: string): readonly number[] | undefined {
   return peaks;
 }
 
-// Peaks only need the shape, so decode at a low rate: a 3-minute stereo stem is about 32 MB
-// as float at 22.05 kHz instead of about 64 MB at 44.1 kHz, and the buffer is dropped at once.
+// Peaks only need the shape: decoding at 22.05 kHz halves the float buffer.
 const PEAKS_DECODE_RATE = 22_050;
 
 // From the Blob, not its object URL: the page's CSP (connect-src) refuses fetch() on blob: URLs.
@@ -44,16 +42,12 @@ async function decodePeaks(blob: Blob): Promise<number[]> {
 
 export interface StemSourceInput {
   clipId: string;
-  /** The gallery file route. */
   url: string;
 }
 
 export interface StemSources {
-  /** Object URLs by clip id, once fetched. Revoked when the group changes or on unmount. */
   srcById: Readonly<Record<string, string>>;
-  /** Bar heights by clip id, once decoded. */
   peaksById: Readonly<Record<string, readonly number[]>>;
-  /** Clips whose audio could not be fetched. */
   failedIds: readonly string[];
 }
 
@@ -63,10 +57,7 @@ function groupKey(stems: readonly StemSourceInput[]): string {
   return stems.map((stem) => `${stem.clipId}\u0000${stem.url}`).join("\u0001");
 }
 
-/** The audio and bar heights of one separation's stems. The gallery's object-URL cache is a
- *  budgeted LRU that would evict stems mid-playback (one 3-minute stem is about 32 MB), so the
- *  group gets its own cache with every stem pinned until the group changes. Peaks are decoded
- *  one stem at a time so only one decoded buffer is alive at once. */
+/** Own cache, not the gallery's budgeted LRU, which would evict stems mid-playback. */
 export function useStemSources(stems: readonly StemSourceInput[]): StemSources {
   const key = groupKey(stems);
   const [state, setState] = useState<{ key: string } & StemSources>({
@@ -81,11 +72,10 @@ export function useStemSources(stems: readonly StemSourceInput[]): StemSources {
       return { clipId, url };
     });
     let cancelled = false;
-    // Sized to the group: nothing is ever evicted while it is shown, so prune is never called.
+    // Sized to the group, so prune is never called.
     const cache = new BlobUrlCache(Number.POSITIVE_INFINITY);
     const peaksById: Record<string, readonly number[]> = {};
     const failedIds: string[] = [];
-    // Each stem's bytes until its peaks are drawn; the object URL alone keeps them after that.
     const blobs = new Map<string, Blob>();
     for (const { clipId } of group) {
       const peaks = cachedPeaks(clipId);
@@ -119,7 +109,6 @@ export function useStemSources(stems: readonly StemSourceInput[]): StemSources {
       const loads = new Map(
         group.map((stem) => [stem.clipId, loadSrc(stem)] as const),
       );
-      // In display order, one at a time.
       for (const { clipId } of group) {
         await loads.get(clipId);
         if (cancelled) return;
@@ -133,7 +122,7 @@ export function useStemSources(stems: readonly StemSourceInput[]): StemSources {
           peaksById[clipId] = peaks;
           publish();
         } catch {
-          // Undecodable here: the row keeps its flat placeholder and still plays.
+          // Undecodable: the row keeps its flat placeholder and still plays.
         }
       }
     })();

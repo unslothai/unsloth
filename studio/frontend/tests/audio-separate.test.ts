@@ -244,7 +244,6 @@ test("a separate run sends the source and options only", () => {
     options: { num_overlap: 1 },
   });
   assert.equal("text" in body, false);
-  // Clone and Speak still always send text.
   assert.equal(buildAudioRunBody({ workflow: "speak", text: "hi" }).text, "hi");
 });
 
@@ -257,7 +256,6 @@ test("separation rows list only on Separate", () => {
   assert.deepEqual(on({ id: "audio-cpp/audio.cpp-gguf/HTDemucs-GGUF" }), [
     "separate",
   ]);
-  // A speech row never lists on Separate.
   assert.equal(
     on({ task: "text-to-speech", audioType: "audiocpp_tts" }).includes(
       "separate",

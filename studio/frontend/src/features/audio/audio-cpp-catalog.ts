@@ -36,7 +36,6 @@ export interface AudioCppModel {
   languages?: readonly string[];
   /** Phonemizes with eSpeak-ng, which upstream runtime bundles lack (backend needs_espeak). */
   needsEspeak?: boolean;
-  /** Separation only: the stems it outputs, in display order. */
   stems?: readonly string[];
 }
 

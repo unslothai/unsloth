@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The stem mixer's levels: volume, mute and solo per stem, keyed by the stem's role. Pure and
-// free of app imports so the node test runner can load it, and so a store can persist it.
+// Free of app imports so the node test runner can load it.
 
 export interface StemMix {
-  /** 0..1. */
   volume: number;
   muted: boolean;
   solo: boolean;
@@ -37,7 +35,6 @@ export function anySolo(state: StemMixerState): boolean {
   return Object.values(state.byStem).some((mix) => mix.solo);
 }
 
-/** Volume as a 0..1 number; anything that is not a number leaves the old value. */
 export function clampVolume(volume: number, fallback = 1): number {
   if (!Number.isFinite(volume)) return fallback;
   return Math.min(1, Math.max(0, volume));
@@ -87,8 +84,7 @@ export function stemMixerReducer(
   }
 }
 
-/** The gain a stem plays at. While any stem is soloed only soloed stems sound, muted or not;
- *  otherwise a muted stem is silent. Solo beats mute. */
+/** Solo beats mute: while any stem is soloed only soloed stems sound. */
 export function effectiveGain(state: StemMixerState, role: string): number {
   const mix = stemMix(state, role);
   if (anySolo(state)) return mix.solo ? mix.volume : 0;

@@ -495,7 +495,6 @@ def test_separation_families_resolve_runnable(hub, folder, family):
     acm.require_runnable(model, "tts")
     with pytest.raises(acm.AudioCppModelError, match = "not a speech-to-text model"):
         acm.require_runnable(model, "asr")
-    # The family also comes from the names alone.
     assert acm.family_from_names([folder]) == family
 
 
@@ -1303,7 +1302,6 @@ def test_model_config_answers_umbrella_ids_without_the_hub(hub, monkeypatch):
     # A dictation model is not a main-slot model.
     with pytest.raises(ValueError, match = "speech-to-text"):
         model_config.ModelConfig.from_identifier("audiocpp-canary-180m-flash")
-    # A separation model is: it loads into the main audio slot.
     _put(snap, "HTDemucs-GGUF/htdemucs-q8_0.gguf", _gguf_bytes(family = "htdemucs"))
     sep = model_config.ModelConfig.from_identifier(f"{AUDIO_CPP_REPO}/HTDemucs-GGUF")
     assert sep.is_audio and sep.audio_type == "audiocpp_sep" and sep.audio_cpp.task == "sep"

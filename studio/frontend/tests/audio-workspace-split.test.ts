@@ -94,7 +94,6 @@ test("Generate says why it is off and runs from Mod+Enter anywhere on the page",
   // A failed run keeps its reason under Generate until the next run.
   assert.match(host, /if \(busy === "generating"\) setGenerationError\(null\);/);
   assert.match(host, /!pageRootRef\.current\?\.contains\(event\.target\)/);
-  // Clone and Separate run through their own hooks; the shortcut follows the page.
   assert.match(
     host,
     /const handlePageGenerate =\s*ttsWorkflow === "separate" \? separate\.handleGenerate :\s*ttsWorkflow === "clone" \? clone\.handleGenerate : handleGenerate;/,

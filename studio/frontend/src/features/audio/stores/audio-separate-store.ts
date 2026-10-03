@@ -7,16 +7,14 @@ import type { AudioSourceSelection } from "../audio-run-request";
 
 export const AUDIO_SEPARATE_STORAGE_KEY = "unsloth_audio_separate_v1";
 
-/** Separate's draft, kept across page switches and reloads. */
 interface AudioSeparateState {
   source: AudioSourceSelection | null;
-  /** The overlap each model last ran with, so a change is announced as a reload. */
+  /** So a change is announced as a reload. */
   lastOverlapByModel: Record<string, boolean>;
   setSource: (source: AudioSourceSelection | null) => void;
   setLastOverlap: (model: string, overlap: boolean) => void;
 }
 
-/** Models remembered at most; the oldest go first. */
 const MAX_MODELS = 20;
 
 export const useAudioSeparateStore = create<AudioSeparateState>()(

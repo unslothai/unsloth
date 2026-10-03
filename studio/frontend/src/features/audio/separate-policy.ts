@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// What Separate needs before it can run, how long a run takes, and its progress copy. Free of app
-// imports so the node test runner can load it directly.
+// Free of app imports so the node test runner can load it directly.
 
 import type { AudioGenerationPresentation } from "./audio-page-policy";
 import type { AudioSourceSelection } from "./audio-run-request";
@@ -11,7 +10,6 @@ import type { AudioToolPanel } from "./tools/types";
 /** Mirrors SEPARATE_MAX_SECONDS in studio/backend/routes/inference.py. */
 export const SEPARATE_MAX_SECONDS = 600;
 
-/** RoFormers take this many runs of the model per window by default; Overlap off sends 1. */
 export const ROFORMER_FAMILIES: ReadonlySet<string> = new Set([
   "bs_roformer",
   "mel_band_roformer",
@@ -34,7 +32,6 @@ function clock(seconds: number): string {
   return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
 }
 
-/** What holds Generate back on Separate's own inputs. Model blockers are the host's. */
 export function separateBlocker({
   source,
   sourceBusy,
@@ -72,7 +69,7 @@ export function separateBlocker({
   return null;
 }
 
-// GPU seconds per second of audio, measured on the pinned runtime (spike S3, 180 s track).
+// GPU seconds per second of audio, measured on the pinned runtime (180 s track).
 const GPU_SECONDS_PER_SECOND: Record<string, number> = {
   htdemucs: 0.032,
   htdemucs_6stems: 0.036,
@@ -81,7 +78,6 @@ const GPU_SECONDS_PER_SECOND: Record<string, number> = {
 };
 const ROFORMER_NO_OVERLAP_SECONDS_PER_SECOND = 0.016;
 
-/** About how long a run takes on the GPU, in whole seconds (at least 1); null when unknown. */
 export function estimateSeparateSeconds(
   family: string | null | undefined,
   durationS: number | null | undefined,
@@ -97,7 +93,7 @@ export function estimateSeparateSeconds(
   return Math.max(1, Math.round(rate * durationS + durationS / 60));
 }
 
-/** RoFormers on the CPU take minutes for seconds of audio (S3: 142 s for an 8 s clip). */
+/** RoFormers on the CPU take minutes for seconds of audio (142 s for an 8 s clip). */
 export function separateCpuWarning(
   family: string | null | undefined,
   device: string | null | undefined,
@@ -108,7 +104,6 @@ export function separateCpuWarning(
     : "Separating on the CPU is slower; expect about a second per second of audio.";
 }
 
-/** The Overlap switch: on is the model's default; off asks for one pass per window. */
 export interface OverlapValue {
   overlap: boolean;
 }
@@ -119,8 +114,7 @@ export function overlapRequest(value: OverlapValue | undefined): {
   return value?.overlap === false ? { options: { num_overlap: 1 } } : {};
 }
 
-/** Whether this run reloads the model: the overlap differs from the one it last ran with. A model
- *  this page has not run yet loaded with the default (overlap on). */
+/** A model this page has not run yet loaded with the default (overlap on). */
 export function overlapReloads(
   lastOverlap: boolean | undefined,
   overlap: boolean,
@@ -128,7 +122,6 @@ export function overlapReloads(
   return (lastOverlap ?? true) !== overlap;
 }
 
-/** Footer copy for a separation run, over the generic generation phases. */
 export function separatePresentation(
   presentation: AudioGenerationPresentation | null,
   phase: string | null,
@@ -154,7 +147,7 @@ export function separatePresentation(
   }
 }
 
-/** The RoFormer Overlap switch. Overlap is a load-time setting, so changing it reloads the model. */
+/** Overlap is a load-time setting, so changing it reloads the model. */
 export const roformerOverlapLogic: Omit<
   AudioToolPanel<OverlapValue>,
   "Component"

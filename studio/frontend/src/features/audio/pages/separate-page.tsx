@@ -43,7 +43,6 @@ import { useAudioSeparateStore } from "../stores/audio-separate-store";
 import { AudioToolPanels } from "../tools/tool-panel-host";
 import { TtsFooter, TtsRailFields } from "./tts-workspace";
 
-// Downloaded first-choice separation models, in the order the picker offers them.
 const SEPARATE_MODEL_ORDER = [
   "HTDemucs-GGUF",
   "BS-RoFormer-ep368-GGUF",
@@ -58,7 +57,6 @@ function separateRank(id: string): number {
   return index === -1 ? SEPARATE_MODEL_ORDER.length : index;
 }
 
-/** Separate's picker rows: catalog models that separate, the recommended ones first. */
 export function separatePageModels(
   models: ModelOption[],
   isMac: boolean,
@@ -81,8 +79,6 @@ export function separatePageModels(
     .map(({ model }) => model);
 }
 
-/** The stems a model makes: the loaded model's family first, else the catalog entry of the model
- *  the page last used. */
 export function separateOutputStems(
   family: string | null | undefined,
   modelId: string | null | undefined,
@@ -116,7 +112,6 @@ function StemChips({ stems }: { stems: readonly string[] }) {
   );
 }
 
-/** Separate's own inputs: the track, and what the model will split it into. */
 function SeparateInputs({
   separate,
   historyClips,
@@ -166,8 +161,6 @@ function SeparateInputs({
   );
 }
 
-/** Separate's rail: the track and its outputs, then the model's tools and the device. Separation
- *  models take no other options, so there is no Advanced. */
 export function SeparateRail({
   separate,
   historyClips,
@@ -178,7 +171,6 @@ export function SeparateRail({
   separate: SeparateGeneration;
   historyClips: readonly AudioGalleryClip[];
   pageModelLoaded: boolean;
-  /** The model the page last loaded, for its stems while it is not loaded. */
   pageModelId: string | null;
 }) {
   const disabled = props.busy === "generating";
@@ -214,7 +206,6 @@ export function SeparateRail({
   );
 }
 
-/** Generate with the run's estimate and Separate's own progress copy. */
 export function SeparateFooter({
   separate,
   generationPresentation,
@@ -279,7 +270,6 @@ function saveBlob(blob: Blob, name: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
-/** Every stem of a group as one zip, fetched from the gallery. */
 async function downloadGroup(group: SeparationGroup) {
   try {
     const files = await Promise.all(
@@ -299,7 +289,7 @@ const SEND_TARGETS: readonly SendTarget[] = [
   { id: "clone", workflow: "clone", label: "Clone (as reference)" },
 ];
 
-/** The selected separation as a mixer. Keyed by group so each one starts from its own clock. */
+/** Keyed by group so each one starts from its own clock. */
 function SelectedSeparation({
   group,
   autoFocus,
@@ -365,8 +355,6 @@ function SelectedSeparation({
   );
 }
 
-/** Separate's output: the selected separation's stems in the mixer, then one history row per
- *  separation. */
 export function SeparateOutput({
   clips,
   selectedId,
@@ -398,7 +386,6 @@ export function SeparateOutput({
   | "loadMore"
 > &
   Pick<AudioHostState, "active"> & {
-    /** This page's clips only. */
     clips: AudioGalleryClip[];
     handleClearGallery: () => Promise<void>;
     modelReady: boolean;
@@ -421,7 +408,7 @@ export function SeparateOutput({
     lastResult !== null &&
     selected !== null &&
     (lastResult.groupId === null || selected.groupId === lastResult.groupId);
-  // Focus moves into the new result once; later re-renders keep it where the user put it.
+  // Once only; later re-renders keep focus where the user put it.
   const [focusedGroup, setFocusedGroup] = useState<string | null>(null);
   useEffect(() => {
     if (fresh && selected) setFocusedGroup(selected.groupId);
@@ -446,7 +433,6 @@ export function SeparateOutput({
       );
       return;
     }
-    // The last one goes through the gallery, which refreshes and offers the way back.
     if (last) await handleArchiveClip(last.id);
   };
   const deleteGroup = async (group: SeparationGroup) => {

@@ -180,8 +180,7 @@ class AudioCppBackend:
         self._model: Optional[AudioCppModel] = None
         self._server: Optional[AudioCppServer] = None
         self._server_lock = threading.RLock()
-        # The session options the running server was started with. ``model_options`` is not part of
-        # the model's equality, so a changed separation overlap is only seen here.
+        # ``model_options`` is not part of model equality: a changed overlap is only seen here.
         self._served_session: dict = {}
 
     # Loading
@@ -397,11 +396,7 @@ class AudioCppBackend:
         options: Optional[dict] = None,
         cancel_event = None,
     ) -> list[dict[str, Any]]:
-        """Split the 44.1 kHz WAV at ``source_path`` into stems written under ``output_dir``.
-
-        Returns ``[{id, path, sample_rate, channels, duration_s}]`` in the runtime's order, or an
-        empty list when the runtime answered without a stem Studio can decode. The answer is
-        streamed to disk and decoded from there; nothing of it crosses back but paths."""
+        """Split a 44.1 kHz WAV into stems under ``output_dir``; [] when none decodes."""
         from core.inference.audio_cpp_outputs import SeparationOutputError, extract_named_outputs
 
         if not self.active_model_name or self.active_model_name not in self.models:
@@ -429,7 +424,7 @@ class AudioCppBackend:
             server = self._server
         response_path = Path(output_dir) / ".response.json"
         try:
-            # Exactly the model and the track: the separation families refuse any other key (S3).
+            # The separation families refuse any other key.
             server.post_json_to_file(
                 "/v1/tasks/run",
                 {"model": server.model_id, "audio": str(source_path)},

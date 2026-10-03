@@ -51,7 +51,6 @@ export function audioRowMatchesWorkflow(
     return workflow === "transcribe";
   }
   if (workflow === "separate") {
-    // Only models the backend or the catalog marks as separating list on Separate.
     return false;
   }
   if (byTask === "speak" || catalogTask === "tts" || row.audioType) {

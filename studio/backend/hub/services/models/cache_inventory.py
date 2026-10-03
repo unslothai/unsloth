@@ -670,8 +670,7 @@ def _scan_cached_gguf(
                 )
                 row_audio_type = None
                 row_audio_workflows = None
-                # audio-to-audio: a separation model, told from the audio.cpp kinds Studio has no page
-                # for by its audio_type.
+                # audio-to-audio: separation, told apart by audio_type.
                 if row_task in ("text-to-speech", "audio-to-audio"):
                     try:
                         from hub.services.models import catalog_classification

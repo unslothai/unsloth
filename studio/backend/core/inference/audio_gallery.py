@@ -75,11 +75,9 @@ def save_file(
     *,
     prune: bool = True,
 ) -> dict[str, Any]:
-    """Persist a WAV already on disk (a separated stem) plus its sidecar; return the record.
+    """Move a WAV on disk into the gallery with its sidecar; all or nothing.
 
-    The file is moved in (copied when ``src`` is on another filesystem) and committed by the
-    sidecar like ``save``; on any failure every artifact is removed. A run saving several files
-    passes ``prune=False`` and prunes once after the last one, so a cap never takes part of it.
+    Multi-file runs pass ``prune=False`` and prune once at the end, so a cap never splits a run.
     """
     audio_id = uuid.uuid4().hex
     directory = gallery_dir()

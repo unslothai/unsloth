@@ -32,7 +32,6 @@ export function Waveform({
   durationS: number | null;
   /** Where to play it from; without one the bars are drawn but cannot play. */
   src: string | null;
-  /** What the clip is, for screen readers. */
   label: string;
   className?: string;
 }) {
@@ -141,9 +140,7 @@ export function Waveform({
   );
 }
 
-/** The bars alone, as a seekable slider: the played part in the text colour, the rest muted.
- *  `onSeek` gets the clicked point as a 0..1 fraction; keys are left to the caller. Static, so
- *  reduced motion needs nothing extra. */
+/** Seekable bars; keys are left to the caller. */
 export function WaveformBars({
   peaks,
   fraction,
@@ -155,13 +152,10 @@ export function WaveformBars({
   onKeyDown,
   className,
 }: {
-  /** Bar heights 0..1; null draws a flat placeholder. */
   peaks: readonly number[] | null;
-  /** How much has played, 0..1. */
   fraction: number;
   /** What the clip is, for screen readers. */
   label: string;
-  /** Position and length in seconds, spoken as the slider's value. */
   valueNow: number;
   valueMax: number;
   disabled?: boolean;
@@ -203,7 +197,6 @@ export function WaveformBars({
       >
         {Array.from({ length: count }, (_, index) => {
           const peak = bars ? (bars[index] ?? 0) : 0;
-          // A floor keeps silence visible as a line rather than a gap.
           const height = Math.max(2, peak * 30);
           const played = fraction > 0 && (index + 0.5) / count <= fraction;
           return (

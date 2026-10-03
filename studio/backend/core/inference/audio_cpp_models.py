@@ -55,8 +55,7 @@ HUB_TASKS = {
     "tts": "text-to-speech",
     "music": "text-to-audio",
     "asr": "automatic-speech-recognition",
-    # Separation rows share the tag of the audio.cpp kinds Studio has no page for; their
-    # audio_type tells them apart.
+    # Shares its tag with kinds Studio has no page for; audio_type tells them apart.
     "sep": "audio-to-audio",
 }
 
@@ -116,7 +115,7 @@ class CloneSpec:
 class SeparationSpec:
     """How a family splits a track into stems on /v1/tasks/run (task ``sep``, 44.1 kHz input)."""
 
-    # Session option for chunk overlap; changing it restarts the server.
+    # Changing it restarts the server.
     overlap_option: Optional[str] = None
 
 
@@ -167,8 +166,6 @@ def _bindings_for(
 @dataclass(frozen = True)
 class AudioCppFamily:
     family: str
-    # Studio task: ``tts`` (speech), ``music`` (generation), ``asr`` or ``sep`` (separation); empty
-    # when Studio has no feature for it.
     task: str
     # audiocpp_server task when it is not the Studio task's default (a voice-design package runs "vdes").
     server_task: Optional[str] = None
@@ -193,7 +190,6 @@ class AudioCppFamily:
     clone: Optional[CloneSpec] = None
     # Models it loads beside its own GGUF.
     companions: tuple[CompanionModel, ...] = ()
-    # How it separates stems, for task ``sep``.
     separation: Optional[SeparationSpec] = None
 
     @property
@@ -380,7 +376,6 @@ _CLONE_FAMILIES: tuple[AudioCppFamily, ...] = (
 )
 
 
-# Source separation: 44.1 kHz in, one 44.1 kHz stereo WAV per stem out.
 _SEPARATION_FAMILIES: tuple[AudioCppFamily, ...] = (
     AudioCppFamily("htdemucs", "sep", separation = SeparationSpec()),
     AudioCppFamily("htdemucs_6stems", "sep", separation = SeparationSpec()),
@@ -623,7 +618,6 @@ def _family_from_spec_tasks(
     tokens = [_SPEC_TO_SERVER_TASK.get(t, t) for t in tasks]
     # Speech first, then music, then transcription: a model that speaks is most useful spoken.
     # A clone-only family comes next: it loads as a cloning session and offers Clone alone.
-    # Separation comes last.
     for token in ("tts", "vdes", "gen", "asr", "clon", "sep"):
         if token in tokens:
             if runtime_knows_family(family) is False:
@@ -1475,7 +1469,6 @@ def option_schema(
     else gets the runtime's spec, else the one embedded in the GGUF.
     """
     if policy.task == "sep":
-        # The route sends exactly the model and the track; a separation request takes no options.
         return ()
     if policy.options:
         source = {"options": {"request": list(policy.options)}}

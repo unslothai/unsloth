@@ -537,11 +537,10 @@ class AudioCppServer:
         cancel_event: Optional[threading.Event] = None,
         sink: Optional[BinaryIO] = None,
     ) -> tuple[int, str, bytes]:
-        """One HTTP round trip. A set ``cancel_event`` closes the socket and raises.
+        """One HTTP round trip; a set ``cancel_event`` closes the socket and raises.
 
-        With a ``sink``, a 2xx body is copied into it in 1 MiB chunks and ``b""`` is returned in its
-        place: a separation answer is hundreds of megabytes of base64. An error body is still
-        returned, its first 64 KiB."""
+        With a ``sink`` a 2xx body is streamed into it and ``b""`` returned (separation answers are
+        hundreds of MB)."""
         if cancel_event is not None and cancel_event.is_set():
             raise AudioCppRequestCancelledError("Request cancelled.")
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout = timeout)

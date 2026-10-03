@@ -64,7 +64,6 @@ def _save(kind):
         meta.update(audio_type = "snac", sample_rate = 24000, created_at = "2026-08-06T00:00:00Z")
         return audio_gallery.save(b"RIFF\x24\x00\x00\x00WAVEfmt ", meta)
     if kind == "audio-separate":
-        # A stem moved in from the run's staging folder inside the account's gallery.
         meta.update(
             audio_type = "audiocpp_sep",
             workflow = "separate",

@@ -44,10 +44,6 @@ import { formatSeconds } from "./waveform-peaks";
 
 const SEEK_STEP_SECONDS = 5;
 
-/** One separation's stems on one clock: play them together, solo, mute or turn each down, and
- *  download or send any of them. Focus the mixer or a stem's bars and press Space or K to play
- *  or pause, arrows to seek. Waveforms are neutral and nothing animates except the loading
- *  pulse, which stops under reduced motion. */
 export function StemMixer({
   groupId,
   title,
@@ -66,7 +62,6 @@ export function StemMixer({
   );
   const playRef = useRef<HTMLButtonElement | null>(null);
 
-  // A different separation starts with every stem at full level.
   // biome-ignore lint/correctness/useExhaustiveDependencies: groupId is the trigger, not a value read inside.
   useEffect(() => {
     dispatch({ type: "reset" });
@@ -88,7 +83,7 @@ export function StemMixer({
   const fraction = duration > 0 ? Math.min(1, position / duration) : 0;
   const loadingCount = stems.filter((stem) => !stem.src).length;
 
-  // Once per group, as soon as Play can take focus (it is disabled until the stems load).
+  // Play is disabled until the stems load.
   const focusedGroup = useRef<string | null>(null);
   useEffect(() => {
     if (!(autoFocus && ready) || focusedGroup.current === groupId) return;
@@ -99,7 +94,6 @@ export function StemMixer({
   const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
     if (event.metaKey || event.ctrlKey || event.altKey) return;
     const target = event.target as HTMLElement;
-    // Buttons, sliders and menus keep their own keys.
     const ours =
       target === event.currentTarget ||
       target.closest("[data-stem-bars]") !== null;
@@ -119,7 +113,6 @@ export function StemMixer({
     }
   };
 
-  // The page announces a finished run; the mixer only says it is still fetching.
   const status = loadingCount > 0 ? "Loading stems…" : "";
 
   return (

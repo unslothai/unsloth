@@ -3337,9 +3337,8 @@ class InferenceOrchestrator:
         audio_options: Optional[dict] = None,
         cancel_event = None,
     ) -> list[dict]:
-        """Split the prepared 44.1 kHz WAV at ``source_path`` into stems the worker writes under
-        ``output_dir``; returns ``[{id, path, sample_rate, channels, duration_s}]``. The full token
-        budget gives the watchdog its hour, the same bound the runtime request has."""
+        """Split a prepared 44.1 kHz WAV into stems under ``output_dir``; the full token budget
+        gives the watchdog the same hour the runtime request has."""
         outputs, _sample_rate = self.generate_audio_response(
             text = "",
             max_new_tokens = AUDIO_GENERATION_MAX_TOKENS,

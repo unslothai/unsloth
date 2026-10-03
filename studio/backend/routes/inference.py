@@ -21921,8 +21921,7 @@ def _clock(seconds: float) -> str:
 
 
 def _prepare_separation_source(ref: dict[str, Any]):
-    """``(source, prepared 44.1 kHz path)`` for a run, after the 10-minute cap on the trimmed
-    length. Raises AudioInputError or HTTPException."""
+    """``(source, prepared 44.1 kHz path)``, after the 10-minute cap on the trimmed length."""
     from core.inference import audio_inputs
 
     source = audio_inputs.resolve_source(ref)
@@ -22007,11 +22006,8 @@ def _save_stems(stems: list[dict], base_meta: dict[str, Any]) -> list[dict]:
 async def _run_separation(
     body: AudioRunRequest, request: Request, current_subject: str
 ) -> AudioRunResponse:
-    """Split a track named by id into stems and save each to history as one group.
-
-    The track is resolved in the caller's account and prepared at 44.1 kHz; the worker writes the
-    stems into a staging folder inside the account's gallery and answers with their paths, which
-    are checked to stay inside it before they are moved in. Paths never reach the client."""
+    """Split a track into stems saved as one history group; worker paths are checked to stay in
+    the account's gallery and never reach the client."""
     from core.inference import audio_gallery, audio_inputs
 
     if body.text is not None:
@@ -33492,7 +33488,6 @@ def _audio_cpp_speech_model_objects(created: int) -> list[dict]:
             return []
         objects = []
         for model in downloaded_models():
-            # A separation model is not a voice /v1/audio/speech can speak in.
             if model.audio_type is None or model.task not in ("tts", "music"):
                 continue
             if account_access.managed_account() and not account_access.model_visible(

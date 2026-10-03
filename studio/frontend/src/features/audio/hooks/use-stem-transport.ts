@@ -3,10 +3,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-/** How far a stem may drift from the first one before it is re-seeked, and how often to look. */
 const DRIFT_TOLERANCE_S = 0.04;
 const DRIFT_CHECK_MS = 250;
-/** A stem that never reports `canplay` must not hang Play forever. */
 const CANPLAY_TIMEOUT_MS = 10_000;
 
 export interface StemTransportSource {
@@ -15,12 +13,9 @@ export interface StemTransportSource {
 }
 
 export interface StemTransport {
-  /** Every stem has audio, so Play can start. */
   ready: boolean;
   playing: boolean;
-  /** Seconds. */
   position: number;
-  /** Seconds. */
   duration: number;
   play(): void;
   pause(): void;
@@ -34,7 +29,6 @@ interface StemVoice {
   gain: GainNode | null;
 }
 
-/** Resolves once the element has finished any seek and has data to play from there. */
 function waitForCanPlay(element: HTMLAudioElement): Promise<void> {
   const canPlay = () =>
     !element.seeking && element.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA;
@@ -55,14 +49,10 @@ function waitForCanPlay(element: HTMLAudioElement): Promise<void> {
 }
 
 function setGain(voice: StemVoice, value: number, context: AudioContext) {
-  // A short glide avoids a click when a stem is muted mid-note.
   voice.gain?.gain.setTargetAtTime(value, context.currentTime, 0.015);
 }
 
-/** One clock for several stems. Each stem is a media element routed through its own gain node
- *  in one AudioContext, so memory stays near the blob size instead of a decoded float copy.
- *  Play seeks every stem, waits until all can play, then starts them together; while playing,
- *  any stem more than 40 ms off the first is re-seeked. `active` false pauses. */
+/** Media elements through gain nodes, not decoded buffers, so memory stays near the blob size. */
 export function useStemTransport({
   sources,
   gains,
@@ -70,10 +60,8 @@ export function useStemTransport({
   durationHint = 0,
 }: {
   sources: readonly StemTransportSource[];
-  /** 0..1 per source, same order. */
   gains: readonly number[];
   active: boolean;
-  /** Seconds, used until the media reports its own length. */
   durationHint?: number;
 }): StemTransport {
   const contextRef = useRef<AudioContext | null>(null);
@@ -82,7 +70,7 @@ export function useStemTransport({
   gainsRef.current = gains;
   const positionRef = useRef(0);
   const playingRef = useRef(false);
-  // Bumped by every play, pause and seek, so a start still waiting on `canplay` knows it is stale.
+  // Lets a start still waiting on `canplay` know it is stale.
   const startToken = useRef(0);
   const [playing, setPlaying] = useState(false);
   const [position, setPosition] = useState(0);
@@ -109,7 +97,6 @@ export function useStemTransport({
     for (const voice of voicesRef.current) voice.element.pause();
   }, []);
 
-  // A new set of stems gets new elements, starting from the top, stopped.
   useEffect(() => {
     if (!srcKey) return;
     const voices: StemVoice[] = srcKey.split("\u0000").map((src) => {
@@ -156,7 +143,6 @@ export function useStemTransport({
     };
   }, [srcKey, updatePosition]);
 
-  // The context outlives stem sets and closes only on unmount.
   useEffect(
     () => () => {
       const context = contextRef.current;
@@ -166,8 +152,7 @@ export function useStemTransport({
     [],
   );
 
-  // Route any element not yet in the graph. Created on the first Play, a user gesture, so the
-  // browser lets the context run.
+  // Created on the first Play, a user gesture, so the browser lets the context run.
   const ensureGraph = useCallback((): AudioContext => {
     let context = contextRef.current;
     if (!context) {
@@ -253,7 +238,6 @@ export function useStemTransport({
     [start, updatePosition],
   );
 
-  // The clock and drift check, only while playing.
   useEffect(() => {
     if (!playing) return;
     const timer = window.setInterval(() => {

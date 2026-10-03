@@ -88,7 +88,6 @@ test("volume scales the gain and is clamped to 0..1", () => {
       .volume,
     0,
   );
-  // Not a number: the old value stays.
   assert.equal(
     stemMix(
       stemMixerReducer(half, {
@@ -100,7 +99,6 @@ test("volume scales the gain and is clamped to 0..1", () => {
     ).volume,
     0.5,
   );
-  // A soloed stem plays at its own volume.
   const soloHalf = stemMixerReducer(half, { type: "toggleSolo", role: "bass" });
   assert.deepEqual(gains(soloHalf), [0, 0, 0.5, 0]);
 });

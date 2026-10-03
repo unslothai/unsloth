@@ -594,8 +594,6 @@ def test_speak_in_a_saved_voice_on_a_speak_and_clone_model(stub, tmp_path):
     assert meta["voice_id"] == voice["id"] and meta["workflow"] == "speak"
 
 
-# Separate: a track in, one gallery clip per stem out, paths only across the worker boundary.
-
 HTDEMUCS_6 = "audio-cpp/audio.cpp-gguf/HTDemucs-6stems-GGUF"
 BS_ROFORMER = "audio-cpp/audio.cpp-gguf/BS-RoFormer-ep368-GGUF"
 SIX_STEMS = ["drums", "bass", "other", "vocals", "guitar", "piano"]
@@ -1028,7 +1026,7 @@ def test_a_separation_model_refuses_speech_and_points_at_separate(sep):
 
 
 def test_the_separate_scope_clears_only_separations(sep, tmp_path):
-    _alice_sources()  # one speak clip
+    _alice_sources()
     input_id = _input(ALICE)
     with _client(ALICE) as client:
         assert _separate(client, inputs = {"source": {"input_id": input_id}}).status_code == 200
@@ -1095,7 +1093,6 @@ def test_the_orchestrator_sends_paths_and_returns_the_stem_list(monkeypatch):
     from core.inference.orchestrator import _audio_generation_timeout
 
     assert _audio_generation_timeout(8192) == 3600.0
-    # Speech never carries an output folder.
     orchestrator, sent = _orchestrator(
         monkeypatch, {"wav_base64": base64.b64encode(_wav()).decode(), "sample_rate": 24000}
     )

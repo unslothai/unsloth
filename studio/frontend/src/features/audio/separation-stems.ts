@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The stems each separation model makes, their display order, and how history groups one run's
-// stems. Free of app imports so the node test runner can load it directly.
+// Free of app imports so the node test runner can load it directly.
 
 import type { AudioGalleryClip } from "./api";
 
@@ -34,7 +33,6 @@ export function stemLabel(id: string): string {
   return words ? words[0].toUpperCase() + words.slice(1) : "Stem";
 }
 
-/** What each family outputs, as the pinned runtime returns them. */
 export const SEPARATION_STEMS_BY_FAMILY: Readonly<
   Record<string, { stems: readonly string[] }>
 > = {
@@ -46,7 +44,6 @@ export const SEPARATION_STEMS_BY_FAMILY: Readonly<
   mel_band_roformer: { stems: ["vocals", "instrumental"] },
 };
 
-/** Known stems in display order, unknown ones after them in the order given. */
 export function orderStems<T extends string>(ids: readonly T[]): T[] {
   const rank = (id: string) => {
     const index = STEM_ORDER.indexOf(id);
@@ -60,7 +57,6 @@ export function orderStems<T extends string>(ids: readonly T[]): T[] {
 
 export interface SeparationGroup {
   groupId: string;
-  /** The source track's name. */
   title: string;
   model: string;
   durationS: number;
@@ -68,7 +64,6 @@ export interface SeparationGroup {
   stems: AudioGalleryClip[];
   /** False when some of the run's stems were deleted. */
   complete: boolean;
-  /** How many stems the run made. */
   expectedStems: number;
   pinned: boolean;
 }
@@ -80,8 +75,7 @@ function settingsStems(clip: AudioGalleryClip): string[] | null {
     : null;
 }
 
-/** One history item per separation run, in the order the clips came in. A clip with no group is
- *  its own item. */
+/** A clip with no group is its own item. */
 export function groupSeparationClips(
   clips: readonly AudioGalleryClip[],
 ): SeparationGroup[] {

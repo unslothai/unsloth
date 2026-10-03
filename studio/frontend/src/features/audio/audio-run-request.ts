@@ -95,7 +95,6 @@ export interface AudioRunRequest {
   instructions?: string | null;
   inputs?: {
     reference?: (AudioSourceRef & { trim?: AudioTrim }) | null;
-    /** The track Separate splits. */
     source?: (AudioSourceRef & { trim?: AudioTrim }) | null;
     reference_text?: string | null;
     emotion?: AudioSourceRef | null;

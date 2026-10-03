@@ -83,7 +83,6 @@ def test_a_load_response_derives_workflows_and_keeps_an_explicit_value():
         ("text-to-speech", "minimax_music3", ["music"]),
         ("text-to-speech", AUDIO_CPP_MUSIC_AUDIO_TYPE, ["music"]),
         ("text-to-speech", None, ["speak"]),
-        # Separation shares audio-to-audio with the kinds Studio has no page for.
         ("audio-to-audio", AUDIO_CPP_SEP_AUDIO_TYPE, ["separate"]),
         ("audio-to-audio", None, None),
         ("text-generation", None, None),
