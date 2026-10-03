@@ -14,8 +14,6 @@ const gallery = readSrc("features/audio/hooks/use-audio-gallery.tsx");
 const tour = readSrc("features/audio/tour/steps.tsx");
 
 test("the host calls its hooks in the order their effects ran in the single page", () => {
-  // The slot's deactivation effect replays a queued pick before the route effect picks again; the
-  // sidecar's state exists before the transcription that reads it.
   const order = [
     "useSttSidecar(",
     "useTranscription(",
@@ -26,7 +24,6 @@ test("the host calls its hooks in the order their effects ran in the single page
   ].map((call) => host.indexOf(call));
   assert.ok(order.every((at) => at > 0), String(order));
   assert.deepEqual([...order].sort((a, b) => a - b), order);
-  // The activation resync still runs before the slot's deactivation effect.
   assert.ok(host.indexOf("// Resync on activation") < host.indexOf("useAudioModelSlot("));
 });
 
@@ -39,7 +36,6 @@ test("only the page commits a workflow; the sidebar's request goes through the s
     slot,
     /const transitionWorkflow = useCallback\(\s*\(next: AudioWorkflowId\) => \{\s*if \(!transitionMode\(slotForWorkflow\(next\)\)\) return false;\s*useAudioWorkspaceStore\.getState\(\)\.commitWorkflow\(next\);/,
   );
-  // A failed Transcribe release puts mode back on Transcribe; the workflow follows it.
   assert.match(host, /mode === "transcribe" \? "transcribe" : musicGeneration \? "music" : "speak"/);
 });
 
@@ -48,7 +44,6 @@ test("a loaded model opens the page that fits it", () => {
     slot,
     /const loadedWorkflow = workflowForLoadedModel\(\{\s*current: useAudioWorkspaceStore\.getState\(\)\.workflow,\s*audioWorkflows: res\.audio_workflows,\s*music: isMusicGenerationModel\(repoId, res\.audio_type\),\s*\}\);[\s\S]{0,200}?rememberModel\(loadedWorkflow, repoId\);\s*if \(modeRef\.current === "speak"\) workspace\.commitWorkflow\(loadedWorkflow\);/,
   );
-  // Opening Audio with a music model already resident lands on Music, until something chooses.
   assert.match(host, /adoptWorkflow\("music"\)/);
 });
 
@@ -60,19 +55,16 @@ test("?workflow= names the page ahead of ?task=, and both clear the URL", () => 
     handoff,
     /if \(!transitionWorkflow\(routedWorkflow\)\) return;\s*void navigateSelf\(\{ to: "\/audio", search: \{\}, replace: true \}\);/,
   );
-  // text-to-audio lands on Music; the commit follows the navigate the task block always did.
   assert.match(
     handoff,
     /void navigateSelf\(\{ to: "\/audio", search: \{\}, replace: true \}\);\s*\/\/[^\n]*\n\s*useAudioWorkspaceStore\s*\.getState\(\)\s*\.commitWorkflow\(audioWorkflowForTask\(task\) \?\? intended\);/,
   );
-  // A Library clip opens on its own page.
   assert.match(handoff, /transitionWorkflow\(clipWorkflow\(clip\)\)/);
 });
 
 test("Speak and Music keep separate drafts that survive a reload", () => {
   assert.match(generation, /readLastPrompt\(ttsDraftKey\("prompt", "speak"\)\)/);
   assert.match(generation, /readLastPrompt\(ttsDraftKey\("prompt", "music"\)\)/);
-  // Speak keeps the key the single page used, so an existing draft is not lost.
   assert.match(generation, /const base = workflow === "music" \? "audio:music" : "audio";/);
   assert.match(generation, /saveLastPrompt\(ttsDraftKey\(field, page\), next\);/);
 });
@@ -91,7 +83,6 @@ test("Generate says why it is off and runs from Mod+Enter anywhere on the page",
   assert.match(host, /: "Type the text to speak\."/);
   assert.match(host, /const chooseModelAction = \{ label: "Choose a model", onClick: openSelector \};/);
   assert.match(host, /\{ label: "Choose a music model", onClick: openSelector \}/);
-  // A failed run keeps its reason under Generate until the next run.
   assert.match(host, /if \(busy === "generating"\) setGenerationError\(null\);/);
   assert.match(host, /!pageRootRef\.current\?\.contains\(event\.target\)/);
   // Clone runs through its own hook; the shortcut follows the page.

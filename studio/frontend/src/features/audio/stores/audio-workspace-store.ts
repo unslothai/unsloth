@@ -7,21 +7,16 @@ import type { AudioWorkflowId } from "../workflows";
 
 export const AUDIO_WORKSPACE_STORAGE_KEY = "unsloth_audio_workspace";
 
-/** The Audio page's workflow, lifted out of the page so the sidebar and the More flyout can drive it.
- *  Only the page commits `workflow`; the sidebar and deep links put a request in `requestedWorkflow`
- *  and the page takes it when it is free to switch, the same gate an in-page tab click passes. */
+/** Only the page commits `workflow`; the sidebar and deep links put a request in
+ *  `requestedWorkflow`, which the page takes once it is free to switch, like an in-page tab click. */
 interface AudioWorkspaceState {
   workflow: AudioWorkflowId;
-  /** Whether anything has picked the workflow yet this session, so a first look at the loaded
-   *  model may still open the page that fits it. */
   workflowChosen: boolean;
   requestedWorkflow: AudioWorkflowId | null;
-  /** Off the Audio page, whether the sidebar lists the workflows under the row. */
   navExpanded: boolean;
   /** The model last loaded on each workflow. */
   lastModelByWorkflow: Partial<Record<AudioWorkflowId, string>>;
   commitWorkflow: (workflow: AudioWorkflowId) => void;
-  /** Opens a workflow only while nothing has chosen one. */
   adoptWorkflow: (workflow: AudioWorkflowId) => void;
   requestWorkflow: (workflow: AudioWorkflowId) => void;
   clearRequestedWorkflow: () => void;
@@ -58,7 +53,7 @@ export const useAudioWorkspaceStore = create<AudioWorkspaceState>()(
     {
       name: AUDIO_WORKSPACE_STORAGE_KEY,
       version: 1,
-      // The open workflow is not remembered across reloads, like the page's mode before it.
+      // The open workflow is not remembered across reloads.
       partialize: (state) => ({
         lastModelByWorkflow: state.lastModelByWorkflow,
       }),

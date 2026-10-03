@@ -720,7 +720,6 @@ def test_a_new_clip_records_its_workflow():
 def test_an_old_clip_takes_its_workflow_from_its_audio_type():
     from models.inference import AudioGalleryItem
 
-    # Sidecars written before the field existed carry no workflow.
     speech = gallery.save(_wav(), _meta())
     song = gallery.save(_wav(), _meta(audio_type = "minimax_music3"))
     listed = {r["id"]: r for r in gallery.list_audio()}

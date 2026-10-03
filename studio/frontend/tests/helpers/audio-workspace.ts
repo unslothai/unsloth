@@ -3,8 +3,7 @@
 
 import { readSrc } from "./kit.ts";
 
-/** The Audio page and the modules split out of it, host first and then the hooks in the order the
- *  host calls them, so a pattern that spans two of them still reads in source order. */
+/** Host first, then hooks in call order, so a spanning pattern reads in source order. */
 export const AUDIO_WORKSPACE_FILES = [
   "features/audio/audio-page.tsx",
   "features/audio/hooks/use-stt-sidecar.ts",
@@ -17,7 +16,7 @@ export const AUDIO_WORKSPACE_FILES = [
   "features/audio/pages/speak-page.tsx",
   "features/audio/pages/music-page.tsx",
   "features/audio/pages/transcribe-page.tsx",
-  "features/audio/tools/instructions-panels.tsx",
+  "features/audio/components/instructions-fields.tsx",
   "features/audio/tools/registry.tsx",
   "features/audio/tools/tool-panel-host.tsx",
   "features/audio/audio-workspace-constants.ts",
@@ -27,8 +26,6 @@ export const AUDIO_WORKSPACE_FILES = [
 
 export type AudioWorkspaceFile = (typeof AUDIO_WORKSPACE_FILES)[number];
 
-/** Every Audio workspace module as one text. Shape assertions that used to read audio-page.tsx
- *  read this, so they hold wherever the split put the code; `doesNotMatch` covers all of it. */
 export function readAudioWorkspaceSource(): string {
   return AUDIO_WORKSPACE_FILES.map((file) => readSrc(file)).join("\n");
 }

@@ -387,14 +387,11 @@ def test_the_spec_family_list_matches_the_pinned_runtime():
     spec = importlib.util.spec_from_file_location("_audio_cpp_installer", installer)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    # A pin bump without a regenerated list fails here.
     assert AUDIO_CPP_SPEC_FAMILIES_TAG == module.DEFAULT_TAG
     for family in ("crisperwhisper", "index_echo", "audio_flamingo", "kugelaudio", "smart_turn"):
         assert family not in AUDIO_CPP_SPEC_FAMILIES
     for family in ("samsone", "gigaam_asr", "maya1"):
         assert family in AUDIO_CPP_SPEC_FAMILIES
-    # The verified table runs on this runtime. The two VAD loaders are refused by the table and
-    # ship no spec of their own.
     assert set(acm.FAMILIES) - AUDIO_CPP_SPEC_FAMILIES == {"marblenet_vad", "silero_vad"}
 
 
@@ -403,17 +400,14 @@ def test_runtime_knows_a_family_from_its_specs_or_the_pinned_list(monkeypatch, t
     from core.inference.audio_cpp_spec_families import AUDIO_CPP_SPEC_FAMILIES_TAG
 
     monkeypatch.setattr(audio_cpp_server, "find_audio_cpp_server_binary", lambda: None)
-    # No runtime installed: no answer, so the spec's guess stands.
     assert acm.runtime_knows_family("samsone") is None
     _fake_runtime(monkeypatch, tmp_path / "pinned", tag = AUDIO_CPP_SPEC_FAMILIES_TAG)
     assert acm.runtime_knows_family("samsone") is True
     assert acm.runtime_knows_family("crisperwhisper") is False
-    # Another tag, or a custom build with no install record, is not judged by the pinned list.
     _fake_runtime(monkeypatch, tmp_path / "newer", tag = "v9.9.9-unsloth.1")
     assert acm.runtime_knows_family("crisperwhisper") is None
     _fake_runtime(monkeypatch, tmp_path / "custom")
     assert acm.runtime_knows_family("crisperwhisper") is None
-    # A shipped model_specs/ folder wins over the list, either way.
     _fake_runtime(
         monkeypatch, tmp_path / "specs", tag = AUDIO_CPP_SPEC_FAMILIES_TAG, specs = ("crisperwhisper",)
     )
@@ -446,13 +440,11 @@ def test_a_spec_fallback_family_the_runtime_lacks_is_refused(hub, monkeypatch, t
     )
     kugel = acm.resolve(f"{AUDIO_CPP_REPO}/KugelAudio-0-Open-GGUF", network = False)
     assert "needs a newer audio runtime" in kugel.unsupported
-    # The verified table is never second-guessed.
     assert acm.family_policy("silero_vad").unsupported.startswith("Voice activity detection")
     assert acm.family_policy("kokoro_tts").task == "tts"
     assert acm.family_policy("crisperwhisper", {"tasks": ["asr"]}).unsupported == (
         "crisperwhisper needs a newer audio runtime than the one installed."
     )
-    # On a runtime Studio cannot judge, the spec's tasks decide as before.
     _fake_runtime(monkeypatch, tmp_path / "newer", tag = "v9.9.9-unsloth.1")
     assert acm.family_policy("crisperwhisper", {"tasks": ["asr"]}).task == "asr"
 

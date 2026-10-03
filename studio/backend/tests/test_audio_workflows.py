@@ -71,7 +71,6 @@ def test_a_load_response_derives_workflows_and_keeps_an_explicit_value():
 @pytest.mark.parametrize(
     "task, audio_type, workflows",
     [
-        # audio.cpp music GGUF rows carry the task but no audio_type.
         ("text-to-audio", None, ["music"]),
         ("automatic-speech-recognition", None, ["transcribe"]),
         ("text-to-speech", AUDIO_CPP_TTS_AUDIO_TYPE, ["speak"]),
