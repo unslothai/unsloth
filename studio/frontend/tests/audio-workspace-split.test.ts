@@ -166,3 +166,10 @@ test("switching between Speak and Music passes the same busy gate as a mode swit
     /next !== store\.workflow &&\s*mode === "speak" &&\s*slotForWorkflow\(next\) === "speak"\s*\) \{\s*if \(\s*!canTransitionAudioMode\(busyRef\.current, generationPhaseRef\.current\)\s*\) \{[\s\S]{0,200}?return false;\s*\}\s*if \(busyRef\.current === "generating"\) handleStopGeneration\(\);/,
   );
 });
+
+test("the Max tokens stop warning from main lives in the generation hook", () => {
+  assert.match(
+    generation,
+    /if \(generated\.choices\[0\]\?\.finish_reason === "length"\)\s*toast\.warning\(\s*maxTokens < TTS_MAX_TOKENS/,
+  );
+});

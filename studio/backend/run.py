@@ -348,16 +348,11 @@ def _print_localhost_ipv6_mismatch_warning(local_url: str, port: int) -> None:
     )
 
 
-def _verify_global_reachability(
-    display_host: str,
-    port: int,
-    wsl_nat: bool = False,
-) -> None:
+def _verify_global_reachability(display_host: str, port: int) -> None:
     """Probe check-host.net to confirm display_host:port is reachable from the public internet. Synchronous so
     output lands between the banner URLs and the stop hint. Bounded at ~15s; failures swallowed (verifier
     failing is not Unsloth failing). Only meaningful for a wildcard bind, and skipped entirely by
-    UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK. ``wsl_nat``: the private address is WSL's NAT side, not a LAN
-    one, and the WSL note already printed says so."""
+    UNSLOTH_STUDIO_DISABLE_PUBLIC_CHECK."""
     global _public_reachable
     # Reset to "unknown" each run; set True/False only when the probe decides.
     _public_reachable = None
@@ -386,8 +381,6 @@ def _verify_global_reachability(
         addr = ipaddress.ip_address(display_host)
         if addr.is_loopback or addr.is_private or addr.is_link_local:
             _public_reachable = False
-            if wsl_nat:
-                return
             print(
                 f"{dim}  Note: {display_host} is a private/LAN address -- "
                 f"reachable on this network only, not from the public internet."
@@ -543,32 +536,6 @@ def _network_share_host_for_bind(host: str) -> str:
     return host
 
 
-def _is_wsl_nat() -> bool:
-    from lan_access import _wsl_networking_mode
-
-    # "unknown" = WSL too old for wslinfo, which is NAT; "none" has no network at all.
-    if _wsl_networking_mode() not in ("nat", "unknown"):
-        return False
-    # Imported only on WSL: every wildcard bind reaches here. A container on Docker Desktop's WSL2
-    # kernel also reads "unknown", but its host port is whatever -p published.
-    from utils.paths.file_manager import _in_container
-
-    return not _in_container()
-
-
-def _print_wsl_windows_hint(port: int) -> None:
-    """WSL2 NAT has no LAN URL to print, but Windows reaches a wildcard bind through localhost
-    forwarding (#11187). Printed where the reachability note goes, which it stands in for."""
-    dim = "\033[38;5;245m" if _stdout_color_ok() else ""
-    reset = "\033[0m" if dim else ""
-    print(
-        f"{dim}  WSL2: open http://localhost:{port} in a Windows browser. Other devices on your "
-        f"network can't reach WSL's NAT address; set networkingMode=mirrored in "
-        f"%UserProfile%\\.wslconfig for LAN access.{reset}",
-        flush = True,
-    )
-
-
 def _loopback_bind_host_for(host: str) -> str:
     return wildcard_loopback_host(host) or "127.0.0.1"
 
@@ -661,10 +628,7 @@ def _emit_startup_output(
     if localhost_mismatch_url:
         _print_localhost_ipv6_mismatch_warning(localhost_mismatch_url, port)
     elif wildcard_bind:
-        wsl_nat = _is_wsl_nat()
-        if wsl_nat:
-            _print_wsl_windows_hint(port)
-        _verify_global_reachability(display_host, port, wsl_nat = wsl_nat)
+        _verify_global_reachability(display_host, port)
         _print_cloudflare_line(loopback_host = _loopback_bind_host_for(host))
     _emit_tool_policy_notice(lan_addresses[0] if lan_addresses else host, False, enable_tools)
     print_studio_stop_hint()

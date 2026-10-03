@@ -220,6 +220,45 @@ export const ko = {
       chat: "채팅",
       searchChats: "채팅 검색...",
     },
+    search: {
+      placeholder: "검색",
+      tabs: {
+        all: "전체",
+        chats: "채팅",
+        projects: "프로젝트",
+        files: "파일",
+        models: "모델",
+      },
+      recents: "최근 항목",
+      actions: "작업",
+      newChat: "새 채팅",
+      newTemporaryChat: "새 임시 채팅",
+      fineTune: "모델 파인튜닝",
+      generateImage: "이미지 생성",
+      generateVideo: "동영상 생성",
+      untitledChat: "제목 없는 채팅",
+      compare: "비교",
+      loading: "로딩 중...",
+      empty: {
+        all: "아직 검색할 항목이 없습니다.",
+        chats: "아직 채팅이 없습니다.",
+        projects: "아직 프로젝트가 없습니다.",
+        files: "아직 라이브러리에 파일이 없습니다.",
+        models: "아직 다운로드한 모델이 없습니다.",
+      },
+      noMatches: "결과가 없습니다.",
+      when: {
+        today: "오늘",
+        pastWeek: "지난주",
+        pastMonth: "지난달",
+        older: "이전",
+      },
+      footer: {
+        close: "닫기",
+        changeType: "유형 변경",
+        open: "열기",
+      },
+    },
     notFound: {
       title: "페이지를 찾을 수 없습니다",
       description: "{path} 경로가 존재하지 않습니다.",
@@ -1208,9 +1247,22 @@ export const ko = {
       },
       permissions: {
         sectionTitle: "권한",
-        bypassLabel: "도구 권한",
-        bypassDescription:
-          "채팅의 도구 호출(터미널, python, 웹, MCP)을 실행하기 전에 Unsloth가 승인하는 방식입니다. “Full access”를 선택하면 승인과 코드 샌드박스가 꺼집니다.",
+        names: {
+          ask: "승인 요청",
+          auto: "대신 승인",
+          off: "자동 실행",
+          full: "전체 액세스",
+        },
+        details: {
+          ask:
+            "터미널 및 Python 코드, 웹 검색, 파일 편집, MCP 도구를 포함해 모든 도구 호출 전에 묻습니다. 외부 제공업체가 실행하는 도구는 멈추지 않습니다. 각 단계를 직접 확인하고 싶을 때 적합합니다.",
+          auto:
+            "일반적인 도구 호출은 알아서 실행하고, 자격 증명 읽기, 권한 상승, 파괴적인 명령 실행처럼 위험해 보이는 작업일 때만 묻습니다.",
+          off:
+            "모든 도구 호출을 묻지 않고 실행합니다. Python과 터미널 코드는 여전히 샌드박스 안에서 실행되어 컴퓨터에서 접근할 수 있는 파일이 제한됩니다.",
+          full:
+            "모든 도구 호출을 묻지 않고 실행하며 코드 샌드박스를 꺼서, Python과 터미널 코드가 계정이 접근할 수 있는 모든 파일을 읽고 변경할 수 있습니다. 샌드박스 밖에서 작업해야 하는 신뢰할 수 있는 작업에 적합합니다.",
+        },
       },
     },
     profile: {
@@ -3106,6 +3158,7 @@ export const ko = {
     discardDescription: "{name}의 저장되지 않은 변경 사항이 사라집니다.",
     discard: "버리기",
     mentions: "스킬",
+    manage: "스킬 관리",
   },
   library: {
     tabs: {
