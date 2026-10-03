@@ -245,6 +245,7 @@ from .diffusion_precision import (
     torchao_quantize_importable,
 )
 from .diffusion_te_prequant import te_prequant_pipe_kwargs
+from .diffusion_fast_load import start_load_prefetch, stop_prefetch, te_precast_components
 from .diffusion_flow_shift import apply_comfy_flow_shift
 from .diffusion_text_length import (
     IDEOGRAM4_COMFY_GUIDANCE,
@@ -2031,6 +2032,11 @@ class DiffusionBackend:
         target = resolve_diffusion_device_target(ordinal = ordinal)
         # The INDEXED string, so _resolve_device_target can rebuild a selection an override would erase.
         return target.torch_device, target.dtype
+
+    def _stop_load_prefetch(self) -> None:
+        """End a load's page-cache prefetch (diffusion_fast_load.start_load_prefetch), if one is running."""
+        stop_prefetch(getattr(self, "_load_prefetch", None))
+        self._load_prefetch = None
 
     def _raise_if_load_cancelled(self, token: int) -> None:
         # The epoch alone: unload() bumps _load_token before any teardown, so a load that started
@@ -6328,6 +6334,20 @@ class DiffusionBackend:
                                 }
                                 if hf_token:
                                     pipe_kwargs["token"] = hf_token
+                                # Stopped once the pipeline is built.
+                                self._stop_load_prefetch()
+                                self._load_prefetch = start_load_prefetch(
+                                    fam,
+                                    _base_local_dir or fetch_base,
+                                    prequant_scheme = pipeline_seed_scheme,
+                                    prequant_path_override = transformer_prequant_path,
+                                    prequant_base_repo = base,
+                                    text_encoders_replaced = te_precast_components(
+                                        fam, fetch_base, text_encoder_quant, target
+                                    ),
+                                    cache_dir = hub_cache_dir(),
+                                    logger = logger,
+                                )
                                 if fam.name == HIDREAM_FAMILY_NAME:
                                     # The repo names a Llama text_encoder_4 it does not ship; supply it from the open
                                     # mirror
@@ -6454,9 +6474,12 @@ class DiffusionBackend:
                                     )
                                 # The prefetched snapshot dir keeps from_pretrained off the hub (24 GB per FLUX.1
                                 # otherwise)
-                                pipe = pipeline_cls.from_pretrained(
-                                    _base_local_dir or fetch_base, **pipe_kwargs
-                                )
+                                try:
+                                    pipe = pipeline_cls.from_pretrained(
+                                        _base_local_dir or fetch_base, **pipe_kwargs
+                                    )
+                                finally:
+                                    self._stop_load_prefetch()
                                 if small_host is not None and small_host.engaged:
                                     plan = self._apply_small_host_route(
                                         pipe,
@@ -7359,6 +7382,7 @@ class DiffusionBackend:
                     _clear_exception_frames(exc)
                     raise
                 finally:
+                    self._stop_load_prefetch()
                     # Pre-commit failure: roll back the process-wide mutations (symmetric with _unload_locked).
                     if not state_committed:
                         # First: its gate sits in front of the CUDA-graph layer uninstalled by identity below.

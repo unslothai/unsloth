@@ -2873,7 +2873,12 @@ def apply_memory_plan(
             _fallback_to_model_offload()
             policy = OFFLOAD_MODEL
     else:
-        pipe.to(placement)
+        from .diffusion_fast_load import fast_upload
+
+        components = getattr(pipe, "components", None)
+        modules = list(components.values()) if isinstance(components, dict) else []
+        with fast_upload(modules, placement, logger = logger):
+            pipe.to(placement)
     return policy, tiling_engaged
 
 
