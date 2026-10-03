@@ -105,7 +105,7 @@ def _on_rotational_disk(path: str) -> bool:
         for queue in (os.path.join(base, "queue"), os.path.join(base, "..", "queue")):
             flag = os.path.join(queue, "rotational")
             if os.path.isfile(flag):
-                with open(flag) as handle:
+                with open(flag, encoding = "utf-8") as handle:
                     return handle.read().strip() == "1"
     except Exception:  # noqa: BLE001 - unknown (non-Linux, overlay, network): not rotational
         pass
