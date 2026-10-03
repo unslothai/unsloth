@@ -1410,6 +1410,7 @@ class TestProbeTier:
 
     def test_get_tier_uses_probe_for_remote_tokenizer_signal(self, monkeypatch):
         # tokenizer says 5.x but no architecture/substring match -> probe (not a 530 guess).
+        monkeypatch.setattr("utils.transformers_version.TRANSFORMERS_DEFAULT_VERSION", "5.5.0")
         monkeypatch.setattr(
             "utils.transformers_version._check_config_needs_510", lambda m, t = None: False
         )
@@ -1419,8 +1420,15 @@ class TestProbeTier:
         monkeypatch.setattr(
             "utils.transformers_version._check_tokenizer_config_needs_v5", lambda m, t = None: True
         )
-        monkeypatch.setattr("utils.transformers_version._probe_tier", lambda m, t, reason: "510")
+        seen = {}
+
+        def fake_probe(model_name, hf_token, reason, **kwargs):
+            seen.update(model = model_name, token = hf_token, reason = reason, kwargs = kwargs)
+            return "510"
+
+        monkeypatch.setattr("utils.transformers_version._probe_tier", fake_probe)
         assert get_transformers_tier("org/unknown-5x-arch") == "510"
+        assert seen["kwargs"] == {"include_default": True, "floor": "default"}
 
     def test_stderr_is_transient(self):
         assert _stderr_is_transient("ConnectionError: x") is True
@@ -1446,7 +1454,7 @@ class TestProbeTier:
         )
         monkeypatch.setattr(
             "utils.transformers_version._probe_tier",
-            lambda m, t, reason: seen.update({"probe": t}) or "510",
+            lambda m, t, reason, **kwargs: seen.update({"probe": t}) or "510",
         )
         assert get_transformers_tier("org/gated-5x", "hf_abc") == "510"
         assert seen == {"510": "hf_abc", "550": "hf_abc", "tok": "hf_abc", "probe": "hf_abc"}
@@ -1555,6 +1563,124 @@ class TestProbeGating:
 
         monkeypatch.setattr("utils.transformers_version.subprocess.run", boom)
         assert get_transformers_tier("org/unknown-5x", probe = False) == "530"
+
+    def _prepare_remote_tokenizer_probe(self, monkeypatch, default_version):
+        import utils.transformers_version as tv
+
+        self._patch_venvs(monkeypatch)
+        self._patch_checks_to_tokenizer(monkeypatch)
+        monkeypatch.setattr(
+            tv,
+            "_check_config_needs_530",
+            lambda model_name, hf_token = None: False,
+        )
+        monkeypatch.setattr(tv, "_load_config_json", lambda model_name, hf_token = None: None)
+        monkeypatch.setattr(tv, "TRANSFORMERS_DEFAULT_VERSION", default_version)
+        return tv
+
+    def test_local_tokenizer_probe_ambient_5x_custom_code_falls_back_to_default(
+        self, monkeypatch, tmp_path
+    ):
+        import utils.transformers_version as tv
+
+        self._patch_venvs(monkeypatch)
+        monkeypatch.setattr(tv, "TRANSFORMERS_DEFAULT_VERSION", "5.5.0")
+        model_dir = tmp_path / "k2-horizon-like"
+        model_dir.mkdir()
+        (model_dir / "config.json").write_text(
+            json.dumps(
+                {
+                    "model_type": "k2_horizon",
+                    "auto_map": {"AutoConfig": "configuration_k2.K2HorizonConfig"},
+                }
+            )
+        )
+        (model_dir / "tokenizer_config.json").write_text(
+            json.dumps({"tokenizer_class": "TokenizersBackend"})
+        )
+        seen = []
+
+        def fake_run(cmd, **kwargs):
+            seen.append(cmd[3])
+            return _proc(1, "RuntimeError: Please pass the argument `trust_remote_code=True`")
+
+        monkeypatch.setattr(tv.subprocess, "run", fake_run)
+        assert get_transformers_tier(str(model_dir), probe = True) == "default"
+        assert seen == ["", tv._VENV_T5_530_DIR, tv._VENV_T5_550_DIR, tv._VENV_T5_510_DIR]
+
+    @pytest.mark.parametrize(
+        "default_version, expected, expected_targets",
+        [
+            pytest.param(
+                "5.5.0",
+                "default",
+                "ambient-first",
+                id = "ambient_5x_custom_code_inconclusive_uses_default",
+            ),
+            pytest.param(
+                "4.57.6",
+                "530",
+                "sidecars-only",
+                id = "ambient_4x_custom_code_inconclusive_uses_530",
+            ),
+        ],
+    )
+    def test_remote_tokenizer_probe_fallback_depends_on_ambient_major(
+        self, monkeypatch, default_version, expected, expected_targets
+    ):
+        tv = self._prepare_remote_tokenizer_probe(monkeypatch, default_version)
+        seen = []
+
+        def fake_run(cmd, **kwargs):
+            seen.append(cmd[3])
+            return _proc(1, "RuntimeError: Please pass the argument `trust_remote_code=True`")
+
+        monkeypatch.setattr(tv.subprocess, "run", fake_run)
+        assert get_transformers_tier("org/k2-horizon-like", probe = True) == expected
+        if expected_targets == "ambient-first":
+            assert seen == ["", tv._VENV_T5_530_DIR, tv._VENV_T5_550_DIR, tv._VENV_T5_510_DIR]
+        else:
+            assert seen == [tv._VENV_T5_530_DIR, tv._VENV_T5_550_DIR, tv._VENV_T5_510_DIR]
+
+    def test_remote_tokenizer_probe_uses_successful_ambient_default_first(self, monkeypatch):
+        tv = self._prepare_remote_tokenizer_probe(monkeypatch, "5.5.0")
+        seen = []
+        monkeypatch.setattr(
+            tv.subprocess,
+            "run",
+            lambda cmd, **kwargs: seen.append(cmd[3]) or _proc(0),
+        )
+
+        assert get_transformers_tier("org/k2-horizon-like", probe = True) == "default"
+        assert seen == [""]
+
+    def test_remote_tokenizer_probe_selects_higher_sidecar_after_ambient_failure(self, monkeypatch):
+        tv = self._prepare_remote_tokenizer_probe(monkeypatch, "5.5.0")
+        results = iter(
+            [
+                _proc(1, "ValueError: parser does not support this config"),
+                _proc(1, "ValueError: parser does not support this config"),
+                _proc(0),
+            ]
+        )
+        seen = []
+
+        def fake_run(cmd, **kwargs):
+            seen.append(cmd[3])
+            return next(results)
+
+        monkeypatch.setattr(tv.subprocess, "run", fake_run)
+        assert get_transformers_tier("org/k2-horizon-like", probe = True) == "550"
+        assert seen == ["", tv._VENV_T5_530_DIR, tv._VENV_T5_550_DIR]
+
+    def test_tier_probe_keeps_remote_code_disabled(self):
+        import utils.transformers_version as tv
+        assert "AutoConfig.from_pretrained(model_name, trust_remote_code=False)" in (
+            tv._PROBE_CONFIG_SCRIPT
+        )
+        assert "AutoConfig.from_pretrained(model_name, trust_remote_code=True)" not in (
+            tv._PROBE_CONFIG_SCRIPT
+        )
 
     # ---- version-field probe is default-first (no mis-routing of 4.x models) ----
 
