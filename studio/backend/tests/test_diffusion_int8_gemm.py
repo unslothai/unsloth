@@ -421,7 +421,6 @@ def test_rotquant_probe_accepts_this_torchao(forced):
 @needs_cuda
 def test_rotquant_fake_op_matches_the_real_scale_dtype(forced_rotq):
     from torch._subclasses.fake_tensor import FakeTensorMode
-
     x = _act(40, 768, 9)
     for v2 in (False, True):
         _, s = g8._rotq_op()(x, 256, v2)

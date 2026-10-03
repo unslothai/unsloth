@@ -637,7 +637,9 @@ def _rotq_op() -> Any:
                 x.new_empty((x.shape[0], x.shape[1]), dtype = torch.int8),
                 x.new_empty(
                     (x.shape[0],),
-                    dtype = torch.float32 if _rotq_scale_fp32("v2" if v2 else "v1") else torch.bfloat16,
+                    dtype = torch.float32
+                    if _rotq_scale_fp32("v2" if v2 else "v1")
+                    else torch.bfloat16,
                 ),
             )
     except Exception:  # noqa: BLE001
