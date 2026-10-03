@@ -65,6 +65,8 @@ _INDUCTOR_FLAGS = (
 )
 _INDUCTOR_TRITON_FLAGS = (("unique_kernel_names", "inductor_triton_unique_kernel_names"),)
 _DYNAMO_MODULE = "torch._dynamo.config"
+# torch.compile ``options`` key of inductor's reduction-config filter (see pin_reduction_configs).
+REDUCTION_FILTER_OPTION = "test_configs.force_filter_reduction_configs"
 _INDUCTOR_MODULE = "torch._inductor.config"
 _INDUCTOR_TRITON_MODULE = "torch._inductor.config.triton"
 
@@ -471,6 +473,7 @@ def apply_speed_optims(
 
     on_cuda = getattr(target, "device", None) == "cuda"
     family_allows_compile = bool(getattr(family, "supports_torch_compile", True))
+    filter_reductions = bool(getattr(family, "filter_reduction_configs", False))
 
     applied["vae_single_frame"] = _vae_single_frame(pipe, logger)
     # Lossless: a channels-last VAE speeds up its convs with no numeric change.
@@ -515,6 +518,7 @@ def apply_speed_optims(
                 cache_active = cache_active,
                 offload_active = offload_active,
                 denoiser_offloaded = denoiser_offloaded,
+                filter_reductions = filter_reductions,
             )
     elif (
         mode == SPEED_MAX
@@ -528,6 +532,7 @@ def apply_speed_optims(
             cache_active = cache_active,
             offload_active = offload_active,
             denoiser_offloaded = denoiser_offloaded,
+            filter_reductions = filter_reductions,
         )
 
     if applied["compiled"]:
@@ -869,6 +874,7 @@ def _compile_repeated_blocks(
     cache_active: bool = False,
     offload_active: bool = False,
     denoiser_offloaded: Optional[bool] = None,
+    filter_reductions: bool = False,
 ) -> bool:
     dits = [
         t for t in _denoiser_dits(pipe) if callable(getattr(t, "compile_repeated_blocks", None))
@@ -902,6 +908,8 @@ def _compile_repeated_blocks(
     }
     if max_autotune:
         kwargs["mode"] = "max-autotune-no-cudagraphs"
+    if filter_reductions:
+        pin_reduction_configs(kwargs, logger)
     try:
         import torch
 
@@ -945,6 +953,8 @@ def _compile_repeated_blocks(
         unet_kwargs: dict[str, Any] = {"fullgraph": kwargs["fullgraph"], "dynamic": False}
         if max_autotune:
             unet_kwargs["mode"] = "max-autotune-no-cudagraphs"
+        if filter_reductions:
+            pin_reduction_configs(unet_kwargs, logger)
         try:
             unet.compile(**unet_kwargs)
             return True
@@ -1040,6 +1050,32 @@ def _compile_repeated_blocks(
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "cache-hook inner compile", exc)
     return engaged
+
+
+def pin_reduction_configs(kwargs: dict[str, Any], logger: Any = None) -> bool:
+    """Per-compile reduction-config filter for a family that opts in (``filter_reduction_configs``).
+
+    The reduction heuristic can give one reduction several R0_BLOCK configs, benchmarked on first use in every process
+    with a cold inductor cache and summing in different orders. LTX-2's block RMSNorm (hidden 4096) gets 4096 and 2048,
+    a dead heat on a B200, so half the servers rendered another clip. Inductor's filter keeps one config at codegen.
+    Passed as this compile's ``options`` (``mode`` folded in, torch.compile takes one or the other), never as the
+    process-global knob: other families keep inductor's pick (HunyuanVideo-1.5 measured ~2% slower per step with it).
+    The public config.deterministic is reset by dynamo after the first traced frame. Returns True when engaged."""
+    if not compile_config.reduction_config_filter_available():
+        return False
+    try:
+        options = dict(kwargs.get("options") or {})
+        mode = kwargs.get("mode")
+        if mode is not None:
+            from torch._inductor import list_mode_options
+            options = {**list_mode_options(mode, kwargs.get("dynamic")), **options}
+        options[REDUCTION_FILTER_OPTION] = True
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, "reduction config filter", exc)
+        return False
+    kwargs.pop("mode", None)
+    kwargs["options"] = options
+    return True
 
 
 def _install_inductor_backports(logger: Any) -> bool:

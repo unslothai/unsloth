@@ -12,7 +12,8 @@ from contextvars import ContextVar
 from typing import Any
 
 # dynamic_scale_rblock benchmarks R0_BLOCK vs R0_BLOCK/2 per process (never cached); the two sum in different orders,
-# so renders differed across servers on one seed (FLUX.1-schnell int8, B200). =1 restores inductor's default.
+# so renders differed across servers on one seed (FLUX.1-schnell int8, B200). =1 restores inductor's default, and also
+# drops the per-family reduction-config filter (diffusion_speed.pin_reduction_configs).
 DYNAMIC_SCALE_RBLOCK_ENV = "UNSLOTH_DIFFUSION_DYNAMIC_SCALE_RBLOCK"
 
 
@@ -20,6 +21,18 @@ def reduction_blocks_pinned() -> bool:
     """True unless UNSLOTH_DIFFUSION_DYNAMIC_SCALE_RBLOCK asks for inductor's per-process R0_BLOCK benchmark."""
     raw = (os.environ.get(DYNAMIC_SCALE_RBLOCK_ENV) or "").strip().lower()
     return raw not in ("1", "on", "true", "yes")
+
+
+def reduction_config_filter_available() -> bool:
+    """Whether a family's compile may pin inductor's reduction-config filter: torch has it (2.10+) and the kill switch
+    is not set."""
+    if not reduction_blocks_pinned():
+        return False
+    try:
+        import torch
+        return hasattr(torch._inductor.config.test_configs, "force_filter_reduction_configs")
+    except Exception:  # noqa: BLE001 - no torch / inductor: nothing pinned
+        return False
 
 
 _LOCK = threading.Lock()
