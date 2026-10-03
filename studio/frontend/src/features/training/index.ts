@@ -66,6 +66,14 @@ export {
   previewRewards,
 } from "./api/rewards-api";
 export type { RewardRecord } from "./api/rewards-api";
+export { previewCell, useRlWorkspaceStore } from "./stores/rl-workspace-store";
+export {
+  formatScore,
+  readRewardHead,
+  ruleTags,
+  summarizeRule,
+} from "./lib/reward-summary";
+export type { RewardSummary, RuleType } from "./lib/reward-summary";
 export type {
   TrainingRunSummary,
   TrainingRunListResponse,

@@ -11,8 +11,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { Textarea } from "@/components/ui/textarea";
-import { GRPO_DEFAULT_SYSTEM_PROMPT } from "@/config/training";
 import { useTrainingConfigStore } from "@/features/training";
 import { useT } from "@/i18n";
 import {
@@ -107,8 +105,6 @@ export function RlParamsSection({
       grpoNumGenerations: state.grpoNumGenerations,
       grpoMaxCompletionLength: state.grpoMaxCompletionLength,
       grpoTemperature: state.grpoTemperature,
-      grpoSystemPrompt: state.grpoSystemPrompt,
-      grpoEnableThinking: state.grpoEnableThinking,
       grpoVariant: state.grpoVariant,
       grpoMaskTruncatedCompletions: state.grpoMaskTruncatedCompletions,
       grpoEpsilonHigh: state.grpoEpsilonHigh,
@@ -117,8 +113,6 @@ export function RlParamsSection({
       setGrpoNumGenerations: state.setGrpoNumGenerations,
       setGrpoMaxCompletionLength: state.setGrpoMaxCompletionLength,
       setGrpoTemperature: state.setGrpoTemperature,
-      setGrpoSystemPrompt: state.setGrpoSystemPrompt,
-      setGrpoEnableThinking: state.setGrpoEnableThinking,
       setGrpoVariant: state.setGrpoVariant,
       setGrpoMaskTruncatedCompletions: state.setGrpoMaskTruncatedCompletions,
       setGrpoEpsilonHigh: state.setGrpoEpsilonHigh,
@@ -207,15 +201,6 @@ export function RlParamsSection({
             />
           </ParamsRow>
           <ParamsRow
-            label={t("rl.params.thinking")}
-            tooltip={t("rl.params.thinkingHint")}
-          >
-            <Switch
-              checked={s.grpoEnableThinking}
-              onCheckedChange={s.setGrpoEnableThinking}
-            />
-          </ParamsRow>
-          <ParamsRow
             label={t("rl.params.maskTruncated")}
             tooltip={t("rl.params.maskTruncatedHint")}
           >
@@ -225,36 +210,6 @@ export function RlParamsSection({
             />
           </ParamsRow>
         </>
-      )}
-      {objective === "grpo" && (
-        <div className="flex flex-col gap-1.5 pt-2">
-          <div className="flex items-center justify-between gap-2">
-            <p className="text-xs font-medium text-foreground">
-              {t("rl.params.systemPrompt")}
-            </p>
-            {s.grpoSystemPrompt !== GRPO_DEFAULT_SYSTEM_PROMPT && (
-              <button
-                type="button"
-                className="text-ui-11p5 text-primary underline-offset-2 hover:underline"
-                onClick={() =>
-                  s.setGrpoSystemPrompt(GRPO_DEFAULT_SYSTEM_PROMPT)
-                }
-              >
-                {t("rl.params.systemPromptReset")}
-              </button>
-            )}
-          </div>
-          <Textarea
-            rows={4}
-            aria-label={t("rl.params.systemPrompt")}
-            className="font-mono text-xs"
-            value={s.grpoSystemPrompt}
-            onChange={(e) => s.setGrpoSystemPrompt(e.target.value)}
-          />
-          <p className="text-ui-11p5 text-muted-foreground/85">
-            {t("rl.params.systemPromptHint")}
-          </p>
-        </div>
       )}
       <ParamsRow
         label={t("rl.params.maxPrompt")}

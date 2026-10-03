@@ -13,9 +13,12 @@ import {
 import { getHfToken } from "@/features/hub";
 import {
   checkDatasetFormat,
+  previewCell,
+  useRlWorkspaceStore,
   useTrainingConfigStore,
 } from "@/features/training";
 import {
+  RL_REQUIRED_ROLES,
   RL_ROLES,
   type RlObjective,
   type RlRole,
@@ -23,6 +26,17 @@ import {
   resolveRlMapping,
 } from "@/features/training/lib/rl-roles";
 import { type TranslationKey, useT } from "@/i18n";
+import { cn } from "@/lib/utils";
+import {
+  AiChat02Icon,
+  Cancel01Icon,
+  Message01Icon,
+  RefreshIcon,
+  Target02Icon,
+  Tick02Icon,
+  ViewOffIcon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import {
   type ReactElement,
   useCallback,
@@ -39,7 +53,51 @@ const ROLE_LABEL: Record<RlRole, TranslationKey> = {
   rejected: "rl.dataset.role.rejected",
   system: "rl.dataset.role.system",
 };
+const ROLE_ICON: Record<RlRole, IconSvgElement> = {
+  prompt: Message01Icon,
+  answer: Target02Icon,
+  chosen: Tick02Icon,
+  rejected: Cancel01Icon,
+  system: AiChat02Icon,
+};
+const ROLE_TONE: Record<RlRole, string> = {
+  prompt: "text-sky-700 dark:text-sky-300",
+  answer: "text-amber-700 dark:text-amber-300",
+  chosen: "text-emerald-700 dark:text-emerald-300",
+  rejected: "text-rose-700 dark:text-rose-300",
+  system: "text-violet-700 dark:text-violet-300",
+};
 const IGNORE = "__ignore";
+
+function RoleChip({
+  role,
+  mapped,
+  required,
+}: {
+  role: RlRole;
+  mapped: boolean;
+  required: boolean;
+}): ReactElement {
+  const t = useT();
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-ui-10 font-medium",
+        mapped
+          ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300"
+          : required
+            ? "bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300"
+            : "bg-muted text-muted-foreground",
+      )}
+    >
+      <HugeiconsIcon
+        icon={mapped ? Tick02Icon : ROLE_ICON[role]}
+        className="size-3"
+      />
+      {t(ROLE_LABEL[role])}
+    </span>
+  );
+}
 
 export function RlDatasetRoles({
   objective,
@@ -56,6 +114,12 @@ export function RlDatasetRoles({
       datasetSplit: s.datasetSplit,
       mapping: s.rlRoleMapping,
       setMapping: s.setRlRoleMapping,
+    })),
+  );
+  const { previewRow, setPreviewRow } = useRlWorkspaceStore(
+    useShallow((s) => ({
+      previewRow: s.previewRow,
+      setPreviewRow: s.setPreviewRow,
     })),
   );
   const [columns, setColumns] = useState<string[] | null>(null);
@@ -90,10 +154,12 @@ export function RlDatasetRoles({
       });
       if (request === latestRequest.current) {
         setColumns(res.columns);
+        setPreviewRow(res.preview_samples?.[0] ?? null);
       }
     } catch (err) {
       if (request === latestRequest.current) {
         setColumns(null);
+        setPreviewRow(null);
         setError(err instanceof Error ? err.message : String(err));
       }
     } finally {
@@ -101,7 +167,7 @@ export function RlDatasetRoles({
         setLoading(false);
       }
     }
-  }, [datasetName, datasetSubset, datasetSplit]);
+  }, [datasetName, datasetSubset, datasetSplit, setPreviewRow]);
 
   // Reload on remount and on dataset changes, so roles survive leaving the page.
   useEffect(() => {
@@ -136,10 +202,15 @@ export function RlDatasetRoles({
   const missing = columns
     ? missingRlRoles(objective, columns, config.mapping)
     : [];
+  const mappedRoles = new Set(Object.values(config.mapping));
+  const required = RL_REQUIRED_ROLES[objective];
+  const chipRoles = roles.filter(
+    (role) => required.includes(role) || role === "answer",
+  );
 
   return (
     <div className="flex flex-col gap-3 rounded-xl border border-border/70 p-3">
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
           <p className="flex items-center gap-1.5 text-xs font-medium text-foreground">
             {t("rl.dataset.title")}
@@ -149,15 +220,31 @@ export function RlDatasetRoles({
             {t("rl.dataset.description")}
           </p>
         </div>
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          disabled={!datasetName || loading}
-          onClick={loadColumns}
-        >
-          {loading ? t("rl.dataset.loading") : t("rl.dataset.loadColumns")}
-        </Button>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {columns &&
+            chipRoles.map((role) => (
+              <RoleChip
+                key={role}
+                role={role}
+                mapped={mappedRoles.has(role)}
+                required={required.includes(role)}
+              />
+            ))}
+          <Button
+            type="button"
+            size="icon-sm"
+            variant="ghost"
+            aria-label={t("rl.dataset.loadColumns")}
+            title={t("rl.dataset.loadColumns")}
+            disabled={!datasetName}
+            onClick={loadColumns}
+          >
+            <HugeiconsIcon
+              icon={RefreshIcon}
+              className={cn("size-3.5", loading && "animate-spin")}
+            />
+          </Button>
+        </div>
       </div>
       {!datasetName && (
         <p className="text-ui-11p5 text-muted-foreground">
@@ -169,43 +256,77 @@ export function RlDatasetRoles({
           {t("rl.dataset.error", { error })}
         </p>
       )}
-      {columns?.map((column) => (
-        <div
-          key={column}
-          className="grid grid-cols-[minmax(0,1fr)_calc(170px*var(--ui-space-scale,1))] items-center gap-2"
-        >
-          <span className="truncate font-mono text-xs text-foreground">
-            {column}
-          </span>
-          <Select
-            value={config.mapping[column] ?? IGNORE}
-            onValueChange={(role) => setRole(column, role)}
-          >
-            <SelectTrigger size="sm" className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={IGNORE}>
-                {t("rl.dataset.role.ignore")}
-              </SelectItem>
-              {roles.map((role: RlRole) => (
-                <SelectItem key={role} value={role}>
-                  {t(ROLE_LABEL[role])}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+      {loading && !columns && (
+        <p className="text-ui-11p5 text-muted-foreground">
+          {t("rl.dataset.loading")}
+        </p>
+      )}
+      {columns && columns.length > 0 && (
+        <div className="flex flex-col">
+          <div className="grid grid-cols-[minmax(0,9rem)_minmax(0,1fr)_calc(180px*var(--ui-space-scale,1))] gap-3 pb-1.5 text-ui-10 uppercase tracking-[0.05em] text-muted-foreground/70">
+            <span>{t("rl.dataset.columnHeader")}</span>
+            <span>{t("rl.dataset.sampleHeader")}</span>
+            <span>{t("rl.dataset.roleHeader")}</span>
+          </div>
+          {columns.map((column) => {
+            const role = config.mapping[column] as RlRole | undefined;
+            const sample = previewCell(previewRow?.[column]);
+            return (
+              <div
+                key={column}
+                className="grid grid-cols-[minmax(0,9rem)_minmax(0,1fr)_calc(180px*var(--ui-space-scale,1))] items-center gap-3 border-t border-border/50 py-2"
+              >
+                <span className="truncate font-mono text-xs text-foreground">
+                  {column}
+                </span>
+                <span
+                  className="truncate text-ui-11p5 text-muted-foreground"
+                  title={sample}
+                >
+                  {sample || "—"}
+                </span>
+                <Select
+                  value={role ?? IGNORE}
+                  onValueChange={(next) => setRole(column, next)}
+                >
+                  <SelectTrigger
+                    size="sm"
+                    className={cn("w-full", role && ROLE_TONE[role])}
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={IGNORE}>
+                      {t("rl.dataset.role.ignore")}
+                    </SelectItem>
+                    {roles.map((r: RlRole) => (
+                      <SelectItem key={r} value={r}>
+                        <span className="flex items-center gap-1.5">
+                          <HugeiconsIcon
+                            icon={ROLE_ICON[r]}
+                            className={cn("size-3.5", ROLE_TONE[r])}
+                          />
+                          {t(ROLE_LABEL[r])}
+                        </span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            );
+          })}
         </div>
-      ))}
+      )}
       {columns && missing.length > 0 && (
-        <p className="text-ui-11p5 text-destructive">
+        <p className="text-ui-11p5 text-amber-700 dark:text-amber-300">
           {t("rl.dataset.missing", {
             roles: missing.map((role) => t(ROLE_LABEL[role])).join(", "),
           })}
         </p>
       )}
       {objective === "grpo" && (
-        <p className="text-ui-11p5 text-muted-foreground/85">
+        <p className="flex items-center gap-1.5 text-ui-11p5 text-muted-foreground/85">
+          <HugeiconsIcon icon={ViewOffIcon} className="size-3.5 shrink-0" />
           {t("rl.dataset.answerNote")}
         </p>
       )}

@@ -31,9 +31,10 @@ import { cn } from "@/lib/utils";
 import type { TrainingMethod } from "@/types/training";
 import {
   AiBrain01Icon,
+  Award01Icon,
+  BubbleChatEditIcon,
   Database02Icon,
   FloppyDiskIcon,
-  Award01Icon,
   Settings05Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
@@ -43,6 +44,7 @@ import { DatasetSourceToggleAction } from "../sections/dataset-source-toggle";
 import { FieldHint } from "../sections/field-hint";
 import { ParamsSection } from "../sections/params-section";
 import { ObjectiveSelect } from "../sections/rl/objective-select";
+import { PromptFormatSection } from "../sections/rl/prompt-format-section";
 import { RewardsSection } from "../sections/rl/rewards-section";
 import { RlDatasetRoles } from "../sections/rl/rl-dataset-roles";
 import { RlParamsSection } from "../sections/rl/rl-params-section";
@@ -329,6 +331,18 @@ export function TrainingWizard({
           </div>
         )}
       </SectionBox>
+
+      {objective === "grpo" && (
+        <SectionBox
+          title={t("rl.prompt.title")}
+          titleBadge={<NewBadge />}
+          description={t("rl.prompt.description")}
+          icon={BubbleChatEditIcon}
+          chipTint="var(--chart-1)"
+        >
+          <PromptFormatSection />
+        </SectionBox>
+      )}
 
       {objective === "grpo" && (
         <SectionBox
