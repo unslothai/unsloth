@@ -52,7 +52,11 @@ import {
   runBoundedVariantsRequest,
 } from "./gguf-variants-request";
 import { assertCompletedPaddedBody } from "./padded-response";
-import { maxTokensIsTheLimit } from "./generation-length.ts";
+import {
+  type LengthStopCause,
+  lengthStopCause,
+  windowEvidenceCount,
+} from "./generation-length.ts";
 
 export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
 // Bumped alongside that event so other tabs, which never receive it, can drop caches they built
@@ -108,24 +112,35 @@ export class StreamInterruptedError extends Error {
   }
 }
 
+const LENGTH_STOP_ADVICE: Record<LengthStopCause, string> = {
+  max_tokens:
+    "The model reached the Max Tokens limit before producing a final answer. " +
+    "Increase Max Tokens or disable thinking, then retry.",
+  // The context window can bind even when Max Tokens is finite.
+  context_length:
+    "The model ran out of room to answer: thinking used what the context window " +
+    "had left after the prompt, before any answer was written. Raising Max " +
+    "Tokens cannot create room the window does not have -- increase the " +
+    "Context Length in Model settings, or disable thinking, then retry.",
+  // No Studio setting controls a connected model's window.
+  context_window:
+    "The conversation filled the model's context window before an answer was " +
+    "written. Start a new chat, or shorten this one, then retry.",
+  // Unknown cause: offer both remedies.
+  unknown:
+    "The model hit Max Tokens or its context window before answering. Increase " +
+    "Max Tokens, disable thinking, or start a new chat.",
+};
+
 /** Thrown when a reasoning model consumes its output budget before emitting any standard content,
  *  so the chat UI can explain a completed stream holding only a thinking panel. */
 export class GenerationLengthError extends Error {
-  /** @param maxTokensWasSet whether the user actually configured a Max Tokens value. With Max Tokens on "Max"
-     *  the backend already requests the whole context length, so generation stops at the context wall and
-     *  "Increase Max Tokens" cannot be followed. The false branch also covers a finite cap the prompt left no room
-     *  for, hence the wording about raising the cap. */
-  constructor(maxTokensWasSet = true) {
-    super(
-      maxTokensWasSet
-        ? "The model reached the Max Tokens limit before producing a final answer. " +
-            "Increase Max Tokens or disable thinking, then retry."
-        : "The model ran out of room to answer: thinking used what the context window " +
-            "had left after the prompt, before any answer was written. Raising Max " +
-            "Tokens cannot create room the window does not have -- increase the " +
-            "Context Length in Model settings, or disable thinking, then retry.",
-    );
+  readonly stopCause: LengthStopCause;
+
+  constructor(stopCause: LengthStopCause) {
+    super(LENGTH_STOP_ADVICE[stopCause]);
     this.name = "GenerationLengthError";
+    this.stopCause = stopCause;
   }
 }
 
@@ -1643,8 +1658,7 @@ function classifyStructuredDeltaContent(content: unknown): {
 export async function* streamChatCompletions(
   payload: OpenAIChatCompletionsRequest,
   signal: AbortSignal,
-  /** The window this request is served by, when the caller knows it. Used only to tell a user-chosen
-   *  Max Tokens apart from the backend's stand-in for "Max", which is the whole context length. */
+  /** Served context window for length-stop attribution; null or omitted when unknown. */
   loadedContextLength?: number | null,
 ): AsyncGenerator<OpenAIChatChunk> {
   const response = await authFetch("/v1/chat/completions", {
@@ -1680,6 +1694,9 @@ export async function* streamChatCompletions(
   // Reported by the server on the final chunk. Needed to tell the two walls apart: a finite Max
   // Tokens below the context length does not mean Max Tokens stopped the generation.
   let promptTokens: number | null = null;
+  let windowCount: number | null = null;
+  // Anthropic's explicit model_context_window_exceeded signal.
+  let providerReportedWindow = false;
 
   const throwIfReasoningOnlyLength = () => {
     if (
@@ -1690,11 +1707,14 @@ export async function* streamChatCompletions(
       // The backend substitutes the full context length when the user left Max Tokens on "Max", so a payload value
       // equal to it is indistinguishable from unset, and both mean the setting is not the lever.
       throw new GenerationLengthError(
-        maxTokensIsTheLimit({
-          cap: payload.max_tokens ?? null,
-          contextLength: loadedContextLength ?? null,
-          promptTokens,
-        }),
+        providerReportedWindow
+          ? "context_window"
+          : lengthStopCause({
+              cap: payload.max_tokens ?? null,
+              contextLength: loadedContextLength ?? null,
+              promptTokens,
+              completionTokens: windowCount,
+            }),
       );
     }
   };
@@ -1783,9 +1803,21 @@ export async function* streamChatCompletions(
           separatorIndex = buffer.search(/\r?\n\r?\n/);
           continue;
         }
-        const parsedUsage = (parsed as { usage?: { prompt_tokens?: number } }).usage;
+        const {
+          usage: parsedUsage,
+          timings: parsedTimings,
+          _toolEvent: parsedToolEvent,
+        } = parsed as {
+          usage?: { prompt_tokens?: number };
+          timings?: { predicted_n?: number };
+          _toolEvent?: { type?: string };
+        };
         if (typeof parsedUsage?.prompt_tokens === "number") {
           promptTokens = parsedUsage.prompt_tokens;
+        }
+        windowCount = windowEvidenceCount(parsedTimings) ?? windowCount;
+        if (parsedToolEvent?.type === "context_window_exceeded") {
+          providerReportedWindow = true;
         }
         // finish_reason is a valid terminal signal for providers that close without a [DONE] sentinel.
         const parsedChoices = (

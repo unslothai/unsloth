@@ -1102,9 +1102,22 @@ export const it = {
       },
       permissions: {
         sectionTitle: "Autorizzazioni",
-        bypassLabel: "Autorizzazioni degli strumenti",
-        bypassDescription:
-          "Come Unsloth approva le chiamate agli strumenti della chat (terminale, python, web, MCP) prima che vengano eseguite. La modalità «Full access» disattiva le approvazioni e la sandbox del codice.",
+        names: {
+          ask: "Chiedi conferma",
+          auto: "Approva per me",
+          off: "Esegui automaticamente",
+          full: "Accesso completo",
+        },
+        details: {
+          ask:
+            "Chiede conferma prima di ogni chiamata agli strumenti, compresi codice da terminale e Python, ricerche web, modifiche ai file e strumenti MCP. Gli strumenti eseguiti da un provider esterno non vengono messi in pausa. Ideale se vuoi controllare ogni passaggio.",
+          auto:
+            "Esegue da solo le chiamate abituali e chiede conferma solo quando un'azione sembra rischiosa, come leggere credenziali, aumentare i privilegi o eseguire comandi distruttivi.",
+          off:
+            "Esegue ogni chiamata agli strumenti senza chiedere. Il codice Python e da terminale viene comunque eseguito nella sandbox, che limita i file del tuo computer a cui può accedere.",
+          full:
+            "Esegue ogni chiamata agli strumenti senza chiedere e disattiva la sandbox del codice, così il codice Python e da terminale può leggere e modificare qualsiasi file accessibile al tuo account. Ideale per attività affidabili che devono lavorare fuori dalla sandbox.",
+        },
       },
       notifications: {
         sectionTitle: "Notifiche",
@@ -2491,6 +2504,7 @@ export const it = {
       context: "Contesto",
       lr: "LR",
       hardware: "Hardware",
+      vram: "VRAM",
       noGpu: "Nessuna GPU rilevata",
       hfToken: "Token HF",
       saved: "Salvato",
@@ -3220,6 +3234,7 @@ export const it = {
     discardDescription: "Le modifiche non salvate a {name} andranno perse.",
     discard: "Scarta",
     mentions: "Competenze",
+    manage: "Gestisci competenze",
   },
   library: {
     tabs: {

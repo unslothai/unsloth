@@ -172,3 +172,97 @@ def test_tool_history_survives_plain_openai_client(monkeypatch):
     tool_msgs = [m for m in msgs if isinstance(m, dict) and m.get("role") == "tool"]
     assert assistant and assistant[0].get("tool_calls"), "assistant tool_calls dropped"
     assert tool_msgs and tool_msgs[0].get("tool_call_id") == "call_abc", "tool_call_id dropped"
+
+
+def test_studio_tool_loop_keeps_earlier_tool_calls(monkeypatch):
+    backend = _ScriptedBackend()
+    payload = ChatCompletionRequest(
+        model = "default",
+        messages = [
+            ChatMessage(role = "user", content = "sum 1..100 in python"),
+            ChatMessage(
+                role = "assistant",
+                content = None,
+                tool_calls = [
+                    {
+                        "id": "call_py",
+                        "type": "function",
+                        "function": {
+                            "name": "python",
+                            "arguments": '{"code": "print(sum(range(101)))"}',
+                        },
+                    }
+                ],
+            ),
+            ChatMessage(role = "tool", tool_call_id = "call_py", name = "python", content = "5050"),
+            ChatMessage(role = "assistant", content = "The sum is 5050."),
+            ChatMessage(role = "user", content = "now up to 5000, reuse your code"),
+        ],
+        enable_tools = True,
+        enabled_tools = ["python"],
+        studio_tool_history = True,
+        stream = False,
+    )
+    _run(payload, monkeypatch, backend)
+
+    loop_calls = [c for c in backend.calls if c.get("loop")]
+    assert loop_calls, "the Studio tool loop never ran"
+    msgs = loop_calls[0]["messages"]
+    assert [m["role"] for m in msgs] == ["user", "assistant", "tool", "assistant", "user"]
+    assert msgs[1]["tool_calls"][0]["function"]["name"] == "python"
+    assert msgs[1]["tool_calls"][0]["function"]["arguments"] == {"code": "print(sum(range(101)))"}
+    assert msgs[2]["tool_call_id"] == "call_py"
+
+
+def test_provider_synthetic_tool_calls_never_reach_the_local_template():
+    from routes.inference import _extract_content_parts
+
+    messages = [
+        ChatMessage(role = "user", content = "compute 2**100"),
+        ChatMessage(
+            role = "assistant",
+            content = None,
+            tool_calls = [
+                {
+                    "id": "srv_1",
+                    "type": "function",
+                    "function": {
+                        "name": "code_execution",
+                        "arguments": json.dumps({"_server_tool": True, "code": "print(2**100)"}),
+                    },
+                }
+            ],
+        ),
+        ChatMessage(role = "tool", tool_call_id = "srv_1", name = "code_execution", content = "1267"),
+        ChatMessage(role = "assistant", content = "It is 1267."),
+        ChatMessage(role = "user", content = "and 2**10?"),
+    ]
+    _, chat_messages, _ = _extract_content_parts(messages)
+
+    assert [m["role"] for m in chat_messages] == ["user", "assistant", "user"]
+    assert "_server_tool" not in json.dumps(chat_messages)
+
+
+def test_deeply_nested_history_arguments_stay_a_string():
+    from routes.inference import _extract_content_parts
+
+    arguments = '{"x":' + "[" * 10000 + "0" + "]" * 10000 + "}"
+    messages = [
+        ChatMessage(role = "user", content = "q"),
+        ChatMessage(
+            role = "assistant",
+            content = None,
+            tool_calls = [
+                {
+                    "id": "call_0",
+                    "type": "function",
+                    "function": {"name": "python", "arguments": arguments},
+                }
+            ],
+        ),
+        ChatMessage(role = "tool", tool_call_id = "call_0", name = "python", content = "r"),
+        ChatMessage(role = "user", content = "again"),
+    ]
+    _, chat_messages, _ = _extract_content_parts(messages)
+
+    assert chat_messages[1]["tool_calls"][0]["function"]["arguments"] == arguments
