@@ -299,24 +299,26 @@ SINKS: dict[str, tuple[tuple[int, ...], frozenset[str]]] = {
     # The exec family replaces this process with the named program, so a tainted path
     # here IS execution with no shell in between. `os.posix_spawn` takes the same
     # argument shape; the spawn family puts a mode first, so the path sits at 1.
+    # The keyword sets are the names each one accepts: `os.execv` is positional-only,
+    # the rest are plain Python functions or take `path` by keyword.
     "os.execv": ((0,), frozenset()),
-    "os.execve": ((0,), frozenset()),
-    "os.execvp": ((0,), frozenset()),
-    "os.execvpe": ((0,), frozenset()),
-    "os.execl": ((0,), frozenset()),
-    "os.execle": ((0,), frozenset()),
-    "os.execlp": ((0,), frozenset()),
-    "os.execlpe": ((0,), frozenset()),
+    "os.execve": ((0,), frozenset({"path"})),
+    "os.execvp": ((0,), frozenset({"file"})),
+    "os.execvpe": ((0,), frozenset({"file"})),
+    "os.execl": ((0,), frozenset({"file"})),
+    "os.execle": ((0,), frozenset({"file"})),
+    "os.execlp": ((0,), frozenset({"file"})),
+    "os.execlpe": ((0,), frozenset({"file"})),
     "os.posix_spawn": ((0,), frozenset()),
     "os.posix_spawnp": ((0,), frozenset()),
-    "os.spawnv": ((1,), frozenset()),
-    "os.spawnve": ((1,), frozenset()),
-    "os.spawnvp": ((1,), frozenset()),
-    "os.spawnvpe": ((1,), frozenset()),
-    "os.spawnl": ((1,), frozenset()),
-    "os.spawnle": ((1,), frozenset()),
-    "os.spawnlp": ((1,), frozenset()),
-    "os.spawnlpe": ((1,), frozenset()),
+    "os.spawnv": ((1,), frozenset({"file"})),
+    "os.spawnve": ((1,), frozenset({"file"})),
+    "os.spawnvp": ((1,), frozenset({"file"})),
+    "os.spawnvpe": ((1,), frozenset({"file"})),
+    "os.spawnl": ((1,), frozenset({"file"})),
+    "os.spawnle": ((1,), frozenset({"file"})),
+    "os.spawnlp": ((1,), frozenset({"file"})),
+    "os.spawnlpe": ((1,), frozenset({"file"})),
     # Deserialisers that construct arbitrary objects.
     # `file` is the keyword both loaders take, and an empty set meant the named
     # spelling was inspected neither positionally nor by keyword.
@@ -605,6 +607,46 @@ def _module_statements(tree: ast.Module):
 def _norm_body_hash(statements: list) -> str:
     """`_norm_hash` over a list of statements, for module and class bodies."""
     return _norm_hash(ast.Module(body = list(statements), type_ignores = []))
+
+
+def _keyword(call: ast.Call, name: str) -> ast.AST | None:
+    """The value passed as `name = ...` at `call`, else None."""
+    return next((k.value for k in call.keywords if k.arg == name), None)
+
+
+_NESTED_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+
+
+def _scope_nodes(root: ast.AST):
+    """Every node in `root`'s own scope, without descending into nested scopes."""
+    pending = [root]
+    while pending:
+        node = pending.pop()
+        yield node
+        for child in ast.iter_child_nodes(node):
+            if not isinstance(child, _NESTED_SCOPES):
+                pending.append(child)
+
+
+def _true_self_attributes(facts) -> frozenset:
+    """Attribute names this file binds as `self.<name> = True`."""
+    cached = facts.__dict__.get("_true_self_attributes")
+    if cached is None:
+        found = set()
+        for node in ast.walk(facts.tree):
+            if isinstance(node, (ast.Assign, ast.AnnAssign)) and (
+                isinstance(node.value, ast.Constant) and node.value.value is True
+            ):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                found.update(
+                    target.attr
+                    for target in targets
+                    if isinstance(target, ast.Attribute)
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == "self"
+                )
+        cached = facts.__dict__["_true_self_attributes"] = frozenset(found)
+    return cached
 
 
 def _short(node: ast.AST, limit: int = 160) -> str:
@@ -2225,6 +2267,19 @@ class _TaintPass(ast.NodeVisitor):
             # the moment they became a str, and everything chained after it inherited that.
             "decode",
             "encode",
+            # `json.JSONDecoder().raw_decode(body)` parses its argument like `json.loads`.
+            "raw_decode",
+            # Streaming reads of a response body hand back the same bytes in chunks:
+            # `b"".join(requests.get(url).iter_content())` read clean.
+            "iter_content",
+            "iter_lines",
+            "iter_bytes",
+            "iter_text",
+            "iter_raw",
+            "aiter_bytes",
+            "aiter_text",
+            "aiter_lines",
+            "aiter_raw",
             # A defensive copy is not a sanitiser. `cfg.copy()` read clean, so an ordinary
             # container copy laundered a parsed config on its way to a sink.
             "copy",
@@ -2319,6 +2374,10 @@ class _TaintPass(ast.NodeVisitor):
                 "os.path.normpath",
                 "os.path.normcase",
                 "os.path.splitext",
+                # An archive opened on downloaded bytes, so its extraction can be followed.
+                "zipfile.ZipFile",
+                "tarfile.open",
+                "tarfile.TarFile",
             },
         ):
             for argument in node.args:
@@ -3413,6 +3472,7 @@ class _TaintPass(ast.NodeVisitor):
         self._propagate_into_mapped(node)
         self._check_sink(node)
         self._check_torch_load(node)
+        self._check_numpy_load(node)
         self._check_remote_code(node)
         self.generic_visit(node)
 
@@ -3495,6 +3555,53 @@ class _TaintPass(ast.NodeVisitor):
         cache[self.qualname] = frozenset(found)
         return cache[self.qualname]
 
+    def _file_handles(self) -> dict:
+        """Handle name -> the path it was opened on, for `open(p)` and `p.open()`."""
+        cache = self.facts.__dict__.setdefault("_file_handle_cache", {})
+        cached = cache.get(self.qualname)
+        if cached is not None:
+            return cached
+        own = self.facts.functions.get(self.qualname)
+        found = {}
+        for statement in _scope_nodes(own if own is not None else self.facts.tree):
+            pairs = []
+            if isinstance(statement, (ast.Assign, ast.AnnAssign)) and statement.value is not None:
+                targets = (
+                    statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+                )
+                pairs = [(target, statement.value) for target in targets]
+            elif isinstance(statement, (ast.With, ast.AsyncWith)):
+                pairs = [(item.optional_vars, item.context_expr) for item in statement.items]
+            for target, value in pairs:
+                if not isinstance(target, ast.Name) or not isinstance(value, ast.Call):
+                    continue
+                if isinstance(value.func, ast.Attribute) and value.func.attr == "open":
+                    found[target.id] = value.func.value
+                elif _matches_any(
+                    self.facts.canonicals(_call_name(value.func)), {"open", "io.open"}
+                ):
+                    path = value.args[0] if value.args else _keyword(value, "file")
+                    if path is not None:
+                        found[target.id] = path
+        cache[self.qualname] = found
+        return found
+
+    def _check_numpy_load(self, node: ast.Call) -> None:
+        """`numpy.load(downloaded, allow_pickle = True)` unpickles object arrays.
+
+        The default has been False since NumPy 1.16.3, so only an explicit opt-in that
+        is not a literal False or None is reported.
+        """
+        if _matches_any(self.facts.canonicals(_call_name(node.func)), {"numpy.load"}) is None:
+            return
+        allow = _keyword(node, "allow_pickle")
+        if allow is None or (isinstance(allow, ast.Constant) and not allow.value):
+            return
+        path = node.args[0] if node.args else _keyword(node, "file")
+        reason = self.tainted(path) if path is not None else None
+        if reason:
+            self._record(node, "numpy.load(allow_pickle = True)", reason, _short(path))
+
     _CONFIG_PARSERS = frozenset({"configparser.ConfigParser", "configparser.RawConfigParser"})
 
     def _note_config_read(self, node: ast.Call) -> None:
@@ -3557,7 +3664,33 @@ class _TaintPass(ast.NodeVisitor):
 
     def _note_mutation(self, node: ast.Call) -> None:
         """`settings.update(json.loads(blob))` taints `settings`."""
+        # `shutil.unpack_archive(downloaded, target)` writes attacker files into target.
+        if _matches_any(self.facts.canonicals(_call_name(node.func)), {"shutil.unpack_archive"}):
+            archive = node.args[0] if node.args else _keyword(node, "filename")
+            target = node.args[1] if len(node.args) > 1 else _keyword(node, "extract_dir")
+            reason = self.tainted(archive) if archive is not None else None
+            if reason and target is not None:
+                self._assign(target, reason)
+            return
         if not isinstance(node.func, ast.Attribute):
+            return
+        # `ZipFile(downloaded).extractall(target)` fills target with archive members, so
+        # a later `sys.path.insert(0, target)` imports them.
+        if node.func.attr in ("extractall", "extract"):
+            position = 0 if node.func.attr == "extractall" else 1
+            target = node.args[position] if len(node.args) > position else _keyword(node, "path")
+            reason = self.tainted(node.func.value)
+            if reason and target is not None:
+                self._assign(target, reason)
+            return
+        # `with plugin.open("wb") as out: out.write(body)` fills the file at `plugin`.
+        if node.func.attr in ("write", "writelines") and isinstance(node.func.value, ast.Name):
+            path = self._file_handles().get(node.func.value.id)
+            if path is not None:
+                for argument in node.args[:1]:
+                    reason = self.tainted(argument)
+                    if reason:
+                        self._assign(path, reason)
             return
         # `plugin.write_bytes(response.content)` fills the file at that path, so a
         # later `runpy.run_path(plugin)` executes the untrusted bytes.
@@ -4012,6 +4145,39 @@ class _TaintPass(ast.NodeVisitor):
                 held = held + tuple(self.state.attr_sink_aliases.get(key) or ())
         return held
 
+    def _scheduled_call(self, node: ast.Call) -> ast.Call | None:
+        """The call a thread, process, executor or `to_thread` will make, if any.
+
+        `Thread(target = execute, args = (parsed["command"],))` runs `execute` with
+        those arguments, as do `executor.submit(execute, ...)`, `asyncio.to_thread` and
+        `loop.run_in_executor(None, execute, ...)`.
+        """
+        names = self.facts.canonicals(_call_name(node.func))
+        callee, args, keywords = None, [], []
+        if _matches_any(names, {"threading.Thread", "multiprocessing.Process"}):
+            callee = _keyword(node, "target")
+            packed = _keyword(node, "args")
+            if isinstance(packed, (ast.Tuple, ast.List)):
+                args = list(packed.elts)
+            named = _keyword(node, "kwargs")
+            if isinstance(named, ast.Dict):
+                keywords = [
+                    ast.keyword(arg = key.value, value = value)
+                    for key, value in zip(named.keys, named.values)
+                    if isinstance(key, ast.Constant) and isinstance(key.value, str)
+                ]
+        elif _matches_any(names, {"asyncio.to_thread"}) or (
+            isinstance(node.func, ast.Attribute) and node.func.attr == "submit"
+        ):
+            if node.args:
+                callee, args, keywords = node.args[0], list(node.args[1:]), list(node.keywords)
+        elif isinstance(node.func, ast.Attribute) and node.func.attr == "run_in_executor":
+            if len(node.args) > 1:
+                callee, args = node.args[1], list(node.args[2:])
+        if callee is None or any(isinstance(a, ast.Starred) for a in args):
+            return None
+        return ast.copy_location(ast.Call(func = callee, args = args, keywords = keywords), node)
+
     def _propagate_into_mapped(self, node: ast.Call) -> None:
         """`map(execute, parsed["commands"])` calls `execute` with every element.
 
@@ -4020,6 +4186,13 @@ class _TaintPass(ast.NodeVisitor):
         every attacker-chosen command with nothing reported. The element is bound to the
         callback's first parameter, which is what `map` and `filter` do.
         """
+        scheduled = self._scheduled_call(node)
+        if scheduled is not None:
+            if any(self.tainted(argument) for argument in scheduled.args) or any(
+                self.tainted(keyword.value) for keyword in scheduled.keywords
+            ):
+                self._propagate_into_callee(scheduled)
+            return
         if (
             _matches_any(self.facts.canonicals(_call_name(node.func)), {"map", "filter"}) is None
             or len(node.args) < 2
@@ -4101,7 +4274,7 @@ class _TaintPass(ast.NodeVisitor):
         if isinstance(value, ast.Name):
             own = self.facts.functions.get(self.qualname)
             body = own if own is not None else self.facts.tree
-            for child in ast.walk(body):
+            for child in _scope_nodes(body):
                 if isinstance(child, ast.Assign) and any(
                     isinstance(t, ast.Name) and t.id == value.id for t in child.targets
                 ):
@@ -4120,12 +4293,23 @@ class _TaintPass(ast.NodeVisitor):
             return self._parsed_mapping(value.func.value)
         return None
 
-    def _parsed_mapping(self, value: ast.AST) -> str | None:
-        """The deserialiser behind `value`, when `value` is a parsed mapping itself."""
+    def _parsed_mapping(
+        self,
+        value: ast.AST,
+        seen: frozenset = frozenset(),
+    ) -> str | None:
+        """The deserialiser behind `value`, when `value` is a parsed mapping itself.
+
+        `seen` breaks `kwargs = dict(kwargs)`, which otherwise followed itself forever.
+        Only this scope's own bindings count; a nested function's locals are its own.
+        """
         if isinstance(value, ast.Name):
+            if value.id in seen:
+                return None
+            seen = seen | {value.id}
             own = self.facts.functions.get(self.qualname)
             body = own if own is not None else self.facts.tree
-            for child in ast.walk(body):
+            for child in _scope_nodes(body):
                 targets = (
                     child.targets
                     if isinstance(child, ast.Assign)
@@ -4134,21 +4318,21 @@ class _TaintPass(ast.NodeVisitor):
                     else []
                 )
                 if any(isinstance(t, ast.Name) and t.id == value.id for t in targets):
-                    reason = self._parsed_mapping(child.value)
+                    reason = self._parsed_mapping(child.value, seen)
                     if reason:
                         return reason
             return None
         if isinstance(value, ast.Subscript):
-            return self._parsed_mapping(value.value)
+            return self._parsed_mapping(value.value, seen)
         if isinstance(value, ast.Call):
             source = _matches_any(self.facts.canonicals(_call_name(value.func)), _DESERIALIZERS)
             if source:
                 return self.tainted(value)
             # `dict(parsed)` and `parsed.copy()` keep every key.
             if _call_name(value.func) == "dict" and value.args:
-                return self._parsed_mapping(value.args[0])
+                return self._parsed_mapping(value.args[0], seen)
             if isinstance(value.func, ast.Attribute) and value.func.attr == "copy":
-                return self._parsed_mapping(value.func.value)
+                return self._parsed_mapping(value.func.value, seen)
         return None
 
     def _partial_inner(self, call: ast.Call) -> str:
@@ -4216,8 +4400,16 @@ class _TaintPass(ast.NodeVisitor):
             # `trust_remote_code = enabled` runs repository code just the same, and only
             # the literal at the call was recognised.
             written_true = (
-                isinstance(keyword.value, ast.Constant) and keyword.value.value is True
-            ) or (isinstance(keyword.value, ast.Name) and keyword.value.id in self.true_names)
+                (isinstance(keyword.value, ast.Constant) and keyword.value.value is True)
+                or (isinstance(keyword.value, ast.Name) and keyword.value.id in self.true_names)
+                # `self.allow_remote = True` in one method, forwarded in another.
+                or (
+                    isinstance(keyword.value, ast.Attribute)
+                    and isinstance(keyword.value.value, ast.Name)
+                    and keyword.value.value.id == "self"
+                    and keyword.value.attr in _true_self_attributes(self.facts)
+                )
+            )
             # The flag read out of parsed data: the document decides, not the user.
             parsed = self._parsed_value(keyword.value)
             if parsed:

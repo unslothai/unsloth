@@ -6143,3 +6143,85 @@ def test_namespace_calls_computed_revisions_and_written_files(tmp_path):
         "    runpy.run_path(plugin)\n",
     )
     assert {"getattr(module, ...)", "unpinned code fetch", "runpy.run_path"} <= _sinks(findings)
+
+
+def test_streamed_bodies_handles_archives_and_numpy_pickle(tmp_path):
+    """Streaming iterators, `raw_decode`, handle writes, extraction and `allow_pickle`."""
+    findings = _scan(
+        tmp_path,
+        "import json, pickle, requests, runpy, sys, zipfile, numpy as np\n"
+        "from importlib import import_module\n"
+        "from pathlib import Path\n"
+        "from huggingface_hub import hf_hub_download\n"
+        "def a(url):\n"
+        "    return pickle.loads(b''.join(requests.get(url).iter_content()))\n"
+        "def b(url):\n"
+        "    cfg, _ = json.JSONDecoder().raw_decode(requests.get(url).text)\n"
+        "    return import_module(cfg['module'])\n"
+        "def c(url):\n"
+        "    plugin = Path('plugin.py')\n"
+        "    with plugin.open('wb') as out:\n"
+        "        out.write(requests.get(url).content)\n"
+        "    runpy.run_path(plugin)\n"
+        "def d(repo):\n"
+        "    target = 'plugins'\n"
+        "    zipfile.ZipFile(hf_hub_download(repo, 'p.zip')).extractall(target)\n"
+        "    sys.path.insert(0, target)\n"
+        "def e(repo):\n"
+        "    return np.load(hf_hub_download(repo, 'x.npy'), allow_pickle = True)\n"
+        "def f(repo):\n"
+        "    return np.load(hf_hub_download(repo, 'x.npy'))\n",
+    )
+    sinks = {(f["qualname"], f["sink"]) for f in findings}
+    assert {
+        ("a", "pickle.loads"),
+        ("b", "importlib.import_module"),
+        ("c", "runpy.run_path"),
+        ("d", "sys.path.insert"),
+        ("e", "numpy.load(allow_pickle = True)"),
+    } <= sinks
+    assert not [s for q, s in sinks if q == "f" and s.startswith("numpy")]
+
+
+def test_keyword_exec_paths_scheduled_callbacks_and_true_attributes(tmp_path):
+    """`os.execvp(file = ...)`, `Thread(target = ..., args = ...)`, `self.flag = True`."""
+    findings = _scan(
+        tmp_path,
+        "import asyncio, json, os, subprocess, threading\n"
+        "from transformers import AutoModel\n"
+        "def run(command):\n"
+        "    subprocess.run(command, shell = True)\n"
+        "def a(blob):\n"
+        "    os.execvp(file = json.loads(blob)['program'], args = ['x'])\n"
+        "def b(blob):\n"
+        "    threading.Thread(target = run, args = (json.loads(blob)['command'],)).start()\n"
+        "async def c(blob):\n"
+        "    await asyncio.to_thread(run, json.loads(blob)['command'])\n"
+        "class Loader:\n"
+        "    def __init__(self):\n"
+        "        self.allow_remote = True\n"
+        "    def load(self, name):\n"
+        "        return AutoModel.from_pretrained(name, trust_remote_code = self.allow_remote)\n",
+    )
+    sinks = {(f["qualname"], f["sink"]) for f in findings}
+    assert ("a", "os.execvp") in sinks
+    assert ("run", "subprocess.run") in sinks
+    assert any(q == "Loader.load" and s.startswith("trust_remote_code") for q, s in sinks)
+
+
+def test_copied_kwargs_terminate_and_nested_bindings_stay_local(tmp_path):
+    """`kwargs = dict(kwargs)` must not recurse, and an inner function's locals are its own."""
+    findings = _scan(
+        tmp_path,
+        "import json\n"
+        "from transformers import AutoModel\n"
+        "def a(name, kwargs):\n"
+        "    kwargs = dict(kwargs)\n"
+        "    return AutoModel.from_pretrained(name, **kwargs)\n"
+        "def b(name, kwargs, blob):\n"
+        "    def inner():\n"
+        "        kwargs = json.loads(blob)\n"
+        "        return kwargs\n"
+        "    return AutoModel.from_pretrained(name, **kwargs)\n",
+    )
+    assert not [f for f in findings if f["sink"] == "trust_remote_code (untrusted **kwargs)"]

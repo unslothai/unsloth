@@ -30,6 +30,7 @@
     "studio/backend/core/inference/llama_cpp.py::LlamaCppBackend.load_model._spawn_and_wait::subprocess.Popen::a5ef03ce7fe5418d::94ecd6e5d625e3db": 1,
     "studio/backend/core/inference/llama_cpp.py::LlamaCppBackend.load_model::subprocess.Popen::a5ef03ce7fe5418d::67a9f211d337c30a": 1,
     "studio/backend/core/inference/llama_cpp.py::LlamaCppBackend.validate_reasoning_budget_capabilities::subprocess.run::e7a4f25dd7119689::ce627f36f9a0e776": 1,
+    "studio/backend/core/inference/llama_video_input.py::_run::subprocess.run::cb93c41ec1734555::38964dce8582e886": 1,
     "studio/backend/core/inference/managed_engine.py::ManagedEngine.start::subprocess.Popen::7d55e902b3b75f6c::98e55a0b5ba8b55e": 1,
     "studio/backend/core/inference/mxc_adapter.py::spawn::subprocess.Popen::ec8beb9934a30aef::84c4eff1c896018a": 1,
     "studio/backend/core/inference/mxc_read_grants.py::_icacls::subprocess.run::29b405f12281d75f::ba49e0b5f84628d6": 1,
