@@ -368,6 +368,7 @@ export function useSpeechGeneration({
         await showRunResult({
           response,
           text,
+          workflow: "speak",
           refreshGallery,
           selectClip,
           setFallbackClip,
