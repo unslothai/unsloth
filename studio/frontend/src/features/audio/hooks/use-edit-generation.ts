@@ -118,9 +118,10 @@ export function useEditGeneration({
   const transcriber = useReferenceTranscribe({
     sttRepo,
     language: "",
-    onText: (next) => {
-      const current = useAudioEditStore.getState().source;
-      useAudioEditStore.getState().setTranscript(next, current?.id ?? null);
+    onText: (next, from) => {
+      const store = useAudioEditStore.getState();
+      // The recording may have changed while this one was transcribed.
+      if (store.source?.id === from.id) store.setTranscript(next, from.id);
     },
   });
 

@@ -151,7 +151,10 @@ export function useCloneGeneration({
   const transcriber = useReferenceTranscribe({
     sttRepo,
     language,
-    onText: (next) => useAudioCloneStore.getState().setReferenceText(next),
+    onText: (next, from) => {
+      const store = useAudioCloneStore.getState();
+      if (store.reference?.id === from.id) store.setReferenceText(next);
+    },
   });
 
   const toolContext = useMemo(
