@@ -212,3 +212,32 @@ def test_studio_tool_loop_keeps_earlier_tool_calls(monkeypatch):
     assert msgs[1]["tool_calls"][0]["function"]["name"] == "python"
     assert "sum(range(101))" in json.dumps(msgs[1]["tool_calls"])
     assert msgs[2]["tool_call_id"] == "call_py"
+
+
+def test_provider_synthetic_tool_calls_never_reach_the_local_template():
+    from routes.inference import _extract_content_parts
+
+    messages = [
+        ChatMessage(role = "user", content = "compute 2**100"),
+        ChatMessage(
+            role = "assistant",
+            content = None,
+            tool_calls = [
+                {
+                    "id": "srv_1",
+                    "type": "function",
+                    "function": {
+                        "name": "code_execution",
+                        "arguments": json.dumps({"_server_tool": True, "code": "print(2**100)"}),
+                    },
+                }
+            ],
+        ),
+        ChatMessage(role = "tool", tool_call_id = "srv_1", name = "code_execution", content = "1267"),
+        ChatMessage(role = "assistant", content = "It is 1267."),
+        ChatMessage(role = "user", content = "and 2**10?"),
+    ]
+    _, chat_messages, _ = _extract_content_parts(messages)
+
+    assert [m["role"] for m in chat_messages] == ["user", "assistant", "user"]
+    assert "_server_tool" not in json.dumps(chat_messages)

@@ -24139,6 +24139,10 @@ def _extract_content_parts(
             chat_message["tool_call_id"] = msg.tool_call_id
         chat_messages.append(chat_message)
 
+    # Gated so a history without tool calls renders exactly as before.
+    if any(m.get("tool_calls") for m in chat_messages):
+        chat_messages = _strip_provider_synthetic_tool_history(chat_messages)
+
     # A user's own attachment outranks an assistant-generated one, as the frontend's
     # legacy image_base64 field does. An assistant-only history still falls back.
     return (
