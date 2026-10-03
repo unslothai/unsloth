@@ -5839,7 +5839,6 @@ export function HubModelPicker({
       <div
         key={key}
         {...drag.rowProps(key)}
-        // DROP_CUE_CLASS: the drag redraws the line above the carried copy.
         className={cn("relative", edge && [DROP_CUE_CLASS, PINNED_DROP_CUE[edge]])}
         style={drag.draggingKey === key ? { opacity: 0.4 } : undefined}
       >
@@ -6582,12 +6581,12 @@ export function HubModelPicker({
       npuSizeLabel(model.size_gb),
       npuResumeLabel(model),
     ].filter(Boolean);
-    const pick = () =>
-      onSelect(model.model_path, {
-        source: "local",
-        isLora: false,
-        isDownloaded: true,
-      });
+    const meta = {
+      source: "local",
+      isLora: false,
+      isDownloaded: true,
+    } as const;
+    const pick = () => onSelect(model.model_path, meta);
     const row = (
       <ModelRow
         label={model.id}
@@ -6628,19 +6627,38 @@ export function HubModelPicker({
         className={onDevice ? downloadedRowButtonClassName : undefined}
       />
     );
-    if (!onDevice) return <div key={model.id}>{row}</div>;
+    // Downloads do not load the model, so show settings only after download.
+    const settings =
+      onConfigure && model.downloaded && !downloading ? (
+        <ModelLoadSettingsAction
+          ariaLabel={`Inference settings for ${model.id}`}
+          onConfigure={() =>
+            onConfigure(model.model_path, {
+              ...meta,
+              contextLength: model.max_context_length,
+            })
+          }
+        />
+      ) : null;
+    if (!onDevice && !onConfigure) return <div key={model.id}>{row}</div>;
     return (
       <div key={model.id} className={downloadedRowShellClassName(isSelected)}>
         <div className="min-w-0 flex-1">{row}</div>
-        <span className={cn(ROW_ACTIONS_CLASS, "h-6")}>
-          <ModelDeleteAction
-            ariaLabel={`Delete ${model.id}`}
-            title={`Delete ${model.id}?`}
-            description="This removes the model's NPU files from this device."
-            successMessage={`Deleted ${model.id}`}
-            disabled={isLoaded}
-            onConfirm={() => npuCatalog.remove(model)}
-          />
+        <span
+          className={cn(ROW_ACTIONS_CLASS, onDevice && "h-6")}
+          aria-hidden={settings || onDevice ? undefined : true}
+        >
+          {settings}
+          {onDevice && (
+            <ModelDeleteAction
+              ariaLabel={`Delete ${model.id}`}
+              title={`Delete ${model.id}?`}
+              description="This removes the model's NPU files from this device."
+              successMessage={`Deleted ${model.id}`}
+              disabled={isLoaded}
+              onConfirm={() => npuCatalog.remove(model)}
+            />
+          )}
         </span>
       </div>
     );

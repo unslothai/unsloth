@@ -374,6 +374,7 @@ class FastDiffusionModel:
 
         model = peft_get_peft_model(model, lora_config)
         model._unsloth_slow_diffusion = True
+        model._unsloth_gradient_checkpointing = use_gradient_checkpointing
         try:
             model.print_trainable_parameters()
         except Exception:

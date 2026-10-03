@@ -152,6 +152,7 @@ import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { ArrowRightIcon, ChevronDown, GitBranchIcon, Moon } from "lucide-react";
 import {
   Link,
+  type NavigateOptions,
   useNavigate,
   useRouter,
   useRouterState,
@@ -215,6 +216,12 @@ import {
   sectionKeyLanding,
   useSectionDrag,
 } from "@/features/chat";
+import {
+  imeOwnsInputKeydown,
+  inputImeHandlers,
+  newInputImeState,
+  resetInputIme,
+} from "@/features/chat/utils/composer-preferences";
 import { sandboxSessionIdFor } from "@/components/assistant-ui/sandbox-files";
 import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
 import {
@@ -234,6 +241,7 @@ import type {
 } from "@/features/settings";
 import { useEffectiveProfile, UserAvatar } from "@/features/profile";
 import { resolveNavRowState } from "@/components/nav-row-state";
+import { createNavigationCoalescer } from "@/components/sidebar-navigation";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { videoNavHint } from "@/config/hardware-verdict";
 import {
@@ -1054,6 +1062,21 @@ export function AppSidebar() {
   } = useSidebar();
   const navigate = useNavigate();
   const router = useRouter();
+  const [rowNavigation] = useState(() =>
+    createNavigationCoalescer<NavigateOptions>({
+      navigate: (options) => navigate(options),
+      currentHref: () => router.latestLocation.href,
+      hrefOf: (options) => router.buildLocation(options).href,
+      currentEntry: () => router.latestLocation.state.__TSR_key,
+      asReplace: (options) => ({ ...options, replace: true }),
+    }),
+  );
+  const navigateFromRow = rowNavigation.go;
+  useEffect(
+    () =>
+      router.subscribe("onResolved", () => rowNavigation.resolved()),
+    [router, rowNavigation],
+  );
   const imagesPageMode = useImageWorkflowStore((s) => s.pageMode);
 
   // `webUpdate` is non-null only when the installed (PyPI) version is behind the latest release.
@@ -2691,7 +2714,7 @@ export function AppSidebar() {
       label: t("shell.navigation.projects"),
       active: pathname === "/projects" || pathname.startsWith("/projects/"),
       onClick: () => {
-        navigate({ to: "/projects" });
+        navigateFromRow({ to: "/projects" });
         closeMobileIfOpen();
       },
       onIntent: () => {
@@ -2726,7 +2749,7 @@ export function AppSidebar() {
       label: t("shell.navigation.library"),
       active: pathname === "/library",
       onClick: () => {
-        navigate({ to: "/library" });
+        navigateFromRow({ to: "/library" });
         closeMobileIfOpen();
       },
       onIntent: () => {
@@ -2738,7 +2761,7 @@ export function AppSidebar() {
       label: t("shell.navigation.hub"),
       active: pathname === "/hub" || pathname.startsWith("/hub/"),
       onClick: () => {
-        navigate({ to: "/hub" });
+        navigateFromRow({ to: "/hub" });
         closeMobileIfOpen();
       },
       onIntent: () => {
@@ -2751,7 +2774,7 @@ export function AppSidebar() {
       // No "New" pill: the row's trailing slot holds the workflow disclosure instead.
       active: pathname === "/images" || pathname.startsWith("/images/"),
       onClick: () => {
-        navigate({ to: "/images" });
+        navigateFromRow({ to: "/images" });
         closeMobileIfOpen();
       },
       onIntent: () => {
@@ -2769,7 +2792,7 @@ export function AppSidebar() {
       pendingTooltip: t("shell.navigation.trainChecking"),
       onClick: () => {
         if (chatOnlyMeasured) return;
-        navigate({ to: "/studio" });
+        navigateFromRow({ to: "/studio" });
         closeMobileIfOpen();
       },
       onIntent: () => {
@@ -2786,7 +2809,7 @@ export function AppSidebar() {
       pending: capabilitiesUnknown,
       pendingTooltip: t("shell.navigation.videoChecking"),
       onClick: () => {
-        navigate({ to: "/video" });
+        navigateFromRow({ to: "/video" });
         closeMobileIfOpen();
       },
       onIntent: () => {
@@ -2798,7 +2821,7 @@ export function AppSidebar() {
       label: t("shell.navigation.audio"),
       active: pathname === "/audio" || pathname.startsWith("/audio/"),
       onClick: () => {
-        navigate({ to: "/audio" });
+        navigateFromRow({ to: "/audio" });
         closeMobileIfOpen();
       },
       onIntent: () => {
@@ -2810,7 +2833,7 @@ export function AppSidebar() {
       label: t("shell.navigation.recipes"),
       active: isRecipesRoute,
       onClick: () => {
-        navigate({ to: "/data-recipes" });
+        navigateFromRow({ to: "/data-recipes" });
         closeMobileIfOpen();
       },
       onIntent: () => {
@@ -2828,7 +2851,7 @@ export function AppSidebar() {
       active: pathname === "/export" || pathname.startsWith("/export/"),
       spinner: exportInProgress,
       onClick: () => {
-        navigate({ to: "/export" });
+        navigateFromRow({ to: "/export" });
         closeMobileIfOpen();
       },
       onIntent: () => {
@@ -2846,7 +2869,7 @@ export function AppSidebar() {
       label: t("shell.navigation.api"),
       active: pathname === "/api-monitor" || pathname.startsWith("/api-monitor/"),
       onClick: () => {
-        navigate({ to: "/api-monitor" });
+        navigateFromRow({ to: "/api-monitor" });
         closeMobileIfOpen();
       },
       onIntent: () => {
@@ -3037,6 +3060,7 @@ export function AppSidebar() {
   const [renameDraft, setRenameDraft] = useState("");
   // Skips the inline rename input's blur-commit when Enter/Escape already handled it.
   const skipRenameBlurRef = useRef(false);
+  const renameImeRef = useRef(newInputImeState());
   // Optimistic title while the debounced sidebar refresh catches up, so the old name doesn't flash.
   const [pendingRename, setPendingRename] = useState<{
     id: string;
@@ -3122,9 +3146,8 @@ export function AppSidebar() {
   function handleInlineRenameKeyDown(
     event: React.KeyboardEvent<HTMLInputElement>,
   ) {
-    // Enter confirms an IME candidate; Escape dismisses one. Neither should
-    // finish the rename. Check before preventDefault so the IME keeps its key.
-    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+    // IME Enter/Escape must not finish the rename; check before preventDefault.
+    if (imeOwnsInputKeydown(event, renameImeRef.current)) return;
     if (event.key === "Enter") {
       event.preventDefault();
       skipRenameBlurRef.current = true;
@@ -3432,7 +3455,7 @@ export function AppSidebar() {
     clearSelection();
     clearChatNotifications(item);
     noteViewed(item.id);
-    navigate({
+    navigateFromRow({
       to: "/chat",
       search:
         item.type === "single"
@@ -4686,8 +4709,15 @@ export function AppSidebar() {
             value={renameDraft}
             onChange={(event) => setRenameDraft(event.target.value)}
             onKeyDown={handleInlineRenameKeyDown}
-            onBlur={handleInlineRenameBlur}
-            onFocus={(event) => event.currentTarget.select()}
+            {...inputImeHandlers(renameImeRef.current)}
+            onBlur={() => {
+              resetInputIme(renameImeRef.current);
+              handleInlineRenameBlur();
+            }}
+            onFocus={(event) => {
+              resetInputIme(renameImeRef.current);
+              event.currentTarget.select();
+            }}
             maxLength={120}
             aria-label={translate("shell.dialog.renameChat.placeholder")}
             className={cn(
@@ -6169,7 +6199,7 @@ export function AppSidebar() {
     >
       <DialogContent
         className="corner-squircle dialog-soft-surface sm:max-w-md"
-        // Radix closes on Escape before the input sees it; keep IME candidate dismissal from closing.
+        // Radix handles Escape before the input; don't close on IME dismissal.
         onEscapeKeyDown={(event) => {
           if (event.isComposing || event.keyCode === 229) event.preventDefault();
         }}
@@ -6184,8 +6214,9 @@ export function AppSidebar() {
         <Input
           value={renameDraft}
           onChange={(event) => setRenameDraft(event.target.value)}
+          {...inputImeHandlers(renameImeRef.current)}
           onKeyDown={(event) => {
-            if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+            if (imeOwnsInputKeydown(event, renameImeRef.current)) return;
             if (event.key === "Enter") {
               event.preventDefault();
               void commitRename();

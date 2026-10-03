@@ -3528,6 +3528,14 @@ class VideoBackend:
                 native_device_name = sd_cpp_device_named(
                     binary, selected_name, position = selected_position
                 )
+            # Same number the fork's dispatch reads, off the re-check's listing (no extra subprocess).
+            from .sd_cpp_backend import sd_cpp_cuda_compute_capability
+
+            native_cuda_cc = (
+                sd_cpp_cuda_compute_capability(binary, native_device_name, probe = False)
+                if native_device != "cpu" and listed_accelerator is not None
+                else None
+            )
         requested_mode = normalize_memory_mode(memory_mode) or "auto"
         policy = {
             "auto": "none" if native_device == "cpu" else "group",
@@ -3563,10 +3571,20 @@ class VideoBackend:
         native_env: tuple[tuple[str, str], ...] = ()
         if h3_sage:
             native_offload += ("--sage-attn",)
-            # Same opt-in takes the fork's BF16 cuBLAS path; a user-exported value (0 included) wins.
-            from .video_minimax_h3 import H3_QUANT_CUBLAS_ENV, H3_QUANT_CUBLAS_MIN_BATCH
-            if H3_QUANT_CUBLAS_ENV not in os.environ:
-                native_env += ((H3_QUANT_CUBLAS_ENV, H3_QUANT_CUBLAS_MIN_BATCH),)
+        if native_device != "cpu":
+            from .video_minimax_h3 import h3_quant_cublas_env
+            native_env += h3_quant_cublas_env(native_cuda_cc, sage = h3_sage)
+        from .video_minimax_h3 import H3_QUANT_CUBLAS_ENV, H3_QUANT_CUBLAS_MIN_CC
+
+        # The fork ignores the env below sm80, so a user value there is not the route.
+        h3_quant_cublas = (
+            native_device != "cpu"
+            and (native_cuda_cc is None or tuple(native_cuda_cc) >= H3_QUANT_CUBLAS_MIN_CC)
+            and dict(native_env)
+            .get(H3_QUANT_CUBLAS_ENV, os.environ.get(H3_QUANT_CUBLAS_ENV, ""))
+            .strip()
+            not in ("", "0")
+        )
         # After the policy, so the pin can see which modules it left on the CPU; without it sd.cpp uses ordinal 0
         # whatever was selected.
         native_offload += tuple(device_backend_flags(native_device_name, list(native_offload)))
@@ -3647,9 +3665,12 @@ class VideoBackend:
                                 "speed_mode": (
                                     speed_mode,
                                     SPEED_MAX if h3_sage else SPEED_OFF,
-                                    "sd.cpp SageAttention + BF16 cuBLAS"
-                                    if h3_sage
-                                    else "sd.cpp exact kernels",
+                                    {
+                                        (True, True): "sd.cpp SageAttention + BF16 cuBLAS",
+                                        (True, False): "sd.cpp SageAttention",
+                                        (False, True): "sd.cpp BF16 cuBLAS matmuls",
+                                        (False, False): "sd.cpp exact kernels",
+                                    }[(bool(h3_sage), bool(h3_quant_cublas))],
                                 ),
                                 "attention_backend": (
                                     None,
@@ -6533,7 +6554,6 @@ class VideoBackend:
                 }
             )
 
-            # Sample at ComfyUI's static sigma shift where the shipped scheduler differs.
             apply_comfy_flow_shift(pipe, getattr(fam, "comfy_flow_shift", None), logger)
             from . import diffusion_prompt_cache
 
@@ -7502,7 +7522,6 @@ class VideoBackend:
                 ),
             }
         )
-        # Sample at ComfyUI's static sigma shift where the shipped scheduler differs.
         apply_comfy_flow_shift(pipe, getattr(fam, "comfy_flow_shift", None), logger)
         from . import diffusion_prompt_cache
 

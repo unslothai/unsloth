@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { readLastPrompt, saveLastPrompt } from "@/lib/last-prompt";
 import { toast } from "@/lib/toast";
 import { generateAudio, runAudio } from "../api";
+import { TTS_MAX_TOKENS } from "../audio-workspace-constants";
 import {
   audioOptionLabel,
   audioOptionsForRequest,
@@ -432,6 +433,12 @@ export function useSpeechGeneration({
           : {}),
         signal: controller.signal,
       });
+      if (generated.choices[0]?.finish_reason === "length")
+        toast.warning(
+          maxTokens < TTS_MAX_TOKENS
+            ? "Speech stopped at the Max tokens limit before the end of the text. Raise Max tokens under Advanced to hear the rest."
+            : "Speech stopped at the Max tokens limit before the end of the text. Split the text into shorter parts to hear the rest.",
+        );
       updateGenerationPhase("finishing");
       const refreshed = await refreshGallery();
       const generatedClip = persistedClipForGeneration(

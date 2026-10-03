@@ -3356,6 +3356,7 @@ class InferenceOrchestrator:
         reference_text: Optional[str] = None,
         speed: Optional[float] = None,
         convert: Optional[dict] = None,
+        stats_holder: Optional[dict] = None,
     ) -> Tuple[bytes, int]:
         """Generate TTS audio. Returns (wav_bytes, sample_rate). Blocking: sends the command and
         waits for the full audio response. ``audio_inputs`` maps a role (reference, emotion,
@@ -3506,6 +3507,8 @@ class InferenceOrchestrator:
                                 raise AudioGenerationCancelledError("Audio generation cancelled")
                             wav_bytes = base64.b64decode(resp["wav_base64"])
                             sample_rate = resp["sample_rate"]
+                            if stats_holder is not None:
+                                stats_holder["stats"] = resp.get("stats")
                             return wav_bytes, sample_rate
 
                         if rtype == "audio_error":

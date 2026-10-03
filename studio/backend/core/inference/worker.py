@@ -1647,6 +1647,7 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
                 "wav_base64": base64.b64encode(wav_bytes).decode("ascii"),
                 "sample_rate": sample_rate,
                 **_audio_runtime(backend),
+                "stats": getattr(backend, "last_generation_stats", None),
             },
         )
         logger.info("Finished audio generation for request_id=%s", request_id)

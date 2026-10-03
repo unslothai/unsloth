@@ -2398,8 +2398,7 @@ def refine_plan_from_loaded_weights(
 
 
 def _placed_on(tensor: Any, device_type: str, is_torchao: Callable[[Any], bool]) -> bool:
-    """Whether ``tensor``'s storage is on ``device_type``. A torchao subclass is judged by its inner tensors: after a
-    streamed offload its wrapper can still report the onload device while its data and scales sit on the host."""
+    """torchao subclasses are judged by inner tensors: after a streamed offload the wrapper can report the wrong device."""
     if is_torchao(tensor):
         try:
             names, _ = tensor.__tensor_flatten__()
@@ -3358,12 +3357,39 @@ def install_group_offload_hooks_eager() -> bool:
     return patched
 
 
+def _install_group_offload_torchao_host_copy(go: Any) -> bool:
+    """Give aliased torchao host copies a separate wrapper so ``swap_tensors`` cannot move them to CUDA."""
+    group_cls = getattr(go, "ModuleGroup", None)
+    original = getattr(group_cls, "_to_cpu", None)
+    is_torchao = getattr(go, "_is_torchao_tensor", None)
+    if (
+        original is None
+        or not callable(is_torchao)
+        or getattr(original, "_unsloth_host_copy", False)
+    ):
+        return False
+
+    def _to_cpu(tensor: Any, low_cpu_mem_usage: bool) -> Any:
+        copy = original(tensor, low_cpu_mem_usage)
+        if copy is not tensor or not is_torchao(tensor):
+            return copy
+        names, ctx = tensor.__tensor_flatten__()
+        return type(tensor).__tensor_unflatten__(
+            {name: getattr(tensor, name) for name in names}, ctx, tensor.size(), tensor.stride()
+        )
+
+    _to_cpu._unsloth_host_copy = True
+    group_cls._to_cpu = staticmethod(_to_cpu)
+    return True
+
+
 def install_group_offload_buffer_restore() -> bool:
-    """diffusers stream group offload restores only parameters, leaving buffers (native int8 weights) on the GPU."""
+    """Fix buffer restoration and torchao host-copy aliasing in diffusers stream group offload."""
     try:
         from diffusers.hooks import group_offloading as go
     except Exception:  # noqa: BLE001 - no group offload in this diffusers
         return False
+    _install_group_offload_torchao_host_copy(go)
     group_cls = getattr(go, "ModuleGroup", None)
     original = getattr(group_cls, "_offload_to_memory", None)
     if original is None or getattr(original, "_unsloth_buffer_restore", False):
@@ -3667,6 +3693,9 @@ def _apply_group_offload(
                 _pin_vision_embedding_device(module)
                 if te_room > 0:
                     te_room -= _keep_groups_resident(module, te_room, onload, logger)
+                if getattr(pipe, "_unsloth_small_host", None):
+                    from .diffusion_small_host import install_encoder_prefetch
+                    install_encoder_prefetch(module, onload, logger)
             except Exception as exc:  # noqa: BLE001 -- degrade this encoder, never fail the load
                 if not stream_transformer and installed == 0:
                     # Resident encoder here would OOM; fall back to model offload, which rejects partial hooks.
