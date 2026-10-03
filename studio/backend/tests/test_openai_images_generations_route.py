@@ -236,7 +236,6 @@ def test_url_response_shape(client):
     assert "url" in item and "b64_json" not in item  # exclude_none drops the unused key
     # Signed link, not the bearer-gated /file route: an OpenAI client downloads this URL with a plain GET and no auth header.
     assert "/images/gallery/img0/file-signed?token=" in item["url"]
-    # Z-Image-Turbo defaults (8 steps, 0 guidance) flow into the backend call.
     assert client.backend.calls[0] == dict(
         prompt = "a sloth",
         width = 256,

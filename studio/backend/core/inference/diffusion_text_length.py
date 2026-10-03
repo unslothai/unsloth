@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Text-conditioning defaults that follow ComfyUI. No torch/diffusers imports.
-
-FLUX.1 T5 runs unmasked, so pad tokens change the embeddings: ComfyUI pads to 256, diffusers to 512.
-"""
+"""Text-conditioning defaults that follow ComfyUI. FLUX.1 T5 runs unmasked, so padding changes the embeddings."""
 
 from __future__ import annotations
 

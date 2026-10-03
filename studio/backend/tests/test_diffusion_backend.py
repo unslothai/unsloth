@@ -14422,7 +14422,6 @@ def test_diffusion_status_response_keeps_the_gguf_a_swap_replaced():
     assert dumped["artifact"] == "prequant:o/r/f.safetensors"
 
 
-# FLUX.1 T5 length (ComfyUI parity): real prompt length floored at 256, capped at 512.
 class _T5WordTokenizer:
     """One id per whitespace word plus EOS, like T5TokenizerFast on plain words."""
 
@@ -14461,7 +14460,7 @@ def test_generate_passes_flux1_t5_length_like_comfy(fake_runtime, tmp_path, monk
     backend.generate(prompt = "a sloth on a branch", steps = 4, guidance = 0.0)
     assert pipe.last_kwargs["max_sequence_length"] == 256
     backend.generate(prompt = " ".join(["w"] * 320), steps = 4, guidance = 0.0)
-    assert pipe.last_kwargs["max_sequence_length"] == 512  # past 256 tokens: the 512 bucket
+    assert pipe.last_kwargs["max_sequence_length"] == 512
 
 
 def test_generate_leaves_t5_length_alone_off_flux1(fake_runtime, tmp_path):

@@ -6533,7 +6533,6 @@ class VideoBackend:
                 }
             )
 
-            # Sample at ComfyUI's static sigma shift where the shipped scheduler differs.
             apply_comfy_flow_shift(pipe, getattr(fam, "comfy_flow_shift", None), logger)
             from . import diffusion_prompt_cache
 
@@ -7502,7 +7501,6 @@ class VideoBackend:
                 ),
             }
         )
-        # Sample at ComfyUI's static sigma shift where the shipped scheduler differs.
         apply_comfy_flow_shift(pipe, getattr(fam, "comfy_flow_shift", None), logger)
         from . import diffusion_prompt_cache
 
