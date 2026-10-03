@@ -1100,20 +1100,24 @@ export function AudioPage({
               </p>
             </div>
 
-            <PillTabs
-              dataTour="audio-mode"
-              ariaLabel="Audio workflow"
-              value={pageWorkflow}
-              onValueChange={(v) => {
-                if (isAudioWorkflowId(v)) transitionWorkflow(v);
-              }}
-              fit={true}
-              className="h-[calc(30px*var(--ui-space-scale,1))] max-w-full self-start overflow-x-auto [scrollbar-width:none] [&>button]:h-[calc(30px*var(--ui-space-scale,1))] [&>button]:shrink-0 [&>button]:px-2.5"
-              tabs={AUDIO_WORKFLOWS.map(({ id, label }) => ({
-                value: id,
-                label,
-              }))}
-            />
+            {/* Five tabs can outgrow a narrow rail, so this wrapper scrolls them. Overflow on the tab list
+                itself clipped the selected pill's edge and shadow; the padding leaves room for both. */}
+            <div className="-m-1.5 shrink-0 self-start overflow-x-auto p-1.5 [max-width:calc(100%+0.75rem)] [scrollbar-width:none]">
+              <PillTabs
+                dataTour="audio-mode"
+                ariaLabel="Audio workflow"
+                value={pageWorkflow}
+                onValueChange={(v) => {
+                  if (isAudioWorkflowId(v)) transitionWorkflow(v);
+                }}
+                fit={true}
+                className="h-[calc(30px*var(--ui-space-scale,1))] max-w-none [&>button]:h-[calc(30px*var(--ui-space-scale,1))] [&>button]:shrink-0 [&>button]:px-2.5"
+                tabs={AUDIO_WORKFLOWS.map(({ id, label }) => ({
+                  value: id,
+                  label,
+                }))}
+              />
+            </div>
 
             {mode === "speak" ? (
               (() => {
