@@ -41,11 +41,7 @@ class FastVoxtralModel:
         return model
 
     @staticmethod
-    def from_pretrained(
-        model_name,
-        *args,
-        **kwargs,
-    ):
+    def from_pretrained(model_name, *args, **kwargs):
         from unsloth.models.loader import FastModel
 
         # Same pre-patch protocol as FastLlamaModel.from_pretrained: snapshot the
