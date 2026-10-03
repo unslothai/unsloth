@@ -52,7 +52,8 @@ def probe_llm_compressor_for_compressed_export() -> Dict[str, Any]:
     consent_kind = None
     install_summary = None
     blocked_reason = None
-    if shadow_valid:
+    # export.py ignores even a valid shadow once UNSLOTH_DISABLE_LLMCOMPRESSOR_MAIN is set.
+    if shadow_valid and not shadow_disabled:
         ready = True
     elif not shadow_disabled and not offline:
         ready = False

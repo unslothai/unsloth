@@ -31,6 +31,8 @@ def lce():
         (False, False, True, True, False, True, None, False),
         (False, True, False, False, False, False, "workspace", False),
         (False, True, False, False, True, False, None, True),
+        (True, True, False, False, False, False, "workspace", False),
+        (True, True, False, True, False, True, None, False),
     ],
 )
 def test_probe_routing(
