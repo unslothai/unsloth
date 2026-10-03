@@ -4660,6 +4660,7 @@ def write_openclaw_config(
     if window:
         window = int(window)
         provider_model["contextWindow"] = window
+        # Unset, OpenClaw caps every reply at 8192 (DEFAULT_MODEL_MAX_TOKENS) whatever the window.
         provider_model["maxTokens"] = _agent_output_limit(window, max_tokens)
     elif max_tokens:
         provider_model["maxTokens"] = max_tokens
