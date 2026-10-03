@@ -139,6 +139,57 @@ def test_an_unrelated_import_error_still_surfaces(monkeypatch, fake_peft):
         lora_model.dispatch_torchao(types.SimpleNamespace(weight = object()), "default", None)
 
 
+def test_a_torchao_without_the_dtypes_package_gets_a_plain_lora_layer(monkeypatch, fake_peft):
+    """torchao main (after 0.18) deleted the whole ``torchao.dtypes`` package, so peft <= 0.18's
+    first import inside ``dispatch_torchao`` is a ModuleNotFoundError naming the package, not the
+    class. That is the same removal, and every LoRA target must still fall through to peft's
+    ordinary layer instead of failing the load."""
+    lora_torchao, lora_model = fake_peft
+    monkeypatch.delitem(sys.modules, "torchao.dtypes")  # the fake torchao has no __path__: the import fails
+    monkeypatch.delattr(sys.modules["torchao"], "dtypes")
+    monkeypatch.setattr(
+        sys.modules["torchao"], "__spec__", importlib.machinery.ModuleSpec("torchao", None)
+    )
+
+    # peft <= 0.18's first torchao import, defined in the fake peft module so the guard reads its globals.
+    namespace = dict(lora_torchao.__dict__)
+    exec(
+        "def dispatch_torchao(target, adapter_name, lora_config, **kwargs):\n"
+        "    from torchao.dtypes import AffineQuantizedTensor\n",
+        namespace,
+    )
+    removed = namespace["dispatch_torchao"]
+    monkeypatch.setattr(lora_torchao, "dispatch_torchao", removed)
+    monkeypatch.setattr(lora_model, "dispatch_torchao", removed)
+    with pytest.raises(ModuleNotFoundError, match = "torchao.dtypes"):
+        removed(types.SimpleNamespace(weight = object()), "default", None)
+    patches._patch_peft_torchao_dispatchers()
+    assert (
+        lora_model.dispatch_torchao(types.SimpleNamespace(weight = object()), "default", None) is None
+    )
+
+
+@pytest.mark.parametrize(
+    "message",
+    (
+        "No module named 'torchao'",
+        "No module named 'torchao.dtypes.uintx'",
+        "No module named 'torchao.dtypesx'",
+    ),
+)
+def test_other_missing_modules_still_surface(monkeypatch, fake_peft, message):
+    lora_torchao, lora_model = fake_peft
+
+    def broken(target, adapter_name, lora_config, **kwargs):
+        raise ModuleNotFoundError(message)
+
+    monkeypatch.setattr(lora_torchao, "dispatch_torchao", broken)
+    monkeypatch.setattr(lora_model, "dispatch_torchao", broken)
+    patches._patch_peft_torchao_dispatchers()
+    with pytest.raises(ModuleNotFoundError):
+        lora_model.dispatch_torchao(types.SimpleNamespace(weight = object()), "default", None)
+
+
 def test_the_guard_waits_for_peft_instead_of_importing_it(monkeypatch):
     monkeypatch.delitem(sys.modules, patches._PEFT_LORA_DISPATCH_MODULE, raising = False)
     monkeypatch.setattr(
