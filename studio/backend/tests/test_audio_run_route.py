@@ -226,6 +226,20 @@ def test_client_paths_and_unknown_fields_are_422(stub, body):
     assert stub["backend"].calls == []
 
 
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"min_new_audio_steps": 10, "max_new_audio_steps": 900},  # FireRedAudio
+        {"no_ref": True},  # Irodori
+        {"audio_chunk_threshold_sec": 30, "audio_chunk_duration_sec": 20},  # DramaBox
+    ],
+)
+def test_settings_named_after_audio_are_not_file_options(options):
+    from models.inference import AudioRunRequest
+    request = AudioRunRequest(workflow = "speak", text = "hi", options = options)
+    assert request.options == options
+
+
 @pytest.mark.parametrize("kind", ["input_id", "clip_id", "voice_id"])
 def test_another_accounts_ids_are_404(stub, kind):
     input_id = _input(ALICE)
@@ -1039,3 +1053,38 @@ def test_the_worker_separates_into_paths_not_bytes():
     )
     refused = responses.get_nowait()
     assert refused["type"] == "audio_error" and refused["code"] == "audio_unsupported_backend"
+
+
+def test_the_worker_keeps_run_fields_off_a_backend_without_them():
+    from core.inference.worker import _handle_generate_audio
+
+    seen = []
+
+    class _Native:
+        def generate_audio_response(
+            self,
+            text,
+            temperature = 0.6,
+            top_p = 0.95,
+            top_k = 50,
+            min_p = 0.0,
+            max_new_tokens = 2048,
+            repetition_penalty = 1.0,
+            use_adapter = None,
+            cancel_event = None,
+            instructions = None,
+            language = None,
+            seed = None,
+        ):
+            seen.append(text)
+            return _wav(), 24000
+
+    replies = queue.Queue()
+    speak = {"request_id": "r1", "text": "hi", "workflow": "speak", "speed": 1.1}
+    _handle_generate_audio(_Native(), speak, replies, threading.Event())
+    assert replies.get_nowait()["type"] == "audio_done" and seen == ["hi"]
+    clone = {"request_id": "r2", "text": "hi", "audio_inputs": {"reference": "/abs/ref.wav"}}
+    _handle_generate_audio(_Native(), clone, replies, threading.Event())
+    error = replies.get_nowait()
+    assert error["type"] == "audio_error" and error["status"] == 400
+    assert seen == ["hi"]

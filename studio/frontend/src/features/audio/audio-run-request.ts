@@ -23,6 +23,22 @@ export interface AudioSourceSelection {
   language?: string | null;
 }
 
+/** A gallery clip as a source: its text doubles as the transcript. */
+export function clipReference(clip: {
+  id: string;
+  prompt: string;
+  duration_s: number | null;
+}): AudioSourceSelection {
+  return {
+    kind: "clip",
+    id: clip.id,
+    name: clip.prompt || "Generated clip",
+    durationS: clip.duration_s,
+    transcript: clip.prompt || null,
+    language: null,
+  };
+}
+
 export function sourceRefOf(selection: AudioSourceSelection): AudioSourceRef {
   switch (selection.kind) {
     case "input":

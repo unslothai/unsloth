@@ -344,6 +344,10 @@ test("the host renders Separate's rail, footer and output and the page reuses th
   assert.match(page, /<AudioSourceInput\s+id="separate-source"/);
   assert.match(page, /Converted to 44\.1 kHz automatically/);
   assert.match(page, /allowSavedVoice=\{false\}/);
+  // The track card speaks of a track, not a clone reference, and records up to the cap.
+  assert.match(page, /expiredMessage=\{SEPARATE_TRACK_EXPIRED_MESSAGE\}/);
+  assert.match(page, /maxRecordSeconds=\{SEPARATE_MAX_SECONDS\}/);
+  assert.match(page, /recordHint="[^"]*track[^"]*"/);
   assert.match(page, /<StemMixer/);
   assert.match(page, /groupSeparationClips\(clips, hasMore\)/);
   assert.match(page, /aria-live="polite"/);

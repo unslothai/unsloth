@@ -40,6 +40,8 @@ import {
   type AudioGenerationPhase,
   audioGenerationPresentation,
 } from "./audio-page-policy";
+import { clipReference } from "./audio-run-request";
+import { AudioActiveProvider } from "./components/audio-source-input";
 import { type CreateMode, deviceSizeBytes } from "./audio-workspace-utils";
 import {
   audioCapabilityLine,
@@ -60,6 +62,7 @@ import {
   CloneFooter,
   CloneOutput,
   CloneRail,
+  adoptReference,
   clonePageModels,
 } from "./pages/clone-page";
 import { MusicOutput, MusicRail, musicPageModels } from "./pages/music-page";
@@ -565,6 +568,9 @@ export function AudioPage({
   // Send to: only pages that can take a finished clip today. Bytes first, so a failed fetch leaves the page.
   const sendHandlersFor = useCallback(
     (clip: AudioGalleryClip): ClipSendHandlers => ({
+      clone: () => {
+        if (transitionWorkflow("clone")) adoptReference(clipReference(clip));
+      },
       transcribe: () => {
         // Switching mid-run stops the run, and the stopped run still holds the page busy, so the
         // transcription would be refused and the clip silently dropped.
@@ -1155,11 +1161,13 @@ export function AudioPage({
                       pageModelId={lastPageModel}
                     />
                   ) : ttsWorkflow === "clone" ? (
-                    <CloneRail
-                      {...railProps}
-                      clone={clone}
-                      historyClips={clips}
-                    />
+                    <AudioActiveProvider value={active}>
+                      <CloneRail
+                        {...railProps}
+                        clone={clone}
+                        historyClips={clips}
+                      />
+                    </AudioActiveProvider>
                   ) : (
                     <SpeakRail {...railProps} />
                   );

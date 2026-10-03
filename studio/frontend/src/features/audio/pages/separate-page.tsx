@@ -30,9 +30,15 @@ import type { SendTarget } from "../components/stem-mixer-types";
 import { stemFileName, stemZipName, zipStems } from "../components/stem-zip";
 import type { AudioHostState } from "../hooks/audio-host-state";
 import type { AudioGallery } from "../hooks/use-audio-gallery";
-import type { SeparateGeneration } from "../hooks/use-separate-generation";
+import {
+  SEPARATE_TRACK_EXPIRED_MESSAGE,
+  type SeparateGeneration,
+} from "../hooks/use-separate-generation";
 import { useStemSources } from "../hooks/use-stem-sources";
-import { separatePresentation } from "../separate-policy";
+import {
+  SEPARATE_MAX_SECONDS,
+  separatePresentation,
+} from "../separate-policy";
 import {
   SEPARATION_STEMS_BY_FAMILY,
   type SeparationGroup,
@@ -142,6 +148,9 @@ function SeparateInputs({
           disabled={disabled}
           allowSavedVoice={false}
           usesFirstSeconds={null}
+          expiredMessage={SEPARATE_TRACK_EXPIRED_MESSAGE}
+          recordHint="Play the track near the mic, up to 10 minutes."
+          maxRecordSeconds={SEPARATE_MAX_SECONDS}
           handleRef={separate.sourceHandle}
           onStatusChange={separate.setSourceStatus}
         />
