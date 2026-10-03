@@ -44,6 +44,8 @@ import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 
 const MIN_NAVIGATOR_TURNS = 3;
+// how far an overflowing rail's ends fade out, scaled by how much is hidden past each end
+const RAIL_FADE_PX = 24;
 const PROMPT_PREVIEW_CHARS = 240;
 const REPLY_PREVIEW_CHARS = 480;
 // long enough to cross from a marker onto the card
@@ -501,12 +503,19 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
     let frame = 0;
     const sync = () => {
       frame = 0;
-      const railRange = rail.scrollHeight - rail.clientHeight;
-      if (railRange <= 0) {
-        return;
-      }
+      const railRange = Math.max(0, rail.scrollHeight - rail.clientHeight);
       const range = viewport.scrollHeight - viewport.clientHeight;
-      rail.scrollTop = range > 0 ? (viewport.scrollTop / range) * railRange : 0;
+      rail.scrollTop =
+        railRange > 0 && range > 0
+          ? (viewport.scrollTop / range) * railRange
+          : 0;
+      const fade = (hidden: number) =>
+        `${Math.min(Math.max(hidden, 0), RAIL_FADE_PX)}px`;
+      rail.style.setProperty("--rail-fade-top", fade(rail.scrollTop));
+      rail.style.setProperty(
+        "--rail-fade-bottom",
+        fade(railRange - rail.scrollTop),
+      );
     };
     const schedule = () => {
       if (!frame) {
@@ -515,8 +524,13 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
     };
     sync();
     viewport.addEventListener("scroll", schedule, { passive: true });
+    // the rail eases to a new height on resize, so keep its ends in step
+    const resize = new ResizeObserver(schedule);
+    resize.observe(rail);
+    resize.observe(viewport);
     return () => {
       viewport.removeEventListener("scroll", schedule);
+      resize.disconnect();
       cancelAnimationFrame(frame);
     };
   }, [viewportRef, turnCount]);
@@ -593,7 +607,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
             onPointerLeave={hidePreview}
             onFocus={showPreview}
             onBlur={hidePreview}
-            className="group flex min-h-1 w-full flex-1 cursor-pointer items-center justify-end rounded-sm pr-1.5 outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="group flex h-3 w-full shrink-0 cursor-pointer items-center justify-end rounded-sm pr-1.5 outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
             <span
               className={cn(
@@ -645,7 +659,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
           onPointerMove={onRailPointerMove}
           onPointerLeave={clearMagnify}
           onScroll={onRailScroll}
-          className="aui-turn-navigator group/rail pointer-events-auto absolute top-0 right-[-1.125rem] hidden w-8 -translate-y-1/2 flex-col overflow-y-hidden py-1 [contain:layout_paint] @[1.5rem]/turn-gutter:flex"
+          className="aui-turn-navigator group/rail pointer-events-auto absolute top-0 right-[-1.125rem] hidden w-8 -translate-y-1/2 flex-col overflow-y-hidden py-1 transition-[height] duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] [contain:layout_paint] [mask-image:linear-gradient(to_bottom,transparent,#000_var(--rail-fade-top,0px),#000_calc(100%_-_var(--rail-fade-bottom,0px)),transparent)] motion-reduce:transition-none @[1.5rem]/turn-gutter:flex"
         >
           {markers}
         </nav>
