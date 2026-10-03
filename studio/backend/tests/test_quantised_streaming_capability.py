@@ -91,13 +91,24 @@ def test_a_cold_warm_resolves_it_once_a_load_has_loaded_the_stack(monkeypatch, l
     assert calls == ([1] if loaded else [])
 
 
+def test_an_image_load_alone_resolves_it(monkeypatch):
+    """An early image load makes the post-warm probe stand down and never loads core.inference.video,
+    so requiring it kept the streamed tier hidden for the rest of the process."""
+    for name in _STREAMING_MODULES:
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    monkeypatch.delitem(sys.modules, "core.inference.video", raising = False)
+    namespace: dict = {"_quantised_streaming_capability": None, "sys": sys}
+    exec(_src("_quantised_streaming"), namespace)  # noqa: S102
+    namespace["_refresh_quantised_streaming_capability"] = lambda: True
+    assert namespace["_quantised_streaming"]() is True
+
+
 _STREAMING_MODULES = (
     "torch",
     "torchao",
     "diffusers",
     "diffusers.hooks",
     "diffusers.hooks.group_offloading",
-    "core.inference.video",
 )
 
 
