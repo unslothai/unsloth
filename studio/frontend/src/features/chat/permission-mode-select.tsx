@@ -211,7 +211,7 @@ export function FullAccessConfirmContent({
   return (
     // Backdrop click cancels; no ring.
     <AlertDialogContent
-      className="gap-5 p-7 ring-0 data-[size=default]:sm:max-w-[calc(480px*var(--ui-space-scale,1))]"
+      className="gap-5 p-7 ring-0 data-[size=default]:sm:max-w-[calc(500px*var(--ui-space-scale,1))]"
       onOverlayClick={onClose}
       // Focus the card, not Cancel, so Cancel shows no focus border until tabbed to.
       onOpenAutoFocus={(event) => {
@@ -261,7 +261,8 @@ export function FullAccessConfirmContent({
         </button>
       </p>
       <AlertDialogFooter className="mt-1">
-        <AlertDialogCancel>Cancel</AlertDialogCancel>
+        {/* Muted, not outline: outline keeps a border in light mode. */}
+        <AlertDialogCancel variant="muted">Cancel</AlertDialogCancel>
         <AlertDialogAction variant="destructive" onClick={onConfirm}>
           Turn on
         </AlertDialogAction>
