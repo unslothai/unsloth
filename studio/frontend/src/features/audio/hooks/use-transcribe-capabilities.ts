@@ -6,10 +6,9 @@ import { sttEngineForRepoId, sttSidecarKeyFor } from "../catalog";
 import { fetchSttCapabilities } from "../transcribe-api";
 import type { SttCapabilities } from "../transcribe-capabilities";
 
-// Answers rarely change (an aligner download is the one case), so one fetch per model per visit.
+// Answers change only after an aligner download, so one fetch per model per visit.
 const cache = new Map<string, SttCapabilities>();
 
-/** What the picked speech-to-text model can add: timestamps, speakers. Null while unknown. */
 export function useTranscribeCapabilities(repo: string | null) {
   const model = repo ? sttSidecarKeyFor(repo) : null;
   const engine = repo ? sttEngineForRepoId(repo) : null;
@@ -45,7 +44,6 @@ export function useTranscribeCapabilities(repo: string | null) {
     return () => controller.abort();
   }, [key, model, engine, generation]);
 
-  /** Asks again, e.g. after a run downloaded the timing aligner. */
   const refresh = useCallback(() => setGeneration((value) => value + 1), []);
 
   return { caps, loading, refresh };

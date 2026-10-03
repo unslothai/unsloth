@@ -105,11 +105,8 @@ export function AudioSourceInput({
   handleRef?: Ref<AudioSourceInputHandle>;
   /** Hears what the card is doing (uploading, failed, expired), for the page's Generate blocker. */
   onStatusChange?: (status: AudioSourceStatus) => void;
-  /** Longest recording this page accepts; references keep the 5 minute default. */
   maxRecordSeconds?: number;
-  /** What the card says when the server no longer has the upload, in the page's own words. */
   expiredMessage?: string;
-  /** How much of a long clip the page uses, said on the card; null when it uses all of it. */
   usesFirstSeconds?: number | null;
 }) {
   const source = useAudioSource({ value, onChange, maxRecordSeconds });

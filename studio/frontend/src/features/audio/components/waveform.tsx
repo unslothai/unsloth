@@ -17,7 +17,6 @@ import { WAVEFORM_BARS, formatSeconds } from "./waveform-peaks";
 
 const SEEK_STEP_SECONDS = 5;
 
-/** Lets a page drive the player, e.g. a transcript timestamp that plays from its start. */
 export interface WaveformControl {
   seek: (seconds: number, play?: boolean) => void;
   toggle: () => void;
@@ -45,7 +44,6 @@ export function Waveform({
   label: string;
   className?: string;
   controlRef?: Ref<WaveformControl>;
-  /** Hears the play position, for following along in a transcript. */
   onPositionChange?: (seconds: number, playing: boolean) => void;
 }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);

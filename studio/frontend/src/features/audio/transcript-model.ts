@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Pure transcript helpers: no imports, so node tests can load this file directly.
+// No imports, so node tests can load this file directly.
 
 export interface TranscriptSegment {
   start: number;
   end: number;
   text: string;
-  /** The model's raw speaker id (S01, 0), when it told speakers apart. */
+  /** The model's raw id (S01, 0). */
   speaker?: string;
 }
 
@@ -23,12 +23,18 @@ export interface TranscriptSpeaker {
   label: string;
 }
 
-/** Everything beyond the plain text: the timing, the speakers and where the audio came from. */
+/** Ids only, never a server path. */
+export interface TranscriptSource {
+  kind: "input" | "clip" | "voice";
+  id: string;
+  name: string;
+}
+
 export interface TranscriptDetails {
   segments: TranscriptSegment[];
   words: TranscriptWord[];
   speakers: TranscriptSpeaker[];
-  source: { kind: "input" | "clip" | "voice"; id: string; name: string } | null;
+  source: TranscriptSource | null;
   language: string | null;
   duration: number | null;
 }
@@ -44,7 +50,7 @@ export const EMPTY_TRANSCRIPT_DETAILS: TranscriptDetails = {
 
 export const SPEAKER_NAME_MAX_LENGTH = 40;
 
-/** The segment playing at `seconds`, or -1. In a gap the previous segment stays current. */
+/** In a gap the previous segment stays current. */
 export function activeSegmentIndex(
   seconds: number,
   segments: readonly TranscriptSegment[],
@@ -60,7 +66,6 @@ export function activeSegmentIndex(
   return low;
 }
 
-/** What a speaker is called: the user's name for them, else the default label, else the raw id. */
 export function speakerLabel(
   id: string,
   speakers: readonly TranscriptSpeaker[],
@@ -71,7 +76,6 @@ export function speakerLabel(
   return speakers.find((speaker) => speaker.id === id)?.label ?? id;
 }
 
-/** 1-based position of a speaker, for its colour (cycled by the caller). */
 export function speakerIndex(
   id: string,
   speakers: readonly TranscriptSpeaker[],
@@ -80,13 +84,12 @@ export function speakerIndex(
   return index < 0 ? 1 : index + 1;
 }
 
-export interface TranscriptParagraph {
+interface TranscriptParagraph {
   speaker?: string;
   start: number;
   text: string;
 }
 
-/** Consecutive segments by one speaker joined into one paragraph, for the Text view. */
 export function paragraphs(
   segments: readonly TranscriptSegment[],
   speakersOn: boolean,
@@ -104,7 +107,6 @@ export function paragraphs(
   return speakersOn ? result : [];
 }
 
-/** `m:ss`, or `h:mm:ss` past an hour. */
 export function formatTimestamp(seconds: number): string {
   const total = Math.max(0, Math.floor(Number.isFinite(seconds) ? seconds : 0));
   const hours = Math.floor(total / 3600);
@@ -119,7 +121,6 @@ export function hasTimestamps(details: TranscriptDetails | null): boolean {
   return Boolean(details && details.segments.length > 0);
 }
 
-/** A trimmed single-line name, capped; empty means "use the default label". */
 export function sanitizeSpeakerName(name: string): string {
   return name.replace(/\s+/g, " ").trim().slice(0, SPEAKER_NAME_MAX_LENGTH);
 }
@@ -130,7 +131,7 @@ function finiteSeconds(value: unknown): number | null {
     : null;
 }
 
-/** Details from a stream result, saved record or draft; malformed entries are dropped. */
+/** From a stream result, saved record or draft; malformed entries are dropped. */
 export function detailsFrom(value: {
   segments?: unknown;
   words?: unknown;
@@ -140,28 +141,22 @@ export function detailsFrom(value: {
   duration?: unknown;
 }): TranscriptDetails {
   const segments: TranscriptSegment[] = [];
-  if (Array.isArray(value.segments)) {
-    for (const item of value.segments) {
-      if (!item || typeof item !== "object") continue;
-      const start = finiteSeconds(item.start);
-      const end = finiteSeconds(item.end);
-      if (start === null || end === null || end < start) continue;
-      if (typeof item.text !== "string") continue;
-      const segment: TranscriptSegment = { start, end, text: item.text };
-      if (typeof item.speaker === "string" && item.speaker)
-        segment.speaker = item.speaker;
-      segments.push(segment);
-    }
-  }
   const words: TranscriptWord[] = [];
-  if (Array.isArray(value.words)) {
-    for (const item of value.words) {
+  for (const [list, key] of [
+    [value.segments, "text"],
+    [value.words, "word"],
+  ] as const) {
+    if (!Array.isArray(list)) continue;
+    for (const item of list) {
       if (!item || typeof item !== "object") continue;
       const start = finiteSeconds(item.start);
       const end = finiteSeconds(item.end);
       if (start === null || end === null || end < start) continue;
-      if (typeof item.word !== "string") continue;
-      words.push({ start, end, word: item.word });
+      if (typeof item[key] !== "string") continue;
+      if (key === "word") words.push({ start, end, word: item.word });
+      else if (typeof item.speaker === "string" && item.speaker)
+        segments.push({ start, end, text: item.text, speaker: item.speaker });
+      else segments.push({ start, end, text: item.text });
     }
   }
   const speakers: TranscriptSpeaker[] = [];
@@ -173,21 +168,14 @@ export function detailsFrom(value: {
       speakers.push({ id: item.id, label: item.label });
     }
   }
-  const raw = value.source as
-    | { kind?: unknown; id?: unknown; name?: unknown }
-    | null
-    | undefined;
-  const source: TranscriptDetails["source"] =
+  const raw = value.source as Partial<Record<string, unknown>> | null;
+  const source: TranscriptSource | null =
     raw &&
     typeof raw === "object" &&
     (raw.kind === "input" || raw.kind === "clip" || raw.kind === "voice") &&
     typeof raw.id === "string" &&
     typeof raw.name === "string"
-      ? {
-          kind: raw.kind as "input" | "clip" | "voice",
-          id: raw.id,
-          name: raw.name,
-        }
+      ? { kind: raw.kind, id: raw.id, name: raw.name }
       : null;
   return {
     segments,

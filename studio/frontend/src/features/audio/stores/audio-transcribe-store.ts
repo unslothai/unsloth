@@ -9,7 +9,6 @@ export const AUDIO_TRANSCRIBE_STORAGE_KEY = "unsloth_audio_transcribe_v1";
 
 export type TranscriptView = "text" | "segments";
 
-/** Transcribe's draft: the picked audio and switches, kept across page switches and reloads. */
 interface AudioTranscribeState {
   source: AudioSourceSelection | null;
   /** Empty means Auto. */

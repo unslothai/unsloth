@@ -17,7 +17,6 @@ type PlayerState =
       durationS: number | null;
     };
 
-/** The audio a transcript came from, to play and follow along. It never starts on its own. */
 export function TranscriptPlayer({
   source,
   durationS,
@@ -26,11 +25,9 @@ export function TranscriptPlayer({
   onAvailableChange,
 }: {
   source: TranscriptDetails["source"];
-  /** The transcript's own duration, for when the audio cannot be decoded. */
   durationS: number | null;
   controlRef?: Ref<WaveformControl>;
   onPositionChange?: (seconds: number, playing: boolean) => void;
-  /** Whether there is audio to seek in, so timestamps can stay plain text without it. */
   onAvailableChange?: (available: boolean) => void;
 }) {
   const [state, setState] = useState<PlayerState>({ status: "idle" });
@@ -56,7 +53,6 @@ export function TranscriptPlayer({
         setState({ status: "ready", url, ...decoded });
       })
       .catch(() => {
-        // A 404 means the upload expired or the clip was deleted; anything else is no better.
         if (!controller.signal.aborted) setState({ status: "missing" });
       });
     return () => {
@@ -65,7 +61,8 @@ export function TranscriptPlayer({
     };
   }, [kind, id]);
 
-  const available = state.status === "ready";
+  const ready = state.status === "ready" ? state : null;
+  const available = ready !== null;
   useEffect(() => {
     onAvailableChange?.(available);
   }, [onAvailableChange, available]);
@@ -81,11 +78,9 @@ export function TranscriptPlayer({
   }
   return (
     <Waveform
-      peaks={state.status === "ready" ? state.peaks : null}
-      durationS={
-        state.status === "ready" ? (state.durationS ?? durationS) : durationS
-      }
-      src={state.status === "ready" ? state.url : null}
+      peaks={ready?.peaks ?? null}
+      durationS={ready?.durationS ?? durationS}
+      src={ready?.url ?? null}
       label={source.name || "Transcript audio"}
       controlRef={controlRef}
       onPositionChange={onPositionChange}

@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Transcript file formats. Type imports only, so node tests can load this file directly.
-
-import type {
-  TranscriptDetails,
-  TranscriptSegment,
-  TranscriptSpeaker,
+import {
+  type TranscriptDetails,
+  type TranscriptSegment,
+  speakerLabel,
 } from "./transcript-model.ts";
 
 export type TranscriptExportFormat = "txt" | "srt" | "vtt" | "json";
@@ -18,13 +16,11 @@ export const TRANSCRIPT_EXPORT_FORMATS: readonly TranscriptExportFormat[] = [
   "json",
 ];
 
-/** Everything a transcript file is built from. */
 export interface TranscriptExport {
   title: string;
   text: string;
   model: string;
   details: TranscriptDetails;
-  /** The user's names for speakers, by raw id. */
   names: Readonly<Record<string, string>>;
 }
 
@@ -35,23 +31,14 @@ const MIME: Record<TranscriptExportFormat, string> = {
   json: "application/json;charset=utf-8",
 };
 
-/** SRT and VTT need timed segments; without them they would be one cue for the whole clip. */
 export function formatNeedsTimestamps(format: TranscriptExportFormat): boolean {
   return format === "srt" || format === "vtt";
 }
 
-// Local copy of transcript-model's rule, so this file stays free of runtime imports.
-function nameOf(
-  id: string,
-  speakers: readonly TranscriptSpeaker[],
-  names: Readonly<Record<string, string>>,
-): string {
-  const named = names[id]?.trim();
-  if (named) return named;
-  return speakers.find((speaker) => speaker.id === id)?.label ?? id;
+function nameOf(input: TranscriptExport, id: string): string {
+  return speakerLabel(id, input.details.speakers, input.names);
 }
 
-/** Whether the file should say who is talking: the model told speakers apart. */
 function speakersOn(input: TranscriptExport): boolean {
   return (
     input.details.speakers.length > 0 &&
@@ -59,7 +46,7 @@ function speakersOn(input: TranscriptExport): boolean {
   );
 }
 
-/** A cue's text on as few lines as it needs: a blank line would end the cue early. */
+// A blank line would end the cue early.
 function cueText(text: string): string {
   return text
     .split(/\r?\n/)
@@ -79,15 +66,26 @@ function clock(seconds: number, separator: "," | "."): string {
   return `${pad(Math.floor(whole / 3600))}:${pad(Math.floor((whole % 3600) / 60))}:${pad(whole % 60)}${separator}${pad(millis, 3)}`;
 }
 
-/** The timed cues, or one cue spanning the clip when the model gave no timing. */
-function cues(input: TranscriptExport): TranscriptSegment[] {
-  if (input.details.segments.length > 0) return input.details.segments;
-  if (!input.text.trim()) return [];
-  return [{ start: 0, end: input.details.duration ?? 0, text: input.text }];
+/** Without timing, one cue spans the clip. */
+function cues(input: TranscriptExport) {
+  const { segments, duration } = input.details;
+  const timed: TranscriptSegment[] =
+    segments.length > 0
+      ? segments
+      : input.text.trim()
+        ? [{ start: 0, end: duration ?? 0, text: input.text }]
+        : [];
+  const on = speakersOn(input);
+  return timed
+    .map((segment) => ({
+      segment,
+      text: cueText(segment.text),
+      name: on && segment.speaker ? nameOf(input, segment.speaker) : null,
+    }))
+    .filter(({ text }) => text);
 }
 
 export function toTxt(input: TranscriptExport): string {
-  // Without speakers the file is the text exactly as shown, as before this PR.
   if (!speakersOn(input)) return input.text;
   const blocks: string[] = [];
   let previous: string | undefined;
@@ -100,26 +98,17 @@ export function toTxt(input: TranscriptExport): string {
     }
     previous = segment.speaker;
     blocks.push(
-      segment.speaker
-        ? `${nameOf(segment.speaker, input.details.speakers, input.names)}: ${text}`
-        : text,
+      segment.speaker ? `${nameOf(input, segment.speaker)}: ${text}` : text,
     );
   }
   return `${blocks.join("\n\n")}\n`;
 }
 
 export function toSrt(input: TranscriptExport): string {
-  const on = speakersOn(input);
-  const blocks = cues(input)
-    .map((segment) => ({ segment, text: cueText(segment.text) }))
-    .filter(({ text }) => text)
-    .map(({ segment, text }, index) => {
-      const name =
-        on && segment.speaker
-          ? `${nameOf(segment.speaker, input.details.speakers, input.names)}: `
-          : "";
-      return `${index + 1}\n${clock(segment.start, ",")} --> ${clock(segment.end, ",")}\n${name}${text}`;
-    });
+  const blocks = cues(input).map(
+    ({ segment, text, name }, index) =>
+      `${index + 1}\n${clock(segment.start, ",")} --> ${clock(segment.end, ",")}\n${name === null ? "" : `${name}: `}${text}`,
+  );
   return blocks.length > 0 ? `${blocks.join("\n\n")}\n` : "";
 }
 
@@ -131,17 +120,10 @@ function escapeVtt(text: string): string {
 }
 
 export function toVtt(input: TranscriptExport): string {
-  const on = speakersOn(input);
-  const blocks = cues(input)
-    .map((segment) => ({ segment, text: cueText(segment.text) }))
-    .filter(({ text }) => text)
-    .map(({ segment, text }) => {
-      const voice =
-        on && segment.speaker
-          ? `<v ${escapeVtt(nameOf(segment.speaker, input.details.speakers, input.names))}>`
-          : "";
-      return `${clock(segment.start, ".")} --> ${clock(segment.end, ".")}\n${voice}${escapeVtt(text)}`;
-    });
+  const blocks = cues(input).map(
+    ({ segment, text, name }) =>
+      `${clock(segment.start, ".")} --> ${clock(segment.end, ".")}\n${name === null ? "" : `<v ${escapeVtt(name)}>`}${escapeVtt(text)}`,
+  );
   return `${["WEBVTT", ...blocks].join("\n\n")}\n`;
 }
 
@@ -167,7 +149,6 @@ export function toJson(input: TranscriptExport): string {
   )}\n`;
 }
 
-/** A safe file name from the transcript title: no extension, no path or control characters. */
 export function exportFileName(title: string, ext: string): string {
   const base =
     title
@@ -177,7 +158,6 @@ export function exportFileName(title: string, ext: string): string {
   return `${base}.${ext}`;
 }
 
-/** One format's file content and media type. */
 export function exportTranscript(
   format: TranscriptExportFormat,
   input: TranscriptExport,

@@ -19,8 +19,7 @@ import {
 
 const SPEAKER_COLORS = 5;
 
-/** Who is talking: a coloured dot and the speaker's name, never the colour alone. Click to
- *  rename; the name applies to every line by that speaker. */
+// The name always accompanies the colour, never the colour alone.
 export function SpeakerChip({
   id,
   speakers,
@@ -30,7 +29,6 @@ export function SpeakerChip({
   id: string;
   speakers: readonly TranscriptSpeaker[];
   names: Readonly<Record<string, string>>;
-  /** Saves a cleaned name; "" goes back to the default label. */
   onRename: (id: string, name: string) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -82,7 +80,6 @@ export function SpeakerChip({
               event.preventDefault();
               save();
             }
-            // Escape is handled by the popover, which closes without saving.
           }}
         />
         <p className="text-ui-11p5 leading-snug text-muted-foreground">

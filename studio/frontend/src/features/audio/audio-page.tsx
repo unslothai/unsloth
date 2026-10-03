@@ -59,11 +59,7 @@ import { MusicOutput, MusicRail, musicPageModels } from "./pages/music-page";
 import { SpeakOutput, SpeakRail, speakPageModels } from "./pages/speak-page";
 import { type GenerateBlocker, TtsFooter } from "./pages/tts-workspace";
 import { TranscribeOutput } from "./pages/transcribe-output";
-import {
-  TRANSCRIBE_SOURCE_ID,
-  TranscribeFooter,
-  TranscribeRail,
-} from "./pages/transcribe-page";
+import { TranscribeFooter, TranscribeRail } from "./pages/transcribe-page";
 import { AUDIO_CPP_REPO, audioCppModelFor } from "./audio-cpp-catalog";
 import { selectionExpired } from "./audio-run-request";
 import type { AudioSourceInputHandle } from "./components/audio-source-input";
@@ -85,6 +81,8 @@ import {
   loadedModelRunsWorkflow,
   slotForWorkflow,
 } from "./workflows";
+
+const SPEAKERS_MODEL_REPO = `${AUDIO_CPP_REPO}/MOSS-Transcribe-Diarize-GGUF`;
 
 const MODELS_BY_MODE: Record<CreateMode, ModelOption[]> = {
   speak: audioModelsForTask("tts"),
@@ -684,7 +682,6 @@ export function AudioPage({
     );
     return () => window.clearInterval(timer);
   }, [busy]);
-  // Transcribe: the picked audio, what the model can add, and why the button is off.
   const transcribeSource = useAudioTranscribeStore((state) => state.source);
   const transcribePrefs = useAudioTranscribeStore(
     useShallow((state) => ({
@@ -707,10 +704,7 @@ export function AudioPage({
     transcribePrefs,
     { loading: transcribeCaps.loading, hasModel: transcribeRepo !== null },
   );
-  const transcribeModelName = transcribeRepo
-    ? (transcribeRepo.split("/").pop() ?? transcribeRepo)
-    : "";
-  // Said before the run: loading first is the slow part, and the reason the button waits.
+  const transcribeModelName = transcribeRepo?.split("/").pop() ?? "";
   const transcribeLoadsFirst = Boolean(
     transcribeRepo && !(sttSelected && sttReady),
   );
@@ -718,8 +712,7 @@ export function AudioPage({
     transcribeLoadsFirst &&
     transcribeOptions.request.timestamps &&
     transcribeCaps.caps?.aligner?.downloaded
-      ? // One sentence for both: the load brings the aligner with it.
-        `Loads ${transcribeModelName} with its timing aligner first.`
+      ? `Loads ${transcribeModelName} with its timing aligner first.`
       : [
           transcribeLoadsFirst ? `Loads ${transcribeModelName} first.` : null,
           transcribeOptions.notice,
@@ -734,23 +727,21 @@ export function AudioPage({
     selectionExpired(transcribeSource, Date.now()) ||
     (transcribeSource !== null &&
       transcribeSource.id === expiredTranscribeSourceId);
-  const focusTranscribeSource = useCallback(
-    () => transcribeSourceHandle.current?.focus(),
-    [],
-  );
+  const addAudioActions = [
+    {
+      label: "Add audio",
+      onClick: () => transcribeSourceHandle.current?.focus(),
+    },
+  ];
   const recommendedSttActions = [
     { id: `${AUDIO_CPP_REPO}/Qwen3-ASR-0.6B-GGUF`, name: "Qwen3-ASR 0.6B" },
-    {
-      id: `${AUDIO_CPP_REPO}/MOSS-Transcribe-Diarize-GGUF`,
-      name: SPEAKERS_MODEL_NAME,
-    },
+    { id: SPEAKERS_MODEL_REPO, name: SPEAKERS_MODEL_NAME },
   ].map((model) => ({
     label: `use ${model.name}`,
     onClick: () => handlePickRecommended(model.id),
   }));
   const useSpeakersModel = useCallback(
-    () =>
-      handlePickRecommended(`${AUDIO_CPP_REPO}/MOSS-Transcribe-Diarize-GGUF`),
+    () => handlePickRecommended(SPEAKERS_MODEL_REPO),
     [handlePickRecommended],
   );
   const transcribeBlocker: GenerateBlocker | null =
@@ -771,15 +762,11 @@ export function AudioPage({
                 : transcribeSourceStatus.phase === "error"
                   ? {
                       reason: transcribeSourceStatus.message,
-                      actions: [
-                        { label: "Add audio", onClick: focusTranscribeSource },
-                      ],
+                      actions: addAudioActions,
                     }
                   : {
                       reason: "Add audio to transcribe.",
-                      actions: [
-                        { label: "Add audio", onClick: focusTranscribeSource },
-                      ],
+                      actions: addAudioActions,
                     }
             : transcribeSourceExpired
               ? {
@@ -828,7 +815,6 @@ export function AudioPage({
     transcribeWithSpeakers,
     refreshTranscribeCaps,
   ]);
-  // A finished run moves focus to its transcript and is announced either way.
   const [transcribeAnnouncement, setTranscribeAnnouncement] = useState("");
   const lastTranscribeFinish = useRef<number | null>(transcriptionFinishedAt);
   useEffect(() => {

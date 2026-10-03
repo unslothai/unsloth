@@ -4,9 +4,7 @@
 export const PAGE_SIZE = 50;
 // The list route clamps a page to 200, so asking for more silently gets 200 back.
 export const MAX_PAGE_SIZE = 200;
-// Mirrors MAX_SECONDS in core/inference/audio_inputs.py, so a Transcribe recording is stopped at
-// the boundary rather than uploaded and refused. 30 minutes of the 16 kHz PCM capture stays far
-// under the inputs route's 200 MB cap.
+// MAX_SECONDS in core/inference/audio_inputs.py: stop at the boundary rather than upload and be refused.
 export const RECORDING_MAX_SECONDS = 30 * 60;
 export const TTS_MAX_TOKENS = 8192;
 // Max tokens caps the OUTPUT and the prompt's own tokens sit in the same context window, so

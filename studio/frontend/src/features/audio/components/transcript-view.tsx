@@ -20,7 +20,6 @@ const VIEW_TABS = [
   { value: "segments", label: "Segments" },
 ];
 
-/** The transcript as reading text or as timed lines that play from where they start. */
 export function TranscriptView({
   text,
   details,
@@ -38,10 +37,8 @@ export function TranscriptView({
   onRename: (id: string, name: string) => void;
   view: TranscriptViewMode;
   onViewChange: (view: TranscriptViewMode) => void;
-  /** Where the player is, in seconds. */
   position: number;
   playing: boolean;
-  /** The player to seek; null when the audio is gone, so timestamps are plain text. */
   player: RefObject<WaveformControl | null> | null;
 }) {
   const { segments, speakers } = details;
@@ -51,14 +48,14 @@ export function TranscriptView({
   const shown = hasSegments ? view : "text";
   const active =
     playing || position > 0 ? activeSegmentIndex(position, segments) : -1;
-  // Hour-long transcripts need h:mm:ss; a fixed width in ch keeps rows aligned at any UI size.
+  // A fixed width in ch keeps rows aligned at any UI size; h:mm:ss needs 7.
   const stampWidth =
     hasSegments && segments[segments.length - 1].start >= 3600
       ? "min-w-[7ch]"
       : "min-w-[5ch]";
   const activeRow = useRef<HTMLLIElement | null>(null);
 
-  // Follow along only while playing, so reading ahead while paused is never yanked back.
+  // Only while playing, so reading ahead while paused is never yanked back.
   useEffect(() => {
     if (!playing || active < 0 || shown !== "segments") return;
     activeRow.current?.scrollIntoView({

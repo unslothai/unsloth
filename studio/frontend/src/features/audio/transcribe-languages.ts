@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Transcribe's language list. Speech-to-text runtimes take ISO codes; the TTS LanguageSelect is
-// keyed by names, so it is not reused here. Empty means the model detects the language.
+// ISO codes, unlike the name-keyed TTS LanguageSelect; "" means the model detects it.
 
 export const TRANSCRIBE_LANGUAGES: readonly { code: string; name: string }[] = [
   { code: "", name: "Detect automatically" },
@@ -38,7 +37,6 @@ export const TRANSCRIBE_LANGUAGES: readonly { code: string; name: string }[] = [
   { code: "yue", name: "Cantonese" },
 ];
 
-/** The list a model can use: an English-only model gets no choice, a short list keeps Auto. */
 export function transcribeLanguagesFor(
   modelLanguages: readonly string[] | null | undefined,
 ): readonly { code: string; name: string }[] {

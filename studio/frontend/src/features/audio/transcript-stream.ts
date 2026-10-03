@@ -1,31 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** One timed stretch of a transcript, in seconds. `speaker` is the model's raw id (S01, 0). */
-export interface TranscriptSegmentData {
-  start: number;
-  end: number;
-  text: string;
-  speaker?: string;
-}
-
-export interface TranscriptWordData {
-  start: number;
-  end: number;
-  word: string;
-}
-
-export interface TranscriptSpeakerData {
-  id: string;
-  label: string;
-}
-
-/** Where the audio came from; ids only, never a server path. */
-export interface TranscriptSourceData {
-  kind: "input" | "clip" | "voice";
-  id: string;
-  name: string;
-}
+import type {
+  TranscriptSegment,
+  TranscriptSource,
+  TranscriptSpeaker,
+  TranscriptWord,
+} from "./transcript-model.ts";
 
 export interface TranscriptRecord {
   id: string;
@@ -36,12 +17,11 @@ export interface TranscriptRecord {
   duration: number | null;
   created_at: string;
   archived: boolean;
-  // Optional details; old transcripts have none. The list returns counts, not segments.
-  segments?: TranscriptSegmentData[];
-  words?: TranscriptWordData[];
-  speakers?: TranscriptSpeakerData[];
+  segments?: TranscriptSegment[];
+  words?: TranscriptWord[];
+  speakers?: TranscriptSpeaker[];
   speaker_names?: Record<string, string>;
-  source?: TranscriptSourceData;
+  source?: TranscriptSource;
   timestamps?: boolean;
   segment_count?: number;
   has_words?: boolean;
@@ -51,7 +31,6 @@ export interface TranscriptProgress {
   text: string;
   processed_seconds?: number;
   duration?: number;
-  /** What the server is doing now, for runtimes without progress numbers. */
   phase?: "loading" | "downloading_aligner" | "transcribing";
 }
 
@@ -61,10 +40,10 @@ export interface TranscriptResult {
   duration: number | null;
   record: TranscriptRecord | null;
   language?: string | null;
-  segments?: TranscriptSegmentData[];
-  words?: TranscriptWordData[];
-  speakers?: TranscriptSpeakerData[];
-  source?: TranscriptSourceData;
+  segments?: TranscriptSegment[];
+  words?: TranscriptWord[];
+  speakers?: TranscriptSpeaker[];
+  source?: TranscriptSource;
 }
 
 export async function readTranscriptStream(

@@ -42,7 +42,7 @@ import {
 import { detailsFrom, formatTimestamp } from "./transcript-model";
 import type { TranscriptRecord } from "./transcript-stream";
 
-/** A history row's file. The list carries counts only, so timed formats fetch the full record. */
+// The list carries counts only, so timed formats fetch the full record.
 async function downloadRecord(
   record: TranscriptRecord,
   format: TranscriptExportFormat,
@@ -72,7 +72,6 @@ async function downloadRecord(
   await downloadTranscriptFile(file.content, full.title, file.ext, file.mime);
 }
 
-/** "2 speakers" when the model told them apart, else "Timestamps" when it timed the text. */
 function recordBadge(record: TranscriptRecord): string | null {
   const speakers = record.speakers?.length ?? 0;
   if (speakers > 0)

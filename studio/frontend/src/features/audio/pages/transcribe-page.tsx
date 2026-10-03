@@ -36,8 +36,6 @@ import { GenerateActions, type GenerateBlocker } from "./tts-workspace";
 // Radix Select cannot hold an empty value, so "detect" travels as this.
 const AUTO = "__auto__";
 
-export const TRANSCRIBE_SOURCE_ID = "transcribe-source";
-
 function SwitchRow({
   id,
   label,
@@ -61,7 +59,6 @@ function SwitchRow({
       >
         {label}
         {value.always ? (
-          // A setting the model always applies is a fact, not a control.
           <span
             id={id}
             className="text-ui-11p5 font-normal text-muted-foreground"
@@ -98,7 +95,6 @@ function SwitchRow({
   );
 }
 
-/** Transcribe's rail: the audio, its language, and what to add beyond the text. */
 export function TranscribeRail({
   historyClips,
   disabled,
@@ -113,9 +109,7 @@ export function TranscribeRail({
   sourceHandle: Ref<AudioSourceInputHandle>;
   onSourceStatusChange: (status: AudioSourceStatus) => void;
   switches: TranscribeSwitches;
-  /** The languages the picked model takes; only Auto means it detects on its own. */
   languages: readonly { code: string; name: string }[];
-  /** Picks (or offers to download) the model that adds timestamps and speakers. */
   onUseSpeakersModel?: () => void;
 }) {
   const source = useAudioTranscribeStore((state) => state.source);
@@ -133,7 +127,7 @@ export function TranscribeRail({
     <AudioHistoryProvider value={historyClips}>
       <div data-tour="audio-record">
         <AudioSourceInput
-          id={TRANSCRIBE_SOURCE_ID}
+          id="transcribe-source"
           label="Audio"
           hint="Up to 30 minutes. Drop a file, record, or reuse a clip."
           value={source}
@@ -205,7 +199,6 @@ export function TranscribeRail({
   );
 }
 
-/** Transcribe's footer: one Transcribe button, Stop while it runs, and why it is off when it is. */
 export function TranscribeFooter({
   busy,
   blocker,
@@ -217,23 +210,17 @@ export function TranscribeFooter({
   modelName,
   progress,
 }: Pick<AudioHostState, "busy"> & {
-  /** Why Transcribe is off, said under it, with the fix when there is one. */
   blocker: GenerateBlocker | null;
-  /** Said before a run that costs more than usual (a download, a reload, CPU only). */
   notice: string | null;
-  /** Mod+Enter, as the platform spells it. */
   shortcutLabel: string;
   stopping: boolean;
   onTranscribe: () => void;
   onStop: () => void;
-  /** The picked model's short name, for "Loading …". */
   modelName: string;
-  /** The server's latest step, for runtimes that report no numbers. */
   progress: TranscriptProgress | null;
 }) {
   const running = busy === "transcribing";
   const working = running || busy === "loading";
-  // Elapsed time for the whole run, model load included.
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {

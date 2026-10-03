@@ -5,7 +5,7 @@ import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { exportFileName } from "./transcript-export";
 
-/** Saves one transcript file; false when it failed or the user cancelled the save dialog. */
+/** false when it failed or the user cancelled the save dialog. */
 export async function downloadTranscriptFile(
   text: string,
   title: string,

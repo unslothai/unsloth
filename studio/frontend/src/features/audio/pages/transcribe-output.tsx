@@ -34,7 +34,7 @@ import {
 import type { TranscriptRecord } from "../transcript-stream";
 import { TranscriptionProgress } from "../transcription-progress";
 
-export interface TranscribeOutputProps
+interface TranscribeOutputProps
   extends Pick<
       Transcription,
       | "transcriptionStartedAt"
@@ -54,16 +54,11 @@ export interface TranscribeOutputProps
       | "clearTranscript"
     >,
     Pick<AudioHostState, "busy" | "active" | "mode"> {
-  /** Bumped whenever the shown transcript changes; a download marks only the one it saved. */
   transcriptVersion: { current: number };
-  /** Marks the transcript at `version` as downloaded, so leaving it is not a loss. */
   markExported: (version: number) => void;
-  /** EMPTY_TRANSCRIPT_DETAILS when the transcript has no timing or speakers. */
   transcriptDetails: TranscriptDetails;
   speakerNames: Record<string, string>;
-  /** "" goes back to the default label. */
   renameSpeaker: (id: string, name: string) => void;
-  /** A history row was picked; the host fetches its full details. */
   selectRecord: (record: TranscriptRecord) => void;
 }
 
@@ -74,8 +69,6 @@ const FORMAT_LABELS: Record<TranscriptExportFormat, string> = {
   json: "JSON with timings (.json)",
 };
 
-/** Transcribe's output: progress, then the result (player, actions, Text | Segments), then
- *  saved transcripts. */
 export function TranscribeOutput({
   transcriptionStartedAt,
   transcriptionFinishedAt,
@@ -146,12 +139,11 @@ export function TranscribeOutput({
           />
         )}
         {transcript ? (
-          // The host focuses this after a run and announces it in its own live region.
+          // Focused and announced by the host after a run.
           <section
             id="transcribe-result"
             tabIndex={-1}
             aria-label="Transcript"
-            // A new run keeps the last transcript until its model is ready; dim it meanwhile.
             aria-busy={busy === "loading" ? true : undefined}
             className={cn(
               "flex flex-col gap-3 transition-opacity duration-150 focus-visible:outline-none motion-reduce:transition-none",

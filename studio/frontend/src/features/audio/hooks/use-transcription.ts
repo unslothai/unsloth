@@ -32,14 +32,14 @@ import type {
 import type { AudioHostState } from "./audio-host-state";
 import type { SttSidecar } from "./use-stt-sidecar";
 
-/** What a run asks for beyond the text; the rail works these out from the model's capabilities. */
-export interface TranscribeRunOptions {
-  language: string;
-  timestamps: boolean;
-  speakers: boolean;
+function toastFailure(what: string, error: unknown) {
+  toast.error(
+    error instanceof Error && error.message
+      ? `${what}: ${error.message}`
+      : `${what}.`,
+  );
 }
 
-/** Transcribe's work: the transcript, its timing and speakers, its recovery draft, and the run. */
 export function useTranscription({
   activeRef,
   busyRef,
@@ -188,7 +188,7 @@ export function useTranscription({
   const runTranscription = useCallback(
     async (
       source: AudioSourceSelection,
-      options: TranscribeRunOptions,
+      options: { language: string; timestamps: boolean; speakers: boolean },
       onSourceExpired?: () => void,
       confirmedVersion?: number,
     ) => {
@@ -219,9 +219,7 @@ export function useTranscription({
           {
             ...target,
             device: useVoiceSettingsStore.getState().sttDevice,
-            language: options.language,
-            timestamps: options.timestamps,
-            speakers: options.speakers,
+            ...options,
             signal: controller.signal,
           },
           (progress) => {
@@ -244,12 +242,11 @@ export function useTranscription({
           setTranscriptError("Transcription cancelled.");
           return;
         }
-        const expired =
+        if (
           error instanceof AudioApiError &&
           error.status === 404 &&
-          source.kind === "input";
-        if (expired) {
-          // The card and the footer say so, with the way to add it again.
+          source.kind === "input"
+        ) {
           onSourceExpired?.();
           return;
         }
@@ -276,7 +273,6 @@ export function useTranscription({
 
   useEffect(() => () => transcriptionAbort.current?.abort(), []);
 
-  /** Shows a saved transcript; the list only carries counts, so its segments are fetched. */
   const selectRecord = useCallback((record: TranscriptRecord) => {
     const version = ++transcriptVersion.current;
     setTranscript(record.text);
@@ -296,16 +292,11 @@ export function useTranscription({
         setSpeakerNames(full.speaker_names ?? {});
       })
       .catch((error: unknown) => {
-        if (transcriptVersion.current !== version) return;
-        toast.error(
-          error instanceof Error && error.message
-            ? `Could not load this transcript's timing: ${error.message}`
-            : "Could not load this transcript's timing.",
-        );
+        if (transcriptVersion.current === version)
+          toastFailure("Could not load this transcript's timing", error);
       });
   }, []);
 
-  /** Names a speaker everywhere they appear; a saved transcript keeps the name on the server. */
   const renameSpeaker = useCallback(
     (id: string, name: string) => {
       const previous = speakerNames;
@@ -314,18 +305,15 @@ export function useTranscription({
       else delete next[id];
       setSpeakerNames(next);
       if (!transcriptRecord) return;
-      const recordId = transcriptRecord.id;
-      renameTranscriptSpeakers(recordId, { [id]: name || null }).catch(
-        (error: unknown) => {
-          if (transcriptRecord?.id !== recordId) return;
-          setSpeakerNames(previous);
-          toast.error(
-            error instanceof Error && error.message
-              ? `Could not rename the speaker: ${error.message}`
-              : "Could not rename the speaker.",
-          );
-        },
-      );
+      const version = transcriptVersion.current;
+      renameTranscriptSpeakers(transcriptRecord.id, {
+        [id]: name || null,
+      }).catch((error: unknown) => {
+        // Another transcript is shown now: rolling back would rename its speakers.
+        if (transcriptVersion.current !== version) return;
+        setSpeakerNames(previous);
+        toastFailure("Could not rename the speaker", error);
+      });
     },
     [speakerNames, transcriptRecord],
   );
@@ -338,7 +326,6 @@ export function useTranscription({
     );
   }, [transcript]);
 
-  /** A download of the transcript shown at `version` counts as kept; a later one is not. */
   const markExported = useCallback((version: number) => {
     if (transcriptVersion.current === version) setTranscriptExported(true);
   }, []);

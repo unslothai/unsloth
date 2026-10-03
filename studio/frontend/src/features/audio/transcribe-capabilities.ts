@@ -1,17 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Which Transcribe switches a model allows, and the plain words for each. Import-free so node
-// tests can load it.
+// Import-free so node tests can load it.
 
-/** GET /api/inference/audio/stt/capabilities. */
 export interface SttCapabilities {
   engine: string | null;
   family: string | null;
   /** on_request: only when asked (Qwen3-ASR with its aligner); always: every run has them. */
   timestamps: "on_request" | "always" | "unsupported";
   speakers: boolean;
-  /** Qwen3-ASR's timing aligner, a separate download. */
   aligner: { downloaded: boolean; size_bytes: number } | null;
   cpu_only: boolean;
 }
@@ -20,18 +17,15 @@ export interface TranscribeSwitch {
   checked: boolean;
   disabled: boolean;
   hint: string;
-  /** Offer the model that can do it, when this one cannot. */
   suggestSpeakersModel?: boolean;
-  /** The model always does this; shown as a fact rather than a switch. */
   always?: boolean;
 }
 
 export interface TranscribeSwitches {
   timestamps: TranscribeSwitch;
   speakers: TranscribeSwitch;
-  /** Said before the run when it costs more than usual (an aligner download, a CPU-only model). */
+  /** Said before a run that costs more than usual (an aligner download, a CPU-only model). */
   notice: string | null;
-  /** What the run sends. */
   request: { timestamps: boolean; speakers: boolean };
 }
 
@@ -72,21 +66,19 @@ export function transcribeSwitches(
       hint: "This model always adds timestamps.",
     };
   } else if (caps.timestamps === "on_request") {
-    const aligner = caps.aligner;
-    const download =
-      aligner && !aligner.downloaded
-        ? ` The first run downloads it (${formatSize(aligner.size_bytes)}).`
-        : "";
+    const size =
+      caps.aligner && !caps.aligner.downloaded
+        ? formatSize(caps.aligner.size_bytes)
+        : null;
     timestamps = {
       checked: prefs.timestamps,
       disabled: false,
-      hint: `Adds the time of each line, using a separate timing aligner.${download}`,
+      hint: `Adds the time of each line, using a separate timing aligner.${size ? ` The first run downloads it (${size}).` : ""}`,
     };
     if (prefs.timestamps) {
-      notice =
-        aligner && !aligner.downloaded
-          ? `Downloads the timing aligner (${formatSize(aligner.size_bytes)}) and reloads the model.`
-          : "Reloads the model with its timing aligner if it is not loaded yet.";
+      notice = size
+        ? `Downloads the timing aligner (${size}) and reloads the model.`
+        : "Reloads the model with its timing aligner if it is not loaded yet.";
     }
   } else {
     timestamps = {

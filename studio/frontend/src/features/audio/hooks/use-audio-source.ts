@@ -92,7 +92,6 @@ export function useAudioSource({
 }: {
   value: AudioSourceSelection | null;
   onChange: (next: AudioSourceSelection | null) => void;
-  /** Longest take before recording stops on its own. */
   maxRecordSeconds?: number;
 }) {
   const [state, dispatch] = useReducer(
@@ -264,8 +263,7 @@ export function useAudioSource({
       });
       return;
     }
-    // A permission prompt cannot be cancelled: if the card went away while it was open, release
-    // the microphone instead of recording for a page that is gone.
+    // The permission prompt cannot be cancelled: release the mic if the card unmounted meanwhile.
     if (unmounted.current) {
       for (const track of stream.getTracks()) track.stop();
       return;
@@ -357,7 +355,7 @@ export function useAudioSource({
 
   // Unmount: release the mic and every URL.
   useEffect(() => {
-    // Set again on mount, so a development remount does not leave the card thinking it is gone.
+    // Reset on mount: a development remount reuses the ref.
     unmounted.current = false;
     return () => {
       unmounted.current = true;

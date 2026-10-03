@@ -12,12 +12,11 @@ export interface TranscriptDraft {
   text: string;
   title: string;
   model: string;
-  /** Timing and speakers; drafts written before timestamps existed have none. */
+  /** Absent on drafts written before timestamps existed. */
   details?: TranscriptDetails;
   speakerNames?: Record<string, string>;
 }
 
-/** Names for known speakers only, each a clean single line; anything else is dropped. */
 function speakerNamesFrom(
   value: unknown,
   details: TranscriptDetails,
