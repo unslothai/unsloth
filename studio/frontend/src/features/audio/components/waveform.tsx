@@ -10,7 +10,6 @@ import { WAVEFORM_BARS, formatSeconds } from "./waveform-peaks";
 
 const SEEK_STEP_SECONDS = 5;
 
-/** The position is also spoken, so colour never carries it alone. */
 export function Waveform({
   peaks,
   durationS,
@@ -18,7 +17,6 @@ export function Waveform({
   label,
   className,
 }: {
-  /** null draws a flat placeholder while the audio decodes. */
   peaks: readonly number[] | null;
   durationS: number | null;
   src: string | null;

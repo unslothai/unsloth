@@ -168,7 +168,6 @@ class AudioCppFamily:
     voices: tuple[str, ...] = ()
     # Why Studio refuses this family, when it does.
     unsupported: Optional[str] = None
-    # False for clone-only families.
     speaks: bool = True
     clone: Optional[CloneSpec] = None
     companions: tuple[CompanionModel, ...] = ()
@@ -247,7 +246,6 @@ def _tool(name: str, type_: str, description: str, **kw) -> dict:
 
 MIOCODEC_FOLDER = "MioCodec-25Hz-44.1kHz-v2-GGUF"
 
-# Clone families; those that cannot speak without a reference do not offer Speak.
 _QWEN3_BASE = AudioCppFamily(
     "qwen3_tts",
     "tts",
@@ -670,7 +668,6 @@ def family_policy(
         if "base" in text:
             return _QWEN3_BASE
     if family == "fireredtts3" and re.search(r"(^|[-_ /])base([-_ ./]|$)", " ".join(names).lower()):
-        # The Base package only loads as a cloning session.
         return replace(policy, server_task = "clon")
     return policy
 
@@ -1542,7 +1539,6 @@ class AudioCppModel:
     speaks: bool = True
     clone: Optional[CloneSpec] = None
     companions: tuple[CompanionModel, ...] = ()
-    # Spec-required request fields (Maya1's instruct).
     required_inputs: tuple[str, ...] = ()
 
     @property

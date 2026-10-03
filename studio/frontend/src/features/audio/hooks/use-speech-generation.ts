@@ -337,7 +337,6 @@ export function useSpeechGeneration({
       );
       return;
     }
-    // Panels own their options, so they override Advanced.
     const requestOptions = {
       ...audioOptionsForRequest(advancedOptionSpecs, audioOptionValues),
       ...toolRequest.patch.options,
@@ -347,7 +346,6 @@ export function useSpeechGeneration({
     const language = audioLanguage.trim();
     saveLastPrompt(ttsDraftKey("prompt", workflow), prompt);
     if (savedVoice) {
-      // A saved voice is a reference the server holds, so the run goes through /audio/run.
       const voiceController = new AbortController();
       generateAbort.current = voiceController;
       updateGenerationPhase("generating");

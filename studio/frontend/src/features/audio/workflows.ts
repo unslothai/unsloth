@@ -116,7 +116,6 @@ export function clipWorkflow(clip: {
   return audioWorkflowForAudioType(clip.audio_type);
 }
 
-/** Current page if runnable, else the backend's first listed page, else Music/Speak by audio type. */
 export function workflowForLoadedModel({
   current,
   audioWorkflows,

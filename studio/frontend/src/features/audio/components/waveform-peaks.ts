@@ -5,7 +5,6 @@
 
 export const WAVEFORM_BARS = 72;
 
-/** Per-bar max |sample| across channels, normalised so the loudest bar is 1. */
 export function computePeaks(
   channels: readonly Float32Array[],
   bars: number = WAVEFORM_BARS,

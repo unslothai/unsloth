@@ -521,7 +521,6 @@ def test_every_task_family_binds_its_workflows():
     assert acm.family_from_names(["Chatterbox-Turbo-GGUF", "chatterbox-turbo-q8_0.gguf"]) == (
         "chatterbox_turbo"
     )
-    # FireRedTTS3 Base loads only as a cloning session.
     base = acm.family_policy("fireredtts3", names = ["FireRedTTS3-Base-GGUF"])
     assert base.default_server_task == "clon" and list(base.workflows) == ["clone"]
     (codec,) = acm.FAMILIES["miotts"].companions

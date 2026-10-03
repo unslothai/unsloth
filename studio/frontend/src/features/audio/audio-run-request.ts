@@ -6,7 +6,6 @@
 /** Mirrors AUDIO_INPUT_MAX_BYTES in studio/backend/utils/upload_limits.py. */
 export const AUDIO_INPUT_MAX_BYTES = 200 * 1024 * 1024;
 
-/** The server clamps references to this many seconds. */
 export const REFERENCE_MAX_SECONDS = 30;
 
 export type AudioSourceRef =
@@ -19,7 +18,6 @@ export interface AudioSourceSelection {
   id: string;
   name: string;
   durationS: number | null;
-  /** Only uploads expire. */
   expiresAt?: string | null;
   transcript?: string | null;
   language?: string | null;
@@ -101,7 +99,6 @@ export interface AudioRunRequest {
   max_tokens?: number | null;
 }
 
-/** Only the single id key, whatever else the caller's object held. */
 function cleanRef(
   ref: AudioSourceRef | null | undefined,
 ): Record<string, unknown> | null {

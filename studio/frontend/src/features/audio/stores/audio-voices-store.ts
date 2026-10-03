@@ -11,7 +11,6 @@ import {
 } from "../api";
 import type { AudioVoiceCreateRequest } from "../audio-run-request";
 
-/** Not persisted: the server is the record. */
 interface AudioVoicesState {
   voices: AudioVoice[];
   loaded: boolean;
@@ -57,7 +56,6 @@ export const useAudioVoicesStore = create<AudioVoicesState>()((set, get) => ({
   },
   rename: async (id, patch) => {
     const before = get().voices;
-    // Optimistic; rolled back if the server refuses.
     set({
       voices: before.map((voice) =>
         voice.id === id ? { ...voice, ...patch } : voice,

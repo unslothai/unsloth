@@ -134,6 +134,5 @@ def test_inventory_rows_of_clone_families_list_clone(tmp_path, folder, family, w
     path.parent.mkdir(parents = True)
     path.write_bytes(_gguf_bytes(family = family))
     found = cc._gguf_path_audio_workflows(path.parent, (f"someone/{folder}",))
-    # The explicit list must win over the task-and-type fallback, which says speak.
     row = CachedGgufRepo(repo_id = "r", task = "text-to-speech", audio_workflows = found)
     assert found == row.audio_workflows == workflows

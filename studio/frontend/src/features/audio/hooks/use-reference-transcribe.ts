@@ -14,7 +14,6 @@ export function useReferenceTranscribe({
   language,
   onText,
 }: {
-  /** Transcribe's STT repo; null falls back to the Settings > Voice dictation model. */
   sttRepo: string | null;
   language: string;
   onText: (text: string) => void;
