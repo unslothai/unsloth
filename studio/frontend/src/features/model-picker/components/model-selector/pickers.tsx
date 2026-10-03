@@ -4255,6 +4255,14 @@ export function HubModelPicker({
     normalizeForSearch(
       `${m.model_id ?? ""} ${m.display_name} ${m.id}`,
     ).includes(localQuery);
+  const localRowAllowed = (m: LocalModelInfo) =>
+    !rowFilter ||
+    rowFilter({
+      id: m.model_id ?? m.id,
+      task: m.task,
+      audioType: m.audio_type,
+      audioWorkflows: m.audio_workflows,
+    });
   const sortedLmStudio = useMemo(
     () =>
       sortLocalModels(
@@ -4283,6 +4291,7 @@ export function HubModelPicker({
               activeCatalogArtifactIds,
               m,
             ) &&
+            localRowAllowed(m) &&
             localModelMatchesFormat(m, formatFilter) &&
             matchesLocalQuery(m),
         ),
@@ -4299,6 +4308,7 @@ export function HubModelPicker({
       task,
       catalog,
       activeCatalogArtifactIds,
+      rowFilter,
     ],
   );
   // Local ./models entries. Chat-only Unsloth runs GGUF anywhere and MLX on Mac, so raw
@@ -4334,6 +4344,7 @@ export function HubModelPicker({
               Boolean(task) ||
               localModelIsGguf(m) ||
               (isMac && localModelIsMlx(m))) &&
+            localRowAllowed(m) &&
             localModelMatchesFormat(m, formatFilter) &&
             matchesLocalQuery(m),
         ),
@@ -4352,6 +4363,7 @@ export function HubModelPicker({
       task,
       catalog,
       activeCatalogArtifactIds,
+      rowFilter,
     ],
   );
   const sortedCustomFolderModels = useMemo(
@@ -4380,6 +4392,7 @@ export function HubModelPicker({
               activeCatalogArtifactIds,
               m,
             ) &&
+            localRowAllowed(m) &&
             localModelMatchesFormat(m, formatFilter) &&
             matchesLocalQuery(m),
         ),
@@ -4396,6 +4409,7 @@ export function HubModelPicker({
       task,
       catalog,
       activeCatalogArtifactIds,
+      rowFilter,
     ],
   );
 

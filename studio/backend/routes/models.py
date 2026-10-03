@@ -1091,11 +1091,13 @@ async def _shared_compat_local_inventory_scan(
             task, audio_type = _catalog_classification._local_model_classification_for_task(
                 model, _local_model_task(model)
             )
+            workflows = _catalog_classification.local_audio_workflows(model, audio_type)
             classified.append(
                 model.model_copy(
                     update = {
                         "task": task,
                         "audio_type": audio_type,
+                        **({"audio_workflows": workflows} if workflows else {}),
                     }
                 )
             )

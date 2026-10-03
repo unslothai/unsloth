@@ -149,6 +149,8 @@ test("an undefined rowFilter leaves the picker rows untouched", () => {
   );
   const guards = pickers.match(/\(!rowFilter \|\|\s*rowFilter\(\{/g) ?? [];
   assert.equal(guards.length, 2);
+  // LM Studio, models-dir and custom-folder rows go through the same filter.
+  assert.equal(pickers.match(/localRowAllowed\(m\) &&/g)?.length, 3);
   const selector = readSrc(
     "features/model-picker/components/model-selector.tsx",
   );

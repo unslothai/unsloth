@@ -572,6 +572,15 @@ def _local_model_classification_for_task(
     return task, audio_type
 
 
+def local_audio_workflows(model, audio_type: Optional[str]) -> Optional[list[str]]:
+    """The audio.cpp family's own workflows for a local speech row (a clone-only one is not
+    Speak); None keeps the task-derived default."""
+    if audio_type != "audiocpp_tts":
+        return None
+    model = _local_probe_model(model)
+    return _gguf_path_audio_workflows(model.path, (model.model_id, model.display_name, model.id))
+
+
 def _local_model_classification(model) -> tuple[Optional[str], Optional[str]]:
     """Return picker task and decoder provenance from one local-row probe."""
     return _local_model_classification_for_task(model, _local_model_task(model))
