@@ -126,8 +126,16 @@ export function useAudioSource({
   const valueKey = value ? `${value.kind}:${value.id}` : null;
   const previewKey = state.preview.key;
   const phase = state.status.phase;
+  const lastValueKey = useRef(valueKey);
   useEffect(() => {
+    const changed = lastValueKey.current !== valueKey;
+    lastValueKey.current = valueKey;
     if (!(value && valueKey)) return;
+    // A failure or expiry belongs to the old selection: a new one (history, saved voice) loads.
+    if (changed && (phase === "error" || phase === "expired")) {
+      dispatch({ type: "reset" });
+      return;
+    }
     if (
       previewKey === valueKey ||
       phase === "uploading" ||

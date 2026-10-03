@@ -38,9 +38,15 @@ import {
   REFERENCE_EXPIRED_MESSAGE,
 } from "../hooks/audio-source-state";
 import { recordingSupported, useAudioSource } from "../hooks/use-audio-source";
+import { clipWorkflow } from "../workflows";
 import { VoicePicker } from "./voice-picker";
 import { Waveform } from "./waveform";
 import { formatSeconds } from "./waveform-peaks";
+
+const SPOKEN_PROMPT_WORKFLOWS: ReadonlySet<string> = new Set([
+  "speak",
+  "clone",
+]);
 
 /** The gallery clips an input card offers under From history. Provided by the page. */
 const AudioHistoryContext = createContext<readonly AudioGalleryClip[]>([]);
@@ -422,7 +428,12 @@ export function AudioSourceInput({
                           id: clip.id,
                           name: clip.prompt || "Generated clip",
                           durationS: clip.duration_s,
-                          transcript: clip.prompt || null,
+                          // Only Speak and Clone clips say their prompt; Convert and Music prompts are labels.
+                          transcript: SPOKEN_PROMPT_WORKFLOWS.has(
+                            clipWorkflow(clip),
+                          )
+                            ? clip.prompt || null
+                            : null,
                           language: null,
                         })
                       }

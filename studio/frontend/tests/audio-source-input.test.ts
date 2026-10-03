@@ -214,3 +214,29 @@ test("the whole card is the drop target, with every way in", () => {
   );
   assert.match(hook, /decodeAudioData/);
 });
+
+test("a history pick carries a transcript only from Speak and Clone clips", () => {
+  assert.match(
+    card,
+    /SPOKEN_PROMPT_WORKFLOWS[^=]*=\s*new Set\(\[\s*"speak",\s*"clone",?\s*\]\)/,
+  );
+  assert.match(
+    card,
+    /transcript: SPOKEN_PROMPT_WORKFLOWS\.has\(\s*clipWorkflow\(clip\),?\s*\)\s*\?\s*clip\.prompt \|\| null\s*:\s*null/,
+  );
+});
+
+test("a new selection clears the old one's error or expiry so it loads", () => {
+  assert.match(
+    hook,
+    /if \(changed && \(phase === "error" \|\| phase === "expired"\)\) \{\s*dispatch\(\{ type: "reset" \}\);/,
+  );
+  const failed = audioSourceReducer(INITIAL_AUDIO_SOURCE_STATE, {
+    type: "fail",
+    message: "x",
+  });
+  assert.deepEqual(
+    audioSourceReducer(failed, { type: "reset" }),
+    INITIAL_AUDIO_SOURCE_STATE,
+  );
+});
