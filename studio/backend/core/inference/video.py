@@ -6383,8 +6383,6 @@ class VideoBackend:
                 from .video_ltx2 import install_stg_compile_adapter
                 install_stg_compile_adapter(getattr(view, fam.denoiser_attr, None))
             if not getattr(fam, "cudnn_benchmark", True) and applied.get("cudnn_benchmark"):
-                # The family opted out (VideoFamily.cudnn_benchmark): LTX for its per-shape re-tune, Wan for run-to-run
-                # reproducibility (the benchmark's per-process algorithm pick changes decoded pixels).
                 from .video_ltx2 import disable_cudnn_benchmark
                 if disable_cudnn_benchmark():
                     applied = {**applied, "cudnn_benchmark": False}
