@@ -14742,7 +14742,8 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     # Cap at the lean top_k, but honor a lower user setting.
     lean_k = _autoinject_top_k()
     sidebar_k = _opt_int(rag_scope.get("default_top_k"))
-    top_k = min(sidebar_k, lean_k) if sidebar_k is not None else lean_k
+    # Zero or below is no limit to the search, which then returns its own default count.
+    top_k = min(sidebar_k, lean_k) if sidebar_k is not None and sidebar_k > 0 else lean_k
     budget: int | None = None
     # The window the budget was sized against, so `_text_token_cost` only trusts a GGUF actually serving this same
     # window.
@@ -14887,9 +14888,8 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
                         cited = thread_docs or {s.get("documentId") for s in thread_found[1]}
                         if not any(s.get("documentId") in cited for s in found[1]):
                             # Still the lean top_k in total, so the unbudgeted path never doubles the injection.
-                            limit = top_k or lean_k
-                            n_proj = min(len(found[1]), limit // 2)
-                            merged = thread_found[1][: limit - n_proj] + found[1][:n_proj]
+                            n_proj = min(len(found[1]), top_k // 2)
+                            merged = thread_found[1][: top_k - n_proj] + found[1][:n_proj]
                             found = (render_sources(merged), merged)
                     elif thread_found:
                         found = thread_found

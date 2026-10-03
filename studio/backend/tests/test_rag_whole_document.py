@@ -592,10 +592,15 @@ def test_build_rag_autoinject_on_skips_thread_search_when_attachment_already_hit
     assert len(calls) == 1
 
 
-def test_build_rag_autoinject_on_zero_top_k_still_grounds_attachment(rag_conn, monkeypatch):
+@pytest.mark.parametrize("project_id", ["p1", None])
+def test_build_rag_autoinject_on_zero_top_k_still_grounds_attachment(
+    rag_conn, monkeypatch, project_id
+):
     monkeypatch.setattr(inf_tools, "_thread_document_ids", lambda thread_id: {"d1"})
 
     def fake_search(**kw):
+        if kw.get("min_dense_score") is not None and not kw.get("scope_project_id"):
+            return None
         name, doc = ("thread", "d1") if kw.get("min_dense_score") is None else ("project", "d2")
         # Zero is falsy to the search, which then returns its configured default count.
         sources = [
@@ -607,7 +612,7 @@ def test_build_rag_autoinject_on_zero_top_k_still_grounds_attachment(rag_conn, m
     monkeypatch.setattr(tool, "search_for_autoinject", fake_search)
     result = inf_tools.build_rag_autoinject(
         _convo("Summarize this document"),
-        {"thread_id": "t1", "project_id": "p1", "autoinject": True, "default_top_k": 0},
+        {"thread_id": "t1", "project_id": project_id, "autoinject": True, "default_top_k": 0},
     )
     injected = _injected_text(result)
     assert "thread-1" in injected
