@@ -360,7 +360,7 @@ test("a separation that a refresh missed falls back on the Separate page", () =>
   const generation = readSrc("features/audio/hooks/use-separate-generation.ts");
   assert.match(generation, /showRunResult\(\{[^}]*workflow: "separate"/);
   const run = readSrc("features/audio/hooks/use-clone-generation.ts");
-  assert.match(run, /workflow = "clone",/);
+  assert.match(run, /workflow: "speak" \| "clone" \| "separate";/);
 });
 
 test("a cut oldest run loads the next page itself, since a short list never scrolls", () => {

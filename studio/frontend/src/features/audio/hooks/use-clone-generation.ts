@@ -43,16 +43,15 @@ export const CLONE_REFERENCE_TEXT_FIELD_ID = "clone-reference-text";
 export async function showRunResult({
   response,
   text,
+  workflow,
   refreshGallery,
   selectClip,
   setFallbackClip,
   setSelectedId,
-  workflow = "clone",
 }: {
   response: AudioRunResponse;
   text: string;
-  /** The page whose history shows the fallback clip. */
-  workflow?: "clone" | "separate";
+  workflow: "speak" | "clone" | "separate";
 } & Pick<
   AudioGallery,
   "refreshGallery" | "selectClip" | "setFallbackClip" | "setSelectedId"
@@ -333,6 +332,7 @@ export function useCloneGeneration({
       await showRunResult({
         response,
         text: draftText,
+        workflow: "clone",
         refreshGallery,
         selectClip,
         setFallbackClip,
