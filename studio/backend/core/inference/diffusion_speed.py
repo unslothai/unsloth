@@ -1068,7 +1068,6 @@ def pin_reduction_configs(kwargs: dict[str, Any], logger: Any = None) -> bool:
         mode = kwargs.get("mode")
         if mode is not None:
             from torch._inductor import list_mode_options
-
             options = {**list_mode_options(mode, kwargs.get("dynamic")), **options}
         options[REDUCTION_FILTER_OPTION] = True
     except Exception as exc:  # noqa: BLE001 - optimisation only

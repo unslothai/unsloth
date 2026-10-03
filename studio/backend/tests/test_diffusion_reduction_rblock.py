@@ -223,12 +223,13 @@ def test_pinned_reduction_has_one_block_size_and_the_default_has_two(monkeypatch
 
 _FILTER = "test_configs.force_filter_reduction_configs"
 _HAS_FILTER = hasattr(_INDUCTOR.test_configs, "force_filter_reduction_configs")
-_needs_filter = pytest.mark.skipif(not _HAS_FILTER, reason = "torch has no inductor reduction-config filter")
+_needs_filter = pytest.mark.skipif(
+    not _HAS_FILTER, reason = "torch has no inductor reduction-config filter"
+)
 
 
 def _family(name):
     from core.inference import diffusion_families, video_families
-
     for fam in (*video_families._FAMILIES, *diffusion_families._FAMILIES):
         if fam.name == name:
             return fam
@@ -260,9 +261,12 @@ def test_only_ltx_opts_into_the_reduction_filter(monkeypatch):
 
 def _compiled_kwargs(max_autotune = False, filter_reductions = False):
     pipe = types.SimpleNamespace(transformer = _Transformer())
-    assert ds._compile_repeated_blocks(
-        pipe, None, max_autotune = max_autotune, filter_reductions = filter_reductions
-    ) is True
+    assert (
+        ds._compile_repeated_blocks(
+            pipe, None, max_autotune = max_autotune, filter_reductions = filter_reductions
+        )
+        is True
+    )
     return pipe.transformer.kwargs
 
 
@@ -277,7 +281,9 @@ def test_opted_in_compile_carries_the_filter_and_leaves_the_process_knob(max_aut
     if max_autotune:
         assert kwargs["options"]["max_autotune"] is True
     assert _INDUCTOR.test_configs.force_filter_reduction_configs is False
-    assert not cc.is_recorded("torch._inductor.config.test_configs", "force_filter_reduction_configs")
+    assert not cc.is_recorded(
+        "torch._inductor.config.test_configs", "force_filter_reduction_configs"
+    )
 
 
 @pytest.mark.parametrize("max_autotune", [False, True])
@@ -307,7 +313,10 @@ def test_bundle_key_carries_the_filter_only_when_set(monkeypatch):
         compile_kwargs = {"fullgraph": True, "dynamic": None, "mode": "default"},
         reduction_filter = True,
     )
-    assert filtered["inductor"] == {"dynamic_scale_rblock": False, "force_filter_reduction_configs": True}
+    assert filtered["inductor"] == {
+        "dynamic_scale_rblock": False,
+        "force_filter_reduction_configs": True,
+    }
     monkeypatch.setenv(_KILL_SWITCH, "1")
     assert "inductor" not in cache.model_fingerprint(
         family = "ltx-2",
@@ -328,7 +337,7 @@ def _wan_like_block_head():
         def __init__(self):
             super().__init__()
             self.norm = torch.nn.LayerNorm(3072, elementwise_affine = False, eps = 1e-6)
-            self.table = torch.nn.Parameter(torch.randn(1, 6, 3072) / 3072 ** 0.5)
+            self.table = torch.nn.Parameter(torch.randn(1, 6, 3072) / 3072**0.5)
             self.proj = torch.nn.Linear(3072, 3072)
 
         def forward(self, x, temb):
@@ -357,9 +366,13 @@ def _ltx_like_block_norm():
             self.proj = torch.nn.Linear(4096, 4096)
 
         def forward(self, x, temb):
-            shift, scale, *_ = (self.table[None, None] + temb.reshape(1, temb.shape[1], 6, -1)).unbind(dim = 2)
+            shift, scale, *_ = (
+                self.table[None, None] + temb.reshape(1, temb.shape[1], 6, -1)
+            ).unbind(dim = 2)
             h = x.float()
-            normed = (h * torch.rsqrt(h.pow(2).mean(-1, keepdim = True) + 1e-6) * self.weight.float()).to(x.dtype)
+            normed = (
+                h * torch.rsqrt(h.pow(2).mean(-1, keepdim = True) + 1e-6) * self.weight.float()
+            ).to(x.dtype)
             return self.proj(normed * (1 + scale) + shift)
 
     torch.manual_seed(0)
@@ -369,7 +382,14 @@ def _ltx_like_block_norm():
     return head, (x, temb)
 
 
-def _run_norm(monkeypatch, tmp_path, *, force_r0_block = None, build = None, compile_kwargs = None):
+def _run_norm(
+    monkeypatch,
+    tmp_path,
+    *,
+    force_r0_block = None,
+    build = None,
+    compile_kwargs = None,
+):
     from torch._inductor.runtime import triton_heuristics
 
     monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", str(tmp_path / "inductor"))
@@ -382,18 +402,24 @@ def _run_norm(monkeypatch, tmp_path, *, force_r0_block = None, build = None, com
     real = triton_heuristics.CachingAutotuner.autotune_to_one_config
 
     def autotune(self, *args, **kwargs):
-        blocks = sorted({launcher.config.kwargs.get("R0_BLOCK") for launcher in self.launchers} - {None})
+        blocks = sorted(
+            {launcher.config.kwargs.get("R0_BLOCK") for launcher in self.launchers} - {None}
+        )
         if len(blocks) > 1:
             seen.append(blocks)
             if force_r0_block in blocks:
-                self.launchers = [l for l in self.launchers if l.config.kwargs.get("R0_BLOCK") == force_r0_block]
+                self.launchers = [
+                    l for l in self.launchers if l.config.kwargs.get("R0_BLOCK") == force_r0_block
+                ]
                 return None
         return real(self, *args, **kwargs)
 
     monkeypatch.setattr(triton_heuristics.CachingAutotuner, "autotune_to_one_config", autotune)
     head, inputs = (build or _wan_like_block_head)()
     with torch.no_grad():
-        out = torch.compile(head, **(compile_kwargs or {"fullgraph": True, "dynamic": False}))(*inputs)
+        out = torch.compile(head, **(compile_kwargs or {"fullgraph": True, "dynamic": False}))(
+            *inputs
+        )
     torch.cuda.synchronize()
     torch._dynamo.reset()
     return seen, hashlib.sha256(out.float().cpu().numpy().tobytes()).hexdigest()
@@ -421,7 +447,9 @@ def test_filter_option_gives_the_norm_one_config(monkeypatch, tmp_path, build):
     assert sha_small != sha_large
     kwargs = {"fullgraph": True, "dynamic": False}
     assert ds.pin_reduction_configs(kwargs) is True
-    pinned_seen, sha_pinned = _run_norm(monkeypatch, tmp_path / "pinned", build = build, compile_kwargs = kwargs)
+    pinned_seen, sha_pinned = _run_norm(
+        monkeypatch, tmp_path / "pinned", build = build, compile_kwargs = kwargs
+    )
     assert pinned_seen == []
     assert sha_pinned in (sha_small, sha_large)
     # Per compile only: the same process compiling without the option still sees inductor's configs.

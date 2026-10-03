@@ -30,7 +30,6 @@ def reduction_config_filter_available() -> bool:
         return False
     try:
         import torch
-
         return hasattr(torch._inductor.config.test_configs, "force_filter_reduction_configs")
     except Exception:  # noqa: BLE001 - no torch / inductor: nothing pinned
         return False
