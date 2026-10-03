@@ -20,6 +20,7 @@ import {
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import { NonModalDropdownMenu } from "@/components/ui/non-modal-dropdown-menu";
+import { COMPOSER_INPUT_SELECTOR } from "@/features/settings";
 import {
   Tooltip,
   TooltipContent,
@@ -52,6 +53,8 @@ type PromptQueueListProps = {
 };
 
 /** The queue engine owns dispatch and validates every mutation against live IDs. */
+const MENU_OR_TRIGGER = "[data-slot='dropdown-menu-content'], [data-queue-menu]";
+
 export function PromptQueueList({
   entry,
   items,
@@ -72,6 +75,17 @@ export function PromptQueueList({
   const composingRef = useRef(false);
   const composingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editFromMenuRef = useRef(false);
+  const pointerDownRef = useRef<{ target: EventTarget | null; at: number }>({
+    target: null,
+    at: 0,
+  });
+  useEffect(() => {
+    const note = (event: PointerEvent) => {
+      pointerDownRef.current = { target: event.target, at: event.timeStamp };
+    };
+    document.addEventListener("pointerdown", note, true);
+    return () => document.removeEventListener("pointerdown", note, true);
+  }, []);
   const instructionsId = useId();
   const editingItem = items.find(
     (item) => item.id === editingId && item.canEdit,
@@ -398,14 +412,27 @@ export function PromptQueueList({
                       // Opening the menu must not select an item on pointer release.
                       onPointerUpCapture={(event) => event.preventDefault()}
                       // A queued send focuses the composer: stay open and take focus back, or Escape lands there.
+                      // Any other focus move, or one a pointer just caused, dismisses as before.
                       onFocusOutside={(event) => {
-                        event.preventDefault();
-                        const from = event.detail.originalEvent.relatedTarget;
+                        const { target, relatedTarget, timeStamp } =
+                          event.detail.originalEvent;
+                        const down = pointerDownRef.current;
+                        const byPointer =
+                          timeStamp - down.at < 1000 &&
+                          down.target instanceof Element &&
+                          !down.target.closest(MENU_OR_TRIGGER);
                         if (
-                          from instanceof HTMLElement &&
-                          from.closest("[data-slot='dropdown-menu-content']")
+                          byPointer ||
+                          !(target instanceof Element) ||
+                          !target.matches(COMPOSER_INPUT_SELECTOR)
                         )
-                          from.focus({ preventScroll: true });
+                          return;
+                        event.preventDefault();
+                        if (
+                          relatedTarget instanceof HTMLElement &&
+                          relatedTarget.closest(MENU_OR_TRIGGER)
+                        )
+                          relatedTarget.focus({ preventScroll: true });
                       }}
                       onCloseAutoFocus={(event) => {
                         if (!editFromMenuRef.current) return;
