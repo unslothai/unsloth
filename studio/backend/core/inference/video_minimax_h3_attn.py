@@ -1,30 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MiniMax-H3 attention fast path: strided SDPA layout, fused int8 QKV, and the per-arch kernel pick.
+"""MiniMax-H3 attention fast path, one kill switch (``=0``) per lever:
 
-H3 runs ONE full self-attention per block over the whole packed sequence (B=1, 56 heads of 128, ~19.3k rows at
-960x544x124), so attention is about half of every denoising step and its prologue is the bulk of the per-block
-memory traffic outside the GEMMs. Three levers, each with its own kill switch, all lossless where measured:
-
-1. Strided layout (``UNSLOTH_H3_STRIDED_ATTN=0`` turns it off). diffusers' pinned cuDNN backend copies q, k and v
-   into ``(B, H, S, D)`` with ``.contiguous()`` and its output is then permuted back and copied again by the
-   processor's ``flatten``. Torch's cuDNN and flash SDPA both accept the permuted ``(B, S, H, D)`` views directly and
-   return their output in that same physical layout, so this processor hands them the views: under Inductor the v
-   copy and the output permute kernels disappear and the rope / norm prologue writes coalesced rows instead of a
-   transposed scatter. The attention kernels are layout-invariant (eager outputs bit-identical across layouts), and
-   with Studio's ``emulate_precision_casts`` the compiled block is bit-identical too.
-
-2. Fused int8 QKV (``UNSLOTH_H3_FUSED_QKV=0``). The three projections read the same input, so the stock path
-   block-Hadamard-rotates it three times, dynamically quantizes it three times and launches three int8 GEMMs. A
-   resident pre-quantized denoiser gets one ``to_qkv`` whose torchao ``Int8Tensor`` is the row-concatenation of the
-   three (per-row weight scales concatenate the same way): one rotation, one activation quant, one GEMM. Integer
-   accumulation is exact and the dequant epilogue is elementwise, so the result is bit-identical. The diffusers H3
-   processor already has a ``fused_projections`` branch, so the module layout is the one diffusers expects.
-
-3. Per-arch kernel (``UNSLOTH_H3_ATTN_ARCH=0``). Studio pins cuDNN attention under a speed profile. At H3's shape
-   torch's FlashAttention-2 SDPA is faster on the archs listed in ``H3_FLASH_FASTER_ARCHS`` (measured; see the
-   table there), while cuDNN wins or ties on sm120. Only measured archs move; every other arch keeps cuDNN.
+1. ``UNSLOTH_H3_STRIDED_ATTN``: torch cuDNN / flash SDPA take the permuted (B, S, H, D) views, so the q / k / v and
+   output copies disappear; bit-identical (attention kernels are layout-invariant).
+2. ``UNSLOTH_H3_FUSED_QKV``: one row-concatenated int8 ``to_qkv`` (one rotation, act quant and GEMM instead of three);
+   bit-identical because int accumulation is exact and the dequant epilogue is per row.
+3. ``UNSLOTH_H3_ATTN_ARCH``: flash instead of cuDNN on the archs in ``H3_FLASH_FASTER_ARCHS`` only.
 """
 
 from __future__ import annotations
@@ -37,12 +20,7 @@ STRIDED_ATTN_ENV = "UNSLOTH_H3_STRIDED_ATTN"
 FUSED_QKV_ENV = "UNSLOTH_H3_FUSED_QKV"
 ATTN_ARCH_ENV = "UNSLOTH_H3_ATTN_ARCH"
 
-# torch SDPA FlashAttention-2 vs cuDNN at B=1 H=56 D=128 bf16, no mask, (B, S, H, D) views; median ms per layer,
-# torch 2.11 / cuDNN 9.19 (Colab, this change's microbench):
-#   sm80  A100-40GB  S=19303: flash 53.4  cuDNN 57.2 (cuDNN contiguous, today's path: 59.5);  S=37525: 202.6 / 216.4
-#   sm89  L4         S=19303: flash 170.6 cuDNN 173.1 (180.6);                                 S=37525: 655.9 / 678.4
-#   sm120 RTX PRO 6000 S=19303: flash 29.8 cuDNN 28.8 (30.0);                                  S=37525: 113.2 / 109.2
-# sm90 / sm100 and anything unmeasured keep cuDNN.
+# Measured at H3's shape (torch 2.11): flash beats cuDNN on sm80 / sm89, ties or loses on sm120; unmeasured keep cuDNN.
 H3_FLASH_FASTER_ARCHS = frozenset({(8, 0), (8, 9)})
 
 _CUDNN = "_native_cudnn"
@@ -66,11 +44,7 @@ def _capability(device: Any = None) -> Optional[tuple[int, int]]:
 def h3_attention_backend(
     selected: Optional[str], capability: Optional[tuple[int, int]] = None
 ) -> Optional[str]:
-    """The dispatcher backend H3 should run given what Studio's generic selection picked.
-
-    Only the automatic cuDNN pick moves, and only to torch's flash SDPA on an arch where flash was measured faster
-    at H3's shape. An explicit request (anything but cuDNN), a CPU / ROCm target or an unmeasured arch is returned
-    unchanged."""
+    """Moves only the automatic cuDNN pick, and only to flash on a measured-faster arch; anything else unchanged."""
     if selected != _CUDNN or not _enabled(ATTN_ARCH_ENV):
         return selected
     cap = capability if capability is not None else _capability()
@@ -87,12 +61,8 @@ def _backend_value(backend: Any) -> Optional[str]:
 
 @lru_cache(maxsize = None)
 def strided_processor_class() -> Any:
-    """``MiniMaxH3AttnProcessor`` subclass that feeds torch SDPA the permuted views, built once.
-
-    One class object for every attention module (dynamo guards on the type id of each module it closes over; a
-    class per call would retrace every block). Anything this path does not cover (a mask, context parallelism, a
-    backend other than torch's cuDNN / flash SDPA) goes through the stock ``__call__`` unchanged. The kill switch is
-    read at install, not per call."""
+    """Strided ``MiniMaxH3AttnProcessor`` subclass. Built once: dynamo guards on the class id, so a class per call
+    would retrace every block. Masks, context parallelism and other backends take the stock ``__call__``."""
     import torch
     import torch.nn.functional as F
     from diffusers.models.transformers.transformer_minimax_h3 import (
@@ -100,9 +70,6 @@ def strided_processor_class() -> Any:
         _apply_rotary_emb,
     )
     from torch.nn.attention import SDPBackend, sdpa_kernel
-
-    # The torch-native dispatcher backends that already hand SDPA strided views (math / efficient) are listed too,
-    # so the processor stays exercisable off CUDA; Studio only ever pins cuDNN or flash here.
 
     def _fusable_norm(norm: Any) -> bool:
         return (
@@ -123,7 +90,6 @@ def strided_processor_class() -> Any:
     }
 
     class UnslothH3StridedAttnProcessor(MiniMaxH3AttnProcessor):
-        # set per instance at install from UNSLOTH_H3_QK_ROPE; the class default keeps the stock norm + rope
         _unsloth_qk_rope = False
 
         def __call__(
@@ -153,9 +119,7 @@ def strided_processor_class() -> Any:
                 and _fusable_norm(attn.norm_q)
                 and _fusable_norm(attn.norm_k)
             ):
-                # one read + one write per row for norm and rope together (video_minimax_h3_qknorm). Called through
-                # torch.ops (registered at install): dynamo traces into a Python wrapper around the op's builder and
-                # graph-breaks there, which split every compiled block in two (measured: 2x slower steps).
+                # Through torch.ops, not the Python wrapper: dynamo graph-breaks inside the wrapper's lru_cache.
                 cos, sin = rotary_emb
                 op = torch.ops.unsloth_h3.qk_norm_rope
                 query = op(query, attn.norm_q.weight, cos, sin, float(attn.norm_q.eps))
@@ -167,8 +131,6 @@ def strided_processor_class() -> Any:
                     query = _apply_rotary_emb(query, *rotary_emb)
                     key = _apply_rotary_emb(key, *rotary_emb)
 
-            # (B, S, H, D) -> (B, H, S, D) views, no copy: both kernels take the strides and write their output in
-            # the query's physical layout, so the permute back below is a view as well.
             with sdpa_kernel(kernel):
                 out = F.scaled_dot_product_attention(
                     query.permute(0, 2, 1, 3),
@@ -197,15 +159,12 @@ def _h3_attention_modules(transformer: Any) -> list:
 
 
 def install_strided_attention(transformer: Any, logger: Any = None) -> int:
-    """Swap every H3 attention processor for the strided one, keeping the backend it was set to. Returns the count.
-
-    Call after ``set_attention_backend`` (or before: the backend attribute is carried over either way, and a later
-    ``set_attention_backend`` reaches the new processor through the same ``_attention_backend`` attribute)."""
+    """Swap every H3 attention processor for the strided one, keeping its backend. Returns the count."""
     if not _enabled(STRIDED_ATTN_ENV):
         return 0
     try:
         cls = strided_processor_class()
-    except Exception as exc:  # noqa: BLE001 -- an older diffusers without the H3 processor: stock path
+    except Exception as exc:  # noqa: BLE001 -- older diffusers without the H3 processor
         if logger is not None:
             logger.info("video.h3_attn: strided processor unavailable, keeping stock: %s", exc)
         return 0
@@ -214,7 +173,6 @@ def install_strided_attention(transformer: Any, logger: Any = None) -> int:
     qk_rope_on = qk_rope_enabled()
     if qk_rope_on:
         try:
-            # Register the custom op now, outside any traced region.
             qk_norm_rope_op()
         except Exception as exc:  # noqa: BLE001 -- keep the stock norm + rope
             qk_rope_on = False
@@ -237,7 +195,7 @@ def install_strided_attention(transformer: Any, logger: Any = None) -> int:
 
 
 def strided_attention_count(transformer: Any) -> int:
-    """How many H3 attention modules run the strided processor (engagement census)."""
+    """Engagement census."""
     try:
         cls = strided_processor_class()
     except Exception:  # noqa: BLE001
@@ -250,9 +208,7 @@ def strided_attention_count(transformer: Any) -> int:
 
 
 def _per_token_int8(weight: Any) -> bool:
-    """A torchao int8 weight whose linear quantizes the ACTIVATION per row (per token), so the activation quant
-    depends on the input alone and stays the same when weight rows are appended: v1
-    ``LinearActivationQuantizedTensor`` with the per-token int8 quant, or a plain per-row ``Int8Tensor``."""
+    """Per-token activation quant (depends on the input alone, so appending weight rows cannot change it)."""
     name = type(weight).__name__
     if name == "LinearActivationQuantizedTensor":
         fn = getattr(weight, "input_quant_func", None)
@@ -281,12 +237,8 @@ def _same_attr(a: Any, b: Any) -> bool:
 
 
 def _cat_rows(parts: list) -> Any:
-    """Row-concatenate tensors or torchao tensor subclasses of identical structure.
-
-    Plain tensors concatenate on dim 0. A subclass is flattened, every inner tensor is concatenated the same way
-    (each must carry one row per OUTER row: per-row int data, scales, zero points; a per-tensor scale is refused),
-    and the subclass is rebuilt with the outer size updated. Non-tensor attributes must match exactly, apart from
-    an attribute that IS the outer shape (v1 ``AffineQuantizedTensor`` records it), which is rewritten."""
+    """Row-concatenate tensors or identically structured torchao subclasses. Every inner tensor must be per row (a
+    per-tensor scale is refused); non-tensor attributes must match, except a recorded outer shape, which is rewritten."""
     import torch
 
     t0 = parts[0]
@@ -313,7 +265,6 @@ def _cat_rows(parts: list) -> Any:
         return isinstance(x, (tuple, list, torch.Size)) and tuple(x) == shape
 
     def normalised(c: Any, shape: tuple) -> Any:
-        # TorchAOBaseTensor subclasses (Int8Tensor) flatten their attributes into a dict, v1 ones into a list.
         if isinstance(c, dict):
             return {k: ("<outer-shape>" if is_shape(v, shape) else v) for k, v in c.items()}
         return ["<outer-shape>" if is_shape(x, shape) else x for x in c]
@@ -341,7 +292,7 @@ def _cat_rows(parts: list) -> Any:
 
 
 def _fusable_parts(module: Any) -> Optional[tuple]:
-    """(to_q, to_k, to_v, rotation group or None) when the three projections can become one int8 GEMM, else None."""
+    """(to_q, to_k, to_v, rotation group or None), or None when not fusable."""
     from .diffusion_convrot import is_rotated_linear
 
     if getattr(module, "fused_projections", False):
@@ -375,7 +326,7 @@ def _fusable_parts(module: Any) -> Optional[tuple]:
 
 
 def _self_check(parts: tuple, fused: Any) -> bool:
-    """The fused projection reproduces the three it replaces, bit for bit, on this device (a few rows)."""
+    """Bit-exact against the three projections on this device."""
     import torch
 
     w = parts[0].weight
@@ -390,13 +341,8 @@ def _self_check(parts: tuple, fused: Any) -> bool:
 
 
 def fuse_h3_qkv_(transformer: Any, logger: Any = None) -> int:
-    """Fuse ``to_q``/``to_k``/``to_v`` into ``to_qkv`` on every eligible H3 attention module, in place.
-
-    Eligible = all three are bias-free ``nn.Linear`` (or all ConvRot-rotated at one group) carrying torchao int8
-    weights with per-token activation quant and per-row weight scales, identical quantization attributes, one
-    device, no hooks. Each fused module must reproduce the three projections bit for bit on its device before it is
-    swapped in; anything else is left exactly as it was. One module at a time, so the transient extra memory is one
-    block's QKV."""
+    """Fuse ``to_q``/``to_k``/``to_v`` into ``to_qkv`` in place where ``_fusable_parts`` allows and ``_self_check``
+    passes; one module at a time, so the transient extra memory is one block's QKV."""
     if not _enabled(FUSED_QKV_ENV):
         return 0
     from torch import nn
@@ -432,9 +378,7 @@ def fuse_h3_qkv_(transformer: Any, logger: Any = None) -> int:
             delattr(module, name)
         fused += 1
     if fused:
-        # The three per-module projections are freed piecemeal while each fused weight is a fresh, larger block, so
-        # the caching allocator is left holding ~5.8 GB of unreusable fragments (measured: cold-render reserved
-        # 58.7 -> 64.5 GB on an RTX PRO 6000). Hand them back.
+        # The freed per-projection blocks are fragments the larger fused weights cannot reuse (~5.8 GB on G4).
         try:
             import torch
             if torch.cuda.is_available():
@@ -447,7 +391,7 @@ def fuse_h3_qkv_(transformer: Any, logger: Any = None) -> int:
 
 
 def fused_qkv_count(transformer: Any) -> int:
-    """How many H3 attention modules run one fused QKV projection (engagement census)."""
+    """Engagement census."""
     return sum(
         1 for m in _h3_attention_modules(transformer) if getattr(m, "fused_projections", False)
     )

@@ -7369,9 +7369,7 @@ class VideoBackend:
                 install_strided_attention,
             )
             h3_denoiser = getattr(pipe, denoiser_component, None)
-            # One rotation + activation quant + int8 GEMM for q, k and v instead of three. Resident, hookless int8
-            # denoiser only: a streamed one is owned by group-offload hooks keyed to the three projections, and the
-            # fusion runs on the card, before the lazy regional compile traces the block.
+            # Resident only: a streamed denoiser's offload hooks are keyed to the three projections.
             if (
                 effective_speed != SPEED_OFF
                 and denoiser_pinned
@@ -7388,7 +7386,6 @@ class VideoBackend:
                 umem_target, attention_backend, speed_active = effective_speed != SPEED_OFF
             )
             try:
-                # Studio's generic pick is cuDNN on NVIDIA; at H3's shape flash SDPA is faster on some archs.
                 h3_attn_backend = h3_attention_backend(h3_attn_backend)
             except Exception:  # noqa: BLE001 -- keep the generic pick
                 pass
