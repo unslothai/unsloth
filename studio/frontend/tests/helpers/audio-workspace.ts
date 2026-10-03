@@ -21,6 +21,8 @@ export const AUDIO_WORKSPACE_FILES = [
   "features/audio/audio-workspace-utils.ts",
   "features/audio/components/field.tsx",
   "features/audio/components/workflow-title-menu.tsx",
+  "features/audio/components/clip-card.tsx",
+  "features/audio/components/waveform.tsx",
 ] as const;
 
 export type AudioWorkspaceFile = (typeof AUDIO_WORKSPACE_FILES)[number];

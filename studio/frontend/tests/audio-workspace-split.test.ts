@@ -48,7 +48,9 @@ test("a loaded model opens the page that fits it", () => {
 });
 
 test("?workflow= names the page ahead of ?task=, and both clear the URL", () => {
-  const workflowAt = handoff.indexOf("const routedWorkflow = routeSearch.workflow;");
+  const workflowAt = handoff.indexOf(
+    "const routedWorkflow = routeSearch.workflow;",
+  );
   const taskAt = handoff.indexOf("const task = routeSearch.task;");
   assert.ok(workflowAt > 0 && workflowAt < taskAt);
   assert.match(
@@ -70,13 +72,19 @@ test("Speak and Music keep separate drafts that survive a reload", () => {
 });
 
 test("history is per page, and Clear all clears only that page", () => {
-  assert.match(gallery, /clips\.filter\(\(clip\) => clipWorkflow\(clip\) === workflow\)/);
+  assert.match(
+    gallery,
+    /clips\.filter\(\(clip\) => clipWorkflow\(clip\) === workflow\)/,
+  );
   assert.match(gallery, /await clearAudioGallery\(workflow\);/);
   assert.match(host, /\(\) => handleClearGallery\(ttsWorkflow\)/);
 });
 
 test("Create|Train shows only where the page trains", () => {
-  assert.match(host, /\{workflowTab\.createTrain \? \(\s*<PillTabs\s*ariaLabel="Page mode"/);
+  assert.match(
+    host,
+    /\{workflowTab\.createTrain \? \(\s*<PillTabs\s*ariaLabel="Page mode"/,
+  );
 });
 
 test("Generate says why it is off and runs from Mod+Enter anywhere on the page", () => {
@@ -99,11 +107,47 @@ test("the rail heading switches pages from a menu of every workflow", () => {
   // A tab row of 5-7 pages truncated every label in the default rail; the title menu lists them all.
   const host = readSrc("features/audio/audio-page.tsx");
   assert.doesNotMatch(host, /ariaLabel="Audio workflow"/);
-  assert.match(host, /<WorkflowTitleMenu\s+workflow=\{pageWorkflow\}\s+onSelect=\{transitionWorkflow\}/);
+  assert.match(
+    host,
+    /<WorkflowTitleMenu\s+workflow=\{pageWorkflow\}\s+onSelect=\{transitionWorkflow\}/,
+  );
   const menu = readSrc("features/audio/components/workflow-title-menu.tsx");
   assert.match(menu, /data-tour="audio-mode"/);
   assert.match(menu, /AUDIO_WORKFLOWS\.map\(\(tab\) =>/);
   assert.match(menu, /\{tab\.hint\}/);
   // Radio items: the current page is ticked and announced as checked.
   assert.match(menu, /<DropdownMenuRadioGroup\s+value=\{current\.id\}/);
+});
+
+test("results show as a clip card with a waveform, never autoplaying", () => {
+  const output = readSrc("features/audio/pages/tts-workspace.tsx");
+  const card = readSrc("features/audio/components/clip-card.tsx");
+  assert.doesNotMatch(output, /<audio\b/);
+  assert.doesNotMatch(output + card, /autoPlay/);
+  assert.match(output, /<ClipCard\s+\/\/[^\n]*\n\s*key=\{selectedClip\.id\}/);
+  assert.match(card, /<Waveform\s+peaks=\{peaks\}/);
+  // A run in progress stands where its clip will appear, with Stop, and no second live region.
+  assert.match(
+    output,
+    /\{pending \? \(\s*<PendingClipCard \{\.\.\.pending\} \/>/,
+  );
+  assert.match(
+    host,
+    /pending:\s*busy === "generating" && generationPresentation/,
+  );
+  assert.match(host, /onStop: handleStopGeneration,/);
+  assert.doesNotMatch(card, /aria-live/);
+});
+
+test("Send to lists the other Audio pages from the shared workflow list", () => {
+  const card = readSrc("features/audio/components/clip-card.tsx");
+  assert.match(
+    card,
+    /AUDIO_WORKFLOWS\.filter\(\s*\(tab\) => tab\.id !== current && handlers\[tab\.id\],?\s*\)/,
+  );
+  // Bytes first: a failed fetch must not leave the user on another page.
+  assert.match(
+    host,
+    /const blob = await fetchClipBlob\(clip\.url\);\s*if \(!transitionWorkflow\("transcribe"\)\) return;/,
+  );
 });

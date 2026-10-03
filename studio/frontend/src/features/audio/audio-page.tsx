@@ -30,7 +30,7 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useIsMobileShell } from "@/hooks/use-mobile";
 
-import type { AudioGalleryClip } from "./api";
+import { type AudioGalleryClip, fetchClipBlob } from "./api";
 import {
   type AudioBusy,
   type AudioGenerationPhase,
@@ -39,6 +39,7 @@ import {
 } from "./audio-page-policy";
 import { type CreateMode, deviceSizeBytes } from "./audio-workspace-utils";
 import { audioCapabilityLine, audioModelsForTask } from "./catalog";
+import type { ClipSendHandlers } from "./components/clip-card";
 import { WorkflowTitleMenu } from "./components/workflow-title-menu";
 import { galleryCache, useAudioGallery, useWorkflowHistory } from "./hooks/use-audio-gallery";
 import { useAudioHandoff } from "./hooks/use-audio-handoff";
@@ -90,7 +91,8 @@ export function AudioPage({
       : mode === "transcribe"
         ? "transcribe"
         : "speak";
-  const ttsWorkflow = pageWorkflow === "music" ? "music" : "speak";
+  const ttsWorkflow: "speak" | "music" =
+    pageWorkflow === "music" ? "music" : "speak";
   const workflowTab = audioWorkflowTab(pageWorkflow);
   const { rootStyle: railRootStyle } = useMediaRailWidth("audio");
   const tourSteps = useMemo(
@@ -240,6 +242,7 @@ export function AudioPage({
     selectedId,
     setSelectedId,
     srcById,
+    peaksById,
     ensureClipSrc,
     refreshGallery,
     loadMore,
@@ -473,6 +476,30 @@ export function AudioPage({
   const handleClearWorkflowGallery = useCallback(
     () => handleClearGallery(ttsWorkflow),
     [handleClearGallery, ttsWorkflow],
+  );
+  // Send to: only pages that can take a finished clip today. Bytes first, so a failed fetch leaves the page.
+  const sendHandlersFor = useCallback(
+    (clip: AudioGalleryClip): ClipSendHandlers => ({
+      transcribe: () => {
+        void (async () => {
+          try {
+            const blob = await fetchClipBlob(clip.url);
+            if (!transitionWorkflow("transcribe")) return;
+            const name = `${clip.prompt.trim().slice(0, 40) || "Audio clip"}.wav`;
+            handleTranscribeFile(
+              new File([blob], name, { type: blob.type || "audio/wav" }),
+            );
+          } catch (error) {
+            toast.error(
+              error instanceof Error
+                ? error.message
+                : "Could not load this clip for transcription.",
+            );
+          }
+        })();
+      },
+    }),
+    [transitionWorkflow, handleTranscribeFile],
   );
   const handleUseTextAgain = useCallback(
     (clip: AudioGalleryClip) => {
@@ -927,6 +954,22 @@ export function AudioPage({
             <div className="flex min-h-0 flex-1 flex-col gap-4 p-6 px-10 @[50rem]:pt-[calc(60px*var(--ui-space-scale,1))]">
               {(() => {
                 const outputProps = {
+                  workflow: ttsWorkflow,
+                  peaksById,
+                  sendHandlersFor,
+                  pending:
+                    busy === "generating" && generationPresentation
+                      ? {
+                          title:
+                            prompt.trim() ||
+                            audioInstructions.trim() ||
+                            (ttsWorkflow === "music" ? "New track" : "New clip"),
+                          status: generationPresentation.status,
+                          elapsedSeconds,
+                          canStop: generationPresentation.canStop,
+                          onStop: handleStopGeneration,
+                        }
+                      : null,
                   clips: visibleClips,
                   selectedClip,
                   selectedClipSrc,

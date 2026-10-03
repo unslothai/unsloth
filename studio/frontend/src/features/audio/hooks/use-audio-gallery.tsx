@@ -35,6 +35,7 @@ import {
   MAX_PAGE_SIZE,
   PAGE_SIZE,
 } from "../audio-workspace-constants";
+import { decodePeaks } from "../components/waveform-decode";
 import { clipWorkflow } from "../workflows";
 import type { AudioHostState } from "./audio-host-state";
 
@@ -45,12 +46,15 @@ export const galleryCache: {
   nextCursor: AudioGalleryCursor | null;
   selectedId: string | null;
   srcById: BlobUrlCache;
+  /** Waveform bar heights by clip, decoded once from the bytes fetched for playback. */
+  peaksById: Map<string, number[] | null>;
 } = {
   clips: [],
   hasMore: false,
   nextCursor: null,
   selectedId: null,
   srcById: new BlobUrlCache(CLIP_BLOB_BUDGET_BYTES),
+  peaksById: new Map(),
 };
 
 export function useAudioGallery({
@@ -76,6 +80,9 @@ export function useAudioGallery({
   const [srcById, setSrcById] = useState<Record<string, string>>(
     galleryCache.srcById.toRecord(),
   );
+  const [peaksById, setPeaksById] = useState<
+    ReadonlyMap<string, number[] | null>
+  >(galleryCache.peaksById);
   const clipSrcLoads = useRef<Map<string, Promise<void>>>(new Map());
 
   const ensureClipSrc = useCallback(async (clip: AudioGalleryClip) => {
@@ -99,6 +106,12 @@ export function useAudioGallery({
           galleryCache.selectedId ? [galleryCache.selectedId] : [],
         );
         setSrcById(galleryCache.srcById.toRecord());
+        if (!galleryCache.peaksById.has(clip.id)) {
+          void decodePeaks(fetched.blob).then(({ peaks }) => {
+            galleryCache.peaksById.set(clip.id, peaks);
+            setPeaksById(new Map(galleryCache.peaksById));
+          });
+        }
       } catch {
         toast.error("Could not load this audio clip. Try selecting it again.");
       }
@@ -505,6 +518,7 @@ export function useAudioGallery({
     selectedId,
     setSelectedId,
     srcById,
+    peaksById,
     ensureClipSrc,
     refreshGallery,
     loadMore,
