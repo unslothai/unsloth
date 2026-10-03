@@ -73,6 +73,14 @@ export const es = {
     queueingOnHint: "Los mensajes nuevos esperan su turno.",
     queueingHintShared: "La cola se conserva.",
   },
+  turns: {
+    label: "Turno {number}",
+    bookmarkedLabel: "Turno {number}, en marcadores",
+    bookmarked: "En marcadores",
+    bookmark: "Añadir turno a marcadores",
+    removeBookmark: "Quitar marcador",
+    navigator: "Turnos",
+  },
   picker: {
     onDevice: "En el dispositivo",
     huggingFace: "Hugging Face",
@@ -1933,6 +1941,9 @@ export const es = {
       inlineReadAloudDescription: "Mostrar Lectura en voz alta en cada respuesta, en lugar de en el menú Más.",
       inlineEditResponse: "Editar respuesta en las respuestas",
       inlineEditResponseDescription: "Mostrar Editar respuesta en cada respuesta, en lugar de en el menú Más.",
+      turnNavigation: "Navegación por turnos",
+      turnNavigationDescription:
+        "Numera cada turno, añade turnos a marcadores y salta entre ellos desde una barra junto a los chats largos.",
       modelDisclaimer: "Mostrar aviso del modelo",
       modelDisclaimerDescription:
         'Muestra "Los LLM pueden cometer errores" bajo el cuadro de chat.',

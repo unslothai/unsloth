@@ -7,6 +7,7 @@ import {
   notifyChatHistoryUpdated,
 } from "../api/chat-api";
 import { useChatArtifactsStore } from "../artifacts/store";
+import { useBookmarkedTurnsStore } from "../stores/bookmarked-turns-store";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { ThreadRecord } from "../types";
 import {
@@ -363,6 +364,8 @@ export async function deleteChatItems(
 
   try {
     const kept = await deleteStoredChatThreads(threadIds, args);
+    // after the delete lands, so a rolled-back delete keeps its bookmarks
+    useBookmarkedTurnsStore.getState().forgetThreads(threadIds);
     // Whether or not deletion was asked for: a sandbox that could not be removed leaves files with
     // no card to reach them from, and the chat is already gone, so this offer is the only notice
     // and the only retry.

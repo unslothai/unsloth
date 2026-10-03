@@ -49,6 +49,8 @@ export interface ChatPreferencesState {
   setShowInlineReadAloud: (value: boolean) => void;
   showInlineEditResponse: boolean;
   setShowInlineEditResponse: (value: boolean) => void;
+  showTurnNavigation: boolean;
+  setShowTurnNavigation: (value: boolean) => void;
   thinkingVisibility: DisplayVisibility;
   setThinkingVisibility: (value: DisplayVisibility) => void;
   toolVisibility: DisplayVisibility;
@@ -99,6 +101,9 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       showInlineEditResponse: false,
       setShowInlineEditResponse: (showInlineEditResponse) =>
         set({ showInlineEditResponse }),
+      showTurnNavigation: false,
+      setShowTurnNavigation: (showTurnNavigation) =>
+        set({ showTurnNavigation }),
       thinkingVisibility: DEFAULT_THINKING_VISIBILITY,
       setThinkingVisibility: (thinkingVisibility) =>
         set({ thinkingVisibility }),
@@ -138,6 +143,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           showResponseModel: saved?.showResponseModel ?? false,
           showInlineReadAloud: saved?.showInlineReadAloud ?? false,
           showInlineEditResponse: saved?.showInlineEditResponse ?? false,
+          showTurnNavigation: saved?.showTurnNavigation ?? false,
           thinkingVisibility: migrateVisibility(
             saved?.thinkingVisibility,
             legacy?.collapseThinkingByDefault,

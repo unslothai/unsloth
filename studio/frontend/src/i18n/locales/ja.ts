@@ -74,6 +74,14 @@ export const ja = {
     queueingOnHint: "新しいメッセージは順番待ちになります。",
     queueingHintShared: "キューは保持されます。",
   },
+  turns: {
+    label: "ターン {number}",
+    bookmarkedLabel: "ターン {number}（ブックマーク済み）",
+    bookmarked: "ブックマーク済み",
+    bookmark: "ターンをブックマーク",
+    removeBookmark: "ブックマークを解除",
+    navigator: "ターン",
+  },
   picker: {
     onDevice: "デバイス上",
     huggingFace: "Hugging Face",
@@ -1889,6 +1897,9 @@ export const ja = {
       inlineReadAloudDescription: "読み上げを「その他」メニューではなく、各応答に表示します。",
       inlineEditResponse: "応答に応答の編集を表示",
       inlineEditResponseDescription: "応答の編集を「その他」メニューではなく、各応答に表示します。",
+      turnNavigation: "ターンナビゲーション",
+      turnNavigationDescription:
+        "各ターンに番号を付け、ターンをブックマークし、長いチャットの横のバーからターン間を移動します。",
       modelDisclaimer: "モデルの免責事項を表示",
       modelDisclaimerDescription: 'チャットボックスの下に "LLMs can make mistakes" と表示します。',
       projectAttachments: "プロジェクト全体でファイルを共有",
