@@ -158,11 +158,13 @@ UNTRUSTED_CALLS = frozenset(
         "requests.put",
         "requests.patch",
         "requests.request",
+        "requests.delete",
         "httpx.get",
         "httpx.post",
         "httpx.put",
         "httpx.patch",
         "httpx.request",
+        "httpx.delete",
         "httpx.stream",
         "urlopen",
         "urlretrieve",
@@ -246,6 +248,8 @@ SINKS: dict[str, tuple[tuple[int, ...], frozenset[str]]] = {
     "importlib.import_module": ((0, 1), frozenset({"name", "package"})),
     "import_module": ((0, 1), frozenset({"name", "package"})),
     "__import__": ((0,), frozenset({"name"})),
+    # Probing a dotted name imports its parent package, running that `__init__.py`.
+    "importlib.util.find_spec": ((0,), frozenset({"name"})),
     "importlib.util.spec_from_file_location": ((1,), frozenset({"location"})),
     "spec_from_file_location": ((1,), frozenset({"location"})),
     # The loaders behind it, used directly: `SourceFileLoader(name, path).load_module()`.
@@ -282,6 +286,8 @@ SINKS: dict[str, tuple[tuple[int, ...], frozenset[str]]] = {
     "builtins.eval": ((0,), frozenset()),
     # Shell. A tainted argv[0] or a tainted command string is execution.
     "os.system": ((0,), frozenset()),
+    # Windows: opens the path through its file association, so an executable runs.
+    "os.startfile": ((0,), frozenset({"path"})),
     "os.popen": ((0,), frozenset()),
     # The async spellings run a program exactly as the blocking ones do.
     "asyncio.create_subprocess_exec": ((0,), frozenset({"program", "executable"})),
@@ -347,6 +353,8 @@ SINKS: dict[str, tuple[tuple[int, ...], frozenset[str]]] = {
     "_pickle.Unpickler": ((0,), frozenset({"file"})),
     "dill.Unpickler": ((0,), frozenset({"file"})),
     "pickle.loads": ((0,), frozenset({"data"})),
+    "cloudpickle.load": ((0,), frozenset({"file"})),
+    "cloudpickle.loads": ((0,), frozenset({"data"})),
     "dill.load": ((0,), frozenset({"file"})),
     "dill.loads": ((0,), frozenset({"str"})),
     # Not `torch.load`: that one depends on `weights_only`, which is a value and not a
@@ -2092,9 +2100,13 @@ class _TaintPass(ast.NodeVisitor):
         if own is not None and name in _scope_locals(own):
             if name in _param_names(own):
                 return False
-            nodes = list(ast.walk(own))
+            nodes = list(_scope_nodes(own))
         else:
-            nodes = list(ast.walk(self.facts.tree))
+            # An imported name is defined elsewhere and is not proven here, and a
+            # nested function's local of the same name is not this binding.
+            if name in self.facts.imports:
+                return False
+            nodes = list(_scope_nodes(self.facts.tree))
         accepted: set = set()
         for node in nodes:
             if not isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
@@ -2182,6 +2194,24 @@ class _TaintPass(ast.NodeVisitor):
 
     def _tainted_call(self, node: ast.Call) -> str | None:
         names = self.facts.canonicals(_call_name(node.func))
+        # `getattr(cfg, "module")` is `cfg.module` spelled as a call.
+        if (
+            _matches_any(names, {"getattr", "builtins.getattr"})
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+        ):
+            reason = self.tainted(node.args[0])
+            if reason:
+                return reason
+        # `await asyncio.to_thread(json.loads, body)` returns what the callback returns.
+        if _matches_any(names, {"asyncio.to_thread"}) or (
+            isinstance(node.func, ast.Attribute) and node.func.attr == "run_in_executor"
+        ):
+            scheduled = self._scheduled_call(node)
+            if scheduled is not None:
+                reason = self.tainted(scheduled)
+                if reason:
+                    return reason
         source = _matches_any(names, UNTRUSTED_CALLS)
         if source is None:
             # `decode = json.loads` then `decode(blob)`. Sink aliases were followed and
@@ -2198,7 +2228,8 @@ class _TaintPass(ast.NodeVisitor):
         if (
             source is None
             and isinstance(node.func, ast.Attribute)
-            and node.func.attr in ("get", "post", "put", "patch", "request", "send", "stream")
+            and node.func.attr
+            in ("get", "post", "put", "patch", "delete", "request", "send", "stream")
             and isinstance(node.func.value, ast.Name)
             and node.func.value.id in self._http_sessions()
         ):
@@ -3664,7 +3695,7 @@ class _TaintPass(ast.NodeVisitor):
         own = self.facts.functions.get(self.qualname)
         body = own if own is not None else self.facts.tree
         found = set()
-        for statement in ast.walk(body):
+        for statement in _scope_nodes(body):
             if (
                 isinstance(statement, (ast.Assign, ast.AnnAssign))
                 and isinstance(statement.value, ast.Call)
@@ -3736,10 +3767,16 @@ class _TaintPass(ast.NodeVisitor):
         if not isinstance(node.func, ast.Attribute):
             return
         # `Path(downloaded).rename(final)` and `.replace(final)` move the same file.
-        if node.func.attr in ("rename", "replace") and len(node.args) == 1 and not node.keywords:
+        target = node.args[0] if len(node.args) == 1 else _keyword(node, "target")
+        if (
+            node.func.attr in ("rename", "replace")
+            and len(node.args) + len(node.keywords) == 1
+            and target is not None
+            and not isinstance(target, ast.Constant)
+        ):
             reason = self.tainted(node.func.value)
-            if reason and not isinstance(node.args[0], ast.Constant):
-                self._assign(node.args[0], reason)
+            if reason:
+                self._assign(target, reason)
         # `ZipFile(downloaded).extractall(target)` fills target with archive members, so
         # a later `sys.path.insert(0, target)` imports them.
         if node.func.attr in ("extractall", "extract"):
@@ -4213,6 +4250,13 @@ class _TaintPass(ast.NodeVisitor):
                 held = held + tuple(self.state.attr_sink_aliases.get(key) or ())
         return held
 
+    def _check_callback_sinks(self, invoked: ast.Call) -> None:
+        """Every sink check, on a call a thread, executor or `map` makes on our behalf."""
+        self._check_yaml_load(invoked)
+        self._check_sink(invoked)
+        self._check_torch_load(invoked)
+        self._check_numpy_load(invoked)
+
     def _scheduled_call(self, node: ast.Call) -> ast.Call | None:
         """The call a thread, process, executor or `to_thread` will make, if any.
 
@@ -4257,7 +4301,7 @@ class _TaintPass(ast.NodeVisitor):
         scheduled = self._scheduled_call(node)
         if scheduled is not None:
             # `Thread(target = subprocess.run, args = (command,))` runs the sink itself.
-            self._check_sink(scheduled)
+            self._check_callback_sinks(scheduled)
             if any(self.tainted(argument) for argument in scheduled.args) or any(
                 self.tainted(keyword.value) for keyword in scheduled.keywords
             ):
@@ -4275,6 +4319,8 @@ class _TaintPass(ast.NodeVisitor):
             return
         invoked = ast.Call(func = node.args[0], args = list(node.args[1:]), keywords = [])
         ast.copy_location(invoked, node)
+        # `map(subprocess.run, parsed["commands"])` calls the sink once per element.
+        self._check_callback_sinks(invoked)
         self._propagate_into_callee(invoked)
 
     def _check_torch_load(

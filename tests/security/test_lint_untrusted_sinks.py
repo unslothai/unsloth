@@ -6289,3 +6289,76 @@ def test_import_packages_class_namespaces_and_sink_callbacks(tmp_path):
         ("c", "subprocess.run"),
     } <= sinks
     assert not [f for f in findings if f["qualname"] == "d" and f["tier"] == "A"]
+
+
+def test_find_spec_startfile_cloudpickle_delete_and_fixed_getattr(tmp_path):
+    """New sinks and sources, and `getattr(cfg, "module")` as a plain attribute read."""
+    findings = _scan(
+        tmp_path,
+        "import asyncio, cloudpickle, httpx, importlib.util, json, os, requests, runpy\n"
+        "from importlib import import_module\n"
+        "from pathlib import Path\n"
+        "from huggingface_hub import hf_hub_download\n"
+        "def a(blob):\n"
+        "    return importlib.util.find_spec(json.loads(blob)['module'])\n"
+        "def b(repo):\n"
+        "    os.startfile(hf_hub_download(repo, 'setup.exe'))\n"
+        "def c(url):\n"
+        "    return cloudpickle.loads(requests.get(url).content)\n"
+        "def d(url):\n"
+        "    return cloudpickle.loads(httpx.delete(url).content)\n"
+        "def e(blob):\n"
+        "    return import_module(getattr(json.loads(blob), 'module'))\n"
+        "async def f(url):\n"
+        "    cfg = await asyncio.to_thread(json.loads, requests.get(url).text)\n"
+        "    return import_module(cfg['module'])\n"
+        "def g(repo):\n"
+        "    final = Path('plugin.py')\n"
+        "    Path(hf_hub_download(repo, 'plugin.py')).rename(target = final)\n"
+        "    runpy.run_path(final)\n",
+    )
+    sinks = {(f["qualname"], f["sink"]) for f in findings}
+    assert {
+        ("a", "importlib.util.find_spec"),
+        ("b", "os.startfile"),
+        ("c", "cloudpickle.loads"),
+        ("d", "cloudpickle.loads"),
+        ("e", "importlib.import_module"),
+        ("f", "importlib.import_module"),
+        ("g", "runpy.run_path"),
+    } <= sinks
+
+
+def test_callback_sinks_and_scope_local_proofs(tmp_path):
+    """Sinks used as `map`/thread callbacks, and nested bindings proving nothing outside."""
+    findings = _scan(
+        tmp_path,
+        "import configparser, json, requests, subprocess, threading, torch, yaml\n"
+        "from importlib import import_module\n"
+        "from urllib.request import urlopen\n"
+        "from huggingface_hub import hf_hub_download\n"
+        "from settings import SAFE\n"
+        "def a(blob):\n"
+        "    return list(map(subprocess.run, json.loads(blob)['commands']))\n"
+        "def b(repo):\n"
+        "    threading.Thread(target = torch.load, args = (hf_hub_download(repo, 'x.pt'),)).start()\n"
+        "def c(url):\n"
+        "    threading.Thread(target = yaml.unsafe_load, args = (urlopen(url),)).start()\n"
+        "def helper():\n"
+        "    SAFE = True\n"
+        "    return SAFE\n"
+        "def d(repo):\n"
+        "    return torch.load(hf_hub_download(repo, 'x.pt'), weights_only = SAFE)\n"
+        "def e(parser, blob):\n"
+        "    def inner():\n"
+        "        parser = configparser.ConfigParser()\n"
+        "        return parser\n"
+        "    parser.read(json.loads(blob))\n"
+        "    return import_module(parser['module'])\n",
+    )
+    sinks = {(f["qualname"], f["sink"]) for f in findings}
+    assert ("a", "subprocess.run") in sinks
+    assert any(q == "b" and s.startswith("torch.load") for q, s in sinks)
+    assert any(q == "c" and s.startswith("yaml.unsafe_load") for q, s in sinks)
+    assert any(q == "d" and s.startswith("torch.load") for q, s in sinks)
+    assert not [f for f in findings if f["qualname"] == "e" and f["tier"] == "A"]
