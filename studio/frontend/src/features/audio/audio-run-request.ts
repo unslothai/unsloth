@@ -11,7 +11,7 @@ export const AUDIO_INPUT_MAX_BYTES = 200 * 1024 * 1024;
 /** The server clamps references to this many seconds before cloning. */
 export const REFERENCE_MAX_SECONDS = 30;
 
-/** Edit takes recordings up to this long; longer is refused rather than cut, so it still matches its transcript. */
+/** Longer is refused, not cut: a cut recording no longer matches its transcript. */
 export const EDIT_SOURCE_MAX_SECONDS = 30;
 
 /** One piece of audio the server already holds, by exactly one id. */
@@ -90,9 +90,6 @@ export function selectionExpired(
 
 export type AudioOptionScalar = boolean | number | string;
 
-/** How an Edit run changes the recording. Words: DotTTS sends `markup`, FireRedAudio sends one
- *  `instructions` entry per change, Vevo2 sends neither (it reads the edited `text`). Delivery
- *  (FireRedAudio only): a speed and/or a raised pitch, which the server turns into instructions. */
 export interface AudioRunEditPart {
   mode: "words" | "delivery";
   markup?: string | null;
@@ -110,7 +107,6 @@ export interface AudioRunRequest {
     reference?: (AudioSourceRef & { trim?: AudioTrim }) | null;
     reference_text?: string | null;
     emotion?: AudioSourceRef | null;
-    /** Edit: the recording to change. */
     source?: (AudioSourceRef & { trim?: AudioTrim }) | null;
   };
   edit?: AudioRunEditPart | null;
@@ -190,7 +186,6 @@ export function buildAudioRunBody(
   return body;
 }
 
-/** The edit part with only its allowed keys and well-typed values. */
 function cleanEdit(
   edit: AudioRunEditPart | null | undefined,
 ): Record<string, unknown> | null {

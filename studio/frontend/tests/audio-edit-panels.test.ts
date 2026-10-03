@@ -151,11 +151,6 @@ test("the registry lists the edit panels and the panel keeps its labels", () => 
   assert.match(registry, /\.\.\.EDIT_TOOL_PANELS,/);
   const panels = readSrc("features/audio/tools/edit-panels.tsx");
   assert.match(panels, /EDIT_COPY\.howItEditsTitle/);
-  assert.match(panels, /EDIT_COPY\.previewTitle/);
-  assert.match(panels, /"unsloth_audio_edit_preview_open"/);
-  assert.match(panels, /Call \{index \+ 1\} of \{calls\.length\}/);
-  assert.match(panels, /<pre className="[^"]*font-mono/);
-  assert.match(panels, /motion-reduce:/);
   const editor = readSrc(
     "features/audio/components/transcript-diff-editor.tsx",
   );

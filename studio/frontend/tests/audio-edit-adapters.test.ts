@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The golden check: every case in fixtures/audio-edit-requests.json, which the backend's
-// test_audio_edit_requests.py reads too, so the preview and the server cannot drift apart.
+// fixtures/audio-edit-requests.json is shared with the backend's test_audio_edit_requests.py.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -17,14 +16,11 @@ const {
   EDIT_TOO_LONG,
   FIRERED_INSERT_AT_END,
   FIRERED_TOO_MANY_CHANGES,
-  MODEL_PLACEHOLDER,
-  RECORDING_PLACEHOLDER,
   buildEditRun,
   deliveryInstructions,
   editAdapterFor,
   editPhaseLabel,
   markupFor,
-  previousResult,
 } = await import("../src/features/audio/edit-adapters.ts");
 const { buildAudioRunBody } = await import(
   "../src/features/audio/audio-run-request.ts"
@@ -41,11 +37,9 @@ interface FixtureCase {
     advanced: Record<string, boolean | number | string>;
   };
   run_body: Record<string, unknown>;
-  runtime: { path: string; body: Record<string, unknown> }[];
 }
 
 const fixture = JSON.parse(readText("fixtures/audio-edit-requests.json")) as {
-  placeholders: { model: string; recording: string; previous: string };
   cases: FixtureCase[];
 };
 const SOURCE = { input_id: "in_0123456789abcdef" };
@@ -61,16 +55,6 @@ const runFor = (family: string, input: FixtureCase["input"]) =>
     advanced: input.advanced,
   });
 
-test("the fixture's placeholders are the preview's", () => {
-  assert.equal(fixture.placeholders.model, MODEL_PLACEHOLDER);
-  assert.equal(fixture.placeholders.recording, RECORDING_PLACEHOLDER);
-  assert.equal(
-    fixture.placeholders.previous.replace("{n}", "2"),
-    previousResult(2),
-  );
-  assert.equal(fixture.cases.length, 7);
-});
-
 for (const testCase of fixture.cases) {
   test(`golden: ${testCase.name}`, () => {
     const adapter = EDIT_ADAPTERS[testCase.family];
@@ -81,13 +65,11 @@ for (const testCase of fixture.cases) {
     );
     const run = runFor(testCase.family, testCase.input);
     assert.deepEqual(run, testCase.run_body);
-    // What actually goes over the wire is the same body.
     assert.deepEqual(buildAudioRunBody(run), testCase.run_body);
-    assert.deepEqual(adapter.preview(run), testCase.runtime);
   });
 }
 
-test("Advanced options reach the body as values and the runtime as strings, minus claims", () => {
+test("Advanced options reach the body minus the adapter's claims", () => {
   const run = buildEditRun(EDIT_ADAPTERS.firered_audio, {
     source: SOURCE,
     transcript: S2,
@@ -106,20 +88,6 @@ test("Advanced options reach the body as values and the runtime as strings, minu
     guidance_scale: 1.2,
     flag: true,
   });
-  assert.deepEqual(EDIT_ADAPTERS.firered_audio.preview(run)[0].body.options, {
-    template_name: "semantic_edit",
-    instruction: "Replace 'human' with 'robot'.",
-    num_inference_steps: "4",
-    guidance_scale: "1.2",
-    flag: "true",
-  });
-  // A seed, when a caller sets one, goes top-level as an int.
-  const seeded = EDIT_ADAPTERS.dots_tts.preview({
-    ...run,
-    seed: 7,
-    edit: { mode: "words", markup: "a <del>b</del>" },
-  });
-  assert.equal(seeded[0].body.seed, 7);
 });
 
 test("FireRedAudio cannot insert at the very end", () => {
@@ -184,17 +152,6 @@ test("Vevo2 sends neither markup nor instructions, and drops an empty transcript
   });
   assert.deepEqual(run.edit, { mode: "words" });
   assert.equal(run.inputs?.reference_text, undefined);
-  assert.deepEqual(EDIT_ADAPTERS.vevo2.preview(run), [
-    {
-      path: "/v1/tasks/run",
-      body: {
-        model: "<model>",
-        route: "editing",
-        source_audio: "<recording>",
-        target_text: "A robot voice.",
-      },
-    },
-  ]);
 });
 
 test("Delivery is FireRedAudio's only, speed then pitch, skipping what is unchanged", () => {
@@ -229,20 +186,6 @@ test("Delivery is FireRedAudio's only, speed then pitch, skipping what is unchan
     speed: [0.5, 2, 0.1],
     pitchSteps: [1, 6],
   });
-});
-
-test("the preview never shows a server path or an upload id", () => {
-  for (const testCase of fixture.cases) {
-    const run = runFor(testCase.family, testCase.input);
-    const calls = EDIT_ADAPTERS[testCase.family].preview(run);
-    const text = JSON.stringify(calls.map((call) => call.body));
-    assert.doesNotMatch(text, /input_id|in_0123456789abcdef/);
-    for (const call of calls) {
-      for (const value of Object.values(call.body)) {
-        if (typeof value === "string") assert.ok(!value.startsWith("/"), value);
-      }
-    }
-  }
 });
 
 test("the adapter follows the loaded model's family and edit workflow", () => {

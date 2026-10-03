@@ -1,35 +1,30 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The word diff between a recording's transcript and the user's edited copy. One diff drives
-// both the highlighting in ② and the changes sent to the model, so what the user sees is what
-// gets edited. Words are whitespace-separated tokens: punctuation stays on its word. Free of app
-// imports so the node test runner can load it directly.
+// One diff drives both the highlighting in ② and the changes sent to the model. Words are
+// whitespace-separated tokens: punctuation stays on its word.
 
-/** Past this many words on either side the diff is not computed (it is quadratic). */
+/** The diff is quadratic: past this many words on either side it is not computed. */
 export const EDIT_DIFF_MAX_WORDS = 400;
 
-export type DiffOpKind = "equal" | "delete" | "insert";
+type DiffOpKind = "equal" | "delete" | "insert";
 
-export interface DiffOp {
+interface DiffOp {
   kind: DiffOpKind;
   word: string;
 }
 
-export type EditChangeKind = "replace" | "delete" | "insert";
-
-/** One contiguous change: the words it removes from the transcript and the words it adds. */
 export interface EditChange {
-  kind: EditChangeKind;
+  kind: "replace" | "delete" | "insert";
   old: string[];
   new: string[];
-  /** The transcript word right after the change, or null when the change ends the sentence. */
+  /** The transcript word right after the change; null at the end. */
   before: string | null;
-  /** Where the change starts, as an index into the transcript's words. */
+  /** Index of the change's first word in the transcript. */
   index: number;
 }
 
-export interface DiffSegment {
+interface DiffSegment {
   kind: DiffOpKind;
   text: string;
   /** Screen-reader prefix, so colour and decoration never carry the meaning alone. */
@@ -41,8 +36,7 @@ export function tokenizeWords(text: string): string[] {
   return trimmed ? trimmed.split(/\s+/) : [];
 }
 
-/** The word-level diff of two texts (longest common subsequence), or null past the word cap.
- *  Within a changed run the removed words come before the added ones. */
+/** LCS word diff; null past the word cap. In a changed run removed words precede added ones. */
 export function diffWords(a: string, b: string): DiffOp[] | null {
   const left = tokenizeWords(a);
   const right = tokenizeWords(b);
@@ -51,7 +45,6 @@ export function diffWords(a: string, b: string): DiffOp[] | null {
   const n = left.length;
   const m = right.length;
   const width = m + 1;
-  // lcs[i * width + j] is the LCS length of left[i..] and right[j..].
   const lcs = new Uint16Array((n + 1) * width);
   for (let i = n - 1; i >= 0; i -= 1) {
     for (let j = m - 1; j >= 0; j -= 1) {
@@ -82,7 +75,6 @@ export function diffWords(a: string, b: string): DiffOp[] | null {
   return ops;
 }
 
-/** Each run of changed words as one change: removed and added words together are a replace. */
 export function groupChanges(ops: readonly DiffOp[]): EditChange[] {
   const changes: EditChange[] = [];
   let originalIndex = 0;
@@ -121,19 +113,15 @@ export function groupChanges(ops: readonly DiffOp[]): EditChange[] {
   return changes;
 }
 
-/** The changes between two texts, or null past the word cap. */
 export function changesBetween(a: string, b: string): EditChange[] | null {
   const ops = diffWords(a, b);
   return ops ? groupChanges(ops) : null;
 }
 
-/** How many separate changes the edit makes, or null past the word cap. */
 export function countChanges(a: string, b: string): number | null {
   return changesBetween(a, b)?.length ?? null;
 }
 
-/** The diff as runs to render: equal words, then each change's deleted and inserted words.
- *  Null past the word cap. */
 export function diffSegments(a: string, b: string): DiffSegment[] | null {
   const ops = diffWords(a, b);
   if (!ops) return null;

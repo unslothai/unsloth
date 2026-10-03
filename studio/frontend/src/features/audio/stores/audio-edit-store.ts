@@ -4,42 +4,27 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { AudioSourceSelection } from "../audio-run-request";
+import type { EditDelivery, EditMode } from "../edit-adapters";
 
 export const AUDIO_EDIT_STORAGE_KEY = "unsloth_audio_edit_v1";
 
-export type AudioEditMode = "words" | "delivery";
-
-export interface AudioEditDelivery {
-  /** Playback speed, 1 = unchanged. */
-  speed: number;
-  /** Steps to raise the pitch, 0 = unchanged. */
-  pitchSteps: number;
-}
-
-export const DEFAULT_EDIT_DELIVERY: AudioEditDelivery = {
-  speed: 1,
-  pitchSteps: 0,
-};
-
-/** Edit's draft, kept across page switches and reloads. Tool values live in the Clone store with every page's. */
+/** Tool values live in the Clone store with every page's. */
 interface AudioEditState {
   source: AudioSourceSelection | null;
-  /** ① What the recording says. */
   transcript: string;
-  /** The source id the transcript was taken from, so a new recording gets transcribed again. */
+  /** The source id the transcript came from, so a new recording gets transcribed again. */
   transcriptFor: string | null;
-  /** ② The transcript with the user's changes. */
   edited: string;
-  /** Whether the user typed in ②; until then ② follows ①. */
+  /** Until the user types in ②, ② follows ①. */
   editedTouched: boolean;
-  mode: AudioEditMode;
-  delivery: AudioEditDelivery;
+  mode: EditMode;
+  delivery: EditDelivery;
   setSource: (source: AudioSourceSelection | null) => void;
   setTranscript: (transcript: string, transcriptFor?: string | null) => void;
   setEdited: (edited: string) => void;
   resetEdited: () => void;
-  setMode: (mode: AudioEditMode) => void;
-  setDelivery: (delivery: Partial<AudioEditDelivery>) => void;
+  setMode: (mode: EditMode) => void;
+  setDelivery: (delivery: Partial<EditDelivery>) => void;
 }
 
 export const useAudioEditStore = create<AudioEditState>()(
@@ -51,7 +36,7 @@ export const useAudioEditStore = create<AudioEditState>()(
       edited: "",
       editedTouched: false,
       mode: "words",
-      delivery: DEFAULT_EDIT_DELIVERY,
+      delivery: { speed: 1, pitchSteps: 0 },
       setSource: (source) => set({ source }),
       setTranscript: (transcript, transcriptFor) =>
         set((state) => ({

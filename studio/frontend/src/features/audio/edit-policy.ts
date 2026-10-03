@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// What Edit needs before it can run, in rail order, and the page's copy. Free of app imports so
-// the node test runner can load it directly.
-
 import {
   type AudioSourceSelection,
   EDIT_SOURCE_MAX_SECONDS,
@@ -15,13 +12,6 @@ import {
 } from "./edit-adapters";
 import { countChanges } from "./edit-diff";
 
-/** The S2 sentence, for examples and the tour. */
-export const EDIT_EXAMPLE = {
-  original: "Okay, I'm Cemo and what you just heard wasn't a human voice.",
-  edited: "Okay, I'm Cemo and what you just heard wasn't a robot voice.",
-} as const;
-
-/** The page's labels and hints, kept in one place so the rail and the tests agree. */
 export const EDIT_COPY = {
   recordingLabel: "Recording",
   recordingHint: "Up to 30 s of one voice.",
@@ -39,7 +29,6 @@ export const EDIT_COPY = {
   pitchHint:
     "Below 1× is slower, above is faster. FireRedAudio can raise pitch, not lower it, and makes one pass per change.",
   howItEditsTitle: "How edits apply",
-  previewTitle: "Request preview",
   vevo2SwitchNote:
     "Vevo2 reloads for editing when it was last used on Clone, about 1–9 s.",
   emptyText:
@@ -55,19 +44,6 @@ export const EDIT_TRANSCRIPT_EMPTY = "Type what's said in the recording.";
 export const EDIT_NO_CHANGES = "Change at least one word in ②.";
 export const EDIT_DELIVERY_EMPTY = "Pick a speed or a pitch change.";
 
-export type EditBlockerKind =
-  | "source"
-  | "source-busy"
-  | "source-expired"
-  | "source-too-long"
-  | "transcribing"
-  | "transcript"
-  | "changes"
-  | "too-long"
-  | "panel"
-  | "delivery";
-
-/** What a blocker's button does; the host wires each id to its handler. */
 export type EditBlockerActionId =
   | "add-recording"
   | "choose-recording"
@@ -76,50 +52,40 @@ export type EditBlockerActionId =
   | "open-transcribe"
   | "focus-changes";
 
-export interface EditBlockerAction {
+interface EditBlockerAction {
   id: EditBlockerActionId;
   label: string;
 }
 
-export interface EditBlocker {
-  kind: EditBlockerKind;
+interface EditBlocker {
+  kind: string;
   reason: string;
   actions: readonly EditBlockerAction[];
 }
 
-export interface EditBlockerInput {
+interface EditBlockerInput {
   source: AudioSourceSelection | null;
-  /** The recording card is uploading or recording. */
   sourceBusy: boolean;
-  /** The upload is past its keep-until time (selectionExpired). */
   sourceExpired: boolean;
-  /** Why the last pick failed, shown when there is no recording. */
   sourceError?: string | null;
-  /** The length that will be edited, after any trim; null when unknown. */
   sourceDurationS: number | null;
-  /** Speech-to-text is running on the recording. */
   transcribing: boolean;
-  /** Whether a speech-to-text model can be used to fill ①. */
   sttAvailable: boolean;
-  /** ① */
   transcript: string;
-  /** ② */
   edited: string;
   mode: EditMode;
   delivery: EditDelivery;
-  /** The first tool panel error (collectToolRequest), e.g. an adapter's limit. */
   panelError: string | null;
 }
 
 const blocker = (
-  kind: EditBlockerKind,
+  kind: string,
   reason: string,
   actions: EditBlockerAction[] = [],
 ): EditBlocker => ({ kind, reason, actions });
 
-/** The first page input Edit is missing, in rail order; null when it can run. Model blockers
- *  (none loaded, cannot edit) come from the host first. Delivery reads no words, so the
- *  transcript steps apply to Words only; a Delivery run without one is named after the file. */
+/** The first missing page input, in rail order. Model blockers come from the host first;
+ *  Delivery reads no words, so the transcript steps apply to Words only. */
 export function editBlocker(input: EditBlockerInput): EditBlocker | null {
   if (!input.source && !input.sourceBusy) {
     return blocker("source", input.sourceError || EDIT_NO_SOURCE, [

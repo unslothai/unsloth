@@ -9,7 +9,6 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 registerBundlerResolver();
 const {
   EDIT_DELIVERY_EMPTY,
-  EDIT_EXAMPLE,
   EDIT_NO_CHANGES,
   EDIT_NO_SOURCE,
   EDIT_SOURCE_BUSY,
@@ -19,6 +18,11 @@ const {
   EDIT_TRANSCRIPT_EMPTY,
   editBlocker,
 } = await import("../src/features/audio/edit-policy.ts");
+
+const EDIT_EXAMPLE = {
+  original: "Okay, I'm Cemo and what you just heard wasn't a human voice.",
+  edited: "Okay, I'm Cemo and what you just heard wasn't a robot voice.",
+};
 const { EDIT_TOO_LONG, FIRERED_TOO_MANY_CHANGES } = await import(
   "../src/features/audio/edit-adapters.ts"
 );
