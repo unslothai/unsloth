@@ -501,6 +501,16 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
       return;
     }
     let frame = 0;
+    const fade = (hidden: number) =>
+      `${Math.min(Math.max(hidden, 0), RAIL_FADE_PX)}px`;
+    const fadeEnds = () => {
+      const railRange = Math.max(0, rail.scrollHeight - rail.clientHeight);
+      rail.style.setProperty("--rail-fade-top", fade(rail.scrollTop));
+      rail.style.setProperty(
+        "--rail-fade-bottom",
+        fade(railRange - rail.scrollTop),
+      );
+    };
     const sync = () => {
       frame = 0;
       const railRange = Math.max(0, rail.scrollHeight - rail.clientHeight);
@@ -509,27 +519,31 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
         railRange > 0 && range > 0
           ? (viewport.scrollTop / range) * railRange
           : 0;
-      const fade = (hidden: number) =>
-        `${Math.min(Math.max(hidden, 0), RAIL_FADE_PX)}px`;
-      rail.style.setProperty("--rail-fade-top", fade(rail.scrollTop));
-      rail.style.setProperty(
-        "--rail-fade-bottom",
-        fade(railRange - rail.scrollTop),
-      );
+      fadeEnds();
     };
     const schedule = () => {
       if (!frame) {
         frame = requestAnimationFrame(sync);
       }
     };
+    // keyboard focus scrolls the rail to reveal its dash; keep the ends right, then follow the thread again once focus leaves
+    const onFocusOut = (event: globalThis.FocusEvent) => {
+      if (!rail.contains(event.relatedTarget as Node | null)) {
+        schedule();
+      }
+    };
     sync();
     viewport.addEventListener("scroll", schedule, { passive: true });
+    rail.addEventListener("scroll", fadeEnds, { passive: true });
+    rail.addEventListener("focusout", onFocusOut);
     // the rail eases to a new height on resize, so keep its ends in step
     const resize = new ResizeObserver(schedule);
     resize.observe(rail);
     resize.observe(viewport);
     return () => {
       viewport.removeEventListener("scroll", schedule);
+      rail.removeEventListener("scroll", fadeEnds);
+      rail.removeEventListener("focusout", onFocusOut);
       resize.disconnect();
       cancelAnimationFrame(frame);
     };

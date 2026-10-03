@@ -9,6 +9,7 @@ export interface BookmarkedTurnsState {
   bookmarkedByThread: Record<string, string[]>;
   toggleBookmarkedTurn: (threadId: string, messageId: string) => void;
   forgetThreads: (threadIds: readonly string[]) => void;
+  forgetTurns: (threadId: string, messageIds: readonly string[]) => void;
 }
 
 export const useBookmarkedTurnsStore = create<BookmarkedTurnsState>()(
@@ -43,6 +44,23 @@ export const useBookmarkedTurnsStore = create<BookmarkedTurnsState>()(
                 ([id]) => !forget.has(id),
               ),
             ),
+          };
+        }),
+      forgetTurns: (threadId, messageIds) =>
+        set((state) => {
+          const current = state.bookmarkedByThread[threadId];
+          if (!current?.some((id) => messageIds.includes(id))) {
+            return state;
+          }
+          const next = current.filter((id) => !messageIds.includes(id));
+          const others = Object.fromEntries(
+            Object.entries(state.bookmarkedByThread).filter(
+              ([id]) => id !== threadId,
+            ),
+          );
+          return {
+            bookmarkedByThread:
+              next.length > 0 ? { ...others, [threadId]: next } : others,
           };
         }),
     }),
