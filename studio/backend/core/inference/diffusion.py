@@ -59,6 +59,7 @@ from .diffusion_families import (
     _is_local_path,
     canonical_base,
     cache_holds_files,
+    comfy_flow_shift_for,
     default_generation_params,
     detect_family_for_pick,
     excluded_model_reason,
@@ -240,6 +241,14 @@ from .diffusion_precision import (
     torchao_quantize_importable,
 )
 from .diffusion_te_prequant import te_prequant_pipe_kwargs
+from .diffusion_flow_shift import apply_comfy_flow_shift
+from .diffusion_text_length import (
+    IDEOGRAM4_COMFY_GUIDANCE,
+    ideogram4_comfy_guidance_schedule,
+    ideogram4_comfy_mu_std,
+    flux_t5_kwarg,
+    true_cfg_needs_empty_negative,
+)
 from .diffusion_denoiser_prequant import (
     DENOISER_COMPONENT,
     PIPELINE_SEED_DECLINED,
@@ -5556,6 +5565,10 @@ class DiffusionBackend:
                 # repo's transformer/ shards, since the fallback would pull them HERE, inside the load lock, after
                 # eviction, where unload cannot preempt it and progress already reported 100%.
                 dense_fallback_allowed = bool(_transformer_prefetched)
+                # Set when an offloading GGUF pick loads the pre-quantised checkpoint instead (diffusion_gguf_route).
+                gguf_offload_placement: Optional[Any] = None
+                gguf_offload_scheme: Optional[str] = None
+                gguf_offload_swap = False
                 # A GGUF pick with the scheme left to us: the hosted pre-quant is free only while already cached,
                 # since fetching it means a SECOND multi-GB denoiser and the GGUF never runs. An explicit scheme, a
                 # LoRA bake and every non-GGUF kind keep today's behaviour. An all-zero-weight list is not a bake.
@@ -5747,6 +5760,23 @@ class DiffusionBackend:
                                 transformer_quant_decline = _torchao_offload_decline(
                                     "the quantised build still needs", replanned
                                 )
+                                # Held until the resident retry below had its turn.
+                                gguf_offload_placement, gguf_offload_reason = (
+                                    self._gguf_offload_prequant_placement(
+                                        replanned,
+                                        candidate,
+                                        fam = fam,
+                                        target = target,
+                                        auto = transformer_quant_auto,
+                                        gguf_filename = gguf_filename,
+                                        base = base,
+                                        prequant_path = transformer_prequant_path,
+                                    )
+                                )
+                                # The retry below may rebind ``candidate``; the placement is this one's.
+                                gguf_offload_scheme = getattr(candidate, "scheme", None)
+                                if gguf_offload_reason is not None:
+                                    transformer_quant_decline = gguf_offload_reason
                             if plan_keeps_transformer_resident(replanned):
                                 quant_plan = replanned
                                 # The GGUF plan declined resident; a prequant-sized replan says nothing about the
@@ -5799,6 +5829,18 @@ class DiffusionBackend:
                                     quant_plan = retry_plan
                                     if candidate.prequant:
                                         dense_fallback_allowed = False
+                        if quant_plan is None and gguf_offload_placement is not None:
+                            logger.info(
+                                "diffusion.transformer_quant: the GGUF pick offloads ('%s'); loading the "
+                                "pre-quantised %s checkpoint under the same placement instead",
+                                gguf_offload_placement.offload_policy,
+                                gguf_offload_scheme,
+                            )
+                            quant_plan = gguf_offload_placement
+                            gguf_offload_swap = True
+                            transformer_quant_decline = None
+                            # A dense bf16 fallback would land the whole denoiser on a card it does not fit.
+                            dense_fallback_allowed = False
                     else:
                         # This materialises the dense bf16 transformer, so re-check the fit rather than OOMing after
                         # eviction (skipped for a prequant).
@@ -5992,15 +6034,42 @@ class DiffusionBackend:
                                     ),
                                     text_encoder_quant = text_encoder_quant,
                                 )
+                                sized_placement, sized_reason = (
+                                    (None, None)
+                                    if plan_keeps_transformer_resident(sized_plan)
+                                    else self._gguf_offload_prequant_placement(
+                                        sized_plan,
+                                        sized_candidate,
+                                        fam = fam,
+                                        target = target,
+                                        auto = transformer_quant_auto,
+                                        gguf_filename = gguf_filename,
+                                        base = base,
+                                        prequant_path = transformer_prequant_path,
+                                    )
+                                )
                                 if plan_keeps_transformer_resident(sized_plan):
                                     quant_plan = sized_plan
                                     if sized_plan.offload_policy != OFFLOAD_NONE:
                                         dense_fallback_allowed = False
+                                elif sized_placement is not None:
+                                    logger.info(
+                                        "diffusion.transformer_quant: the pre-quantised %s checkpoint "
+                                        "offloads ('%s'); loading it under that placement instead of the GGUF",
+                                        sized_candidate.scheme,
+                                        sized_placement.offload_policy,
+                                    )
+                                    quant_plan = sized_placement
+                                    gguf_offload_swap = True
+                                    dense_fallback_allowed = False
                                 else:
                                     dense_declined = True
                                     dense_fallback_allowed = False
-                                    transformer_quant_decline = _torchao_offload_decline(
-                                        "the pre-quantised transformer needs", sized_plan
+                                    transformer_quant_decline = (
+                                        sized_reason
+                                        or _torchao_offload_decline(
+                                            "the pre-quantised transformer needs", sized_plan
+                                        )
                                     )
                                     logger.info(
                                         "diffusion.transformer_quant_declined: %s",
@@ -6132,6 +6201,14 @@ class DiffusionBackend:
                                 fetch_base = fetch_base,
                                 local_files_only = local_files_only,
                                 _load_token = _load_token,
+                                seed_plan = quant_plan if quant_plan is not None else plan,
+                            )
+                            transformer_quant_artifact = self._gguf_route_artifact(
+                                pipe,
+                                fam,
+                                transformer_quant_engaged,
+                                base = base,
+                                prequant_path = transformer_prequant_path,
                             )
                         except Exception as exc:  # noqa: BLE001 - fall back to the GGUF build
                             self._raise_if_load_cancelled(_load_token)
@@ -6919,6 +6996,10 @@ class DiffusionBackend:
                         )
 
                     self._raise_if_load_cancelled(_load_token)
+                    # Before from_pipe copies the scheduler.
+                    apply_comfy_flow_shift(
+                        pipe, comfy_flow_shift_for(fam, gguf_filename, repo_id, base), logger
+                    )
                     # Before the speed optims so their decode compile lands inside the non-finite check; `off` keeps fp32.
                     vae_fp16 = str(
                         speed_mode or ""
@@ -7189,6 +7270,15 @@ class DiffusionBackend:
                     if transformer_quant_artifact is not None:
                         # Beside ``source``, never in it: the frontend branches on "auto"/"explicit".
                         resolved["transformer_quant"]["artifact"] = transformer_quant_artifact
+                    if gguf_offload_swap and transformer_quant_engaged is not None:
+                        from .diffusion_gguf_route import gguf_offload_swap_reason
+                        resolved["transformer_quant"]["reason"] = gguf_offload_swap_reason(
+                            transformer_quant_engaged,
+                            transformer_quant_artifact,
+                            plan,
+                            gguf_filename,
+                        )
+                        resolved["transformer_quant"]["replaced"] = f"gguf:{gguf_filename}"
 
                     # Opt-in (UNSLOTH_DIFFUSION_BG_COMPILE=1): off by default so the same seed twice repeats.
                     bg_module = (
@@ -7301,6 +7391,66 @@ class DiffusionBackend:
         )
         return self.status()
 
+    @staticmethod
+    def _gguf_route_artifact(
+        pipe: Any,
+        fam: Any,
+        scheme: Optional[str],
+        *,
+        base: Optional[str],
+        prequant_path: Optional[str],
+    ) -> Optional[str]:
+        """``prequant:<repo>/<file>`` when the build loaded a pre-quantized checkpoint, else None."""
+        try:
+            transformer = getattr(pipe, "transformer", None)
+            if scheme is None or getattr(transformer, "_unsloth_prequant_path", None) is None:
+                return None
+            from .diffusion_denoiser_prequant import prequant_artifact_label
+
+            return prequant_artifact_label(
+                resolve_prequant_source(fam, scheme, path_override = prequant_path, base_repo = base),
+                transformer,
+            )
+        except Exception:  # noqa: BLE001 - status only
+            return None
+
+    @staticmethod
+    def _gguf_offload_prequant_placement(
+        replanned: Any,
+        candidate: Any,
+        *,
+        fam: Any,
+        target: Any,
+        auto: bool,
+        gguf_filename: Optional[str],
+        base: Optional[str],
+        prequant_path: Optional[str],
+    ) -> tuple[Optional[Any], Optional[str]]:
+        """``diffusion_gguf_route.gguf_offload_prequant_placement`` with the cache state resolved."""
+        from .diffusion_gguf_route import gguf_offload_prequant_placement
+
+        scheme = getattr(candidate, "scheme", None)
+        if candidate is None or not scheme:
+            return None, None
+        try:
+            prequant_cached = (
+                _uncached_prequant_repo(
+                    fam, target, scheme, base_repo = base, prequant_path = prequant_path
+                )
+                is None
+            )
+        except Exception:  # noqa: BLE001 - unknown cache state: treat as uncached
+            prequant_cached = False
+        return gguf_offload_prequant_placement(
+            replanned,
+            candidate,
+            scheme = scheme,
+            auto = auto,
+            gguf_filename = gguf_filename,
+            prequant_cached = prequant_cached,
+            torchao_offload_plan = torchao_offload_plan,
+        )
+
     def _load_dense_quant_pipeline(
         self,
         transformer_cls: Any,
@@ -7322,8 +7472,12 @@ class DiffusionBackend:
         fetch_base: Optional[str] = None,
         local_files_only: bool = False,
         _load_token: Optional[int] = None,
+        seed_plan: Any = None,
     ) -> tuple[Any, str]:
         """Build the opt-in fast pipeline and return ``(pipe, engaged_scheme)``.
+
+        ``seed_plan``: the placement the build runs under; an offloading one seeds a pre-quantized checkpoint on the
+        host (``prequant_seed_device``).
 
         Two ways to get the quantized transformer, in order: (1) Pre-quantized, when a checkpoint is
         configured for the chosen scheme (an explicit ``prequant_path`` or the family's hosted
@@ -7370,6 +7524,12 @@ class DiffusionBackend:
             )
             check_cancelled()
             if source is not None:
+                # A GPU seed under offload OOMed 8 GB Qwen-Image-2.1 in the streaming hooks.
+                seed_device = (
+                    prequant_seed_device(seed_plan, device, scheme)
+                    if seed_plan is not None
+                    else device
+                )
                 transformer = load_prequantized_transformer(
                     transformer_cls,
                     fetch_base,
@@ -7391,6 +7551,7 @@ class DiffusionBackend:
                     # re-downloaded under the import-time constant.
                     cache_dir = hub_cache_dir(),
                     logger = logger,
+                    placement_device = None if seed_device == device else seed_device,
                 )
                 check_cancelled()
                 if transformer is not None:
@@ -7403,7 +7564,7 @@ class DiffusionBackend:
                         transformer,
                         dtype,
                         hf_token,
-                        device,
+                        seed_device,
                         base_local_dir,
                         fam = fam,
                         te_quant_mode = text_encoder_quant,
@@ -9257,7 +9418,19 @@ class DiffusionBackend:
                     if steps == 48 and abs(float(guidance) - 7.0) < 1e-6:
                         kwargs.pop(state.family.cfg_kwarg, None)
                     else:
-                        kwargs["guidance_schedule"] = None
+                        # ComfyUI preset for this step count; the 7 -> 3 CFG override only at guidance 7.
+                        mu, std = ideogram4_comfy_mu_std(steps)
+                        if "mu" in call_params:
+                            kwargs["mu"] = mu
+                        if "std" in call_params:
+                            kwargs["std"] = std
+                        if abs(float(guidance) - IDEOGRAM4_COMFY_GUIDANCE) < 1e-6:
+                            kwargs.pop(state.family.cfg_kwarg, None)
+                            kwargs["guidance_schedule"] = ideogram4_comfy_guidance_schedule(
+                                steps, width, height
+                            )
+                        else:
+                            kwargs["guidance_schedule"] = None
                 if state.family.name == LUMINA2_FAMILY_NAME and "cfg_trunc_ratio" in call_params:
                     # Lumina 2's card recipe truncates the CFG double-forward to the first quarter
                     # (cfg_trunc_ratio=0.25); the 1.0 default oversaturates.
@@ -9289,6 +9462,11 @@ class DiffusionBackend:
                         kwargs["height"] = ih
                 if negative_prompt and "negative_prompt" in call_params:
                     kwargs["negative_prompt"] = negative_prompt
+                elif "negative_prompt" in call_params and true_cfg_needs_empty_negative(
+                    state.family.cfg_kwarg, guidance
+                ):
+                    # Qwen-Image true CFG needs a negative present; ComfyUI encodes an empty one.
+                    kwargs["negative_prompt"] = ""
                 if workflow == "controlnet" and control_pil is not None:
                     # CN pipeline takes the control map + scale; guidance start/end bound its step range. Every kwarg
                     # is signature-gated.
@@ -9487,6 +9665,10 @@ class DiffusionBackend:
                                 chunk_kwargs["negative_prompt"] = [
                                     chunk_kwargs["negative_prompt"]
                                 ] * len(chunk)
+                        # Per chunk, since a prompts list varies in length.
+                        t5_len = flux_t5_kwarg(state.family.name, pipe, call_params, chunk_kwargs)
+                        if t5_len is not None:
+                            chunk_kwargs["max_sequence_length"] = t5_len
                         # A step cache keys residuals on the cond/uncond context, which a graph key
                         # cannot see. Per chunk because an AUTO decision is re-taken per generation.
                         if state.cuda_graphs:

@@ -56,6 +56,13 @@ from typing import (
 import httpx
 
 from core.inference.chat_template_helpers import build_dac_tts_prompt
+from core.inference.llama_custom_config import (
+    CompiledCustomConfig,
+    CustomConfigError,
+    CustomConfigSource,
+    compile_custom_config,
+    parse_config_source,
+)
 from core.inference.context_window import (
     _COMPACTION_HEADROOM_RATIO,
     clamp_compaction_headroom_ratio,
@@ -512,6 +519,7 @@ from utils.code_integrity import code_integrity_block_reason, code_integrity_use
 # Unsloth's Python is, so it must not make the whole models package a hard import dependency.
 from utils.gguf_archs import (
     SPEECH_GGUF_ARCHS as _SPEECH_GGUF_ARCHS,
+    is_audio_cpp_gguf_architecture,
     is_speech_gguf_architecture,
 )
 
@@ -625,14 +633,21 @@ class GgufLoadIntent:
     force_reload: bool = False
 
     cpu_fallback: bool = False
+    llama_cpp_config: Optional[CustomConfigSource] = None
 
     def __post_init__(self):
+        object.__setattr__(self, "llama_cpp_config", parse_config_source(self.llama_cpp_config))
         for key in ("tensor_split", "gpu_ids", "extra_args"):
             value = getattr(self, key)
             if value is not None:
                 object.__setattr__(self, key, tuple(value))
         if self.gpu_ids == ():
             object.__setattr__(self, "gpu_ids", None)
+
+
+def _is_custom(intent) -> bool:
+    source = getattr(intent, "llama_cpp_config", None)
+    return source is not None and source.mode == "custom"
 
 
 class _CpuFallbackRuntime(NamedTuple):
@@ -6328,7 +6343,7 @@ def _widen_pin_ids_for_companion_devices(
     pin_ids: list[int],
     inherited_ids: Optional[list[int]],
     *,
-    may_widen: bool = True,
+    allowed_ids: Optional[Iterable[int]] = None,
 ) -> tuple[list[int], str]:
     """Fit a pinned GPU mask to the companion devices the argv names (#11810).
 
@@ -6336,12 +6351,13 @@ def _widen_pin_ids_for_companion_devices(
     ``inherited_ids``, else the physical index). Cards they name are appended after the
     pinned ones, the winning flag is renumbered to the child's mask, and a main
     ``--device`` is added so ``-ngl -1`` does not spread over the extra cards. Tokens
-    the parent cannot see are left alone. ``may_widen`` False (explicit gpu_ids) only
-    renumbers within the pin. Returns the mask and a log note, empty when unchanged.
+    the parent cannot see are left alone. ``allowed_ids`` (explicit gpu_ids) limits
+    widening to those cards. Returns the mask and a log note, empty when unchanged.
     """
     if not pin_ids:
         return list(pin_ids), ""
     main_ids = [int(i) for i in pin_ids]
+    allowed = None if allowed_ids is None else {int(i) for i in allowed_ids}
     # A main --device past the pinned positions would resolve to a widened companion card.
     for token in str(_extra_args_main_device(cmd) or "").split(","):
         match = _GPU_DEVICE_TOKEN_RE.match(token.strip())
@@ -6375,7 +6391,7 @@ def _widen_pin_ids_for_companion_devices(
                     physical = n
                 elif n < len(inherited_ids):
                     physical = int(inherited_ids[n])
-                if not may_widen and physical not in main_ids:
+                if allowed is not None and physical not in main_ids and physical not in allowed:
                     physical = None
             tokens.append((token, physical))
         if any(physical is not None for _, physical in tokens):
@@ -6962,6 +6978,11 @@ def _llama_chunk_has_generated_output(data: dict) -> bool:
         if choice.get("text") not in (None, ""):
             return True
     return False
+
+
+def _perf_callback_wants_timings(callback) -> bool:
+    """A callback that only tracks prefill progress opts out of per-token timings."""
+    return callback is not None and getattr(callback, "wants_timings", True)
 
 
 def _report_live_llama_timings(callback, chunk) -> None:
@@ -7754,6 +7775,7 @@ class LlamaCppBackend:
         self._requested_n_ctx: int = 0
         # Last healthy caller intent for crash recovery. Memory-only and never logged.
         self._last_load_intent: Optional[GgufLoadIntent] = None
+        self._compiled_custom_config: Optional[CompiledCustomConfig] = None
         self._mtp_runtime_fallback_lock = threading.Lock()
         self._mtp_runtime_fallback_in_progress = False
         # Background watchdog so an MTP+tensor crash recovers even when no request
@@ -8487,6 +8509,8 @@ class LlamaCppBackend:
         never competed with."""
         if self._arch_gate_forced_cpu:
             return True
+        if self._compiled_custom_config is not None:
+            return self._compiled_custom_config.cpu_only and self._gpu_offload_active is False
         return (
             self._gpu_memory_mode == "manual"
             and self._gpu_layers == 0
@@ -8550,6 +8574,15 @@ class LlamaCppBackend:
         effective = self._gpu_ids or None
         return requested == raw or requested == effective
 
+    def _adopt_widened_pin(self, pin_ids: List[int]) -> None:
+        """Record a companion-widened explicit pin as the effective one (#12467).
+
+        Else /status and dedupe keep the pre-widen pin and a reload drops the companion
+        card. A launch that recorded none (forced CPU) stays None.
+        """
+        if self._gpu_ids is not None:
+            self._gpu_ids = [int(i) for i in pin_ids]
+
     def _record_matching_gpu_request(self, gpu_ids: Optional[List[int]]) -> None:
         """Adopt the caller's explicit pool after a full already-loaded match.
 
@@ -8571,6 +8604,29 @@ class LlamaCppBackend:
     def last_load_intent(self) -> Optional[GgufLoadIntent]:
         return self._last_load_intent
 
+    @property
+    def requested_llama_cpp_config(self) -> Optional[dict]:
+        source = getattr(self._last_load_intent, "llama_cpp_config", None)
+        return source.to_wire() if source is not None else None
+
+    @property
+    def llama_cpp_config_summary(self) -> Optional[dict]:
+        compiled = getattr(self, "_compiled_custom_config", None)
+        return compiled.summary() if compiled is not None else None
+
+    def _custom_runtime_matches(self, intent: GgufLoadIntent) -> bool:
+        resident = self._last_load_intent
+        return (
+            not intent.force_reload
+            and getattr(self, "_compiled_custom_config", None) is not None
+            and resident is not None
+            and resident.llama_cpp_config == intent.llama_cpp_config
+            and intent.model_identifier == self._model_identifier
+            and (intent.hf_variant or None) == (self._hf_variant or None)
+            and intent.disable_vision == resident.disable_vision
+            and not self._binary_changed_since_launch()
+        )
+
     def _runtime_matches_intent(
         self, intent: GgufLoadIntent, effective_extra_args: Optional[list[str]]
     ) -> bool:
@@ -8578,6 +8634,8 @@ class LlamaCppBackend:
 
         if intent.force_reload:
             return False
+        if _is_custom(intent) or getattr(self, "_compiled_custom_config", None) is not None:
+            return _is_custom(intent) and self._custom_runtime_matches(intent)
         if self._requested_n_ctx != int(intent.n_ctx):
             return False
         if not self._is_diffusion and self._requested_n_parallel != max(1, int(intent.n_parallel)):
@@ -20347,6 +20405,7 @@ class LlamaCppBackend:
         if (
             arch not in self._DIFFUSION_ARCHES
             and not is_speech_gguf_architecture(arch)
+            and not is_audio_cpp_gguf_architecture(arch)
             and not getattr(self, "_gguf_header_parsed", False)
         ):
             return None
@@ -20355,6 +20414,11 @@ class LlamaCppBackend:
             # name-based branch below name a page.
             arch = ""
         if arch:
+            if is_audio_cpp_gguf_architecture(arch):
+                return (
+                    "This is an audio GGUF (speech, music or transcription), which cannot run as "
+                    "a chat model. Open it from the Audio page instead."
+                )
             if is_speech_gguf_architecture(arch):
                 # Points at the Transformers build, not this file on the Audio page: that page
                 # cannot list a speech GGUF either, so it would promise a row that is not there.
@@ -21160,6 +21224,11 @@ class LlamaCppBackend:
         arch_match = re.search(r"unknown model architecture:\s*'([^']+)'", lowered)
         if arch_match:
             arch = arch_match.group(1)
+            if is_audio_cpp_gguf_architecture(arch):
+                return (
+                    "This is an audio GGUF (speech, music or transcription), which llama-server "
+                    "cannot run as a chat/completion model. Open it from Unsloth's Audio page instead."
+                )
             if is_speech_gguf_architecture(arch):
                 # Same wording rule as the pre-launch refusal above: name the build that runs,
                 # not a page this file will not appear on.
@@ -23313,6 +23382,291 @@ class LlamaCppBackend:
         self._stdout_thread.start()
         return True
 
+    def prepare_custom_config(self, intent: GgufLoadIntent) -> CompiledCustomConfig:
+        """Compile the INI against the selected llama-server without touching the resident model."""
+        if getattr(self, "_llama_update_in_progress", False):
+            raise CustomConfigError("llama.cpp is updating; try again in a moment")
+        binary = self._exec_path_for_launch(self._find_llama_server_binary())
+        if not binary:
+            raise LlamaServerNotFoundError(LLAMA_SERVER_NOT_FOUND_DETAIL)
+        caps = self.probe_server_capabilities(binary)
+        if not caps.get("help_probe_ok"):
+            raise CustomConfigError("Could not read the selected llama-server's options")
+        return compile_custom_config(
+            intent.llama_cpp_config, caps.get("flags") or {}, caps.get("switch_flags") or ()
+        )
+
+    def _load_custom_model(
+        self,
+        intent: GgufLoadIntent,
+        *,
+        load_cancel_event: Optional[threading.Event] = None,
+    ) -> bool:
+        """Launch Studio's transport flags plus the compiled INI: no tuning, no fallback."""
+        from core.inference.model_ids import public_model_id
+
+        self._cancel_event.clear()
+        epoch = self._unload_epoch
+
+        def cancelled():
+            return (
+                self._cancel_event.is_set()
+                or self._unload_epoch != epoch
+                or bool(load_cancel_event is not None and load_cancel_event.is_set())
+            )
+
+        compiled = self.prepare_custom_config(intent)
+        model_path, projector = intent.gguf_path, intent.mmproj_path
+        download_cancel = (
+            _CombinedCancelEvent(self._cancel_event, load_cancel_event)
+            if load_cancel_event
+            else self._cancel_event
+        )
+        if intent.hf_repo and not model_path:
+            with _hf_offline_if_unreachable():
+                model_path = self._download_gguf(
+                    hf_repo = _resolve_repo_id_casing(intent.hf_repo),
+                    hf_variant = intent.hf_variant,
+                    hf_token = intent.hf_token,
+                    cancel_event = download_cancel,
+                    allow_smaller_fallback = False,
+                )
+        if cancelled():
+            return False
+        if not model_path or not Path(model_path).is_file():
+            raise CustomConfigError("The selected GGUF file is unavailable")
+        refusal = self._non_chat_gguf_refusal_for_path(model_path, intent.model_identifier)
+        if refusal:
+            raise CustomConfigError(refusal)
+        # The route could not classify an uncached file; diffusion GGUFs run outside llama-server.
+        if self._gguf_path_is_diffusion(model_path, intent.model_identifier):
+            raise CustomConfigError(
+                "Diffusion GGUFs run on the diffusion runner; use Studio settings"
+            )
+        # The INI's own projector switch-off wins over Studio's --mmproj (last wins on argv).
+        if {"--no-mmproj", "--no-mmproj-auto"} & set(compiled.options):
+            projector = None
+        # Downloaded even with vision off, as managed loads do: only its header tells an
+        # audio-only encoder (kept) from an image tower (dropped below).
+        elif intent.is_vision and not projector and intent.hf_repo:
+            with _hf_offline_if_unreachable():
+                projector = self._download_mmproj(
+                    hf_repo = intent.hf_repo,
+                    hf_token = intent.hf_token,
+                    cancel_event = download_cancel,
+                    near_path = model_path,
+                )
+        if projector:
+            projector = self._resolve_launch_mmproj_path(
+                model_path = model_path, mmproj_path = projector
+            )
+            if projector and intent.disable_vision and not _mmproj_env_is_audio_only(projector):
+                projector = None
+
+        binary = self._exec_path_for_launch(self._find_llama_server_binary())
+        caps = self.probe_server_capabilities(binary)
+        # The INI is the only configuration source: inherited LLAMA_ARG_* would be a second one.
+        env = {
+            k: v
+            for k, v in self._llama_server_env_for_binary(binary).items()
+            if not k.startswith("LLAMA_ARG_")
+        }
+        scrub_denied_env(env)  # LLAMA_API_KEY: the child would refuse Studio's own requests
+        # HSA enumeration dies on an arch the build lacks before --device is read: mask like managed loads.
+        survivors = self._arch_gate_survivors(binary)
+        if survivors:
+            self._emit_child_gpu_visibility(
+                env, ",".join(str(i) for i in survivors), prefer_rocr = True
+            )
+        port = self._find_free_port()
+        cmd = [binary, "-m", model_path, "--host", "127.0.0.1", "--port", str(port)]
+        cmd += ["--alias", public_model_id(intent.model_identifier), "--jinja"]
+        if compiled.n_parallel is not None:
+            cmd += ["--parallel", str(compiled.n_parallel)]
+        if projector:
+            cmd += ["--mmproj", projector]
+        api_key = None
+        if os.getenv("UNSLOTH_DIRECT_STREAM", "0") == "1":
+            import secrets
+            api_key = secrets.token_urlsafe(32)
+            cmd += ["--api-key", api_key]
+        cmd += list(compiled.argv)
+        resolved = replace(intent, gguf_path = model_path, mmproj_path = projector, verified_gguf = None)
+
+        with self._lock:
+            if cancelled():
+                return False
+            with self._spawn_lock:
+                if self._spawn_is_stale():
+                    return False
+            self._begin_load_warnings()
+            self._kill_process()
+            self._cleanup_cpu_fallback_runtime()
+            self._model_identifier = intent.model_identifier
+            self._read_gguf_metadata(model_path)
+            self._gguf_path = model_path
+            self._gguf_load_identity = self._gguf_load_source_identity(model_path, projector)
+            self._hf_repo, self._hf_variant = intent.hf_repo, intent.hf_variant
+            self._port, self._api_key = port, api_key
+            self._launch_binary_revision = self._binary_revision(binary)
+            self._slot_save_dir = self._chat_template_override = None
+            self._cpu_fallback_reason = self._mmproj_fallback_reason = None
+            self._mtp_draft_path = self._mtp_draft_suppressed_path = None
+            self._spec_fallback_reason = self._spec_drafter_kind = None
+            self._mtp_runtime_fallback_active = self._dflash_retry_needed = False
+            self._memory_state = self._memory_direct_io = self._memory_pending_launch = None
+            self._is_vision = bool(projector)
+            self._disable_vision = self._vision_disabled_by_user = intent.disable_vision
+            self._mmproj_has_audio, self._mmproj_accepts_image = False, True
+            self._mmproj_projector_type = None
+            if projector:
+                from utils.models.gguf_metadata import (
+                    mmproj_capabilities,
+                    read_mmproj_projector_type,
+                )
+                self._mmproj_has_audio, self._mmproj_accepts_image = mmproj_capabilities(projector)
+                self._mmproj_projector_type = read_mmproj_projector_type(projector)
+            self._is_audio = self._audio_probed = self._has_audio_input = False
+            self._audio_type = None
+            # Every managed knob reads as unset: the INI, not Studio, chose them.
+            self._extra_args, self._requested_extra_args = [], []
+            self._extra_args_source = (intent.model_identifier, intent.hf_variant)
+            self._requested_n_batch = self._requested_n_ubatch = None
+            self._requested_load_mode = self._requested_spec_draft_cache_type = None
+            self._requested_ctx_checkpoints = self._requested_cache_ram = None
+            self._effective_cache_types = (
+                compiled.option("-ctk", "--cache-type-k") or "f16",
+                compiled.option("-ctv", "--cache-type-v") or "f16",
+            )
+            self._requested_cache_types = self._effective_cache_types
+            self._cache_type_kv = compiled.option("-ctk", "--cache-type-k")
+            self._speculative_type = self._requested_spec_mode = self._spec_draft_n_max = None
+            self._fit_load_mode_flags, self._vram_fraction_launched = [], None
+            self._gpu_memory_mode, self._gpu_layers, self._n_cpu_moe = "auto", -1, 0
+            self._tensor_parallel = self._arch_gate_forced_cpu = False
+            self._tensor_split = self._gpu_ids = self._requested_gpu_ids = None
+            self._auto_tensor_split = self._auto_tensor_split_emitted = None
+            self._spill_plan_flags = []
+            self._layer_preserves_tensor_intent = self._capability_probe_inconclusive = False
+            self._flash_attn_enabled = self._swa_full = self._kv_cache_unified = False
+            self._prompt_cache_disabled = "--no-cache-prompt" in compiled.options
+            budget = compiled.option("--reasoning-budget")
+            self._reasoning_budget = self._requested_reasoning_budget = (
+                int(budget) if budget is not None and re.fullmatch(r"-?[0-9]+", budget) else -1
+            )
+            self._reasoning_budget_message = self._requested_reasoning_budget_message = (
+                compiled.option("--reasoning-budget-message") or ""
+            )
+            try:
+                if cancelled() or not self._start_llama_process(
+                    cmd,
+                    env,
+                    child_gpu_physical_ids = None if compiled.cpu_only else tuple(survivors) or None,
+                ):
+                    self._kill_process()
+                    return False
+                if not self._wait_for_health(timeout = 600.0, cancelled = cancelled):
+                    was_cancelled = cancelled() or getattr(self, "_health_wait_cancelled", False)
+                    self._kill_process()
+                    if was_cancelled:
+                        return False
+                    # llama-server's own reason (unknown device, bad value) is otherwise only in the log.
+                    reason = next(
+                        (
+                            l.strip()
+                            for l in reversed(self._stdout_lines[-50:])
+                            if "error" in l.lower()
+                        ),
+                        "check the server log",
+                    )
+                    if survivors and "device" in reason.lower():
+                        reason += f" (only supported GPUs are visible, numbered from 0 to {len(survivors) - 1})"
+                    raise CustomConfigError(
+                        f"llama-server did not start with this configuration: {reason}"
+                    )
+                props = self._query_server_props() or {}
+                n_ctx = (props.get("default_generation_settings") or {}).get("n_ctx")
+                slots = props.get("total_slots")
+                if not isinstance(n_ctx, int) or not isinstance(slots, int) or slots < 1:
+                    raise CustomConfigError("llama-server did not report its context and slots")
+                template = props.get("chat_template")
+                if isinstance(template, str):
+                    self._chat_template = template
+                    flags = detect_reasoning_flags(
+                        template, intent.model_identifier, log_source = "custom config"
+                    )
+                    for name in (
+                        "supports_reasoning",
+                        "reasoning_style",
+                        "reasoning_always_on",
+                        "reasoning_effort_levels",
+                        "supports_preserve_thinking",
+                        "preserve_thinking_default",
+                        "supports_tools",
+                    ):
+                        setattr(self, "_" + name, flags[name])
+                self._commit_effective_parallel_slots(slots)
+                self._requested_n_parallel = slots
+                self._requested_n_ctx = 0
+                self._effective_context_length = n_ctx
+                self._max_context_length = self._context_length
+                # A unified cache is one shared pool (llama-server enables it for np auto):
+                # trust its startup line, else the options.
+                unified = next(
+                    (
+                        m[1] == "true"
+                        for line in reversed(self._stdout_lines)
+                        if (m := re.search(r"kv_unified = '(true|false)'", line))
+                    ),
+                    compiled.n_parallel is None
+                    or "--kv-unified" in compiled.options
+                    or "-kvu" in compiled.options,
+                )
+                if "--no-kv-unified" in compiled.options or "-no-kvu" in compiled.options:
+                    unified = False
+                self._kv_cache_unified = unified
+                per_slot = compiled.option("--kv-unified-per-slot")
+                total = n_ctx if unified and not per_slot else n_ctx * slots
+                # An explicit -c pins a unified pool; only c=0 sizes it to np x per-slot (server.cpp).
+                pinned = compiled.option("-c", "--ctx-size")
+                if unified and pinned and re.fullmatch(r"[0-9]+", pinned) and int(pinned) > 0:
+                    total = min(total, int(pinned))
+                self._kv_cache_context_total = total
+                self._has_video_input = bool((props.get("modalities") or {}).get("video"))
+                self._idle_slot_clearing_active = _idle_slot_clearing_active(
+                    cmd, supports_cache_ram = bool(caps.get("supports_cache_ram"))
+                )
+                self._gpu_offload_active = (
+                    False
+                    if compiled.cpu_only and not projector
+                    else classify_gpu_offload_lines(self._stdout_lines)
+                )
+                self._compiled_custom_config = compiled
+                self._last_load_intent = resolved
+                if cancelled() or not self._publish_healthy():
+                    self._kill_process()
+                    return False
+            except Exception:
+                self._kill_process()
+                raise
+            finally:
+                if not self._healthy:
+                    self._compiled_custom_config = None
+                    self._last_load_intent = None
+        # Outside self._lock (non-reentrant; _apply_detected_audio takes it), as managed loads
+        # do. The duplicate-load fast path requires the probe.
+        try:
+            detected = self._detect_audio_type_strict()
+            self._audio_probed = True
+        except Exception as exc:
+            logger.debug("Audio probe failed: %s", exc)
+            detected = None
+        return (
+            self._apply_detected_audio(detected)
+            if intent.audio_codec_path is None
+            else self._apply_detected_audio(detected, intent.audio_codec_path)
+        )
+
     @contextlib.contextmanager
     def _serial_load_scope(self):
         """Hold the serial load lock and release pending launch state with it.
@@ -23418,6 +23772,9 @@ class LlamaCppBackend:
             # so any in-flight load has drained) instead of using a half-swapped one.
             if getattr(self, "_llama_update_in_progress", False):
                 raise RuntimeError("llama.cpp is updating; try again in a moment.")
+
+            if _is_custom(intent):
+                return self._load_custom_model(intent, load_cancel_event = load_cancel_event)
 
             intent = self._preserve_cpu_fallback_intent(intent)
             tensor_parallel = intent.tensor_parallel
@@ -24170,6 +24527,7 @@ class LlamaCppBackend:
                     if _load_cancelled():
                         logger.info("Load cancelled before diffusion server start")
                         return False
+                    self._compiled_custom_config = None
                     return self._start_diffusion_server(
                         model_path = model_path,
                         gguf_path = gguf_path,
@@ -29410,12 +29768,14 @@ class LlamaCppBackend:
                             cmd,
                             _pin_ids,
                             self._resolve_visible_physical_ids(),
-                            may_widen = not gpu_ids,
+                            allowed_ids = gpu_ids or None,
                         )
                         if _companion_widen:
                             _companion_fit_mask = list(_pin_ids)
                             if not _had_main_device and _extra_args_main_device(cmd) is not None:
                                 _companion_added_device = list(cmd[-2:])
+                            if gpu_ids:
+                                self._adopt_widened_pin(_pin_ids)
                     if _companion_widen:
                         logger.info(
                             "Companion device flags name GPUs by their unpinned "
@@ -30674,7 +31034,7 @@ class LlamaCppBackend:
                                 cmd,
                                 list(_remaining),
                                 list(_companion_fit_mask),
-                                may_widen = not gpu_ids,
+                                allowed_ids = gpu_ids or None,
                             )
                             _companion_added_device = (
                                 list(cmd[-2:])
@@ -31605,6 +31965,7 @@ class LlamaCppBackend:
                 # dropped: a respawn replays this snapshot arbitrarily later, so recovery
                 # re-resolves the file instead of trusting a path this request verified.
                 self._last_load_intent = replace(intent, verified_gguf = None)
+                self._compiled_custom_config = None
                 self._mtp_runtime_fallback_active = _mtp_active_for_launched_server
                 self._start_mtp_crash_watchdog()
 
@@ -32324,6 +32685,13 @@ class LlamaCppBackend:
         if self._binary_changed_since_launch():
             logger.info("llama-server selection changed since launch; forcing a reload")
             return False
+        if _is_custom(intent) or getattr(self, "_compiled_custom_config", None) is not None:
+            if not (_is_custom(intent) and self._custom_runtime_matches(intent)):
+                return False
+            self._last_load_intent = replace(
+                intent, gguf_path = intent.gguf_path or self._gguf_path, verified_gguf = None
+            )
+            return True
         intent = self._preserve_cpu_fallback_intent(intent, source_matches = True)
         # The stored state is what LAUNCHED, and on a virtualised Metal device that is
         # the CPU-pinned rewrite, not the request. Apply the same rewrite here
@@ -32553,6 +32921,7 @@ class LlamaCppBackend:
             self._launch_binary_revision = ()
             self._cpu_fallback_reason = None
             self._last_load_intent = None
+            self._compiled_custom_config = None
             self._mtp_runtime_fallback_active = False
             self._hf_variant = None
             self._is_vision = False
@@ -34406,6 +34775,8 @@ class LlamaCppBackend:
         """
         # Cheap async-safe gate: only our live MTP+tensor launch, not cancelled,
         # with a snapshot to replay.
+        if getattr(self, "_compiled_custom_config", None) is not None:
+            return False
         if self._cancel_event.is_set():
             return False
         if not self._mtp_runtime_fallback_active:
@@ -35563,7 +35934,7 @@ class LlamaCppBackend:
         retry_preflight_context_length = None
         # Progress events let advancing prefills renew the first-token deadline.
         payload["return_progress"] = True
-        if perf_callback is not None:
+        if _perf_callback_wants_timings(perf_callback):
             payload["timings_per_token"] = True
         if logit_bias:
             payload["logit_bias"] = logit_bias
@@ -36698,7 +37069,7 @@ class LlamaCppBackend:
             if on_decode_slot is not None:
                 payload["verbose"] = True
                 payload["response_fields"] = ["id_slot"]
-            if perf_callback is not None:
+            if _perf_callback_wants_timings(perf_callback):
                 payload["timings_per_token"] = True
             if logit_bias:
                 payload["logit_bias"] = logit_bias
@@ -39432,7 +39803,7 @@ class LlamaCppBackend:
 
         # Progress events feed the first-token deadline; timings stay opt-in.
         stream_payload["return_progress"] = True
-        if perf_callback is not None:
+        if _perf_callback_wants_timings(perf_callback):
             stream_payload["timings_per_token"] = True
 
         _final_respawn_truncations: list[dict] = []
@@ -40496,6 +40867,7 @@ class LlamaCppBackend:
         max_new_tokens: int = 2048,
         repetition_penalty: float = 1.1,
         cancel_event: Optional[threading.Event] = None,
+        stats_holder: Optional[dict] = None,
     ) -> tuple:
         """
         Generate TTS audio via llama-server /completion + codec decode.
@@ -40580,6 +40952,8 @@ class LlamaCppBackend:
             raise RuntimeError("Audio generation cancelled")
 
         data = resp.json()
+        if stats_holder is not None:
+            stats_holder["stats"] = {"truncated": data.get("stop_type") == "limit"}
         token_ids = (
             [p["id"] for p in data.get("completion_probabilities", []) if "id" in p]
             if need_ids

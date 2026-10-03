@@ -186,6 +186,7 @@ import {
   watchAutoContinueRun,
 } from "@/features/chat/utils/auto-continue-run-keeper";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
+import { SkillsComposerButton } from "@/features/chat/skills-composer-button";
 import { pickerAcceptForTextBasenames } from "@/features/chat/text-attachment-accept";
 import {
   COMPOSER_INPUT_SELECTOR,
@@ -5371,6 +5372,7 @@ const Composer: FC<{
               {mcpEnabledForChat ? (
                 <McpComposerButton side={effectiveMenuSide} />
               ) : null}
+              <SkillsComposerButton side={effectiveMenuSide} />
             </>
           ) : null}
         </div>

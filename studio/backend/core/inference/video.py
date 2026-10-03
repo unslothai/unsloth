@@ -42,7 +42,7 @@ import time
 import types
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from hub.utils.hf_errors import modelscope_missing
 from loggers import get_logger
@@ -55,6 +55,7 @@ from .diffusion_attention import (
     sdpa_math_only,
     select_attention_backend,
 )
+from .diffusion_flow_shift import apply_comfy_flow_shift
 from .diffusion_cache import (
     FBCACHE_MIN_STEPS,
     TC_AUTO,
@@ -1290,10 +1291,13 @@ def _h3_free_device_bytes(device: str) -> Optional[int]:
         return None
 
 
-def _h3_card_free_bytes(device: Optional[str], ordinal: Optional[int]) -> Optional[int]:
-    """Live free VRAM via nvidia-smi / amd-smi (no CUDA context here), or None. No pin = sd.cpp's ordinal 0."""
+def _h3_card_memory_bytes(
+    device: Optional[str], ordinal: Optional[int]
+) -> tuple[Optional[int], Optional[int]]:
+    """(free, total) VRAM of the H3 render card via nvidia-smi / amd-smi (no CUDA context), or (None, None). No pin =
+    ordinal 0."""
     if device != "cuda":
-        return None
+        return None, None
     try:
         from utils.hardware import get_visible_gpu_utilization, gpu_query
 
@@ -1306,11 +1310,44 @@ def _h3_card_free_bytes(device: Optional[str], ordinal: Optional[int]) -> Option
             total = entry.get("vram_total_gb")
             used = entry.get("vram_used_gb")
             if total is None or used is None:
-                return None
-            return max(0, int((float(total) - float(used)) * 1024**3))
+                return None, None
+            total_bytes = int(float(total) * 1024**3)
+            return max(0, int((float(total) - float(used)) * 1024**3)), total_bytes
     except Exception:  # noqa: BLE001 -- an unreadable card decides nothing
-        return None
-    return None
+        return None, None
+    return None, None
+
+
+def _h3_card_free_bytes(device: Optional[str], ordinal: Optional[int]) -> Optional[int]:
+    """Free VRAM of the H3 render card, or None (keeps the committed offload flags)."""
+    return _h3_card_memory_bytes(device, ordinal)[0]
+
+
+def _h3_native_server_pressure(device: Optional[str], ordinal: Optional[int]) -> Optional[str]:
+    """Why the resident H3 sd-server should not outlive a render (``h3_native_server_pressure``), or None."""
+    from .diffusion_memory import (
+        _available_system_memory_mib,
+        _cgroup_memory_limit_mib,
+        _system_memory_mib,
+    )
+    from .video_minimax_h3 import h3_native_server_pressure
+
+    vram_free, vram_total = _h3_card_memory_bytes(device, ordinal)
+    try:
+        host_total_mib = _system_memory_mib()[0]
+        # Available RAM is cgroup-capped, so the reserve must be a share of the same limit.
+        cgroup_limit_mib = _cgroup_memory_limit_mib()
+        if cgroup_limit_mib and (host_total_mib is None or cgroup_limit_mib < host_total_mib):
+            host_total_mib = cgroup_limit_mib
+        host_avail_mib = _available_system_memory_mib()
+    except Exception:  # noqa: BLE001 -- unknown host memory decides nothing
+        host_total_mib = host_avail_mib = None
+    return h3_native_server_pressure(
+        vram_free = vram_free,
+        vram_total = vram_total,
+        host_available = None if host_avail_mib is None else int(host_avail_mib) << 20,
+        host_total = None if host_total_mib is None else int(host_total_mib) << 20,
+    )
 
 
 def _h3_device_capacity_bytes(device: str) -> Optional[int]:
@@ -3491,6 +3528,14 @@ class VideoBackend:
                 native_device_name = sd_cpp_device_named(
                     binary, selected_name, position = selected_position
                 )
+            # Same number the fork's dispatch reads, off the re-check's listing (no extra subprocess).
+            from .sd_cpp_backend import sd_cpp_cuda_compute_capability
+
+            native_cuda_cc = (
+                sd_cpp_cuda_compute_capability(binary, native_device_name, probe = False)
+                if native_device != "cpu" and listed_accelerator is not None
+                else None
+            )
         requested_mode = normalize_memory_mode(memory_mode) or "auto"
         policy = {
             "auto": "none" if native_device == "cpu" else "group",
@@ -3526,29 +3571,58 @@ class VideoBackend:
         native_env: tuple[tuple[str, str], ...] = ()
         if h3_sage:
             native_offload += ("--sage-attn",)
-            # Same opt-in takes the fork's BF16 cuBLAS path; a user-exported value (0 included) wins.
-            from .video_minimax_h3 import H3_QUANT_CUBLAS_ENV, H3_QUANT_CUBLAS_MIN_BATCH
-            if H3_QUANT_CUBLAS_ENV not in os.environ:
-                native_env += ((H3_QUANT_CUBLAS_ENV, H3_QUANT_CUBLAS_MIN_BATCH),)
+        if native_device != "cpu":
+            from .video_minimax_h3 import h3_quant_cublas_env
+            native_env += h3_quant_cublas_env(native_cuda_cc, sage = h3_sage)
+        from .video_minimax_h3 import H3_QUANT_CUBLAS_ENV, H3_QUANT_CUBLAS_MIN_CC
+
+        # The fork ignores the env below sm80, so a user value there is not the route.
+        h3_quant_cublas = (
+            native_device != "cpu"
+            and (native_cuda_cc is None or tuple(native_cuda_cc) >= H3_QUANT_CUBLAS_MIN_CC)
+            and dict(native_env)
+            .get(H3_QUANT_CUBLAS_ENV, os.environ.get(H3_QUANT_CUBLAS_ENV, ""))
+            .strip()
+            not in ("", "0")
+        )
         # After the policy, so the pin can see which modules it left on the CPU; without it sd.cpp uses ordinal 0
         # whatever was selected.
         native_offload += tuple(device_backend_flags(native_device_name, list(native_offload)))
-        from .video_minimax_h3 import MiniMaxH3NativeRuntime
+        from .video_minimax_h3 import (
+            H3NativeServerSlot,
+            MiniMaxH3NativeRuntime,
+            h3_sibling_server_binary,
+        )
 
+        native_files = SdCppModelFiles(
+            diffusion_model = str(resolved[0]),
+            llm = str(resolved[1]),
+            vae = str(resolved[2]),
+            audio_vae = str(resolved[3]),
+        )
+        # Nothing spawns here: the slot starts the server on the first render; no sibling sd-server keeps one-shot.
+        server_binary = h3_sibling_server_binary(getattr(engine, "binary", None))
         runtime = MiniMaxH3NativeRuntime(
             engine = engine,
             # Pinned under the reader claim above, where this exact file answered --help with the H3 options. Taking it
             # at generation time instead would compare a replacement against itself.
             binary_identity = binary_identity,
             selected_card = selected_card,
-            files = SdCppModelFiles(
-                diffusion_model = str(resolved[0]),
-                llm = str(resolved[1]),
-                vae = str(resolved[2]),
-                audio_vae = str(resolved[3]),
-            ),
+            files = native_files,
             offload_flags = native_offload,
             env = native_env,
+            server_slot = (
+                H3NativeServerSlot(
+                    server_binary,
+                    native_files,
+                    native_offload,
+                    pressure_probe = functools.partial(
+                        _h3_native_server_pressure, native_device, native_ordinal
+                    ),
+                )
+                if server_binary
+                else None
+            ),
         )
 
         with self._lock:
@@ -3591,9 +3665,12 @@ class VideoBackend:
                                 "speed_mode": (
                                     speed_mode,
                                     SPEED_MAX if h3_sage else SPEED_OFF,
-                                    "sd.cpp SageAttention + BF16 cuBLAS"
-                                    if h3_sage
-                                    else "sd.cpp exact kernels",
+                                    {
+                                        (True, True): "sd.cpp SageAttention + BF16 cuBLAS",
+                                        (True, False): "sd.cpp SageAttention",
+                                        (False, True): "sd.cpp BF16 cuBLAS matmuls",
+                                        (False, False): "sd.cpp exact kernels",
+                                    }[(bool(h3_sage), bool(h3_quant_cublas))],
                                 ),
                                 "attention_backend": (
                                     None,
@@ -6407,6 +6484,15 @@ class VideoBackend:
                     vae_tiling = True
                 except Exception as exc:  # noqa: BLE001 -- tiling is an optimisation only
                     logger.warning("video.vae_tiling_failed: %s", exc)
+            # Resident: decode untiled when it fits, tiled as fallback. Not on SPEED_OFF, which must stay bit-identical.
+            if (
+                offload_policy == "none"
+                and target.device == "cuda"
+                and effective_speed != SPEED_OFF
+            ):
+                from .video_vae_untiled import install_untiled_decode
+                if install_untiled_decode(pipe, fam.name, logger = logger):
+                    speed_optims += ("vae_untiled_when_fits",)
             # Wan's decode also grows within a single tile, which tiling alone cannot bound.
             install_decoder_sync(pipe, target, logger = logger)
 
@@ -6477,6 +6563,7 @@ class VideoBackend:
                 }
             )
 
+            apply_comfy_flow_shift(pipe, getattr(fam, "comfy_flow_shift", None), logger)
             from . import diffusion_prompt_cache
 
             diffusion_prompt_cache.install(
@@ -7444,6 +7531,7 @@ class VideoBackend:
                 ),
             }
         )
+        apply_comfy_flow_shift(pipe, getattr(fam, "comfy_flow_shift", None), logger)
         from . import diffusion_prompt_cache
 
         diffusion_prompt_cache.install(
@@ -8835,6 +8923,97 @@ class VideoBackend:
             audios = decoded_audios,
         )
 
+    def _h3_native_server_render(
+        self,
+        runtime: Any,
+        params: Any,
+        *,
+        output_path: Path,
+        on_log: Callable[[str], None],
+        cancel: threading.Event,
+        flags: Optional[list[str]] = None,
+        env: Optional[dict[str, str]] = None,
+    ) -> Optional[Path]:
+        """Render one MiniMax-H3 clip on the runtime's resident sd-server, spawned with this render's sd-cli ``flags`` /
+        ``env``.
+
+        Returns the written container, or None for the one-shot sd-cli: no slot, kill switch, reference video / audio,
+        or a server that cannot start, lacks vid_gen, or died (the runtime then stays one-shot). Every fallback first
+        stops the server so the two never hold the model at once. A job the live server fails is raised after stopping
+        it. Called inside the generation's managed-tree reader claim."""
+        import base64
+
+        from .sd_cpp_args import build_vid_gen_request, h3_server_eligible
+        from .sd_cpp_engine import SdCppCancelled
+        from .sd_cpp_server import SdCppServerUnsupported
+        from .video_minimax_h3 import h3_native_server_enabled
+
+        slot = getattr(runtime, "server_slot", None)
+        if slot is None or slot.disabled_reason is not None:
+            return None
+        if not h3_native_server_enabled():
+            slot.stop("UNSLOTH_H3_NATIVE_SERVER=0")
+            return None
+        if not h3_server_eligible(params):
+            # The sd-cli loads the whole model again; a resident copy beside it may not fit.
+            slot.release("reference video / audio render runs on sd-cli")
+            return None
+
+        def b64_file(path: Optional[str]) -> Optional[str]:
+            if not path:
+                return None
+            return base64.b64encode(Path(path).read_bytes()).decode("ascii")
+
+        payload = build_vid_gen_request(
+            params,
+            images_b64 = {
+                "init_image": b64_file(params.init_img),
+                "end_image": b64_file(params.end_img),
+            },
+            ref_images_b64 = [b64_file(p) for p in params.ref_images] or None,
+        )
+        render_flags = list(runtime.offload_flags) if flags is None else list(flags)
+        render_env = dict(runtime.env) if env is None else dict(env)
+        slot.begin_render()
+        try:
+            try:
+                server = slot.get(render_flags, render_env, cancel_event = cancel)
+            except SdCppCancelled:
+                raise
+            except Exception as exc:  # noqa: BLE001 - any start failure leaves the one-shot path
+                if cancel.is_set():
+                    raise SdCppCancelled("sd-server start was cancelled.") from exc
+                logger.warning("video.h3_native_server_start_failed (using sd-cli): %s", exc)
+                slot.disable(f"start failed: {exc}")
+                return None
+            try:
+                data = server.vid_gen(payload, on_step = on_log, cancel_event = cancel)
+            except SdCppServerUnsupported as exc:
+                logger.warning("video.h3_native_server_unsupported (using sd-cli): %s", exc)
+                slot.disable(str(exc))
+                return None
+            except SdCppCancelled:
+                raise
+            except RuntimeError as exc:
+                if cancel.is_set():
+                    raise SdCppCancelled("sd-server generation was cancelled.") from exc
+                if not server.is_alive():
+                    logger.warning(
+                        "video.h3_native_server_died (retrying once on sd-cli, staying one-shot): %s",
+                        exc,
+                    )
+                    slot.disable(f"server died: {exc}")
+                    return None
+                slot.stop("render failed")
+                raise
+            Path(output_path).write_bytes(data)
+            return Path(output_path)
+        finally:
+            try:
+                slot.end_render()
+            except Exception as exc:  # noqa: BLE001 - the render's own outcome wins
+                logger.warning("video.h3_native_server_release_failed: %s", exc)
+
     def _generate_h3_native(
         self,
         *,
@@ -8882,10 +9061,30 @@ class VideoBackend:
                 need = h3_native_resident_bytes(file_bytes, width, height, frames)
             except Exception:  # noqa: BLE001 -- unknown size keeps the committed offload
                 need = None
+            free = None
+            if need:
+                # A live resident server's weights count as free; a larger clip's activations must still fit the rest.
+                slot = getattr(runtime, "server_slot", None)
+                live = slot.alive_signature() if slot is not None else None
+                resident_flags, _ = h3_native_render_flags(
+                    runtime.offload_flags,
+                    memory_mode = state.memory_mode,
+                    free_bytes = need,
+                    need_bytes = need,
+                )
+                if (
+                    live is not None
+                    and live[2] == tuple(resident_flags)
+                    and "--offload-to-cpu" not in live[2]
+                ):
+                    card_free = _h3_card_free_bytes(state.device, state.gpu_ordinal)
+                    free = None if card_free is None else card_free + file_bytes
+                else:
+                    free = _h3_card_free_bytes(state.device, state.gpu_ordinal)
             render_flags, render_resident = h3_native_render_flags(
                 runtime.offload_flags,
                 memory_mode = state.memory_mode,
-                free_bytes = _h3_card_free_bytes(state.device, state.gpu_ordinal) if need else None,
+                free_bytes = free,
                 need_bytes = need,
             )
         if seed is None:
@@ -8978,31 +9177,42 @@ class VideoBackend:
                                 "replaced by an install, so it is no longer the build this model "
                                 "was checked against. Reload the model and try again."
                             )
-                        generated = runtime.engine.generate_video(
-                            runtime.files,
-                            SdCppVideoGenParams(
-                                prompt = prompt,
-                                width = width,
-                                height = height,
-                                num_frames = frames,
-                                fps = fps,
-                                steps = steps,
-                                cfg_scale = 1.0,
-                                seed = int(seed),
-                                init_img = init_img,
-                                end_img = end_img,
-                                ref_images = staged.images,
-                                ref_videos = staged.videos,
-                                ref_video_audios = staged.video_audios,
-                                ref_audios = staged.audios,
-                                flow_shift = flow_shift,
-                            ),
-                            output_path = str(output_path),
-                            offload = render_flags,
-                            env = dict(runtime.env) or None,
-                            on_log = on_log,
-                            cancel_event = cancel,
+                        video_params = SdCppVideoGenParams(
+                            prompt = prompt,
+                            width = width,
+                            height = height,
+                            num_frames = frames,
+                            fps = fps,
+                            steps = steps,
+                            cfg_scale = 1.0,
+                            seed = int(seed),
+                            init_img = init_img,
+                            end_img = end_img,
+                            ref_images = staged.images,
+                            ref_videos = staged.videos,
+                            ref_video_audios = staged.video_audios,
+                            ref_audios = staged.audios,
+                            flow_shift = flow_shift,
                         )
+                        generated = self._h3_native_server_render(
+                            runtime,
+                            video_params,
+                            output_path = output_path,
+                            on_log = on_log,
+                            cancel = cancel,
+                            flags = render_flags,
+                            env = dict(runtime.env),
+                        )
+                        if generated is None:
+                            generated = runtime.engine.generate_video(
+                                runtime.files,
+                                video_params,
+                                output_path = str(output_path),
+                                offload = render_flags,
+                                env = dict(runtime.env) or None,
+                                on_log = on_log,
+                                cancel_event = cancel,
+                            )
                 except SdCppCancelled:
                     raise RuntimeError(VIDEO_CANCELLED_MSG) from None
                 except RuntimeError as exc:
@@ -9164,6 +9374,12 @@ class VideoBackend:
         cannot observe a half-torn-down backend."""
         state, self._state = self._state, None
         if state is not None:
+            server_slot = getattr(getattr(state, "pipe", None), "server_slot", None)
+            if server_slot is not None:
+                try:
+                    server_slot.stop("unload")
+                except Exception as exc:  # noqa: BLE001 - teardown is best effort
+                    logger.warning("video.h3_native_server_stop_failed: %s", exc)
             # An in-flight background compile still runs the denoiser the teardown frees.
             if getattr(state, "bg_compile", None) is not None:
                 try:

@@ -1519,6 +1519,8 @@ def fake_studio(tmp_path, monkeypatch):
         if url.endswith("/api/inference/status"):
             return {"is_gguf": True, "model_identifier": state["models"][0]["id"]}
         if url.endswith("/api/auth/api-keys"):
+            if method == "GET":
+                return {"api_keys": [{"key_prefix": "feedface"}]}
             return {"key": "sk-unsloth-feedfacefeedface"}
         if url.endswith("/api/settings/embedding-model"):
             return {"embedding_model": "unsloth/bge-small-en-v1.5"}
@@ -2834,10 +2836,18 @@ def test_connect_key_minted_once_then_cached(fake_studio, tmp_path):
     CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     # First run mints; second reuses the minted key cached for this server.
-    mints = [c for c in fake_studio if c[1].endswith("/api/auth/api-keys")]
+    mints = [c for c in fake_studio if c[0] == "POST" and c[1].endswith("/api/auth/api-keys")]
     assert len(mints) == 1
     cached = json.loads((tmp_path / "agent_api_key.json").read_text())
     assert cached["servers"][BASE]["minted"] == ["sk-unsloth-feedfacefeedface"]
+
+
+def test_connect_skips_a_minted_key_the_owner_does_not_hold(fake_studio, tmp_path):
+    cache = tmp_path / "agent_api_key.json"
+    cache.write_text(json.dumps({"servers": {BASE: {"minted": ["sk-unsloth-a11ce000a11ce000"]}}}))
+    result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    _assert_env_set(result.output, "ANTHROPIC_AUTH_TOKEN", "sk-unsloth-feedfacefeedface")
 
 
 def test_connect_explicit_key_remembered_for_keyless_runs(fake_studio, tmp_path):
@@ -4230,6 +4240,25 @@ def test_verify_studio_identity_end_to_end(tmp_path, monkeypatch):
         stop_bad()
 
 
+def test_studio_token_is_issued_for_the_owner_not_a_managed_account(tmp_path, monkeypatch):
+    import secrets
+
+    import jwt
+
+    import unsloth_cli._inference as inference
+
+    inference.ensure_studio_backend_path()
+    from studio.backend.auth import storage
+
+    monkeypatch.setattr(storage, "DB_PATH", tmp_path / "auth.db")
+    storage.create_initial_user("unsloth", "owner-password", secrets.token_urlsafe(32))
+    storage.issue_account_setup_code(username = "alice")
+
+    token = inference._studio_token()
+    assert token
+    assert jwt.decode(token, options = {"verify_signature": False})["sub"] == "unsloth"
+
+
 def _serve_redirect(target):
     """Start a localhost server that 302-redirects every GET to target+path."""
     import threading
@@ -4847,6 +4876,78 @@ def test_resolve_model_refused_load_reports_survivor(monkeypatch, capsys):
     assert "Nothing was unloaded; owner/model-GGUF is still serving." in captured.err
 
 
+def _other_account_studio(
+    monkeypatch,
+    capsys,
+    load_status = "loaded",
+):
+    state = {"models": [], "loads": []}
+
+    def http_json(
+        method,
+        url,
+        key,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if url.endswith("/api/inference/loaded-models"):
+            return {"object": "list", "data": state["models"]}
+        assert url.endswith("/api/inference/status"), url
+        if state["models"]:
+            return {"is_gguf": True, "active_model": "owner/model-GGUF", "gguf_variant": "Q4_K_M"}
+        return {"loaded": [], "loading": [], "yours": False}
+
+    def load_model(base, key, model, load, payload):
+        state["loads"].append((payload, capsys.readouterr().out))
+        state["models"] = [{"id": model, "loaded": True}]
+        return {"status": load_status, "model": model}
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    monkeypatch.setattr(start, "_load_model_with_progress", load_model)
+    return state
+
+
+@pytest.mark.parametrize(
+    "load",
+    [start.LoadOptions(), start.LoadOptions(max_seq_length = 4096)],
+    ids = ["no-settings", "settings-only"],
+)
+def test_resolve_model_says_another_account_holds_the_resident(monkeypatch, capsys, load):
+    state = _other_account_studio(monkeypatch, capsys)
+
+    with pytest.raises(typer.Exit):
+        start._resolve_model(BASE, "key", None, load)
+
+    err = capsys.readouterr().err
+    assert "belongs to another account" in err
+    assert "No model is loaded" not in err and "No chat model" not in err
+    assert state["loads"] == []
+
+
+def test_resolve_model_warns_before_replacing_another_accounts_resident(monkeypatch, capsys):
+    state = _other_account_studio(monkeypatch, capsys)
+
+    start._resolve_model(BASE, "key", "owner/model-GGUF")
+
+    [(payload, before_load)] = state["loads"]
+    assert payload == {"model_path": "owner/model-GGUF"}
+    assert "from another account's model to owner/model-GGUF." in before_load
+    assert "unloads it for every attached session" in before_load
+
+
+def test_resolve_model_exact_match_shares_another_accounts_resident(monkeypatch, capsys):
+    state = _other_account_studio(monkeypatch, capsys, load_status = "already_loaded")
+
+    entry = start._resolve_model(
+        BASE, "key", "owner/model-GGUF", start.LoadOptions(gguf_variant = "Q4_K_M")
+    )
+
+    assert entry["id"] == "owner/model-GGUF"
+    assert state["loads"][0][0]["gguf_variant"] == "Q4_K_M"
+    assert "Reusing loaded model: owner/model-GGUF:Q4_K_M" in capsys.readouterr().out
+
+
 def test_resolve_model_interrupt_skips_survivor_probe(monkeypatch, capsys):
     models = [{"id": "owner/model-GGUF", "loaded": True}]
     probes = []
@@ -5244,7 +5345,12 @@ def test_write_openclaw_config_fresh(tmp_path):
     assert provider["apiKey"] == "sk-unsloth-abc"
     assert provider["api"] == "openai-completions"
     assert provider["models"] == [
-        {"id": MODEL["id"], "name": MODEL["id"], "contextWindow": MODEL["context_length"]}
+        {
+            "id": MODEL["id"],
+            "name": MODEL["id"],
+            "contextWindow": MODEL["context_length"],
+            "maxTokens": 32000,
+        }
     ]
     # The default model must be pinned or OpenClaw has nothing active.
     assert config["agents"]["defaults"]["model"]["primary"] == f"unsloth/{MODEL['id']}"
@@ -5254,6 +5360,25 @@ def test_write_openclaw_config_fresh(tmp_path):
     assert config["gateway"]["auth"]["mode"] == "none"  # unauth loopback gateway
     if os.name != "nt":  # the file holds an API key
         assert path.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("window, expected", [(32_768, 8_192), (131_072, 32_000)])
+def test_openclaw_output_limit_follows_the_context(tmp_path, window, expected):
+    path = tmp_path / "openclaw.json"
+    start.write_openclaw_config(BASE, "sk-unsloth-abc", {**MODEL, "context_length": window}, path)
+    model = json.loads(path.read_text())["models"]["providers"]["unsloth"]["models"][0]
+    assert model["maxTokens"] == expected
+
+
+@pytest.mark.parametrize("max_tokens, expected", [("40000", 40000), ("200000", 65536)])
+def test_connect_openclaw_max_tokens(fake_studio, tmp_path, max_tokens, expected):
+    result = CliRunner().invoke(
+        start.start_app, ["openclaw", "--no-launch", "--max-tokens", max_tokens]
+    )
+    assert result.exit_code == 0, result.output
+    assert "--max-tokens" not in _launch_command(result.output)
+    config = json.loads((tmp_path / "agents" / "openclaw" / "openclaw.json").read_text())
+    assert config["models"]["providers"]["unsloth"]["models"][0]["maxTokens"] == expected
 
 
 def test_write_openclaw_config_clears_per_agent_path_overrides(tmp_path):
@@ -6044,6 +6169,22 @@ def test_write_hermes_config_small_window_claims_floor(hermes_config):
     assert config["compression"] == {"enabled": True, "threshold": 0.5625}
     # The same floor check runs against the compression model mid-session.
     assert config["auxiliary"]["compression"]["context_length"] == 65536
+    # Newer Hermes checks a local server's floor against ollama_num_ctx, not context_length.
+    assert config["model"]["ollama_num_ctx"] == 65536
+
+
+def test_write_hermes_config_large_window_drops_claimed_num_ctx(hermes_config):
+    yaml = pytest.importorskip("yaml")
+    start.write_hermes_config(BASE, {"id": "small", "context_length": 40960}, hermes_config)
+    start.write_hermes_config(BASE, MODEL, hermes_config)
+    assert "ollama_num_ctx" not in yaml.safe_load(hermes_config.read_text())["model"]
+
+
+def test_write_hermes_config_keeps_user_num_ctx(hermes_config):
+    yaml = pytest.importorskip("yaml")
+    hermes_config.write_text(yaml.safe_dump({"model": {"ollama_num_ctx": 100000}}))
+    start.write_hermes_config(BASE, MODEL, hermes_config)
+    assert yaml.safe_load(hermes_config.read_text())["model"]["ollama_num_ctx"] == 100000
 
 
 def test_write_hermes_config_preserves_and_idempotent(hermes_config):

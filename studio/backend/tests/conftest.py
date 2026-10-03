@@ -175,8 +175,10 @@ def _reset_gpu_query_cache():
     # Only when already imported: importing utils.hardware would change import-order tests.
     def _reset():
         gpu_query = sys.modules.get("utils.hardware.gpu_query")
-        if gpu_query is not None:
-            gpu_query.reset()
+        # A background probe thread may still be importing it; a half-built module has no cache yet.
+        reset = getattr(gpu_query, "reset", None)
+        if reset is not None:
+            reset()
         hw = sys.modules.get("utils.hardware.hardware")
         if hw is not None and hasattr(hw, "_last_good_visible_info"):
             with hw._last_good_visible_lock:
@@ -185,6 +187,15 @@ def _reset_gpu_query_cache():
     _reset()
     yield
     _reset()
+
+
+@pytest.fixture(autouse = True)
+def _reset_media_import_window(monkeypatch):
+    # A load path claims the window for the process; later prewarm tests would skip.
+    warm = sys.modules.get("utils.torch_warmup")
+    if warm is not None and hasattr(warm, "_media_import_claimed"):
+        monkeypatch.setattr(warm, "_media_import_claimed", False)
+        monkeypatch.setattr(warm, "_media_import_owner", None)
 
 
 @pytest.fixture(autouse = True)

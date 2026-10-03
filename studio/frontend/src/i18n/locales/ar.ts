@@ -2,9 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import type { en } from "./en";
+import { en } from "./en.ts";
 
 export const ar = {
+  // English fallback until this experimental feature is translated.
+  managedEngines: en.managedEngines,
   composerSettings: {
     title: "كتابة الرسائل",
     plainText: "محرر نص عادي",
@@ -217,6 +219,45 @@ export const ar = {
       actions: "الإجراءات",
       chat: "الدردشة",
       searchChats: "ابحث في الدردشات...",
+    },
+    search: {
+      placeholder: "بحث",
+      tabs: {
+        all: "الكل",
+        chats: "المحادثات",
+        projects: "المشاريع",
+        files: "الملفات",
+        models: "النماذج",
+      },
+      recents: "العناصر الأخيرة",
+      actions: "الإجراءات",
+      newChat: "محادثة جديدة",
+      newTemporaryChat: "محادثة مؤقتة جديدة",
+      fineTune: "ضبط نموذج",
+      generateImage: "إنشاء صورة",
+      generateVideo: "إنشاء فيديو",
+      untitledChat: "محادثة بلا عنوان",
+      compare: "مقارنة",
+      loading: "جارٍ التحميل...",
+      empty: {
+        all: "لا يوجد شيء للبحث فيه بعد.",
+        chats: "لا توجد محادثات بعد.",
+        projects: "لا توجد مشاريع بعد.",
+        files: "لا توجد ملفات في مكتبتك بعد.",
+        models: "لا توجد نماذج منزّلة بعد.",
+      },
+      noMatches: "لا توجد نتائج.",
+      when: {
+        today: "اليوم",
+        pastWeek: "الأسبوع الماضي",
+        pastMonth: "الشهر الماضي",
+        older: "أقدم",
+      },
+      footer: {
+        close: "إغلاق",
+        changeType: "تغيير النوع",
+        open: "فتح",
+      },
     },
     notFound: {
       title: "الصفحة غير موجودة",
@@ -1210,9 +1251,22 @@ export const ar = {
       },
       permissions: {
         sectionTitle: "الأذونات",
-        bypassLabel: "أذونات الأدوات",
-        bypassDescription:
-          "كيفية موافقة Unsloth على استدعاءات أدوات المحادثة (الطرفية، python، الويب، MCP) قبل تشغيلها. وضع «Full access» يعطّل الموافقات وصندوق عزل الشيفرة.",
+        names: {
+          ask: "طلب الموافقة",
+          auto: "الموافقة نيابةً عني",
+          off: "التشغيل تلقائيًا",
+          full: "وصول كامل",
+        },
+        details: {
+          ask:
+            "يطلب الموافقة قبل كل استدعاء أداة، بما في ذلك شيفرة الطرفية وPython وعمليات البحث في الويب وتعديل الملفات وأدوات MCP. الأدوات التي يشغّلها مزوّد خارجي لا تتوقف لطلب الموافقة. الأنسب عندما تريد مراجعة كل خطوة.",
+          auto:
+            "يشغّل استدعاءات الأدوات المعتادة تلقائيًا ولا يطلب الموافقة إلا عندما يبدو الإجراء خطرًا، مثل قراءة بيانات الاعتماد أو رفع الصلاحيات أو تشغيل أوامر مدمّرة.",
+          off:
+            "يشغّل كل استدعاءات الأدوات دون سؤال. تظل شيفرة Python والطرفية تعمل داخل صندوق العزل، الذي يحدّ من الملفات التي يمكنها الوصول إليها على جهازك.",
+          full:
+            "يشغّل كل استدعاءات الأدوات دون سؤال ويوقف صندوق عزل الشيفرة، فيمكن لشيفرة Python والطرفية قراءة أي ملف يصل إليه حسابك وتغييره. الأنسب للمهام الموثوقة التي تحتاج إلى العمل خارج صندوق العزل.",
+        },
       },
     },
     profile: {
@@ -2401,6 +2455,7 @@ export const ar = {
       context: "السياق",
       lr: "معدل التعلّم",
       hardware: "الأجهزة",
+      vram: "VRAM",
       noGpu: "لم يتم اكتشاف GPU",
       hfToken: "توكن HF",
       saved: "محفوظ",
@@ -3110,6 +3165,7 @@ export const ar = {
     discardDescription: "ستُفقد التعديلات غير المحفوظة على {name}.",
     discard: "تجاهل",
     mentions: "المهارات",
+    manage: "إدارة المهارات",
   },
   library: {
     tabs: {

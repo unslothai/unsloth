@@ -2,6 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { ChatThinkingControl } from "./components/chat-thinking-control";
+// eslint-disable-next-line no-restricted-imports -- Keep the import-free payload helper independent of the picker UI.
+import { llamaCppConfigPayload } from "@/features/model-picker/model-config/llama-cpp-config";
 import { useChatArtifactsStore } from "./artifacts/store";
 import { mlxRuntimeStateFrom } from "./lib/mlx-runtime-state";
 import { offloadCountsFrom, offloadWarning } from "./lib/partial-offload";
@@ -127,6 +129,7 @@ import {
 } from "./api/prompts-api";
 import { PromptCountBadge } from "./prompt-storage/prompt-count-badge";
 import { McpComposerButton } from "./mcp-composer-button";
+import { SkillsComposerButton } from "./skills-composer-button";
 import { PermissionModeComposerPill } from "./permission-mode-select";
 import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
 import { resyncInferenceStatusAfterServerModelChange } from "./hooks/use-chat-model-runtime";
@@ -198,9 +201,11 @@ import {
   shouldPinDiffusionPlacement,
 } from "./lib/gpu-placement";
 import {
-  loadedGpuMemoryFields,
+  loadedLlamaCppConfigFields,
+  managedGpuMemoryFields,
   reconcilePersistedGpuIds,
-  resolveLoadedSpeculativeSettings,
+  managedKvCacheFields,
+  managedSpeculativeSettings,
   resolvePreserveThinkingOnLoad,
   persistGpuMemoryModeOnLoad,
   resolveSpeculativeSettingsForLoad,
@@ -1574,6 +1579,23 @@ export function SharedComposer({
         // active model's shared snapshot, which resolveFitMaxSeqLength would treat as a pin. A GGUF pane
         // with no explicit context loads at native (0 -> n_ctx_train), not the session maxSeqLength.
         const effectiveCustomContextLength = ownConfig.customContextLength;
+        const paneEngine = targetIsGguf ? "auto" : (ownConfig.engine ?? "auto");
+        const paneEngineFields = {
+          engine: paneEngine,
+          engine_precision: ownConfig.enginePrecision ?? "auto",
+          engine_parallelism: ownConfig.engineParallelism ?? "tensor",
+          load_in_4bit: paneEngine === "auto",
+          ...(paneEngine !== "auto" && ownConfig.selectedGpuIds !== undefined
+            ? {
+                gpu_ids:
+                  reconcilePersistedGpuIds(
+                    ownConfig.selectedGpuIds,
+                    ownConfig.selectedGpuIndexKind,
+                    false,
+                  ) ?? undefined,
+              }
+            : {}),
+        };
         let loadTrustRemoteCode = trustRemoteCode;
         let approvedRemoteCodeFingerprint: string | null = null;
         // Size validation exactly as the load below, so the training-guard preflight checks the footprint
@@ -1591,7 +1613,7 @@ export function SharedComposer({
           model_path: sel.id,
           hf_token: currentStore.hfToken || null,
           max_seq_length: compareMaxSeqLength,
-          load_in_4bit: true,
+          ...paneEngineFields,
           is_lora: sel.isLora,
           gguf_variant: sel.ggufVariant ?? null,
           trust_remote_code: loadTrustRemoteCode,
@@ -1618,6 +1640,9 @@ export function SharedComposer({
                   : ownConfig.reasoningBudgetMessage,
                 // Only when this panel has read the stored value: omitted, the load inherits it, which is what
                 // keeps CLI-set flags working.
+                ...llamaCppConfigPayload(ownConfig.llamaCppConfig, {
+                  isDiffusion: resolvedIsDiffusion === true,
+                }),
                 ...(ownConfig.llamaExtraArgs !== undefined
                   ? // biome-ignore lint/style/useNamingConvention: API schema
                     { llama_extra_args: ownConfig.llamaExtraArgs ?? [] }
@@ -1687,7 +1712,7 @@ export function SharedComposer({
           load_request_id: loadRequestId,
           hf_token: useChatRuntimeStore.getState().hfToken || null,
           max_seq_length: compareMaxSeqLength,
-          load_in_4bit: true,
+          ...paneEngineFields,
           is_lora: sel.isLora,
           gguf_variant: sel.ggufVariant ?? null,
           trust_remote_code: loadTrustRemoteCode,
@@ -1717,6 +1742,9 @@ export function SharedComposer({
                 n_cpu_moe: effectiveNCpuMoe,
                 tensor_split: compareLoadKnobs.splitRatio ?? undefined,
                 gpu_ids: effectiveSelectedGpuIds ?? undefined,
+                ...llamaCppConfigPayload(ownConfig.llamaCppConfig, {
+                  isDiffusion: resolvedIsDiffusion === true,
+                }),
                 ...(ownConfig.llamaExtraArgs !== undefined
                   ? // biome-ignore lint/style/useNamingConvention: API schema
                     { llama_extra_args: ownConfig.llamaExtraArgs ?? [] }
@@ -1813,8 +1841,7 @@ export function SharedComposer({
           supportsPreserveThinking: resp.supports_preserve_thinking ?? false,
           preserveThinking: resolvePreserveThinkingOnLoad(resp),
           supportsTools: resp.supports_tools ?? false,
-          kvCacheDtype: resp.cache_type_kv ?? null,
-          loadedKvCacheDtype: resp.cache_type_kv ?? null,
+          ...managedKvCacheFields(resp),
           ...mlxRuntimeStateFrom(resp),
           // Click-time value, not the resolved echo (see the single-model load).
           nParallel: committedSlots,
@@ -1852,12 +1879,16 @@ export function SharedComposer({
             : clearedServerTuningState()),
           // What this pane's launch is running, for a later rollback: the status applier is held off for
           // the whole load, so a switch straight after would snapshot the other model's list.
+          ...loadedLlamaCppConfigFields(resp, ownConfig.llamaCppConfig),
           loadedLlamaExtraArgs:
             resp.requested_llama_extra_args !== undefined
               ? (resp.requested_llama_extra_args ?? [])
               : (ownConfig.llamaExtraArgs ?? null),
           tensorParallel: resp.tensor_parallel ?? false,
           loadedTensorParallel: resp.tensor_parallel ?? false,
+          loadedEngine: resp.engine ?? "auto",
+          loadedEnginePrecision: resp.engine_precision ?? "auto",
+          loadedEngineParallelism: resp.engine_parallelism ?? "tensor",
           loadedDisableVision: resp.disable_vision ?? false,
           // Adopted from the echo like the knob above: this pane loaded its own model, so the editable
           // value must follow it or Advanced Settings shows the other pane's Vision state.
@@ -1870,7 +1901,7 @@ export function SharedComposer({
           loadedCustomContextLength: keepCustomCtx,
           // Adopt the load response's GPU-memory fields (mode/layers/MoE/split/pick plus loaded baselines)
           // so the GPU controls round-trip. The context group and native-path token/expiry clear below.
-          ...loadedGpuMemoryFields(resp),
+          ...managedGpuMemoryFields(resp),
           // Drives the GPU Memory controls' diffusion gate; set alongside the GPU fields on every load path
           // so the gate cannot read stale.
           loadedIsDiffusion: resp.is_diffusion ?? false,
@@ -1887,7 +1918,7 @@ export function SharedComposer({
           // lease. Clear any prior picked file's token/expiry so the reload path never sends a stale one.
           activeNativePathToken: null,
           activeNativePathExpiresAtMs: null,
-          ...resolveLoadedSpeculativeSettings(resp),
+          ...managedSpeculativeSettings(resp),
         });
         if (!targetIsGguf) {
           // Non-GGUF panes carry their context in params.maxSeqLength.
@@ -2914,6 +2945,7 @@ export function SharedComposer({
             </button>
           ) : null}
           {mcpEnabledForChat ? <McpComposerButton side="top" /> : null}
+          <SkillsComposerButton side="top" />
         </div>
         {/* mr-0.5 matches the send button inset from the edge in normal chat; gap-1.5 matches its control spacing. */}
         <div className="ml-auto mr-0.5 flex items-center gap-1.5">

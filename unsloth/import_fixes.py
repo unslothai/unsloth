@@ -4568,28 +4568,54 @@ def check_fbgemm_gpu_version():
 
 def patch_enable_input_require_grads():
     """Patch PreTrainedModel.enable_input_require_grads to tolerate vision models
-    that raise NotImplementedError from get_input_embeddings()."""
+    that raise NotImplementedError from get_input_embeddings(), and so that its hook traces
+    under torch.compile."""
     import inspect
+    import torch
     from transformers import PreTrainedModel
 
-    # Only patch the new variant that iterates over self.modules(); see huggingface/transformers#41993.
     try:
         original_source = inspect.getsource(PreTrainedModel.enable_input_require_grads)
     except:
         return
 
+    class _RequireGrad(torch.autograd.Function):
+        # x + -0.0 is x exactly (signed zeros too); the anchor only makes the output need grad.
+        @staticmethod
+        def forward(ctx, x, anchor):
+            return x + anchor
+
+        @staticmethod
+        def backward(ctx, grad):
+            return grad, None
+
+    # Created here: torch.compile cannot create a tensor that requires grad inside a graph.
+    anchor = torch.tensor(-0.0, requires_grad = True)
+
+    def make_inputs_require_grads(module, input, output):
+        # requires_grad_() on an intermediate is a graph break under torch.compile.
+        if torch.compiler.is_compiling():
+            if not torch.is_grad_enabled():
+                return  # a compiled decode step records no grad
+            return _RequireGrad.apply(output, anchor)
+        output.requires_grad_(True)
+
+    # Older transformers hooks a single embedding (huggingface/transformers#41993 added the loop).
+    # wraps keeps inspect.getsource on transformers' source for later source checks.
+    original = PreTrainedModel.enable_input_require_grads
     if "for module in self.modules()" not in original_source:
+
+        @functools.wraps(original)
+        def _patched_single_enable_input_require_grads(self):
+            self._require_grads_hook = self.get_input_embeddings().register_forward_hook(
+                make_inputs_require_grads
+            )
+
+        PreTrainedModel.enable_input_require_grads = _patched_single_enable_input_require_grads
         return
 
+    @functools.wraps(original)
     def _patched_enable_input_require_grads(self):
-        import torch
-
-        def make_inputs_require_grads(module, input, output):
-            # Dynamo graph-breaks on requires_grad_(); a compiled decode step records no grad anyway.
-            if torch.compiler.is_compiling() and not torch.is_grad_enabled():
-                return
-            output.requires_grad_(True)
-
         hooks = []
         seen_modules = set()
 
@@ -6610,6 +6636,96 @@ def fix_cudnn_sdpa_d256_masked_backward():
     logger.info(
         "Unsloth: SM100 GPU found; masked head_dim 256 SDPA training will avoid cuDNN attention "
         f"(devices {sorted(sm100_devices)})"
+    )
+
+
+def _rocm_windows_broken_sdpa_backends():
+    """Fused SDPA backends ("flash", "mem_efficient") failing on this process's Windows ROCm GPU.
+
+    torch 2.11.0+rocm7.14.1 on gfx1151 fails every fused call (hipErrorInvalidValue), raised only
+    by the next checked launch, so each probe ends in one and is compared against math.
+    """
+    if sys.platform != "win32":
+        return []
+    try:
+        import torch
+        import torch.nn.functional as F
+        from torch.nn.attention import SDPBackend, sdpa_kernel
+
+        # Some AMD wheels tag only __version__, so torch.version.hip alone misses them.
+        is_rocm = bool(getattr(torch.version, "hip", None)) or _is_rocm_torch_build()
+        if not is_rocm or not torch.cuda.is_available():
+            return []
+    except Exception:
+        return []
+
+    def attend(device, backend):
+        g = torch.Generator(device = device).manual_seed(0)
+        q, k, v = (
+            torch.randn(1, 2, 16, 64, device = device, dtype = dtype, generator = g) for _ in range(3)
+        )
+        q.requires_grad_(True)
+        with sdpa_kernel([backend]):
+            out = F.scaled_dot_product_attention(q, k, v, is_causal = True)
+            out = out.float()  # checked launch: a failed attention launch raises here
+            out.sum().backward()
+        dq = q.grad.float()
+        dq.sum().item()
+        return torch.cat([out.detach().flatten(), dq.flatten()])
+
+    # Only this process's device: probing every visible GPU would open a HIP context on each.
+    device = torch.device("cuda", torch.cuda.current_device())
+    try:
+        from .device_type import arch_lacks_bf16
+        arch = torch.cuda.get_device_properties(device).gcnArchName
+    except Exception:
+        arch_lacks_bf16, arch = (lambda _: True), None
+    # gfx10 claims bf16 it lacks (device_type.arch_lacks_bf16); fp16 is safe everywhere.
+    dtype = torch.float16 if arch_lacks_bf16(arch) else torch.bfloat16
+    broken = []
+    # An import under inference_mode would leave nothing to backpropagate through.
+    with torch.inference_mode(False), torch.enable_grad():
+        try:
+            reference = attend(device, SDPBackend.MATH)
+        except Exception:
+            return []  # math fails too: nothing to learn about the fused kernels
+        for name, backend in (
+            ("flash", SDPBackend.FLASH_ATTENTION),
+            ("mem_efficient", SDPBackend.EFFICIENT_ATTENTION),
+        ):
+            try:
+                ok = torch.allclose(attend(device, backend), reference, atol = 2e-2, rtol = 2e-2)
+            except Exception as e:
+                ok = "No available kernel" in str(e)
+            if not ok:
+                broken.append(name)
+    return broken
+
+
+def fix_rocm_windows_fused_sdpa():
+    """Turn off fused SDPA backends that fail on this Windows ROCm GPU, so attention uses math.
+
+    Probe-gated, so it is a no-op once the kernels work. UNSLOTH_ALLOW_ROCM_FUSED_SDPA=1 opts out.
+    """
+    if os.environ.get("UNSLOTH_ALLOW_ROCM_FUSED_SDPA", "0") == "1":
+        return
+    broken = _rocm_windows_broken_sdpa_backends()
+    if not broken:
+        return
+    try:
+        import torch
+        if "flash" in broken:
+            torch.backends.cuda.enable_flash_sdp(False)
+        if "mem_efficient" in broken:
+            torch.backends.cuda.enable_mem_efficient_sdp(False)
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the Windows ROCm SDPA fix ({e})")
+        return
+    names = " or ".join("flash" if b == "flash" else "memory-efficient" for b in broken)
+    fallback = "the math kernel" if len(broken) == 2 else "the remaining kernels"
+    logger.warning(
+        f"Unsloth: this Windows ROCm torch cannot run {names} attention; using {fallback} "
+        "instead (set UNSLOTH_ALLOW_ROCM_FUSED_SDPA=1 to keep them)."
     )
 
 

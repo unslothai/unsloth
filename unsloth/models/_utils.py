@@ -13,6 +13,7 @@ from .._version import __version__
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
+    "config_return_dict",
     "is_bfloat16_supported",
     "_requested_float32",
     "_mark_requested_float32",
@@ -110,6 +111,7 @@ __all__ = [
     "_patch_transformers_trainer_data_parallel",
     "patch_flex_attention_kernel_options",
 ]
+
 
 import torch
 from typing import Union, Optional, List, Any, Callable, Tuple, Iterator
@@ -4297,6 +4299,11 @@ def offload_output_embeddings(model, temporary_location: str = "_unsloth_tempora
     return
 
 
+def config_return_dict(config):
+    # use_return_dict without its transformers 5 deprecation warning, a torch.compile graph break.
+    return getattr(config, "return_dict", True) and not getattr(config, "torchscript", False)
+
+
 def is_bfloat16_supported():
     return SUPPORTS_BFLOAT16
 
@@ -6798,3 +6805,80 @@ try:
     patch_flex_attention_kernel_options()
 except Exception:
     pass
+
+
+@functools.lru_cache(maxsize = 1)
+def _gradient_checkpointing_layer_class():
+    try:
+        from transformers.modeling_layers import GradientCheckpointingLayer
+    except ImportError:
+        return None
+    return GradientCheckpointingLayer
+
+
+@functools.lru_cache(maxsize = None)
+def _forward_reads_checkpoint_function(cls):
+    try:
+        return "_gradient_checkpointing_func" in inspect.getsource(cls.forward)
+    except Exception:
+        return True  # cannot read it: assume it does, as _forward_calls_checkpointing does
+
+
+def _calls_checkpoint_function(module):
+    """Calls `self._gradient_checkpointing_func` when its flag is on (also older / remote-code backbones)."""
+    layer_class = _gradient_checkpointing_layer_class()
+    if layer_class is not None and isinstance(module, layer_class):
+        return True
+    return hasattr(module, "gradient_checkpointing") and _forward_reads_checkpoint_function(
+        type(module)
+    )
+
+
+def _is_unarmed(module):
+    return (
+        _calls_checkpoint_function(module)
+        and getattr(module, "_gradient_checkpointing_func", None) is None
+    )
+
+
+def resolve_training_gradient_checkpointing(model, use_gradient_checkpointing):
+    """`None` keeps the mode chosen at load / get_peft_model instead of forcing it on."""
+    if use_gradient_checkpointing is not None:
+        return use_gradient_checkpointing
+    if hasattr(model, "_unsloth_gradient_checkpointing"):
+        return model._unsloth_gradient_checkpointing
+    # Nothing recorded (no adapter, full finetuning): loading's choice is whether it armed the layers.
+    checkpointing = [m for m in model.modules() if _calls_checkpoint_function(m)]
+    if checkpointing:
+        return any(not _is_unarmed(m) for m in checkpointing)
+    return True
+
+
+def arm_gradient_checkpointing(model):
+    """Install the checkpoint function a load with checkpointing off never gave the layers."""
+    if not any(_is_unarmed(m) for m in model.modules()):
+        return False
+    # Outer model, not get_base_model(): Gemma 3N / 4 and DeepSeek-V4.1 install their override there.
+    try:
+        model.gradient_checkpointing_enable()
+    except Exception as e:
+        logger.warning(
+            f"Unsloth: could not turn on gradient checkpointing ({e}); training without it."
+        )
+        return False
+    # As the load path does: a layer handed a cache skips checkpointing (_checkpointed_layer_forward).
+    try:
+        from unsloth_zoo.training_utils import disable_use_cache
+    except ImportError:
+        return True
+    disable_use_cache(model)
+    return True
+
+
+def set_module_gradient_checkpointing(module, value):
+    """Never turn on a module without its checkpoint function: its next training forward would raise."""
+    if value and _is_unarmed(module):
+        module.gradient_checkpointing = False
+        return False
+    module.gradient_checkpointing = value
+    return True
