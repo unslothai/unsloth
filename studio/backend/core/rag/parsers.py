@@ -828,15 +828,20 @@ def _decode_text(data: bytes, *, html: bool = False) -> str:
         if match is not None:
             guess = str(match)
             # A tie means the bytes cannot tell the code pages apart ("ÜÖÄ" is also Cyrillic);
-            # a CJK guess that paired no bytes is just half-width katakana ("° ± µ").
+            # any byte decodes in a single-byte page, so another one needs language evidence
+            # ("está" is also Arabic); a CJK guess that paired no bytes is half-width katakana ("° ± µ").
             tied = any(
                 other is not match
                 and (other.chaos, other.coherence) == (match.chaos, match.coherence)
                 for other in results
             )
-            paired = len(guess) < len(data)
-            single_byte = match.encoding in ("cp1252", "cp1251", "cp1253", "cp1255", "cp1256")
-            if not tied and (single_byte or paired):
+            if match.encoding == "cp1252":
+                plausible = True
+            elif match.encoding in ("cp1251", "cp1253", "cp1255", "cp1256"):
+                plausible = match.coherence > 0
+            else:
+                plausible = len(guess) < len(data)
+            if not tied and plausible:
                 return guess
     return data.decode("cp1252", errors = "replace")
 

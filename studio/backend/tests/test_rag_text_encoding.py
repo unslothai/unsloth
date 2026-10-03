@@ -171,5 +171,7 @@ def test_a_short_windows_1252_line_is_not_mistaken_for_another_language(tmp_path
         "° ± µ ½ ¼ ¾ © ®",
         "é è ê ë à â ä ô ö û ü ç",
         "Æ Ø Å æ ø å Æ Ø",
+        "élève, für, está, bênção, égalité, âgé, forêt, café",
+        "à é è ù â ê î ô û ë ï ü ç œ æ",
     ):
         assert _text(tmp_path, "short.txt", line.encode("cp1252")) == line, line
