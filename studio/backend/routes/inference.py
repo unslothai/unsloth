@@ -24147,6 +24147,7 @@ def _extract_content_parts(
     # legacy image_base64 field does. An assistant-only history still falls back.
     return (
         "\n\n".join(p for p in system_parts if p),
+        # Mappings, not JSON strings: Qwen3.5's template renders string arguments as nothing.
         _structured_tool_history_for_local_template(chat_messages),
         served_images if structured else (latest_user_image_b64 or latest_image_b64),
     )

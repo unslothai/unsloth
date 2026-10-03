@@ -210,7 +210,7 @@ def test_studio_tool_loop_keeps_earlier_tool_calls(monkeypatch):
     msgs = loop_calls[0]["messages"]
     assert [m["role"] for m in msgs] == ["user", "assistant", "tool", "assistant", "user"]
     assert msgs[1]["tool_calls"][0]["function"]["name"] == "python"
-    assert "sum(range(101))" in json.dumps(msgs[1]["tool_calls"])
+    assert msgs[1]["tool_calls"][0]["function"]["arguments"] == {"code": "print(sum(range(101)))"}
     assert msgs[2]["tool_call_id"] == "call_py"
 
 
