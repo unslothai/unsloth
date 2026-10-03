@@ -101,6 +101,7 @@ function ConvertInputs({
           allowSavedVoice={false}
           handleRef={convert.sourceHandle}
           onStatusChange={convert.setSourceStatus}
+          maxSeconds={caps?.source_max_seconds ?? 300}
         />
       </div>
 

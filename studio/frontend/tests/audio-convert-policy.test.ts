@@ -316,3 +316,10 @@ test("Speak sends a convert-only model to Convert, not to Clone", () => {
   assert.match(page, SPEAK_BLOCKER_OPENS_CONVERT);
   assert.match(page, SPEAK_STATUS_LINE_CONVERTS);
 });
+
+test("the Convert source card states Convert's own length cap", () => {
+  const page = readSrc("features/audio/pages/convert-page.tsx");
+  assert.match(page, /maxSeconds=\{caps\?\.source_max_seconds \?\? 300\}/);
+  const card = readSrc("features/audio/components/audio-source-input.tsx");
+  assert.match(card, /durationS > maxSeconds/);
+});
