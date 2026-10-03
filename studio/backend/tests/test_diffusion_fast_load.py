@@ -197,7 +197,6 @@ def test_load_prefetch_puts_the_seeded_checkpoint_first_and_skips_the_dense_deno
     assert seen.pop("paths")[0] == str(ckpt)
     fl.start_load_prefetch(object(), str(snap), prequant_scheme = "int8")
     assert not any("transformer/" in p for p in seen.pop("paths"))
-    # No seed (or a seed whose checkpoint is not cached): the dense denoiser shards are what the load reads.
     fl.start_load_prefetch(object(), str(snap), prequant_scheme = None)
     assert seen["paths"][-1].endswith("transformer/diffusion_pytorch_model.safetensors")
     monkeypatch.setattr(pq, "cached_checkpoint_path", lambda source, cache_dir = None: None)
@@ -312,7 +311,6 @@ def test_fast_upload_leaves_other_to_calls_alone(monkeypatch):
     weight = module.a.weight
     with fl.fast_upload([module], "cuda") as staged:
         assert staged > 0
-        # A dtype change, a copy, or another device is not what was staged: the stock path answers.
         assert weight.to("cuda", dtype = torch.float32).dtype == torch.float32
         assert weight.to("cuda", copy = True).data_ptr() != weight.to("cuda").data_ptr()
         assert weight.to("cpu").device.type == "cpu"

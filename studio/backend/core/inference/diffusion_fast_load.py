@@ -23,7 +23,6 @@ _SWITCH_OFF = ("0", "off", "false", "no")
 
 _PREFETCH_THREADS = 8
 _PREFETCH_READ_BYTES = 64 << 20
-# Below this much uncached data the threads cost more than they save.
 _PREFETCH_MIN_BYTES = 256 << 20
 _PREFETCH_THREAD_PREFIX = "unsloth-image-prefetch"
 
