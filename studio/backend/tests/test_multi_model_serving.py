@@ -194,6 +194,28 @@ def test_the_multi_model_setting_defaults_off(monkeypatch):
         multi_model_settings.set_multi_model_enabled("yes")
 
 
+def test_turning_the_setting_off_saves_first_and_unloads_after_the_reply(backends, monkeypatch):
+    from fastapi import BackgroundTasks
+    import routes.settings as settings_routes
+
+    _, extra = backends
+    monkeypatch.setattr(settings_routes, "set_multi_model_enabled", lambda value: value)
+
+    def fail():
+        raise RuntimeError("llama-server would not exit")
+
+    monkeypatch.setattr(extra.llama, "unload_model", fail)
+    tasks = BackgroundTasks()
+    response = settings_routes.update_multi_model(
+        settings_routes.MultiModelPayload(enabled = False), tasks, "s"
+    )
+    # The saved value comes back before any teardown runs.
+    assert response.enabled is False and model_slots.slots == [extra]
+    asyncio.run(tasks())
+    # A teardown that fails is logged, not raised, and the slot stays counted.
+    assert model_slots.slots == [] and model_slots.stuck == [extra] and model_slots.holds_vram()
+
+
 def test_unload_drops_only_the_named_extra_slot(backends, monkeypatch):
     primary, extra = backends
     _hold_chat_claim(monkeypatch)

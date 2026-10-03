@@ -14,7 +14,7 @@ from contextvars import ContextVar
 from typing import Any, Literal, Optional, get_args
 from urllib.parse import unquote, urlsplit
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
 from pydantic import (
@@ -1373,16 +1373,13 @@ def get_multi_model(current_subject: str = Depends(get_current_subject)) -> Mult
 
 @_owner_settings_router.put("/multi-model", response_model = MultiModelResponse)
 def update_multi_model(
-    payload: MultiModelPayload, current_subject: str = Depends(get_current_subject)
+    payload: MultiModelPayload,
+    background_tasks: BackgroundTasks,
+    current_subject: str = Depends(get_current_subject),
 ) -> MultiModelResponse:
     """Keep the loaded models when another loads. Takes effect on the next load."""
     try:
         enabled = set_multi_model_enabled(payload.enabled)
-        if not enabled:
-            from core.inference import model_slots
-
-            # Back to one model: the idle kept ones go now, a busy one once it is ejected.
-            model_slots.unload_idle()
     except Exception as exc:
         raise log_and_http_error(
             exc,
@@ -1392,7 +1389,19 @@ def update_multi_model(
             log = logger,
         ) from exc
     logger.info("settings.multi_model_updated subject=%s enabled=%s", current_subject, enabled)
+    if not enabled:
+        # Back to one model: the idle kept ones go after the reply (a teardown can take minutes),
+        # a busy one once it is ejected. One that fails to unload stays tracked as stuck.
+        background_tasks.add_task(_unload_idle_models)
     return MultiModelResponse(enabled = enabled)
+
+
+def _unload_idle_models() -> None:
+    from core.inference import model_slots
+    try:
+        model_slots.unload_idle()
+    except Exception:
+        logger.warning("settings.multi_model_unload_idle_failed", exc_info = True)
 
 
 @_shared_settings_router.get("/upload-limit", response_model = UploadLimitResponse)
