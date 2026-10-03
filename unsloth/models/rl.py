@@ -3588,6 +3588,32 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             )
 
 
+# TRL 1.10+ raises TypeError unless train_dataset is a datasets Dataset / IterableDataset, but earlier TRL took a plain
+# list, which the vision notebooks pass (PIL conversations + skip_prepare_dataset=True). Dataset.from_list is no drop-in
+# fix: it re-encodes every image to bytes. DPO / KTO / Reward always map the dataset, so they keep TRL's error.
+_LIST_TRAIN_DATASET_TRAINERS = frozenset(("sft_trainer", "grpo_trainer", "rloo_trainer"))
+_TRL_TRAIN_DATASET_TYPE_CHECK = re.compile(
+    r"(elif\s+not\s+isinstance\(\s*train_dataset\s*,\s*)\(?\s*(Dataset(?:\s*,\s*IterableDataset)?)\s*\)?(\s*\)\s*:)"
+)
+
+
+def _allow_list_train_dataset(function, source, trainer_file):
+    if trainer_file not in _LIST_TRAIN_DATASET_TRAINERS:
+        return source
+    if function == "__init__":
+        return _TRL_TRAIN_DATASET_TYPE_CHECK.sub(
+            r"\1(\2, list, tuple, torch.utils.data.Dataset)\3", source
+        )
+    if function == "_reject_skip_prepare_without_labels":
+        # get_dataset_column_names reads .column_names, which a list does not have.
+        return source.replace(
+            "cols = get_dataset_column_names(dataset)",
+            "cols = (get_dataset_column_names(dataset) if hasattr(dataset, 'column_names') "
+            "else list(next(iter(dataset), {}).keys()))",
+        )
+    return source
+
+
 def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, imports):
     init = inspect.getsource(RLTrainer.__init__)
     old_init = init
@@ -3789,6 +3815,7 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
 
         for edit_function in edit_functions:
             source = edit_function(function, source)
+        source = _allow_list_train_dataset(function, source, trainer_file)
 
         """
         import torch
