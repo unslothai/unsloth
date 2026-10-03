@@ -593,11 +593,23 @@ def resolve_prequant_source(
         # safetensors spelling ahead of the pickle. Order-preserving dedup so a family that declares
         # exactly what the chain would derive does not make the downloader ask twice for it.
         declared = (preferred,) if preferred else ()
-        # opt-in rotated artifact goes first; the plain chain stays behind it (not yet hosted, or offline)
-        from .diffusion_transformer_quant import convrot_prequant_filename, int8_convrot_enabled
+        # rotated artifact first (default on per family, else opt-in), only in the repo it is published to; the plain
+        # chain stays behind it (not yet hosted, offline, or an older cache)
+        from .diffusion_transformer_quant import (
+            convrot_prequant_filename,
+            convrot_prequant_repo,
+            int8_convrot_enabled,
+        )
 
-        rotated = convrot_prequant_filename(scheme, getattr(fam, "name", None))
-        if rotated and int8_convrot_enabled():
+        fam_name = getattr(fam, "name", None)
+        rotated = convrot_prequant_filename(scheme, fam_name)
+        rotated_repo = convrot_prequant_repo(scheme, fam_name)
+        if (
+            rotated
+            and rotated_repo
+            and str(repo_id).strip().lower() == rotated_repo.lower()
+            and int8_convrot_enabled(fam_name)
+        ):
             declared = (rotated,) + declared
         names: list[str] = []
         for name in declared + derived:
