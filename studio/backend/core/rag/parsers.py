@@ -828,10 +828,9 @@ def _decode_text(data: bytes, *, html: bool = False) -> str:
         match = results.best()
         if match is not None:
             guess = str(match)
-            # A tie means the bytes cannot tell the code pages apart ("ÜÖÄ" is also Cyrillic);
-            # any byte decodes in a single-byte page, so another one needs language evidence and
-            # words made of high bytes, not lone accents ("está", "À É È" also score as Arabic,
-            # Cyrillic); a CJK guess that paired no bytes is half-width katakana ("° ± µ").
+            # A tie is ambiguous ("ÜÖÄ" is also Cyrillic); a single-byte page decodes anything, so it needs
+            # language evidence and high-byte words, not lone accents ("À É È"); a CJK guess that paired
+            # no bytes is half-width katakana ("° ± µ").
             tied = any(
                 other is not match
                 and (other.chaos, other.coherence) == (match.chaos, match.coherence)
