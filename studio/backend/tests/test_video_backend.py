@@ -12452,7 +12452,13 @@ def test_cudnn_benchmark_opt_out_families():
     from core.inference.video_families import _FAMILIES
 
     off = {fam.name for fam in _FAMILIES if not fam.cudnn_benchmark}
-    assert {"wan2.2-ti2v-5b", "wan2.2-t2v-a14b", "ltx-2", "hunyuanvideo-1.5", "hunyuanvideo-1.5-720p"} <= off
+    assert {
+        "wan2.2-ti2v-5b",
+        "wan2.2-t2v-a14b",
+        "ltx-2",
+        "hunyuanvideo-1.5",
+        "hunyuanvideo-1.5-720p",
+    } <= off
     assert all(
         fam.vae_force_fp32 or fam.name == "ltx-2" or fam.name.startswith("hunyuanvideo-1.5")
         for fam in _FAMILIES
