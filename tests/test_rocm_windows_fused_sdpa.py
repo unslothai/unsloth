@@ -35,7 +35,7 @@ def _run(code, *args):
 
 def test_probe_is_windows_rocm_only():
     if _on_windows_rocm():
-        pytest.skip("this host is the one the probe is for")
+        pytest.skip(reason = "this host is the Windows ROCm one the probe targets")
     from unsloth.import_fixes import _rocm_windows_broken_sdpa_backends
     assert _rocm_windows_broken_sdpa_backends() == []
 
@@ -97,7 +97,7 @@ _PROBE_TWICE = textwrap.dedent(
 
 def test_windows_rocm_probe_is_stable_and_leaves_no_pending_error():
     if not _on_windows_rocm():
-        pytest.skip("needs a Windows ROCm GPU")
+        pytest.skip(reason = "needs a Windows ROCm GPU to reproduce the launch failure")
     first, second = _run(_PROBE_TWICE)
     assert first == second
 
@@ -148,7 +148,7 @@ _ATTENTION = textwrap.dedent(
 
 def test_windows_rocm_attention_runs_after_import():
     if not _on_windows_rocm():
-        pytest.skip("needs a Windows ROCm GPU")
+        pytest.skip(reason = "needs a Windows ROCm GPU to reproduce the launch failure")
     assert _run(_ATTENTION) == {
         "causal_fwd": True,
         "mask_fwd": True,
