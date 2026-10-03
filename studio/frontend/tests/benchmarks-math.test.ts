@@ -340,3 +340,17 @@ test("offload rows drop chat's --fit with its value and --cpu-moe alone", () => 
   assert.deepEqual(strip(["--cpu-moe", "-t", "8"]), ["-t", "8"]);
   assert.deepEqual(strip(["-cmoe", "--jinja"]), ["--jinja"]);
 });
+
+test("offload rows are skipped on a virtualised Mac GPU, where every load runs on the CPU", () => {
+  const manual: Variant = {
+    label: "12 layers on GPU",
+    load: { gpu_memory_mode: "manual", gpu_layers: 12, n_cpu_moe: 0 },
+  };
+  const auto: Variant = { label: "Studio auto", load: { gpu_memory_mode: "auto", gpu_layers: -1 } };
+  assert.equal(
+    servedMismatch(manual, { gpu_placement_paravirtual: true }),
+    "this Mac's GPU is virtualised, so Studio runs every load on the CPU",
+  );
+  assert.equal(servedMismatch(manual, { gpu_placement_paravirtual: false }), null);
+  assert.equal(servedMismatch(auto, { gpu_placement_paravirtual: true }), null);
+});
