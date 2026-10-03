@@ -398,7 +398,10 @@ export function SeparateOutput({
       name: string,
     ) => void;
   }) {
-  const groups = useMemo(() => groupSeparationClips(clips), [clips]);
+  const groups = useMemo(
+    () => groupSeparationClips(clips, hasMore),
+    [clips, hasMore],
+  );
   const selected =
     groups.find((group) =>
       group.stems.some((clip) => clip.id === selectedId),

@@ -886,6 +886,27 @@ def test_save_file_prunes_only_when_asked(tmp_path, monkeypatch):
     assert pruned == [1]
 
 
+def test_prune_keeps_or_drops_a_group_whole(tmp_path, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_AUDIO_GALLERY_MAX_CLIPS", "3")
+
+    def group(gid, t):
+        ids = []
+        for i, role in enumerate(("vocals", "drums", "bass", "other")):
+            src = tmp_path / f"{gid}{role}.wav"
+            src.write_bytes(_wav())
+            meta = {**_stem_meta(), "group_id": gid, "role": role}
+            record = gallery.save_file(src, meta, prune = False)
+            os.utime(gallery.gallery_dir() / f"{record['id']}.wav", (t + i, t + i))
+            ids.append(record["id"])
+        return ids
+
+    old = group("a" * 32, 100.0)
+    new = group("b" * 32, 200.0)
+    gallery._prune_to_cap()
+    assert all(gallery.audio_path(i) is not None for i in new)
+    assert all(gallery.audio_path(i) is None for i in old)
+
+
 def test_a_separate_scoped_clear_spares_speak_and_clone():
     speech = gallery.save(_wav(), _meta())
     clone = gallery.save(_wav(), _meta(audio_type = "audiocpp_tts", workflow = "clone"))

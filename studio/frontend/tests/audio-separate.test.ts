@@ -136,6 +136,31 @@ test("a separation missing stems says so", () => {
   assert.equal(group.expectedStems, 4);
 });
 
+test("a group cut by the page boundary waits for the next page", () => {
+  const clips = [
+    clip({
+      id: "a",
+      group_id: "g1",
+      role: "vocals",
+      settings: { stems: ["vocals"] },
+    }),
+    clip({
+      id: "b",
+      group_id: "g2",
+      role: "vocals",
+      settings: { stems: ["vocals", "drums"] },
+    }),
+  ];
+  assert.deepEqual(
+    groupSeparationClips(clips, true).map((group) => group.groupId),
+    ["g1"],
+  );
+  assert.deepEqual(
+    groupSeparationClips(clips, false).map((group) => group.groupId),
+    ["g1", "g2"],
+  );
+});
+
 test("Generate says what the track needs, in order", () => {
   const source = {
     kind: "input" as const,
@@ -310,7 +335,7 @@ test("the host renders Separate's rail, footer and output and the page reuses th
   assert.match(page, /Converted to 44\.1 kHz automatically/);
   assert.match(page, /allowSavedVoice=\{false\}/);
   assert.match(page, /<StemMixer/);
-  assert.match(page, /groupSeparationClips\(clips\)/);
+  assert.match(page, /groupSeparationClips\(clips, hasMore\)/);
   assert.match(page, /aria-live="polite"/);
   // No inline fetch of the stems for playback: the mixer's own sources pin the group.
   assert.match(page, /useStemSources\(inputs\)/);

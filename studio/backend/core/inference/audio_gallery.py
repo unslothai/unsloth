@@ -179,6 +179,8 @@ def _prune_to_cap() -> int:
                     if running > byte_cap and index > 0:
                         keep = index
                         break
+            # A run's clips (a separation's stems) go together: a kept clip keeps its siblings.
+            kept_groups = {r["group_id"] for r, _ in entries[:keep] if r.get("group_id")}
             if keep >= len(entries):
                 return 0
 
@@ -188,6 +190,8 @@ def _prune_to_cap() -> int:
             flags = gallery_flags.read_trusted(directory)
             pruned: list[str] = []
             for record, _cursor in entries[keep:]:
+                if record.get("group_id") in kept_groups:
+                    continue
                 audio_id = record["id"]
                 if gallery_flags.is_archived(flags, audio_id) or gallery_flags.pin_rank(
                     flags, audio_id

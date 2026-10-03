@@ -78,6 +78,7 @@ function settingsStems(clip: AudioGalleryClip): string[] | null {
 /** A clip with no group is its own item. */
 export function groupSeparationClips(
   clips: readonly AudioGalleryClip[],
+  hasMore = false,
 ): SeparationGroup[] {
   const byId = new Map<string, AudioGalleryClip[]>();
   const order: string[] = [];
@@ -91,7 +92,7 @@ export function groupSeparationClips(
     }
     list.push(clip);
   }
-  return order.map((key) => {
+  const groups = order.map((key) => {
     const list = byId.get(key) ?? [];
     const roleOf = (clip: AudioGalleryClip) => clip.role || clip.id;
     const ordered = orderStems(list.map(roleOf)).map(
@@ -114,4 +115,8 @@ export function groupSeparationClips(
       pinned: ordered.some((clip) => clip.pinned),
     };
   });
+  // The oldest group may continue on the next page: hide it until it has loaded, so its row
+  // never acts on part of the run.
+  const tail = groups[groups.length - 1];
+  return hasMore && tail && !tail.complete ? groups.slice(0, -1) : groups;
 }
