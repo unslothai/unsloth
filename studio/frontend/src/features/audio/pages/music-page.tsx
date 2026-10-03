@@ -458,6 +458,7 @@ export function MusicRail({
       {...props}
       // Length lives in the page's fields, so Advanced keeps only the model's options.
       musicGeneration={false}
+      samplingControls={false}
       inputs={
         <MusicStudioInputs
           music={music}

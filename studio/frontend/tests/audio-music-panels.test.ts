@@ -144,3 +144,11 @@ test("Stable Audio's sampler sends pingpong or euler and whole steps", () => {
     { min: 1, max: 50, default: 8 },
   );
 });
+
+test("the Music studio's Advanced hides speech sampling it never sends", () => {
+  const page = readSrc("features/audio/pages/music-page.tsx");
+  assert.match(
+    page,
+    /musicGeneration=\{false\}\s*samplingControls=\{false\}\s*inputs=\{\s*<MusicStudioInputs/,
+  );
+});
