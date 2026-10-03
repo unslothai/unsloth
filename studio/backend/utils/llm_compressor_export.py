@@ -44,6 +44,8 @@ def probe_llm_compressor_for_compressed_export() -> Dict[str, Any]:
         "UNSLOTH_DISABLE_LLM_COMPRESSOR_AUTOINSTALL", "0"
     ).lower() not in ("0", "", "false", "no")
     workspace_ok = _workspace_llmcompressor_ok(spec)
+    # Same pip-first choice as save.py's llm_compressor_manual_install_command.
+    has_pip = importlib.util.find_spec("pip") is not None
 
     # Any provisionable shadow is asked for even when the workspace copy exists: export.py prefers it,
     # and the workspace copy cannot run models above its transformers ceiling.
@@ -80,13 +82,17 @@ def probe_llm_compressor_for_compressed_export() -> Dict[str, Any]:
         "needs_consent": consent_kind is not None,
         "consent_kind": consent_kind,
         "install_summary": install_summary,
-        "workspace_install_command": f"uv pip install --python {sys.executable} '{spec}'",
+        "workspace_install_command": (
+            f"{sys.executable} -m pip install '{spec}'"
+            if has_pip
+            else f"uv pip install --python {sys.executable} '{spec}'"
+        ),
         "shadow_path": _VENV_LLMCOMPRESSOR_DIR,
         "autoinstall_disabled": autoinstall_disabled,
         "shadow_disabled": shadow_disabled,
         "offline": offline,
         "blocked_reason": blocked_reason,
         "python_executable": sys.executable,
-        "has_pip": importlib.util.find_spec("pip") is not None,
+        "has_pip": has_pip,
         "has_uv": bool(shutil.which("uv")),
     }

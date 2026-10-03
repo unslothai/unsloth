@@ -1147,11 +1147,10 @@ class ExportBackend:
                     and _supports_kwarg(self.current_model.save_pretrained_merged, "token")
                     else {}
                 )
-                # Only a consented export carries the flag, so callers without it keep their signature.
+                # Always explicit: the library defaults to auto-installing, so an unconsented export must say False.
                 consent_kw = (
-                    {"install_missing_dependencies": True}
-                    if install_missing_dependencies
-                    and _supports_kwarg(
+                    {"install_missing_dependencies": bool(install_missing_dependencies)}
+                    if _supports_kwarg(
                         self.current_model.save_pretrained_merged, "install_missing_dependencies"
                     )
                     else {}
@@ -1269,9 +1268,8 @@ class ExportBackend:
                             token = hf_token,
                             private = private,
                             **(
-                                {"install_missing_dependencies": True}
-                                if install_missing_dependencies
-                                and _supports_kwarg(
+                                {"install_missing_dependencies": bool(install_missing_dependencies)}
+                                if _supports_kwarg(
                                     self.current_model.push_to_hub_merged,
                                     "install_missing_dependencies",
                                 )
