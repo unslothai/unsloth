@@ -1072,13 +1072,38 @@ def _reserve_mib(memory_kind: str, base: int) -> int:
     return max(2048, int(base * 0.10))
 
 
+def _rocm_linux_apu_os_room_outside_pool(memory: DeviceMemory) -> bool:
+    """A Linux ROCm APU whose host RAM outside the GPU pool's free part already holds the unified OS reserve.
+
+    There the pool HIP reports is the amdgpu GTT cap, which sits below physical RAM, and the OS lives in host RAM
+    outside it. Taking the 20% unified reserve out of the pool as well reserves twice: on a gfx1151 runner with
+    31 GB of a 64 GB pool free and 86 GB of host RAM available, Z-Image-Turbo (21 GB) was refused at "19 GB
+    usable" while ComfyUI rendered it at a 29 GB peak. Linux ROCm only: Windows HIP over-reports free memory
+    (#7072), and Apple / NVIDIA unified memory keep today's reserve. Unknown readings answer False."""
+    if memory.memory_kind != "unified_memory" or not sys.platform.startswith("linux") or memory.free_mib is None:
+        return False
+    torch = sys.modules.get("torch")
+    if torch is None or not _torch_is_rocm(torch):
+        return False
+    available = _available_system_memory_mib()
+    if available is None:
+        return False
+    os_reserve = _reserve_mib("unified_memory", memory.total_mib or memory.free_mib)
+    return int(available) - int(memory.free_mib) >= os_reserve
+
+
+def _budget_reserve_kind(memory: DeviceMemory) -> str:
+    # The pool still needs fragmentation / tenant headroom, the discrete margin; the OS share is already outside it.
+    return "discrete_vram" if _rocm_linux_apu_os_room_outside_pool(memory) else memory.memory_kind
+
+
 def _safe_device_budget_mib(memory: DeviceMemory) -> Optional[int]:
     """Free memory minus a headroom reserve (room for fragmentation + other tenants). None when
     free memory is unknown."""
     if memory.free_mib is None:
         return None
     base = memory.total_mib or memory.free_mib
-    return max(0, int(memory.free_mib) - _reserve_mib(memory.memory_kind, base))
+    return max(0, int(memory.free_mib) - _reserve_mib(_budget_reserve_kind(memory), base))
 
 
 def _fast_device_budget_mib(memory: DeviceMemory) -> Optional[int]:
@@ -1087,7 +1112,7 @@ def _fast_device_budget_mib(memory: DeviceMemory) -> Optional[int]:
     if memory.free_mib is None:
         return None
     base = memory.total_mib or memory.free_mib
-    reserve = max(2048, _reserve_mib(memory.memory_kind, base) // 2)
+    reserve = max(2048, _reserve_mib(_budget_reserve_kind(memory), base) // 2)
     return max(0, int(memory.free_mib) - reserve)
 
 
