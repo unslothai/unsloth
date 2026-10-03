@@ -497,9 +497,6 @@ def test_generate_releases_and_restores_resident_groups():
 
 
 def test_torchao_groups_stay_on_device_after_release_and_restore(monkeypatch):
-    """An oversized request streams the pinned groups of a torchao int8 DiT, then restore pins them again. The int8
-    wrapper can still report the onload device after a streamed offload while its data and scales sit on the host;
-    restore must judge it by the inner tensors, else the next request computes on a host weight."""
     torch, _ = _cuda_offload_model()
     pytest.importorskip("torchao")
     from diffusers.hooks import apply_group_offloading
@@ -508,7 +505,9 @@ def test_torchao_groups_stay_on_device_after_release_and_restore(monkeypatch):
     monkeypatch.delenv("UNSLOTH_DIFFUSION_PARTIAL_RESIDENT", raising = False)
     cfg = Int8DynamicActivationInt8WeightConfig(set_inductor_config = False)
     if not hasattr(cfg, "version"):
-        pytest.skip("torchao without config versions")
+        pytest.skip(
+            "torchao predates versioned configs; the v2 int8 layout this test pins is unavailable"
+        )
     cfg.version = 2
     torch.manual_seed(0)
     net = (

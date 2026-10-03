@@ -117,7 +117,6 @@ export function useEditGeneration({
 
   const transcriber = useReferenceTranscribe({
     sttRepo,
-    language: "",
     onText: (next, from) => {
       const store = useAudioEditStore.getState();
       // The recording may have changed while this one was transcribed.
