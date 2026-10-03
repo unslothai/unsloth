@@ -14423,8 +14423,6 @@ def test_diffusion_status_response_keeps_the_gguf_a_swap_replaced():
 
 
 class _T5WordTokenizer:
-    """One id per whitespace word plus EOS, like T5TokenizerFast on plain words."""
-
     def __call__(
         self,
         text,
