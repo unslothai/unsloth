@@ -639,7 +639,9 @@ class AudioCppServer:
                 process.wait(timeout = 10)
             except subprocess.TimeoutExpired:
                 process.kill()
-                process.wait(timeout = 10)
+                # A killed server can sit in GPU context teardown well past 10 s on a busy card;
+                # the music reload restarts it mid-session and must not fail on that.
+                process.wait(timeout = 120)
         forget_pid(process.pid)
         shutil.rmtree(self._config_dir, ignore_errors = True)
 
