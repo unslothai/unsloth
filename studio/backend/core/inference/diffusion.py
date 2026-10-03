@@ -7141,8 +7141,7 @@ class DiffusionBackend:
                         pipe._unsloth_cuda_graphs = ()
                         pipe._unsloth_cuda_graph_reason = "offload active"
                         speed_applied["cuda_graph"] = False
-                    # The speed layer ran on the plan, before placement; the measured placement may since have pinned
-                    # every denoiser group, so residency follows the final placement.
+                    # the speed layer saw only the plan; placement may have pinned every denoiser group since
                     if denoisers_pinned_resident(pipe):
                         engage_pinned_denoisers(pipe, speed_applied, logger)
 

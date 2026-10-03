@@ -2961,10 +2961,8 @@ _DENOISER_NAMES = ("transformer", "transformer_2", "unconditional_transformer", 
 
 
 def denoisers_pinned_resident(pipe: Any) -> bool:
-    """Whether the final placement left every denoiser in place: each one carries no offload hook, or only
-    group-offload hooks whose groups the measured placement pinned whole (``_keep_groups_resident``), and at least
-    one was pinned. Such a denoiser does not move per forward, so levers keyed on residency may engage; its hooks stay
-    so an oversized request can stream it again (``release_resident_groups``)."""
+    """Every denoiser unhooked or with all its offload groups pinned, at least one pinned. The hooks stay so an
+    oversized request can stream it again (``release_resident_groups``)."""
     pinned = False
     for name in _DENOISER_NAMES:
         module = getattr(pipe, name, None)

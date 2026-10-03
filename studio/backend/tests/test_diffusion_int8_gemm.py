@@ -212,9 +212,8 @@ def test_small_m_and_misaligned_keep_stock(forced):
 
 @needs_cuda
 def test_pinned_group_offloaded_denoiser_takes_the_gemm_and_survives_release(forced, monkeypatch):
-    """The Qwen-Image-2.1 16 GB placement: diffusers group offloading on an int8 DiT with every group pinned resident.
-    The speed layer refused the GEMM on the plan; after placement engage_pinned_denoisers installs it, bit-identical to
-    the stock torchao Linear, and it stays correct when an oversized request streams the groups again and restores."""
+    """16 GB Qwen-Image-2.1: every group pinned, the GEMM engages after placement, bit-identical to stock torchao,
+    through release and restore."""
     pytest.importorskip("diffusers.hooks")
     from diffusers.hooks import apply_group_offloading
     import types as _types
@@ -265,7 +264,6 @@ def test_pinned_group_offloaded_denoiser_takes_the_gemm_and_survives_release(for
         record_stream = True,
         non_blocking = True,
     )
-    # Studio's own torchao kwargs (frozen weights, the swap retry, the pin decision), as apply_memory_plan passes them
     apply_group_offloading(dit, **dm._torchao_group_offload_kwargs(dit, kwargs, [0]))
     pipe = _types.SimpleNamespace(transformer = dit, components = {"transformer": dit})
     assert dm._keep_groups_resident(dit, 1024, "cuda") > 0
@@ -275,7 +273,7 @@ def test_pinned_group_offloaded_denoiser_takes_the_gemm_and_survives_release(for
     applied = {"compiled": True, "int8_gemm": False}
     ds.engage_pinned_denoisers(pipe, applied)
     assert applied["int8_gemm"] and dit._unsloth_int8_gemm == 8
-    # no_grad, as Studio renders an offloaded torchao denoiser (inference_mode rejects moving torchao weights)
+    # inference_mode rejects moving torchao weights
     with torch.no_grad():
         before = g8.call_count()
         assert torch.equal(dit(x), ref)
