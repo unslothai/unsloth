@@ -85,6 +85,8 @@ import { copyToClipboardFrom } from "@/lib/copy-to-clipboard";
 import { isTauri } from "@/lib/api-base";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
+import { useHoverFlyout } from "@/hooks/use-hover-flyout";
+import { NAV_FLYOUT_INTENT, NAV_TOOLTIP_INTENT } from "@/lib/hover-intent";
 import {
   Archive03Icon,
   Cancel01Icon,
@@ -137,6 +139,7 @@ import {
 import {
   Tooltip,
   TooltipContent,
+  TooltipProvider,
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
@@ -256,7 +259,6 @@ import {
   useRef,
   useState,
   type ComponentType,
-  type PointerEvent,
   type ReactNode,
 } from "react";
 import { toast } from "@/lib/toast";
@@ -334,6 +336,12 @@ type NavRowDef = {
 };
 
 // An expanded project shows this many recent chats before "Show more".
+// Row kebab with centred dots: Hugeicons draws them half a unit low.
+const MoreVerticalCenteredIcon = MoreVerticalIcon.map(([tag, attrs]) => [
+  tag,
+  { ...attrs, transform: "translate(0 -0.5)" },
+]) as unknown as IconSvgElement;
+
 const PROJECT_CHAT_LIMIT = 4;
 // And the Projects section shows this many folders before its own "Show more".
 const SIDEBAR_PROJECT_LIMIT = 5;
@@ -1007,46 +1015,22 @@ export function AppSidebar() {
   const [chatOpen, setChatOpen] = useState(true);
 
   // Mouse hover previews the flyout; a press pins or unpins it. Touch and keyboard pin it.
-  const [moreHoverOpen, setMoreHoverOpen] = useState(false);
   const [morePinnedOpen, setMorePinnedOpen] = useState(false);
-  const moreOpen = moreHoverOpen || morePinnedOpen;
   const moreTriggerRef = useRef<HTMLButtonElement | null>(null);
   const moreContentRef = useRef<HTMLDivElement | null>(null);
+  const moreHover = useHoverFlyout(NAV_FLYOUT_INTENT, moreContentRef);
+  const { dismiss: dismissMoreHover } = moreHover;
+  const moreOpen = moreHover.open || morePinnedOpen;
   // A hover preview must not move focus in or out of the composer.
   const moreChosen = useRef(false);
-  const moreCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const clearMoreCloseTimer = useCallback(() => {
-    if (!moreCloseTimer.current) return;
-    clearTimeout(moreCloseTimer.current);
-    moreCloseTimer.current = null;
-  }, []);
-  const openMorePreview = useCallback(
-    (event: PointerEvent<HTMLElement>) => {
-      if (event.pointerType !== "mouse") return;
-      clearMoreCloseTimer();
-      setMoreHoverOpen(true);
-    },
-    [clearMoreCloseTimer],
-  );
-  // Grace period for crossing the gap to the flyout.
-  const closeMorePreviewSoon = useCallback(
-    (event: PointerEvent<HTMLElement>) => {
-      if (event.pointerType !== "mouse") return;
-      clearMoreCloseTimer();
-      moreCloseTimer.current = setTimeout(() => setMoreHoverOpen(false), 180);
-    },
-    [clearMoreCloseTimer],
-  );
   const setMoreOpen = useCallback(
     (next: boolean) => {
-      clearMoreCloseTimer();
+      dismissMoreHover();
       if (next) moreChosen.current = true;
       setMorePinnedOpen(next);
-      if (!next) setMoreHoverOpen(false);
     },
-    [clearMoreCloseTimer],
+    [dismissMoreHover],
   );
-  useEffect(() => clearMoreCloseTimer, [clearMoreCloseTimer]);
   // Radix forwards onOpenAutoFocus at runtime but omits it from DropdownMenuContent's types.
   const moreContentFocusProps = {
     onOpenAutoFocus: (event: Event) => {
@@ -2534,7 +2518,7 @@ export function AppSidebar() {
   const unrailedRowPadding = usesDesktopTitlebar ? "px-[calc(5px*var(--ui-space-scale,1))]" : "px-1.5";
 
   // Headers follow unrailedRowPadding: the label starts where row content does, and the
-  // actions end where a hovered row's "…" does. 18px / 12px normally (the class defaults), 17px / 11px here.
+  // actions end where a hovered row's "…" does. 18px / 9px normally (the class defaults), 17px / 8px here.
   const headerInset = usesDesktopTitlebar
     ? "sidebar-sticky-label-desktop"
     : null;
@@ -2969,6 +2953,9 @@ export function AppSidebar() {
   function handleInlineRenameKeyDown(
     event: React.KeyboardEvent<HTMLInputElement>,
   ) {
+    // Enter confirms an IME candidate; Escape dismisses one. Neither should
+    // finish the rename. Check before preventDefault so the IME keeps its key.
+    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
     if (event.key === "Enter") {
       event.preventDefault();
       skipRenameBlurRef.current = true;
@@ -4698,7 +4685,7 @@ export function AppSidebar() {
                   className={actionClass}
                 >
                   <span className="sidebar-row-action-glyph">
-                    <HugeiconsIcon icon={MoreVerticalIcon} strokeWidth={1.75} className="size-icon" />
+                    <HugeiconsIcon icon={MoreVerticalCenteredIcon} strokeWidth={1.75} className="size-icon" />
                   </span>
                 </button>
               )}
@@ -4886,7 +4873,7 @@ export function AppSidebar() {
                 className="sidebar-row-action sidebar-touch-reveal group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
               >
                 <span className="sidebar-row-action-glyph">
-                  <HugeiconsIcon icon={MoreVerticalIcon} strokeWidth={1.75} className="size-icon" />
+                  <HugeiconsIcon icon={MoreVerticalCenteredIcon} strokeWidth={1.75} className="size-icon" />
                 </span>
               </button>
             )}
@@ -4948,6 +4935,7 @@ export function AppSidebar() {
   return (
     <>
       {slotShortcuts}
+    <TooltipProvider {...NAV_TOOLTIP_INTENT}>
     <Sidebar
       collapsible="icon"
       collapseToZero={isTauri}
@@ -4955,18 +4943,18 @@ export function AppSidebar() {
       className={cn(
         // Rail background comes from --sidebar-surface (index.css) so the footer fade can match it.
         "font-heading group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-[var(--sidebar-surface)]",
-        usesNativeMacTitlebar &&
-          "group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:border-r-0",
-        usesDesktopTitlebar && !usesNativeMacTitlebar && pinned &&
-          "[&_[data-sidebar=sidebar]]:border-r-0",
+        !(usesCustomTitlebar && pinned) &&
+          "[&_[data-sidebar=sidebar]]:border-r [&_[data-sidebar=sidebar]]:border-sidebar-edge dark:[&_[data-sidebar=sidebar]]:border-r-0",
       )}
     >
       <SidebarHeader
         className={cn(
           "relative",
-          usesDesktopTitlebar
-            ? "shrink-0 p-0 pt-[calc(var(--studio-desktop-titlebar-height,34px)+calc(17px*var(--ui-space-scale,1)))]"
-            : "pl-3 pr-3 pt-[calc(14px*var(--ui-space-scale,1))] pb-[calc(8px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:px-0",
+          usesCustomTitlebar
+            ? "shrink-0 p-0 pt-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-padding-top,11px))]"
+            : usesNativeMacTitlebar
+              ? "shrink-0 p-0 pt-[calc(var(--studio-desktop-titlebar-height,34px)+calc(17px*var(--ui-space-scale,1)))]"
+              : "pl-3 pr-3 pt-[calc(14px*var(--ui-space-scale,1))] pb-[calc(8px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:px-0",
         )}
       >
         {showSidebarBrand && (
@@ -4989,6 +4977,7 @@ export function AppSidebar() {
                 usesDesktopTitlebar
                   ? "justify-between pl-4 pr-3"
                   : "justify-between",
+                usesCustomTitlebar && "h-[var(--studio-chat-control-height,34px)]",
               )}
             >
                 <Link
@@ -5253,10 +5242,7 @@ export function AppSidebar() {
               })}
               {/* Unpinned destinations, behind one row. */}
               {overflowNavIds.length > 0 && (
-                <SidebarMenuItem
-                  onPointerEnter={openMorePreview}
-                  onPointerLeave={closeMorePreviewSoon}
-                >
+                <SidebarMenuItem>
                   <DropdownMenu
                     open={moreOpen}
                     onOpenChange={setMoreOpen}
@@ -5271,6 +5257,7 @@ export function AppSidebar() {
                         <DropdownMenuTrigger asChild>
                           <SidebarMenuButton
                             ref={moreTriggerRef}
+                            {...moreHover.trigger}
                             // More is a container, not a destination: no active style just because the current page
                             // lives inside it. Keeps the row highlighted while the panel is open, after the pointer
                             // has left. Not data-state: the tooltip and menu triggers both write that one.
@@ -5280,7 +5267,7 @@ export function AppSidebar() {
                               if (event.pointerType !== "mouse" || event.button !== 0 || event.ctrlKey) return;
                               event.preventDefault();
                               // An open preview never mounts again, so focus it as a click-open would.
-                              if (!morePinnedOpen && moreHoverOpen) {
+                              if (!morePinnedOpen && moreHover.open) {
                                 moreContentRef.current?.focus({ preventScroll: true });
                               }
                               setMoreOpen(!morePinnedOpen);
@@ -5314,8 +5301,7 @@ export function AppSidebar() {
                       align="start"
                       sideOffset={6}
                       className="w-48 p-1"
-                      onPointerEnter={openMorePreview}
-                      onPointerLeave={closeMorePreviewSoon}
+                      {...moreHover.content}
                       // The trigger handles its own presses.
                       onPointerDownOutside={(event) => {
                         if (moreTriggerRef.current?.contains(event.target as Node)) event.preventDefault();
@@ -5550,7 +5536,7 @@ export function AppSidebar() {
                               className="sidebar-row-action group-hover/run-item:opacity-100 group-hover/run-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
                             >
                               <span className="sidebar-row-action-glyph">
-                                <HugeiconsIcon icon={MoreVerticalIcon} strokeWidth={1.75} className="size-icon" />
+                                <HugeiconsIcon icon={MoreVerticalCenteredIcon} strokeWidth={1.75} className="size-icon" />
                               </span>
                             </button>
                           )}
@@ -5859,6 +5845,7 @@ export function AppSidebar() {
         </SidebarMenu>
       </SidebarFooter>
     </Sidebar>
+    </TooltipProvider>
     <ChatSearchDialog />
     {!isTauri && (
       <ShutdownDialog
@@ -5975,7 +5962,13 @@ export function AppSidebar() {
         if (!open) setRenamingTarget(null);
       }}
     >
-      <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-md">
+      <DialogContent
+        className="corner-squircle dialog-soft-surface sm:max-w-md"
+        // Radix closes on Escape before the input sees it; keep IME candidate dismissal from closing.
+        onEscapeKeyDown={(event) => {
+          if (event.isComposing || event.keyCode === 229) event.preventDefault();
+        }}
+      >
         <DialogHeader>
           <DialogTitle>
             {renamingTarget?.kind === "run"
@@ -5987,6 +5980,7 @@ export function AppSidebar() {
           value={renameDraft}
           onChange={(event) => setRenameDraft(event.target.value)}
           onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing || event.keyCode === 229) return;
             if (event.key === "Enter") {
               event.preventDefault();
               void commitRename();

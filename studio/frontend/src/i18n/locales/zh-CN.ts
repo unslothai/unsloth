@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import type { en } from "./en";
+import { en } from "./en.ts";
 
 export const zhCN = {
   linkMenu: {
@@ -213,6 +213,8 @@ export const zhCN = {
       clearDataFailed: "无法清除网站数据。请重试。",
     },
   },
+  // English fallback until this experimental feature is translated.
+  managedEngines: en.managedEngines,
   composerSettings: {
     title: "消息输入",
     plainText: "纯文本输入",
@@ -423,6 +425,45 @@ export const zhCN = {
       actions: "操作",
       chat: "聊天",
       searchChats: "搜索聊天...",
+    },
+    search: {
+      placeholder: "搜索",
+      tabs: {
+        all: "全部",
+        chats: "聊天",
+        projects: "项目",
+        files: "文件",
+        models: "模型",
+      },
+      recents: "最近",
+      actions: "操作",
+      newChat: "新聊天",
+      newTemporaryChat: "新建临时聊天",
+      fineTune: "微调模型",
+      generateImage: "生成图像",
+      generateVideo: "生成视频",
+      untitledChat: "未命名聊天",
+      compare: "对比",
+      loading: "加载中...",
+      empty: {
+        all: "暂无可搜索的内容。",
+        chats: "暂无聊天。",
+        projects: "暂无项目。",
+        files: "你的资料库中暂无文件。",
+        models: "暂无已下载的模型。",
+      },
+      noMatches: "无结果。",
+      when: {
+        today: "今天",
+        pastWeek: "过去一周",
+        pastMonth: "过去一个月",
+        older: "更早",
+      },
+      footer: {
+        close: "关闭",
+        changeType: "切换类型",
+        open: "打开",
+      },
     },
     notFound: {
       title: "页面未找到",

@@ -1851,8 +1851,8 @@ def test_spent_one_shot_rehearsal_repeat_is_detected_not_blank_continuation():
         ),
         # First flush out of BUFFERING applies the same trailing-name hold as STREAMING.
         pytest.param(
-            [["I will use web_search", '[ARGS]{"code":"print(1)"}'], ["done"]],
-            [("web_search", {"code": "print(1)"})],
+            [["I will use web_search", '[ARGS]{"query":"print(1)"}'], ["done"]],
+            [("web_search", {"query": "print(1)"})],
             ["web_search"],
             None,
             id = "initial_buffer_flush_holds_split_rehearsal_name",
@@ -2020,7 +2020,7 @@ def test_unrestricted_mode_split_rehearsal_name_is_not_streamed():
             max_tool_iterations = 2,
         )
     )
-    assert exec_fn.calls == [("web_search", {"q": "x"})], exec_fn.calls
+    assert exec_fn.calls == [("web_search", {"query": "x"})], exec_fn.calls
     contents = [e["text"] for e in events if e["type"] == "content"]
     assert not any("web_search" in t for t in contents), contents
 
@@ -2043,7 +2043,7 @@ def test_unrestricted_mode_split_after_bracket_is_not_streamed():
             max_tool_iterations = 2,
         )
     )
-    assert exec_fn.calls == [("web_search", {"q": "x"})], exec_fn.calls
+    assert exec_fn.calls == [("web_search", {"query": "x"})], exec_fn.calls
     contents = [e["text"] for e in events if e["type"] == "content"]
     assert not any("web_search[" in t for t in contents), contents
 
@@ -2612,7 +2612,7 @@ class TestLoopBasic:
             [
                 [
                     '<think>draft render_html[ARGS]{"code":"x"}</think>',
-                    'web_search[ARGS]{"code":"print(1)"}',
+                    'web_search[ARGS]{"query":"print(1)"}',
                 ],
                 ["Done."],
             ]
@@ -2638,7 +2638,7 @@ class TestLoopBasic:
         tool_starts = [e for e in events if e["type"] == "tool_start"]
 
         assert [e["tool_name"] for e in tool_starts] == ["web_search"], tool_starts
-        assert exec_fn.calls == [("web_search", {"code": "print(1)"})]
+        assert exec_fn.calls == [("web_search", {"query": "print(1)"})]
 
     def test_render_html_success_blocks_second_canvas_call(self):
         exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
@@ -4881,14 +4881,14 @@ def test_oversized_bare_json_call_is_not_leaked_and_executes():
     from core.inference.safetensors_agentic import _MAX_BARE_JSON_BUFFER
 
     big = "A" * (_MAX_BARE_JSON_BUFFER + 5000)
-    full = '{"name":"web_search","parameters":{"code":"' + big + '"}}'
+    full = '{"name":"web_search","parameters":{"query":"' + big + '"}}'
     chunks = [full[i : i + 2000] for i in range(0, len(full), 2000)]
     loop, exec_fn = _make_loop(turns = [chunks, ["done"]], exec_results = ["OK"], max_tool_iterations = 2)
     events = _collect_events(loop)
     contents = [e["text"] for e in events if e["type"] == "content"]
     assert not any(t.lstrip().startswith('{"name') for t in contents), contents[:1]
     assert exec_fn.calls and exec_fn.calls[0][0] == "web_search"
-    assert len(exec_fn.calls[0][1].get("code", "")) > _MAX_BARE_JSON_BUFFER
+    assert len(exec_fn.calls[0][1].get("query", "")) > _MAX_BARE_JSON_BUFFER
 
 
 def test_oversized_plain_json_answer_still_streams():

@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import type { en } from "./en";
+import { en } from "./en.ts";
 
 export const ar = {
   linkMenu: {
@@ -213,6 +213,8 @@ export const ar = {
       clearDataFailed: "تعذّر مسح بيانات المواقع. حاول مرة أخرى.",
     },
   },
+  // English fallback until this experimental feature is translated.
+  managedEngines: en.managedEngines,
   composerSettings: {
     title: "كتابة الرسائل",
     plainText: "محرر نص عادي",
@@ -425,6 +427,45 @@ export const ar = {
       actions: "الإجراءات",
       chat: "الدردشة",
       searchChats: "ابحث في الدردشات...",
+    },
+    search: {
+      placeholder: "بحث",
+      tabs: {
+        all: "الكل",
+        chats: "المحادثات",
+        projects: "المشاريع",
+        files: "الملفات",
+        models: "النماذج",
+      },
+      recents: "العناصر الأخيرة",
+      actions: "الإجراءات",
+      newChat: "محادثة جديدة",
+      newTemporaryChat: "محادثة مؤقتة جديدة",
+      fineTune: "ضبط نموذج",
+      generateImage: "إنشاء صورة",
+      generateVideo: "إنشاء فيديو",
+      untitledChat: "محادثة بلا عنوان",
+      compare: "مقارنة",
+      loading: "جارٍ التحميل...",
+      empty: {
+        all: "لا يوجد شيء للبحث فيه بعد.",
+        chats: "لا توجد محادثات بعد.",
+        projects: "لا توجد مشاريع بعد.",
+        files: "لا توجد ملفات في مكتبتك بعد.",
+        models: "لا توجد نماذج منزّلة بعد.",
+      },
+      noMatches: "لا توجد نتائج.",
+      when: {
+        today: "اليوم",
+        pastWeek: "الأسبوع الماضي",
+        pastMonth: "الشهر الماضي",
+        older: "أقدم",
+      },
+      footer: {
+        close: "إغلاق",
+        changeType: "تغيير النوع",
+        open: "فتح",
+      },
     },
     notFound: {
       title: "الصفحة غير موجودة",

@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import type { en } from "./en";
+import { en } from "./en.ts";
 
 export const es = {
   linkMenu: {
@@ -213,6 +213,8 @@ export const es = {
       clearDataFailed: "No se pudieron borrar los datos de sitios. Inténtalo de nuevo.",
     },
   },
+  // English fallback until this experimental feature is translated.
+  managedEngines: en.managedEngines,
   composerSettings: {
     title: "Redacción de mensajes",
     plainText: "Redactor de texto sin formato",
@@ -427,6 +429,45 @@ export const es = {
       actions: "Acciones",
       chat: "Chat",
       searchChats: "Buscar chats...",
+    },
+    search: {
+      placeholder: "Buscar",
+      tabs: {
+        all: "Todo",
+        chats: "Chats",
+        projects: "Proyectos",
+        files: "Archivos",
+        models: "Modelos",
+      },
+      recents: "Recientes",
+      actions: "Acciones",
+      newChat: "Nuevo chat",
+      newTemporaryChat: "Nuevo chat temporal",
+      fineTune: "Ajustar un modelo",
+      generateImage: "Generar una imagen",
+      generateVideo: "Generar un vídeo",
+      untitledChat: "Chat sin título",
+      compare: "Comparar",
+      loading: "Cargando...",
+      empty: {
+        all: "Aún no hay nada que buscar.",
+        chats: "Aún no hay chats.",
+        projects: "Aún no hay proyectos.",
+        files: "Aún no hay archivos en tu Biblioteca.",
+        models: "Aún no hay modelos descargados.",
+      },
+      noMatches: "Sin resultados.",
+      when: {
+        today: "Hoy",
+        pastWeek: "Última semana",
+        pastMonth: "Último mes",
+        older: "Más antiguo",
+      },
+      footer: {
+        close: "Cerrar",
+        changeType: "Cambiar tipo",
+        open: "Abrir",
+      },
     },
     notFound: {
       title: "Página no encontrada",

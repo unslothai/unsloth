@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import type { en } from "./en";
+import { en } from "./en.ts";
 
 export const hi = {
   linkMenu: {
@@ -213,6 +213,8 @@ export const hi = {
       clearDataFailed: "साइट डेटा साफ़ नहीं हो सका। फिर से कोशिश करें।",
     },
   },
+  // English fallback until this experimental feature is translated.
+  managedEngines: en.managedEngines,
   composerSettings: {
     title: "संदेश लिखना",
     plainText: "सादा टेक्स्ट इनपुट",
@@ -428,6 +430,45 @@ export const hi = {
       actions: "क्रियाएँ",
       chat: "चैट",
       searchChats: "चैट खोजें...",
+    },
+    search: {
+      placeholder: "खोजें",
+      tabs: {
+        all: "सभी",
+        chats: "चैट",
+        projects: "प्रोजेक्ट",
+        files: "फ़ाइलें",
+        models: "मॉडल",
+      },
+      recents: "हाल के",
+      actions: "क्रियाएँ",
+      newChat: "नई चैट",
+      newTemporaryChat: "नई अस्थायी चैट",
+      fineTune: "मॉडल फ़ाइन-ट्यून करें",
+      generateImage: "इमेज बनाएँ",
+      generateVideo: "वीडियो बनाएँ",
+      untitledChat: "बिना शीर्षक वाली चैट",
+      compare: "तुलना",
+      loading: "लोड हो रहा है...",
+      empty: {
+        all: "अभी खोजने के लिए कुछ नहीं है।",
+        chats: "अभी कोई चैट नहीं है।",
+        projects: "अभी कोई प्रोजेक्ट नहीं है।",
+        files: "आपकी लाइब्रेरी में अभी कोई फ़ाइल नहीं है।",
+        models: "अभी कोई डाउनलोड किया गया मॉडल नहीं है।",
+      },
+      noMatches: "कोई परिणाम नहीं।",
+      when: {
+        today: "आज",
+        pastWeek: "पिछला सप्ताह",
+        pastMonth: "पिछला महीना",
+        older: "पुराने",
+      },
+      footer: {
+        close: "बंद करें",
+        changeType: "प्रकार बदलें",
+        open: "खोलें",
+      },
     },
     notFound: {
       title: "पेज नहीं मिला",

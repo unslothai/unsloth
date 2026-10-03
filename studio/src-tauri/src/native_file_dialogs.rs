@@ -15,8 +15,9 @@ const MAX_TRAINING_CONFIG_BYTES: u64 = 1024 * 1024;
 /// pieces, and a piece has to fit in one IPC response.
 const MAX_CHAT_IMPORT_CHUNK_BYTES: usize = 8 * 1024 * 1024;
 const NATIVE_FILE_NAME_HEADER: &str = "x-unsloth-default-name";
-const CHAT_IMPORT_EXTENSIONS: &[&str] = &["json", "jsonl", "ndjson", "csv"];
-const CHAT_IMPORT_TYPE_ERROR: &str = "Chat import must be a .json, .jsonl, .ndjson, or .csv file.";
+const CHAT_IMPORT_EXTENSIONS: &[&str] = &["json", "jsonl", "ndjson", "csv", "md", "markdown"];
+const CHAT_IMPORT_TYPE_ERROR: &str =
+    "Chat import must be a .json, .jsonl, .ndjson, .csv, or .md file.";
 const TRAINING_CONFIG_EXTENSIONS: &[&str] = &["yaml", "yml"];
 
 #[derive(Debug, Serialize)]

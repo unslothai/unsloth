@@ -3,7 +3,7 @@
 // See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import type { en } from "./en";
+import { en } from "./en.ts";
 
 export const ja = {
   linkMenu: {
@@ -214,6 +214,8 @@ export const ja = {
       clearDataFailed: "サイトデータを消去できませんでした。もう一度お試しください。",
     },
   },
+  // English fallback until this experimental feature is translated.
+  managedEngines: en.managedEngines,
   composerSettings: {
     title: "入力欄",
     plainText: "プレーンテキスト入力",
@@ -427,6 +429,45 @@ export const ja = {
       actions: "アクション",
       chat: "チャット",
       searchChats: "チャットを検索...",
+    },
+    search: {
+      placeholder: "検索",
+      tabs: {
+        all: "すべて",
+        chats: "チャット",
+        projects: "プロジェクト",
+        files: "ファイル",
+        models: "モデル",
+      },
+      recents: "最近",
+      actions: "アクション",
+      newChat: "新規チャット",
+      newTemporaryChat: "新しい一時チャット",
+      fineTune: "モデルをファインチューン",
+      generateImage: "画像を生成",
+      generateVideo: "動画を生成",
+      untitledChat: "無題のチャット",
+      compare: "比較",
+      loading: "読み込み中...",
+      empty: {
+        all: "まだ検索できるものはありません。",
+        chats: "チャットはまだありません。",
+        projects: "プロジェクトはまだありません。",
+        files: "ライブラリにファイルはまだありません。",
+        models: "ダウンロード済みのモデルはまだありません。",
+      },
+      noMatches: "結果がありません。",
+      when: {
+        today: "今日",
+        pastWeek: "過去 1 週間",
+        pastMonth: "過去 1 か月",
+        older: "それ以前",
+      },
+      footer: {
+        close: "閉じる",
+        changeType: "種類を切り替え",
+        open: "開く",
+      },
     },
     notFound: {
       title: "ページが見つかりません",

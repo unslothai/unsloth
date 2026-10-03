@@ -827,7 +827,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
           <input
             ref={importInputRef}
             type="file"
-            accept=".json,.jsonl,.ndjson,.csv"
+            accept=".json,.jsonl,.ndjson,.csv,.md,.markdown"
             className="hidden"
             onChange={(e) => {
               const file = e.target.files?.[0];

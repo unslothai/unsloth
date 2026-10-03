@@ -8,13 +8,21 @@ import ts from "typescript";
 
 import { stripSearchImageTokens } from "../src/features/chat/search-images/search-images.ts";
 import {
+  buildNamedConversationsMarkdown,
   createConversationMarkdownBuilder,
   createConversationMarkdownExporter,
 } from "../src/features/chat/utils/conversation-markdown-export.ts";
-import { buildConversationMarkdown } from "../src/features/chat/utils/conversation-markdown.ts";
+import {
+  buildConversationMarkdown,
+  CONVERSATION_MARKDOWN_MIME_TYPE,
+} from "../src/features/chat/utils/conversation-markdown.ts";
 import { csvDocument, CSV_MIME } from "../src/features/chat/utils/csv-export.ts";
 import * as liveThreadHead from "../src/features/chat/utils/live-thread-head.ts";
 import { orderByParentChain } from "../src/features/chat/utils/message-order.ts";
+import { parseConversationMarkdownDocument } from "../src/features/chat/utils/conversation-markdown-import.ts";
+import { canMergeConversationExport } from "../src/features/chat/utils/ndjson.ts";
+import { planChatItemSources } from "../src/features/chat/utils/project-source-plan.ts";
+import type { ThreadRecord } from "../src/features/chat/types.ts";
 import { readSrc } from "./helpers/kit.ts";
 
 type StoredMessage = {
@@ -36,6 +44,11 @@ type Exporters = {
     title: string,
   ) => Promise<string>;
   exportConversationCsv: (threadId: string) => Promise<void>;
+  exportBulkConversationsMerged: (
+    threadIds: string[],
+    format: "markdown",
+    basename: string,
+  ) => Promise<void>;
 };
 
 const SOURCE = readSrc(
@@ -66,6 +79,7 @@ function loadExporters(
   stored: StoredMessage[],
   downloads: string[],
   sources: string[],
+  threads: ThreadRecord[] = [],
 ) {
   const javascript = ts.transpileModule(
     [
@@ -77,7 +91,11 @@ function loadExporters(
         "export async function exportConversationCsv(",
         "export async function saveChatItemAsProjectSource(",
       ),
-      "globalThis.__exporters = { buildConversationMarkdownForThread, exportConversationMarkdown, saveConversationAsProjectSource, exportConversationCsv };",
+      sliceSource(
+        "export async function exportBulkConversationsMerged(",
+        "export async function exportBulkConversationsSeparate(",
+      ),
+      "globalThis.__exporters = { buildConversationMarkdownForThread, exportConversationMarkdown, saveConversationAsProjectSource, exportConversationCsv, exportBulkConversationsMerged };",
     ].join("\n"),
     {
       compilerOptions: {
@@ -90,6 +108,12 @@ function loadExporters(
     exports: {},
     toast: { info: () => {} },
     listStoredChatMessages: async () => stored,
+    getStoredChatThread: async (id: string) =>
+      threads.find((thread) => thread.id === id),
+    buildNamedConversationsMarkdown,
+    CONVERSATION_MARKDOWN_MIME_TYPE,
+    canMergeConversationExport,
+    planChatItemSources,
     ...liveThreadHead,
     orderByParentChain,
     createConversationMarkdownBuilder,
@@ -154,18 +178,20 @@ const edited = storedMessages([
 
 test("Markdown follows the older reply picked in the branch picker", async () => {
   const expected = "## User\n\nName one fruit.\n\n## Assistant\n\nApples.\n";
+  const expectedExport = `<!-- unsloth-chat-v1:[24,21] -->\n\n${expected}`;
   assert.deepEqual(await markdownOutputs(regenerated, ["u1", "a1"]), {
-    copied: expected,
-    downloads: [expected],
+    copied: expectedExport,
+    downloads: [expectedExport],
     sources: [expected],
   });
 });
 
 test("Markdown leaves out the reply a regeneration replaced", async () => {
   const expected = "## User\n\nName one fruit.\n\n## Assistant\n\nPears.\n";
+  const expectedExport = `<!-- unsloth-chat-v1:[24,20] -->\n\n${expected}`;
   assert.deepEqual(await markdownOutputs(regenerated), {
-    copied: expected,
-    downloads: [expected],
+    copied: expectedExport,
+    downloads: [expectedExport],
     sources: [expected],
   });
 });
@@ -173,9 +199,10 @@ test("Markdown leaves out the reply a regeneration replaced", async () => {
 // Mid-switch the branch on screen is briefly an empty list, which is no opinion about which reply is showing.
 test("Markdown still exports while the switched-to chat is loading", async () => {
   const expected = "## User\n\nName one fruit.\n\n## Assistant\n\nPears.\n";
+  const expectedExport = `<!-- unsloth-chat-v1:[24,20] -->\n\n${expected}`;
   assert.deepEqual(await markdownOutputs(regenerated, []), {
-    copied: expected,
-    downloads: [expected],
+    copied: expectedExport,
+    downloads: [expectedExport],
     sources: [expected],
   });
 });
@@ -192,15 +219,62 @@ test("CSV still writes both replies while markdown writes one", async () => {
 
 test("Markdown follows the prompt version on screen", async () => {
   const older = "## User\n\nName one color.\n\n## Assistant\n\nBlue.\n";
+  const olderExport = `<!-- unsloth-chat-v1:[24,19] -->\n\n${older}`;
   assert.deepEqual(await markdownOutputs(edited, ["u1", "a1"]), {
-    copied: older,
-    downloads: [older],
+    copied: olderExport,
+    downloads: [olderExport],
     sources: [older],
   });
   const newer = "## User\n\nName one animal.\n\n## Assistant\n\nCat.\n";
+  const newerExport = `<!-- unsloth-chat-v1:[25,18] -->\n\n${newer}`;
   assert.deepEqual(await markdownOutputs(edited), {
-    copied: newer,
-    downloads: [newer],
+    copied: newerExport,
+    downloads: [newerExport],
     sources: [newer],
   });
 });
+
+for (const { models, panes, titles } of [
+  {
+    models: ["org/Alpha", "org/Beta"],
+    panes: ["model1", "model2"],
+    titles: ["Compare - Beta", "Standalone", "Compare - Alpha"],
+  },
+  {
+    models: ["org/Alpha", "org/Alpha"],
+    panes: ["base", "lora"],
+    titles: [
+      "Compare - Alpha - fine-tuned",
+      "Standalone",
+      "Compare - Alpha - base",
+    ],
+  },
+]) {
+  test(`combined Markdown names comparison halves: ${panes.join("/")}`, async () => {
+    const threads = [
+      ...models.map((modelId, index) => ({
+        id: `half-${index}`,
+        title: "Compare",
+        pairId: "pair",
+        modelId,
+        modelType: panes[index],
+        createdAt: 1,
+      })),
+      { id: "single", title: "Standalone", modelType: "base", createdAt: 1 },
+    ] as ThreadRecord[];
+    const downloads: string[] = [];
+    const exporters = loadExporters(regenerated, downloads, [], threads);
+    await exporters.exportBulkConversationsMerged(
+      ["half-1", "single", "half-0"],
+      "markdown",
+      "chats",
+    );
+    assert.equal(downloads.length, 1);
+    assert.deepEqual(
+      parseConversationMarkdownDocument(downloads[0], "chats").map(
+        ({ title }) => title,
+      ),
+      titles,
+    );
+  });
+}

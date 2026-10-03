@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import type { en } from "./en";
+import { en } from "./en.ts";
 
 export const ko = {
   linkMenu: {
@@ -213,6 +213,8 @@ export const ko = {
       clearDataFailed: "사이트 데이터를 삭제하지 못했습니다. 다시 시도하세요.",
     },
   },
+  // English fallback until this experimental feature is translated.
+  managedEngines: en.managedEngines,
   composerSettings: {
     title: "메시지 입력",
     plainText: "일반 텍스트 입력",
@@ -425,6 +427,45 @@ export const ko = {
       actions: "작업",
       chat: "채팅",
       searchChats: "채팅 검색...",
+    },
+    search: {
+      placeholder: "검색",
+      tabs: {
+        all: "전체",
+        chats: "채팅",
+        projects: "프로젝트",
+        files: "파일",
+        models: "모델",
+      },
+      recents: "최근 항목",
+      actions: "작업",
+      newChat: "새 채팅",
+      newTemporaryChat: "새 임시 채팅",
+      fineTune: "모델 파인튜닝",
+      generateImage: "이미지 생성",
+      generateVideo: "동영상 생성",
+      untitledChat: "제목 없는 채팅",
+      compare: "비교",
+      loading: "로딩 중...",
+      empty: {
+        all: "아직 검색할 항목이 없습니다.",
+        chats: "아직 채팅이 없습니다.",
+        projects: "아직 프로젝트가 없습니다.",
+        files: "아직 라이브러리에 파일이 없습니다.",
+        models: "아직 다운로드한 모델이 없습니다.",
+      },
+      noMatches: "결과가 없습니다.",
+      when: {
+        today: "오늘",
+        pastWeek: "지난주",
+        pastMonth: "지난달",
+        older: "이전",
+      },
+      footer: {
+        close: "닫기",
+        changeType: "유형 변경",
+        open: "열기",
+      },
     },
     notFound: {
       title: "페이지를 찾을 수 없습니다",

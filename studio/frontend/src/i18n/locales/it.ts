@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { en } from "./en.ts";
+
 export const it = {
   linkMenu: {
     openInBrowser: "Apri nel browser di Unsloth",
@@ -210,6 +212,8 @@ export const it = {
       clearDataFailed: "Impossibile cancellare i dati dei siti. Riprova.",
     },
   },
+  // English fallback until this experimental feature is translated.
+  managedEngines: en.managedEngines,
   composerSettings: {
     title: "Composizione dei messaggi",
     plainText: "Composizione in testo semplice",
@@ -387,6 +391,45 @@ export const it = {
       actions: "Azioni",
       chat: "Chat",
       searchChats: "Cerca nelle chat...",
+    },
+    search: {
+      placeholder: "Cerca",
+      tabs: {
+        all: "Tutti",
+        chats: "Chat",
+        projects: "Progetti",
+        files: "File",
+        models: "Modelli",
+      },
+      recents: "Recenti",
+      actions: "Azioni",
+      newChat: "Nuova chat",
+      newTemporaryChat: "Nuova chat temporanea",
+      fineTune: "Fai il fine-tune di un modello",
+      generateImage: "Genera un'immagine",
+      generateVideo: "Genera un video",
+      untitledChat: "Chat senza titolo",
+      compare: "Confronto",
+      loading: "Caricamento...",
+      empty: {
+        all: "Ancora niente da cercare.",
+        chats: "Ancora nessuna chat.",
+        projects: "Ancora nessun progetto.",
+        files: "Ancora nessun file nella tua Libreria.",
+        models: "Ancora nessun modello scaricato.",
+      },
+      noMatches: "Nessun risultato.",
+      when: {
+        today: "Oggi",
+        pastWeek: "Ultima settimana",
+        pastMonth: "Ultimo mese",
+        older: "Meno recenti",
+      },
+      footer: {
+        close: "Chiudi",
+        changeType: "Cambia tipo",
+        open: "Apri",
+      },
     },
     notFound: {
       title: "Pagina non trovata",

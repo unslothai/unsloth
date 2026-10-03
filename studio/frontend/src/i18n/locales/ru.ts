@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import type { en } from "./en";
+import { en } from "./en.ts";
 
 export const ru = {
   linkMenu: {
@@ -213,6 +213,8 @@ export const ru = {
       clearDataFailed: "Не удалось очистить данные сайтов. Повторите попытку.",
     },
   },
+  // English fallback until this experimental feature is translated.
+  managedEngines: en.managedEngines,
   composerSettings: {
     title: "Ввод сообщений",
     plainText: "Обычный текст",
@@ -427,6 +429,45 @@ export const ru = {
       actions: "Действия",
       chat: "Чат",
       searchChats: "Поиск по чатам...",
+    },
+    search: {
+      placeholder: "Поиск",
+      tabs: {
+        all: "Все",
+        chats: "Чаты",
+        projects: "Проекты",
+        files: "Файлы",
+        models: "Модели",
+      },
+      recents: "Недавние",
+      actions: "Действия",
+      newChat: "Новый чат",
+      newTemporaryChat: "Новый временный чат",
+      fineTune: "Дообучить модель",
+      generateImage: "Создать изображение",
+      generateVideo: "Создать видео",
+      untitledChat: "Чат без названия",
+      compare: "Сравнение",
+      loading: "Загрузка…",
+      empty: {
+        all: "Пока нечего искать.",
+        chats: "Пока нет чатов.",
+        projects: "Пока нет проектов.",
+        files: "В вашей библиотеке пока нет файлов.",
+        models: "Пока нет скачанных моделей.",
+      },
+      noMatches: "Ничего не найдено.",
+      when: {
+        today: "Сегодня",
+        pastWeek: "За неделю",
+        pastMonth: "За месяц",
+        older: "Ранее",
+      },
+      footer: {
+        close: "Закрыть",
+        changeType: "Сменить тип",
+        open: "Открыть",
+      },
     },
     notFound: {
       title: "Страница не найдена",

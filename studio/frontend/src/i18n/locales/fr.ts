@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import type { en } from "./en";
+import { en } from "./en.ts";
 
 export const fr = {
   linkMenu: {
@@ -213,6 +213,8 @@ export const fr = {
       clearDataFailed: "Impossible d'effacer les données des sites. Réessayez.",
     },
   },
+  // English fallback until this experimental feature is translated.
+  managedEngines: en.managedEngines,
   composerSettings: {
     title: "Saisie des messages",
     plainText: "Saisie en texte brut",
@@ -428,6 +430,45 @@ export const fr = {
       actions: "Actions",
       chat: "Chat",
       searchChats: "Rechercher des chats...",
+    },
+    search: {
+      placeholder: "Rechercher",
+      tabs: {
+        all: "Tout",
+        chats: "Discussions",
+        projects: "Projets",
+        files: "Fichiers",
+        models: "Modèles",
+      },
+      recents: "Récents",
+      actions: "Actions",
+      newChat: "Nouvelle discussion",
+      newTemporaryChat: "Nouvelle discussion temporaire",
+      fineTune: "Affiner un modèle",
+      generateImage: "Générer une image",
+      generateVideo: "Générer une vidéo",
+      untitledChat: "Discussion sans titre",
+      compare: "Comparaison",
+      loading: "Chargement...",
+      empty: {
+        all: "Rien à rechercher pour l’instant.",
+        chats: "Aucune discussion pour l’instant.",
+        projects: "Aucun projet pour l’instant.",
+        files: "Aucun fichier dans votre Bibliothèque pour l’instant.",
+        models: "Aucun modèle téléchargé pour l’instant.",
+      },
+      noMatches: "Aucun résultat.",
+      when: {
+        today: "Aujourd’hui",
+        pastWeek: "Semaine dernière",
+        pastMonth: "Mois dernier",
+        older: "Plus ancien",
+      },
+      footer: {
+        close: "Fermer",
+        changeType: "Changer de type",
+        open: "Ouvrir",
+      },
     },
     notFound: {
       title: "Page introuvable",
