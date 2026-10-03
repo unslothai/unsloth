@@ -316,7 +316,7 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
   }>({ messages: null, index: new Map() });
   const previewId = useId();
   const [preview, setPreview] = useState<TurnPreview | null>(null);
-  // an open card follows its reply while it streams; scanning back from the end keeps the latest turn cheap
+  // only the latest turn can still stream, so an open card follows it and the scan stops at its prompt
   const previewOpenerId = preview?.openerId;
   const liveReply = useAuiState(({ thread }) => {
     if (!previewOpenerId) {
@@ -324,8 +324,10 @@ const TurnRail: FC<{ viewportRef: RefObject<HTMLElement | null> }> = ({
     }
     const messages = thread.messages;
     for (let index = messages.length - 1; index >= 0; index--) {
-      if (messages[index].id === previewOpenerId) {
-        return turnReplyText(messages, index);
+      if (messages[index].role === "user") {
+        return messages[index].id === previewOpenerId
+          ? turnReplyText(messages, index)
+          : null;
       }
     }
     return null;
