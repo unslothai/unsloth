@@ -52,7 +52,15 @@ def _for_training(module, class_name):
         if isinstance(node, ast.FunctionDef) and node.name == "for_training"
     )
     method.decorator_list = []
-    compiled = ast.Module(body = _helpers_used_by(method, tree) + [method], type_ignores = [])
+    utils = ast.parse((path.parent / "_utils.py").read_text(encoding = "utf-8"))
+    shared = [
+        node
+        for node in utils.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name
+        in ("resolve_training_gradient_checkpointing", "set_module_gradient_checkpointing")
+    ]
+    compiled = ast.Module(body = shared + _helpers_used_by(method, tree) + [method], type_ignores = [])
     namespace = _Namespace(os = os)
     exec(compile(ast.fix_missing_locations(compiled), str(path), "exec"), namespace)
     return namespace["for_training"]

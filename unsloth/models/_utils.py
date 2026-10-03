@@ -6805,3 +6805,30 @@ try:
     patch_flex_attention_kernel_options()
 except Exception:
     pass
+
+
+def resolve_training_gradient_checkpointing(model, use_gradient_checkpointing):
+    """`None` restores the mode chosen at load / get_peft_model instead of forcing it on."""
+    if use_gradient_checkpointing is None:
+        return getattr(model, "_unsloth_gradient_checkpointing", True)
+    return use_gradient_checkpointing
+
+
+def set_module_gradient_checkpointing(module, value):
+    """Set `module.gradient_checkpointing`, but never turn on a transformers checkpointing layer that
+    gradient_checkpointing_enable() never armed: it has no `_gradient_checkpointing_func` and its
+    first training forward raises AttributeError."""
+    if value:
+        try:
+            from transformers.modeling_layers import GradientCheckpointingLayer
+        except ImportError:
+            GradientCheckpointingLayer = None
+        if (
+            GradientCheckpointingLayer is not None
+            and isinstance(module, GradientCheckpointingLayer)
+            and getattr(module, "_gradient_checkpointing_func", None) is None
+        ):
+            module.gradient_checkpointing = False
+            return False
+    module.gradient_checkpointing = value
+    return True

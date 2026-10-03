@@ -118,6 +118,8 @@ from ._utils import (
     _select_moe_detection_targets,
     set_task_config_attr,
     _unsloth_freeze_norm_running_stats,
+    resolve_training_gradient_checkpointing,
+    set_module_gradient_checkpointing,
 )
 from ._utils import *
 from ._remote_code_buffers import restore_remote_code_non_persistent_buffers
@@ -4352,11 +4354,14 @@ class FastBaseModel:
         return model
 
     @staticmethod
-    def for_training(model, use_gradient_checkpointing = True):
+    def for_training(model, use_gradient_checkpointing = None):
         if not hasattr(model, "parameters"):
             raise TypeError(
                 "Unsloth: I think you're passing a tokenizer, not the model to for_training!"
             )
+        use_gradient_checkpointing = resolve_training_gradient_checkpointing(
+            model, use_gradient_checkpointing
+        )
 
         for param in model.parameters():
             if hasattr(param, "_fast_lora"):
@@ -4364,7 +4369,7 @@ class FastBaseModel:
 
         def _for_training(m):
             if hasattr(m, "gradient_checkpointing"):
-                m.gradient_checkpointing = use_gradient_checkpointing
+                set_module_gradient_checkpointing(m, use_gradient_checkpointing)
             if hasattr(m, "training"):
                 m.training = True
             if hasattr(m, "_saved_temp_tokenizer"):
@@ -4386,7 +4391,7 @@ class FastBaseModel:
         # Since transformers 4.53, this must be turned on explicitly.
         for module in model.modules():
             if hasattr(module, "gradient_checkpointing"):
-                module.gradient_checkpointing = use_gradient_checkpointing
+                set_module_gradient_checkpointing(module, use_gradient_checkpointing)
 
         for _getter in ("get_input_embeddings", "get_output_embeddings"):
             embeddings = _embeddings_or_none(model, _getter)
