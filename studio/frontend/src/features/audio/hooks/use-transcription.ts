@@ -311,8 +311,7 @@ export function useTranscription({
       renameTranscriptSpeakers(transcriptRecord.id, {
         [id]: name || null,
       }).catch((error: unknown) => {
-        // Roll back only this speaker, only on the same transcript and only if no later rename
-        // replaced it; a whole-map rollback erased other renames that had saved.
+        // Only this speaker, unless renamed since: a whole-map rollback erased saved renames.
         if (transcriptVersion.current !== version) return;
         setSpeakerNames((current) => {
           if ((current[id] ?? "") !== name) return current;

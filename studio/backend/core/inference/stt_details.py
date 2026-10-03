@@ -10,8 +10,7 @@ import math
 import re
 from typing import Any, Optional
 
-# Families whose spans Studio keeps. Nemotron also answers with spans, but as sub-word pieces
-# ("f ever ed"), and its text rebuilt from them would read that way, so its spans are dropped.
+# Nemotron's spans are sub-word pieces ("f ever ed"), so it is not listed: its text stays whole.
 ALWAYS_TIMESTAMPED = frozenset(
     {"moss_transcribe_diarize", "vibevoice_asr", "parakeet_tdt", "kroko_asr"}
 )

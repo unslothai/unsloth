@@ -22947,8 +22947,7 @@ async def _transcribe_audio_result(
 
     serving_engine = _resolve_serving_stt_engine(engine)
     if source_path is not None and serving_engine != "audiocpp":
-        # A prepared WAV is already capped at 30 minutes; the encoded-upload byte cap would
-        # refuse anything past ~13 minutes of 16 kHz PCM.
+        # Prepared WAVs are capped at 30 min; the encoded-upload cap would refuse past ~13 min.
         raw = await asyncio.to_thread(source_path.read_bytes)
         source_path = None
         if not raw:
