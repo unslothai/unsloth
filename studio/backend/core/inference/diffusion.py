@@ -244,9 +244,8 @@ from .diffusion_te_prequant import te_prequant_pipe_kwargs
 from .diffusion_flow_shift import apply_comfy_flow_shift
 from .diffusion_text_length import (
     IDEOGRAM4_COMFY_GUIDANCE,
-    IDEOGRAM4_COMFY_MU,
-    IDEOGRAM4_COMFY_STD,
     ideogram4_comfy_guidance_schedule,
+    ideogram4_comfy_mu_std,
     flux_t5_kwarg,
     true_cfg_needs_empty_negative,
 )
@@ -9419,11 +9418,12 @@ class DiffusionBackend:
                     if steps == 48 and abs(float(guidance) - 7.0) < 1e-6:
                         kwargs.pop(state.family.cfg_kwarg, None)
                     else:
-                        # ComfyUI "Default" preset; the 7 -> 3 CFG override only at guidance 7.
+                        # ComfyUI preset for this step count; the 7 -> 3 CFG override only at guidance 7.
+                        mu, std = ideogram4_comfy_mu_std(steps)
                         if "mu" in call_params:
-                            kwargs["mu"] = IDEOGRAM4_COMFY_MU
+                            kwargs["mu"] = mu
                         if "std" in call_params:
-                            kwargs["std"] = IDEOGRAM4_COMFY_STD
+                            kwargs["std"] = std
                         if abs(float(guidance) - IDEOGRAM4_COMFY_GUIDANCE) < 1e-6:
                             kwargs.pop(state.family.cfg_kwarg, None)
                             kwargs["guidance_schedule"] = ideogram4_comfy_guidance_schedule(

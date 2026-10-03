@@ -14532,6 +14532,21 @@ def test_generate_ideogram_defaults_follow_comfy_template(fake_runtime, tmp_path
     assert call["guidance_schedule"] == "card" and (call["mu"], call["std"]) == (0.0, 1.5)
 
 
+def test_generate_ideogram_step_count_picks_its_comfy_preset(fake_runtime, tmp_path):
+    # 48 steps at another guidance keeps the Quality preset (std 1.5, the pipeline default), 12 is Turbo.
+    backend = DiffusionBackend()
+    _load_ideogram(backend, tmp_path)
+    pipe = _IdeogramScheduleFakePipe()
+    object.__setattr__(backend._state, "pipe", pipe)
+    backend.generate(prompt = "a sloth", steps = 48, guidance = 5.0)
+    call = pipe.last_kwargs
+    assert call["guidance_scale"] == 5.0 and (call["mu"], call["std"]) == (0.0, 1.5)
+    backend.generate(prompt = "a sloth", width = 1024, height = 1024, steps = 12, guidance = 7.0)
+    call = pipe.last_kwargs
+    assert (call["mu"], call["std"]) == (0.5, 1.75)
+    assert len(call["guidance_schedule"]) == 12 and call["guidance_schedule"][-1] == 3.0
+
+
 class _ShiftSchedulerConfig(dict):
     pass
 

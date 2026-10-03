@@ -18,6 +18,8 @@ IDEOGRAM4_COMFY_STD = 1.75
 IDEOGRAM4_COMFY_GUIDANCE = 7.0
 IDEOGRAM4_COMFY_TAIL_GUIDANCE = 3.0
 IDEOGRAM4_COMFY_TAIL_SIGMA = 0.3
+# ComfyUI's other presets by step count (Quality 48 == the pipeline default); any other count runs "Default".
+_IDEOGRAM4_COMFY_PRESETS = {48: (0.0, 1.5), 12: (0.5, 1.75)}
 _IDEOGRAM4_LOGSNR_MIN = -15.0
 _IDEOGRAM4_LOGSNR_MAX = 18.0
 
@@ -41,13 +43,19 @@ def ideogram4_sigmas(steps: int, width: int, height: int, mu: float, std: float)
     return out
 
 
+def ideogram4_comfy_mu_std(steps: int) -> tuple[float, float]:
+    """``(mu, std)`` of the ComfyUI preset with this step count, else the "Default" preset."""
+    return _IDEOGRAM4_COMFY_PRESETS.get(int(steps), (IDEOGRAM4_COMFY_MU, IDEOGRAM4_COMFY_STD))
+
+
 def ideogram4_comfy_guidance_schedule(steps: int, width: int, height: int) -> list[float]:
     """Per-step guidance ComfyUI's template applies: 7, then 3 on every step whose sigma is <= 0.3."""
+    mu, std = ideogram4_comfy_mu_std(steps)
     return [
         IDEOGRAM4_COMFY_TAIL_GUIDANCE
         if sigma <= IDEOGRAM4_COMFY_TAIL_SIGMA
         else IDEOGRAM4_COMFY_GUIDANCE
-        for sigma in ideogram4_sigmas(steps, width, height, IDEOGRAM4_COMFY_MU, IDEOGRAM4_COMFY_STD)
+        for sigma in ideogram4_sigmas(steps, width, height, mu, std)
     ]
 
 
