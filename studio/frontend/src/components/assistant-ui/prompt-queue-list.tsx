@@ -398,7 +398,16 @@ export function PromptQueueList({
                       // Opening the menu must not select an item on pointer release.
                       onPointerUpCapture={(event) => event.preventDefault()}
                       // A queued send focuses the composer; that alone must not dismiss the menu.
-                      onFocusOutside={(event) => event.preventDefault()}
+                      // Focus goes back too, or Escape and the arrow keys land in the composer.
+                      onFocusOutside={(event) => {
+                        event.preventDefault();
+                        const from = event.detail.originalEvent.relatedTarget;
+                        if (
+                          from instanceof HTMLElement &&
+                          from.closest("[data-slot='dropdown-menu-content']")
+                        )
+                          from.focus({ preventScroll: true });
+                      }}
                       onCloseAutoFocus={(event) => {
                         if (!editFromMenuRef.current) return;
                         event.preventDefault();
