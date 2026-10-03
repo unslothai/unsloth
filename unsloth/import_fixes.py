@@ -5451,8 +5451,20 @@ def patch_torch_missing_attribute_error():
     if getattr(original, "__unsloth_patched__", False):
         return True
 
+    # torch's stacklevel=2 would name this wrapper; catch_warnings + replay is process-global, so warn here.
+    deprecated_attrs = torch.__dict__.get("_deprecated_attrs", {})
+
     @functools.wraps(original)
     def __getattr__(name):
+        replacement = deprecated_attrs.get(name)
+        if replacement is not None:
+            warnings.warn(
+                f"'{name}' is deprecated, please use "
+                f"'{replacement.__module__}.{replacement.__name__}()'",
+                UserWarning,
+                stacklevel = 2,
+            )
+            return replacement()
         try:
             return original(name)
         except AttributeError as exception:

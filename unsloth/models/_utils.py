@@ -1715,6 +1715,7 @@ def _apply_text_only_key_mapping(kwargs, parent_config, text_config):
     ):
         _TEXT_ONLY_PARENT_MODEL_TYPES[text_model_type] = parent_model_type
         _install_text_only_conversion_carry()
+    return mapping
 
 
 def _cast_text_only_prequantized_params(model, dtype):

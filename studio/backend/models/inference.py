@@ -79,6 +79,14 @@ class LoadRequest(LlamaCppConfigFields):
         False,
         description = "Start a fresh runtime even when the active settings already match",
     )
+    alongside: bool = Field(
+        False,
+        description = "Keep the loaded model and serve this one next to it",
+    )
+    force_alongside: bool = Field(
+        False,
+        description = "Load alongside even when it only partly fits the free GPU memory",
+    )
     native_path_lease: Optional[str] = Field(
         None, description = "Frontend-visible signed native path grant"
     )
@@ -1753,6 +1761,10 @@ class LoadResponse(_InferenceRuntimeFields):
         "message. Null once the user has dismissed it at this allocation, and on every "
         "load where enlarging the allocation would not help. The model still loaded.",
     )
+    evicted: list[str] = Field(
+        default_factory = list,
+        description = "Models loaded alongside that were unloaded to make room for this one.",
+    )
 
 
 class UnloadResponse(BaseModel):
@@ -1877,6 +1889,16 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
     )
     loading: List[str] = Field(default_factory = list, description = "Models currently being loaded")
     loaded: List[str] = Field(default_factory = list, description = "Models currently loaded")
+    serving: List[str] = Field(
+        default_factory = list,
+        description = "Models answering requests: the active one and each kept alongside. "
+        "Unlike loaded, leaves out a model only held in memory behind the active one.",
+    )
+    serving_checkpoints: List[str] = Field(
+        default_factory = list,
+        description = "The checkpoint id each serving entry is loaded from, in the same order: "
+        "the path of a local model, else the same id. Load, select and unload by this one.",
+    )
     inference: Optional[Dict[str, Any]] = Field(
         None, description = "Recommended inference parameters for the active model"
     )
