@@ -186,7 +186,10 @@ const audioGgufGroups = (tasks: readonly AudioCppTask[]): CatalogGroup[] =>
   AUDIO_CPP_MODELS.filter((model) => tasks.includes(model.task)).map((model) => ({
     canonicalId: model.id,
     displayName: audioCppDisplayName(model.id),
-    description: AUDIO_GGUF_DESCRIPTIONS[model.task],
+    description:
+      model.workflows && !model.workflows.includes("speak")
+        ? "Voice cloning"
+        : AUDIO_GGUF_DESCRIPTIONS[model.task],
     scope: "audio",
     task: model.task === "asr" ? "stt" : "tts",
     artifacts: [gguf(model.id)],

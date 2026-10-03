@@ -30,6 +30,45 @@ def test_progress_and_saved_result(monkeypatch):
     asyncio.run(scenario())
 
 
+def test_phases_pass_through_and_details_are_saved(monkeypatch, tmp_path):
+    from core.inference import transcript_gallery
+
+    monkeypatch.setattr(transcript_gallery, "studio_root", lambda: tmp_path)
+    segments = [{"start": 0.12, "end": 3.14, "text": "Welcome back.", "speaker": "S01"}]
+
+    async def scenario():
+        async def transcribe(progress):
+            # Back to back: a phase is never throttled away like a text update would be.
+            progress({"text": "", "phase": "loading"})
+            await asyncio.sleep(0.05)
+            progress({"text": "", "phase": "transcribing"})
+            await asyncio.sleep(0.05)
+            return {
+                "text": "Welcome back.",
+                "model": "moss",
+                "duration": 3.2,
+                "segments": segments,
+                "speakers": [{"id": "S01", "label": "Speaker 1"}],
+                "source": {"kind": "clip", "id": "c" * 32, "name": "Clip"},
+                "timestamps": True,
+            }
+
+        return [
+            json.loads(line)
+            async for line in transcript_stream.stream_transcript(transcribe, "clip")
+        ]
+
+    events = asyncio.run(scenario())
+    phases = [e["phase"] for e in events if e["type"] == "progress" and "phase" in e]
+    assert phases == ["loading", "transcribing"]
+    complete = events[-1]
+    assert complete["type"] == "complete" and complete["segments"] == segments
+    saved = transcript_gallery.get(complete["record"]["id"])
+    assert saved["segments"] == segments and saved["source"]["kind"] == "clip"
+    assert saved["speakers"] == [{"id": "S01", "label": "Speaker 1"}]
+    assert saved["timestamps"] is True
+
+
 def test_save_failure_returns_complete_text(monkeypatch):
     async def transcribe(progress):
         return {"text": "keep this", "model": "tiny"}

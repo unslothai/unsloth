@@ -120,6 +120,45 @@ def seed_audio_and_project(account, actor: str = "right") -> dict[str, str]:
     return params
 
 
+@seeder("media-audio-input")
+def seed_audio_input(account) -> dict[str, str]:
+    import hashlib
+
+    from core.inference import audio_inputs
+    from utils.account_context import run_as
+
+    data = _wav_bytes()
+
+    def save() -> dict:
+        directory = audio_inputs.inputs_dir()
+        upload = directory / ".matrix.upload.tmp"
+        upload.write_bytes(data)
+        try:
+            record, _ = audio_inputs._finish_upload(
+                directory, upload, hashlib.sha256(data).hexdigest(), SENTINEL, len(data)
+            )
+        finally:
+            upload.unlink(missing_ok = True)
+        return record
+
+    return {"input_id": run_as(account, save)["id"]}
+
+
+@seeder("media-audio-voice")
+def seed_audio_voice(account) -> dict[str, str]:
+    import tempfile
+    from pathlib import Path
+
+    from core.inference import audio_voices
+    from utils.account_context import run_as
+
+    with tempfile.TemporaryDirectory() as scratch:
+        source = Path(scratch) / "voice.wav"
+        source.write_bytes(_wav_bytes())
+        record = run_as(account, audio_voices.create, source, {"name": SENTINEL})
+    return {"voice_id": record["id"]}
+
+
 @seeder("media-transcript")
 def seed_transcript(account) -> dict[str, str]:
     from core.inference import transcript_gallery
@@ -300,6 +339,25 @@ FACTORIES = {
     ),
     "routes.inference:POST:/audio/gallery/{audio_id}/project": Factory(
         "media-audio-project", {"project_id": MEDIA_PROJECT_ID}, fragment = "sandbox"
+    ),
+    "routes.inference:GET:/audio/inputs/{input_id}/file": Factory("media-audio-input"),
+    "routes.inference:DELETE:/audio/inputs/{input_id}": Factory("media-audio-input"),
+    "routes.inference:POST:/audio/inputs/{input_id}/transcribe": Factory(
+        "media-audio-input",
+        {"model": "media/none"},
+        # Past the source lookup the model check refuses: no speech-to-text model exists here.
+        right = (404,),
+        fragment = "Model not found",
+        self_expected = (409,),
+        reason = "no speech-to-text model is available, so transcription itself refuses",
+    ),
+    "routes.inference:PATCH:/audio/voices/{voice_id}": Factory(
+        "media-audio-voice", {"name": "renamed"}, fragment = "renamed"
+    ),
+    "routes.inference:DELETE:/audio/voices/{voice_id}": Factory("media-audio-voice"),
+    "routes.inference:GET:/audio/voices/{voice_id}/file": Factory("media-audio-voice"),
+    "routes.inference:GET:/audio/transcripts/{transcript_id}": Factory(
+        "media-transcript", fragment = SENTINEL
     ),
     "routes.inference:PATCH:/audio/transcripts/{transcript_id}": Factory(
         "media-transcript", {"archived": True}, fragment = SENTINEL

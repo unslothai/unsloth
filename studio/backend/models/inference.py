@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 import uuid
 from collections import deque
@@ -12,6 +13,7 @@ from typing import Annotated, Any, Dict, Literal, Optional, List, Union
 
 from pydantic import (
     BaseModel,
+    ConfigDict,
     Discriminator,
     Field,
     PrivateAttr,
@@ -20,6 +22,7 @@ from pydantic import (
     model_validator,
 )
 
+from core.inference.audio_workflows import status_audio_workflows
 from core.inference.llama_server_args import (
     BATCH_MAX,
     BATCH_MIN,
@@ -1359,6 +1362,35 @@ class _InferenceRuntimeFields(BaseModel):
             "description, default, min, max, values, required}. Send chosen values as audio_options."
         ),
     )
+    audio_workflows: Optional[List[str]] = Field(
+        None,
+        description = (
+            "Audio page workflows (speak, clone, music, transcribe) the loaded model serves; [] "
+            "for a model that is not an audio model. Derived from is_audio and audio_type when "
+            "not given."
+        ),
+    )
+    audio_reference_text: Optional[Literal["required", "optional", "unused"]] = Field(
+        None,
+        description = (
+            "For a model that clones: whether a request needs the reference clip's transcript. "
+            "None for a model that does not clone."
+        ),
+    )
+    audio_required_inputs: Optional[List[str]] = Field(
+        None,
+        description = (
+            "Request fields the model refuses to run without (Maya1: ['instruct'], a voice "
+            "description sent as instructions)."
+        ),
+    )
+
+    @model_validator(mode = "after")
+    def derive_audio_workflows(self):
+        if self.audio_workflows is None:
+            self.audio_workflows = status_audio_workflows(self.is_audio, self.audio_type)
+        return self
+
     has_video_input: bool = Field(
         False,
         description = (
@@ -5104,10 +5136,233 @@ class AudioGalleryItem(BaseModel):
     created_at: str
     pinned: bool = Field(False, description = "Pinned to the top of history")
     archived: bool = Field(False, description = "Moved to the archived shelf, hidden from history")
+    workflow: Optional[str] = Field(
+        None, description = "Audio page workflow that made the clip: speak, clone or music"
+    )
     order_at: Optional[float] = Field(
         None,
         description = "Unpinned sort key (epoch-second scale): the manual key once dragged, else the file mtime",
     )
+    role: Optional[str] = Field(None, description = "The clip's part in its run, e.g. output")
+    source_clip_id: Optional[str] = Field(
+        None, description = "History clip the run took its reference from"
+    )
+    voice_id: Optional[str] = Field(None, description = "Saved voice the run spoke in")
+    settings: Optional[Dict[str, Any]] = Field(
+        None, description = "Language, options, speed and whether a transcript was used"
+    )
+    reference_name: Optional[str] = Field(None, description = "Name of the reference clip or voice")
+
+
+_AUDIO_ID_PATTERN = r"^[A-Za-z0-9_-]{1,128}$"
+# A run names audio by id only. Option names with these words carry a location...
+_AUDIO_FILE_OPTION_WORDS = frozenset({"path", "paths", "file", "files", "dir", "url", "uri"})
+# ...and a text value under a name ending in these is a clip (source_audio, voice_ref), while
+# min_new_audio_steps, audio_chunk_mode or a boolean no_ref are settings.
+_AUDIO_CLIP_OPTION_ENDINGS = frozenset({"audio", "wav", "ref"})
+
+
+def _names_a_file(name: str, value: Any) -> bool:
+    words = re.split(r"[^a-z0-9]+", name.lower())
+    if any(word in _AUDIO_FILE_OPTION_WORDS for word in words):
+        return True
+    return isinstance(value, str) and words[-1] in _AUDIO_CLIP_OPTION_ENDINGS
+
+
+class AudioSourceRef(BaseModel):
+    """Audio named by id: an uploaded input, a history clip or a saved voice. Exactly one."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    input_id: Optional[str] = Field(None, pattern = _AUDIO_ID_PATTERN)
+    clip_id: Optional[str] = Field(None, pattern = _AUDIO_ID_PATTERN)
+    voice_id: Optional[str] = Field(None, pattern = _AUDIO_ID_PATTERN)
+
+    @model_validator(mode = "after")
+    def _exactly_one(self):
+        named = [v for v in (self.input_id, self.clip_id, self.voice_id) if v]
+        if len(named) != 1:
+            raise ValueError("Name exactly one of input_id, clip_id or voice_id.")
+        return self
+
+
+class AudioRunInputs(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    reference: Optional[AudioSourceRef] = None
+    reference_text: Optional[str] = Field(None, max_length = 4000)
+    emotion: Optional[AudioSourceRef] = None
+
+
+class AudioRunRequest(BaseModel):
+    """``POST /audio/run``: one Audio page run. Audio is named by id; the server picks the files."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    workflow: Literal["clone", "speak"]
+    text: str = Field(..., min_length = 1)
+    language: Optional[str] = Field(None, max_length = 64)
+    instructions: Optional[str] = Field(None, max_length = 4000)
+    inputs: AudioRunInputs = Field(default_factory = AudioRunInputs)
+    options: Optional[Dict[str, Any]] = Field(
+        None, description = "Per-model options, as listed in audio_options or by a tool panel"
+    )
+    speed: Optional[float] = Field(None, ge = 0.25, le = 4.0)
+    seed: Optional[int] = Field(None, ge = -(2**63), le = 2**64 - 1)
+    max_tokens: Optional[int] = Field(None, ge = 1)
+
+    @field_validator("options")
+    @classmethod
+    def _no_file_options(cls, value):
+        if value is None:
+            return value
+        for name, option in value.items():
+            if _names_a_file(str(name), option):
+                raise ValueError(f"Option '{name}' is not accepted; name audio by id in inputs.")
+            if isinstance(option, (dict, list)):
+                raise ValueError(f"Option '{name}' must be a single value.")
+        return value
+
+
+class AudioRunClip(BaseModel):
+    id: str
+    role: str = "output"
+    url: str
+    sample_rate: int
+    duration_s: float
+    workflow: str
+
+
+class AudioRunAudio(BaseModel):
+    data: str
+    format: str = "wav"
+    sample_rate: int
+
+
+class AudioRunResponse(BaseModel):
+    clips: List[AudioRunClip] = Field(default_factory = list)
+    model: str
+    audio: Optional[AudioRunAudio] = Field(
+        None, description = "The audio inline, only when saving it to history failed"
+    )
+
+
+class AudioInputRecord(BaseModel):
+    id: str
+    name: str
+    duration_s: float
+    sample_rate: int
+    channels: int
+    url: str
+    expires_at: str
+
+
+class AudioInputTranscribeRequest(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    model: str = Field(..., min_length = 1, max_length = 512)
+    engine: Optional[str] = Field(None, max_length = 64)
+    device: Optional[Literal["auto", "cpu", "gpu"]] = None
+    language: Optional[str] = Field(None, max_length = 64)
+
+
+class AudioInputTranscript(BaseModel):
+    text: str
+    language: Optional[str] = None
+    model: str
+
+
+class TranscribeSourceRef(BaseModel):
+    """The audio to transcribe, by id: an upload, a history clip or a saved voice. Exactly one."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    input_id: Optional[str] = Field(None, pattern = _AUDIO_ID_PATTERN)
+    clip_id: Optional[str] = Field(None, pattern = _AUDIO_ID_PATTERN)
+    voice_id: Optional[str] = Field(None, pattern = _AUDIO_ID_PATTERN)
+
+    @model_validator(mode = "after")
+    def _exactly_one(self):
+        named = [v for v in (self.input_id, self.clip_id, self.voice_id) if v]
+        if len(named) != 1:
+            raise ValueError("Name exactly one of input_id, clip_id or voice_id.")
+        return self
+
+
+class TranscribeSourceRequest(BaseModel):
+    """``POST /audio/transcribe/source``: Audio page audio named by id, transcribed and saved."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    source: TranscribeSourceRef
+    model: str = Field(..., min_length = 1, max_length = 512)
+    engine: Optional[str] = Field(None, max_length = 64)
+    device: Optional[Literal["auto", "cpu", "gpu"]] = None
+    language: Optional[str] = Field(None, max_length = 64)
+    timestamps: bool = Field(False, description = "Ask for segment and word timestamps")
+    speakers: bool = Field(False, description = "Keep who spoke each segment, when the model tells")
+    title: Optional[str] = Field(None, max_length = 255, description = "Defaults to the source's name")
+
+
+class TranscriptPatch(BaseModel):
+    """``PATCH /audio/transcripts/{id}``: archive or restore, and name speakers (None clears)."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    archived: Optional[bool] = None
+    speaker_names: Optional[Dict[str, Optional[str]]] = None
+
+    @field_validator("speaker_names")
+    @classmethod
+    def _bounded_names(cls, value):
+        if value is None:
+            return value
+        if len(value) > 64:
+            raise ValueError("Name at most 64 speakers at once.")
+        for speaker_id, name in value.items():
+            if not speaker_id or len(speaker_id) > 64:
+                raise ValueError("Unknown speaker id.")
+            if name is not None and len(name.strip()) > 40:
+                raise ValueError("Speaker names can be at most 40 characters.")
+        return value
+
+
+class AudioVoice(BaseModel):
+    id: str
+    name: str
+    transcript: Optional[str] = None
+    language: Optional[str] = None
+    duration_s: float
+    sample_rate: int
+    created_at: str
+    url: str
+
+
+class AudioVoiceCreate(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    source: AudioSourceRef
+    name: str = Field(..., min_length = 1, max_length = 80)
+    transcript: Optional[str] = Field(None, max_length = 4000)
+    language: Optional[str] = Field(None, max_length = 64)
+
+    @model_validator(mode = "after")
+    def _from_input_or_clip(self):
+        if self.source.voice_id:
+            raise ValueError("A voice is saved from an input or a history clip.")
+        return self
+
+
+class AudioVoicePatch(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    name: Optional[str] = Field(None, min_length = 1, max_length = 80)
+    transcript: Optional[str] = Field(None, max_length = 4000)
+    language: Optional[str] = Field(None, max_length = 64)
+
+
+class AudioVoiceListResponse(BaseModel):
+    voices: List[AudioVoice] = Field(default_factory = list)
 
 
 class AudioGalleryFlagsPatch(BaseModel):

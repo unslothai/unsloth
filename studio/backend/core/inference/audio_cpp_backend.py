@@ -19,14 +19,19 @@ from __future__ import annotations
 import base64
 import io
 import json
+import re
 import threading
 import wave
+from dataclasses import replace
 from typing import Any, Optional, Tuple
 
 from core.inference import audio_cpp_files
 from core.inference.audio_cpp_models import (
     AudioCppModel,
     AudioCppModelError,
+    CloneSpec,
+    forget,
+    option_matches,
     require_runnable,
     resolve,
     validate_options,
@@ -75,13 +80,78 @@ def _music_seconds(max_new_tokens: Optional[int]) -> float:
     return max(5.0, min(_MAX_MUSIC_SECONDS, frames / 25.0))
 
 
+# Qwen3-TTS answers "unsupported language: en"; it wants the language's English name.
+_LANGUAGE_NAMES = {
+    "zh": "Chinese",
+    "en": "English",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "de": "German",
+    "fr": "French",
+    "ru": "Russian",
+    "pt": "Portuguese",
+    "es": "Spanish",
+    "it": "Italian",
+}
+_SPEAKER_LINE_RE = re.compile(r"^\s*Speaker\s*\d+\s*:", re.IGNORECASE | re.MULTILINE)
+# F5's usable speed range.
+_MIN_SPEED, _MAX_SPEED = 0.5, 2.0
+
+
 def model_info_fields(model: AudioCppModel) -> dict[str, Any]:
     """What status reports for a loaded audio.cpp model, beyond the common audio fields."""
     return {
         "audio_family": model.family,
         "audio_options": [dict(option) for option in model.options],
         "gguf_variant": model.variant.key,
+        "audio_workflows": list(model.workflows),
+        "audio_reference_text": model.clone.reference_text if model.clone else None,
+        "audio_required_inputs": list(model.required_inputs),
+        "audio_clone": clone_rules(model),
     }
+
+
+def clone_rules(model: AudioCppModel) -> Optional[dict[str, Any]]:
+    clone = model.clone
+    if clone is None:
+        return None
+    return {
+        "reference_text": clone.reference_text,
+        "reference_text_waived": [
+            [name, list(values)] for name, values in clone.reference_text_waived
+        ],
+        "emotion_audio": clone.emotion_audio,
+    }
+
+
+def language_name(language: Optional[str]) -> Optional[str]:
+    """``en`` -> ``English``; None for Auto or an unknown code."""
+    text = str(language or "").strip()
+    if not text or text.lower() == "auto":
+        return None
+    code = text.lower().replace("_", "-").split("-", 1)[0]
+    if code in _LANGUAGE_NAMES:
+        return _LANGUAGE_NAMES[code]
+    for name in _LANGUAGE_NAMES.values():
+        if name.lower() == text.lower():
+            return name
+    logger.info("audio.cpp: no language name for %r; sending Auto", text)
+    return None
+
+
+def speech_input(model: AudioCppModel, text: str) -> str:
+    """VibeVoice refuses a script with no ``Speaker N:`` line."""
+    if model.family == "vibevoice" and not _SPEAKER_LINE_RE.search(text or ""):
+        return f"Speaker 1: {text}"
+    return text
+
+
+def _option_string(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value)) if abs(value) < 1e15 else repr(value)
+    return str(value)
 
 
 class AudioCppBackend:
@@ -166,9 +236,17 @@ class AudioCppBackend:
             self.loading_models.discard(model_name)
 
     def _ensure_downloaded(self, model: AudioCppModel, hf_token: Optional[str]) -> None:
+        self._download_missing(model, hf_token)
+        for companion in model.companions:
+            companion_model = _resolve_companion(model, companion, hf_token, network = True)
+            if self._download_missing(companion_model, hf_token):
+                forget(companion.id)
+
+    @staticmethod
+    def _download_missing(model: AudioCppModel, hf_token: Optional[str]) -> bool:
         missing = audio_cpp_files.missing_files(model)
         if not missing:
-            return
+            return False
         from huggingface_hub import hf_hub_download
 
         from utils.hf_cache_settings import active_hf_hub_cache
@@ -182,6 +260,7 @@ class AudioCppBackend:
                 token = hf_token or None,
                 cache_dir = cache_dir,
             )
+        return True
 
     def _start_server(
         self,
@@ -191,9 +270,10 @@ class AudioCppBackend:
         with self._server_lock:
             self._stop_server_locked()
             model_path = audio_cpp_files.materialize(model)
+            served = _with_companions(model)
             try:
                 self._server = AudioCppServer.start(
-                    model, model_path, force_cpu = self._force_cpu, cancel_event = cancel_event
+                    served, model_path, force_cpu = self._force_cpu, cancel_event = cancel_event
                 )
             except AudioCppStartCancelledError as exc:
                 _raise_if_cancelled(cancel_event)
@@ -230,6 +310,10 @@ class AudioCppBackend:
         language: Optional[str] = None,
         seed: Optional[int] = None,
         audio_options: Optional[dict] = None,
+        workflow: Optional[str] = None,
+        audio_inputs: Optional[dict] = None,
+        reference_text: Optional[str] = None,
+        speed: Optional[float] = None,
     ) -> Tuple[bytes, int]:
         del top_k, min_p, repetition_penalty, use_adapter
         if not self.active_model_name or self.active_model_name not in self.models:
@@ -238,10 +322,27 @@ class AudioCppBackend:
         if model is None:
             raise RuntimeError("No active audio model")
         _raise_if_cancelled(cancel_event)
-        options = validate_options(model.options, audio_options)
+        cloning = workflow == "clone" or bool(audio_inputs)
+        if cloning and model.clone is None:
+            raise RuntimeError(f"{model.display_name} cannot clone a voice.")
+        options = validate_options(model.clone_options if cloning else model.options, audio_options)
         server = self._running_server(model, cancel_event)
         try:
-            if model.task == "music":
+            if cloning:
+                wav = self._generate_clone(
+                    server,
+                    model,
+                    text,
+                    audio_inputs or {},
+                    reference_text = reference_text,
+                    instructions = instructions,
+                    language = language,
+                    speed = speed,
+                    seed = seed,
+                    options = options,
+                    cancel_event = cancel_event,
+                )
+            elif model.task == "music":
                 wav = self._generate_music(
                     server, model, text, instructions, max_new_tokens, seed, options, cancel_event
                 )
@@ -263,7 +364,10 @@ class AudioCppBackend:
             _raise_if_cancelled(cancel_event)
             raise
         except AudioCppRequestError as exc:
-            raise RuntimeError(f"The audio runtime could not generate audio: {exc.detail}") from exc
+            from core.inference.audio_errors import AudioRuntimeError
+            raise AudioRuntimeError(
+                f"The audio runtime could not generate audio: {exc.detail}", status = exc.status
+            ) from exc
         _raise_if_cancelled(cancel_event)
         return wav, _wav_sample_rate(wav)
 
@@ -288,7 +392,11 @@ class AudioCppBackend:
     ) -> bytes:
         defaults = dict(model.request_defaults)
         default_options = dict(defaults.pop("options", None) or {})
-        body: dict[str, Any] = {"model": server.model_id, "input": text, **defaults}
+        body: dict[str, Any] = {
+            "model": server.model_id,
+            "input": speech_input(model, text),
+            **defaults,
+        }
         # Family defaults win: Studio's generic temperature can stop one emitting its stop token (MOSS-TTS-Nano).
         del temperature, top_p
         chosen = dict(options)
@@ -337,6 +445,75 @@ class AudioCppBackend:
                 timeout = _GENERATE_TIMEOUT_SECONDS,
                 cancel_event = cancel_event,
             )
+        return data
+
+    @staticmethod
+    def _generate_clone(
+        server: AudioCppServer,
+        model: AudioCppModel,
+        text: str,
+        audio_inputs: dict,
+        *,
+        reference_text: Optional[str],
+        instructions: Optional[str],
+        language: Optional[str],
+        speed: Optional[float],
+        seed: Optional[int],
+        options: dict,
+        cancel_event,
+    ) -> bytes:
+        """Speak ``text`` in the voice of ``audio_inputs["reference"]`` (a server-local WAV path).
+
+        An emotion clip has no field on the speech endpoint, so that request goes to /v1/tasks/run
+        with the clip as top-level ``audio``."""
+        clone = model.clone or CloneSpec()
+        reference = audio_inputs.get("reference")
+        if not reference:
+            raise RuntimeError(f"{model.display_name} needs a reference clip to clone.")
+        emotion = audio_inputs.get("emotion") if clone.emotion_audio else None
+        request_options = {name: _option_string(value) for name, value in options.items()}
+        body: dict[str, Any] = {"model": server.model_id}
+        spoken = speech_input(model, text)
+        if emotion:
+            body["text"] = spoken
+        else:
+            body["input"] = spoken
+        body["voice_ref"] = str(reference)
+        if emotion:
+            body["audio"] = str(emotion)
+        transcript = str(reference_text or "").strip()
+        if (
+            transcript
+            and clone.reference_text != "unused"
+            and not option_matches(clone.reference_text_dropped, options)
+        ):
+            body["reference_text"] = transcript
+        if language and str(language).strip():
+            chosen = language_name(language) if clone.language_names else str(language).strip()
+            if chosen:
+                body["language"] = chosen
+        if clone.speed and speed is not None:
+            body["speed"] = max(_MIN_SPEED, min(_MAX_SPEED, float(speed)))
+        if clone.instructions and instructions and str(instructions).strip():
+            body["instructions"] = str(instructions).strip()
+        if request_options:
+            body["options"] = request_options
+        if seed is not None:
+            body["seed"] = str(int(seed))
+        if emotion:
+            ctype, data = server.post_json(
+                "/v1/tasks/run",
+                body,
+                timeout = _GENERATE_TIMEOUT_SECONDS,
+                cancel_event = cancel_event,
+            )
+            return _audio_from_task_response(ctype, data)
+        _ctype, data = server.post_json(
+            "/v1/audio/speech",
+            body,
+            timeout = _GENERATE_TIMEOUT_SECONDS,
+            cancel_event = cancel_event,
+        )
         return data
 
     @staticmethod
@@ -412,6 +589,31 @@ class AudioCppBackend:
 
     def reset_generation_state(self, caller_cancel_event = None) -> None:
         del caller_cancel_event
+
+
+def _resolve_companion(
+    model: AudioCppModel,
+    companion,
+    hf_token: Optional[str] = None,
+    *,
+    network: bool = True,
+) -> AudioCppModel:
+    found = resolve(companion.id, companion.variant, hf_token, network = network)
+    if found is None:
+        name = companion.id.rsplit("/", 1)[-1]
+        raise RuntimeError(f"{model.display_name} needs {name}, which Studio could not find.")
+    return found
+
+
+def _with_companions(model: AudioCppModel) -> AudioCppModel:
+    """``model`` with each companion's served path in its session options (MioTTS's codec)."""
+    if not model.companions:
+        return model
+    session = dict((model.model_options or {}).get("session_options") or {})
+    for companion in model.companions:
+        companion_model = _resolve_companion(model, companion, network = False)
+        session[companion.session_option] = audio_cpp_files.materialize(companion_model)
+    return replace(model, model_options = {**model.model_options, "session_options": session})
 
 
 def _audio_from_task_response(content_type: str, data: bytes) -> bytes:

@@ -100,6 +100,8 @@ from hub.services.models.ollama import (
 from core.inference.audio_errors import (
     AudioBackendUnsupportedError,
     AudioGenerationCancelledError,
+    AudioRuntimeError,
+    audio_runtime_http_error,
 )
 from core.inference import context_refusal
 from core.inference.context_window import (
@@ -3695,6 +3697,17 @@ from models.inference import (
     AudioGalleryFlagsPatch,
     AudioGalleryItem,
     AudioGalleryListResponse,
+    AudioInputRecord,
+    AudioInputTranscribeRequest,
+    AudioInputTranscript,
+    AudioRunRequest,
+    AudioRunResponse,
+    AudioVoice,
+    AudioVoiceCreate,
+    AudioVoiceListResponse,
+    AudioVoicePatch,
+    TranscribeSourceRequest,
+    TranscriptPatch,
     LoadResponse,
     LoadProgressResponse,
     UnloadResponse,
@@ -8145,6 +8158,9 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         # llama-server never serves an audio GGUF; those load through the audio worker.
         audio_family = None,
         audio_options = None,
+        audio_workflows = None,
+        audio_reference_text = None,
+        audio_required_inputs = None,
         # Older/custom backend doubles predate this additive runtime field.
         preserve_thinking_default = bool(getattr(llama_backend, "preserve_thinking_default", False)),
         speculative_type = llama_backend.requested_spec_mode,
@@ -19025,6 +19041,9 @@ async def _load_model_impl(
             has_video_input = _model_info.get("has_video_input", False),
             audio_family = _model_info.get("audio_family"),
             audio_options = _model_info.get("audio_options"),
+            audio_workflows = _model_info.get("audio_workflows"),
+            audio_reference_text = _model_info.get("audio_reference_text"),
+            audio_required_inputs = _model_info.get("audio_required_inputs"),
             is_mlx = bool(_model_info.get("is_mlx", False)),
             mlx_kv_quant = _model_info.get("mlx_kv_quant"),
             mlx_kv_quant_requested = _model_info.get("mlx_kv_quant_requested"),
@@ -21688,6 +21707,9 @@ async def _slot_status(current_subject: str):
             has_video_input = has_video_input,
             audio_family = model_info.get("audio_family"),
             audio_options = model_info.get("audio_options"),
+            audio_workflows = model_info.get("audio_workflows"),
+            audio_reference_text = model_info.get("audio_reference_text"),
+            audio_required_inputs = model_info.get("audio_required_inputs"),
             gguf_variant = model_info.get("gguf_variant"),
             is_mlx = bool(model_info.get("is_mlx", False)),
             mlx_kv_quant = model_info.get("mlx_kv_quant"),
@@ -21840,6 +21862,55 @@ def _audio_cpp_music_request_problem(
     return None
 
 
+def _audio_model_label(model_name: Optional[str]) -> str:
+    """``audio-cpp/audio.cpp-gguf/Maya1-GGUF`` -> ``Maya1``, for a sentence naming the model."""
+    label = str(model_name or "").rstrip("/").rsplit("/", 1)[-1]
+    label = re.sub(r"[-_.]gguf$", "", label, flags = re.IGNORECASE)
+    return label or "This model"
+
+
+def _audio_request_problem(
+    model_info: dict,
+    model_name: Optional[str],
+    audio_type: Optional[str],
+    payload: ChatCompletionRequest,
+    run_inputs: Optional[dict],
+) -> Optional[str]:
+    """Why the loaded model cannot serve this request, in words for the user; else None."""
+    workflows = model_info.get("audio_workflows")
+    label = _audio_model_label(model_name)
+    inputs = (run_inputs or {}).get("audio_inputs") or {}
+    cloning = bool(run_inputs) and (run_inputs.get("workflow") == "clone" or bool(inputs))
+    if cloning:
+        if not workflows or "clone" not in workflows:
+            return "Load a model that can clone a voice."
+        if not inputs.get("reference"):
+            return "Add a reference clip to clone."
+        rules = model_info.get("audio_clone") or {}
+        if inputs.get("emotion") and not rules.get("emotion_audio"):
+            return f"{label} does not take an emotion clip."
+        if (
+            rules.get("reference_text") == "required"
+            and not str((run_inputs or {}).get("reference_text") or "").strip()
+        ):
+            from core.inference.audio_cpp_models import option_matches
+            if not option_matches(rules.get("reference_text_waived") or [], payload.audio_options):
+                return "Type what's said in the reference clip."
+    elif (
+        workflows is not None
+        and audio_type == "audiocpp_tts"
+        and "speak" not in workflows
+        and "clone" in workflows
+    ):
+        return f"{label} speaks in a voice cloned from a recording. Open Clone and add one."
+    if (
+        "instruct" in (model_info.get("audio_required_inputs") or [])
+        and not str(payload.audio_instructions or "").strip()
+    ):
+        return f"{label} needs a voice description."
+    return None
+
+
 async def _generate_tts_wav(
     text: str,
     payload: ChatCompletionRequest,
@@ -21848,10 +21919,12 @@ async def _generate_tts_wav(
     *,
     speech_api_default_max_tokens: bool = False,
     requested_model: str = _RELOAD_ONLY_MODEL,
+    run_inputs: Optional[dict] = None,
     stats_holder: Optional[dict] = None,
 ) -> tuple[bytes, int, str, Optional[str]]:
-    """Shared core of /audio/generate and /audio/speech. Returns
-    (wav_bytes, sample_rate, model_name, audio_type)."""
+    """Shared core of /audio/generate, /audio/speech and /audio/run. Returns
+    (wav_bytes, sample_rate, model_name, audio_type). ``run_inputs`` is /audio/run's ``workflow``,
+    ``audio_inputs`` (role -> server-local WAV path), ``reference_text`` and ``speed``."""
     # A named target must be budgeted against its own context after preflight.
     if requested_model == _RELOAD_ONLY_MODEL:
         _raise_if_prompt_leaves_no_speech_budget(text)
@@ -21884,6 +21957,7 @@ async def _generate_tts_wav(
 
     # Pick backend - both return (wav_bytes, sample_rate)
     audio_family = None
+    model_info: dict = {}
     llama_backend = get_llama_cpp_backend()
     # GGUF TTS goes straight to llama-server /completion, holding a slot with no
     # admission lease, so only the direct counter can show it in the slot readout.
@@ -21943,6 +22017,12 @@ async def _generate_tts_wav(
             language = payload.audio_language,
             seed = payload.seed,
             **({"audio_options": payload.audio_options} if payload.audio_options else {}),
+            **{
+                key: value
+                for key, value in (run_inputs or {}).items()
+                if key in ("workflow", "audio_inputs", "reference_text", "speed")
+                and value is not None
+            },
             stats_holder = stats_holder,
         )
 
@@ -21951,6 +22031,11 @@ async def _generate_tts_wav(
             status_code = 400,
             detail = f"Active model does not support text-to-speech (audio_type={audio_type or 'unknown'}).",
         )
+    _request_problem = _audio_request_problem(
+        model_info, model_name, audio_type, payload, run_inputs
+    )
+    if _request_problem:
+        raise HTTPException(status_code = 400, detail = _request_problem)
     if audio_type == "minimax_music3" and not str(payload.audio_instructions or "").strip():
         raise HTTPException(status_code = 400, detail = _MINIMAX_NEEDS_DESCRIPTION)
     if audio_type == "audiocpp_music":
@@ -22004,6 +22089,10 @@ async def _generate_tts_wav(
             if isinstance(e, AudioBackendUnsupportedError):
                 logger.info("Audio generation unsupported on this backend: %s", e.detail)
                 raise HTTPException(status_code = 501, detail = e.message)
+            if isinstance(e, AudioRuntimeError):
+                status_code, detail = audio_runtime_http_error(e)
+                logger.warning("Audio generation refused by the runtime: %s", e)
+                raise HTTPException(status_code = status_code, detail = detail)
             if audio_type == "minimax_music3" and _MINIMAX_PROMPT_OVERFLOW.fullmatch(str(e)):
                 raise HTTPException(status_code = 400, detail = str(e))
             logger.error(f"Audio generation error: {e}", exc_info = True)
@@ -22029,23 +22118,31 @@ def _wav_duration_seconds(wav_bytes: bytes, sample_rate: int) -> float:
 
 
 def _persist_tts_clip(
-    wav_bytes: bytes, sample_rate: int, text: str, model_name: str, audio_type: Optional[str]
+    wav_bytes: bytes,
+    sample_rate: int,
+    text: str,
+    model_name: str,
+    audio_type: Optional[str],
+    extra_meta: Optional[dict] = None,
+    workflow: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
     """Best-effort gallery save: persistence never fails the request that produced
     the audio. Blocking, so callers run it off the event loop."""
     from core.inference import audio_gallery
+    from core.inference.audio_workflows import workflow_for_audio_type
+
+    meta = {
+        "prompt": text,
+        "model": model_name,
+        "audio_type": audio_type or "unknown",
+        "workflow": workflow or workflow_for_audio_type(audio_type),
+        "sample_rate": sample_rate,
+        "duration_s": _wav_duration_seconds(wav_bytes, sample_rate),
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    meta.update({k: v for k, v in (extra_meta or {}).items() if v is not None})
     try:
-        return audio_gallery.save(
-            wav_bytes,
-            {
-                "prompt": text,
-                "model": model_name,
-                "audio_type": audio_type or "unknown",
-                "sample_rate": sample_rate,
-                "duration_s": _wav_duration_seconds(wav_bytes, sample_rate),
-                "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            },
-        )
+        return audio_gallery.save(wav_bytes, meta)
     except Exception as exc:  # noqa: BLE001 - log and serve the audio anyway
         logger.warning("audio_gallery.persist_failed: %s", exc)
         return None
@@ -22158,6 +22255,105 @@ async def generate_audio(
             ],
         }
     )
+
+
+def _audio_source_error(exc) -> HTTPException:
+    return HTTPException(status_code = exc.status, detail = exc.detail)
+
+
+def _audio_run_settings(body: AudioRunRequest, reference_text_used: bool) -> dict[str, Any]:
+    """The run's recipe for history: scalar options only."""
+    options = {
+        str(name): value
+        for name, value in (body.options or {}).items()
+        if isinstance(value, (bool, int, float)) or (isinstance(value, str) and len(value) <= 4000)
+    }
+    return {
+        "language": body.language,
+        "instructions": body.instructions,
+        "options": options,
+        "reference_text_used": reference_text_used,
+        "speed": body.speed,
+    }
+
+
+@router.post("/audio/run", response_model = AudioRunResponse)
+async def run_audio_workflow(
+    body: AudioRunRequest,
+    request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Clone, or Speak in a saved voice, and save the clip to history. Audio is named by id and
+    resolved here in the caller's account; the worker gets a prepared copy's path, never bytes."""
+    import base64
+
+    from core.inference import audio_inputs
+
+    if body.workflow == "clone" and body.inputs.reference is None:
+        raise HTTPException(status_code = 400, detail = "Add a reference clip to clone.")
+    prepared = {}
+    try:
+        for role in ("reference", "emotion"):
+            ref = getattr(body.inputs, role)
+            if ref is not None:
+                prepared[role] = await asyncio.to_thread(
+                    audio_inputs.prepare_reference, ref.model_dump(exclude_none = True)
+                )
+    except audio_inputs.AudioInputError as exc:
+        raise _audio_source_error(exc) from None
+    paths = {role: str(path) for role, (_source, path) in prepared.items()}
+    reference_source = prepared["reference"][0] if "reference" in prepared else None
+    reference_text = (body.inputs.reference_text or "").strip() or None
+    if reference_text is None and reference_source is not None and reference_source.kind == "voice":
+        from core.inference import audio_voices
+        voice = await asyncio.to_thread(audio_voices.get, reference_source.id)
+        reference_text = ((voice or {}).get("transcript") or "").strip() or None
+
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": body.text}],
+        max_tokens = body.max_tokens,
+        audio_instructions = body.instructions,
+        audio_language = body.language,
+        audio_options = body.options,
+        seed = body.seed,
+    )
+    wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
+        body.text,
+        payload,
+        request,
+        current_subject,
+        run_inputs = {
+            "workflow": body.workflow,
+            "audio_inputs": paths or None,
+            "reference_text": reference_text,
+            "speed": body.speed,
+        },
+    )
+    extra_meta: dict[str, Any] = {
+        "role": "output",
+        "settings": _audio_run_settings(body, reference_text is not None),
+    }
+    if reference_source is not None:
+        extra_meta["reference_name"] = reference_source.name
+        if reference_source.kind == "clip":
+            extra_meta["source_clip_id"] = reference_source.id
+        elif reference_source.kind == "voice":
+            extra_meta["voice_id"] = reference_source.id
+    record = await asyncio.to_thread(
+        _persist_tts_clip,
+        wav_bytes,
+        sample_rate,
+        body.text,
+        model_name,
+        audio_type,
+        extra_meta,
+        body.workflow,
+    )
+    if record is None:
+        audio = {"data": base64.b64encode(wav_bytes).decode("ascii"), "sample_rate": sample_rate}
+        return AudioRunResponse(model = model_name, audio = audio)
+    clip = {k: record[k] for k in ("id", "url", "sample_rate", "duration_s", "workflow")}
+    return AudioRunResponse(clips = [clip], model = model_name)
 
 
 def _refuse_decision_connection(provider_type: Optional[str], api_type: Optional[str]) -> None:
@@ -23276,9 +23472,15 @@ async def _transcribe_audio_result(
     request: Optional[Request] = None,
     device: Optional[str] = None,
     on_progress = None,
+    *,
+    source_path: Optional[Path] = None,
+    timestamps: bool = False,
 ) -> dict:
     """STT for already-decoded bytes, sidecar errors mapped to HTTP statuses.
-    Returns the sidecar's result dict so callers own the response shape."""
+    Returns the sidecar's result dict so callers own the response shape.
+
+    ``source_path`` (a prepared WAV inside the account) replaces ``raw``: audio.cpp reads it in
+    place, with ``timestamps`` when asked; every other engine gets its bytes."""
     if account_access.managed_account():
         await asyncio.to_thread(
             account_access.require_model_access, _stt_repo_reference(model, engine)
@@ -23296,12 +23498,19 @@ async def _transcribe_audio_result(
         SttTranscriptionCancelledError,
     )
 
-    if not raw:
-        raise HTTPException(status_code = 400, detail = "Audio is empty.")
-    if len(raw) > _MAX_AUDIO_RAW_BYTES:
-        raise HTTPException(status_code = 413, detail = "Audio is too large.")
+    if source_path is None:
+        if not raw:
+            raise HTTPException(status_code = 400, detail = "Audio is empty.")
+        if len(raw) > _MAX_AUDIO_RAW_BYTES:
+            raise HTTPException(status_code = 413, detail = "Audio is too large.")
 
     serving_engine = _resolve_serving_stt_engine(engine)
+    if source_path is not None and serving_engine != "audiocpp":
+        # Prepared WAVs are capped at 30 min; the encoded-upload cap would refuse past ~13 min.
+        raw = await asyncio.to_thread(source_path.read_bytes)
+        source_path = None
+        if not raw:
+            raise HTTPException(status_code = 400, detail = "Audio is empty.")
     await asyncio.to_thread(
         _prepare_runtime_fallback_checkpoint,
         engine,
@@ -23323,13 +23532,41 @@ async def _transcribe_audio_result(
         # timers fired, which is what OOMs a device that fits either alone. A no-op once
         # the model is resident, so the steady state costs a residency check.
         load_stt, _ = _stt_lifecycle()
+        on_phase = (
+            (lambda phase: on_progress({"text": "", "phase": phase}))
+            if on_progress is not None and source_path is not None
+            else None
+        )
+        load_options = {}
+        if source_path is not None and timestamps:
+            await asyncio.to_thread(sidecar.ensure_aligner, model, on_phase)
+            # Started with its aligner now, or transcribe_path would restart it.
+            load_options["timestamps"] = True
+        if on_phase is not None and await asyncio.to_thread(
+            sidecar.needs_reload_for, model, timestamps
+        ):
+            on_phase("loading")
         await asyncio.to_thread(
-            functools.partial(load_stt, model, serving_engine, cancel_event, device = device)
+            functools.partial(
+                load_stt, model, serving_engine, cancel_event, device = device, **load_options
+            )
         )
         loaded = getattr(sidecar, "loaded_model", None)
         if loaded is not None and loaded == _stt_resolved_model_id(model, serving_engine):
             account_access.note_resident_account(f"stt:{serving_engine}", loaded)
-        if on_progress is not None and serving_engine in ("transformers", "mtmd"):
+        if source_path is not None:
+            result = await asyncio.to_thread(
+                functools.partial(
+                    sidecar.transcribe_path,
+                    source_path,
+                    model,
+                    language,
+                    timestamps = timestamps,
+                    cancel_event = cancel_event,
+                    on_phase = on_phase,
+                )
+            )
+        elif on_progress is not None and serving_engine in ("transformers", "mtmd"):
             result = await asyncio.to_thread(
                 sidecar.transcribe,
                 raw,
@@ -23387,6 +23624,14 @@ async def _transcribe_audio_result(
     finally:
         if disconnect_watcher is not None:
             await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
+    return _labeled_speakers(result)
+
+
+def _labeled_speakers(result: dict) -> dict:
+    speakers = result.get("speakers") if isinstance(result, dict) else None
+    if isinstance(speakers, list) and all(isinstance(s, str) for s in speakers):
+        from core.inference.stt_capabilities import label_speakers
+        result = {**result, "speakers": label_speakers(speakers)}
     return result
 
 
@@ -23463,6 +23708,87 @@ async def transcribe_audio_raw(
             b"".join(chunks), model, language, fast, engine, request, device
         )
     )
+
+
+_NO_TIMESTAMPS_DETAIL = (
+    "This model cannot add timestamps. Pick Qwen3-ASR (audio.cpp), Parakeet-TDT, "
+    "MOSS-Transcribe-Diarize or VibeVoice-ASR."
+)
+_NO_SPEAKERS_DETAIL = (
+    "This model cannot tell speakers apart. Pick MOSS-Transcribe-Diarize or VibeVoice-ASR."
+)
+
+
+def _source_transcript(result: dict, source, speakers: bool) -> dict:
+    out = dict(result)
+    if not (speakers and out.get("speakers")):
+        out.pop("speakers", None)
+        if out.get("segments"):
+            out["segments"] = [
+                {k: v for k, v in s.items() if k != "speaker"} for s in out["segments"]
+            ]
+    out["source"] = {"kind": source.kind, "id": source.id, "name": source.name}
+    out["timestamps"] = bool(out.get("segments"))
+    return out
+
+
+@studio_router.post("/audio/transcribe/source")
+async def transcribe_audio_source(
+    body: TranscribeSourceRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Transcribe Audio page audio named by id, streamed as NDJSON and saved to history."""
+    from core.inference import audio_inputs, stt_capabilities, stt_details
+    from core.inference.transcript_stream import stream_transcript
+
+    engine = body.engine or await asyncio.to_thread(_stt_engine_for_model, body.model)
+    serving_engine = _resolve_serving_stt_engine(engine)
+    caps = await asyncio.to_thread(stt_capabilities.capabilities_for, body.model, serving_engine)
+    if body.timestamps and caps["timestamps"] == "unsupported":
+        raise HTTPException(status_code = 422, detail = _NO_TIMESTAMPS_DETAIL)
+    if body.speakers and not caps["speakers"]:
+        raise HTTPException(status_code = 422, detail = _NO_SPEAKERS_DETAIL)
+    rate = stt_details.FIXED_SPAN_RATES.get(caps["family"], 16000)
+
+    def _prepare():
+        source = audio_inputs.resolve_source(body.source.model_dump(exclude_none = True))
+        return source, audio_inputs.prepared_path(source, rate)
+
+    try:
+        source, path = await asyncio.to_thread(_prepare)
+    except audio_inputs.AudioInputError as exc:
+        raise _audio_source_error(exc) from None
+
+    async def _run(on_progress):
+        result = await _transcribe_audio_result(
+            b"",
+            body.model,
+            body.language,
+            False,
+            engine,
+            None,
+            body.device,
+            on_progress,
+            source_path = path,
+            timestamps = body.timestamps,
+        )
+        return _source_transcript(result, source, body.speakers)
+
+    return StreamingResponse(
+        stream_transcript(_run, body.title or source.name),
+        media_type = "application/x-ndjson",
+        headers = {"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
+
+
+@studio_router.get("/audio/stt/capabilities")
+async def stt_model_capabilities(
+    model: Optional[str] = Query(None, max_length = 512),
+    engine: Optional[str] = Query(None, max_length = 64),
+    current_subject: str = Depends(get_current_subject),
+):
+    """What ``model`` can add to a transcript (timestamps, speakers) and where it runs. Offline."""
+    from core.inference import stt_capabilities
+    return await asyncio.to_thread(stt_capabilities.capabilities_for, model, engine)
 
 
 # =====================================================================
@@ -44325,12 +44651,15 @@ async def delete_gallery_audio(audio_id: str, current_subject: str = Depends(get
 
 
 @studio_router.delete("/audio/gallery")
-async def clear_gallery_audio(current_subject: str = Depends(get_current_subject)):
+async def clear_gallery_audio(
+    workflow: Optional[Literal["speak", "clone", "music"]] = None,
+    current_subject: str = Depends(get_current_subject),
+):
     from core.inference import audio_gallery
     from core.inference.gallery_flags import FlagsUnavailable
 
     try:
-        removed = await asyncio.to_thread(audio_gallery.clear)
+        removed = await asyncio.to_thread(audio_gallery.clear, workflow = workflow)
     except FlagsUnavailable as exc:
         logger.warning("audio_gallery.clear_blocked: %s", exc)
         raise HTTPException(
@@ -44339,6 +44668,159 @@ async def clear_gallery_audio(current_subject: str = Depends(get_current_subject
             "avoid deleting archived clips.",
         )
     return {"removed": removed}
+
+
+@studio_router.post("/audio/inputs", status_code = 201, response_model = AudioInputRecord)
+async def upload_audio_input(
+    request: Request,
+    response: Response,
+    name: str = Query("audio", max_length = 255),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Store a raw audio body (any container), decoded once to WAV; a re-upload of the same audio
+    returns the existing record with 200."""
+    from core.inference import audio_inputs
+    from utils.upload_limits import AUDIO_INPUT_MAX_BYTES
+
+    declared = request.headers.get("content-length")
+    try:
+        if declared is not None and int(declared) > AUDIO_INPUT_MAX_BYTES:
+            raise HTTPException(status_code = 413, detail = "Audio is too large.")
+    except ValueError:
+        pass
+    try:
+        record, created = await audio_inputs.save_stream(request.stream(), name)
+    except audio_inputs.AudioInputError as exc:
+        raise _audio_source_error(exc) from None
+    if not created:
+        response.status_code = 200
+    return AudioInputRecord(**record)
+
+
+@studio_router.get("/audio/inputs/{input_id}/file")
+async def get_audio_input_file(input_id: str, current_subject: str = Depends(get_current_subject)):
+    from core.inference import audio_inputs
+    from fastapi.responses import FileResponse
+
+    path = await asyncio.to_thread(audio_inputs.input_path, input_id)
+    if path is None:
+        raise HTTPException(status_code = 404, detail = "This reference expired. Add it again.")
+    return FileResponse(
+        path, media_type = "audio/wav", headers = {"Cache-Control": "private, max-age=3600"}
+    )
+
+
+@studio_router.delete("/audio/inputs/{input_id}")
+async def delete_audio_input(input_id: str, current_subject: str = Depends(get_current_subject)):
+    from core.inference import audio_inputs
+    if not await asyncio.to_thread(audio_inputs.delete, input_id):
+        raise HTTPException(status_code = 404, detail = "Audio not found.")
+    return {"removed": True}
+
+
+@studio_router.post("/audio/inputs/{input_id}/transcribe", response_model = AudioInputTranscript)
+async def transcribe_audio_input(
+    input_id: str,
+    body: AudioInputTranscribeRequest,
+    request: Request,
+    clip_id: Optional[str] = Query(None, max_length = 128),
+    voice_id: Optional[str] = Query(None, max_length = 128),
+    current_subject: str = Depends(get_current_subject),
+):
+    """What is said in an input (or, with the path id ``source``, a history clip or saved voice),
+    over the first 30 s a clone uses. Saves nothing to the transcript history."""
+    from core.inference import audio_inputs
+
+    ref = {
+        # ``source`` (or ``-``) stands for "the clip_id or voice_id in the query". A real input id
+        # together with one of those names two sources and is refused.
+        "input_id": None if input_id in ("source", "-") else input_id,
+        "clip_id": clip_id,
+        "voice_id": voice_id,
+    }
+
+    def _prepare() -> bytes:
+        source = audio_inputs.resolve_source(ref)
+        cap = None if source.kind == "voice" else audio_inputs.REFERENCE_MAX_SECONDS
+        path = audio_inputs.prepared_path(source, 16000, max_seconds = cap)
+        return path.read_bytes()
+
+    try:
+        raw = await asyncio.to_thread(_prepare)
+    except audio_inputs.AudioInputError as exc:
+        raise _audio_source_error(exc) from None
+    result = await _transcribe_audio_result(
+        raw, body.model, body.language, False, body.engine, request, body.device
+    )
+    return AudioInputTranscript(
+        text = str(result.get("text") or "").strip(),
+        language = result.get("language") or None,
+        model = body.model,
+    )
+
+
+@studio_router.get("/audio/voices", response_model = AudioVoiceListResponse)
+async def list_audio_voices(current_subject: str = Depends(get_current_subject)):
+    from core.inference import audio_voices
+    return AudioVoiceListResponse(voices = await asyncio.to_thread(audio_voices.list_voices))
+
+
+@studio_router.post("/audio/voices", status_code = 201, response_model = AudioVoice)
+async def create_audio_voice(
+    body: AudioVoiceCreate, current_subject: str = Depends(get_current_subject)
+):
+    from core.inference import audio_inputs, audio_voices
+    def _create() -> dict:
+        source = audio_inputs.resolve_source(body.source.model_dump(exclude_none = True))
+        return audio_voices.create(
+            source.path,
+            {"name": body.name, "transcript": body.transcript, "language": body.language},
+        )
+
+    try:
+        return AudioVoice(**await asyncio.to_thread(_create))
+    except audio_inputs.AudioInputError as exc:
+        raise _audio_source_error(exc) from None
+
+
+@studio_router.patch("/audio/voices/{voice_id}", response_model = AudioVoice)
+async def update_audio_voice(
+    voice_id: str,
+    body: AudioVoicePatch,
+    current_subject: str = Depends(get_current_subject),
+):
+    from core.inference import audio_inputs, audio_voices
+
+    try:
+        record = await asyncio.to_thread(
+            audio_voices.update, voice_id, body.model_dump(exclude_unset = True)
+        )
+    except audio_inputs.AudioInputError as exc:
+        raise _audio_source_error(exc) from None
+    if record is None:
+        raise HTTPException(status_code = 404, detail = "Voice not found.")
+    return AudioVoice(**record)
+
+
+@studio_router.delete("/audio/voices/{voice_id}")
+async def delete_audio_voice(voice_id: str, current_subject: str = Depends(get_current_subject)):
+    from core.inference import audio_voices
+    if not await asyncio.to_thread(audio_voices.delete, voice_id):
+        raise HTTPException(status_code = 404, detail = "Voice not found.")
+    return {"removed": True}
+
+
+@studio_router.get("/audio/voices/{voice_id}/file")
+async def get_audio_voice_file(voice_id: str, current_subject: str = Depends(get_current_subject)):
+    from core.inference import audio_voices
+    from fastapi.responses import FileResponse
+
+    path = await asyncio.to_thread(audio_voices.voice_path, voice_id)
+    if path is None:
+        raise HTTPException(status_code = 404, detail = "Voice not found.")
+    return FileResponse(
+        path, media_type = "audio/wav", headers = {"Cache-Control": "private, max-age=3600"}
+    )
 
 
 @studio_router.get("/audio/transcripts")
@@ -44352,20 +44834,48 @@ async def list_gallery_transcripts(
     return await asyncio.to_thread(transcript_gallery.list_transcripts, limit, before, archived)
 
 
-@studio_router.patch("/audio/transcripts/{transcript_id}")
-async def archive_gallery_transcript(
-    transcript_id: str,
-    patch: AudioGalleryFlagsPatch,
-    current_subject: str = Depends(get_current_subject),
+@studio_router.get("/audio/transcripts/{transcript_id}")
+async def get_gallery_transcript(
+    transcript_id: str, current_subject: str = Depends(get_current_subject)
 ):
+    """One transcript in full: its segments, words and speakers included."""
     from core.inference import transcript_gallery
 
-    if patch.archived is None:
-        raise HTTPException(status_code = 422, detail = "Specify whether to archive this transcript.")
-    record = await asyncio.to_thread(transcript_gallery.set_archived, transcript_id, patch.archived)
+    record = await asyncio.to_thread(transcript_gallery.get, transcript_id)
     if record is None:
         raise HTTPException(status_code = 404, detail = "Transcript not found.")
     return record
+
+
+@studio_router.patch("/audio/transcripts/{transcript_id}")
+async def archive_gallery_transcript(
+    transcript_id: str,
+    patch: TranscriptPatch,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Archive or restore a transcript, and name its speakers; returns its list row."""
+    from core.inference import transcript_gallery
+
+    if patch.archived is None and patch.speaker_names is None:
+        raise HTTPException(status_code = 422, detail = "Specify whether to archive this transcript.")
+    record = None
+    if patch.speaker_names is not None:
+        try:
+            record = await asyncio.to_thread(
+                transcript_gallery.set_speaker_names, transcript_id, patch.speaker_names
+            )
+        except transcript_gallery.TranscriptPatchError as exc:
+            raise HTTPException(status_code = 422, detail = str(exc)) from None
+        if record is None:
+            raise HTTPException(status_code = 404, detail = "Transcript not found.")
+    if patch.archived is not None:
+        archived = await asyncio.to_thread(
+            transcript_gallery.set_archived, transcript_id, patch.archived
+        )
+        if archived is None:
+            raise HTTPException(status_code = 404, detail = "Transcript not found.")
+        record = archived
+    return transcript_gallery.summary(record)
 
 
 @studio_router.delete("/audio/transcripts/{transcript_id}")

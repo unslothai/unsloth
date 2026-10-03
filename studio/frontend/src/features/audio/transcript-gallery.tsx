@@ -1,21 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from "react";
-import { HugeiconsIcon } from "@hugeicons/react";
-import {
-  Archive02Icon,
-  Copy01Icon,
-  Delete02Icon,
-  Download01Icon,
-  MoreVerticalIcon,
-} from "@hugeicons/core-free-icons";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -24,12 +9,68 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { downloadTranscript } from "./transcript-download";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import {
+  Archive02Icon,
+  Copy01Icon,
+  Delete02Icon,
+  Download01Icon,
+  MoreVerticalIcon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { archiveTranscript, deleteTranscript, listTranscripts } from "./api";
+import { getTranscript } from "./transcribe-api";
+import { downloadTranscriptFile } from "./transcript-download";
+import {
+  TRANSCRIPT_EXPORT_FORMATS,
+  type TranscriptExportFormat,
+  exportTranscript,
+  formatNeedsTimestamps,
+} from "./transcript-export";
+import { detailsFrom, formatTimestamp } from "./transcript-model";
 import type { TranscriptRecord } from "./transcript-stream";
+
+// The list carries counts only, so timed formats fetch the full record.
+async function downloadRecord(
+  record: TranscriptRecord,
+  format: TranscriptExportFormat,
+): Promise<void> {
+  let full = record;
+  if ((record.segment_count ?? 0) > 0) {
+    try {
+      full = await getTranscript(record.id);
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Could not load transcript.",
+      );
+      return;
+    }
+  }
+  const file = exportTranscript(format, {
+    title: full.title,
+    text: full.text,
+    model: full.model,
+    details: detailsFrom(full),
+    names: full.speaker_names ?? {},
+  });
+  await downloadTranscriptFile(file.content, full.title, file.ext, file.mime);
+}
+
+function recordBadge(record: TranscriptRecord): string | null {
+  const speakers = record.speakers?.length ?? 0;
+  if (speakers > 0)
+    return speakers === 1 ? "1 speaker" : `${speakers} speakers`;
+  return (record.segment_count ?? 0) > 0 ? "Timestamps" : null;
+}
 
 export function TranscriptGallery({
   active,
@@ -83,7 +124,9 @@ export function TranscriptGallery({
         setRecords([]);
         setCursor(null);
         toast.error(
-          error instanceof Error ? error.message : "Could not load transcripts.",
+          error instanceof Error
+            ? error.message
+            : "Could not load transcripts.",
         );
       })
       .finally(() => {
@@ -97,6 +140,7 @@ export function TranscriptGallery({
   useLayoutEffect(() => {
     refreshRef.current = refresh;
   }, [refresh]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `latest` is the trigger; a newly saved transcript refetches the list.
   useEffect(() => {
     if (active) void refresh();
     return () => {
@@ -212,6 +256,16 @@ export function TranscriptGallery({
               }}
             >
               <span className="min-w-0 flex-1 truncate">{record.title}</span>
+              {recordBadge(record) ? (
+                <span className="shrink-0 rounded-4xl bg-muted px-1.5 text-ui-11 text-muted-foreground">
+                  {recordBadge(record)}
+                </span>
+              ) : null}
+              {record.duration ? (
+                <span className="shrink-0 font-mono text-ui-11p5 tabular-nums text-muted-foreground">
+                  {formatTimestamp(record.duration)}
+                </span>
+              ) : null}
               <span className="shrink-0 text-ui-11p5 text-muted-foreground">
                 {new Date(record.created_at).toLocaleDateString()}
               </span>
@@ -228,14 +282,26 @@ export function TranscriptGallery({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem
-                  onClick={() =>
-                    void downloadTranscript(record.text, record.title)
-                  }
-                >
-                  <HugeiconsIcon icon={Download01Icon} />
-                  Download .txt
-                </DropdownMenuItem>
+                {TRANSCRIPT_EXPORT_FORMATS.map((format) => {
+                  const blocked =
+                    formatNeedsTimestamps(format) &&
+                    !((record.segment_count ?? 0) > 0);
+                  return (
+                    <DropdownMenuItem
+                      key={format}
+                      disabled={blocked}
+                      onClick={() => void downloadRecord(record, format)}
+                    >
+                      <HugeiconsIcon icon={Download01Icon} />
+                      Download .{format}
+                      {blocked ? (
+                        <span className="ml-auto pl-3 text-ui-11p5 text-muted-foreground">
+                          Needs timestamps
+                        </span>
+                      ) : null}
+                    </DropdownMenuItem>
+                  );
+                })}
                 <DropdownMenuItem
                   onClick={() =>
                     void copyToClipboard(record.text).then((ok) =>

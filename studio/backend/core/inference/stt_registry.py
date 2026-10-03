@@ -50,6 +50,7 @@ def load(
     engine: str,
     request_cancel_event: Optional[threading.Event] = None,
     device: Optional[str] = None,
+    timestamps: bool = False,
 ) -> None:
     """Make ``model`` resident on ``engine``, then release every idle other engine.
 
@@ -64,6 +65,7 @@ def load(
     downloaded must not cost the user the engine they were already using.
     """
     others = [name for name in STT_ENGINES if name != engine]
+    options = {"timestamps": True} if timestamps else {}
     with _load_lock:
         # Release the other engines BEFORE allocating, but only once the checkpoint is known to be on disk. Holding
         # two engines across the load is what makes a switch OOM on a device that fits either alone; releasing blind
@@ -72,11 +74,11 @@ def load(
         if _model_is_downloaded(engine, model):
             unload(others, wait = False)
             sidecar_for(engine).load(
-                model, request_cancel_event = request_cancel_event, device = device
+                model, request_cancel_event = request_cancel_event, device = device, **options
             )
         else:
             sidecar_for(engine).load(
-                model, request_cancel_event = request_cancel_event, device = device
+                model, request_cancel_event = request_cancel_event, device = device, **options
             )
             unload(others, wait = False)
 

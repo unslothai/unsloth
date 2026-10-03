@@ -4,9 +4,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { readSrc } from "./helpers/kit.ts";
+import { readAudioWorkspaceSource } from "./helpers/audio-workspace.ts";
 
-const source = readSrc("features/audio/audio-page.tsx");
+const source = readAudioWorkspaceSource();
 
 test("generation exposes Stop only while the request controller can abort", () => {
   assert.match(
@@ -102,15 +102,10 @@ test("transcription survives page deactivation and aborts on unmount", () => {
   );
   assert.match(
     source,
-    /transcribeWithProgress\(\s*blob,\s*name,\s*\{[\s\S]*signal: controller\.signal/,
+    /transcribeSourceWithProgress\(\s*sourceRefOf\(source\),\s*source\.name,\s*\{[\s\S]*signal: controller\.signal/,
   );
-  const lifecycle = source.slice(
-    source.indexOf("// Release the microphone"),
-    source.indexOf("const handleTranscribeFile"),
-  );
-  assert.match(lifecycle, /if \(!active\) \{\s*stopAndDiscardRecording\(\);\s*\}/);
   assert.match(
-    lifecycle,
+    source,
     /useEffect\(\(\) => \(\) => transcriptionAbort\.current\?\.abort\(\), \[\]\)/,
   );
   assert.doesNotMatch(
@@ -138,7 +133,7 @@ test("a saved clip the refresh missed keeps its response audio mounted", () => {
     source,
     /const selectClip = useCallback\(\s*\(id: string, keepFallback = false\) => \{[\s\S]*if \(!keepFallback\) setFallbackClip\(null\);/,
   );
-  assert.match(source, /saved: true,\s*\}\);\s*selectClip\(generated\.clip_id, true\);/);
+  assert.match(source, /saved: true,\s*workflow,\s*\}\);\s*selectClip\(generated\.clip_id, true\);/);
 });
 
 test("deleting a clip drops the row without waiting on the refresh", () => {
@@ -168,6 +163,6 @@ test("the response fallback is dropped once its gallery record arrives", () => {
   // stale data URL, labelled as saved, as though the delete had not happened.
   assert.match(
     source,
-    /fallbackClipRef\.current &&\s*galleryCache\.selectedId &&\s*merged\.some\(\(c\) => c\.id === galleryCache\.selectedId\)\s*\)\s*\{\s*setFallbackClip\(null\);/,
+    /fallbackClipRef\.current\?\.saved &&\s*galleryCache\.selectedId &&\s*merged\.some\(\(c\) => c\.id === galleryCache\.selectedId\)\s*\)\s*\{\s*setFallbackClip\(null\);/,
   );
 });

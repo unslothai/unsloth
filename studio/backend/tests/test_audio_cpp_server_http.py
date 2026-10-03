@@ -79,6 +79,13 @@ FAKE_SERVER = textwrap.dedent(
                 if fields.get("language") == "slow":
                     time.sleep(30)
                 return self.reply(200, json.dumps({"text": json.dumps(fields, sort_keys=True)}).encode())
+            if self.path == "/v1/audio/transcriptions/details":
+                req = json.loads(body)
+                if req.get("language") == "slow":
+                    time.sleep(30)
+                if req.get("language") == "xx":
+                    return self.reply(400, json.dumps({"error": {"message": "unsupported language"}}).encode())
+                return self.reply(200, json.dumps({"text": json.dumps(req, sort_keys=True)}).encode())
             self.reply(404, b"{}")
 
     ThreadingHTTPServer(("127.0.0.1", cfg["port"]), H).serve_forever()
@@ -160,8 +167,10 @@ def test_cancel_closes_the_socket_mid_request(fake_binary, tmp_path):
         server.stop()
 
 
-def test_transcription_multipart_carries_model_language_and_file(fake_binary, tmp_path):
-    from core.inference.stt_audiocpp_sidecar import AudioCppSttSidecar
+def test_transcription_details_carries_model_language_and_server_path(fake_binary, tmp_path):
+    from pathlib import Path
+
+    from core.inference.stt_audiocpp_sidecar import AudioCppSttSidecar, _stt_tmp_dir
 
     model = CANARY
     server = srv.AudioCppServer.start(model, str(tmp_path / "m.gguf"))
@@ -169,7 +178,14 @@ def test_transcription_multipart_carries_model_language_and_file(fake_binary, tm
         side = AudioCppSttSidecar()
         side._server = server
         fields = json.loads(side._post_transcription(b"RIFF....WAVE", "en", None))
-        assert fields == {"file": "dictation.wav", "language": "en", "model": server.model_id}
+        audio = Path(fields.pop("audio"))
+        # JSON naming a file the server reads, not an upload; the file is gone once it answered.
+        assert fields == {"language": "en", "model": server.model_id}
+        assert audio.is_absolute() and audio.parent == _stt_tmp_dir() and audio.suffix == ".wav"
+        assert not audio.exists()
+        # A family that rejects the language still transcribes, without it.
+        fields = json.loads(side._post_transcription(b"RIFF....WAVE", "xx", None))
+        assert "language" not in fields and fields["model"] == server.model_id
     finally:
         server.stop()
 
