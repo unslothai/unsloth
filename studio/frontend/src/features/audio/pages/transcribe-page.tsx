@@ -30,6 +30,7 @@ import {
   type TranscribeSwitch,
   type TranscribeSwitches,
 } from "../transcribe-capabilities";
+import { transcribeLanguageFor } from "../transcribe-languages";
 import type { TranscriptProgress } from "../transcript-stream";
 import { GenerateActions, type GenerateBlocker } from "./tts-workspace";
 
@@ -119,10 +120,7 @@ export function TranscribeRail({
   const setTimestamps = useAudioTranscribeStore((state) => state.setTimestamps);
   const setSpeakers = useAudioTranscribeStore((state) => state.setSpeakers);
   // A saved language the model no longer lists falls back to Auto rather than vanishing.
-  const languageValue =
-    language && languages.some((entry) => entry.code === language)
-      ? language
-      : AUTO;
+  const languageValue = transcribeLanguageFor(language, languages) || AUTO;
   return (
     <AudioHistoryProvider value={historyClips}>
       <div data-tour="audio-record">

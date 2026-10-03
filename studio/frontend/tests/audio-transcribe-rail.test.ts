@@ -101,3 +101,13 @@ test("an always-on setting reads as a fact and the card does not cap Transcribe'
     /usesFirstSeconds !== null &&\s*durationS !== null &&\s*durationS > usesFirstSeconds/,
   );
 });
+
+test("the run sends the language the rail shows, never a hidden saved one", () => {
+  assert.match(rail, /transcribeLanguageFor\(language, languages\) \|\| AUTO/);
+  assert.match(
+    host,
+    /const transcribeLanguage = transcribeLanguageFor\(\s*transcribePrefs\.language,\s*transcribeLanguages,\s*\)/,
+  );
+  assert.match(host, /language: transcribeLanguage,/);
+  assert.doesNotMatch(host, /language: transcribePrefs\.language/);
+});

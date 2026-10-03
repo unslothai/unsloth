@@ -10,6 +10,7 @@ import {
 } from "../src/features/audio/transcribe-capabilities.ts";
 import {
   TRANSCRIBE_LANGUAGES,
+  transcribeLanguageFor,
   transcribeLanguagesFor,
 } from "../src/features/audio/transcribe-languages.ts";
 
@@ -150,4 +151,13 @@ test("languages are ISO codes with Auto first; English-only models keep only Aut
     transcribeLanguagesFor(["en", "de", "es", "fr"]).map((entry) => entry.code),
     ["", "en", "es", "fr", "de"],
   );
+});
+
+test("a saved language the model does not list is sent as detect, as the rail shows it", () => {
+  const canary = transcribeLanguagesFor(["en", "de", "es", "fr"]);
+  assert.equal(transcribeLanguageFor("ja", canary), "");
+  assert.equal(transcribeLanguageFor("de", canary), "de");
+  // An English-only model shows no picker, and a saved code is not sent to it.
+  assert.equal(transcribeLanguageFor("de", transcribeLanguagesFor(["en"])), "");
+  assert.equal(transcribeLanguageFor("", canary), "");
 });

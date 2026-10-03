@@ -356,6 +356,9 @@ FACTORIES = {
     ),
     "routes.inference:DELETE:/audio/voices/{voice_id}": Factory("media-audio-voice"),
     "routes.inference:GET:/audio/voices/{voice_id}/file": Factory("media-audio-voice"),
+    "routes.inference:GET:/audio/transcripts/{transcript_id}": Factory(
+        "media-transcript", fragment = SENTINEL
+    ),
     "routes.inference:PATCH:/audio/transcripts/{transcript_id}": Factory(
         "media-transcript", {"archived": True}, fragment = SENTINEL
     ),

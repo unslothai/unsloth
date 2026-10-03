@@ -67,7 +67,10 @@ import type { AudioSourceStatus } from "./hooks/audio-source-state";
 import { useTranscribeCapabilities } from "./hooks/use-transcribe-capabilities";
 import { useAudioTranscribeStore } from "./stores/audio-transcribe-store";
 import { SPEAKERS_MODEL_NAME, transcribeSwitches } from "./transcribe-capabilities";
-import { transcribeLanguagesFor } from "./transcribe-languages";
+import {
+  transcribeLanguageFor,
+  transcribeLanguagesFor,
+} from "./transcribe-languages";
 import { type AudioPickerRow, audioRowMatchesWorkflow } from "./picker-filter";
 import { useAudioCloneStore } from "./stores/audio-clone-store";
 import { useAudioWorkspaceStore } from "./stores/audio-workspace-store";
@@ -704,6 +707,10 @@ export function AudioPage({
   const transcribeLanguages = transcribeLanguagesFor(
     audioCppModelFor(transcribeRepo)?.languages,
   );
+  const transcribeLanguage = transcribeLanguageFor(
+    transcribePrefs.language,
+    transcribeLanguages,
+  );
   const transcribeSourceExpired =
     transcribeSourceStatus.phase === "expired" ||
     selectionExpired(transcribeSource, Date.now()) ||
@@ -778,7 +785,7 @@ export function AudioPage({
     void runTranscription(
       source,
       {
-        language: transcribePrefs.language,
+        language: transcribeLanguage,
         timestamps: transcribeWithTimestamps,
         speakers: transcribeWithSpeakers,
       },
@@ -792,7 +799,7 @@ export function AudioPage({
     });
   }, [
     runTranscription,
-    transcribePrefs.language,
+    transcribeLanguage,
     transcribeWithTimestamps,
     transcribeWithSpeakers,
     refreshTranscribeCaps,
