@@ -272,3 +272,33 @@ def test_a_custom_build_launches_on_a_backend_it_was_compiled_with(tmp_path, mon
     assert srv.select_backend(build("cuda", "cpu,cuda"), False) == "cuda"
     # A build too old to report keeps the host guess.
     assert srv.select_backend(build("silent", ""), False) == "cuda"
+
+
+def test_a_server_slow_to_exit_after_kill_does_not_fail_the_restart(tmp_path, monkeypatch):
+    """Seed-VC exited ~54 s after SIGTERM following a run; a reload must not raise on it."""
+    import subprocess as sp
+
+    class SlowProcess:
+        pid = 424242
+        killed = False
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            pass
+
+        def kill(self):
+            self.killed = True
+
+        def wait(self, timeout = None):
+            raise sp.TimeoutExpired(["audiocpp_server"], timeout)
+
+    forgotten = []
+    monkeypatch.setattr(srv, "forget_pid", forgotten.append)
+    config_dir = tmp_path / "cfg"
+    config_dir.mkdir()
+    process = SlowProcess()
+    server = srv.AudioCppServer(process, 1, KOKORO, "kokoro", "cuda", config_dir)
+    server.stop()
+    assert process.killed and not config_dir.exists() and forgotten == []

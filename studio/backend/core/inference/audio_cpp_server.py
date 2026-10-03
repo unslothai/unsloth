@@ -639,7 +639,15 @@ class AudioCppServer:
                 process.wait(timeout = 10)
             except subprocess.TimeoutExpired:
                 process.kill()
-                process.wait(timeout = 10)
+                # Seed-VC took ~54 s to exit after a run; a slow exit must not fail the next request.
+                try:
+                    process.wait(timeout = 60)
+                except subprocess.TimeoutExpired:
+                    logger.warning(
+                        "audio.cpp: server pid %s still exiting after SIGKILL", process.pid
+                    )
+                    shutil.rmtree(self._config_dir, ignore_errors = True)
+                    return
         forget_pid(process.pid)
         shutil.rmtree(self._config_dir, ignore_errors = True)
 
