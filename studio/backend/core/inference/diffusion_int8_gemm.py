@@ -242,11 +242,8 @@ def _launch(a: Any, w: Any, xs: Any, ws: Any, bias: Any, cfg: tuple) -> Any:
 
 
 def _aligned(a: Any, w: Any) -> bool:
-    """K, N (the output row stride), the row strides and the base pointers of both int8 operands on 16 bytes. Triton
-    specialises on exactly these; a K or stride off 16 compiles a variant that spills ~3.2-6.4 KB per thread (sm100 /
-    sm80), an N off 16 one that spills ~150-260 B on sm89, and the driver then reserves that local memory for every
-    resident thread of the device (about 0.7 GB on B200, 1.4 GB on A100) for the rest of the process, outside
-    PyTorch's allocator. Such shapes keep the stock path."""
+    """K, N, both row strides and both int8 base pointers on 16 bytes. Triton specialises on these, and an off-16 variant
+    spills; the driver then reserves that local memory device-wide for the process, outside PyTorch's allocator."""
     return (
         a.shape[1] % 16 == 0
         and w.shape[0] % 16 == 0
@@ -258,8 +255,7 @@ def _aligned(a: Any, w: Any) -> bool:
 
 
 def _run(a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
-    """Op body: the probed tile for this device, the stock epilogue if the launch fails or the operands are not
-    16-byte aligned (``_aligned``)."""
+    """Op body: the probed tile for this device, else (launch failure, ``_aligned`` false) the stock epilogue."""
     _CALLS[0] += 1
     a = a if a.stride(-1) == 1 else a.contiguous()
     cfg = _DEVICE_CFG.get(a.device.index)
@@ -328,8 +324,7 @@ def device_config(index: int) -> Optional[tuple]:
     return cfg
 
 
-# (M, N, K, bias, fp32 scales). Ragged N and K stay multiples of 16 (still off every shipped BLOCK_N / BLOCK_K): an N or
-# K off 16 compiles a spilling variant ``_aligned`` keeps off, and its local-memory reservation would outlive the probe.
+# (M, N, K, bias, fp32 scales). Ragged N / K stay on 16: an off-16 probe compiles the spilling variant (see ``_aligned``).
 _PROBE_SHAPES = (
     (257, 384, 512, False, False),
     (33, 208, 144, True, True),

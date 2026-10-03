@@ -80,7 +80,6 @@ def test_dense_linear_is_not_eligible():
 
 
 def test_probe_shapes_stay_on_the_16_byte_grid():
-    """A probe K off 16 compiles the spilling kernel variant; its local memory stays reserved for the process."""
     ns = [n for _m, n, _k, _b, _x in g8._PROBE_SHAPES]
     ks = [k for _m, _n, k, _b, _x in g8._PROBE_SHAPES]
     assert all(n % 16 == 0 for n in ns) and all(k % 16 == 0 for k in ks)
@@ -240,8 +239,7 @@ def test_prequant_style_fp32_weight_scale(forced, bias):
 
 @needs_cuda
 def test_no_compiled_variant_spills_to_local_memory(forced):
-    """Local memory a kernel spills to is reserved by the driver for every resident thread of the device and kept for
-    the process (0.7 GB on B200, 1.4 GB on A100 for the K-off-16 variant), outside PyTorch's allocator."""
+    """Spilled local memory stays reserved device-wide for the process (see ``_aligned``)."""
     g = torch.Generator().manual_seed(0)
     for m, k, n in ((4096, 3072, 3072), (300, 1040, 528), (300, 1040, 520), (300, 1000, 384)):
         a = torch.randint(-127, 128, (m, k), generator = g, dtype = torch.int8).cuda()
