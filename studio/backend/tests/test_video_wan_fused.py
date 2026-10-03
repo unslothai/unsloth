@@ -310,6 +310,29 @@ def test_kernel_failure_after_the_self_check_keeps_the_stock_forward(monkeypatch
 
 
 @needs_cuda
+def test_self_check_out_of_memory_retries_instead_of_disabling(monkeypatch):
+    blk = _block(dim = 128, ffn = 256, heads = 2, device = "cuda", dtype = torch.float16)
+    x, enc, temb, rot = _inputs(blk, 1, 32, 128, "cuda", torch.float16)
+    real = wf._fused_forward
+    calls = []
+
+    def _oom_once(*args):
+        calls.append(1)
+        if len(calls) == 1:
+            raise torch.OutOfMemoryError("CUDA out of memory")
+        return real(*args)
+
+    monkeypatch.setattr(wf, "_fused_forward", _oom_once)
+    with torch.no_grad():
+        want = WanTransformerBlock.forward(blk, x, enc, temb, rot)
+        assert wf.install(torch.float16, "cuda") is True
+        got = [blk(x, enc, temb, rot) for _ in range(2)]
+    assert all(torch.equal(want, g) for g in got)
+    assert wf.counts() == {"fused": 1, "stock": 1}
+    assert list(wf._VERIFIED.values()) == [True]
+
+
+@needs_cuda
 def test_grad_and_non_fp16_inputs_take_the_stock_path():
     blk = _block(dim = 128, ffn = 256, heads = 2, device = "cuda", dtype = torch.float16)
     x, enc, temb, rot = _inputs(blk, 1, 32, 128, "cuda", torch.float16)

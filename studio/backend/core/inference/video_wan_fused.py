@@ -487,14 +487,20 @@ class _Fallback(Exception):
     """A sub-module returned a layout the kernels do not take; recompute the block on the stock path."""
 
 
-def _verify(block: Any, args: tuple, stock: Callable) -> bool:
-    """Run the fused and stock block once on the same inputs; trust the fused path only on a bit-for-bit match."""
+def _verify(block: Any, args: tuple, stock: Callable) -> Optional[bool]:
+    """Run the fused and stock block once on the same inputs; trust the fused path only on a bit-for-bit match.
+    None (undecided, retried on the next call) when the check itself ran out of memory."""
     import torch
     try:
+        # A streamed group's onload can still be in flight on the copy stream (diffusers' first group offload pass);
+        # a reference computed from half-copied weights would disable the fused path for the whole load.
+        torch.cuda.synchronize(args[0].device)
         with torch.no_grad():
             ref = stock(block, *args)
             got = _fused_forward(block, *args)
         return bool(torch.equal(ref, got))
+    except torch.OutOfMemoryError:
+        return None
     except Exception:  # noqa: BLE001
         return False
 
@@ -519,6 +525,9 @@ def _make_forward(stock: Callable) -> Callable:
         ok = _VERIFIED.get(key)
         if ok is None:
             ok = _verify(self, (hidden_states, encoder_hidden_states, temb, rotary_emb), stock)
+            if ok is None:
+                _COUNTS["stock"] += 1
+                return stock(self, hidden_states, encoder_hidden_states, temb, rotary_emb)
             _VERIFIED[key] = ok
             logger = _STATE.get("logger")
             if logger is not None:
