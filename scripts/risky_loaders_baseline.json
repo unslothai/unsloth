@@ -30,7 +30,7 @@
       "file": "studio/backend/core/export/export.py",
       "rule": "unpinned-code-fetch",
       "sink": "git-clone-unpinned",
-      "digest": "e63525c81d014de0",
+      "digest": "f7dadd837277bc8d",
       "count": 1,
       "reason": "Known residual: clones llama.cpp for convert_lora_to_gguf.py at the bundled release tag when known (--branch tag), else upstream master, the same upstream trust as installing llama.cpp; pinning is a separate change."
     },
@@ -585,6 +585,22 @@
       "digest": "c6f8db768c498be7",
       "count": 1,
       "reason": "Only when the model itself was already loaded via approved remote code (_loaded_via_remote_code), so the export reload follows that decision."
+    },
+    {
+      "file": "unsloth/save.py",
+      "rule": "unpinned-code-fetch",
+      "sink": "git-clone-unpinned",
+      "digest": "6030da6ce18569c3",
+      "count": 1,
+      "reason": "Known residual: the legacy GGUF save path clones llama.cpp from upstream master (install_llama_cpp_clone_non_blocking / install_llama_cpp_blocking), the same upstream trust as installing llama.cpp; pinning is a separate change."
+    },
+    {
+      "file": "unsloth/save.py",
+      "rule": "unpinned-code-fetch",
+      "sink": "git-clone-unpinned",
+      "digest": "72fcdff75af05310",
+      "count": 1,
+      "reason": "Known residual: the legacy GGUF save path clones llama.cpp from upstream master (install_llama_cpp_clone_non_blocking / install_llama_cpp_blocking), the same upstream trust as installing llama.cpp; pinning is a separate change."
     },
     {
       "file": "unsloth/save.py",

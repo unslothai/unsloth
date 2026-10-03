@@ -90,6 +90,15 @@ REPORTED = {
         "def f(folder):\n    run(f'git clone https://github.com/o/r {folder}')\n",
         ("unpinned-code-fetch", "git-clone-unpinned"),
     ),
+    "a clone held in a command list": (
+        "def f():\n    commands = ['git clone https://github.com/o/r', 'pip install x']\n"
+        "    try_execute(commands)\n",
+        ("unpinned-code-fetch", "git-clone-unpinned"),
+    ),
+    "runpy.run_path by keyword": (
+        "import runpy\ndef f(p):\n    runpy.run_path(path_name = p)\n",
+        ("dynamic-import", "runpy.run_path"),
+    ),
     "a clone next to a message that only mentions checkout": (
         "import subprocess\ndef f():\n    subprocess.run(['git', 'clone', 'u'])\n"
         "    print('source checkout detected')\n",
@@ -132,6 +141,9 @@ QUIET = {
     ),
     "a download that is not loaded as code": (
         "from huggingface_hub import snapshot_download\ndef f(n):\n    return snapshot_download(n)\n"
+    ),
+    "a clone pinned by a chained reset": (
+        "def f(v):\n    try_execute(['git clone u', f'cd r && git reset --hard {v}'])\n"
     ),
     "git clone followed by a checkout": (
         "import subprocess\ndef f():\n    subprocess.run(['git', 'clone', 'u'])\n"
@@ -193,6 +205,14 @@ def test_a_removed_duplicate_leaves_no_spare_allowance(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(sys, "argv", ["lint_risky_loaders.py"])
     assert module.main() == 1
+
+
+def test_update_refuses_a_partial_scan(monkeypatch):
+    module = _module()
+    monkeypatch.setattr(sys, "argv", ["lint_risky_loaders.py", "--update", "--paths", "scripts"])
+    with pytest.raises(SystemExit) as raised:
+        module.main()
+    assert raised.value.code == 2
 
 
 def test_every_baseline_entry_is_reviewed():

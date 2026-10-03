@@ -180,6 +180,14 @@ def _first_argument(call: ast.Call, keyword: str):
     return _keyword(call, keyword)
 
 
+# The keyword that names the module or file, where it is not `name`.
+_TARGET_KEYWORDS = {
+    "runpy.run_path": "path_name",
+    "runpy.run_module": "mod_name",
+    "pydoc.locate": "path",
+}
+
+
 def _dynamic_import(call: ast.Call, qualified: str):
     sink = DYNAMIC_IMPORTS.get(qualified) or DYNAMIC_IMPORT_TAILS.get(qualified.split(".")[-1])
     if sink is None:
@@ -189,7 +197,7 @@ def _dynamic_import(call: ast.Call, qualified: str):
         keyword = "location" if sink == "spec_from_file_location" else "path"
         target = call.args[1] if len(call.args) > 1 else _keyword(call, keyword)
     else:
-        target = _first_argument(call, "name")
+        target = _first_argument(call, _TARGET_KEYWORDS.get(sink, "name"))
     if target is None or _is_written_out(target):
         return None
     return sink
@@ -272,6 +280,9 @@ def _trust_remote_code(node: ast.AST):
 def _git_words(command) -> list:
     """The written-out words of a git command, from an argv list or a shell string; [] otherwise."""
     if isinstance(command, (ast.List, ast.Tuple)):
+        first = command.elts[0] if command.elts else None
+        if not (isinstance(first, ast.Constant) and first.value == "git"):
+            return []
         words = [
             e.value
             for e in command.elts
@@ -280,31 +291,34 @@ def _git_words(command) -> list:
     else:
         if isinstance(command, ast.JoinedStr) and command.values:
             command = command.values[0]
-        if not (isinstance(command, ast.Constant) and isinstance(command.value, str)):
+        if (
+            not (isinstance(command, ast.Constant) and isinstance(command.value, str))
+            or "git " not in command.value
+        ):
             return []
-        words = command.value.split()
+        # The first git command in a chain, so `cd llama.cpp && git reset --hard X` counts.
+        segments = (part.split() for part in re.split(r"&&|;|\|\|", command.value))
+        words = next((w for w in segments if w[:1] == ["git"]), [])
     return words if words[:1] == ["git"] else []
 
 
-def _unpinned_fetches(calls: list) -> list:
+def _unpinned_fetches(calls: list, git_commands: list) -> list:
     """Per function: a clone with no pin, or a revision-less Hub download feeding a code loader."""
     found = []
-    pinned = None
     loads_code = any(qualified in CODE_LOADERS for _, qualified in calls)
     for call, qualified in calls:
-        if qualified.split(".")[-1] in HUB_DOWNLOADS:
-            if loads_code and _keyword(call, "revision") is None:
-                found.append((call, "hub-download-loaded-as-code"))
-            continue
-        if _git_words(call.args[0] if call.args else None)[1:2] == ["clone"]:
-            if pinned is None:
-                # A git command that moves to a revision, not any string that mentions one.
-                pinned = any(
-                    set(_git_words(other.args[0] if other.args else None)) & PIN_WORDS
-                    for other, _ in calls
-                )
-            if not pinned:
-                found.append((call, "git-clone-unpinned"))
+        if (
+            qualified.split(".")[-1] in HUB_DOWNLOADS
+            and loads_code
+            and _keyword(call, "revision") is None
+        ):
+            found.append((call, "hub-download-loaded-as-code"))
+    # Written-out git commands, passed directly or held in a variable first. A pin is a git
+    # command that moves to a revision, not any string that mentions one.
+    if not any(set(words) & PIN_WORDS for _, words in git_commands):
+        found += [
+            (node, "git-clone-unpinned") for node, words in git_commands if words[1:2] == ["clone"]
+        ]
     return found
 
 
@@ -331,6 +345,8 @@ def scan_file(path: Path, relative: str) -> list:
     found = []
     imports = []
     calls_by_owner: dict = {}
+    git_by_owner: dict = {}
+    covered = set()
     stack = [(tree, tree)]
     while stack:
         node, owner = stack.pop()
@@ -353,11 +369,20 @@ def scan_file(path: Path, relative: str) -> list:
             elif isinstance(child, ast.Constant) and isinstance(child.value, str):
                 if "/ma" in child.value and BRANCH_HEAD_PY.search(child.value):
                     found.append(_key(relative, "unpinned-code-fetch", "branch-head-url", child))
+            if (
+                isinstance(child, (ast.List, ast.Tuple, ast.JoinedStr, ast.Constant))
+                and id(child) not in covered
+            ):
+                words = _git_words(child)
+                if words:
+                    git_by_owner.setdefault(owner, []).append((child, words))
+                    if isinstance(child, ast.JoinedStr):
+                        covered.add(id(child.values[0]))
             stack.append((child, owner))
 
     table = _imports(ast.Module(body = imports, type_ignores = []))
-    for owner, owned in calls_by_owner.items():
-        calls = [(call, _qualified(call.func, table)) for call in owned]
+    for owner in calls_by_owner.keys() | git_by_owner.keys():
+        calls = [(call, _qualified(call.func, table)) for call in calls_by_owner.get(owner, ())]
         for call, qualified in calls:
             sink = _dynamic_import(call, qualified)
             if sink:
@@ -365,7 +390,7 @@ def scan_file(path: Path, relative: str) -> list:
             sink = _unsafe_deserialize(call, qualified)
             if sink:
                 found.append(_key(relative, "unsafe-deserialize", sink, call))
-        for call, sink in _unpinned_fetches(calls):
+        for call, sink in _unpinned_fetches(calls, git_by_owner.get(owner, [])):
             found.append(_key(relative, "unpinned-code-fetch", sink, call))
     return found
 
@@ -418,6 +443,9 @@ def main() -> int:
 
     if arguments.self_test:
         return self_test()
+    if arguments.update and arguments.paths:
+        # --update rewrites the whole baseline, so a partial scan would drop every other entry.
+        parser.error("--update rewrites the whole baseline; run it without --paths")
 
     document = json.loads(BASELINE_PATH.read_text(encoding = "utf-8"))
     found = collect(arguments.paths or document["targets"])
@@ -524,6 +552,9 @@ def clone():
     subprocess.run(["git", "clone", "https://github.com/org/repo"])
 def shell_clone(folder):
     run(f"git clone https://github.com/org/repo {folder}")
+def held_clone():
+    commands = ["git clone --recursive https://github.com/org/repo", "pip install x"]
+    try_execute(commands)
 """,
     "unsafe-deserialize": """
 import pickle, torch, yaml, joblib
@@ -541,7 +572,7 @@ def f(path, flag):
 _BAD_COUNTS = {
     "dynamic-import": 7,
     "trust-remote-code": 6,
-    "unpinned-code-fetch": 4,
+    "unpinned-code-fetch": 5,
     "unsafe-deserialize": 7,
 }
 
@@ -560,6 +591,8 @@ def f(name, path, trust_remote_code = False):
     yaml.load(open(path), Loader = yaml.SafeLoader)
     yaml.safe_load(open(path))
     snapshot_download(name)
+def chained_pin(version):
+    try_execute(["git clone https://github.com/org/repo", f"cd repo && git reset --hard {version}"])
 def pinned():
     subprocess.run(["git", "clone", "https://github.com/org/repo"])
     subprocess.run(["git", "checkout", "0123abc"])
