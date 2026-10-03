@@ -479,7 +479,7 @@ def prequant_mirror_path(
                 candidate = os.path.realpath(os.path.join(base, *rel))
             except Exception:  # noqa: BLE001 - a bad root is simply not a mirror
                 break
-            if candidate.startswith(base + os.sep) and os.path.isfile(candidate):
+            if candidate.startswith(base.rstrip(os.sep) + os.sep) and os.path.isfile(candidate):
                 return candidate
     return None
 

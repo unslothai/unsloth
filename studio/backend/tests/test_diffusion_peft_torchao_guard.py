@@ -48,6 +48,19 @@ def test_studio_copy_matches_unsloth_import_fixes(name):
     ), f"{name} drifted from unsloth/import_fixes.py; port the change to both copies."
 
 
+def _assigned_value_dump(path: Path, name: str) -> str:
+    for node in ast.parse(path.read_text(encoding = "utf-8")).body:
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == name for t in node.targets):
+            return ast.dump(node.value)
+    raise AssertionError(f"{path} has no top-level {name}")
+
+
+def test_studio_and_unsloth_match_the_same_torchao_removals():
+    """The matcher is shared state too: when unsloth patched first, its matcher is the one that runs."""
+    name = "_PEFT_TORCHAO_MISSING_TENSOR_SUBCLASS"
+    assert _assigned_value_dump(_PATCH_MODULE, name) == _assigned_value_dump(_IMPORT_FIXES, name)
+
+
 @pytest.fixture(autouse = True)
 def _restore_peft_dispatchers(monkeypatch):
     """The patcher wraps every loaded peft copy, real ones included. Put them back afterwards so a

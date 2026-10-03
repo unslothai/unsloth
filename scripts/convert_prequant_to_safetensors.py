@@ -218,7 +218,7 @@ def convert(src: str, out_dir: str, *, repo: str | None, revision: str | None, s
 
     t0 = time.time()
     name = os.path.basename(src)
-    stem = name[: -len(".pt")] if name.endswith(".pt") else name
+    stem = os.path.splitext(name)[0] if name.endswith((".pt", ".pth")) else name
     dest_dir = os.path.join(out_dir, *repo.split("/")) if repo else out_dir
     os.makedirs(dest_dir, exist_ok = True)
     dst = os.path.join(dest_dir, stem + ".safetensors")

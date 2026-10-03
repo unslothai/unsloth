@@ -62,6 +62,14 @@ UNSLOTH_METADATA_KEY = "unsloth_metadata"
 # never sees a key it would try to rsplit on ".".
 UNSLOTH_ROOT_PREFIX = "unsloth_root::"
 UNSLOTH_ROOT_KEYS_KEY = "unsloth_root_tensors"
+# Our own header entries: never torchao tensor entries, so never pruned (layout + source: prequant_native).
+_UNSLOTH_HEADER_KEYS = (
+    UNSLOTH_FORMAT_KEY,
+    UNSLOTH_METADATA_KEY,
+    UNSLOTH_ROOT_KEYS_KEY,
+    "unsloth_quant_layout",
+    "unsloth_source",
+)
 
 # The torchao release that first shipped the flatten/unflatten pair under this import path. Below it
 # the helpers are absent and a safetensors artifact simply cannot be read, so the loader says so and
@@ -354,7 +362,7 @@ def _header_without_inert_tensor_field(
     pruned = dict(header)
     victims = []
     for key, value in header.items():
-        if key in (UNSLOTH_FORMAT_KEY, UNSLOTH_METADATA_KEY, UNSLOTH_ROOT_KEYS_KEY):
+        if key in _UNSLOTH_HEADER_KEYS:
             continue
         try:
             parsed = json.loads(value)
@@ -426,7 +434,7 @@ def _header_without_unconstructible_fields(
             removed: list = []
             pruned = {}
             for key, value in header.items():
-                if key in (UNSLOTH_FORMAT_KEY, UNSLOTH_METADATA_KEY, UNSLOTH_ROOT_KEYS_KEY):
+                if key in _UNSLOTH_HEADER_KEYS:
                     pruned[key] = value
                     continue
                 try:
@@ -484,7 +492,7 @@ _ST_DTYPES = {
 }
 
 # safetensors refuses headers past 100 MB; a pre-quant header is a few MB at most.
-_MAX_HEADER_BYTES = 100 << 20
+_MAX_HEADER_BYTES = 100_000_000  # the safetensors parser's own limit
 
 
 def _mapped_tensors(path: str) -> tuple:

@@ -168,6 +168,10 @@ def _decode(value: Any, api: dict, what: str) -> Any:
         if not isinstance(data, str) or not hasattr(enum_cls, data):
             raise _Unsupported(f"{what}: {kind} {data!r}")
         return getattr(enum_cls, data)
+    if kind in ("PerRow", "PerTensor") and data is not None and not isinstance(data, dict):
+        raise _Unsupported(f"{what}: {kind} {data!r}")
+    if kind in ("PerRow", "PerTensor") and set(data or {}) - ({"dim"} if kind == "PerRow" else set()):
+        raise _Unsupported(f"{what}: {kind} fields {sorted(set(data) - {'dim'})}")
     if kind == "PerRow":
         dim = (data or {}).get("dim", -1)
         try:
@@ -344,7 +348,7 @@ def native_unflatten(tensors: dict, raw: dict, *, path: str = "") -> Optional[di
         names = json.loads(raw.get("tensor_names") or "null")
     except Exception:  # noqa: BLE001
         return None
-    if not isinstance(names, list) or not all(isinstance(n, str) and n for n in names):
+    if not isinstance(names, list) or not all(isinstance(n, str) and n for n in names) or len(set(names)) != len(names):
         return None
     v1 = _v1_int8_api() if int8_rebuilds_as_v1(raw) else None
     out: dict = {}

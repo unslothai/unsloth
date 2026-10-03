@@ -267,6 +267,20 @@ def test_layouts_the_native_reader_does_not_model_go_to_torchao():
     assert pn.native_unflatten(dict(flat), dict(meta, **{"blk.w.weight": json.dumps(entry)})) is None
 
 
+@needs_helpers
+@needs_int8tensor
+def test_duplicate_names_and_unknown_granularity_fields_go_to_torchao():
+    flatten, _ = ps._torchao_helpers()
+    flat, meta = flatten({"blk.f.weight": _fp8_tensor()})
+    dup = dict(meta, tensor_names = json.dumps(["blk.f.weight", "blk.f.weight"]))
+    assert pn.native_unflatten(dict(flat), dup) is None
+    entry = json.loads(meta["blk.f.weight"])
+    text = json.dumps(entry)
+    assert '"_type": "PerRow", "_data": {"dim": -1}' in text
+    odd = dict(meta, **{"blk.f.weight": text.replace('"_type": "PerRow", "_data": {"dim": -1}', '"_type": "PerRow", "_data": {"dim": -1, "block": 128}')})
+    assert pn.native_unflatten(dict(flat), odd) is None
+
+
 def test_overlapping_tensor_bytes_are_refused(tmp_path):
     header = {"x": {"dtype": "F32", "shape": [4], "data_offsets": [0, 16]}, "y": {"dtype": "F32", "shape": [4], "data_offsets": [0, 16]}}
     raw = json.dumps(header).encode()
@@ -507,6 +521,12 @@ def test_the_converter_writes_a_text_encoder_with_tied_weights(tmp_path):
     torch.save({"format": TE_PREQUANT_FORMAT, "metadata": {"scheme": "fp8", "component": "text_encoder"}, "state_dict": sd}, str(src))
     rec = _converter().convert(str(src), str(tmp_path / "out"), repo = None, revision = None, sha = None)
     assert rec["kind"] == "text_encoder" and rec["verified_bit_identical"]
+    assert rec["dst"].endswith("Model-text_encoder-FP8.safetensors")
+    pth = tmp_path / "Other-text_encoder-FP8.pth"
+    pth.write_bytes(src.read_bytes())
+    assert _converter().convert(str(pth), str(tmp_path / "out"), repo = None, revision = None, sha = None)["dst"].endswith(
+        "Other-text_encoder-FP8.safetensors"
+    )
     back = ps.load_plain_prequant_safetensors(rec["dst"])
     assert back["format"] == TE_PREQUANT_FORMAT
     for key in sd:
