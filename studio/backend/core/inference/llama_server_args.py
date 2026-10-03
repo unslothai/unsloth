@@ -2276,7 +2276,10 @@ _NGRAM_MOD_LEGACY_FLAGS = {
 
 
 def translate_ngram_mod_args(
-    args: Iterable[str], flavor: Optional[str], *, chain_with_mtp: bool = False
+    args: Iterable[str],
+    flavor: Optional[str],
+    *,
+    chain_with_mtp: bool = False,
 ) -> list[str]:
     """Respell ``--spec-ngram-mod-n-*`` extras for a pre-rename build (``flavor == "legacy"``).
 
