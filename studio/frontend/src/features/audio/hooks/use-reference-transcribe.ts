@@ -8,31 +8,14 @@ import { transcribeAudioInput } from "../api";
 import { type AudioSourceSelection, sourceRefOf } from "../audio-run-request";
 import { sttEngineForRepoId, sttSidecarKeyFor } from "../catalog";
 
-/** The speech-to-text model the page uses: Transcribe's pick, else the dictation model from
- *  Settings > Voice. */
-export function referenceSttModel(sttRepo: string | null): {
-  model: string;
-  engine: string;
-} {
-  if (sttRepo) {
-    return {
-      model: sttSidecarKeyFor(sttRepo),
-      engine: sttEngineForRepoId(sttRepo),
-    };
-  }
-  const model = useVoiceSettingsStore.getState().sttModel;
-  return { model, engine: sttEngineFor(model) };
-}
-
-/** Fills "What's said in the clip" from the reference, without adding it to the transcript list. */
+/** Fills "What's said in the clip" without adding it to the transcript list. */
 export function useReferenceTranscribe({
   sttRepo,
   language,
   onText,
 }: {
-  /** Transcribe's selected or last speech-to-text repo, if any. */
+  /** Transcribe's STT repo; null falls back to the Settings > Voice dictation model. */
   sttRepo: string | null;
-  /** The clone language, as a hint; empty lets the model detect it. */
   language: string;
   onText: (text: string) => void;
 }) {
@@ -50,12 +33,14 @@ export function useReferenceTranscribe({
       setTranscribing(true);
       setError(null);
       try {
-        const target = referenceSttModel(sttRepo);
+        const voice = useVoiceSettingsStore.getState();
+        const model = sttRepo ? sttSidecarKeyFor(sttRepo) : voice.sttModel;
         const result = await transcribeAudioInput(
           sourceRefOf(reference),
           {
-            ...target,
-            device: useVoiceSettingsStore.getState().sttDevice,
+            model,
+            engine: sttRepo ? sttEngineForRepoId(sttRepo) : sttEngineFor(model),
+            device: voice.sttDevice,
             ...(language ? { language } : {}),
           },
           controller.signal,
@@ -84,21 +69,7 @@ export function useReferenceTranscribe({
     [sttRepo, language],
   );
 
-  const cancel = useCallback(() => {
-    abort.current?.abort();
-    abort.current = null;
-    setTranscribing(false);
-  }, []);
-
   useEffect(() => () => abort.current?.abort(), []);
 
-  return {
-    transcribe,
-    transcribing,
-    error,
-    clearError: () => setError(null),
-    cancel,
-  };
+  return { transcribe, transcribing, error };
 }
-
-export type ReferenceTranscribe = ReturnType<typeof useReferenceTranscribe>;

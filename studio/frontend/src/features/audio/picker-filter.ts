@@ -3,7 +3,7 @@
 
 // Free of app imports so the node test runner can load it directly.
 
-import { audioCppModelFor, audioCppWorkflowsFor } from "./audio-cpp-catalog";
+import { audioCppModelFor } from "./audio-cpp-catalog";
 import {
   type AudioWorkflowId,
   audioWorkflowForAudioType,
@@ -34,7 +34,7 @@ export function audioRowMatchesWorkflow(
   }
   const catalogModel = audioCppModelFor(row.id);
   if (catalogModel?.workflows) {
-    return audioCppWorkflowsFor(catalogModel).includes(workflow);
+    return catalogModel.workflows.includes(workflow);
   }
   const catalogTask = catalogModel?.task;
   if (catalogTask === "music") {

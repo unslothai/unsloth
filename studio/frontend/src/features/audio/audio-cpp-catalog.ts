@@ -15,14 +15,14 @@ export const AUDIO_CPP_AUDIO_TYPES: ReadonlySet<string> = new Set([
 
 export type AudioCppTask = "tts" | "music" | "asr";
 
-/** The Audio pages a model lists on. Mirrors AudioWorkflowId; spelled out so this file stays import-free. */
+/** Mirrors AudioWorkflowId; spelled out to keep this file import-free. */
 export type AudioCppWorkflow = "speak" | "clone" | "music" | "transcribe";
 
 export interface AudioCppModel {
   /** Hub repo id, or `${AUDIO_CPP_REPO}/<folder>` for a package in the shared repo. */
   id: string;
   task: AudioCppTask;
-  /** The pages it lists on, when they differ from its task's (clone-only speech models). */
+  /** Overrides the task's default page (clone-only speech models). */
   workflows?: readonly AudioCppWorkflow[];
   /** ASR only: the primary language codes the model transcribes. Absent = multilingual. */
   languages?: readonly string[];
@@ -162,19 +162,19 @@ export function isAudioRuntimeGguf(
   );
 }
 
-/** The pages a catalog model lists on: its own list, else the one its task implies. */
+const TASK_WORKFLOW: Record<AudioCppTask, AudioCppWorkflow> = {
+  tts: "speak",
+  music: "music",
+  asr: "transcribe",
+};
+
 export function audioCppWorkflowsFor(
   model: AudioCppModel,
 ): readonly AudioCppWorkflow[] {
-  if (model.workflows) return model.workflows;
-  return model.task === "music"
-    ? ["music"]
-    : model.task === "asr"
-      ? ["transcribe"]
-      : ["speak"];
+  return model.workflows ?? [TASK_WORKFLOW[model.task]];
 }
 
-/** Whether a model speaks without a reference clip. Anything outside the catalog is assumed to. */
+/** Speaks without a reference clip; models outside the catalog are assumed to. */
 export function audioCppModelSpeaks(id: string | null | undefined): boolean {
   const model = audioCppModelFor(id);
   return !model || audioCppWorkflowsFor(model).includes("speak");

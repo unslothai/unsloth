@@ -5,15 +5,12 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { PauseIcon, PlayIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { WAVEFORM_BARS, formatSeconds } from "./waveform-peaks";
 
 const SEEK_STEP_SECONDS = 5;
 
-/** A clip as neutral bars with a play button. The played part is in the text colour, the rest
- *  muted; the position is also spoken, so colour never carries it alone. Focus the bars and
- *  press Space to play or pause, arrows to seek. Nothing animates, so reduced motion needs no
- *  separate state. */
+/** The position is also spoken, so colour never carries it alone. */
 export function Waveform({
   peaks,
   durationS,
@@ -21,12 +18,10 @@ export function Waveform({
   label,
   className,
 }: {
-  /** Bar heights 0..1; null draws a flat placeholder while the audio decodes. */
+  /** null draws a flat placeholder while the audio decodes. */
   peaks: readonly number[] | null;
   durationS: number | null;
-  /** Where to play it from; without one the bars are drawn but cannot play. */
   src: string | null;
-  /** What the clip is, for screen readers. */
   label: string;
   className?: string;
 }) {
@@ -40,7 +35,6 @@ export function Waveform({
   const bars = peaks && peaks.length > 0 ? peaks : null;
   const count = bars?.length ?? WAVEFORM_BARS;
 
-  // A new source starts from the top, stopped.
   useEffect(() => {
     setPlaying(false);
     setPosition(0);
@@ -48,7 +42,7 @@ export function Waveform({
     if (src === null) audioRef.current?.pause();
   }, [src]);
 
-  const toggle = useCallback(() => {
+  const toggle = () => {
     const audio = audioRef.current;
     if (!(audio && src)) return;
     if (audio.paused) {
@@ -56,18 +50,15 @@ export function Waveform({
     } else {
       audio.pause();
     }
-  }, [src]);
+  };
 
-  const seekTo = useCallback(
-    (seconds: number) => {
-      const audio = audioRef.current;
-      if (!(audio && src) || duration <= 0) return;
-      const next = Math.min(duration, Math.max(0, seconds));
-      audio.currentTime = next;
-      setPosition(next);
-    },
-    [src, duration],
-  );
+  const seekTo = (seconds: number) => {
+    const audio = audioRef.current;
+    if (!(audio && src) || duration <= 0) return;
+    const next = Math.min(duration, Math.max(0, seconds));
+    audio.currentTime = next;
+    setPosition(next);
+  };
 
   return (
     <div className={cn("flex items-center gap-2", className)}>
@@ -124,7 +115,6 @@ export function Waveform({
         >
           {Array.from({ length: count }, (_, index) => {
             const peak = bars ? (bars[index] ?? 0) : 0;
-            // A floor keeps silence visible as a line rather than a gap.
             const height = Math.max(2, peak * 30);
             const played = (index + 0.5) / count <= fraction;
             return (

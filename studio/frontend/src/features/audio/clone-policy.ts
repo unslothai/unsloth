@@ -1,17 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// What Clone needs before it can run, and the request rules its panels share. Free of app
-// imports so the node test runner can load it directly.
+// No app imports: the node test runner loads this directly.
 
 import type { AudioSourceSelection } from "./audio-run-request";
 import type { AudioModelContext, AudioRunPatch } from "./tools/types";
 
-/** How the "What's said in the clip" field shows. */
-export type ReferenceTextField = "required" | "optional" | "hidden";
+type ReferenceTextField = "required" | "optional" | "hidden";
 
-/** The transcript field for the loaded model, after any panel that changes it (Timbre only,
- *  CosyVoice3 Cross-lingual). An unknown model gets an optional field. */
+/** A panel override (Timbre only, CosyVoice3 Cross-lingual) wins; unknown models get optional. */
 export function referenceTextField(
   ctx: Pick<AudioModelContext, "referenceTextMode">,
   patch: Pick<AudioRunPatch, "referenceTextMode">,
@@ -27,8 +24,7 @@ export function referenceTextField(
   }
 }
 
-/** The languages Qwen3-TTS names in full; Auto (empty) lets the model detect it. The backend
- *  maps ISO codes for families that need names, so these work for every clone model. */
+/** Qwen3-TTS spellings; the backend maps them for other clone families. */
 export const QWEN3_LANGUAGE_NAMES = [
   "Chinese",
   "English",
@@ -42,7 +38,6 @@ export const QWEN3_LANGUAGE_NAMES = [
   "Italian",
 ] as const;
 
-/** Three sentences to try a new voice on. */
 export const CLONE_TEXT_EXAMPLES = [
   "Thanks for calling. How can I help you today?",
   "The quick brown fox jumps over the lazy dog near the river bank.",
@@ -51,15 +46,14 @@ export const CLONE_TEXT_EXAMPLES = [
 
 const SPEAKER_LINE = /^\s*Speaker\s*\d+\s*:/im;
 
-/** VibeVoice reads a script of `Speaker N:` lines. Plain text becomes one speaker's line, the
- *  same rule the backend applies, so the preview shows what is sent. */
+/** Same rule as the backend, so the preview shows what is sent. */
 export function formatVibeVoiceScript(text: string): string {
   const trimmed = text.trim();
   if (!trimmed || SPEAKER_LINE.test(trimmed)) return trimmed;
   return `Speaker 1: ${trimmed}`;
 }
 
-/** IndexTTS2's eight emotion dimensions, in the order its vector takes them. */
+/** Order matters: it is the runtime's vector order. */
 export const INDEX_TTS2_EMOTIONS = [
   { key: "happy", label: "Happy" },
   { key: "angry", label: "Angry" },
@@ -71,7 +65,6 @@ export const INDEX_TTS2_EMOTIONS = [
   { key: "calm", label: "Calm" },
 ] as const;
 
-/** The vector as the runtime takes it: eight comma-separated numbers, two decimals at most. */
 export function emotionVectorString(vector: readonly number[]): string {
   return INDEX_TTS2_EMOTIONS.map((_, index) => {
     const value = vector[index];
@@ -83,7 +76,7 @@ export function emotionVectorString(vector: readonly number[]): string {
   }).join(",");
 }
 
-export type CloneBlockerKind =
+type CloneBlockerKind =
   | "reference"
   | "reference-busy"
   | "reference-expired"
@@ -92,9 +85,8 @@ export type CloneBlockerKind =
   | "text"
   | "panel";
 
-export interface CloneBlockerInput {
+interface CloneBlockerInput {
   reference: AudioSourceSelection | null;
-  /** The reference card is uploading or recording. */
   referenceBusy: boolean;
   referenceExpired: boolean;
   referenceError: string | null;
@@ -104,8 +96,7 @@ export interface CloneBlockerInput {
   panelError: string | null;
 }
 
-/** The first page input Clone is missing, in rail order; null when it can run. Model blockers
- *  (none loaded, cannot clone) come from the host first. */
+/** First missing input in rail order; model blockers come from the host before this. */
 export function cloneBlocker(
   input: CloneBlockerInput,
 ): { kind: CloneBlockerKind; reason: string } | null {

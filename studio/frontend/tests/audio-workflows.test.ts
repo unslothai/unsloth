@@ -80,12 +80,10 @@ test("the music audio types match the backend's list", () => {
 });
 
 test("a loaded model keeps the open page when it can run it, else opens its own", () => {
-  // VoxCPM2 speaks and clones: loading it on Clone stays on Clone.
   assert.equal(
     workflowForLoadedModel({ current: "clone", audioWorkflows: ["speak", "clone"], music: false }),
     "clone",
   );
-  // A clone-only model loaded from Speak opens Clone.
   assert.equal(
     workflowForLoadedModel({ current: "speak", audioWorkflows: ["clone"], music: false }),
     "clone",
@@ -95,7 +93,6 @@ test("a loaded model keeps the open page when it can run it, else opens its own"
     workflowForLoadedModel({ current: "speak", audioWorkflows: ["transcribe"], music: true }),
     "music",
   );
-  // An older backend sends no list: the audio type decides.
   assert.equal(workflowForLoadedModel({ current: "clone", audioWorkflows: null, music: false }), "speak");
   assert.equal(workflowForLoadedModel({ current: "speak", audioWorkflows: [], music: true }), "music");
 });

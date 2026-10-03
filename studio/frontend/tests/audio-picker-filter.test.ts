@@ -60,7 +60,6 @@ test("a clone-only speech model lists only on Clone", () => {
     }),
     ["clone"],
   );
-  // Before the backend row says so, the catalog entry does.
   assert.deepEqual(
     workflowsFor({
       id: "audio-cpp/audio.cpp-gguf/Qwen3-TTS-12Hz-0.6B-Base-GGUF",

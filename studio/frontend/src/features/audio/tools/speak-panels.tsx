@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Speak's model tools beyond the instruction fields: a saved voice for models that also clone,
-// and VibeVoice's speaker script.
-
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
 import { formatVibeVoiceScript } from "../clone-policy";
 import { VoicePicker } from "../components/voice-picker";
@@ -14,8 +11,7 @@ import {
 } from "./panel-logic";
 import type { AudioToolPanel } from "./types";
 
-/** Models that both speak and clone (VoxCPM2) can read the text in a saved voice. */
-export const speakVoicePanel: AudioToolPanel<SpeakVoiceValue> = {
+const speakVoicePanel: AudioToolPanel<SpeakVoiceValue> = {
   ...speakVoiceLogic,
   Component: ({ value, onChange, disabled }) => (
     <div className="grid gap-2">
@@ -54,8 +50,7 @@ export const speakVoicePanel: AudioToolPanel<SpeakVoiceValue> = {
   ),
 };
 
-/** VibeVoice reads `Speaker N:` lines; plain text is sent as the first speaker's. */
-export const vibeVoiceDialoguePanel: AudioToolPanel<null> = {
+const vibeVoiceDialoguePanel: AudioToolPanel<null> = {
   ...vibeVoiceDialogueLogic,
   Component: ({ core }) => {
     const text = core?.text.trim() ?? "";

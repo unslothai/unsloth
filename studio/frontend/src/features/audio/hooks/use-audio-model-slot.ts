@@ -331,8 +331,6 @@ export function useAudioModelSlot({
               duration: offloadNotice ? 8000 : undefined,
             },
           );
-          // The page follows what it just loaded: a music model opens Music, a clone-only model Clone,
-          // and a model that can run the open page keeps it.
           const loadedWorkflow = workflowForLoadedModel({
             current: useAudioWorkspaceStore.getState().workflow,
             audioWorkflows: res.audio_workflows,
@@ -1083,8 +1081,7 @@ export function useAudioModelSlot({
     };
   }, [active, isMac]);
 
-  // A one-click pick from outside the picker (Clone's recommended models): resolve the quant the
-  // picker would, then take the same path, so an undownloaded model downloads first.
+  // Clone's recommended models: same path as the picker, so an undownloaded model downloads first.
   const pickRecommendedModel = useCallback(
     async (id: string) => {
       if (busyRef.current !== null) return;

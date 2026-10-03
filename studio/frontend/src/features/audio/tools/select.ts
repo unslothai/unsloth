@@ -52,7 +52,6 @@ const REFERENCE_TEXT_MODES: ReadonlySet<string> = new Set([
   "unused",
 ]);
 
-/** The tool context for the loaded model on one page, read from its status fields. */
 export function audioModelContextFor(
   status: {
     audio_type?: string | null;
@@ -88,7 +87,6 @@ export function audioModelContextFor(
   };
 }
 
-/** Where a panel's value is kept: per model, page and panel, so models never share settings. */
 export function toolValueKey(
   model: string | null | undefined,
   workflow: AudioWorkflowId,
@@ -100,8 +98,7 @@ export function toolValueKey(
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** A panel's value: what was kept for it laid over its defaults, so a value saved by an older
- *  build still has every field the panel reads. */
+// Kept value over defaults, so a value saved by an older build still has every field.
 export function panelValue<V>(
   panel: Pick<AudioToolPanel<V>, "id" | "initial">,
   values: Readonly<Record<string, unknown>>,
@@ -116,8 +113,6 @@ export function panelValue<V>(
   return stored as V;
 }
 
-/** Every shown panel's part of the request, merged in rail order, and the first reason one of
- *  them holds Generate back. */
 export function collectToolRequest(
   panels: readonly AnyAudioToolPanel[],
   values: Readonly<Record<string, unknown>>,

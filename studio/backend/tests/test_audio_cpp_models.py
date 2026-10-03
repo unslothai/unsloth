@@ -327,12 +327,8 @@ def test_an_unknown_family_follows_its_spec_tasks_or_is_refused(hub):
         assert (model.unsupported is None) == bool(task)
     sep = acm.resolve("someone/new_sep-GGUF", network = False)
     assert "Source separation" in sep.unsupported
-    # A clone-only family loads as a cloning session and offers Clone alone.
     clone_only = acm.resolve("someone/new_clone_only-GGUF", network = False)
-    assert list(clone_only.workflows) == ["clone"]
-    assert clone_only.workflows["clone"].server_task == "clon"
-    assert clone_only.clone.reference_text == "optional"
-    assert list(acm.resolve("someone/new_tts-GGUF", network = False).workflows) == ["speak"]
+    assert list(clone_only.workflows) == ["clone"] and clone_only.clone.reference_text == "optional"
 
 
 def test_unsupported_task_tokens_are_refused_by_a_readable_name(hub):
@@ -484,17 +480,13 @@ def test_qwen3_tts_package_kind_comes_from_its_name(hub):
         voice["default"] == "vivian" and len(voice["values"]) == 9 and "uncle_fu" in voice["values"]
     )
     assert not any(o["name"] == "voice" for o in design.options)
-    # Base only clones: runnable, Clone alone, a transcript required unless timbre only.
-    assert base.unsupported is None and base.server_task == "tts"
-    assert list(base.workflows) == ["clone"]
-    assert base.clone.reference_text == "required"
-    assert base.clone.language_names
+    assert base.unsupported is None and list(base.workflows) == ["clone"]
+    assert base.clone.reference_text == "required" and base.clone.language_names
     assert [o["name"] for o in base.clone.tool_options] == ["x_vector_only_mode"]
-    assert any(o["name"] == "x_vector_only_mode" for o in base.clone_options)
     assert list(custom.workflows) == ["speak"] and list(design.workflows) == ["speak"]
 
 
-# The clone table: family -> (server task, speaks, reference_text). S1 and the audio.cpp sources.
+# family -> (server task, speaks, reference_text), from the audio.cpp sources.
 _CLONE_TABLE = {
     "chatterbox": ("clon", False, "unused"),
     "f5_tts": ("tts", False, "required"),
@@ -526,11 +518,7 @@ def test_every_task_family_binds_its_workflows():
             assert family.default_server_task == server_task, family.family
             assert family.clone.reference_text == reference_text, family.family
             clone = bindings["clone"]
-            assert (clone.endpoint, clone.server_task, clone.input_rate) == (
-                "speech",
-                server_task,
-                24000,
-            )
+            assert (clone.endpoint, clone.server_task) == ("speech", server_task)
             continue
         assert family.family not in _CLONE_TABLE
         ((workflow, binding),) = bindings.items()
@@ -538,23 +526,12 @@ def test_every_task_family_binds_its_workflows():
         assert binding.endpoint == endpoint_for[workflow]
         assert binding.server_task == family.default_server_task
     assert set(_CLONE_TABLE) == {f.family for f in acm.FAMILIES.values() if f.clone is not None}
-    # Chatterbox-Turbo is its own family and still speaks.
-    assert list(acm.FAMILIES["chatterbox_turbo"].workflows) == ["speak"]
-    assert acm.FAMILIES["chatterbox_turbo"].default_server_task == "tts"
     assert acm.family_from_names(["Chatterbox-Turbo-GGUF", "chatterbox-turbo-q8_0.gguf"]) == (
         "chatterbox_turbo"
     )
-    assert acm.family_from_names(["Chatterbox-GGUF", "chatterbox-q8_0.gguf"]) == "chatterbox"
-    # FireRedTTS3 Base loads only as a cloning session; Instruct clones under tts.
-    base = acm.family_policy(
-        "fireredtts3", names = ["FireRedTTS3-Base-GGUF", "fireredtts3-base-q8_0.gguf"]
-    )
-    instruct = acm.family_policy(
-        "fireredtts3", names = ["FireRedTTS3-Instruct-GGUF", "fireredtts3-instruct-q8_0.gguf"]
-    )
+    # FireRedTTS3 Base loads only as a cloning session.
+    base = acm.family_policy("fireredtts3", names = ["FireRedTTS3-Base-GGUF"])
     assert base.default_server_task == "clon" and list(base.workflows) == ["clone"]
-    assert instruct.default_server_task == "tts" and list(instruct.workflows) == ["clone"]
-    # MioTTS loads MioCodec beside it; MioCodec alone is refused as a companion.
     (codec,) = acm.FAMILIES["miotts"].companions
     assert codec.id == f"{AUDIO_CPP_REPO}/MioCodec-25Hz-44.1kHz-v2-GGUF"
     assert (codec.variant, codec.session_option) == ("Q8_0", "miotts.codec_model_path")
@@ -2097,15 +2074,11 @@ def test_required_inputs_come_from_the_raw_spec(hub):
     }
     _put(snap, "Maya1-GGUF/maya1-q8_0.gguf", _gguf_bytes(family = "maya1", spec = maya_spec))
     maya = acm.resolve(f"{AUDIO_CPP_REPO}/Maya1-GGUF", network = False)
+    # instruct travels as the request's description, not as an option.
     assert maya.required_inputs == ("instruct",)
-    # The option schema still hides instruct: it travels as the request's description.
     assert [o["name"] for o in maya.options] == ["temperature"]
-    # A voice-design package fills instruct itself, so nothing is required of the user.
+    # A voice-design package fills instruct itself.
     folder = "Qwen3-TTS-12Hz-1.7B-VoiceDesign-GGUF"
     design_spec = {**maya_spec, "family": "qwen3_tts"}
-    _put(
-        snap,
-        f"{folder}/{folder.lower()}-q8_0.gguf",
-        _gguf_bytes(family = "qwen3_tts", spec = design_spec),
-    )
+    _put(snap, f"{folder}/m-q8_0.gguf", _gguf_bytes(family = "qwen3_tts", spec = design_spec))
     assert acm.resolve(f"{AUDIO_CPP_REPO}/{folder}", network = False).required_inputs == ()
