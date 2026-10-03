@@ -61,6 +61,17 @@ export function resolveIncompleteReason<T extends IncompleteReason | null>(
   return contextWindowExceeded ? "context_window" : reason;
 }
 
+/** Let a context-window error refine a latched length stop; preserve other latched reasons. */
+export function incompleteReasonAfterError(
+  latched: IncompleteReason | null,
+  fromError: IncompleteReason,
+): IncompleteReason {
+  if (latched === "length" && fromError === "context_window") {
+    return fromError;
+  }
+  return latched ?? fromError;
+}
+
 /** Whether the provider reported this reason rather than the client inferring it; the provider
  *  wins where they disagree. */
 export function isProviderReportedReason(
@@ -230,29 +241,64 @@ export function budgetImpliesTruncation({
   );
 }
 
-/** Whether an assistant turn can be resumed at all. A turn that called a tool cannot: the
- *  continuation runs as a sibling, so the call and its result are absent from the outbound
- *  history. Matches the backend guard. */
+/** Mirrors the backend guard: tool calls block; reasoning-only needs `thought`. */
 export function isContinuableContent(
   content: readonly unknown[] | undefined,
+  { thought = false }: { thought?: boolean } = {},
 ): boolean {
   if (!content) {
     return false;
   }
   let hasText = false;
+  let hasReasoning = false;
   for (const part of content) {
     const type = (part as { type?: string })?.type;
     if (type === "text") {
       hasText = hasText || ((part as { text?: string }).text ?? "").length > 0;
       continue;
     }
-    // Reasoning and citations are never replayed, so they neither block nor enable.
-    if (type === "reasoning" || type === "source") {
+    if (type === "reasoning") {
+      hasReasoning =
+        hasReasoning || ((part as { text?: string }).text ?? "").trim().length > 0;
+      continue;
+    }
+    // Citations are never replayed, so they neither block nor enable.
+    if (type === "source") {
       continue;
     }
     return false;
   }
-  return hasText;
+  return hasText || (thought && hasReasoning);
+}
+
+/** Reasoning is kept only when it all precedes the answer, as reasoning_content does. */
+export function readContinuationSource(
+  content: readonly unknown[] | undefined,
+): { partial: string; reasoning: string } {
+  let partial = "";
+  const thoughts: string[] = [];
+  let ordered = true;
+  for (const part of content ?? []) {
+    const { type, text } = (part ?? {}) as { type?: string; text?: unknown };
+    if (typeof text !== "string") {
+      continue;
+    }
+    if (type === "text") {
+      partial += text;
+    } else if (type === "reasoning") {
+      ordered = ordered && partial.length === 0;
+      thoughts.push(text);
+    }
+  }
+  return { partial, reasoning: ordered ? thoughts.join("\n") : "" };
+}
+
+/** Seed the adapter buffer, leaving <think> open when there is no answer yet. */
+export function continuationSeed(partial: string, thought: string): string {
+  if (!thought) {
+    return partial;
+  }
+  return partial ? `<think>${thought}</think>${partial}` : `<think>${thought}`;
 }
 
 /** The newest Gemini text-part thoughtSignature on an assistant turn, carried so the resumed turn
@@ -322,8 +368,12 @@ export const CONTINUE_INSTRUCTION =
 export const CONTINUATION_RUN_CONFIG_KEY = "unslothContinuation";
 
 export type ContinuationRequest = {
-  /** The partial answer to resume, exactly as it was rendered. */
+  /** The partial answer exactly as rendered; empty when stopped mid-thought. */
   partial: string;
+  /** Carried only to a backend that resumes a thought. */
+  reasoning?: string;
+  /** Seconds, so the resumed turn keeps its timer. */
+  reasoningDuration?: number;
   /** Gemini text-part thoughtSignature from the turn being resumed: the sibling run drops the
    *  original assistant message, so replaying it here keeps the history signed. */
   thoughtSignature?: string;
@@ -336,16 +386,36 @@ export function readContinuationRequest(
   const custom = (runConfig as { custom?: Record<string, unknown> } | undefined)
     ?.custom;
   const request = custom?.[CONTINUATION_RUN_CONFIG_KEY] as
-    | { partial?: unknown; thoughtSignature?: unknown }
+    | {
+        partial?: unknown;
+        reasoning?: unknown;
+        reasoningDuration?: unknown;
+        thoughtSignature?: unknown;
+      }
     | undefined;
-  const partial = request?.partial;
-  if (typeof partial === "string" && partial.length > 0) {
-    const signature = request?.thoughtSignature;
-    return typeof signature === "string" && signature
-      ? { partial, thoughtSignature: signature }
-      : { partial };
+  const partial = typeof request?.partial === "string" ? request.partial : "";
+  const reasoning =
+    typeof request?.reasoning === "string" && request.reasoning.trim()
+      ? request.reasoning
+      : "";
+  if (!partial && !reasoning) {
+    return null;
   }
-  return null;
+  const duration = request?.reasoningDuration;
+  const signature = request?.thoughtSignature;
+  return {
+    partial,
+    ...(reasoning ? { reasoning } : {}),
+    ...(reasoning &&
+    typeof duration === "number" &&
+    Number.isFinite(duration) &&
+    duration >= 0
+      ? { reasoningDuration: duration }
+      : {}),
+    ...(typeof signature === "string" && signature
+      ? { thoughtSignature: signature }
+      : {}),
+  };
 }
 
 /** Resuming a Max Tokens cut WITHOUT asking: hitting the cap is not a decision the user made.

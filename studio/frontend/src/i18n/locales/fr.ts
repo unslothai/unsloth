@@ -2,9 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import type { en } from "./en";
+import { en } from "./en.ts";
 
 export const fr = {
+  // English fallback until this experimental feature is translated.
+  managedEngines: en.managedEngines,
   composerSettings: {
     title: "Saisie des messages",
     plainText: "Saisie en texte brut",
@@ -220,6 +222,45 @@ export const fr = {
       actions: "Actions",
       chat: "Chat",
       searchChats: "Rechercher des chats...",
+    },
+    search: {
+      placeholder: "Rechercher",
+      tabs: {
+        all: "Tout",
+        chats: "Discussions",
+        projects: "Projets",
+        files: "Fichiers",
+        models: "Modèles",
+      },
+      recents: "Récents",
+      actions: "Actions",
+      newChat: "Nouvelle discussion",
+      newTemporaryChat: "Nouvelle discussion temporaire",
+      fineTune: "Affiner un modèle",
+      generateImage: "Générer une image",
+      generateVideo: "Générer une vidéo",
+      untitledChat: "Discussion sans titre",
+      compare: "Comparaison",
+      loading: "Chargement...",
+      empty: {
+        all: "Rien à rechercher pour l’instant.",
+        chats: "Aucune discussion pour l’instant.",
+        projects: "Aucun projet pour l’instant.",
+        files: "Aucun fichier dans votre Bibliothèque pour l’instant.",
+        models: "Aucun modèle téléchargé pour l’instant.",
+      },
+      noMatches: "Aucun résultat.",
+      when: {
+        today: "Aujourd’hui",
+        pastWeek: "Semaine dernière",
+        pastMonth: "Mois dernier",
+        older: "Plus ancien",
+      },
+      footer: {
+        close: "Fermer",
+        changeType: "Changer de type",
+        open: "Ouvrir",
+      },
     },
     notFound: {
       title: "Page introuvable",
@@ -1234,9 +1275,22 @@ export const fr = {
       },
       permissions: {
         sectionTitle: "Autorisations",
-        bypassLabel: "Autorisations des outils",
-        bypassDescription:
-          "Comment Unsloth approuve les appels d'outils de la discussion (terminal, python, web, MCP) avant leur exécution. Le mode « Full access » désactive les demandes d'approbation et le bac à sable d'exécution du code.",
+        names: {
+          ask: "Demander l'accord",
+          auto: "Approuver pour moi",
+          off: "Exécuter automatiquement",
+          full: "Accès complet",
+        },
+        details: {
+          ask:
+            "Demande votre accord avant chaque appel d'outil, y compris le code terminal et Python, les recherches web, les modifications de fichiers et les outils MCP. Les outils exécutés par un fournisseur externe ne sont pas mis en pause. Idéal pour vérifier chaque étape.",
+          auto:
+            "Exécute seul les appels d'outils courants et ne demande votre accord que lorsqu'une action semble risquée, comme lire des identifiants, élever des privilèges ou lancer des commandes destructrices.",
+          off:
+            "Exécute chaque appel d'outil sans demander. Le code Python et terminal reste exécuté dans le bac à sable, qui limite les fichiers auxquels il peut accéder sur votre ordinateur.",
+          full:
+            "Exécute chaque appel d'outil sans demander et désactive le bac à sable du code : le code Python et terminal peut lire et modifier tout fichier accessible à votre compte. Idéal pour les tâches de confiance qui doivent travailler hors du bac à sable.",
+        },
       },
     },
     profile: {
@@ -1360,20 +1414,13 @@ export const fr = {
           wide: "Large",
           full: "Pleine largeur",
         },
-        composerAttachments: {
-          label: "Pièces jointes dans la zone de saisie",
-          description:
-            "De grandes cartes qui agrandissent la zone de saisie, ou une rangée compacte de vignettes.",
-          cards: "Grandes cartes",
-          compact: "Vignettes compactes",
-        },
         sentAttachments: {
           label: "Pièces jointes dans les messages envoyés",
           description:
-            "Une liste indiquant le type de chaque fichier, ou de petites étiquettes. Le mode automatique passe aux étiquettes au-delà de six fichiers.",
+            "Standard affiche chaque fichier avec son type, Compact en place davantage sur chaque ligne. Le mode automatique passe en compact au-delà de six fichiers.",
           auto: "Automatique",
-          list: "Liste",
-          chips: "Étiquettes",
+          list: "Standard",
+          chips: "Compact",
         },
         reset: "Réinitialiser",
         resetAll: "Réinitialiser la personnalisation",
@@ -1841,9 +1888,6 @@ export const fr = {
         "Le texte collé de {count} caractères ou plus devient une pièce jointe .txt. Le texte plus court reste dans le champ de message.",
       pastedTextOffDescription:
         "Tout le texte collé reste dans le champ de message, quelle que soit sa longueur.",
-      projectsSection: "Afficher la section Projets",
-      projectsSectionDescription:
-        "Regroupe les discussions de projet sous un titre Projets. Désactivez cette option pour les lister dans Récents.",
       title: "Discussion",
       description: "Personnalisez le fonctionnement du chat sur cet appareil.",
       modelSelection: {
@@ -1880,6 +1924,11 @@ export const fr = {
       autoScrollManual: "Manuel",
       autoScrollKeywords:
         "défilement défiler automatique suivre bas sauter diffusion génération vue verrouiller scroll autoscroll follow",
+      scrollToBottomButton: "Bouton « Défiler vers le bas »",
+      scrollToBottomButtonDescription:
+        "Afficher un bouton pour revenir au dernier message après avoir fait défiler vers le haut.",
+      scrollToBottomButtonKeywords:
+        "défiler bas sauter dernier flèche bouton masquer scroll bottom button",
       showResponseModel: "Afficher le modèle de réponse",
       showResponseModelDescription:
         "Afficher les métadonnées du modèle dans les réponses de l’assistant.",
@@ -2261,11 +2310,13 @@ export const fr = {
       revoking: "Révocation...",
       decisionApi: {
         title: "API de décision",
-        description: "Répondez à des questions oui/non, à choix multiples et à score sur du texte avec un modèle Laya local. Compatible avec le SDK TypeSafe.",
+        description: "Répondez à des questions oui/non, à choix multiples et à score sur du texte avec un modèle sur cette machine ou un modèle de décision issu des Connexions. Compatible avec le SDK TypeSafe.",
         enable: "Répondre aux requêtes",
         enableDescription: "Sert /v1/systemone. L'activer télécharge le modèle.",
+        enableRemoteDescription: "Sert /v1/systemone.",
         lockedByEnv: "Défini par {name}.",
         model: "Modèle",
+        thisMachine: "Cette machine",
         modelMultilingual: "Multilingue",
         modelEnglish: "Anglais",
         modelTypedDecisions: "Décisions typées",
@@ -2290,6 +2341,10 @@ export const fr = {
         downloadFailed: "Impossible de lancer le téléchargement.",
         saveFailed: "Impossible d'enregistrer le réglage de l'API de décision.",
         loadError: "Impossible de charger les réglages de l'API de décision.",
+        sendsTo: "Les requêtes sont envoyées à {provider}.",
+        connectionMissing: "Cette connexion n'existe plus ou n'a pas de modèle de décision. Choisissez un autre modèle.",
+        addConnection: "Pour utiliser un modèle de décision hébergé, ajoutez TypeSafe, Liquid AI ou OpenRouter dans Connexions.",
+        openConnections: "Ouvrir Connexions",
       },
       usageNoModel:
         "Chargez ou téléchargez un modèle pour voir des exemples exécutables. Aucun modèle n'est encore disponible sur ce serveur pour figurer dans les exemples.",
@@ -2450,6 +2505,7 @@ export const fr = {
       context: "Contexte",
       lr: "LR",
       hardware: "Matériel",
+      vram: "VRAM",
       noGpu: "Aucun GPU détecté",
       hfToken: "Token HF",
       saved: "Enregistré",
@@ -3189,6 +3245,7 @@ export const fr = {
     discardDescription: "Les modifications non enregistrées de {name} seront perdues.",
     discard: "Abandonner",
     mentions: "Compétences",
+    manage: "Gérer les compétences",
   },
   library: {
     tabs: {

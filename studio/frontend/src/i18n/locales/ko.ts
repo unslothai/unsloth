@@ -2,9 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import type { en } from "./en";
+import { en } from "./en.ts";
 
 export const ko = {
+  // English fallback until this experimental feature is translated.
+  managedEngines: en.managedEngines,
   composerSettings: {
     title: "메시지 입력",
     plainText: "일반 텍스트 입력",
@@ -217,6 +219,45 @@ export const ko = {
       actions: "작업",
       chat: "채팅",
       searchChats: "채팅 검색...",
+    },
+    search: {
+      placeholder: "검색",
+      tabs: {
+        all: "전체",
+        chats: "채팅",
+        projects: "프로젝트",
+        files: "파일",
+        models: "모델",
+      },
+      recents: "최근 항목",
+      actions: "작업",
+      newChat: "새 채팅",
+      newTemporaryChat: "새 임시 채팅",
+      fineTune: "모델 파인튜닝",
+      generateImage: "이미지 생성",
+      generateVideo: "동영상 생성",
+      untitledChat: "제목 없는 채팅",
+      compare: "비교",
+      loading: "로딩 중...",
+      empty: {
+        all: "아직 검색할 항목이 없습니다.",
+        chats: "아직 채팅이 없습니다.",
+        projects: "아직 프로젝트가 없습니다.",
+        files: "아직 라이브러리에 파일이 없습니다.",
+        models: "아직 다운로드한 모델이 없습니다.",
+      },
+      noMatches: "결과가 없습니다.",
+      when: {
+        today: "오늘",
+        pastWeek: "지난주",
+        pastMonth: "지난달",
+        older: "이전",
+      },
+      footer: {
+        close: "닫기",
+        changeType: "유형 변경",
+        open: "열기",
+      },
     },
     notFound: {
       title: "페이지를 찾을 수 없습니다",
@@ -1206,9 +1247,22 @@ export const ko = {
       },
       permissions: {
         sectionTitle: "권한",
-        bypassLabel: "도구 권한",
-        bypassDescription:
-          "채팅의 도구 호출(터미널, python, 웹, MCP)을 실행하기 전에 Unsloth가 승인하는 방식입니다. “Full access”를 선택하면 승인과 코드 샌드박스가 꺼집니다.",
+        names: {
+          ask: "승인 요청",
+          auto: "대신 승인",
+          off: "자동 실행",
+          full: "전체 액세스",
+        },
+        details: {
+          ask:
+            "터미널 및 Python 코드, 웹 검색, 파일 편집, MCP 도구를 포함해 모든 도구 호출 전에 묻습니다. 외부 제공업체가 실행하는 도구는 멈추지 않습니다. 각 단계를 직접 확인하고 싶을 때 적합합니다.",
+          auto:
+            "일반적인 도구 호출은 알아서 실행하고, 자격 증명 읽기, 권한 상승, 파괴적인 명령 실행처럼 위험해 보이는 작업일 때만 묻습니다.",
+          off:
+            "모든 도구 호출을 묻지 않고 실행합니다. Python과 터미널 코드는 여전히 샌드박스 안에서 실행되어 컴퓨터에서 접근할 수 있는 파일이 제한됩니다.",
+          full:
+            "모든 도구 호출을 묻지 않고 실행하며 코드 샌드박스를 꺼서, Python과 터미널 코드가 계정이 접근할 수 있는 모든 파일을 읽고 변경할 수 있습니다. 샌드박스 밖에서 작업해야 하는 신뢰할 수 있는 작업에 적합합니다.",
+        },
       },
     },
     profile: {
@@ -1331,20 +1385,13 @@ export const ko = {
           wide: "넓게",
           full: "전체 너비",
         },
-        composerAttachments: {
-          label: "입력창의 첨부 파일",
-          description:
-            "입력창을 키우는 큰 카드 또는 작은 타일 한 줄로 표시합니다.",
-          cards: "큰 카드",
-          compact: "작은 타일",
-        },
         sentAttachments: {
           label: "보낸 메시지의 첨부 파일",
           description:
-            "각 파일의 형식을 보여 주는 목록 또는 작은 칩으로 표시합니다. 자동은 파일이 6개를 넘으면 칩으로 바뀝니다.",
+            "표준은 각 파일을 형식과 함께 표시하고, 컴팩트는 한 줄에 더 많이 표시합니다. 자동은 파일이 6개를 넘으면 컴팩트로 바뀝니다.",
           auto: "자동",
-          list: "목록",
-          chips: "칩",
+          list: "표준",
+          chips: "컴팩트",
         },
         reset: "초기화",
         resetAll: "사용자 지정 초기화",
@@ -1801,9 +1848,6 @@ export const ko = {
         "붙여넣은 텍스트가 {count}자 이상이면 .txt 첨부 파일이 됩니다. 더 짧은 텍스트는 입력창에 남습니다.",
       pastedTextOffDescription:
         "길이와 관계없이 붙여넣은 모든 텍스트가 입력창에 남습니다.",
-      projectsSection: "프로젝트 섹션 표시",
-      projectsSectionDescription:
-        "프로젝트 채팅을 프로젝트 제목 아래에 모읍니다. 끄면 최근 항목에 표시됩니다.",
       title: "채팅",
       description: "이 기기에서 채팅이 작동하는 방식을 사용자 지정합니다.",
       modelSelection: {
@@ -1840,6 +1884,11 @@ export const ko = {
       autoScrollManual: "수동",
       autoScrollKeywords:
         "스크롤 자동 스크롤 따라가기 아래 이동 스트리밍 생성 고정 scroll autoscroll follow",
+      scrollToBottomButton: "맨 아래로 스크롤 버튼",
+      scrollToBottomButtonDescription:
+        "위로 스크롤한 뒤 최신 메시지로 돌아가는 버튼을 표시합니다.",
+      scrollToBottomButtonKeywords:
+        "스크롤 맨 아래 최신 화살표 버튼 숨기기 scroll bottom button",
       showResponseModel: "응답 모델 표시",
       showResponseModelDescription:
         "어시스턴트 응답에 모델 메타데이터를 표시합니다.",
@@ -2209,11 +2258,13 @@ export const ko = {
       revoking: "폐기 중...",
       decisionApi: {
         title: "판단 API",
-        description: "로컬 Laya 모델로 텍스트에 대한 예/아니오, 객관식, 점수 질문에 답합니다. TypeSafe SDK와 함께 사용할 수 있습니다.",
+        description: "이 컴퓨터의 모델이나 연결의 판단 모델로 텍스트에 대한 예/아니오, 객관식, 점수 질문에 답합니다. TypeSafe SDK와 함께 사용할 수 있습니다.",
         enable: "요청 처리",
         enableDescription: "/v1/systemone을 제공합니다. 켜면 모델을 다운로드합니다.",
+        enableRemoteDescription: "/v1/systemone을 제공합니다.",
         lockedByEnv: "{name}(으)로 설정됨.",
         model: "모델",
+        thisMachine: "이 컴퓨터",
         modelMultilingual: "다국어",
         modelEnglish: "영어",
         modelTypedDecisions: "유형별 판단",
@@ -2238,6 +2289,10 @@ export const ko = {
         downloadFailed: "다운로드를 시작하지 못했습니다.",
         saveFailed: "판단 API 설정을 저장하지 못했습니다.",
         loadError: "판단 API 설정을 불러오지 못했습니다.",
+        sendsTo: "요청은 {provider}(으)로 전송됩니다.",
+        connectionMissing: "이 연결이 없거나 판단 모델이 없습니다. 다른 모델을 선택하세요.",
+        addConnection: "호스팅된 판단 모델을 사용하려면 연결에서 TypeSafe, Liquid AI 또는 OpenRouter를 추가하세요.",
+        openConnections: "연결 열기",
       },
       usageNoModel:
         "모델을 로드하거나 다운로드하면 실행 가능한 예제가 표시됩니다. 이 서버에는 아직 지정할 모델이 없습니다.",
@@ -2393,6 +2448,7 @@ export const ko = {
       context: "컨텍스트",
       lr: "LR",
       hardware: "하드웨어",
+      vram: "VRAM",
       noGpu: "GPU가 감지되지 않았습니다",
       hfToken: "HF 토큰",
       saved: "저장됨",
@@ -3103,6 +3159,7 @@ export const ko = {
     discardDescription: "{name}의 저장되지 않은 변경 사항이 사라집니다.",
     discard: "버리기",
     mentions: "스킬",
+    manage: "스킬 관리",
   },
   library: {
     tabs: {

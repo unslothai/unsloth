@@ -62,20 +62,27 @@ def load_krea2_tokenizer(
         check_cancelled()
     from transformers import AutoTokenizer
 
+    from .diffusion_offline_source import offline_snapshot_source
+
+    cache_dir = _live_cache_dir()
     kwargs: dict[str, Any] = {
         "subfolder": "tokenizer",
         "local_files_only": local_files_only,
-        "cache_dir": _live_cache_dir(),
+        "cache_dir": cache_dir,
     }
     if hf_token:
         kwargs["token"] = hf_token
+    # Offline by repo id, transformers 5.x fails both attempts below (see diffusion_offline_source).
+    source = offline_snapshot_source(
+        repo_id, "tokenizer", local_files_only = local_files_only, cache_dir = cache_dir
+    )
     try:
-        return AutoTokenizer.from_pretrained(repo_id, **kwargs)
+        return AutoTokenizer.from_pretrained(source, **kwargs)
     except Exception as exc:  # noqa: BLE001 -- 4.x config-parse failure, retry with override
         if check_cancelled is not None:
             check_cancelled()
         logger.info("diffusion.krea2 tokenizer compat fallback: %s", exc)
-        return AutoTokenizer.from_pretrained(repo_id, extra_special_tokens = {}, **kwargs)
+        return AutoTokenizer.from_pretrained(source, extra_special_tokens = {}, **kwargs)
 
 
 def remap_rope_parameters(text_config) -> None:

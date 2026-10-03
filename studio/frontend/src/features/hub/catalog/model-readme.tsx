@@ -7,6 +7,7 @@ import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
 import { LruMap } from "@/features/hub/lib/lru-map";
 import { isHuggingFaceOffline } from "@/features/hub/lib/network";
 import { fingerprintToken } from "@/features/hub/lib/token-fingerprint";
+import { withLiteralUnknownTags } from "@/lib/markdown-data-images";
 import {
   type MarkdownPluginNeeds,
   markdownPluginNeeds,
@@ -68,6 +69,7 @@ const README_ALLOWED_TAGS: NonNullable<
   source: ["src", "type", "media"],
   track: ["src", "kind", "srclang", "label", "default"],
 };
+const README_REHYPE_PLUGINS = withLiteralUnknownTags(README_ALLOWED_TAGS);
 
 const README_RENDER_CHAR_LIMIT = 120_000;
 const README_CACHE_TTL_MS = 60_000;
@@ -536,6 +538,7 @@ export function ModelReadme({
           controls={false}
           components={README_COMPONENTS}
           allowedTags={README_ALLOWED_TAGS}
+          rehypePlugins={README_REHYPE_PLUGINS}
           urlTransform={urlTransform}
         >
           {current.body}

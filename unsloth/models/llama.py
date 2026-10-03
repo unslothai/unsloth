@@ -30,6 +30,9 @@ from ._utils import (
     is_bfloat16_supported,
     get_quant_type,
     resolve_model_class,
+    arm_gradient_checkpointing,
+    resolve_training_gradient_checkpointing,
+    set_module_gradient_checkpointing,
 )
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
@@ -969,7 +972,7 @@ def LlamaModel_fast_forward(
     )
     use_cache = use_cache if use_cache is not None else self.config.use_cache
 
-    return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+    return_dict = return_dict if return_dict is not None else config_return_dict(self.config)
 
     if input_ids is not None and inputs_embeds is not None:
         raise ValueError(
@@ -1374,6 +1377,9 @@ def _LlamaModel_fast_forward_inference(
         for idx, decoder_layer in enumerate(self.model.layers):
             layer_device, device_index = per_layer_device(decoder_layer)
             X, residual, position_ids = move_to_device(layer_device, X, residual, position_ids)
+            # self_attn is called directly, so no accelerate hook moves the mask to a split layer's device.
+            if attention_mask is not None:
+                attention_mask = move_to_device(layer_device, attention_mask)
             residual.copy_(X)
             X = fast_rms_layernorm_inference(
                 decoder_layer.input_layernorm,
@@ -1559,7 +1565,9 @@ def CausalLM_fast_forward(fast_forward_inference):
                 if output_hidden_states is not None
                 else self.config.output_hidden_states
             )
-            return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+            return_dict = (
+                return_dict if return_dict is not None else config_return_dict(self.config)
+            )
             self.model._has_no_labels = labels is None
             outputs = self.model(
                 input_ids = input_ids,
@@ -4343,11 +4351,16 @@ class FastLlamaModel:
         return model
 
     @staticmethod
-    def for_training(model, use_gradient_checkpointing = True):
+    def for_training(model, use_gradient_checkpointing = None):
         if not hasattr(model, "parameters"):
             raise TypeError(
                 "Unsloth: I think you're passing a tokenizer, not the model to for_training!"
             )
+        use_gradient_checkpointing = resolve_training_gradient_checkpointing(
+            model, use_gradient_checkpointing
+        )
+        if use_gradient_checkpointing:
+            arm_gradient_checkpointing(model)
 
         for param in model.parameters():
             if hasattr(param, "_fast_lora"):
@@ -4355,7 +4368,7 @@ class FastLlamaModel:
 
         def _for_training(m):
             if hasattr(m, "gradient_checkpointing"):
-                m.gradient_checkpointing = use_gradient_checkpointing
+                set_module_gradient_checkpointing(m, use_gradient_checkpointing)
             if hasattr(m, "training"):
                 m.training = True
             if hasattr(m, "_saved_temp_tokenizer"):
@@ -4377,7 +4390,7 @@ class FastLlamaModel:
         # Since transformers 4.53, this must be turned on explicitly.
         for module in model.modules():
             if hasattr(module, "gradient_checkpointing"):
-                module.gradient_checkpointing = use_gradient_checkpointing
+                set_module_gradient_checkpointing(module, use_gradient_checkpointing)
 
         if hasattr(model, "get_input_embeddings"):
             embeddings = model.get_input_embeddings()

@@ -117,6 +117,10 @@ from ._utils import (
     _cast_text_only_prequantized_params,
     _select_moe_detection_targets,
     set_task_config_attr,
+    _unsloth_freeze_norm_running_stats,
+    arm_gradient_checkpointing,
+    resolve_training_gradient_checkpointing,
+    set_module_gradient_checkpointing,
 )
 from ._utils import *
 from ._remote_code_buffers import restore_remote_code_non_persistent_buffers
@@ -2433,6 +2437,9 @@ def _offload_activation_unpack(packed):
     return x if device is None else x.to(device, non_blocking = True)
 
 
+_NON_REENTRANT_GC_MODEL_TYPES = ("deepseek_v41",)
+
+
 class FastBaseModel:
     @staticmethod
     @_offline_aware_load
@@ -4138,6 +4145,11 @@ class FastBaseModel:
 
         # VLMs can hit DDP "marked ready twice" with re-entrant checkpointing (#3713), so under DDP skip the offloaded/re-entrant checkpoint patch and default native checkpoint to non-reentrant, offloading via saved-tensor hooks instead.
         use_reentrant = not is_distributed()
+        # DeepSeek-V4.1 layers consume tensors from earlier layers; reentrant GC's no_grad pass drops those grads.
+        _gc_model_type = (getattr(getattr(model, "config", None), "model_type", "") or "").lower()
+        _force_non_reentrant = _gc_model_type.startswith(_NON_REENTRANT_GC_MODEL_TYPES)
+        if _force_non_reentrant:
+            use_reentrant = False
         if not use_reentrant:
             unpatch_unsloth_gradient_checkpointing()
             unpatch_unsloth_smart_gradient_checkpointing()
@@ -4160,6 +4172,16 @@ class FastBaseModel:
             _nonre_checkpoint._unsloth_original = _orig_checkpoint
             torch_checkpoint.checkpoint = _nonre_checkpoint
             hf_modeling_utils.checkpoint = _nonre_checkpoint
+        else:
+            # Drop the wrapper an earlier deepseek_v41 load in this process installed.
+            for _mod, _name in (
+                (torch_checkpoint, "checkpoint"),
+                (torch_checkpoint, "_old_checkpoint"),
+                (hf_modeling_utils, "checkpoint"),
+            ):
+                _orig = getattr(getattr(_mod, _name, None), "_unsloth_original", None)
+                if _orig is not None:
+                    setattr(_mod, _name, _orig)
 
         from .loader_utils import enable_composite_gradient_checkpointing
         from .remote_moe_shims import prepare_remote_moe_for_training
@@ -4180,6 +4202,7 @@ class FastBaseModel:
         if full_finetuning:
             # prepare_model_for_training re-enabled every parameter, a kept wrapper's siblings too.
             _freeze_unused_siblings(model)
+        _unsloth_freeze_norm_running_stats(model)
         _model_type = getattr(getattr(model, "config", None), "model_type", "") or ""
         if not use_reentrant and not any(x in _model_type.lower() for x in ("gemma3n", "gemma4")):
             # _set_gradient_checkpointing() binds torch's checkpoint as a default argument, bypassing the patch above.
@@ -4201,6 +4224,32 @@ class FastBaseModel:
                 return _original_gc_enable(**kwargs)
 
             model.gradient_checkpointing_enable = _gc_enable_reentrant
+
+        if _force_non_reentrant:
+            # Wrap the unpatched method so a second post_patch_model (get_peft_model) replaces the wrapper instead of nesting it.
+            _original_gc_enable_nr = getattr(
+                model.gradient_checkpointing_enable,
+                "_unsloth_gc_original",
+                model.gradient_checkpointing_enable,
+            )
+
+            def _gc_enable_non_reentrant(
+                gradient_checkpointing_kwargs = None,
+                *args,
+                **kwargs,
+            ):
+                gc_kwargs = dict(gradient_checkpointing_kwargs or {})
+                gc_kwargs["use_reentrant"] = False
+                # Bind this model's wrapper (and its offloading) even if a later load restored the global.
+                _prev_checkpoint = hf_modeling_utils.checkpoint
+                hf_modeling_utils.checkpoint = _nonre_checkpoint
+                try:
+                    return _original_gc_enable_nr(gc_kwargs, *args, **kwargs)
+                finally:
+                    hf_modeling_utils.checkpoint = _prev_checkpoint
+
+            _gc_enable_non_reentrant._unsloth_gc_original = _original_gc_enable_nr
+            model.gradient_checkpointing_enable = _gc_enable_non_reentrant
 
         from transformers.trainer import Trainer
 
@@ -4306,11 +4355,16 @@ class FastBaseModel:
         return model
 
     @staticmethod
-    def for_training(model, use_gradient_checkpointing = True):
+    def for_training(model, use_gradient_checkpointing = None):
         if not hasattr(model, "parameters"):
             raise TypeError(
                 "Unsloth: I think you're passing a tokenizer, not the model to for_training!"
             )
+        use_gradient_checkpointing = resolve_training_gradient_checkpointing(
+            model, use_gradient_checkpointing
+        )
+        if use_gradient_checkpointing:
+            arm_gradient_checkpointing(model)
 
         for param in model.parameters():
             if hasattr(param, "_fast_lora"):
@@ -4318,7 +4372,7 @@ class FastBaseModel:
 
         def _for_training(m):
             if hasattr(m, "gradient_checkpointing"):
-                m.gradient_checkpointing = use_gradient_checkpointing
+                set_module_gradient_checkpointing(m, use_gradient_checkpointing)
             if hasattr(m, "training"):
                 m.training = True
             if hasattr(m, "_saved_temp_tokenizer"):
@@ -4340,7 +4394,7 @@ class FastBaseModel:
         # Since transformers 4.53, this must be turned on explicitly.
         for module in model.modules():
             if hasattr(module, "gradient_checkpointing"):
-                module.gradient_checkpointing = use_gradient_checkpointing
+                set_module_gradient_checkpointing(module, use_gradient_checkpointing)
 
         for _getter in ("get_input_embeddings", "get_output_embeddings"):
             embeddings = _embeddings_or_none(model, _getter)

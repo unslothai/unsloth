@@ -43,6 +43,7 @@ from functools import lru_cache
 from typing import Any, Iterator, Optional
 
 from . import diffusion_compile_config as compile_config
+from .diffusion_bg_compile import eager_forced as _bg_eager_forced
 from . import diffusion_gguf_compile as gguf_compile
 
 SPEED_OFF = "off"
@@ -52,13 +53,15 @@ SPEED_MAX = "max"
 SPEED_MODES = (SPEED_OFF, SPEED_EAGER, SPEED_DEFAULT, SPEED_MAX)
 
 
-# (attribute, snapshot key). All but the first are what torchao's recommended_inductor_config_setter() flips.
+# (attribute, snapshot key). The first and last are Studio's own; the rest are what torchao's
+# recommended_inductor_config_setter() flips.
 _INDUCTOR_FLAGS = (
     ("emulate_precision_casts", "inductor_emulate_precision_casts"),
     ("coordinate_descent_tuning", "inductor_coordinate_descent_tuning"),
     ("coordinate_descent_check_all_directions", "inductor_coordinate_descent_check_all_directions"),
     ("force_fuse_int_mm_with_mul", "inductor_force_fuse_int_mm_with_mul"),
     ("fx_graph_cache", "inductor_fx_graph_cache"),
+    ("dynamic_scale_rblock", "inductor_dynamic_scale_rblock"),
 )
 _INDUCTOR_TRITON_FLAGS = (("unique_kernel_names", "inductor_triton_unique_kernel_names"),)
 _DYNAMO_MODULE = "torch._dynamo.config"
@@ -334,7 +337,8 @@ def compile_eligible(target: Any, *, is_gguf: bool, family: Any) -> bool:
     dtype = getattr(target, "dtype", None)
     if _is_bfloat16(dtype):
         return True
-    # fp16-incompatible families run in fp32 though video passes the fp16 target; fp32 compile is unmeasured.
+    # fp16-incompatible families run in fp32 (unmeasured under compile) or in fp16 behind diffusion_fp16_guard, which
+    # must stay eager: the int8 fused MLP installed for compile replaces the guard's FFN forward.
     if bool(getattr(family, "fp16_incompatible", False)):
         return False
     return _is_float16(dtype) and _fp16_compile_capable(target)
@@ -421,6 +425,7 @@ def apply_speed_optims(
     offload_active: bool = False,
     cuda_graph_default: bool = True,
     cache_engaged: Optional[bool] = None,
+    denoiser_offloaded: Optional[bool] = None,
     logger: Any = None,
 ) -> dict[str, bool]:
     """Apply the opt-in speed optims for ``speed_mode`` to a built pipeline, BEFORE placement /
@@ -428,6 +433,7 @@ def apply_speed_optims(
 
     ``offload_active`` (offload policy != none) installs ``@torch.compiler.disable``d onload hooks,
     so the compile must drop ``fullgraph`` (like an active step cache) or it crashes at step 1.
+    ``denoiser_offloaded`` (None = ``offload_active``) limits the CUDA-graph refusal to a moved denoiser.
 
     ``cuda_graph_default`` is what the CUDA-graph arm assumes for a family that declares nothing:
     True on the image backend, False on video, where ``supports_cuda_graph`` opts in.
@@ -445,14 +451,23 @@ def apply_speed_optims(
         "fused_qkv": False,
         "compiled": False,
         "compiled_dequant": False,
+        "rocm_query_chunks": False,
         "compiled_vae_decode": False,
         "cuda_graph": False,
+        "int8_gemm": False,
     }
     mode = normalize_speed_mode(speed_mode)
     # TF32 (max) and cudnn.benchmark (any non-off CUDA load) are process-global; the caller restores them so a later
     # `off` load never inherits them.
     if mode == SPEED_OFF:
         return applied
+
+    if getattr(target, "backend", None) == "rocm":
+        try:
+            from .diffusion_qwenimage21_rocm import install as install_rocm_query_chunks
+            applied["rocm_query_chunks"] = install_rocm_query_chunks(pipe, target, logger)
+        except Exception as exc:  # noqa: BLE001 - keep stock attention on unsupported installs
+            _warn(logger, "qwen-image-2.1 ROCm query chunks", exc)
 
     on_cuda = getattr(target, "device", None) == "cuda"
     family_allows_compile = bool(getattr(family, "supports_torch_compile", True))
@@ -495,6 +510,7 @@ def apply_speed_optims(
                 max_autotune = False,
                 cache_active = cache_active,
                 offload_active = offload_active,
+                denoiser_offloaded = denoiser_offloaded,
             )
     elif (
         mode == SPEED_MAX
@@ -507,6 +523,12 @@ def apply_speed_optims(
             max_autotune = True,
             cache_active = cache_active,
             offload_active = offload_active,
+            denoiser_offloaded = denoiser_offloaded,
+        )
+
+    if applied["compiled"]:
+        applied["int8_gemm"] = any(
+            bool(getattr(t, "_unsloth_int8_gemm", 0)) for t in _denoiser_dits(pipe)
         )
 
     if applied["compiled"] and _vae_decode_compile_allowed(pipe, mode):
@@ -552,7 +574,9 @@ def apply_speed_optims(
                 target,
                 family = family,
                 pipe = pipe,
-                offload_active = offload_active,
+                offload_active = offload_active
+                if denoiser_offloaded is None
+                else bool(denoiser_offloaded),
                 cache_active = cache_active if cache_engaged is None else bool(cache_engaged),
                 speed_mode = mode,
                 family_default = cuda_graph_default,
@@ -733,6 +757,16 @@ def _denoiser_dits(pipe: Any) -> list:
     return dits
 
 
+def int8_gemm_live(pipe: Any, optims: Any) -> list:
+    """``speed_optims`` with ``int8_gemm`` dropped once a deferred install's first-forward probe swapped nothing."""
+    optims = list(optims or ())
+    if "int8_gemm" in optims and not any(
+        bool(getattr(t, "_unsloth_int8_gemm", 0)) for t in _denoiser_dits(pipe)
+    ):
+        optims.remove("int8_gemm")
+    return optims
+
+
 # Blocks MEASURED to raise inductor CantSplit under dynamic = True; measure before adding.
 _STREAM_MERGING_BLOCKS: frozenset[str] = frozenset({"FluxSingleTransformerBlock"})
 
@@ -798,6 +832,7 @@ def _compile_repeated_blocks(
     max_autotune: bool = False,
     cache_active: bool = False,
     offload_active: bool = False,
+    denoiser_offloaded: Optional[bool] = None,
 ) -> bool:
     dits = [
         t for t in _denoiser_dits(pipe) if callable(getattr(t, "compile_repeated_blocks", None))
@@ -851,9 +886,22 @@ def _compile_repeated_blocks(
         inductor_cfg = _inductor_config()
         if inductor_cfg is not None and hasattr(inductor_cfg, "emulate_precision_casts"):
             compile_config.set_knob(_INDUCTOR_MODULE, "emulate_precision_casts", True)
+        # One R0_BLOCK per reduction: see diffusion_compile_config.DYNAMIC_SCALE_RBLOCK_ENV.
+        if (
+            inductor_cfg is not None
+            and hasattr(inductor_cfg, "dynamic_scale_rblock")
+            and compile_config.reduction_blocks_pinned()
+        ):
+            compile_config.set_knob(_INDUCTOR_MODULE, "dynamic_scale_rblock", False)
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "compile_repeated_blocks", exc)
         return False
+    # A block whose attention runs inside sdpa_kernel would otherwise bypass AOTAutogradCache on every start.
+    try:
+        from . import diffusion_aot_cache
+        diffusion_aot_cache.install(logger)
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, "sdpa aot cache", exc)
     if unet is not None:
         # Whole-module static compile for the U-Net classes above. fullgraph mirrors the regional decision; dynamic is
         # ALWAYS False, so each new (height, width, batch) pays its own compile. ``Module.compile`` keeps the module
@@ -894,6 +942,20 @@ def _compile_repeated_blocks(
             install_int8_fused(transformer, logger, offload_active = offload_active)
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "int8 fused mlp", exc)
+        # After the fused MLP (its down projection calls the same GEMM), before the compile traces the Linears.
+        try:
+            from .diffusion_int8_gemm import install as install_int8_gemm
+
+            # Keyed on the DENOISER's placement: a group plan that streams only the encoders keeps it resident.
+            transformer._unsloth_int8_gemm = install_int8_gemm(
+                transformer,
+                logger,
+                offload_active = offload_active
+                if denoiser_offloaded is None
+                else bool(denoiser_offloaded),
+            )
+        except Exception as exc:  # noqa: BLE001 - optimisation only
+            _warn(logger, "int8 fused-dequant gemm", exc)
         if type(transformer).__name__ == "QwenImageTransformer2DModel":
             try:
                 from .diffusion_qwenimage_rope import install as install_qwen_real_rope
@@ -909,6 +971,12 @@ def _compile_repeated_blocks(
         try:
             transformer.compile_repeated_blocks(**dit_kwargs)
             engaged = True
+            # Kept so a caller that moves the compile below an offload hook (MiniMax-H3's streamed denoiser) compiles
+            # with exactly these settings.
+            try:
+                transformer._unsloth_regional_compile_kwargs = dict(dit_kwargs)
+            except Exception:  # noqa: BLE001 - not a settable module (tests/fakes)
+                pass
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "compile_repeated_blocks", exc)
             continue
@@ -1044,7 +1112,8 @@ class _CompileGuard:
         guard = self
 
         def guarded(*args: Any, **kwargs: Any) -> Any:
-            if guard.error is None:
+            # Compile still in flight in the background: entering it here would compile inline.
+            if guard.error is None and not _bg_eager_forced():
                 compile_config.apply()
                 try:
                     return compiled(*args, **kwargs)

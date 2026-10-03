@@ -281,6 +281,8 @@ from .import_fixes import (
     check_vllm_torch_sm100_compatibility,
     fix_vllm_guided_decoding_params,
     fix_vllm_pdl_blackwell,
+    fix_cudnn_sdpa_d256_masked_backward,
+    fix_rocm_windows_fused_sdpa,
     fix_triton_compiled_kernel_missing_attrs,
     fix_dynamo_config_thread_visibility,
     patch_trunc_normal_precision_issue,
@@ -364,6 +366,9 @@ check_vllm_torch_sm100_compatibility()
 fix_vllm_guided_decoding_params()
 fix_trl_vllm_ascend()
 fix_vllm_pdl_blackwell()
+fix_cudnn_sdpa_d256_masked_backward()
+# Windows ROCm only, probe-gated: fused attention fails on every call there (gfx1151, torch 2.11).
+fix_rocm_windows_fused_sdpa()
 fix_triton_compiled_kernel_missing_attrs()
 # Must run before unsloth_zoo's patch_torch_compile and the gpt-oss patches raise the dynamo
 # recompile limits, so those settings reach the autograd worker threads on torch >= 2.12.
@@ -422,6 +427,8 @@ del check_vllm_torch_sm100_compatibility
 del fix_vllm_guided_decoding_params
 del fix_trl_vllm_ascend
 del fix_vllm_pdl_blackwell
+del fix_cudnn_sdpa_d256_masked_backward
+del fix_rocm_windows_fused_sdpa
 del fix_triton_compiled_kernel_missing_attrs
 del fix_dynamo_config_thread_visibility
 del patch_trunc_normal_precision_issue

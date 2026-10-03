@@ -8,6 +8,7 @@ import type * as React from "react";
 
 import { Tick02Icon } from "@/lib/tick-icon";
 import { useSnappedPaddingRef } from "@/lib/snap-padding";
+import { useWindowChromeCollisionPadding } from "@/lib/window-chrome";
 import { cn } from "@/lib/utils";
 import { MenuChevronRightIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -75,6 +76,7 @@ function MenubarContent({
   align = "start",
   alignOffset = -4,
   sideOffset = 0,
+  collisionPadding,
   ref,
   ...props
 }: React.ComponentProps<typeof MenubarPrimitive.Content>) {
@@ -84,6 +86,7 @@ function MenubarContent({
       <MenubarPrimitive.Content
         ref={snappedRef}
         data-slot="menubar-content"
+        collisionPadding={useWindowChromeCollisionPadding(collisionPadding)}
         align={align}
         alignOffset={alignOffset}
         sideOffset={sideOffset}
@@ -255,6 +258,7 @@ function MenubarSubTrigger({
 
 function MenubarSubContent({
   className,
+  collisionPadding,
   ref,
   ...props
 }: React.ComponentProps<typeof MenubarPrimitive.SubContent>) {
@@ -263,6 +267,7 @@ function MenubarSubContent({
     <MenubarPrimitive.SubContent
       ref={snappedRef}
       data-slot="menubar-sub-content"
+      collisionPadding={useWindowChromeCollisionPadding(collisionPadding)}
       className={cn(
         "bg-popover text-popover-foreground data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 ring-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-edge-gain,1)),transparent)] min-w-32 rounded-2xl p-1 shadow-2xl ring-1 duration-100 z-50 origin-(--radix-menubar-content-transform-origin) overflow-hidden",
         className,

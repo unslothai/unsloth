@@ -56,7 +56,10 @@ NATIVE_AUDIO_MODEL_TYPES = {
     "minimax_music3": "minimax_music3",
 }
 
-NATIVE_AUDIO_TYPES = frozenset(NATIVE_AUDIO_MODEL_TYPES.values())
+# audio.cpp speech and music models ride the same worker path; their weights run in audiocpp_server.
+from core.inference.audio_cpp_models import AUDIO_CPP_AUDIO_TYPES  # noqa: E402
+
+NATIVE_AUDIO_TYPES = frozenset(NATIVE_AUDIO_MODEL_TYPES.values()) | AUDIO_CPP_AUDIO_TYPES
 REMOTE_CODE_AUDIO_TYPES = frozenset(("moss_tts_local", "moss_tts_nano", "higgs_tts3"))
 PYTHON310_AUDIO_TYPES = frozenset(("higgs_tts2", "higgs_tts3", "minimax_music3"))
 MOSS_LOCAL_CODEC_REPO = "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2"
@@ -380,7 +383,31 @@ def _native_audio_type(model_name: str) -> Optional[str]:
     curated = NATIVE_AUDIO_MODEL_IDS.get(normalized.lower())
     if curated:
         return curated
+    audio_cpp_type = audio_cpp_audio_type(normalized)
+    if audio_cpp_type:
+        return audio_cpp_type
     return native_audio_type_from_local_path(normalized)
+
+
+def audio_cpp_audio_type(model_name: str) -> Optional[str]:
+    """The audio_type of an audio.cpp speech or music id, from the HF cache alone.
+
+    Only ids that name the umbrella repo, a legacy key, or a repo this process already
+    resolved are looked at, so an ordinary model name costs nothing here.
+    """
+    from core.inference.audio_cpp_models import looks_like_audio_cpp, resolve
+
+    if not looks_like_audio_cpp(model_name):
+        return None
+    try:
+        model = resolve(model_name, network = False)
+    except Exception:  # noqa: BLE001 - a probe never fails its caller
+        return None
+    return model.audio_type if model is not None else None
+
+
+def is_audio_cpp_audio_model(model_name: str) -> bool:
+    return audio_cpp_audio_type(model_name) is not None
 
 
 def is_native_audio_model(model_name: str) -> bool:
@@ -398,6 +425,11 @@ def native_audio_security_targets(
     hf_token: Optional[str] = None,
 ) -> list[str]:
     """Repositories whose code or weights are loaded for this audio model."""
+    from core.inference.audio_cpp_models import AUDIO_CPP_AUDIO_TYPES, looks_like_audio_cpp, repo_of
+
+    if audio_type in AUDIO_CPP_AUDIO_TYPES or looks_like_audio_cpp(model_name):
+        # An umbrella id names a subfolder; the weights, and so the scan, belong to the repo that holds it.
+        return [repo_of(model_name) or model_name]
     targets = [model_name]
     resolved_type = audio_type or _native_audio_type(model_name)
     if resolved_type == "moss_tts_local":
@@ -671,6 +703,12 @@ def native_audio_download_plan(model_name: str, hf_token: Optional[str] = None) 
     normalized = str(model_name or "").strip()
     if not normalized:
         raise ValueError("A model repository is required.")
+    from core.inference.audio_cpp_models import looks_like_audio_cpp
+
+    if looks_like_audio_cpp(normalized):
+        raise ValueError(
+            "This is a GGUF model: download it as a GGUF variant from the model picker or the Model Hub."
+        )
     local_checkpoint = Path(normalized).expanduser().exists()
     audio_type = _native_audio_type(normalized)
     if audio_type in PYTHON310_AUDIO_TYPES and sys.version_info < (3, 10):

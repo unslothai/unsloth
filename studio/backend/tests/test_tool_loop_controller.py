@@ -24,6 +24,7 @@ if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 from core.inference.tool_loop_controller import (
+    UNPARSED_ARGUMENTS_KEY,
     ToolLoopController,
     append_deferred_nudges,
     canonical_tool_call_key,
@@ -36,7 +37,7 @@ from core.inference.tool_loop_controller import (
     tool_event_provenance,
 )
 from core.inference.tool_call_parser import TOOL_ERROR_NUDGE, parse_tool_calls_from_text
-from core.inference.tools import ALL_TOOLS, _mcp_specs_for_server
+from core.inference.tools import ALL_TOOLS, _mcp_specs_for_server, execute_tool
 
 
 def test_append_deferred_nudges_merges_deduped_into_one_message():
@@ -177,6 +178,59 @@ def test_successful_duplicate_is_internal_noop_and_keeps_remaining_tools():
     assert "different enabled tool" in duplicate_nudge
     assert completion.model_message()["role"] == "user"
     _shared_setup_1(controller)
+
+
+def test_web_search_alias_args_share_the_duplicate_key():
+    controller = ToolLoopController(tools = [_tool("web_search")])
+    first = controller.prepare_call(_call("web_search", {"q": "unsloth"}, "call_a"))
+    assert first.should_execute
+    assert first.arguments == {"query": "unsloth"}
+    assert first.status_text == "Searching: unsloth"
+    controller.record_result(first, "ok")
+
+    duplicate = controller.prepare_call(_call("web_search", {"query": "unsloth"}, "call_b"))
+    assert duplicate.action == "duplicate"
+    assert duplicate.key == first.key
+    assert not duplicate.should_execute
+
+
+def test_truncated_web_search_args_keep_the_unparsed_sentinel():
+    controller = ToolLoopController(tools = [_tool("web_search")])
+    decision = controller.prepare_call(_call("web_search", '{"query":"weather in S'))
+    assert decision.arguments == {UNPARSED_ARGUMENTS_KEY: '{"query":"weather in S'}
+    assert "cut off" in execute_tool("web_search", decision.arguments)
+
+
+def test_web_search_url_mode_ignores_unused_args_for_duplicate_key():
+    controller = ToolLoopController(tools = [_tool("web_search")])
+    first = controller.prepare_call(
+        _call(
+            "web_search",
+            {
+                "url": "https://example.com/page",
+                "query": "unused",
+                "image_queries": ["unused"],
+            },
+            "call_a",
+        )
+    )
+    assert first.arguments == {"url": "https://example.com/page"}
+    controller.record_result(first, "page")
+
+    duplicate = controller.prepare_call(
+        _call(
+            "web_search",
+            {
+                "href": "https://example.com/page",
+                "query": "different",
+                "image_queries": ["different"],
+            },
+            "call_b",
+        )
+    )
+    assert duplicate.action == "duplicate"
+    assert duplicate.arguments == first.arguments
+    assert duplicate.key == first.key
 
 
 def test_repeated_successful_duplicate_becomes_terminal_after_one_recovery_nudge():
