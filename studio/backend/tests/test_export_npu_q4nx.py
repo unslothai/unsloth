@@ -163,6 +163,7 @@ def _stub_installer(
 
     monkeypatch.setattr(export_mod.q4nx, "_installer", lambda: _Installer)
     monkeypatch.setattr(export_mod.q4nx, "_gguf_architecture", lambda _p: architecture)
+    monkeypatch.setattr(export_mod.q4nx, "require_converter_deps", lambda: None)
     return installed
 
 
@@ -176,7 +177,7 @@ def _fake_popen(
 
     class _Popen:
         def __init__(self, cmd, cwd, **kwargs):
-            ran.update(cmd = cmd, cwd = cwd, preexec_fn = kwargs.get("preexec_fn"))
+            ran.update(cmd = cmd, cwd = cwd, preexec_fn = kwargs.get("preexec_fn"), env = kwargs.get("env"))
             self.returncode = returncode
             if returncode == 0:
                 (Path(cmd[-1]) / "model.q4nx").write_bytes(b"q4nx")
@@ -202,6 +203,7 @@ def test_converter_runs_in_this_interpreter(monkeypatch, tmp_path, architecture,
     assert ran["cmd"][:2] == [sys.executable, "-c"]
     assert ran["cmd"][3:] == ["/x/M.Q4_1.gguf", str(out)]
     assert ran["cwd"] == str(tmp_path / converter)
+    assert ran["env"]["PYTHONIOENCODING"] == "utf-8"
     if sys.platform.startswith("linux"):
         # Dies with its parent: cancelling an export must not orphan a converter.
         assert callable(ran["preexec_fn"])

@@ -117,6 +117,7 @@ def convert_gguf_to_q4nx(gguf_path: str, out_dir: Path) -> None:
     logger.info(
         f"Converting {os.path.basename(gguf_path)} to Q4NX ({name}) for the AMD NPU in {out_dir}"
     )
+    from utils.child_stdio import utf8_child_env
     from utils.process_lifetime import child_popen_kwargs, spawn_on_lifetime_thread
     from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
@@ -125,6 +126,7 @@ def convert_gguf_to_q4nx(gguf_path: str, out_dir: Path) -> None:
         lambda: subprocess.Popen(
             [sys.executable, "-c", _RUN_CONVERTER, gguf_path, str(out_dir)],
             cwd = str(script.parent),
+            env = utf8_child_env(),
             stderr = subprocess.PIPE,
             text = True,
             encoding = "utf-8",
