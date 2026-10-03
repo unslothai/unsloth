@@ -3571,7 +3571,6 @@ class VideoBackend:
         if h3_sage:
             native_offload += ("--sage-attn",)
         if native_device != "cpu":
-            # BF16 cuBLAS for quantized DiT matmuls on sm80+; a user-exported value (0 included) wins.
             from .video_minimax_h3 import h3_quant_cublas_env
             native_env += h3_quant_cublas_env(native_cuda_cc, sage = h3_sage)
         from .video_minimax_h3 import H3_QUANT_CUBLAS_ENV, H3_QUANT_CUBLAS_MIN_CC
