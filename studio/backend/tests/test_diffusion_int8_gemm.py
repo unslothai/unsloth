@@ -239,7 +239,6 @@ def test_prequant_style_fp32_weight_scale(forced, bias):
 
 @needs_cuda
 def test_no_compiled_variant_spills_to_local_memory(forced):
-    """Spilled local memory stays reserved device-wide for the process (see ``_aligned``)."""
     g = torch.Generator().manual_seed(0)
     for m, k, n in ((4096, 3072, 3072), (300, 1040, 528), (300, 1040, 520), (300, 1000, 384)):
         a = torch.randint(-127, 128, (m, k), generator = g, dtype = torch.int8).cuda()
