@@ -17,7 +17,9 @@ class FakeVAE:
         self,
         oom_untiled = False,
         dtype = torch.float16,
+        error = None,
     ):
+        self.error = error
         self.decoder = torch.nn.Conv3d(1, 1, 1).to(dtype)
         self.use_tiling = True
         self.calls = []
@@ -29,8 +31,10 @@ class FakeVAE:
         return_dict = False,
     ):
         self.calls.append(self.use_tiling)
+        if not self.use_tiling and self.error is not None:
+            raise self.error
         if not self.use_tiling and self.oom_untiled:
-            raise torch.OutOfMemoryError("fake")
+            raise torch.cuda.OutOfMemoryError("fake")
         return ("tiled" if self.use_tiling else "untiled",)
 
 
@@ -96,11 +100,16 @@ def test_install_is_idempotent(monkeypatch):
     assert vae.decode is first
 
 
-def test_estimate_scales_with_latent_area_not_frames():
+def test_estimate_scales_with_latent_area_and_output_frames():
     a = U.untiled_decode_bytes(WAN, (1, 48, 31, 44, 80))
     b = U.untiled_decode_bytes(WAN, (1, 48, 5, 44, 80))
     c = U.untiled_decode_bytes(WAN, (1, 48, 31, 88, 80))
-    assert a == b and c == 2 * a
+    assert c == 2 * a
+    # 121 -> 17 frames: only the RGB output (held twice) shrinks.
+    assert a - b == 2 * 3 * (121 - 17) * 704 * 1280 * 2
+    # 1021 frames at 1280x704 holds ~10 GiB of fp16 output on top of the per-frame peak.
+    long = U.untiled_decode_bytes(WAN, (1, 48, 256, 44, 80))
+    assert long - b >= 10 * 2**30 - 2 * 3 * 17 * 704 * 1280 * 2
     assert U.untiled_decode_bytes("nope", (1, 48, 31, 44, 80)) is None
 
 
@@ -117,3 +126,44 @@ def test_fp32_decoder_needs_twice_the_fp16_estimate(monkeypatch):
     assert U.untiled_decode_bytes(WAN, tuple(Z.shape), itemsize = 4) == 2 * U.untiled_decode_bytes(
         WAN, tuple(Z.shape)
     )
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        RuntimeError("HIP out of memory. Tried to allocate 2.00 GiB"),
+        RuntimeError("compile failed"),
+    ],
+)
+def test_wrapped_or_backend_oom_falls_back_other_errors_raise(monkeypatch, error):
+    if error.args[0] == "compile failed":
+        error.__cause__ = torch.cuda.OutOfMemoryError("inner")
+    vae = FakeVAE(error = error)
+    monkeypatch.setattr(U, "_free_bytes", lambda device: 100 * 2**30)
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+    U.install_untiled_decode(_pipe(vae), WAN)
+    assert vae.decode(Z) == ("tiled",)
+    assert vae.use_tiling is True
+
+
+def test_non_oom_error_raises_and_restores_tiling(monkeypatch):
+    vae = FakeVAE(error = ValueError("bad latent"))
+    monkeypatch.setattr(U, "_free_bytes", lambda device: 100 * 2**30)
+    U.install_untiled_decode(_pipe(vae), WAN)
+    with pytest.raises(ValueError):
+        vae.decode(Z)
+    assert vae.use_tiling is True
+
+
+def test_estimate_that_ran_out_of_memory_is_not_retried_untiled(monkeypatch):
+    vae = FakeVAE(oom_untiled = True)
+    monkeypatch.setattr(U, "_free_bytes", lambda device: 100 * 2**30)
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+    U.install_untiled_decode(_pipe(vae), WAN)
+    assert vae.decode(Z) == ("tiled",)
+    assert vae.decode(Z) == ("tiled",)
+    assert vae.calls == [False, True, True]
+    assert vae.decode._unsloth_untiled_stats["oom_fallback"] == 1
+    # a smaller clip still tries untiled
+    vae.decode(torch.zeros(1, 48, 2, 44, 80))
+    assert vae.calls[-2:] == [False, True]

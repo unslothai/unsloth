@@ -15,6 +15,11 @@ UNTILED_ENV = "UNSLOTH_VIDEO_VAE_UNTILED"
 _BYTES_PER_LATENT_PIXEL = {
     "wan2.2-ti2v-5b": 2.5 * 2**20,
 }
+# (spatial, temporal) upsampling to the RGB output, which Wan's decode holds about twice (per-frame torch.cat, then
+# clamp) and which grows with frames: 1021 frames at 1280x704 is 5.2 GiB per fp16 copy.
+_OUTPUT_SCALE = {
+    "wan2.2-ti2v-5b": (16, 4),
+}
 _MARGIN = 1.25
 _MARGIN_BYTES = 2 * 2**30
 
@@ -32,8 +37,12 @@ def untiled_decode_bytes(
     coef = _BYTES_PER_LATENT_PIXEL.get(family)
     if coef is None or len(latent_shape) != 5:
         return None
-    batch, _, _, height, width = (int(x) for x in latent_shape)
-    return int(coef * max(2, itemsize) / 2 * max(1, batch) * height * width)
+    batch, _, latent_frames, height, width = (int(x) for x in latent_shape)
+    batch, itemsize = max(1, batch), max(2, itemsize)
+    spatial, temporal = _OUTPUT_SCALE[family]
+    frames = (max(1, latent_frames) - 1) * temporal + 1
+    output = 2 * batch * 3 * frames * height * spatial * width * spatial * itemsize
+    return int(coef * itemsize / 2 * batch * height * width + output)
 
 
 def _decoder_itemsize(vae: Any) -> int:
@@ -75,6 +84,8 @@ def install_untiled_decode(
     if getattr(decode, "_unsloth_untiled_decode", False):
         return True
     stats = {"untiled": 0, "tiled": 0, "oom_fallback": 0}
+    # Smallest estimate that has run out of memory; larger ones go straight to tiled instead of repeating the OOM.
+    oom_need: list = []
 
     def untiled_when_fits(z: Any, *args: Any, **kwargs: Any) -> Any:
         if not getattr(vae, "use_tiling", False):
@@ -83,7 +94,12 @@ def install_untiled_decode(
             family, tuple(getattr(z, "shape", ())), itemsize = _decoder_itemsize(vae)
         )
         free = _free_bytes(getattr(z, "device", None))
-        fits = need is not None and free is not None and need * _MARGIN + _MARGIN_BYTES <= free
+        fits = (
+            need is not None
+            and free is not None
+            and need * _MARGIN + _MARGIN_BYTES <= free
+            and not (oom_need and need >= oom_need[0])
+        )
         if logger is not None:
             logger.info(
                 "video.vae_untiled: decode %s (untiled needs ~%s MiB with margin, %s MiB free)",
@@ -96,17 +112,21 @@ def install_untiled_decode(
             return decode(z, *args, **kwargs)
         import torch
 
+        from .diffusion_batched import is_oom_error
+
         vae.use_tiling = False
         try:
             out = decode(z, *args, **kwargs)
             stats["untiled"] += 1
             return out
-        except torch.cuda.OutOfMemoryError:  # torch.OutOfMemoryError only exists from torch 2.5
-            pass
+        except Exception as exc:  # noqa: BLE001 -- only an OOM (incl. wrapped / backend-specific) falls back
+            if not is_oom_error(exc):
+                raise
         finally:
             vae.use_tiling = True
         # Retried outside the handler so the failed attempt's tensors (held by the traceback) are gone first.
         stats["oom_fallback"] += 1
+        oom_need[:] = [min([need, *oom_need])]
         torch.cuda.empty_cache()
         if logger is not None:
             logger.warning("video.vae_untiled: untiled decode ran out of memory; decoding tiled")
