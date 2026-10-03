@@ -17,10 +17,8 @@ export function createNavigationCoalescer<T>({
   asReplace,
 }: {
   navigate: (options: T) => Promise<unknown>;
-  /** Where the router is, or is already heading. */
   currentHref: () => string;
   hrefOf: (options: T) => string;
-  /** Key of the router's latest history entry. */
   currentEntry: () => string | undefined;
   asReplace: (options: T) => T;
 }): { go: (options: T) => void; resolved: () => void } {
@@ -33,8 +31,7 @@ export function createNavigationCoalescer<T>({
       void navigate(replace ? asReplace(options) : options).catch(() => {});
       unshown = currentHref() === hrefOf(options) ? currentEntry() : undefined;
     },
-    // Any resolve: the router only resolves once nothing is pending, so the entry either
-    // rendered or history left it (Back, then Forward onto it, must not replace it).
+    // The router resolves only when nothing is pending: the entry rendered or history left it.
     resolved() {
       unshown = undefined;
     },
