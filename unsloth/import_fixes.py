@@ -5451,9 +5451,7 @@ def patch_torch_missing_attribute_error():
     if getattr(original, "__unsloth_patched__", False):
         return True
 
-    # torch warns for these aliases at stacklevel=2, which through this wrapper
-    # names our frame and defeats get_ignored_functions' module="torch" filter.
-    # Warn here instead: catch_warnings + replay is process-global and resets registries.
+    # torch's stacklevel=2 would name this wrapper; catch_warnings + replay is process-global, so warn here.
     deprecated_attrs = torch.__dict__.get("_deprecated_attrs", {})
 
     @functools.wraps(original)

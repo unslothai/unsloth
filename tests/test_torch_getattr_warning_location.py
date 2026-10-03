@@ -38,7 +38,6 @@ def patched_torch():
         torch.__getattr__ = previous
 
 
-# torch 2.6 through 2.13; fail rather than skip if the table changes.
 _ALIASES = ("has_cuda", "has_cudnn", "has_mkldnn", "has_mps")
 
 
