@@ -1915,8 +1915,12 @@ def _dense_fast_path_reason(
     kind: str,
     path_override: Optional[str],
     loras: Any = None,
+    failure: Optional[str] = None,
 ) -> str:
-    """Name an unreadable hosted checkpoint only when it was in play (not override/GGUF/LoRA bake)."""
+    """Name an unreadable hosted checkpoint only when it was in play (not override/GGUF/LoRA bake).
+
+    ``failure`` is why a pre-quantized checkpoint that WAS tried did not load (``last_prequant_failure``):
+    planning thought it readable, so only the load can say what went wrong."""
     note = (
         prequant_unreadable_reason(fam, scheme, base_repo = base)
         if kind == "pipeline" and not path_override and not _has_active_lora(loras)
@@ -1924,6 +1928,11 @@ def _dense_fast_path_reason(
     )
     if note:
         return f"engaged on the dense fast path; {note}, so the dense bf16 transformer was quantized instead"
+    if failure:
+        return (
+            f"engaged on the dense fast path; the pre-quantized {scheme} checkpoint did not load "
+            f"({failure}), so the dense bf16 transformer was quantized instead"
+        )
     return "engaged on the dense fast path"
 
 
@@ -5335,6 +5344,8 @@ class DiffusionBackend:
                     self._active_generate_cancel.set()
             self._reserve_teardown_locked()
         with self._model_transition_slot():
+            # Per load: a previous load's pre-quant failure must never reach this one's status.
+            self._prequant_fallback_note = None
             with self._lock:
                 try:
                     self._raise_if_load_cancelled(_load_token)
@@ -6390,9 +6401,22 @@ class DiffusionBackend:
                                         )
                                     else:
                                         # The plan was priced on the seed landing, so re-plan at bf16 without it.
+                                        # Named in the status too: the dense path's reason would otherwise only
+                                        # say "dense fast path".
+                                        from utils.native_path_leases import redact_native_paths
+
+                                        from .diffusion_prequant import last_prequant_failure
+
+                                        failure = last_prequant_failure()
+                                        self._prequant_fallback_note = (
+                                            redact_native_paths(failure)
+                                            if failure
+                                            else "the checkpoint was unavailable"
+                                        )
                                         logger.warning(
                                             "diffusion.denoiser_prequant: no pre-quantized denoiser was "
-                                            "seeded; re-planning memory at the released bf16 size"
+                                            "seeded (%s); re-planning memory at the released bf16 size",
+                                            self._prequant_fallback_note,
                                         )
                                         pipeline_seed_scheme = None
                                         plan = bf16_pipeline_plan
@@ -7206,6 +7230,7 @@ class DiffusionBackend:
                                     kind,
                                     transformer_prequant_path,
                                     loras,
+                                    failure = getattr(self, "_prequant_fallback_note", None),
                                 ),
                                 # Honored when the quant engaged AND when the ask was "off" (a request NOT to
                                 # quantise, which the GGUF build satisfies)
@@ -7507,6 +7532,7 @@ class DiffusionBackend:
             self._raise_if_load_cancelled(_load_token)
 
         check_cancelled()
+        self._prequant_fallback_note = None
         fetch_base = fetch_base or prefer_ungated_mirror(base, hf_token)
         # 1. Pre-quantized checkpoint, when one is configured for the resolved scheme.
         scheme = _planned_quant_scheme(
@@ -7555,6 +7581,25 @@ class DiffusionBackend:
                     placement_device = None if seed_device == device else seed_device,
                 )
                 check_cancelled()
+                if transformer is None:
+                    # Never a silent swap: the status names why the checkpoint was not used.
+                    from utils.native_path_leases import redact_native_paths
+
+                    from .diffusion_prequant import last_prequant_failure
+
+                    failure = last_prequant_failure()
+                    self._prequant_fallback_note = (
+                        redact_native_paths(failure)
+                        if failure
+                        else "the checkpoint was unavailable"
+                    )
+                    logger.warning(
+                        "diffusion.prequant: %s checkpoint from %s not used (%s); quantizing the dense "
+                        "transformer instead",
+                        scheme,
+                        getattr(source, "location", "?"),
+                        self._prequant_fallback_note,
+                    )
                 if transformer is not None:
                     if scheme == TQ_NVFP4:
                         from .diffusion_nvfp4_linear import nvfp4_prewarm
@@ -7581,8 +7626,11 @@ class DiffusionBackend:
         if not allow_dense_fallback:
             # The plan only budgeted the prequant-sized build, so the dense bf16 transformer would exceed it after
             # eviction.
+            note = getattr(self, "_prequant_fallback_note", None)
             raise RuntimeError(
-                "prequant checkpoint unavailable and the dense transformer does not fit resident"
+                "prequant checkpoint unavailable"
+                + (f" ({note})" if note else "")
+                + " and the dense transformer does not fit resident"
             )
         # Deliberately the hub id, not base_local_dir: diffusers treats a local directory as terminal (_get_model_file
         # raises rather than falling back to the hub) and a sharded load raises per missing shard, so a partial
