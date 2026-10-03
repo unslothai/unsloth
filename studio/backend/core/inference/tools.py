@@ -14697,18 +14697,20 @@ def rag_autoinject_reaches_retrieval(
     return bool(enabled), whole_doc_requested
 
 
-def _thread_has_chunks(thread_id) -> bool:
+def _thread_document_ids(thread_id) -> set | None:
+    """Ids of the thread's indexed attachments; None when the store cannot say."""
     try:
         from core.rag import store
         from storage import rag_db
 
         conn = rag_db.get_connection()
         try:
-            return store.scope_token_estimate(conn, store.thread_scope(thread_id)) > 0
+            docs = store.list_documents(conn, store.thread_scope(thread_id))
         finally:
             conn.close()
     except Exception:  # noqa: BLE001
-        return True
+        return None
+    return {d["id"] for d in docs if d.get("status") == "completed" and d.get("num_chunks")}
 
 
 def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> dict | None:
@@ -14814,10 +14816,12 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
         found = search_for_autoinject(query = query, top_k = top_k, **scope)
         return _trim(found[0], found[1], max_tokens) if found else None
 
+    thread_docs = _thread_document_ids(thread_id) if whole_doc_requested and text is None else set()
+
     def retrieve_thread_unfloored(*, max_tokens = None):
         # Lexical-only finds nothing for a generic request ("summarize this") whose words are not in the file, so
         # this mandatory grounding retries with the dense leg. Chats with no attachment skip the query embedding.
-        if not _thread_has_chunks(thread_id):
+        if thread_docs is not None and not thread_docs:
             return None
         scope_kwargs = _scope_retrieval_kwargs(rag_scope)
         found = retrieve(
@@ -14868,14 +14872,24 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
                 )
                 # Project hits clearing the floor must not crowd out the attachment: without one of its passages,
                 # it goes first.
-                if whole_doc_requested and (not found or rag_scope.get("project_id")):
+                grounded = (
+                    bool(found)
+                    and thread_docs is not None
+                    and any(s.get("documentId") in thread_docs for s in found[1])
+                )
+                if (
+                    whole_doc_requested
+                    and (not found or rag_scope.get("project_id"))
+                    and not grounded
+                ):
                     thread_found = retrieve_thread_unfloored()
                     if thread_found and found:
-                        thread_docs = {s.get("documentId") for s in thread_found[1]}
-                        if not any(s.get("documentId") in thread_docs for s in found[1]):
+                        cited = thread_docs or {s.get("documentId") for s in thread_found[1]}
+                        if not any(s.get("documentId") in cited for s in found[1]):
                             # Still the lean top_k in total, so the unbudgeted path never doubles the injection.
-                            n_proj = min(len(found[1]), top_k // 2)
-                            merged = thread_found[1][: top_k - n_proj] + found[1][:n_proj]
+                            limit = top_k or len(thread_found[1])
+                            n_proj = min(len(found[1]), limit // 2)
+                            merged = thread_found[1][: limit - n_proj] + found[1][:n_proj]
                             found = (render_sources(merged), merged)
                     elif thread_found:
                         found = thread_found
