@@ -26,6 +26,27 @@ export interface AudioSourceSelection {
   language?: string | null;
 }
 
+/** A gallery clip as a source: its text doubles as the transcript. */
+export function clipReference(clip: {
+  id: string;
+  prompt: string;
+  duration_s: number | null;
+  workflow?: string | null;
+  reference_name?: string | null;
+}): AudioSourceSelection {
+  // Only speech is a transcript: not a Music description, nor the file name an untranscribed edit is titled by.
+  const spoken =
+    clip.workflow !== "music" && clip.prompt !== clip.reference_name;
+  return {
+    kind: "clip",
+    id: clip.id,
+    name: clip.prompt || "Generated clip",
+    durationS: clip.duration_s,
+    transcript: (spoken && clip.prompt) || null,
+    language: null,
+  };
+}
+
 export function sourceRefOf(selection: AudioSourceSelection): AudioSourceRef {
   switch (selection.kind) {
     case "input":

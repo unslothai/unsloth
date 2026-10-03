@@ -24,16 +24,32 @@ test("the compare draws its bars from the server's file, since the CSP blocks fe
 });
 
 test("a long recording is refused on Edit, so the card does not promise to use its first 30 s", () => {
-  assert.match(page, /id="edit-recording"[\s\S]*?trimsLongClips=\{false\}/);
-  const card = readSrc("features/audio/components/audio-source-input.tsx");
-  assert.match(card, /trimsLongClips &&\s*durationS !== null/);
+  assert.match(page, /id="edit-recording"[\s\S]*?usesFirstSeconds=\{null\}/);
 });
 
-test("a history pick fills ① only with speech, not a Music description or a file name", () => {
-  const card = readSrc("features/audio/components/audio-source-input.tsx");
-  assert.match(card, /transcript: spokenText\(clip\)/);
-  assert.match(card, /clipWorkflow\(clip\) !== "music"/);
-  assert.match(card, /clip\.prompt !== clip\.reference_name/);
+test("a history pick fills the transcript only with speech, not a Music description or a file name", async () => {
+  const { clipReference } = await import(
+    "../src/features/audio/audio-run-request.ts"
+  );
+  const clip = { id: "c1", duration_s: 4, reference_name: "take.wav" };
+  assert.equal(
+    clipReference({ ...clip, prompt: "Hello there.", workflow: "edit" })
+      .transcript,
+    "Hello there.",
+  );
+  assert.equal(
+    clipReference({ ...clip, prompt: "calm piano", workflow: "music" })
+      .transcript,
+    null,
+  );
+  assert.equal(
+    clipReference({ ...clip, prompt: "take.wav", workflow: "edit" }).transcript,
+    null,
+  );
+  assert.equal(
+    clipReference({ ...clip, prompt: "take.wav", workflow: "edit" }).name,
+    "take.wav",
+  );
 });
 
 test("the compare resets for a new pair, not when the Original's file arrives", () => {

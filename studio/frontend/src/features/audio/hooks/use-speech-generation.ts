@@ -36,6 +36,7 @@ import {
   isMusicGenerationModel,
   musicGenerationRequiresCuda,
 } from "../catalog";
+import { TTS_MAX_TOKENS } from "../audio-workspace-constants";
 import type { AudioHostState } from "./audio-host-state";
 import { galleryCache } from "./use-audio-gallery";
 import { useAudioCloneStore } from "../stores/audio-clone-store";
@@ -368,6 +369,7 @@ export function useSpeechGeneration({
         await showRunResult({
           response,
           text,
+          workflow: "speak",
           refreshGallery,
           selectClip,
           setFallbackClip,
@@ -438,6 +440,7 @@ export function useSpeechGeneration({
           prompt: text,
           model: generated.model,
           saved: true,
+          workflow,
         });
         selectClip(generated.clip_id, true);
       } else {
@@ -448,6 +451,7 @@ export function useSpeechGeneration({
           prompt: text,
           model: generated.model,
           saved: false,
+          workflow,
         });
       }
     } catch (error) {

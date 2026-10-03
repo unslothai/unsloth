@@ -441,11 +441,37 @@ export function useAudioModelSlot({
   );
   const transitionWorkflow = useCallback(
     (next: AudioWorkflowId) => {
-      if (!transitionMode(slotForWorkflow(next))) return false;
-      useAudioWorkspaceStore.getState().commitWorkflow(next);
+      const store = useAudioWorkspaceStore.getState();
+      // Speak and Music share the slot, so transitionMode would wave a switch between them through.
+      if (
+        next !== store.workflow &&
+        mode === "speak" &&
+        slotForWorkflow(next) === "speak"
+      ) {
+        if (
+          !canTransitionAudioMode(busyRef.current, generationPhaseRef.current)
+        ) {
+          toast.info(
+            "Wait for the active audio task to finish before switching modes.",
+          );
+          return false;
+        }
+        if (busyRef.current === "generating") handleStopGeneration();
+        invalidatePendingTtsSelection();
+      } else if (!transitionMode(slotForWorkflow(next))) {
+        return false;
+      }
+      store.commitWorkflow(next);
       return true;
     },
-    [transitionMode],
+    [
+      transitionMode,
+      mode,
+      busyRef,
+      generationPhaseRef,
+      handleStopGeneration,
+      invalidatePendingTtsSelection,
+    ],
   );
   const { stage: stageTtsDownload } = useStagedDownload({
     scopeId: "audio",

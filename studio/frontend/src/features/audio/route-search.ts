@@ -82,8 +82,11 @@ export function audioWorkflowForPick(pick: {
   if (workflow !== "speak") {
     return workflow;
   }
-  const music =
-    MUSIC_AUDIO_TYPES.has(pick.audioType ?? "") ||
-    audioCppModelFor(pick.id)?.task === "music";
-  return music ? "music" : "speak";
+  const catalog = audioCppModelFor(pick.id);
+  if (MUSIC_AUDIO_TYPES.has(pick.audioType ?? "") || catalog?.task === "music") {
+    return "music";
+  }
+  return catalog?.workflows && !catalog.workflows.includes("speak")
+    ? (catalog.workflows[0] ?? "speak")
+    : "speak";
 }

@@ -43,6 +43,7 @@ export const CLONE_REFERENCE_TEXT_FIELD_ID = "clone-reference-text";
 export async function showRunResult({
   response,
   text,
+  workflow,
   refreshGallery,
   selectClip,
   setFallbackClip,
@@ -50,6 +51,7 @@ export async function showRunResult({
 }: {
   response: AudioRunResponse;
   text: string;
+  workflow: "speak" | "clone";
 } & Pick<
   AudioGallery,
   "refreshGallery" | "selectClip" | "setFallbackClip" | "setSelectedId"
@@ -72,6 +74,7 @@ export async function showRunResult({
         prompt: text,
         model: response.model,
         saved: true,
+        workflow,
       });
     } catch {}
     selectClip(clip.id, true);
@@ -85,6 +88,7 @@ export async function showRunResult({
       prompt: text,
       model: response.model,
       saved: false,
+      workflow,
     });
   }
 }
@@ -328,6 +332,7 @@ export function useCloneGeneration({
       await showRunResult({
         response,
         text: draftText,
+        workflow: "clone",
         refreshGallery,
         selectClip,
         setFallbackClip,

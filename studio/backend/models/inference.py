@@ -5133,14 +5133,18 @@ class AudioGalleryItem(BaseModel):
 
 
 _AUDIO_ID_PATTERN = r"^[A-Za-z0-9_-]{1,128}$"
-# Words of an option name that would carry a file reference; a run names audio by id only.
-_AUDIO_FILE_OPTION_WORDS = frozenset(
-    {"audio", "ref", "path", "paths", "file", "files", "dir", "url", "uri", "wav"}
-)
+# A run names audio by id only. Option names with these words carry a location...
+_AUDIO_FILE_OPTION_WORDS = frozenset({"path", "paths", "file", "files", "dir", "url", "uri"})
+# ...and a text value under a name ending in these is a clip (source_audio, voice_ref), while
+# min_new_audio_steps, audio_chunk_mode or a boolean no_ref are settings.
+_AUDIO_CLIP_OPTION_ENDINGS = frozenset({"audio", "wav", "ref"})
 
 
-def _names_a_file(name: str) -> bool:
-    return any(word in _AUDIO_FILE_OPTION_WORDS for word in re.split(r"[^a-z0-9]+", name.lower()))
+def _names_a_file(name: str, value: Any) -> bool:
+    words = re.split(r"[^a-z0-9]+", name.lower())
+    if any(word in _AUDIO_FILE_OPTION_WORDS for word in words):
+        return True
+    return isinstance(value, str) and words[-1] in _AUDIO_CLIP_OPTION_ENDINGS
 
 
 class AudioSourceRef(BaseModel):
@@ -5220,7 +5224,7 @@ class AudioRunRequest(BaseModel):
         if value is None:
             return value
         for name, option in value.items():
-            if _names_a_file(str(name)):
+            if _names_a_file(str(name), option):
                 raise ValueError(f"Option '{name}' is not accepted; name audio by id in inputs.")
             if isinstance(option, (dict, list)):
                 raise ValueError(f"Option '{name}' must be a single value.")

@@ -67,7 +67,7 @@ type RailProps = Omit<
 >;
 
 // A transcript the user typed is replaced only when it came from the previous source.
-function adoptReference(next: AudioSourceSelection | null) {
+export function adoptReference(next: AudioSourceSelection | null) {
   const store = useAudioCloneStore.getState();
   const previous = store.reference;
   store.setReference(next);
