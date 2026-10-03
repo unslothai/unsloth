@@ -325,6 +325,7 @@ export function useEditGeneration({
       await showRunResult({
         response,
         text: run.text,
+        workflow: "edit",
         refreshGallery,
         selectClip,
         setFallbackClip,

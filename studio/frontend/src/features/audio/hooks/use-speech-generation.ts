@@ -4,7 +4,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { readLastPrompt, saveLastPrompt } from "@/lib/last-prompt";
 import { toast } from "@/lib/toast";
-import { TTS_MAX_TOKENS } from "../audio-workspace-constants";
 import { generateAudio, runAudio } from "../api";
 import {
   audioOptionLabel,
