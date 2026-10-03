@@ -473,6 +473,8 @@ export interface ServedStatus {
   cache_type_kv?: string | null;
   /** Slots the server actually serves after load_model's clamps. */
   parallel_slots?: number | null;
+  /** A virtualised Mac GPU: every load is rewritten to run on the CPU. */
+  gpu_placement_paravirtual?: boolean | null;
 }
 
 const NGRAM_FLAGS = [
@@ -677,6 +679,10 @@ export function servedMismatch(
   variant: Variant,
   st: ServedStatus,
 ): string | null {
+  // Every manual placement collapses to gpu_layers=0 there, so the rows would chart one CPU
+  // config under many GPU labels.
+  if (variant.load.gpu_memory_mode === "manual" && st.gpu_placement_paravirtual)
+    return "this Mac's GPU is virtualised, so Studio runs every load on the CPU";
   const want = variant.load.speculative_type;
   // Only rows that pick a forced mode can be let down by a fallback; the Auto row asks Studio to
   // choose, so its fallback (ngram, speculation off) is the Studio-default config we mean to measure.
