@@ -2203,12 +2203,12 @@ def test_wan_frame_snapping_4k_plus_1(fake_runtime):
 
 
 def test_wan_ti2v_defaults_applied(fake_runtime):
-    # No steps/guidance passed -> ComfyUI's TI2V-5B template defaults (20 / 5.0).
+    # No steps/guidance passed -> the Wan pipeline defaults (50 / 5.0).
     backend = VideoBackend()
     backend.load_pipeline("Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline")
     backend.generate(prompt = "a sloth")
     call = backend._state.pipe.last_kwargs
-    assert call["num_inference_steps"] == 20
+    assert call["num_inference_steps"] == 50
     assert call["guidance_scale"] == 5.0
 
 

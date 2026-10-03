@@ -2446,8 +2446,7 @@ def refine_plan_from_loaded_weights(
 
 
 def _placed_on(tensor: Any, device_type: str, is_torchao: Callable[[Any], bool]) -> bool:
-    """Whether ``tensor``'s storage is on ``device_type``. A torchao subclass is judged by its inner tensors: after a
-    streamed offload its wrapper can still report the onload device while its data and scales sit on the host."""
+    """torchao subclasses are judged by inner tensors: after a streamed offload the wrapper can report the wrong device."""
     if is_torchao(tensor):
         try:
             names, _ = tensor.__tensor_flatten__()
