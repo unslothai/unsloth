@@ -122,7 +122,6 @@ test("recording approval applies once and only to the transcript it covered", as
 
 test("changing model residency preserves the transcript and its recorded origin", () => {
   const refresh = section("const refreshSttStatus", "const sttSelected");
-  // The STT hook declares the sidecar load right after the release.
   const release = section(
     "const releaseTranscribeSelection",
     "const ensureSttLoaded",

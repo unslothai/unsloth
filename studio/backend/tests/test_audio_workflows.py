@@ -32,7 +32,6 @@ def test_music_audio_types_match_the_frontend_set():
 @pytest.mark.parametrize(
     "task, audio_type, workflows",
     [
-        # audio.cpp music GGUF rows carry the task but no audio_type.
         ("text-to-audio", None, ["music"]),
         ("automatic-speech-recognition", None, ["transcribe"]),
         ("text-to-speech", AUDIO_CPP_TTS_AUDIO_TYPE, ["speak"]),

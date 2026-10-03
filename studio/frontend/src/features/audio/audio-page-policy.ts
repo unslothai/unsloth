@@ -183,7 +183,6 @@ export function nativeAudioInstructionsKind(
   return null;
 }
 
-/** The instruction field a TTS page shows: Music always takes a description, Speak never does. */
 export function instructionsFieldKind(
   workflow: "speak" | "music",
   audioType?: string | null,

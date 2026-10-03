@@ -68,7 +68,6 @@ import type { AudioHostState } from "./audio-host-state";
 import type { SttSidecar } from "./use-stt-sidecar";
 import type { Transcription } from "./use-transcription";
 
-/** The main inference slot Speak and Music share: picks, loads, staged downloads, mode switches and eject. */
 export function useAudioModelSlot({
   active,
   activeRef,
@@ -134,7 +133,6 @@ export function useAudioModelSlot({
     | "sttStatusRefreshGeneration"
   >) {
   const ttsLoadInFlight = useRef(false);
-  // A pick that lost the race with a load still settling. Replayed once it does.
   const pendingRoutedTtsPick = useRef<{
     repoId: string;
     ggufFilename?: string | null;
@@ -147,7 +145,6 @@ export function useAudioModelSlot({
   const pendingTtsLoad = useRef<{
     generation: number;
     repoId: string;
-    /** What the load request actually sent, which is what a cancel has to name. */
     loadTarget: string;
     loadRequestId: string;
     controller: AbortController;
@@ -172,17 +169,13 @@ export function useAudioModelSlot({
     async (
       repoId: string,
       ggufFilename?: string | null,
-      // Where the weights actually are: a row cached in a NON-ACTIVE HF cache is loadable only by its snapshot path,
-      // which the picker supplies as meta.loadId, and sending the display repo id instead failed offline or
-      // re-downloaded into the active cache. Chat threads the same field (chat-page.tsx).
+      // Rows in a non-active HF cache load only by snapshot path (meta.loadId), as in chat-page.tsx.
       loadId?: string | null,
       audioType?: string | null,
       remoteCodeApproval?: RemoteCodeApproval,
-      // The catalog's answer: the ids alone miss a GGUF repo that does not spell it.
       isGguf?: boolean | null,
     ) => {
-      // A routed pick arriving while a previous load is still tearing down would otherwise be dropped,
-      // and the route effect has already cleared ?model=, so replay it from the finally below.
+      // ?model= is already cleared, so a pick arriving mid-teardown is replayed from the finally below.
       if (ttsLoadInFlight.current || busyRef.current === "generating") {
         pendingRoutedTtsPick.current = {
           repoId,
@@ -194,11 +187,8 @@ export function useAudioModelSlot({
         };
         return;
       }
-      // A load stops every chat on the shared llama-server, so ask the way Chat does instead of dead-ending on the
-      // backend's 409. Claimed before the await: a routed pick arriving while the dialog is open must queue.
+      // A load stops every chat on the shared llama-server: ask as Chat does, gate claimed before the await so picks queue.
       ttsLoadInFlight.current = true;
-      // Chat's gate, held across the question and the load. Without it a queue can materialize while
-      // the dialog is open, outside the snapshot the answer was given for.
       const lifecycleLease = useChatRuntimeStore.getState().beginModelLoading();
       if (lifecycleLease === null) {
         ttsLoadInFlight.current = false;
@@ -216,8 +206,7 @@ export function useAudioModelSlot({
         pendingRoutedTtsPick.current = null;
         return;
       }
-      // The page can go away while the dialog is open, and pendingTtsLoad is still null then, so the
-      // deactivation effect has nothing to abort. Queue it for the activation replay.
+      // Hidden while the dialog is open: nothing to abort yet, so queue for the activation replay.
       if (!activeRef.current) {
         releaseLifecycle();
         ttsLoadInFlight.current = false;
@@ -237,9 +226,7 @@ export function useAudioModelSlot({
       const pending = {
         generation,
         repoId,
-        // What the request actually sent. Cancelling under the display id works only when the load target is a
-        // standard HF cache snapshot; a pinned directory elsewhere does not match and _cancel_scoped_load_attempt then
-        // refuses.
+        // Cancel must name what was sent: for a pinned dir the display id makes _cancel_scoped_load_attempt refuse.
         loadTarget: loadId || repoId,
         loadRequestId,
         controller,
@@ -291,8 +278,7 @@ export function useAudioModelSlot({
             trust_remote_code: trustRemoteCode,
             approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
             audio_device: wantsCpu ? "cpu" : "auto",
-            // GGUF ignores audio_device: llama.cpp offloads unless told not to. An absent speculative_type resolves to
-            // "auto", which may attach a GPU drafter, and the backend then evicts image/video for a CPU load.
+            // GGUF ignores audio_device; an absent speculative_type means auto, which may attach a GPU drafter.
             ...(wantsCpu && isGgufLoad
               ? // biome-ignore lint/style/useNamingConvention: API schema
                 {
@@ -307,9 +293,7 @@ export function useAudioModelSlot({
             runtime: "tts",
             onRequestStart: () => {
               pending.requestStarted = true;
-              // Queued prompts would otherwise start on the model this load replaces. Only once /load is actually going
-              // out: loadModel returns without sending when a stored token is invalid, and cancelling earlier threw away
-              // accepted sends for a swap that never happened.
+              // Cancel queued prompts only once /load is really sent: loadModel can return without sending.
               cancelPreStreamRunReservations(stopDecision.preStreamRunTokens);
               requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds);
             },
@@ -327,14 +311,12 @@ export function useAudioModelSlot({
               duration: offloadNotice ? 8000 : undefined,
             },
           );
-          // The page follows what it just loaded: a music model opens Music, a speech model Speak.
           const loadedWorkflow = isMusicGenerationModel(repoId, res.audio_type)
             ? "music"
             : "speak";
           if (modeRef.current === "speak") {
             useAudioWorkspaceStore.getState().commitWorkflow(loadedWorkflow);
           }
-          // Only the native runtime and GGUF can be held in RAM.
           if (
             wantsCpu &&
             !isGgufLoad &&
@@ -364,20 +346,16 @@ export function useAudioModelSlot({
           pendingTtsLoad.current = null;
         if (activeRef.current) await refreshStatus();
         ttsLoadInFlight.current = false;
-        // Before the replay below, which needs the gate for its own attempt.
         releaseLifecycle();
         busyRef.current = null;
         setBusy(null);
-        // Only while Audio is visible: replaying unconditionally started a load with activeRef already false, which
-        // the deactivation effect never saw to cancel, so a hidden page could replace the model Chat had loaded.
+        // Only while visible: a hidden replay escapes the deactivation cancel and can replace Chat's model.
         if (activeRef.current) replayQueuedTtsPick();
       }
     },
     [refreshStatus, audioDevice],
   );
 
-  // Stage uncached Hub GGUFs through the shared manager so Audio gets the same progress,
-  // cancellation, resume and disk preflight as Chat/Images/Video.
   const loadTtsModelRef = useRef(loadTtsModel);
   loadTtsModelRef.current = loadTtsModel;
   /** Start a pick that lost the race with a load still settling. Visible pages only: a load started
@@ -424,10 +402,8 @@ export function useAudioModelSlot({
       if (busyRef.current === "generating") handleStopGeneration();
       stopAndDiscardRecording();
       setMode(nextMode);
-      // Held through Generate, the sidecar keeps a dictation model in VRAM beside the speech one.
       if (mode === "transcribe") {
-        // Resolves to whether the sidecar is actually gone: swallowing the rejection made a failed unload
-        // look like a release, so the speech load went ahead with the dictation model and OOMed.
+        // Resolves to whether the sidecar is gone: a swallowed failed unload let the speech load OOM.
         const release = releaseTranscribeSelection().then(
           () => true,
           (error) => {
@@ -439,14 +415,11 @@ export function useAudioModelSlot({
             return false;
           },
         );
-        // Recorded so a TTS load can wait for the teardown: allocating while the sidecar still holds its
-        // model is what OOMs a device that fits either one alone.
         pendingTranscribeRelease.current = release;
         void release.then((released) => {
           if (pendingTranscribeRelease.current !== release) return;
           pendingTranscribeRelease.current = null;
-          // The sidecar is still holding its model, so the page must not sit in Speak claiming otherwise:
-          // back to Transcribe, where Eject can retry. Only if nothing has moved on since.
+          // Sidecar still resident: back to Transcribe so Eject can retry, unless something moved on.
           if (!released && modeRef.current === "speak") setMode("transcribe");
         });
       }
@@ -460,8 +433,6 @@ export function useAudioModelSlot({
       stopAndDiscardRecording,
     ],
   );
-  /** Switch pages. Speak and Music share the main slot, so moving between them loads and releases
-   *  nothing; a move to or from Transcribe is the mode switch, with its gate and sidecar release. */
   const transitionWorkflow = useCallback(
     (next: AudioWorkflowId) => {
       if (!transitionMode(slotForWorkflow(next))) return false;
@@ -486,8 +457,7 @@ export function useAudioModelSlot({
         stagedTtsLoadDeferred.current = false;
         return;
       }
-      // Audio stays mounted across tabs, so loading from a hidden page would evict the visible page's
-      // model; likewise, wait for an active generation to end.
+      // Stays mounted: a hidden load would evict the visible page's model; also wait out generation.
       if (!active || busyRef.current !== null) {
         stagedTtsLoadDeferred.current = true;
         return;
@@ -576,9 +546,7 @@ export function useAudioModelSlot({
         }
       }
 
-      // Hub TTS picks use the same managed path as Chat. Native models can also depend on a second codec
-      // repository, so the selected repo's downloaded badge is not enough: the cache-aware backend plan owns every
-      // missing file.
+      // Native models can need a second codec repo, so the backend plan owns every missing file.
       if (meta.source === "hub" && !ggufFilename) {
         let plan;
         try {
@@ -645,8 +613,6 @@ export function useAudioModelSlot({
           isGguf: meta.isGguf,
           generation,
         };
-        // A named quant is fetched as the standard variant download, as Chat does, so the backend's plan
-        // brings the files it needs beside the weights and the Downloads row reads "<repo> · <quant>".
         stageTtsDownload([
           meta.ggufVariant
             ? {
@@ -666,8 +632,6 @@ export function useAudioModelSlot({
         return;
       }
 
-      // A cached/local/direct pick supersedes any staged auto-load: the manager may keep downloading
-      // globally, but its old completion cannot load here.
       void loadTtsModelRef.current(
         repoId,
         ggufFilename,
@@ -749,7 +713,6 @@ export function useAudioModelSlot({
           )
             return;
         } catch {
-          // Status is advisory here; the normal preparation path reports errors.
         }
         if (activeRef.current && selectedSttRepoRef.current === deferred.repoId)
           void ensureSttLoaded(
@@ -761,17 +724,13 @@ export function useAudioModelSlot({
     }
   }, [active, ensureSttLoaded]);
 
-  /** An in-flight Transcribe teardown a following TTS load has to wait behind. */
   const pendingTranscribeRelease = useRef<Promise<boolean> | null>(null);
 
   const handleModelSelect = useCallback(
     async (id: string, meta: ModelSelectorChangeMeta) => {
       if (busyRef.current !== null) return;
-      // Catalog first; an uncurated Hub pick falls back to its pipeline tag, or every community ASR
-      // repo would load into the TTS slot.
+      // Uncurated picks fall back to the pipeline tag, else community ASR repos load into the TTS slot.
       const task = resolveAudioPickTask(audioTaskFor(id), meta.pipelineTag);
-      // A recommended GGUF speech or music row the installed audio runtime cannot run: say why
-      // instead of loading into a 501.
       const runtimeProblem =
         task === "stt" ? null : audioCppRuntimeProblem(id, audioCppRuntime.current);
       if (runtimeProblem) {
@@ -792,16 +751,12 @@ export function useAudioModelSlot({
           return;
         }
       }
-      // Selecting a different artifact while recording is a lifecycle change even in Transcribe mode;
-      // never let the old capture submit against a sidecar this pick is replacing.
       stopAndDiscardRecording();
       deferredSttLoad.current = null;
       if (task === "stt") {
-        // An STT pick owns Transcribe: it runs on the sidecar, not the main slot.
         if (!transitionMode("transcribe")) return;
         const sidecarKey = sttSidecarKeyFor(id);
         const engine = sttEngineForRepoId(id, meta.isGguf);
-        // Remembered per repo, so a deferred or on-demand load of this pick asks for the same quant.
         if (meta.ggufVariant) {
           sttGgufVariants.current.set(id.toLowerCase(), meta.ggufVariant);
         } else {
@@ -813,14 +768,9 @@ export function useAudioModelSlot({
         void ensureSttLoaded(id, sidecarKey, engine);
         return;
       }
-      // TTS (or an uncurated repo the user pasted, which /load will validate).
       if (!transitionMode("speak")) return;
-      // Serialize against a Transcribe release started by that transition.
       const releaseInFlight = pendingTranscribeRelease.current;
-      // A release that failed leaves the sidecar resident, so do not stack a speech model on top of it: back to
-      // Transcribe, where Eject can retry. Claimed before the await below, not after: the button only disables on
-      // `busy`, so a slow release let several clicks through, each resuming into its own generateAudio while
-      // generateAbort tracked only the last.
+      // A failed release leaves the sidecar resident; claimed before the await since the button only disables on `busy`.
       if (releaseInFlight && !(await releaseInFlight)) {
         setMode("transcribe");
         return;
@@ -855,8 +805,6 @@ export function useAudioModelSlot({
           `Loading the GGUF build of ${id}. MLX has no text-to-speech decoder, so the safetensors build cannot generate on this Mac.`,
           { duration: 7000 },
         );
-        // Resolving the sibling is part of the model load lifecycle. Reserve the slot so Generate cannot
-        // run the old resident model and then be evicted by this inspection's completion.
         ttsInspectionGeneration.current = selectionGeneration;
         busyRef.current = "loading";
         setBusy("loading");
@@ -923,13 +871,10 @@ export function useAudioModelSlot({
       return;
     }
 
-    // Eject also owns unresolved permission requests. Invalidating here makes their eventual streams
-    // self-discard instead of recording for an old STT pick.
     stopAndDiscardRecording();
 
     if (mode === "transcribe") {
       if (!selectedSttRepo) return;
-      // A selection can exist before its sidecar is resident, so an unowned pick is only forgotten.
       if (!sttReady) {
         sttStatusRefreshGeneration.current += 1;
         void releaseTranscribeSelection();
@@ -962,20 +907,15 @@ export function useAudioModelSlot({
     const activeModel = status?.active_model;
     if (!activeModel) return;
 
-    // Chat's gate, taken before the question so a queue cannot materialize while the dialog is open
-    // and then be stopped by the blanket queue stop.
     const lifecycleLease = useChatRuntimeStore.getState().beginModelLoading();
     if (lifecycleLease === null) {
       toast.info("Wait for the current model to finish loading.");
       return;
     }
 
-    // Busy before the dialog, so a second eject cannot start behind the first.
     setBusy("unloading");
     void (async () => {
       try {
-        // Ejecting stops every chat on the shared llama-server, and unforced the backend refused with a 409 the
-        // user could only read. Nothing is torn down until the answer is in, so declining leaves the page as it was.
         const stopDecision = await confirmStopRunningChatsIfNeeded(
           "Unloading the model",
           "unload",
@@ -1027,8 +967,7 @@ export function useAudioModelSlot({
     stopAndDiscardRecording,
   ]);
 
-  // Trained TTS checkpoints. A scan row carries no modality until the backend tags it, so without
-  // this a checkpoint you just fine-tuned here is unreachable.
+  // Scan rows carry no modality until the backend tags them; without this trained checkpoints are unreachable.
   const [trainedTtsModels, setTrainedTtsModels] = useState<ModelOption[]>([]);
   useEffect(() => {
     if (!active) return;
@@ -1038,8 +977,6 @@ export function useAudioModelSlot({
         if (cancelled) return;
         setTrainedTtsModels(
           res.loras
-            // Merged native speech checkpoints bypass MLX through the portable audio worker. Other
-            // safetensors exports still need a GGUF build on Mac.
             .filter(
               (lora) =>
                 !isMac ||
@@ -1048,8 +985,7 @@ export function useAudioModelSlot({
                   lora.export_type,
                 ),
             )
-            // The GGUF flag matters: GGUF_TTS_AUDIO_TYPES leaves csm out because llama.cpp has no CSM
-            // decoder, so a csm LoRA exported to GGUF fails at load.
+            // GGUF_TTS_AUDIO_TYPES omits csm: llama.cpp has no CSM decoder.
             .filter((lora) =>
               isTtsAudioType(lora.audio_type, lora.export_type === "gguf"),
             )
@@ -1068,7 +1004,6 @@ export function useAudioModelSlot({
         );
       })
       .catch(() => {
-        // Listing trained models is additive; the catalog rows still work without it.
         if (!cancelled) setTrainedTtsModels([]);
       });
     return () => {

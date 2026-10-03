@@ -13,7 +13,6 @@ from typing import Optional
 
 from core.inference.audio_cpp_models import AUDIO_CPP_MUSIC_AUDIO_TYPE, HUB_TASKS
 
-# Generation audio types that make music; every other generation audio type speaks.
 MUSIC_AUDIO_TYPES = frozenset(("minimax_music3", AUDIO_CPP_MUSIC_AUDIO_TYPE))
 
 

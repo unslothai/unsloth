@@ -46,7 +46,6 @@ const outputStep: TourStep = {
   ),
 };
 
-/** Each page has its own settings body, so each gets its own model and middle steps. */
 export function buildAudioTourSteps({
   workflow,
 }: {

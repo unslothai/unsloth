@@ -102,7 +102,6 @@ test("an undefined rowFilter leaves the picker rows untouched", () => {
     "features/model-picker/components/model-selector/pickers.tsx",
   );
   const guards = pickers.match(/\(!rowFilter \|\|\s*rowFilter\(\{/g) ?? [];
-  // Cached GGUF and cached repos only; Hub search rows stay unfiltered.
   assert.equal(guards.length, 2);
   const selector = readSrc(
     "features/model-picker/components/model-selector.tsx",

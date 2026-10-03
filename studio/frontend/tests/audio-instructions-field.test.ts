@@ -19,7 +19,6 @@ test("a model gets the instruction field it always got, on its own page", () => 
   assert.equal(instructionsFieldKind("music", "minimax_music3"), "music");
   assert.equal(instructionsFieldKind("speak", "snac"), null);
   assert.equal(instructionsFieldKind("speak", "csm"), null);
-  // A music model resident while Speak is open does not put its description on Speak.
   assert.equal(instructionsFieldKind("speak", "audiocpp_music"), null);
 });
 

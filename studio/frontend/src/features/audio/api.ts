@@ -196,7 +196,6 @@ export async function deleteAudioClip(id: string): Promise<void> {
   if (!response.ok) throw new Error(await readFastApiError(response));
 }
 
-/** Deletes the clips that are not archived; with a workflow, only that workflow's clips. */
 export async function clearAudioGallery(
   workflow?: "speak" | "music",
 ): Promise<number> {

@@ -13,10 +13,8 @@ import { AUDIO_CPP_MUSIC_AUDIO_TYPE } from "./audio-cpp-catalog";
 
 export type AudioWorkflowId = "speak" | "music" | "transcribe";
 
-/** Which model slot a workflow runs in: Speak and Music share the main inference slot, Transcribe uses the STT sidecar. */
 export type AudioWorkflowSlot = "speak" | "transcribe";
 
-/** The Audio workflows, shared by the page, the sidebar list and the More-flyout submenu. */
 export const AUDIO_WORKFLOWS: ReadonlyArray<{
   id: AudioWorkflowId;
   label: string;
@@ -24,7 +22,6 @@ export const AUDIO_WORKFLOWS: ReadonlyArray<{
   icon: IconSvgElement;
   hint: string;
   slot: AudioWorkflowSlot;
-  /** Whether the header offers the Create|Train pill. */
   createTrain: boolean;
 }> = [
   {
@@ -74,7 +71,6 @@ export function slotForWorkflow(id: AudioWorkflowId): AudioWorkflowSlot {
   return audioWorkflowTab(id).slot;
 }
 
-/** The `?task=` pipeline tags other pages hand to Audio. */
 export function audioWorkflowForTask(
   task: string | null | undefined,
 ): AudioWorkflowId | null {
@@ -90,14 +86,12 @@ export function audioWorkflowForTask(
   }
 }
 
-/** Which generation workflow made a clip of this audio type. */
 export function audioWorkflowForAudioType(
   audioType: string | null | undefined,
 ): "speak" | "music" {
   return audioType && MUSIC_AUDIO_TYPES.has(audioType) ? "music" : "speak";
 }
 
-/** A gallery clip's workflow. Clips saved before the field existed fall back to their audio type. */
 export function clipWorkflow(clip: {
   workflow?: string | null;
   audio_type?: string | null;

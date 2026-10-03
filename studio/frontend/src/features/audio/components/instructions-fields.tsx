@@ -6,8 +6,6 @@ import { Textarea } from "@/components/ui/textarea";
 import type { NativeAudioInstructionsKind } from "../audio-page-policy";
 import { Field } from "./field";
 
-/** The free-text instruction a model takes beside its text: a music description, a Higgs scene,
- *  a voice design, or MOSS Local style guidance. */
 export function InstructionsField({
   instructionsKind,
   musicNeedsDescription,
@@ -64,7 +62,6 @@ export function InstructionsField({
   );
 }
 
-/** MOSS Local's optional language tag. */
 export function MossLanguageField({
   audioLanguage,
   setAudioLanguage,

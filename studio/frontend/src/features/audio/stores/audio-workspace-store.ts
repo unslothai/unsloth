@@ -8,7 +8,6 @@ import type { AudioWorkflowId } from "../workflows";
  *  `requestedWorkflow`, which the page takes once it is free to switch, like an in-page tab click. */
 interface AudioWorkspaceState {
   workflow: AudioWorkflowId;
-  /** Whether anything has picked the workflow this session, so the loaded model may still pick it. */
   workflowChosen: boolean;
   requestedWorkflow: AudioWorkflowId | null;
   navExpanded: boolean;

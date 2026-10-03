@@ -6,7 +6,6 @@ import type { ModelOption } from "@/features/model-picker/components/model-selec
 import { isMusicGenerationModel, macTtsCatalogChoiceIsRunnable } from "../catalog";
 import { TtsOutput, TtsRailFields } from "./tts-workspace";
 
-/** Music's picker rows: the music models from the main-slot catalog. */
 export function musicPageModels(
   models: ModelOption[],
   isMac: boolean,
@@ -18,7 +17,6 @@ export function musicPageModels(
   );
 }
 
-/** Music runs in the main slot like Speak; its rail asks for lyrics and a description. */
 export function MusicRail(
   props: Omit<ComponentProps<typeof TtsRailFields>, "musicGeneration">,
 ) {
@@ -30,7 +28,6 @@ export function MusicOutput(
     modelReady,
     ...props
   }: Omit<ComponentProps<typeof TtsOutput>, "emptyText"> & {
-    /** Whether a model for this page is loaded, so the empty copy asks only for what is missing. */
     modelReady: boolean;
   },
 ) {
