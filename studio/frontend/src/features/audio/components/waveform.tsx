@@ -154,7 +154,6 @@ export function WaveformBars({
 }: {
   peaks: readonly number[] | null;
   fraction: number;
-  /** What the clip is, for screen readers. */
   label: string;
   valueNow: number;
   valueMax: number;

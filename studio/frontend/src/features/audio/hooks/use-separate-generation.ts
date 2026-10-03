@@ -178,7 +178,6 @@ export function useSeparateGeneration({
       },
     ],
   };
-  // Model blockers come first.
   const blocker: GenerateBlocker | null = inputBlocker
     ? {
         reason: inputBlocker.reason,

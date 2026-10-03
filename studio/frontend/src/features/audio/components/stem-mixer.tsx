@@ -83,7 +83,6 @@ export function StemMixer({
   const fraction = duration > 0 ? Math.min(1, position / duration) : 0;
   const loadingCount = stems.filter((stem) => !stem.src).length;
 
-  // Play is disabled until the stems load.
   const focusedGroup = useRef<string | null>(null);
   useEffect(() => {
     if (!(autoFocus && ready) || focusedGroup.current === groupId) return;
