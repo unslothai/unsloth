@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Decode a resident video VAE in one piece when the untiled decode fits.
-
-Every conventional video load turns VAE tiling on, whatever the card, so a B200 with 150 GB free decodes a
-1280x704 Wan clip in overlapping 256 px tiles: the overlaps are decoded twice and the seams are blended. With the
-whole pipeline resident there is usually room for the plain decode, which is faster and is the decoder's own
-output rather than a blend of tiles.
-
-Per call, from the latent shape: the untiled decode's extra memory is estimated from a measured per-family
-coefficient, and the call runs untiled only when that estimate (plus a margin) fits in the memory free right
-now. Otherwise, or if the untiled decode still runs out of memory, the call decodes tiled exactly as before.
-Families without a measured coefficient keep tiling.
-"""
+"""Decode a resident video VAE untiled per call when its estimated peak fits in free memory; tiled otherwise or on OOM."""
 
 from __future__ import annotations
 
@@ -21,14 +10,11 @@ from typing import Any, Optional
 
 UNTILED_ENV = "UNSLOTH_VIDEO_VAE_UNTILED"
 
-# Extra device memory of an untiled decode, in bytes per LATENT pixel (h x w), measured on a B200 at each family's
-# default shape with Studio's own fp16 decode path, then rounded up; scaled by the decoder's element size, since an
-# fp32 decode (ROCm, no fp16 path, or after its non-finite fallback) measured 21.1 GiB against fp16's 9.6 GiB at
-# 1280x704. Wan's decoder runs one latent frame at a time (causal cache), so its peak does not grow with the clip length.
+# Untiled fp16 decode peak per latent pixel (h x w), measured on a B200; frame count does not enter (Wan's causal cache
+# decodes one latent frame at a time). Scaled by the decoder's element size: fp32 peaked at 21.1 GiB vs fp16 9.6 GiB.
 _BYTES_PER_LATENT_PIXEL = {
     "wan2.2-ti2v-5b": 2.5 * 2**20,
 }
-# Headroom on top of the estimate: allocator fragmentation and the output tensor itself.
 _MARGIN = 1.25
 _MARGIN_BYTES = 2 * 2**30
 
@@ -42,8 +28,7 @@ def untiled_decode_bytes(
     latent_shape: tuple,
     itemsize: int = 2,
 ) -> Optional[int]:
-    """Estimated extra memory of an untiled decode of ``latent_shape`` (B, C, T, h, w) by a decoder whose weights
-    are ``itemsize`` bytes wide, or None if unmeasured."""
+    """Extra bytes of an untiled decode of ``latent_shape`` (B, C, T, h, w), or None if unmeasured."""
     coef = _BYTES_PER_LATENT_PIXEL.get(family)
     if coef is None or len(latent_shape) != 5:
         return None
@@ -52,25 +37,25 @@ def untiled_decode_bytes(
 
 
 def _decoder_itemsize(vae: Any) -> int:
-    """Element size of the decoder's weights, read per call; 4 (fp32, the larger estimate) if unreadable."""
+    """Decoder weight element size; 4 if unreadable."""
     try:
         for param in vae.decoder.parameters():
             if param.is_floating_point():
                 return int(param.element_size())
-    except Exception:  # noqa: BLE001 -- unreadable means assume the wider dtype
+    except Exception:  # noqa: BLE001
         pass
     return 4
 
 
 def _free_bytes(device: Any) -> Optional[int]:
-    """Memory an allocation can use now: free on the device plus what torch's cache holds unused."""
+    """Device free memory plus torch's unused cache."""
     try:
         import torch
 
         free, _ = torch.cuda.mem_get_info(device)
         cached = torch.cuda.memory_reserved(device) - torch.cuda.memory_allocated(device)
         return int(free) + max(0, int(cached))
-    except Exception:  # noqa: BLE001 -- no reading means no untiled decode
+    except Exception:  # noqa: BLE001
         return None
 
 
@@ -80,11 +65,7 @@ def install_untiled_decode(
     *,
     logger: Any = None,
 ) -> bool:
-    """Wrap ``pipe.vae.decode`` so each call decodes untiled when it fits. Returns whether it was installed.
-
-    Only for a CUDA-resident pipeline whose VAE is tiled and whose family has a measured coefficient; the caller
-    gates on placement and speed tier.
-    """
+    """Wrap ``pipe.vae.decode`` to decode untiled when it fits; the caller gates on placement and speed tier."""
     vae = getattr(pipe, "vae", None)
     decode = getattr(vae, "decode", None)
     if not _enabled() or vae is None or not callable(decode):

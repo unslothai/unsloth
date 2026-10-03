@@ -6463,8 +6463,7 @@ class VideoBackend:
                     vae_tiling = True
                 except Exception as exc:  # noqa: BLE001 -- tiling is an optimisation only
                     logger.warning("video.vae_tiling_failed: %s", exc)
-            # Tiling stays the fallback; a resident pipeline decodes in one piece whenever that fits (faster, and the
-            # decoder's own output instead of blended tiles). Held off on SPEED_OFF, which must stay bit-identical.
+            # Resident: decode untiled when it fits, tiled as fallback. Not on SPEED_OFF, which must stay bit-identical.
             if (
                 offload_policy == "none"
                 and target.device == "cuda"
