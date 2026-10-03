@@ -67,7 +67,9 @@ def fast_upload_enabled() -> bool:
 class LoadPrefetch:
     """Handle on a running prefetch: ``stop`` ends the reads at the next request boundary."""
 
-    def __init__(self, files: list[str], need: int, threads: list[threading.Thread], stop: threading.Event):
+    def __init__(
+        self, files: list[str], need: int, threads: list[threading.Thread], stop: threading.Event
+    ):
         self.files = files
         self.need = need
         self.threads = threads
@@ -222,7 +224,9 @@ def stop_prefetch(handle: Optional[LoadPrefetch]) -> None:
             pass
 
 
-def _snapshot_dir(base: Optional[str], base_local_dir: Optional[str], cache_dir: Optional[str]) -> Optional[str]:
+def _snapshot_dir(
+    base: Optional[str], base_local_dir: Optional[str], cache_dir: Optional[str]
+) -> Optional[str]:
     if base_local_dir and os.path.isdir(base_local_dir):
         return base_local_dir
     if base and os.path.isdir(base):
@@ -231,7 +235,6 @@ def _snapshot_dir(base: Optional[str], base_local_dir: Optional[str], cache_dir:
         return None
     try:
         from huggingface_hub import try_to_load_from_cache
-
         for root in (cache_dir, None) if cache_dir else (None,):
             hit = try_to_load_from_cache(base, "model_index.json", cache_dir = root)
             if isinstance(hit, str):
@@ -242,10 +245,7 @@ def _snapshot_dir(base: Optional[str], base_local_dir: Optional[str], cache_dir:
 
 
 def pipeline_component_files(
-    snapshot: Optional[str],
-    *,
-    skip_denoiser: bool,
-    skip_text_encoders: bool,
+    snapshot: Optional[str], *, skip_denoiser: bool, skip_text_encoders: bool
 ) -> list[str]:
     """The weight files ``from_pretrained`` reads from a local diffusers snapshot: every component
     ``model_index.json`` names, text encoders first, then the VAE, then the denoiser. Cache only."""
@@ -259,7 +259,10 @@ def pipeline_component_files(
     components = [
         name
         for name, value in index.items()
-        if not name.startswith("_") and isinstance(value, (list, tuple)) and len(value) == 2 and value[0]
+        if not name.startswith("_")
+        and isinstance(value, (list, tuple))
+        and len(value) == 2
+        and value[0]
     ]
 
     def _rank(name: str) -> int:
@@ -310,7 +313,6 @@ def start_load_prefetch(
         seeded = False
         if prequant_scheme:
             from .diffusion_denoiser_prequant import denoiser_prequant_source
-
             source = denoiser_prequant_source(
                 fam,
                 prequant_scheme,
@@ -387,7 +389,9 @@ def _ring_copy(sources: list[Any], device: Any) -> list[Any]:
     if not jobs:
         return targets
     buffers = max(1, min(_UPLOAD_BUFFERS, len(jobs)))
-    staging = [torch.empty(_UPLOAD_CHUNK_BYTES, dtype = torch.uint8, pin_memory = True) for _ in range(buffers)]
+    staging = [
+        torch.empty(_UPLOAD_CHUNK_BYTES, dtype = torch.uint8, pin_memory = True) for _ in range(buffers)
+    ]
     done: list[Any] = [None] * buffers
     stream = torch.cuda.Stream(device = device)
 
@@ -398,7 +402,9 @@ def _ring_copy(sources: list[Any], device: Any) -> list[Any]:
         staging[slot][:size].copy_(src8[offset : offset + size])
 
     try:
-        with ThreadPoolExecutor(max_workers = _UPLOAD_THREADS, thread_name_prefix = "unsloth-upload") as pool:
+        with ThreadPoolExecutor(
+            max_workers = _UPLOAD_THREADS, thread_name_prefix = "unsloth-upload"
+        ) as pool:
             pending = {}
             for index in range(buffers):
                 src8, _dst8, offset, size = jobs[index]
@@ -445,7 +451,12 @@ def _same_device(a: Any, b: Any) -> bool:
 
 
 @contextlib.contextmanager
-def fast_upload(modules: Sequence[Any], device: Any, *, logger: Any = None) -> Iterator[int]:
+def fast_upload(
+    modules: Sequence[Any],
+    device: Any,
+    *,
+    logger: Any = None,
+) -> Iterator[int]:
     """Inside the block, ``Tensor.to(device)`` on the modules' plain CPU tensors returns a ring-uploaded copy.
 
     Wrap the existing placement call (``module.to(device)`` / ``pipe.to(device)``): it still decides
@@ -456,7 +467,6 @@ def fast_upload(modules: Sequence[Any], device: Any, *, logger: Any = None) -> I
     try:
         if fast_upload_enabled():
             import torch
-
             target = torch.device(device)
             if target.type == "cuda" and torch.cuda.is_available():
                 if target.index is None:
@@ -494,7 +504,6 @@ def fast_upload(modules: Sequence[Any], device: Any, *, logger: Any = None) -> I
 
 def _staged_to_class():
     from torch.overrides import TorchFunctionMode
-
     class _StagedToMode(TorchFunctionMode):
         """Answers ``Tensor.to`` for a staged source with its device copy; every other call runs as usual."""
 
@@ -503,7 +512,13 @@ def _staged_to_class():
             self.staged = staged
             self.device = device
 
-        def __torch_function__(self, func, types, args = (), kwargs = None):
+        def __torch_function__(
+            self,
+            func,
+            types,
+            args = (),
+            kwargs = None,
+        ):
             import torch
 
             kwargs = kwargs or {}

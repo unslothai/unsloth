@@ -24,7 +24,10 @@ def _join_prefetch(handle, timeout = 30.0):
 
 
 def test_kill_switches(monkeypatch):
-    for env, probe in ((fl.PREFETCH_ENV, fl.prefetch_enabled), (fl.FAST_UPLOAD_ENV, fl.fast_upload_enabled)):
+    for env, probe in (
+        (fl.PREFETCH_ENV, fl.prefetch_enabled),
+        (fl.FAST_UPLOAD_ENV, fl.fast_upload_enabled),
+    ):
         monkeypatch.delenv(env, raising = False)
         assert probe()
         for off in ("0", "off", "false", "no", " OFF "):
@@ -74,7 +77,9 @@ def test_prefetch_reads_every_uncached_byte_in_order(tmp_path, monkeypatch):
     monkeypatch.setattr(fl, "_uncached_bytes", lambda path: __import__("os").path.getsize(path))
     monkeypatch.setattr(fl, "_available_host_mib", lambda: 1 << 20)
     monkeypatch.setattr("builtins.open", _Spy)
-    handle = fl.start_prefetch(files + [files[0], str(tmp_path / "missing")], min_bytes = 0, threads = 4)
+    handle = fl.start_prefetch(
+        files + [files[0], str(tmp_path / "missing")], min_bytes = 0, threads = 4
+    )
     _join_prefetch(handle)
     assert handle.files == files  # duplicates and missing paths dropped, order kept
     for path in files:
@@ -101,7 +106,9 @@ def test_prefetch_declines_cached_small_or_ram_tight_loads(tmp_path, monkeypatch
     assert fl.start_prefetch([str(path)], min_bytes = 0) is None
     monkeypatch.delenv(fl.PREFETCH_ENV)
     _join_prefetch(fl.start_prefetch([str(path)], min_bytes = 0))
-    monkeypatch.setattr(fl, "_on_rotational_disk", lambda p: True)  # parallel slices would seek-thrash a disk
+    monkeypatch.setattr(
+        fl, "_on_rotational_disk", lambda p: True
+    )  # parallel slices would seek-thrash a disk
     assert fl.start_prefetch([str(path)], min_bytes = 0) is None
 
 
@@ -121,7 +128,11 @@ def _fake_snapshot(tmp_path):
     (snap / "model_index.json").write_text(json.dumps(index))
     layout = {
         "text_encoder": ["model.safetensors"],
-        "text_encoder_2": ["model-00002-of-00002.safetensors", "model-00001-of-00002.safetensors", "index.json"],
+        "text_encoder_2": [
+            "model-00002-of-00002.safetensors",
+            "model-00001-of-00002.safetensors",
+            "index.json",
+        ],
         "transformer": ["diffusion_pytorch_model.safetensors"],
         "vae": ["diffusion_pytorch_model.safetensors", "diffusion_pytorch_model.bin"],
         "tokenizer": ["vocab.json"],
@@ -135,22 +146,31 @@ def _fake_snapshot(tmp_path):
 
 def test_component_files_are_the_weights_from_pretrained_reads_text_encoders_first(tmp_path):
     snap = _fake_snapshot(tmp_path)
-    rel = lambda paths: [p[len(str(snap)) + 1:] for p in paths]  # noqa: E731
-    assert rel(fl.pipeline_component_files(str(snap), skip_denoiser = False, skip_text_encoders = False)) == [
+    rel = lambda paths: [p[len(str(snap)) + 1 :] for p in paths]  # noqa: E731
+    assert rel(
+        fl.pipeline_component_files(str(snap), skip_denoiser = False, skip_text_encoders = False)
+    ) == [
         "text_encoder/model.safetensors",
         "text_encoder_2/model-00001-of-00002.safetensors",
         "text_encoder_2/model-00002-of-00002.safetensors",
         "vae/diffusion_pytorch_model.safetensors",
         "transformer/diffusion_pytorch_model.safetensors",
     ]
-    assert rel(fl.pipeline_component_files(str(snap), skip_denoiser = True, skip_text_encoders = True)) == [
+    assert rel(
+        fl.pipeline_component_files(str(snap), skip_denoiser = True, skip_text_encoders = True)
+    ) == [
         "vae/diffusion_pytorch_model.safetensors",
     ]
     assert fl.pipeline_component_files(None, skip_denoiser = False, skip_text_encoders = False) == []
-    assert fl.pipeline_component_files(str(tmp_path), skip_denoiser = False, skip_text_encoders = False) == []
+    assert (
+        fl.pipeline_component_files(str(tmp_path), skip_denoiser = False, skip_text_encoders = False)
+        == []
+    )
 
 
-def test_load_prefetch_puts_the_seeded_checkpoint_first_and_skips_the_dense_denoiser(tmp_path, monkeypatch):
+def test_load_prefetch_puts_the_seeded_checkpoint_first_and_skips_the_dense_denoiser(
+    tmp_path, monkeypatch
+):
     snap = _fake_snapshot(tmp_path)
     ckpt = tmp_path / "FLUX.1-schnell-INT8.pt"
     ckpt.write_bytes(b"q")
@@ -162,9 +182,15 @@ def test_load_prefetch_puts_the_seeded_checkpoint_first_and_skips_the_dense_deno
     import core.inference.diffusion_denoiser_prequant as dp
     import core.inference.diffusion_prequant as pq
 
-    monkeypatch.setattr(dp, "denoiser_prequant_source", lambda fam, scheme, **kw: _Source() if scheme == "int8" else None)
+    monkeypatch.setattr(
+        dp,
+        "denoiser_prequant_source",
+        lambda fam, scheme, **kw: _Source() if scheme == "int8" else None,
+    )
     monkeypatch.setattr(pq, "cached_checkpoint_path", lambda source, cache_dir = None: str(ckpt))
-    monkeypatch.setattr(fl, "start_prefetch", lambda paths, logger = None: seen.setdefault("paths", list(paths)))
+    monkeypatch.setattr(
+        fl, "start_prefetch", lambda paths, logger = None: seen.setdefault("paths", list(paths))
+    )
 
     fl.start_load_prefetch(object(), str(snap), prequant_scheme = "int8")
     assert seen.pop("paths")[0] == str(ckpt)
@@ -215,11 +241,15 @@ def _model(torch):
             self.a = torch.nn.Linear(512, 1024).to(torch.bfloat16)
             self.b = torch.nn.Linear(1024, 512, bias = False).to(torch.bfloat16)
             self.c = torch.nn.Linear(512, 1024)
-            self.c.weight = self.a.weight  # tied (a bf16 weight on an fp32 Linear is fine for .to())
+            self.c.weight = (
+                self.a.weight
+            )  # tied (a bf16 weight on an fp32 Linear is fine for .to())
             self.register_buffer("table", torch.randn(700, 1024))
             self.register_buffer("ids", torch.arange(300000, dtype = torch.int64))
             self.small = torch.nn.Parameter(torch.randn(3, 5), requires_grad = False)
-            self.view_param = torch.nn.Parameter(torch.randn(1024, 600)[:, :512].clone().t(), requires_grad = False)
+            self.view_param = torch.nn.Parameter(
+                torch.randn(1024, 600)[:, :512].clone().t(), requires_grad = False
+            )
 
     return _M()
 
@@ -240,7 +270,9 @@ def test_fast_upload_matches_a_plain_to_byte_for_byte(monkeypatch):
     assert ref_state.keys() == got_state.keys()
     for name, want in ref_state.items():
         have = got_state[name]
-        assert have.device.type == "cuda" and have.dtype == want.dtype and have.shape == want.shape, name
+        assert (
+            have.device.type == "cuda" and have.dtype == want.dtype and have.shape == want.shape
+        ), name
         assert have.stride() == want.stride(), name
         assert have.requires_grad == want.requires_grad, name
         assert torch.equal(have, want), name
@@ -293,9 +325,12 @@ def test_fast_upload_passes_tensor_subclasses_through(monkeypatch):
         pass
 
     module = torch.nn.Linear(1024, 1024)
-    module.weight = torch.nn.Parameter(module.weight.detach().as_subclass(_Tagged), requires_grad = False)
+    module.weight = torch.nn.Parameter(
+        module.weight.detach().as_subclass(_Tagged), requires_grad = False
+    )
     assert fl._upload_candidates([module], "cuda") == [] or all(
-        type(t) in (torch.Tensor, torch.nn.Parameter) for t in fl._upload_candidates([module], "cuda")
+        type(t) in (torch.Tensor, torch.nn.Parameter)
+        for t in fl._upload_candidates([module], "cuda")
     )
     with fl.fast_upload([module], "cuda"):
         module.to("cuda")
