@@ -3231,6 +3231,7 @@ export const fr = {
     discardDescription: "Les modifications non enregistrées de {name} seront perdues.",
     discard: "Abandonner",
     mentions: "Compétences",
+    manage: "Gérer les compétences",
   },
   library: {
     tabs: {

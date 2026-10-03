@@ -3220,6 +3220,7 @@ export const it = {
     discardDescription: "Le modifiche non salvate a {name} andranno perse.",
     discard: "Scarta",
     mentions: "Competenze",
+    manage: "Gestisci competenze",
   },
   library: {
     tabs: {

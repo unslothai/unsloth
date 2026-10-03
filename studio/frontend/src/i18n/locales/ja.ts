@@ -3099,6 +3099,7 @@ export const ja = {
     discardDescription: "{name} の保存されていない変更は失われます。",
     discard: "破棄",
     mentions: "スキル",
+    manage: "スキルを管理",
   },
   library: {
     tabs: {

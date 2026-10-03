@@ -3145,6 +3145,7 @@ export const ko = {
     discardDescription: "{name}의 저장되지 않은 변경 사항이 사라집니다.",
     discard: "버리기",
     mentions: "스킬",
+    manage: "스킬 관리",
   },
   library: {
     tabs: {

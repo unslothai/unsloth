@@ -3220,6 +3220,7 @@ export const de = {
     discardDescription: "Nicht gespeicherte Änderungen an {name} gehen verloren.",
     discard: "Verwerfen",
     mentions: "Fähigkeiten",
+    manage: "Fähigkeiten verwalten",
   },
   library: {
     tabs: {
