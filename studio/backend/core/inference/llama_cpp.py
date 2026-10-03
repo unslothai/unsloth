@@ -6980,6 +6980,11 @@ def _llama_chunk_has_generated_output(data: dict) -> bool:
     return False
 
 
+def _perf_callback_wants_timings(callback) -> bool:
+    """A callback that only tracks prefill progress opts out of per-token timings."""
+    return callback is not None and getattr(callback, "wants_timings", True)
+
+
 def _report_live_llama_timings(callback, chunk) -> None:
     """Report request-scoped llama.cpp progress without altering the public stream."""
     if callback is None or not isinstance(chunk, dict):
@@ -35929,7 +35934,7 @@ class LlamaCppBackend:
         retry_preflight_context_length = None
         # Progress events let advancing prefills renew the first-token deadline.
         payload["return_progress"] = True
-        if perf_callback is not None:
+        if _perf_callback_wants_timings(perf_callback):
             payload["timings_per_token"] = True
         if logit_bias:
             payload["logit_bias"] = logit_bias
@@ -37064,7 +37069,7 @@ class LlamaCppBackend:
             if on_decode_slot is not None:
                 payload["verbose"] = True
                 payload["response_fields"] = ["id_slot"]
-            if perf_callback is not None:
+            if _perf_callback_wants_timings(perf_callback):
                 payload["timings_per_token"] = True
             if logit_bias:
                 payload["logit_bias"] = logit_bias
@@ -39798,7 +39803,7 @@ class LlamaCppBackend:
 
         # Progress events feed the first-token deadline; timings stay opt-in.
         stream_payload["return_progress"] = True
-        if perf_callback is not None:
+        if _perf_callback_wants_timings(perf_callback):
             stream_payload["timings_per_token"] = True
 
         _final_respawn_truncations: list[dict] = []
