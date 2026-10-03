@@ -248,3 +248,10 @@ test("a microphone granted after the card unmounted is released, not recorded", 
   );
   assert.match(hook, /return \(\) => \{\s*mounted\.current = false;/);
 });
+
+test("an upload that replaces a selection clears it, so a failed upload cannot run the old one", () => {
+  assert.match(
+    hook,
+    /dispatch\(\{ type: "upload-start", name: fileName \}\);\s*(\/\/[^\n]*\n\s*)?onChangeRef\.current\(null\);/,
+  );
+});

@@ -216,6 +216,8 @@ export function useAudioSource({
       const controller = new AbortController();
       uploadAbort.current = controller;
       dispatch({ type: "upload-start", name: fileName });
+      // The card now shows the new file: a run must not quietly use the one it replaced.
+      onChangeRef.current(null);
       // Drawn while it uploads: the waveform and length should not wait for the network.
       void drawBlob("local", file);
       try {

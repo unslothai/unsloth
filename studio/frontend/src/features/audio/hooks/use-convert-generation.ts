@@ -120,6 +120,7 @@ export function useConvertGeneration({
   const transcriber = useReferenceTranscribe({
     sttRepo,
     language: "",
+    purpose: "convert",
     onText: (next) => useAudioConvertStore.getState().setSourceText(next),
   });
   // A transcription still running for the previous recording must not fill in the new one's text.

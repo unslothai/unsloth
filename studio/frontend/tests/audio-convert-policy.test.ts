@@ -263,3 +263,15 @@ test("Use again restores an upload or history clip target, not only a saved voic
     /clip\.target_input_id\s*\?\s*\{ kind: "input" as const, id: clip\.target_input_id \}/,
   );
 });
+
+test("Convert transcribes its source as far as it converts", () => {
+  const hook = readSrc("features/audio/hooks/use-convert-generation.ts");
+  assert.match(hook, /purpose: "convert",/);
+  const transcribe = readSrc(
+    "features/audio/hooks/use-reference-transcribe.ts",
+  );
+  assert.match(
+    transcribe,
+    /\.\.\.\(language \? \{ language \} : \{\}\),\s*purpose,/,
+  );
+});

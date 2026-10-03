@@ -29,12 +29,15 @@ export function useReferenceTranscribe({
   sttRepo,
   language,
   onText,
+  purpose = "reference",
 }: {
   /** Transcribe's selected or last speech-to-text repo, if any. */
   sttRepo: string | null;
   /** The clone language, as a hint; empty lets the model detect it. */
   language: string;
   onText: (text: string) => void;
+  /** "convert" transcribes as much as Convert converts, not the clone reference's 30 s. */
+  purpose?: "reference" | "convert";
 }) {
   const [transcribing, setTranscribing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -57,6 +60,7 @@ export function useReferenceTranscribe({
             ...target,
             device: useVoiceSettingsStore.getState().sttDevice,
             ...(language ? { language } : {}),
+            purpose,
           },
           controller.signal,
         );
@@ -81,7 +85,7 @@ export function useReferenceTranscribe({
         setTranscribing(false);
       }
     },
-    [sttRepo, language],
+    [sttRepo, language, purpose],
   );
 
   const cancel = useCallback(() => {

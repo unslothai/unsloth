@@ -44268,6 +44268,7 @@ async def transcribe_audio_input(
     transcript lands in history. A clone reference is cut to its first 30 s, so the transcript
     covers what is cloned."""
     from core.inference import audio_inputs
+    from core.inference.audio_cpp_convert import CONVERT_SOURCE_MAX_SECONDS
 
     ref = {
         # ``source`` (or ``-``) stands for "the clip_id or voice_id in the query". A real input id
@@ -44279,7 +44280,10 @@ async def transcribe_audio_input(
 
     def _prepare() -> bytes:
         source = audio_inputs.resolve_source(ref)
-        cap = None if source.kind == "voice" else audio_inputs.REFERENCE_MAX_SECONDS
+        if body.purpose == "convert":
+            cap = CONVERT_SOURCE_MAX_SECONDS
+        else:
+            cap = None if source.kind == "voice" else audio_inputs.REFERENCE_MAX_SECONDS
         path = audio_inputs.prepared_path(source, 16000, "mono", None, max_seconds = cap)
         return path.read_bytes()
 

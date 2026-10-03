@@ -453,7 +453,13 @@ export interface TranscribeInputResponse {
 /** Transcribes a reference without saving it to the transcript list. */
 export async function transcribeAudioInput(
   ref: AudioSourceRef,
-  body: { model: string; engine?: string; device?: string; language?: string },
+  body: {
+    model: string;
+    engine?: string;
+    device?: string;
+    language?: string;
+    purpose?: "reference" | "convert";
+  },
   signal?: AbortSignal,
 ): Promise<TranscribeInputResponse> {
   const response = await authFetch(transcribeUrl(ref), {
