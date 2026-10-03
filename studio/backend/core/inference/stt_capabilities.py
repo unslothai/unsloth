@@ -7,15 +7,11 @@ from __future__ import annotations
 
 from typing import Optional
 
+from core.inference.stt_details import ALWAYS_TIMESTAMPED, ON_REQUEST_TIMESTAMPS
 from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# Nemotron's spans are sub-word pieces ("fel lo w"), so it stays plain text.
-_ALWAYS_TIMESTAMPED = frozenset(
-    {"moss_transcribe_diarize", "vibevoice_asr", "parakeet_tdt", "kroko_asr"}
-)
-_ON_REQUEST_TIMESTAMPS = frozenset({"qwen3_asr"})
 _SPEAKER_FAMILIES = frozenset({"moss_transcribe_diarize", "vibevoice_asr"})
 _ALIGNER_SIZE_BYTES = 1_129_966_496
 
@@ -136,9 +132,9 @@ def capabilities_for(model: Optional[str], engine: Optional[str]) -> dict:
         result["family"] = family
         result["cpu_only"] = family in CPU_ONLY_FAMILIES
         result["speakers"] = family in _SPEAKER_FAMILIES
-        if family in _ALWAYS_TIMESTAMPED:
+        if family in ALWAYS_TIMESTAMPED:
             result["timestamps"] = "always"
-        elif family in _ON_REQUEST_TIMESTAMPS:
+        elif family in ON_REQUEST_TIMESTAMPS:
             result["timestamps"] = "on_request"
             result["aligner"] = _aligner_state()
     except Exception as exc:  # noqa: BLE001 - a capability probe never fails the page

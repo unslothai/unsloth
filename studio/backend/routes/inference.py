@@ -23161,17 +23161,8 @@ _NO_SPEAKERS_DETAIL = (
 )
 
 
-def _source_transcript(
-    result: dict,
-    source,
-    speakers: bool,
-    timed: bool = True,
-) -> dict:
-    """``timed`` False drops untrusted spans (Nemotron's sub-word pieces) from history."""
+def _source_transcript(result: dict, source, speakers: bool) -> dict:
     out = dict(result)
-    if not timed:
-        for key in ("segments", "words", "speakers"):
-            out.pop(key, None)
     if not (speakers and out.get("speakers")):
         out.pop("speakers", None)
         if out.get("segments"):
@@ -23222,9 +23213,7 @@ async def transcribe_audio_source(
             source_path = path,
             timestamps = body.timestamps,
         )
-        return _source_transcript(
-            result, source, body.speakers, caps["timestamps"] != "unsupported"
-        )
+        return _source_transcript(result, source, body.speakers)
 
     return StreamingResponse(
         stream_transcript(_run, body.title or source.name),

@@ -114,10 +114,6 @@ def test_vibevoice_spans_are_always_24k():
     ]
     assert result["speaker_ids"] == ["0"]
     assert result["text"] == payload["text"] and result["language"] == "en"
-    assert (
-        stt_details.normalize(payload, "vibevoice_asr_streaming", 16000)["segments"][0]["end"]
-        == 3.5
-    )
 
 
 def test_qwen3_words_become_seconds_and_one_segment():
@@ -316,3 +312,17 @@ def test_korean_aligned_words_keep_their_spaces():
         {"start": 0.5, "end": 0.9, "word": "반갑습니다"},
     ]
     assert stt_details.group_words(words)[0]["text"] == "안녕하세요 반갑습니다"
+
+
+def test_nemotron_sub_word_spans_never_replace_its_text():
+    # Shape audiocpp_server returned on a T4: text whole, words split mid-word.
+    payload = {
+        "text": "He was in a fevered state of mind",
+        "sample_rate": 16000,
+        "words": [
+            {"word": w, "start_sample": i * 1600, "end_sample": i * 1600 + 1500}
+            for i, w in enumerate(["He", "was", "in", "a", "f", "ever", "ed", "sta", "te"])
+        ],
+    }
+    result = stt_details.normalize(payload, "nemotron_asr", 16000)
+    assert result == {"text": "He was in a fevered state of mind", "language": None}

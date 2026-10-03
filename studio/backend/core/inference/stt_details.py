@@ -10,6 +10,13 @@ import math
 import re
 from typing import Any, Optional
 
+# Families whose spans Studio keeps. Nemotron also answers with spans, but as sub-word pieces
+# ("f ever ed"), and its text rebuilt from them would read that way, so its spans are dropped.
+ALWAYS_TIMESTAMPED = frozenset(
+    {"moss_transcribe_diarize", "vibevoice_asr", "parakeet_tdt", "kroko_asr"}
+)
+ON_REQUEST_TIMESTAMPS = frozenset({"qwen3_asr"})
+_SPAN_KEYS = ("words", "segments", "speaker_turns")
 # VibeVoice-ASR counts its spans at 24 kHz whatever rate it was fed (and reports the input's rate).
 FIXED_SPAN_RATES = {"vibevoice_asr": 24000, "vibevoice_asr_streaming": 24000}
 # MOSS-Transcribe-Diarize embeds "[0.12][S01]" markers in its text; its segments carry the prose.
@@ -195,6 +202,8 @@ def group_words(words: list[dict]) -> list[dict]:
 def normalize(payload: dict, family: str, sent_rate: int) -> dict:
     """``sent_rate`` (the WAV's rate) applies only when the answer names none."""
     payload = payload if isinstance(payload, dict) else {}
+    if family not in ALWAYS_TIMESTAMPED | ON_REQUEST_TIMESTAMPS:
+        payload = {k: v for k, v in payload.items() if k not in _SPAN_KEYS}
     rate = FIXED_SPAN_RATES.get(family)
     if rate is None:
         reported = payload.get("sample_rate")

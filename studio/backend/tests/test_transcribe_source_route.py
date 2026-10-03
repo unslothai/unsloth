@@ -405,28 +405,3 @@ def test_transcript_routes_get_rename_and_archive(stub):
         cleared = client.patch(url, json = {"speaker_names": {"S01": None}, "archived": True}).json()
         assert "speaker_names" not in cleared and cleared["archived"] is True
         assert client.get("/api/inference/audio/transcripts/" + "e" * 32).status_code == 404
-
-
-def test_spans_from_a_model_studio_treats_as_plain_text_are_dropped(stub):
-    # Nemotron answers with sub-word spans ("fel lo w"); history must not keep them.
-    stub.result = {
-        "text": "And so my fellow Americans",
-        "language": None,
-        "duration": 2.0,
-        "segments": [{"start": 0.9, "end": 2.5, "text": "And so my fel lo w"}],
-        "words": [{"start": 0.9, "end": 1.0, "word": "fel"}],
-    }
-    input_id = _input(ALICE)
-    with _client(ALICE) as client:
-        complete = _events(
-            _post(
-                client,
-                model = f"{REPO}/Nemotron-3.5-ASR-Streaming-0.6B-GGUF",
-                source = {"input_id": input_id},
-                speakers = False,
-            )
-        )[-1]
-    assert complete["text"] == "And so my fellow Americans"
-    assert "segments" not in complete and "words" not in complete
-    assert complete["timestamps"] is False
-    assert "segments" not in complete["record"]
