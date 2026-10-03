@@ -123,7 +123,6 @@ def _triton_ok(x: Any) -> bool:
     )
 
 
-# tuned at H3's shape
 _ROWS = 16
 _WARPS = 4
 
