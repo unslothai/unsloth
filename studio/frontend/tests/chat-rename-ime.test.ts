@@ -6,8 +6,7 @@ import test from "node:test";
 import ts from "typescript";
 import { readSrc } from "./helpers/kit.ts";
 
-// Execute the shipped callbacks, following composer-submit-path.test.ts. This
-// catches guards placed after preventDefault or after the rename side effects.
+// Runs the shipped callbacks to catch guards placed after preventDefault or side effects.
 function handler(
   file: string,
   inline: boolean | "escape",
@@ -23,7 +22,6 @@ function handler(
   const matches: ts.Node[] = [];
   function visit(node: ts.Node) {
     if (inline === "escape") {
-      // The rename dialog's DialogContent, which wraps the commitRename input.
       if (
         ts.isJsxAttribute(node) &&
         node.name.getText(source) === "onEscapeKeyDown" &&
@@ -142,8 +140,7 @@ for (const [name, file] of [
   ["thread sidebar dialog", "features/chat/thread-sidebar.tsx"],
 ] as const) {
   test(`${name}: candidate Escape does not close the dialog`, () => {
-    // Radix calls this from a document capture listener, before the input's
-    // onKeyDown, so the input guard alone cannot keep the dialog open.
+    // Radix fires this before the input's onKeyDown, so the input guard alone is not enough.
     const onEscape = handler(file, "escape", {});
     const press = (isComposing: boolean, keyCode: number) => {
       let prevented = false;

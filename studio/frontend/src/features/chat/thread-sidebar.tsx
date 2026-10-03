@@ -354,7 +354,6 @@ export function ThreadSidebar({
       <Dialog open={renamingItem !== null} onOpenChange={(open) => { if (!open) setRenamingItem(null); }}>
         <DialogContent
           className="corner-squircle dialog-soft-surface sm:max-w-sm"
-          // Radix closes on Escape before the input sees it; keep IME candidate dismissal from closing.
           onEscapeKeyDown={(e) => { if (e.isComposing || e.keyCode === 229) e.preventDefault(); }}
         >
           <DialogHeader>
