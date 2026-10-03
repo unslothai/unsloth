@@ -212,10 +212,16 @@ def _load_plain():
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     try:
+        # No dtype kwarg: `dtype=` fails at the 4.52.4 floor, `torch_dtype=` is deprecated from 4.57.6. Cast after.
         tok = AutoTokenizer.from_pretrained(_MODEL)
-        model = AutoModelForCausalLM.from_pretrained(_MODEL, dtype = torch.float32)
+        model = AutoModelForCausalLM.from_pretrained(_MODEL).to(torch.float32)
     except OSError as e:  # hub unreachable / model missing
         pytest.skip(f"could not fetch {_MODEL} (network/hub): {str(e)[:150]}")
+    got = next(model.parameters()).dtype
+    assert got == torch.float32, (
+        f"the cast after load left the model in {got}, not float32. These tests compare "
+        f"losses, so a silent dtype change is a silent change of what they measure."
+    )
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
     # Unsloth's GRPO path calls model.for_training()/for_inference() (added by FastLanguageModel). A plain HF model
@@ -273,7 +279,16 @@ def test_sft_trains_on_cpu(tmp_path):
     SFTTrainer(model = model, processing_class = tok, args = cfg, train_dataset = ds).train()
 
 
+def _skip_if_unsloth_refuses_grpo():
+    # Unsloth refuses GRPO below trl 0.20.0 (unsloth/models/rl.py); the floor lane runs below it.
+    import trl
+    from packaging.version import Version
+    if Version(trl.__version__) < Version("0.20.0"):
+        pytest.skip(f"unsloth refuses GRPO on trl {trl.__version__} (< 0.20.0)")
+
+
 def test_grpo_trains_on_cpu(tmp_path):
+    _skip_if_unsloth_refuses_grpo()
     from datasets import Dataset
     from trl import GRPOConfig, GRPOTrainer
 
@@ -337,6 +352,7 @@ def test_dpo_trains_on_cpu(tmp_path):
 
 def test_grpo_evaluates_with_an_explicit_eval_batch_size(tmp_path):
     """Shrinking an explicit eval batch of 8 to the train batch of 2 split num_generations = 4 groups."""
+    _skip_if_unsloth_refuses_grpo()
     from datasets import Dataset
     from trl import GRPOConfig, GRPOTrainer
 
@@ -374,6 +390,7 @@ def test_grpo_evaluates_with_an_explicit_eval_batch_size(tmp_path):
 
 
 def test_grpo_trains_on_cpu_through_the_patched_batch_sampler(tmp_path):
+    _skip_if_unsloth_refuses_grpo()
     """The canary above proves the GRPO trainer runs. It does NOT prove Unsloth's own
     ``get_batch_samples`` runs, because ``_load_plain`` never goes through the loader that
     installs it, so ``Trainer.get_batch_samples`` stays stock transformers.

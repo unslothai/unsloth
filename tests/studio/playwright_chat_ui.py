@@ -320,9 +320,41 @@ def exercise_permission_mode_controls(page, shoot):
     # went out as Cache-Control: no-store (#12148): its own 30s timeout never fired, and the step sat
     # there until the 180s watchdog killed the job (Chat UI Tests (chat) on main at 1dddc1437). The
     # pill is the one thing the next assertion needs, and waiting for it is bounded.
+    #
+    # One more reload, only when the app never booted. Seen once on the Windows msedge permissions lane
+    # (#12438's run 36881445186): after the reload the server served /chat and the three boot scripts and
+    # then no /api request at all, the page stayed on "Loading...", and the pill never mounted. That is
+    # the app shell failing to start, not this step's assertion, so it gets one retry with the evidence
+    # logged; a page that booted and still lacks the pill fails at once, and so does a second boot failure.
+    def _boot_state():
+        try:
+            return page.evaluate(
+                """() => ({
+                    url: location.href,
+                    readyState: document.readyState,
+                    composer: !!document.querySelector('textarea[aria-label="Message input"]'),
+                    root: (document.getElementById("root")?.innerText || "").trim().slice(0, 80),
+                })"""
+            )
+        except Exception as exc:
+            return {"evaluate_failed": repr(exc)}
+
     def reload_and_wait_for_pill():
         page.reload(wait_until = "load")
+        try:
+            expect(pill).to_be_visible(timeout = 30_000)
+            return
+        except AssertionError:
+            state = _boot_state()
+            shoot("04-permission-pill-missing")
+            info(f"WARN permission pill missing 30s after reload; page state {state}")
+            if state.get("composer") or state.get("evaluate_failed"):
+                raise
+        page.reload(wait_until = "load")
         expect(pill).to_be_visible(timeout = 30_000)
+        info(
+            "WARN the app did not boot on the first reload and did on the second; see the state above"
+        )
 
     # choose() only drives THIS tab.
     # The mirror to /api/chat/settings is a 400ms trailing-edge debounce (SETTINGS_DEBOUNCE_MS, chat-runtime-store.ts)

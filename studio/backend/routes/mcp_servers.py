@@ -43,6 +43,7 @@ from core.inference.mcp_client import (
     tool_visible_to,
 )
 from core.inference.mcp_config_import import parse_mcp_config
+from core.inference.mcp_image import image_input_mappings, image_mapping
 from models.mcp_servers import (
     BlenderTest,
     McpServerCreate,
@@ -161,6 +162,20 @@ def _normalize_headers(headers: dict[str, str] | None) -> dict[str, str] | None:
     return out or None
 
 
+def _image_mappings_active(row: dict) -> bool:
+    from core.inference.tools import _enabled_mcp_servers
+
+    # Same servers the model's MCP catalog keeps; a mapping elsewhere could never receive the image.
+    if not image_input_mappings(row) or not _enabled_mcp_servers([row]):
+        return False
+    if is_stdio(row["url"]) and not stdio_mcp_enabled():
+        return False
+    tools = get_cached_tools(row["id"])
+    return tools is None or any(
+        image_mapping(row, tool) for tool in tools if tool_visible_to(tool, "model")
+    )
+
+
 def _row_to_response(row: dict, *, include_headers: bool = True) -> McpServerResponse:
     return McpServerResponse(
         id = row["id"],
@@ -170,6 +185,8 @@ def _row_to_response(row: dict, *, include_headers: bool = True) -> McpServerRes
         headers = (parse_server_headers(row) or {}) if include_headers else {},
         is_enabled = bool(row["is_enabled"]),
         use_oauth = bool(row.get("use_oauth")),
+        image_input_mappings = image_input_mappings(row),
+        image_mappings_active = _image_mappings_active(row),
         created_at = row["created_at"],
         updated_at = row["updated_at"],
     )
@@ -348,8 +365,13 @@ async def create_mcp_server(
         headers_json = json.dumps(headers) if headers else None,
         is_enabled = payload.is_enabled,
         use_oauth = use_oauth,
+        image_input_mappings_json = _mappings_json(payload.image_input_mappings),
     )
     return _row_to_response(mcp_servers_db.get_server(server_id))
+
+
+def _mappings_json(mappings) -> str:
+    return json.dumps([mapping.model_dump() for mapping in mappings or []])
 
 
 def _changes_from_payload(payload: McpServerUpdate) -> dict:
@@ -374,6 +396,8 @@ def _changes_from_payload(payload: McpServerUpdate) -> dict:
         if payload.use_oauth is None:
             raise HTTPException(status_code = 400, detail = "use_oauth must be true or false")
         changes["use_oauth"] = payload.use_oauth
+    if "image_input_mappings" in sent:
+        changes["image_input_mappings_json"] = _mappings_json(payload.image_input_mappings)
     # stdio is OAuth-less: drop a stale OAuth flag when switching to a command.
     if "url" in changes and is_stdio(changes["url"]):
         changes["use_oauth"] = False
@@ -455,6 +479,31 @@ async def delete_mcp_server(server_id: str, current_subject: str = Depends(get_c
     mcp_servers_db.delete_server(server_id)
     invalidate_tool_cache(server_id)
     await asyncio.to_thread(close_mcp_sessions, old["url"], parse_server_headers(old))
+
+
+@router.get("/{server_id}/tools")
+def list_mcp_server_tools(
+    server_id: str,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: ViaApiKey = False,
+):
+    """Cached tool names and input schemas, for choosing an image input mapping."""
+    server = mcp_servers_db.get_server(server_id)
+    if not server:
+        raise HTTPException(status_code = 404, detail = "MCP server not found")
+    if is_stdio(server["url"]):
+        require_ui_session_for_local_commands(via_api_key)
+    tools = get_cached_tools(server_id)
+    if tools is None:
+        raise HTTPException(status_code = 409, detail = "Refresh this server's tools first")
+    # App-only tools never reach the model, so a mapping on one could never be used.
+    return [
+        {"name": tool["name"], "inputSchema": tool.get("inputSchema") or tool.get("input_schema")}
+        for tool in tools
+        if isinstance(tool, dict)
+        and isinstance(tool.get("name"), str)
+        and tool_visible_to(tool, "model")
+    ]
 
 
 @router.post("/{server_id}/refresh", response_model = McpServerProbeResult)

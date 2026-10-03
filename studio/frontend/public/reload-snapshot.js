@@ -53,6 +53,7 @@
     "--contrast-line-mix",
     "--contrast-panel-ink-target",
     "--contrast-panel-target",
+    "--contrast-seam-gain",
     "--contrast-state-mix",
     "--contrast-surface-mix",
     "--contrast-target",

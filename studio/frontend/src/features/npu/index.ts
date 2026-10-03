@@ -6,7 +6,10 @@ export {
   NPU_MODEL_PREFIX,
   type NpuModel,
   type NpuStatus,
+  npuDownloadLabel,
+  npuResumeLabel,
   npuRowsFor,
+  npuSizeLabel,
 } from "./api";
 export { NpuSetupNotice } from "./npu-setup-notice";
 export {

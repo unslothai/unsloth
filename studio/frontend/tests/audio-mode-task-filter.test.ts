@@ -18,7 +18,7 @@ const catalogSource = readSrc("features/audio/catalog.ts");
 test("Hub discovery follows the active audio mode", () => {
   assert.match(
     pageSource,
-    /speak: \["text-to-speech"\],[\s\S]*transcribe: \["automatic-speech-recognition"\]/,
+    /speak: \["text-to-speech", "text-to-audio"\],[\s\S]*transcribe: \["automatic-speech-recognition"\]/,
   );
   assert.match(pageSource, /task=\{HUB_TASKS_BY_MODE\[mode\]\}/);
 });
