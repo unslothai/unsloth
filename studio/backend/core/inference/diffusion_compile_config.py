@@ -6,9 +6,21 @@ the render thread that compiles. Knobs are recorded here and ``apply()`` re-writ
 
 from __future__ import annotations
 
+import os
 import threading
 from contextvars import ContextVar
 from typing import Any
+
+# dynamic_scale_rblock benchmarks R0_BLOCK vs R0_BLOCK/2 per process (never cached); the two sum in different orders,
+# so renders differed across servers on one seed (FLUX.1-schnell int8, B200). =1 restores inductor's default.
+DYNAMIC_SCALE_RBLOCK_ENV = "UNSLOTH_DIFFUSION_DYNAMIC_SCALE_RBLOCK"
+
+
+def reduction_blocks_pinned() -> bool:
+    """True unless UNSLOTH_DIFFUSION_DYNAMIC_SCALE_RBLOCK asks for inductor's per-process R0_BLOCK benchmark."""
+    raw = (os.environ.get(DYNAMIC_SCALE_RBLOCK_ENV) or "").strip().lower()
+    return raw not in ("1", "on", "true", "yes")
+
 
 _LOCK = threading.Lock()
 _KNOBS: dict[tuple[str, str], Any] = {}

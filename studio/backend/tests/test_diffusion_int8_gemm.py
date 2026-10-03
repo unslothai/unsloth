@@ -82,6 +82,48 @@ def test_dense_linear_is_not_eligible():
     assert g8._eligible(torch.nn.Linear(128, 128)) is None
 
 
+def test_probe_shapes_stay_on_the_16_byte_grid():
+    ns = [n for _m, n, _k, _b, _x in g8._PROBE_SHAPES]
+    ks = [k for _m, _n, k, _b, _x in g8._PROBE_SHAPES]
+    assert all(n % 16 == 0 for n in ns) and all(k % 16 == 0 for k in ks)
+    for bk in (64, 128):  # every shipped BLOCK_K still sees a ragged K
+        assert any(k % bk for k in ks)
+    assert any(n % 128 for n in ns)  # and BLOCK_N a ragged N
+
+
+def test_misaligned_operands_take_the_stock_epilogue(monkeypatch):
+    launched, stock = [], []
+    monkeypatch.setattr(g8, "_launch", lambda a, w, *rest: launched.append(a.shape) or "fused")
+    monkeypatch.setattr(g8, "reference", lambda a, w, *rest: stock.append(a.shape) or "stock")
+    g8._DEVICE_CFG[None] = g8._FALLBACK_CONFIG  # CPU tensors report device index None
+    xs, ws = torch.ones(32), torch.ones(64)
+
+    def run(a, w):
+        return g8._run(a, w, xs, ws, None)
+
+    assert (
+        run(torch.zeros(32, 1024, dtype = torch.int8), torch.zeros(64, 1024, dtype = torch.int8))
+        == "fused"
+    )
+    assert (
+        run(torch.zeros(32, 1000, dtype = torch.int8), torch.zeros(64, 1000, dtype = torch.int8))
+        == "stock"
+    )
+    flat = torch.zeros(64 * 1024 + 8, dtype = torch.int8)
+    assert (
+        run(flat[8 : 8 + 32 * 1024].view(32, 1024), torch.zeros(64, 1024, dtype = torch.int8))
+        == "stock"
+    )
+    assert run(torch.zeros(32, 1024, dtype = torch.int8), flat[8:].view(64, 1024)) == "stock"
+    wide = torch.zeros(64, 1032, dtype = torch.int8)[:, :1024]  # row stride 1032: off 16
+    assert run(torch.zeros(32, 1024, dtype = torch.int8), wide) == "stock"
+    assert (
+        run(torch.zeros(32, 1024, dtype = torch.int8), torch.zeros(72, 1024, dtype = torch.int8))
+        == "stock"
+    )
+    assert len(launched) == 1 and len(stock) == 5
+
+
 def _cuda_ready() -> bool:
     if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
         return False
@@ -128,7 +170,7 @@ def _int8_linear(k, n, bias, version):
     "m, k, n, bias, xs32",
     [
         (4096, 4096, 4096, False, False),
-        (1037, 520, 1400, True, False),
+        (1037, 528, 1400, True, False),
         (17, 256, 1024, True, True),
         (300, 12288, 256, False, False),
     ],
@@ -146,6 +188,74 @@ def test_op_is_bit_exact_vs_torchao_epilogue(forced, m, k, n, bias, xs32, ws32):
     out = g8._op()(a, w, xs, ws, b)
     assert out.dtype == torch.bfloat16
     assert torch.equal(out, g8.reference(a, w, xs, ws, b))
+
+
+def _tie_operands(k = 4096, rows = 32):
+    """int8 a, w whose int32 products sit one or two units off a bf16 midpoint in [2^24, 2^26), both signs."""
+    k1 = k - 128
+    targets = []
+    for e in (24, 25):
+        for mult in (0, 3, 50, 100):
+            mid = (1 << e) + mult * (1 << (e - 7)) + (1 << (e - 8))
+            for d in (-1, 1, -2, 2):
+                targets += [mid + d, -(mid + d)]
+    w = torch.zeros(len(targets), k, dtype = torch.int8)
+    for j, t in enumerate(targets):
+        s1, s2 = divmod(abs(t), 127)
+        full, rem = divmod(s1, 127)
+        sign = 1 if t >= 0 else -1
+        w[j, :full] = 127 * sign
+        w[j, full] = rem * sign
+        w[j, k1] = s2 * sign
+    a = torch.ones(rows, k, dtype = torch.int8)
+    a[:, :k1] = 127
+    return a.cuda(), w.cuda(), torch.tensor(targets, dtype = torch.int32)
+
+
+@needs_cuda
+@pytest.mark.parametrize("cfg", sorted({g8._FALLBACK_CONFIG, *g8._ARCH_CONFIG.values()}))
+@pytest.mark.parametrize("ws32", [False, True])
+def test_epilogue_rounds_large_accumulators_twice_like_torch(cfg, ws32):
+    # Arch-independent epilogue math: every tile config is launched directly, past the arch gate.
+    a, w, targets = _tie_operands()
+    assert torch.equal(torch._int_mm(a, w.t())[0].cpu(), targets)
+    assert (
+        int((_one_rounding_bf16(targets) != targets.float().to(torch.bfloat16).float()).sum()) >= 8
+    )
+    xs = torch.ones(a.shape[0], device = "cuda", dtype = torch.bfloat16)
+    ws = torch.ones(w.shape[0], device = "cuda", dtype = torch.float32 if ws32 else torch.bfloat16)
+    try:
+        out = g8._launch(a, w, xs, ws, None, cfg)
+    except Exception as exc:  # noqa: BLE001 - a tile this part's shared memory cannot hold
+        pytest.skip(f"tile {cfg} does not launch here: {exc}")
+    ref = g8.reference(a, w, xs, ws, None)
+    assert torch.equal(ref[0].float().cpu(), targets.float().to(torch.bfloat16).float())
+    assert torch.equal(out, ref)
+
+
+@needs_cuda
+def test_probe_covers_the_double_rounding():
+    a, w = g8.tie_operands(torch.device("cuda"))
+    c = torch._int_mm(a, w.t())[0].cpu()
+    assert int((_one_rounding_bf16(c) != c.float().to(torch.bfloat16).float()).sum()) >= 8
+    xs = torch.ones(a.shape[0], device = "cuda", dtype = torch.bfloat16)
+    ws = torch.ones(w.shape[0], device = "cuda", dtype = torch.bfloat16)
+    out = g8._launch(a, w, xs, ws, None, g8._FALLBACK_CONFIG)
+    assert torch.equal(out, g8.reference(a, w, xs, ws, None))
+
+
+def _one_rounding_bf16(c):
+    """int32 -> bf16 with ONE round-to-nearest-even (exact, in int64), as fp32 values."""
+    v = c.to(torch.int64)
+    a = v.abs()
+    e = torch.floor(torch.log2(a.double().clamp(min = 1))).to(torch.int64)
+    shift = (e - 7).clamp(min = 1)
+    q = torch.bitwise_right_shift(a, shift)
+    r = a - torch.bitwise_left_shift(q, shift)
+    half = torch.bitwise_left_shift(torch.ones_like(a), shift - 1)
+    q = q + ((r > half) | ((r == half) & (q % 2 == 1))).to(torch.int64)
+    out = (torch.bitwise_left_shift(q, shift) * v.sign()).double()
+    return torch.where(a < 256, v.double(), out).float()
 
 
 @needs_cuda
@@ -196,6 +306,26 @@ def test_prequant_style_fp32_weight_scale(forced, bias):
             out = torch.compile(fused, fullgraph = True)(x)
             assert not counters["graph_break"]
             assert torch.equal(out, torch.compile(stock, fullgraph = True)(x))
+
+
+@needs_cuda
+def test_no_compiled_variant_spills_to_local_memory(forced):
+    g = torch.Generator().manual_seed(0)
+    for m, k, n in ((4096, 3072, 3072), (300, 1040, 528), (300, 1040, 520), (300, 1000, 384)):
+        a = torch.randint(-127, 128, (m, k), generator = g, dtype = torch.int8).cuda()
+        w = torch.randint(-127, 128, (n, k), generator = g, dtype = torch.int8).cuda()
+        xs = (torch.rand(m, generator = g) * 0.02).to(torch.bfloat16).cuda()
+        ws = (torch.rand(n, generator = g) * 0.002).to(torch.bfloat16).cuda()
+        assert torch.equal(g8._op()(a, w, xs, ws, None), g8.reference(a, w, xs, ws, None))
+    torch.cuda.synchronize()
+    caches = getattr(g8._kernels().i8mm_dq, "device_caches", None)
+    if caches is None:
+        pytest.skip("Triton without per-device kernel caches")
+    variants = [ck for cache in caches.values() for ck in cache[0].values()]
+    assert variants
+    for ck in variants:
+        ck._init_handles()
+        assert ck.n_spills == 0, ck.n_spills
 
 
 @needs_cuda

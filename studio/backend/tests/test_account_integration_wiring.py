@@ -81,7 +81,7 @@ def _credentials(token):
     return authentication.HTTPAuthorizationCredentials(scheme = "Bearer", credentials = token)
 
 
-_FULL_ACCESS = "Full access is unavailable while more than one account exists."
+_FULL_ACCESS = "Full access is only available to the installation owner."
 
 _REQUESTS = {
     "/v1/chat/completions": {"model": "m", "messages": [{"role": "user", "content": "hi"}]},
@@ -103,7 +103,7 @@ _REQUESTS = {
         {"disable_sandbox": True},
     ],
 )
-@pytest.mark.parametrize("account", [OWNER, ALICE], ids = ["owner", "alice"])
+@pytest.mark.parametrize("account", [ALICE], ids = ["alice"])
 def test_full_access_is_refused_at_the_door_in_multi_mode(
     multi_user, monkeypatch, path, flags, account
 ):
@@ -118,8 +118,12 @@ def test_full_access_is_refused_at_the_door_in_multi_mode(
 
 
 @pytest.mark.parametrize("path", sorted(_REQUESTS))
-def test_single_account_full_access_passes_the_door(monkeypatch, path):
-    monkeypatch.setattr(policy, "installation_is_multi_user", lambda: False)
+@pytest.mark.parametrize("multi", [False, True])
+@pytest.mark.parametrize(
+    "flags", [{"permission_mode": "full"}, {"bypass_permissions": True}, {"disable_sandbox": True}]
+)
+def test_owner_full_access_passes_the_door(monkeypatch, path, multi, flags):
+    monkeypatch.setattr(policy, "installation_is_multi_user", lambda: multi)
 
     def backend():
         raise HTTPException(status_code = 503, detail = "no backend in this test")
@@ -127,8 +131,9 @@ def test_single_account_full_access_passes_the_door(monkeypatch, path):
     monkeypatch.setattr(inference, "get_llama_cpp_backend", backend)
     monkeypatch.setattr(inference, "produce_openai_chat_completions", lambda *a, **k: backend())
     with _client_for(OWNER) as client:
-        response = client.post(path, json = {**_REQUESTS[path], "bypass_permissions": True})
-    assert response.status_code != 400 or response.json().get("detail") != _FULL_ACCESS
+        response = client.post(path, json = {**_REQUESTS[path], **flags})
+    assert response.status_code == 503, response.text
+    assert response.json()["detail"] == "no backend in this test"
 
 
 def test_admission_runs_after_the_docstring_and_reads_every_flag():

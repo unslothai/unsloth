@@ -159,6 +159,7 @@ export interface RunExportParams {
   token?: string;
   privateRepo: boolean;
   baseModelId?: string | null;
+  installMissingDependencies?: boolean;
   summary: ExportRunSummary;
 }
 
@@ -477,6 +478,9 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
               repo_id: params.repoId,
               hf_token: params.token,
               private: params.privateRepo,
+              install_missing_dependencies: Boolean(
+                params.installMissingDependencies,
+              ),
             }),
           );
           if (outputPath) outputs.push({ label: sel.label, path: outputPath });

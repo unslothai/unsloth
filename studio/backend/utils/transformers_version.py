@@ -3826,13 +3826,14 @@ def _ensure_venv_llmcompressor_exists() -> bool:
     return False
 
 
-def llmcompressor_shadow_pythonpath() -> str | None:
-    """Provision (lazily) the llm-compressor-main shadow and return its sys.path entry, or None.
-
-    Returns None when the shadow is disabled (UNSLOTH_DISABLE_LLMCOMPRESSOR_MAIN), offline, or
-    provisioning failed - callers then fall back to the fail-fast path.
-    """
+def llmcompressor_shadow_pythonpath(*, allow_provision: bool = False) -> str | None:
+    """Return the llm-compressor-main shadow's sys.path entry, provisioning a missing one only with
+    allow_provision (the user's consent), or None (disabled, offline, not consented, failed)."""
     if _llmcompressor_main_disabled():
+        return None
+    if _llmcompressor_shadow_is_valid():
+        return _VENV_LLMCOMPRESSOR_DIR
+    if not allow_provision:
         return None
     if _ensure_venv_llmcompressor_exists():
         return _VENV_LLMCOMPRESSOR_DIR
