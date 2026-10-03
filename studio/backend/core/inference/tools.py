@@ -14697,6 +14697,20 @@ def rag_autoinject_reaches_retrieval(
     return bool(enabled), whole_doc_requested
 
 
+def _thread_has_chunks(thread_id) -> bool:
+    try:
+        from core.rag import store
+        from storage import rag_db
+
+        conn = rag_db.get_connection()
+        try:
+            return store.scope_token_estimate(conn, store.thread_scope(thread_id)) > 0
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> dict | None:
     """Pre-retrieve the latest user turn; if a hit clears the cosine floor return ``{"events": [...],
     "messages": [...]}`` to splice into the loop, else ``None``. Toggle via ``rag_scope.autoinject``
@@ -14802,7 +14816,9 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
 
     def retrieve_thread_unfloored(*, max_tokens = None):
         # Lexical-only finds nothing for a generic request ("summarize this") whose words are not in the file, so
-        # this mandatory grounding retries with the dense leg.
+        # this mandatory grounding retries with the dense leg. Chats with no attachment skip the query embedding.
+        if not _thread_has_chunks(thread_id):
+            return None
         scope_kwargs = _scope_retrieval_kwargs(rag_scope)
         found = retrieve(
             max_tokens = max_tokens, scope_thread_id = thread_id, min_dense_score = None, **scope_kwargs

@@ -303,6 +303,7 @@ def test_build_rag_autoinject_large_model_auto_falls_back_over_budget(rag_conn, 
 
 def test_build_rag_autoinject_fallback_is_thread_first_and_budgeted(rag_conn, monkeypatch):
     monkeypatch.setattr(tool, "whole_document_context", lambda **kw: None)
+    monkeypatch.setattr(inf_tools, "_thread_has_chunks", lambda thread_id: True)
     calls = []
 
     def fake_search(**kw):
@@ -529,6 +530,19 @@ def test_build_rag_autoinject_on_grounds_attachment_beside_project_hits(rag_conn
     )
     injected = _injected_text(result)
     assert injected.index("OVER_BUDGET_PASSAGE") < injected.index("PROJECT_PASSAGE")
+
+
+@pytest.mark.parametrize("autoinject", [True, False])
+def test_build_rag_autoinject_skips_thread_fallback_without_attachment(
+    rag_conn, monkeypatch, autoinject
+):
+    calls = []
+    monkeypatch.setattr(tool, "search_for_autoinject", lambda **kw: calls.append(kw))
+    result = inf_tools.build_rag_autoinject(
+        _convo("Say hello in three words."), {"thread_id": "t1", "autoinject": autoinject}
+    )
+    assert result is None
+    assert not [c for c in calls if c.get("min_dense_score") is None]
 
 
 def test_build_rag_autoinject_off_does_not_inject_project_alone(rag_conn, monkeypatch):
