@@ -294,6 +294,13 @@ async def load_video_model_gated(
         _refuse_disabled_nvfp4_request,
     )
 
+    from auth import model_policy
+    from utils.account_context import is_owner_context
+
+    if not is_owner_context() and model_policy.is_model_blocked(request.model_path):
+        raise HTTPException(
+            status_code = 403, detail = "The installation owner has blocked this model."
+        )
     _refuse_disabled_nvfp4_request(request)
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_media_references, request)
