@@ -20,7 +20,7 @@ import {
 } from "./audio-source-state";
 
 // A reference only needs seconds; a long take is still usable, the server keeps the first 30 s.
-const RECORDING_MAX_SECONDS = 5 * 60;
+const DEFAULT_RECORD_MAX_SECONDS = 5 * 60;
 const RECORDING_CHUNK_MS = 1000;
 
 // Some containers decode in a media element but not in Web Audio, so the length falls back to one.
@@ -63,9 +63,13 @@ export function recordingSupported(): boolean {
 export function useAudioSource({
   value,
   onChange,
+  maxRecordSeconds = DEFAULT_RECORD_MAX_SECONDS,
+  active = true,
 }: {
   value: AudioSourceSelection | null;
   onChange: (next: AudioSourceSelection | null) => void;
+  maxRecordSeconds?: number;
+  active?: boolean;
 }) {
   const [state, dispatch] = useReducer(
     audioSourceReducer,
@@ -79,6 +83,8 @@ export function useAudioSource({
   const recorderRef = useRef<SegmentRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const discardRecording = useRef(false);
+  const activeRef = useRef(active);
+  const pickCount = useRef(0);
   const acquiring = useRef(false);
   const acquisition = useRef(0);
   const objectUrl = useRef<string | null>(null);
@@ -187,8 +193,10 @@ export function useAudioSource({
       loadAbort.current?.abort();
       const controller = new AbortController();
       uploadAbort.current = controller;
-      dispatch({ type: "upload-start", name: fileName });
-      void drawBlob("local", file);
+      // Each pick draws under its own key, so a slow decode of an earlier file cannot land on this one.
+      const localKey = `local:${++pickCount.current}`;
+      dispatch({ type: "upload-start", name: fileName, key: localKey });
+      void drawBlob(localKey, file);
       try {
         const record = await uploadAudioInput(file, fileName, {
           signal: controller.signal,
@@ -244,8 +252,8 @@ export function useAudioSource({
       return;
     }
     acquiring.current = false;
-    // Cleared or unmounted while the permission prompt was open: release the mic at once.
-    if (ticket !== acquisition.current) {
+    // Cleared, unmounted or hidden while the permission prompt was open: release the mic at once.
+    if (ticket !== acquisition.current || !activeRef.current) {
       for (const track of stream.getTracks()) track.stop();
       return;
     }
@@ -265,7 +273,7 @@ export function useAudioSource({
     const chunks: Blob[] = [];
     const limit = window.setTimeout(() => {
       if (recorder.state !== "inactive") recorder.stop();
-    }, RECORDING_MAX_SECONDS * 1000);
+    }, maxRecordSeconds * 1000);
     recorder.addEventListener("dataavailable", (event) => {
       if (event.data.size > 0) chunks.push(event.data);
     });
@@ -293,12 +301,18 @@ export function useAudioSource({
     discardRecording.current = false;
     recorder.start(RECORDING_CHUNK_MS);
     dispatch({ type: "record-start", now: Date.now() });
-  }, [pickFile, stopStream]);
+  }, [pickFile, stopStream, maxRecordSeconds]);
 
   const stopRecording = useCallback(() => {
     const recorder = recorderRef.current;
     if (recorder && recorder.state !== "inactive") recorder.stop();
   }, []);
+
+  // Leaving the Audio page ends a recording; what was captured is kept.
+  useEffect(() => {
+    activeRef.current = active;
+    if (!active) stopRecording();
+  }, [active, stopRecording]);
 
   const recordingStartedAt =
     state.status.phase === "recording" ? state.status.startedAt : null;

@@ -24,6 +24,7 @@ test("a picked file uploads with progress, draws at once, then is ready", () => 
   let state = audioSourceReducer(INITIAL_AUDIO_SOURCE_STATE, {
     type: "upload-start",
     name: "voice.wav",
+    key: "local:1",
   });
   assert.deepEqual(state.status, {
     phase: "uploading",
@@ -32,7 +33,7 @@ test("a picked file uploads with progress, draws at once, then is ready", () => 
   });
   state = audioSourceReducer(state, {
     type: "preview",
-    key: "local",
+    key: "local:1",
     peaks: [0.2, 1],
     durationS: 4.7,
     url: "blob:x",
@@ -57,11 +58,12 @@ test("a local decode that finishes after a fast upload still draws the card", ()
   let state = audioSourceReducer(INITIAL_AUDIO_SOURCE_STATE, {
     type: "upload-start",
     name: "voice.wav",
+    key: "local:1",
   });
   state = audioSourceReducer(state, { type: "upload-done", key: "input:abc" });
   state = audioSourceReducer(state, {
     type: "preview",
-    key: "local",
+    key: "local:1",
     peaks: [0.5, 1],
     durationS: 4.7,
     url: "blob:x",
@@ -72,7 +74,7 @@ test("a local decode that finishes after a fast upload still draws the card", ()
   state = audioSourceReducer(state, { type: "load-start", key: "voice:v1" });
   state = audioSourceReducer(state, {
     type: "preview",
-    key: "local",
+    key: "local:1",
     peaks: [0.1],
     durationS: 1,
     url: "blob:y",
@@ -81,10 +83,35 @@ test("a local decode that finishes after a fast upload still draws the card", ()
   assert.equal(state.preview.peaks, null);
 });
 
+test("a slow decode of an earlier pick does not draw on the next one", () => {
+  let state = audioSourceReducer(INITIAL_AUDIO_SOURCE_STATE, {
+    type: "upload-start",
+    name: "first.wav",
+    key: "local:1",
+  });
+  state = audioSourceReducer(state, { type: "upload-done", key: "input:a" });
+  state = audioSourceReducer(state, {
+    type: "upload-start",
+    name: "second.wav",
+    key: "local:2",
+  });
+  state = audioSourceReducer(state, {
+    type: "preview",
+    key: "local:1",
+    peaks: [0.9],
+    durationS: 9,
+    url: "blob:first",
+  });
+  assert.equal(state.preview.key, "local:2");
+  assert.equal(state.preview.peaks, null);
+  assert.equal(state.preview.url, null);
+});
+
 test("a failed upload shows its reason; an expired one says so", () => {
   const uploading = audioSourceReducer(INITIAL_AUDIO_SOURCE_STATE, {
     type: "upload-start",
     name: "a.mp3",
+    key: "local:1",
   });
   assert.deepEqual(
     audioSourceReducer(uploading, {
@@ -216,8 +243,14 @@ test("a superseded microphone request releases its stream", () => {
   );
   assert.match(
     hook,
-    /if \(ticket !== acquisition\.current\) \{\s*for \(const track of stream\.getTracks\(\)\) track\.stop\(\);/,
+    /if \(ticket !== acquisition\.current \|\| !activeRef\.current\) \{\s*for \(const track of stream\.getTracks\(\)\) track\.stop\(\);/,
   );
+  // Leaving the Audio page ends a recording.
+  assert.match(
+    hook,
+    /activeRef\.current = active;\s*if \(!active\) stopRecording\(\);/,
+  );
+  assert.match(card, /useAudioSource\(\{ value, onChange, maxRecordSeconds, active \}\)/);
   assert.match(
     hook,
     /const abortAll = useCallback\(\(\) => \{\s*acquisition\.current \+= 1;/,

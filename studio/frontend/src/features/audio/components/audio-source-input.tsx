@@ -46,6 +46,9 @@ import { formatSeconds } from "./waveform-peaks";
 
 const AudioHistoryContext = createContext<readonly AudioGalleryClip[]>([]);
 export const AudioHistoryProvider = AudioHistoryContext.Provider;
+// False while the persistently mounted Audio page is hidden, so no card keeps the mic.
+const AudioActiveContext = createContext(true);
+export const AudioActiveProvider = AudioActiveContext.Provider;
 
 type SourceTab = "upload" | "record" | "history" | "voice";
 
@@ -90,6 +93,10 @@ export function AudioSourceInput({
   allowSavedVoice = true,
   handleRef,
   onStatusChange,
+  maxRecordSeconds,
+  expiredMessage = REFERENCE_EXPIRED_MESSAGE,
+  usesFirstSeconds = REFERENCE_MAX_SECONDS,
+  recordHint = "Read a sentence or two in a quiet room.",
 }: {
   id: string;
   label: string;
@@ -101,8 +108,14 @@ export function AudioSourceInput({
   allowSavedVoice?: boolean;
   handleRef?: Ref<AudioSourceInputHandle>;
   onStatusChange?: (status: AudioSourceStatus) => void;
+  maxRecordSeconds?: number;
+  /** The card's copy defaults to a clone reference; other pages pass their own. */
+  expiredMessage?: string;
+  usesFirstSeconds?: number | null;
+  recordHint?: string;
 }) {
-  const source = useAudioSource({ value, onChange });
+  const active = useContext(AudioActiveContext);
+  const source = useAudioSource({ value, onChange, maxRecordSeconds, active });
   const history = useContext(AudioHistoryContext);
   const [tab, setTab] = useState<SourceTab>("upload");
   const [dragging, setDragging] = useState(false);
@@ -227,7 +240,7 @@ export function AudioSourceInput({
 
       {status.phase === "expired" ? (
         <div className="grid gap-2">
-          <AlertLine>{REFERENCE_EXPIRED_MESSAGE}</AlertLine>
+          <AlertLine>{expiredMessage}</AlertLine>
           <Button
             type="button"
             variant="outline"
@@ -289,9 +302,11 @@ export function AudioSourceInput({
             <output className="text-ui-11p5 text-muted-foreground">
               Loading the clip…
             </output>
-          ) : durationS !== null && durationS > REFERENCE_MAX_SECONDS ? (
+          ) : usesFirstSeconds !== null &&
+            durationS !== null &&
+            durationS > usesFirstSeconds ? (
             <p className="text-ui-11p5 leading-snug text-muted-foreground">
-              Uses the first {REFERENCE_MAX_SECONDS} s.
+              Uses the first {usesFirstSeconds} s.
             </p>
           ) : null}
         </div>
@@ -377,7 +392,7 @@ export function AudioSourceInput({
                     </span>
                   </>
                 ) : (
-                  "Read a sentence or two in a quiet room."
+                  recordHint
                 )}
               </output>
             </div>

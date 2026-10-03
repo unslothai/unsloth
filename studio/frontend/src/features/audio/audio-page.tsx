@@ -37,6 +37,7 @@ import {
   audioGenerationPresentation,
 } from "./audio-page-policy";
 import { clipReference } from "./audio-run-request";
+import { AudioActiveProvider } from "./components/audio-source-input";
 import { type CreateMode, deviceSizeBytes } from "./audio-workspace-utils";
 import {
   audioCapabilityLine,
@@ -1017,11 +1018,13 @@ export function AudioPage({
                   return ttsWorkflow === "music" ? (
                     <MusicRail {...railProps} />
                   ) : ttsWorkflow === "clone" ? (
-                    <CloneRail
-                      {...railProps}
-                      clone={clone}
-                      historyClips={clips}
-                    />
+                    <AudioActiveProvider value={active}>
+                      <CloneRail
+                        {...railProps}
+                        clone={clone}
+                        historyClips={clips}
+                      />
+                    </AudioActiveProvider>
                   ) : (
                     <SpeakRail {...railProps} />
                   );
