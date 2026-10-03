@@ -12054,6 +12054,95 @@ def _inherited_ctx_size() -> int:
         return 0
 
 
+class _EstimateContextFloor(NamedTuple):
+    """Minimum Auto context and whether GPU layers can move to the CPU."""
+
+    ctx: int
+    can_offload: bool
+
+
+def _estimate_context_floor(
+    n_ctx: Optional[int],
+    llama_extra_args: Optional[list[str]],
+    gpu_memory_mode: Optional[str],
+    gpu_layers: Optional[int],
+    breakdown: Any,
+) -> Optional[_EstimateContextFloor]:
+    """The loader's Auto context floor, or None for a pinned context.
+
+    Manual with Auto layers floors at --fit-ctx; fixed layers can still shrink context (common/fit.cpp).
+    """
+    from core.inference.llama_cpp import (
+        _FIT_FLOOR_MIN_CTX,
+        _FIT_MIN_CTX,
+        _LLAMA_FIT_MIN_CTX,
+        LlamaCppBackend,
+        _env_asks_for_the_native_context,
+        _env_fixes_gpu_layers,
+    )
+    from core.inference.llama_server_args import (
+        _GPU_LAYER_FLAGS,
+        _last_flag_value,
+        fit_ctx_in,
+        fit_is_effectively_on,
+        parse_ctx_override,
+        parse_gpu_layers_override,
+    )
+    from utils.hardware import is_apple_silicon
+
+    if (n_ctx or 0) > 0 or not breakdown.kv_on_gpu or not breakdown.kv_estimable:
+        return None
+    extras = list(llama_extra_args or [])
+    try:
+        # Keep -c 0 pinned even on Metal: checking its fit budget would require MLX.
+        if parse_ctx_override(extras) is not None:
+            return None
+        # The last -ngl wins. llama.cpp also takes "auto" and "all" here.
+        layer_arg = _last_flag_value(extras, _GPU_LAYER_FLAGS)
+    except ValueError:
+        return None
+    if _inherited_ctx_size() > 0:
+        return None
+    if gpu_memory_mode != "manual":
+        # The launch's own --fit on precedes the extras, so only they can turn it off.
+        try:
+            fitter_runs = fit_is_effectively_on(["--fit", "on", *extras], os.environ)
+        except ValueError:
+            return None
+        # Arguments beat the environment; only auto/-1 let the fitter move layers.
+        layers_fixed = _env_fixes_gpu_layers(
+            os.environ if layer_arg is None else {"LLAMA_ARG_N_GPU_LAYERS": layer_arg}
+        )
+        floor_ctx = _FIT_FLOOR_MIN_CTX if is_apple_silicon() else _FIT_MIN_CTX
+        return _EstimateContextFloor(floor_ctx, fitter_runs and not layers_fixed)
+    # Manual /load folds -ngl into gpu_layers and strips --fit.
+    try:
+        layer_override = parse_gpu_layers_override(extras)
+    except ValueError:
+        return None
+    if layer_override is not None:
+        gpu_layers = layer_override
+    if gpu_layers is not None and gpu_layers >= 0:
+        return None
+    # Manual clears inherited fit/layer settings. Use argv, then the launcher's
+    # 8192 when supported, then llama.cpp's 4096.
+    try:
+        fit_ctx = fit_ctx_in(extras)
+    except ValueError:
+        return None
+    if fit_ctx is None and LlamaCppBackend.probe_server_capabilities().get("supports_fit_ctx"):
+        fit_ctx = _FIT_MIN_CTX
+    if fit_ctx is None:
+        # Without --fit-ctx, an inherited zero keeps native context.
+        if _env_asks_for_the_native_context():
+            return None
+        fit_ctx = _LLAMA_FIT_MIN_CTX
+    # Negative wraps unsigned; zero resolves to native context. Neither shrinks.
+    if fit_ctx <= 0:
+        return None
+    return _EstimateContextFloor(fit_ctx, True)
+
+
 def _launch_required_ubatch_for_config(
     config,
     llama_extra_args: Optional[list[str]] = None,
@@ -19951,7 +20040,10 @@ async def estimate_memory(
     if account_access.managed_account() and not native_access_deferred:
         await asyncio.to_thread(account_access.require_model_access, request.model_path)
     from core.inference.llama_cpp import _args_place_tensors_on_cpu
-    from core.inference.llama_server_args import _effective_tensor_parallel
+    from core.inference.llama_server_args import (
+        _effective_tensor_parallel,
+        strip_split_mode_only,
+    )
 
     request = _resolve_llama_cpp_config(request)
     if _custom_llama_config(request):
@@ -20055,11 +20147,38 @@ async def estimate_memory(
         # Price the files on this disk, not the repository they came from.
         config = _localized_estimate_config(config, gguf_path)
 
-        breakdown = _gguf_memory_breakdown(
+        # A CPU-only launch drops the split flags, so a pin charges no per-device buffers.
+        pinned_gpu_ids = (
+            None
+            if _gguf_offloaded_layer_fraction(
+                request.gpu_memory_mode,
+                request.gpu_layers,
+                None,
+                request.llama_extra_args,
+                device_pin_governs = bool(request.selected_gpu_ids),
+            )
+            == 0.0
+            else request.selected_gpu_ids or None
+        )
+        # Resolved as the breakdown does: extras --split-mode wins, Manual fixed layers drop tensor.
+        tensor_split = (
+            _effective_tensor_parallel(request.llama_extra_args, bool(request.tensor_parallel))
+            and _tensor_split_possible(request.selected_gpu_ids or None)
+            and _manual_keeps_tensor_split(
+                request.gpu_memory_mode,
+                request.gpu_layers,
+                request.llama_extra_args,
+            )
+        )
+        # The probed inventory is the pool: a Vulkan build's _effective_gpu_count sees none of it.
+        device_count = _guard_device_count(
+            pinned_gpu_ids, _cached_inference_devices(), tensor_parallel = tensor_split
+        )
+        price = functools.partial(
+            _gguf_memory_breakdown,
             config,
             gguf_path,
             hf_token = request.hf_token,
-            n_ctx = request.n_ctx or 0,
             llama_extra_args = request.llama_extra_args,
             speculative_type = request.speculative_type,
             n_parallel = resolved_slots,
@@ -20068,46 +20187,7 @@ async def estimate_memory(
             n_batch = request.n_batch,
             n_ubatch = request.n_ubatch,
             ctx_checkpoints = request.ctx_checkpoints,
-            # A layer split across pinned cards replicates the context-linear
-            # compute term and adds per-device pipeline overhead, so the count
-            # matters there too, not just in tensor mode. Automatic placement
-            # stays at one: _guard_device_count makes the same call.
-            n_devices = _guard_device_count(
-                # A pin names cards for a launch that puts something on them. At an
-                # effective layer count of zero the launch is CPU-only and the loader
-                # drops the split flags, so charging the pinned count added per-device
-                # pipeline overhead and replicated the context-linear compute term for
-                # buffers no card allocates: on a two-card pin, 1039 -> 2105 MiB at 4k
-                # and 1417 -> 5129 MiB at 262k. Asked of the same function the panel
-                # prices placement with, so the two cannot disagree.
-                None
-                if _gguf_offloaded_layer_fraction(
-                    request.gpu_memory_mode,
-                    request.gpu_layers,
-                    None,
-                    request.llama_extra_args,
-                    device_pin_governs = bool(request.selected_gpu_ids),
-                )
-                == 0.0
-                else request.selected_gpu_ids or None,
-                # Tensor mode replicates its buffers over the whole pool, and on a
-                # Vulkan build _effective_gpu_count sees none of it. The probed
-                # inventory is the pool; None falls through to the CUDA count as before.
-                _cached_inference_devices(),
-                # Same resolution the breakdown prices with: an extras --split-mode
-                # decides the mode, not the toggle alone, and one card cannot split.
-                tensor_parallel = _effective_tensor_parallel(
-                    request.llama_extra_args, bool(request.tensor_parallel)
-                )
-                and _tensor_split_possible(request.selected_gpu_ids or None)
-                # And the Manual drops, about the layer count rather than the pool: a
-                # tensor count here sizes per-device buffers for a CPU layer split.
-                and _manual_keeps_tensor_split(
-                    request.gpu_memory_mode,
-                    request.gpu_layers,
-                    request.llama_extra_args,
-                ),
-            ),
+            n_devices = device_count,
             disable_vision = bool(request.disable_vision),
             gpu_memory_mode = request.gpu_memory_mode,
             gpu_layers = request.gpu_layers,
@@ -20118,8 +20198,37 @@ async def estimate_memory(
             # otherwise and this must read the same way.
             device_pin_governs = bool(request.selected_gpu_ids),
         )
+        breakdown = price(n_ctx = request.n_ctx or 0)
         if breakdown is None:
             return EstimateMemoryResponse(available = False, reason = "unsizable")
+        context_floor = _estimate_context_floor(
+            request.n_ctx,
+            request.llama_extra_args,
+            request.gpu_memory_mode,
+            request.gpu_layers,
+            breakdown,
+        )
+        floor = None
+        if context_floor is not None and breakdown.n_ctx > context_floor.ctx:
+            floor = price(n_ctx = context_floor.ctx)
+            # A tensor launch can fall back to a layer split on the same cards
+            # (preserve_multi_gpu_on_layer), which replicates compute buffers: take the larger.
+            if floor is not None and tensor_split:
+                layer = price(
+                    n_ctx = context_floor.ctx,
+                    tensor_parallel = False,
+                    # As tensor_fallback.py relaunches.
+                    llama_extra_args = [
+                        *(strip_split_mode_only(request.llama_extra_args) or []),
+                        "--split-mode",
+                        "layer",
+                    ],
+                    n_devices = device_count,
+                )
+                if layer is not None and layer.gpu_bytes > floor.gpu_bytes:
+                    floor = layer
+        elif context_floor is not None:
+            floor = breakdown
         # Shaped through the canonical MemoryEstimate, the same one
         # GET /models/kv-cache-estimate goes through, so the two routes cannot
         # drift apart in vocabulary. The projection is what preserves THIS
@@ -20134,6 +20243,11 @@ async def estimate_memory(
             # below does not carry the field, and inventing a value would put a
             # wrong number on the canonical route for the sake of a non-null.
             quant_file_bytes = 0,
+            gpu_floor_bytes = (
+                None if floor is None else min(int(floor.gpu_bytes), int(breakdown.gpu_bytes))
+            ),
+            floor_can_offload = context_floor is not None and context_floor.can_offload,
+            context_is_pinned = context_floor is None,
             moe_offload_unmodelled = bool(
                 (request.gpu_memory_mode == "manual" and (request.n_cpu_moe or 0) > 0)
                 # Outside Manual the extras keep their expert-placement flags: /load
