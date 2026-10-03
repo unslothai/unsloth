@@ -542,7 +542,11 @@ def _gallery_root(tmp_path, account = ALICE) -> Path:
 
 def _wav_info(path) -> dict:
     with wave.open(str(path), "rb") as w:
-        return {"sample_rate": w.getframerate(), "channels": w.getnchannels(), "frames": w.getnframes()}
+        return {
+            "sample_rate": w.getframerate(),
+            "channels": w.getnchannels(),
+            "frames": w.getnframes(),
+        }
 
 
 def _alice_sources() -> dict:

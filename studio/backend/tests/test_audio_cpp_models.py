@@ -476,9 +476,7 @@ def test_separation_families_resolve_runnable(hub, folder, family):
     assert (model.family, model.task, model.server_task) == (family, "sep", "sep")
     assert model.unsupported is None and model.options == ()
     assert (model.audio_type, model.hub_task) == ("audiocpp_sep", "audio-to-audio")
-    assert model.workflows == {
-        "separate": acm.WorkflowBinding("sep", "tasks", None, ("audio",))
-    }
+    assert model.workflows == {"separate": acm.WorkflowBinding("sep", "tasks", None, ("audio",))}
     assert model.separation == acm.FAMILIES[family].separation
     acm.require_runnable(model, "tts")
     with pytest.raises(acm.AudioCppModelError, match = "not a speech-to-text model"):
