@@ -4759,23 +4759,67 @@ html[data-chat-font] .aui-root {
 }
 
 .sidebar-row-ghost {
+	--row-ghost-surface: var(--sidebar);
 	position: fixed;
 	top: 0;
 	z-index: 60;
 	display: flex;
 	align-items: center;
 	border-radius: 10px;
-	background: var(--sidebar-accent);
-	box-shadow:
-		0 0 0 1px color-mix(in oklab, var(--foreground) 8%, transparent),
-		0 8px 24px -8px rgb(0 0 0 / 0.35);
 	pointer-events: none;
 	will-change: transform;
+}
+
+.sidebar-section-ghost {
+	--row-ghost-surface: var(--sidebar);
+	display: flex;
+	align-items: center;
+	border-radius: 10px;
+	will-change: transform;
+}
+
+:is(.sidebar-row-ghost, .sidebar-section-ghost, .model-picker-row-ghost) {
+	background: color-mix(in oklab, color-mix(in oklab, var(--row-ghost-surface), black 4%) 62%, transparent);
+	-webkit-backdrop-filter: blur(0.5px) saturate(1.05);
+	backdrop-filter: blur(0.5px) saturate(1.05);
+	box-shadow:
+		0 0 0 1px rgb(0 0 0 / 0.06),
+		0 4px 12px -4px rgb(0 0 0 / 0.12);
+}
+
+.dark :is(.sidebar-row-ghost, .sidebar-section-ghost, .model-picker-row-ghost) {
+	background: color-mix(in oklab, color-mix(in oklab, var(--row-ghost-surface), black 22%) 62%, transparent);
+	box-shadow:
+		0 0 0 1px rgb(255 255 255 / 0.045),
+		0 6px 16px -6px rgb(0 0 0 / 0.5);
 }
 
 .sidebar-section-ghost > *,
 .sidebar-row-ghost * {
 	pointer-events: none;
+}
+
+.model-picker-row-ghost {
+	--row-ghost-surface: var(--popover);
+	position: fixed;
+	top: 0;
+	z-index: 60;
+	display: flex;
+	align-items: center;
+	pointer-events: none;
+	will-change: transform;
+}
+
+.model-picker-row-ghost * {
+	pointer-events: none;
+}
+
+/* Margin dropped: the pill was sized without it, so a Connected row's ml-4 would offset the copy. */
+.model-picker-row-ghost > * {
+	width: 100%;
+	height: 100%;
+	margin: 0;
+	background: transparent;
 }
 
 /* The drop cue under a carried row's copy, drawn again above it (use-sidebar-drag.ts). */
@@ -4787,7 +4831,7 @@ html[data-chat-font] .aui-root {
 	pointer-events: none;
 }
 
-/* A row's copy is its face as drawn, lit like a hovered row but never like the open chat. */
+/* A row's copy is its face as drawn, never lit like the open chat. */
 .sidebar-row-ghost > [data-sidebar="menu-button"] {
 	width: 100%;
 	height: 100%;
