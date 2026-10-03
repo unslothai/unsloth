@@ -769,6 +769,7 @@ def _docx_mark_notes(document):
 
 _HIGH_BYTES = bytes(range(0x80, 0x100))
 _ASCII_LETTERS = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+_HIGH_RUN = re.compile(rb"[\x80-\xff]+")
 
 
 def _declared_charset(data: bytes) -> str | None:
@@ -828,8 +829,9 @@ def _decode_text(data: bytes, *, html: bool = False) -> str:
         if match is not None:
             guess = str(match)
             # A tie means the bytes cannot tell the code pages apart ("ÜÖÄ" is also Cyrillic);
-            # any byte decodes in a single-byte page, so another one needs language evidence
-            # ("está" is also Arabic); a CJK guess that paired no bytes is half-width katakana ("° ± µ").
+            # any byte decodes in a single-byte page, so another one needs language evidence and
+            # words made of high bytes, not lone accents ("está", "À É È" also score as Arabic,
+            # Cyrillic); a CJK guess that paired no bytes is half-width katakana ("° ± µ").
             tied = any(
                 other is not match
                 and (other.chaos, other.coherence) == (match.chaos, match.coherence)
@@ -838,7 +840,8 @@ def _decode_text(data: bytes, *, html: bool = False) -> str:
             if match.encoding == "cp1252":
                 plausible = True
             elif match.encoding in ("cp1251", "cp1253", "cp1255", "cp1256"):
-                plausible = match.coherence > 0
+                in_words = sum(len(run) for run in _HIGH_RUN.findall(data) if len(run) >= 3)
+                plausible = match.coherence > 0 and 2 * in_words > high
             else:
                 plausible = len(guess) < len(data)
             if not tied and plausible:
