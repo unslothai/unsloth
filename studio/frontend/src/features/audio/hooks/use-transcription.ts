@@ -299,19 +299,28 @@ export function useTranscription({
 
   const renameSpeaker = useCallback(
     (id: string, name: string) => {
-      const previous = speakerNames;
-      const next = { ...previous };
-      if (name) next[id] = name;
-      else delete next[id];
-      setSpeakerNames(next);
+      const previous = speakerNames[id];
+      setSpeakerNames((current) => {
+        const next = { ...current };
+        if (name) next[id] = name;
+        else delete next[id];
+        return next;
+      });
       if (!transcriptRecord) return;
       const version = transcriptVersion.current;
       renameTranscriptSpeakers(transcriptRecord.id, {
         [id]: name || null,
       }).catch((error: unknown) => {
-        // Another transcript is shown now: rolling back would rename its speakers.
+        // Roll back only this speaker, only on the same transcript and only if no later rename
+        // replaced it; a whole-map rollback erased other renames that had saved.
         if (transcriptVersion.current !== version) return;
-        setSpeakerNames(previous);
+        setSpeakerNames((current) => {
+          if ((current[id] ?? "") !== name) return current;
+          const next = { ...current };
+          if (previous) next[id] = previous;
+          else delete next[id];
+          return next;
+        });
         toastFailure("Could not rename the speaker", error);
       });
     },

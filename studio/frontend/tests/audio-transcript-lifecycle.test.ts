@@ -352,3 +352,10 @@ test("a draft restores with or without timing details", () => {
     speakerNames: { S01: "Ada" },
   });
 });
+
+test("a failed speaker rename rolls back only that speaker, on the same transcript", () => {
+  const rename = section("const renameSpeaker", "const handleCopyTranscript");
+  assert.match(rename, /if \(transcriptVersion\.current !== version\) return;/);
+  assert.match(rename, /if \(\(current\[id\] \?\? ""\) !== name\) return current;/);
+  assert.doesNotMatch(rename, /setSpeakerNames\(previous\)/);
+});
