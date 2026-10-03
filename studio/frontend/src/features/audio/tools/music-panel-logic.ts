@@ -16,10 +16,6 @@ function specDefault(
   return value === undefined ? null : value;
 }
 
-function specValues(specs: AudioOptionSpec[], name: string): readonly string[] {
-  return specs.find((spec) => spec.name === name)?.values ?? [];
-}
-
 // ---- ACE-Step: Musical controls ---------------------------------------------------------------
 
 export const ACE_STEP_NOTES = [
@@ -189,14 +185,4 @@ export function stepsRange(specs: AudioOptionSpec[]): {
   const max = typeof spec?.max === "number" ? Math.max(min, spec.max) : 100;
   const fallback = typeof spec?.default === "number" ? spec.default : 8;
   return { min, max, default: Math.min(max, Math.max(min, fallback)) };
-}
-
-/** A spec's enum values, or the given fallback when the spec does not list any. */
-export function enumValues(
-  specs: AudioOptionSpec[],
-  name: string,
-  fallback: readonly string[],
-): readonly string[] {
-  const values = specValues(specs, name);
-  return values.length > 0 ? values : fallback;
 }

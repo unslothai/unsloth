@@ -21915,12 +21915,10 @@ def _audio_music_settings(
 def _read_music_outputs(run_dir: Path) -> list[tuple[bytes, int, Optional[int]]]:
     """``(wav, sample_rate, seed)`` per output the worker listed in ``run_dir/outputs.json``.
     A listed file outside ``run_dir`` (or not a WAV) is refused, never read."""
-    import io as _io
-    import wave as _wave
+    from core.inference.audio_task_outputs import wav_header
 
-    manifest_path = run_dir / "outputs.json"
     try:
-        manifest = json.loads(manifest_path.read_text(encoding = "utf-8"))
+        manifest = json.loads((run_dir / "outputs.json").read_text(encoding = "utf-8"))
     except (OSError, ValueError):
         return []
     root = run_dir.resolve()
@@ -21934,8 +21932,7 @@ def _read_music_outputs(run_dir: Path) -> list[tuple[bytes, int, Optional[int]]]
             continue
         data = path.read_bytes()
         try:
-            with _wave.open(_io.BytesIO(data)) as w:
-                rate = int(w.getframerate())
+            rate = wav_header(data)[0]
         except Exception:  # noqa: BLE001 - not a WAV
             continue
         seed = entry.get("seed")

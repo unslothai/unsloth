@@ -23,10 +23,13 @@ import re
 import threading
 import wave
 from dataclasses import replace
+from pathlib import Path
 from typing import Any, Optional, Tuple
 
 from core.inference import audio_cpp_files
+from core.inference import audio_cpp_music as cm
 from core.inference.audio_cpp_models import (
+    MUSIC_MAX_VARIATIONS,
     AudioCppModel,
     AudioCppModelError,
     CloneSpec,
@@ -41,6 +44,8 @@ from core.inference.audio_cpp_server import (
     AudioCppServer,
     AudioCppStartCancelledError,
 )
+from core.inference.audio_cpp_music import music_rules
+from core.inference.audio_task_outputs import task_outputs, wav_header
 from loggers import get_logger
 from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 
@@ -116,12 +121,6 @@ def model_info_fields(model: AudioCppModel) -> dict[str, Any]:
         "audio_clone": clone_rules(model),
         "audio_music": music_rules(model),
     }
-
-
-def music_rules(model: AudioCppModel, max_batch: int = 1) -> Optional[dict[str, Any]]:
-    """The ``audio_music`` status: the Music studio's modes for this model, or None."""
-    from core.inference.audio_cpp_music import music_rules as rules
-    return rules(model, max_batch)
 
 
 def clone_rules(model: AudioCppModel) -> Optional[dict[str, Any]]:
@@ -572,13 +571,11 @@ class AudioCppBackend:
         options: dict,
         cancel_event,
     ) -> bytes:
-        from core.inference.audio_cpp_music import MusicRequestError, legacy_song_request
-
         try:
-            request = legacy_song_request(
+            request = cm.legacy_song_request(
                 model, text, instructions, _music_seconds(max_new_tokens), options, seed
             )
-        except MusicRequestError as exc:
+        except cm.MusicRequestError as exc:
             raise RuntimeError(str(exc)) from exc
         ctype, data = server.post_json(
             "/v1/tasks/run",
@@ -606,7 +603,6 @@ class AudioCppBackend:
 
         The session's max_batch only grows (to the most a request may ask for), so one reload
         covers every later batch; a batch the session already fits never restarts it."""
-        from core.inference.audio_cpp_models import MUSIC_MAX_VARIATIONS
         with self._server_lock:
             if batch <= self._max_batch():
                 return self._running_server(model, cancel_event)
@@ -645,10 +641,6 @@ class AudioCppBackend:
 
         Every output goes to ``output_dir`` with an ``outputs.json`` manifest for the route; the
         first one is returned, as for any other request."""
-        from core.inference import audio_cpp_music as cm
-        from core.inference.audio_cpp_models import MUSIC_MAX_VARIATIONS
-        from core.inference.audio_task_outputs import task_outputs, wav_header
-
         if model.task != "music" or model.music is None:
             raise RuntimeError(f"{model.display_name} does not make music in the Music studio.")
         mode_id = str(music.get("mode") or "song")
@@ -730,7 +722,7 @@ class AudioCppBackend:
             ) from exc
         _raise_if_cancelled(cancel_event)
         if output_dir:
-            _write_outputs(output_dir, outputs, wav_header)
+            _write_outputs(output_dir, outputs)
         first = outputs[0][1]
         return first, _wav_sample_rate(first)
 
@@ -788,11 +780,9 @@ def _with_session_overrides(model: AudioCppModel, overrides: dict[str, str]) -> 
     return replace(model, model_options = {**model.model_options, "session_options": session})
 
 
-def _write_outputs(output_dir: str, outputs, wav_header) -> None:
+def _write_outputs(output_dir: str, outputs) -> None:
     """Each output as ``NN.wav`` in ``output_dir`` plus the ``outputs.json`` manifest the route
     reads: ``[{"id", "file", "sample_rate", "duration_s", "seed"}]`` with bare file names."""
-    from pathlib import Path
-
     directory = Path(output_dir)
     directory.mkdir(parents = True, exist_ok = True)
     manifest = []
@@ -814,8 +804,6 @@ def _write_outputs(output_dir: str, outputs, wav_header) -> None:
 
 def _audio_from_task_response(content_type: str, data: bytes) -> bytes:
     """WAV bytes from ``/v1/tasks/run``: raw audio, or JSON carrying base64 audio."""
-    from core.inference.audio_task_outputs import task_outputs
-
     try:
         return task_outputs(content_type, data)[0][1]
     except RuntimeError:

@@ -30,7 +30,7 @@ import re
 import struct
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, BinaryIO, Iterable, Optional, Sequence
 
@@ -229,8 +229,6 @@ MUSIC_SPECS: dict[str, MusicSpec] = {
 def _stable_audio_music(names: Iterable[str]) -> MusicSpec:
     """Stable Audio's modes by package: Small-SFX makes effects, Medium makes both, Small-Music
     makes music; every music package edits."""
-    from dataclasses import replace
-
     spec = MUSIC_SPECS["stable_audio"]
     text = " ".join(names).lower()
     if re.search(r"(^|[-_ /.])sfx([-_ /.]|$)", text):
@@ -248,8 +246,6 @@ def music_with_spec_bounds(
     music: Optional[MusicSpec], raw_options: Sequence[Any]
 ) -> Optional[MusicSpec]:
     """``music`` with each duration narrowed to the spec's ``duration_sec`` min and max."""
-    from dataclasses import replace
-
     if music is None:
         return None
     low = high = None
@@ -895,11 +891,9 @@ def family_policy(
         if "base" in text:
             return _QWEN3_BASE
     if family == "stable_audio" and policy.music is not None:
-        from dataclasses import replace
         return replace(policy, music = _stable_audio_music(names))
     if family == "fireredtts3" and re.search(r"(^|[-_ /])base([-_ ./]|$)", " ".join(names).lower()):
         # The Base package only loads as a cloning session.
-        from dataclasses import replace
         return replace(policy, server_task = "clon")
     return policy
 
@@ -1550,11 +1544,16 @@ _STUDIO_DRIVEN_OPTIONS = frozenset(
 )
 # The music form fills these from its lyrics, description and duration fields.
 _MUSIC_DRIVEN_OPTIONS = frozenset(
-    {"lyrics", "style", "caption", "prompt", "tags", "duration", "duration_sec", "duration_seconds"}
-)
-# The Music studio's edit, batch and length fields set these; a client never sends them as options.
-_MUSIC_DRIVEN_OPTIONS = _MUSIC_DRIVEN_OPTIONS | frozenset(
     {
+        "lyrics",
+        "style",
+        "caption",
+        "prompt",
+        "tags",
+        "duration",
+        "duration_sec",
+        "duration_seconds",
+        # Set by the Music studio's edit, batch and length fields.
         "route",
         "task_route",
         "repainting_start",
@@ -1854,8 +1853,6 @@ class AudioCppModel:
         return f"{self.id}:{self.variant.key}"
 
     def with_variant(self, variant: AudioCppVariant) -> "AudioCppModel":
-        from dataclasses import replace
-
         model_options = dict(self.model_options)
         if variant.session_options:
             model_options["session_options"] = {
@@ -2154,28 +2151,27 @@ def _resolve_uncached(
     return model.with_variant(chosen)
 
 
+def _request_source(spec: Optional[dict], embedded: Optional[dict]) -> dict:
+    if spec is None or not ((spec.get("options") or {}).get("request")):
+        spec = embedded
+    return spec if isinstance(spec, dict) else {}
+
+
 def _raw_request_options(spec: Optional[dict], embedded: Optional[dict]) -> list:
-    source = spec
-    if source is None or not ((source.get("options") or {}).get("request")):
-        source = embedded
-    raw = ((source or {}).get("options") or {}).get("request") or []
+    raw = (_request_source(spec, embedded).get("options") or {}).get("request") or []
     return raw if isinstance(raw, list) else []
 
 
 def _request_keys(spec: Optional[dict], embedded: Optional[dict]) -> Optional[frozenset[str]]:
-    """The request options a strict spec declares, read from the raw spec like ``_required_inputs``
-    (``_clean_option`` hides the ones Studio fills); None for a spec the runtime does not check."""
-    source = spec
-    if source is None or not ((source.get("options") or {}).get("request")):
-        source = embedded
-    if not isinstance(source, dict) or source.get("schema_version") is None:
+    """Request options a strict spec (``schema_version``) declares; None when the runtime does not
+    check them or the spec lists none."""
+    if _request_source(spec, embedded).get("schema_version") is None:
         return None
     names = frozenset(
         str(item.get("name")).strip()
         for item in _raw_request_options(spec, embedded)
         if isinstance(item, dict) and str(item.get("name") or "").strip()
     )
-    # A spec that lists no request options says nothing Studio can rely on.
     return names or None
 
 

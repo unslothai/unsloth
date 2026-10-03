@@ -89,8 +89,6 @@ export interface MusicEditDraft {
   extendS: number;
   /** What the changed part should sound like. */
   prompt: string;
-  /** Lyrics for the changed part (ACE-Step repaint). */
-  lyrics: string;
 }
 
 export interface MusicDrafts {

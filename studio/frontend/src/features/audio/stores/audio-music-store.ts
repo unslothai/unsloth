@@ -25,7 +25,6 @@ export const DEFAULT_MUSIC_DRAFTS: MusicDrafts = {
     strength: null,
     extendS: 15,
     prompt: "",
-    lyrics: "",
   },
 };
 

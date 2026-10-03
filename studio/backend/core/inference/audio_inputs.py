@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import time
 import uuid
 import wave
@@ -456,7 +457,6 @@ def sweep(
         # Music run folders the route removes when it is done; one a crash left behind goes here.
         runs = directory / "runs"
         if runs.is_dir():
-            import shutil
             for run in runs.iterdir():
                 if run.is_dir() and now - _mtime(run) > _STALE_TMP_SECONDS:
                     shutil.rmtree(run, ignore_errors = True)

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { AdvancedDisclosure } from "@/components/advanced-disclosure";
 import {
   GalleryItemMenu,
@@ -43,8 +43,6 @@ import type { AudioHostState } from "../hooks/audio-host-state";
 import type { AudioGallery } from "../hooks/use-audio-gallery";
 import type { AudioModelSlot } from "../hooks/use-audio-model-slot";
 import type { SpeechGeneration } from "../hooks/use-speech-generation";
-// Music variations and Send to: grouped history rows, sibling chips, Edit/Extend in Music.
-import { useState } from "react";
 import {
   MusicSendToButtons,
   MusicSendToMenuItems,

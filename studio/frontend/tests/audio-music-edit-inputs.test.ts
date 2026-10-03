@@ -42,7 +42,6 @@ function draft(patch: Partial<Draft> = {}): Draft {
     strength: null,
     extendS: 15,
     prompt: "brighter chorus",
-    lyrics: "",
     ...patch,
   };
 }
