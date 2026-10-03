@@ -379,7 +379,6 @@ export interface InferenceStatusResponse {
   audio_options?: unknown;
   /** Audio page workflows the loaded model can run ("speak", "clone", "music", "transcribe"); empty when it is not an audio model. */
   audio_workflows?: string[] | null;
-  /** Null when the model does not clone. */
   audio_reference_text?: "required" | "optional" | "unused" | null;
   /** e.g. Maya1: "instruct" (its voice description). */
   audio_required_inputs?: string[] | null;

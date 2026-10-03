@@ -221,13 +221,17 @@ export async function clearAudioGallery(
   return body.removed;
 }
 
-export async function fetchClipObjectUrl(
-  url: string,
-): Promise<{ url: string; bytes: number }> {
+export async function fetchClipBlob(url: string): Promise<Blob> {
   const response = await authFetch(url);
   if (!response.ok) throw new Error(await readFastApiError(response));
-  const blob = await response.blob();
-  return { url: URL.createObjectURL(blob), bytes: blob.size };
+  return response.blob();
+}
+
+export async function fetchClipObjectUrl(
+  url: string,
+): Promise<{ url: string; bytes: number; blob: Blob }> {
+  const blob = await fetchClipBlob(url);
+  return { url: URL.createObjectURL(blob), bytes: blob.size, blob };
 }
 
 export async function transcribeWithProgress(
@@ -447,7 +451,6 @@ export interface AudioRunResponse {
     workflow: string;
   }[];
   model: string;
-  /** Only when the gallery could not save the result. */
   audio: GeneratedAudio | null;
 }
 

@@ -7,6 +7,7 @@ import { PauseIcon, PlayIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type Ref,
+  useCallback,
   useEffect,
   useImperativeHandle,
   useRef,
@@ -31,7 +32,7 @@ export function Waveform({
   controlRef,
   onPositionChange,
 }: {
-  /** null draws a flat placeholder while the audio decodes. */
+  /** 0..1; null draws a flat placeholder while decoding. */
   peaks: readonly number[] | null;
   durationS: number | null;
   src: string | null;
@@ -57,7 +58,7 @@ export function Waveform({
     if (src === null) audioRef.current?.pause();
   }, [src]);
 
-  const toggle = () => {
+  const toggle = useCallback(() => {
     const audio = audioRef.current;
     if (!(audio && src)) return;
     if (audio.paused) {
@@ -65,15 +66,18 @@ export function Waveform({
     } else {
       audio.pause();
     }
-  };
+  }, [src]);
 
-  const seekTo = (seconds: number) => {
-    const audio = audioRef.current;
-    if (!(audio && src) || duration <= 0) return;
-    const next = Math.min(duration, Math.max(0, seconds));
-    audio.currentTime = next;
-    setPosition(next);
-  };
+  const seekTo = useCallback(
+    (seconds: number) => {
+      const audio = audioRef.current;
+      if (!(audio && src) || duration <= 0) return;
+      const next = Math.min(duration, Math.max(0, seconds));
+      audio.currentTime = next;
+      setPosition(next);
+    },
+    [src, duration],
+  );
 
   useImperativeHandle(
     controlRef,

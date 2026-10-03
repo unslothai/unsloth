@@ -8,16 +8,14 @@ import { transcribeAudioInput } from "../api";
 import { type AudioSourceSelection, sourceRefOf } from "../audio-run-request";
 import { sttEngineForRepoId, sttSidecarKeyFor } from "../catalog";
 
-/** Fills "What's said in the clip" without adding it to the transcript list. */
+/** Fills "What's said in the clip" without adding it to the transcript list. No language hint:
+ *  the page's language is the output's, and a cross-lingual reference is not in it. */
 export function useReferenceTranscribe({
   sttRepo,
-  language,
   onText,
 }: {
-  /** Transcribe's STT repo; null falls back to the Settings > Voice dictation model. */
   sttRepo: string | null;
-  language: string;
-  onText: (text: string) => void;
+  onText: (text: string, reference: AudioSourceSelection) => void;
 }) {
   const [transcribing, setTranscribing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -41,14 +39,13 @@ export function useReferenceTranscribe({
             model,
             engine: sttRepo ? sttEngineForRepoId(sttRepo) : sttEngineFor(model),
             device: voice.sttDevice,
-            ...(language ? { language } : {}),
           },
           controller.signal,
         );
         if (controller.signal.aborted) return;
         const text = result.text.trim();
         if (text) {
-          onTextRef.current(text);
+          onTextRef.current(text, reference);
         } else {
           setError(
             "No speech was heard in the clip. Type what's said instead.",
@@ -66,7 +63,7 @@ export function useReferenceTranscribe({
         setTranscribing(false);
       }
     },
-    [sttRepo, language],
+    [sttRepo],
   );
 
   useEffect(() => () => abort.current?.abort(), []);

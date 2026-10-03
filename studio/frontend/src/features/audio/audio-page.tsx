@@ -38,7 +38,13 @@ import {
   audioGenerationPresentation,
 } from "./audio-page-policy";
 import { type CreateMode, deviceSizeBytes } from "./audio-workspace-utils";
-import { audioCapabilityLine, audioModelsForTask } from "./catalog";
+import {
+  audioCapabilityLine,
+  audioModelsForTask,
+  isMusicGenerationModel,
+} from "./catalog";
+import type { ClipSendHandlers } from "./components/clip-card";
+import { WorkflowTitleMenu } from "./components/workflow-title-menu";
 import { galleryCache, useAudioGallery, useWorkflowHistory } from "./hooks/use-audio-gallery";
 import { useAudioHandoff } from "./hooks/use-audio-handoff";
 import { useAudioModelSlot } from "./hooks/use-audio-model-slot";
@@ -76,11 +82,9 @@ import { useAudioCloneStore } from "./stores/audio-clone-store";
 import { useAudioWorkspaceStore } from "./stores/audio-workspace-store";
 import { AudioToolPanels } from "./tools/tool-panel-host";
 import {
-  AUDIO_WORKFLOWS,
   type AudioWorkflowId,
   audioWorkflowTab,
   clipWorkflow,
-  isAudioWorkflowId,
   loadedModelRunsWorkflow,
   slotForWorkflow,
 } from "./workflows";
@@ -258,6 +262,7 @@ export function AudioPage({
     selectedId,
     setSelectedId,
     srcById,
+    peaksById,
     ensureClipSrc,
     refreshGallery,
     loadMore,
@@ -510,6 +515,8 @@ export function AudioPage({
     visibleClips,
     selectedClip,
     selectedClipSrc,
+    loadMoreVisible,
+    fallbackClip: pageFallbackClip,
   } = useWorkflowHistory({
     workflow: ttsWorkflow,
     enabled: active && mode === "speak",
@@ -525,6 +532,30 @@ export function AudioPage({
   const handleClearWorkflowGallery = useCallback(
     () => handleClearGallery(ttsWorkflow),
     [handleClearGallery, ttsWorkflow],
+  );
+  // Send to: only pages that can take a finished clip today. Bytes first, so a failed fetch leaves the page.
+  const sendHandlersFor = useCallback(
+    (clip: AudioGalleryClip): ClipSendHandlers => ({
+      transcribe: () => {
+        // Switching mid-run stops the run, and the stopped run still holds the page busy, so the
+        // transcription would be refused and the clip silently dropped.
+        if (busyRef.current !== null) {
+          toast.info("Wait for the current audio task to finish, then send the clip.");
+          return;
+        }
+        if (!transitionWorkflow("transcribe")) return;
+        // The clip goes in by id, as "From history" does; the run keeps the page's own settings.
+        useAudioTranscribeStore.getState().setSource({
+          kind: "clip",
+          id: clip.id,
+          name: clip.prompt || "Generated clip",
+          durationS: clip.duration_s,
+          transcript: clip.prompt || null,
+          language: null,
+        });
+      },
+    }),
+    [transitionWorkflow, busyRef],
   );
   const handleUseTextAgain = useCallback(
     (clip: AudioGalleryClip) => {
@@ -978,9 +1009,13 @@ export function AudioPage({
                 additionalOnDeviceModels={
                   mode === "transcribe"
                     ? sttOnDeviceModels
-                    : ttsWorkflow === "speak"
-                      ? trainedTtsModels
-                      : []
+                    : ttsWorkflow === "clone"
+                      ? []
+                      : trainedTtsModels.filter(
+                        (model) =>
+                          isMusicGenerationModel(model.id, model.audioType) ===
+                          (ttsWorkflow === "music"),
+                      )
                 }
                 rowFilter={selectorRowFilter}
                 loadedModelIdOverride={
@@ -1085,101 +1120,90 @@ export function AudioPage({
                 settingsFadeClass,
               )}
             >
-              {/* Same heading treatment as the Images and Video Create panes, so the media panes stay level (#7986). */}
-              <div className="mb-2 grid gap-1.5">
-                <h2 className="flex items-center gap-2 font-heading text-xl font-medium leading-none text-foreground">
-                  <HugeiconsIcon
-                    icon={workflowTab.icon}
-                    className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0"
+              {/* One child, so the scroll fades see the rail grow (they watch only the first child): with
+                  the heading first, opening Advanced left the bottom fade over the last controls. */}
+              <div className="flex flex-col gap-4">
+                {/* Same heading treatment as the Images and Video Create panes, so the media panes stay level (#7986). */}
+                <div className="mb-2 grid gap-1.5">
+                  <WorkflowTitleMenu
+                    workflow={pageWorkflow}
+                    onSelect={transitionWorkflow}
                   />
-                  {workflowTab.heading}
-                </h2>
-                <p className="text-ui-11p5 leading-snug text-muted-foreground">
-                  {workflowTab.hint}
-                </p>
-                {/* The always-on capability line: which task the selected model actually does. */}
-                <p className="text-xs leading-snug text-muted-foreground">
-                  {capabilityLine}
-                </p>
-              </div>
+                  <p className="text-ui-11p5 leading-snug text-muted-foreground">
+                    {workflowTab.hint}
+                  </p>
+                  <p className="text-xs leading-snug text-muted-foreground">
+                    {capabilityLine}
+                  </p>
+                </div>
 
-              <PillTabs
-                dataTour="audio-mode"
-                ariaLabel="Audio workflow"
-                value={pageWorkflow}
-                onValueChange={(v) => {
-                  if (isAudioWorkflowId(v)) transitionWorkflow(v);
-                }}
-                fit={true}
-                className="h-[calc(30px*var(--ui-space-scale,1))] self-start [&>button]:h-[calc(30px*var(--ui-space-scale,1))] [&>button]:px-3.5"
-                tabs={AUDIO_WORKFLOWS.map(({ id, label }) => ({
-                  value: id,
-                  label,
-                }))}
-              />
-
-              {mode === "speak" ? (
-                (() => {
-                  const railProps = {
-                    prompt,
-                    setPrompt,
-                    toolPanels: (
-                      <AudioToolPanels
-                        workflow={ttsWorkflow === "music" ? "music" : "speak"}
-                        ctx={toolContext}
-                        values={toolValues}
-                        onChange={handleToolValueChange}
-                        specs={audioOptionSpecs}
-                        disabled={busy === "generating"}
-                        core={{ text: prompt }}
+                {mode === "speak" ? (
+                  (() => {
+                    const railProps = {
+                      prompt,
+                      setPrompt,
+                      toolPanels: (
+                        <AudioToolPanels
+                          workflow={ttsWorkflow === "music" ? "music" : "speak"}
+                          ctx={toolContext}
+                          values={toolValues}
+                          onChange={handleToolValueChange}
+                          specs={audioOptionSpecs}
+                          disabled={busy === "generating"}
+                          core={{ text: prompt }}
+                        />
+                      ),
+                      audioDevice,
+                      busy,
+                      status,
+                      setAudioDeviceState,
+                      ttsLoaded,
+                      handleEject,
+                      samplingControls,
+                      audioOptionSpecs,
+                      claimedOptions,
+                      advancedOpen,
+                      setAdvancedOpen,
+                      temperature,
+                      mossFrameLimit,
+                      handleTemperatureChange,
+                      musicSeconds,
+                      musicRange,
+                      setMinimaxMaxSeconds,
+                      cudaMusicGeneration,
+                      mossMaxSeconds,
+                      mossMaxSecondsLimit,
+                      setMossMaxSeconds,
+                      maxTokens,
+                      setMaxTokens,
+                      audioOptionValues,
+                      handleAudioOptionChange,
+                      handleAudioOptionsReset,
+                    };
+                    return ttsWorkflow === "music" ? (
+                      <MusicRail {...railProps} />
+                    ) : ttsWorkflow === "clone" ? (
+                      <CloneRail
+                        {...railProps}
+                        clone={clone}
+                        historyClips={clips}
                       />
-                    ),
-                    audioDevice,
-                    busy,
-                    status,
-                    setAudioDeviceState,
-                    ttsLoaded,
-                    handleEject,
-                    samplingControls,
-                    audioOptionSpecs,
-                    claimedOptions,
-                    advancedOpen,
-                    setAdvancedOpen,
-                    temperature,
-                    mossFrameLimit,
-                    handleTemperatureChange,
-                    musicSeconds,
-                    musicRange,
-                    setMinimaxMaxSeconds,
-                    cudaMusicGeneration,
-                    mossMaxSeconds,
-                    mossMaxSecondsLimit,
-                    setMossMaxSeconds,
-                    maxTokens,
-                    setMaxTokens,
-                    audioOptionValues,
-                    handleAudioOptionChange,
-                    handleAudioOptionsReset,
-                  };
-                  return ttsWorkflow === "music" ? (
-                    <MusicRail {...railProps} />
-                  ) : ttsWorkflow === "clone" ? (
-                    <CloneRail {...railProps} clone={clone} historyClips={clips} />
-                  ) : (
-                    <SpeakRail {...railProps} />
-                  );
-                })()
-              ) : (
-                <TranscribeRail
-                  historyClips={clips}
-                  disabled={busy === "transcribing"}
-                  sourceHandle={transcribeSourceHandle}
-                  onSourceStatusChange={setTranscribeSourceStatus}
-                  switches={transcribeOptions}
-                  languages={transcribeLanguages}
-                  onUseSpeakersModel={useSpeakersModel}
-                />
-              )}
+                    ) : (
+                      <SpeakRail {...railProps} />
+                    );
+                  })()
+                ) : (
+                  <TranscribeRail
+                    historyClips={clips}
+                    disabled={busy === "transcribing"}
+                    sourceHandle={transcribeSourceHandle}
+                    onSourceStatusChange={setTranscribeSourceStatus}
+                    switches={transcribeOptions}
+                    languages={transcribeLanguages}
+                    onUseSpeakersModel={useSpeakersModel}
+                  />
+                )}
+              </div>
             </div>
             {mode === "speak" ? (
               /* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */
@@ -1279,18 +1303,34 @@ export function AudioPage({
               <div className="flex min-h-0 flex-1 flex-col gap-4 p-6 px-10 @[50rem]:pt-[calc(60px*var(--ui-space-scale,1))]">
                 {(() => {
                   const outputProps = {
+                    workflow: ttsWorkflow,
+                    peaksById,
+                    sendHandlersFor,
+                    pending:
+                      busy === "generating" && generationPresentation
+                        ? {
+                            title:
+                              prompt.trim() ||
+                              audioInstructions.trim() ||
+                              (ttsWorkflow === "music" ? "New track" : "New clip"),
+                            status: generationPresentation.status,
+                            elapsedSeconds,
+                            canStop: generationPresentation.canStop,
+                            onStop: handleStopGeneration,
+                          }
+                        : null,
                     clips: visibleClips,
                     selectedClip,
                     selectedClipSrc,
                     srcById,
                     handleDownloadClip,
                     handleDeleteClip,
-                    fallbackClip,
+                    fallbackClip: pageFallbackClip,
                     handleDownloadFallbackClip,
                     handleClearGallery: handleClearWorkflowGallery,
                     historyReorder,
                     hasMore,
-                    loadMore,
+                    loadMore: loadMoreVisible,
                     selectedId,
                     selectClip,
                     handleTogglePin,

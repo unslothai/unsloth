@@ -7,7 +7,6 @@ import { audioToolPanelsFor } from "./registry";
 import { panelValue } from "./select";
 import type { AudioModelContext, CoreInputs } from "./types";
 
-/** Renders the loaded model's tools for this page, where the rail always showed them. */
 export function AudioToolPanels({
   workflow,
   ctx,

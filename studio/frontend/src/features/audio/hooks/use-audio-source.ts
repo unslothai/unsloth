@@ -80,7 +80,6 @@ export function recordingSupported(): boolean {
   );
 }
 
-/** The selection belongs to the caller, so it can be kept in a store across reloads. */
 export function useAudioSource({
   value,
   onChange,
@@ -104,8 +103,9 @@ export function useAudioSource({
   const recorderRef = useRef<SegmentRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const discardRecording = useRef(false);
-  const unmounted = useRef(false);
   const activeRef = useRef(active);
+  const acquiring = useRef(false);
+  const acquisition = useRef(0);
   const objectUrl = useRef<string | null>(null);
   const setObjectUrl = useCallback((blob: Blob | null) => {
     if (objectUrl.current) URL.revokeObjectURL(objectUrl.current);
@@ -126,6 +126,13 @@ export function useAudioSource({
   const valueKey = value ? `${value.kind}:${value.id}` : null;
   const previewKey = state.preview.key;
   const phase = state.status.phase;
+  // A new pick replaces an error about an earlier one (a failed upload, then a history clip).
+  const seenKey = useRef(valueKey);
+  useEffect(() => {
+    if (seenKey.current === valueKey) return;
+    seenKey.current = valueKey;
+    if (valueKey && phase === "error") dispatch({ type: "reset" });
+  }, [valueKey, phase]);
   useEffect(() => {
     if (!(value && valueKey)) return;
     if (
@@ -243,14 +250,17 @@ export function useAudioSource({
   }, []);
 
   const startRecording = useCallback(async () => {
-    if (recorderRef.current) return;
+    if (recorderRef.current || acquiring.current) return;
+    acquiring.current = true;
+    const ticket = ++acquisition.current;
     let stream: MediaStream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true },
       });
     } catch {
-      if (unmounted.current) return;
+      acquiring.current = false;
+      if (ticket !== acquisition.current) return;
       dispatch({
         type: "fail",
         message:
@@ -258,8 +268,9 @@ export function useAudioSource({
       });
       return;
     }
-    // The permission prompt cannot be cancelled: release the mic if the card unmounted or hid meanwhile.
-    if (unmounted.current || !activeRef.current) {
+    acquiring.current = false;
+    // Cleared, unmounted or hidden while the permission prompt was open: release the mic at once.
+    if (ticket !== acquisition.current || !activeRef.current) {
       for (const track of stream.getTracks()) track.stop();
       return;
     }
@@ -335,6 +346,7 @@ export function useAudioSource({
   }, [recordingStartedAt]);
 
   const abortAll = useCallback(() => {
+    acquisition.current += 1;
     uploadAbort.current?.abort();
     loadAbort.current?.abort();
     if (recorderRef.current) {
@@ -354,16 +366,14 @@ export function useAudioSource({
     onChangeRef.current(null);
   }, [abortAll, dismissError]);
 
-  useEffect(() => {
-    // Reset on mount: a development remount reuses the ref.
-    unmounted.current = false;
-    return () => {
-      unmounted.current = true;
+  useEffect(
+    () => () => {
       abortAll();
       for (const track of streamRef.current?.getTracks() ?? []) track.stop();
       if (objectUrl.current) URL.revokeObjectURL(objectUrl.current);
-    };
-  }, [abortAll]);
+    },
+    [abortAll],
+  );
 
   const fail = useCallback(
     (message: string) => dispatch({ type: "fail", message }),

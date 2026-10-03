@@ -40,7 +40,6 @@ import { useReferenceTranscribe } from "./use-reference-transcribe";
 export const CLONE_TEXT_FIELD_ID = "clone-text";
 export const CLONE_REFERENCE_TEXT_FIELD_ID = "clone-reference-text";
 
-/** Selects the saved clip once the gallery lists it, else its bytes, so a run is never dropped. */
 export async function showRunResult({
   response,
   text,
@@ -74,9 +73,7 @@ export async function showRunResult({
         model: response.model,
         saved: true,
       });
-    } catch {
-      // The id is still selected below; the next refresh shows it.
-    }
+    } catch {}
     selectClip(clip.id, true);
     return;
   }
@@ -146,15 +143,14 @@ export function useCloneGeneration({
     phase: "idle",
   });
   const referenceHandle = useRef<AudioSourceInputHandle | null>(null);
-  // Keyed by id so picking another reference clears it.
   const [expiredReferenceId, setExpiredReferenceId] = useState<string | null>(
     null,
   );
 
   const transcriber = useReferenceTranscribe({
     sttRepo,
-    language,
-    onText: (next) => useAudioCloneStore.getState().setReferenceText(next),
+    onText: (next, source) =>
+      useAudioCloneStore.getState().applyTranscript(source, next),
   });
 
   const toolContext = useMemo(
@@ -214,7 +210,6 @@ export function useCloneGeneration({
   );
   const transcriptField = referenceTextField(toolContext, toolRequest.patch);
 
-  // An upload can pass its keep-until time while the page sits open.
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (reference?.kind !== "input" || !reference.expiresAt) return;
@@ -344,7 +339,9 @@ export function useCloneGeneration({
         const expired =
           error instanceof AudioApiError &&
           error.status === 404 &&
-          state.reference.kind === "input";
+          state.reference.kind === "input" &&
+          // With an emotion clip too, the 404 may be that clip's: keep the server's message.
+          !patch.inputs?.emotion;
         if (expired) {
           setExpiredReferenceId(state.reference.id);
           referenceHandle.current?.markExpired();
@@ -390,7 +387,6 @@ export function useCloneGeneration({
     replayQueuedTtsPick,
   ]);
 
-  // A new reference clears a failure that was about the old one.
   useEffect(() => {
     if (reference) setGenerationError(null);
   }, [reference]);

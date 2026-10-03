@@ -16,7 +16,6 @@ import type {
   AudioToolPanel,
 } from "./types";
 
-/** The instruction text and language the rail keeps for whichever model is loaded. */
 export interface InstructionsValue {
   instructions: string;
   language: string;

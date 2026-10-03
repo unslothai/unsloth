@@ -51,7 +51,7 @@ export const AudioActiveProvider = AudioActiveContext.Provider;
 
 type SourceTab = "upload" | "record" | "history" | "voice";
 
-const AUDIO_EXTS = "wav mp3 flac ogg oga opus m4a aac webm".split(" ");
+const AUDIO_EXTS = "wav mp3 flac ogg oga opus m4a aac webm mp4".split(" ");
 const AUDIO_ACCEPT = `audio/*,${AUDIO_EXTS.map((ext) => `.${ext}`).join(",")}`;
 
 const SOURCE_LABEL: Record<AudioSourceSelection["kind"], string> = {

@@ -5,7 +5,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { readLastPrompt, saveLastPrompt } from "@/lib/last-prompt";
 import { toast } from "@/lib/toast";
 import { generateAudio, runAudio } from "../api";
-import { TTS_MAX_TOKENS } from "../audio-workspace-constants";
 import {
   audioOptionLabel,
   audioOptionsForRequest,
@@ -36,6 +35,7 @@ import {
   isMusicGenerationModel,
   musicGenerationRequiresCuda,
 } from "../catalog";
+import { TTS_MAX_TOKENS } from "../audio-workspace-constants";
 import type { AudioHostState } from "./audio-host-state";
 import { galleryCache } from "./use-audio-gallery";
 import { useAudioCloneStore } from "../stores/audio-clone-store";
@@ -338,7 +338,6 @@ export function useSpeechGeneration({
       );
       return;
     }
-    // Panels own their options, so they override Advanced.
     const requestOptions = {
       ...audioOptionsForRequest(advancedOptionSpecs, audioOptionValues),
       ...toolRequest.patch.options,
@@ -348,7 +347,6 @@ export function useSpeechGeneration({
     const language = audioLanguage.trim();
     saveLastPrompt(ttsDraftKey("prompt", workflow), prompt);
     if (savedVoice) {
-      // A saved voice is a reference the server holds, so the run goes through /audio/run.
       const voiceController = new AbortController();
       generateAbort.current = voiceController;
       updateGenerationPhase("generating");
@@ -440,6 +438,7 @@ export function useSpeechGeneration({
           prompt: text,
           model: generated.model,
           saved: true,
+          workflow,
         });
         selectClip(generated.clip_id, true);
       } else {
@@ -450,6 +449,7 @@ export function useSpeechGeneration({
           prompt: text,
           model: generated.model,
           saved: false,
+          workflow,
         });
       }
     } catch (error) {

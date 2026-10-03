@@ -124,7 +124,6 @@ def test_an_upload_decodes_dedupes_and_deletes(client, fmt, codec, rate, layout,
     assert response.status_code == 201, response.text
     record = response.json()
     assert set(record) == set("id name duration_s sample_rate channels url expires_at".split())
-    # Only the file's own name is kept, never the client's folders.
     got = (record["name"], record["sample_rate"], record["channels"], round(record["duration_s"]))
     assert got == (name, rate, channels, 2)
     assert record["url"] == f"{INPUTS}/{record['id']}/file"

@@ -676,7 +676,6 @@ def _scan_cached_gguf(
                         row_audio_type = catalog_classification._repo_gguf_audio_type(
                             repo_info, gguf_identity.load_snapshot or gguf_snapshot
                         )
-                        # An audio.cpp family names its workflows: a clone-only one is not Speak.
                         if row_audio_type == "audiocpp_tts":
                             row_audio_workflows = catalog_classification._gguf_path_audio_workflows(
                                 gguf_identity.load_snapshot

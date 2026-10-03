@@ -262,7 +262,6 @@ def _finish_upload(
     existing = _find_by_sha(directory, sha)
     if existing is not None:
         input_id, meta = existing
-        # Re-adding the same clip keeps it for another day.
         meta["touched_at"] = _now()
         _write_json(_sidecar(directory, input_id), meta)
         return _record(input_id, meta), False

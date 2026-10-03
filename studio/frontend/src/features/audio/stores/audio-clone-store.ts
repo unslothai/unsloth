@@ -16,12 +16,12 @@ interface AudioCloneState {
   toolValues: Record<string, unknown>;
   setReference: (reference: AudioSourceSelection | null) => void;
   setReferenceText: (referenceText: string) => void;
+  applyTranscript: (source: AudioSourceSelection, text: string) => void;
   setText: (text: string) => void;
   setLanguage: (language: string) => void;
   setToolValue: (key: string, value: unknown) => void;
 }
 
-/** Oldest evicted first so storage stays bounded. */
 const MAX_TOOL_VALUES = 200;
 
 export const useAudioCloneStore = create<AudioCloneState>()(
@@ -34,6 +34,18 @@ export const useAudioCloneStore = create<AudioCloneState>()(
       toolValues: {},
       setReference: (reference) => set({ reference }),
       setReferenceText: (referenceText) => set({ referenceText }),
+      // Kept on the source too, so a new pick replaces it like the clip's own; a result for a clip
+      // no longer picked is dropped.
+      applyTranscript: (source, text) =>
+        set((state) =>
+          state.reference?.kind === source.kind &&
+          state.reference.id === source.id
+            ? {
+                reference: { ...state.reference, transcript: text },
+                referenceText: text,
+              }
+            : {},
+        ),
       setText: (text) => set({ text }),
       setLanguage: (language) => set({ language }),
       setToolValue: (key, value) =>
@@ -45,7 +57,6 @@ export const useAudioCloneStore = create<AudioCloneState>()(
             entries.length >= MAX_TOOL_VALUES
               ? entries.slice(entries.length - MAX_TOOL_VALUES + 1)
               : entries;
-          // Re-inserted last, so insertion order is recency.
           return { toolValues: { ...Object.fromEntries(kept), [key]: value } };
         }),
     }),

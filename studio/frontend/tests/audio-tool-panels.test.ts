@@ -70,7 +70,6 @@ test("a model gets the instruction field it always got, and nothing else", () =>
     shown("music", ctx({ musicGeneration: true, audioType: "minimax_music3" })),
     ["music-description"],
   );
-  // Codec models had no instruction field and still have none.
   assert.deepEqual(shown("speak", ctx({ audioType: "snac" })), []);
   assert.deepEqual(shown("speak", ctx({ audioType: "csm" })), []);
   // A music model resident while Speak is open does not put its description on Speak.

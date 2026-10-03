@@ -114,7 +114,6 @@ SPEECH, TASKS = "/v1/audio/speech", "/v1/tasks/run"
 # fmt: off
 @pytest.mark.parametrize("key, kwargs, expect", [
     ("qwen3", {"reference_text": T, "language": "en"}, {**BASE, "reference_text": T, "language": "English"}),
-    # Transcript unused, guidance clamped to 0-5, undeclared options dropped.
     ("chatterbox", {"reference_text": T, "audio_options": {"exaggeration": 0.7, "guidance_scale": 9, "temperature": 0.1}},
      {**BASE, "options": {"exaggeration": "0.7", "guidance_scale": "5"}}),
     # Emotion audio switches to the tasks endpoint with top-level audio.

@@ -18,7 +18,6 @@ import type {
   CoreInputs,
 } from "./types";
 
-/** Which instruction field the model takes, the same rule the rail always used. */
 export function instructionsKindFor(
   ctx: AudioModelContext,
 ): NativeAudioInstructionsKind | null {
@@ -27,7 +26,6 @@ export function instructionsKindFor(
     : nativeAudioInstructionsKind(ctx.audioType);
 }
 
-/** A panel shows on its own workflows, for the models it matches. */
 export function panelApplies(
   panel: Pick<AudioToolPanel<unknown>, "workflows" | "families" | "appliesTo">,
   workflow: AudioWorkflowId,
@@ -39,7 +37,6 @@ export function panelApplies(
     : panel.families.includes(ctx.audioFamily ?? "");
 }
 
-/** Spec options the shown panels render themselves, which Advanced then leaves out. */
 export function claimedOptionNames(
   panels: readonly Pick<AudioToolPanel<unknown>, "claims">[],
 ): Set<string> {
