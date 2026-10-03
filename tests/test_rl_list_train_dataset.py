@@ -153,4 +153,6 @@ def test_matches_installed_trl():
                 compiled[0].__init__
             ), name
     if checked == 0:
-        pytest.skip(f"trl {trl.__version__} has no train_dataset type check")
+        pytest.skip(
+            reason = f"trl {trl.__version__} predates the 1.10 train_dataset type check, nothing to widen"
+        )
