@@ -45,6 +45,7 @@ class ActiveGeneration:
         "cancel_event",
         "model",
         "kind",
+        "backend",
         "account_id",
         "_handle",
         "_borrowed",
@@ -58,6 +59,7 @@ class ActiveGeneration:
         run_id: Optional[str] = None,
         model: Optional[str] = None,
         kind: str = "chat",
+        backend: Any = None,
         account_id: Optional[str] = None,
     ):
         self.account_id = account_id or current_account_id()
@@ -66,6 +68,7 @@ class ActiveGeneration:
         self.cancel_event = cancel_event
         self.model = model or None
         self.kind = kind
+        self.backend = backend
         self._handle: Optional[str] = None
         self._borrowed = False
 
@@ -87,6 +90,8 @@ class ActiveGeneration:
                         entry["model"] = self.model
                     if self.kind:
                         entry["kind"] = self.kind
+                    if self.backend is not None:
+                        entry["backend"] = self.backend
                     self._borrowed = True
                     return self
             self._handle = uuid.uuid4().hex
@@ -96,6 +101,7 @@ class ActiveGeneration:
                 "run_id": self.run_id,
                 "model": self.model,
                 "kind": self.kind,
+                "backend": self.backend,
                 "account_id": self.account_id,
                 "started_at": time.time(),
                 "event": self.cancel_event,
@@ -157,6 +163,32 @@ def count(account_id: Optional[str] = None) -> int:
         return sum(1 for e in _ACTIVE.values() if e["account_id"] == account_id)
 
 
+def count_for_backend(backend: Any, account_id: Optional[str] = None) -> int:
+    """Number of in-flight generations served by one backend instance."""
+    with _LOCK:
+        return sum(
+            1
+            for e in _ACTIVE.values()
+            if e["backend"] is backend and (account_id is None or e["account_id"] == account_id)
+        )
+
+
+def active_thread_ids_for_backend(backend: Any, account_id: Optional[str] = None) -> list[str]:
+    """Conversation ids currently served by one backend instance."""
+    seen: list[str] = []
+    with _LOCK:
+        entries = [
+            e
+            for e in _ACTIVE.values()
+            if e["backend"] is backend and (account_id is None or e["account_id"] == account_id)
+        ]
+    for e in sorted(entries, key = lambda e: e["started_at"]):
+        thread_id = e["thread_id"]
+        if thread_id and thread_id not in seen:
+            seen.append(thread_id)
+    return seen
+
+
 def foreign_count(account_id: str) -> int:
     """Generations in flight for OTHER accounts, which a load or unload must not interrupt."""
     with _LOCK:
@@ -175,6 +207,22 @@ def cancel_all(account_id: Optional[str] = None) -> int:
     for ev in events:
         try:
             ev.set()
+        except Exception:
+            pass
+    return len(events)
+
+
+def cancel_backend(backend: Any, account_id: Optional[str] = None) -> int:
+    """Signal only generations served by one backend instance."""
+    with _LOCK:
+        events = [
+            e["event"]
+            for e in _ACTIVE.values()
+            if e["backend"] is backend and (account_id is None or e["account_id"] == account_id)
+        ]
+    for event in events:
+        try:
+            event.set()
         except Exception:
             pass
     return len(events)

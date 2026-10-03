@@ -1341,7 +1341,7 @@ def test_monitor_status_counts_slots_no_row_can_see(monkeypatch, queue, expected
 
     monkeypatch.setattr(inf, "api_monitor", ApiMonitor(max_entries = 3))
     monkeypatch.setattr(inf, "_monitor_active_model", lambda: "org/M-GGUF")
-    monkeypatch.setattr(inf, "_monitor_context_length", lambda: 4096)
+    monkeypatch.setattr(inf, "_monitor_context_length", lambda _backend = None: 4096)
     monkeypatch.setattr(inf, "_monitor_queue_state", lambda: queue)
 
     app = FastAPI()
@@ -1358,7 +1358,7 @@ def test_monitor_status_is_idle_without_a_model(monkeypatch):
 
     monkeypatch.setattr(inf, "api_monitor", ApiMonitor(max_entries = 3))
     monkeypatch.setattr(inf, "_monitor_active_model", lambda: None)
-    monkeypatch.setattr(inf, "_monitor_context_length", lambda: None)
+    monkeypatch.setattr(inf, "_monitor_context_length", lambda _backend = None: None)
     monkeypatch.setattr(inf, "_monitor_queue_state", lambda: None)
 
     app = FastAPI()
@@ -1463,7 +1463,7 @@ def test_direct_llama_work_is_busy_without_the_admission_snapshot(monkeypatch):
 
     monkeypatch.setattr(inf, "api_monitor", ApiMonitor(max_entries = 3))
     monkeypatch.setattr(inf, "_monitor_active_model", lambda: "org/M-GGUF")
-    monkeypatch.setattr(inf, "_monitor_context_length", lambda: 4096)
+    monkeypatch.setattr(inf, "_monitor_context_length", lambda _backend = None: 4096)
     monkeypatch.setattr(inf, "_monitor_queue_state", lambda: None)
     monkeypatch.setattr(inf, "_direct_llama_inflight", 1)
 
