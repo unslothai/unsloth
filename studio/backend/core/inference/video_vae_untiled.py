@@ -22,8 +22,9 @@ from typing import Any, Optional
 UNTILED_ENV = "UNSLOTH_VIDEO_VAE_UNTILED"
 
 # Extra device memory of an untiled decode, in bytes per LATENT pixel (h x w), measured on a B200 at each family's
-# default shape with Studio's own decode path, then rounded up. Wan's decoder runs one latent frame at a time
-# (causal cache), so its peak does not grow with the clip length.
+# default shape with Studio's own fp16 decode path, then rounded up; scaled by the decoder's element size, since an
+# fp32 decode (ROCm, no fp16 path, or after its non-finite fallback) measured 21.1 GiB against fp16's 9.6 GiB at
+# 1280x704. Wan's decoder runs one latent frame at a time (causal cache), so its peak does not grow with the clip length.
 _BYTES_PER_LATENT_PIXEL = {
     "wan2.2-ti2v-5b": 2.5 * 2**20,
 }
@@ -36,13 +37,29 @@ def _enabled() -> bool:
     return os.environ.get(UNTILED_ENV, "").strip().lower() not in ("0", "false", "no", "off")
 
 
-def untiled_decode_bytes(family: str, latent_shape: tuple) -> Optional[int]:
-    """Estimated extra memory of an untiled decode of ``latent_shape`` (B, C, T, h, w), or None if unmeasured."""
+def untiled_decode_bytes(
+    family: str,
+    latent_shape: tuple,
+    itemsize: int = 2,
+) -> Optional[int]:
+    """Estimated extra memory of an untiled decode of ``latent_shape`` (B, C, T, h, w) by a decoder whose weights
+    are ``itemsize`` bytes wide, or None if unmeasured."""
     coef = _BYTES_PER_LATENT_PIXEL.get(family)
     if coef is None or len(latent_shape) != 5:
         return None
     batch, _, _, height, width = (int(x) for x in latent_shape)
-    return int(coef * max(1, batch) * height * width)
+    return int(coef * max(2, itemsize) / 2 * max(1, batch) * height * width)
+
+
+def _decoder_itemsize(vae: Any) -> int:
+    """Element size of the decoder's weights, read per call; 4 (fp32, the larger estimate) if unreadable."""
+    try:
+        for param in vae.decoder.parameters():
+            if param.is_floating_point():
+                return int(param.element_size())
+    except Exception:  # noqa: BLE001 -- unreadable means assume the wider dtype
+        pass
+    return 4
 
 
 def _free_bytes(device: Any) -> Optional[int]:
@@ -81,7 +98,9 @@ def install_untiled_decode(
     def untiled_when_fits(z: Any, *args: Any, **kwargs: Any) -> Any:
         if not getattr(vae, "use_tiling", False):
             return decode(z, *args, **kwargs)
-        need = untiled_decode_bytes(family, tuple(getattr(z, "shape", ())))
+        need = untiled_decode_bytes(
+            family, tuple(getattr(z, "shape", ())), itemsize = _decoder_itemsize(vae)
+        )
         free = _free_bytes(getattr(z, "device", None))
         fits = need is not None and free is not None and need * _MARGIN + _MARGIN_BYTES <= free
         if logger is not None:
@@ -101,7 +120,7 @@ def install_untiled_decode(
             out = decode(z, *args, **kwargs)
             stats["untiled"] += 1
             return out
-        except torch.OutOfMemoryError:
+        except torch.cuda.OutOfMemoryError:  # torch.OutOfMemoryError only exists from torch 2.5
             pass
         finally:
             vae.use_tiling = True

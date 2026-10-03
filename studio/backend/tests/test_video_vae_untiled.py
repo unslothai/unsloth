@@ -13,7 +13,12 @@ from core.inference import video_vae_untiled as U
 
 
 class FakeVAE:
-    def __init__(self, oom_untiled = False):
+    def __init__(
+        self,
+        oom_untiled = False,
+        dtype = torch.float16,
+    ):
+        self.decoder = torch.nn.Conv3d(1, 1, 1).to(dtype)
         self.use_tiling = True
         self.calls = []
         self.oom_untiled = oom_untiled
@@ -97,3 +102,18 @@ def test_estimate_scales_with_latent_area_not_frames():
     c = U.untiled_decode_bytes(WAN, (1, 48, 31, 88, 80))
     assert a == b and c == 2 * a
     assert U.untiled_decode_bytes("nope", (1, 48, 31, 44, 80)) is None
+
+
+def test_fp32_decoder_needs_twice_the_fp16_estimate(monkeypatch):
+    # Wan's untiled fp32 decode peaked at 21.1 GiB against 9.6 GiB fp16 (1280x704): a gate sized for fp16 must not
+    # send an fp32 decoder untiled.
+    fp16_gate = U.untiled_decode_bytes(WAN, tuple(Z.shape)) * U._MARGIN + U._MARGIN_BYTES
+    monkeypatch.setattr(U, "_free_bytes", lambda device: int(fp16_gate) + 1)
+    half, full = FakeVAE(), FakeVAE(dtype = torch.float32)
+    U.install_untiled_decode(_pipe(half), WAN)
+    U.install_untiled_decode(_pipe(full), WAN)
+    assert half.decode(Z) == ("untiled",)
+    assert full.decode(Z) == ("tiled",)
+    assert U.untiled_decode_bytes(WAN, tuple(Z.shape), itemsize = 4) == 2 * U.untiled_decode_bytes(
+        WAN, tuple(Z.shape)
+    )
