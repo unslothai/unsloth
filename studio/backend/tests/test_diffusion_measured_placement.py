@@ -496,6 +496,54 @@ def test_generate_releases_and_restores_resident_groups():
     assert "pipe._unsloth_measured_reserve = (" in src
 
 
+def _pinned_pipe(
+    monkeypatch,
+    resident_flags,
+    hf_hook = False,
+):
+    torch = pytest.importorskip("torch")
+    net = torch.nn.Linear(4, 4)
+    if hf_hook:
+        net._hf_hook = object()
+    groups = [types.SimpleNamespace(_unsloth_resident = flag) for flag in resident_flags]
+    monkeypatch.setattr(dm, "_offload_groups", lambda m: groups if m is net else [])
+    return types.SimpleNamespace(transformer = net, text_encoder = torch.nn.Linear(4, 4))
+
+
+def test_denoiser_residency_follows_the_final_placement(monkeypatch):
+    """Residency reads the placement (16 GB: all 35 groups pinned), not the plan's stream flag."""
+    assert dm.denoisers_pinned_resident(_pinned_pipe(monkeypatch, [True] * 35))
+    assert not dm.denoisers_pinned_resident(_pinned_pipe(monkeypatch, [True] * 23 + [False] * 12))
+    assert not dm.denoisers_pinned_resident(_pinned_pipe(monkeypatch, [True] * 35, hf_hook = True))
+    assert not dm.denoisers_pinned_resident(_pinned_pipe(monkeypatch, []))
+
+
+def test_pinned_denoiser_reads_real_group_offload_hooks(monkeypatch):
+    """Real group offloading: pinned -> resident, released -> moving, restored -> resident."""
+    torch, net = _cuda_offload_model()
+    from diffusers.hooks import apply_group_offloading
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_PARTIAL_RESIDENT", raising = False)
+    apply_group_offloading(
+        net,
+        onload_device = torch.device("cuda"),
+        offload_device = torch.device("cpu"),
+        offload_type = "block_level",
+        num_blocks_per_group = 1,
+        use_stream = True,
+        record_stream = True,
+        non_blocking = True,
+    )
+    pipe = types.SimpleNamespace(transformer = net, components = {"transformer": net})
+    assert not dm.denoisers_pinned_resident(pipe)  # hooked, nothing pinned: streams
+    assert dm._keep_groups_resident(net, 1024, "cuda") > 0
+    assert dm.denoisers_pinned_resident(pipe)
+    restore = dm.release_resident_groups(pipe, 1024)
+    assert restore is not None and not dm.denoisers_pinned_resident(pipe)
+    restore()
+    assert dm.denoisers_pinned_resident(pipe)
+
+
 def test_torchao_groups_stay_on_device_after_release_and_restore(monkeypatch):
     torch, _ = _cuda_offload_model()
     pytest.importorskip("torchao")

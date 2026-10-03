@@ -602,6 +602,38 @@ def apply_speed_optims(
     return applied
 
 
+def engage_pinned_denoisers(
+    pipe: Any,
+    applied: dict,
+    logger: Any = None,
+) -> dict:
+    """Install the int8 GEMM the plan refused once every denoiser group is pinned (before the first forward). Graphs
+    stay off: an oversized request can still stream the groups, and the hooks' copy-stream wait breaks capture."""
+    if getattr(pipe, "_unsloth_cuda_graph_reason", None) == "offload active":
+        try:
+            pipe._unsloth_cuda_graph_reason = "denoiser pinned resident under offload hooks"
+        except Exception:  # noqa: BLE001
+            pass
+    if not applied.get("compiled") or applied.get("int8_gemm"):
+        return applied
+    try:
+        from .diffusion_int8_gemm import install as install_int8_gemm
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, "int8 fused-dequant gemm", exc)
+        return applied
+    for transformer in _denoiser_dits(pipe):
+        try:
+            transformer._unsloth_int8_gemm = install_int8_gemm(
+                transformer, logger, offload_active = False
+            )
+        except Exception as exc:  # noqa: BLE001 - optimisation only
+            _warn(logger, "int8 fused-dequant gemm", exc)
+    applied["int8_gemm"] = any(
+        bool(getattr(t, "_unsloth_int8_gemm", 0)) for t in _denoiser_dits(pipe)
+    )
+    return applied
+
+
 def fp16_unet_offloaded(target: Any, pipe: Any, *, offload_active: bool) -> bool:
     """An offloaded fp16 U-Net stays eager: fused QKV costs more transfer than compile saves (L4: 5.43 vs 4.86 s)."""
     return (
