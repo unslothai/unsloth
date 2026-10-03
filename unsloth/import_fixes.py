@@ -6640,7 +6640,7 @@ def fix_cudnn_sdpa_d256_masked_backward():
 
 
 def _rocm_windows_broken_sdpa_backends():
-    """Fused SDPA backends ("flash", "mem_efficient") failing on a Windows ROCm GPU here.
+    """Fused SDPA backends ("flash", "mem_efficient") failing on this process's Windows ROCm GPU.
 
     A failed launch there (torch 2.11.0+rocm7.14.1, gfx1151: hipErrorInvalidValue on every call)
     is not raised by the call or by synchronize(), only by the next checked launch, so each probe
@@ -6665,7 +6665,7 @@ def _rocm_windows_broken_sdpa_backends():
             for _ in range(3)
         )
         q.requires_grad_(True)
-        with torch.enable_grad(), sdpa_kernel([backend]):
+        with sdpa_kernel([backend]):
             out = F.scaled_dot_product_attention(q, k, v, is_causal = True)
             out = out.float()  # checked launch: a failed attention launch raises here
             out.sum().backward()
@@ -6673,26 +6673,25 @@ def _rocm_windows_broken_sdpa_backends():
         dq.sum().item()
         return torch.cat([out.detach().flatten(), dq.flatten()])
 
+    # Only this process's device: probing every visible GPU would open a HIP context on each.
+    device = torch.device("cuda", torch.cuda.current_device())
     broken = []
-    for name, backend in (
-        ("flash", SDPBackend.FLASH_ATTENTION),
-        ("mem_efficient", SDPBackend.EFFICIENT_ATTENTION),
-    ):
-        for index in range(torch.cuda.device_count()):
-            device = torch.device("cuda", index)
+    # An import under inference_mode would leave nothing to backpropagate through.
+    with torch.inference_mode(False), torch.enable_grad():
+        try:
+            reference = attend(device, SDPBackend.MATH)
+        except Exception:
+            return []  # math fails too: nothing to learn about the fused kernels
+        for name, backend in (
+            ("flash", SDPBackend.FLASH_ATTENTION),
+            ("mem_efficient", SDPBackend.EFFICIENT_ATTENTION),
+        ):
             try:
-                with torch.cuda.device(device):
-                    reference = attend(device, SDPBackend.MATH)
-            except Exception:
-                continue  # math fails too: nothing to learn about the fused kernels
-            try:
-                with torch.cuda.device(device):
-                    ok = torch.allclose(attend(device, backend), reference, atol = 2e-2, rtol = 2e-2)
+                ok = torch.allclose(attend(device, backend), reference, atol = 2e-2, rtol = 2e-2)
             except Exception as e:
                 ok = "No available kernel" in str(e)
             if not ok:
                 broken.append(name)
-                break
     return broken
 
 

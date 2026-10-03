@@ -40,22 +40,6 @@ def test_probe_is_windows_rocm_only():
     assert _rocm_windows_broken_sdpa_backends() == []
 
 
-_DISABLE = textwrap.dedent(
-    """
-    import json, sys
-    import unsloth.import_fixes as fixes
-    import torch
-    torch.backends.cuda.enable_flash_sdp(True)
-    torch.backends.cuda.enable_mem_efficient_sdp(True)
-    fixes._rocm_windows_broken_sdpa_backends = lambda: json.loads(sys.argv[1])
-    fixes.fix_rocm_windows_fused_sdpa()
-    print("RESULT " + json.dumps([torch.backends.cuda.flash_sdp_enabled(),
-                                  torch.backends.cuda.mem_efficient_sdp_enabled(),
-                                  torch.backends.cuda.math_sdp_enabled()]))
-    """
-)
-
-
 @pytest.mark.parametrize(
     "broken, expected",
     [
@@ -65,8 +49,22 @@ _DISABLE = textwrap.dedent(
         (["flash", "mem_efficient"], [False, False, True]),
     ],
 )
-def test_only_broken_backends_are_turned_off(broken, expected):
-    assert _run(_DISABLE, json.dumps(broken)) == expected
+def test_only_broken_backends_are_turned_off(monkeypatch, broken, expected):
+    import unsloth.import_fixes as fixes
+
+    cuda = torch.backends.cuda
+    saved = (cuda.flash_sdp_enabled(), cuda.mem_efficient_sdp_enabled())
+    monkeypatch.delenv("UNSLOTH_ALLOW_ROCM_FUSED_SDPA", raising = False)
+    monkeypatch.setattr(fixes, "_rocm_windows_broken_sdpa_backends", lambda: list(broken))
+    try:
+        cuda.enable_flash_sdp(True)
+        cuda.enable_mem_efficient_sdp(True)
+        fixes.fix_rocm_windows_fused_sdpa()
+        got = [cuda.flash_sdp_enabled(), cuda.mem_efficient_sdp_enabled(), cuda.math_sdp_enabled()]
+    finally:
+        cuda.enable_flash_sdp(saved[0])
+        cuda.enable_mem_efficient_sdp(saved[1])
+    assert got == expected
 
 
 def test_opt_out_skips_the_probe(monkeypatch):
@@ -87,7 +85,8 @@ _PROBE_TWICE = textwrap.dedent(
     import torch
     from unsloth.import_fixes import _rocm_windows_broken_sdpa_backends
     first = _rocm_windows_broken_sdpa_backends()
-    second = _rocm_windows_broken_sdpa_backends()
+    with torch.inference_mode():  # an import inside inference_mode must probe the same
+        second = _rocm_windows_broken_sdpa_backends()
     # Nothing may be left pending: a stale launch error would raise on this checked kernel.
     torch.ones(4, device = "cuda").float().sum().item()
     print("RESULT " + json.dumps([first, second]))
