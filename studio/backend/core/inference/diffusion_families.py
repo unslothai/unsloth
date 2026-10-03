@@ -113,9 +113,6 @@ class DiffusionFamily:
     max_output_pixels: int = 2048 * 2048
     # Accepted condition-image preprocessing resolutions (square side, by area); empty = no such control.
     reference_resolutions: tuple[int, ...] = field(default_factory = tuple)
-    # Static sigma shift ComfyUI samples this family with; the loader rebuilds the scheduler at it. None = keep the
-    # shipped scheduler.
-    comfy_flow_shift: Optional[float] = None
     # Activation-guard cost of one condition pixel relative to one output pixel.
     condition_pixel_weight: float = 1.0
     # Extra lowercased substrings (besides ``name``) that map a repo id here.
@@ -328,7 +325,6 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Qwen instruction editing: the 2511 checkpoint ships as QwenImageEditPlusPipeline. Specific aliases first so
         # detect_family prefers this over "qwen-image".
         name = "qwen-image-edit",
-        comfy_flow_shift = 3.1,  # ComfyUI ModelSamplingAuraFlow 3.1 (Qwen-Image-Edit 2511 template)
         pipeline_class = "QwenImageEditPlusPipeline",
         transformer_class = "QwenImageTransformer2DModel",
         base_repo = "Qwen/Qwen-Image-Edit-2511",
@@ -346,7 +342,6 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     ),
     DiffusionFamily(
         name = "qwen-image",
-        comfy_flow_shift = 3.1,  # ComfyUI ModelSamplingAuraFlow 3.1 (Qwen-Image templates)
         pipeline_class = "QwenImagePipeline",
         transformer_class = "QwenImageTransformer2DModel",
         base_repo = "Qwen/Qwen-Image",
@@ -493,7 +488,6 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
     ),
     DiffusionFamily(
         name = "z-image",
-        comfy_flow_shift = 3.0,  # ComfyUI shift 3 for Turbo and base (Turbo already ships 3.0)
         pipeline_class = "ZImagePipeline",
         transformer_class = "ZImageTransformer2DModel",
         base_repo = "Tongyi-MAI/Z-Image-Turbo",
@@ -1138,37 +1132,29 @@ def prefer_ungated_mirror(
 # Default (steps, guidance) per model for callers that cannot pass them. Matched by substring, most specific first;
 # same values as the UI MODEL_DEFAULTS table, keep in sync.
 _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
-    # Values follow ComfyUI's official templates for the same model (our baseline).
-    # Z-Image-Turbo: 8 steps (ComfyUI runs 8 sampler steps; diffusers runs one forward per step).
-    ("z-image-turbo", 8, 0.0),
-    # FLUX.1 Krea dev is a FLUX.1-dev finetune, NOT a Krea-2: 20 steps at the FLUX guidance default 3.5, as ComfyUI.
-    # Must precede the generic "krea" key.
-    ("flux.1-krea", 20, 3.5),
+    ("z-image-turbo", 9, 0.0),
+    # FLUX.1 Krea dev is a FLUX.1-dev finetune, NOT a Krea-2: 28 steps at guidance 4.5. Must precede the generic
+    # "krea" key.
+    ("flux.1-krea", 28, 4.5),
     # Krea 2 Raw (undistilled): 52 steps / guidance 3.5. Must precede the generic "krea" key.
     ("krea-2-raw", 52, 3.5),
     # Krea 2 Turbo (distilled): 8 steps, no CFG. "krea" then covers Turbo and other krea ids but Raw.
     ("krea", 8, 0.0),
     ("flux.1-schnell", 4, 0.0),
-    ("kontext", 20, 2.5),  # editing: before the generic flux.1
-    ("flux.1", 20, 3.5),
-    # The undistilled base variants run real CFG: 20 steps at CFG 5, as ComfyUI. Keep this before the generic
-    # distilled key, which covers both 4B and 9B 4-step checkpoints.
-    ("flux.2-klein-base", 20, 5.0),
+    ("kontext", 28, 2.5),  # editing: before the generic flux.1
+    ("flux.1", 28, 3.5),
+    # The undistilled base variants need their model-card 50-step CFG recipe. Keep this before the generic distilled
+    # key, which covers both 4B and 9B 4-step checkpoints.
+    ("flux.2-klein-base", 50, 4.0),
     ("flux.2-klein", 4, 1.0),
-    ("flux.2-dev", 20, 4.0),  # full (non-distilled)
-    # Qwen-Image-2.1: 25 steps, no guidance. Before the generic qwen-image key.
-    ("qwen-image-2.1", 25, 1.0),
-    ("qwen-image-21", 25, 1.0),
-    ("qwen_image_21", 25, 1.0),
-    ("qwenimage21", 25, 1.0),
-    # Qwen-Image-Edit 2511: 40 steps at CFG 4. Before the generic qwen-image key.
-    ("qwen-image-edit", 40, 4.0),
-    # Qwen-Image-2512: 50 steps at CFG 4 (its own ComfyUI template; the original Qwen-Image runs 20).
-    ("qwen-image-2512", 50, 4.0),
+    ("flux.2-dev", 28, 4.0),  # full (non-distilled)
+    # Qwen-Image-2.1: 40 steps, no guidance. Before the generic qwen-image key.
+    ("qwen-image-2.1", 40, 1.0),
+    ("qwen-image-21", 40, 1.0),
+    ("qwen_image_21", 40, 1.0),
+    ("qwenimage21", 40, 1.0),
     ("qwen-image", 20, 4.0),
-    # Z-Image base: 25 steps at ComfyUI CFG 4. diffusers Z-Image computes pos + g * (pos - neg), so its g is
-    # ComfyUI's cfg - 1.
-    ("z-image", 25, 3.0),
+    ("z-image", 20, 4.0),
     # Lumina Image 2.0 card: 50 steps, guidance 4 (plus cfg_trunc_ratio 0.25, which the loader passes itself).
     ("lumina", 50, 4.0),
     # HunyuanImage 2.1 card: 50 steps; guidance feeds distilled_guidance_scale, while real CFG runs inside the
@@ -1178,13 +1164,13 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("hidream-i1-dev", 28, 0.0),
     ("hidream-i1-fast", 16, 0.0),
     ("hidream", 50, 5.0),
-    # Ideogram 4: ComfyUI's Default preset, 20 steps at guidance 7 (3 once sigma <= 0.3), logit-normal mu 0.0 / std 1.75.
-    # An explicit 48 steps at 7 still runs the card's tapered schedule.
-    ("ideogram", 20, 7.0),
+    # Ideogram 4 card: 48 steps, guidance 7 (its schedule tapers the last 3 steps; the loader keeps that taper at
+    # these defaults).
+    ("ideogram", 48, 7.0),
     # SDXL: Turbo distilled; base wants ~30 steps + CFG ~7. "sdxl-turbo" precedes "sdxl".
     ("sdxl-turbo", 3, 0.0),
-    ("stable-diffusion-xl", 25, 7.0),
-    ("sdxl", 25, 7.0),
+    ("stable-diffusion-xl", 30, 7.0),
+    ("sdxl", 30, 7.0),
 )
 # Unrecognised model: distilled few-step / no-CFG shape, matching the UI fallback.
 _GENERATION_DEFAULT_FALLBACK = (9, 0.0)
