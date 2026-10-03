@@ -357,9 +357,7 @@ def test_block_streamed_denoiser_installs_against_its_onload_device(
 
     stock = _convrot(_int8_linear(1024, 768, False, version))
     fused = _convrot(_int8_linear(1024, 768, False, version))
-    holder = (
-        Holder(fused).requires_grad_(False).cpu()
-    )  # Studio builds the streamed denoiser on the host
+    holder = Holder(fused).requires_grad_(False).cpu()
     hooks.apply_group_offloading(
         holder,
         onload_device = torch.device("cuda"),
@@ -379,7 +377,7 @@ def test_block_streamed_denoiser_installs_against_its_onload_device(
         out = holder(x)
         assert g8.call_count() == before + 1
         assert torch.equal(out, stock(x))
-        assert torch.equal(holder(x), out)  # second onload of the same block
+        assert torch.equal(holder(x), out)
     if not use_stream:  # the stream path keeps the last group resident until the next onload
         assert fused.weight.device.type == "cpu"
 
