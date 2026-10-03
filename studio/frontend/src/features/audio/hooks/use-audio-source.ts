@@ -102,6 +102,7 @@ export function useAudioSource({
   const uploadAbort = useRef<AbortController | null>(null);
   const loadAbort = useRef<AbortController | null>(null);
   const recorderRef = useRef<SegmentRecorder | null>(null);
+  const mounted = useRef(true);
   const streamRef = useRef<MediaStream | null>(null);
   const discardRecording = useRef(false);
   // Every object URL this card made, revoked when replaced or unmounted.
@@ -267,6 +268,11 @@ export function useAudioSource({
       });
       return;
     }
+    // Permission granted after the card unmounted: never record for a card that is gone.
+    if (!mounted.current) {
+      for (const track of stream.getTracks()) track.stop();
+      return;
+    }
     streamRef.current = stream;
     let recorder: SegmentRecorder;
     try {
@@ -353,8 +359,10 @@ export function useAudioSource({
   }, [setObjectUrl]);
 
   // Unmount: release the mic and every URL.
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
       uploadAbort.current?.abort();
       loadAbort.current?.abort();
       if (recorderRef.current) {
@@ -363,9 +371,8 @@ export function useAudioSource({
       }
       for (const track of streamRef.current?.getTracks() ?? []) track.stop();
       if (objectUrl.current) URL.revokeObjectURL(objectUrl.current);
-    },
-    [],
-  );
+    };
+  }, []);
 
   const fail = useCallback(
     (message: string) => dispatch({ type: "fail", message }),

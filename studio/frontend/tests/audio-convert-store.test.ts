@@ -84,3 +84,23 @@ test("pitch stays a whole number of semitones within ±12", () => {
   state.setPitch(Number.NaN);
   assert.equal(useAudioConvertStore.getState().pitch, 0);
 });
+
+test("a new recording drops the old transcript or brings its own", () => {
+  const s = useAudioConvertStore.getState();
+  s.setSource({ kind: "clip", id: "a", name: "A", durationS: 2 });
+  s.setSourceText("words of A");
+  s.setSource({ kind: "clip", id: "a", name: "A again", durationS: 2 });
+  assert.equal(useAudioConvertStore.getState().sourceText, "words of A");
+  s.setSource({ kind: "input", id: "b", name: "B", durationS: 3 });
+  assert.equal(useAudioConvertStore.getState().sourceText, "");
+  s.setSource({
+    kind: "voice",
+    id: "v",
+    name: "V",
+    durationS: 4,
+    transcript: " words of V ",
+  });
+  assert.equal(useAudioConvertStore.getState().sourceText, "words of V");
+  s.setSource(null);
+  assert.equal(useAudioConvertStore.getState().sourceText, "");
+});

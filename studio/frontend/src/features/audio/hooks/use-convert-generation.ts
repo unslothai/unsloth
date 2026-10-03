@@ -122,6 +122,10 @@ export function useConvertGeneration({
     language: "",
     onText: (next) => useAudioConvertStore.getState().setSourceText(next),
   });
+  // A transcription still running for the previous recording must not fill in the new one's text.
+  const sourceKey = source ? `${source.kind}:${source.id}` : null;
+  const cancelTranscribe = transcriber.cancel;
+  useEffect(() => cancelTranscribe(), [sourceKey, cancelTranscribe]);
 
   const toolContext = useMemo(
     () =>

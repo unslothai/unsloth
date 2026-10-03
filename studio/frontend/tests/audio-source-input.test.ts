@@ -240,3 +240,11 @@ test("a new selection clears the old one's error or expiry so it loads", () => {
     INITIAL_AUDIO_SOURCE_STATE,
   );
 });
+
+test("a microphone granted after the card unmounted is released, not recorded", () => {
+  assert.match(
+    hook,
+    /if \(!mounted\.current\) \{\s*for \(const track of stream\.getTracks\(\)\) track\.stop\(\);\s*return;/,
+  );
+  assert.match(hook, /return \(\) => \{\s*mounted\.current = false;/);
+});

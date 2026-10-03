@@ -6,7 +6,7 @@ import test from "node:test";
 
 import type { ConvertBlockerInput } from "../src/features/audio/convert-policy.ts";
 import type { AudioConvertCaps } from "../src/features/chat/types/api.ts";
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 const {
@@ -241,5 +241,13 @@ test("a run that reloads the model says so before and during; a repeat run does 
   assert.equal(
     notice("Custom", "tts", "vc", false)?.before,
     "Reloads Custom for Convert.",
+  );
+});
+
+test("changing the recording cancels a transcription of the previous one", () => {
+  const hook = readSrc("features/audio/hooks/use-convert-generation.ts");
+  assert.match(
+    hook,
+    /useEffect\(\(\) => cancelTranscribe\(\), \[sourceKey, cancelTranscribe\]\)/,
   );
 });
