@@ -11,28 +11,34 @@ const { createNavigationCoalescer } =
 
 type Nav = { to: string; replace?: boolean };
 
-// A fake router: `href` moves when a navigation starts, as `latestLocation` does.
-function fakeRouter(start = "/chat") {
-  let href = start;
+// A fake router: `latest` moves when a navigation reaches history, as `latestLocation` does;
+// `shown` when its load renders, as `resolvedLocation` does. With `blocked`, navigations wait
+// on a blocker before touching history, as the Library note preview's save does.
+function fakeRouter(start = "/chat", { blocked = false } = {}) {
+  let latest = start;
+  let shown = start;
   const calls: string[] = [];
-  const settles: Array<(ok: boolean) => void> = [];
+  const pending: Array<() => void> = [];
   const go = createNavigationCoalescer<Nav>({
     navigate: (nav) => {
       calls.push(nav.replace ? `replace ${nav.to}` : nav.to);
-      href = nav.to;
-      return new Promise((resolve, reject) => {
-        settles.push((ok) =>
-          ok ? resolve(undefined) : reject(new Error("x")),
-        );
-      });
+      const commit = () => {
+        latest = nav.to;
+        pending.push(() => {
+          shown = nav.to;
+        });
+      };
+      if (!blocked) commit();
+      return new Promise(() => {});
     },
-    currentHref: () => href,
+    currentHref: () => latest,
     hrefOf: (nav) => nav.to,
+    entryShown: () => shown === latest,
     asReplace: (nav) => ({ ...nav, replace: true }),
   });
   const click = (to: string) => go({ to });
-  const flush = () => new Promise((r) => setTimeout(r, 0));
-  return { click, calls, settles, flush };
+  const render = () => pending.splice(0).forEach((f) => f());
+  return { click, calls, render };
 }
 
 test("a click on the current page does not navigate", () => {
@@ -56,32 +62,19 @@ test("a click during a load goes out at once and replaces the unshown entry", ()
   assert.deepEqual(r.calls, ["/hub", "replace /library", "replace /images"]);
 });
 
-test("the next click after a load settles pushes a new entry", async () => {
+test("the next click after a load renders pushes a new entry", () => {
   const r = fakeRouter();
   r.click("/hub");
-  r.settles[0](true);
-  await r.flush();
+  r.render();
   r.click("/library");
   assert.deepEqual(r.calls, ["/hub", "/library"]);
 });
 
-test("an older load settling does not end a newer one", async () => {
-  const r = fakeRouter();
+test("clicks held by a blocker never replace the entry on screen", () => {
+  const r = fakeRouter("/library", { blocked: true });
   r.click("/hub");
-  r.click("/library");
-  r.settles[0](true);
-  await r.flush();
   r.click("/images");
-  assert.deepEqual(r.calls, ["/hub", "replace /library", "replace /images"]);
-});
-
-test("a failed navigation does not turn the next click into a replace", async () => {
-  const r = fakeRouter();
-  r.click("/hub");
-  r.settles[0](false);
-  await r.flush();
-  r.click("/library");
-  assert.deepEqual(r.calls, ["/hub", "/library"]);
+  assert.deepEqual(r.calls, ["/hub", "/images"]);
 });
 
 test("sidebar rows and chat rows navigate through the coalescer", async () => {
@@ -96,6 +89,7 @@ test("sidebar rows and chat rows navigate through the coalescer", async () => {
     source,
     /function openChatItem\(item: SidebarItem\) \{[\s\S]*?navigateFromRow\(\{\s*to: "\/chat",/,
   );
+  assert.match(source, /shown\.href === router\.latestLocation\.href/);
   assert.match(
     source,
     /asReplace: \(options\) => \(\{ \.\.\.options, replace: true \}\)/,

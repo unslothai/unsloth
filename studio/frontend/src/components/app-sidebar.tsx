@@ -900,6 +900,10 @@ export function AppSidebar() {
       navigate: (options) => navigate(options),
       currentHref: () => router.latestLocation.href,
       hrefOf: (options) => router.buildLocation(options).href,
+      entryShown: () => {
+        const shown = router.state.resolvedLocation;
+        return !shown || shown.href === router.latestLocation.href;
+      },
       asReplace: (options) => ({ ...options, replace: true }),
     }),
   );

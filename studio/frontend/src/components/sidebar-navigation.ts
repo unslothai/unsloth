@@ -4,34 +4,29 @@
 // Import-free so it is testable: app-sidebar.tsx pulls in the whole shell.
 
 /**
- * Sidebar clicks: drop one on where the router is or is heading; send one made during a
- * sidebar load at once as a replace, so the router cancels the stale load and a burst leaves
- * one history entry. Never queue behind the in-flight load: a slow chunk would stall the click.
+ * Sidebar clicks: drop one on where the router is or is heading; while the current entry is
+ * still loading (never shown), send the click at once as a replace, so the router cancels the
+ * stale load and a burst leaves one history entry. Asks the router instead of tracking our own
+ * promise: a blocker (unsaved Library note) holds a navigation before it touches history, and
+ * a blocked one never settles, so the shown entry must still get a push.
  */
 export function createNavigationCoalescer<T>({
   navigate,
   currentHref,
   hrefOf,
+  entryShown,
   asReplace,
 }: {
   navigate: (options: T) => Promise<unknown>;
   /** Where the router is, or is already heading. */
   currentHref: () => string;
   hrefOf: (options: T) => string;
+  /** Whether the current history entry has rendered. */
+  entryShown: () => boolean;
   asReplace: (options: T) => T;
 }): (options: T) => void {
-  let latest = 0;
-  let loading = false;
-
   return (options: T) => {
     if (hrefOf(options) === currentHref()) return;
-    const id = ++latest;
-    const replace = loading;
-    loading = true;
-    void navigate(replace ? asReplace(options) : options)
-      .catch(() => {})
-      .finally(() => {
-        if (id === latest) loading = false;
-      });
+    void navigate(entryShown() ? options : asReplace(options)).catch(() => {});
   };
 }
