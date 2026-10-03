@@ -242,7 +242,7 @@ def test_a_transcription_error_is_sanitized_before_it_reaches_the_client():
         def __init__(self, status):
             self.status = status
 
-        def post_multipart(self, *_args, **_kwargs):
+        def post_json(self, *_args, **_kwargs):
             raise AudioCppRequestError(self.status, _LEAKY)
 
     sidecar = stt.AudioCppSttSidecar.__new__(stt.AudioCppSttSidecar)

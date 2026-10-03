@@ -340,3 +340,47 @@ def test_inputs_and_voices_live_in_the_accounts_audio_folder(tmp_path):
         tmp_path / "accounts" / BOB.account_id / "audio" / "voices"
     )
     assert run_as(OWNER, audio_inputs.inputs_dir) == tmp_path / "audio" / "inputs"
+
+
+@pytest.mark.parametrize("account,other", [(ALICE, BOB), (BOB, ALICE)])
+def test_transcribe_sources_and_transcripts_do_not_resolve_another_accounts_ids(
+    account, other, monkeypatch
+):
+    from core.inference import transcript_gallery
+
+    async def fake_transcribe(*_args, **_kwargs):
+        return {"text": "private words", "language": None, "model": "m"}
+
+    monkeypatch.setattr(inference, "_transcribe_audio_result", fake_transcribe)
+    record = _save_input(account)
+    clip = run_as(account, _save, "audio")
+    transcript = run_as(
+        account,
+        transcript_gallery.save,
+        {
+            "text": "private words",
+            "model": "m",
+            "speakers": [{"id": "S01", "label": "Speaker 1"}],
+            "segments": [{"start": 0, "end": 1, "text": "private words", "speaker": "S01"}],
+        },
+        "private.wav",
+    )
+    route = "/api/inference/audio/transcribe/source"
+    url = f"/api/inference/audio/transcripts/{transcript['id']}"
+    with _client(other) as client:
+        for source in ({"input_id": record["id"]}, {"clip_id": clip["id"]}):
+            response = client.post(route, json = {"source": source, "model": "small"})
+            assert response.status_code == 404, response.text
+        assert client.get(url).status_code == 404
+        assert client.patch(url, json = {"speaker_names": {"S01": "Mallory"}}).status_code == 404
+        assert client.patch(url, json = {"archived": True}).status_code == 404
+        assert transcript["id"] not in client.get("/api/inference/audio/transcripts").text
+    with _client(account) as client:
+        response = client.post(
+            route, json = {"source": {"input_id": record["id"]}, "model": "small"}
+        )
+        assert response.status_code == 200
+        assert '"type": "complete"' in response.text and "private words" in response.text
+        assert client.get(url).json()["segments"][0]["text"] == "private words"
+        renamed = client.patch(url, json = {"speaker_names": {"S01": "Me"}}).json()
+        assert renamed["speaker_names"] == {"S01": "Me"}

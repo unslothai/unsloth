@@ -5243,6 +5243,63 @@ class AudioInputTranscript(BaseModel):
     model: str
 
 
+class TranscribeSourceRef(BaseModel):
+    """The audio to transcribe, by id: an upload, a history clip or a saved voice. Exactly one."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    input_id: Optional[str] = Field(None, pattern = _AUDIO_ID_PATTERN)
+    clip_id: Optional[str] = Field(None, pattern = _AUDIO_ID_PATTERN)
+    voice_id: Optional[str] = Field(None, pattern = _AUDIO_ID_PATTERN)
+
+    @model_validator(mode = "after")
+    def _exactly_one(self):
+        named = [v for v in (self.input_id, self.clip_id, self.voice_id) if v]
+        if len(named) != 1:
+            raise ValueError("Name exactly one of input_id, clip_id or voice_id.")
+        return self
+
+
+class TranscribeSourceRequest(BaseModel):
+    """``POST /audio/transcribe/source``: Audio page audio named by id, transcribed and saved."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    source: TranscribeSourceRef
+    model: str = Field(..., min_length = 1, max_length = 512)
+    engine: Optional[str] = Field(None, max_length = 64)
+    device: Optional[Literal["auto", "cpu", "gpu"]] = None
+    language: Optional[str] = Field(None, max_length = 64)
+    timestamps: bool = Field(False, description = "Ask for segment and word timestamps")
+    speakers: bool = Field(False, description = "Keep who spoke each segment, when the model tells")
+    title: Optional[str] = Field(
+        None, max_length = 255, description = "Defaults to the source's name"
+    )
+
+
+class TranscriptPatch(BaseModel):
+    """``PATCH /audio/transcripts/{id}``: archive or restore, and name speakers (None clears)."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    archived: Optional[bool] = None
+    speaker_names: Optional[Dict[str, Optional[str]]] = None
+
+    @field_validator("speaker_names")
+    @classmethod
+    def _bounded_names(cls, value):
+        if value is None:
+            return value
+        if len(value) > 64:
+            raise ValueError("Name at most 64 speakers at once.")
+        for speaker_id, name in value.items():
+            if not speaker_id or len(speaker_id) > 64:
+                raise ValueError("Unknown speaker id.")
+            if name is not None and len(name.strip()) > 40:
+                raise ValueError("Speaker names can be at most 40 characters.")
+        return value
+
+
 class AudioVoice(BaseModel):
     id: str
     name: str

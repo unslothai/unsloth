@@ -550,9 +550,20 @@ _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
         )
         for name in names
     ),
+    # Its spec says ASR, but it answers with a description of the audio, not what was said.
+    AudioCppFamily(
+        "samsone",
+        "",
+        unsupported = "SAMSONE describes audio rather than transcribing speech, so Studio does not "
+        "offer it for transcription.",
+    ),
 )
 
 FAMILIES: dict[str, AudioCppFamily] = {f.family: f for f in _FAMILY_LIST}
+
+# Families whose session refuses any backend but the CPU ("Niagara ASR CPU variants require
+# --backend cpu"), so Studio starts them there whatever the device preference says.
+CPU_ONLY_FAMILIES: frozenset[str] = frozenset({"niagara_asr"})
 
 # Spec task names that are not runtime task tokens.
 _SPEC_TO_SERVER_TASK = {
