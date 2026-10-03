@@ -2882,6 +2882,7 @@ class InferenceOrchestrator:
         seed: Optional[int] = None,
         caller_image_indexes: "tuple[int, ...]" = (),
         mcp_image = None,
+        deduplicate_tool_calls: bool = True,
         **_unused,
     ):
         """Run the safetensors agentic tool loop in the parent process, calling the worker for each
@@ -3004,6 +3005,7 @@ class InferenceOrchestrator:
             execute_tool = execute_tool,
             cancel_event = cancel_event,
             auto_heal_tool_calls = auto_heal_tool_calls,
+            deduplicate_tool_calls = deduplicate_tool_calls,
             nudge_tool_calls = nudge_tool_calls,
             max_tool_iterations = max_tool_iterations,
             tool_call_timeout = tool_call_timeout,

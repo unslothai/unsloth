@@ -25836,6 +25836,7 @@ async def _proxy_to_external_provider(
                     bypass_permissions = bool(payload.bypass_permissions),
                     rag_scope = payload.rag_scope,
                     nudge_tool_calls = payload.nudge_tool_calls,
+                    deduplicate_tool_calls = payload.deduplicate_tool_calls,
                 )
                 if studio_tool_payloads
                 else None
@@ -26260,6 +26261,7 @@ async def _proxy_to_external_provider(
                     rag_scope = payload.rag_scope,
                     auto_heal = payload.auto_heal_tool_calls,
                     nudge_tool_calls = payload.nudge_tool_calls,
+                    deduplicate_tool_calls = payload.deduplicate_tool_calls,
                     # Matches the strip below: only a headerless caller has its calls
                     # withheld, so only it needs a healed one the wire never carried flagged.
                     on_withheld_tool_call = (None if _ui_events else _tool_call_stripper.arm),
@@ -28617,6 +28619,11 @@ async def produce_openai_chat_completions(
             _gguf_auto_heal_tool_calls = (
                 payload.auto_heal_tool_calls if payload.auto_heal_tool_calls is not None else True
             )
+            _gguf_deduplicate_tool_calls = (
+                payload.deduplicate_tool_calls
+                if payload.deduplicate_tool_calls is not None
+                else True
+            )
             # Filled once admission returns. The generator below is BUILT before the
             # reservation exists but not ITERATED until after, so the callback always sees
             # a reservation by the time a round can call it.
@@ -28702,6 +28709,7 @@ async def produce_openai_chat_completions(
                     preserve_thinking = payload.preserve_thinking,
                     continue_final_message = _continue_final_message(payload, thought = True),
                     auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
+                    deduplicate_tool_calls = _gguf_deduplicate_tool_calls,
                     nudge_tool_calls = payload.nudge_tool_calls,
                     tool_choice = payload.tool_choice,
                     max_tool_iterations = payload.max_tool_calls_per_message
@@ -30703,6 +30711,9 @@ async def produce_openai_chat_completions(
         _sf_auto_heal_tool_calls = (
             payload.auto_heal_tool_calls if payload.auto_heal_tool_calls is not None else True
         )
+        _sf_deduplicate_tool_calls = (
+            payload.deduplicate_tool_calls if payload.deduplicate_tool_calls is not None else True
+        )
         # Active tool names gating the bare-rehearsal strip, matching the loop gate.
         _sf_display_tool_names = _display_tool_name_gate(_sf_tools_to_use)
 
@@ -30797,6 +30808,7 @@ async def produce_openai_chat_completions(
                 preserve_thinking = payload.preserve_thinking,
                 continue_final_message = _sf_continue,
                 auto_heal_tool_calls = _sf_auto_heal_tool_calls,
+                deduplicate_tool_calls = _sf_deduplicate_tool_calls,
                 nudge_tool_calls = payload.nudge_tool_calls,
                 max_tool_iterations = _sf_tool_budget,
                 tool_call_timeout = payload.tool_call_timeout

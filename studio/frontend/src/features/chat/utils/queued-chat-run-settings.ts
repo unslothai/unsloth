@@ -43,6 +43,7 @@ const QUEUED_SETTING_KEYS = [
   "loadedIsMlx",
   "autoHealToolCalls",
   "nudgeToolCalls",
+  "deduplicateToolCalls",
   "maxToolCallsPerMessage",
   "toolCallTimeout",
   "autoCompactEnabled",
