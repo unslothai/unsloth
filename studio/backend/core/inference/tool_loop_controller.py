@@ -21,7 +21,7 @@ from typing import Any, Collection, Literal, Mapping, Sequence
 from urllib.parse import urlparse
 
 from core.inference.llama_tool_schema import unrelaxed
-from core.inference.mcp_images import split_images as split_mcp_images
+from core.inference.mcp_images import is_image_tool, split_images as split_mcp_images
 
 # Stamped by mcp_client on every tool it registers; the provenance the envelope
 # is trusted on.
@@ -338,13 +338,13 @@ class ToolCallCompletion:
         return message
 
     def mcp_images(self) -> list[dict]:
-        """Images this call returned, and only for a call an MCP server served.
+        """Images returned by an MCP server or the sandbox image viewer.
 
         The envelope is a plain suffix, so any tool whose output happens to end in
         one -- terminal output, a fetched page -- would otherwise have its bytes
         decoded and attached as model image input.
         """
-        if not self.executed or not self.decision.tool_name.startswith(MCP_TOOL_PREFIX):
+        if not self.executed or not is_image_tool(self.decision.tool_name):
             return []
         return split_mcp_images(self.result)[1]
 
@@ -811,6 +811,8 @@ def status_for_tool(tool_name: str, arguments: Mapping[str, Any]) -> str:
     if tool_name == "terminal":
         preview = str(arguments.get("command") or "")[:60]
         return f"Running: {preview}" if preview else "Running command..."
+    if tool_name == "view_image":
+        return "Viewing image: " + str(arguments.get("path") or "")[:80]
     if tool_name == "edit_file":
         # The name, not the patch: the tool card below already shows the edit.
         path = str(arguments.get("path") or "").strip()
@@ -974,7 +976,9 @@ _MCP_TOOL_PREFIX = "mcp__"
 # than the card the user is looking at.
 _IMAGE_SENTINEL_TOOLS = _SANDBOX_TOOLS | {"code_execution"}
 _SOURCE_MAP_TOOLS = frozenset({"search_knowledge_base", "search_conversation"})
-_WORKSPACE_TOOLS = _SANDBOX_TOOLS | {"edit_file"}
+# Invalidated by workspace writes, but reading an image is not new work that licenses a rerun.
+_WORKSPACE_READ_TOOLS = frozenset({"view_image"})
+_WORKSPACE_TOOLS = _SANDBOX_TOOLS | {"edit_file"} | _WORKSPACE_READ_TOOLS
 
 
 # `sk-unsloth-` + 32 hex (auth/storage.py), cached in the clear so the CLI can reuse it. Masked on
@@ -1257,7 +1261,10 @@ class ToolLoopController:
         # otherwise apply the edit twice. Here as well as in the prefilters, which a
         # structured batch skips. A failed command can still have written, so it counts too.
         if decision.tool_name in _WORKSPACE_TOOLS:
-            if decision.key not in self._workspace_ran:
+            if (
+                decision.tool_name not in _WORKSPACE_READ_TOOLS
+                and decision.key not in self._workspace_ran
+            ):
                 self._workspace_ran.add(decision.key)
                 self._workspace_novel += 1
             stale = {
