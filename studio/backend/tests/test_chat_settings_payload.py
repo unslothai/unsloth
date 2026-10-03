@@ -17,7 +17,7 @@ _BACKEND = Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-from routes.chat_history import ChatSettingsPayload  # noqa: E402
+from routes.chat_history import ChatPreset, ChatSettingsPayload  # noqa: E402
 from storage.studio_db import (  # noqa: E402
     CorruptSettingsError,
     _deep_merge_settings,
@@ -66,6 +66,31 @@ def test_mirrored_settings_round_trip():
         "gpuMemoryMode": "manual",
         "fitOnDeviceOnly": True,
     }
+
+
+def test_preset_params_may_carry_the_ui_checkpoint_key():
+    # Why (#9500): the UI spreads its default inference params into every preset
+    # save, and those defaults always include `checkpoint` (the selected model
+    # id). extra="forbid" turned that into a 400 on PUT /api/chat/settings, so no
+    # preset create/copy/edit persisted. The key must validate and round-trip.
+    payload = ChatSettingsPayload.model_validate(
+        {
+            "inferenceParams": {
+                "temperature": 0.6,
+                "checkpoint": "unsloth/Qwen3.8-27B-GGUF",
+            }
+        }
+    )
+    assert payload.inferenceParams is not None
+    assert payload.inferenceParams.checkpoint == "unsloth/Qwen3.8-27B-GGUF"
+
+    preset = ChatPreset.model_validate(
+        {
+            "name": "copy",
+            "params": {"checkpoint": ""},
+        }
+    )
+    assert preset.params.checkpoint == ""
 
 
 def test_thread_rag_source_keeps_its_shape():
