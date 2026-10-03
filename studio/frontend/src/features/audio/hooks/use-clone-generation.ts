@@ -47,9 +47,12 @@ export async function showRunResult({
   selectClip,
   setFallbackClip,
   setSelectedId,
+  workflow = "clone",
 }: {
   response: AudioRunResponse;
   text: string;
+  /** The page whose history shows the fallback clip. */
+  workflow?: "clone" | "separate";
 } & Pick<
   AudioGallery,
   "refreshGallery" | "selectClip" | "setFallbackClip" | "setSelectedId"
@@ -72,7 +75,7 @@ export async function showRunResult({
         prompt: text,
         model: response.model,
         saved: true,
-        workflow: "clone",
+        workflow,
       });
     } catch {}
     selectClip(clip.id, true);
@@ -86,7 +89,7 @@ export async function showRunResult({
       prompt: text,
       model: response.model,
       saved: false,
-      workflow: "clone",
+      workflow,
     });
   }
 }

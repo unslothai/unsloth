@@ -356,6 +356,13 @@ test("the host renders Separate's rail, footer and output and the page reuses th
   assert.match(page, /failed: sources\.failedIds\.includes\(clip\.id\)/);
 });
 
+test("a separation that a refresh missed falls back on the Separate page", () => {
+  const generation = readSrc("features/audio/hooks/use-separate-generation.ts");
+  assert.match(generation, /showRunResult\(\{[^}]*workflow: "separate"/);
+  const run = readSrc("features/audio/hooks/use-clone-generation.ts");
+  assert.match(run, /workflow = "clone",/);
+});
+
 test("a cut oldest run loads the next page itself, since a short list never scrolls", () => {
   const page = readSrc("features/audio/pages/separate-page.tsx");
   assert.match(

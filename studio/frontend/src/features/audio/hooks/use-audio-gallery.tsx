@@ -64,7 +64,7 @@ export function useAudioGallery({
     prompt: string;
     model: string;
     saved: boolean;
-    workflow: "speak" | "music" | "clone";
+    workflow: "speak" | "music" | "clone" | "separate";
   } | null>(null);
   const fallbackClipRef = useRef(fallbackClip);
   fallbackClipRef.current = fallbackClip;

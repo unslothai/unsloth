@@ -234,6 +234,7 @@ export function useSeparateGeneration({
         selectClip,
         setFallbackClip,
         setSelectedId,
+        workflow: "separate",
       });
       setLastResult({
         groupId: response.group_id,
