@@ -1330,3 +1330,23 @@ def test_a_partly_offloaded_model_plans_only_the_vram_its_cards_had():
     assert _gpu_plan_mib(20 * gib, [0, 1], [(0, 30_000), (1, 30_000)]) == {0: 10240, 1: 10240}
     assert _gpu_plan_mib(20 * gib, [0], [(0, 6_000)]) == {0: 6_000}
     assert _gpu_plan_mib(4 * gib, [2], []) == {2: 4096}
+
+
+def test_the_replace_fallback_frees_the_active_model_before_placing_the_new_one(
+    backends, monkeypatch
+):
+    primary, extra = backends
+    _gated_load_fakes(monkeypatch, short_fits = [1, 1])
+    seen = []
+    real = inf._run_tracked_load_model_impl
+
+    async def load(request, *args, **kwargs):
+        if not request.alongside:
+            seen.append(primary.is_active)
+        return await real(request, *args, **kwargs)
+
+    monkeypatch.setattr(inf, "_run_tracked_load_model_impl", load)
+    asyncio.run(
+        inf.load_model_gated(LoadRequest(model_path = "org/C-GGUF", alongside = True), None, "s")
+    )
+    assert seen == [False] and primary.model_identifier == "org/C-GGUF"

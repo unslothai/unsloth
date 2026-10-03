@@ -17257,17 +17257,19 @@ async def load_model_gated(
                                 update = {"alongside": False, "force_alongside": False}
                             )
                             async with inference_lifecycle_gate() if new_slot else nullcontext():
+                                _raise_or_cancel_active_generations(
+                                    force = request.force_cancel_active, action = "Loading a model"
+                                )
+                                # As a pick does before a switch: the active model goes first, so
+                                # the new one is placed on a GPU it no longer shares.
+                                await asyncio.to_thread(_unload_primary)
                                 response = await _run_tracked_load_model_impl(
                                     request,
                                     fastapi_request,
                                     current_subject,
                                     attempt = attempt,
                                     current_request_counted = current_request_counted,
-                                    on_reload_confirmed = functools.partial(
-                                        _raise_or_cancel_active_generations,
-                                        force = request.force_cancel_active,
-                                        action = "Loading a model",
-                                    ),
+                                    on_reload_confirmed = None,
                                 )
                             evicted += [replaced] if replaced else []
                             break
@@ -17307,6 +17309,16 @@ async def load_model_gated(
 
 def _ran_out_of_memory(exc: HTTPException) -> bool:
     return exc.status_code == 500 and "out of memory" in str(exc.detail).lower()
+
+
+def _unload_primary() -> None:
+    llama = get_llama_cpp_backend()
+    if llama.is_active:
+        llama.unload_model()
+    backend = _peek_inference_backend()
+    name = getattr(backend, "active_model_name", None)
+    if name:
+        backend.unload_model(name)
 
 
 def _primary_model_label() -> Optional[str]:
