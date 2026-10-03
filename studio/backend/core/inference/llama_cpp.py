@@ -573,6 +573,14 @@ class GpuMemoryShortError(RuntimeError):
         self.gpu_indices = gpu_indices
 
 
+def _gpu_plan_mib(total_bytes: int, on: list[int], gpus) -> dict[int, int]:
+    """MiB this load holds per GPU: an even share, capped at what each card had free, since
+    --fit on offloads the rest to CPU."""
+    share = total_bytes // (1024 * 1024 * len(on))
+    free = dict(gpus)
+    return {idx: min(share, free.get(idx, share)) for idx in on}
+
+
 def _net_of_held_vram(gpu_mem, held: dict[int, int]):
     """Cap each GPU's free MiB at its total less what the other loaded models planned. A total of 0
     is an integrated GPU on shared RAM, whose free reading already counts them: left as is."""
@@ -27384,10 +27392,9 @@ class LlamaCppBackend:
                     )
                     _on = list(gpu_indices or [idx for idx, _ in gpus])
                     if _on:
-                        _planned = (gguf_size + mmproj_size + kv_cache_bytes) // (
-                            1024 * 1024 * len(_on)
+                        self._pending_plan_mib = _gpu_plan_mib(
+                            gguf_size + mmproj_size + kv_cache_bytes, _on, gpus
                         )
-                        self._pending_plan_mib = {idx: _planned for idx in _on}
                     if (
                         not gpus
                         and not _detected_gpus

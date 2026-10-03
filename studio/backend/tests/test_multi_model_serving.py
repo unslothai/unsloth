@@ -1307,3 +1307,12 @@ def test_training_stops_on_a_kept_model_that_would_not_unload(backends, monkeypa
     monkeypatch.setattr(extra.llama, "unload_model", stuck)
     with pytest.raises(training_vram.ManagedEngineStillRunning):
         training_vram.free_kept_models_for_training("test")
+
+
+def test_a_partly_offloaded_model_plans_only_the_vram_its_cards_had():
+    from core.inference.llama_cpp import _gpu_plan_mib
+
+    gib = 1024**3
+    assert _gpu_plan_mib(20 * gib, [0, 1], [(0, 30_000), (1, 30_000)]) == {0: 10240, 1: 10240}
+    assert _gpu_plan_mib(20 * gib, [0], [(0, 6_000)]) == {0: 6_000}
+    assert _gpu_plan_mib(4 * gib, [2], []) == {2: 4096}

@@ -1812,7 +1812,9 @@ export function useChatModelRuntime() {
       >;
       const { keepModelsLoaded, loadedModels: loadedNow, params: paramsNow } =
         useChatRuntimeStore.getState();
-      const keepsOthers = keepModelsLoaded && !forceReload;
+      // vLLM and SGLang always replace the loaded models, so they keep the running-chat prompt.
+      const keepsOthers =
+        keepModelsLoaded && !forceReload && (paramsNow.engine ?? "auto") === "auto";
       const switchingNote = keepsOthers ? "Keeping the loaded models." : "Switching models.";
       // Reloading one of several touches only its own slot, so only its chats stop.
       const touchesOnlySelected =
