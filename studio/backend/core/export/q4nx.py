@@ -118,18 +118,28 @@ def convert_gguf_to_q4nx(gguf_path: str, out_dir: Path) -> None:
     logger.info(
         f"Converting {os.path.basename(gguf_path)} to Q4NX ({name}) for the AMD NPU in {out_dir}"
     )
-    result = subprocess.run(
-        [sys.executable, "-c", _RUN_CONVERTER, gguf_path, str(out_dir)],
-        cwd = str(script.parent),
-        stderr = subprocess.PIPE,
-        text = True,
-        encoding = "utf-8",
-        errors = "replace",
+    from utils.process_lifetime import child_popen_kwargs, spawn_on_lifetime_thread
+    from utils.subprocess_compat import windows_hidden_subprocess_kwargs
+
+    # Bound to this process's lifetime: cancelling an export kills the worker, and a converter
+    # left behind would keep a whole model in RAM.
+    process = spawn_on_lifetime_thread(
+        lambda: subprocess.Popen(
+            [sys.executable, "-c", _RUN_CONVERTER, gguf_path, str(out_dir)],
+            cwd = str(script.parent),
+            stderr = subprocess.PIPE,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            **windows_hidden_subprocess_kwargs(),
+            **child_popen_kwargs(),
+        )
     )
-    if result.returncode != 0:
-        tail = (result.stderr or "").strip().splitlines()
+    _, stderr = process.communicate()
+    if process.returncode != 0:
+        tail = (stderr or "").strip().splitlines()
         raise RuntimeError(
-            f"The Q4NX converter exited with code {result.returncode}"
+            f"The Q4NX converter exited with code {process.returncode}"
             + (f": {tail[-1]}" if tail else "")
         )
     if not (out_dir / "model.q4nx").is_file():

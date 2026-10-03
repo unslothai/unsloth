@@ -9,7 +9,6 @@ Reuses the harness in test_export_gguf_discovery.py; the converter itself is stu
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 from pathlib import Path
 
@@ -164,20 +163,35 @@ def _stub_installer(
     return installed
 
 
+def _fake_popen(
+    export_mod,
+    monkeypatch,
+    returncode = 0,
+    stderr = "",
+):
+    ran = {}
+
+    class _Popen:
+        def __init__(self, cmd, cwd, **kwargs):
+            ran.update(cmd = cmd, cwd = cwd, preexec_fn = kwargs.get("preexec_fn"))
+            self.returncode = returncode
+            if returncode == 0:
+                (Path(cmd[-1]) / "model.q4nx").write_bytes(b"q4nx")
+
+        def communicate(self):
+            return None, stderr
+
+    monkeypatch.setattr(export_mod.q4nx.subprocess, "Popen", _Popen)
+    return ran
+
+
 @pytest.mark.parametrize(
     "architecture, converter", [("qwen3", "q4nx"), ("llama", "q4nx"), ("qwen35", "q4k")]
 )
 def test_converter_runs_in_this_interpreter(monkeypatch, tmp_path, architecture, converter):
     export_mod, _b, _s, _c = _backend(monkeypatch, tmp_path, object())
     installed = _stub_installer(export_mod, monkeypatch, tmp_path, architecture)
-    ran = {}
-
-    def run(cmd, cwd, **_kw):
-        ran.update(cmd = cmd, cwd = cwd)
-        (Path(cmd[-1]) / "model.q4nx").write_bytes(b"q4nx")
-        return subprocess.CompletedProcess(cmd, 0, stderr = "")
-
-    monkeypatch.setattr(export_mod.q4nx.subprocess, "run", run)
+    ran = _fake_popen(export_mod, monkeypatch)
     out = tmp_path / "out"
     export_mod.q4nx.convert_gguf_to_q4nx("/x/M.Q4_1.gguf", out)
 
@@ -185,6 +199,9 @@ def test_converter_runs_in_this_interpreter(monkeypatch, tmp_path, architecture,
     assert ran["cmd"][:2] == [sys.executable, "-c"]
     assert ran["cmd"][3:] == ["/x/M.Q4_1.gguf", str(out)]
     assert ran["cwd"] == str(tmp_path / converter)
+    if sys.platform.startswith("linux"):
+        # Dies with its parent: cancelling an export must not orphan a converter.
+        assert callable(ran["preexec_fn"])
 
 
 def test_a_symlinked_output_folder_is_refused(monkeypatch, tmp_path):
@@ -251,12 +268,12 @@ def test_converter_failure_names_its_last_stderr_line(monkeypatch, tmp_path):
     export_mod, _b, _s, _c = _backend(monkeypatch, tmp_path, object())
     _stub_installer(export_mod, monkeypatch, tmp_path)
 
-    def run(cmd, cwd, **_kw):
-        return subprocess.CompletedProcess(
-            cmd, 1, stderr = "Traceback ...\nValueError: Unsupported model architecture: mistral3\n"
-        )
-
-    monkeypatch.setattr(export_mod.q4nx.subprocess, "run", run)
+    _fake_popen(
+        export_mod,
+        monkeypatch,
+        returncode = 1,
+        stderr = "Traceback ...\nValueError: Unsupported model architecture: mistral3\n",
+    )
 
     with pytest.raises(RuntimeError, match = "Unsupported model architecture: mistral3"):
         export_mod.q4nx.convert_gguf_to_q4nx("/x/M.Q4_1.gguf", tmp_path / "out")
