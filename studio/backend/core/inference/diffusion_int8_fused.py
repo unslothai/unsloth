@@ -90,9 +90,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
 
     @triton.jit
     def _gelu_tanh(y):
-        # ATen's CUDA GELU(tanh), op for op: 0.5 * y * (1 + tanh(sqrt(2/pi) * (y + 0.044715 * y^3))). Every bf16 input
-        # rounds to ATen's bf16 output (exhaustive); the y / (1 + exp(-2u)) form differed on 150 inputs in [-10, -2.98].
-        # mul_rn / add_rn: ptxas contracts packed f32x2 mul + add into an FMA on sm_100 even with fp fusion off.
+        # ATen's GELU(tanh) op for op (y / (1 + exp(-2u)) is NOT bf16-equal); *_rn: ptxas FMA-fuses f32x2 on sm_100.
         cube = tl.extra.cuda.libdevice.mul_rn(tl.extra.cuda.libdevice.mul_rn(y, y), y)
         inner = 0.7978845608028654 * tl.extra.cuda.libdevice.add_rn(
             y, tl.extra.cuda.libdevice.mul_rn(0.044715, cube)
@@ -119,12 +117,10 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         if FP32_SCALE:
             c = c.to(tl.float32)
         else:
-            # int32 * bf16 promotes to bf16: int32 -> fp32 -> bf16, two roundings (an explicit fp32 step, else
-            # Triton fuses the casts into one rounding and differs on ties above 2^24).
+            # int32 -> fp32 -> bf16 rounds twice; Triton folds a plain cast chain into one rounding.
             c = _rbf16(tl.extra.cuda.libdevice.int2float_rn(c))
         y = _rbf16(c * xs)
-        # mul_rn / add_rn keep ``y * w_scale + bias`` two roundings: with an fp32 weight scale nothing sits between them,
-        # and ptxas fuses packed f32x2 mul + add into an FMA on sm_100 even with fp fusion off.
+        # *_rn: ptxas fuses packed f32x2 mul + add into an FMA on sm_100 even with fp fusion off.
         y = tl.extra.cuda.libdevice.mul_rn(
             y,
             tl.load(ws_ptr + offs, mask = mask, other = 0.0, eviction_policy = "evict_last").to(
@@ -390,7 +386,6 @@ def _kernels() -> Optional[types.SimpleNamespace]:
 
     @triton.jit
     def gelu_bf16(x_ptr, o_ptr, n, BLOCK: tl.constexpr):
-        # The kernels' GELU on its own, for the device probe's exhaustive bf16 comparison against ATen.
         offs = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
         m = offs < n
         y = tl.load(x_ptr + offs, mask = m, other = 0.0).to(tl.float32)
@@ -409,7 +404,6 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         FP32_SCALE: tl.constexpr,
         CHUNK: tl.constexpr,
     ):
-        # The kernels' dequant epilogue on its own (same row loop), for the device probe: bf16 out.
         row = tl.program_id(0).to(tl.int64)
         xs = tl.load(xs_ptr + row).to(tl.float32)
         base = tl.arange(0, CHUNK)
@@ -447,8 +441,7 @@ def _scale_dtype(xs: Any) -> Any:
 
 
 def _launch(c: Any, xs: Any, ws: Any, bias: Any, prefix: Any) -> tuple:
-    """Run the kernel. ``prefix`` is None or a [B, S, H, D] view (any strides, last dim contiguous).
-    ``xs`` is torchao's activation scale, fp32 (torchao >= 0.18) or bf16 (<= 0.17); the returned scale matches it."""
+    """Run the kernel. ``prefix`` is None or a [B, S, H, D] view (any strides, last dim contiguous)."""
     import torch
 
     k = _kernels()
@@ -545,8 +538,7 @@ def reference_dq_swiglu_quant(
 
 
 def _reference_act_quant(h: Any, scale_dtype: Any) -> tuple:
-    """torchao Int8Tensor.from_hp(h, PerRow()) for a bf16 ``h``: the bf16 scale, kept (<= 0.17, bf16 reciprocal and
-    product) or stored as fp32 (>= 0.18, fp32 reciprocal and product)."""
+    """torchao ``Int8Tensor.from_hp(h, PerRow())`` for a bf16 ``h``."""
     import torch
 
     amax = torch.maximum(-h.amin(dim = 1).clamp(max = 0), h.amax(dim = 1).clamp(min = 0))
@@ -629,14 +621,12 @@ def _device_ok(index: int) -> bool:
         dev = torch.device("cuda", index)
         g = torch.Generator(device = "cpu").manual_seed(0)
         c = torch.randint(-(2**20), 2**20, (33, 200), generator = g, dtype = torch.int32)
-        # rows 1-4: accumulators above 2^24 next to bf16 midpoints (the bf16-scale double rounding)
         c[1:5] = _bf16_tie_ints((4, 200), g)
         c = c.to(dev)
         xs = (torch.rand(33, generator = g) * 1e-3 + 1e-5).to(torch.bfloat16)
         xs[1:5] *= 2**-10
         ws = (torch.rand(200, generator = g) * 1e-4 + 1e-6).to(dev)
         bias = (torch.randn(200, generator = g) * 0.1).to(torch.bfloat16).to(dev)
-        # Both torchao activation-scale contracts (bf16 <= 0.17, fp32 >= 0.18), each against its eager mirror.
         for x_scale in (xs.float().to(dev), xs.to(dev)):
             for w_scale in (ws, ws.to(torch.bfloat16)):
                 q, s = _launch(c, x_scale, w_scale, bias, None)
@@ -647,8 +637,6 @@ def _device_ok(index: int) -> bool:
                 q_ref, s_ref = reference_dq_swiglu_quant(c, x_scale, w_scale, bias, 104, 0, 96)
                 if not (s.dtype == s_ref.dtype and torch.equal(q, q_ref) and torch.equal(s, s_ref)):
                     return False
-        # The mirrors' act quant must still be this torchao's own (its scale dtype, reciprocal and product roundings),
-        # and the GELU must round every finite bf16 input as ATen's does.
         return (
             _act_quant_contract_ok(dev)
             and _gelu_matches_aten(dev)
@@ -659,8 +647,7 @@ def _device_ok(index: int) -> bool:
 
 
 def _bf16_tie_ints(shape: tuple, generator: Any) -> Any:
-    """int32 values in [2^24, 2^30) within one fp32 ulp of a bf16 rounding midpoint, both signs: where PyTorch's
-    ``int32 -> fp32 -> bf16`` (two roundings) and a direct ``int32 -> bf16`` (one) can disagree."""
+    """int32 values in [2^24, 2^30) within one fp32 ulp of a bf16 midpoint: one vs two roundings disagree there."""
     import torch
 
     n = 1
@@ -686,8 +673,7 @@ def _epilogue_matches_torchao(
     m: int = 1031,
     n: int = 2056,
 ) -> bool:
-    """The kernels' dequant epilogue equals torchao's ``bf16(bf16(c * xs) * ws + bias)`` on every element, for both
-    activation-scale dtypes and an fp32 weight scale + bias (the case an FMA contraction would round once)."""
+    """The epilogue equals torchao's ``bf16(bf16(c * xs) * ws + bias)``; fp32 ``ws`` + bias exposes an FMA."""
     import torch
 
     g = torch.Generator(device = "cpu").manual_seed(2)
@@ -824,7 +810,6 @@ def _linear_from_q(q: Any, xs: Any, weight: Any, bias: Any, out_dtype: Any) -> A
     """torchao Int8Tensor linear on an already-quantized activation: same ops, same order, as the stock epilogue."""
     import torch
 
-    # The scale keeps torchao's dtype: a bf16 one (torchao <= 0.17) makes ``int32 * x_scale`` a bf16 product.
     if out_dtype == torch.bfloat16:
         from .diffusion_int8_gemm import linear_from_q
         fused = linear_from_q(q, xs.reshape(-1), weight, bias)

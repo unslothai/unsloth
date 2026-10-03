@@ -43,15 +43,12 @@ def _cuda_int8_toolchain() -> bool:
     not _cuda_int8_toolchain(), reason = "needs CUDA (not ROCm), Triton >= 3.2, torchao"
 )
 def test_device_probe_accepts_this_torchao():
-    # The probe compares both kernels to their eager mirrors for both activation-scale dtypes (with int32 ties above
-    # 2^24) and the mirrors' act quant to torchao's own. On main the kernels held torchao 0.18's fp32 contract only.
     fused._device_ok.cache_clear()
     assert fused._device_ok(torch.cuda.current_device())
 
 
 def _int8_config():
-    """Studio's int8 config, as an ``Int8Tensor`` (torchao 0.17's default is the legacy tensor the fused path skips)
-    and without torchao's process-wide inductor / fp32-matmul-precision setter (Studio passes the same flag)."""
+    """Studio's int8 config as an ``Int8Tensor`` (0.17 defaults to the legacy tensor), no process-wide setter."""
     from torchao.quantization import Int8DynamicActivationInt8WeightConfig
 
     cfg = Int8DynamicActivationInt8WeightConfig(set_inductor_config = False)
@@ -131,7 +128,6 @@ def _rand_inputs(
     seed = 0,
     xs_dtype = torch.float32,
 ):
-    # xs_dtype: torchao's activation-scale dtype, fp32 on >= 0.18, bf16 on <= 0.17
     g = torch.Generator(device = "cpu").manual_seed(seed)
     c = torch.randint(-(2**20), 2**20, (m, n), generator = g, dtype = torch.int32).cuda()
     xs = (torch.rand(m, generator = g) * 1e-3 + 1e-5).to(torch.bfloat16).to(xs_dtype).cuda()
@@ -319,8 +315,7 @@ def test_swiglu_kernel_bit_exact_vs_eager_reference(m, n, gate_col, value_col, x
 
 
 def _bf16_tie_ints(m, n, seed):
-    """int32 accumulators in [2^24, 2^30), at most one fp32 ulp (+-1) off a bf16 rounding midpoint, both signs:
-    PyTorch's int32 * bf16 rounds them int32 -> fp32 -> bf16 (twice), a fused int32 -> bf16 cast once."""
+    """int32 accumulators in [2^24, 2^30) within one fp32 ulp of a bf16 rounding midpoint, both signs."""
     g = torch.Generator(device = "cpu").manual_seed(seed)
     e = torch.randint(24, 30, (m, n), generator = g, dtype = torch.int64)
     one = torch.ones_like(e)
@@ -356,8 +351,6 @@ def _double_rounding_hits(c):
 @needs_cuda
 @_XS_DTYPES
 def test_kernels_round_large_accumulators_like_torchao(xs_dtype):
-    # bf16 activation scale (torchao <= 0.17): int32 * bf16 rounds the accumulator to fp32, then to bf16. Triton folds
-    # ``int32 -> fp32 -> bf16`` into one rounding, which differs on ties above 2^24.
     m, n = 64, 2048
     c = _bf16_tie_ints(m, n, 3)
     assert _double_rounding_hits(c) > 100  # the inputs do reach the case
@@ -373,15 +366,11 @@ def test_kernels_round_large_accumulators_like_torchao(xs_dtype):
 
 @needs_cuda
 def test_gelu_rounds_every_bf16_input_like_aten():
-    # The kernels' GELU was y / (1 + exp(-2u)): 150 of 65280 bf16 inputs (y in [-10, -2.98], FLUX text-stream MLPs
-    # reach them) rounded one bf16 step away from ATen's 0.5 * y * (1 + tanh(u)).
     assert fused._gelu_matches_aten(torch.device("cuda", torch.cuda.current_device()))
 
 
 @needs_cuda
 def test_epilogue_rounds_scale_product_and_bias_separately():
-    # fp32 weight scale + bias: nothing rounds between ``* ws`` and ``+ bias``, and on B200 ptxas fused the packed
-    # f32x2 mul + add into an FMA (one rounding) despite fp fusion off; ~1 in 1e5 outputs moved one bf16 step.
     assert fused._epilogue_matches_torchao(
         torch.device("cuda", torch.cuda.current_device()), 4101, 3000
     )
@@ -389,8 +378,6 @@ def test_epilogue_rounds_scale_product_and_bias_separately():
 
 @needs_cuda
 def test_reference_act_quant_is_torchao_own():
-    # The kernels' mirrors quantize the bf16 activation as this torchao's Int8Tensor.from_hp does: scale dtype,
-    # reciprocal and product roundings (bf16 on torchao <= 0.17, fp32 on >= 0.18).
     from torchao.quantization.granularity import PerRow
     from torchao.quantization.quantize_.workflows.int8.int8_tensor import Int8Tensor
 
@@ -420,9 +407,7 @@ def test_fake_ops_report_the_real_scale_dtype(xs_dtype):
 
 @needs_cuda
 def test_quantizing_leaves_fp32_matmul_precision_alone():
-    # torchao's default config handler calls recommended_inductor_config_setter(): process-wide
-    # set_float32_matmul_precision("high") (TF32) plus inductor flags, which broke later fp32 tests in the session
-    # (test_diffusion_convrot's explicit block-diagonal rotation). Studio passes set_inductor_config=False; so do these.
+    # The default handler's recommended_inductor_config_setter() turns on TF32 process-wide; Studio opts out.
     before = torch.get_float32_matmul_precision()
     _quantized_ff()
     assert torch.get_float32_matmul_precision() == before

@@ -146,8 +146,7 @@ def test_op_is_bit_exact_vs_torchao_epilogue(forced, m, k, n, bias, xs32, ws32):
 
 
 def _tie_operands(k = 4096, rows = 32):
-    """int8 a, w whose int32 products sit one or two units off a bf16 rounding midpoint in [2^24, 2^26), both signs:
-    a row of 127s then 1s, each weight row hitting its own target exactly."""
+    """int8 a, w whose int32 products sit one or two units off a bf16 midpoint in [2^24, 2^26), both signs."""
     k1 = k - 128
     targets = []
     for e in (24, 25):
@@ -172,9 +171,7 @@ def _tie_operands(k = 4096, rows = 32):
 @pytest.mark.parametrize("cfg", sorted({g8._FALLBACK_CONFIG, *g8._ARCH_CONFIG.values()}))
 @pytest.mark.parametrize("ws32", [False, True])
 def test_epilogue_rounds_large_accumulators_twice_like_torch(cfg, ws32):
-    # bf16 activation scale (v1, and v2 on torchao <= 0.17): torch's int32 * bf16 rounds the accumulator int32 ->
-    # fp32 -> bf16, two roundings. Triton folds acc.to(fp32).to(bf16) into one, so ties above 2^24 differed. The
-    # epilogue math is arch-independent: every tile config is launched directly, past the arch gate.
+    # Arch-independent epilogue math: every tile config is launched directly, past the arch gate.
     a, w, targets = _tie_operands()
     assert torch.equal(torch._int_mm(a, w.t())[0].cpu(), targets)
     assert (
@@ -193,7 +190,6 @@ def test_epilogue_rounds_large_accumulators_twice_like_torch(cfg, ws32):
 
 @needs_cuda
 def test_probe_covers_the_double_rounding():
-    # The per-device probe launches the tie operands: a single-rounding epilogue must be refused.
     a, w = g8.tie_operands(torch.device("cuda"))
     c = torch._int_mm(a, w.t())[0].cpu()
     assert int((_one_rounding_bf16(c) != c.float().to(torch.bfloat16).float()).sum()) >= 8

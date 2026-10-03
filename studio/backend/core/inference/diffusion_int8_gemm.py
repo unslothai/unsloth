@@ -170,12 +170,10 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         if XS_FP32:
             y = acc.to(tl.float32)
         else:
-            # int32 * bf16 promotes to bf16: int32 -> fp32 -> bf16, two roundings. The explicit fp32 step keeps them
-            # apart; ``acc.to(fp32).to(bf16)`` is folded by Triton into one rounding (differs on ties above 2^24).
+            # int32 -> fp32 -> bf16 rounds twice; Triton folds ``acc.to(fp32).to(bf16)`` into one rounding.
             y = _rbf16(tl.extra.cuda.libdevice.int2float_rn(acc))
         y = _rbf16(y * xs[:, None])
-        # mul_rn / add_rn: with an fp32 weight scale nothing rounds between ``* ws`` and ``+ bias``, and ptxas fuses
-        # packed f32x2 mul + add into an FMA on sm_100 even with fp fusion off.
+        # *_rn: ptxas fuses packed f32x2 mul + add into an FMA on sm_100 even with fp fusion off.
         y = tl.extra.cuda.libdevice.mul_rn(y, ws[None, :])
         if not WS_FP32:
             y = _rbf16(y)
@@ -339,7 +337,6 @@ def _probe(index: int, cfg: tuple) -> bool:
             b = (torch.randn(n, generator = g) * 0.1).to(torch.bfloat16).to(dev) if bias else None
             if not torch.equal(_launch(a, w, xs, ws, b, cfg), reference(a, w, xs, ws, b)):
                 return False
-        # Accumulators above 2^24 next to bf16 midpoints, bf16 activation scale: int32 -> fp32 -> bf16 rounds twice.
         a, w = tie_operands(dev)
         xs = torch.ones(a.shape[0], device = dev, dtype = torch.bfloat16)
         ws = torch.ones(w.shape[0], device = dev, dtype = torch.bfloat16)
@@ -356,8 +353,7 @@ def tie_operands(
     rows: int = 32,
     k: int = 4096,
 ) -> tuple:
-    """int8 (a [rows, k], w [64, k]) whose products are int32 accumulators in [2^24, 2^26) one or two units off a
-    bf16 rounding midpoint (both signs): a row of 127s then 1s, each weight row hitting its own target exactly."""
+    """int8 (a, w) whose int32 products sit one or two units off a bf16 midpoint in [2^24, 2^26), both signs."""
     import torch
 
     k2 = 128
