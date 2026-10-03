@@ -190,6 +190,21 @@ def _reset_gpu_query_cache():
 
 
 @pytest.fixture(autouse = True)
+def _restore_fp32_matmul_precision():
+    # torchao's default quant-config handlers call set_float32_matmul_precision("high") process-wide (TF32 matmuls),
+    # which leaked into later fp32 tests of the session. Only when torch is already imported: no import cost here.
+    def _get():
+        getter = getattr(sys.modules.get("torch"), "get_float32_matmul_precision", None)
+        return getter() if getter is not None else None
+
+    before = _get() or "highest"
+    yield
+    after = _get()
+    if after is not None and after != before:
+        sys.modules["torch"].set_float32_matmul_precision(before)
+
+
+@pytest.fixture(autouse = True)
 def _isolate_studio_home(_studio_home_root, monkeypatch):
     home = _studio_home_root / f"home-{next(_studio_home_counter)}"
     home.mkdir()

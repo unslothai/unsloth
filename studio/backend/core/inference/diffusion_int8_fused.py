@@ -4,9 +4,14 @@
 """Fused int8 activation path between two torchao int8 GEMMs of a DiT feed-forward: one Triton kernel
 reads the int32 ``_int_mm`` output, applies dequant + GELU(tanh) / SwiGLU and writes int8 + the fp32 row scale.
 
-NUMERICS: bit-identical to EAGER torchao + ATen (every bf16 rounding kept, fp contraction off so
+NUMERICS: bit-identical to EAGER torchao + ATen (every bf16 rounding kept, ATen's GELU(tanh) formula op for op (equal
+on every bf16 input), fp contraction off so
 ``y * w_scale + bias`` rounds twice, row scale ``bf16(amax / 127.5)`` clamped at fp32 eps, quantizer multiplies by
 the correctly rounded reciprocal). The compiled stock path is NOT eager-exact (Inductor keeps fp32 chains).
+Both torchao activation-scale contracts, picked by the incoming scale's dtype: torchao >= 0.18 keeps it in fp32 (fp32
+``c * x_scale``, reciprocal and product); torchao <= 0.17 keeps the activation's bf16, so ``int32 * bf16`` first rounds
+the accumulator to fp32 and then to bf16 (two roundings: ``libdevice.int2float_rn``, since Triton folds
+``int32 -> fp32 -> bf16`` into one), and ``1 / s`` and ``x * (1 / s)`` round to bf16. The output scale keeps that dtype.
 
 Anything but a plain dynamic symmetric per-row ``Int8Tensor`` on CUDA + Triton >= 3.2 keeps the stock path.
 Kill switch: ``UNSLOTH_DIFFUSION_INT8_FUSED=0``.
@@ -85,9 +90,14 @@ def _kernels() -> Optional[types.SimpleNamespace]:
 
     @triton.jit
     def _gelu_tanh(y):
-        # 0.5 * y * (1 + tanh(u)) == y * sigmoid(2u) == y / (1 + exp(-2u)), u = sqrt(2/pi) * (y + 0.044715 y^3)
-        u = 0.7978845608028654 * (y + 0.044715 * (y * y * y))
-        return y / (1.0 + tl.exp2(u * -2.8853900817779268))
+        # ATen's CUDA GELU(tanh), op for op: 0.5 * y * (1 + tanh(sqrt(2/pi) * (y + 0.044715 * y^3))). Every bf16 input
+        # rounds to ATen's bf16 output (exhaustive); the y / (1 + exp(-2u)) form differed on 150 inputs in [-10, -2.98].
+        # mul_rn / add_rn: ptxas contracts packed f32x2 mul + add into an FMA on sm_100 even with fp fusion off.
+        cube = tl.extra.cuda.libdevice.mul_rn(tl.extra.cuda.libdevice.mul_rn(y, y), y)
+        inner = 0.7978845608028654 * tl.extra.cuda.libdevice.add_rn(
+            y, tl.extra.cuda.libdevice.mul_rn(0.044715, cube)
+        )
+        return 0.5 * y * (1.0 + tl.extra.cuda.libdevice.tanh(inner))
 
     @triton.jit
     def _pre(
@@ -101,19 +111,34 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         WS_FP32: tl.constexpr,
         EVICT: tl.constexpr,
         FINAL_ROUND: tl.constexpr,
+        FP32_SCALE: tl.constexpr,
     ):
         # torchao Int8Tensor linear epilogue: (int32 * x_scale).to(bf16) * w_scale (+ bias), then .to(bf16).
         # FINAL_ROUND=False leaves the last rounding to the caller (it commutes with a row max).
-        c = tl.load(c_ptr + offs, mask = mask, other = 0, eviction_policy = EVICT).to(tl.float32)
+        c = tl.load(c_ptr + offs, mask = mask, other = 0, eviction_policy = EVICT)
+        if FP32_SCALE:
+            c = c.to(tl.float32)
+        else:
+            # int32 * bf16 promotes to bf16: int32 -> fp32 -> bf16, two roundings (an explicit fp32 step, else
+            # Triton fuses the casts into one rounding and differs on ties above 2^24).
+            c = _rbf16(tl.extra.cuda.libdevice.int2float_rn(c))
         y = _rbf16(c * xs)
-        y = y * tl.load(ws_ptr + offs, mask = mask, other = 0.0, eviction_policy = "evict_last").to(
-            tl.float32
+        # mul_rn / add_rn keep ``y * w_scale + bias`` two roundings: with an fp32 weight scale nothing sits between them,
+        # and ptxas fuses packed f32x2 mul + add into an FMA on sm_100 even with fp fusion off.
+        y = tl.extra.cuda.libdevice.mul_rn(
+            y,
+            tl.load(ws_ptr + offs, mask = mask, other = 0.0, eviction_policy = "evict_last").to(
+                tl.float32
+            ),
         )
         if not WS_FP32:
             y = _rbf16(y)
         if HAS_BIAS:
-            y = y + tl.load(b_ptr + offs, mask = mask, other = 0.0, eviction_policy = "evict_last").to(
-                tl.float32
+            y = tl.extra.cuda.libdevice.add_rn(
+                y,
+                tl.load(b_ptr + offs, mask = mask, other = 0.0, eviction_policy = "evict_last").to(
+                    tl.float32
+                ),
             )
         if FINAL_ROUND:
             y = _rbf16(y)
@@ -138,6 +163,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         p_sh,
         HAS_BIAS: tl.constexpr,
         WS_FP32: tl.constexpr,
+        FP32_SCALE: tl.constexpr,
         HAS_PREFIX: tl.constexpr,
         HEAD_DIM: tl.constexpr,
         CHUNK: tl.constexpr,
@@ -154,7 +180,9 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         for k in range(0, N, CHUNK):
             offs = k + base
             m = offs < N
-            y = _pre(crow, xs, ws_ptr, b_ptr, offs, m, HAS_BIAS, WS_FP32, "evict_last", False)
+            y = _pre(
+                crow, xs, ws_ptr, b_ptr, offs, m, HAS_BIAS, WS_FP32, "evict_last", False, FP32_SCALE
+            )
             vmax = tl.maximum(vmax, tl.where(m, y, float("-inf")))
         # bf16 rounding is monotone, so max(round(v)) == round(max(v)): round once, after the reduction.
         amax = _rbf16(_gelu_tanh(_rbf16(tl.max(vmax, axis = 0))))
@@ -166,7 +194,17 @@ def _kernels() -> Optional[types.SimpleNamespace]:
                 g = _rbf16(
                     _gelu_tanh(
                         _pre(
-                            crow, xs, ws_ptr, b_ptr, offs, m, HAS_BIAS, WS_FP32, "evict_last", True
+                            crow,
+                            xs,
+                            ws_ptr,
+                            b_ptr,
+                            offs,
+                            m,
+                            HAS_BIAS,
+                            WS_FP32,
+                            "evict_last",
+                            True,
+                            FP32_SCALE,
                         )
                     )
                 )
@@ -190,7 +228,9 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         scale = _rbf16(tl.math.div_rn(amax, 127.5))
         scale = tl.maximum(scale, 1.1920928955078125e-07)
         inv = tl.math.div_rn(1.0, scale)
-        tl.store(s_ptr + row, scale)
+        if not FP32_SCALE:
+            inv = _rbf16(inv)
+        tl.store(s_ptr + row, scale.to(s_ptr.dtype.element_ty))
         if HAS_PREFIX:
             for k in range(0, NA, CHUNK_A):
                 j = k + abase
@@ -198,7 +238,10 @@ def _kernels() -> Optional[types.SimpleNamespace]:
                 v = tl.load(pbase + (j // HEAD_DIM) * p_sh + (j % HEAD_DIM), mask = m, other = 0.0).to(
                     tl.float32
                 )
-                qi = tl.extra.cuda.libdevice.nearbyint(v * inv)
+                p = v * inv
+                if not FP32_SCALE:
+                    p = _rbf16(p)
+                qi = tl.extra.cuda.libdevice.nearbyint(p)
                 qi = tl.minimum(tl.maximum(qi, -128.0), 127.0)
                 tl.store(qrow + j, qi.to(tl.int8), mask = m)
         # pass 2: rebuild (the int32 row is mostly still in L2) and quantize.
@@ -207,10 +250,25 @@ def _kernels() -> Optional[types.SimpleNamespace]:
             m = offs < N
             g = _rbf16(
                 _gelu_tanh(
-                    _pre(crow, xs, ws_ptr, b_ptr, offs, m, HAS_BIAS, WS_FP32, "evict_first", True)
+                    _pre(
+                        crow,
+                        xs,
+                        ws_ptr,
+                        b_ptr,
+                        offs,
+                        m,
+                        HAS_BIAS,
+                        WS_FP32,
+                        "evict_first",
+                        True,
+                        FP32_SCALE,
+                    )
                 )
             )
-            qi = tl.extra.cuda.libdevice.nearbyint(g * inv)
+            p = g * inv
+            if not FP32_SCALE:
+                p = _rbf16(p)
+            qi = tl.extra.cuda.libdevice.nearbyint(p)
             qi = tl.minimum(tl.maximum(qi, -128.0), 127.0)
             tl.store(qrow + NA + offs, qi.to(tl.int8), mask = m)
 
@@ -232,9 +290,14 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         HAS_BIAS: tl.constexpr,
         WS_FP32: tl.constexpr,
         EVICT: tl.constexpr,
+        FP32_SCALE: tl.constexpr,
     ):
-        g = _pre(crow + g0, xs, ws_ptr + g0, b_ptr + g0, offs, m, HAS_BIAS, WS_FP32, EVICT, True)
-        v = _pre(crow + v0, xs, ws_ptr + v0, b_ptr + v0, offs, m, HAS_BIAS, WS_FP32, EVICT, True)
+        g = _pre(
+            crow + g0, xs, ws_ptr + g0, b_ptr + g0, offs, m, HAS_BIAS, WS_FP32, EVICT, True, FP32_SCALE
+        )
+        v = _pre(
+            crow + v0, xs, ws_ptr + v0, b_ptr + v0, offs, m, HAS_BIAS, WS_FP32, EVICT, True, FP32_SCALE
+        )
         return _rbf16(_rbf16(_silu(g)) * v)
 
     @triton.jit
@@ -253,6 +316,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         stride_q,
         HAS_BIAS: tl.constexpr,
         WS_FP32: tl.constexpr,
+        FP32_SCALE: tl.constexpr,
         CHUNK: tl.constexpr,
     ):
         # c row = the fused GEMM output; the gate half starts at column G0, the value half at V0 (both N wide).
@@ -268,7 +332,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
             offs = k + base
             m = offs < N
             h = _swiglu_val(
-                crow, xs, ws_ptr, b_ptr, G0, V0, offs, m, HAS_BIAS, WS_FP32, "evict_first"
+                crow, xs, ws_ptr, b_ptr, G0, V0, offs, m, HAS_BIAS, WS_FP32, "evict_first", FP32_SCALE
             )
             tl.store(hrow + offs, h.to(tl.bfloat16), mask = m, eviction_policy = "evict_last")
             acc = tl.maximum(acc, tl.where(m, tl.abs(h), 0.0))
@@ -276,7 +340,9 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         scale = _rbf16(tl.math.div_rn(amax, 127.5))
         scale = tl.maximum(scale, 1.1920928955078125e-07)
         inv = tl.math.div_rn(1.0, scale)
-        tl.store(s_ptr + row, scale)
+        if not FP32_SCALE:
+            inv = _rbf16(inv)
+        tl.store(s_ptr + row, scale.to(s_ptr.dtype.element_ty))
         qrow = q_ptr + row * stride_q
         for k in range(0, N, CHUNK):
             offs = k + base
@@ -284,17 +350,64 @@ def _kernels() -> Optional[types.SimpleNamespace]:
             h = tl.load(hrow + offs, mask = m, other = 0.0, eviction_policy = "evict_first").to(
                 tl.float32
             )
-            qi = tl.extra.cuda.libdevice.nearbyint(h * inv)
+            p = h * inv
+            if not FP32_SCALE:
+                p = _rbf16(p)
+            qi = tl.extra.cuda.libdevice.nearbyint(p)
             qi = tl.minimum(tl.maximum(qi, -128.0), 127.0)
             tl.store(qrow + offs, qi.to(tl.int8), mask = m)
 
+    @triton.jit
+    def gelu_bf16(x_ptr, o_ptr, n, BLOCK: tl.constexpr):
+        # The kernels' GELU on its own, for the device probe's exhaustive bf16 comparison against ATen.
+        offs = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+        m = offs < n
+        y = tl.load(x_ptr + offs, mask = m, other = 0.0).to(tl.float32)
+        tl.store(o_ptr + offs, _gelu_tanh(y).to(tl.bfloat16), mask = m)
+
+    @triton.jit
+    def dq_bf16(
+        c_ptr,
+        xs_ptr,
+        ws_ptr,
+        b_ptr,
+        o_ptr,
+        N,
+        HAS_BIAS: tl.constexpr,
+        WS_FP32: tl.constexpr,
+        FP32_SCALE: tl.constexpr,
+        CHUNK: tl.constexpr,
+    ):
+        # The kernels' dequant epilogue on its own (same row loop), for the device probe: bf16 out.
+        row = tl.program_id(0).to(tl.int64)
+        xs = tl.load(xs_ptr + row).to(tl.float32)
+        base = tl.arange(0, CHUNK)
+        for k in range(0, N, CHUNK):
+            offs = k + base
+            m = offs < N
+            y = _pre(
+                c_ptr + row * N, xs, ws_ptr, b_ptr, offs, m, HAS_BIAS, WS_FP32, "evict_first", True, FP32_SCALE
+            )
+            tl.store(o_ptr + row * N + offs, y.to(tl.bfloat16), mask = m)
+
     return types.SimpleNamespace(
-        dq_gelu_quant = dq_gelu_quant, dq_swiglu_quant = dq_swiglu_quant, triton = triton
+        dq_gelu_quant = dq_gelu_quant,
+        dq_swiglu_quant = dq_swiglu_quant,
+        gelu_bf16 = gelu_bf16,
+        dq_bf16 = dq_bf16,
+        triton = triton,
     )
 
 
+def _scale_dtype(xs: Any) -> Any:
+    """The output act-quant scale dtype: the incoming one (torchao's contract: fp32 on >= 0.18, bf16 on <= 0.17)."""
+    import torch
+    return torch.float32 if xs.dtype == torch.float32 else torch.bfloat16
+
+
 def _launch(c: Any, xs: Any, ws: Any, bias: Any, prefix: Any) -> tuple:
-    """Run the kernel. ``prefix`` is None or a [B, S, H, D] view (any strides, last dim contiguous)."""
+    """Run the kernel. ``prefix`` is None or a [B, S, H, D] view (any strides, last dim contiguous).
+    ``xs`` is torchao's activation scale, fp32 (torchao >= 0.18) or bf16 (<= 0.17); the returned scale matches it."""
     import torch
 
     k = _kernels()
@@ -307,7 +420,7 @@ def _launch(c: Any, xs: Any, ws: Any, bias: Any, prefix: Any) -> tuple:
         s, d, na = 1, 1, 0
         p_sb = p_ss = p_sh = 0
     q = torch.empty((m_rows, na + n), device = c.device, dtype = torch.int8)
-    scale = torch.empty((m_rows,), device = c.device, dtype = torch.float32)
+    scale = torch.empty((m_rows,), device = c.device, dtype = _scale_dtype(xs))
     with torch.cuda.device(c.device):
         k.dq_gelu_quant[(m_rows,)](
             c,
@@ -327,6 +440,7 @@ def _launch(c: Any, xs: Any, ws: Any, bias: Any, prefix: Any) -> tuple:
             p_sh,
             HAS_BIAS = bias is not None,
             WS_FP32 = ws.dtype == torch.float32,
+            FP32_SCALE = xs.dtype == torch.float32,
             HAS_PREFIX = prefix is not None,
             HEAD_DIM = d,
             CHUNK = 2048,
@@ -346,7 +460,7 @@ def _launch_swiglu(
     k = _kernels()
     m_rows = c.shape[0]
     q = torch.empty((m_rows, n), device = c.device, dtype = torch.int8)
-    scale = torch.empty((m_rows,), device = c.device, dtype = torch.float32)
+    scale = torch.empty((m_rows,), device = c.device, dtype = _scale_dtype(xs))
     scratch = torch.empty((m_rows, n), device = c.device, dtype = torch.bfloat16)
     with torch.cuda.device(c.device):
         k.dq_swiglu_quant[(m_rows,)](
@@ -364,6 +478,7 @@ def _launch_swiglu(
             q.stride(0),
             HAS_BIAS = bias is not None,
             WS_FP32 = ws.dtype == torch.float32,
+            FP32_SCALE = xs.dtype == torch.float32,
             CHUNK = 2048,
             num_warps = 8,
             enable_fp_fusion = False,
@@ -385,8 +500,16 @@ def reference_dq_swiglu_quant(
         return y.to(torch.bfloat16)
 
     h = F.silu(part(gate_col)) * part(value_col)
+    return _reference_act_quant(h, _scale_dtype(xs))
+
+
+def _reference_act_quant(h: Any, scale_dtype: Any) -> tuple:
+    """torchao Int8Tensor.from_hp(h, PerRow()) for a bf16 ``h``: the bf16 scale, kept (<= 0.17, bf16 reciprocal and
+    product) or stored as fp32 (>= 0.18, fp32 reciprocal and product)."""
+    import torch
+
     amax = torch.maximum(-h.amin(dim = 1).clamp(max = 0), h.amax(dim = 1).clamp(min = 0))
-    scale = (amax / 127.5).clamp(min = torch.finfo(torch.float32).eps).to(torch.float32)
+    scale = (amax / 127.5).clamp(min = torch.finfo(torch.float32).eps).to(scale_dtype)
     q = torch.clamp(torch.round(h * (1.0 / scale).reshape(-1, 1)), -128, 127).to(torch.int8)
     return q, scale
 
@@ -423,7 +546,7 @@ def _op() -> Any:
             na = 0 if prefix is None else prefix.shape[-2] * prefix.shape[-1]
             return (
                 c.new_empty((c.shape[0], na + c.shape[1]), dtype = torch.int8),
-                c.new_empty((c.shape[0],), dtype = torch.float32),
+                c.new_empty((c.shape[0],), dtype = _scale_dtype(xs)),
             )
 
         @custom_op(
@@ -438,7 +561,7 @@ def _op() -> Any:
         def _(c, xs, ws, bias, gate_col, value_col, n):
             return (
                 c.new_empty((c.shape[0], n), dtype = torch.int8),
-                c.new_empty((c.shape[0],), dtype = torch.float32),
+                c.new_empty((c.shape[0],), dtype = _scale_dtype(xs)),
             )
     except Exception:  # noqa: BLE001 - a registration failure keeps the stock path
         return None
@@ -464,18 +587,120 @@ def _device_ok(index: int) -> bool:
     try:
         dev = torch.device("cuda", index)
         g = torch.Generator(device = "cpu").manual_seed(0)
-        c = torch.randint(-(2**20), 2**20, (33, 200), generator = g, dtype = torch.int32).to(dev)
-        xs = (torch.rand(33, generator = g) * 1e-3 + 1e-5).to(torch.bfloat16).float().to(dev)
+        c = torch.randint(-(2**20), 2**20, (33, 200), generator = g, dtype = torch.int32)
+        # rows 1-4: accumulators above 2^24 next to bf16 midpoints (the bf16-scale double rounding)
+        c[1:5] = _bf16_tie_ints((4, 200), g)
+        c = c.to(dev)
+        xs = (torch.rand(33, generator = g) * 1e-3 + 1e-5).to(torch.bfloat16)
+        xs[1:5] *= 2**-10
         ws = (torch.rand(200, generator = g) * 1e-4 + 1e-6).to(dev)
         bias = (torch.randn(200, generator = g) * 0.1).to(torch.bfloat16).to(dev)
-        q, s = _launch(c, xs, ws, bias, None)
-        q_ref, s_ref = reference_dq_gelu_quant(c, xs, ws, bias, None)
-        ok = bool(torch.equal(q, q_ref) and torch.equal(s, s_ref))
-        q, s = _launch_swiglu(c, xs, ws, bias, 104, 0, 96)
-        q_ref, s_ref = reference_dq_swiglu_quant(c, xs, ws, bias, 104, 0, 96)
-        return ok and bool(torch.equal(q, q_ref) and torch.equal(s, s_ref))
+        # Both torchao activation-scale contracts (bf16 <= 0.17, fp32 >= 0.18), each against its eager mirror.
+        for x_scale in (xs.float().to(dev), xs.to(dev)):
+            for w_scale in (ws, ws.to(torch.bfloat16)):
+                q, s = _launch(c, x_scale, w_scale, bias, None)
+                q_ref, s_ref = reference_dq_gelu_quant(c, x_scale, w_scale, bias, None)
+                if not (s.dtype == s_ref.dtype and torch.equal(q, q_ref) and torch.equal(s, s_ref)):
+                    return False
+                q, s = _launch_swiglu(c, x_scale, w_scale, bias, 104, 0, 96)
+                q_ref, s_ref = reference_dq_swiglu_quant(c, x_scale, w_scale, bias, 104, 0, 96)
+                if not (s.dtype == s_ref.dtype and torch.equal(q, q_ref) and torch.equal(s, s_ref)):
+                    return False
+        # The mirrors' act quant must still be this torchao's own (its scale dtype, reciprocal and product roundings),
+        # and the GELU must round every finite bf16 input as ATen's does.
+        return _act_quant_contract_ok(dev) and _gelu_matches_aten(dev) and _epilogue_matches_torchao(dev)
     except Exception:  # noqa: BLE001 - any build / launch failure keeps the stock path
         return False
+
+
+def _bf16_tie_ints(shape: tuple, generator: Any) -> Any:
+    """int32 values in [2^24, 2^30) within one fp32 ulp of a bf16 rounding midpoint, both signs: where PyTorch's
+    ``int32 -> fp32 -> bf16`` (two roundings) and a direct ``int32 -> bf16`` (one) can disagree."""
+    import torch
+
+    n = 1
+    for d in shape:
+        n *= d
+    e = torch.randint(24, 30, (n,), generator = generator, dtype = torch.int64)
+    mant = torch.randint(0, 128, (n,), generator = generator, dtype = torch.int64)
+    ulp = torch.bitwise_left_shift(torch.ones_like(e), e - 23)
+    off = torch.randint(-1, 2, (n,), generator = generator, dtype = torch.int64) * (ulp // 2).clamp(
+        min = 1
+    ) + torch.randint(-1, 2, (n,), generator = generator, dtype = torch.int64)
+    mid = (
+        torch.bitwise_left_shift(torch.ones_like(e), e)
+        + mant * torch.bitwise_left_shift(torch.ones_like(e), e - 7)
+        + torch.bitwise_left_shift(torch.ones_like(e), e - 8)
+    )
+    sign = torch.randint(0, 2, (n,), generator = generator, dtype = torch.int64) * 2 - 1
+    return ((mid + off) * sign).to(torch.int32).reshape(shape)
+
+
+def _epilogue_matches_torchao(dev: Any, m: int = 1031, n: int = 2056) -> bool:
+    """The kernels' dequant epilogue equals torchao's ``bf16(bf16(c * xs) * ws + bias)`` on every element, for both
+    activation-scale dtypes and an fp32 weight scale + bias (the case an FMA contraction would round once)."""
+    import torch
+
+    g = torch.Generator(device = "cpu").manual_seed(2)
+    c = torch.randint(-(2**20), 2**20, (m, n), generator = g, dtype = torch.int32).to(dev)
+    ws = (torch.rand(n, generator = g) * 1e-4 + 1e-6).to(dev)
+    bias = (torch.randn(n, generator = g) * 0.1).to(torch.bfloat16).to(dev)
+    xs = (torch.rand(m, generator = g) * 1e-3 + 1e-5).to(torch.bfloat16)
+    k = _kernels()
+    for x_scale in (xs.float().to(dev), xs.to(dev)):
+        out = torch.empty((m, n), device = dev, dtype = torch.bfloat16)
+        with torch.cuda.device(dev):
+            k.dq_bf16[(m,)](
+                c,
+                x_scale,
+                ws,
+                bias,
+                out,
+                n,
+                HAS_BIAS = True,
+                WS_FP32 = True,
+                FP32_SCALE = x_scale.dtype == torch.float32,
+                CHUNK = 2048,
+                num_warps = 8,
+                enable_fp_fusion = False,
+            )
+        ref = ((c * x_scale.reshape(-1, 1)).to(torch.bfloat16) * ws + bias).to(torch.bfloat16)
+        if not torch.equal(out, ref):
+            return False
+    return True
+
+
+def _gelu_matches_aten(dev: Any) -> bool:
+    """The kernels' GELU(tanh) equals ``F.gelu(x, approximate="tanh")`` on every finite bf16 ``x``, bit for bit."""
+    import torch
+    import torch.nn.functional as F
+
+    x = torch.arange(-(2**15), 2**15, dtype = torch.int32).to(torch.int16).view(torch.bfloat16)
+    x = x[torch.isfinite(x)].to(dev)
+    out = torch.empty_like(x)
+    k = _kernels()
+    with torch.cuda.device(dev):
+        k.gelu_bf16[(k.triton.cdiv(x.numel(), 1024),)](
+            x, out, x.numel(), BLOCK = 1024, num_warps = 4, enable_fp_fusion = False
+        )
+    return bool(torch.equal(out.view(torch.int16), F.gelu(x, approximate = "tanh").view(torch.int16)))
+
+
+def _act_quant_contract_ok(dev: Any) -> bool:
+    """``_reference_act_quant`` in this torchao's scale dtype equals ``Int8Tensor.from_hp(h, PerRow())`` bit for bit."""
+    import torch
+    from torchao.quantization.granularity import PerRow
+    from torchao.quantization.quantize_.workflows.int8.int8_tensor import Int8Tensor
+
+    g = torch.Generator(device = "cpu").manual_seed(1)
+    h = torch.randn(37, 520, generator = g) * (torch.rand(1, 520, generator = g) * 4)
+    h[:, :3] *= 50
+    h[2] = 0
+    h = h.to(torch.bfloat16).to(dev)
+    t = Int8Tensor.from_hp(h, PerRow())
+    s_ref = t.scale.reshape(-1)
+    q, s = _reference_act_quant(h, s_ref.dtype)
+    return bool(torch.equal(q, t.qdata) and torch.equal(s, s_ref))
 
 
 def reference_dq_gelu_quant(c: Any, xs: Any, ws: Any, bias: Any, prefix: Any) -> tuple:
@@ -492,10 +717,7 @@ def reference_dq_gelu_quant(c: Any, xs: Any, ws: Any, bias: Any, prefix: Any) ->
         g = torch.cat(
             [prefix.reshape(prefix.shape[0] * prefix.shape[1], -1).to(g.dtype), g], dim = -1
         )
-    amax = torch.maximum(-g.amin(dim = 1).clamp(max = 0), g.amax(dim = 1).clamp(min = 0))
-    scale = (amax / 127.5).clamp(min = torch.finfo(torch.float32).eps).to(torch.float32)
-    q = torch.clamp(torch.round(g * (1.0 / scale).reshape(-1, 1)), -128, 127).to(torch.int8)
-    return q, scale
+    return _reference_act_quant(g, _scale_dtype(xs))
 
 
 def _plain_int8_weight(w: Any) -> bool:
@@ -553,12 +775,14 @@ def _linear_from_q(q: Any, xs: Any, weight: Any, bias: Any, out_dtype: Any) -> A
     """torchao Int8Tensor linear on an already-quantized activation: same ops, same order, as the stock epilogue."""
     import torch
 
+    # The scale keeps torchao's dtype: a bf16 one (torchao <= 0.17) makes ``int32 * x_scale`` a bf16 product.
     if out_dtype == torch.bfloat16:
         from .diffusion_int8_gemm import linear_from_q
-        fused = linear_from_q(q, xs.reshape(-1).to(torch.float32), weight, bias)
+        fused = linear_from_q(q, xs.reshape(-1), weight, bias)
         if fused is not None:
             return fused
-    y = (_int_mm(q, weight) * xs.reshape(-1, 1).to(torch.float32)).to(out_dtype)
+    inter = torch.float32 if xs.dtype == torch.float16 else xs.dtype
+    y = (_int_mm(q, weight) * xs.reshape(-1, 1).to(inter)).to(out_dtype)
     y = y * weight.scale.flatten()
     if bias is not None:
         y = y + bias

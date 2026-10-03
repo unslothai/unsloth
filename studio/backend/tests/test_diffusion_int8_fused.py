@@ -28,6 +28,36 @@ needs_cuda = pytest.mark.skipif(
 )
 
 
+def _cuda_int8_toolchain() -> bool:
+    """The probe's prerequisites without the probe: on such a host a refused probe is a failure, not a skip."""
+    if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+        return False
+    try:
+        from torchao.quantization.quantize_.workflows.int8.int8_tensor import Int8Tensor  # noqa: F401
+    except Exception:  # noqa: BLE001
+        return False
+    return fused._triton_version_ok() and fused._triton_jit_toolchain_ok()
+
+
+@pytest.mark.skipif(not _cuda_int8_toolchain(), reason = "needs CUDA (not ROCm), Triton >= 3.2, torchao")
+def test_device_probe_accepts_this_torchao():
+    # The probe compares both kernels to their eager mirrors for both activation-scale dtypes (with int32 ties above
+    # 2^24) and the mirrors' act quant to torchao's own. On main the kernels held torchao 0.18's fp32 contract only.
+    fused._device_ok.cache_clear()
+    assert fused._device_ok(torch.cuda.current_device())
+
+
+def _int8_config():
+    """Studio's int8 config, as an ``Int8Tensor`` (torchao 0.17's default is the legacy tensor the fused path skips)
+    and without torchao's process-wide inductor / fp32-matmul-precision setter (Studio passes the same flag)."""
+    from torchao.quantization import Int8DynamicActivationInt8WeightConfig
+
+    cfg = Int8DynamicActivationInt8WeightConfig(set_inductor_config = False)
+    if hasattr(cfg, "version"):
+        cfg.version = 2
+    return cfg
+
+
 def _require_int8tensor(module):
     """Skip when the torchao (<= 0.17) int8 config builds the legacy tensor: the fused path then keeps stock."""
     for m in module.modules():
@@ -97,16 +127,24 @@ def _rand_inputs(
     ws_dtype = torch.float32,
     bias = True,
     seed = 0,
+    xs_dtype = torch.float32,
 ):
+    # xs_dtype: torchao's activation-scale dtype, fp32 on >= 0.18, bf16 on <= 0.17
     g = torch.Generator(device = "cpu").manual_seed(seed)
     c = torch.randint(-(2**20), 2**20, (m, n), generator = g, dtype = torch.int32).cuda()
-    xs = (torch.rand(m, generator = g) * 1e-3 + 1e-5).to(torch.bfloat16).float().cuda()
+    xs = (torch.rand(m, generator = g) * 1e-3 + 1e-5).to(torch.bfloat16).to(xs_dtype).cuda()
     ws = (torch.rand(n, generator = g) * 1e-4 + 1e-6).to(ws_dtype).cuda()
     b = (torch.randn(n, generator = g) * 0.1).to(torch.bfloat16).cuda() if bias else None
     return c, xs, ws, b
 
 
+_XS_DTYPES = pytest.mark.parametrize(
+    "xs_dtype", [torch.float32, torch.bfloat16], ids = ["xs_fp32", "xs_bf16"]
+)
+
+
 @needs_cuda
+@_XS_DTYPES
 @pytest.mark.parametrize(
     "m, n, ws_dtype, bias",
     [
@@ -116,18 +154,20 @@ def _rand_inputs(
         (17, 8, torch.float32, True),  # smallest eligible
     ],
 )
-def test_kernel_bit_exact_vs_eager_reference(m, n, ws_dtype, bias):
-    c, xs, ws, b = _rand_inputs(m, n, ws_dtype = ws_dtype, bias = bias)
+def test_kernel_bit_exact_vs_eager_reference(m, n, ws_dtype, bias, xs_dtype):
+    c, xs, ws, b = _rand_inputs(m, n, ws_dtype = ws_dtype, bias = bias, xs_dtype = xs_dtype)
     q, s = fused._launch(c, xs, ws, b, None)
     q_ref, s_ref = fused.reference_dq_gelu_quant(c, xs, ws, b, None)
+    assert s.dtype == s_ref.dtype == xs_dtype
     assert torch.equal(s, s_ref)
     assert torch.equal(q, q_ref)
 
 
 @needs_cuda
-def test_kernel_small_activations_take_the_exact_amax_path():
+@_XS_DTYPES
+def test_kernel_small_activations_take_the_exact_amax_path(xs_dtype):
     # Every pre-activation negative: max|gelu| comes from the negative lobe, not gelu(max y).
-    c, xs, ws, b = _rand_inputs(256, 1024, bias = False)
+    c, xs, ws, b = _rand_inputs(256, 1024, bias = False, xs_dtype = xs_dtype)
     c = -c.abs() - 1
     q, s = fused._launch(c, xs, ws, b, None)
     q_ref, s_ref = fused.reference_dq_gelu_quant(c, xs, ws, b, None)
@@ -135,10 +175,11 @@ def test_kernel_small_activations_take_the_exact_amax_path():
 
 
 @needs_cuda
+@_XS_DTYPES
 @pytest.mark.parametrize("transposed", [False, True])
-def test_kernel_prefix_segment(transposed):
+def test_kernel_prefix_segment(transposed, xs_dtype):
     bsz, seq, heads, hd, n = 2, 300, 4, 64, 1024
-    c, xs, ws, b = _rand_inputs(bsz * seq, n)
+    c, xs, ws, b = _rand_inputs(bsz * seq, n, xs_dtype = xs_dtype)
     if transposed:  # SDPA output layout [B, H, S, D] seen as [B, S, H, D]
         prefix = (
             (torch.randn(bsz, heads, seq, hd, device = "cuda") * 3).to(torch.bfloat16).transpose(1, 2)
@@ -157,7 +198,7 @@ def _quantized_ff(
     seed = 0,
 ):
     FeedForward = pytest.importorskip("diffusers.models.attention").FeedForward
-    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+    from torchao.quantization import quantize_
 
     torch.manual_seed(seed)
     ff = (
@@ -168,7 +209,7 @@ def _quantized_ff(
     )
     for p in ff.parameters():
         p.data.normal_(0, 0.05)
-    quantize_(ff, Int8DynamicActivationInt8WeightConfig())
+    quantize_(ff, _int8_config())
     return _require_int8tensor(ff)
 
 
@@ -235,7 +276,7 @@ def test_uninstall_restores_stock_forward():
 @needs_cuda
 def test_flux_single_block_bit_identical_to_stock_eager():
     tf = pytest.importorskip("diffusers.models.transformers.transformer_flux")
-    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+    from torchao.quantization import quantize_
 
     torch.manual_seed(0)
     blk = (
@@ -248,7 +289,7 @@ def test_flux_single_block_bit_identical_to_stock_eager():
         p.data.normal_(0, 0.05)
     quantize_(
         blk,
-        Int8DynamicActivationInt8WeightConfig(),
+        _int8_config(),
         filter_fn = lambda m, fqn: isinstance(m, torch.nn.Linear) and "norm" not in fqn,
     )
     _require_int8tensor(blk)
@@ -263,22 +304,132 @@ def test_flux_single_block_bit_identical_to_stock_eager():
 
 
 @needs_cuda
+@_XS_DTYPES
 @pytest.mark.parametrize(
     "m, n, gate_col, value_col", [(4352, 10240, 0, 10240), (300, 1024, 1024, 0), (17, 64, 0, 64)]
 )
-def test_swiglu_kernel_bit_exact_vs_eager_reference(m, n, gate_col, value_col):
-    c, xs, ws, b = _rand_inputs(m, 2 * n, bias = False)
+def test_swiglu_kernel_bit_exact_vs_eager_reference(m, n, gate_col, value_col, xs_dtype):
+    c, xs, ws, b = _rand_inputs(m, 2 * n, bias = False, xs_dtype = xs_dtype)
     q, s = fused._launch_swiglu(c, xs, ws, None, gate_col, value_col, n)
     q_ref, s_ref = fused.reference_dq_swiglu_quant(c, xs, ws, None, gate_col, value_col, n)
+    assert s.dtype == s_ref.dtype == xs_dtype
     assert torch.equal(s, s_ref) and torch.equal(q, q_ref)
 
 
+def _bf16_tie_ints(m, n, seed):
+    """int32 accumulators in [2^24, 2^30), at most one fp32 ulp (+-1) off a bf16 rounding midpoint, both signs:
+    PyTorch's int32 * bf16 rounds them int32 -> fp32 -> bf16 (twice), a fused int32 -> bf16 cast once."""
+    g = torch.Generator(device = "cpu").manual_seed(seed)
+    e = torch.randint(24, 30, (m, n), generator = g, dtype = torch.int64)
+    one = torch.ones_like(e)
+    mid = (
+        torch.bitwise_left_shift(one, e)
+        + torch.randint(0, 128, (m, n), generator = g, dtype = torch.int64)
+        * torch.bitwise_left_shift(one, e - 7)
+        + torch.bitwise_left_shift(one, e - 8)
+    )
+    half_ulp = torch.bitwise_left_shift(one, e - 24)
+    off = torch.randint(-1, 2, (m, n), generator = g, dtype = torch.int64) * half_ulp
+    off = off + torch.randint(-1, 2, (m, n), generator = g, dtype = torch.int64)
+    sign = torch.randint(0, 2, (m, n), generator = g, dtype = torch.int64) * 2 - 1
+    return ((mid + off) * sign).to(torch.int32).cuda()
+
+
+def _double_rounding_hits(c):
+    """How many int32 values round differently int32 -> bf16 directly (exact RNE in int64) than via fp32 (torch)."""
+    v = c.cpu().to(torch.int64)
+    a = v.abs()
+    e = torch.floor(torch.log2(a.double().clamp(min = 1))).to(torch.int64)
+    shift = (e - 7).clamp(min = 1)
+    one = torch.ones_like(a)
+    q = torch.bitwise_right_shift(a, shift)
+    r = a - torch.bitwise_left_shift(q, shift)
+    half = torch.bitwise_left_shift(one, shift - 1)
+    q = q + ((r > half) | ((r == half) & (q % 2 == 1))).to(torch.int64)
+    single = torch.bitwise_left_shift(q, shift) * v.sign()
+    double = c.cpu().float().to(torch.bfloat16).double().to(torch.int64)
+    return int((single != double)[a >= 2**24].sum())
+
+
+@needs_cuda
+@_XS_DTYPES
+def test_kernels_round_large_accumulators_like_torchao(xs_dtype):
+    # bf16 activation scale (torchao <= 0.17): int32 * bf16 rounds the accumulator to fp32, then to bf16. Triton folds
+    # ``int32 -> fp32 -> bf16`` into one rounding, which differs on ties above 2^24.
+    m, n = 64, 2048
+    c = _bf16_tie_ints(m, n, 3)
+    assert _double_rounding_hits(c) > 100  # the inputs do reach the case
+    _, xs, ws, b = _rand_inputs(m, n, xs_dtype = xs_dtype)
+    xs = (xs * 2**-10).to(xs_dtype)  # |c * xs| stays O(1-100): GELU / SiLU in their curved range
+    q, s = fused._launch(c, xs, ws, b, None)
+    q_ref, s_ref = fused.reference_dq_gelu_quant(c, xs, ws, b, None)
+    assert torch.equal(s, s_ref) and torch.equal(q, q_ref)
+    q, s = fused._launch_swiglu(c, xs, ws, b, n // 2, 0, n // 2)
+    q_ref, s_ref = fused.reference_dq_swiglu_quant(c, xs, ws, b, n // 2, 0, n // 2)
+    assert torch.equal(s, s_ref) and torch.equal(q, q_ref)
+
+
+@needs_cuda
+def test_gelu_rounds_every_bf16_input_like_aten():
+    # The kernels' GELU was y / (1 + exp(-2u)): 150 of 65280 bf16 inputs (y in [-10, -2.98], FLUX text-stream MLPs
+    # reach them) rounded one bf16 step away from ATen's 0.5 * y * (1 + tanh(u)).
+    assert fused._gelu_matches_aten(torch.device("cuda", torch.cuda.current_device()))
+
+
+@needs_cuda
+def test_epilogue_rounds_scale_product_and_bias_separately():
+    # fp32 weight scale + bias: nothing rounds between ``* ws`` and ``+ bias``, and on B200 ptxas fused the packed
+    # f32x2 mul + add into an FMA (one rounding) despite fp fusion off; ~1 in 1e5 outputs moved one bf16 step.
+    assert fused._epilogue_matches_torchao(torch.device("cuda", torch.cuda.current_device()), 4101, 3000)
+
+
+@needs_cuda
+def test_reference_act_quant_is_torchao_own():
+    # The kernels' mirrors quantize the bf16 activation as this torchao's Int8Tensor.from_hp does: scale dtype,
+    # reciprocal and product roundings (bf16 on torchao <= 0.17, fp32 on >= 0.18).
+    from torchao.quantization.granularity import PerRow
+    from torchao.quantization.quantize_.workflows.int8.int8_tensor import Int8Tensor
+
+    g = torch.Generator(device = "cpu").manual_seed(5)
+    h = torch.randn(300, 3072, generator = g) * (torch.rand(1, 3072, generator = g) * 6)
+    h[:, :4] *= 80
+    h[7] = 0
+    h = h.to(torch.bfloat16).cuda()
+    t = Int8Tensor.from_hp(h, PerRow())
+    q, s = fused._reference_act_quant(h, t.scale.dtype)
+    assert torch.equal(q, t.qdata) and torch.equal(s, t.scale.reshape(-1))
+
+
+@needs_cuda
+@_XS_DTYPES
+def test_fake_ops_report_the_real_scale_dtype(xs_dtype):
+    from torch._subclasses.fake_tensor import FakeTensorMode
+
+    c, xs, ws, b = _rand_inputs(40, 256, xs_dtype = xs_dtype)
+    op = fused._op()
+    real = (op.gelu(c, xs, ws, b, None)[1], op.swiglu(c, xs, ws, b, 128, 0, 128)[1])
+    with FakeTensorMode() as mode:
+        fc, fxs, fws, fb = (mode.from_tensor(t) for t in (c, xs, ws, b))
+        fake = (op.gelu(fc, fxs, fws, fb, None)[1], op.swiglu(fc, fxs, fws, fb, 128, 0, 128)[1])
+    assert [t.dtype for t in fake] == [t.dtype for t in real] == [xs_dtype, xs_dtype]
+
+
+@needs_cuda
+def test_quantizing_leaves_fp32_matmul_precision_alone():
+    # torchao's default config handler calls recommended_inductor_config_setter(): process-wide
+    # set_float32_matmul_precision("high") (TF32) plus inductor flags, which broke later fp32 tests in the session
+    # (test_diffusion_convrot's explicit block-diagonal rotation). Studio passes set_inductor_config=False; so do these.
+    before = torch.get_float32_matmul_precision()
+    _quantized_ff()
+    assert torch.get_float32_matmul_precision() == before
+
+
 def _quantize(module):
-    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+    from torchao.quantization import quantize_
 
     for p in module.parameters():
         p.data.normal_(0, 0.05)
-    quantize_(module, Int8DynamicActivationInt8WeightConfig())
+    quantize_(module, _int8_config())
     return _require_int8tensor(module)
 
 
@@ -606,7 +757,7 @@ def test_int8_flux_under_fbcache_renders_through_the_fused_kernel():
 
     tf = pytest.importorskip("diffusers.models.transformers.transformer_flux")
     hooks = pytest.importorskip("diffusers.hooks")
-    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+    from torchao.quantization import quantize_
 
     torch.manual_seed(0)
     model = (
@@ -629,7 +780,7 @@ def test_int8_flux_under_fbcache_renders_through_the_fused_kernel():
         p.data.normal_(0, 0.05)
     quantize_(
         model,
-        Int8DynamicActivationInt8WeightConfig(),
+        _int8_config(),
         filter_fn = lambda m, fqn: isinstance(m, torch.nn.Linear)
         and "single_transformer_blocks" in fqn
         and "norm" not in fqn,

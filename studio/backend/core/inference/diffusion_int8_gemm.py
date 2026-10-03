@@ -9,7 +9,8 @@ writes bf16, so every int8 Linear writes half the bytes and its consumer (norm, 
 
 NUMERICS: the Linear output is bit-identical to torchao's epilogue, eager and compiled under Studio's
 ``emulate_precision_casts``: ``bf16(bf16(r(c) * xs) * ws)`` (+ bias as a bf16 add), where ``r`` rounds the int32
-accumulator to bf16 when the activation scale is bf16 (int32 * bf16 promotes to bf16) and is exact when it is fp32.
+accumulator to bf16 when the activation scale is bf16 (int32 * bf16 promotes to bf16, via fp32: two roundings) and to
+fp32 when it is fp32.
 The activation quant is torchao's own math, so Inductor still fuses it into the producer. A compiled block is NOT
 bit-identical end to end: the consumer reductions (LayerNorm / RMSNorm Welford) that used to fuse the epilogue now
 read bf16 and Inductor re-tiles them, a rounding-order change smaller than compiled-vs-eager (LPIPS-gated).
@@ -166,15 +167,20 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         # torchao epilogue, every rounding kept: (int32 * xs) -> xs dtype, * ws -> ws dtype, -> bf16, + bias.
         xs = tl.load(xs_ptr + rm).to(tl.float32)
         ws = tl.load(ws_ptr + rn).to(tl.float32)
-        y = acc.to(tl.float32)
-        if not XS_FP32:
-            y = _rbf16(y)
+        if XS_FP32:
+            y = acc.to(tl.float32)
+        else:
+            # int32 * bf16 promotes to bf16: int32 -> fp32 -> bf16, two roundings. The explicit fp32 step keeps them
+            # apart; ``acc.to(fp32).to(bf16)`` is folded by Triton into one rounding (differs on ties above 2^24).
+            y = _rbf16(tl.extra.cuda.libdevice.int2float_rn(acc))
         y = _rbf16(y * xs[:, None])
-        y = y * ws[None, :]
+        # mul_rn / add_rn: with an fp32 weight scale nothing rounds between ``* ws`` and ``+ bias``, and ptxas fuses
+        # packed f32x2 mul + add into an FMA on sm_100 even with fp fusion off.
+        y = tl.extra.cuda.libdevice.mul_rn(y, ws[None, :])
         if not WS_FP32:
             y = _rbf16(y)
         if HAS_BIAS:
-            y = y + tl.load(b_ptr + rn).to(tl.float32)[None, :]
+            y = tl.extra.cuda.libdevice.add_rn(y, tl.load(b_ptr + rn).to(tl.float32)[None, :])
         c_ptrs = c_ptr + offs_m[:, None] * stride_cm + offs_n[None, :]
         mask = (offs_m[:, None] < M) & (offs_n[None, :] < N)
         tl.store(c_ptrs, y.to(tl.bfloat16), mask = mask)
@@ -333,10 +339,43 @@ def _probe(index: int, cfg: tuple) -> bool:
             b = (torch.randn(n, generator = g) * 0.1).to(torch.bfloat16).to(dev) if bias else None
             if not torch.equal(_launch(a, w, xs, ws, b, cfg), reference(a, w, xs, ws, b)):
                 return False
+        # Accumulators above 2^24 next to bf16 midpoints, bf16 activation scale: int32 -> fp32 -> bf16 rounds twice.
+        a, w = tie_operands(dev)
+        xs = torch.ones(a.shape[0], device = dev, dtype = torch.bfloat16)
+        ws = torch.ones(w.shape[0], device = dev, dtype = torch.bfloat16)
+        if not torch.equal(_launch(a, w, xs, ws, None, cfg), reference(a, w, xs, ws, None)):
+            return False
         torch.cuda.synchronize(dev)
         return True
     except Exception:  # noqa: BLE001 - out of shared memory, compile failure, ...
         return False
+
+
+def tie_operands(device: Any, rows: int = 32, k: int = 4096) -> tuple:
+    """int8 (a [rows, k], w [64, k]) whose products are int32 accumulators in [2^24, 2^26) one or two units off a
+    bf16 rounding midpoint (both signs): a row of 127s then 1s, each weight row hitting its own target exactly."""
+    import torch
+
+    k2 = 128
+    k1 = k - k2
+    targets = []
+    for e in (24, 25):
+        for mult in (0, 3, 50, 100):
+            mid = (1 << e) + mult * (1 << (e - 7)) + (1 << (e - 8))
+            for d in (-1, 1, -2, 2):
+                targets += [mid + d, -(mid + d)]
+    w = torch.zeros(len(targets), k, dtype = torch.int8)
+    for j, t in enumerate(targets):
+        s1, s2 = divmod(abs(t), 127)
+        full, rem = divmod(s1, 127)
+        sign = 1 if t >= 0 else -1
+        w[j, :full] = 127 * sign
+        if rem:
+            w[j, full] = rem * sign
+        w[j, k1] = s2 * sign
+    a = torch.ones(rows, k, dtype = torch.int8)
+    a[:, :k1] = 127
+    return a.to(device), w.to(device)
 
 
 def _v1_parts(w: Any) -> Optional[tuple]:
