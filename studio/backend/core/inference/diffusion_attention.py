@@ -155,7 +155,10 @@ def _probe_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
             continue
         try:
             with sdpa_kernel([backend]):
-                torch.nn.functional.scaled_dot_product_attention(q, q, q)
+                out = torch.nn.functional.scaled_dot_product_attention(q, q, q)
+            # Checked launch + host read: on Windows ROCm a failed fused launch raises only on the
+            # next checked kernel, which would otherwise be some later diffusion op.
+            out.float().sum().item()
             available.append(name)
         except Exception:  # noqa: BLE001 - "No available kernel" is the answer, not an error
             continue
