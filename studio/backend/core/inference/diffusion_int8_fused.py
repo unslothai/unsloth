@@ -8,10 +8,8 @@ NUMERICS: bit-identical to EAGER torchao + ATen (every bf16 rounding kept, ATen'
 on every bf16 input), fp contraction off so
 ``y * w_scale + bias`` rounds twice, row scale ``bf16(amax / 127.5)`` clamped at fp32 eps, quantizer multiplies by
 the correctly rounded reciprocal). The compiled stock path is NOT eager-exact (Inductor keeps fp32 chains).
-Both torchao activation-scale contracts, picked by the incoming scale's dtype: torchao >= 0.18 keeps it in fp32 (fp32
-``c * x_scale``, reciprocal and product); torchao <= 0.17 keeps the activation's bf16, so ``int32 * bf16`` first rounds
-the accumulator to fp32 and then to bf16 (two roundings: ``libdevice.int2float_rn``, since Triton folds
-``int32 -> fp32 -> bf16`` into one), and ``1 / s`` and ``x * (1 / s)`` round to bf16. The output scale keeps that dtype.
+Activation-scale contract follows the incoming scale's dtype: fp32 on torchao >= 0.18; bf16 on <= 0.17, where
+``int32 * bf16`` rounds twice (int32 -> fp32 -> bf16) and ``1 / s`` and ``x * (1 / s)`` round to bf16.
 
 Anything but a plain dynamic symmetric per-row ``Int8Tensor`` on CUDA + Triton >= 3.2 keeps the stock path.
 Kill switch: ``UNSLOTH_DIFFUSION_INT8_FUSED=0``.
