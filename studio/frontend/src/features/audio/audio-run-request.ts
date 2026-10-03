@@ -87,7 +87,40 @@ export function selectionExpired(
 
 export type AudioOptionScalar = boolean | number | string;
 
-export interface AudioRunRequest {
+/** Convert: Speech or Singing (Singing reloads models that offer it under another task). */
+export type ConvertMode = "speech" | "singing";
+
+/** Vevo2: keep the recording's own delivery, or take the target's (needs the recording's words). */
+export type ConvertStyle = "source" | "target";
+
+/** The Convert settings the route maps onto each family's own request fields. */
+export interface AudioConvertParams {
+  mode: ConvertMode;
+  /** Semitones, -12..12; null when pitch is Auto or the model has no pitch control. */
+  pitch: number | null;
+  pitch_auto: boolean;
+  style?: ConvertStyle;
+  /** RVC: the built-in voice to convert to. */
+  voice?: string | null;
+}
+
+/** POST /audio/run for Convert: a recording and a target voice instead of text. */
+export interface AudioConvertRunRequest {
+  workflow: "convert";
+  inputs: {
+    source: AudioSourceRef & { trim?: AudioTrim };
+    target?: AudioSourceRef | null;
+    /** What's said in the recording, for Take target style. */
+    source_text?: string | null;
+  };
+  convert: AudioConvertParams;
+  options?: Record<string, AudioOptionScalar>;
+  seed?: number | null;
+}
+
+export type AudioRunRequest = AudioTextRunRequest | AudioConvertRunRequest;
+
+export interface AudioTextRunRequest {
   workflow: "clone" | "speak";
   text: string;
   language?: string | null;
@@ -128,11 +161,69 @@ function cleanRef(
   return out;
 }
 
+/** Scalar options only, by name; whatever else a caller passed is left out. */
+function cleanOptions(
+  options: Record<string, AudioOptionScalar> | undefined,
+): Record<string, AudioOptionScalar> {
+  return Object.fromEntries(
+    Object.entries(options ?? {}).filter(
+      ([name, value]) =>
+        name &&
+        (typeof value === "boolean" ||
+          typeof value === "string" ||
+          (typeof value === "number" && Number.isFinite(value))),
+    ),
+  );
+}
+
+const CONVERT_MODES: ReadonlySet<string> = new Set(["speech", "singing"]);
+
+/** Convert's body: the source and target by id, the typed convert settings, and nothing that
+ *  names a file. The route resolves the ids to its own files in the caller's account. */
+function buildConvertRunBody(
+  request: AudioConvertRunRequest,
+): Record<string, unknown> {
+  const inputs: Record<string, unknown> = {};
+  const source = cleanRef(request.inputs?.source);
+  if (source) inputs.source = source;
+  const target = cleanRef(request.inputs?.target, false);
+  if (target) inputs.target = target;
+  const sourceText = request.inputs?.source_text?.trim();
+  if (sourceText) inputs.source_text = sourceText;
+  const params = request.convert;
+  const convert: Record<string, unknown> = {
+    mode: CONVERT_MODES.has(params?.mode) ? params.mode : "speech",
+    pitch_auto: params?.pitch_auto === true,
+    pitch:
+      params?.pitch_auto !== true &&
+      typeof params?.pitch === "number" &&
+      Number.isFinite(params.pitch)
+        ? Math.min(12, Math.max(-12, Math.round(params.pitch)))
+        : null,
+  };
+  if (params?.style === "source" || params?.style === "target") {
+    convert.style = params.style;
+  }
+  const voice = params?.voice?.trim();
+  if (voice) convert.voice = voice;
+  const body: Record<string, unknown> = {
+    workflow: "convert",
+    inputs,
+    convert,
+  };
+  const options = cleanOptions(request.options);
+  if (Object.keys(options).length > 0) body.options = options;
+  if (typeof request.seed === "number" && Number.isInteger(request.seed))
+    body.seed = request.seed;
+  return body;
+}
+
 /** The JSON body of POST /audio/run: the allowed keys only, empty values left out. The route
  *  forbids extra keys, so anything else a caller spread in would be a 422 anyway. */
 export function buildAudioRunBody(
   request: AudioRunRequest,
 ): Record<string, unknown> {
+  if (request.workflow === "convert") return buildConvertRunBody(request);
   const body: Record<string, unknown> = {
     workflow: request.workflow,
     text: request.text,
@@ -150,15 +241,7 @@ export function buildAudioRunBody(
   const emotion = cleanRef(request.inputs?.emotion, false);
   if (emotion) inputs.emotion = emotion;
   if (Object.keys(inputs).length > 0) body.inputs = inputs;
-  const options = Object.fromEntries(
-    Object.entries(request.options ?? {}).filter(
-      ([name, value]) =>
-        name &&
-        (typeof value === "boolean" ||
-          typeof value === "string" ||
-          (typeof value === "number" && Number.isFinite(value))),
-    ),
-  );
+  const options = cleanOptions(request.options);
   if (Object.keys(options).length > 0) body.options = options;
   if (typeof request.speed === "number" && Number.isFinite(request.speed))
     body.speed = request.speed;

@@ -68,6 +68,8 @@ export type AudioBusy =
 
 export type AudioGenerationPhase =
   | "preparing"
+  /** The run reloads the model under another task first (Convert's Chatterbox, Singing, an engine change). */
+  | "switching"
   | "generating"
   | "stopping"
   | "finishing"
@@ -80,9 +82,11 @@ export type AudioGenerationPresentation = {
 };
 
 /** Project request-lifetime phases into truthful UI copy. Audio generation has no
- *  browser-visible numeric progress, so these labels never imply a fraction or ETA. */
+ *  browser-visible numeric progress, so these labels never imply a fraction or ETA.
+ *  `detail` names a switch ("Switching Chatterbox to Convert…"). */
 export function audioGenerationPresentation(
   phase: AudioGenerationPhase,
+  detail?: string | null,
 ): AudioGenerationPresentation | null {
   switch (phase) {
     case "preparing":
@@ -90,6 +94,12 @@ export function audioGenerationPresentation(
         status: "Preparing audio…",
         actionLabel: "Preparing…",
         canStop: false,
+      };
+    case "switching":
+      return {
+        status: detail || "Switching model…",
+        actionLabel: "Stop",
+        canStop: true,
       };
     case "generating":
       return {

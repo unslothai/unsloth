@@ -416,7 +416,7 @@ export function useAudioGallery({
   );
 
   /** With a workflow, clears only that page's clips and leaves the other page's history alone. */
-  const handleClearGallery = useCallback(async (workflow?: "speak" | "clone" | "music") => {
+  const handleClearGallery = useCallback(async (workflow?: "speak" | "clone" | "convert" | "music") => {
     try {
       await clearAudioGallery(workflow);
       if (workflow) {
@@ -553,7 +553,7 @@ export function useWorkflowHistory({
   loadMore,
   loadingMoreRef,
   selectClip,
-}: { workflow: "speak" | "clone" | "music"; enabled: boolean } & Pick<
+}: { workflow: "speak" | "clone" | "convert" | "music"; enabled: boolean } & Pick<
   AudioGallery,
   | "clips"
   | "hasMore"

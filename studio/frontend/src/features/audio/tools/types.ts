@@ -1,9 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { AudioConvertCaps } from "@/features/chat/types/api";
 import type { ComponentType } from "react";
 import type { AudioOptionSpec, AudioOptionValues } from "../audio-options";
-import type { AudioSourceRef } from "../audio-run-request";
+import type {
+  AudioSourceRef,
+  ConvertMode,
+  ConvertStyle,
+} from "../audio-run-request";
 import type { AudioWorkflowId } from "../workflows";
 
 /** Whether a clone model needs the reference clip's transcript, as the status reports it. */
@@ -23,6 +28,12 @@ export interface AudioModelContext {
   requiredInputs?: readonly string[];
   /** Status `audio_reference_text`: null when the model does not clone. */
   referenceTextMode?: AudioReferenceTextMode | null;
+  /** Status `audio_convert`: null when the model does not convert. */
+  convert?: AudioConvertCaps | null;
+  /** Status `audio_workflow_tasks`: the server task each workflow runs under. */
+  workflowTasks?: Readonly<Record<string, string>>;
+  /** Convert: the Speech or Singing tab the page has selected. */
+  convertMode?: ConvertMode;
 }
 
 /** The part of a generation request a panel contributes. */
@@ -37,6 +48,9 @@ export interface AudioRunPatch {
   speed?: number;
   /** A panel that changes whether the transcript is used, over what the model reports. */
   referenceTextMode?: "required" | "optional" | "hidden";
+  /** Convert: Vevo2's style, and the Seed-VC engine (also sent as options.route) so the page can
+   *  tell that a run reloads the model. */
+  convert?: { style?: ConvertStyle; route?: string };
 }
 
 export interface CoreInputs {
@@ -70,7 +84,8 @@ export interface AudioToolPanel<V> {
   appliesTo?: (ctx: AudioModelContext) => boolean;
   initial: (specs: AudioOptionSpec[]) => V;
   Component: ComponentType<AudioToolPanelProps<V>>;
-  toRequest: (value: V) => AudioRunPatch;
+  /** `ctx` is the same context the panel applies on (Convert reads its Speech or Singing mode). */
+  toRequest: (value: V, ctx?: AudioModelContext) => AudioRunPatch;
   validate?: (
     value: V,
     core: CoreInputs,

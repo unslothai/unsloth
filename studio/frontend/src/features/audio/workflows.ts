@@ -7,14 +7,20 @@ import {
   AiVoiceIcon,
   MusicNote03Icon,
   SpeechToTextIcon,
+  UserSwitchIcon,
   VoiceIdIcon,
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 import { AUDIO_CPP_MUSIC_AUDIO_TYPE } from "./audio-cpp-catalog";
 
-export type AudioWorkflowId = "speak" | "clone" | "music" | "transcribe";
+export type AudioWorkflowId =
+  | "speak"
+  | "clone"
+  | "convert"
+  | "music"
+  | "transcribe";
 
-/** Which model slot a workflow runs in: Speak, Clone and Music share the main inference slot, Transcribe uses the STT sidecar. */
+/** Which model slot a workflow runs in: Speak, Clone, Convert and Music share the main inference slot, Transcribe uses the STT sidecar. */
 export type AudioWorkflowSlot = "speak" | "transcribe";
 
 /** The Audio workflows, shared by the page, the sidebar list and the More-flyout submenu. */
@@ -45,6 +51,15 @@ export const AUDIO_WORKFLOWS: ReadonlyArray<{
     hint: "Speak in the voice from a short recording",
     slot: "speak",
     createTrain: true,
+  },
+  {
+    id: "convert",
+    label: "Convert",
+    heading: "Convert voice",
+    icon: UserSwitchIcon,
+    hint: "Make a recording sound like another voice",
+    slot: "speak",
+    createTrain: false,
   },
   {
     id: "music",
@@ -111,10 +126,11 @@ export function audioWorkflowForAudioType(
 export function clipWorkflow(clip: {
   workflow?: string | null;
   audio_type?: string | null;
-}): "speak" | "clone" | "music" {
+}): "speak" | "clone" | "convert" | "music" {
   if (
     clip.workflow === "speak" ||
     clip.workflow === "clone" ||
+    clip.workflow === "convert" ||
     clip.workflow === "music"
   ) {
     return clip.workflow;

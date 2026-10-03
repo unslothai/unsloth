@@ -25,6 +25,7 @@ import {
   Download01Icon,
   SparklesIcon,
   StopIcon,
+  UserSwitchIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { addAudioClipToProject, type AudioGalleryClip } from "../api";
@@ -462,6 +463,10 @@ export function TtsOutput({
   onFreshClipFocused,
   announcement,
   clipBadge,
+  renderPlayer,
+  useAgainLabel = "Use text again",
+  showCopyText = true,
+  onSendToConvert,
 }: Pick<
   AudioGallery,
   | "srcById"
@@ -493,8 +498,23 @@ export function TtsOutput({
     freshClipId: string | null;
     onFreshClipFocused: () => void;
     announcement: string;
-    /** A short tag after a clip's text, such as the voice a clone used. */
-    clipBadge?: (clip: AudioGalleryClip) => string | null;
+    /** A short tag after a clip's text, such as the voice a clone used; `place` says which row asks. */
+    clipBadge?: (
+      clip: AudioGalleryClip,
+      place: "selected" | "history",
+    ) => string | null;
+    /** Replaces the selected clip's player (Convert's Source | Converted switch); focusRef marks a fresh clip. */
+    renderPlayer?: (
+      clip: AudioGalleryClip,
+      src: string,
+      focusRef: ((element: HTMLAudioElement | null) => void) | undefined,
+    ) => ReactNode;
+    /** The history menu's first item, which puts a clip's inputs back on its page. */
+    useAgainLabel?: string;
+    /** Whether the history menu offers Copy text (a conversion has no text of its own). */
+    showCopyText?: boolean;
+    /** Adds "Convert this voice" to the history menu, which opens Convert with the clip as the recording. */
+    onSendToConvert?: (clip: AudioGalleryClip) => void;
   }) {
   const focusFreshClip = (element: HTMLAudioElement | null) => {
     if (!element) return;
@@ -514,7 +534,13 @@ export function TtsOutput({
             </p>
             {/* Auth-protected bytes, so mount a fresh player only once this clip's object URL exists: reusing
                 one media element while src is changing left History switches showing broken controls. */}
-            {selectedClipSrc ? (
+            {selectedClipSrc && renderPlayer ? (
+              renderPlayer(
+                selectedClip,
+                selectedClipSrc,
+                selectedClip.id === freshClipId ? focusFreshClip : undefined,
+              )
+            ) : selectedClipSrc ? (
               <audio
                 key={selectedClip.id}
                 ref={selectedClip.id === freshClipId ? focusFreshClip : undefined}
@@ -535,8 +561,8 @@ export function TtsOutput({
               <span title={selectedClip.model}>{audioModelLabel(selectedClip.model)}</span>
               <span>·</span>
               <span>{formatClipDuration(selectedClip.duration_s)}</span>
-              {clipBadge?.(selectedClip) ? (
-                <ClipBadge text={clipBadge(selectedClip) ?? ""} />
+              {clipBadge?.(selectedClip, "selected") ? (
+                <ClipBadge text={clipBadge(selectedClip, "selected") ?? ""} />
               ) : null}
               <span className="flex-1" />
               <Button
@@ -660,8 +686,8 @@ export function TtsOutput({
                     className="size-3.5 shrink-0 text-muted-foreground"
                   />
                   <span className="min-w-0 flex-1 truncate">{clip.prompt}</span>
-                  {clipBadge?.(clip) ? (
-                    <ClipBadge text={clipBadge(clip) ?? ""} />
+                  {clipBadge?.(clip, "history") ? (
+                    <ClipBadge text={clipBadge(clip, "history") ?? ""} />
                   ) : null}
                   <span className="shrink-0 text-ui-11p5 text-muted-foreground">
                     {formatClipDuration(clip.duration_s)}
@@ -699,18 +725,32 @@ export function TtsOutput({
                           strokeWidth={1.75}
                           className="size-icon"
                         />
-                        Use text again
+                        {useAgainLabel}
                       </DropdownMenuItem>
-                      <DropdownMenuItem
-                        onClick={() => void handleCopyPrompt(clip.prompt)}
-                      >
-                        <HugeiconsIcon
-                          icon={Copy01Icon}
-                          strokeWidth={1.75}
-                          className="size-icon"
-                        />
-                        Copy text
-                      </DropdownMenuItem>
+                      {onSendToConvert ? (
+                        <DropdownMenuItem
+                          onClick={() => onSendToConvert(clip)}
+                        >
+                          <HugeiconsIcon
+                            icon={UserSwitchIcon}
+                            strokeWidth={1.75}
+                            className="size-icon"
+                          />
+                          Convert this voice
+                        </DropdownMenuItem>
+                      ) : null}
+                      {showCopyText ? (
+                        <DropdownMenuItem
+                          onClick={() => void handleCopyPrompt(clip.prompt)}
+                        >
+                          <HugeiconsIcon
+                            icon={Copy01Icon}
+                            strokeWidth={1.75}
+                            className="size-icon"
+                          />
+                          Copy text
+                        </DropdownMenuItem>
+                      ) : null}
                     </>
                   }
                 />

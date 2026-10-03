@@ -11,9 +11,10 @@ const modeStep: TourStep = {
   body: (
     <>
       Speak turns text into speech, Clone speaks in the voice from a short
-      recording, Music makes songs and sound effects, and Transcribe turns a
-      recording into text. Each lists only the models that can do it, so the
-      picker above follows the page.
+      recording, Convert makes a recording sound like another voice, Music makes
+      songs and sound effects, and Transcribe turns a recording into text. Each
+      lists only the models that can do it, so the picker above follows the
+      page.
     </>
   ),
 };
@@ -23,6 +24,8 @@ const MODEL_STEP_BODY: Record<AudioWorkflowId, string> = {
     "Text-to-speech models, including voices you fine-tuned under On Device.",
   clone:
     "Models that can speak in the voice of a short recording you give them.",
+  convert:
+    "Voice conversion models. Loading one replaces the model in the main slot.",
   music: "Music models. Loading one replaces the model in the main slot.",
   transcribe:
     "Speech recognition models. They run beside your chat model, not in its place.",
@@ -107,6 +110,44 @@ export function buildAudioTourSteps({
         body: <>What the cloned voice should say.</>,
       },
       outputStep,
+    ];
+  }
+
+  if (workflow === "convert") {
+    return [
+      modeStep,
+      modelStep(workflow),
+      {
+        id: "source",
+        target: "audio-convert-source",
+        title: "Recording",
+        body: (
+          <>
+            Upload, record or pick the speech or singing to convert. Its words
+            and timing stay; only the voice changes.
+          </>
+        ),
+      },
+      {
+        id: "target",
+        target: "audio-convert-target",
+        title: "Target voice",
+        body: (
+          <>
+            The voice it should sound like: a short clip, a saved voice, or one
+            of the model's built-in voices.
+          </>
+        ),
+      },
+      {
+        ...outputStep,
+        body: (
+          <>
+            Results play here and stay in the history list. Switch between
+            Source and Converted to hear the difference at the same moment.
+          </>
+        ),
+      },
     ];
   }
 

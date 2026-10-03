@@ -8,6 +8,31 @@ import { readAudioWorkspaceSource } from "./helpers/audio-workspace.ts";
 
 const source = readAudioWorkspaceSource();
 
+const { audioGenerationPresentation } = await import(
+  "../src/features/audio/audio-page-policy.ts"
+);
+
+test("a run that reloads the model first can be stopped while it switches", () => {
+  assert.deepEqual(audioGenerationPresentation("switching"), {
+    status: "Switching model…",
+    actionLabel: "Stop",
+    canStop: true,
+  });
+  assert.deepEqual(
+    audioGenerationPresentation("switching", "Switching Chatterbox to Convert…"),
+    {
+      status: "Switching Chatterbox to Convert…",
+      actionLabel: "Stop",
+      canStop: true,
+    },
+  );
+  // The detail only names a switch; other phases keep their own words.
+  assert.equal(
+    audioGenerationPresentation("generating", "Switching…")?.status,
+    "Generating audio…",
+  );
+});
+
 test("generation exposes Stop only while the request controller can abort", () => {
   assert.match(
     source,

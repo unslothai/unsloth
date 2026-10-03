@@ -4,6 +4,7 @@
 import type { NativeAudioInstructionsKind } from "../audio-page-policy";
 import type { AudioWorkflowId } from "../workflows";
 import { CLONE_TOOL_PANELS } from "./clone-panels";
+import { CONVERT_TOOL_PANELS } from "./convert-panels";
 import { InstructionsField, MossLanguageField } from "./instructions-panels";
 import { instructionsKindFor, panelApplies } from "./select";
 import { SPEAK_TOOL_PANELS } from "./speak-panels";
@@ -104,12 +105,13 @@ export function isInstructionPanel(id: string): boolean {
 }
 
 /** Model tools, in rail order: the saved-voice choice first, then the instruction fields, then
- *  family tools. */
+ *  family tools. Convert's panels show on Convert only. */
 export const AUDIO_TOOL_PANELS: readonly AnyAudioToolPanel[] = [
   SPEAK_TOOL_PANELS[0],
   ...INSTRUCTION_PANELS,
   ...SPEAK_TOOL_PANELS.slice(1),
   ...CLONE_TOOL_PANELS,
+  ...CONVERT_TOOL_PANELS,
 ];
 
 export function audioToolPanelsFor(

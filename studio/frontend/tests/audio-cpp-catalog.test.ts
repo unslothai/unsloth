@@ -20,6 +20,7 @@ import {
   audioCppDisplayName,
   audioCppModelFor,
   audioCppSizeLabel,
+  audioCppWorkflowsFor,
   isAudioCppFolderId,
 } from "../src/features/audio/audio-cpp-catalog.ts";
 import {
@@ -159,6 +160,30 @@ test("recommended models are plain GGUF Audio rows named as on the Hub", () => {
       assert.equal(option.descriptionSuffix, "GGUF");
     }
   }
+});
+
+test("voice conversion models are seeded with the pages they run on", () => {
+  const workflowsOf = (name: string) => {
+    const model = audioCppModelFor(`${AUDIO_CPP_REPO}/${name}`);
+    assert.ok(model, name);
+    assert.equal(model.task, "tts", name);
+    return audioCppWorkflowsFor(model);
+  };
+  assert.deepEqual(workflowsOf("RVC-GGUF"), ["convert"]);
+  assert.deepEqual(workflowsOf("SeedVC-MLX-GGUF"), ["convert"]);
+  assert.deepEqual(workflowsOf("MeanVC2-GGUF"), ["convert"]);
+  assert.deepEqual(workflowsOf("Chatterbox-GGUF"), ["clone", "convert"]);
+  assert.deepEqual(workflowsOf("Vevo2-GGUF"), ["clone", "convert"]);
+  // The picker says what they do instead of "Text-to-speech".
+  const description = (name: string) =>
+    groupForRepoId(`${AUDIO_CPP_REPO}/${name}`, AUDIO_CATALOG)?.description;
+  assert.equal(description("RVC-GGUF"), "Voice conversion");
+  assert.equal(description("SeedVC-MLX-GGUF"), "Voice conversion");
+  assert.equal(description("MeanVC2-GGUF"), "Voice conversion");
+  assert.equal(description("Chatterbox-GGUF"), "Voice cloning and conversion");
+  assert.equal(description("Vevo2-GGUF"), "Voice cloning and conversion");
+  assert.equal(description("IndexTTS2-GGUF"), "Voice cloning");
+  assert.equal(description("VoxCPM2-GGUF"), "Text-to-speech");
 });
 
 test("GGUF heuristics treat these rows like any llama.cpp GGUF", () => {
@@ -525,6 +550,8 @@ test("the capability line names GGUF audio and music, never the runtime's intern
   assert.equal(audioCapabilityLine("tts", "audiocpp_tts"), "Text-to-speech · GGUF");
   assert.equal(audioCapabilityLine("music", "audiocpp_music"), "Music generation · GGUF");
   assert.equal(audioCapabilityLine("clone", "audiocpp_tts"), "Voice cloning · GGUF");
+  assert.equal(audioCapabilityLine("convert", "audiocpp_tts"), "Voice conversion · GGUF");
+  assert.equal(audioCapabilityLine("convert"), "Voice conversion");
   assert.equal(audioCapabilityLine("tts", "higgs_tts2"), "Text-to-speech · higgs_tts2");
   assert.equal(audioCapabilityLine("stt", "ready"), "Speech-to-text · ready");
 });

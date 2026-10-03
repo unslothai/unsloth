@@ -111,8 +111,16 @@ export interface AudioGalleryClip {
   source_clip_id?: string | null;
   voice_id?: string | null;
   settings?: Record<string, unknown> | null;
-  /** The reference clip's name, for clones. */
+  /** The reference clip's name, for clones; the target voice's name or built-in label, for conversions. */
   reference_name?: string | null;
+  /** Convert: the upload that was converted, when the source was not a history clip. */
+  source_input_id?: string | null;
+  /** Convert: the server kept a copy of the uploaded source with this clip. */
+  source_saved?: boolean;
+  /** Convert: the converted recording's name. */
+  source_name?: string | null;
+  /** Convert: the built-in voice the recording was converted to (RVC). */
+  target_builtin?: string | null;
 }
 
 export interface AudioGalleryListResponse {
@@ -218,7 +226,7 @@ export async function deleteAudioClip(id: string): Promise<void> {
 
 /** Deletes the clips that are not archived; with a workflow, only that workflow's clips. */
 export async function clearAudioGallery(
-  workflow?: "speak" | "clone" | "music",
+  workflow?: "speak" | "clone" | "convert" | "music",
 ): Promise<number> {
   const query = workflow ? `?workflow=${workflow}` : "";
   const response = await authFetch(`/api/inference/audio/gallery${query}`, {

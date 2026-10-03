@@ -18,8 +18,14 @@ const { audioCppModelSpeaks } = await import(
   "../src/features/audio/audio-cpp-catalog.ts"
 );
 
-type Workflow = "speak" | "clone" | "music" | "transcribe";
-const WORKFLOWS: Workflow[] = ["speak", "clone", "music", "transcribe"];
+type Workflow = "speak" | "clone" | "convert" | "music" | "transcribe";
+const WORKFLOWS: Workflow[] = [
+  "speak",
+  "clone",
+  "convert",
+  "music",
+  "transcribe",
+];
 
 function workflowsFor(row: Parameters<typeof audioRowMatchesWorkflow>[0]) {
   return WORKFLOWS.filter((workflow) => audioRowMatchesWorkflow(row, workflow));
@@ -75,6 +81,43 @@ test("a clone-only speech model lists only on Clone", () => {
       task: "text-to-speech",
     }),
     ["speak", "clone"],
+  );
+});
+
+test("voice conversion models list on Convert only; Chatterbox and Vevo2 on Clone and Convert", () => {
+  for (const name of ["RVC-GGUF", "SeedVC-MLX-GGUF", "MeanVC2-GGUF"]) {
+    const id = `audio-cpp/audio.cpp-gguf/${name}`;
+    // From the catalog entry, before the backend row says so...
+    assert.deepEqual(
+      workflowsFor({ id, task: "text-to-speech", audioType: "audiocpp_tts" }),
+      ["convert"],
+      name,
+    );
+    // ...and from the backend's list.
+    assert.deepEqual(
+      workflowsFor({ id, task: "text-to-speech", audioWorkflows: ["convert"] }),
+      ["convert"],
+      name,
+    );
+    assert.equal(audioCppModelSpeaks(id), false, name);
+  }
+  for (const name of ["Chatterbox-GGUF", "Vevo2-GGUF"]) {
+    const id = `audio-cpp/audio.cpp-gguf/${name}`;
+    assert.deepEqual(
+      workflowsFor({ id, task: "text-to-speech", audioType: "audiocpp_tts" }),
+      ["clone", "convert"],
+      name,
+    );
+    assert.equal(audioCppModelSpeaks(id), false, name);
+  }
+  // A speech model never lists on Convert.
+  assert.deepEqual(
+    workflowsFor({
+      id: "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF",
+      task: "text-to-speech",
+      audioType: "audiocpp_tts",
+    }),
+    ["speak"],
   );
 });
 
