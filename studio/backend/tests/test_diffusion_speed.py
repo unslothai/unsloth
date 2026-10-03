@@ -2342,8 +2342,7 @@ def test_family_compiles_regionally_closes_the_dynamo_import_window_first(monkey
 def test_int8_gemm_install_follows_the_denoiser_placement(
     monkeypatch, offload_active, denoiser_offloaded, expected
 ):
-    """A denoiser pinned resident under an offload rotation of the OTHER components (MiniMax-H3 on a 40 GB card)
-    still takes the fused int8 GEMM; only a moving denoiser keeps the stock path."""
+    """Only a moving denoiser keeps the stock GEMM; one pinned under the others' offload rotation takes the fused one."""
     from core.inference import diffusion_int8_gemm, diffusion_speed as ds_mod
 
     seen = []

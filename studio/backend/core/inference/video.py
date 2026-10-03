@@ -7425,16 +7425,14 @@ class VideoBackend:
                 # The conditioner and the VAEs stay in the rotation even when the denoiser is pinned, so the onload
                 # hooks are live and fullgraph has to drop.
                 offload_active = offload_policy != "none",
-                # The denoiser's OWN placement: pinned resident under the rotation (model offload) it never moves, so
-                # the fused int8 GEMM, which needs its weights on the card, engages there as on a hookless load.
+                # a denoiser pinned under the others' offload rotation never moves, so the fused int8 GEMM can engage
                 denoiser_offloaded = bool(denoiser_streamed) or not denoiser_pinned,
                 cuda_graph_default = False,
                 logger = logger,
             )
             speed_optims = tuple(k for k, v in applied.items() if v) + h3_attn_levers
             if denoiser_streamed and "compiled" in speed_optims:
-                # The streamed blocks still run on the card: the fused int8 GEMM installs against the onload device,
-                # before the first forward traces the blocks below their hooks.
+                # before the first forward traces the blocks below their hooks
                 try:
                     from .diffusion_int8_gemm import install as install_int8_gemm
                     if install_int8_gemm(
