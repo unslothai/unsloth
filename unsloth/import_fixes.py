@@ -6642,9 +6642,8 @@ def fix_cudnn_sdpa_d256_masked_backward():
 def _rocm_windows_broken_sdpa_backends():
     """Fused SDPA backends ("flash", "mem_efficient") failing on this process's Windows ROCm GPU.
 
-    A failed launch there (torch 2.11.0+rocm7.14.1, gfx1151: hipErrorInvalidValue on every call)
-    is not raised by the call or by synchronize(), only by the next checked launch, so each probe
-    ends in one and is compared against math. "No available kernel" is not a failure.
+    torch 2.11.0+rocm7.14.1 on gfx1151 fails every fused call (hipErrorInvalidValue), raised only
+    by the next checked launch, so each probe ends in one and is compared against math.
     """
     if sys.platform != "win32":
         return []
