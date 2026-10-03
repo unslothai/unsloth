@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from core.inference.audio_cpp_models import AudioCppModel
+from core.inference.audio_errors import sanitize_runtime_detail
 from loggers import get_logger
 from utils.prebuilt.child_env import isolate_home, scrub_env
 from utils.prebuilt.runtime_libs import dedupe_existing_dirs
@@ -490,7 +491,7 @@ class AudioCppServer:
                 raise AudioCppUnavailableError(
                     "The audio runtime exited before becoming ready; the model file may be "
                     "incomplete or unsupported by this build."
-                    + (f" Last output: {tail[-400:]}" if tail else "")
+                    + (f" Last output: {sanitize_runtime_detail(tail[-280:])}" if tail else "")
                 )
             if self._probe():
                 return
@@ -576,7 +577,11 @@ class AudioCppServer:
             if not self.alive():
                 raise AudioCppUnavailableError(
                     "The audio runtime stopped while serving the request."
-                    + (f" Last output: {self.log_tail()[-400:]}" if self.log_tail() else "")
+                    + (
+                        f" Last output: {sanitize_runtime_detail(self.log_tail()[-280:])}"
+                        if self.log_tail()
+                        else ""
+                    )
                 ) from exc
             raise AudioCppUnavailableError(f"The audio runtime did not answer: {exc}") from exc
         finally:
@@ -634,7 +639,9 @@ class AudioCppServer:
                 process.wait(timeout = 10)
             except subprocess.TimeoutExpired:
                 process.kill()
-                process.wait(timeout = 10)
+                # A killed server can sit in GPU context teardown well past 10 s on a busy card;
+                # the music reload restarts it mid-session and must not fail on that.
+                process.wait(timeout = 120)
         forget_pid(process.pid)
         shutil.rmtree(self._config_dir, ignore_errors = True)
 

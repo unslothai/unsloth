@@ -15,10 +15,14 @@ export const AUDIO_CPP_AUDIO_TYPES: ReadonlySet<string> = new Set([
 
 export type AudioCppTask = "tts" | "music" | "asr";
 
+/** Mirrors AudioWorkflowId; spelled out to keep this file import-free. */
+export type AudioCppWorkflow = "speak" | "clone" | "music" | "transcribe";
+
 export interface AudioCppModel {
   /** Hub repo id, or `${AUDIO_CPP_REPO}/<folder>` for a package in the shared repo. */
   id: string;
   task: AudioCppTask;
+  workflows?: readonly AudioCppWorkflow[];
   /** ASR only: the primary language codes the model transcribes. Absent = multilingual. */
   languages?: readonly string[];
   /** Phonemizes with eSpeak-ng, which upstream runtime bundles lack (backend needs_espeak). */
@@ -47,13 +51,19 @@ export const AUDIO_CPP_MODELS: readonly AudioCppModel[] = [
   { id: folder("MOSS-TTS-Nano-100M-GGUF"), task: "tts" },
   { id: folder("Supertonic-3-GGUF"), task: "tts" },
   { id: folder("Chatterbox-Turbo-GGUF"), task: "tts" },
-  { id: folder("VoxCPM2-GGUF"), task: "tts" },
+  { id: folder("VoxCPM2-GGUF"), task: "tts", workflows: ["speak", "clone"] },
+  { id: folder("Qwen3-TTS-12Hz-0.6B-Base-GGUF"), task: "tts", workflows: ["clone"] },
+  { id: folder("Chatterbox-GGUF"), task: "tts", workflows: ["clone"] },
+  { id: folder("IndexTTS2-GGUF"), task: "tts", workflows: ["clone"] },
+  { id: folder("CosyVoice3-GGUF"), task: "tts", workflows: ["clone"] },
   { id: folder("Qwen3-TTS-12Hz-1.7B-CustomVoice-GGUF"), task: "tts" },
   { id: folder("Qwen3-TTS-12Hz-1.7B-VoiceDesign-GGUF"), task: "tts" },
   { id: "audio-cpp/MiniMax-Music3-GGUF", task: "music" },
   { id: "audio-cpp/Yue2-3B-GGUF", task: "music" },
   { id: folder("ACE-Step1.5-GGUF"), task: "music" },
   { id: folder("Stable-Audio-3-Small-Music-GGUF"), task: "music" },
+  { id: folder("Stable-Audio-3-Small-SFX-GGUF"), task: "music" },
+  { id: folder("ControlFoley-GGUF"), task: "music" },
   { id: folder("Qwen3-ASR-0.6B-GGUF"), task: "asr" },
   { id: folder("Qwen3-ASR-1.7B-GGUF"), task: "asr" },
   { id: folder("Parakeet-TDT-0.6B-v3-GGUF"), task: "asr" },
@@ -151,6 +161,23 @@ export function isAudioRuntimeGguf(
     audioCppModelFor(id) !== null ||
     isAudioCppFolderId(id)
   );
+}
+
+const TASK_WORKFLOW: Record<AudioCppTask, AudioCppWorkflow> = {
+  tts: "speak",
+  music: "music",
+  asr: "transcribe",
+};
+
+export function audioCppWorkflowsFor(
+  model: AudioCppModel,
+): readonly AudioCppWorkflow[] {
+  return model.workflows ?? [TASK_WORKFLOW[model.task]];
+}
+
+export function audioCppModelSpeaks(id: string | null | undefined): boolean {
+  const model = audioCppModelFor(id);
+  return !model || audioCppWorkflowsFor(model).includes("speak");
 }
 
 export function audioCppModelsForTask(task: AudioCppTask): AudioCppModel[] {

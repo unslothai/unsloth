@@ -19,14 +19,22 @@ from __future__ import annotations
 import base64
 import io
 import json
+import re
 import threading
 import wave
+from dataclasses import replace
+from pathlib import Path
 from typing import Any, Optional, Tuple
 
 from core.inference import audio_cpp_files
+from core.inference import audio_cpp_music as cm
 from core.inference.audio_cpp_models import (
+    MUSIC_MAX_VARIATIONS,
     AudioCppModel,
     AudioCppModelError,
+    CloneSpec,
+    forget,
+    option_matches,
     require_runnable,
     resolve,
     validate_options,
@@ -37,6 +45,8 @@ from core.inference.audio_cpp_server import (
     AudioCppServer,
     AudioCppStartCancelledError,
 )
+from core.inference.audio_cpp_music import music_rules
+from core.inference.audio_task_outputs import task_outputs, wav_header
 from loggers import get_logger
 from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 
@@ -53,6 +63,12 @@ def _raise_if_cancelled(cancel_event) -> None:
     if cancel_event is not None and cancel_event.is_set():
         from core.inference.audio_errors import AudioGenerationCancelledError
         raise AudioGenerationCancelledError("Audio generation cancelled")
+
+
+def _wav_seconds(path: str) -> float:
+    with wave.open(str(path)) as w:
+        rate = w.getframerate()
+        return round(w.getnframes() / rate, 3) if rate else 0.0
 
 
 def _wav_sample_rate(wav_bytes: bytes) -> int:
@@ -75,13 +91,79 @@ def _music_seconds(max_new_tokens: Optional[int]) -> float:
     return max(5.0, min(_MAX_MUSIC_SECONDS, frames / 25.0))
 
 
+# Qwen3-TTS answers "unsupported language: en"; it wants the language's English name.
+_LANGUAGE_NAMES = {
+    "zh": "Chinese",
+    "en": "English",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "de": "German",
+    "fr": "French",
+    "ru": "Russian",
+    "pt": "Portuguese",
+    "es": "Spanish",
+    "it": "Italian",
+}
+_SPEAKER_LINE_RE = re.compile(r"^\s*Speaker\s*\d+\s*:", re.IGNORECASE | re.MULTILINE)
+# F5's usable speed range.
+_MIN_SPEED, _MAX_SPEED = 0.5, 2.0
+
+
 def model_info_fields(model: AudioCppModel) -> dict[str, Any]:
     """What status reports for a loaded audio.cpp model, beyond the common audio fields."""
     return {
         "audio_family": model.family,
         "audio_options": [dict(option) for option in model.options],
         "gguf_variant": model.variant.key,
+        "audio_workflows": list(model.workflows),
+        "audio_reference_text": model.clone.reference_text if model.clone else None,
+        "audio_required_inputs": list(model.required_inputs),
+        "audio_clone": clone_rules(model),
+        "audio_music": music_rules(model),
     }
+
+
+def clone_rules(model: AudioCppModel) -> Optional[dict[str, Any]]:
+    clone = model.clone
+    if clone is None:
+        return None
+    return {
+        "reference_text": clone.reference_text,
+        "reference_text_waived": [
+            [name, list(values)] for name, values in clone.reference_text_waived
+        ],
+        "emotion_audio": clone.emotion_audio,
+    }
+
+
+def language_name(language: Optional[str]) -> Optional[str]:
+    """``en`` -> ``English``; None for Auto or an unknown code."""
+    text = str(language or "").strip()
+    if not text or text.lower() == "auto":
+        return None
+    code = text.lower().replace("_", "-").split("-", 1)[0]
+    if code in _LANGUAGE_NAMES:
+        return _LANGUAGE_NAMES[code]
+    for name in _LANGUAGE_NAMES.values():
+        if name.lower() == text.lower():
+            return name
+    logger.info("audio.cpp: no language name for %r; sending Auto", text)
+    return None
+
+
+def speech_input(model: AudioCppModel, text: str) -> str:
+    """VibeVoice refuses a script with no ``Speaker N:`` line."""
+    if model.family == "vibevoice" and not _SPEAKER_LINE_RE.search(text or ""):
+        return f"Speaker 1: {text}"
+    return text
+
+
+def _option_string(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value)) if abs(value) < 1e15 else repr(value)
+    return str(value)
 
 
 class AudioCppBackend:
@@ -99,6 +181,9 @@ class AudioCppBackend:
         self._model: Optional[AudioCppModel] = None
         self._server: Optional[AudioCppServer] = None
         self._server_lock = threading.RLock()
+        # Request-raised session options (Stable Audio max_batch); cleared when another model loads.
+        self._session_overrides: dict[str, str] = {}
+        self._status_patch: Optional[dict[str, Any]] = None
 
     # Loading
 
@@ -146,6 +231,8 @@ class AudioCppBackend:
         self.loading_models.add(model_name)
         try:
             self._ensure_downloaded(model, hf_token)
+            self._session_overrides = {}
+            self._status_patch = None
             self._start_server(model)
             self._model = model
             self.models = {
@@ -166,9 +253,17 @@ class AudioCppBackend:
             self.loading_models.discard(model_name)
 
     def _ensure_downloaded(self, model: AudioCppModel, hf_token: Optional[str]) -> None:
+        self._download_missing(model, hf_token)
+        for companion in model.companions:
+            companion_model = _resolve_companion(model, companion, hf_token, network = True)
+            if self._download_missing(companion_model, hf_token):
+                forget(companion.id)
+
+    @staticmethod
+    def _download_missing(model: AudioCppModel, hf_token: Optional[str]) -> bool:
         missing = audio_cpp_files.missing_files(model)
         if not missing:
-            return
+            return False
         from huggingface_hub import hf_hub_download
 
         from utils.hf_cache_settings import active_hf_hub_cache
@@ -182,6 +277,7 @@ class AudioCppBackend:
                 token = hf_token or None,
                 cache_dir = cache_dir,
             )
+        return True
 
     def _start_server(
         self,
@@ -191,9 +287,10 @@ class AudioCppBackend:
         with self._server_lock:
             self._stop_server_locked()
             model_path = audio_cpp_files.materialize(model)
+            served = _with_session_overrides(_with_companions(model), self._session_overrides)
             try:
                 self._server = AudioCppServer.start(
-                    model, model_path, force_cpu = self._force_cpu, cancel_event = cancel_event
+                    served, model_path, force_cpu = self._force_cpu, cancel_event = cancel_event
                 )
             except AudioCppStartCancelledError as exc:
                 _raise_if_cancelled(cancel_event)
@@ -230,6 +327,12 @@ class AudioCppBackend:
         language: Optional[str] = None,
         seed: Optional[int] = None,
         audio_options: Optional[dict] = None,
+        workflow: Optional[str] = None,
+        audio_inputs: Optional[dict] = None,
+        reference_text: Optional[str] = None,
+        speed: Optional[float] = None,
+        music: Optional[dict] = None,
+        output_dir: Optional[str] = None,
     ) -> Tuple[bytes, int]:
         del top_k, min_p, repetition_penalty, use_adapter
         if not self.active_model_name or self.active_model_name not in self.models:
@@ -238,10 +341,38 @@ class AudioCppBackend:
         if model is None:
             raise RuntimeError("No active audio model")
         _raise_if_cancelled(cancel_event)
-        options = validate_options(model.options, audio_options)
+        if workflow == "music" and music is not None:
+            options = validate_options(model.options, audio_options)
+            return self._run_music(
+                model,
+                music,
+                (audio_inputs or {}).get("source"),
+                options,
+                seed,
+                output_dir,
+                cancel_event,
+            )
+        cloning = workflow == "clone" or bool(audio_inputs)
+        if cloning and model.clone is None:
+            raise RuntimeError(f"{model.display_name} cannot clone a voice.")
+        options = validate_options(model.clone_options if cloning else model.options, audio_options)
         server = self._running_server(model, cancel_event)
         try:
-            if model.task == "music":
+            if cloning:
+                wav = self._generate_clone(
+                    server,
+                    model,
+                    text,
+                    audio_inputs or {},
+                    reference_text = reference_text,
+                    instructions = instructions,
+                    language = language,
+                    speed = speed,
+                    seed = seed,
+                    options = options,
+                    cancel_event = cancel_event,
+                )
+            elif model.task == "music":
                 wav = self._generate_music(
                     server, model, text, instructions, max_new_tokens, seed, options, cancel_event
                 )
@@ -263,7 +394,10 @@ class AudioCppBackend:
             _raise_if_cancelled(cancel_event)
             raise
         except AudioCppRequestError as exc:
-            raise RuntimeError(f"The audio runtime could not generate audio: {exc.detail}") from exc
+            from core.inference.audio_errors import AudioRuntimeError
+            raise AudioRuntimeError(
+                f"The audio runtime could not generate audio: {exc.detail}", status = exc.status
+            ) from exc
         _raise_if_cancelled(cancel_event)
         return wav, _wav_sample_rate(wav)
 
@@ -288,7 +422,11 @@ class AudioCppBackend:
     ) -> bytes:
         defaults = dict(model.request_defaults)
         default_options = dict(defaults.pop("options", None) or {})
-        body: dict[str, Any] = {"model": server.model_id, "input": text, **defaults}
+        body: dict[str, Any] = {
+            "model": server.model_id,
+            "input": speech_input(model, text),
+            **defaults,
+        }
         # Family defaults win: Studio's generic temperature can stop one emitting its stop token (MOSS-TTS-Nano).
         del temperature, top_p
         chosen = dict(options)
@@ -340,6 +478,75 @@ class AudioCppBackend:
         return data
 
     @staticmethod
+    def _generate_clone(
+        server: AudioCppServer,
+        model: AudioCppModel,
+        text: str,
+        audio_inputs: dict,
+        *,
+        reference_text: Optional[str],
+        instructions: Optional[str],
+        language: Optional[str],
+        speed: Optional[float],
+        seed: Optional[int],
+        options: dict,
+        cancel_event,
+    ) -> bytes:
+        """Speak ``text`` in the voice of ``audio_inputs["reference"]`` (a server-local WAV path).
+
+        An emotion clip has no field on the speech endpoint, so that request goes to /v1/tasks/run
+        with the clip as top-level ``audio``."""
+        clone = model.clone or CloneSpec()
+        reference = audio_inputs.get("reference")
+        if not reference:
+            raise RuntimeError(f"{model.display_name} needs a reference clip to clone.")
+        emotion = audio_inputs.get("emotion") if clone.emotion_audio else None
+        request_options = {name: _option_string(value) for name, value in options.items()}
+        body: dict[str, Any] = {"model": server.model_id}
+        spoken = speech_input(model, text)
+        if emotion:
+            body["text"] = spoken
+        else:
+            body["input"] = spoken
+        body["voice_ref"] = str(reference)
+        if emotion:
+            body["audio"] = str(emotion)
+        transcript = str(reference_text or "").strip()
+        if (
+            transcript
+            and clone.reference_text != "unused"
+            and not option_matches(clone.reference_text_dropped, options)
+        ):
+            body["reference_text"] = transcript
+        if language and str(language).strip():
+            chosen = language_name(language) if clone.language_names else str(language).strip()
+            if chosen:
+                body["language"] = chosen
+        if clone.speed and speed is not None:
+            body["speed"] = max(_MIN_SPEED, min(_MAX_SPEED, float(speed)))
+        if clone.instructions and instructions and str(instructions).strip():
+            body["instructions"] = str(instructions).strip()
+        if request_options:
+            body["options"] = request_options
+        if seed is not None:
+            body["seed"] = str(int(seed))
+        if emotion:
+            ctype, data = server.post_json(
+                "/v1/tasks/run",
+                body,
+                timeout = _GENERATE_TIMEOUT_SECONDS,
+                cancel_event = cancel_event,
+            )
+            return _audio_from_task_response(ctype, data)
+        _ctype, data = server.post_json(
+            "/v1/audio/speech",
+            body,
+            timeout = _GENERATE_TIMEOUT_SECONDS,
+            cancel_event = cancel_event,
+        )
+        return data
+
+    @staticmethod
     def _generate_music(
         server: AudioCppServer,
         model: AudioCppModel,
@@ -350,46 +557,12 @@ class AudioCppBackend:
         options: dict,
         cancel_event,
     ) -> bytes:
-        # The Audio page's music form sends the description as instructions and the lyrics as text (the MiniMax
-        # convention).
-        description = str(instructions or "").strip()
-        lyrics = str(text or "").strip()
-        seconds = _music_seconds(max_new_tokens)
-        request: dict[str, Any] = {}
-        request_options: dict[str, Any] = dict(options)
-        if model.family == "minimax_music3":
-            if not lyrics:
-                raise RuntimeError("MiniMax Music 3 needs lyrics.")
-            # The caption is the input. The task route maps duration_seconds onto the duration_sec
-            # option; sending both is refused as "conflicting option values", even when equal.
-            request.update(
-                {"text": description or lyrics, "lyrics": lyrics, "duration_seconds": seconds}
+        try:
+            request = cm.legacy_song_request(
+                model, text, instructions, _music_seconds(max_new_tokens), options, seed
             )
-            request_options["lyrics"] = lyrics
-        elif model.family == "yue2":
-            if not description:
-                raise RuntimeError("YuE2 needs a style description.")
-            request["text"] = lyrics or description
-            request_options["style"] = description
-            if lyrics:
-                request_options["lyrics"] = lyrics
-            # YuE2's length is its semantic token budget at 25 frames per second (default 9000, six
-            # minutes), and its default floor of 200 frames would outlast a short request.
-            frames = int(round(seconds * 25))
-            request_options["semantic_max_tokens"] = frames
-            request_options["semantic_min_tokens"] = min(200, frames)
-        else:
-            # A lone prompt with no description is the description.
-            if not description:
-                description, lyrics = lyrics, ""
-            request["text"] = description
-            request["duration_seconds"] = seconds
-            if lyrics and model.family != "stable_audio":
-                request["lyrics"] = lyrics
-        if request_options:
-            request["options"] = request_options
-        if seed is not None:
-            request["seed"] = str(int(seed))
+        except cm.MusicRequestError as exc:
+            raise RuntimeError(str(exc)) from exc
         ctype, data = server.post_json(
             "/v1/tasks/run",
             {"model": server.model_id, "request": request},
@@ -397,6 +570,143 @@ class AudioCppBackend:
             cancel_event = cancel_event,
         )
         return _audio_from_task_response(ctype, data)
+
+    def take_status_patch(self) -> Optional[dict[str, Any]]:
+        patch, self._status_patch = self._status_patch, None
+        return patch
+
+    def _max_batch(self) -> int:
+        try:
+            return max(1, int(self._session_overrides.get(_MAX_BATCH_OPTION, "1")))
+        except ValueError:
+            return 1
+
+    def _server_for_batch(self, model: AudioCppModel, batch: int, cancel_event) -> AudioCppServer:
+        """The running server, restarted once with max_batch raised to the cap, so later batches
+        never reload."""
+        with self._server_lock:
+            if batch <= self._max_batch():
+                return self._running_server(model, cancel_event)
+            logger.info(
+                "audio.cpp: reloading %s with %s=%d for %d variations",
+                model.id,
+                _MAX_BATCH_OPTION,
+                MUSIC_MAX_VARIATIONS,
+                batch,
+            )
+            previous = dict(self._session_overrides)
+            self._session_overrides[_MAX_BATCH_OPTION] = str(MUSIC_MAX_VARIATIONS)
+            try:
+                self._start_server(model, cancel_event)
+            except BaseException:
+                self._session_overrides = previous
+                raise
+            rules = music_rules(model, self._max_batch())
+            if self.active_model_name in self.models:
+                self.models[self.active_model_name]["audio_music"] = rules
+            self._status_patch = {"audio_music": rules}
+            return self._server
+
+    def _run_music(
+        self,
+        model: AudioCppModel,
+        music: dict,
+        source: Optional[str],
+        options: dict,
+        seed: Optional[int],
+        output_dir: Optional[str],
+        cancel_event,
+    ) -> Tuple[bytes, int]:
+        """Every output goes to ``output_dir`` with an ``outputs.json`` manifest; the first is
+        returned."""
+        if model.task != "music" or model.music is None:
+            raise RuntimeError(f"{model.display_name} does not make music in the Music studio.")
+        mode_id = str(music.get("mode") or "song")
+        try:
+            mode = cm.song_mode(model, mode_id)
+        except cm.MusicRequestError as exc:
+            raise RuntimeError(str(exc)) from exc
+        variations = int(music.get("variations") or 1) if mode_id != "edit" else 1
+        if variations > 1 and (not mode.variations or variations > MUSIC_MAX_VARIATIONS):
+            raise RuntimeError(
+                f"{model.display_name} makes at most "
+                f"{MUSIC_MAX_VARIATIONS if mode.variations else 1} variation(s) at a time."
+            )
+        if seed is None and model.music.fixed_seed:
+            seed = cm.random_seed()
+        batch = variations if mode.variations == "batch" else 1
+        if mode_id == "edit":
+            if not source:
+                raise RuntimeError("Add a clip to edit.")
+            seconds = _wav_seconds(source)
+        else:
+            seconds = cm.clamp_seconds(mode, music.get("duration_s"))
+        try:
+            if mode_id == "edit":
+                requests = [
+                    cm.edit_request(
+                        model,
+                        text = music.get("text") or "",
+                        edit = music.get("edit") or {},
+                        source = source,
+                        source_seconds = seconds,
+                        duration_s = music.get("duration_s"),
+                        options = options,
+                        seed = seed,
+                    )
+                ]
+            else:
+                instrumental = bool(music.get("instrumental")) and mode.instrumental != "never"
+                takes = 1 if batch > 1 else variations
+                requests = [
+                    cm.song_request(
+                        model,
+                        description = music.get("text") or "",
+                        lyrics = "" if mode.lyrics == "unused" else (music.get("lyrics") or ""),
+                        seconds = seconds,
+                        options = options,
+                        seed = cm.take_seed(seed, index),
+                        instrumental = instrumental or mode.instrumental == "always",
+                        batch = batch,
+                    )
+                    for index in range(takes)
+                ]
+        except cm.MusicRequestError as exc:
+            raise RuntimeError(str(exc)) from exc
+        server = self._server_for_batch(model, batch, cancel_event)
+        # The route sizes the wait from the full work (extend, continue length); the orchestrator
+        # outlasts that same budget.
+        timeout = float(music.get("timeout_s") or 0) or cm.timeout_seconds(
+            model.family, seconds, variations, server.backend == "cpu"
+        )
+        outputs: list[tuple[str, bytes, Optional[int]]] = []
+        try:
+            for index, request in enumerate(requests):
+                _raise_if_cancelled(cancel_event)
+                ctype, data = server.post_json(
+                    "/v1/tasks/run",
+                    {"model": server.model_id, "request": request},
+                    timeout = timeout,
+                    cancel_event = cancel_event,
+                )
+                take_seed = cm.take_seed(seed, index)
+                for output_id, wav in task_outputs(ctype, data):
+                    name = output_id if len(requests) == 1 else f"take_{index}"
+                    outputs.append((name, wav, take_seed))
+        except AudioCppRequestCancelledError:
+            self._restart_after_cancel()
+            _raise_if_cancelled(cancel_event)
+            raise
+        except AudioCppRequestError as exc:
+            from core.inference.audio_errors import AudioRuntimeError
+            raise AudioRuntimeError(
+                f"The audio runtime could not generate audio: {exc.detail}", status = exc.status
+            ) from exc
+        _raise_if_cancelled(cancel_event)
+        if output_dir:
+            _write_outputs(output_dir, outputs)
+        first = outputs[0][1]
+        return first, _wav_sample_rate(first)
 
     # Unloading
 
@@ -414,8 +724,70 @@ class AudioCppBackend:
         del caller_cancel_event
 
 
+def _resolve_companion(
+    model: AudioCppModel,
+    companion,
+    hf_token: Optional[str] = None,
+    *,
+    network: bool = True,
+) -> AudioCppModel:
+    found = resolve(companion.id, companion.variant, hf_token, network = network)
+    if found is None:
+        name = companion.id.rsplit("/", 1)[-1]
+        raise RuntimeError(f"{model.display_name} needs {name}, which Studio could not find.")
+    return found
+
+
+def _with_companions(model: AudioCppModel) -> AudioCppModel:
+    """``model`` with each companion's served path in its session options (MioTTS's codec)."""
+    if not model.companions:
+        return model
+    session = dict((model.model_options or {}).get("session_options") or {})
+    for companion in model.companions:
+        companion_model = _resolve_companion(model, companion, network = False)
+        session[companion.session_option] = audio_cpp_files.materialize(companion_model)
+    return replace(model, model_options = {**model.model_options, "session_options": session})
+
+
+_MAX_BATCH_OPTION = "stable_audio.max_batch"
+_MANIFEST = "outputs.json"
+
+
+def _with_session_overrides(model: AudioCppModel, overrides: dict[str, str]) -> AudioCppModel:
+    if not overrides:
+        return model
+    session = dict((model.model_options or {}).get("session_options") or {})
+    session.update(overrides)
+    return replace(model, model_options = {**model.model_options, "session_options": session})
+
+
+def _write_outputs(output_dir: str, outputs) -> None:
+    """Bare file names only: the route refuses any path outside ``output_dir``."""
+    directory = Path(output_dir)
+    directory.mkdir(parents = True, exist_ok = True)
+    manifest = []
+    for index, (output_id, wav, seed) in enumerate(outputs):
+        name = f"{index:02d}.wav"
+        (directory / name).write_bytes(wav)
+        rate, duration = wav_header(wav)
+        manifest.append(
+            {
+                "id": str(output_id),
+                "file": name,
+                "sample_rate": rate,
+                "duration_s": duration,
+                "seed": seed,
+            }
+        )
+    (directory / _MANIFEST).write_text(json.dumps(manifest), encoding = "utf-8")
+
+
 def _audio_from_task_response(content_type: str, data: bytes) -> bytes:
     """WAV bytes from ``/v1/tasks/run``: raw audio, or JSON carrying base64 audio."""
+    try:
+        return task_outputs(content_type, data)[0][1]
+    except RuntimeError:
+        pass
     if content_type.startswith("audio/") or data[:4] == b"RIFF":
         return data
     try:
