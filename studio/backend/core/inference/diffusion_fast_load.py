@@ -13,6 +13,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import threading
 from typing import Any, Iterable, Iterator, Optional, Sequence
 
@@ -32,7 +33,10 @@ _UPLOAD_BUFFERS = 16
 _UPLOAD_MIN_TENSOR_BYTES = 1 << 20
 _UPLOAD_MIN_TOTAL_BYTES = 256 << 20
 
-_WEIGHT_SUFFIXES = (".safetensors",)
+# variant=None: from_pretrained never opens *.fp16.safetensors-style twins.
+_DEFAULT_WEIGHT_RE = re.compile(
+    r"^(?:diffusion_pytorch_model|model)(?:-\d{5}-of-\d{5})?\.safetensors$"
+)
 _DENOISER_COMPONENTS = ("transformer", "unet")
 
 
@@ -274,7 +278,7 @@ def pipeline_component_files(
         except OSError:
             continue
         for entry in entries:
-            if entry.endswith(_WEIGHT_SUFFIXES):
+            if _DEFAULT_WEIGHT_RE.match(entry):
                 path = os.path.join(folder, entry)
                 if os.path.isfile(path):
                     files.append(path)

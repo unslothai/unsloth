@@ -127,13 +127,16 @@ def _fake_snapshot(tmp_path):
     snap.mkdir()
     (snap / "model_index.json").write_text(json.dumps(index))
     layout = {
-        "text_encoder": ["model.safetensors"],
+        "text_encoder": ["model.safetensors", "model.fp16.safetensors"],
         "text_encoder_2": [
             "model-00002-of-00002.safetensors",
             "model-00001-of-00002.safetensors",
             "index.json",
         ],
-        "transformer": ["diffusion_pytorch_model.safetensors"],
+        "transformer": [
+            "diffusion_pytorch_model.safetensors",
+            "diffusion_pytorch_model.fp16-00001-of-00002.safetensors",
+        ],
         "vae": ["diffusion_pytorch_model.safetensors", "diffusion_pytorch_model.bin"],
         "tokenizer": ["vocab.json"],
     }
