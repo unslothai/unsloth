@@ -6484,6 +6484,15 @@ class VideoBackend:
                     vae_tiling = True
                 except Exception as exc:  # noqa: BLE001 -- tiling is an optimisation only
                     logger.warning("video.vae_tiling_failed: %s", exc)
+            # Resident: decode untiled when it fits, tiled as fallback. Not on SPEED_OFF, which must stay bit-identical.
+            if (
+                offload_policy == "none"
+                and target.device == "cuda"
+                and effective_speed != SPEED_OFF
+            ):
+                from .video_vae_untiled import install_untiled_decode
+                if install_untiled_decode(pipe, fam.name, logger = logger):
+                    speed_optims += ("vae_untiled_when_fits",)
             # Wan's decode also grows within a single tile, which tiling alone cannot bound.
             install_decoder_sync(pipe, target, logger = logger)
 
