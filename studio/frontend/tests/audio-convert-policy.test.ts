@@ -291,6 +291,8 @@ test("only the expired-upload 404 expires uploads, and a re-upload clears it", (
 // Chatterbox restarts under clon for Clone and vc for Convert; a stale task hides the reload.
 const CLONE_REFRESHES_AFTER_RUN =
   /await showRunResult\(\{[\s\S]*?\}\);\s*(?:\/\/[^\n]*\n\s*)*await refreshStatus\(\);\s*\} catch \(error\)/;
+const CLONE_REFRESHES_AFTER_STOP =
+  /if \(!expired\) toast\.error\(message\);\s*\}\s*(?:\/\/[^\n]*\n\s*)*await refreshStatus\(\);\s*\} finally/;
 const CONVERT_REFRESHES_AFTER_STOPPED_SWITCH =
   /\} else if \(switchNotice\) \{\s*(?:\/\/[^\n]*\n\s*)*await refreshStatus\(\);\s*\}\s*\} finally/;
 const CONVERTS_ONLY =
@@ -300,9 +302,10 @@ const SPEAK_BLOCKER_OPENS_CONVERT =
 const SPEAK_STATUS_LINE_CONVERTS =
   /ttsWorkflow === "speak" && loadedConvertsOnly\s*\?\s*"The loaded model converts recordings\. Pick a speech model\."/;
 
-test("Convert's reload notice reads a status refreshed after a Clone run or a stopped switch", () => {
+test("Convert's reload notice reads a status refreshed after a Clone run, a stopped Clone or a stopped switch", () => {
   const clone = readSrc("features/audio/hooks/use-clone-generation.ts");
   assert.match(clone, CLONE_REFRESHES_AFTER_RUN);
+  assert.match(clone, CLONE_REFRESHES_AFTER_STOP);
   const convert = readSrc("features/audio/hooks/use-convert-generation.ts");
   assert.match(convert, CONVERT_REFRESHES_AFTER_STOPPED_SWITCH);
 });

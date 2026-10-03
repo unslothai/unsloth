@@ -384,8 +384,9 @@ export function useCloneGeneration({
         // already marked on its card and under Generate.
         setGenerationError(message);
         if (!expired) toast.error(message);
-        await refreshStatus();
       }
+      // Also after Stop: the run may already have restarted audio.cpp under another task.
+      await refreshStatus();
     } finally {
       generateAbort.current = null;
       updateGenerationPhase(null);
