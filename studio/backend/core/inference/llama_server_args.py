@@ -27,6 +27,19 @@ logger = logging.getLogger(__name__)
 PARALLEL_MIN = 1
 PARALLEL_MAX = 64
 
+PARALLEL_DEFAULT = 4
+
+
+def clamp_parallel_slots(n_parallel) -> int:
+    if n_parallel is None:
+        return PARALLEL_DEFAULT
+    try:
+        asked = int(n_parallel)
+    except (TypeError, ValueError):
+        return PARALLEL_DEFAULT
+    return max(PARALLEL_MIN, min(PARALLEL_MAX, asked))
+
+
 # --batch-size / --ubatch-size range, mirrored by N_BATCH_MIN/MAX in per-model-config.ts
 BATCH_MIN = 1
 BATCH_MAX = 65536
@@ -69,7 +82,6 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     frozenset({"-hfv", "-hfrv", "--hf-repo-v"}),
     frozenset({"-hffv", "--hf-file-v"}),
     frozenset({"-hft", "--hf-token"}),
-    frozenset({"-mm", "--mmproj"}),
     frozenset({"-mmu", "--mmproj-url"}),
     # Networking: Unsloth binds + proxies; retargeting orphans the proxy.
     frozenset({"--host"}),
@@ -77,6 +89,7 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     frozenset({"--path"}),
     frozenset({"--api-prefix"}),
     frozenset({"--reuse-port"}),
+    frozenset({"--rpc"}),
     # Auth / TLS: Unsloth terminates auth; upstream --api-key / TLS shadows Unsloth's key and breaks the proxy hop
     frozenset({"--api-key"}),
     frozenset({"--api-key-file"}),
@@ -577,6 +590,8 @@ _FIT_FLAGS: frozenset[str] = frozenset({"-fit", "--fit"})
 # The fitter's per-device margin. Never stripped (llama.cpp is last-wins), so a pass-through value is what the child
 # really keeps free; see fit_target_margin_in.
 _FIT_TARGET_FLAGS: frozenset[str] = frozenset({"-fitt", "--fit-target"})
+# The fitter's context floor, also never stripped; see fit_ctx_in.
+_FIT_CTX_FLAGS: frozenset[str] = frozenset({"-fitc", "--fit-ctx"})
 _LAYER_OFFLOAD_FLAGS: frozenset[str] = _GPU_LAYER_FLAGS | _FIT_FLAGS
 _MOE_OFFLOAD_FLAGS: frozenset[str] = frozenset({"-ncmoe", "--n-cpu-moe", "-cmoe", "--cpu-moe"})
 _OFFLOAD_SHADOWING_FLAGS: frozenset[str] = _LAYER_OFFLOAD_FLAGS | _MOE_OFFLOAD_FLAGS
@@ -1059,6 +1074,25 @@ def fit_is_effectively_on(
     if raw_value is None:
         return True
     return str(raw_value).strip().lower() not in _ENV_FALSE_VALUES
+
+
+def fit_ctx_in(
+    args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> Optional[int]:
+    """Return the last --fit-ctx, falling back to the supplied environment.
+
+    Unset or invalid values return None. Preserve negatives: llama.cpp stores them
+    unsigned, disabling context reduction.
+    """
+    raw_value = _last_flag_value(args, _FIT_CTX_FLAGS)
+    if raw_value is None and env:
+        raw_value = env.get("LLAMA_ARG_FIT_CTX")
+    if raw_value is None:
+        return None
+    try:
+        return int(str(raw_value).strip())
+    except ValueError:
+        return None
 
 
 def fit_target_margin_in(
@@ -1791,6 +1825,7 @@ DENIED_ENV_VARS: tuple[str, ...] = (
     "LLAMA_ARG_HOST",
     "LLAMA_ARG_PORT",
     "LLAMA_ARG_REUSE_PORT",
+    "LLAMA_ARG_RPC",
     "LLAMA_ARG_N_PARALLEL",
     "LLAMA_ARG_POOLING",
     "LLAMA_ARG_EMBEDDINGS",
@@ -1802,13 +1837,7 @@ DENIED_ENV_VARS: tuple[str, ...] = (
     "LLAMA_ARG_UI_CONFIG_FILE",
     "LLAMA_ARG_UI_MCP_PROXY",
     "LLAMA_ARG_STATIC_PATH",
-    # Deliberately absent: LLAMA_ARG_MMPROJ and LLAMA_ARG_MMPROJ_URL. --mmproj is refused in the box because Unsloth
-    # resolves the projector itself, but the environment twin is an INPUT here: _launch_has_mmproj reads both to know
-    # the launch has a projector at all, which is what keeps the vision and audio state of a model loaded through an
-    # inherited one. Only the paravirtual CPU recovery drops them, where an unpinned projector is the corrupt path it
-    # is undoing. The pooling twins are absent for the opposite reason: load_model already pops LLAMA_ARG_POOLING /
-    # _RERANKING / _EMBEDDINGS itself. The multi-model server mode is absent too: a child holding its own model
-    # directory, preset and autoload policy is not the single model Unsloth launched and accounts for.
+    # LLAMA_ARG_MMPROJ / _URL stay allowed: _launch_has_mmproj reads them as launch inputs.
     "LLAMA_ARG_MODELS_DIR",
     "LLAMA_ARG_MODELS_PRESET",
     "LLAMA_ARG_MODELS_MAX",

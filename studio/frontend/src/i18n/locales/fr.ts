@@ -2,9 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import type { en } from "./en";
+import { en } from "./en.ts";
 
 export const fr = {
+  // English fallback until this experimental feature is translated.
+  managedEngines: en.managedEngines,
   composerSettings: {
     title: "Saisie des messages",
     plainText: "Saisie en texte brut",
@@ -96,6 +98,7 @@ export const fr = {
     useModelScope: "Utiliser ModelScope",
     useModelScopeHint: "Rechercher et télécharger depuis ModelScope à la place. Vous pouvez revenir en arrière dans les Paramètres.",
     useModelScopeFailed: "Impossible de passer à ModelScope.",
+    updateToken: "Mettre à jour le jeton",
     hfToken: {
       label: "Token HF",
       saved: "Enregistré",
@@ -143,6 +146,13 @@ export const fr = {
       next: "Résultat suivant",
       close: "Fermer la recherche",
       truncated: "Cette page est trop longue pour être parcourue en entier.",
+    },
+    zoom: {
+      label: "Zoom",
+      zoomOut: "Zoom arrière",
+      zoomIn: "Zoom avant",
+      reset: "Réinitialiser",
+      announce: "Zoom {percent} %",
     },
     beta: "BETA",
     brand: "unsloth",
@@ -204,6 +214,53 @@ export const fr = {
       help: "Aide",
       logOut: "Se déconnecter",
       shutdown: "Arrêter",
+    },
+    commandPalette: {
+      placeholder: "Saisissez une commande ou recherchez...",
+      noResults: "Aucun résultat trouvé.",
+      navigation: "Navigation",
+      actions: "Actions",
+      chat: "Chat",
+      searchChats: "Rechercher des chats...",
+    },
+    search: {
+      placeholder: "Rechercher",
+      tabs: {
+        all: "Tout",
+        chats: "Discussions",
+        projects: "Projets",
+        files: "Fichiers",
+        models: "Modèles",
+      },
+      recents: "Récents",
+      actions: "Actions",
+      newChat: "Nouvelle discussion",
+      newTemporaryChat: "Nouvelle discussion temporaire",
+      fineTune: "Affiner un modèle",
+      generateImage: "Générer une image",
+      generateVideo: "Générer une vidéo",
+      untitledChat: "Discussion sans titre",
+      compare: "Comparaison",
+      loading: "Chargement...",
+      empty: {
+        all: "Rien à rechercher pour l’instant.",
+        chats: "Aucune discussion pour l’instant.",
+        projects: "Aucun projet pour l’instant.",
+        files: "Aucun fichier dans votre Bibliothèque pour l’instant.",
+        models: "Aucun modèle téléchargé pour l’instant.",
+      },
+      noMatches: "Aucun résultat.",
+      when: {
+        today: "Aujourd’hui",
+        pastWeek: "Semaine dernière",
+        pastMonth: "Mois dernier",
+        older: "Plus ancien",
+      },
+      footer: {
+        close: "Fermer",
+        changeType: "Changer de type",
+        open: "Ouvrir",
+      },
     },
     notFound: {
       title: "Page introuvable",
@@ -482,6 +539,10 @@ export const fr = {
           label: "Raccourcis clavier",
           description: "Ouvrir cette liste de raccourcis",
         },
+        openCommandPalette: {
+          label: "Palette de commandes",
+          description: "Ouvrir la palette de commandes",
+        },
         searchChats: {
           label: "Rechercher dans les discussions",
           description: "Ouvrir la recherche de discussions",
@@ -719,6 +780,7 @@ export const fr = {
       disabled: "La journalisation dans un fichier est désactivée (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
       missing: "Aucun fichier journal n'a été trouvé.",
       unreadable: "Le fichier journal n'a pas pu être lu.",
+      viewLogs: "Voir les journaux",
       timeout: "La demande du journal a expire. Le serveur est peut-etre injoignable.",
       droppedNotice: "Certaines lignes ont été ignorées : le journal a été écrit plus vite qu'il ne pouvait être lu.",
       morePending: "D'autres lignes sont encore en cours de lecture ; elles arriveront au prochain rafraichissement.",
@@ -1106,6 +1168,9 @@ export const fr = {
         source: "Source des modèles",
         sourceDescription: "Où le hub de modèles recherche et télécharge. Choisissez ModelScope si Hugging Face est bloqué ou lent sur votre réseau.",
         sourceFallback: "ModelScope n'a pas pu démarrer, Hugging Face est donc utilisé. Consultez les journaux d'Unsloth.",
+        autoSourceTitle: "Source des modèles basculée sur ModelScope",
+        autoSourceDescription: "Hugging Face est souvent lent ou bloqué dans votre région ; Unsloth télécharge donc désormais les modèles depuis ModelScope.",
+        autoSourceAction: "Ouvrir les paramètres de source des modèles",
         sectionTitle: "Hub de modèles",
         endpoint: "Point de terminaison Hugging Face",
         endpointDescription: "Source de téléchargement des modèles et jeux de données. Laissez vide pour huggingface.co, ou saisissez un miroir comme https://hf-mirror.com.",
@@ -1210,9 +1275,22 @@ export const fr = {
       },
       permissions: {
         sectionTitle: "Autorisations",
-        bypassLabel: "Autorisations des outils",
-        bypassDescription:
-          "Comment Unsloth approuve les appels d'outils de la discussion (terminal, python, web, MCP) avant leur exécution. Le mode « Full access » désactive les demandes d'approbation et le bac à sable d'exécution du code.",
+        names: {
+          ask: "Demander l'accord",
+          auto: "Approuver pour moi",
+          off: "Exécuter automatiquement",
+          full: "Accès complet",
+        },
+        details: {
+          ask:
+            "Demande votre accord avant chaque appel d'outil, y compris le code terminal et Python, les recherches web, les modifications de fichiers et les outils MCP. Les outils exécutés par un fournisseur externe ne sont pas mis en pause. Idéal pour vérifier chaque étape.",
+          auto:
+            "Exécute seul les appels d'outils courants et ne demande votre accord que lorsqu'une action semble risquée, comme lire des identifiants, élever des privilèges ou lancer des commandes destructrices.",
+          off:
+            "Exécute chaque appel d'outil sans demander. Le code Python et terminal reste exécuté dans le bac à sable, qui limite les fichiers auxquels il peut accéder sur votre ordinateur.",
+          full:
+            "Exécute chaque appel d'outil sans demander et désactive le bac à sable du code : le code Python et terminal peut lire et modifier tout fichier accessible à votre compte. Idéal pour les tâches de confiance qui doivent travailler hors du bac à sable.",
+        },
       },
     },
     profile: {
@@ -1336,20 +1414,13 @@ export const fr = {
           wide: "Large",
           full: "Pleine largeur",
         },
-        composerAttachments: {
-          label: "Pièces jointes dans la zone de saisie",
-          description:
-            "De grandes cartes qui agrandissent la zone de saisie, ou une rangée compacte de vignettes.",
-          cards: "Grandes cartes",
-          compact: "Vignettes compactes",
-        },
         sentAttachments: {
           label: "Pièces jointes dans les messages envoyés",
           description:
-            "Une liste indiquant le type de chaque fichier, ou de petites étiquettes. Le mode automatique passe aux étiquettes au-delà de six fichiers.",
+            "Standard affiche chaque fichier avec son type, Compact en place davantage sur chaque ligne. Le mode automatique passe en compact au-delà de six fichiers.",
           auto: "Automatique",
-          list: "Liste",
-          chips: "Étiquettes",
+          list: "Standard",
+          chips: "Compact",
         },
         reset: "Réinitialiser",
         resetAll: "Réinitialiser la personnalisation",
@@ -1574,6 +1645,7 @@ export const fr = {
         noRamReserveDescription: "Réduit la RAM occupée par les poids du modèle.",
         noRamReserveHint: "Ignore le chargement mappé en mémoire sur les versions Windows compatibles lorsque le modèle est entièrement déchargé sur le GPU, afin que ses pages ne restent pas résidentes. Sinon, conserve le chargement mappé en mémoire. Les tampons CPU nécessaires peuvent toujours occuper de la RAM. Supprime --no-mmap et --mlock.",
         mlockVetoed: "--mlock reste désactivé : épingler le modèle réserverait de la RAM pour l'intégralité de celui-ci. Le déchargement automatique en veille reste désactivé.",
+        mlockNotApplicable: "Entièrement sur le GPU : rien à verrouiller en RAM système. Le déchargement automatique en veille reste désactivé.",
         memlockCapped: "Ce système limite la mémoire verrouillée à {limit}. Un modèle plus grand ne sera pas entièrement épinglé ; augmentez la limite avec ulimit -l.",
         reloadRequired: "Rechargez le modèle pour appliquer les nouvelles options de mémoire.",
         loadError: "Impossible de charger les paramètres de mémoire du modèle",
@@ -1801,6 +1873,11 @@ export const fr = {
         advanced: { title: "Avancé" },
         contextTitle: "Contexte",
       },
+      library: {
+        label: "Gérer les discussions",
+        description: "Recherchez, triez et organisez discussions, projets et sections.",
+        action: "Ouvrir la Bibliothèque",
+      },
       projectAttachmentsHint:
         "Modifiez ce réglage pour chaque chat dans son menu de pièces jointes.",
       rememberParamsPerModelHint:
@@ -1811,9 +1888,6 @@ export const fr = {
         "Le texte collé de {count} caractères ou plus devient une pièce jointe .txt. Le texte plus court reste dans le champ de message.",
       pastedTextOffDescription:
         "Tout le texte collé reste dans le champ de message, quelle que soit sa longueur.",
-      projectsSection: "Afficher la section Projets",
-      projectsSectionDescription:
-        "Regroupe les discussions de projet sous un titre Projets. Désactivez cette option pour les lister dans Récents.",
       title: "Discussion",
       description: "Personnalisez le fonctionnement du chat sur cet appareil.",
       modelSelection: {
@@ -1843,6 +1917,18 @@ export const fr = {
       pastedTextThresholdDescription:
         "Appuyez sur {shortcut} pour coller directement dans le champ de message.",
       pastedTextThresholdOff: "Désactivé",
+      autoScroll: "Défilement pendant la génération",
+      autoScrollDescription:
+        "Le défilement auto garde le nouveau texte visible. Manuel reste en place pour lire depuis le début.",
+      autoScrollAuto: "Défilement auto",
+      autoScrollManual: "Manuel",
+      autoScrollKeywords:
+        "défilement défiler automatique suivre bas sauter diffusion génération vue verrouiller scroll autoscroll follow",
+      scrollToBottomButton: "Bouton « Défiler vers le bas »",
+      scrollToBottomButtonDescription:
+        "Afficher un bouton pour revenir au dernier message après avoir fait défiler vers le haut.",
+      scrollToBottomButtonKeywords:
+        "défiler bas sauter dernier flèche bouton masquer scroll bottom button",
       showResponseModel: "Afficher le modèle de réponse",
       showResponseModelDescription:
         "Afficher les métadonnées du modèle dans les réponses de l’assistant.",
@@ -1915,6 +2001,22 @@ export const fr = {
           "Activez « {setting} » dans Paramètres → Chat pour que les Canvas chargent des ressources externes, ou autorisez-le uniquement pour ce Canvas.",
         blockedSettingsAction: "Ouvrir les paramètres",
         blockedDismiss: "Ignorer",
+        errorTitle: "Ce Canvas a rencontré une erreur",
+        errorTitlePlural: "Ce Canvas a rencontré {count} erreurs",
+        errorHint: "« Corriger avec le modèle » place l'erreur dans la zone de message. Rien n'est envoyé tant que vous n'envoyez pas.",
+        errorBannerAction: "Corriger avec le modèle",
+        errorConsoleAction: "Ouvrir la console",
+        errorConsoleHideAction: "Masquer la console",
+        errorLocation: "ligne {line}, colonne {column}",
+        errorLine: "ligne {line}",
+        consoleTitle: "Console",
+        reloadCanvas: "Relancer",
+        consoleMessageCount: "{count} message",
+        consoleMessageCountPlural: "{count} messages",
+        consoleClear: "Vider la console",
+        consoleClose: "Fermer la console",
+        consoleEmpty: "Aucune sortie console pour l'instant.",
+        consoleCapped: "Seules les {count} dernieres entrees sont conservees; la sortie precedente a ete abandonnee.",
       },
       data: "Données",
       exportHistory: "Exporter l'historique des discussions",
@@ -2069,9 +2171,6 @@ export const fr = {
       archivedAudio: "Audio archivé",
       archivedAudioDescription: "Consultez et gérez les clips audio que vous avez archivés.",
       manageAction: "Gérer",
-      manageChats: "Gérer les discussions",
-      manageChatsDescription:
-        "Sélectionnez plusieurs discussions pour les déplacer, les épingler, les archiver, les exporter ou les supprimer.",
       exportArchivedChats: "Exporter",
       exportingArchivedChats: "Exportation...",
       exportedOneArchivedChat: "1 discussion archivée a été exportée",
@@ -2211,11 +2310,13 @@ export const fr = {
       revoking: "Révocation...",
       decisionApi: {
         title: "API de décision",
-        description: "Répondez à des questions oui/non, à choix multiples et à score sur du texte avec un modèle Laya local. Compatible avec le SDK TypeSafe.",
+        description: "Répondez à des questions oui/non, à choix multiples et à score sur du texte avec un modèle sur cette machine ou un modèle de décision issu des Connexions. Compatible avec le SDK TypeSafe.",
         enable: "Répondre aux requêtes",
         enableDescription: "Sert /v1/systemone. L'activer télécharge le modèle.",
+        enableRemoteDescription: "Sert /v1/systemone.",
         lockedByEnv: "Défini par {name}.",
         model: "Modèle",
+        thisMachine: "Cette machine",
         modelMultilingual: "Multilingue",
         modelEnglish: "Anglais",
         modelTypedDecisions: "Décisions typées",
@@ -2232,11 +2333,18 @@ export const fr = {
         loading: "Chargement…",
         loadedOn: "Chargé sur {device}",
         download: "Télécharger",
+        downloadConfirmTitle: "Télécharger Laya {model} ?",
+        downloadConfirmBody:
+          "L'API de décision a besoin de ce modèle pour répondre aux requêtes. Environ {size}, téléchargé une seule fois dans votre cache Hugging Face.",
         unload: "Décharger",
         downloadBusy: "Un modèle de l'API de décision est déjà en cours de téléchargement.",
         downloadFailed: "Impossible de lancer le téléchargement.",
         saveFailed: "Impossible d'enregistrer le réglage de l'API de décision.",
         loadError: "Impossible de charger les réglages de l'API de décision.",
+        sendsTo: "Les requêtes sont envoyées à {provider}.",
+        connectionMissing: "Cette connexion n'existe plus ou n'a pas de modèle de décision. Choisissez un autre modèle.",
+        addConnection: "Pour utiliser un modèle de décision hébergé, ajoutez TypeSafe, Liquid AI ou OpenRouter dans Connexions.",
+        openConnections: "Ouvrir Connexions",
       },
       usageNoModel:
         "Chargez ou téléchargez un modèle pour voir des exemples exécutables. Aucun modèle n'est encore disponible sur ce serveur pour figurer dans les exemples.",
@@ -2397,6 +2505,7 @@ export const fr = {
       context: "Contexte",
       lr: "LR",
       hardware: "Matériel",
+      vram: "VRAM",
       noGpu: "Aucun GPU détecté",
       hfToken: "Token HF",
       saved: "Enregistré",
@@ -2472,6 +2581,8 @@ export const fr = {
       tokenRejectedTitle: "Token Hugging Face refusé",
       tokenRejectedBody:
         "Mettez à jour votre token dans Paramètres → Général, puis réessayez.",
+      tokenRejectedAnonymousBody:
+        "Les modèles publics s'affichent sans lui. Mettez à jour votre token dans Paramètres → Général pour accéder aux modèles privés et restreints.",
       hubUnreachable: "Impossible de joindre Hugging Face",
       cantUseModel: "Impossible d'utiliser le modèle pour l'entraînement",
       reasonTypeMismatch:
@@ -3134,6 +3245,7 @@ export const fr = {
     discardDescription: "Les modifications non enregistrées de {name} seront perdues.",
     discard: "Abandonner",
     mentions: "Compétences",
+    manage: "Gérer les compétences",
   },
   library: {
     tabs: {
@@ -3146,6 +3258,116 @@ export const fr = {
       audio: "Audio",
       models: "Fine-tunes",
       all: "Tout",
+      chats: "Discussions",
+    },
+    // The Chats tab: conversations and projects, kept apart from every file tab.
+    chats: {
+      sections: {
+        chats: "Discussions",
+        projects: "Projets",
+        archived: "Archivés",
+        ariaLabel: "Sections des discussions",
+      },
+      search: {
+        chats: "Rechercher des discussions",
+        projects: "Rechercher des projets",
+        archived: "Rechercher dans les discussions archivées",
+        project: "Rechercher dans « {project} »",
+        sections: "Rechercher des sections",
+      },
+      toolbar: {
+        show: "Afficher",
+        pinned: "Épinglés",
+        forks: "Forks",
+        comparisons: "Comparaisons",
+        project: "Projet",
+        model: "Modèle",
+        groupBy: "Grouper par",
+        groupNone: "Aucun regroupement",
+        groupDate: "Date",
+        groupProject: "Projet",
+        pinnedFirst: "Épinglés en premier",
+        newChat: "Nouvelle discussion",
+        newProject: "Nouveau projet",
+        sortChats: "Nombre de discussions",
+        withoutSection: "Aucune section",
+      },
+      groups: {
+        today: "Aujourd’hui",
+        yesterday: "Hier",
+        week: "7 derniers jours",
+        month: "30 derniers jours",
+      },
+      list: {
+        created: "Créé",
+        lastActive: "Dernière activité",
+        location: "Emplacement",
+        lastModified: "Dernière modification",
+        contents: "Contenu",
+        oneMessage: "1 message",
+        messageCount: "{count} messages",
+        showMore: "Afficher plus ({count})",
+      },
+      badges: {
+        pinned: "Épinglé",
+        fork: "Fork",
+        compare: "Comparaison",
+      },
+      menu: {
+        fork: "Forker",
+        moveTo: "Déplacer vers un projet",
+        newChatInProject: "Nouvelle discussion dans le projet",
+        edit: "Modifier",
+        deleteProject: "Supprimer le projet",
+        newChatInSection: "Nouvelle discussion dans la section",
+      },
+      project: {
+        oneProject: "1 projet",
+        projectCount: "{count} projets",
+      },
+      empty: {
+        chatsTitle: "Aucune discussion pour l’instant",
+        chatsDescription: "Vos conversations apparaissent ici, séparées de vos fichiers.",
+        projectsTitle: "Aucun projet pour l’instant",
+        projectsDescription: "Les projets regroupent des discussions liées et partagent des instructions entre elles.",
+        archivedTitle: "Rien d’archivé",
+        archivedDescription: "Les discussions que vous archivez apparaissent ici.",
+        sectionsTitle: "Aucune section pour l’instant",
+        sectionsDescription: "Les sections regroupent discussions et projets dans la barre latérale comme vous le souhaitez.",
+        sectionTitle: "Rien dans cette section pour l’instant",
+        sectionDescription: "Déplacez des discussions ici depuis leur menu, ou démarrez une nouvelle discussion dans cette section.",
+      },
+      dialog: {
+        renameChat: "Renommer la discussion",
+        deleteChatDescription: "Cette discussion sera définitivement supprimée. Cette action est irréversible.",
+        deleteProjectDescription: "Le projet et ses discussions ({count}) seront définitivement supprimés. Cette action est irréversible.",
+        deleteFilesMany: "Supprimer aussi les fichiers et dossiers sandbox créés par ces discussions.",
+        deleteProjectFilesLabel: "Supprimer le dossier de travail du projet",
+        deleteProjectFiles: "Le dossier de travail du projet sera supprimé du disque.",
+      },
+      toast: {
+        projectMoved: "{project} déplacé vers {section}",
+        projectUnfiled: "{project} retiré de {section}",
+        forkFailed: "Échec du fork",
+        projectDeleted: "« {name} » supprimé",
+        projectDeleteFailed: "Impossible de supprimer le projet",
+        removedFromSection: "Retirées de la section : {count}",
+      },
+      folder: {
+        openChat: "Ouvrir le dossier de la discussion",
+        openChatTitle: "Ouvrir le dossier que lisent et écrivent les outils de cette discussion",
+        openProject: "Ouvrir le dossier du projet",
+        openProjectTitle: "Ouvrir le dossier que lisent et écrivent les discussions de ce projet",
+        chatHint: "Seule l’application de bureau peut ouvrir le dossier de fichiers d’une discussion. Dans un navigateur, téléchargez le fichier depuis le résultat de l’outil qui l’a écrit.",
+        projectHint: "Seule l’application de bureau peut ouvrir le dossier d’un projet. Dans un navigateur, téléchargez les fichiers depuis les résultats des outils qui les ont écrits.",
+        manyFolders: "Cette discussion a écrit dans plusieurs dossiers.",
+        manyFoldersDescription: "Elle a exécuté des outils avant et après un déplacement : ouvrez plutôt le dossier depuis une carte d’outil.",
+        chatFailed: "Impossible d’ouvrir le dossier de la discussion.",
+        projectFailed: "Impossible d’ouvrir le dossier du projet.",
+        chatMissing: "Cette discussion n’a pas encore de dossier.",
+        projectMissing: "Ce projet n’a pas encore de dossier.",
+        missingDescription: "Il est créé la première fois qu’un outil écrit un fichier.",
+      },
     },
     empty: {
       suggestedTitle: "Votre bibliothèque est vide",

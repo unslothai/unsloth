@@ -884,6 +884,26 @@ def test_any_subquadratic_kernel_means_not_math_only(kernels, monkeypatch):
     assert att.sdpa_math_only(_target()) is False
 
 
+def test_a_fused_launch_that_fails_late_is_not_reported_available(monkeypatch):
+    # Windows ROCm gfx1151: the fused call returns, and its hipErrorInvalidValue only surfaces on
+    # the next checked kernel. The probe must take that error itself, not hand it to a later op.
+    torch = pytest.importorskip("torch")
+
+    class _Pending:
+        def float(self):
+            raise RuntimeError("CUDA error: invalid argument")
+
+    real = torch.nn.functional.scaled_dot_product_attention
+
+    def _sdpa(q, k, v, *a, **kw):
+        if not torch.backends.cuda.math_sdp_enabled():
+            return _Pending()
+        return real(q, k, v, *a, **kw)
+
+    monkeypatch.setattr(torch.nn.functional, "scaled_dot_product_attention", _sdpa)
+    assert att._probe_sdpa_kernels("cpu", torch.float32) == ("math",)
+
+
 def test_an_unanswerable_probe_is_not_a_math_only_verdict(monkeypatch):
     # "Only math" is a claim about the hardware. A probe that could not run (no torch, no device,
     # an allocator failure) has made no such claim, and must not refuse or warn on a guess.

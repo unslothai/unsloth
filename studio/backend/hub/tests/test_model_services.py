@@ -427,6 +427,12 @@ class TestExtractQuantToken:
     def test_ud_prefix_preserved(self):
         assert gguf.extract_quant_token("Foo-BF16-UD-Q4_K_XL.gguf") == "UD-Q4_K_XL"
 
+    def test_packed_and_grouped_quant_variants_do_not_collapse(self):
+        assert gguf.extract_quant_token("Ternary-Bonsai-1.7B-PQ2_0.gguf") == "PQ2_0"
+        assert gguf.extract_quant_token("Ternary-Bonsai-1.7B-Q2_0.gguf") == "Q2_0"
+        assert gguf.extract_quant_token("Ternary-Bonsai-1.7B-Q2_0_g64.gguf") == "Q2_0_g64"
+        assert gguf.extract_quant_token("Ternary-Bonsai-2-27B-PTQ1_0.gguf") == "PTQ1_0"
+
     def test_precision_infix_variants_do_not_collapse(self):
         labels = {
             gguf.extract_quant_label("Foo-BF16-Q4_K_M.gguf"),
@@ -506,6 +512,12 @@ def test_big_endian_detection_ignores_model_name_be_token():
     assert gguf.pick_best_gguf(["model-Q4_K_M-be.gguf", "model-Q4_K_M.gguf"]) == (
         "model-Q4_K_M.gguf"
     )
+
+
+def test_pick_best_gguf_prefers_an_unlisted_quant_only_over_full_precision():
+    assert gguf.pick_best_gguf(["model-bf16.gguf", "model-Q3_K.gguf"]) == "model-Q3_K.gguf"
+    assert gguf.pick_best_gguf(["model-F32.gguf", "model-bf16.gguf"]) == "model-bf16.gguf"
+    assert gguf.pick_best_gguf(["model-APEX.gguf", "model-Q4_0.gguf"]) == "model-APEX.gguf"
 
 
 def test_custom_inventory_filters_mtp_companions_at_registered_root(tmp_path, monkeypatch):
@@ -701,6 +713,69 @@ def test_local_inventory_prefers_active_cache_when_copies_are_equally_complete(t
     )
 
     assert local_inventory._dedupe_local_models([previous, active]) == [active]
+
+
+def _custom_gguf_row(
+    tmp_path: Path,
+    *,
+    load_path: Path,
+    size_bytes: int = 10,
+):
+    return model_common._local_model_info(
+        scan_path = load_path,
+        load_path = load_path,
+        source = "custom",
+        model_format = "gguf",
+        size_bytes = size_bytes,
+    )
+
+
+def test_custom_dedupe_overlapping_symlink_scans_collapse_to_one_row(tmp_path):
+    target = tmp_path / "weights"
+    target.mkdir()
+    gguf_file = target / "model.gguf"
+    gguf_file.write_bytes(b"x" * 10)
+    scan_root = tmp_path / "scan-link"
+    try:
+        scan_root.symlink_to(target, target_is_directory = True)
+    except OSError as error:
+        pytest.skip(f"symlink creation unavailable: {error}")
+    row = _custom_gguf_row(tmp_path, load_path = scan_root / "model.gguf")
+    assert local_inventory._dedupe_custom_local_models([row, row]) == [row]
+
+
+def test_custom_dedupe_collapses_duplicate_scanner_rows_for_one_symlink_alias(tmp_path):
+    target = tmp_path / "weights"
+    target.mkdir()
+    (target / "model.gguf").write_bytes(b"x" * 10)
+    alias = tmp_path / "alias"
+    try:
+        alias.symlink_to(target, target_is_directory = True)
+    except OSError as error:
+        pytest.skip(f"symlink creation unavailable: {error}")
+    row = _custom_gguf_row(tmp_path, load_path = alias / "model.gguf")
+    duplicate = _custom_gguf_row(tmp_path, load_path = alias / "model.gguf", size_bytes = 20)
+    result = local_inventory._dedupe_custom_local_models([row, duplicate])
+    assert len(result) == 1
+    assert result[0].size_bytes == 20
+
+
+def test_custom_dedupe_distinct_symlink_aliases_stay_separate_rows(tmp_path):
+    target = tmp_path / "weights"
+    target.mkdir()
+    (target / "model.gguf").write_bytes(b"x" * 10)
+    alias_a = tmp_path / "alias-a"
+    alias_b = tmp_path / "alias-b"
+    try:
+        alias_a.symlink_to(target, target_is_directory = True)
+        alias_b.symlink_to(target, target_is_directory = True)
+    except OSError as error:
+        pytest.skip(f"symlink creation unavailable: {error}")
+    row_a = _custom_gguf_row(tmp_path, load_path = alias_a / "model.gguf")
+    row_b = _custom_gguf_row(tmp_path, load_path = alias_b / "model.gguf")
+    result = local_inventory._dedupe_custom_local_models([row_a, row_b])
+    assert len(result) == 2
+    assert {r.path for r in result} == {row_a.path, row_b.path}
 
 
 def test_loaded_repo_match_accepts_previous_cache_snapshot_path(monkeypatch, tmp_path):
@@ -1930,7 +2005,7 @@ def test_browse_allowlist_includes_linux_run_media_mounts(monkeypatch, tmp_path)
     home.mkdir()
     model_dir.mkdir(parents = True)
     monkeypatch.setattr(folder_browser.Path, "home", lambda: home)
-    monkeypatch.setattr(folder_browser, "linux_run_media_mount_roots", lambda: [media_root])
+    monkeypatch.setattr(folder_browser, "linux_external_mount_roots", lambda: [media_root])
     monkeypatch.setattr(folder_browser, "_resolve_hf_cache_dir", lambda: tmp_path / "missing-hf")
     monkeypatch.setattr(scan_folders, "list_scan_folders", lambda: [])
     monkeypatch.setattr(folder_browser, "well_known_model_dirs", lambda: [])
@@ -2245,7 +2320,7 @@ def test_cached_models_scan_emits_curated_and_custom_whisper_as_stt(monkeypatch,
         lambda repo_path, _snapshot = None: {"_hidden_stt": "custom-whisper" in str(repo_path)},
     )
 
-    rows = cache_inventory._scan_cached_models()
+    rows = cache_inventory._scan_cached_models(active_hub_cache = curated_path.parent)
 
     rows_by_repo = {row["repo_id"]: row for row in rows}
     assert set(rows_by_repo) == {"unsloth/whisper-tiny", "Org/custom-whisper"}
@@ -2317,7 +2392,7 @@ def _diffusion_scan(
         return task
 
     monkeypatch.setattr(cache_inventory, "_cached_row_task", row_task)
-    rows = cache_inventory._scan_cached_models()
+    rows = cache_inventory._scan_cached_models(active_hub_cache = tmp_path / "hub")
     assert len(rows) == 1
     assert selected_snapshots == ([snapshot] if expect_task_classification else [])
     return rows[0]
@@ -2366,6 +2441,7 @@ def test_cached_models_scan_keeps_a_complete_pipeline_loadable(monkeypatch, tmp_
     assert row["partial"] is False
     assert row["companion_prefetch"] is False
     assert row["single_file"] is False
+    assert row["load_id"] == "Org/Pipeline-Complete"
 
 
 def test_cached_models_scan_exposes_minimax_music3_modular_pipeline(monkeypatch, tmp_path):
@@ -2381,6 +2457,8 @@ def test_cached_models_scan_exposes_minimax_music3_modular_pipeline(monkeypatch,
         modular_manifest = {
             "_class_name": "MiniMaxMusic3ModularPipeline",
             "_blocks_class_name": "MiniMaxMusic3Blocks",
+            # A component sourced from its Hub repo, not the snapshot.
+            "transformer": ["diffusers", "Model", {"pretrained_model_name_or_path": "Org/Music"}],
         },
         expect_task_classification = False,
     )
@@ -2388,6 +2466,10 @@ def test_cached_models_scan_exposes_minimax_music3_modular_pipeline(monkeypatch,
     assert row["task"] == "text-to-speech"
     assert row["audio_type"] == "minimax_music3"
     assert row["capabilities"]["can_chat"] is False
+    assert row["artifact_kind"] == "diffusers_modular_pipeline"
+    assert row["load_id"] == str(
+        tmp_path / "hub/models--MiniMaxAI--MiniMax-Music3/snapshots" / _SNAPSHOT_SHA
+    )
     assert row["partial"] is False
     assert row["single_file"] is False
 
@@ -2683,6 +2765,21 @@ def test_gguf_variant_requirements_include_split_files_and_preferred_mmproj():
         "model-Q4_K_M-00002-of-00002.gguf",
         "mmproj-F16.gguf",
     )
+
+
+def test_gguf_variant_requirements_keep_packed_q2_files_separate():
+    requirements = gguf_variants._build_gguf_variant_requirements(
+        [
+            _sibling("Ternary-Bonsai-1.7B-PQ2_0.gguf", 10, "pq"),
+            _sibling("Ternary-Bonsai-1.7B-Q2_0.gguf", 20, "q2"),
+            _sibling("Ternary-Bonsai-1.7B-Q2_0_g64.gguf", 30, "q2g64"),
+        ]
+    )
+
+    assert set(requirements) == {"pq2_0", "q2_0", "q2_0_g64"}
+    assert requirements["pq2_0"].target_filenames == ("Ternary-Bonsai-1.7B-PQ2_0.gguf",)
+    assert requirements["q2_0"].target_filenames == ("Ternary-Bonsai-1.7B-Q2_0.gguf",)
+    assert requirements["q2_0_g64"].target_filenames == ("Ternary-Bonsai-1.7B-Q2_0_g64.gguf",)
 
 
 def test_qwen38_flash_next_plan_includes_the_loaders_nested_mtp_choice():
@@ -3018,6 +3115,7 @@ def test_download_dataset_continues_without_metadata_manifest(monkeypatch, tmp_p
             "token": False,
             "repo_type": "dataset",
             "max_workers": 1,
+            "tqdm_class": None,
         }
     ]
     assert verified == [("dataset", "Org/Data", None, str(tmp_path))]
@@ -4264,6 +4362,23 @@ def test_model_download_job_helpers_preserve_idle_shape():
     assert key == "org/model::"
     assert status.state == "idle"
     assert status.error is None
+    assert status.attempt == 1
+
+
+def test_model_download_status_reports_the_retry_attempt(monkeypatch):
+    registry = download_registry.DownloadRegistry()
+    monkeypatch.setattr(downloads, "_registry", registry)
+    key = downloads._download_job_key("Org/Model", "Q4_K_M")
+    assert registry.claim(key, download_registry.TRANSPORT_XET)[0]
+    generation = registry.current_generation(key)
+    registry.release_active_slot(key)
+    assert registry.claim(
+        key, download_registry.TRANSPORT_XET, generation = generation, replace_active = True
+    )[0]
+
+    status = downloads._job_status(key)
+
+    assert (status.generation, status.attempt) == (generation, 2)
 
 
 def test_gguf_repo_partial_treats_completed_disk_variant_as_clean(monkeypatch, tmp_path):
@@ -5291,6 +5406,9 @@ def test_model_download_records_completed_baseline_for_new_gguf_variant(monkeypa
     )
 
     class _Registry:
+        def get_job_metadata(self, _key):
+            return None
+
         claim_kwargs = None
 
         def claim(self, _key, _transport, **kwargs):
@@ -5373,6 +5491,9 @@ def test_gguf_model_download_skips_completed_baseline_for_variant_resume_state(
     )
 
     class _Registry:
+        def get_job_metadata(self, _key):
+            return None
+
         claim_kwargs = None
 
         def claim(self, _key, _transport, **kwargs):
@@ -5565,6 +5686,9 @@ def test_model_claim_register_cancel_uses_registry_marker_owner(monkeypatch):
     killed = []
 
     class _Registry:
+        def get_job_metadata(self, _key):
+            return None
+
         def claim(self, *_args, **_kwargs):
             return True, "running"
 
@@ -5610,6 +5734,9 @@ def test_model_cancel_registered_worker_requests_and_kills(monkeypatch):
             events.append(("kill",))
 
     class _Registry:
+        def get_job_metadata(self, _key):
+            return None
+
         def get_process(self, _key):
             return _Proc()
 
@@ -5648,6 +5775,9 @@ def test_model_download_watcher_invalidates_hf_cache_scan(monkeypatch):
     invalidated = []
 
     class _Registry:
+        def get_job_metadata(self, _key):
+            return None
+
         def claim(self, *_args, **_kwargs):
             return True, "running"
 
@@ -6467,6 +6597,7 @@ def test_download_dataset_writes_manifest_for_xet(monkeypatch, tmp_path):
             "token": False,
             "repo_type": "dataset",
             "max_workers": 1,
+            "tqdm_class": None,
             "revision": "dataset-commit",
         }
     ]
@@ -6481,6 +6612,9 @@ def test_dataset_status_includes_generation(monkeypatch):
         def current_generation(self, _key):
             return 4
 
+        def current_attempt(self, _key):
+            return 2
+
     monkeypatch.setattr(dataset_downloads, "_registry", _Registry())
     monkeypatch.setattr(
         dataset_downloads,
@@ -6492,6 +6626,7 @@ def test_dataset_status_includes_generation(monkeypatch):
 
     assert result.state == "running"
     assert result.generation == 4
+    assert result.attempt == 2
 
 
 def _write_local_model(
@@ -6867,7 +7002,7 @@ def _write_pipeline(root: Path, *, components = ("transformer", "vae", "text_enc
     (MiniMax-H3, HunyuanVideo, Qwen-Image, HiDream) has exactly this shape."""
     root.mkdir(parents = True, exist_ok = True)
     (root / "model_index.json").write_text(
-        json.dumps({"_class_name": "MiniMaxH3Pipeline", "_diffusers_version": "0.39.0"}),
+        json.dumps({"_class_name": "MiniMaxH3Pipeline", "transformer": ["diffusers", "Model"]}),
         encoding = "utf-8",
     )
     for name in components:
@@ -6909,6 +7044,16 @@ def test_the_lmstudio_walk_does_not_descend_into_a_pipeline(tmp_path):
 
     assert names == {"MiniMax-H3-local"}
     assert not names & {"vae", "transformer", "text_encoder"}
+
+
+def test_the_walk_does_not_descend_into_an_interrupted_pipeline_copy(tmp_path):
+    root = tmp_path / "scan"
+    pipeline = _write_pipeline(root / "MiniMax-H3-local")
+    (pipeline / "transformer" / "diffusion_pytorch_model.safetensors").unlink()
+
+    names = {Path(row.path).name for row in local_inventory._scan_lmstudio_dir(root)}
+
+    assert names == {"MiniMax-H3-local"}
 
 
 def test_a_scan_folder_pointed_straight_at_a_pipeline_is_not_walked_as_a_publisher(tmp_path):

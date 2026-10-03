@@ -219,7 +219,12 @@ class TestSurvivesTheRouteLayer:
 
         consume = orch.InferenceOrchestrator._consume_token_stream
         stream = consume(
-            SimpleNamespace(_proc = None, _resp_queue = None, _mark_worker_started = lambda _event: None),
+            SimpleNamespace(
+                _proc = None,
+                _resp_queue = None,
+                _mark_worker_started = lambda _event: None,
+                _forget_request = lambda *_a: None,
+            ),
             lambda _timeout: payload,
             lambda: None,
             crash_context = "test",

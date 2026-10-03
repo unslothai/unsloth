@@ -178,8 +178,33 @@ def test_proxy_never_gets_bootstrap_even_if_it_strips_headers(tmp_path, monkeypa
     assert client.get("/", headers = PROXY_HEADERS).status_code == 200
     # A badly configured proxy may appear to be a direct localhost browser.
     response = client.get("/", headers = {"Host": "127.0.0.1:8888"})
-    assert response.status_code == (404 if tunnel_only else 200)
+    assert response.status_code == 200
     assert "__UNSLOTH_BOOTSTRAP__" not in response.text
+
+
+@pytest.mark.parametrize("configured", [False, True])
+@pytest.mark.parametrize("path", ["/", "/assets/app.js"])
+def test_direct_loopback_frontend_is_preserved(tmp_path, monkeypatch, configured, path):
+    import main
+
+    # Bootstrap behavior has its own coverage; keep this admission check away
+    # from the developer's account database when the setting is absent.
+    monkeypatch.setattr(main, "_inject_bootstrap", lambda html, app: (html, None))
+    if configured:
+        monkeypatch.setenv(PROXY_ORIGIN_ENV, ORIGIN)
+    client = _client(tmp_path)
+    assert client.get(path, headers = {"Host": "127.0.0.1:8888"}).status_code == 200
+
+
+@pytest.mark.parametrize("configured", [False, True])
+@pytest.mark.parametrize("path", ["/", "/assets/app.js"])
+def test_loopback_authority_with_proxy_headers_stays_rejected(
+    tmp_path, monkeypatch, configured, path
+):
+    if configured:
+        monkeypatch.setenv(PROXY_ORIGIN_ENV, ORIGIN)
+    headers = {**PROXY_HEADERS, "Host": "127.0.0.1:8888"}
+    assert _client(tmp_path).get(path, headers = headers).status_code == 404
 
 
 def test_invalid_setting_prevents_frontend_mount(tmp_path, monkeypatch):

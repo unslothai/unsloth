@@ -50,16 +50,31 @@ def test_cpu_thread_cap_normalises_valid_inputs(raw):
     assert env["OMP_NUM_THREADS"] == str(int(raw.strip()))
 
 
-# Unset / empty / whitespace -> no env mutation (pure opt-in).
 @pytest.mark.parametrize("raw", [None, "", "   ", "\t"])
-def test_cpu_thread_cap_is_opt_in(raw):
+def test_cpu_thread_cap_unset_limits_only_openblas(raw):
     env = {} if raw is None else {"UNSLOTH_CPU_THREADS": raw}
     snapshot = dict(env)
 
     configure_cpu_threads(env)
 
-    assert env == snapshot
-    assert all(variable not in env for variable in _THREAD_POOL_ENV_VARS)
+    assert env == {**snapshot, "OPENBLAS_NUM_THREADS": "1"}
+
+
+def test_openblas_default_keeps_user_value():
+    env = {"OPENBLAS_NUM_THREADS": "8"}
+
+    configure_cpu_threads(env)
+
+    assert env == {"OPENBLAS_NUM_THREADS": "8"}
+
+
+@pytest.mark.parametrize("raw", ["", "  "])
+def test_openblas_default_replaces_blank_value(raw):
+    env = {"OPENBLAS_NUM_THREADS": raw}
+
+    configure_cpu_threads(env)
+
+    assert env == {"OPENBLAS_NUM_THREADS": "1"}
 
 
 # Anything that is not a positive integer raises a clear ValueError.

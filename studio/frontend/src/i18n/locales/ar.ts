@@ -2,9 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import type { en } from "./en";
+import { en } from "./en.ts";
 
 export const ar = {
+  // English fallback until this experimental feature is translated.
+  managedEngines: en.managedEngines,
   composerSettings: {
     title: "كتابة الرسائل",
     plainText: "محرر نص عادي",
@@ -95,6 +97,7 @@ export const ar = {
     useModelScope: "استخدام ModelScope",
     useModelScopeHint: "ابحث ونزّل من ModelScope بدلًا من ذلك. يمكنك العودة من الإعدادات.",
     useModelScopeFailed: "تعذّر التبديل إلى ModelScope.",
+    updateToken: "تحديث الرمز",
     hfToken: {
       label: "توكن HF",
       saved: "محفوظ",
@@ -140,6 +143,13 @@ export const ar = {
       next: "التطابق التالي",
       close: "إغلاق البحث",
       truncated: "هذه الصفحة أطول من أن يتم البحث فيها بالكامل.",
+    },
+    zoom: {
+      label: "التكبير",
+      zoomOut: "تصغير",
+      zoomIn: "تكبير",
+      reset: "إعادة تعيين",
+      announce: "التكبير {percent}%",
     },
     beta: "BETA",
     brand: "unsloth",
@@ -201,6 +211,53 @@ export const ar = {
       help: "مساعدة",
       logOut: "تسجيل الخروج",
       shutdown: "إيقاف التشغيل",
+    },
+    commandPalette: {
+      placeholder: "اكتب أمرًا أو ابحث...",
+      noResults: "لم يُعثر على أي نتائج.",
+      navigation: "التنقل",
+      actions: "الإجراءات",
+      chat: "الدردشة",
+      searchChats: "ابحث في الدردشات...",
+    },
+    search: {
+      placeholder: "بحث",
+      tabs: {
+        all: "الكل",
+        chats: "المحادثات",
+        projects: "المشاريع",
+        files: "الملفات",
+        models: "النماذج",
+      },
+      recents: "العناصر الأخيرة",
+      actions: "الإجراءات",
+      newChat: "محادثة جديدة",
+      newTemporaryChat: "محادثة مؤقتة جديدة",
+      fineTune: "ضبط نموذج",
+      generateImage: "إنشاء صورة",
+      generateVideo: "إنشاء فيديو",
+      untitledChat: "محادثة بلا عنوان",
+      compare: "مقارنة",
+      loading: "جارٍ التحميل...",
+      empty: {
+        all: "لا يوجد شيء للبحث فيه بعد.",
+        chats: "لا توجد محادثات بعد.",
+        projects: "لا توجد مشاريع بعد.",
+        files: "لا توجد ملفات في مكتبتك بعد.",
+        models: "لا توجد نماذج منزّلة بعد.",
+      },
+      noMatches: "لا توجد نتائج.",
+      when: {
+        today: "اليوم",
+        pastWeek: "الأسبوع الماضي",
+        pastMonth: "الشهر الماضي",
+        older: "أقدم",
+      },
+      footer: {
+        close: "إغلاق",
+        changeType: "تغيير النوع",
+        open: "فتح",
+      },
     },
     notFound: {
       title: "الصفحة غير موجودة",
@@ -478,6 +535,10 @@ export const ar = {
           label: "اختصارات لوحة المفاتيح",
           description: "فتح قائمة الاختصارات هذه",
         },
+        openCommandPalette: {
+          label: "لوحة الأوامر",
+          description: "فتح لوحة الأوامر",
+        },
         searchChats: {
           label: "بحث في المحادثات",
           description: "فتح مربع حوار بحث المحادثات",
@@ -715,6 +776,7 @@ export const ar = {
       disabled: "التسجيل في ملف مُعطَّل (UNSLOTH_STUDIO_NO_FILE_LOG=1).",
       missing: "لم يُعثر على أي ملف سجل.",
       unreadable: "تعذّرت قراءة ملف السجل.",
+      viewLogs: "عرض السجلات",
       timeout: "انتهت مهلة طلب السجل. قد يتعذر الوصول إلى الخادم.",
       droppedNotice: "تم تخطي بعض الأسطر: كُتب السجل بسرعة أكبر مما أمكن قراءته.",
       morePending: "لا يزال يجري قراءة أسطر إضافية، وستظهر عند التحديث التالي.",
@@ -1084,6 +1146,9 @@ export const ar = {
         source: "مصدر النماذج",
         sourceDescription: "المكان الذي يبحث فيه مركز النماذج ويُنزّل منه. اختر ModelScope إذا كان Hugging Face محظورًا أو بطيئًا على شبكتك.",
         sourceFallback: "تعذّر تشغيل ModelScope، لذلك يُستخدم Hugging Face. راجع سجلات Unsloth.",
+        autoSourceTitle: "تم تبديل مصدر النماذج إلى ModelScope",
+        autoSourceDescription: "غالبًا ما يكون Hugging Face بطيئًا أو محجوبًا في منطقتك، لذلك يقوم Unsloth الآن بتنزيل النماذج من ModelScope.",
+        autoSourceAction: "فتح إعدادات مصدر النماذج",
         sectionTitle: "مركز النماذج",
         endpoint: "نقطة نهاية Hugging Face",
         endpointDescription: "المصدر الذي تُنزَّل منه النماذج ومجموعات البيانات. اتركه فارغًا لاستخدام huggingface.co، أو أدخل مرآة مثل https://hf-mirror.com.",
@@ -1186,9 +1251,22 @@ export const ar = {
       },
       permissions: {
         sectionTitle: "الأذونات",
-        bypassLabel: "أذونات الأدوات",
-        bypassDescription:
-          "كيفية موافقة Unsloth على استدعاءات أدوات المحادثة (الطرفية، python، الويب، MCP) قبل تشغيلها. وضع «Full access» يعطّل الموافقات وصندوق عزل الشيفرة.",
+        names: {
+          ask: "طلب الموافقة",
+          auto: "الموافقة نيابةً عني",
+          off: "التشغيل تلقائيًا",
+          full: "وصول كامل",
+        },
+        details: {
+          ask:
+            "يطلب الموافقة قبل كل استدعاء أداة، بما في ذلك شيفرة الطرفية وPython وعمليات البحث في الويب وتعديل الملفات وأدوات MCP. الأدوات التي يشغّلها مزوّد خارجي لا تتوقف لطلب الموافقة. الأنسب عندما تريد مراجعة كل خطوة.",
+          auto:
+            "يشغّل استدعاءات الأدوات المعتادة تلقائيًا ولا يطلب الموافقة إلا عندما يبدو الإجراء خطرًا، مثل قراءة بيانات الاعتماد أو رفع الصلاحيات أو تشغيل أوامر مدمّرة.",
+          off:
+            "يشغّل كل استدعاءات الأدوات دون سؤال. تظل شيفرة Python والطرفية تعمل داخل صندوق العزل، الذي يحدّ من الملفات التي يمكنها الوصول إليها على جهازك.",
+          full:
+            "يشغّل كل استدعاءات الأدوات دون سؤال ويوقف صندوق عزل الشيفرة، فيمكن لشيفرة Python والطرفية قراءة أي ملف يصل إليه حسابك وتغييره. الأنسب للمهام الموثوقة التي تحتاج إلى العمل خارج صندوق العزل.",
+        },
       },
     },
     profile: {
@@ -1311,20 +1389,13 @@ export const ar = {
           wide: "واسع",
           full: "العرض الكامل",
         },
-        composerAttachments: {
-          label: "المرفقات في حقل الكتابة",
-          description:
-            "بطاقات كبيرة تُوسّع حقل الكتابة، أو صف مضغوط من المربعات الصغيرة.",
-          cards: "بطاقات كبيرة",
-          compact: "مربعات مضغوطة",
-        },
         sentAttachments: {
           label: "المرفقات في الرسائل المرسلة",
           description:
-            "قائمة تعرض نوع كل ملف، أو شارات صغيرة. يتحوّل الوضع التلقائي إلى الشارات عند تجاوز ستة ملفات.",
+            "يعرض الوضع القياسي نوع كل ملف، ويعرض الوضع المضغوط ملفات أكثر في كل سطر. يتحوّل الوضع التلقائي إلى المضغوط عند تجاوز ستة ملفات.",
           auto: "تلقائي",
-          list: "قائمة",
-          chips: "شارات",
+          list: "قياسي",
+          chips: "مضغوط",
         },
         reset: "إعادة تعيين",
         resetAll: "إعادة تعيين التخصيص",
@@ -1546,6 +1617,7 @@ export const ar = {
         noRamReserveDescription: "يقلل ذاكرة النظام المحجوزة لأوزان النموذج.",
         noRamReserveHint: "يتخطى التحميل المعتمد على تعيين الذاكرة في إصدارات ويندوز المدعومة عندما يكون النموذج محمّلاً بالكامل على كرت الرسوميات، فلا تبقى صفحاته مقيمة. وإلا يُبقي التحميل المعتمد على تعيين الذاكرة. قد تستهلك مخازن المعالج المطلوبة ذاكرة النظام. ويحذف ‎--no-mmap‎ و‎--mlock‎.",
         mlockVetoed: "يبقى ‎--mlock‎ معطَّلاً: تثبيت النموذج سيحجز ذاكرة تكفي حجمه كاملاً. ولا يزال التفريغ التلقائي عند الخمول معطَّلاً.",
+        mlockNotApplicable: "بالكامل على وحدة GPU: لا شيء في ذاكرة النظام لقفله. يبقى التفريغ التلقائي عند الخمول معطَّلاً.",
         memlockCapped: "يحدّ هذا النظام الذاكرة المقفلة عند {limit}. لن يُثبَّت نموذج أكبر بالكامل؛ ارفع الحد باستخدام ulimit -l.",
         reloadRequired: "أعد تحميل النموذج لتطبيق خيارات الذاكرة الجديدة.",
         loadError: "تعذّر تحميل إعدادات ذاكرة النموذج",
@@ -1766,6 +1838,11 @@ export const ar = {
         advanced: { title: "إعدادات متقدمة" },
         contextTitle: "السياق",
       },
+      library: {
+        label: "إدارة المحادثات",
+        description: "ابحث في المحادثات والمشاريع والأقسام، ورتّبها، ونظّمها.",
+        action: "فتح المكتبة",
+      },
       projectAttachmentsHint:
         "يمكن تغيير هذا الإعداد لكل دردشة من قائمة المرفقات الخاصة بها.",
       rememberParamsPerModelHint:
@@ -1776,9 +1853,6 @@ export const ar = {
         "يصبح النص الملصق الذي يبلغ {count} حرفًا أو أكثر مرفقًا بصيغة .txt. يبقى النص الأقصر في مربع الرسالة.",
       pastedTextOffDescription:
         "يبقى كل النص الملصق في مربع الرسالة، مهما كان طوله.",
-      projectsSection: "إظهار قسم المشاريع",
-      projectsSectionDescription:
-        "يجمع محادثات المشروع تحت عنوان المشاريع. أوقف هذا الخيار لعرضها ضمن الأخيرة بدلاً من ذلك.",
       title: "المحادثة",
       description: "خصّص طريقة عمل المحادثة على هذا الجهاز.",
       modelSelection: {
@@ -1808,6 +1882,18 @@ export const ar = {
       pastedTextThresholdDescription:
         "اضغط {shortcut} للصق مباشرة في مربع الرسالة.",
       pastedTextThresholdOff: "إيقاف",
+      autoScroll: "التمرير أثناء الإنشاء",
+      autoScrollDescription:
+        "التمرير التلقائي يُبقي النص الجديد ظاهرًا. اليدوي يثبت لتقرأ من البداية.",
+      autoScrollAuto: "تمرير تلقائي",
+      autoScrollManual: "يدوي",
+      autoScrollKeywords:
+        "تمرير تلقائي متابعة أسفل قفز بث إنشاء تثبيت scroll autoscroll follow",
+      scrollToBottomButton: "زر التمرير إلى الأسفل",
+      scrollToBottomButtonDescription:
+        "إظهار زر للعودة إلى أحدث رسالة بعد التمرير لأعلى.",
+      scrollToBottomButtonKeywords:
+        "تمرير أسفل أحدث سهم زر إخفاء scroll bottom button",
       showResponseModel: "إظهار نموذج الاستجابة",
       showResponseModelDescription:
         "إظهار البيانات الوصفية للنموذج في ردود المساعد.",
@@ -1880,6 +1966,22 @@ export const ar = {
           "فعّل «{setting}» في الإعدادات ← الدردشة للسماح لـ Canvas بتحميل الموارد الخارجية، أو اسمح بذلك لهذا الـ Canvas فقط.",
         blockedSettingsAction: "فتح الإعدادات",
         blockedDismiss: "تجاهل",
+        errorTitle: "واجه هذا الـ Canvas خطأ",
+        errorTitlePlural: "واجه هذا الـ Canvas {count} أخطاء",
+        errorHint: "«الإصلاح مع النموذج» يضع الخطأ في مربع الرسالة. لا يُرسل شيء حتى ترسله أنت.",
+        errorBannerAction: "الإصلاح مع النموذج",
+        errorConsoleAction: "فتح وحدة التحكم",
+        errorConsoleHideAction: "إخفاء وحدة التحكم",
+        errorLocation: "السطر {line}، العمود {column}",
+        errorLine: "السطر {line}",
+        consoleTitle: "وحدة التحكم",
+        reloadCanvas: "تشغيل مرة أخرى",
+        consoleMessageCount: "{count} رسالة",
+        consoleMessageCountPlural: "{count} رسائل",
+        consoleClear: "مسح وحدة التحكم",
+        consoleClose: "إغلاق وحدة التحكم",
+        consoleEmpty: "لا يوجد إخراج في وحدة التحكم بعد.",
+        consoleCapped: "يتم الاحتفاظ بآخر {count} إدخال فقط؛ وأُسقط ما قبلها.",
       },
       data: "البيانات",
       exportHistory: "تصدير سجل المحادثات",
@@ -2030,9 +2132,6 @@ export const ar = {
       archivedAudio: "الصوتيات المؤرشفة",
       archivedAudioDescription: "اعرض المقاطع الصوتية التي أرشفتها وأدرها.",
       manageAction: "إدارة",
-      manageChats: "إدارة المحادثات",
-      manageChatsDescription:
-        "حدد عدة محادثات لنقلها أو تثبيتها أو أرشفتها أو تصديرها أو حذفها.",
       exportArchivedChats: "تصدير",
       exportingArchivedChats: "جارٍ التصدير...",
       exportedOneArchivedChat: "تم تصدير محادثة مؤرشفة واحدة",
@@ -2166,11 +2265,13 @@ export const ar = {
       revoking: "جارٍ الإلغاء...",
       decisionApi: {
         title: "واجهة القرارات البرمجية",
-        description: "أجب عن أسئلة نعم/لا والاختيار من متعدد والتقييم حول النص باستخدام نموذج Laya محلي. يعمل مع حزمة TypeSafe.",
+        description: "أجب عن أسئلة نعم/لا والاختيار من متعدد والتقييم حول النص باستخدام نموذج على هذا الجهاز أو نموذج قرارات من الاتصالات. يعمل مع حزمة TypeSafe.",
         enable: "خدمة الطلبات",
         enableDescription: "يقدّم /v1/systemone. عند التشغيل يُنزَّل النموذج.",
+        enableRemoteDescription: "يقدّم /v1/systemone.",
         lockedByEnv: "مضبوط بواسطة {name}.",
         model: "النموذج",
+        thisMachine: "هذا الجهاز",
         modelMultilingual: "متعدد اللغات",
         modelEnglish: "إنجليزي",
         modelTypedDecisions: "قرارات مُصنَّفة",
@@ -2187,11 +2288,18 @@ export const ar = {
         loading: "جارٍ التحميل…",
         loadedOn: "مُحمَّل على {device}",
         download: "تنزيل",
+        downloadConfirmTitle: "هل تريد تنزيل Laya {model}؟",
+        downloadConfirmBody:
+          "تحتاج واجهة API للقرارات إلى هذا النموذج للرد على الطلبات. حجمه نحو {size}، ويُنزَّل مرة واحدة إلى ذاكرة Hugging Face المؤقتة.",
         unload: "إلغاء التحميل",
         downloadBusy: "يجري بالفعل تنزيل نموذج لواجهة القرارات.",
         downloadFailed: "تعذّر بدء التنزيل.",
         saveFailed: "تعذّر حفظ إعداد واجهة القرارات.",
         loadError: "تعذّر تحميل إعدادات واجهة القرارات.",
+        sendsTo: "تُرسَل الطلبات إلى {provider}.",
+        connectionMissing: "هذا الاتصال لم يعد موجودًا أو لا يحتوي على نماذج قرارات. اختر نموذجًا آخر.",
+        addConnection: "لاستخدام نموذج قرارات مستضاف، أضف TypeSafe أو Liquid AI أو OpenRouter في الاتصالات.",
+        openConnections: "فتح الاتصالات",
       },
       usageNoModel:
         "حمّل نموذجًا أو نزّله لعرض أمثلة قابلة للتشغيل. لا يوجد في هذا الخادم أي نموذج يمكن استخدامه في الأمثلة بعد.",
@@ -2347,6 +2455,7 @@ export const ar = {
       context: "السياق",
       lr: "معدل التعلّم",
       hardware: "الأجهزة",
+      vram: "VRAM",
       noGpu: "لم يتم اكتشاف GPU",
       hfToken: "توكن HF",
       saved: "محفوظ",
@@ -2420,6 +2529,8 @@ export const ar = {
       tokenRejectedTitle: "رُفض توكن Hugging Face",
       tokenRejectedBody:
         "حدّث التوكن في الإعدادات ← عام، ثم أعد المحاولة.",
+      tokenRejectedAnonymousBody:
+        "تُعرض النماذج العامة بدونه. حدّث التوكن في الإعدادات ← عام للوصول إلى النماذج الخاصة والمقيّدة.",
       hubUnreachable: "تعذّر الوصول إلى Hugging Face",
       cantUseModel: "لا يمكن استخدام النموذج للتدريب",
       reasonTypeMismatch:
@@ -3054,6 +3165,7 @@ export const ar = {
     discardDescription: "ستُفقد التعديلات غير المحفوظة على {name}.",
     discard: "تجاهل",
     mentions: "المهارات",
+    manage: "إدارة المهارات",
   },
   library: {
     tabs: {
@@ -3066,6 +3178,116 @@ export const ar = {
       audio: "الصوت",
       models: "النماذج المضبوطة",
       all: "الكل",
+      chats: "المحادثات",
+    },
+    // The Chats tab: conversations and projects, kept apart from every file tab.
+    chats: {
+      sections: {
+        chats: "المحادثات",
+        projects: "المشاريع",
+        archived: "المؤرشفة",
+        ariaLabel: "أقسام المحادثات",
+      },
+      search: {
+        chats: "البحث في المحادثات",
+        projects: "البحث في المشاريع",
+        archived: "البحث في المحادثات المؤرشفة",
+        project: "البحث في «{project}»",
+        sections: "البحث في الأقسام",
+      },
+      toolbar: {
+        show: "عرض",
+        pinned: "المثبتة",
+        forks: "التفرعات",
+        comparisons: "المقارنات",
+        project: "المشروع",
+        model: "النموذج",
+        groupBy: "التجميع حسب",
+        groupNone: "بدون تجميع",
+        groupDate: "التاريخ",
+        groupProject: "المشروع",
+        pinnedFirst: "المثبتة أولاً",
+        newChat: "محادثة جديدة",
+        newProject: "مشروع جديد",
+        sortChats: "عدد المحادثات",
+        withoutSection: "بلا قسم",
+      },
+      groups: {
+        today: "اليوم",
+        yesterday: "أمس",
+        week: "آخر 7 أيام",
+        month: "آخر 30 يومًا",
+      },
+      list: {
+        created: "تاريخ الإنشاء",
+        lastActive: "آخر نشاط",
+        location: "الموقع",
+        lastModified: "آخر تعديل",
+        contents: "المحتويات",
+        oneMessage: "رسالة واحدة",
+        messageCount: "عدد الرسائل: {count}",
+        showMore: "عرض المزيد ({count})",
+      },
+      badges: {
+        pinned: "مثبتة",
+        fork: "تفرع",
+        compare: "مقارنة",
+      },
+      menu: {
+        fork: "إنشاء تفرع",
+        moveTo: "نقل إلى مشروع",
+        newChatInProject: "محادثة جديدة في المشروع",
+        edit: "تعديل",
+        deleteProject: "حذف المشروع",
+        newChatInSection: "محادثة جديدة في القسم",
+      },
+      project: {
+        oneProject: "مشروع واحد",
+        projectCount: "عدد المشاريع: {count}",
+      },
+      empty: {
+        chatsTitle: "لا توجد محادثات بعد",
+        chatsDescription: "تظهر محادثاتك هنا، منفصلة عن ملفاتك.",
+        projectsTitle: "لا توجد مشاريع بعد",
+        projectsDescription: "تجمع المشاريع المحادثات المرتبطة وتشارك التعليمات بينها.",
+        archivedTitle: "لا يوجد شيء مؤرشف",
+        archivedDescription: "تظهر هنا المحادثات التي تؤرشفها.",
+        sectionsTitle: "لا توجد أقسام بعد",
+        sectionsDescription: "تجمع الأقسام المحادثات والمشاريع في الشريط الجانبي كما تشاء.",
+        sectionTitle: "لا شيء في هذا القسم بعد",
+        sectionDescription: "انقل المحادثات إلى هنا من قائمتها، أو ابدأ محادثة جديدة في هذا القسم.",
+      },
+      dialog: {
+        renameChat: "إعادة تسمية المحادثة",
+        deleteChatDescription: "سيتم حذف هذه المحادثة نهائيًا. لا يمكن التراجع عن ذلك.",
+        deleteProjectDescription: "سيتم حذف المشروع ومحادثاته ({count}) نهائيًا. لا يمكن التراجع عن ذلك.",
+        deleteFilesMany: "احذف أيضًا الملفات ومجلدات بيئة الاختبار التي أنشأتها هذه المحادثات.",
+        deleteProjectFilesLabel: "حذف مجلد مساحة عمل المشروع",
+        deleteProjectFiles: "ستتم إزالة مجلد مساحة عمل المشروع من القرص.",
+      },
+      toast: {
+        projectMoved: "تم نقل {project} إلى {section}",
+        projectUnfiled: "تمت إزالة {project} من {section}",
+        forkFailed: "تعذر إنشاء التفرع",
+        projectDeleted: "تم حذف «{name}»",
+        projectDeleteFailed: "تعذر حذف المشروع",
+        removedFromSection: "أُزيلت من القسم: {count}",
+      },
+      folder: {
+        openChat: "فتح مجلد المحادثة",
+        openChatTitle: "فتح المجلد الذي تقرأ منه أدوات هذه المحادثة وتكتب فيه",
+        openProject: "فتح مجلد المشروع",
+        openProjectTitle: "فتح المجلد الذي تقرأ منه محادثات هذا المشروع وتكتب فيه",
+        chatHint: "يمكن لتطبيق سطح المكتب فقط فتح مجلد ملفات المحادثة. في المتصفح، نزّل الملف من نتيجة الأداة التي كتبته.",
+        projectHint: "يمكن لتطبيق سطح المكتب فقط فتح مجلد المشروع. في المتصفح، نزّل الملفات من نتائج الأدوات التي كتبتها.",
+        manyFolders: "كتبت هذه المحادثة في أكثر من مجلد.",
+        manyFoldersDescription: "شغّلت أدوات قبل النقل وبعده، لذا افتح المجلد من بطاقة أداة بدلًا من ذلك.",
+        chatFailed: "تعذّر فتح مجلد المحادثة.",
+        projectFailed: "تعذّر فتح مجلد المشروع.",
+        chatMissing: "لا يوجد مجلد لهذه المحادثة بعد.",
+        projectMissing: "لا يوجد مجلد لهذا المشروع بعد.",
+        missingDescription: "يُنشأ عندما تكتب أداة ملفًا لأول مرة.",
+      },
     },
     empty: {
       suggestedTitle: "مكتبتك فارغة",

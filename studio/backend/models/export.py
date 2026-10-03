@@ -176,6 +176,11 @@ class ExportMergedModelRequest(ExportCommonOptions):
         "When set, it overrides format_type. Lets the export UI expose the full set of formats "
         "beyond the quick buttons.",
     )
+    install_missing_dependencies: bool = Field(
+        False,
+        description = "User consent to install llm-compressor (or its shadow runtime) for "
+        "compressed-tensors export.",
+    )
 
 
 class ExportBaseModelRequest(ExportCommonOptions):
@@ -230,6 +235,17 @@ class ExportGGUFRequest(BaseModel):
 class ExportLoRAAdapterRequest(ExportCommonOptions):
     """Request for exporting only the LoRA adapter (not merged)."""
 
+    adapter_format: Optional[Literal["mlx", "peft"]] = Field(
+        None,
+        description = "On-disk adapter format. Omitted resolves per platform "
+        "(Apple-silicon MLX servers write the native MLX format, CUDA servers "
+        "write the native PEFT format — omission always preserves the "
+        "platform's native output), except with gguf=True, where the adapter "
+        "files are always "
+        "PEFT (GGUF LoRA files are built from that format). Explicit 'peft' "
+        "on an MLX server converts the adapter; explicit 'mlx' on a non-MLX "
+        "server — or combined with gguf=True — is an error.",
+    )
     gguf: bool = Field(
         False,
         description = "If True, also convert the adapter to a GGUF LoRA file "
@@ -240,3 +256,19 @@ class ExportLoRAAdapterRequest(ExportCommonOptions):
         description = "GGUF LoRA output float type (only used when gguf=True). "
         "Q8_0 falls back to F16 per tensor for dims not divisible by the block size (32).",
     )
+
+
+class LlmCompressorExportProbeResponse(BaseModel):
+    ready: bool
+    needs_consent: bool
+    consent_kind: Optional[Literal["shadow", "workspace"]] = None
+    install_summary: Optional[str] = None
+    workspace_install_command: str
+    shadow_path: str
+    autoinstall_disabled: bool
+    shadow_disabled: bool
+    offline: bool
+    blocked_reason: Optional[str] = None
+    python_executable: str
+    has_pip: bool
+    has_uv: bool
