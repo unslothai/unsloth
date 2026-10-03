@@ -120,3 +120,12 @@ test("flavor accents used as text meet the accent-text floor", () => {
     }
   }
 });
+
+test("More themes leads with Butterfly Pea and Earl Grey, and Cherry is just Cherry", () => {
+  // The menu draws FLAVOR_THEME_IDS in order: Butterfly Pea took Blueberry's slot and Earl Grey
+  // took Honey's, with Blueberry and Honey moving to where those two were.
+  assert.deepEqual(FLAVOR_THEME_IDS.slice(0, 5), ["matcha", "espresso", "butterfly-pea", "cherry", "earl-grey"]);
+  assert.equal(FLAVOR_THEME_IDS.indexOf("blueberry"), 11);
+  assert.equal(FLAVOR_THEME_IDS.indexOf("honey"), 13);
+  assert.equal(COLOR_THEMES.cherry.name, "Cherry");
+});

@@ -2,9 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import type { en } from "./en";
+import { en } from "./en.ts";
 
 export const es = {
+  // English fallback until this experimental feature is translated.
+  managedEngines: en.managedEngines,
   composerSettings: {
     title: "Redacción de mensajes",
     plainText: "Redactor de texto sin formato",
@@ -152,6 +154,13 @@ export const es = {
       close: "Cerrar búsqueda",
       truncated: "Esta página es demasiado larga para buscarla por completo.",
     },
+    zoom: {
+      label: "Zoom",
+      zoomOut: "Alejar",
+      zoomIn: "Acercar",
+      reset: "Restablecer",
+      announce: "Zoom {percent} %",
+    },
     beta: "BETA",
     brand: "unsloth",
     product: "Unsloth",
@@ -212,6 +221,53 @@ export const es = {
       help: "Ayuda",
       logOut: "Cerrar sesión",
       shutdown: "Apagar",
+    },
+    commandPalette: {
+      placeholder: "Escribe un comando o busca...",
+      noResults: "No se encontraron resultados.",
+      navigation: "Navegación",
+      actions: "Acciones",
+      chat: "Chat",
+      searchChats: "Buscar chats...",
+    },
+    search: {
+      placeholder: "Buscar",
+      tabs: {
+        all: "Todo",
+        chats: "Chats",
+        projects: "Proyectos",
+        files: "Archivos",
+        models: "Modelos",
+      },
+      recents: "Recientes",
+      actions: "Acciones",
+      newChat: "Nuevo chat",
+      newTemporaryChat: "Nuevo chat temporal",
+      fineTune: "Ajustar un modelo",
+      generateImage: "Generar una imagen",
+      generateVideo: "Generar un vídeo",
+      untitledChat: "Chat sin título",
+      compare: "Comparar",
+      loading: "Cargando...",
+      empty: {
+        all: "Aún no hay nada que buscar.",
+        chats: "Aún no hay chats.",
+        projects: "Aún no hay proyectos.",
+        files: "Aún no hay archivos en tu Biblioteca.",
+        models: "Aún no hay modelos descargados.",
+      },
+      noMatches: "Sin resultados.",
+      when: {
+        today: "Hoy",
+        pastWeek: "Última semana",
+        pastMonth: "Último mes",
+        older: "Más antiguo",
+      },
+      footer: {
+        close: "Cerrar",
+        changeType: "Cambiar tipo",
+        open: "Abrir",
+      },
     },
     notFound: {
       title: "Página no encontrada",
@@ -489,6 +545,10 @@ export const es = {
         openKeyboardShortcuts: {
           label: "Atajos de teclado",
           description: "Abrir esta lista de atajos",
+        },
+        openCommandPalette: {
+          label: "Paleta de comandos",
+          description: "Abrir la paleta de comandos",
         },
         searchChats: {
           label: "Buscar chats",
@@ -1345,20 +1405,13 @@ export const es = {
           wide: "Amplio",
           full: "Ancho completo",
         },
-        composerAttachments: {
-          label: "Adjuntos en el cuadro de texto",
-          description:
-            "Tarjetas grandes que agrandan el cuadro de texto o una fila compacta de miniaturas.",
-          cards: "Tarjetas grandes",
-          compact: "Miniaturas compactas",
-        },
         sentAttachments: {
           label: "Adjuntos en los mensajes enviados",
           description:
-            "Una lista con el tipo de cada archivo o pequeñas etiquetas. Automático cambia a etiquetas con más de seis archivos.",
+            "Estándar muestra cada archivo con su tipo y Compacto cabe más en cada línea. Automático cambia a compacto con más de seis archivos.",
           auto: "Automático",
-          list: "Lista",
-          chips: "Etiquetas",
+          list: "Estándar",
+          chips: "Compacto",
         },
         reset: "Restablecer",
         resetAll: "Restablecer la personalización",
@@ -1583,6 +1636,7 @@ export const es = {
         noRamReserveDescription: "Reduce la RAM ocupada por los pesos del modelo.",
         noRamReserveHint: "Omite la carga mapeada en memoria en las compilaciones de Windows compatibles cuando el modelo está totalmente descargado en la GPU, de modo que sus páginas no quedan residentes. En caso contrario conserva la carga mapeada en memoria. Los búferes de CPU necesarios pueden seguir usando RAM. Elimina --no-mmap y --mlock.",
         mlockVetoed: "--mlock permanece desactivado: fijar el modelo reservaría RAM para todo él. La descarga automática por inactividad sigue desactivada.",
+        mlockNotApplicable: "Totalmente en la GPU: nada que bloquear en la RAM del sistema. La descarga automática por inactividad sigue desactivada.",
         memlockCapped: "Este sistema limita la memoria bloqueada a {limit}. Un modelo mayor no quedará fijado por completo; aumenta el límite con ulimit -l.",
         reloadRequired: "Vuelve a cargar el modelo para aplicar las nuevas opciones de memoria.",
         loadError: "No se pudieron cargar los ajustes de memoria del modelo",
@@ -1823,9 +1877,6 @@ export const es = {
         "El texto pegado de {count} caracteres o más se convierte en un adjunto .txt. El texto más corto queda en el cuadro de mensaje.",
       pastedTextOffDescription:
         "Todo el texto pegado queda en el cuadro de mensaje, sin importar su longitud.",
-      projectsSection: "Mostrar la sección Proyectos",
-      projectsSectionDescription:
-        "Agrupa los chats de proyecto bajo un encabezado Proyectos. Desactívalo para listarlos en Recientes.",
       title: "Chat",
       description: "Personaliza cómo funciona el chat en este dispositivo.",
       modelSelection: {
@@ -1862,6 +1913,11 @@ export const es = {
       autoScrollManual: "Manual",
       autoScrollKeywords:
         "desplazamiento desplazar automático seguir abajo saltar transmisión generar vista bloquear scroll autoscroll follow",
+      scrollToBottomButton: "Botón para ir al final",
+      scrollToBottomButtonDescription:
+        "Muestra un botón para volver al último mensaje después de desplazarte hacia arriba.",
+      scrollToBottomButtonKeywords:
+        "desplazar final abajo saltar último flecha botón ocultar scroll bottom button",
       showResponseModel: "Mostrar el modelo de respuesta",
       showResponseModelDescription:
         "Muestra los metadatos del modelo en las respuestas del asistente.",
@@ -1937,6 +1993,22 @@ export const es = {
           "Activa “{setting}” en Ajustes → Chat para que los Canvas carguen recursos externos, o permítelo solo en este Canvas.",
         blockedSettingsAction: "Abrir ajustes",
         blockedDismiss: "Descartar",
+        errorTitle: "Este Canvas ha dado un error",
+        errorTitlePlural: "Este Canvas ha dado {count} errores",
+        errorHint: "«Corregir con el modelo» pone el error en el cuadro de mensaje. No se envía nada hasta que lo envíes.",
+        errorBannerAction: "Corregir con el modelo",
+        errorConsoleAction: "Abrir consola",
+        errorConsoleHideAction: "Ocultar consola",
+        errorLocation: "línea {line}, columna {column}",
+        errorLine: "línea {line}",
+        consoleTitle: "Consola",
+        reloadCanvas: "Ejecutar de nuevo",
+        consoleMessageCount: "{count} mensaje",
+        consoleMessageCountPlural: "{count} mensajes",
+        consoleClear: "Vaciar consola",
+        consoleClose: "Cerrar consola",
+        consoleEmpty: "Aún no hay salida en la consola.",
+        consoleCapped: "Solo se conservan las ultimas {count} entradas; la salida anterior se descarto.",
       },
       data: "Datos",
       exportHistory: "Exportar historial de chat",
@@ -2226,11 +2298,13 @@ export const es = {
       revoking: "Revocando...",
       decisionApi: {
         title: "API de decisiones",
-        description: "Responde preguntas de sí/no, de opción múltiple y de puntuación sobre texto con un modelo Laya local. Funciona con el SDK de TypeSafe.",
+        description: "Responde preguntas de sí/no, de opción múltiple y de puntuación sobre texto con un modelo en este equipo o un modelo de decisiones de Conexiones. Funciona con el SDK de TypeSafe.",
         enable: "Atender solicitudes",
         enableDescription: "Atiende /v1/systemone. Al activarlo se descarga el modelo.",
+        enableRemoteDescription: "Atiende /v1/systemone.",
         lockedByEnv: "Definido por {name}.",
         model: "Modelo",
+        thisMachine: "Este equipo",
         modelMultilingual: "Multilingüe",
         modelEnglish: "Inglés",
         modelTypedDecisions: "Decisiones tipadas",
@@ -2255,6 +2329,10 @@ export const es = {
         downloadFailed: "No se pudo iniciar la descarga.",
         saveFailed: "No se pudo guardar el ajuste de la API de decisiones.",
         loadError: "No se pudieron cargar los ajustes de la API de decisiones.",
+        sendsTo: "Las solicitudes se envían a {provider}.",
+        connectionMissing: "Esta conexión ya no existe o no tiene modelos de decisiones. Elige otro modelo.",
+        addConnection: "Para usar un modelo de decisiones alojado, añade TypeSafe, Liquid AI u OpenRouter en Conexiones.",
+        openConnections: "Abrir Conexiones",
       },
       usageNoModel:
         "Carga o descarga un modelo para ver ejemplos ejecutables. Este servidor todavía no tiene ningún modelo que indicar.",

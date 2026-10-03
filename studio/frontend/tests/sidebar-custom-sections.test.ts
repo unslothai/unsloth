@@ -941,13 +941,8 @@ test("a chat filed from its menu while its drop into a folder is in flight keeps
 });
 
 test("custom sections re-measure the bottom fade when they change the list's height", () => {
-  const deps = APP_SIDEBAR.slice(
-    APP_SIDEBAR.indexOf("// Recompute bottom-fade on mount"),
-    APP_SIDEBAR.indexOf("// Resizing changes clientHeight"),
-  );
-  for (const dep of ["visibleCustomSections.length", "collapsedSectionIds", "customSectionRowCount", "projectsSectionHidden"]) {
-    assert.ok(deps.includes(`    ${dep},\n`), dep);
-  }
+  // They draw inside the scroller, whose sections the fade observer watches.
+  assert.match(APP_SIDEBAR, /for \(const section of el\.children\) observer\.observe\(section\);/);
 });
 
 test("Alt + arrow on a section's header moves it, as it moves a row", async () => {

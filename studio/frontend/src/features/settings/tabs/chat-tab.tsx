@@ -20,7 +20,6 @@ import {
   useChatPreferencesStore,
   useChatRuntimeStore,
   usePlusMenuPrefsStore,
-  useSidebarOrganizationStore,
 } from "@/features/chat";
 import { PASTED_TEXT_THRESHOLD_CHOICES } from "@/features/chat/utils/pasted-text";
 import { refreshContextUsage } from "@/features/chat/utils/refresh-context-usage";
@@ -230,8 +229,6 @@ export function ChatTab() {
   const setShowMemoryBar = useChatRuntimeStore(
     (state) => state.setShowMemoryBar,
   );
-  const organizeBy = useSidebarOrganizationStore((s) => s.organizeBy);
-  const setOrganizeBy = useSidebarOrganizationStore((s) => s.setOrganizeBy);
   const showModelDisclaimer = useChatPreferencesStore(
     (state) => state.showModelDisclaimer,
   );
@@ -264,6 +261,12 @@ export function ChatTab() {
   );
   const setShowTurnNavigation = useChatPreferencesStore(
     (state) => state.setShowTurnNavigation,
+  );
+  const showScrollToBottomButton = useChatPreferencesStore(
+    (state) => state.showScrollToBottomButton,
+  );
+  const setShowScrollToBottomButton = useChatPreferencesStore(
+    (state) => state.setShowScrollToBottomButton,
   );
   const thinkingVisibility = useChatPreferencesStore(
     (state) => state.thinkingVisibility,
@@ -459,6 +462,16 @@ export function ChatTab() {
             ))}
           </div>
         </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.scrollToBottomButton")}
+          description={t("settings.chat.scrollToBottomButtonDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.scrollToBottomButton")}
+            checked={showScrollToBottomButton}
+            onCheckedChange={setShowScrollToBottomButton}
+          />
+        </SettingsRow>
       </SettingsSection>
 
       <SettingsSection title={t("settings.chat.groups.conversations.title")}>
@@ -476,23 +489,23 @@ export function ChatTab() {
         <SettingsRow
           label={t("settings.chat.currentDate.label")}
           description={t("settings.chat.currentDate.description")}
-        >
-          <div className="flex flex-col items-end gap-1">
-            <Switch
-              aria-label={t("settings.chat.currentDate.label")}
-              checked={currentDatePrompt?.enabled ?? false}
-              disabled={!currentDatePrompt || isSavingCurrentDatePrompt}
-              onCheckedChange={(enabled) => void saveCurrentDatePrompt(enabled)}
-            />
-            {currentDatePromptError ? (
+          below={
+            currentDatePromptError ? (
               <span
                 role="alert"
                 className="max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs text-destructive"
               >
                 {currentDatePromptError}
               </span>
-            ) : null}
-          </div>
+            ) : null
+          }
+        >
+          <Switch
+            aria-label={t("settings.chat.currentDate.label")}
+            checked={currentDatePrompt?.enabled ?? false}
+            disabled={!currentDatePrompt || isSavingCurrentDatePrompt}
+            onCheckedChange={(enabled) => void saveCurrentDatePrompt(enabled)}
+          />
         </SettingsRow>
         <SettingsRow
           label={t("settings.chat.projectAttachments")}
@@ -642,18 +655,6 @@ export function ChatTab() {
             aria-label={t("settings.chat.turnNavigation")}
             checked={showTurnNavigation}
             onCheckedChange={setShowTurnNavigation}
-          />
-        </SettingsRow>
-        <SettingsRow
-          label={t("settings.chat.projectsSection")}
-          description={t("settings.chat.projectsSectionDescription")}
-        >
-          <Switch
-            aria-label={t("settings.chat.projectsSection")}
-            checked={organizeBy === "project"}
-            onCheckedChange={(checked) =>
-              setOrganizeBy(checked ? "project" : "list")
-            }
           />
         </SettingsRow>
         <SettingsRow

@@ -13,6 +13,7 @@ from .._version import __version__
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
+    "config_return_dict",
     "is_bfloat16_supported",
     "_requested_float32",
     "_mark_requested_float32",
@@ -111,6 +112,7 @@ __all__ = [
     "patch_flex_attention_kernel_options",
 ]
 
+
 import torch
 from typing import Union, Optional, List, Any, Callable, Tuple, Iterator
 from platform import system as platform_system
@@ -139,7 +141,7 @@ from ..device_type import (
     apply_gfx101x_triton_workaround,
     gfx101x_triton_workaround_applied,
 )
-from ..import_fixes import UNSLOTH_ENABLE_LOGGING
+from ..import_fixes import UNSLOTH_ENABLE_LOGGING, stale_kernel_hint
 from unsloth_zoo.log import logger
 from unsloth_zoo.tokenizer_utils import (
     patch_tokenizer as _patch_tokenizer,
@@ -491,13 +493,23 @@ _CUDNN_LARGE_HEAD_DIM_MIN_CAPABILITY = (10, 0)
 
 
 def _sdpa_reaches_cudnn_at_head_dim_256():
-    """True when plain SDPA already dispatches cuDNN for a MASKED head_dim 256 on this box."""
+    """True when plain SDPA already dispatches cuDNN for a MASKED head_dim 256 on this box.
+
+    False under fix_cudnn_sdpa_d256_masked_backward: it moves that training onto the efficient
+    kernel, where flex is faster again.
+    """
     try:
         if Version(torch.__version__.split("+")[0]) < Version(_CUDNN_LARGE_HEAD_DIM_TORCH_VERSION):
             return False
         if getattr(torch.version, "hip", None):
             return False
         if not torch.cuda.is_available():
+            return False
+        if getattr(
+            torch.nn.functional.scaled_dot_product_attention,
+            "_unsloth_avoids_cudnn_d256_masked_backward",
+            False,
+        ):
             return False
         return all(
             torch.cuda.get_device_capability(index) >= _CUDNN_LARGE_HEAD_DIM_MIN_CAPABILITY
@@ -3458,11 +3470,13 @@ elif DEVICE_TYPE == "cuda":
                         "To update flash-attn, do the below:\n"
                         '\npip install --no-deps --no-build-isolation --upgrade "flash-attn>=2.6.3"'
                     )
-            except:
+            except Exception as error:
                 print(
                     "Unsloth: Your Flash Attention 2 installation seems to be broken. "
                     "Using Xformers instead. No performance changes will be seen."
                 )
+                if hint := stale_kernel_hint("flash_attn", error):
+                    print(hint)
 
                 import transformers.utils.import_utils
 
@@ -4285,6 +4299,11 @@ def offload_output_embeddings(model, temporary_location: str = "_unsloth_tempora
     return
 
 
+def config_return_dict(config):
+    # use_return_dict without its transformers 5 deprecation warning, a torch.compile graph break.
+    return getattr(config, "return_dict", True) and not getattr(config, "torchscript", False)
+
+
 def is_bfloat16_supported():
     return SUPPORTS_BFLOAT16
 
@@ -4646,11 +4665,45 @@ def _unsloth_train_if_needed(model):
         and _unsloth_wrappees_are_in_train_mode(model)
     ):
         return model
+    _unsloth_freeze_norm_running_stats(model)
     model.train()
     try:
         model._unsloth_train_mode_asserted = True
     except Exception:
         pass
+    return model
+
+
+_UNSLOTH_RUNNING_STAT_NORMS = (
+    torch.nn.modules.batchnorm._BatchNorm,
+    torch.nn.modules.instancenorm._InstanceNorm,
+)
+
+
+def _unsloth_norm_stats_are_frozen(module):
+    """Running-stat norm with all own params frozen. UNSLOTH_FREEZE_NORM_RUNNING_STATS=0 opts out."""
+    if os.environ.get("UNSLOTH_FREEZE_NORM_RUNNING_STATS", "1") == "0":
+        return False
+    if not getattr(module, "track_running_stats", False):
+        return False
+    params = list(module.parameters(recurse = False))
+    return len(params) > 0 and not any(p.requires_grad for p in params)
+
+
+def _unsloth_norm_train(module, mode = True):
+    if mode and _unsloth_norm_stats_are_frozen(module):
+        mode = False
+    return type(module).train(module, mode)
+
+
+def _unsloth_freeze_norm_running_stats(model):
+    """Keep frozen running-stat norms in eval (LoRA never saves their buffers); rechecked per train() call."""
+    if not isinstance(model, torch.nn.Module):
+        return model
+    for module in model.modules():
+        if isinstance(module, _UNSLOTH_RUNNING_STAT_NORMS) and "train" not in module.__dict__:
+            # partial, not a bound method, so deepcopy / pickle still work.
+            module.train = functools.partial(_unsloth_norm_train, module)
     return model
 
 
@@ -4882,6 +4935,9 @@ def patch_gradient_accumulation_fix(Trainer):
                             pass
             except Exception:
                 pass
+            if getattr(self, "is_fsdp_enabled", False):
+                from .llama import _decline_fused_lora_for_fsdp
+                _decline_fused_lora_for_fsdp(getattr(self, "model", None))
 
         _unsloth_trainer_init.__wrapped__ = _original_trainer_init
         Trainer.__init__ = _unsloth_trainer_init

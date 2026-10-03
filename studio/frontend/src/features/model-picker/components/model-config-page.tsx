@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { InferenceEnginePicker } from "./inference-engines";
+import { CustomLlamaConfigEditor } from "./custom-llama-config-editor";
+import {
+  MANAGED_LLAMA_CPP_CONFIG,
+  normalizeLlamaCppConfig,
+} from "../model-config/llama-cpp-config";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { InfoHint } from "@/components/ui/info-hint";
@@ -182,6 +188,15 @@ import {
   vramFractionToPercent,
   vramPercentToFraction,
 } from "../model-config/per-model-config";
+import { isAudioRuntimeGguf } from "../../audio/audio-cpp-catalog";
+import {
+  type RunConfigImport,
+  SharedRunConfigControls,
+  SharedRunConfigReview,
+  cancelRunConfigImportForEdit,
+  isRunConfigEditorChange,
+  isRunConfigVariantUnresolved,
+} from "../sharing";
 import { ChatTemplateEditorDialog } from "./chat-template-editor-dialog";
 import { MemoryEstimateRow } from "./memory-estimate-row";
 import type { ModelPickTarget } from "./model-selector/types";
@@ -330,6 +345,7 @@ function withoutUnsupportedDiffusionSettings(
     config.nBatch == null &&
     config.nUbatch == null &&
     (config.llamaExtraArgs == null || config.llamaExtraArgs.length === 0) &&
+    config.llamaCppConfig?.mode !== "custom" &&
     !hasUnsupportedGpuPick
   ) {
     return config;
@@ -350,6 +366,10 @@ function withoutUnsupportedDiffusionSettings(
     // them as though it had, so a box filled before classification flipped would leave the
     // model running without what it says.
     llamaExtraArgs: null,
+    // The diffusion runner has no llama-server; explicit managed, since omitted inherits the stored custom.
+    ...(config.llamaCppConfig?.mode === "custom"
+      ? { llamaCppConfig: MANAGED_LLAMA_CPP_CONFIG }
+      : {}),
     ...(hasUnsupportedGpuPick
       ? {
           selectedGpuIds: undefined,
@@ -1302,6 +1322,33 @@ function LoadModeRow({
   );
 }
 
+// Outside the managed lock: custom launches still honour disable_vision.
+function VisionRow({
+  config,
+  update,
+}: {
+  config: PerModelConfig;
+  update: (patch: Partial<PerModelConfig>) => void;
+}) {
+  return (
+    <div className={ROW_CLASS}>
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className={LABEL_CLASS}>Vision</span>
+        <InfoHint>
+          Loads the vision projector so the model can read images. Turning
+          it off frees that VRAM for more layers on the GPU. Text generation
+          is unaffected either way.
+        </InfoHint>
+      </div>
+      <Switch
+        className="panel-switch shrink-0"
+        checked={!config.disableVision}
+        onCheckedChange={(checked) => update({ disableVision: !checked })}
+      />
+    </div>
+  );
+}
+
 function GgufAdvancedSettings({
   config,
   update,
@@ -1317,6 +1364,7 @@ function GgufAdvancedSettings({
   moeLayersInputRef,
   onExtraArgsLoadableChange,
   draftKey,
+  hideVision = false,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
@@ -1333,6 +1381,7 @@ function GgufAdvancedSettings({
   /** Which stored entries the extra-arguments row reads, most specific first. */
   onExtraArgsLoadableChange: (loadable: boolean) => void;
   draftKey: string;
+  hideVision?: boolean;
 }) {
   const batchAdviceId = useId();
   const ubatchAdviceId = useId();
@@ -1624,21 +1673,7 @@ function GgufAdvancedSettings({
       {/* withoutUnsupportedDiffusionSettings forces disableVision back to false on a diffusion model
           and the runner never reads it, so the switch would flip back under the pointer. */}
       {!isDiffusion && (
-        <div className={ROW_CLASS}>
-          <div className="flex min-w-0 items-center gap-1.5">
-            <span className={LABEL_CLASS}>Vision</span>
-            <InfoHint>
-              Loads the vision projector so the model can read images. Turning
-              it off frees that VRAM for more layers on the GPU. Text generation
-              is unaffected either way.
-            </InfoHint>
-          </div>
-          <Switch
-            className="panel-switch shrink-0"
-            checked={!config.disableVision}
-            onCheckedChange={(checked) => update({ disableVision: !checked })}
-          />
-        </div>
+        hideVision ? null : <VisionRow config={config} update={update} />
       )}
 
       {!isDiffusion && (
@@ -2036,6 +2071,7 @@ export function ModelConfigPage({
     (s) => s.loadedMlxKvQuantRequested,
   );
   const isActiveModel = loadedConfig != null;
+  const sharedVariantUnresolved = isRunConfigVariantUnresolved(target);
   const hfToken = useChatRuntimeStore((s) => s.hfToken);
   const activeNativePathToken = useChatRuntimeStore(
     (s) => s.activeNativePathToken,
@@ -2151,6 +2187,7 @@ export function ModelConfigPage({
   // refuse. Held by the panel rather than the row, since the row unmounts whenever Advanced
   // settings collapse while its tokens stay in the config.
   const [extraArgsLoadable, setExtraArgsLoadable] = useState(true);
+  const [customConfigLoadable, setCustomConfigLoadable] = useState(true);
   // True until the server-row read below settles: a load started before it lands sends none of the
   // row's settings, and with Remember unchecked it forgets the row it never read.
   const [extraArgsHydrating, setExtraArgsHydrating] = useState(
@@ -2194,6 +2231,15 @@ export function ModelConfigPage({
   const [autoOpenAdvanced, setAutoOpenAdvanced] = useState(() =>
     hasNonDefaultAdvanced(configState),
   );
+  const [importedConfig, setImportedConfig] = useState<RunConfigImport | null>(
+    null,
+  );
+  const handleSharedConfigImport = useCallback((imported: RunConfigImport) => {
+    setImportedConfig(imported);
+    if (Object.keys(imported.changes).length > 0) {
+      setAutoOpenAdvanced(true);
+    }
+  }, []);
   // Frozen like the rest of the auto-open decision, so editing the width does not reopen the
   // section the user just closed.
   const [initialMlxKvQuant] = useState(() => configState.mlxKvQuant ?? null);
@@ -2230,7 +2276,7 @@ export function ModelConfigPage({
     : templateDefaults.loading;
 
   // Fetch GGUF header dims to size the GPU Memory sliders; the context also fills in below.
-  const contextFetchKey = target.isGguf
+  const contextFetchKey = target.isGguf && !sharedVariantUnresolved
     ? `${target.id}\n${target.ggufVariant ?? ""}\n${hfToken || ""}\n${nativePathToken ?? ""}`
     : null;
   const [fetchedStagedDims, setFetchedStagedDims] = useState<{
@@ -2297,6 +2343,10 @@ export function ModelConfigPage({
     stagedDims,
   );
   const resolvedIsDiffusion = classifiedIsDiffusion === true;
+  // Speech, music and ASR GGUFs the backend runs on its audio runtime: no llama-server launches,
+  // so none of its knobs apply. Their own options live under Advanced on the Audio page.
+  const audioRuntimeGguf =
+    target.isGguf && isAudioRuntimeGguf(target.id, target.meta.audioType);
 
   // The one field on this page whose stored value the local config may never have seen:
   // llama_extra_args can be set through the overrides API with no UI involved, so an empty box
@@ -2650,7 +2700,12 @@ export function ModelConfigPage({
       config.nUbatch != null);
   const gpuIndexKind =
     pinnableGpuContext(gpuDevices, resolvedIsDiffusion).indexKind ?? null;
+  const handleSharedConfigEdit = () => {
+    cancelRunConfigImportForEdit(draftKey);
+    setImportedConfig(null);
+  };
   const update = (patch: Partial<PerModelConfig>) => {
+    handleSharedConfigEdit();
     // Every control lands here and nothing else does: the hydration effect's own sanitising
     // writes go through setConfig, and marking those would have the read refuse its result.
     markModelConfigDraftEdited(draftKey);
@@ -2720,7 +2775,9 @@ export function ModelConfigPage({
     platform.deviceType,
     platform.chatOnlyReason,
   );
-  const atBaseline = perModelConfigsEqual(config, baseline);
+  const atBaseline = perModelConfigsEqual(config, baseline, {
+    followGlobal: true,
+  });
   // The fitted value is an outcome, not an override. Auto stays at the default even
   // when a loaded model reports less than its native context. A non-GGUF pin is an
   // override too, read from whichever field it was saved in.
@@ -2790,7 +2847,11 @@ export function ModelConfigPage({
   // stands down, since its runner allocates on a different plan. The tri-state is read as a
   // tri-state, not through resolvedIsDiffusion: a GGUF still being classified may be
   // DiffusionGemma, and guessing paints a footprint from the wrong plan that never clears.
+  // A custom INI owns llama.cpp tuning: the managed rows lock and Studio cannot price it.
+  const customActive =
+    config.llamaCppConfig?.mode === "custom" && !resolvedIsDiffusion;
   const memoryEstimateRequest =
+    !customActive &&
     shouldRequestMemoryEstimate({
       isGguf: Boolean(target.isGguf),
       isAppleUnifiedMemory,
@@ -3042,10 +3103,8 @@ export function ModelConfigPage({
       ? "Reload model"
       : "Load model";
 
-  const handleRun = () => {
-    if (budgetSettling) {
-      return;
-    }
+  const [engineReady, setEngineReady] = useState(true);
+  const commitDraft = () => {
     // Same-click Load/Reload: a numeric draft the user just typed is flushed only by that input's
     // blur handler, which runs after this click closure captured the stale value, so commit
     // every numeric input imperatively.
@@ -3120,56 +3179,49 @@ export function ModelConfigPage({
         ? maxSeqLengthValue
         : (normalizeMaxSeqLength(effectiveConfig.maxSeqLength) ??
           clampMaxSeqLength(DEFAULT_MAX_SEQ_LENGTH, nativeMaxSeqLength));
-    // Recheck the committed draft so Save/Forget reloads when needed.
-    const effectiveAtBaseline = perModelConfigsEqual(effectiveConfig, baseline);
-    const effectivePersistenceOnly =
-      isActiveModel && effectiveAtBaseline && rememberChanged;
-    // Judge what storage keeps: savePerModelConfig normalizes first, so the raw object over-reports.
-    const normalizedRuntimeConfig = normalizePerModelConfig(
-      effectiveRuntimeConfig,
-    );
-    const defaultConfig = isDefaultConfig(normalizedRuntimeConfig);
-    let saveFailed = false;
-    const evicted: { modelId: string; ggufVariant: string | null }[] = [];
-    if (remember) {
-      saveFailed = !savePerModelConfig(
-        configId,
-        target.ggufVariant,
-        normalizedRuntimeConfig,
-        evicted,
-      );
-    } else {
-      saveFailed = !deletePerModelConfig(configId, target.ggufVariant);
+    return { effectiveConfig, effectiveRuntimeConfig, effectiveMaxSeqLengthValue };
+  };
+
+  const persistConfig = (next: PerModelConfig) => {
+    // Normalizing drops a blank or oversized custom config, saving managed over a good one.
+    if (
+      remember &&
+      next.llamaCppConfig !== undefined &&
+      normalizeLlamaCppConfig(next.llamaCppConfig) === undefined
+    ) {
+      return { saved: false, defaultConfig: false };
     }
+    // Judge what storage keeps: savePerModelConfig normalizes first, so the raw object over-reports.
+    const normalized = normalizePerModelConfig(next);
+    const evicted: { modelId: string; ggufVariant: string | null }[] = [];
+    const saved = remember
+      ? savePerModelConfig(configId, target.ggufVariant, normalized, evicted)
+      : deletePerModelConfig(configId, target.ggufVariant);
     // Mirror to the server so an API load gets these settings, not app defaults. Best-effort, and
     // skipped when the localStorage write failed or the two would permanently disagree. Gated on
     // auto-switch reach, not GGUF-ness: the resolver skips a materialized Ollama link, and a
     // native-path lease is the same.
     // A forget also drops the local records for every other spelling the server reports clearing.
-    if (
-      !saveFailed &&
-      (target.apiLoadable ?? target.isGguf) &&
-      !nativePathToken
-    ) {
+    if (saved && (target.apiLoadable ?? target.isGguf) && !nativePathToken) {
       syncModelOverride(
         configId,
         target.ggufVariant,
-        remember ? normalizedRuntimeConfig : null,
+        remember ? normalized : null,
         remember
           ? {
               resetReasoningBudget:
                 baseline.reasoningBudget !== -1 &&
-                normalizedRuntimeConfig.reasoningBudget === -1,
+                normalized.reasoningBudget === -1,
               resetReasoningBudgetMessage:
                 baseline.reasoningBudgetMessage !== "" &&
-                normalizedRuntimeConfig.reasoningBudgetMessage === "",
+                normalized.reasoningBudgetMessage === "",
             }
           : undefined,
       );
     }
     // Only once the write landed: a blocked or full localStorage leaves the values on screen,
     // and clearing anyway let the next read replace them with the older stored row.
-    if (!saveFailed) {
+    if (saved) {
       clearModelConfigDraftEdited(draftKey);
     }
     // Saving can push the local map over budget and drop other models, whose server entries would
@@ -3179,24 +3231,73 @@ export function ModelConfigPage({
         keepLaunchFlags: true,
       });
     }
+    return { saved, defaultConfig: isDefaultConfig(normalized) };
+  };
+
+  const finishPersist = (defaultConfig: boolean) => {
+    const nextRemember = remember && !defaultConfig;
+    setSavedRemember(nextRemember);
+    setRemember(nextRemember);
+    toast.success(
+      nextRemember
+        ? "Settings saved."
+        : remember
+          ? "Default settings kept."
+          : "Settings forgotten.",
+    );
+  };
+
+  const handleSave = () => {
+    if (sharedVariantUnresolved) {
+      return;
+    }
+    const { effectiveRuntimeConfig } = commitDraft();
+    const { saved, defaultConfig } = persistConfig(effectiveRuntimeConfig);
+    if (!saved) {
+      toast.error("Couldn't save settings for this model.");
+      return;
+    }
+    // The page stays mounted, so show a context pinFixedLayerContext stored (else it reads "Auto").
+    // Not on a forget: that stored nothing, and pinning here would change the next load.
+    // setConfig, not update: this mirrors what was just saved, so the draft must stay unedited.
+    if (
+      remember &&
+      effectiveRuntimeConfig.customContextLength !== config.customContextLength
+    ) {
+      setConfig((current) => ({
+        ...current,
+        customContextLength: effectiveRuntimeConfig.customContextLength,
+      }));
+    }
+    finishPersist(defaultConfig);
+  };
+
+  const handleRun = () => {
+    if (sharedVariantUnresolved) {
+      return;
+    }
+    if (budgetSettling) {
+      return;
+    }
+    const { effectiveConfig, effectiveRuntimeConfig, effectiveMaxSeqLengthValue } =
+      commitDraft();
+    // Recheck the committed draft so Save/Forget reloads when needed.
+    const effectivePersistenceOnly =
+      isActiveModel &&
+      perModelConfigsEqual(effectiveConfig, baseline, {
+        followGlobal: true,
+      }) &&
+      rememberChanged;
+    const { saved, defaultConfig } = persistConfig(effectiveRuntimeConfig);
     if (effectivePersistenceOnly) {
-      if (saveFailed) {
+      if (!saved) {
         toast.error("Couldn't save settings for this model.");
         return;
       }
-      const nextRemember = remember && !defaultConfig;
-      setSavedRemember(nextRemember);
-      setRemember(nextRemember);
-      toast.success(
-        nextRemember
-          ? "Settings saved."
-          : remember
-            ? "Default settings kept."
-            : "Settings forgotten.",
-      );
+      finishPersist(defaultConfig);
       return;
     }
-    if (saveFailed) {
+    if (!saved) {
       toast.error("Couldn't save these settings, loading with them anyway.");
     }
     // MLX pins in customContextLength as GGUF does, so unpinned sends nothing.
@@ -3243,7 +3344,14 @@ export function ModelConfigPage({
   };
 
   return (
-    <div className="hint-on-hover flex flex-col">
+    <div
+      className="hint-on-hover flex flex-col"
+      onChange={(event) => {
+        if (isRunConfigEditorChange(event)) {
+          handleSharedConfigEdit();
+        }
+      }}
+    >
       {variant === "page" && showHeader && (
         // -ml-1.5 cancels the icon's inset in its 28px circle, so the chevron starts on
         // the same left edge as the rows below.
@@ -3272,8 +3380,30 @@ export function ModelConfigPage({
         </div>
       )}
 
-      <div className="space-y-5">
-        {memoryEstimateRequest != null && (
+      <SharedRunConfigReview
+        target={target}
+        imported={importedConfig}
+        draftConfig={configState}
+        currentConfig={config}
+        remember={remember}
+        hasSavedSettings={savedRemember}
+      />
+      <fieldset
+        disabled={customActive}
+        inert={customActive ? true : undefined}
+        className={`min-w-0 space-y-5 ${customActive ? "opacity-50" : ""}`}
+      >
+        {!target.isGguf && !targetIsMlx && !classifiedIsDiffusion && !target.meta.isLora && !target.meta.audioType && (
+          <InferenceEnginePicker parallelism={config.engineParallelism ?? "tensor"} onParallelismChange={engineParallelism => update({ engineParallelism })} precision={config.enginePrecision ?? "auto"} onPrecisionChange={enginePrecision => update({ enginePrecision })} value={config.engine ?? "auto"} onChange={engine => update({ engine })} onReadyChange={setEngineReady} onUse={handleRun} gpuIds={config.selectedGpuIds} onGpuChange={ids => update({ selectedGpuIds: ids, selectedGpuIndexKind: "physical" })} />
+        )}
+        {audioRuntimeGguf ? (
+          <p className="text-ui-12 leading-snug text-muted-foreground">
+            This model runs on the audio runtime, so llama.cpp settings do not
+            apply. Its generation options are under Advanced on the Audio page
+            once it is loaded.
+          </p>
+        ) : null}
+        {memoryEstimateRequest != null && !audioRuntimeGguf && (
           <MemoryEstimateRow
             estimate={memoryEstimate.estimate}
             loading={memoryEstimate.loading}
@@ -3295,7 +3425,7 @@ export function ModelConfigPage({
             onExpandedChange={setMemoryBreakdownOpen}
           />
         )}
-        {target.isGguf && (
+        {target.isGguf && !audioRuntimeGguf && (
           <>
             <div className="space-y-2">
               <div className={ROW_CLASS}>
@@ -3396,6 +3526,7 @@ export function ModelConfigPage({
                 layerCount={stagedDims?.layerCount ?? null}
                 moeLayerCount={stagedDims?.moeLayerCount ?? null}
                 isDiffusion={resolvedIsDiffusion}
+                hideVision={customActive}
                 gpuDevices={gpuDevices}
                 gpuLayersInputRef={gpuLayersInputRef}
                 moeLayersInputRef={moeLayersInputRef}
@@ -3438,15 +3569,26 @@ export function ModelConfigPage({
             )}
           </>
         )}
-      </div>
+      </fieldset>
 
-      <div
-        className={
-          variant === "sidebar"
-            ? "mt-5 flex flex-col gap-2 border-t border-border pt-5"
-            : "mt-5 flex items-center justify-between gap-3 border-t border-border pt-5"
-        }
-      >
+      {target.isGguf &&
+        !resolvedIsDiffusion &&
+        !audioRuntimeGguf &&
+        (showAdvanced || customActive) && (
+          <div className="mt-5 space-y-5">
+            {customActive && <VisionRow config={config} update={update} />}
+            <CustomLlamaConfigEditor
+              value={config.llamaCppConfig}
+              onChange={(llamaCppConfig) => update({ llamaCppConfig })}
+              sourceKey={draftKey}
+              onLoadableChange={setCustomConfigLoadable}
+            />
+          </div>
+        )}
+
+      {/* Stacked in both variants: a row that wraps on demand reflows when the same click that
+          commits a draft mounts Save settings, moving Load out from under the cursor. */}
+      <div className="mt-5 flex flex-col gap-2 border-t border-border pt-5">
         <div className="flex min-w-0 items-center gap-2">
           <Checkbox
             id={rememberId}
@@ -3465,23 +3607,21 @@ export function ModelConfigPage({
             Remember for this model
           </label>
         </div>
-        <div
-          className={
-            variant === "sidebar"
-              ? "flex flex-wrap items-center gap-2"
-              : "flex shrink-0 items-center gap-2"
-          }
-        >
+        <div className="flex flex-wrap items-center gap-2">
           {/* Primary action first, like the Preset row's Save/Delete. */}
           <Button
             type="button"
             size="sm"
             className={FOOTER_BUTTON_CLASS}
             disabled={
+              sharedVariantUnresolved ||
+              ((config.engine ?? "auto") !== "auto" && !engineReady) ||
               stagedMetadataPending ||
               budgetSettling ||
-              (!extraArgsLoadable && !sharedExtraArgsCleared) ||
-              sharedExtraArgsRefused ||
+              (customActive && !customConfigLoadable) ||
+              (!customActive &&
+                ((!extraArgsLoadable && !sharedExtraArgsCleared) ||
+                  sharedExtraArgsRefused)) ||
               extraArgsHydrating ||
               (isActiveModel &&
                 atBaseline &&
@@ -3492,6 +3632,31 @@ export function ModelConfigPage({
           >
             {primaryActionLabel}
           </Button>
+          {/* Hidden with nothing to save or forget, else never-remembered models show a dead Forget. */}
+          {!persistenceOnly && (remember || savedRemember) && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className={FOOTER_BUTTON_CLASS}
+              // Same gates as Load: an unclassified model or an in-flight budget PUT would persist
+              // settings the load path strips or has already captured. Forget stores nothing, so
+              // broken saved arguments must not lock it.
+              disabled={
+                sharedVariantUnresolved ||
+                stagedMetadataPending ||
+                budgetSettling ||
+                (remember &&
+                  ((customActive && !customConfigLoadable) ||
+                    (!extraArgsLoadable && !sharedExtraArgsCleared) ||
+                    sharedExtraArgsRefused ||
+                    extraArgsHydrating))
+              }
+              onClick={handleSave}
+            >
+              {remember ? "Save settings" : "Forget settings"}
+            </Button>
+          )}
           <Button
             type="button"
             variant="outline"
@@ -3499,6 +3664,7 @@ export function ModelConfigPage({
             className={`${FOOTER_BUTTON_CLASS} text-muted-foreground`}
             disabled={atDefault}
             onClick={() => {
+              handleSharedConfigEdit();
               // Reset writes through setConfig, not update, so it marks the draft itself.
               markModelConfigDraftEdited(draftKey);
               // And drops the raw edit: token equality alone would make the discarded text
@@ -3509,11 +3675,27 @@ export function ModelConfigPage({
                 // running process's arguments, so a reload after Reset kept the flags the box says are gone.
                 ...DEFAULT_PER_MODEL_CONFIG,
                 llamaExtraArgs: null,
+                llamaCppConfig: MANAGED_LLAMA_CPP_CONFIG,
               });
             }}
           >
             Reset
           </Button>
+          {target.isGguf && (
+            <SharedRunConfigControls
+              className={FOOTER_BUTTON_CLASS}
+              target={target}
+              config={config}
+              ready={!extraArgsHydrating}
+              canImport={variant !== "sidebar"}
+              isDiffusion={resolvedIsDiffusion}
+              disabled={
+                sharedExtraArgsRefused ||
+                (!extraArgsLoadable && !sharedExtraArgsCleared)
+              }
+              onImport={handleSharedConfigImport}
+            />
+          )}
         </div>
       </div>
 
