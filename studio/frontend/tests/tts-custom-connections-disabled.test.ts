@@ -89,6 +89,9 @@ function load(
       "../search-images/search-images": {
         stripSearchImageTokens: (text: string) => text,
       },
+      "../utils/speech-text": {
+        markdownToSpeechText: (text: string) => text,
+      },
       "../stores/external-providers-store": {
         useExternalProvidersStore: {
           getState: () => ({
