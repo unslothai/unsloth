@@ -66,6 +66,7 @@ import hashlib
 import json
 import re
 import sys
+import tokenize
 from pathlib import Path
 
 
@@ -4973,10 +4974,16 @@ def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
     index = _ModuleIndex(roots, files)
 
     facts_by_path: dict[Path, _FileFacts] = {}
+    # A file that cannot be parsed is a file nobody analysed, so it fails the gate the
+    # same way an unconverged body does instead of quietly dropping out of the scan.
+    unparsed: list[Path] = []
     for path in files:
         try:
-            tree = ast.parse(path.read_text(encoding = "utf-8", errors = "replace"), filename = str(path))
-        except SyntaxError:
+            # `tokenize.open` honours a PEP 263 coding declaration, as the interpreter does.
+            with tokenize.open(path) as handle:
+                tree = ast.parse(handle.read(), filename = str(path))
+        except (SyntaxError, UnicodeDecodeError, ValueError):
+            unparsed.append(path)
             continue
         facts_by_path[path] = _FileFacts(path, tree, index)
     # Published on the index so a package re-export can be followed to the file that
@@ -5162,6 +5169,23 @@ def scan(targets: list[Path], roots: list[Path] | None = None) -> list[dict]:
 
     if not settled:
         unconverged.add(f"<whole scan>::interprocedural fixpoint")
+
+    for path in unparsed:
+        findings.append(
+            {
+                "path": _relative(path),
+                "line": 0,
+                "qualname": "<module>",
+                "sink": INCOMPLETE_SINK,
+                "argument": "the file could not be parsed",
+                "why": "the result for this file is incomplete",
+                "artefacts": [],
+                "tier": "A",
+                "hash": "unparsed",
+                "context": "",
+                "gated": True,
+            }
+        )
 
     if unconverged:
         for where in sorted(unconverged):

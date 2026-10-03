@@ -6086,3 +6086,18 @@ def test_a_revision_local_read_from_data_is_not_a_pin(tmp_path):
         "    sys.path.insert(0, snapshot_download(repo, revision = revision))\n",
     )
     assert "unpinned code fetch" in _sinks(findings)
+
+
+def test_an_unparsable_file_fails_closed_and_a_declared_encoding_is_honoured(tmp_path):
+    """A parse failure is an incomplete result, and a PEP 263 Latin-1 file still parses."""
+    broken = _scan(tmp_path, "def broken(:\n    pass\n", name = "broken.py")
+    assert any(f["sink"] == L.INCOMPLETE_SINK for f in broken)
+    latin = tmp_path / "latin.py"
+    latin.write_bytes(
+        "# -*- coding: latin-1 -*-\n"
+        "import importlib, json\n"
+        "def café(blob):\n"
+        "    return importlib.import_module(json.loads(blob)['module'])\n".encode("latin-1")
+    )
+    findings = L.scan([latin], roots = [tmp_path])
+    assert "importlib.import_module" in _sinks(findings)
