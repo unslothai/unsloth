@@ -120,8 +120,13 @@ interface Row extends ChatSearchRow {
   open: () => void;
 }
 
+type ActionId = Extract<
+  ShortcutId,
+  "newChat" | "newTemporaryChat" | "switchToTrain" | "switchToImages" | "switchToVideo"
+>;
+
 interface Action {
-  id: ShortcutId;
+  id: ActionId;
   icon: IconSvgElement;
   labelKey: TranslationKey;
 }
@@ -269,9 +274,20 @@ export function ChatSearchDialog() {
   const matched = useMemo(() => matchAll(activeQuery), [matchAll, activeQuery]);
 
   const hasQuery = queryTokens(activeQuery).length > 0;
+  // One call per action (hooks cannot run in a loop). Availability can change while open, so it
+  // gates the selection keys too, not just the rendered rows.
+  const available: Record<ActionId, boolean> = {
+    newChat: useShortcutAvailable("newChat", false),
+    newTemporaryChat: useShortcutAvailable("newTemporaryChat", false),
+    switchToTrain: useShortcutAvailable("switchToTrain", false),
+    switchToImages: useShortcutAvailable("switchToImages", false),
+    switchToVideo: useShortcutAvailable("switchToVideo", false),
+  };
   // Live query, not the deferred one: Enter must never run an action the input no longer matches.
-  const visibleActions = ACTIONS.filter((action) =>
-    haystackMatches(t(action.labelKey).toLowerCase(), queryTokens(query)),
+  const visibleActions = ACTIONS.filter(
+    (action) =>
+      available[action.id] &&
+      haystackMatches(t(action.labelKey).toLowerCase(), queryTokens(query)),
   );
 
   // All: one headed group per kind. A kind's tab: one list.
@@ -611,9 +627,7 @@ function ActionItem({
   onSelect: () => void;
 }) {
   const t = useT();
-  const available = useShortcutAvailable(action.id, false);
   const label = useShortcutLabel(action.id);
-  if (!available) return null;
   return (
     <CommandPrimitive.Item
       value={`action:${action.id}`}

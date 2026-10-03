@@ -116,3 +116,9 @@ test("empty states wait for their source, and chats rank by last activity", () =
   assert.match(DIALOG, /projects: !projectsLoaded,/);
   assert.match(DIALOG, /time: item\.updatedAt \?\? item\.createdAt,/);
 });
+
+test("an action that becomes unavailable leaves the selection keys too", () => {
+  // Rows and keys share one list, so a key never points at an unmounted row.
+  assert.match(DIALOG, /available\[action\.id\] &&\s*haystackMatches\(/);
+  assert.doesNotMatch(DIALOG.slice(DIALOG.indexOf("function ActionItem(")), /useShortcutAvailable|return null/);
+});
