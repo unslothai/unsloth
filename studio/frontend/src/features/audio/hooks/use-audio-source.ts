@@ -98,6 +98,8 @@ export function useAudioSource({
   const recorderRef = useRef<SegmentRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const discardRecording = useRef(false);
+  const acquiring = useRef(false);
+  const acquisition = useRef(0);
   const objectUrl = useRef<string | null>(null);
   const setObjectUrl = useCallback((blob: Blob | null) => {
     if (objectUrl.current) URL.revokeObjectURL(objectUrl.current);
@@ -235,18 +237,28 @@ export function useAudioSource({
   }, []);
 
   const startRecording = useCallback(async () => {
-    if (recorderRef.current) return;
+    if (recorderRef.current || acquiring.current) return;
+    acquiring.current = true;
+    const ticket = ++acquisition.current;
     let stream: MediaStream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true },
       });
     } catch {
+      acquiring.current = false;
+      if (ticket !== acquisition.current) return;
       dispatch({
         type: "fail",
         message:
           "Could not use the microphone. Allow access, or upload a file instead.",
       });
+      return;
+    }
+    acquiring.current = false;
+    // Cleared or unmounted while the permission prompt was open: release the mic at once.
+    if (ticket !== acquisition.current) {
+      for (const track of stream.getTracks()) track.stop();
       return;
     }
     streamRef.current = stream;
@@ -315,6 +327,7 @@ export function useAudioSource({
   }, [recordingStartedAt]);
 
   const abortAll = useCallback(() => {
+    acquisition.current += 1;
     uploadAbort.current?.abort();
     loadAbort.current?.abort();
     if (recorderRef.current) {

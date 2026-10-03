@@ -207,3 +207,24 @@ test("the whole card is the drop target, with every way in", () => {
   );
   assert.match(hook, /decodeAudioData/);
 });
+
+test("a superseded microphone request releases its stream", () => {
+  const hook = readSrc("features/audio/hooks/use-audio-source.ts");
+  assert.match(
+    hook,
+    /if \(recorderRef\.current \|\| acquiring\.current\) return;/,
+  );
+  assert.match(
+    hook,
+    /if \(ticket !== acquisition\.current\) \{\s*for \(const track of stream\.getTracks\(\)\) track\.stop\(\);/,
+  );
+  assert.match(
+    hook,
+    /const abortAll = useCallback\(\(\) => \{\s*acquisition\.current \+= 1;/,
+  );
+});
+
+test("the chooser accepts MP4 like the drop check does", () => {
+  const input = readSrc("features/audio/components/audio-source-input.tsx");
+  assert.match(input, /const AUDIO_EXTS = "[^"]*\bmp4\b/);
+});
