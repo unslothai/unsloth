@@ -27,6 +27,8 @@ export interface PerModelConfig {
   maxSeqLength: number | null;
   kvCacheDtype: string | null;
   mlxKvQuant?: MlxKvQuant | null;
+  /** MLX only: run quantized projections with int8 activations, where the model supports it. */
+  mlxInt8Prefill?: boolean;
   speculativeType: string | null;
   specDraftNMax: number | null;
   /** KV cache dtype for the DRAFT context, sized and quantized independently of kvCacheDtype.
@@ -73,6 +75,7 @@ export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
   maxSeqLength: null,
   kvCacheDtype: null,
   mlxKvQuant: null,
+  mlxInt8Prefill: false,
   speculativeType: null,
   specDraftNMax: null,
   specDraftCacheDtype: null,
@@ -378,8 +381,9 @@ const LEGACY_MIGRATION_FLAG = "unsloth_model_configs_migrated";
 // would normalize the unknown field straight back out of the record.
 // v2 added nBatch/nUbatch, v3 llamaExtraArgs, v4 disableVision, v5 the llama-server tuning group
 // (loadMode / specDraftCacheDtype / ctxCheckpoints / cacheRam), v6 the reasoning budget pair,
-// v7 mlxKvQuant, and v8 custom llama.cpp configuration.
-const STORAGE_SCHEMA_VERSION = 8;
+// v7 mlxKvQuant, v8 custom llama.cpp configuration, and v9 mlxInt8Prefill.
+const STORAGE_SCHEMA_VERSION = 9;
+const PRE_MLX_INT8_PREFILL_SCHEMA_VERSION = 8;
 const PRE_LLAMA_CPP_CONFIG_SCHEMA_VERSION = 7;
 const PRE_MLX_KV_QUANT_SCHEMA_VERSION = 6;
 const PRE_REASONING_BUDGET_SCHEMA_VERSION = 5;
@@ -422,6 +426,7 @@ const STORED_CONFIG_FIELDS = new Set([
   "maxSeqLength",
   "kvCacheDtype",
   "mlxKvQuant",
+  "mlxInt8Prefill",
   "speculativeType",
   "specDraftNMax",
   "specDraftCacheDtype",
@@ -1033,6 +1038,7 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
         : null,
     maxSeqLength: normalizeMaxSeqLength(partial.maxSeqLength),
     mlxKvQuant: normalizeMlxKvQuant(partial.mlxKvQuant, partial.mlxKvBits),
+    mlxInt8Prefill: partial.mlxInt8Prefill === true,
     kvCacheDtype:
       typeof partial.kvCacheDtype === "string" &&
       VALID_KV_CACHE_DTYPES.has(partial.kvCacheDtype)
@@ -1116,8 +1122,11 @@ function normalize(raw: unknown): PerModelConfig {
  *  client reconstructs anyway, and stamping every record v4 would put the whole store out of reach.
  *  The tuning group and the reasoning pair follow the same rule. */
 function storedSchemaVersion(normalized: PerModelConfig): number {
-  if (normalized.llamaCppConfig !== undefined) {
+  if (normalized.mlxInt8Prefill) {
     return STORAGE_SCHEMA_VERSION;
+  }
+  if (normalized.llamaCppConfig !== undefined) {
+    return PRE_MLX_INT8_PREFILL_SCHEMA_VERSION;
   }
   if (normalized.mlxKvQuant != null) {
     return PRE_LLAMA_CPP_CONFIG_SCHEMA_VERSION;
@@ -1297,6 +1306,7 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
     config.maxSeqLength == null &&
     (config.kvCacheDtype ?? null) === DEFAULT_PER_MODEL_CONFIG.kvCacheDtype &&
     (config.mlxKvQuant ?? null) === DEFAULT_PER_MODEL_CONFIG.mlxKvQuant &&
+    !config.mlxInt8Prefill &&
     config.speculativeType === DEFAULT_PER_MODEL_CONFIG.speculativeType &&
     config.specDraftNMax == null &&
     config.nParallel == null &&

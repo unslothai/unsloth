@@ -9282,6 +9282,18 @@ def test_mlx_kv_quant_survives_the_whole_override_projection():
         assert LoadRequest(model_path = "unsloth/A", **kwargs).mlx_kv_quant == "tq-4"
 
 
+def test_mlx_int8_prefill_is_stored_only_when_on_and_reaches_the_load(monkeypatch):
+    _mock_override_store(monkeypatch)
+    assert settings.normalize_model_override({"mlx_int8_prefill": False}) == {}
+    _put("org/m", mlx_int8_prefill = True)
+    stored = settings.get_model_overrides()["org/m"]
+    assert stored == {"mlx_int8_prefill": True}
+    kwargs = settings.model_override_load_kwargs(stored, is_gguf = False)
+    assert LoadRequest(model_path = "org/m", **kwargs).mlx_int8_prefill is True
+    _put("org/m", mlx_int8_prefill = False)
+    assert "org/m" not in settings.get_model_overrides()
+
+
 def _idle_backend(kw, monkeypatch, *, user_loaded):
     """A loaded, long-idle GGUF backend wired into the idle loop."""
     _reset_keepwarm()
