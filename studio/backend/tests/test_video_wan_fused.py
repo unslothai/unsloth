@@ -352,6 +352,35 @@ def test_self_check_out_of_memory_twice_keeps_stock(monkeypatch):
     assert list(wf._VERIFIED.values()) == [False]
 
 
+@pytest.mark.skipif(
+    not _CUDA or torch.cuda.device_count() < 2, reason = "needs two NVIDIA GPUs (non-current device)"
+)
+def test_kernels_launch_on_the_tensors_device(monkeypatch):
+    blk = _block(dim = 128, ffn = 256, heads = 2, device = "cuda:1", dtype = torch.float16)
+    x, enc, temb, rot = _inputs(blk, 1, 32, 128, "cuda:1", torch.float16)
+    kernels = wf._kernels()
+    seen = []
+    for name in ("modnorm", "gate_residual", "rope"):
+        real = kernels[name]
+
+        def _record(
+            *args,
+            _real = real,
+            **kwargs,
+        ):
+            seen.append(torch.cuda.current_device())
+            return _real(*args, **kwargs)
+
+        monkeypatch.setitem(kernels, name, _record)
+    assert torch.cuda.current_device() == 0
+    with torch.no_grad():
+        want = WanTransformerBlock.forward(blk, x, enc, temb, rot)
+        assert wf.install(torch.float16, "cuda:1") is True
+        got = blk(x, enc, temb, rot)
+    assert torch.equal(want, got) and wf.counts()["fused"] == 1
+    assert seen and set(seen) == {1}
+
+
 @needs_cuda
 def test_grad_and_non_fp16_inputs_take_the_stock_path():
     blk = _block(dim = 128, ffn = 256, heads = 2, device = "cuda", dtype = torch.float16)

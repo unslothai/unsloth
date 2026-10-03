@@ -449,6 +449,16 @@ def _self_attention(attn: Any, hidden_states: Any, rotary_emb: Any) -> Any:
 def _fused_forward(
     block: Any, hidden_states: Any, encoder_hidden_states: Any, temb: Any, rotary_emb: Any
 ) -> Any:
+    import torch
+
+    # Triton launches on the current device's stream; a load on another GPU (cuda:1 of a T4x2) must switch to it
+    with torch.cuda.device(hidden_states.device):
+        return _fused_block(block, hidden_states, encoder_hidden_states, temb, rotary_emb)
+
+
+def _fused_block(
+    block: Any, hidden_states: Any, encoder_hidden_states: Any, temb: Any, rotary_emb: Any
+) -> Any:
     """The stock block, step for step, with the float32 elementwise chains replaced by the kernels above."""
     import torch
 
