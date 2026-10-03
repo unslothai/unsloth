@@ -20420,10 +20420,13 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
         from core.inference.llama_keepwarm import inference_lifecycle_gate
 
         async with inference_lifecycle_gate():
-            if _raise_or_cancel_slot_generations(extra, force = request.force_cancel_active):
-                deadline = time.monotonic() + _POST_CANCEL_DRAIN_TIMEOUT_S
-                while extra.generations and time.monotonic() < deadline:
-                    await asyncio.sleep(0.05)
+            _raise_or_cancel_slot_generations(extra, force = request.force_cancel_active)
+            # Past this unload's own ref, a ref is a request already routed here: let it start
+            # or finish, then gate whatever it started, as above.
+            deadline = time.monotonic() + _POST_CANCEL_DRAIN_TIMEOUT_S
+            while (extra.generations or extra.refs > 1) and time.monotonic() < deadline:
+                await asyncio.sleep(0.05)
+                _raise_or_cancel_slot_generations(extra, force = request.force_cancel_active)
             await asyncio.to_thread(model_slots.drop, extra)
         await asyncio.to_thread(release_chat_gpu_claim)
         api_monitor.record_lifecycle(

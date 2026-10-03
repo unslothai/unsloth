@@ -531,6 +531,38 @@ def test_unloading_a_generating_slot_is_refused_unless_forced(backends, monkeypa
     assert event.is_set() and not extra.llama.is_loaded and model_slots.slots == []
 
 
+def test_unloading_a_slot_waits_for_a_request_already_routed_to_it(backends, monkeypatch):
+    _, extra = backends
+    monkeypatch.setattr(inf, "release_chat_gpu_claim", lambda: True)
+    event = threading.Event()
+
+    async def run(starts_generating):
+        extra.refs += 1  # another request routed here, not yet generating
+        seen = {}
+
+        async def routed_request():
+            await asyncio.sleep(0.2)
+            seen["loaded_while_routed"] = extra.llama.is_loaded
+            if starts_generating:
+                extra.generations.add(event)
+            extra.refs -= 1
+
+        task = asyncio.create_task(routed_request())
+        try:
+            await inf._unload_model_impl(UnloadRequest(model_path = "org/B-GGUF"), "s")
+        finally:
+            await task
+        return seen
+
+    with active_generations.ActiveGeneration(event, thread_id = "t1"):
+        with pytest.raises(HTTPException) as excinfo:
+            asyncio.run(run(starts_generating = True))
+    assert excinfo.value.status_code == 409 and extra.llama.is_loaded
+    extra.generations.discard(event)
+    assert asyncio.run(run(starts_generating = False)) == {"loaded_while_routed": True}
+    assert model_slots.slots == [] and not extra.llama.is_loaded
+
+
 def test_a_slot_server_leaves_the_primary_pidfile_alone(monkeypatch):
     import utils.process_lifetime as process_lifetime
     from core.inference.llama_cpp import LlamaCppBackend
