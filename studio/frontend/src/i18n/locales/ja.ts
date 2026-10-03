@@ -3,9 +3,11 @@
 // See /studio/LICENSE.AGPL-3.0
 
 import type { DeepPartialMessageTree } from "../types";
-import type { en } from "./en";
+import { en } from "./en.ts";
 
 export const ja = {
+  // English fallback until this experimental feature is translated.
+  managedEngines: en.managedEngines,
   composerSettings: {
     title: "入力欄",
     plainText: "プレーンテキスト入力",
