@@ -20,7 +20,9 @@ torch = pytest.importorskip("torch")
 torchao = pytest.importorskip("torchao")
 
 _HAVE_HELPERS = ps.safetensors_prequant_supported()
-needs_helpers = pytest.mark.skipif(not _HAVE_HELPERS, reason = "needs torchao >= 0.16 flatten helpers")
+needs_helpers = pytest.mark.skipif(
+    not _HAVE_HELPERS, reason = "needs torchao >= 0.16 flatten helpers"
+)
 _V1 = pn._v1_int8_api() is not None
 _API = pn._torchao_api() or {}
 needs_int8tensor = pytest.mark.skipif("Int8Tensor" not in _API, reason = "needs torchao Int8Tensor")
@@ -28,7 +30,11 @@ needs_int8tensor = pytest.mark.skipif("Int8Tensor" not in _API, reason = "needs 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
-def _int8_tensor(n = 8, k = 32, seed = 0):
+def _int8_tensor(
+    n = 8,
+    k = 32,
+    seed = 0,
+):
     from core.inference.prequant_legacy_int8 import _int8_tensor_api, _to_int8_tensor
 
     g = torch.Generator().manual_seed(seed)
@@ -37,11 +43,17 @@ def _int8_tensor(n = 8, k = 32, seed = 0):
     return _to_int8_tensor(qdata, scale, torch.bfloat16, _int8_tensor_api())
 
 
-def _fp8_tensor(n = 8, k = 32, seed = 0):
+def _fp8_tensor(
+    n = 8,
+    k = 32,
+    seed = 0,
+):
     from torchao.float8.inference import Float8MMConfig
     from torchao.quantization import Float8Tensor, PerRow
     from torchao.quantization.quantize_.common.kernel_preference import KernelPreference
-    from torchao.quantization.quantize_.workflows.float8.float8_tensor import QuantizeTensorToFloat8Kwargs
+    from torchao.quantization.quantize_.workflows.float8.float8_tensor import (
+        QuantizeTensorToFloat8Kwargs,
+    )
 
     g = torch.Generator().manual_seed(seed)
     qdata = (torch.randn(n, k, generator = g) * 50).to(torch.float8_e4m3fn)
@@ -65,7 +77,13 @@ def _fp8_tensor(n = 8, k = 32, seed = 0):
     )
 
 
-def _write(path, state_dict, *, layout = None, scheme = "int8"):
+def _write(
+    path,
+    state_dict,
+    *,
+    layout = None,
+    scheme = "int8",
+):
     from safetensors.torch import save_file
 
     flatten, _ = ps._torchao_helpers()
@@ -147,7 +165,12 @@ def test_a_tensor_off_its_dtype_alignment_is_still_read(tmp_path):
     raw = json.dumps(header).encode()
     raw += b" " * (-len(raw) % 8)
     path = tmp_path / "odd.safetensors"
-    path.write_bytes(len(raw).to_bytes(8, "little") + raw + a.numpy().tobytes() + b.view(torch.int16).numpy().tobytes())
+    path.write_bytes(
+        len(raw).to_bytes(8, "little")
+        + raw
+        + a.numpy().tobytes()
+        + b.view(torch.int16).numpy().tobytes()
+    )
     _, tensors = ps._mapped_tensors(str(path))
     assert torch.equal(tensors["a"], a) and torch.equal(tensors["b"], b)
 
@@ -176,7 +199,10 @@ def test_v1_converted_int8_rebuilds_as_v1_only_where_torchao_ships_it(tmp_path):
         assert type(w).__name__ == "Int8Tensor"
     # Without the v1 declaration the artifact keeps the class it was written as, on every torchao.
     plain = _write(tmp_path / "P-INT8.safetensors", sd)
-    assert type(ps.load_prequant_safetensors(str(plain))["state_dict"]["blk.q.weight"]).__name__ == "Int8Tensor"
+    assert (
+        type(ps.load_prequant_safetensors(str(plain))["state_dict"]["blk.q.weight"]).__name__
+        == "Int8Tensor"
+    )
 
 
 @pytest.mark.skipif(not _V1, reason = "needs torchao <= 0.17 (v1 int8 classes)")
@@ -194,11 +220,15 @@ def test_v1_rebuild_is_bit_identical_to_a_real_v1_quantize(tmp_path):
     converted = torch.nn.Sequential(torch.nn.Linear(64, 32, bias = False)).to(torch.bfloat16)
     converted.load_state_dict(reference, assign = True)
     assert convert_legacy_int8_weights(converted) == 1
-    path = _write(tmp_path / "M-INT8.safetensors", dict(converted.state_dict()), layout = _v1_layout())
+    path = _write(
+        tmp_path / "M-INT8.safetensors", dict(converted.state_dict()), layout = _v1_layout()
+    )
     back = ps.load_prequant_safetensors(str(path))["state_dict"]
     assert _same(_canon(back["0.weight"]), _canon(v1))
     x = torch.randn(17, 64, dtype = torch.bfloat16)
-    assert torch.equal(torch.nn.functional.linear(x, back["0.weight"]), torch.nn.functional.linear(x, v1))
+    assert torch.equal(
+        torch.nn.functional.linear(x, back["0.weight"]), torch.nn.functional.linear(x, v1)
+    )
 
 
 @needs_helpers
@@ -250,13 +280,20 @@ def test_a_live_field_this_torchao_lacks_is_refused_and_an_inert_one_is_dropped(
 @needs_int8tensor
 def test_layouts_the_native_reader_does_not_model_go_to_torchao():
     from torchao.quantization import Float8Tensor, PerRow, PerTensor
-    from torchao.quantization.quantize_.workflows.int8.int8_tensor import Int8Tensor, QuantizeTensorToInt8Kwargs
+    from torchao.quantization.quantize_.workflows.int8.int8_tensor import (
+        Int8Tensor,
+        QuantizeTensorToInt8Kwargs,
+    )
 
     flatten, _ = ps._torchao_helpers()
     per_tensor = Int8Tensor.from_hp(
-        torch.randn(16, 32, dtype = torch.bfloat16), PerTensor(), act_quant_kwargs = QuantizeTensorToInt8Kwargs(granularity = PerRow())
+        torch.randn(16, 32, dtype = torch.bfloat16),
+        PerTensor(),
+        act_quant_kwargs = QuantizeTensorToInt8Kwargs(granularity = PerRow()),
     )
-    experts = Float8Tensor.from_hp(torch.randn(2, 16, 32, dtype = torch.bfloat16), granularity = PerRow())
+    experts = Float8Tensor.from_hp(
+        torch.randn(2, 16, 32, dtype = torch.bfloat16), granularity = PerRow()
+    )
     for weight in (per_tensor, experts):
         flat, meta = flatten({"blk.w.weight": weight})
         assert pn.native_unflatten(dict(flat), dict(meta)) is None
@@ -264,7 +301,9 @@ def test_layouts_the_native_reader_does_not_model_go_to_torchao():
     flat, meta = flatten({"blk.w.weight": _int8_tensor()})
     entry = json.loads(meta["blk.w.weight"])
     entry["_data"]["future_live_field"] = "per_block_128"
-    assert pn.native_unflatten(dict(flat), dict(meta, **{"blk.w.weight": json.dumps(entry)})) is None
+    assert (
+        pn.native_unflatten(dict(flat), dict(meta, **{"blk.w.weight": json.dumps(entry)})) is None
+    )
 
 
 @needs_helpers
@@ -277,12 +316,23 @@ def test_duplicate_names_and_unknown_granularity_fields_go_to_torchao():
     entry = json.loads(meta["blk.f.weight"])
     text = json.dumps(entry)
     assert '"_type": "PerRow", "_data": {"dim": -1}' in text
-    odd = dict(meta, **{"blk.f.weight": text.replace('"_type": "PerRow", "_data": {"dim": -1}', '"_type": "PerRow", "_data": {"dim": -1, "block": 128}')})
+    odd = dict(
+        meta,
+        **{
+            "blk.f.weight": text.replace(
+                '"_type": "PerRow", "_data": {"dim": -1}',
+                '"_type": "PerRow", "_data": {"dim": -1, "block": 128}',
+            )
+        },
+    )
     assert pn.native_unflatten(dict(flat), odd) is None
 
 
 def test_overlapping_tensor_bytes_are_refused(tmp_path):
-    header = {"x": {"dtype": "F32", "shape": [4], "data_offsets": [0, 16]}, "y": {"dtype": "F32", "shape": [4], "data_offsets": [0, 16]}}
+    header = {
+        "x": {"dtype": "F32", "shape": [4], "data_offsets": [0, 16]},
+        "y": {"dtype": "F32", "shape": [4], "data_offsets": [0, 16]},
+    }
     raw = json.dumps(header).encode()
     raw += b" " * (-len(raw) % 8)
     path = tmp_path / "overlap.safetensors"
@@ -298,7 +348,9 @@ def test_the_mapped_read_takes_mxfp8_scale_dtypes(tmp_path):
     t = torch.ones(8, 4).to(torch.float8_e8m0fnu)
     save_file({"a.b": t}, str(tmp_path / "e.safetensors"))
     _, tensors = ps._mapped_tensors(str(tmp_path / "e.safetensors"))
-    assert tensors["a.b"].dtype == torch.float8_e8m0fnu and torch.equal(tensors["a.b"].view(torch.uint8), t.view(torch.uint8))
+    assert tensors["a.b"].dtype == torch.float8_e8m0fnu and torch.equal(
+        tensors["a.b"].view(torch.uint8), t.view(torch.uint8)
+    )
 
 
 def _mirror(tmp_path, monkeypatch, *files):
@@ -319,7 +371,10 @@ def test_a_mirrored_sibling_this_host_cannot_read_is_not_served(tmp_path, monkey
     monkeypatch.setattr(pq, "_register_prequant_safe_globals", lambda: True)
     monkeypatch.setattr(pq, "_download_checkpoint_name", lambda *a, **k: "/hub/Model-INT8.pt")
     src = pq.PrequantSource(
-        kind = "repo", location = "unsloth/Model-INT8", filename = "Model-INT8.pt", declared_filenames = ("Model-INT8.pt",)
+        kind = "repo",
+        location = "unsloth/Model-INT8",
+        filename = "Model-INT8.pt",
+        declared_filenames = ("Model-INT8.pt",),
     )
     assert pq._resolve_checkpoint_path(src, None, None, scheme = "int8") == "/hub/Model-INT8.pt"
     cached = pq.cached_checkpoint_path(src)
@@ -328,13 +383,25 @@ def test_a_mirrored_sibling_this_host_cannot_read_is_not_served(tmp_path, monkey
 
 def test_any_mirrored_name_wins_before_the_hub_is_asked(tmp_path, monkeypatch):
     (pt,) = _mirror(tmp_path, monkeypatch, "unsloth/Model-INT8/Model-INT8.pt")
-    monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True)
-    calls = []
-    monkeypatch.setattr(pq, "_download_checkpoint_name", lambda source, name, *a, **k: calls.append(name) or f"/hub/{name}")
-    src = pq.PrequantSource(
-        kind = "repo", location = "unsloth/Model-INT8", filename = "Model-INT8.safetensors", fallback_filenames = ("Model-INT8.pt",)
+    monkeypatch.setattr(
+        pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True
     )
-    assert pq._resolve_checkpoint_path(src, None, None, scheme = "int8") == str(pt.resolve()) and calls == []
+    calls = []
+    monkeypatch.setattr(
+        pq,
+        "_download_checkpoint_name",
+        lambda source, name, *a, **k: calls.append(name) or f"/hub/{name}",
+    )
+    src = pq.PrequantSource(
+        kind = "repo",
+        location = "unsloth/Model-INT8",
+        filename = "Model-INT8.safetensors",
+        fallback_filenames = ("Model-INT8.pt",),
+    )
+    assert (
+        pq._resolve_checkpoint_path(src, None, None, scheme = "int8") == str(pt.resolve())
+        and calls == []
+    )
 
 
 def test_the_text_encoder_mirror_is_used_when_the_hub_is_unreachable(tmp_path, monkeypatch):
@@ -355,7 +422,9 @@ def test_the_text_encoder_mirror_is_used_when_the_hub_is_unreachable(tmp_path, m
         filename = "Model-text_encoder-FP8.safetensors",
         fallback_filenames = ("Model-text_encoder-FP8.pt",),
     )
-    assert te._resolve_checkpoint_path(src, None, cache_dir = str(tmp_path / "hub")) == str(pt.resolve())
+    assert te._resolve_checkpoint_path(src, None, cache_dir = str(tmp_path / "hub")) == str(
+        pt.resolve()
+    )
 
 
 def test_the_mirror_is_read_before_the_hub_and_cannot_escape_its_root(tmp_path, monkeypatch):
@@ -366,7 +435,9 @@ def test_the_mirror_is_read_before_the_hub_and_cannot_escape_its_root(tmp_path, 
     outside = tmp_path / "secret.safetensors"
     outside.write_bytes(b"x")
     monkeypatch.setenv(pq.PREQUANT_MIRROR_ENV, str(root))
-    assert pq.prequant_mirror_path("unsloth/Model-FP8", "Model-INT8.safetensors") == str(target.resolve())
+    assert pq.prequant_mirror_path("unsloth/Model-FP8", "Model-INT8.safetensors") == str(
+        target.resolve()
+    )
     # a request for the pickle gets its converted sibling; a pickle with no sibling is not mirrored
     assert pq.prequant_mirror_path("unsloth/Model-FP8", "Model-INT8.pt") == str(target.resolve())
     assert pq.prequant_mirror_path("unsloth/Model-FP8", "Model-FP8.pt") is None
@@ -382,7 +453,9 @@ def test_the_resolver_takes_the_mirrored_safetensors_without_asking_the_hub(tmp_
     target.parent.mkdir(parents = True)
     target.write_bytes(b"x")
     monkeypatch.setenv(pq.PREQUANT_MIRROR_ENV, str(root))
-    monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True)
+    monkeypatch.setattr(
+        pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True
+    )
 
     def no_hub(*args, **kwargs):
         raise AssertionError("the Hub was asked for a mirrored file")
@@ -418,7 +491,9 @@ def test_the_text_encoder_resolver_reads_the_mirror_too(tmp_path, monkeypatch):
         filename = "Model-text_encoder-FP8.safetensors",
         fallback_filenames = ("Model-text_encoder-FP8.pt",),
     )
-    assert te._resolve_checkpoint_path(src, None, cache_dir = str(tmp_path / "hub")) == str(target.resolve())
+    assert te._resolve_checkpoint_path(src, None, cache_dir = str(tmp_path / "hub")) == str(
+        target.resolve()
+    )
 
 
 def test_the_dense_fast_path_reason_names_a_load_time_failure(monkeypatch):
@@ -446,7 +521,8 @@ def test_every_load_starts_without_the_previous_loads_failure_note():
 
 def _converter():
     spec = importlib.util.spec_from_file_location(
-        "convert_prequant_to_safetensors", REPO_ROOT / "scripts" / "convert_prequant_to_safetensors.py"
+        "convert_prequant_to_safetensors",
+        REPO_ROOT / "scripts" / "convert_prequant_to_safetensors.py",
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -470,7 +546,9 @@ def no_foreign_legacy_registrations():
     saved = torch.serialization.get_safe_globals()
     legacy = {*li.LEGACY_INT8_CLASS_NAMES, li._ACT_QUANT}
     torch.serialization.clear_safe_globals()
-    torch.serialization.add_safe_globals([g for g in saved if not (isinstance(g, tuple) and g[1] in legacy)])
+    torch.serialization.add_safe_globals(
+        [g for g in saved if not (isinstance(g, tuple) and g[1] in legacy)]
+    )
     yield
     torch.serialization.clear_safe_globals()
     torch.serialization.add_safe_globals(saved)
@@ -478,23 +556,32 @@ def no_foreign_legacy_registrations():
 
 @needs_helpers
 @needs_int8tensor
-def test_the_converter_writes_a_bit_identical_v1_int8_artifact(tmp_path, monkeypatch, no_foreign_legacy_registrations):
+def test_the_converter_writes_a_bit_identical_v1_int8_artifact(
+    tmp_path, monkeypatch, no_foreign_legacy_registrations
+):
     src = tmp_path / "Model-INT8.pt"
     if _V1:
         from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
 
         model = torch.nn.Sequential(torch.nn.Linear(64, 32, bias = False)).to(torch.bfloat16)
         quantize_(model, Int8DynamicActivationInt8WeightConfig())
-        sd = {"blk.proj.weight": model[0].weight, "blk.norm.weight": torch.ones(64, dtype = torch.bfloat16)}
-        torch.save({"format": pq.PREQUANT_FORMAT, "metadata": {"scheme": "int8"}, "state_dict": sd}, str(src))
+        sd = {
+            "blk.proj.weight": model[0].weight,
+            "blk.norm.weight": torch.ones(64, dtype = torch.bfloat16),
+        }
+        torch.save(
+            {"format": pq.PREQUANT_FORMAT, "metadata": {"scheme": "int8"}, "state_dict": sd},
+            str(src),
+        )
     else:
         import core.inference.prequant_legacy_int8 as li
-
         if not li.legacy_int8_decode_supported():
             pytest.skip("no v1 classes and no legacy decoder")
         _legacy_writer()._write_legacy_checkpoint(monkeypatch, src)
     conv = _converter()
-    rec = conv.convert(str(src), str(tmp_path / "out"), repo = "unsloth/Model-FP8", revision = "abc", sha = None)
+    rec = conv.convert(
+        str(src), str(tmp_path / "out"), repo = "unsloth/Model-FP8", revision = "abc", sha = None
+    )
     assert rec["verified_bit_identical"] and rec["int8_source"] == pn.INT8_SOURCE_V1
     dst = tmp_path / "out" / "unsloth" / "Model-FP8" / "Model-INT8.safetensors"
     assert rec["dst"] == str(dst) and dst.is_file()
@@ -516,16 +603,29 @@ def test_the_converter_writes_a_text_encoder_with_tied_weights(tmp_path):
     from core.inference.diffusion_te_prequant import TE_PREQUANT_FORMAT
 
     embed = torch.randn(16, 8).to(torch.float8_e4m3fn)
-    sd = {"model.embed_tokens.weight": embed, "lm_head.weight": embed, "model.norm.weight": torch.ones(8)}
+    sd = {
+        "model.embed_tokens.weight": embed,
+        "lm_head.weight": embed,
+        "model.norm.weight": torch.ones(8),
+    }
     src = tmp_path / "Model-text_encoder-FP8.pt"
-    torch.save({"format": TE_PREQUANT_FORMAT, "metadata": {"scheme": "fp8", "component": "text_encoder"}, "state_dict": sd}, str(src))
+    torch.save(
+        {
+            "format": TE_PREQUANT_FORMAT,
+            "metadata": {"scheme": "fp8", "component": "text_encoder"},
+            "state_dict": sd,
+        },
+        str(src),
+    )
     rec = _converter().convert(str(src), str(tmp_path / "out"), repo = None, revision = None, sha = None)
     assert rec["kind"] == "text_encoder" and rec["verified_bit_identical"]
     assert rec["dst"].endswith("Model-text_encoder-FP8.safetensors")
     pth = tmp_path / "Other-text_encoder-FP8.pth"
     pth.write_bytes(src.read_bytes())
-    assert _converter().convert(str(pth), str(tmp_path / "out"), repo = None, revision = None, sha = None)["dst"].endswith(
-        "Other-text_encoder-FP8.safetensors"
+    assert (
+        _converter()
+        .convert(str(pth), str(tmp_path / "out"), repo = None, revision = None, sha = None)["dst"]
+        .endswith("Other-text_encoder-FP8.safetensors")
     )
     back = ps.load_plain_prequant_safetensors(rec["dst"])
     assert back["format"] == TE_PREQUANT_FORMAT
@@ -538,10 +638,15 @@ def test_the_converter_writes_a_text_encoder_with_tied_weights(tmp_path):
 def test_the_converters_comparison_sees_every_kind_of_difference():
     conv = _converter()
     w = _int8_tensor()
-    assert conv.compare_state_dicts({"a.w": w, "b": torch.zeros(2)}, {"a.w": w, "b": torch.zeros(2)}) == []
+    assert (
+        conv.compare_state_dicts({"a.w": w, "b": torch.zeros(2)}, {"a.w": w, "b": torch.zeros(2)})
+        == []
+    )
     assert conv.compare_state_dicts({"a.w": w}, {"a.w": _int8_tensor(seed = 1)}) == ["a.w"]
     assert conv.compare_state_dicts({"b": torch.zeros(2)}, {"b": -torch.zeros(2)}) == ["b"]
-    assert conv.compare_state_dicts({"b": torch.zeros(2)}, {"b": torch.zeros(2, dtype = torch.float64)}) == ["b"]
+    assert conv.compare_state_dicts(
+        {"b": torch.zeros(2)}, {"b": torch.zeros(2, dtype = torch.float64)}
+    ) == ["b"]
     assert conv.compare_state_dicts({"b": torch.zeros(2)}, {"c": torch.zeros(2)}) == ["b", "c"]
     nan = torch.tensor([float("nan")])
     assert conv.compare_state_dicts({"b": nan}, {"b": nan.clone()}) == []
@@ -569,7 +674,14 @@ def test_the_converter_refuses_v1_weights_off_the_supported_layout_and_restores_
 
         model = torch.nn.Sequential(torch.nn.Linear(64, 32, bias = False)).to(torch.bfloat16)
         quantize_(model, Int8DynamicActivationInt8WeightConfig())
-        torch.save({"format": pq.PREQUANT_FORMAT, "metadata": {"scheme": "int8"}, "state_dict": {"blk.p.weight": model[0].weight}}, str(src))
+        torch.save(
+            {
+                "format": pq.PREQUANT_FORMAT,
+                "metadata": {"scheme": "int8"},
+                "state_dict": {"blk.p.weight": model[0].weight},
+            },
+            str(src),
+        )
     elif li.legacy_int8_decode_supported():
         _legacy_writer()._write_legacy_checkpoint(monkeypatch, src)
     else:

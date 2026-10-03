@@ -1118,7 +1118,9 @@ def cached_checkpoint_path(
             return True
 
     candidates = [
-        n for n in candidate_filenames_of(source) if (wanted is None or n in wanted) and _readable(n)
+        n
+        for n in candidate_filenames_of(source)
+        if (wanted is None or n in wanted) and _readable(n)
     ]
     if getattr(source, "kind", None) == "repo":
         mirrored = _first_mirrored(getattr(source, "location", None), candidates, _readable)

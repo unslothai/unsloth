@@ -548,7 +548,9 @@ def _mapped_tensors(path: str) -> tuple:
         cursor = end
     if cursor != size - base:
         raise ValueError(f"{path}: the data section does not match its header")
-    storage = torch.UntypedStorage.from_file(path, shared = False, nbytes = size) if size > base else None
+    storage = (
+        torch.UntypedStorage.from_file(path, shared = False, nbytes = size) if size > base else None
+    )
     tensors = {}
     for start, end, name, dtype, shape, itemsize in entries:
         offset = base + start
@@ -563,7 +565,12 @@ def _mapped_tensors(path: str) -> tuple:
     return dict(metadata), tensors
 
 
-def load_prequant_safetensors(path: str, *, device: str = "cpu", mmap: bool = False) -> dict:
+def load_prequant_safetensors(
+    path: str,
+    *,
+    device: str = "cpu",
+    mmap: bool = False,
+) -> dict:
     """Read ``path`` into the SAME dict shape the pickle path returns.
 
     Returning ``{"format", "state_dict", "metadata"}`` rather than a new type is deliberate: every
@@ -587,7 +594,6 @@ def load_prequant_safetensors(path: str, *, device: str = "cpu", mmap: bool = Fa
         raw, tensors = _mapped_tensors(path)
     else:
         from safetensors import safe_open
-
         with safe_open(path, framework = "pt", device = device) as handle:
             raw = dict(handle.metadata() or {})
             tensors = {key: handle.get_tensor(key) for key in handle.keys()}

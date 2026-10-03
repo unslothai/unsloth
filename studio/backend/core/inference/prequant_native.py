@@ -159,7 +159,6 @@ def _decode(value: Any, api: dict, what: str) -> Any:
     kind, data = value.get("_type"), value.get("_data")
     if kind == "torch.dtype":
         import torch
-
         if data not in _DTYPES:
             raise _Unsupported(f"{what}: dtype {data!r}")
         return getattr(torch, data)
@@ -170,7 +169,9 @@ def _decode(value: Any, api: dict, what: str) -> Any:
         return getattr(enum_cls, data)
     if kind in ("PerRow", "PerTensor") and data is not None and not isinstance(data, dict):
         raise _Unsupported(f"{what}: {kind} {data!r}")
-    if kind in ("PerRow", "PerTensor") and set(data or {}) - ({"dim"} if kind == "PerRow" else set()):
+    if kind in ("PerRow", "PerTensor") and set(data or {}) - (
+        {"dim"} if kind == "PerRow" else set()
+    ):
         raise _Unsupported(f"{what}: {kind} fields {sorted(set(data) - {'dim'})}")
     if kind == "PerRow":
         dim = (data or {}).get("dim", -1)
@@ -199,17 +200,23 @@ def _granularity_name(g: Any) -> str:
     return type(g).__name__
 
 
-def _rebuild_int8(name: str, entry: dict, tensors: dict, used: set, api: dict, v1: Optional[dict]) -> Any:
+def _rebuild_int8(
+    name: str, entry: dict, tensors: dict, used: set, api: dict, v1: Optional[dict]
+) -> Any:
     import torch
 
     data = entry.get("_data") or {}
     data_names = list(entry.get("_tensor_data_names") or [])
-    if set(data_names) - {"qdata", "scale", "zero_point"} or not {"qdata", "scale"} <= set(data_names):
+    if set(data_names) - {"qdata", "scale", "zero_point"} or not {"qdata", "scale"} <= set(
+        data_names
+    ):
         raise _Unsupported(f"{name}: int8 tensor data {data_names}")
     keys = {d: _flat_key(name, d) for d in data_names}
     missing = [k for k in keys.values() if k not in tensors]
     if missing:
-        raise ValueError(f"int8 weight {name!r}: missing {missing[0]!r}; the checkpoint is incomplete")
+        raise ValueError(
+            f"int8 weight {name!r}: missing {missing[0]!r}; the checkpoint is incomplete"
+        )
     qdata, scale = tensors[keys["qdata"]], tensors[keys["scale"]]
     zero_point = tensors.get(keys["zero_point"]) if "zero_point" in keys else None
     # Only the layout Unsloth ships is modelled here (2-D, symmetric, one scale per output row). Any other valid
@@ -286,7 +293,9 @@ def _rebuild_fp8(name: str, entry: dict, tensors: dict, used: set, api: dict) ->
     keys = {d: _flat_key(name, d) for d in data_names}
     missing = [k for k in keys.values() if k not in tensors]
     if missing:
-        raise ValueError(f"fp8 weight {name!r}: missing {missing[0]!r}; the checkpoint is incomplete")
+        raise ValueError(
+            f"fp8 weight {name!r}: missing {missing[0]!r}; the checkpoint is incomplete"
+        )
     qdata, scale = tensors[keys["qdata"]], tensors[keys["scale"]]
     # As for int8: anything but a 2-D per-row or per-tensor weight is torchao's to read.
     if qdata.dtype not in (torch.float8_e4m3fn, torch.float8_e5m2) or qdata.dim() != 2:
@@ -304,7 +313,10 @@ def _rebuild_fp8(name: str, entry: dict, tensors: dict, used: set, api: dict) ->
     dtype = _decode(data.get("dtype"), api, name)
     mm_config = _decode(data.get("mm_config"), api, name)
     act = _decode(data.get("act_quant_kwargs"), api, name)
-    if act is not None and _granularity_name(getattr(act, "granularity", None)) not in ("PerRow", "PerTensor"):
+    if act is not None and _granularity_name(getattr(act, "granularity", None)) not in (
+        "PerRow",
+        "PerTensor",
+    ):
         raise _Unsupported(f"{name}: fp8 activation granularity")
     pref = _decode(data.get("kernel_preference"), api, name)
     for d in keys.values():
@@ -333,7 +345,12 @@ def int8_rebuilds_as_v1(raw: dict) -> bool:
     return _v1_int8_api() is not None
 
 
-def native_unflatten(tensors: dict, raw: dict, *, path: str = "") -> Optional[dict]:
+def native_unflatten(
+    tensors: dict,
+    raw: dict,
+    *,
+    path: str = "",
+) -> Optional[dict]:
     """``tensors`` + ``raw`` header -> state dict, or None when torchao's reader has to do it.
 
     ``tensors`` is not modified when this returns None. Raises ValueError for a checkpoint that is
@@ -348,7 +365,11 @@ def native_unflatten(tensors: dict, raw: dict, *, path: str = "") -> Optional[di
         names = json.loads(raw.get("tensor_names") or "null")
     except Exception:  # noqa: BLE001
         return None
-    if not isinstance(names, list) or not all(isinstance(n, str) and n for n in names) or len(set(names)) != len(names):
+    if (
+        not isinstance(names, list)
+        or not all(isinstance(n, str) and n for n in names)
+        or len(set(names)) != len(names)
+    ):
         return None
     v1 = _v1_int8_api() if int8_rebuilds_as_v1(raw) else None
     out: dict = {}

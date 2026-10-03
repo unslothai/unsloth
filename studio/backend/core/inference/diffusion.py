@@ -7575,7 +7575,9 @@ class DiffusionBackend:
 
                     failure = last_prequant_failure()
                     self._prequant_fallback_note = (
-                        redact_native_paths(failure) if failure else "the checkpoint was unavailable"
+                        redact_native_paths(failure)
+                        if failure
+                        else "the checkpoint was unavailable"
                     )
                     logger.warning(
                         "diffusion.prequant: %s checkpoint from %s not used (%s); quantizing the dense "

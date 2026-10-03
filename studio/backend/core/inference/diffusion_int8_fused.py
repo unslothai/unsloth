@@ -971,7 +971,9 @@ def _finalize(transformer: Any, logger: Any = None) -> int:
     if not _has_eligible(transformer):
         return 0
     intmm = _resolve_intmm()
-    if intmm is None:  # an int8 GEMM home this file does not know: keep the stock path rather than fail the render
+    if (
+        intmm is None
+    ):  # an int8 GEMM home this file does not know: keep the stock path rather than fail the render
         return 0
     _INTMM_MODULE = intmm
     import torch

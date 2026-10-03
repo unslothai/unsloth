@@ -83,7 +83,9 @@ def _v1_facts_of(w, standins = None) -> dict:
         if isinstance(layout, standins.get(_LAYOUT, ())):
             layout = _LAYOUT
     return {
-        "act_quant": (act if isinstance(act, str) else getattr(act, "__name__", str(act))).rsplit(".", 1)[-1],
+        "act_quant": (act if isinstance(act, str) else getattr(act, "__name__", str(act))).rsplit(
+            ".", 1
+        )[-1],
         "quant_kwargs": dict(state.get("quant_kwargs") or {}),
         "zero_point": None if zero_point is None else "tensor",
         "zero_point_domain": getattr(domain, "name", str(domain)),
@@ -140,7 +142,8 @@ def _same(a, b) -> bool:
             return False
         # Raw bytes, not torch.equal: -0.0 == 0.0 and NaN != NaN would otherwise decide.
         return a.numel() == 0 or torch.equal(
-            a.detach().contiguous().cpu().view(torch.uint8), b.detach().contiguous().cpu().view(torch.uint8)
+            a.detach().contiguous().cpu().view(torch.uint8),
+            b.detach().contiguous().cpu().view(torch.uint8),
         )
     if isinstance(a, tuple) and isinstance(b, tuple):
         return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b, strict = True))
@@ -176,7 +179,9 @@ def _untie(flat: dict) -> dict:
     return out
 
 
-def write_plain_safetensors(path: str, *, fmt: str, state_dict: dict, metadata: dict, extra: dict) -> None:
+def write_plain_safetensors(
+    path: str, *, fmt: str, state_dict: dict, metadata: dict, extra: dict
+) -> None:
     """The torchao-free plain layout ``load_plain_prequant_safetensors`` reads (text encoders)."""
     import torch
     from safetensors.torch import save_file
@@ -208,13 +213,21 @@ def write_plain_safetensors(path: str, *, fmt: str, state_dict: dict, metadata: 
     save_file(_untie(flat), path, metadata = header)
 
 
-def convert(src: str, out_dir: str, *, repo: str | None, revision: str | None, sha: str | None) -> dict:
+def convert(
+    src: str, out_dir: str, *, repo: str | None, revision: str | None, sha: str | None
+) -> dict:
     import torch
 
     from core.inference import diffusion_prequant as dp
     from core.inference import prequant_safetensors as ps
     from core.inference.diffusion_te_prequant import TE_PREQUANT_FORMAT
-    from core.inference.prequant_native import INT8_SOURCE_V1, INT8_V1_FACTS, QUANT_LAYOUT_KEY, SOURCE_KEY, quant_layout_header
+    from core.inference.prequant_native import (
+        INT8_SOURCE_V1,
+        INT8_V1_FACTS,
+        QUANT_LAYOUT_KEY,
+        SOURCE_KEY,
+        quant_layout_header,
+    )
 
     t0 = time.time()
     name = os.path.basename(src)
@@ -259,10 +272,14 @@ def convert(src: str, out_dir: str, *, repo: str | None, revision: str | None, s
         if facts:
             int8 = sum(type(v).__name__ == "Int8Tensor" for v in flat_sd.values())
             if len(facts) != int8:
-                raise ValueError(f"{src}: {int8} int8 weights but {len(facts)} came from torchao v1")
+                raise ValueError(
+                    f"{src}: {int8} int8 weights but {len(facts)} came from torchao v1"
+                )
             distinct = {json.dumps(f, sort_keys = True, default = str) for f in facts}
             if distinct != {json.dumps(INT8_V1_FACTS, sort_keys = True)}:
-                raise ValueError(f"{src}: v1 int8 weights do not match the supported v1 layout: {sorted(distinct)[:3]}")
+                raise ValueError(
+                    f"{src}: v1 int8 weights do not match the supported v1 layout: {sorted(distinct)[:3]}"
+                )
             int8_source = INT8_SOURCE_V1
         layout = quant_layout_header(flat_sd, int8_source = int8_source)
         # save_prequant_safetensors writes torchao's flattened layout plus our two keys; add the layout and source.
@@ -273,7 +290,9 @@ def convert(src: str, out_dir: str, *, repo: str | None, revision: str | None, s
             raise RuntimeError("torchao >= 0.16 is required to write the flattened layout")
         undotted = ps.unsupported_state_dict_keys(flat_sd)
         if undotted:
-            raise ValueError(f"{src}: root-level quantized weights cannot be flattened: {undotted[:8]}")
+            raise ValueError(
+                f"{src}: root-level quantized weights cannot be flattened: {undotted[:8]}"
+            )
         roots = ps._root_level_keys(flat_sd)
         quantizable = {k: v for k, v in flat_sd.items() if k not in set(roots)}
         flat, torchao_metadata = helpers[0](quantizable)
@@ -319,7 +338,9 @@ def main(argv = None) -> int:
     p = argparse.ArgumentParser(description = __doc__.split("\n\n")[0])
     p.add_argument("src", nargs = "+")
     p.add_argument("--out-dir", required = True)
-    p.add_argument("--repo", default = None, help = "owner/name the .pt came from (mirror layout + provenance)")
+    p.add_argument(
+        "--repo", default = None, help = "owner/name the .pt came from (mirror layout + provenance)"
+    )
     p.add_argument("--revision", default = None)
     p.add_argument("--sha256", default = None, help = "known sha256 of a single SRC (skips hashing it)")
     p.add_argument("--report", default = None, help = "append one JSON line per file here")

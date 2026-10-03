@@ -50,7 +50,9 @@ def test_studio_copy_matches_unsloth_import_fixes(name):
 
 def _assigned_value_dump(path: Path, name: str) -> str:
     for node in ast.parse(path.read_text(encoding = "utf-8")).body:
-        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == name for t in node.targets):
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == name for t in node.targets
+        ):
             return ast.dump(node.value)
     raise AssertionError(f"{path} has no top-level {name}")
 
@@ -158,7 +160,9 @@ def test_a_torchao_without_the_dtypes_package_gets_a_plain_lora_layer(monkeypatc
     class. That is the same removal, and every LoRA target must still fall through to peft's
     ordinary layer instead of failing the load."""
     lora_torchao, lora_model = fake_peft
-    monkeypatch.delitem(sys.modules, "torchao.dtypes")  # the fake torchao has no __path__: the import fails
+    monkeypatch.delitem(
+        sys.modules, "torchao.dtypes"
+    )  # the fake torchao has no __path__: the import fails
     monkeypatch.delattr(sys.modules["torchao"], "dtypes")
     monkeypatch.setattr(
         sys.modules["torchao"], "__spec__", importlib.machinery.ModuleSpec("torchao", None)
