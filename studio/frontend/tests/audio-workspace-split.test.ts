@@ -44,7 +44,11 @@ test("a loaded model opens the page that fits it", () => {
     slot,
     /const loadedWorkflow = workflowForLoadedModel\(\{\s*current: useAudioWorkspaceStore\.getState\(\)\.workflow,\s*audioWorkflows: res\.audio_workflows,\s*music: isMusicGenerationModel\(repoId, res\.audio_type\),\s*\}\);[\s\S]{0,200}?rememberModel\(loadedWorkflow, repoId\);\s*if \(modeRef\.current === "speak"\) workspace\.commitWorkflow\(loadedWorkflow\);/,
   );
-  assert.match(host, /adoptWorkflow\("music"\)/);
+  // A model already resident on mount uses the same rule, so a clone-only one opens Clone.
+  assert.match(
+    host,
+    /workflowForLoadedModel\(\{\s*current: store\.workflow,\s*audioWorkflows: status\.audio_workflows,\s*music: musicGeneration,\s*\}\);\s*if \(next !== "speak" && next !== store\.workflow\) store\.adoptWorkflow\(next\);/,
+  );
 });
 
 test("?workflow= names the page ahead of ?task=, and both clear the URL", () => {
