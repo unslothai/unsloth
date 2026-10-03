@@ -186,6 +186,8 @@ def _build_sft_config(SFTConfig, args, is_mlx, bf16_supported):
         dataset_num_proc = 2,
         packing = args.packing,
     )
+    if getattr(args, "context_parallel_size", 1) > 1:
+        config_kwargs["context_parallel_size"] = args.context_parallel_size
     if is_mlx:
         if args.per_device_eval_batch_size != 4:
             print("Warning: --per_device_eval_batch_size is ignored on MLX without eval data.")
@@ -462,6 +464,12 @@ if __name__ == "__main__":
         "--packing",
         action = "store_true",
         help = "Enable padding-free sample packing via TRL's bin packer.",
+    )
+    training_group.add_argument(
+        "--context_parallel_size",
+        type = int,
+        default = 1,
+        help = "Ranks per context parallel group (SDPA ring attention, torchrun, PyTorch >= 2.7).",
     )
 
     report_group = parser.add_argument_group("📊 Report Options")
