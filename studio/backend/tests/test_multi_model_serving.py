@@ -40,6 +40,8 @@ BOB = AccountContext("b" * 32, "bob")
 
 
 class FakeLlama:
+    holds_no_vram = False
+
     def __init__(
         self,
         identifier = None,
@@ -1155,6 +1157,35 @@ def test_a_zero_vram_primary_keeps_the_chat_claim_a_kept_model_holds(backends, m
     model_slots.drop(extra)
     inf._release_chat_for_zero_vram_primary()
     assert gpu_arbiter.current_owner() is None
+
+
+@pytest.mark.parametrize("primary_on_gpu", [False, True])
+def test_ejecting_the_last_kept_model_beside_a_cpu_primary_drops_the_claim(
+    backends, monkeypatch, primary_on_gpu
+):
+    primary, extra = backends
+    _hold_chat_claim(monkeypatch)
+    primary.holds_no_vram = not primary_on_gpu
+    response = asyncio.run(inf._unload_model_impl(UnloadRequest(model_path = "org/B-GGUF"), "s"))
+    assert response.status == "unloaded" and primary.is_loaded
+    expected = gpu_arbiter.CHAT if primary_on_gpu else None
+    assert gpu_arbiter.current_owner() == expected
+
+
+def test_turning_the_setting_off_drops_the_claim_its_kept_models_held(backends, monkeypatch):
+    from fastapi import BackgroundTasks
+    import routes.settings as settings_routes
+
+    primary, extra = backends
+    _hold_chat_claim(monkeypatch)
+    # The primary was ejected earlier and kept CHAT for the model still loaded beside it.
+    primary.unload_model()
+    monkeypatch.setattr(settings_routes, "set_multi_model_enabled", lambda value: value)
+    tasks = BackgroundTasks()
+    settings_routes.update_multi_model(settings_routes.MultiModelPayload(enabled = False), tasks, "s")
+    assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
+    asyncio.run(tasks())
+    assert model_slots.slots == [] and gpu_arbiter.current_owner() is None
 
 
 def test_a_trained_model_still_filling_a_slot_cannot_be_deleted(backends, monkeypatch, tmp_path):

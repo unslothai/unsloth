@@ -1398,10 +1398,14 @@ def update_multi_model(
 
 def _unload_idle_models() -> None:
     from core.inference import model_slots
+    from routes.inference import release_chat_after_kept_models
+
     try:
         model_slots.unload_idle()
     except Exception:
         logger.warning("settings.multi_model_unload_idle_failed", exc_info = True)
+    # The primary's own unload kept CHAT while these were loaded.
+    release_chat_after_kept_models()
 
 
 @_shared_settings_router.get("/upload-limit", response_model = UploadLimitResponse)

@@ -11472,6 +11472,26 @@ def _release_chat_for_zero_vram_primary() -> None:
     release_if(CHAT, lambda: not model_slots.holds_vram())
 
 
+def release_chat_after_kept_models() -> bool:
+    """Once kept models are gone, drop CHAT if nothing is left or only a primary that holds no VRAM."""
+    from core.inference.gpu_arbiter import CHAT, release_if
+    from core.inference.llama_cpp import chat_load_active
+
+    if release_chat_gpu_claim():
+        return True
+
+    def zero_vram_primary_only() -> bool:
+        llama = get_llama_cpp_backend()
+        return (
+            not model_slots.holds_vram()
+            and llama.is_loaded
+            and llama.holds_no_vram
+            and not chat_load_active()
+        )
+
+    return model_slots.in_slot(None, lambda: release_if(CHAT, zero_vram_primary_only))
+
+
 def reap_dead_managed_engine(backend) -> None:
     """A crashed engine leaves nothing resident, so its claim and sharers go with it."""
     from core.inference.gpu_arbiter import CHAT, current_owner
@@ -20456,7 +20476,7 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
                 await asyncio.sleep(0.05)
                 _raise_or_cancel_slot_generations(extra, force = request.force_cancel_active)
             await asyncio.to_thread(model_slots.drop, extra)
-        await asyncio.to_thread(release_chat_gpu_claim)
+        await asyncio.to_thread(release_chat_after_kept_models)
         api_monitor.record_lifecycle(
             event = "unload", model = _lifecycle_model_label(request.model_path), reason = "manual"
         )
