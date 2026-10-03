@@ -67,7 +67,6 @@ import { type GenerateBlocker, TtsFooter } from "./pages/tts-workspace";
 import { TranscribeOutput, TranscribeRail } from "./pages/transcribe-page";
 import type { SendTarget } from "./components/stem-mixer-types";
 import { type AudioPickerRow, audioRowMatchesWorkflow } from "./picker-filter";
-import { clipAsSource } from "./send-to";
 import { useAudioCloneStore } from "./stores/audio-clone-store";
 import { useAudioWorkspaceStore } from "./stores/audio-workspace-store";
 import { AudioToolPanels } from "./tools/tool-panel-host";
@@ -577,9 +576,12 @@ export function AudioPage({
     async (target: SendTarget, clip: AudioGalleryClip, name: string) => {
       if (target.workflow === "clone") {
         if (!transitionWorkflow("clone")) return;
-        useAudioCloneStore.getState().setReference(
-          clipAsSource({ clipId: clip.id, name, durationS: clip.duration_s }),
-        );
+        useAudioCloneStore.getState().setReference({
+          kind: "clip",
+          id: clip.id,
+          name,
+          durationS: clip.duration_s,
+        });
         return;
       }
       if (target.workflow === "transcribe") {

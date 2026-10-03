@@ -116,10 +116,7 @@ class CloneSpec:
 class SeparationSpec:
     """How a family splits a track into stems on /v1/tasks/run (task ``sep``, 44.1 kHz input)."""
 
-    # The stem ids the runtime returns, in its own order (S3); informational, the response decides.
-    stems: tuple[str, ...] = ()
-    # The session option that sets the chunk overlap, when the family has one. Changing it
-    # restarts the server.
+    # Session option for chunk overlap; changing it restarts the server.
     overlap_option: Optional[str] = None
 
 
@@ -383,28 +380,12 @@ _CLONE_FAMILIES: tuple[AudioCppFamily, ...] = (
 )
 
 
-# Source separation (S3): 44.1 kHz in, one 44.1 kHz stereo WAV per stem out.
+# Source separation: 44.1 kHz in, one 44.1 kHz stereo WAV per stem out.
 _SEPARATION_FAMILIES: tuple[AudioCppFamily, ...] = (
-    AudioCppFamily(
-        "htdemucs", "sep", separation = SeparationSpec(("drums", "bass", "other", "vocals"))
-    ),
-    AudioCppFamily(
-        "htdemucs_6stems",
-        "sep",
-        separation = SeparationSpec(("drums", "bass", "other", "vocals", "guitar", "piano")),
-    ),
-    # The unprefixed session option: S3 measured num_overlap "1" at 2.9 s against 10.0 s by default.
-    AudioCppFamily(
-        "bs_roformer",
-        "sep",
-        separation = SeparationSpec(("vocals", "instrumental"), overlap_option = "num_overlap"),
-    ),
-    # Stem ids not verified on a runtime yet; the response names them either way.
-    AudioCppFamily(
-        "mel_band_roformer",
-        "sep",
-        separation = SeparationSpec(("vocals", "instrumental"), overlap_option = "num_overlap"),
-    ),
+    AudioCppFamily("htdemucs", "sep", separation = SeparationSpec()),
+    AudioCppFamily("htdemucs_6stems", "sep", separation = SeparationSpec()),
+    AudioCppFamily("bs_roformer", "sep", separation = SeparationSpec("num_overlap")),
+    AudioCppFamily("mel_band_roformer", "sep", separation = SeparationSpec("num_overlap")),
 )
 
 

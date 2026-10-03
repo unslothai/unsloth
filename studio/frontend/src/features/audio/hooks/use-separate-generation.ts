@@ -9,6 +9,7 @@ import type { AudioSourceInputHandle } from "../components/audio-source-input";
 import type { GenerateBlocker } from "../pages/tts-workspace";
 import {
   type OverlapValue,
+  type SeparateBlockerKind,
   estimateSeparateSeconds,
   overlapReloads,
   separateBlocker,
@@ -157,37 +158,36 @@ export function useSeparateGeneration({
     sourceExpired,
     sourceError: sourceStatus.phase === "error" ? sourceStatus.message : null,
   });
-  /** What holds Generate back on this page, with the fix as an action. Model blockers (none
-   *  loaded, cannot separate) are the host's and come first. */
+  const addTrack = {
+    label: "Add a track",
+    onClick: () => sourceHandle.current?.focus(),
+  };
+  const blockerActions: Partial<
+    Record<SeparateBlockerKind, GenerateBlocker["actions"]>
+  > = {
+    source: [addTrack],
+    "source-error": [addTrack],
+    "source-expired": [
+      {
+        label: "Add it again",
+        onClick: () => {
+          useAudioSeparateStore.getState().setSource(null);
+          sourceHandle.current?.browse();
+        },
+      },
+    ],
+    "too-long": [
+      {
+        label: "Pick a shorter track",
+        onClick: () => sourceHandle.current?.browse(),
+      },
+    ],
+  };
+  // Model blockers (none loaded, cannot separate) are the host's and come first.
   const blocker: GenerateBlocker | null = inputBlocker
     ? {
         reason: inputBlocker.reason,
-        actions:
-          inputBlocker.kind === "source" || inputBlocker.kind === "source-error"
-            ? [
-                {
-                  label: "Add a track",
-                  onClick: () => sourceHandle.current?.focus(),
-                },
-              ]
-            : inputBlocker.kind === "source-expired"
-              ? [
-                  {
-                    label: "Add it again",
-                    onClick: () => {
-                      useAudioSeparateStore.getState().setSource(null);
-                      sourceHandle.current?.browse();
-                    },
-                  },
-                ]
-              : inputBlocker.kind === "too-long"
-                ? [
-                    {
-                      label: "Pick a shorter track",
-                      onClick: () => sourceHandle.current?.browse(),
-                    },
-                  ]
-                : undefined,
+        actions: blockerActions[inputBlocker.kind],
       }
     : null;
 

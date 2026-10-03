@@ -499,10 +499,8 @@ def test_separation_families_resolve_runnable(hub, folder, family):
     assert acm.family_from_names([folder]) == family
 
 
-def test_separation_specs_name_stems_and_the_overlap_option():
+def test_separation_specs_name_the_overlap_option():
     assert acm.family_from_names(["HTDemucs-6stems-GGUF"]) == "htdemucs_6stems"
-    assert acm.FAMILIES["htdemucs"].separation.stems == ("drums", "bass", "other", "vocals")
-    assert len(acm.FAMILIES["htdemucs_6stems"].separation.stems) == 6
     assert acm.FAMILIES["htdemucs"].separation.overlap_option is None
     assert acm.FAMILIES["htdemucs_6stems"].separation.overlap_option is None
     assert acm.FAMILIES["bs_roformer"].separation.overlap_option == "num_overlap"

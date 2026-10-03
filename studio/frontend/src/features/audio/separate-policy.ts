@@ -160,7 +160,7 @@ export const roformerOverlapLogic: Omit<
   "Component"
 > = {
   id: "roformer-overlap",
-  families: ["bs_roformer", "mel_band_roformer"],
+  families: [...ROFORMER_FAMILIES],
   workflows: ["separate"],
   title: "Overlap",
   claims: [],

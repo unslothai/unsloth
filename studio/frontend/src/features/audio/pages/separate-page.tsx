@@ -32,7 +32,6 @@ import type { AudioHostState } from "../hooks/audio-host-state";
 import type { AudioGallery } from "../hooks/use-audio-gallery";
 import type { SeparateGeneration } from "../hooks/use-separate-generation";
 import { useStemSources } from "../hooks/use-stem-sources";
-import { availableSendTargets } from "../send-to";
 import { separatePresentation } from "../separate-policy";
 import {
   SEPARATION_STEMS_BY_FAMILY,
@@ -295,7 +294,10 @@ async function downloadGroup(group: SeparationGroup) {
   }
 }
 
-const SEND_TARGETS = availableSendTargets();
+const SEND_TARGETS: readonly SendTarget[] = [
+  { id: "transcribe", workflow: "transcribe", label: "Transcribe" },
+  { id: "clone", workflow: "clone", label: "Clone (as reference)" },
+];
 
 /** The selected separation as a mixer. Keyed by group so each one starts from its own clock. */
 function SelectedSeparation({

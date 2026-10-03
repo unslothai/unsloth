@@ -21,7 +21,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 # Keys whose string value can carry base64 audio, matching ``_audio_candidates`` in the backend.
-_AUDIO_KEY_RE = re.compile(rb'(?<!\\)"(audio|wav|data|audio_base64|b64_json)"\s*:\s*"')
+_AUDIO_KEYS = ("audio", "wav", "data", "audio_base64", "b64_json")
+_AUDIO_KEY_RE = re.compile(rb'(?<!\\)"(' + "|".join(_AUDIO_KEYS).encode() + rb')"\s*:\s*"')
 _PLACEHOLDER = "\u0000span"
 _ID_UNSAFE_RE = re.compile(r"[^A-Za-z0-9_-]")
 _B64_ALPHABET = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
@@ -98,7 +99,7 @@ def _find_outputs(node: Any) -> Optional[list]:
 
 
 def _span_index(item: dict) -> Optional[int]:
-    for key in ("audio", "wav", "data", "audio_base64", "b64_json"):
+    for key in _AUDIO_KEYS:
         value = item.get(key)
         if isinstance(value, str) and value.startswith(_PLACEHOLDER):
             try:

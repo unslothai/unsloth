@@ -105,6 +105,7 @@ from core.inference.audio_errors import (
     audio_runtime_http_error,
     sanitize_runtime_detail,
 )
+from core.inference.audio_cpp_outputs import NO_STEMS
 from core.inference import context_refusal
 from core.inference.context_window import (
     estimate_message_tokens as _estimate_message_tokens,
@@ -21891,7 +21892,6 @@ async def run_audio_workflow(
 _STEM_ORDER = ("vocals", "drums", "bass", "guitar", "piano", "other", "instrumental")
 _SEPARATE_MAX_SECONDS = 600.0
 _SEPARATE_RATE = 44100
-_NO_STEMS = "The audio runtime returned no stems."
 
 
 def _separation_options(body: AudioRunRequest, family: Optional[str], label: str) -> Optional[dict]:
@@ -21957,7 +21957,7 @@ def _stem_rank(ids: list[str]):
 def _checked_stems(outputs: Any, staging: Path) -> list[dict]:
     """The worker's stems, each a WAV inside ``staging``, in display order; 502 otherwise."""
     if not isinstance(outputs, list) or not outputs:
-        raise HTTPException(status_code = 502, detail = _NO_STEMS)
+        raise HTTPException(status_code = 502, detail = NO_STEMS)
     root = staging.resolve()
     stems = []
     for output in outputs:
@@ -21976,7 +21976,7 @@ def _checked_stems(outputs: Any, staging: Path) -> list[dict]:
             riff = False
         if not riff:
             logger.warning("audio.separate: the worker returned an unusable stem")
-            raise HTTPException(status_code = 502, detail = _NO_STEMS)
+            raise HTTPException(status_code = 502, detail = NO_STEMS)
         stems.append(stem)
     rank = _stem_rank([stem["id"] for stem in stems])
     return sorted(stems, key = lambda stem: rank(stem["id"]))

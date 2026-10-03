@@ -24,9 +24,6 @@ const {
   separateCpuWarning,
   separatePresentation,
 } = await import("../src/features/audio/separate-policy.ts");
-const { availableSendTargets, clipAsSource, SEND_TARGETS } = await import(
-  "../src/features/audio/send-to.ts"
-);
 const { buildAudioRunBody } = await import(
   "../src/features/audio/audio-run-request.ts"
 );
@@ -232,29 +229,6 @@ test("progress copy names the separation phases", () => {
     "Saving stems…",
   );
   assert.equal(separatePresentation(null, "generating", false), null);
-});
-
-test("Send to lists only pages that exist", () => {
-  assert.deepEqual(
-    availableSendTargets().map((target) => target.workflow),
-    ["transcribe", "clone"],
-  );
-  assert.deepEqual(
-    availableSendTargets([
-      ...SEND_TARGETS,
-      { id: "convert", workflow: "convert", label: "Convert" },
-    ]).map((target) => target.id),
-    ["transcribe", "clone"],
-  );
-  assert.deepEqual(
-    clipAsSource({ clipId: "c", name: "Song - Vocals", durationS: 3 }),
-    {
-      kind: "clip",
-      id: "c",
-      name: "Song - Vocals",
-      durationS: 3,
-    },
-  );
 });
 
 test("a separate run sends the source and options only", () => {
