@@ -34,6 +34,9 @@ export const en = {
     installAndLoad: "Install and load",
     confirm: "Install {engine} {version}? This optional download can use several gigabytes. Exact additional download and disk usage are unavailable. Compatible cached packages and model files are reused.",
     confirmSized: "Install {engine} {version}? This optional download is about {size}. Packages Studio already has, including PyTorch when the versions match, are reused rather than downloaded again.",
+    wslSetup: "On Windows, {engine} runs inside WSL2 (Windows Subsystem for Linux). Studio will turn on WSL2 and set up its own private Ubuntu environment for engines; your existing Linux distributions are not touched. Windows will show one administrator (UAC) prompt, and may ask you to restart before the installation can finish. Nothing changes until you click Install.",
+    wslReady: "On Windows, {engine} runs inside Studio's private WSL2 environment.",
+    wslRestart: "Restart Windows to finish turning on WSL2, then click Install again.",
     background: "Installation runs in the background. Removing the engine keeps your downloaded models.",
     failed: "Engine installation failed. Retry or use the default engine.",
     details: "Technical details",
@@ -260,6 +263,45 @@ export const en = {
       actions: "Actions",
       chat: "Chat",
       searchChats: "Search chats...",
+    },
+    search: {
+      placeholder: "Search",
+      tabs: {
+        all: "All",
+        chats: "Chats",
+        projects: "Projects",
+        files: "Files",
+        models: "Models",
+      },
+      recents: "Recents",
+      actions: "Actions",
+      newChat: "New chat",
+      newTemporaryChat: "New temporary chat",
+      fineTune: "Fine-tune a model",
+      generateImage: "Generate an image",
+      generateVideo: "Generate a video",
+      untitledChat: "Untitled chat",
+      compare: "Compare",
+      loading: "Loading…",
+      empty: {
+        all: "Nothing to search yet.",
+        chats: "No chats yet.",
+        projects: "No projects yet.",
+        files: "No files in your Library yet.",
+        models: "No downloaded models yet.",
+      },
+      noMatches: "No results.",
+      when: {
+        today: "Today",
+        pastWeek: "Past week",
+        pastMonth: "Past month",
+        older: "Older",
+      },
+      footer: {
+        close: "Close",
+        changeType: "Change type",
+        open: "Open",
+      },
     },
     notFound: {
       title: "Page not found",
@@ -1117,9 +1159,22 @@ export const en = {
       },
       permissions: {
         sectionTitle: "Permissions",
-        bypassLabel: "Tool permissions",
-        bypassDescription:
-          "How Unsloth approves chat tool calls (terminal, python, web, MCP) before they run. Full access disables approvals and the code sandbox.",
+        names: {
+          ask: "Ask for approval",
+          auto: "Approve for me",
+          off: "Run automatically",
+          full: "Full access",
+        },
+        details: {
+          ask:
+            "Asks before every tool call, including terminal and Python code, web searches, file edits and MCP tools. Tools run by an external provider are not paused. Best when you want to review each step.",
+          auto:
+            "Runs routine tool calls on its own and only asks when an action looks risky, such as reading credentials, escalating privileges or running destructive commands.",
+          off:
+            "Runs every tool call without asking. Python and terminal code still run in the sandbox, which limits which files they can reach on your computer.",
+          full:
+            "Runs every tool call without asking and turns off the code sandbox, so Python and terminal code can read and change any file your account can access. Best for trusted tasks that need to work outside the sandbox.",
+        },
       },
       notifications: {
         sectionTitle: "Notifications",
@@ -3133,6 +3188,7 @@ export const en = {
     discardDescription: "Edits to {name} that are not saved will be lost.",
     discard: "Discard",
     mentions: "Skills",
+    manage: "Manage skills",
   },
   // The Library page, its file viewer, and the menus and toasts that act on its files.
   library: {

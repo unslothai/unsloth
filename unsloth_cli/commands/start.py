@@ -4668,12 +4668,22 @@ def _studio_embedding_model(base: str, key: str) -> Optional[str]:
     return name.strip()
 
 
-def _openclaw_provider(base: str, key: str, model: dict) -> dict:
+def _openclaw_provider(
+    base: str,
+    key: str,
+    model: dict,
+    max_tokens: Optional[int] = None,
+) -> dict:
     # Unsloth is a generic OpenAI-compatible /v1 endpoint (the vLLM/LM Studio path).
     provider_model = {"id": model["id"], "name": model["id"]}
     window = model.get("context_length") or model.get("max_context_length")
     if window:
-        provider_model["contextWindow"] = int(window)
+        window = int(window)
+        provider_model["contextWindow"] = window
+        # Unset, OpenClaw caps every reply at 8192 (DEFAULT_MODEL_MAX_TOKENS) whatever the window.
+        provider_model["maxTokens"] = _agent_output_limit(window, max_tokens)
+    elif max_tokens:
+        provider_model["maxTokens"] = max_tokens
     return {
         "baseUrl": f"{base}/v1",
         "apiKey": key,
@@ -4691,6 +4701,7 @@ def write_openclaw_config(
     workspace_path: Optional[str] = None,
     embedding_model: Optional[str] = None,
     request_body: Optional[dict] = None,
+    max_tokens: Optional[int] = None,
 ) -> None:
     config = _read_json_object(path)
     if config is None:
@@ -4703,7 +4714,7 @@ def write_openclaw_config(
     before = json.dumps(config, sort_keys = True)
     models = _subdict(config, "models")
     models.setdefault("mode", "merge")
-    _subdict(models, "providers")["unsloth"] = _openclaw_provider(base, key, model)
+    _subdict(models, "providers")["unsloth"] = _openclaw_provider(base, key, model, max_tokens)
     # Memory search is on by default and defaults to openai, so a local session reaches OpenAI unless this block is written.
     search = _subdict(_subdict(config, "memory"), "search")
     if embedding_model:
@@ -5942,13 +5953,22 @@ def _opencode_app_target(
     return _AppTarget("opencode", "OpenCode app", path, updates)
 
 
-def _openclaw_app_updates(text, path, base, key, entry) -> list:
+def _openclaw_app_updates(
+    text,
+    path,
+    base,
+    key,
+    entry,
+    max_tokens = None,
+) -> list:
     config = _parse_app_config(path, text) or {}
     agents = config.get("agents")
     defaults = agents.get("defaults") if isinstance(agents, dict) else None
     defaults = defaults if isinstance(defaults, dict) else {}
     ref = f"unsloth/{entry['id']}"
-    changes = [(("models", "providers", "unsloth"), _openclaw_provider(base, key, entry))]
+    changes = [
+        (("models", "providers", "unsloth"), _openclaw_provider(base, key, entry, max_tokens))
+    ]
     # The picker only offers allowlisted models once an allowlist exists; never create one.
     policy = defaults.get("modelPolicy")
     allowed = policy.get("allow") if isinstance(policy, dict) else None
@@ -5965,9 +5985,10 @@ def _openclaw_app_updates(text, path, base, key, entry) -> list:
     return changes
 
 
-def _openclaw_app_target() -> _AppTarget:
+def _openclaw_app_target(max_tokens: Optional[int] = None) -> _AppTarget:
     path = Path.home() / ".openclaw" / "openclaw.json"
-    return _AppTarget("openclaw", "OpenClaw app", path, _openclaw_app_updates)
+    updates = functools.partial(_openclaw_app_updates, max_tokens = max_tokens)
+    return _AppTarget("openclaw", "OpenClaw app", path, updates)
 
 
 def _hermes_app_target(request_body: Optional[dict] = None) -> _AppTarget:
@@ -6268,6 +6289,7 @@ def openclaw(
     launch: bool = _LAUNCH_OPTION,
     gguf_variant: Optional[str] = _GGUF_VARIANT_OPTION,
     max_seq_length: int = _CONTEXT_OPTION,
+    max_tokens: Optional[int] = _MAX_TOKENS_OPTION,
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
     gpu_memory_mode: Optional[Literal["auto", "manual"]] = _GPU_MEMORY_MODE_OPTION,
@@ -6323,7 +6345,7 @@ def openclaw(
         server_options = server_options,
     )
     if app:
-        return _add_app_provider(_openclaw_app_target(), base, api_key, entry)
+        return _add_app_provider(_openclaw_app_target(max_tokens), base, api_key, entry)
     openclaw_args = list(ctx.args)
     # Default a bare `unsloth start openclaw` to the local TUI. Anything the caller passes through is forwarded verbatim so OpenClaw parses it under its own grammar (openclaw [global-flags] <command> [options]): an explicit subcommand, a global flag that must precede the command such as --profile/--dev, or a tui option. We cannot reinterpret those safely because a leading "--flag value" is ambiguous between a global (`--profile test`) and a tui option (`--message hi`), and prepending `tui --local` would break the global form, so only the empty case is defaulted.
     if not openclaw_args:
@@ -6341,6 +6363,7 @@ def openclaw(
             workspace_path = "${OPENCLAW_WORKSPACE_DIR}",
             embedding_model = _studio_embedding_model(base, key),
             request_body = server_options.request_body(),
+            max_tokens = max_tokens,
         )
         # Scope both config and state so OpenClaw never touches the user's ~/.openclaw.
         # Off, else OpenClaw re-imports any provider key it cannot see from a login shell.

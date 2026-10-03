@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import subprocess
+
+from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 import json
 from pathlib import Path
 
@@ -292,17 +294,20 @@ def gpu_memory_fraction(
     engine does not budget. An unreadable
     device is an actionable failure, never permission to fall back to a larger engine default.
     """
+    from utils.hardware.nvidia import _nvidia_smi_executable
     from utils.vram_budget_settings import get_vram_budget_fraction
+
     try:
         result = subprocess.run(
             [
-                "nvidia-smi",
+                _nvidia_smi_executable(),
                 "--id",
                 ",".join(str(gpu_id) for gpu_id in gpu_ids),
                 "--query-gpu=memory.total,memory.free",
                 "--format=csv,noheader,nounits",
             ],
             capture_output = True,
+            **windows_hidden_subprocess_kwargs(),
             text = True,
             encoding = "utf-8",
             errors = "replace",

@@ -435,10 +435,11 @@ foreach ($row in @(
 # Shared deadline 2 x 1500 ms; the first child burns 1200 ms of it, leaving under 3 s.
 $got = Invoke-RawWithStub @("TIMEOUT", "cuda;12;8;8.9") -TimeoutMs 1500 -TimeoutSleepMs 1200
 Check "stub: no CUDA-only child when under 3 s of the shared budget remain" ($script:StubCalls.Count -eq 1 -and $got -eq "")
-# Shared deadline 2 x 4000 ms; the first child hangs for 3000 ms. Each child's bound leaves 2 s to
-# reap it, so the CUDA-only child gets what is left minus that, and the pair ends by the deadline.
-$got = Invoke-RawWithStub @("TIMEOUT", "cuda;12;8;8.9") -TimeoutMs 4000 -TimeoutSleepMs 3000
-Check "stub: every child's bound leaves 2 s of the shared deadline to reap it" (
+# Shared deadline 2 x 4000 ms, first child hangs 3200 ms; each bound leaves 2 s to reap, so the CUDA child gets ~2800 ms.
+# Not 3000 ms: that sits on the window's upper edge and an early Start-Sleep wake on Windows gave 3001.
+$got = Invoke-RawWithStub @("TIMEOUT", "cuda;12;8;8.9") -TimeoutMs 4000 -TimeoutSleepMs 3200
+$secondMs = if ($script:StubCalls.Count -ge 2) { $script:StubCalls[1].TimeoutMs } else { "none" }
+Check "stub: every child's bound leaves 2 s of the shared deadline to reap it (second bound: $secondMs ms)" (
     $script:StubCalls.Count -eq 2 -and $script:StubCalls[0].TimeoutMs -eq 4000 -and
     $script:StubCalls[1].TimeoutMs -le 3000 -and $script:StubCalls[1].TimeoutMs -ge 2000)
 # Shared deadline 2 x 5000 ms; the first child burns 5000 ms, so the retry gets only the rest.

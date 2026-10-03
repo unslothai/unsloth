@@ -778,7 +778,15 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             model_info.update(
                 {
                     k: _entry[k]
-                    for k in ("is_audio", "audio_type", "has_audio_input", "has_video_input")
+                    for k in (
+                        "is_audio",
+                        "audio_type",
+                        "has_audio_input",
+                        "has_video_input",
+                        "audio_family",
+                        "audio_options",
+                        "gguf_variant",
+                    )
                     if k in _entry
                 }
             )
@@ -1583,6 +1591,8 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
     request_id = cmd.get("request_id", "")
     try:
         logger.info("Starting audio generation for request_id=%s", request_id)
+        # Only audio.cpp models take per-model options; other backends never see the keyword.
+        extra = {"audio_options": cmd["audio_options"]} if cmd.get("audio_options") else {}
         wav_bytes, sample_rate = backend.generate_audio_response(
             text = cmd["text"],
             temperature = cmd.get("temperature", 0.6),
@@ -1596,6 +1606,7 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
             instructions = cmd.get("instructions"),
             language = cmd.get("language"),
             seed = cmd.get("seed"),
+            **extra,
         )
 
         # Send WAV bytes as base64 (bytes can't go through mp.Queue directly).
@@ -1858,7 +1869,8 @@ def run_inference_process(
     # importing Unsloth; native_audio itself has no eager ML imports.
     from core.inference.native_audio import is_native_audio_model
 
-    _native_audio_worker = is_native_audio_model(model_name)
+    # The route marks an audio.cpp GGUF, which a bare Hub id does not reveal without a header read.
+    _native_audio_worker = bool(config.get("audio_cpp")) or is_native_audio_model(model_name)
 
     # Before detect_hardware(), whose probe would leave a CUDA context here; the route
     # skips the arbiter on the basis that this load reserves none.
@@ -2224,7 +2236,12 @@ def run_inference_process(
         _ensure_backend_on_path()
 
         if _native_audio_worker:
-            from core.inference.native_audio import NativeAudioBackend as InferenceBackend
+            from core.inference.native_audio import is_audio_cpp_audio_model
+            if config.get("audio_cpp") or is_audio_cpp_audio_model(model_name):
+                # Weights run in audiocpp_server; this worker only proxies to it.
+                from core.inference.audio_cpp_backend import AudioCppBackend as InferenceBackend
+            else:
+                from core.inference.native_audio import NativeAudioBackend as InferenceBackend
         else:
             # Recover from any namespace-package shadow before importing Unsloth.
             from core.import_guards import ensure_real_packages

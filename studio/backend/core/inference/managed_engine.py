@@ -11,6 +11,9 @@ import os
 import secrets
 import socket
 import subprocess
+
+from utils.subprocess_compat import windows_hidden_subprocess_kwargs
+import sys
 import threading
 import time
 from collections import deque
@@ -21,6 +24,7 @@ import httpx
 from utils.hardware.hardware import resolve_requested_gpu_ids
 
 from .engine_install import (
+    driver_library_path,
     engine_lease,
     installed,
     profile,
@@ -38,6 +42,13 @@ from .engine_adapters import (
     launch_arguments,
     tool_parser_for_template,
 )
+
+
+def _offline(env) -> bool:
+    return any(
+        str(env.get(key, "")).strip().lower() in {"1", "true", "yes", "on"}
+        for key in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
+    )
 
 
 def validate_load(engine: str, request) -> list[int]:
@@ -177,15 +188,17 @@ def validate_model(
     }
     if precision == "fp8":
         # Eager TorchAO FP8 on Ampere: Triton cannot compile its casts, SGLang online FP8 is invalid.
+        from utils.hardware.nvidia import _nvidia_smi_executable
         result = subprocess.run(
             [
-                "nvidia-smi",
+                _nvidia_smi_executable(),
                 "--id",
                 ",".join(str(i) for i in (gpu_ids or [0])),
                 "--query-gpu=compute_cap",
                 "--format=csv,noheader,nounits",
             ],
             capture_output = True,
+            **windows_hidden_subprocess_kwargs(),
             text = True,
             encoding = "utf-8",
             errors = "replace",
@@ -234,6 +247,26 @@ STARTUP_STALL_S = 900
 STARTUP_LIMIT_S = 4 * 3600
 
 
+def _token_file_token(env) -> str | None:
+    """The `hf auth login` token a local engine would read from its inherited HF_HOME; the WSL
+    guest gets its own HF_HOME, so the token has to cross over. Anonymous loads keep none."""
+    if (env.get("HF_HUB_DISABLE_IMPLICIT_TOKEN") or "").upper() in ("1", "ON", "YES", "TRUE"):
+        return None
+    home = env.get("HF_HOME") or os.path.join(
+        env.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache"), "huggingface"
+    )
+    path = env.get("HF_TOKEN_PATH") or os.path.join(
+        os.path.expandvars(os.path.expanduser(home)), "token"
+    )
+    try:
+        token = (
+            Path(os.path.expandvars(os.path.expanduser(path))).read_text(encoding = "utf-8").strip()
+        )
+    except (OSError, UnicodeDecodeError):
+        return None
+    return token or None
+
+
 class ManagedEngine:
     def __init__(self, engine: str):
         self.engine = engine
@@ -249,6 +282,7 @@ class ManagedEngine:
         self._tail = deque(maxlen = 200)
         self._last_output = time.monotonic()
         self.base_url = ""
+        self._guest_environment = None
         # A URL-safe token can start with '-', which CLI parsers read as an option.
         self.key = "studio-" + secrets.token_urlsafe(32)
 
@@ -298,86 +332,95 @@ class ManagedEngine:
                     raise RuntimeError("Could not allocate an inference server port.")
                 self.base_url = f"http://127.0.0.1:{port}"
                 self.model, self.context = model, context or 4096
-                child_env = {
-                    k: v
-                    for k, v in env.items()
-                    if not k.startswith(("PYTHON", "UV_", "PIP_", "SGLANG_", "VLLM_"))
-                }
-                from utils.native_path_leases import child_env_without_native_path_secret
+                stdin = None
+                if info.get("host") == "wsl":
+                    command, child_env = self._wsl_command(
+                        info, env, gpu_ids, options, trust_remote_code, model, model_path, port
+                    )
+                    # The guest runner ends the engine when this pipe closes (stop, or Studio dying).
+                    stdin = subprocess.PIPE
+                    self._guest_environment = info["path"]
+                else:
+                    child_env = {
+                        k: v
+                        for k, v in env.items()
+                        if not k.startswith(("PYTHON", "UV_", "PIP_", "SGLANG_", "VLLM_"))
+                    }
+                    from utils.native_path_leases import child_env_without_native_path_secret
 
-                child_env = child_env_without_native_path_secret(child_env)
-                child_env.pop("VIRTUAL_ENV", None)
-                child_env.pop("LD_PRELOAD", None)
-                child_env.pop("LD_LIBRARY_PATH", None)
-                child_env["PATH"] = os.pathsep.join(
-                    [
-                        info["path"] + "/bin",
-                        *([info["studio_prefix"] + "/bin"] if info.get("shared") else []),
-                        child_env.get("PATH", os.defpath),
-                    ]
-                )
-                child_env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in (gpu_ids or [0]))
-                child_env["PYTHONNOUSERSITE"] = "1"
-                from .engine_install import engine_root
+                    child_env = child_env_without_native_path_secret(child_env)
+                    child_env.pop("VIRTUAL_ENV", None)
+                    child_env.pop("LD_PRELOAD", None)
+                    child_env.pop("LD_LIBRARY_PATH", None)
+                    if driver := driver_library_path(env):
+                        child_env["LD_LIBRARY_PATH"] = driver
+                    child_env["PATH"] = os.pathsep.join(
+                        [
+                            info["path"] + "/bin",
+                            *([info["studio_prefix"] + "/bin"] if info.get("shared") else []),
+                            child_env.get("PATH", os.defpath),
+                        ]
+                    )
+                    child_env["CUDA_VISIBLE_DEVICES"] = ",".join(str(i) for i in (gpu_ids or [0]))
+                    child_env["PYTHONNOUSERSITE"] = "1"
+                    from .engine_install import engine_root
 
-                # Compiler caches are keyed per launch config: reuse across dtype/GPU changes breaks.
-                policy = Path(__file__).with_name("engine_adapters.py").read_bytes()
-                policy += Path(__file__).with_name(f"{self.engine}_server.py").read_bytes()
-                cache_key = hashlib.sha256(
-                    policy
-                    + json.dumps(
-                        [info.get("profile_digest"), model, self.context, gpu_ids, options],
-                        sort_keys = True,
-                    ).encode()
-                ).hexdigest()[:16]
-                cache = engine_root() / self.engine / "cache" / cache_key
-                child_env["VLLM_CACHE_ROOT"] = str(cache)
-                child_env["TORCHINDUCTOR_CACHE_DIR"] = str(cache / "inductor")
-                child_env["TRITON_CACHE_DIR"] = str(cache / "triton")
-                # FlashInfer's JIT build files name this env's sources; a shared ~/.cache outlives a replaced env.
-                child_env["FLASHINFER_WORKSPACE_BASE"] = info["path"]
-                from .engine_install import cuda_environment
+                    cache = (
+                        engine_root()
+                        / self.engine
+                        / "cache"
+                        / self._cache_key(info, model, gpu_ids, options)
+                    )
+                    child_env["VLLM_CACHE_ROOT"] = str(cache)
+                    child_env["TORCHINDUCTOR_CACHE_DIR"] = str(cache / "inductor")
+                    child_env["TRITON_CACHE_DIR"] = str(cache / "triton")
+                    # FlashInfer's JIT build files name this env's sources; a shared ~/.cache outlives a replaced env.
+                    child_env["FLASHINFER_WORKSPACE_BASE"] = info["path"]
+                    from .engine_install import cuda_environment
 
-                child_env.pop("CUDA_PATH", None)
-                child_env.update(cuda_environment(info))
-                memory_fraction = gpu_memory_fraction(
-                    gpu_ids or [0], memory_reserve_mib(self.engine, options), RESERVE_SHARE
-                )
-                child_env.update(self.adapter.environment(len(gpu_ids or [0])))
-                child_env.update(self.adapter.key_environment(self.key))
-                if self.engine == "vllm" and _deep_gemm_unloadable(info["path"]):
-                    child_env["VLLM_USE_DEEP_GEMM"] = "0"
+                    child_env.pop("CUDA_PATH", None)
+                    child_env.update(cuda_environment(info))
+                    memory_fraction = gpu_memory_fraction(
+                        gpu_ids or [0], memory_reserve_mib(self.engine, options), RESERVE_SHARE
+                    )
+                    child_env.update(self.adapter.environment(len(gpu_ids or [0])))
+                    child_env.update(self.adapter.key_environment(self.key))
+                    if self.engine == "vllm" and _deep_gemm_unloadable(info["path"]):
+                        child_env["VLLM_USE_DEEP_GEMM"] = "0"
+                    command = self.adapter.command(
+                        info["path"] + "/bin/python",
+                        model_path or model,
+                        port,
+                        self.key,
+                        self.context,
+                        memory_fraction,
+                        len(gpu_ids or [0]),
+                        **(
+                            {
+                                "options": {**options, "engine_version": info.get("version")},
+                                "trust_remote_code": trust_remote_code,
+                            }
+                            if options
+                            else {}
+                        ),
+                        **(
+                            {"served_model_name": model}
+                            if model_path and model_path != model
+                            else {}
+                        ),
+                    )
                 self.process = spawn_on_lifetime_thread(
                     lambda: subprocess.Popen(
-                        self.adapter.command(
-                            info["path"] + "/bin/python",
-                            model_path or model,
-                            port,
-                            self.key,
-                            self.context,
-                            memory_fraction,
-                            len(gpu_ids or [0]),
-                            **(
-                                {
-                                    "options": {**options, "engine_version": info.get("version")},
-                                    "trust_remote_code": trust_remote_code,
-                                }
-                                if options
-                                else {}
-                            ),
-                            **(
-                                {"served_model_name": model}
-                                if model_path and model_path != model
-                                else {}
-                            ),
-                        ),
+                        command,
                         env = child_env,
+                        stdin = stdin,
                         stdout = subprocess.PIPE,
                         stderr = subprocess.STDOUT,
                         text = True,
                         encoding = "utf-8",
                         errors = "replace",
                         start_new_session = True,
+                        creationflags = 0x08000000 if sys.platform == "win32" else 0,
                         **child_popen_kwargs(),
                     )
                 )
@@ -419,6 +462,100 @@ class ManagedEngine:
             self.stop()
             raise
 
+    def _cache_key(self, info, model, gpu_ids, options) -> str:
+        # Compiler caches are keyed per launch config: reuse across dtype/GPU changes breaks.
+        policy = Path(__file__).with_name("engine_adapters.py").read_bytes()
+        policy += Path(__file__).with_name(f"{self.engine}_server.py").read_bytes()
+        return hashlib.sha256(
+            policy
+            + json.dumps(
+                [info.get("profile_digest"), model, self.context, gpu_ids, options],
+                sort_keys = True,
+            ).encode()
+        ).hexdigest()[:16]
+
+    def _wsl_command(
+        self, info, env, gpu_ids, options, trust_remote_code, model, model_path, port
+    ) -> tuple[list[str], dict]:
+        """The engine inside Studio's WSL distro: only the variables it needs cross over, since
+        Studio's Windows paths mean nothing there; the token crosses through WSLENV, not argv."""
+        from . import wsl_host
+        from hub.utils.hf_tokens import _HF_TOKEN_ENV_KEYS
+
+        guest_root = wsl_host.GUEST_ROOT
+        environment = info["path"]
+        wsl_host.guest(["test", "-x", environment + "/bin/python"], timeout = 300)
+        cache = f"{guest_root}/cache/{self.engine}/{self._cache_key(info, model, gpu_ids, options)}"
+        guest_env = {
+            "PATH": environment
+            + "/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/lib/wsl/lib",
+            "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+            "CUDA_VISIBLE_DEVICES": ",".join(
+                str(i) for i in wsl_host.guest_gpu_indices(list(gpu_ids or [0]))
+            ),
+            "PYTHONNOUSERSITE": "1",
+            # Weights download inside the distro's own disk; /mnt/c reads are far slower.
+            "HF_HOME": f"{guest_root}/hf",
+            "VLLM_CACHE_ROOT": cache,
+            "TORCHINDUCTOR_CACHE_DIR": cache + "/inductor",
+            "TRITON_CACHE_DIR": cache + "/triton",
+            "FLASHINFER_WORKSPACE_BASE": environment,
+            **({"HF_ENDPOINT": env["HF_ENDPOINT"]} if env.get("HF_ENDPOINT") else {}),
+            # Cache-only mode must hold in the guest too.
+            **({"HF_HUB_OFFLINE": "1"} if _offline(env) else {}),
+        }
+        from .engine_install import cuda_environment
+
+        guest_env.update(cuda_environment(info))
+        guest_env.update(self.adapter.environment(len(gpu_ids or [0])))
+        if self.engine == "vllm" and info.get("deep_gemm_unloadable"):
+            guest_env["VLLM_USE_DEEP_GEMM"] = "0"
+        target = wsl_host.to_guest_path(model_path) if model_path else model
+        command = self.adapter.command(
+            environment + "/bin/python",
+            target,
+            port,
+            self.key,
+            self.context,
+            gpu_memory_fraction(
+                gpu_ids or [0], memory_reserve_mib(self.engine, options), RESERVE_SHARE
+            ),
+            len(gpu_ids or [0]),
+            **(
+                {
+                    "options": {**options, "engine_version": info.get("version")},
+                    "trust_remote_code": trust_remote_code,
+                }
+                if options
+                else {}
+            ),
+            **({"served_model_name": model} if model_path and model_path != model else {}),
+        )
+        # The engine launchers are Studio source files; the guest reads them through /mnt.
+        server = str(Path(__file__).with_name(f"{self.engine}_server.py"))
+        command = [wsl_host.to_guest_path(arg) if arg == server else arg for arg in command]
+        secrets = {
+            key: env[key]
+            for key in (*_HF_TOKEN_ENV_KEYS, "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY")
+            if env.get(key)
+        }
+        if not any(key in secrets for key in _HF_TOKEN_ENV_KEYS):
+            token = _token_file_token(env)
+            if token:
+                secrets["HF_TOKEN"] = token
+        # The engine key goes through WSLENV like the tokens: guest_env lands on /usr/bin/env's argv.
+        secrets.update(self.adapter.key_environment(self.key))
+        return wsl_host.guest_command(
+            [
+                f"{guest_root}/bin/run-engine",
+                "/usr/bin/env",
+                *[f"{k}={v}" for k, v in guest_env.items()],
+                *command,
+            ],
+            secrets = secrets,
+            withhold = tuple(key.upper() for key in _HF_TOKEN_ENV_KEYS if key not in secrets),
+        )
+
     @property
     def headers(self):
         return {"Authorization": "Bearer " + self.key}
@@ -443,11 +580,25 @@ class ManagedEngine:
         self._cancel.set()
         with self._lock:
             if self.process is not None:
-                terminate_pid(self.process.pid, timeout = 5, owner_verified = True)
+                graceful = False
+                if self.process.stdin is not None:
+                    # WSL: closing the pipe makes the guest runner stop the engine's process group.
+                    try:
+                        self.process.stdin.close()
+                        self.process.wait(timeout = 15)
+                        graceful = True
+                    except (OSError, subprocess.TimeoutExpired):
+                        pass
+                if not graceful:
+                    terminate_pid(self.process.pid, timeout = 5, owner_verified = True)
                 try:
                     self.process.wait(timeout = 5)
                 except subprocess.TimeoutExpired:
                     return False
+                if self._guest_environment and not graceful:
+                    from .wsl_host import kill_environment
+                    kill_environment(self._guest_environment)
+                self._guest_environment = None
                 forget_pid(self.process.pid)
                 if self._reader:
                     self._reader.join(timeout = 2)
