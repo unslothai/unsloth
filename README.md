@@ -229,6 +229,16 @@ uv venv unsloth_env --python 3.13
 uv pip install unsloth --torch-backend=auto
 ```
 
+#### Poetry (Linux / WSL):
+Poetry installs unsloth like any PyPI package. On Linux and WSL, PyPI's `torch` wheel already bundles CUDA, so no extra steps are needed:
+```bash
+pip install poetry
+poetry init          # or poetry new unsloth_env in a new project
+poetry add unsloth
+poetry run python -c "import unsloth; print(unsloth.__version__)"
+```
+Poetry resolves everything from PyPI, so it cannot auto-pick a GPU build: `--torch-backend=auto` is uv-only, and the `unsloth[cuXXX-torchYYY]` CUDA extras (which point `xformers` at `download.pytorch.org`) are silently resolved from PyPI instead, so don't use them with Poetry. For AMD, Intel, DGX Spark or Blackwell GPUs follow the [platform guides](#amd-intel-dgx-spark-blackwell) or the uv commands above, and on Windows use `uv pip install unsloth --torch-backend=auto`, since PyPI's `torch` is CPU-only there.
+
 #### AMD, Intel, DGX Spark, Blackwell:
 See our [Blackwell guide](https://unsloth.ai/docs/blog/fine-tuning-llms-with-blackwell-rtx-50-series-and-unsloth) and [DGX Spark guide](https://unsloth.ai/docs/blog/fine-tuning-llms-with-nvidia-dgx-spark-and-unsloth). <br>
 To install Unsloth on **AMD** and **Intel** GPUs, follow our [AMD Guide](https://unsloth.ai/docs/basics/amd) and [Intel Guide](https://unsloth.ai/docs/get-started/install/intel).
