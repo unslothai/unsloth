@@ -18,6 +18,8 @@ import ast
 import sys
 from pathlib import Path
 
+import pytest
+
 _BACKEND = Path(__file__).resolve().parent.parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
@@ -96,21 +98,37 @@ def _sync_helpers_that_build_the_singleton(rel: str) -> set[str]:
     return names
 
 
+# Workers that call a callable they are handed, on the worker thread. to_thread runs only its
+# first argument; a lambda further along is just passed to it, so it counts as off the loop only
+# when that worker is known to invoke it there. Pinned below by reading the worker itself.
+# worker name -> (its file, the name and position of the parameter it calls).
+_WORKERS_THAT_RUN_THEIR_CALLBACK = {"in_slot": ("core/inference/model_slots.py", "fn", 1)}
+
+
 def _calls_inside_offloaded_lambdas(fn: ast.AST) -> set[int]:
-    """ids of the Call nodes in a lambda passed straight to asyncio.to_thread: they run on the
-    worker thread, not the loop. Only a lambda that is itself an argument counts, so a lambda
-    stored first and called on the loop later is still reported."""
+    """ids of the Call nodes in a lambda that asyncio.to_thread runs on its worker thread: the
+    lambda is to_thread's first argument, or a later argument to a worker listed in
+    _WORKERS_THAT_RUN_THEIR_CALLBACK. Any other lambda, stored or handed to a worker that might
+    return it, is not exempt."""
     inside = set()
     for node in ast.walk(fn):
         if not (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
             and node.func.attr == "to_thread"
+            and node.args
         ):
             continue
-        for arg in [*node.args, *(kw.value for kw in node.keywords)]:
-            if isinstance(arg, ast.Lambda):
-                inside.update(id(n) for n in ast.walk(arg.body) if isinstance(n, ast.Call))
+        worker, *rest = node.args
+        lambdas = [worker] if isinstance(worker, ast.Lambda) else []
+        worker_name = getattr(worker, "attr", None) or getattr(worker, "id", None)
+        if worker_name in _WORKERS_THAT_RUN_THEIR_CALLBACK:
+            _file, param, position = _WORKERS_THAT_RUN_THEIR_CALLBACK[worker_name]
+            callback = [rest[position]] if len(rest) > position else []
+            callback += [kw.value for kw in node.keywords if kw.arg == param]
+            lambdas += [a for a in callback if isinstance(a, ast.Lambda)]
+        for lam in lambdas:
+            inside.update(id(n) for n in ast.walk(lam.body) if isinstance(n, ast.Call))
     return inside
 
 
@@ -227,13 +245,15 @@ def test_read_only_endpoints_never_construct_the_singleton():
 
 
 def test_a_lambda_handed_to_to_thread_is_off_the_loop_but_an_inline_call_is_not():
-    """The exemption is exactly as wide as the offload: the same helper call on the loop is
-    still reported."""
+    """The exemption is exactly as wide as the offload: the same helper call on the loop, in a
+    stored lambda, or in a lambda handed to a worker that may only return it is still reported."""
     fn = ast.parse(
         "async def handler(model):\n"
         "    await asyncio.to_thread(slots.in_slot, None, lambda: helper(model))\n"
+        "    await asyncio.to_thread(lambda: helper(model))\n"
         "    stored = lambda: helper(model)\n"
         "    helper(model)\n"
+        "    (await asyncio.to_thread(identity, lambda: helper(model)))()\n"
     ).body[0]
     off_loop = _calls_inside_offloaded_lambdas(fn)
     calls = [
@@ -241,5 +261,22 @@ def test_a_lambda_handed_to_to_thread_is_off_the_loop_but_an_inline_call_is_not(
         for n in ast.walk(fn)
         if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "helper"
     ]
-    assert [n.lineno for n in calls if id(n) in off_loop] == [2]
-    assert sorted(n.lineno for n in calls if id(n) not in off_loop) == [3, 4]
+    assert sorted(n.lineno for n in calls if id(n) in off_loop) == [2, 3]
+    assert sorted(n.lineno for n in calls if id(n) not in off_loop) == [4, 5, 6]
+
+
+@pytest.mark.parametrize("worker", sorted(_WORKERS_THAT_RUN_THEIR_CALLBACK))
+def test_each_listed_worker_still_runs_the_callable_it_is_handed(worker):
+    """The exemption trusts these workers to call their callback; read that off their source."""
+    rel, param, position = _WORKERS_THAT_RUN_THEIR_CALLBACK[worker]
+    tree = ast.parse((_BACKEND / rel).read_text(encoding = "utf-8"))
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == worker)
+    assert [a.arg for a in fn.args.args][position] == param, f"{worker}'s callback moved"
+    # Called directly, or handed on as the callable of context.run / a similar runner.
+    runs = [
+        n
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Call)
+        and any(isinstance(a, ast.Name) and a.id == param for a in [n.func, *n.args[:1]])
+    ]
+    assert runs, f"{worker} no longer runs its {param} argument; drop it from the list"
