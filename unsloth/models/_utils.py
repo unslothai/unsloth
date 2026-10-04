@@ -302,6 +302,17 @@ def _unsloth_install_pretrain_detector(model):
     return model
 
 
+def _unsloth_dataset_column_names(dataset):
+    columns = getattr(dataset, "column_names", None)
+    if columns is not None:
+        return columns
+    try:
+        row = dataset[0] if isinstance(dataset, (list, tuple)) else next(iter(dataset))
+    except (IndexError, StopIteration):
+        return []
+    return list(row.keys()) if hasattr(row, "keys") else []
+
+
 def _unsloth_reset_stray_compile_cache(self):
     # A manual forward/backward under torch.compile BEFORE trainer.train() caches a forward plus AOTAutograd backward graph in a one-off context, and reusing it poisons training with NaN/zero gradients, so drop the cache. Module-level, so the SFT auto-packing wrapper and the plain-Trainer loop can run it too.
     import os
@@ -1715,6 +1726,7 @@ def _apply_text_only_key_mapping(kwargs, parent_config, text_config):
     ):
         _TEXT_ONLY_PARENT_MODEL_TYPES[text_model_type] = parent_model_type
         _install_text_only_conversion_carry()
+    return mapping
 
 
 def _cast_text_only_prequantized_params(model, dtype):

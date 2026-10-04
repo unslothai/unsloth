@@ -672,6 +672,10 @@ def graph_eligible(
     if not _denoiser_dits(pipe) and _denoiser_unet(pipe) is None:
         return False, "no denoiser transformer"
 
+    # Sage under a replayed graph renders noise (FLUX.1-schnell, A100), while the ungraphed render is correct.
+    if any(getattr(m, "_unsloth_attention_backend", None) == "sage" for m in _denoiser_dits(pipe)):
+        return False, "SageAttention is not CUDA-graph safe"
+
     try:
         cuda = getattr(_torch(), "cuda", None)
         if cuda is None or not hasattr(cuda, "CUDAGraph") or not cuda.is_available():
