@@ -29,6 +29,7 @@ caller falls back to dense-quantise (then GGUF). Inert with nothing configured.
 
 from __future__ import annotations
 
+import re as _re
 import threading as _threading
 from dataclasses import dataclass
 from collections.abc import Sequence
@@ -2221,10 +2222,15 @@ def _has_meta_tensors(module: Any) -> bool:
 
 
 _LAST_FAILURE = _threading.local()
+# An absolute POSIX or Windows path; the status keeps only its last component (the server's layout is not the
+# client's business). Not after a word, ':' or '/', so URLs and repo ids are left alone.
+_ABS_PATH = _re.compile(
+    r"(?<![\w:/.])(?:[A-Za-z]:[\\/]|/)(?:[^\s'\"<>|:;,()\[\]\\/]+[\\/])+(?=[^\s\\/])"
+)
 
 
 def _warn(logger: Any, what: str, exc: Exception) -> None:
-    _LAST_FAILURE.text = f"{type(exc).__name__}: {exc}"[:300]
+    _LAST_FAILURE.text = _ABS_PATH.sub("", f"{type(exc).__name__}: {exc}")[:300]
     if logger is not None:
         logger.warning("diffusion.prequant: %s failed: %s", what, exc)
 

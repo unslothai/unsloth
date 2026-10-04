@@ -510,6 +510,29 @@ def test_the_dense_fast_path_reason_names_a_load_time_failure(monkeypatch):
     )
 
 
+@pytest.mark.parametrize(
+    "message, expected",
+    [
+        (
+            "/srv/hf/hub/models--unsloth--X/snapshots/abc/X-INT8.safetensors: the data section does not match its header",
+            "ValueError: X-INT8.safetensors: the data section does not match its header",
+        ),
+        (
+            r"C:\Users\me\mirror\unsloth\X\X-FP8.safetensors is truncated",
+            "ValueError: X-FP8.safetensors is truncated",
+        ),
+        (
+            "unsloth/X-FP8 has no X-FP8.pt (https://huggingface.co/unsloth/X-FP8)",
+            "ValueError: unsloth/X-FP8 has no X-FP8.pt (https://huggingface.co/unsloth/X-FP8)",
+        ),
+    ],
+)
+def test_the_status_failure_note_carries_no_server_directory(message, expected):
+    import core.inference.diffusion_prequant as dp
+    dp._warn(None, "load", ValueError(message))
+    assert dp.last_prequant_failure() == expected
+
+
 def test_every_load_starts_without_the_previous_loads_failure_note():
     import core.inference.diffusion as diffusion
 
