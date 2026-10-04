@@ -4562,7 +4562,9 @@ async def get_gguf_variants(
     repo_id = resolve_host_path_reference(repo_id) or repo_id
     local_path = resolve_host_path_reference(local_path) or local_path
     if account_access.managed_account():
-        await asyncio.to_thread(account_access.require_model_access, repo_id)
+        await asyncio.to_thread(
+            account_access.require_model_access, repo_id, **({"offline": True} if offline else {})
+        )
     try:
         hf_token = _resolve_hub_token(hf_token_header, hf_token)
         from hub.services.models import gguf_variants as hub_gguf_variants

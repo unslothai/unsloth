@@ -2170,18 +2170,54 @@ def test_load_is_dropped_when_the_padding_cannot_be_proven(monkeypatch, tmp_path
 # ── fp8 activation scale floor ──────────────────────────────────────────────────
 
 
-def test_an_fp8_checkpoint_without_the_activation_floor_is_rejected():
-    # A checkpoint built before activation_value_lb bakes hp_value_lb=None into every quantised
-    # tensor, and stays broken however it is loaded: torchao's per-row activation quantiser divides
-    # by the row amax, so qwen's all-zero text rows give scale 0 and NaN. The metadata checks around
-    # this one all accept an absent field for back-compat, which is exactly wrong here, so the floor
-    # is read off the TENSORS instead. Measured: 412 of 512 rows non-finite without it, 0 with it.
+def test_an_fp8_checkpoint_without_the_activation_floor_is_detected():
+    # Pre-floor builds bake hp_value_lb=None (all-zero rows -> scale 0 -> NaN); read off the tensors, not metadata.
     floored = {"blocks.0.attn.to_q.weight": Float8Tensor(hp_value_lb = 1e-12)}
     unfloored = {"blocks.0.attn.to_q.weight": Float8Tensor(hp_value_lb = None)}
     assert pq._fp8_activation_floor_present(floored, None) is True
     assert pq._fp8_activation_floor_present(unfloored, None) is False
     # Zero is not a floor either: it is what an unclamped amax divide produces.
     assert pq._fp8_activation_floor_present({"w": Float8Tensor(hp_value_lb = 0.0)}, None) is False
+
+
+def test_an_fp8_checkpoint_without_the_floor_loads_with_the_runtime_floor(monkeypatch, tmp_path):
+    # The floor is not weight data, so a pre-floor artifact holds the runtime path's exact weights.
+    from core.inference.diffusion_transformer_quant import FP8_ACTIVATION_VALUE_LB
+
+    ckpt = _good_ckpt(scheme = "fp8")
+    shared = types.SimpleNamespace(hp_value_lb = None, hp_value_ub = None)
+    first, second, floored = Float8Tensor(), Float8Tensor(), Float8Tensor(hp_value_lb = 1e-9)
+    first.act_quant_kwargs = shared
+    second.act_quant_kwargs = shared  # a pickle may share one kwargs object between tensors
+    ckpt["state_dict"] = {
+        "a.weight": first,
+        "b.weight": second,
+        "c.weight": floored,
+        "d.bias": object(),
+    }
+    out = _load(monkeypatch, tmp_path, ckpt, scheme = "fp8")
+    assert out is not None
+    # a repaired load is not a failure: nothing for the status line to report
+    assert pq.last_prequant_failure() is None
+    assert first.act_quant_kwargs.hp_value_lb == FP8_ACTIVATION_VALUE_LB
+    assert second.act_quant_kwargs.hp_value_lb == FP8_ACTIVATION_VALUE_LB
+    assert first.act_quant_kwargs is not second.act_quant_kwargs
+    assert shared.hp_value_lb is None
+    assert (
+        floored.act_quant_kwargs.hp_value_lb == 1e-9
+    )  # an artifact's own floor is never rewritten
+
+
+def test_an_fp8_checkpoint_differing_in_more_than_the_floor_stays_refused(monkeypatch, tmp_path):
+    ckpt = _good_ckpt(scheme = "fp8")
+    capped = Float8Tensor(hp_value_lb = None)
+    capped.act_quant_kwargs.hp_value_ub = 1e4
+    ckpt["state_dict"] = {"a.weight": capped}
+    assert _load(monkeypatch, tmp_path, ckpt, scheme = "fp8") is None
+    assert "no activation scale floor" in (pq.last_prequant_failure() or "")
+    no_field = Float8Tensor()
+    no_field.act_quant_kwargs = types.SimpleNamespace()
+    assert pq._fp8_activation_floor_restorable({"a.weight": no_field}) is False
 
 
 def test_the_floor_check_ignores_dense_and_unreadable_state_dicts():
@@ -2293,6 +2329,11 @@ def test_the_fp8_invariants_cover_the_fp8_half_of_a_policy_checkpoint():
     unfloored = dict(ckpt)
     unfloored["state_dict"] = dict(ckpt["state_dict"])
     unfloored["state_dict"]["layers.0.feed_forward.w1.weight"] = Float8Tensor(hp_value_lb = None)
+    # The fp8 half without its floor is restorable (the load writes the runtime floor in), so it validates.
+    assert pq._validate_checkpoint(unfloored, "nvfp4", base, logger) is True
+    capped = Float8Tensor(hp_value_lb = None)
+    capped.act_quant_kwargs.hp_value_ub = 1.0
+    unfloored["state_dict"]["layers.0.feed_forward.w1.weight"] = capped
     assert pq._validate_checkpoint(unfloored, "nvfp4", base, logger) is False
     per_tensor = dict(ckpt)
     per_tensor["metadata"] = _policy_meta()

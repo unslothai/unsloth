@@ -1349,6 +1349,8 @@ class MiniMaxH3NativeRuntime:
     # The card the load resolved, kept for failure records: re-resolving at failure time can read None.
     selected_card: Optional[str] = None
     env: tuple[tuple[str, str], ...] = ()
+    # sd_cpp_cudnn.CudnnAttention; its env is already in ``env``.
+    cudnn: Any = None
     # H3NativeServerSlot, or None for one-shot sd-cli only.
     server_slot: Any = None
 
