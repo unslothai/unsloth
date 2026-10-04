@@ -154,12 +154,12 @@ def test_install_is_idempotent_and_uninstall_restores():
     vae = _diffusers_vae()
     before = (vae.tile_sample_min_height, vae.tile_sample_stride_height, dm.vae_tile_side(vae))
     assert vt.install(vae) and vt.install(vae)
-    assert "tiled_decode" in vae.__dict__
-    # the encode geometry is untouched; the memory estimates see the real decode tile
+    assert "tiled_decode" in vae.__dict__ and "tiled_encode" in vae.__dict__
+    # the tile attributes are untouched; the memory estimates see the real decode tile
     assert (vae.tile_sample_min_height, vae.tile_sample_stride_height) == before[:2]
     assert dm.vae_tile_side(vae) == vt.TILE_LATENTS * 16
     vt.uninstall(vae)
-    assert "tiled_decode" not in vae.__dict__
+    assert "tiled_decode" not in vae.__dict__ and "tiled_encode" not in vae.__dict__
     assert dm.vae_tile_side(vae) == before[2]
 
 
@@ -230,3 +230,61 @@ def test_per_call_guard_budgets_one_wide_tile_at_every_ui_size(width, height):
     assert tiled >= one_tile
     act = dm.calibrated_image_activation("qwen-image-2.1")
     assert act.tiled_decode_mib >= 1_697
+
+
+def _line_error_latent(x, ref):
+    d = (x - ref).abs().mean(1)[0, 0]
+    return max(float(d.mean(0).max()), float(d.mean(1).max()))
+
+
+@pytest.mark.parametrize("height, width", [(640, 640), (256, 1088), (1088, 256)])
+def test_tiled_encode_has_no_seam_lines(height, width):
+    vae = _diffusers_vae()
+    g = torch.Generator().manual_seed(4)
+    # a smooth image (low frequencies), so encode differences come from the tiles, not from noise
+    x = torch.nn.functional.interpolate(torch.rand(1, 3, 8, 8, generator = g) * 2 - 1, size = (height, width), mode = "bicubic")
+    x = x.clamp(-1, 1)[:, :, None]
+    with torch.no_grad():
+        vae.use_tiling = False
+        untiled = vae._encode(x)
+        vae.enable_tiling()
+        stock = vae._encode(x)
+        assert vt.install(vae)
+        wide = vae._encode(x)
+    assert wide.shape == untiled.shape == stock.shape
+    stock_err, wide_err = _line_error_latent(stock, untiled), _line_error_latent(wide, untiled)
+    assert stock_err > 0
+    if max(height, width) <= vt.ENCODE_TILE_LATENTS * 16:
+        # up to 1024 px a side (Studio's default reference resolution): one tile, the untiled encode exactly
+        assert torch.equal(wide, untiled)
+    else:
+        assert stock_err > 2 * wide_err, (stock_err, wide_err)
+
+
+def test_encode_tiles_are_wider_than_decode_tiles():
+    assert vt.ENCODE_TILE_LATENTS == 2 * vt.TILE_LATENTS
+    assert vt.ENCODE_OVERLAP_LATENTS >= vt.ENCODE_TILE_LATENTS // 2
+    for length in range(1, 200):
+        starts = vt.tile_starts(length, vt.ENCODE_TILE_LATENTS, vt.ENCODE_OVERLAP_LATENTS)
+        w = vt.axis_weights(starts, vt.ENCODE_TILE_LATENTS, length, 1, torch, "cpu", vt.ENCODE_MARGIN_LATENTS, vt.ENCODE_RAMP_LATENTS)
+        total = torch.zeros(length)
+        for s, wi in zip(starts, w):
+            total[s : s + wi.numel()] += wi
+        assert torch.allclose(total, torch.ones(length), atol = 1e-6)
+
+
+def test_encode_within_one_tile_is_untiled_and_kill_switch_keeps_stock(monkeypatch):
+    vae = _diffusers_vae()
+    x = (torch.rand(1, 3, 1, 512, 384, generator = torch.Generator().manual_seed(5)) * 2 - 1)
+    big = (torch.rand(1, 3, 1, 640, 640, generator = torch.Generator().manual_seed(6)) * 2 - 1)
+    with torch.no_grad():
+        vae.use_tiling = False
+        untiled = vae._encode(x)
+        vae.enable_tiling()
+        stock_big = vae._encode(big)
+        assert vt.install(vae)
+        assert torch.equal(vae._encode(x), untiled)
+        monkeypatch.setenv(vt.WIDE_TILES_ENV, "0")
+        assert torch.equal(vae._encode(big), stock_big)
+    vt.uninstall(vae)
+    assert "tiled_encode" not in vae.__dict__

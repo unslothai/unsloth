@@ -1,22 +1,25 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Seam-free tiled decode for the Qwen-Image-2.1 VAE.
+"""Seam-free tiled decode and encode for the Qwen-Image-2.1 VAE.
 
 diffusers gives AutoencoderKLQwenImage21 the Wan VAE's tile geometry in PIXELS (256 px tiles, 192 px stride),
 but this VAE compresses 16x, not 8x: a tile is 16 latents with a 4-latent (64 px) blend, and the last row /
 column is a 4-latent sliver. The decoder sees further than 4 latents past a tile edge, so every seam and the
 sliver at the right / bottom edge decode differently from their neighbours and the short linear blend leaves
 thin vertical / horizontal lines, one tile long. A 1024x1024 render is 6x6 such tiles, so every low-VRAM tier
-that tiles the decode (streaming / whole-model offload) shows them; resident loads decode untiled.
+that tiles the decode (streaming / whole-model offload) shows them; resident loads decode untiled. The tiled
+encode (img2img and edit inputs on the same tiers) has the same geometry.
 
 Here a tile is 32 latents with at least a 16-latent overlap (ComfyUI's decode overlap), and the tiles are
 spread evenly so the last one ends at the image edge at full size (no sliver). A tile gets no weight within 4
-latents of an edge it shares with another tile and ramps to full weight over the next 8, normalised where more
-than two tiles meet (any stride under 16 latents, e.g. 1344 or 2400 px, makes three tiles overlap). A canvas that fits one tile decodes
-untiled. Only the decode changes; the stock tiled encode is left alone. Kill switch
-``UNSLOTH_DIFFUSION_VAE_WIDE_TILES=0``: at load it skips the install (the fused batched tile decode, if any,
-installs as before); set later, each decode takes the stock serial tiled decode.
+latents of an edge it shares with another tile and ramps to full weight over the next 8, normalised where
+more than two tiles meet (any stride under 16 latents, e.g. 1344 or 2400 px, makes three tiles overlap). A
+canvas that fits one tile is decoded / encoded untiled. The encode (img2img and edit inputs on the same tiers)
+uses 64-latent tiles with 32-latent overlaps, blended in latent space: the encoder attends over the whole tile, so
+the stock 16-latent tiles shift the condition latent everywhere and derail the edit, not only at the seams.
+Kill switch ``UNSLOTH_DIFFUSION_VAE_WIDE_TILES=0``: at load it skips the install (the fused batched tile
+decode, if any, installs as before); set later, each decode / encode takes the stock tiled path.
 """
 
 from __future__ import annotations
@@ -32,6 +35,13 @@ OVERLAP_LATENTS = 16
 # Blend: a tile gets no weight within MARGIN latents of an edge it shares, then ramps to full over RAMP latents.
 MARGIN_LATENTS = 4
 RAMP_LATENTS = 8
+# Encode: twice the decode tile (stable-diffusion.cpp's ratio), so a 1024 px condition image, Studio's default
+# reference resolution, encodes as one tile, bit-identical to the untiled encode. The encoder's middle block attends
+# over the whole tile, so smaller tiles shift the latent everywhere, not only at the seams.
+ENCODE_TILE_LATENTS = 64
+ENCODE_OVERLAP_LATENTS = 32
+ENCODE_MARGIN_LATENTS = 8
+ENCODE_RAMP_LATENTS = 16
 
 _VAE_CLASSES = frozenset({"AutoencoderKLQwenImage21"})
 
@@ -135,6 +145,46 @@ def tiled_decode(vae: Any, z: Any, return_dict: bool = True) -> Any:
     return DecoderOutput(sample = dec)
 
 
+def _encode_tile(vae: Any, x: Any) -> Any:
+    """The VAE's own untiled ``_encode`` of one pixel tile: the (mean, logvar) moments, not a sample."""
+    prev = vae.use_tiling
+    vae.use_tiling = False
+    try:
+        return vae._encode(x)
+    finally:
+        vae.use_tiling = prev
+
+
+def tiled_encode(vae: Any, x: Any) -> Any:
+    """Encode ``x`` (B, C, T, H, W pixels) to moments in evenly spread 64-latent tiles with 32-latent overlaps,
+    blended in latent space with the decode's normalised ramp (no weight within 8 latents of a shared edge, full
+    weight 16 latents further in). Stock ``tiled_encode`` uses 16-latent tiles, 4-latent blends and sliver tiles."""
+    import torch
+
+    _, _, _, height_px, width_px = x.shape
+    ratio = int(vae.spatial_compression_ratio)
+    height, width = height_px // ratio, width_px // ratio
+    tile, overlap = ENCODE_TILE_LATENTS, ENCODE_OVERLAP_LATENTS
+    hs = tile_starts(height, tile, overlap)
+    ws = tile_starts(width, tile, overlap)
+    th, tw = min(tile, height), min(tile, width)
+    if len(hs) == 1 and len(ws) == 1:
+        return _encode_tile(vae, x)
+    margin, ramp = ENCODE_MARGIN_LATENTS, ENCODE_RAMP_LATENTS
+    wy = axis_weights(hs, tile, height, 1, torch, x.device, margin, ramp)
+    wx = axis_weights(ws, tile, width, 1, torch, x.device, margin, ramp)
+    out, dtype = None, None
+    for i, y in enumerate(hs):
+        for j, xs in enumerate(ws):
+            tile_out = _encode_tile(vae, x[:, :, :, y * ratio : (y + th) * ratio, xs * ratio : (xs + tw) * ratio])
+            if out is None:
+                dtype = tile_out.dtype
+                out = torch.zeros((*tile_out.shape[:3], height, width), dtype = torch.float32, device = tile_out.device)
+            out[..., y : y + th, xs : xs + tw].add_(tile_out.float() * (wy[i].view(-1, 1) * wx[j].view(1, -1)))
+            del tile_out
+    return out.to(dtype)
+
+
 def _wants_wide_tiles(vae: Any) -> bool:
     if vae is None or type(vae).__name__ not in _VAE_CLASSES:
         return False
@@ -149,32 +199,45 @@ def _wants_wide_tiles(vae: Any) -> bool:
 
 
 def install(vae: Any, logger: Any = None) -> bool:
-    """Route ``vae``'s tiled decode through the wide, edge-aligned tiles. Idempotent; False when not covered.
+    """Route ``vae``'s tiled decode and encode through the wide, edge-aligned tiles. Idempotent; False when not covered.
 
-    Only the decode changes: the stock tiled encode and the VAE's tile attributes stay as diffusers set them.
+    The tiled encode (img2img, edits) gets 64-latent tiles. The VAE's tile attributes stay as diffusers set them;
     ``_unsloth_decode_tile_side`` carries the real decode tile side for Studio's memory estimates."""
     if not _wants_wide_tiles(vae) or wide_tiles_disabled():
         return False
     if getattr(vae, "_unsloth_wide_tiles", False):
         return True
     own = vae.__dict__.get("tiled_decode")
+    own_encode = vae.__dict__.get("tiled_encode")
     stock = vae.tiled_decode
+    stock_encode = getattr(vae, "tiled_encode", None)
 
     def _tiled_decode(self: Any, z: Any, return_dict: bool = True) -> Any:
         if wide_tiles_disabled():
             return stock(z, return_dict = return_dict)
         return tiled_decode(self, z, return_dict = return_dict)
 
+    def _tiled_encode(self: Any, x: Any) -> Any:
+        if wide_tiles_disabled():
+            return stock_encode(x)
+        return tiled_encode(self, x)
+
     vae._unsloth_wide_tiles_own = own
     vae.tiled_decode = types.MethodType(_tiled_decode, vae)
+    if callable(stock_encode) and callable(getattr(vae, "_encode", None)):
+        vae._unsloth_wide_tiles_own_encode = own_encode
+        vae.tiled_encode = types.MethodType(_tiled_encode, vae)
     vae._unsloth_decode_tile_side = TILE_LATENTS * int(vae.spatial_compression_ratio)
     vae._unsloth_wide_tiles = True
     if logger is not None:
         logger.info(
-            "diffusion.vae_tiling: %s decodes in %d-latent tiles with %d-latent overlaps, the last tile edge-aligned",
+            "diffusion.vae_tiling: %s decodes in %d-latent tiles with %d-latent overlaps and encodes in %d-latent "
+            "tiles with %d-latent overlaps, the last tile edge-aligned",
             type(vae).__name__,
             TILE_LATENTS,
             OVERLAP_LATENTS,
+            ENCODE_TILE_LATENTS,
+            ENCODE_OVERLAP_LATENTS,
         )
     return True
 
@@ -182,11 +245,14 @@ def install(vae: Any, logger: Any = None) -> bool:
 def uninstall(vae: Any) -> None:
     if not getattr(vae, "_unsloth_wide_tiles", False):
         return
-    own: Optional[Any] = vae.__dict__.get("_unsloth_wide_tiles_own")
-    if own is None:
-        vae.__dict__.pop("tiled_decode", None)
-    else:
-        vae.tiled_decode = own
-    for name in ("_unsloth_wide_tiles_own", "_unsloth_decode_tile_side"):
+    for attr, saved in (("tiled_decode", "_unsloth_wide_tiles_own"), ("tiled_encode", "_unsloth_wide_tiles_own_encode")):
+        if saved not in vae.__dict__ and attr == "tiled_encode":
+            continue
+        own: Optional[Any] = vae.__dict__.get(saved)
+        if own is None:
+            vae.__dict__.pop(attr, None)
+        else:
+            setattr(vae, attr, own)
+    for name in ("_unsloth_wide_tiles_own", "_unsloth_wide_tiles_own_encode", "_unsloth_decode_tile_side"):
         vae.__dict__.pop(name, None)
     vae._unsloth_wide_tiles = False
