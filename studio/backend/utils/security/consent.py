@@ -20,6 +20,7 @@ from utils.security.remote_code_scan import (
     HIGH,
     MEDIUM,
     RemoteCodeUnscannable,
+    config_declares_auto_map,
     remote_code_config_paths,
     remote_code_fingerprint,
     repo_remote_code_files,
@@ -90,7 +91,10 @@ def _config_has_auto_map(
     configs = _load_remote_code_configs(model_name, hf_token, load_subdirs = load_subdirs)
     if configs is None:
         return None
-    if not any(bool((cfg or {}).get("auto_map")) for cfg in configs):
+    # Every nesting level, not just the top: a composite model declares auto_map on a
+    # sub-config, and the loader resolves it from there, so a top-level-only read
+    # returned "ships no remote code" for a repo whose code the load would run.
+    if not any(config_declares_auto_map(cfg or {}) for cfg in configs):
         return False
     return True
 

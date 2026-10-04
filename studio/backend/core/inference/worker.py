@@ -510,6 +510,60 @@ def _worker_reclaimable_gpu_gb(config: dict) -> dict[str, float] | None:
         return None
 
 
+def _load_download_repos(
+    mc,
+    load_in_4bit: bool,
+    backend,
+    companions = (),
+) -> list[str]:
+    from hub.utils.paths import is_valid_repo_id
+    from utils.paths import is_local_path
+    from utils.security.file_security import load_scan_target
+    from utils.third_party_source import SPEECH_CODEC_REPOSITORIES
+
+    audio_type = getattr(mc, "audio_type", None)
+    repos = [str(mc.identifier), *(str(repo) for repo in companions)]
+    base = getattr(mc, "base_model", None)
+    if base:
+        repos.append(str(base))
+        mapped = None
+        if getattr(backend, "device", None) == "mlx":
+            from core.inference.model_ids import mlx_bnb_base_repo
+            mapped = mlx_bnb_base_repo(str(base))
+        else:
+            try:
+                from unsloth.models import loader
+                from unsloth.models.loader_utils import get_model_name
+
+                quantized = (
+                    load_in_4bit
+                    and not getattr(mc, "is_audio", False)
+                    and getattr(loader, "ALLOW_BITSANDBYTES", True)
+                )
+                mapped = get_model_name(str(base), load_in_4bit = quantized)
+                if mapped and not getattr(loader, "ALLOW_PREQUANTIZED_MODELS", True):
+                    mapped = loader._strip_unsloth_bnb_4bit_suffix(mapped)
+            except Exception:
+                mapped = None
+        if mapped:
+            repos.append(str(mapped))
+    repos.extend(SPEECH_CODEC_REPOSITORIES.get(audio_type, ()))
+    hub_ids: list[str] = []
+    for repo in repos:
+        repo, _subdirs = load_scan_target(repo, ())
+        if is_valid_repo_id(repo) and not is_local_path(repo) and repo not in hub_ids:
+            hub_ids.append(repo)
+    return hub_ids
+
+
+def _hub_cache_dir() -> Optional[str]:
+    try:
+        from utils.hf_cache_settings import get_hf_cache_paths
+        return str(get_hf_cache_paths().hub_cache)
+    except Exception:
+        return None
+
+
 # The token env before a load scrubbed it; the next load restores it.
 _TOKEN_ENV_BEFORE_ANONYMOUS_LOAD: Optional[dict] = None
 
@@ -649,6 +703,15 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                     },
                 )
 
+        _send_response(
+            resp_queue,
+            {
+                "type": "downloads",
+                "repo_ids": _load_download_repos(mc, load_in_4bit, backend, targets),
+                "xet_disabled": os.environ.get("HF_HUB_DISABLE_XET") == "1",
+                "hub_cache": _hub_cache_dir(),
+            },
+        )
         heartbeat_stop = start_watchdog(
             repo_ids = watch_repos,
             on_stall = lambda msg: _send_response(resp_queue, {"type": "stall", "message": msg}),
@@ -715,7 +778,15 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             model_info.update(
                 {
                     k: _entry[k]
-                    for k in ("is_audio", "audio_type", "has_audio_input", "has_video_input")
+                    for k in (
+                        "is_audio",
+                        "audio_type",
+                        "has_audio_input",
+                        "has_video_input",
+                        "audio_family",
+                        "audio_options",
+                        "gguf_variant",
+                    )
                     if k in _entry
                 }
             )
@@ -1520,6 +1591,8 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
     request_id = cmd.get("request_id", "")
     try:
         logger.info("Starting audio generation for request_id=%s", request_id)
+        # Only audio.cpp models take per-model options; other backends never see the keyword.
+        extra = {"audio_options": cmd["audio_options"]} if cmd.get("audio_options") else {}
         wav_bytes, sample_rate = backend.generate_audio_response(
             text = cmd["text"],
             temperature = cmd.get("temperature", 0.6),
@@ -1533,6 +1606,7 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
             instructions = cmd.get("instructions"),
             language = cmd.get("language"),
             seed = cmd.get("seed"),
+            **extra,
         )
 
         # Send WAV bytes as base64 (bytes can't go through mp.Queue directly).
@@ -1543,6 +1617,7 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
                 "request_id": request_id,
                 "wav_base64": base64.b64encode(wav_bytes).decode("ascii"),
                 "sample_rate": sample_rate,
+                "stats": getattr(backend, "last_generation_stats", None),
             },
         )
         logger.info("Finished audio generation for request_id=%s", request_id)
@@ -1572,8 +1647,15 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
     try:
         import numpy as np
 
-        # numpy arrays can't go through mp.Queue, so decode from list.
-        audio_array = np.array(cmd["audio_data"], dtype = np.float32)
+        # "audio_data" is the older single-clip list form.
+        if "audio_clips" in cmd:
+            # Copy: frombuffer views are read-only.
+            clips = [np.frombuffer(clip, dtype = np.float32).copy() for clip in cmd["audio_clips"]]
+        else:
+            clips = [np.array(cmd["audio_data"], dtype = np.float32)]
+        audio_array = clips[0]
+        # Passed only when present, so single-clip calls are unchanged.
+        extra_audio_kwargs = {"extra_audio_arrays": clips[1:]} if len(clips) > 1 else {}
 
         audio_type = cmd.get("audio_type")
 
@@ -1583,7 +1665,9 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
                 raise RuntimeError("Whisper transcription is not supported on the MLX backend yet.")
             generator = backend.generate_whisper_response(
                 audio_array = audio_array,
+                use_adapter = cmd.get("use_adapter"),
                 cancel_event = cancel_event,
+                **extra_audio_kwargs,
             )
         else:
             audio_kwargs = {
@@ -1607,7 +1691,7 @@ def _handle_generate_audio_input(backend, cmd: dict, resp_queue: Any, cancel_eve
                 backend, "stop", "generate_audio_input_response"
             ):
                 audio_kwargs["stop"] = cmd["stop"]
-            generator = backend.generate_audio_input_response(**audio_kwargs)
+            generator = backend.generate_audio_input_response(**audio_kwargs, **extra_audio_kwargs)
 
         logger.info("Starting audio input generation for request_id=%s", request_id)
 
@@ -1786,7 +1870,8 @@ def run_inference_process(
     # importing Unsloth; native_audio itself has no eager ML imports.
     from core.inference.native_audio import is_native_audio_model
 
-    _native_audio_worker = is_native_audio_model(model_name)
+    # The route marks an audio.cpp GGUF, which a bare Hub id does not reveal without a header read.
+    _native_audio_worker = bool(config.get("audio_cpp")) or is_native_audio_model(model_name)
 
     # Before detect_hardware(), whose probe would leave a CUDA context here; the route
     # skips the arbiter on the basis that this load reserves none.
@@ -2152,7 +2237,12 @@ def run_inference_process(
         _ensure_backend_on_path()
 
         if _native_audio_worker:
-            from core.inference.native_audio import NativeAudioBackend as InferenceBackend
+            from core.inference.native_audio import is_audio_cpp_audio_model
+            if config.get("audio_cpp") or is_audio_cpp_audio_model(model_name):
+                # Weights run in audiocpp_server; this worker only proxies to it.
+                from core.inference.audio_cpp_backend import AudioCppBackend as InferenceBackend
+            else:
+                from core.inference.native_audio import NativeAudioBackend as InferenceBackend
         else:
             # Recover from any namespace-package shadow before importing Unsloth.
             from core.import_guards import ensure_real_packages

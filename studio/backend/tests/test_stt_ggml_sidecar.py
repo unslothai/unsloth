@@ -1251,9 +1251,9 @@ def test_unload_all_attempts_every_backend_even_when_one_fails(monkeypatch):
         asyncio.run(ri.stt_unload(engine = None, current_subject = "tester"))
 
     assert excinfo.value.status_code == 500
-    # The later engines are still attempted after transformers raised. mtmd is
-    # included so an Unload with no engine frees a resident llama-server too.
-    assert attempted == ["transformers", "gguf", "mtmd"]
+    # The later engines are still attempted after transformers raised. mtmd and audiocpp are
+    # included so an Unload with no engine frees a resident llama-server or audiocpp_server too.
+    assert attempted == ["transformers", "gguf", "mtmd", "audiocpp"]
 
 
 # 4. free_stt_model_for_training isolates the two backends -----------------------

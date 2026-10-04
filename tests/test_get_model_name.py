@@ -150,19 +150,125 @@ class TestGetModelName(unittest.TestCase):
                 with self.subTest(model_name = model_name, load_in_4bit = load_in_4bit):
                     self._assert_mapping(model_name, load_in_4bit, expected, should_change)
 
+    @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
+    def test_artifactory_report_preserves_repo_id_case(self):
+        self.assertEqual(
+            get_model_name("unsloth/Meta-Llama-3.1-8B-Instruct", load_in_4bit = True),
+            "unsloth/Meta-Llama-3.1-8B-Instruct-unsloth-bnb-4bit",
+        )
+
+    @patch.object(loader_utils, "_get_new_mapper", _no_remote_mapper)
+    def test_offline_reuses_legacy_lowercase_cache(self):
+        canonical = "unsloth/Meta-Llama-3.1-8B-Instruct-unsloth-bnb-4bit"
+        for cached, expected in (
+            ({canonical.lower()}, canonical.lower()),
+            ({canonical, canonical.lower()}, canonical),
+            (set(), canonical),
+        ):
+            fake = lambda repo_id, filename, cache_dir = None, revision = None: (
+                "/cache/config.json" if repo_id in cached else None
+            )
+            for offline_kwargs, env in (
+                ({"local_files_only": True}, {}),
+                ({}, {"HF_HUB_OFFLINE": "1"}),
+            ):
+                with (
+                    self.subTest(cached = cached, env = env),
+                    patch("huggingface_hub.try_to_load_from_cache", fake),
+                    patch.dict("os.environ", env),
+                ):
+                    self.assertEqual(
+                        get_model_name(
+                            "unsloth/Meta-Llama-3.1-8B-Instruct",
+                            load_in_4bit = True,
+                            **offline_kwargs,
+                        ),
+                        expected,
+                    )
+        files = {
+            (canonical, "config.json"),
+            (canonical.lower(), "config.json"),
+            (canonical.lower(), "model.safetensors"),
+        }
+        with (
+            patch(
+                "huggingface_hub.try_to_load_from_cache",
+                lambda repo_id, filename, cache_dir = None, revision = None: (
+                    "/cache/f" if (repo_id, filename) in files else None
+                ),
+            ),
+            patch.dict("os.environ", {"HF_HUB_OFFLINE": "1"}),
+        ):
+            self.assertEqual(
+                get_model_name("unsloth/Meta-Llama-3.1-8B-Instruct", load_in_4bit = True),
+                canonical.lower(),
+            )
+            files = {
+                (canonical, "model.safetensors"),
+                (canonical.lower(), "config.json"),
+                (canonical.lower(), "model.safetensors"),
+            }
+            self.assertEqual(
+                get_model_name("unsloth/Meta-Llama-3.1-8B-Instruct", load_in_4bit = True),
+                canonical.lower(),
+            )
+            files = {("unsloth/qwen3-30b-a3b", "config.json")}
+            self.assertEqual(
+                get_model_name("unsloth/Qwen3-30B-A3B", load_in_4bit = True),
+                "unsloth/qwen3-30b-a3b",
+            )
+        with (
+            patch(
+                "huggingface_hub.try_to_load_from_cache",
+                lambda repo_id, filename, cache_dir = None, revision = None: (
+                    "/cache/f"
+                    if repo_id == "unsloth/qwen3-30b-a3b" and revision == "release"
+                    else None
+                ),
+            ),
+            patch.dict("os.environ", {"HF_HUB_OFFLINE": "1"}),
+        ):
+            self.assertEqual(
+                get_model_name("unsloth/qwen3-30b-a3b", load_in_4bit = True, revision = "release"),
+                "unsloth/qwen3-30b-a3b",
+            )
+        with (
+            patch(
+                "huggingface_hub.try_to_load_from_cache",
+                lambda repo_id, filename, cache_dir = None, revision = None: (
+                    "/cache/f" if repo_id == canonical.lower() and revision is None else None
+                ),
+            ),
+            patch.dict("os.environ", {"HF_HUB_OFFLINE": "1"}),
+        ):
+            self.assertEqual(
+                get_model_name(
+                    "meta-llama/Meta-Llama-3.1-8B-Instruct", load_in_4bit = True, revision = "abc"
+                ),
+                canonical.lower(),
+            )
+        with (
+            patch("huggingface_hub.try_to_load_from_cache", side_effect = AssertionError),
+            patch.dict("os.environ", {"HF_HUB_OFFLINE": "0", "TRANSFORMERS_OFFLINE": "0"}),
+        ):
+            self.assertEqual(
+                get_model_name("unsloth/Meta-Llama-3.1-8B-Instruct", load_in_4bit = True),
+                canonical,
+            )
+
     def test_static_mapper_contract(self):
         contracts = [
-            ("qwen/qwen3-8b", "unsloth/qwen3-8b-unsloth-bnb-4bit"),
-            ("qwen/qwen3-8b-fp8", "unsloth/qwen3-8b-unsloth-bnb-4bit"),
+            ("qwen/qwen3-8b", "unsloth/Qwen3-8B-unsloth-bnb-4bit"),
+            ("qwen/qwen3-8b-fp8", "unsloth/Qwen3-8B-unsloth-bnb-4bit"),
             (
                 "mistralai/ministral-3-3b-instruct-2512",
-                "unsloth/ministral-3-3b-instruct-2512-unsloth-bnb-4bit",
+                "unsloth/Ministral-3-3B-Instruct-2512-unsloth-bnb-4bit",
             ),
             (
                 "allenai/olmo-3-7b-instruct",
-                "unsloth/olmo-3-7b-instruct-unsloth-bnb-4bit",
+                "unsloth/Olmo-3-7B-Instruct-unsloth-bnb-4bit",
             ),
-            ("unsloth/kimi-k2-instruct", "unsloth/kimi-k2-instruct-bf16"),
+            ("unsloth/kimi-k2-instruct", "unsloth/Kimi-K2-Instruct-BF16"),
         ]
         for src, expected in contracts:
             with self.subTest(src = src):

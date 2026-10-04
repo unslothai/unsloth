@@ -1109,3 +1109,18 @@ def test_voice_load_rejects_a_context_above_the_requestable_ceiling():
     )
     # 0 keeps meaning "model default".
     assert routes_module._VoiceLoadRequest(model_path = "x.gguf", n_ctx = 0).n_ctx == 0
+
+
+def test_audio_generate_answers_with_the_text_the_clip_speaks(monkeypatch):
+    """Content is the whole spoken text, not a status label cut at 100 characters."""
+    cli, _calls, _saved = _make_client(monkeypatch)
+    text = (
+        "This sentence is deliberately longer than one hundred characters so that a "
+        "truncated label would show it. "
+    ) * 2
+    resp = cli.post(
+        "/v1/audio/generate",
+        json = {"model": "default", "messages": [{"role": "user", "content": text}]},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["choices"][0]["message"]["content"] == text

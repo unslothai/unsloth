@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+// eslint-disable-next-line no-restricted-imports -- Share the config wire types without expanding the picker UI barrel.
+import type {
+  LlamaCppConfig,
+  LlamaCppConfigSummary,
+} from "@/features/model-picker/model-config/llama-cpp-config";
 import type { TransformersUpgradeInfo } from "@/features/transformers-upgrade";
 
 export type CpuFallbackReason = "vulkan_startup_crash";
@@ -45,18 +50,23 @@ export interface ListLorasResponse {
 }
 
 export interface LoadModelRequest {
+  engine_parallelism?: "tensor" | "pipeline" | "data";
+  engine_precision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
+  engine?: "auto" | "vllm" | "sglang";
   model_path: string;
   /** Opaque client attempt ID used to cancel only this in-flight load. */
   load_request_id?: string | null;
 
   /** Start a fresh runtime even when the active settings already match. */
   force_reload?: boolean;
+  alongside?: boolean;
   /** Stop any chats still generating instead of getting a 409: a load replaces the single
    *  llama-server they all decode on. Set only after the user confirms. */
   force_cancel_active?: boolean;
   nativePathLease?: string | null;
   hf_token: string | null;
   max_seq_length: number;
+  max_seq_length_auto_derived?: boolean;
   load_in_4bit: boolean;
   is_lora: boolean;
   gguf_variant?: string | null;
@@ -100,6 +110,7 @@ export interface LoadModelRequest {
    *  flag. Omit/null inherits the stored per-model value; [] launches with none. GGUF only. */
   // biome-ignore lint/style/useNamingConvention: API schema
   llama_extra_args?: string[] | null;
+  llama_cpp_config?: LlamaCppConfig;
   /** Split the model across GPUs by tensor (--split-mode tensor) instead of by layer for GGUF models.
    *  Multi-GPU only. */
   tensor_parallel?: boolean | null;
@@ -126,6 +137,8 @@ export interface LoadModelRequest {
 }
 
 export interface ValidateModelResponse {
+  requested_llama_cpp_config?: LlamaCppConfig | null;
+  llama_cpp_config_summary?: LlamaCppConfigSummary | null;
   valid: boolean;
   message: string;
   identifier?: string | null;
@@ -217,7 +230,11 @@ export function isMultimodalResponse(
 }
 
 export interface LoadModelResponse {
+  engine_parallelism?: "tensor" | "pipeline" | "data";
+  engine_precision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
+  engine?: "auto" | "vllm" | "sglang";
   is_mlx?: boolean;
+  evicted?: string[];
   is_npu?: boolean;
   status: string;
   model: string;
@@ -285,6 +302,10 @@ export interface LoadModelResponse {
   gpu_memory_mode?: "auto" | "manual";
   gpu_layers?: number;
   /** Set when an automatic Vulkan startup crash was recovered by loading on CPU. */
+  offloaded_layers?: number | null;
+  offload_total_layers?: number | null;
+  offload_overridden?: boolean | null;
+  gpu_backend_unavailable?: boolean | null;
   cpu_fallback_reason?: CpuFallbackReason | null;
   /** How Unsloth recovered after a multimodal projector failed at startup. */
   mmproj_fallback_reason?: MmprojFallbackReason | null;
@@ -320,6 +341,8 @@ export interface LoadModelResponse {
   requested_cache_ram?: number | null;
   /** Pass-through llama-server arguments the running load was invoked with. */
   requested_llama_extra_args?: string[] | null;
+  requested_llama_cpp_config?: LlamaCppConfig | null;
+  llama_cpp_config_summary?: LlamaCppConfigSummary | null;
 }
 
 export interface UnloadModelRequest {
@@ -332,6 +355,9 @@ export interface UnloadModelRequest {
 }
 
 export interface InferenceStatusResponse {
+  engine_parallelism?: "tensor" | "pipeline" | "data";
+  engine_precision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
+  engine?: "auto" | "vllm" | "sglang";
   is_mlx?: boolean;
   is_npu?: boolean;
   active_model: string | null;
@@ -347,10 +373,19 @@ export interface InferenceStatusResponse {
   memory_warning?: string | null;
   is_audio?: boolean;
   audio_type?: string | null;
+  /** GGUF audio runtime family of the loaded speech or music model ("kokoro_tts", "yue2"). */
+  audio_family?: string | null;
+  /** The loaded GGUF audio model's generation options, as its spec declares them. Unknown-shaped
+   *  on purpose: the Audio page validates it with parseAudioOptions. */
+  audio_options?: unknown;
   has_audio_input?: boolean;
   has_video_input?: boolean;
   loading: string[];
   loaded: string[];
+  /** The models answering requests; `loaded` also names one only held behind the active model. */
+  serving?: string[];
+  /** Per `serving` entry, the id to select, load and unload it by: a local model's path. */
+  serving_checkpoints?: string[];
   inference?: {
     temperature?: number;
     top_p?: number;
@@ -397,6 +432,10 @@ export interface InferenceStatusResponse {
   gpu_memory_mode?: "auto" | "manual";
   gpu_layers?: number;
   /** Set while the active model is a recovered CPU-only Vulkan load. */
+  offloaded_layers?: number | null;
+  offload_total_layers?: number | null;
+  offload_overridden?: boolean | null;
+  gpu_backend_unavailable?: boolean | null;
   cpu_fallback_reason?: CpuFallbackReason | null;
   /** How the active GGUF recovered after a multimodal projector startup failure. */
   mmproj_fallback_reason?: MmprojFallbackReason | null;
@@ -432,6 +471,8 @@ export interface InferenceStatusResponse {
   requested_cache_ram?: number | null;
   /** Pass-through llama-server arguments the running load was invoked with. */
   requested_llama_extra_args?: string[] | null;
+  requested_llama_cpp_config?: LlamaCppConfig | null;
+  llama_cpp_config_summary?: LlamaCppConfigSummary | null;
   n_layers?: number | null;
   /** Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not MoE. */
   n_moe_layers?: number;
@@ -496,6 +537,14 @@ export interface ApiMonitorEntry {
   reason?: "manual" | "idle" | "api" | null;
   // 0-100 while a download row is running.
   progress?: number | null;
+  running_phase?: "prompt_processing" | "token_generation" | null;
+  prompt_progress?: {
+    total: number | null;
+    processed: number | null;
+    cached: number | null;
+    time_ms: number | null;
+    percent: number | null;
+  } | null;
   // Server-side time to first token (measured, else engine prefill).
   ttft_ms?: number | null;
   tok_per_sec?: number | null;
@@ -608,6 +657,8 @@ export interface OpenAIChatCompletionsRequest {
   seed?: number;
   image_base64?: string;
   audio_base64?: string;
+  /** Further clips after audio_base64, in attach order. */
+  extra_audio_base64?: string[];
   video_base64?: string;
   use_adapter?: boolean | string | null;
   enable_thinking?: boolean | null;
@@ -630,6 +681,8 @@ export interface OpenAIChatCompletionsRequest {
   enabled_tools?: string[];
   /** Local models + enable_tools only. */
   mcp_enabled?: boolean;
+  /** Data URL a mapped MCP tool field receives after the user approves each call. */
+  mcp_image?: string;
   /** The replayed tool calls came from Studio's own local tool loop. */
   studio_tool_history?: boolean;
   /** Local models + enable_tools only. */
@@ -695,7 +748,8 @@ export interface OpenAIChatCompletionsRequest {
 
 export interface OpenAIChatDelta {
   role?: string;
-  content?: string | null;
+  /** Magistral streams structured content parts: read through extractDeltaText. */
+  content?: string | unknown[] | null;
   /** Streamed assistant tool calls. The Gemini and OpenAI Responses translators emit incremental
    *  deltas so the chat-adapter can render tool cards as they arrive. */
   tool_calls?: OpenAIToolCallPart[];
@@ -717,6 +771,8 @@ export interface OpenAIChatChunk {
     total_tokens: number;
   };
   timings?: Record<string, number>;
+  /** Studio heuristic: the response may have stopped mid-quote. */
+  quote_cut?: boolean;
   context_truncated?: {
     dropped_messages: number;
     prompt_tokens_before?: number;

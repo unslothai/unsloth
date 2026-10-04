@@ -11,6 +11,7 @@ rides the same orchestrator path, so a single scripted backend covers both.
 
 import asyncio
 import json
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -18,6 +19,15 @@ import pytest
 from models.inference import ChatCompletionRequest, ChatMessage
 from routes.inference import openai_chat_completions
 from core.inference.api_monitor import ApiMonitor
+
+
+# #12382: with the date setting on and no system prompt, the chat's first message opens with
+# this note. It is the only rewrite of the user's text these assertions allow.
+_DATE_NOTE = re.compile(r"\A\[Current date: \d{4}-\d{2}-\d{2}\]\n\n")
+
+
+def _without_date_note(text):
+    return _DATE_NOTE.sub("", text, count = 1) if isinstance(text, str) else text
 
 
 LOOKUP_TOOL = {
@@ -1220,7 +1230,7 @@ def test_forced_tool_choice_narrows_templated_tools(monkeypatch):
 
 
 def test_multimodal_content_parts_flattened_for_local_template(monkeypatch):
-    # Remote image URLs leave image=None, so content arrives as a part LIST:
+    # An image part with no payload leaves image=None, so content arrives as a part LIST:
     # text parts are kept, the image part dropped.
     backend = _ScriptedBackend(_fixed(_CALL_XML))
     payload = _request(
@@ -1231,7 +1241,7 @@ def test_multimodal_content_parts_flattened_for_local_template(monkeypatch):
                     {"type": "text", "text": "what is this?"},
                     {
                         "type": "image_url",
-                        "image_url": {"url": "https://example.com/cat.png"},
+                        "image_url": {"url": "data:image/png;base64,"},
                     },
                 ],
             )
@@ -1242,7 +1252,7 @@ def test_multimodal_content_parts_flattened_for_local_template(monkeypatch):
     body = _json_body(_call(payload, monkeypatch, backend))
     templated = backend.calls[0]["messages"]
     assert all(isinstance(m.get("content"), str) for m in templated)
-    assert any(m["content"] == "what is this?" for m in templated)
+    assert any(_without_date_note(m["content"]) == "what is this?" for m in templated)
     assert body["choices"][0]["finish_reason"] == "tool_calls"
 
 

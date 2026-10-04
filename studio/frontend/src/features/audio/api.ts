@@ -21,6 +21,7 @@ export interface GenerateAudioResponse {
   model: string;
   audio: GeneratedAudio;
   clip_id?: string | null;
+  choices: { finish_reason: string }[];
 }
 
 export interface GenerateAudioOptions {
@@ -30,6 +31,8 @@ export interface GenerateAudioOptions {
   audio_instructions?: string;
   audio_language?: string;
   seed?: number;
+  /** A GGUF audio model's own options by name, from its status `audio_options` schema. */
+  audio_options?: Record<string, boolean | number | string>;
   signal?: AbortSignal;
 }
 

@@ -150,6 +150,10 @@ NO_WORK_MARKERS = ("dependencies up to date", "prebuilt up to date", "sidecar cu
 # whisper.cpp at all, and every run says so on this line (setup.sh / setup.ps1). That is the
 # pairing gate working, not a prebuilt being re-validated.
 WHISPER_UNPAIRED = re.compile(r"whisper\.cpp\s+no compatible prebuilt \(")
+# audio.cpp's step line (setup.sh / setup.ps1): printed whenever its installer ran, so a run that
+# shows it must also answer from the install record. Skipped installs (UNSLOTH_SKIP_AUDIO_CPP_INSTALL,
+# a user-configured server) print only a verbose substep and owe no answer.
+AUDIO_CPP_STEP = re.compile(r"^\s*audio\.cpp\s+\S", re.MULTILINE)
 # setup.sh's column-padded frontend line: a rebuild on a warm npm cache talks to no forbidden host,
 # so the log line is the only witness.
 FRONTEND_CURRENT_MARKER = re.compile(r"frontend\s+up to date")
@@ -629,6 +633,7 @@ def snapshot(venv_python: pathlib.Path) -> dict:
     for marker in (
         "UNSLOTH_PREBUILT_INFO.json",
         "UNSLOTH_WHISPER_PREBUILT_INFO.json",
+        "UNSLOTH_AUDIO_CPP_PREBUILT_INFO.json",
         "UNSLOTH_NODE_PREBUILT_INFO.json",
     ):
         found = sorted(unsloth_home.glob(f"*/{marker}")) if unsloth_home.is_dir() else []
@@ -648,6 +653,7 @@ def snapshot(venv_python: pathlib.Path) -> dict:
             "llama.cpp/**/llama-server*",
             "llama.cpp/**/llama-quantize*",
             "whisper.cpp/**/whisper-server*",
+            "audio.cpp/**/audiocpp_server*",
             "node/**/node*",
         ):
             for path in unsloth_home.glob(pattern):
@@ -666,8 +672,9 @@ def expected_prebuilt_answers(log: str) -> int:
     unless this run reported its release unpaired. Read from the run, not the disk: an install
     that had a paired whisper.cpp keeps its binary when llama.cpp moves ahead, and the pairing
     gate rejects it all the same. Without the unpaired line a whisper.cpp that re-validated or
-    silently went missing leaves one answer short of two, and the count fails."""
-    return 1 if WHISPER_UNPAIRED.search(log) else 2
+    silently went missing leaves one answer short of two, and the count fails. audio.cpp adds one
+    whenever its step line shows its installer ran: "prebuilt installed" there is a re-download."""
+    return (1 if WHISPER_UNPAIRED.search(log) else 2) + (1 if AUDIO_CPP_STEP.search(log) else 0)
 
 
 # ── run 1 and run 2 ──
@@ -1257,6 +1264,23 @@ def test_without_the_unpaired_line_both_prebuilts_must_answer():
     # A run with no unpaired line and one "prebuilt up to date" is a whisper.cpp that
     # re-validated or went missing: the count of two is what catches it.
     assert expected_prebuilt_answers("  llama.cpp      prebuilt up to date") == 2
+
+
+def test_an_installed_audio_cpp_owes_one_more_answer():
+    log = "  llama.cpp      prebuilt up to date\n  whisper.cpp    prebuilt up to date\n"
+    assert expected_prebuilt_answers(log + "  audio.cpp      prebuilt up to date\n") == 3
+    # A re-download still owes the answer it failed to give.
+    assert expected_prebuilt_answers(log + "  audio.cpp      prebuilt installed\n") == 3
+    # "audio.cpp" inside another line (a path, a skip substep) is not its step line.
+    assert expected_prebuilt_answers(log + "  [verbose] audio.cpp: install skipped\n") == 2
+
+
+def test_the_audio_cpp_step_pattern_matches_both_installers():
+    root = pathlib.Path(__file__).resolve().parents[3]
+    for script in ("studio/setup.sh", "studio/setup.ps1"):
+        text = (root / script).read_text(encoding = "utf-8")
+        assert 'step "audio.cpp" "prebuilt up to date"' in text, script
+        assert 'step "audio.cpp" "update unavailable, existing prebuilt kept"' in text, script
 
 
 def test_the_unpaired_pattern_matches_both_installers():

@@ -55,6 +55,7 @@ class Int4QuantState:
         "_launchers",
         "layout",
         "_fast",
+        "training",
     )
 
     def __init__(self, scale, zero_point, g_idx, shape, bits, group_size, dtype):
@@ -69,6 +70,8 @@ class Int4QuantState:
         self._launchers = None
         self.layout = None
         self._fast = None
+        # Owning module in train mode: every caller (incl. the fast LoRA kernels) skips the fused kernel.
+        self.training = False
 
 
 @triton.jit
@@ -686,11 +689,24 @@ def _fast_args(packed, qs):
         mq, sid = packed.view(K // 16, 2 * N), types[zp is not None].id
         # vLLM's Python wrapper costs ~2 us per call (decode is launch bound): call the op overload.
         if new:
-            call = (
-                torch.ops._C.marlin_gemm.default,
-                (None, mq, None, ms, None, None, mz, ws, sid),
-                (N, K, False, True, False),
+            op = torch.ops._C.marlin_gemm.default
+            args = _marlin_gemm_args(
+                op,
+                c_or_none = None,
+                b_q_weight = mq,
+                b_bias_or_none = None,
+                b_scales = ms,
+                b_zeros_or_none = mz,
+                workspace = ws,
+                b_type_id = sid,
+                size_n = N,
+                size_k = K,
+                is_k_full = True,
+                use_atomic_add = False,
+                use_fp32_reduce = True,
+                is_zp_float = False,
             )
+            call = None if args is None else (op, *args)
         else:
             call = (
                 torch.ops._C.gptq_marlin_gemm.default,
@@ -698,15 +714,38 @@ def _fast_args(packed, qs):
                 (N, K, True, False, True, False),
             )
     key = (qs.layout, packed.device, zp is not None, qs.dtype)
-    if key not in _FAST_CHECKED:
+    if call is not None and key not in _FAST_CHECKED:
         g = torch.Generator(device = packed.device).manual_seed(0)
         probe = torch.randn(4, K, device = packed.device, dtype = qs.dtype, generator = g)
         ref = probe.float() @ int4_dequantize(packed, qs, qs.dtype).float().t()
-        got = _fast_call(call, probe).float()
-        _FAST_CHECKED[key] = bool(((got - ref).abs().max() <= 1e-2 * ref.abs().max() + 1e-3).item())
-    call = call if _FAST_CHECKED[key] else None
+        try:
+            got = _fast_call(call, probe).float()
+            _FAST_CHECKED[key] = bool(
+                ((got - ref).abs().max() <= 1e-2 * ref.abs().max() + 1e-3).item()
+            )
+        except RuntimeError:
+            # An op signature this code does not know: keep the exact dequantize + matmul path.
+            _FAST_CHECKED[key] = False
+    call = call if call is not None and _FAST_CHECKED[key] else None
     qs._fast = (packed.data_ptr(), call)
     return call
+
+
+def _marlin_gemm_args(op, **values):
+    """``marlin_gemm`` (pre, post) ``size_m`` args read from its schema (changes per vLLM release); None if unknown."""
+    pre, post, seen_m = [], [], False
+    for arg in op._schema.arguments[1:]:
+        if arg.name == "size_m":
+            seen_m = True
+            continue
+        if arg.name in values:
+            value = values[arg.name]
+        elif isinstance(arg.type, torch._C.OptionalType):
+            value = None
+        else:
+            return None
+        (post if seen_m else pre).append(value)
+    return (tuple(pre), tuple(post)) if seen_m else None
 
 
 def _fast_call(call, x2):
@@ -724,6 +763,7 @@ def int4_matmul(
     fast = True,
 ):
     """``x @ W.T`` for packed ``W``; ``x`` is ``[..., K]``. ``fast = False`` (training) keeps the exact dequantize + matmul."""
+    fast = fast and not qs.training
     shape = x.shape
     x2 = x.reshape(-1, shape[-1])
     M = x2.shape[0]
