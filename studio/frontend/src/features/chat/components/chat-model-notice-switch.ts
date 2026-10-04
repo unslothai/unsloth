@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+// eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import {
   isHfCacheSnapshotPath,
-  isOllamaLinkPath,
+  isOllamaModelId,
   modelIdsMatch,
   publicModelId,
 } from "@/features/hub/lib/model-identity";
@@ -25,17 +26,16 @@ export type ChatModelSwitchTarget = {
   ggufVariant?: string | null;
 };
 
+// External and Ollama ids are opaque and case-sensitive: folding them would merge distinct models.
 function isExactOnlyIdentity(id: string): boolean {
-  return isExternalModelId(id) || isOllamaLinkPath(id);
+  return isExternalModelId(id) || isOllamaModelId(id);
 }
 
+/** Same HF cache repo: snapshot path vs repo id, either direction, or two snapshots of one repo. */
 function sameHfCacheIdentity(left: string, right: string): boolean {
   if (left === right) {
     return true;
   }
-  // Opaque `external::<provider>::<id>` and `ollama-manifest:` values stay
-  // case-sensitive. Folding them through residentModelIdMatches would hide
-  // Switch Back across distinct models.
   if (isExactOnlyIdentity(left) || isExactOnlyIdentity(right)) {
     return false;
   }
@@ -54,7 +54,6 @@ function sameHfCacheIdentity(left: string, right: string): boolean {
   );
 }
 
-/** Snapshot path and repo id of the same HF cache row, either direction. */
 export function chatModelIsResident(
   createdModel: ChatModelSwitchTarget,
   checkpoint: string,
@@ -69,8 +68,7 @@ export function chatModelIsResident(
   );
 }
 
-/** The picker id Switch Back should load. Exact match first, then the live HF
- *  cache row that shares the same repo. External and Ollama ids never alias. */
+/** The live picker id Switch Back loads: the exact id, else a row of the same HF cache repo. */
 export function chatModelSelectableId(
   modelId: string,
   selectableModelIds: ReadonlySet<string>,
@@ -78,25 +76,12 @@ export function chatModelSelectableId(
   if (selectableModelIds.has(modelId)) {
     return modelId;
   }
-  if (isExactOnlyIdentity(modelId)) {
-    return null;
-  }
   for (const id of selectableModelIds) {
-    if (isExactOnlyIdentity(id)) {
-      continue;
-    }
     if (sameHfCacheIdentity(id, modelId)) {
       return id;
     }
   }
   return null;
-}
-
-export function chatModelIsSelectable(
-  modelId: string,
-  selectableModelIds: ReadonlySet<string>,
-): boolean {
-  return chatModelSelectableId(modelId, selectableModelIds) != null;
 }
 
 type ChatModelThreadSnapshot = {

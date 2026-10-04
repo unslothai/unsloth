@@ -21,7 +21,6 @@ registerBundlerResolver();
 const { store } = installLocalStorageFake();
 const {
   chatModelIsResident,
-  chatModelIsSelectable,
   chatModelSelectableId,
   chatModelSwitchMeta,
   createChatModelHistoryReader,
@@ -200,16 +199,16 @@ test("a snapshot-path chat is selectable through its repo row", () => {
   const repoId = "unsloth/Repo-GGUF";
   assert.equal(chatModelSelectableId(snapshotPath, new Set([repoId])), repoId);
   assert.equal(
-    chatModelIsSelectable(snapshotPath, new Set([repoId])),
+    chatModelSelectableId(snapshotPath, new Set([repoId])) != null,
     true,
   );
   assert.equal(
-    chatModelIsSelectable(snapshotPath, new Set(["unsloth/Other-GGUF"])),
+    chatModelSelectableId(snapshotPath, new Set(["unsloth/Other-GGUF"])) != null,
     false,
   );
-  assert.equal(chatModelIsSelectable(repoId, new Set([repoId])), true);
+  assert.equal(chatModelSelectableId(repoId, new Set([repoId])) != null, true);
   assert.equal(
-    chatModelIsSelectable("/srv/models/a/Repo-Q4_K_M.gguf", new Set(["Repo-Q4_K_M"])),
+    chatModelSelectableId("/srv/models/a/Repo-Q4_K_M.gguf", new Set(["Repo-Q4_K_M"])) != null,
     false,
   );
 });
@@ -243,8 +242,8 @@ test("a case-distinct external id is not already resident", () => {
   const lower = `external::vendor::${encodeURIComponent("vendor/qwen3.8-27b")}`;
   assert.equal(chatModelIsResident({ modelId: upper }, upper, null), true);
   assert.equal(chatModelIsResident({ modelId: upper }, lower, null), false);
-  assert.equal(chatModelIsSelectable(upper, new Set([lower])), false);
-  assert.equal(chatModelIsSelectable(upper, new Set([upper])), true);
+  assert.equal(chatModelSelectableId(upper, new Set([lower])) != null, false);
+  assert.equal(chatModelSelectableId(upper, new Set([upper])) != null, true);
 });
 
 test("a case-distinct ollama-manifest id is not already resident", () => {
@@ -256,8 +255,8 @@ test("a case-distinct ollama-manifest id is not already resident", () => {
   )}`;
   assert.equal(chatModelIsResident({ modelId: upper }, upper, null), true);
   assert.equal(chatModelIsResident({ modelId: upper }, lower, null), false);
-  assert.equal(chatModelIsSelectable(upper, new Set([lower])), false);
-  assert.equal(chatModelIsSelectable(upper, new Set([upper])), true);
+  assert.equal(chatModelSelectableId(upper, new Set([lower])) != null, false);
+  assert.equal(chatModelSelectableId(upper, new Set([upper])) != null, true);
 });
 
 test("a snapshot-path chat is already on its repo-id checkpoint", () => {

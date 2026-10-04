@@ -4,12 +4,12 @@
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import { modelDisplayName } from "@/features/hub/lib/model-identity";
 import {
   CHAT_HISTORY_UPDATED_EVENT,
   type ChatHistoryUpdatedDetail,
 } from "../api/chat-api";
 import { externalModelLabel } from "../lib/external-model-label";
+import { modelDisplayName } from "../../model-picker/model-config/model-identity";
 import { getStoredChatThread } from "../utils/chat-history-storage";
 import {
   type ChatModelSwitchTarget,
@@ -79,8 +79,7 @@ export function ChatModelNotice({
     return null;
   }
   // A model that has since been deleted, or a connection that is gone: the switch could not be
-  // honoured, and saying so on every open is just noise. When the saved snapshot is gone but
-  // the same repo is still in the picker, load that live row instead of the stale path.
+  // honoured, and saying so on every open is just noise. A gone snapshot loads its repo's live row.
   const selectableId = chatModelSelectableId(
     createdModel.modelId,
     selectableModelIds,
