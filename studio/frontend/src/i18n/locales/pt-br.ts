@@ -222,6 +222,45 @@ export const ptBR = {
       chat: "Chat",
       searchChats: "Buscar chats...",
     },
+    search: {
+      placeholder: "Buscar",
+      tabs: {
+        all: "Tudo",
+        chats: "Chats",
+        projects: "Projetos",
+        files: "Arquivos",
+        models: "Modelos",
+      },
+      recents: "Recentes",
+      actions: "Ações",
+      newChat: "Novo chat",
+      newTemporaryChat: "Novo chat temporário",
+      fineTune: "Fazer fine-tune de um modelo",
+      generateImage: "Gerar uma imagem",
+      generateVideo: "Gerar um vídeo",
+      untitledChat: "Chat sem título",
+      compare: "Comparar",
+      loading: "Carregando...",
+      empty: {
+        all: "Nada para buscar ainda.",
+        chats: "Nenhum chat ainda.",
+        projects: "Nenhum projeto ainda.",
+        files: "Nenhum arquivo na sua Biblioteca ainda.",
+        models: "Nenhum modelo baixado ainda.",
+      },
+      noMatches: "Nenhum resultado.",
+      when: {
+        today: "Hoje",
+        pastWeek: "Última semana",
+        pastMonth: "Último mês",
+        older: "Mais antigos",
+      },
+      footer: {
+        close: "Fechar",
+        changeType: "Mudar tipo",
+        open: "Abrir",
+      },
+    },
     notFound: {
       title: "Página não encontrada",
       description: "{path} não existe.",
@@ -1225,9 +1264,22 @@ export const ptBR = {
       },
       permissions: {
         sectionTitle: "Permissões",
-        bypassLabel: "Permissões de ferramentas",
-        bypassDescription:
-          "Como o Unsloth aprova as chamadas de ferramentas do chat (terminal, python, web, MCP) antes de executá-las. O modo “Full access” desativa as aprovações e o sandbox de código.",
+        names: {
+          ask: "Pedir aprovação",
+          auto: "Aprovar por mim",
+          off: "Executar automaticamente",
+          full: "Acesso total",
+        },
+        details: {
+          ask:
+            "Pede aprovação antes de cada chamada de ferramenta, incluindo código de terminal e Python, buscas na web, edição de arquivos e ferramentas MCP. Ferramentas executadas por um provedor externo não são pausadas. Ideal quando você quer revisar cada etapa.",
+          auto:
+            "Executa sozinho as chamadas comuns e só pergunta quando uma ação parece arriscada, como ler credenciais, elevar privilégios ou executar comandos destrutivos.",
+          off:
+            "Executa todas as chamadas de ferramentas sem perguntar. O código de Python e terminal continua rodando no sandbox, que limita quais arquivos do seu computador ele pode acessar.",
+          full:
+            "Executa todas as chamadas de ferramentas sem perguntar e desativa o sandbox de código, assim o código de Python e terminal pode ler e alterar qualquer arquivo que sua conta acessa. Ideal para tarefas confiáveis que precisam trabalhar fora do sandbox.",
+        },
       },
     },
     profile: {
@@ -1576,6 +1628,9 @@ export const ptBR = {
         noRamReserve: "Não reservar RAM do sistema para o modelo",
         noRamReserveDescription: "Reduz a RAM ocupada pelos pesos do modelo.",
         noRamReserveHint: "Ignora o carregamento mapeado em memória nas versões compatíveis do Windows quando o modelo está totalmente descarregado na GPU, para que suas páginas não fiquem residentes. Caso contrário, mantém o carregamento mapeado em memória. Buffers de CPU necessários ainda podem usar RAM. Remove --no-mmap e --mlock.",
+        multiModel: "Manter vários modelos carregados",
+        multiModelDescription: "Carregar um modelo mantém os outros na memória.",
+        multiModelHint: "Cada modelo carregado responde às solicitações que o nomeiam. Com várias GPUs, um novo modelo vai para uma GPU que nenhum outro modelo usa quando há espaço. Se não couber ao lado dos outros, os modelos fora de uso são descarregados primeiro e depois ele substitui o modelo ativo. O treinamento descarrega os modelos extras antes do ativo.",
         mlockVetoed: "--mlock continua desativado: fixar o modelo reservaria RAM para todo ele. A descarga automática por inatividade continua desativada.",
         mlockNotApplicable: "Totalmente na GPU: nada para bloquear na RAM do sistema. A descarga automática por inatividade continua desativada.",
         memlockCapped: "Este sistema limita a memória bloqueada a {limit}. Um modelo maior não será totalmente fixado; aumente o limite com ulimit -l.",
@@ -2427,6 +2482,7 @@ export const ptBR = {
       context: "Contexto",
       lr: "LR",
       hardware: "Hardware",
+      vram: "VRAM",
       noGpu: "Nenhuma GPU detectada",
       hfToken: "Token do HF",
       saved: "Salvo",
@@ -3152,6 +3208,7 @@ export const ptBR = {
     discardDescription: "As alterações não salvas em {name} serão perdidas.",
     discard: "Descartar",
     mentions: "Habilidades",
+    manage: "Gerenciar habilidades",
   },
   library: {
     tabs: {

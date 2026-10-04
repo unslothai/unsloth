@@ -252,12 +252,11 @@ const MODEL_DEFAULTS: Array<{ match: string; steps: number; guidance: number }> 
   // "distilled" before the generic "ltx": the distilled model runs at 8 steps, guidance 1.
   { match: "distilled", steps: 8, guidance: 1 },
   { match: "ltx", steps: 40, guidance: 4 },
-  // ComfyUI's templates for the same models. Wan2.2-T2V-A14B: 20 steps at CFG 3.5, before the generic Wan key.
+  // T2V-A14B before the generic Wan key.
   { match: "a14b", steps: 20, guidance: 3.5 },
   { match: "wan2.2-14b", steps: 20, guidance: 3.5 },
-  // Wan2.2-TI2V-5B: 20 steps at CFG 5. The backend supplies the fps per family.
+  // The backend supplies the fps per family.
   { match: "wan", steps: 20, guidance: 5 },
-  // HunyuanVideo-1.5 runs 20 steps; guidance 6 matches the guider the repo ships.
   { match: "hunyuanvideo", steps: 20, guidance: 6 },
 ];
 
@@ -3587,7 +3586,7 @@ function VideoGenerator({
       )}
       <AdvancedSelect
         label="Attention"
-        hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention: fast (10-40%) but can black-frame some families (Qwen, Wan), so it never engages automatically."
+        hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention (SageAttention 2; without a local install Studio fetches the Hugging Face kernels-hub build, which runs on Ampere, Ada and Hopper GPUs, and any other GPU keeps the default): fast (10-40%) but can black-frame some families (Qwen, Wan), so it never engages automatically."
         badge={<ResolvedBadge status={status} controlKey="attention_backend" />}
         value={attentionBackend}
         onValueChange={(v) => setAttentionBackend(v as typeof attentionBackend)}
@@ -3619,7 +3618,7 @@ function VideoGenerator({
       )}
       <AdvancedSelect
         label="Step cache"
-        hint="First-Block-Cache reuses the transformer tail across steps for many-step models (small quality cost). Auto turns it on only on the Max speed tier at 20+ steps, re-checked per clip. Static skip extrapolates every other middle step on a fixed schedule (12+ steps) and keeps the compile and CUDA graph; Wan2.2 A14B, LTX-2 and MiniMax-H3 run uncached. Never picked by Auto."
+        hint="Static skip extrapolates middle steps on a fixed schedule (12+ steps) and keeps the compile and CUDA graph; Wan2.2 A14B and LTX-2 run uncached. Auto uses it for text-to-video (no keyframes or references), at or above the step count it was measured at, on Wan2.2 TI2V 5B on every speed tier but Off/Eager, and on HunyuanVideo 1.5 and MiniMax-H3 on Max only. First-Block-Cache reuses the transformer tail across steps (larger quality cost); Auto turns it on for other many-step models on Max only. UNSLOTH_DIFFUSION_AUTO_STEP_SKIP=0 stops Auto from picking Static skip."
         badge={<ResolvedBadge status={status} controlKey="transformer_cache" />}
         value={transformerCache}
         onValueChange={(v) => setTransformerCache(v as typeof transformerCache)}

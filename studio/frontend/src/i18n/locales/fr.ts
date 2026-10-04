@@ -223,6 +223,45 @@ export const fr = {
       chat: "Chat",
       searchChats: "Rechercher des chats...",
     },
+    search: {
+      placeholder: "Rechercher",
+      tabs: {
+        all: "Tout",
+        chats: "Discussions",
+        projects: "Projets",
+        files: "Fichiers",
+        models: "Modèles",
+      },
+      recents: "Récents",
+      actions: "Actions",
+      newChat: "Nouvelle discussion",
+      newTemporaryChat: "Nouvelle discussion temporaire",
+      fineTune: "Affiner un modèle",
+      generateImage: "Générer une image",
+      generateVideo: "Générer une vidéo",
+      untitledChat: "Discussion sans titre",
+      compare: "Comparaison",
+      loading: "Chargement...",
+      empty: {
+        all: "Rien à rechercher pour l’instant.",
+        chats: "Aucune discussion pour l’instant.",
+        projects: "Aucun projet pour l’instant.",
+        files: "Aucun fichier dans votre Bibliothèque pour l’instant.",
+        models: "Aucun modèle téléchargé pour l’instant.",
+      },
+      noMatches: "Aucun résultat.",
+      when: {
+        today: "Aujourd’hui",
+        pastWeek: "Semaine dernière",
+        pastMonth: "Mois dernier",
+        older: "Plus ancien",
+      },
+      footer: {
+        close: "Fermer",
+        changeType: "Changer de type",
+        open: "Ouvrir",
+      },
+    },
     notFound: {
       title: "Page introuvable",
       description: "{path} n'existe pas.",
@@ -1236,9 +1275,22 @@ export const fr = {
       },
       permissions: {
         sectionTitle: "Autorisations",
-        bypassLabel: "Autorisations des outils",
-        bypassDescription:
-          "Comment Unsloth approuve les appels d'outils de la discussion (terminal, python, web, MCP) avant leur exécution. Le mode « Full access » désactive les demandes d'approbation et le bac à sable d'exécution du code.",
+        names: {
+          ask: "Demander l'accord",
+          auto: "Approuver pour moi",
+          off: "Exécuter automatiquement",
+          full: "Accès complet",
+        },
+        details: {
+          ask:
+            "Demande votre accord avant chaque appel d'outil, y compris le code terminal et Python, les recherches web, les modifications de fichiers et les outils MCP. Les outils exécutés par un fournisseur externe ne sont pas mis en pause. Idéal pour vérifier chaque étape.",
+          auto:
+            "Exécute seul les appels d'outils courants et ne demande votre accord que lorsqu'une action semble risquée, comme lire des identifiants, élever des privilèges ou lancer des commandes destructrices.",
+          off:
+            "Exécute chaque appel d'outil sans demander. Le code Python et terminal reste exécuté dans le bac à sable, qui limite les fichiers auxquels il peut accéder sur votre ordinateur.",
+          full:
+            "Exécute chaque appel d'outil sans demander et désactive le bac à sable du code : le code Python et terminal peut lire et modifier tout fichier accessible à votre compte. Idéal pour les tâches de confiance qui doivent travailler hors du bac à sable.",
+        },
       },
     },
     profile: {
@@ -1592,6 +1644,9 @@ export const fr = {
         noRamReserve: "Ne pas réserver de RAM système pour le modèle",
         noRamReserveDescription: "Réduit la RAM occupée par les poids du modèle.",
         noRamReserveHint: "Ignore le chargement mappé en mémoire sur les versions Windows compatibles lorsque le modèle est entièrement déchargé sur le GPU, afin que ses pages ne restent pas résidentes. Sinon, conserve le chargement mappé en mémoire. Les tampons CPU nécessaires peuvent toujours occuper de la RAM. Supprime --no-mmap et --mlock.",
+        multiModel: "Garder plusieurs modèles chargés",
+        multiModelDescription: "Charger un modèle garde les autres en mémoire.",
+        multiModelHint: "Chaque modèle chargé répond aux requêtes qui le nomment. Avec plusieurs GPU, un nouveau modèle va sur un GPU qu'aucun autre modèle n'utilise lorsqu'il y a de la place. S'il ne tient pas à côté des autres, les modèles inutilisés sont d'abord déchargés, puis il remplace le modèle actif. L'entraînement décharge les modèles supplémentaires avant le modèle actif.",
         mlockVetoed: "--mlock reste désactivé : épingler le modèle réserverait de la RAM pour l'intégralité de celui-ci. Le déchargement automatique en veille reste désactivé.",
         mlockNotApplicable: "Entièrement sur le GPU : rien à verrouiller en RAM système. Le déchargement automatique en veille reste désactivé.",
         memlockCapped: "Ce système limite la mémoire verrouillée à {limit}. Un modèle plus grand ne sera pas entièrement épinglé ; augmentez la limite avec ulimit -l.",
@@ -2457,6 +2512,7 @@ export const fr = {
       context: "Contexte",
       lr: "LR",
       hardware: "Matériel",
+      vram: "VRAM",
       noGpu: "Aucun GPU détecté",
       hfToken: "Token HF",
       saved: "Enregistré",
@@ -3204,6 +3260,7 @@ export const fr = {
     discardDescription: "Les modifications non enregistrées de {name} seront perdues.",
     discard: "Abandonner",
     mentions: "Compétences",
+    manage: "Gérer les compétences",
   },
   library: {
     tabs: {

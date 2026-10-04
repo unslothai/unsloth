@@ -59,6 +59,7 @@ export interface LoadModelRequest {
 
   /** Start a fresh runtime even when the active settings already match. */
   force_reload?: boolean;
+  alongside?: boolean;
   /** Stop any chats still generating instead of getting a 409: a load replaces the single
    *  llama-server they all decode on. Set only after the user confirms. */
   force_cancel_active?: boolean;
@@ -203,7 +204,7 @@ export interface GgufVariantsResponse {
   variants: GgufVariantDetail[];
   has_vision: boolean;
   default_variant: string | null;
-  /** True only when Hub metadata resolved every required companion. */
+  /** True when Hub metadata or a complete cached download plan proves companion readiness. */
   dependencies_resolved?: boolean;
   /** Native max context from GGUF metadata; present once a variant is downloaded. */
   context_length?: number | null;
@@ -233,6 +234,7 @@ export interface LoadModelResponse {
   engine_precision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
   engine?: "auto" | "vllm" | "sglang";
   is_mlx?: boolean;
+  evicted?: string[];
   is_npu?: boolean;
   status: string;
   model: string;
@@ -252,6 +254,7 @@ export interface LoadModelResponse {
   diffusion_requested_ngl?: number | null;
   is_audio?: boolean;
   audio_type?: string | null;
+  audio_workflows?: string[] | null;
   has_audio_input?: boolean;
   has_video_input?: boolean;
   inference?: {
@@ -376,10 +379,19 @@ export interface InferenceStatusResponse {
   /** The loaded GGUF audio model's generation options, as its spec declares them. Unknown-shaped
    *  on purpose: the Audio page validates it with parseAudioOptions. */
   audio_options?: unknown;
+  /** Audio page workflows the loaded model can run ("speak", "clone", "music", "transcribe"); empty when it is not an audio model. */
+  audio_workflows?: string[] | null;
+  audio_reference_text?: "required" | "optional" | "unused" | null;
+  /** e.g. Maya1: "instruct" (its voice description). */
+  audio_required_inputs?: string[] | null;
   has_audio_input?: boolean;
   has_video_input?: boolean;
   loading: string[];
   loaded: string[];
+  /** The models answering requests; `loaded` also names one only held behind the active model. */
+  serving?: string[];
+  /** Per `serving` entry, the id to select, load and unload it by: a local model's path. */
+  serving_checkpoints?: string[];
   inference?: {
     temperature?: number;
     top_p?: number;

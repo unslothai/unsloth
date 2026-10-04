@@ -222,6 +222,45 @@ export const ja = {
       chat: "チャット",
       searchChats: "チャットを検索...",
     },
+    search: {
+      placeholder: "検索",
+      tabs: {
+        all: "すべて",
+        chats: "チャット",
+        projects: "プロジェクト",
+        files: "ファイル",
+        models: "モデル",
+      },
+      recents: "最近",
+      actions: "アクション",
+      newChat: "新規チャット",
+      newTemporaryChat: "新しい一時チャット",
+      fineTune: "モデルをファインチューン",
+      generateImage: "画像を生成",
+      generateVideo: "動画を生成",
+      untitledChat: "無題のチャット",
+      compare: "比較",
+      loading: "読み込み中...",
+      empty: {
+        all: "まだ検索できるものはありません。",
+        chats: "チャットはまだありません。",
+        projects: "プロジェクトはまだありません。",
+        files: "ライブラリにファイルはまだありません。",
+        models: "ダウンロード済みのモデルはまだありません。",
+      },
+      noMatches: "結果がありません。",
+      when: {
+        today: "今日",
+        pastWeek: "過去 1 週間",
+        pastMonth: "過去 1 か月",
+        older: "それ以前",
+      },
+      footer: {
+        close: "閉じる",
+        changeType: "種類を切り替え",
+        open: "開く",
+      },
+    },
     notFound: {
       title: "ページが見つかりません",
       description: "{path} は存在しません。",
@@ -1196,9 +1235,22 @@ export const ja = {
       },
       permissions: {
         sectionTitle: "権限",
-        bypassLabel: "ツールの権限",
-        bypassDescription:
-          "チャットのツール呼び出し (ターミナル、python、ウェブ、MCP) を実行する前に、Unsloth がどのように承認するかを決めます。「Full access」にすると承認とコードサンドボックスが無効になります。",
+        names: {
+          ask: "承認を求める",
+          auto: "代わりに承認",
+          off: "自動で実行",
+          full: "フルアクセス",
+        },
+        details: {
+          ask:
+            "ターミナルや Python のコード、ウェブ検索、ファイル編集、MCP ツールを含め、すべてのツール呼び出しの前に確認します。外部プロバイダーが実行するツールは一時停止されません。各ステップを確認したいときに最適です。",
+          auto:
+            "通常のツール呼び出しは自動で実行し、認証情報の読み取り、権限昇格、破壊的なコマンドなど、危険そうな操作のときだけ確認します。",
+          off:
+            "すべてのツール呼び出しを確認なしで実行します。Python とターミナルのコードは引き続きサンドボックス内で実行され、コンピューター上でアクセスできるファイルが制限されます。",
+          full:
+            "すべてのツール呼び出しを確認なしで実行し、コードサンドボックスをオフにします。Python とターミナルのコードは、アカウントがアクセスできる任意のファイルを読み取り、変更できます。サンドボックスの外で作業する必要がある、信頼できるタスクに最適です。",
+        },
       },
     },
     profile: {
@@ -1545,6 +1597,9 @@ export const ja = {
         noRamReserve: "モデル用にシステム RAM を確保しない",
         noRamReserveDescription: "モデルの重みが占有する RAM を減らします。",
         noRamReserveHint: "モデルが GPU に完全にオフロードされている場合、対応する Windows ビルドではメモリマップ読み込みを行わず、ファイルのページが常駐しないようにします。それ以外ではメモリマップ読み込みを維持します。必要な CPU バッファは RAM を使用することがあります。--no-mmap と --mlock を除去します。",
+        multiModel: "複数のモデルを読み込んだままにする",
+        multiModelDescription: "モデルを読み込んでも、他のモデルはメモリに残ります。",
+        multiModelHint: "読み込まれた各モデルは、そのモデルを指定したリクエストに応答します。複数の GPU がある場合、空きがあれば新しいモデルは他のモデルが使っていない GPU に配置されます。他のモデルと並べて収まらない場合は、使用中でないモデルを先にアンロードし、それでも足りなければアクティブなモデルを置き換えます。トレーニングはアクティブなモデルより先に追加のモデルをアンロードします。",
         mlockVetoed: "--mlock は無効のままです。モデルを固定するとモデル全体分の RAM を確保することになります。アイドル時の自動アンロードは引き続き無効です。",
         mlockNotApplicable: "すべて GPU 上にあるため、システム RAM に固定するものはありません。アイドル時の自動アンロードは無効のままです。",
         memlockCapped: "このシステムはロック可能なメモリを {limit} に制限しています。これより大きいモデルは完全には固定されません。ulimit -l で上限を引き上げてください。",
@@ -2373,6 +2428,7 @@ export const ja = {
       context: "コンテキスト",
       lr: "LR",
       hardware: "ハードウェア",
+      vram: "VRAM",
       noGpu: "GPU が検出されませんでした",
       hfToken: "HF トークン",
       saved: "保存済み",
@@ -3071,6 +3127,7 @@ export const ja = {
     discardDescription: "{name} の保存されていない変更は失われます。",
     discard: "破棄",
     mentions: "スキル",
+    manage: "スキルを管理",
   },
   library: {
     tabs: {
