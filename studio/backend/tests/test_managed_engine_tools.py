@@ -555,8 +555,11 @@ def test_a_catalog_with_tool_choice_none_is_plain_chat(native):
 
 
 @pytest.mark.parametrize("tools", [False, True])
-def test_managed_messages_keep_the_current_date(native, monkeypatch, tools):
+def test_managed_messages_get_no_unrequested_date(native, monkeypatch, tools):
+    from core.inference import orchestrator
+
     backend, requests = native
+    monkeypatch.setattr(orchestrator, "peek_inference_backend", lambda: backend)
     monkeypatch.setattr(api, "_date_gate_blocks", lambda *a: False)
     monkeypatch.setattr(
         api, "current_date_prompt_line", lambda **_k: "The current date is 2026-08-15."
@@ -578,12 +581,11 @@ def test_managed_messages_keep_the_current_date(native, monkeypatch, tools):
         )
     )
     if tools:
-        messages = requests[-1]["messages"]
-        system = next(m["content"] for m in messages if m["role"] == "system")
+        sent = requests[-1]["messages"]
     else:
-        messages, system = seen[-1], backend.calls[-1]["system_prompt"]
-    assert "The current date is 2026-08-15." in json.dumps(system)
-    assert "2026-08-15" not in json.dumps([m for m in messages if m["role"] == "user"])
+        sent = [*seen[-1], {"role": "system", "content": backend.calls[-1]["system_prompt"]}]
+    # vLLM/SGLang render a template Studio never sees, so no system turn is made up for it.
+    assert "2026-08-15" not in json.dumps(sent)
 
 
 @pytest.mark.parametrize("vision", [False, True])

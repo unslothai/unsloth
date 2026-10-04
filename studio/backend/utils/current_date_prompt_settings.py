@@ -116,9 +116,25 @@ def current_date_prompt_line(today: date | None = None, request: Any = None) -> 
 
 _PROBE_SYSTEM = "UNSLOTH_DATE_PROBE_SYSTEM"
 _PROBE_USER = "UNSLOTH_DATE_PROBE_USER"
+# a catalog a tool request's branch can render, for probing the template it selects.
+PROBE_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "probe",
+            "description": "Probe.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+]
 
 
-def _render_probe(chat_template: str, messages: list[dict], today: date) -> str:
+def _render_probe(
+    chat_template: str,
+    messages: list[dict],
+    today: date,
+    tools: list | None = None,
+) -> str:
     from jinja2.exceptions import TemplateError
     from jinja2.sandbox import ImmutableSandboxedEnvironment
 
@@ -130,19 +146,30 @@ def _render_probe(chat_template: str, messages: list[dict], today: date) -> str:
     # the user's day, so a default that dates itself (or works out yesterday) is dated for them.
     env.globals["strftime_now"] = today.strftime
     return env.from_string(chat_template).render(
-        messages = messages, add_generation_prompt = False, bos_token = "", eos_token = ""
+        messages = messages,
+        add_generation_prompt = False,
+        bos_token = "",
+        eos_token = "",
+        **({"tools": tools} if tools else {}),
     )
 
 
-def _probe_renders(chat_template: str, today: date) -> tuple[str, str] | None:
+def _probe_renders(
+    chat_template: str,
+    today: date,
+    tools: list | None = None,
+) -> tuple[str, str] | None:
     """A plain chat rendered without and with a system turn, when the template renders that turn."""
     # some templates read message text only from content parts, as a vision processor sends it.
     for content in (lambda text: text, lambda text: [{"type": "text", "text": text}]):
         user = {"role": "user", "content": content(_PROBE_USER)}
         try:
-            bare = _render_probe(chat_template, [user], today)
+            bare = _render_probe(chat_template, [user], today, tools)
             with_system = _render_probe(
-                chat_template, [{"role": "system", "content": content(_PROBE_SYSTEM)}, user], today
+                chat_template,
+                [{"role": "system", "content": content(_PROBE_SYSTEM)}, user],
+                today,
+                tools,
             )
         except Exception:
             continue
@@ -152,16 +179,17 @@ def _probe_renders(chat_template: str, today: date) -> tuple[str, str] | None:
 
 
 @lru_cache(maxsize = 8)
-def template_rejects_system_turn(chat_template: str | None) -> bool:
+def template_rejects_system_turn(chat_template: str | None, tools: bool = False) -> bool:
     """A template that renders a plain chat but raises on, or drops, a system turn."""
     if not chat_template:
         return False
     today = date.today()
+    catalog = PROBE_TOOLS if tools else None
     try:
-        _render_probe(chat_template, [{"role": "user", "content": _PROBE_USER}], today)
+        _render_probe(chat_template, [{"role": "user", "content": _PROBE_USER}], today, catalog)
     except Exception:
         return False
-    return _probe_renders(chat_template, today) is None
+    return _probe_renders(chat_template, today, catalog) is None
 
 
 @lru_cache(maxsize = 8)

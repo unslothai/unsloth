@@ -3966,6 +3966,7 @@ import zlib
 
 from utils.current_date_prompt_settings import (
     CURRENT_DATE_PROMPT_PREFIX,
+    PROBE_TOOLS,
     contains_current_date_prompt_line,
     current_date_prompt_line,
     template_default_system_prompt,
@@ -6521,7 +6522,7 @@ def _local_chat_template(image: bool = False, tools: bool = False) -> Optional[s
 
         # a tool request renders a named template's tool_use body; a processor never picks it.
         selected = _selected_template_strings_from_value(
-            template, [{"type": "function"}] if tools else None, prefer_tool_use = not image
+            template, PROBE_TOOLS if tools else None, prefer_tool_use = not image
         )
     except Exception:
         return None
@@ -6532,8 +6533,24 @@ def _local_template_default_system_prompt(today: Any, image: bool = False) -> st
     return template_default_system_prompt(_local_chat_template(image), today)
 
 
+def _local_managed_engine() -> bool:
+    try:
+        if get_llama_cpp_backend().is_loaded:
+            return False
+        from core.inference.orchestrator import peek_inference_backend
+
+        backend = peek_inference_backend()
+        info = (backend.models.get(backend.active_model_name) or {}) if backend else {}
+    except Exception:
+        return False
+    return info.get("engine") in ("vllm", "sglang")
+
+
 def _local_template_rejects_system_turn(image: bool = False, tools: bool = False) -> bool:
-    return template_rejects_system_turn(_local_chat_template(image, tools))
+    if _local_managed_engine():
+        # vLLM/SGLang render a template Studio never sees, so nothing says a system turn is safe.
+        return True
+    return template_rejects_system_turn(_local_chat_template(image, tools), tools)
 
 
 def _apply_current_date_prompt(

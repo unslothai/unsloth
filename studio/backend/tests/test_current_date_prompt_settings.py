@@ -470,6 +470,14 @@ class TestTemplateDefaultSystemPrompt:
     def test_a_template_without_a_system_turn_is_recognised(self, template, rejects):
         assert current_date_settings.template_rejects_system_turn(template) is rejects
 
+    def test_a_tool_request_is_probed_with_a_catalog(self):
+        tools_only = (
+            "{% if tools and messages[0]['role'] == 'system' %}{{ raise_exception('no') }}"
+            "{% endif %}" + _CHATML
+        )
+        assert not current_date_settings.template_rejects_system_turn(tools_only)
+        assert current_date_settings.template_rejects_system_turn(tools_only, True)
+
     def test_a_template_that_refuses_a_system_turn_returns_nothing(self):
         assert current_date_settings.template_default_system_prompt(_REFUSES_SYSTEM, _DAY) == ""
 
@@ -558,6 +566,21 @@ class TestDateStaysInTheSystemTurn:
         )
         monkeypatch.setattr(self.inference, "current_date_prompt_line", lambda **_kwargs: "")
         assert self.inference._audio_input_system_prompt("", object()) == instruction
+
+    def test_a_managed_engine_gets_no_unrequested_system_turn(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from core.inference import orchestrator
+
+        monkeypatch.undo()
+        info = {"engine": "vllm", "chat_template_info": {}}
+        backend = SimpleNamespace(active_model_name = "served", models = {"served": info})
+        monkeypatch.setattr(
+            self.inference, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+        )
+        monkeypatch.setattr(orchestrator, "peek_inference_backend", lambda: backend)
+        assert self.inference._local_template_rejects_system_turn()
+        assert self.inference._local_template_rejects_system_turn(tools = True)
 
     def test_a_tool_request_probes_the_tool_use_template(self, monkeypatch):
         from types import SimpleNamespace
