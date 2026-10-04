@@ -34,7 +34,6 @@ def _clean_env(monkeypatch):
         monkeypatch.delenv(name, raising = False)
 
 
-# ------------------------------------------------------------------------------------------------ CPU
 def test_depth_keeps_the_prefetch_inside_the_reserved_stream_window():
     gb = int(1e9)
     # H3 int8 blocks are ~0.39 GB: running + 2 ahead = 1.17 GB fits the 1.5 GB window
@@ -78,7 +77,6 @@ def test_kill_switch_and_unstreamed_module_leave_it_alone(monkeypatch):
     assert res.install_h3_stream_prefetch(torch.nn.Linear(2, 2), "cuda") == 0  # no offload groups
 
 
-# ------------------------------------------------------------------------------------------------ CUDA
 def _cuda():
     if not torch.cuda.is_available():
         pytest.skip("needs CUDA: diffusers stream group offload")
