@@ -95,6 +95,15 @@ def test_krea2_pipeline_picks_seed_their_hosted_denoiser():
     krea = detect_family("krea/Krea-2-Turbo")
     assert krea is not None and dict(krea.prequant_repos)  # hosted int8 / fp8 artifacts exist
     assert pipeline_seed_supported(krea) is True
+    from core.inference.diffusion_families import family_prequant_repo
+
+    for raw in ("krea/Krea-2-Raw", "unsloth/Krea-2-Raw"):
+        assert family_prequant_repo(krea, "fp8", base_repo = raw) is None
+        assert family_prequant_repo(krea, "int8", base_repo = raw) is None
+    assert (
+        family_prequant_repo(krea, "fp8", base_repo = "krea/Krea-2-Turbo")
+        == "unsloth/Krea-2-Turbo-FP8"
+    )
     ideogram = type("Fam", (), {"name": IDEOGRAM4_FAMILY_NAME})()
     assert pipeline_seed_supported(ideogram) is False
 
