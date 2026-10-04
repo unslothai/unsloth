@@ -25,7 +25,9 @@ export function generatePhaseLabel(
   if (p.step <= 0 || p.total <= 0) return base;
   const fmt = opts.formatEta ?? ((seconds: number) => `${Math.max(0, Math.round(seconds))}s`);
   const eta = p.eta_seconds != null ? fmt(p.eta_seconds) : "";
-  return `${base} Step ${p.step}/${p.total}${eta ? ` · ~${eta}` : ""}`;
+  // " \u2022 " is ModelLoadDescription's primary / secondary split: the step and ETA get their own
+  // line, since one line in the 18rem card truncated the ETA away.
+  return `${base} \u2022 Step ${p.step}/${p.total}${eta ? ` · ~${eta}` : ""}`;
 }
 
 /** Whether two polls would render the same card and preview, so the poll can skip a re-render. */

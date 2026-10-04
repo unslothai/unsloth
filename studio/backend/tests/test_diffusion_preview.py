@@ -174,7 +174,8 @@ def test_cuda_preview_never_syncs_never_writes_and_publishes(monkeypatch):
     finally:
         torch.cuda.set_sync_debug_mode(0)
     assert not prev.failed
-    assert prev.emitted >= 1
+    # Step 1 has no previous latent to pair with, so the first snapshot waits for step 2 (no raw noise).
+    assert prev.emitted == 3
     assert done.wait(10.0)
     prev.finish()
     url, _ = got[-1]

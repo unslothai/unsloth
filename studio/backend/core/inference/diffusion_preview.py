@@ -393,6 +393,10 @@ class LatentPreviewer:
                 if not isinstance(index, int) or prev_index != index - 1:
                     # Only the latent of the step just before is a valid partner (a new chunk restarts at 1).
                     prev = None
+                if prev is None and not final and _sigma_pair(scheduler) is not None:
+                    # The first step of a chunk has no partner yet, so its picture would be the raw noisy
+                    # latent; wait one step for the denoised estimate instead of opening on colour noise.
+                    return
                 self._steps_seen += 1
                 if not final and (self._steps_seen - 1) % self.stride:
                     return

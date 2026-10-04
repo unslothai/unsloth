@@ -17,7 +17,7 @@ test("each phase gets its own label next to the spinner", () => {
   assert.equal(generatePhaseLabel({ phase: "denoise", step: 0, total: 8 }), "Denoising please wait…");
   assert.equal(
     generatePhaseLabel({ phase: "denoise", step: 3, total: 8 }),
-    "Denoising please wait… Step 3/8",
+    "Denoising please wait… \u2022 Step 3/8",
   );
   assert.equal(generatePhaseLabel({ phase: "decode", step: 8, total: 8 }), "Decoding…");
   assert.equal(
@@ -29,7 +29,7 @@ test("each phase gets its own label next to the spinner", () => {
 
 test("a missing phase (sd.cpp) reads as denoising, with the ETA when known", () => {
   const label = generatePhaseLabel({ phase: null, step: 2, total: 4, eta_seconds: 5 });
-  assert.match(label, /^Denoising please wait… Step 2\/4 · ~/);
+  assert.match(label, /^Denoising please wait… \u2022 Step 2\/4 · ~/);
 });
 
 test("a new preview re-renders even when nothing else moved", () => {
