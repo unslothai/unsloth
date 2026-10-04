@@ -513,7 +513,7 @@ class BlockGraph:
         return out
 
     def _record(self, full: tuple, live: list) -> Optional[_Entry]:
-        from .diffusion_cuda_graph import _capturing
+        from .diffusion_cuda_graph import _abandon_capture_pool, _capturing, _heal_generators
 
         torch = _torch()
         key = full[0]
@@ -536,22 +536,29 @@ class BlockGraph:
             stream = self.shared.capture_stream()
             stream.wait_stream(current)
             graph = torch.cuda.CUDAGraph()
+            pool = self.shared.graph_pool()
             with torch.cuda.stream(stream):
                 before = torch.cuda.memory_reserved()
                 with _capturing():
-                    graph.capture_begin(
-                        pool = self.shared.graph_pool(), capture_error_mode = "thread_local"
-                    )
+                    graph.capture_begin(pool = pool, capture_error_mode = "thread_local")
                     try:
-                        out = self.compute(*static_args, **static_kwargs)
-                        flat: list = []
-                        spec = _flatten(out, flat)
-                        if spec != out_spec or len(flat) != len(entry.static_out):
-                            raise RuntimeError("block output layout changed between calls")
-                        for dst, src in zip(entry.static_out, flat):
-                            dst.copy_(src)
-                    finally:
-                        graph.capture_end()
+                        try:
+                            out = self.compute(*static_args, **static_kwargs)
+                            flat: list = []
+                            spec = _flatten(out, flat)
+                            if spec != out_spec or len(flat) != len(entry.static_out):
+                                raise RuntimeError("block output layout changed between calls")
+                            for dst, src in zip(entry.static_out, flat):
+                                dst.copy_(src)
+                        finally:
+                            graph.capture_end()
+                    except BaseException:
+                        # An invalidated capture raises in capture_end before the allocator leaves the pool: every
+                        # later empty_cache would free nothing (torch 2.6: an INTERNAL ASSERT), and the RNG stays in
+                        # capture mode (diffusion_cuda_graph's whole-step capture recovers the same way).
+                        _abandon_capture_pool(pool)
+                        _heal_generators()
+                        raise
                 del out, flat
             current.wait_stream(stream)
             self.shared.pool_bytes += max(0, torch.cuda.memory_reserved() - before)

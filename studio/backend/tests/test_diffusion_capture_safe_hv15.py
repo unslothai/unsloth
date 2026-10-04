@@ -246,7 +246,7 @@ def test_hv15_kill_switch_declines(fresh_cache, monkeypatch):
 _cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
 
 
-def _capture(fn, kw):
+def _capture(fn, kw, pool = None):
     static = {k: (v.clone() if torch.is_tensor(v) else v) for k, v in kw.items()}
     side = torch.cuda.Stream()
     side.wait_stream(torch.cuda.current_stream())
@@ -255,7 +255,7 @@ def _capture(fn, kw):
             fn(**static)
     torch.cuda.current_stream().wait_stream(side)
     graph = torch.cuda.CUDAGraph()
-    with torch.no_grad(), torch.cuda.graph(graph):
+    with torch.no_grad(), torch.cuda.graph(graph, pool = pool):
         out = fn(**static)[0]
     return graph, static, out
 
@@ -290,10 +290,14 @@ def test_hv15_stock_forward_does_not_capture(fresh_cache):
     model = _tiny_model("cuda")
     kw = _inputs(_MASKS["b2_interleaved"], "t2v_zero", device = "cuda")
     stream = torch.cuda.current_stream()
+    pool = torch.cuda.graph_pool_handle()
     with pytest.raises(RuntimeError):
-        _capture(lambda **k: _CLS.forward(model, **k), kw)
+        _capture(lambda **k: _CLS.forward(model, **k), kw, pool = pool)
     # torch.cuda.graph's __exit__ raises in capture_end before it leaves its capture stream: without this every later
     # test in the process ran on that stream (a prefetch test then saw its copies on a "compute" stream)
     torch.cuda.set_stream(stream)
     # torch leaves the CUDA generators in capture mode after an invalidated capture; later tests draw from them
     cg._heal_generators()
+    # and the allocator still allocating to the dead capture's pool: every later empty_cache then freed nothing (a
+    # later test's reserved-memory check failed only when it ran after this file)
+    cg._abandon_capture_pool(pool)

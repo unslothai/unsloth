@@ -504,3 +504,47 @@ def test_a_key_warmed_by_its_timed_eager_steps_records_without_another_warm_up(m
     assert len(recorded) == (1 if timed else 1 + cg.WARMUP_ITERS)
     assert handle.stats["speed_eager"] == (3 if timed else 0)
     handle.free()
+
+
+class _SyncsWhileRecorded(Block):
+    def forward(self, x):
+        y = super().forward(x)
+        if torch.cuda.is_current_stream_capturing():
+            y = y + float(y.sum().item()) * 0  # a host read: invalidates the recording
+        return y
+
+
+def test_a_failed_block_recording_takes_the_allocator_off_its_pool():
+    """As for the whole step (test_diffusion_offload_cuda_graph): capture_end raises before endAllocateToPool, so a
+    failed per-block recording left the allocator on the block pool and every later empty_cache freed nothing."""
+    _cuda()
+    torch.manual_seed(0)
+    net = Net(blocks = 2).cuda()
+    net.blocks[1] = _SyncsWhileRecorded(256).cuda()
+    Net._repeated_blocks = ["Block", "_SyncsWhileRecorded"]
+    try:
+        handle, reason = bg.install_block_graphs(net, device = "cuda")
+        assert reason == "armed"
+        x, t = _inputs(0)
+        with torch.no_grad():
+            for _ in range(3):
+                net(x, t, return_dict = False)
+        torch.cuda.synchronize()
+        assert handle.graphs[1].poisoned and handle.stats["fallbacks"] == 1
+        block = torch.empty(256 << 20, dtype = torch.uint8, device = "cuda")
+        held = torch.cuda.memory_reserved()
+        del block
+        torch.cuda.empty_cache()
+        assert torch.cuda.memory_reserved() <= held - (256 << 20)
+        torch.randn(4, device = "cuda")  # the CUDA generator left capture mode
+        handle.free()
+        # a later recording in the process still works
+        other = Net(blocks = 2).cuda()
+        again, _ = bg.install_block_graphs(other, device = "cuda")
+        with torch.no_grad():
+            for _ in range(3):
+                other(x, t, return_dict = False)
+        assert again.stats["captures"] == 2 and again.stats["replays"] == 4
+        again.free()
+    finally:
+        Net._repeated_blocks = ["Block"]
