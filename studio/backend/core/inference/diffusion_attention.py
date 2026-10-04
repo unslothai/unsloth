@@ -72,9 +72,10 @@ def normalize_attention_backend(value: Optional[str]) -> Optional[str]:
 # (min, max-exclusive) capability range: FA3 is Hopper-SM90 only, FA4 is Blackwell+.
 _ARCH_CAPABILITY: dict[str, tuple[tuple[int, int], Optional[tuple[int, int]]]] = {
     "_flash_3_hub": ((9, 0), (10, 0)),  # Hopper (SM90) only
-    # Blackwell (SM100)+. SM100 is verified; sm110 / sm120 are not, so the first load on each card also runs the
-    # kernel (_fa4_kernel_runs) and keeps the default backend when it fails or is wrong.
-    "flash_4_hub": ((10, 0), None),
+    "flash_4_hub": (
+        (10, 0),
+        None,
+    ),  # SM100+; sm110 / sm120 unverified, so _fa4_kernel_runs also checks each card
 }
 
 
@@ -282,17 +283,13 @@ def _cudnn_attention_supported() -> bool:
     return have is None or have >= (8, 0)
 
 
-# sageattn dispatches on an exact arch match whose set varies by build (2.2.0: sm80/86/89/90/120; community builds add
-# sm75/87) and diffusers only checks the version, so ask the kernel. A static capability row cannot say which build is
-# installed (it would refuse a working community sm75 build, or allow sm100, which no 2.x release dispatches), so the
-# per-device run below is the gate. (device, dtype, head_dim) -> "" or why the kernel is not used.
+# sageattn's arch set varies by build (community sm75 works, sm100 never does), so a run per card is the gate, not a
+# static capability row. (device, dtype, head_dim) -> "" or why the kernel is not used.
 _SAGE_PROBE_CACHE: dict[tuple[str, str, int], str] = {}
 
-# Upstream sageattn pads head_dim 64..128 and raises above 128, and takes fp16/bf16 only.
-_SAGE_MAX_HEAD_DIM = 128
+_SAGE_MAX_HEAD_DIM = 128  # sageattn raises above 128
 _SAGE_DTYPE_NAMES = ("float16", "bfloat16", "fp16", "bf16", "half")
-# Self-check bounds against an fp32 reference on random inputs. SageAttention2 lands near cos 0.9999 / rel-L1 0.01-0.03
-# on such data (INT8 QK, FP8/FP16 PV); a kernel that ran on the wrong arch or with a broken build is far outside.
+# SageAttention 2 lands near cos 0.9999 / rel-L1 0.01-0.03 vs fp32 here; a wrong-arch or broken build is far outside.
 _SAGE_MIN_COSINE = 0.99
 _SAGE_MAX_REL_L1 = 0.08
 
@@ -302,10 +299,9 @@ def _run_sage_probe(
     dtype: Any,
     head_dim: int = 128,
 ) -> str:
-    """Empty when ``sageattn`` on ``device`` matches an fp32 reference at ``head_dim``, else why not.
+    """Empty when ``sageattn`` matches fp32 SDPA at ``head_dim``, else why not. Raises when unaskable (import, OOM).
 
-    Raises when unaskable (import, device, OOM). Random inputs with a per-channel K offset, as real keys have one: a
-    zero tensor only proves the launch, not the numbers."""
+    Random inputs with a per-channel K offset like real keys: a zero tensor proves the launch, not the numbers."""
     import torch
     from sageattention import sageattn
 
@@ -337,7 +333,7 @@ def _run_sage_probe(
         rel = float((got - ref).abs().mean() / ref.abs().mean().clamp_min(1e-12))
     except torch.cuda.OutOfMemoryError:
         raise
-    except Exception as exc:  # noqa: BLE001 - output of the wrong kind is a failed check, not an unaskable probe
+    except Exception as exc:  # noqa: BLE001
         return f"self-check: {type(exc).__name__}: {exc}"
     if cos < _SAGE_MIN_COSINE or rel > _SAGE_MAX_REL_L1:
         return f"self-check: cosine {cos:.4f}, relative L1 {rel:.4f} vs fp32 at head_dim {head_dim}"
@@ -356,7 +352,7 @@ def _indexed_cuda_device(device: str) -> str:
 
 
 def _sage_probe_head_dims(head_dims: Any) -> tuple[int, ...]:
-    """The head dims Sage would actually serve (<= 128; larger ones run native per call), 128 when none are known."""
+    """Head dims Sage serves (<= 128; larger run native per call), 128 when none are known."""
     dims = sorted(
         {
             int(d)
@@ -372,10 +368,8 @@ def _sage_kernel_runs(
     logger: Any = None,
     head_dims: Any = None,
 ) -> Optional[bool]:
-    """True when ``sageattn`` passed its self-check on this card at every head dim it would serve.
-
-    False when the kernel raised, failed the self-check, or the package cannot be imported (not cached: an install
-    later in this process may fix it). None (unaskable, not cached) keeps the requested backend."""
+    """True when ``sageattn`` passed its self-check at every head dim it serves; False when it raised, failed, or is
+    not importable (not cached: a later install may fix it); None (unaskable) keeps the request."""
     device = str(getattr(target, "torch_device", None) or getattr(target, "device", None) or "")
     if not device.startswith("cuda"):
         return None
@@ -405,7 +399,7 @@ def _sage_kernel_runs(
 
 
 def _runs_in_float32(target: Any) -> bool:
-    """The pipeline dtype is fp32 (video families promote fp16 to fp32 on cards without bf16): Sage never applies."""
+    """fp32 pipeline (video families promote fp16 on cards without bf16): Sage never applies."""
     dtype = getattr(target, "dtype", None)
     if dtype is None:
         return False
@@ -413,9 +407,8 @@ def _runs_in_float32(target: Any) -> bool:
     return name in ("float32", "fp32", "float")
 
 
-# Calls the Sage kernel cannot take, routed to the native backend per call instead of raising mid-generation:
-# diffusers' sage backend raises on any attn_mask, and sageattn on head_dim > 128 or a non-fp16/bf16 dtype. Every test
-# below reads only shapes, dtypes and whether a mask was passed, so torch.compile specialises on it (no graph break).
+# Calls Sage cannot take (attn_mask, head_dim > 128, dtype) run native instead of raising mid-generation. The checks
+# read only shapes, dtypes and mask presence, so torch.compile specialises on them without a graph break.
 _SAGE_GUARD_ATTR = "_unsloth_sage_guard"
 _SAGE_ROUTED: dict[str, int] = {}
 _SAGE_ROUTED_LOGGED: set[str] = set()
@@ -448,8 +441,7 @@ def _sage_reroute_reason(query: Any, key: Any, value: Any, attn_mask: Any) -> Op
 
 
 def _note_reroute(label: str, reason: str, counts: dict, logged: set) -> None:
-    """Count (and log once per reason) a call that ran native instead of ``label``. Eager only: under torch.compile the
-    count would be a traced side effect, and the routing itself is already decided by the specialised graph."""
+    """Count and log once per reason. Eager only: under torch.compile it would be a traced side effect."""
     try:
         import torch
         if torch.compiler.is_compiling():
@@ -472,9 +464,8 @@ def _note_sage_reroute(reason: str) -> None:
     _note_reroute("SageAttention", reason, _SAGE_ROUTED, _SAGE_ROUTED_LOGGED)
 
 
-# sageattn() reads the GPU arch through torch.cuda calls Dynamo cannot trace ("torch.* op returned non-Tensor"), so a
-# compiled DiT that reaches it fails its fullgraph compile and the whole load runs eager (measured on A100: Qwen-Image-2.1
-# 0.20 -> 0.38 s/step). Calling it through an opaque custom op keeps the rest of the block compiled.
+# sageattn() reads the arch via torch.cuda calls Dynamo cannot trace, so a fullgraph compile failed and the load ran
+# eager. An opaque custom op keeps the block compiled.
 _SAGE_OP_NAME = "unsloth_studio::sage_attention_nhd"
 _SAGE_OP: dict[str, Any] = {}
 _SAGE_OP_LOCK = threading.Lock()
@@ -495,12 +486,10 @@ def _sage_custom_op(sage_fn: Any) -> Optional[Any]:
                 out = _SAGE_OP["fn"](
                     query = query, key = key, value = value, is_causal = is_causal, scale = scale
                 )
-                # A fresh contiguous tensor, so the fake below describes it exactly (head dims under 64 come back as
-                # a padded slice).
+                # Head dims under 64 come back as a padded slice; the fake describes a contiguous tensor.
                 return out.contiguous()
 
-            # Real objects, not the strings this module's `from __future__ import annotations` would leave: custom_op
-            # infers the schema from them.
+            # custom_op infers the schema from real types, not `from __future__ import annotations` strings.
             _impl.__annotations__ = {
                 "query": torch.Tensor,
                 "key": torch.Tensor,
@@ -529,9 +518,8 @@ def _install_dispatch_guard(
 ) -> bool:
     """Wrap diffusers' registered ``backend`` so calls its kernel cannot take run native. Idempotent.
 
-    False when diffusers' registry is not where this expects it: the caller then does not engage the backend at all,
-    since without the guard a masked call would raise mid-generation. ``make_op(fn)`` optionally returns an opaque op
-    the guard calls for a plain (no lse, no context-parallel) call."""
+    False when the registry is not where expected: the caller then does not engage the backend. ``make_op(fn)``
+    optionally returns an opaque op for plain (no lse, no context-parallel) calls."""
     try:
         from diffusers.models.attention_dispatch import (
             AttentionBackendName,
@@ -549,7 +537,7 @@ def _install_dispatch_guard(
     if not callable(kernel_fn) or not callable(native_fn):
         return False
 
-    # Built here, eagerly: the guard body runs inside compiled graphs, where taking a registration lock cannot trace.
+    # Eagerly: the guard runs inside compiled graphs, where a registration lock cannot trace.
     op = make_op(kernel_fn) if make_op is not None else None
     names = ("query", "key", "value", "attn_mask")
 
@@ -590,14 +578,13 @@ def _install_dispatch_guard(
 
 
 def _install_sage_dispatch_guard() -> bool:
-    """The per-call guard on diffusers' ``sage`` backend (mask, head_dim > 128, dtype), calling through the custom op."""
+    """Per-call guard on diffusers' ``sage`` backend, through the custom op."""
     return _install_dispatch_guard(
         "sage", lambda *a: _sage_reroute_reason(*a), _note_sage_reroute, _sage_custom_op
     )
 
 
-# FlashAttention 4 from the HF kernels hub: diffusers' flash_4_hub raises on any attn_mask, like sage. Its head dims are
-# checked once per card at load (_fa4_kernel_runs), so the per-call test is only the mask, dtype and device.
+# diffusers' flash_4_hub raises on any attn_mask too; head dims are checked at load (_fa4_kernel_runs).
 _FA4_ROUTED: dict[str, int] = {}
 _FA4_ROUTED_LOGGED: set[str] = set()
 
@@ -630,11 +617,8 @@ def _install_fa4_dispatch_guard() -> bool:
     )
 
 
-# The arch row above only admits SM100+; whether the hub FA4 build actually runs, and runs correctly, on this card and
-# torch is asked here once per (device, dtype, head_dim), through diffusers' own dispatch after the kernel is fetched.
-# It catches cards the build has no code for (sm110 / sm120 are unverified) and API drift between the kernel and its
-# callers (torch 2.12.1's own FA4 SDPA hook unpacks 2 values where flash-attn-4 4.0.0b33 returns 5). An exact kernel,
-# so the bound is tight.
+# Whether the hub FA4 build runs correctly here, once per (device, dtype, head_dim) through diffusers' dispatch: catches
+# cards with no code (sm110 / sm120 unverified) and API drift. An exact kernel, so the bound is tight.
 _FA4_PROBE_CACHE: dict[tuple[str, str, int], str] = {}
 _FA4_MIN_COSINE = 0.999
 _FA4_MAX_REL_L1 = 0.02
@@ -645,7 +629,7 @@ def _run_fa4_probe(
     dtype: Any,
     head_dim: int = 128,
 ) -> str:
-    """Empty when diffusers' flash_4_hub matches fp32 SDPA at ``head_dim`` on ``device``, else why not. Raises on OOM."""
+    """Empty when flash_4_hub matches fp32 SDPA at ``head_dim``, else why not. Raises on OOM."""
     import torch
     from diffusers.models.attention_dispatch import AttentionBackendName, dispatch_attention_fn
 
@@ -672,7 +656,7 @@ def _run_fa4_probe(
         rel = float((got - ref).abs().mean() / ref.abs().mean().clamp_min(1e-12))
     except torch.cuda.OutOfMemoryError:
         raise
-    except Exception as exc:  # noqa: BLE001 - "no kernel for this arch" or an API mismatch is the answer
+    except Exception as exc:  # noqa: BLE001
         return f"{type(exc).__name__}: {exc}"
     if cos < _FA4_MIN_COSINE or rel > _FA4_MAX_REL_L1:
         return f"self-check: cosine {cos:.5f}, relative L1 {rel:.4f} vs fp32 at head_dim {head_dim}"
@@ -684,7 +668,7 @@ def _fa4_kernel_runs(
     logger: Any = None,
     head_dims: Any = None,
 ) -> Optional[bool]:
-    """True when flash_4_hub passed its self-check at every DiT head dim; False with a logged reason; None unaskable."""
+    """True when flash_4_hub passed at every DiT head dim; False with a logged reason; None unaskable."""
     device = str(getattr(target, "torch_device", None) or getattr(target, "device", None) or "")
     if not device.startswith("cuda"):
         return None
@@ -704,7 +688,7 @@ def _fa4_kernel_runs(
         if error is None:
             try:
                 error = _run_fa4_probe(device, dtype, head_dim)
-            except Exception:  # noqa: BLE001 - OOM / no torch: no answer about the kernel
+            except Exception:  # noqa: BLE001
                 return None
             error = _FA4_PROBE_CACHE.setdefault(key, error)
         if error:
@@ -723,11 +707,8 @@ def _version_tuple(text: str) -> tuple[int, ...]:
 
 
 def _sage_version_too_old() -> Optional[str]:
-    """Why the installed sageattention cannot serve, when it is older than diffusers' floor; None otherwise.
-
-    PyPI's newest is 1.0.6, the SageAttention 1 Triton kernel: diffusers refuses it, and on a B200 it is 4.7 to 6x
-    slower than cuDNN attention. Not cached: an install later in this process may replace it. A missing package is the
-    probe's to report."""
+    """Why an installed sageattention is below diffusers' floor (PyPI's 1.0.6 is SageAttention 1), else None. Not
+    cached: a later install may replace it."""
     try:
         from importlib.metadata import PackageNotFoundError, version
 
@@ -754,8 +735,7 @@ def _sage_usable(
     target: Any,
     logger: Any = None,
 ) -> bool:
-    """Whether an explicit ``sage`` request may engage: never on a float32 pipeline, never on a card whose kernel failed
-    its self-check at the DiT's head dims, and only with the per-call guard in place. Each refusal is logged."""
+    """Whether an explicit ``sage`` request may engage: not fp32, kernel passes at the DiT head dims, guard in place."""
     if target is not None and _runs_in_float32(target):
         if logger is not None:
             logger.warning(
@@ -1268,7 +1248,7 @@ def apply_attention_backend(
             and target is not None
             and _fa4_kernel_runs(target, logger, _dit_head_dims(pipe)) is False
         ):
-            # The kernel is fetched by set_attention_backend, so it is probed after; undo the per-DiT pin.
+            # set_attention_backend fetches the kernel, so probe after it and undo the pin on failure.
             for fn in setters:
                 try:
                     fn(ATTN_NATIVE)
@@ -1294,7 +1274,7 @@ def apply_attention_backend(
     return None
 
 
-# The backend each DiT was set to, read by the CUDA-graph eligibility check: Sage under a replayed graph renders noise.
+# Read by graph_eligible: Sage under a replayed graph renders noise.
 ATTENTION_BACKEND_ATTR = "_unsloth_attention_backend"
 
 
