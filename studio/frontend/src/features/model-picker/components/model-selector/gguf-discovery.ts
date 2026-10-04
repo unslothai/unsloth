@@ -18,7 +18,6 @@ function withHubState<V extends GgufVariantDetail>(
   };
 }
 
-/** Publish cached quants before optional remote discovery, keeping their load paths and readiness. */
 export async function loadPickerGgufVariants<T extends GgufVariantsResponse>(
   list: (localOnly: boolean) => Promise<T>,
   options: {
