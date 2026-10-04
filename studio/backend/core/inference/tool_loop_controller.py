@@ -87,8 +87,7 @@ def _looks_like_broken_json(raw: str) -> bool:
         remainder = text[error.pos :]
         return bool(remainder) and not any(ch in _JSON_STRUCTURAL for ch in remainder)
     except (ValueError, RecursionError):
-        # Decoder limits, not syntax: an integer past CPython's digit cap, nesting past the recursion limit, or a
-        # NaN/Infinity a strict parser refuses. JSON-shaped text this reader cannot take is as broken as a cut-off one.
+        # Digit cap, recursion limit or NaN/Infinity: unreadable is as broken as cut off.
         return True
     return False
 
@@ -712,15 +711,14 @@ def coerce_tool_arguments(
         )
     if isinstance(raw_args, str):
         try:
-            # Strict on purpose: NaN/Infinity decode here but replay as JSON no provider parses.
+            # NaN/Infinity would replay as JSON no provider parses.
             parsed = json.loads(raw_args, parse_constant = _reject_json_constant)
             if isinstance(parsed, Mapping):
                 return CoercedArguments(
                     coerce_arguments_by_schema(parsed, properties, repair = heal), False
                 )
         except (ValueError, RecursionError):
-            # ValueError covers JSONDecodeError and the digit cap; RecursionError is nesting past the limit. Model text
-            # must never raise out of here -- this runs before the budget gate, so a raise aborts the whole turn.
+            # Must not raise: this runs before the budget gate, so a raise aborts the whole turn.
             pass
         if heal:
             # Healing exists for a model that sends its ONE argument as a bare string instead of an object. Text that

@@ -1192,8 +1192,6 @@ def test_budget_exhausted_parallel_call_is_replayed_with_its_call(executed):
     "fragment",
     [
         '{"query": "b',
-        # Decoder limits rather than syntax: each one decodes past `json.loads` differently and used to raise out of
-        # prepare_call before the exhausted-call replay was built, aborting the turn (Codex review on #10274).
         '{"query":' + "1" * 4301 + "}",
         "[" * 100_000,
         '{"query":NaN}',
@@ -1201,15 +1199,7 @@ def test_budget_exhausted_parallel_call_is_replayed_with_its_call(executed):
     ids = ["cut-off", "digit-limit", "nesting-limit", "nan-constant"],
 )
 def test_budget_exhausted_call_replays_arguments_a_provider_will_parse(executed, heals, fragment):
-    """An exhausted call goes back through prepare_call, not hand-built replay.
-
-    The refused call's streamed arguments never became valid JSON here, and
-    llama-server parses every replayed tool_call's arguments while rendering
-    the template -- an unparseable fragment answers 500 for the whole next
-    turn. The decision's replay shape already guarantees parseability for
-    executed calls; the budget-exhausted path must give the provider the same
-    guarantee instead of the raw fragment -- and must not raise while doing so.
-    """
+    """llama-server parses every replayed tool_call's arguments, so an unparseable one 500s the next turn."""
     transport = FakeTransport(
         [
             [
@@ -1231,7 +1221,6 @@ def test_budget_exhausted_call_replays_arguments_a_provider_will_parse(executed,
     _run(transport, max_calls = 1)
 
     assert [call["name"] for call in executed] == ["web_search"]
-    # The loop went on to the follow-up provider request instead of aborting.
     assert len(transport.requests) == 2
     replayed = transport.requests[1]["messages"]
     exhausted = [
@@ -1241,7 +1230,6 @@ def test_budget_exhausted_call_replays_arguments_a_provider_will_parse(executed,
         for call in message.get("tool_calls") or []
         if call["id"] == "call_b"
     ][0]
-    # Strict: `json.loads` alone takes NaN/Infinity, which is exactly what a provider's parser refuses.
     json.loads(exhausted["function"]["arguments"], parse_constant = _reject_json_constant)
 
 
