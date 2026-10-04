@@ -180,7 +180,6 @@ def binary_cudnn_build(binary: Optional[str]) -> tuple[bool, Optional[int]]:
 
 def managed_root() -> Path:
     from utils.paths.storage_roots import studio_bin_root
-
     return studio_bin_root() / "sd-cpp-cudnn"
 
 
@@ -205,7 +204,6 @@ def installed_library(runtime: CudnnRuntime, root: Optional[Path] = None) -> Opt
 def _uv_executable() -> Optional[str]:
     try:
         from utils.mlx_repair import _uv_executable as find_uv
-
         return find_uv()
     except Exception:  # noqa: BLE001
         return shutil.which("uv")
@@ -215,7 +213,6 @@ def _child_env() -> dict[str, str]:
     try:
         from utils.child_stdio import utf8_child_env
         from utils.native_path_leases import child_env_without_native_path_secret
-
         return utf8_child_env(child_env_without_native_path_secret())
     except Exception:  # noqa: BLE001
         env = dict(os.environ)
@@ -226,15 +223,12 @@ def _child_env() -> dict[str, str]:
 def _reachable(url: str) -> bool:
     try:
         from .diffusion_nvfp4_install import _reachable as probe
-
         return probe(url)
     except Exception:  # noqa: BLE001 - an unanswerable probe means no network
         return False
 
 
-def install_command(
-    runtime: CudnnRuntime, target: Path, uv: Optional[str]
-) -> list[str]:
+def install_command(runtime: CudnnRuntime, target: Path, uv: Optional[str]) -> list[str]:
     """``--target`` a Studio-managed dir, ``--no-deps``, wheels only: nothing in the venv can change."""
     if uv:
         cmd = [uv, "pip", "install", "--python", sys.executable, "--target", str(target)]
@@ -386,7 +380,11 @@ def _install_locked(
         after = _venv_snapshot()
         if before != after:
             # Cannot happen with --target; if it ever does, say so loudly rather than run on a moved torch stack.
-            drift = {k: (before.get(k), after.get(k)) for k in set(before) | set(after) if before.get(k) != after.get(k)}
+            drift = {
+                k: (before.get(k), after.get(k))
+                for k in set(before) | set(after)
+                if before.get(k) != after.get(k)
+            }
             logger.error("sd_cpp.cudnn: the install changed this environment: %s", drift)
             return f"the install changed this environment ({sorted(drift)})"
         if not ok:
@@ -447,7 +445,11 @@ class CudnnAttention:
             self._render = {"loaded": False, "plans": 0, "fallbacks": 0}
 
     def feed(self, line: str) -> None:
-        if self.state is None or self.state in (STATE_UNAVAILABLE, STATE_OFF) or "cuDNN" not in line:
+        if (
+            self.state is None
+            or self.state in (STATE_UNAVAILABLE, STATE_OFF)
+            or "cuDNN" not in line
+        ):
             return
         with self._lock:
             m = _LOADED_RE.search(line)
@@ -475,7 +477,10 @@ class CudnnAttention:
             if seen.get("plans"):
                 self.state, self.reason = STATE_ENGAGED, None
             elif seen.get("fallbacks"):
-                self.state, self.reason = STATE_FALLBACK, "cuDNN built no attention plan; the ggml kernels ran"
+                self.state, self.reason = (
+                    STATE_FALLBACK,
+                    "cuDNN built no attention plan; the ggml kernels ran",
+                )
             elif not seen.get("loaded"):
                 self.state, self.reason = STATE_FALLBACK, "sd.cpp did not load the cuDNN library"
 
@@ -520,7 +525,9 @@ def plan_cudnn_attention(
         )
     if not install_enabled(environ):
         return CudnnAttention(STATE_OFF, f"{CUDNN_INSTALL_ENV}=0")
-    lib, reason = ensure_library(runtime, allow_install = allow_install, status_cb = status_cb, root = root)
+    lib, reason = ensure_library(
+        runtime, allow_install = allow_install, status_cb = status_cb, root = root
+    )
     if lib is None:
         logger.info("sd_cpp.cudnn: attention stays on the ggml kernels: %s", reason)
         return CudnnAttention(STATE_UNAVAILABLE, reason)

@@ -22,9 +22,7 @@ if _TESTS_DIR not in sys.path:
     sys.path.insert(0, _TESTS_DIR)
 
 # Lines the fork prints at INFO level (copied from a B200 sd-server log of the cuDNN build).
-LOADED = (
-    "[INFO   ] ggml - load_locked: cuDNN 92700 loaded from /x/nvidia/cudnn/lib/libcudnn.so.9 for attention"
-)
+LOADED = "[INFO   ] ggml - load_locked: cuDNN 92700 loaded from /x/nvidia/cudnn/lib/libcudnn.so.9 for attention"
 PLAN_DIT = (
     "[INFO   ] ggml - ggml_cuda_cudnn_sdpa_prepare: cuDNN SDPA plan b=1 hq=56 hk=56 sq=19315 skv=19315 "
     "d=128 f16, workspace 0 B, built in 1321 ms"
@@ -35,7 +33,13 @@ NO_PLAN = (
 )
 
 
-def _binary(tmp_path: Path, *, cudnn: bool, cudart: int | None = 12, name = "sd-cli") -> str:
+def _binary(
+    tmp_path: Path,
+    *,
+    cudnn: bool,
+    cudart: int | None = 12,
+    name = "sd-cli",
+) -> str:
     blob = b"\x7fELF" + b"\0" * 64
     if cudart is not None:
         blob += f"libcudart.so.{cudart}".encode() + b"\0"
@@ -89,20 +93,30 @@ def test_binary_scan_reads_a_shared_ggml_beside_the_binary(tmp_path):
 
 @pytest.mark.parametrize(
     "platform, cc",
-    [("win32", (10, 0)), ("darwin", (10, 0)), ("linux", (7, 5)), ("linux", (6, 1)), ("linux", None)],
+    [
+        ("win32", (10, 0)),
+        ("darwin", (10, 0)),
+        ("linux", (7, 5)),
+        ("linux", (6, 1)),
+        ("linux", None),
+    ],
 )
 def test_inert_off_linux_below_sm80_and_unknown_card(monkeypatch, tmp_path, platform, cc):
     """Windows, macOS, a T4 (sm75) and a card whose capability the build did not report (AMD, Vulkan, CPU):
     no install, no env, no status."""
     monkeypatch.setattr(cd, "ensure_library", _no_install)
-    plan = cd.plan_cudnn_attention(_binary(tmp_path, cudnn = True), cc, platform = platform, root = tmp_path)
+    plan = cd.plan_cudnn_attention(
+        _binary(tmp_path, cudnn = True), cc, platform = platform, root = tmp_path
+    )
     assert plan.env == () and plan.state is None
     assert plan.status_fields() == {"sd_cpp_cudnn_attention": None, "sd_cpp_cudnn_reason": None}
 
 
 def test_inert_for_a_prebuilt_without_the_cudnn_build(monkeypatch, tmp_path):
     monkeypatch.setattr(cd, "ensure_library", _no_install)
-    plan = cd.plan_cudnn_attention(_binary(tmp_path, cudnn = False), (10, 0), platform = "linux", root = tmp_path)
+    plan = cd.plan_cudnn_attention(
+        _binary(tmp_path, cudnn = False), (10, 0), platform = "linux", root = tmp_path
+    )
     assert plan.env == () and plan.state is None
 
 
@@ -111,7 +125,9 @@ def test_sm80_plus_gets_the_managed_library_for_the_child_only(monkeypatch, tmp_
     lib = _preinstall(tmp_path)
     monkeypatch.setattr(cd, "_install_locked", _no_install)
     before = dict(os.environ)
-    plan = cd.plan_cudnn_attention(_binary(tmp_path, cudnn = True), cc, platform = "linux", root = tmp_path)
+    plan = cd.plan_cudnn_attention(
+        _binary(tmp_path, cudnn = True), cc, platform = "linux", root = tmp_path
+    )
     assert plan.env == ((cd.GGML_CUDNN_LIB_ENV, lib),)
     assert plan.state == cd.STATE_READY
     # This process's environment is untouched: only the sd.cpp spawn gets the variable.
@@ -160,7 +176,14 @@ def test_install_command_targets_a_studio_dir_never_the_venv(tmp_path, uv):
     assert cmd[cmd.index("--target") + 1] == str(tmp_path / "stage")
     assert "--no-deps" in cmd and cmd[cmd.index("--only-binary") + 1] == ":all:"
     assert cmd[-2:] == ["nvidia-cudnn-cu12==9.27.0.42", "nvidia-cuda-nvrtc-cu12==12.8.93"]
-    for banned in ("--upgrade", "-U", "--force-reinstall", "--reinstall", "--system", "--break-system-packages"):
+    for banned in (
+        "--upgrade",
+        "-U",
+        "--force-reinstall",
+        "--reinstall",
+        "--system",
+        "--break-system-packages",
+    ):
         assert banned not in cmd
 
 
@@ -175,7 +198,13 @@ def test_managed_root_is_under_the_studio_bin_dir_not_site_packages(monkeypatch,
         assert site != root.resolve() and site not in root.resolve().parents
 
 
-def _fake_installer(monkeypatch, *, version = "92700", write_files = True, drift = False):
+def _fake_installer(
+    monkeypatch,
+    *,
+    version = "92700",
+    write_files = True,
+    drift = False,
+):
     calls = []
     snaps = iter([{"torch": "2.12.1"}, {"torch": "2.12.1" if not drift else "2.13.0"}])
     monkeypatch.setattr(cd, "_venv_snapshot", lambda: next(snaps))
@@ -285,7 +314,13 @@ def test_status_fallback_when_no_plan_or_library_not_loaded():
 # --- through the H3 native load --------------------------------------------------------------------------------------
 
 
-def _h3_load(monkeypatch, tmp_path, *, devices, carries = True):
+def _h3_load(
+    monkeypatch,
+    tmp_path,
+    *,
+    devices,
+    carries = True,
+):
     import test_video_backend as tvb
 
     monkeypatch.setattr(cd, "binary_cudnn_build", lambda _b: (carries, 12))
@@ -308,7 +343,10 @@ def test_h3_load_on_sm100_names_the_library_and_reports_ready(monkeypatch, tmp_p
     env = dict(state.pipe.env)
     assert env[cd.GGML_CUDNN_LIB_ENV] == lib
     assert env["GGML_CUDA_QUANT_CUBLAS_MIN_BATCH"] == "1024"
-    assert _sd_cpp_cudnn_status(state) == {"sd_cpp_cudnn_attention": "ready", "sd_cpp_cudnn_reason": None}
+    assert _sd_cpp_cudnn_status(state) == {
+        "sd_cpp_cudnn_attention": "ready",
+        "sd_cpp_cudnn_reason": None,
+    }
 
 
 @pytest.mark.parametrize("cc, carries", [("7.5", True), ("10.0", False)])
@@ -318,11 +356,13 @@ def test_h3_load_on_t4_or_old_prebuilt_is_unchanged(monkeypatch, tmp_path, cc, c
 
     state, _lib = _h3_load(monkeypatch, tmp_path, devices = tvb._cuda_devices(cc), carries = carries)
     assert cd.GGML_CUDNN_LIB_ENV not in dict(state.pipe.env)
-    assert _sd_cpp_cudnn_status(state) == {"sd_cpp_cudnn_attention": None, "sd_cpp_cudnn_reason": None}
+    assert _sd_cpp_cudnn_status(state) == {
+        "sd_cpp_cudnn_attention": None,
+        "sd_cpp_cudnn_reason": None,
+    }
 
 
 def test_status_route_model_carries_the_fields():
     from models.inference import VideoStatusResponse
-
     fields = VideoStatusResponse.model_fields
     assert "sd_cpp_cudnn_attention" in fields and "sd_cpp_cudnn_reason" in fields
