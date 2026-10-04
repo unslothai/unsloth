@@ -582,3 +582,20 @@ def test_skip_zero_changes_nothing():
     model = _skip_model()
     assert ns["skip_checkpointing"](model, 0) == []
     assert all(l.gradient_checkpointing for l in model.layers)
+
+
+def _method(path, cls_name, name):
+    mod = ast.parse(open(os.path.join(HERE, "unsloth", "models", path), encoding = "utf-8").read())
+    cls = next(n for n in mod.body if isinstance(n, ast.ClassDef) and n.name == cls_name)
+    return next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == name)
+
+
+def test_generic_load_refuses_unified_memory_before_loading_to_host():
+    fn = _method("vision.py", "FastBaseModel", "from_pretrained")
+    begin = min(
+        n.lineno
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "begin_block_swap_load"
+    )
+    hits = _refusals(fn, "is_integrated_unified_memory_gpu")
+    assert hits and min(hits) < begin

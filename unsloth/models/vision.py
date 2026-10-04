@@ -125,6 +125,7 @@ from ._utils import (
     set_module_gradient_checkpointing,
 )
 from ._utils import *
+from ._uma_safetensors import is_integrated_unified_memory_gpu
 from ._utils import estimate_training_reserve_bytes as _zoo_reserve_estimate
 from ._remote_code_buffers import restore_remote_code_non_persistent_buffers
 from ._custom_dtype import resolve_dtype, trusted_custom_dtype
@@ -2625,6 +2626,13 @@ class FastBaseModel:
                 _block_swap_layers,
                 "streams frozen LoRA base weights, so it cannot be combined with "
                 "fast_inference or full_finetuning.",
+            )
+        if _block_swap_layers and (
+            not torch.cuda.is_available() or is_integrated_unified_memory_gpu()
+        ):
+            _block_swap_layers = refuse_block_swap_load(
+                _block_swap_layers,
+                "needs a discrete CUDA or ROCm GPU; unified memory has no separate RAM to load into.",
             )
 
         # Offline snapshot for the loads below; not popped, so the weight load still reads local_files_only from **kwargs. See _get_effective_local_files_only.
