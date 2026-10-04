@@ -43,6 +43,8 @@ def _evict_chat() -> None:
 
     from core.inference.llama_cpp import chat_load_active
 
+    from routes.inference import get_voice_llama_backend
+
     unload_extra_models(strict = True)
     llama = get_llama_cpp_backend()
     # is_active (process exists), not is_loaded (exists AND healthy): a chat model still starting up holds VRAM but is
@@ -50,6 +52,10 @@ def _evict_chat() -> None:
     # the cancel event the download loop polls, so it aborts.
     if llama.is_active or chat_load_active():
         llama.unload_model()
+    # The voice slot is a chat-owned llama-server too; left resident it sits beside the pipeline that evicted chat.
+    voice = get_voice_llama_backend()
+    if getattr(voice, "is_active", False):
+        voice.unload_model()
     orchestrator = get_inference_backend()
     if orchestrator.active_model_name:
         orchestrator.unload_model(orchestrator.active_model_name)

@@ -41595,6 +41595,9 @@ class LlamaCppBackend:
         with httpx.Client(
             timeout = httpx.Timeout(_GGUF_AUDIO_READ_TIMEOUT, connect = 10),
             headers = self._auth_headers,
+            # Local transport, like the blocking path: an ambient HTTP(S)_PROXY must not carry it.
+            trust_env = False,
+            verify = _local_ssl_context(),
         ) as client:
             with client.stream("POST", f"{self.base_url}/completion", json = payload) as resp:
                 if resp.status_code != 200:

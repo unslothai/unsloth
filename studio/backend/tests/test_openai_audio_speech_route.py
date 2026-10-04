@@ -397,6 +397,18 @@ def test_streaming_speech_honours_the_requested_model(monkeypatch):
     assert spoken == ["me/my-orpheus-finetune-GGUF", "unsloth/orpheus-3b-0.1-ft-GGUF"]
 
 
+def test_streaming_speech_talks_to_llama_server_over_local_transport():
+    """The streaming client went through an ambient HTTP(S)_PROXY while the blocking one did not."""
+    import inspect
+
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    source = inspect.getsource(LlamaCppBackend.generate_audio_response_stream)
+    client = source[source.index("httpx.Client(") :]
+    client = client[: client.index(") as client")]
+    assert "trust_env = False" in client and "verify = _local_ssl_context()" in client
+
+
 def test_the_shared_core_guards_before_generating():
     """Wired in _generate_tts_wav so /audio/generate inherits it, not only /audio/speech."""
     import inspect
@@ -1206,6 +1218,17 @@ def test_voice_load_resolves_with_the_account_token_not_the_callers(monkeypatch)
         asyncio.run(routes_module.voice_load_model(request, "tester"))
     assert failed.value.status_code == 400  # the route wraps the resolve failure
     assert seen["hf_token"] == "account-token"
+
+
+def test_voice_load_claims_the_gpu_for_chat_before_spawning():
+    """A voice load went around the GPU arbiter, so a resident Images/Video pipeline stayed put
+    beside the new llama-server."""
+    import inspect
+
+    source = inspect.getsource(routes_module.voice_load_model)
+    claim = source.index("await asyncio.to_thread(acquire_for_request, _CHAT)")
+    spawn = source.index("await asyncio.to_thread(voice_backend.load_model, intent)")
+    assert claim < spawn
 
 
 def test_voice_load_rejects_a_context_above_the_requestable_ceiling():

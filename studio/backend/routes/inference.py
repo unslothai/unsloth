@@ -21058,6 +21058,11 @@ async def voice_load_model(
         n_ctx = request.n_ctx,
         n_parallel = request.parallel,
     )
+    # The voice slot is chat-owned GPU use: claim CHAT so a resident Images/Video pipeline is
+    # evicted first, as /load does. A no-op while chat already owns the GPU (voice mode).
+    from core.inference.gpu_arbiter import CHAT as _CHAT, acquire_for_request
+
+    await asyncio.to_thread(acquire_for_request, _CHAT)
     try:
         ok = await asyncio.to_thread(voice_backend.load_model, intent)
     except Exception as e:
