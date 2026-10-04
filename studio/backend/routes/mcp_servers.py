@@ -353,7 +353,6 @@ def list_mcp_servers(
     via_api_key: ViaApiKey = False,
     no_credential: WithoutCredential = False,
 ):
-    # Metadata-only endpoint: never load stored OAuth secrets here.
     rows = mcp_servers_db.list_servers(include_secrets = False)
     if via_api_key or no_credential:
         # Drop the row, not just its fields: `url` is the argv (carries credentials), `headers` is the subprocess
@@ -506,7 +505,7 @@ async def update_mcp_server(
         OAUTH_CLIENT_ID_FIELD in changes
         and changes[OAUTH_CLIENT_ID_FIELD] != old.get(OAUTH_CLIENT_ID_FIELD)
     )
-    # Clear persisted OAuth tokens when the URL, OAuth flag or client credentials change
+    # Clear persisted OAuth tokens on a URL, OAuth flag or client credential change
     if bool(old.get("use_oauth")) and (
         ("url" in changes and changes["url"] != old["url"])
         or changes.get("use_oauth") is False

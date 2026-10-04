@@ -110,7 +110,6 @@ def test_list_and_call_paths_forward_credentials_to_client(monkeypatch):
         **credentials,
     )
 
-    # MCP Apps widget calls (resource reads, structured tool calls) go through _ui_request_sync.
     mcp_client._ui_request_sync(
         "https://calendarmcp.googleapis.com/mcp/v1",
         None,
@@ -183,8 +182,6 @@ def test_oauth_credentials_round_trip_in_storage(tmp_path, monkeypatch):
     assert row[mcp_servers_db.HAS_OAUTH_CLIENT_SECRET_KEY] is True
     masked = mcp_servers_db.get_server("calendar", include_secret = False)
     assert masked[mcp_servers_db.HAS_OAUTH_CLIENT_SECRET_KEY] is True
-    # Presence, never a stand-in value: a masked row must not carry anything
-    # that a connection path could hand to the OAuth client as the secret.
     assert masked["oauth_client_secret"] is None
     assert mcp_client.oauth_client_kwargs(masked)["oauth_client_secret"] is None
 
@@ -359,12 +356,7 @@ def test_changing_client_id_clears_stored_secret(tmp_path, monkeypatch):
 
 
 def test_removing_the_stored_secret_drops_tokens_and_cached_tools(tmp_path, monkeypatch):
-    """Clearing the secret is a credential change like any other.
-
-    `old` is a masked read, so it never carries the stored secret value; a
-    comparison against it cannot see the removal. Leaving the persisted tokens
-    and the cached tools in place would let the server keep answering under
-    credentials the user just revoked."""
+    """`old` is a masked read, so the removal must be judged by presence, not value."""
     from models.mcp_servers import McpServerUpdate
     from routes import mcp_servers as routes
 
@@ -380,7 +372,6 @@ def test_removing_the_stored_secret_drops_tokens_and_cached_tools(tmp_path, monk
     asyncio.run(
         routes.update_mcp_server(
             "calendar",
-            # Same client ID and URL: only the secret goes away.
             McpServerUpdate(
                 oauth_client_id = "configured-client-id",
                 oauth_client_secret = None,
@@ -395,8 +386,7 @@ def test_removing_the_stored_secret_drops_tokens_and_cached_tools(tmp_path, monk
 
 
 def test_resending_an_unchanged_client_id_keeps_tokens_and_cached_tools(tmp_path, monkeypatch):
-    """The edit dialog resends every OAuth field on a rename, and a blank secret
-    field means "keep the stored one" -- neither is a credential change."""
+    """A rename resends every OAuth field with a blank secret: not a credential change."""
     from models.mcp_servers import McpServerUpdate
     from routes import mcp_servers as routes
 

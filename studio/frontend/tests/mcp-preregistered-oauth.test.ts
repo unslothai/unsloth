@@ -13,11 +13,7 @@ import {
 } from "../src/features/chat/utils/mcp-oauth-form.ts";
 
 const CHAT_ROOT = new URL("../src/features/chat/", import.meta.url);
-// The hint must be derived from the stored secret's owner AND from the two
-// fields whose edits clear it, never from a bare "a secret exists" flag that
-// survives them. Asserting the arguments, not just the call, is what makes a
-// mis-wired hint fail here: this suite has no DOM, so it cannot render the
-// dialog and read the attribute back.
+// No DOM here: assert the hint's arguments (owner, url, client ID), not a bare "secret exists" flag.
 const DERIVES_SECRET_HINT =
   /placeholder=\{mcpOAuthSecretPlaceholder\(\s*form\.storedSecretOwner,\s*form\.url,\s*form\.oauthClientId,?\s*\)\}/;
 

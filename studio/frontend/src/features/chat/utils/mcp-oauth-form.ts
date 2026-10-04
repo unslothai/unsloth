@@ -42,9 +42,7 @@ export function mcpOAuthSecretPlaceholder(
   if (!storedSecretOwner) {
     return MCP_OAUTH_SECRET_PLACEHOLDER_NEW;
   }
-  // A secret belongs to one registered client at one origin, so the update
-  // route drops it whenever either changes and no replacement is supplied.
-  // Promising that a blank field keeps it would then be a silent credential loss.
+  // The update route drops the secret when the client ID or URL changes without a replacement.
   const keepsStoredSecret =
     url.trim() === storedSecretOwner.url.trim() &&
     clientId.trim() === storedSecretOwner.clientId.trim();
