@@ -28,9 +28,11 @@ from core.inference.audio_device import audio_device_forces_cpu, audio_load_runs
 from core.inference.context_refusal import ContextBudgetExceeded
 from core.inference.native_audio import NATIVE_AUDIO_TYPES, is_native_audio_model
 from core.inference.audio_errors import (
+    AUDIO_RUNTIME_ERROR_CODE,
     AUDIO_UNSUPPORTED_CODE,
     AudioBackendUnsupportedError,
     AudioGenerationCancelledError,
+    AudioRuntimeError,
 )
 from core.inference.worker import PendingTeardowns, StopLedger
 from utils.hardware import get_device, prepare_gpu_selection
@@ -3487,6 +3489,11 @@ class InferenceOrchestrator:
                                 raise AudioBackendUnsupportedError(
                                     resp.get("error", "This backend cannot generate audio."),
                                     hint = resp.get("hint"),
+                                )
+                            if resp.get("code") == AUDIO_RUNTIME_ERROR_CODE:
+                                raise AudioRuntimeError(
+                                    resp.get("error", "Audio generation failed"),
+                                    status = resp.get("status"),
                                 )
                             raise RuntimeError(resp.get("error", "Audio generation failed"))
 

@@ -359,21 +359,39 @@ _TASK_NAMES = {
     "vad": "Voice activity detection",
     "midi": "Music transcription",
     "vc": "Voice conversion",
-    "svc": "Voice conversion",
+    "svc": "Singing voice conversion",
     "s2s": "Speech-to-speech",
     "spk": "Speaker embedding",
+    "turn": "Turn detection",
+    "clon": "Voice cloning",
+    "vdes": "Voice design",
 }
 
 
-def _family_from_spec_tasks(family: str, spec: Optional[dict]) -> AudioCppFamily:
-    """Policy for a family Studio does not list, from the tasks its spec declares."""
+def _family_from_spec_tasks(
+    family: str,
+    spec: Optional[dict],
+    label: Optional[str] = None,
+) -> AudioCppFamily:
+    """Policy for a family Studio does not list, from the tasks its spec declares.
+
+    The spec can be the one a GGUF embeds, newer than the installed runtime, so a family the
+    runtime does not load is refused here rather than failing at load with "unsupported model
+    family hint". ``label`` names the model in that refusal.
+    """
     tasks = [str(t).lower() for t in (spec or {}).get("tasks") or [] if isinstance(t, str)]
     tokens = [_SPEC_TO_SERVER_TASK.get(t, t) for t in tasks]
     # Speech first, then music, then transcription: a model that speaks is most useful spoken.
     for token in ("tts", "vdes", "clon", "gen", "asr"):
         if token in tokens:
             if token == "clon":
-                break
+                continue
+            if runtime_knows_family(family) is False:
+                return AudioCppFamily(
+                    family,
+                    "",
+                    unsupported = f"{label or family} needs a newer audio runtime than the one installed.",
+                )
             studio = "tts" if token == "vdes" else _SERVER_TO_STUDIO_TASK[token]
             return AudioCppFamily(family, studio, server_task = token)
     if "clon" in tokens:
@@ -383,9 +401,15 @@ def _family_from_spec_tasks(family: str, spec: Optional[dict]) -> AudioCppFamily
             unsupported = "This model only clones a reference voice, which Studio does not send yet.",
         )
     if tokens:
-        what = _TASK_NAMES.get(tokens[0], tokens[0])
+        what = _TASK_NAMES.get(tokens[0])
         return AudioCppFamily(
-            family, "", unsupported = f"{what} models are not supported in Studio yet."
+            family,
+            "",
+            unsupported = (
+                f"{what} models are not supported in Studio yet."
+                if what
+                else f"Studio does not support the '{tokens[0]}' task yet."
+            ),
         )
     return AudioCppFamily(
         family,
@@ -398,13 +422,14 @@ def family_policy(
     family: str,
     spec: Optional[dict] = None,
     names: Iterable[str] = (),
+    label: Optional[str] = None,
 ) -> AudioCppFamily:
     """What Studio does with ``family``: the table entry, else what its spec says it does.
 
     ``names`` (repo, folder and file names) pick the Qwen3-TTS package kind, which the family
     alone does not say: CustomVoice needs a speaker, VoiceDesign designs one, Base only clones.
     """
-    policy = FAMILIES.get(family) or _family_from_spec_tasks(family, spec)
+    policy = FAMILIES.get(family) or _family_from_spec_tasks(family, spec, label)
     if family == "qwen3_tts":
         text = " ".join(names).lower()
         if "voicedesign" in text or "voice-design" in text:
@@ -1119,6 +1144,45 @@ def runtime_spec(family: str) -> Optional[dict]:
     return None
 
 
+def runtime_knows_family(family: str) -> Optional[bool]:
+    """Whether the installed runtime loads ``family``; None when Studio cannot tell.
+
+    A runtime that ships ``model_specs/`` answers from it. The prebuilt bundles do not ship that
+    folder, so for the pinned prebuilt the families its source tree specs are listed in
+    ``audio_cpp_spec_families``. Any other runtime (no install, a custom build, another tag) is
+    unknown, and the spec's own tasks decide as before.
+    """
+    if not family or not re.fullmatch(r"[a-z0-9_]+", family):
+        return None
+    try:
+        from core.inference.audio_cpp_server import (
+            find_audio_cpp_server_binary,
+            read_install_record,
+        )
+        binary = find_audio_cpp_server_binary()
+    except Exception:  # noqa: BLE001 - no runtime, no answer
+        return None
+    if not binary:
+        return None
+    if runtime_spec(family) is not None:
+        return True
+    try:
+        parents = list(Path(binary).resolve().parents)[:3]
+        if any((parent / "model_specs").is_dir() for parent in parents):
+            return False
+        tag = read_install_record(binary).get("release_tag")
+    except (OSError, ValueError):
+        return None
+    from core.inference.audio_cpp_spec_families import (
+        AUDIO_CPP_SPEC_FAMILIES,
+        AUDIO_CPP_SPEC_FAMILIES_TAG,
+    )
+
+    if tag != AUDIO_CPP_SPEC_FAMILIES_TAG:
+        return None
+    return family in AUDIO_CPP_SPEC_FAMILIES
+
+
 def _clean_option(raw: Any) -> Optional[dict]:
     if not isinstance(raw, dict):
         return None
@@ -1536,7 +1600,7 @@ def _resolve_uncached(
         )
     spec = runtime_spec(family)
     embedded = header.spec if header is not None else None
-    policy = family_policy(family, spec or embedded, names)
+    policy = family_policy(family, spec or embedded, names, ref.display_name)
     if policy.package:
         # In the package's own order: its first mix is the one the runtime defaults to.
         variants = _package_variants(policy, files, ref.folder)

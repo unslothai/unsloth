@@ -34,6 +34,7 @@ from core.inference.audio_cpp_models import (
     resolve,
     split_variant_ref,
 )
+from core.inference.audio_errors import sanitize_runtime_detail
 from core.inference.audio_cpp_server import (
     AudioCppRequestCancelledError,
     AudioCppRequestError,
@@ -821,11 +822,13 @@ class AudioCppSttSidecar:
             self._release_locked()
             raise SttTranscriptionCancelledError("Transcription cancelled.") from exc
         except AudioCppRequestError as exc:
+            # The runtime's own words reach the client, so strip paths and credentials first.
+            detail = sanitize_runtime_detail(exc.detail) or "The audio runtime refused the request."
             if 400 <= exc.status < 500:
                 # The server rejected this clip or option (e.g. an unsupported language), not a broken runtime.
-                raise SttAudioDecodeError(exc.detail) from exc
+                raise SttAudioDecodeError(detail) from exc
             note_runtime_inference_failure(str(exc))
-            raise SttEngineUnavailableError(f"The audio runtime failed: {exc.detail}") from exc
+            raise SttEngineUnavailableError(f"The audio runtime failed: {detail}") from exc
         except (AudioCppUnavailableError, ValueError) as exc:
             if cancel_event is None or not cancel_event.is_set():
                 note_runtime_inference_failure(f"{type(exc).__name__}: {exc}")
