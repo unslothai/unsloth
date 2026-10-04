@@ -1,20 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""S3 audio datasets: audio files download beside their manifest and stay reachable.
-
-#4539: a Whisper finetune's dataset is audio files on S3 plus a transcription
-manifest. The tabular-only loader (#6222) filtered the audio keys out of the
-listing, flattened every download to its basename, and called a manifest+audio
-prefix a mixed-format error -- so the one layout this feature exists for could
-never load. Pinned here: audio keys are downloaded preserving their structure,
-the single-format rule judges only the manifest files, and the manifest's audio
-references are rewritten to the materialized local paths (prefix-relative keys,
-s3:// URIs, and manifest-relative paths; anything unmatched is left alone).
-
-Same harness as test_s3_dataset.py: boto3 may be absent in CI, so the client is
-faked and no network or credentials are involved.
-"""
+"""#4539: S3 audio datasets download beside their manifest and the manifest points at them.
+boto3 is faked as in test_s3_dataset.py."""
 
 import csv
 import importlib.util
@@ -117,7 +105,6 @@ def test_audio_files_download_beside_the_manifest_preserving_structure(monkeypat
 
     files = s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
 
-    # The loader consumes manifests only; audio materializes beside them.
     assert [os.path.basename(f) for f in files] == ["metadata.jsonl"]
     assert (tmp_path / "audio" / "a.wav").exists()
     assert (tmp_path / "audio" / "b.mp3").exists()
@@ -199,7 +186,6 @@ def test_json_lines_in_a_json_manifest_are_rewritten(monkeypatch, tmp_path):
 
 
 def test_manifest_relative_references_resolve_against_the_manifest_dir(monkeypatch, tmp_path):
-    # The manifest lives in a subdirectory and references a sibling by name.
     _install(
         monkeypatch,
         ["datasets/train/metadata.jsonl", "datasets/train/clips/a.wav"],
@@ -231,8 +217,7 @@ def test_csv_audio_references_are_rewritten_to_local_paths(monkeypatch, tmp_path
 
 
 def test_tabular_only_prefixes_keep_the_flat_layout(monkeypatch, tmp_path):
-    # #6222's contract: no audio in the listing means basenames in the target
-    # dir, name collisions deduplicated -- unchanged by the audio path.
+    # #6222's flat, collision-renamed layout is unchanged without audio.
     _install(monkeypatch, ["datasets/sub/train.parquet", "datasets/other/train.parquet"])
     files = s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
     assert sorted(os.path.basename(f) for f in files) == ["train.parquet", "train_1.parquet"]
@@ -240,9 +225,6 @@ def test_tabular_only_prefixes_keep_the_flat_layout(monkeypatch, tmp_path):
 
 
 def test_a_key_with_dotdot_segments_cannot_escape_the_download_dir(monkeypatch, tmp_path):
-    # ".." is a legal literal in an S3 key, and the structured layout joins
-    # keys into filesystem paths. Bucket contents are external input: a key
-    # aimed above the temp dir must stop the download, not write there.
     client = _install(
         monkeypatch,
         ["datasets/metadata.jsonl", "datasets/../../evil.wav"],

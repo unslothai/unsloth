@@ -49,7 +49,6 @@ export function DatasetPanel() {
   );
   const localDatasetInventory = useLocalDatasetInventory(datasetSource);
   const uploads = useDatasetUploads();
-  // Vision only: audio S3 datasets load since #4539 (audio downloaded beside its manifest).
   const isVisionTraining = (modelType ?? "text") === "vision" || isVisionModel;
 
   useEffect(() => {

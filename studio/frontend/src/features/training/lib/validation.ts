@@ -64,8 +64,7 @@ export function hasIncompatibleTrainingModalities(
 export function validateS3Source(
   config: TrainingConfigState,
 ): StartValidationResult {
-  // Audio is no longer gated: the backend downloads the audio beside its manifest and points the
-  // manifest at it (#4539). Vision stays out until image references get the same treatment.
+  // Audio manifests are rewritten to downloaded paths (#4539); image references are not.
   if (config.modelType === "vision" || config.isVisionModel) {
     return {
       ok: false,

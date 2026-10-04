@@ -72,7 +72,6 @@ export function DatasetSourceToggleAction() {
   return (
     <DatasetSourceToggle
       datasetSource={datasetSource}
-      // Vision only: audio S3 datasets load since #4539 (audio downloaded beside its manifest).
       isVisionModel={effectiveModelType === "vision" || isVisionModel}
       restoreBrowseDatasetSource={restoreBrowseDatasetSource}
       selectS3Source={selectS3Source}

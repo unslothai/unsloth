@@ -9,13 +9,9 @@ to a local temp directory so the existing local-file dataset path can consume
 them. boto3 is an optional dependency and is imported lazily — callers should
 gate on :func:`boto3_available` before invoking the loader.
 
-Audio datasets (#4539) are a manifest plus the audio files it references. Audio
-keys under the prefix are downloaded too, preserving their key structure so the
-manifest's relative references stay true, and the manifest's audio values are
-rewritten to the materialized absolute paths — the local loader hands them to
-``datasets.Audio``, which opens path strings verbatim. Audio references a
-parquet manifest carries cannot be rewritten without pyarrow, so those must
-already be absolute or resolvable on this host.
+Audio keys download too, keeping their prefix-relative layout, and audio values in
+JSON/JSONL/CSV manifests are rewritten to the local paths (``datasets.Audio`` opens path
+strings verbatim). Parquet manifests are not rewritten: their paths must already resolve.
 
 The S3 config dict mirrors ``models.training.S3Config.model_dump()`` (snake_case
 keys): bucket, region, prefix, access_key_id, secret_access_key, use_iam_role.
@@ -52,7 +48,6 @@ _IGNORED_METADATA_FILENAMES = {
     "schema.json",
     "state.json",
 }
-# Manifest formats whose audio references this module can rewrite in place.
 _REWRITABLE_MANIFEST_EXTENSIONS = (".json", ".jsonl", ".csv")
 
 
@@ -196,9 +191,7 @@ def _download_structured(
         _raise_if_cancelled(cancel_callback)
         relative = _key_relative_to_prefix(key, prefix)
         parts = [part for part in relative.split("/") if part not in ("", ".")]
-        # ".." is a legal literal in an S3 key, and this layout joins keys into
-        # filesystem paths. Bucket contents are external input: refuse rather
-        # than let a listing write above the download directory.
+        # ".." is a legal S3 key segment: refuse rather than write above target_dir.
         if ".." in parts or not parts:
             raise ValueError(
                 f"S3 key {key!r} contains '..' or empty path segments and cannot "
@@ -217,13 +210,8 @@ def _rewrite_audio_references(
     bucket: str,
     prefix: Optional[str],
 ) -> None:
-    """Point each manifest's audio references at the downloaded local files.
-
-    A reference resolves as the prefix-relative key, the full ``s3://`` URI, or
-    a path relative to the manifest's own directory — whichever downloaded.
-    Anything unmatched is left exactly as written: it may be an absolute path
-    or URL that is somebody else's contract to satisfy.
-    """
+    """Rewrite audio values naming a downloaded key (prefix-relative, ``s3://`` URI, or
+    manifest-relative) to its local path; anything else is left as written."""
     lookup: dict[str, str] = {}
     for key, local_path in audio_local_by_key.items():
         lookup[_key_relative_to_prefix(key, prefix)] = local_path
@@ -231,7 +219,7 @@ def _rewrite_audio_references(
 
     for manifest_key, manifest_path in manifest_local_by_key.items():
         if not manifest_path.lower().endswith(_REWRITABLE_MANIFEST_EXTENSIONS):
-            continue  # parquet: cannot rewrite without pyarrow (see module docstring)
+            continue
         manifest_dir = os.path.dirname(_key_relative_to_prefix(manifest_key, prefix))
 
         def resolve(value):
@@ -250,7 +238,6 @@ def _rewrite_audio_references(
 
 
 def _rewrite_row(row, resolve) -> None:
-    """Rewrite one manifest row's audio references in place."""
     if not isinstance(row, dict):
         return
     for column, value in row.items():
@@ -258,7 +245,7 @@ def _rewrite_row(row, resolve) -> None:
         if replacement is not None:
             row[column] = replacement
         elif isinstance(value, dict):
-            # The HF undecoded-audio shape: {"path": ..., "bytes": ...}.
+            # HF undecoded audio: {"path": ..., "bytes": ...}
             replacement = resolve(value.get("path"))
             if replacement is not None:
                 value["path"] = replacement
@@ -270,7 +257,7 @@ def _rewrite_json_manifest(manifest_path: str, resolve) -> None:
     try:
         data = None if manifest_path.lower().endswith(".jsonl") else json.loads(text)
     except json.JSONDecodeError:
-        data = None  # JSON Lines in a .json file, which the datasets json loader also accepts
+        data = None  # JSON Lines in a .json file
     if data is None:
         rows = [json.loads(line) for line in text.splitlines() if line.strip()]
         for row in rows:
@@ -280,7 +267,7 @@ def _rewrite_json_manifest(manifest_path: str, resolve) -> None:
                 f.write(json.dumps(row, ensure_ascii = False) + "\n")
         return
     if not isinstance(data, list):
-        return  # column-oriented JSON: leave it alone rather than guess
+        return  # column-oriented JSON
     for row in data:
         _rewrite_row(row, resolve)
     with open(manifest_path, "w", encoding = "utf-8") as f:
@@ -357,8 +344,6 @@ def prepare_s3_dataset_download(
 
         local_files: list[str] = []
         if audio_keys:
-            # Keys keep their prefix-relative structure so the manifest's
-            # relative references stay true; unique keys cannot collide.
             manifest_local_by_key = _download_structured(
                 client, bucket, prefix, keys, target_dir, cancel_callback
             )
@@ -368,7 +353,6 @@ def prepare_s3_dataset_download(
             local_files = list(manifest_local_by_key.values())
             _rewrite_audio_references(manifest_local_by_key, audio_local_by_key, bucket, prefix)
         else:
-            # The tabular-only layout keeps its flat, collision-renamed shape.
             used_paths: set[str] = set()
             for key in keys:
                 _raise_if_cancelled(cancel_callback)

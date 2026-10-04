@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The audio S3 loader against a real bucket, opt-in.
-
-The fake-client suite pins the contract; this one runs the same shape through boto3 and a
-network. Skipped unless ``UNSLOTH_S3_LIVE_BUCKET`` names a bucket the ambient credentials
-can write to (``AWS_ACCESS_KEY_ID`` / ``AWS_SECRET_ACCESS_KEY`` or the default chain, plus
-``AWS_ENDPOINT_URL_S3`` for an S3-compatible server). Everything it uploads sits under a
-unique prefix and is deleted afterwards.
+"""The audio S3 loader against a real, writable bucket (ambient AWS credentials; set
+``AWS_ENDPOINT_URL_S3`` for an S3-compatible server). Opt-in; uploads are deleted after.
 
     UNSLOTH_S3_LIVE_BUCKET=my-bucket pytest studio/backend/tests/test_s3_audio_dataset_live.py -q
 """
