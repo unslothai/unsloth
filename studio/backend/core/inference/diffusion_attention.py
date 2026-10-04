@@ -804,9 +804,6 @@ def _run_cudnn_head_dim_probe(device: str, dtype: Any, head_dim: int) -> bool:
     import torch
 
     if dtype not in (torch.float16, torch.bfloat16):
-        # diffusers' flash backend is half precision only, and the CK build raises on fp32 at the first call
-        if dtype is not None:
-            return False
         dtype = torch.bfloat16
     q = torch.empty((1, 2, 8, int(head_dim)), device = device, dtype = dtype)
     try:

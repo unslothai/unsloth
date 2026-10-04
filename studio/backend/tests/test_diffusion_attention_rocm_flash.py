@@ -226,3 +226,17 @@ def test_probe_kernel_error_is_false(monkeypatch):
     fa.flash_attn_func = flash_attn_func
     monkeypatch.setitem(sys.modules, "flash_attn", fa)
     assert att._run_rocm_flash_probe("cpu", torch.bfloat16) is False
+
+
+def test_cudnn_head_dim_probe_still_answers_fp32_at_bf16(monkeypatch):
+    torch = pytest.importorskip("torch")
+    import torch.backends.cuda as tbc
+
+    if not hasattr(tbc, "can_use_cudnn_attention"):
+        pytest.skip("torch without can_use_cudnn_attention")
+    seen = []
+    monkeypatch.setattr(
+        tbc, "can_use_cudnn_attention", lambda p, debug: seen.append(p.query.dtype) or True
+    )
+    assert att._run_cudnn_head_dim_probe("cpu", torch.float32, 128) is True
+    assert seen == [torch.bfloat16]
