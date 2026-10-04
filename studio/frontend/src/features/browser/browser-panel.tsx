@@ -321,18 +321,23 @@ function useTabTitle() {
 function TabStrip({
   tabs,
   activeTabId,
-}: { tabs: BrowserTab[]; activeTabId: string | null }) {
+  active,
+}: { tabs: BrowserTab[]; activeTabId: string | null; active: boolean }) {
   const t = useT();
   const tabTitle = useTabTitle();
   const fullView = useBrowserStore((state) => state.fullView);
   const { activateTab, closeTab, newTab, closePanel, setFullView } =
     useBrowserStore.getState();
   const fullViewShortcut = useShortcutLabel("toggleBrowserFullView");
-  useShortcut("toggleBrowserFullView", (event) => {
-    event.preventDefault();
-    const state = useBrowserStore.getState();
-    state.setFullView(!state.fullView);
-  });
+  useShortcut(
+    "toggleBrowserFullView",
+    (event) => {
+      event.preventDefault();
+      const state = useBrowserStore.getState();
+      state.setFullView(!state.fullView);
+    },
+    { enabled: active },
+  );
   return (
     // Above the desktop titlebar's drag strip (z-40), which would swallow tab clicks.
     <div
@@ -1319,7 +1324,8 @@ function liveTabIds(mounted: readonly string[], tabs: BrowserTab[], activeTabId:
 }
 
 /** The chat's in-app browser: tabs of web pages and opened files. Memoized so chat renders skip it. */
-export const BrowserPanel = memo(function BrowserPanel() {
+/** `active`: whether the chat holding it is shown; it stays mounted on other pages. */
+export const BrowserPanel = memo(function BrowserPanel({ active = true }: { active?: boolean }) {
   const t = useT();
   const tabs = useBrowserStore((state) => state.tabs);
   const activeTabId = useBrowserStore((state) => state.activeTabId);
@@ -1356,7 +1362,7 @@ export const BrowserPanel = memo(function BrowserPanel() {
       aria-label={t("browser.title")}
       className="relative flex h-full min-h-0 flex-col overflow-hidden bg-muted pt-[var(--studio-content-top-inset,0px)]"
     >
-      <TabStrip tabs={tabs} activeTabId={activeTabId} />
+      <TabStrip tabs={tabs} activeTabId={activeTabId} active={active} />
       <div
         className={cn(
           "relative flex min-h-0 flex-1 flex-col overflow-hidden border-t border-border/60 dark:border-transparent",

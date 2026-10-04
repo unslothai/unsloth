@@ -198,6 +198,14 @@ fn ipv6_is_private(ip: Ipv6Addr) -> bool {
         || (first & 0xfff0) == 0x3ff0
 }
 
+/// Longest page address sent to the panel, as the proxied frame caps its messages. A page can
+/// pushState a far longer one, and each would cross IPC and land in the tab.
+const MAX_URL_CHARS: usize = 8192;
+
+fn reportable(url: &str) -> bool {
+    url.len() <= MAX_URL_CHARS
+}
+
 fn is_external_handoff(url: &Url) -> bool {
     // What the opener capability allows.
     url.scheme() == "mailto"
@@ -653,7 +661,7 @@ fn start_url_poll<R: Runtime>(app: &AppHandle<R>) {
             let Ok(webview) = view(&app, &tab_id) else {
                 continue;
             };
-            let Some(url) = page_url(&webview).await else {
+            let Some(url) = page_url(&webview).await.filter(|url| reportable(url)) else {
                 continue;
             };
             let changed = {
@@ -699,7 +707,7 @@ fn create_view<R: Runtime>(
             if navigation_allowed(url) {
                 return true;
             }
-            if is_external_handoff(url) {
+            if is_external_handoff(url) && reportable(url.as_str()) {
                 emit(
                     &nav_app,
                     BrowserEvent::External {
@@ -713,7 +721,7 @@ fn create_view<R: Runtime>(
         .on_page_load(move |webview, payload| {
             let app = webview.app_handle();
             // The blank page a view starts on before its first address.
-            if payload.url().scheme() == "about" {
+            if payload.url().scheme() == "about" || !reportable(payload.url().as_str()) {
                 return;
             }
             let url = payload.url().to_string();
@@ -747,6 +755,9 @@ fn create_view<R: Runtime>(
             refresh_history(&webview);
         })
         .on_new_window(move |url, _features| {
+            if !reportable(url.as_str()) {
+                return NewWindowResponse::Deny;
+            }
             // A tab instead of a window, with no opener to script.
             if navigation_allowed(&url) && matches!(url.scheme(), "http" | "https") {
                 emit(
@@ -1327,6 +1338,13 @@ mod tests {
 
     fn allowed(url: &str) -> bool {
         navigation_allowed(&Url::parse(url).unwrap())
+    }
+
+    #[test]
+    fn page_addresses_are_bounded() {
+        let long = format!("https://example.com/{}", "a".repeat(MAX_URL_CHARS));
+        assert!(!reportable(&long));
+        assert!(reportable("https://example.com/"));
     }
 
     #[test]

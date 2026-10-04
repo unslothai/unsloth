@@ -258,3 +258,9 @@ def test_bot_checks_are_told_apart_from_plain_refusals():
     assert not _is_bot_check(503, headers(Server = "cloudflare"))
     assert not _is_bot_check(404, headers(Server = "cloudflare"))
     assert not _is_bot_check(403, headers(Server = "nginx"))
+
+
+def test_a_byte_order_mark_decides_the_encoding():
+    page = "<p>caf\u00e9</p>"
+    assert browser_mod._decode_html(page.encode("utf-16"), None) == page
+    assert browser_mod._decode_html(b"\xef\xbb\xbf" + page.encode("utf-8"), "iso-8859-1") == page

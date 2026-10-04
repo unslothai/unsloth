@@ -30,7 +30,7 @@ function openNewTab(fullView = false) {
 /** The chat header's new browser tab button, as ChatGPT has it: a click opens a tab beside the
  *  chat, and hovering offers a tab in full view too. Hidden while the panel is open, which has its
  *  own; its shortcuts still work then. */
-export function BrowserToggleButton() {
+export function BrowserToggleButton({ active = true }: { active?: boolean }) {
   const t = useT();
   const open = useBrowserStore((state) => state.open);
   const newTabShortcut = useShortcutLabel("newBrowserTab");
@@ -46,10 +46,15 @@ export function BrowserToggleButton() {
     setMenuOpen(false);
     openNewTab(fullView);
   };
-  useShortcut("newBrowserTab", (event) => {
-    event.preventDefault();
-    openTab();
-  });
+  // The chat stays mounted on other pages: its shortcuts only work while it is shown.
+  useShortcut(
+    "newBrowserTab",
+    (event) => {
+      event.preventDefault();
+      openTab();
+    },
+    { enabled: active },
+  );
   // The open panel toggles full view itself.
   useShortcut(
     "toggleBrowserFullView",
@@ -57,7 +62,7 @@ export function BrowserToggleButton() {
       event.preventDefault();
       openTab(true);
     },
-    { enabled: !open },
+    { enabled: active && !open },
   );
   const clearTimer = () => {
     if (timer.current !== null) window.clearTimeout(timer.current);

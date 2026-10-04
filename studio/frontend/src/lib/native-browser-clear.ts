@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import { isTauri } from "./api-base.ts";
+
+let clearing = false;
+const closedListeners = new Set<() => void>();
+
+/** True while a clear runs: a page shown meanwhile could write the cleared data back. */
+export function nativeClearing(): boolean {
+  return clearing;
+}
+
+/** Called once a clear has closed every native page. */
+export function onNativeViewsClosed(listener: () => void): void {
+  closedListeners.add(listener);
+}
+
+/** Clear the desktop browser pages' cookies, storage and cache, closing them for the clear. The
+ *  browser's Clear data and an account switch both come here, so neither can race a page reopening. */
+export async function clearNativeBrowsingData(): Promise<void> {
+  if (!isTauri) return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  if (!(await invoke<boolean>("browser_view_supported").catch(() => false))) return;
+  clearing = true;
+  try {
+    await invoke("browser_view_clear_data", { closeViews: true });
+  } finally {
+    clearing = false;
+    for (const listener of closedListeners) listener();
+  }
+}

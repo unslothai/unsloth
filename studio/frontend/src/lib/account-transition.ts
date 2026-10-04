@@ -3,7 +3,7 @@
 
 import { RUNTIME_REPAIR_KEY } from "../hooks/runtime-repair-history.ts";
 import { USER_STOPPED_KEY } from "../hooks/server-stop-intent.ts";
-import { isTauri } from "./api-base.ts";
+import { clearNativeBrowsingData } from "./native-browser-clear.ts";
 
 export const BROWSER_ACCOUNT_KEY = "unsloth.browser-account.v1";
 /** Written before a switch publishes new tokens, so peer tabs stop sending requests until the
@@ -186,13 +186,7 @@ function deleteAccountDatabase(
 
 /** The desktop browser panel's cookies live outside this origin's storage. A shell without the
  * panel answers neither command, so only a failed clear fails the switch. */
-async function clearDesktopBrowsingData(): Promise<void> {
-  if (!isTauri) return;
-  const { invoke } = await import("@tauri-apps/api/core");
-  const supported = await invoke<boolean>("browser_view_supported").catch(() => false);
-  // Closing the open pages first, so none writes the previous account's data back.
-  if (supported) await invoke("browser_view_clear_data", { closeViews: true });
-}
+
 
 /** Run before publishing new tokens; the marker is published last so other tabs reload only
  * once the new session is ready. */
@@ -201,7 +195,9 @@ export async function transitionBrowserAccount(
   postAuthRoute: string,
   commitSession: () => void,
   browser: AccountTransitionBrowser = window,
-  clearSiteData: () => Promise<void> = clearDesktopBrowsingData,
+  // The browser's own clear: it closes the open pages first and keeps them closed while it runs,
+  // so none writes the previous account's data back.
+  clearSiteData: () => Promise<void> = clearNativeBrowsingData,
 ): Promise<boolean> {
   const marker = browserAccountMarker(account);
   const storage = browser.localStorage;

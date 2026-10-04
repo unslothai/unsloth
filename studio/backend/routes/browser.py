@@ -8,6 +8,7 @@ rendered in ``/frame``, an opaque-origin sandbox; an injected script routes navi
 from __future__ import annotations
 
 import asyncio
+import codecs
 import html as _html
 import json
 import re
@@ -719,7 +720,18 @@ class BrowserFetchRequest(BaseModel):
     max_bytes: Optional[int] = Field(default = None, ge = 1, le = _MAX_BROWSER_FETCH_BYTES)
 
 
+_BOMS = (
+    (codecs.BOM_UTF8, "utf-8-sig"),
+    (codecs.BOM_UTF16_LE, "utf-16"),
+    (codecs.BOM_UTF16_BE, "utf-16"),
+)
+
+
 def _decode_html(raw: bytes, charset: Optional[str]) -> str:
+    # A byte order mark wins over any declared charset, as in browsers.
+    for bom, codec in _BOMS:
+        if raw.startswith(bom):
+            return raw.decode(codec, errors = "replace")
     candidates = [charset] if charset else []
     sniffed = _META_CHARSET_RE.search(raw[:4096])
     if sniffed:

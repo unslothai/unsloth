@@ -889,7 +889,7 @@ const SingleContent = memo(function SingleContent({
                />
              ) : showBrowserPanel ? (
               <Suspense fallback={null}>
-                <BrowserPanel />
+                <BrowserPanel active={chatActive} />
               </Suspense>
             ) : showArtifactPanel && artifact ? (
               <ArtifactSurface
@@ -4684,7 +4684,7 @@ export function ChatPage({
             {view.mode === "single" && (
               <ChatHeaderMenu temporary={incognito} onToggleTemporary={toggleIncognito} />
             )}
-            {view.mode === "single" && !isMobile ? <BrowserToggleButton /> : null}
+            {view.mode === "single" && !isMobile ? <BrowserToggleButton active={active} /> : null}
             {view.mode === "single" &&
             latestResearchRunId &&
             latestResearchRunStatus ? (

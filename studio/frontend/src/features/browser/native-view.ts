@@ -151,16 +151,18 @@ function onNativeEvent(event: NativeEvent): void {
         newTabTimes.push(now);
         store.openUrl(event.url, { newTab: true });
       } else {
-        toast(t("browser.native.externalPrompt", { host: hostOf(currentEntryUrl(tab)), url: event.url }), {
-          action: { label: t("browser.native.open"), onClick: () => store.openUrl(event.url, { newTab: true }) },
+        prompt(t("browser.native.externalPrompt", { host: hostOf(currentEntryUrl(tab)), url: event.url }), {
+          label: t("browser.native.open"),
+          onClick: () => store.openUrl(event.url, { newTab: true }),
         });
       }
       break;
     }
     case "external":
       // Pages can ask without a click, so the user decides.
-      toast(t("browser.native.externalPrompt", { host: hostOf(currentEntryUrl(tab)), url: event.url }), {
-        action: { label: t("browser.native.open"), onClick: () => openExternalLink(event.url) },
+      prompt(t("browser.native.externalPrompt", { host: hostOf(currentEntryUrl(tab)), url: event.url }), {
+        label: t("browser.native.open"),
+        onClick: () => openExternalLink(event.url),
       });
       break;
     case "download":
@@ -174,6 +176,18 @@ function onNativeEvent(event: NativeEvent): void {
       }
       break;
   }
+}
+
+// Pages can ask in a loop: one prompt on screen, replaced at most once a second.
+const PROMPT_ID = "browser-native-prompt";
+const PROMPT_INTERVAL_MS = 1000;
+let lastPrompt = Number.NEGATIVE_INFINITY;
+
+function prompt(message: string, action: { label: string; onClick: () => void }): void {
+  const now = Date.now();
+  if (now - lastPrompt < PROMPT_INTERVAL_MS) return;
+  lastPrompt = now;
+  toast(message, { id: PROMPT_ID, action });
 }
 
 /** Keyed by the entry the view holds, not the tab's current one, which may not have loaded yet. */
