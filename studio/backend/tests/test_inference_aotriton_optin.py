@@ -48,7 +48,6 @@ def test_user_value_is_kept(preset):
 
 
 def test_import_does_not_pull_torch():
-    # The opt-in must stay dependency-light: the package import is lazy by contract.
     env = {k: v for k, v in os.environ.items() if k != VAR}
     code = (
         "import sys\n"
