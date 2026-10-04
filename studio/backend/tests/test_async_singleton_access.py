@@ -109,12 +109,13 @@ _WORKERS_THAT_RUN_THEIR_CALLBACK = {
 
 
 def _executed_calls(lam: ast.Lambda) -> list[ast.Call]:
-    """Calls the lambda's own body makes when it runs. A lambda or def nested inside it is only
-    created there, and could be returned and called back on the loop, so it is not descended."""
+    """Calls the lambda's own body makes when it runs. A lambda, def or generator expression
+    nested inside it is only created there, and could be returned and run back on the loop, so
+    it is not descended."""
     found, stack = [], [lam.body]
     while stack:
         node = stack.pop()
-        if isinstance(node, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef)):
+        if isinstance(node, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef, ast.GeneratorExp)):
             continue
         if isinstance(node, ast.Call):
             found.append(node)
@@ -278,6 +279,7 @@ def test_a_lambda_handed_to_to_thread_is_off_the_loop_but_an_inline_call_is_not(
         "    (await asyncio.to_thread(lambda: lambda: helper(model)))()\n"
         "    await asyncio.to_thread(model_slots.in_slot, None, lambda: helper(model))\n"
         "    await asyncio.to_thread(other.in_slot, None, lambda: helper(model))\n"
+        "    (await asyncio.to_thread(lambda: (helper(model) for _ in range(1)))).__next__()\n"
     ).body[0]
     off_loop = _calls_inside_offloaded_lambdas(fn)
     calls = [
@@ -286,7 +288,7 @@ def test_a_lambda_handed_to_to_thread_is_off_the_loop_but_an_inline_call_is_not(
         if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "helper"
     ]
     assert sorted(n.lineno for n in calls if id(n) in off_loop) == [3, 8]
-    assert sorted(n.lineno for n in calls if id(n) not in off_loop) == [2, 4, 5, 6, 7, 9]
+    assert sorted(n.lineno for n in calls if id(n) not in off_loop) == [2, 4, 5, 6, 7, 9, 10]
 
 
 @pytest.mark.parametrize("worker", sorted(_WORKERS_THAT_RUN_THEIR_CALLBACK))
@@ -305,11 +307,21 @@ def test_each_listed_worker_still_runs_the_callable_it_is_handed(worker):
             ), f"{route} calls {worker} but does not import it from {rel}"
     fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
     assert [a.arg for a in fn.args.args][position] == param, f"{worker}'s callback moved"
-    # Called directly, or handed on as the callable of context.run / a similar runner.
+    # Called directly, or run through contextvars' Context.run: forwarding it anywhere else could
+    # return it uncalled, so it does not count.
     runs = [
         n
         for n in ast.walk(fn)
         if isinstance(n, ast.Call)
-        and any(isinstance(a, ast.Name) and a.id == param for a in [n.func, *n.args[:1]])
+        and (
+            (isinstance(n.func, ast.Name) and n.func.id == param)
+            or (
+                isinstance(n.func, ast.Attribute)
+                and n.func.attr == "run"
+                and n.args[:1]
+                and isinstance(n.args[0], ast.Name)
+                and n.args[0].id == param
+            )
+        )
     ]
     assert runs, f"{worker} no longer runs its {param} argument; drop it from the list"
