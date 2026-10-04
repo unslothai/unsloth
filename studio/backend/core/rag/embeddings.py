@@ -423,10 +423,8 @@ def _refuse_custom_module(class_ref, model_name_or_path, trust_remote_code) -> N
 
 
 def _gate_st_custom_modules() -> None:
-    """Backport sentence-transformers 6.0's trust gate (CVE-2026-68770): before 6.0 a local
-    path, which is what the embedder loads once a model is cached, imported repo-hosted module
-    classes from modules.json without trust_remote_code. Stock embedders only reference
-    ``sentence_transformers.*`` classes and are unaffected. Version-gated and idempotent."""
+    """Backport sentence-transformers 6.0's trust gate (CVE-2026-68770): before 6.0 a cached
+    model's modules.json could import repo-hosted classes without trust_remote_code."""
     try:
         import inspect
         import sentence_transformers as st
@@ -437,8 +435,7 @@ def _gate_st_custom_modules() -> None:
         from sentence_transformers import SentenceTransformer
     except Exception:
         return
-    # 5.0-5.4 resolve on the model class; 5.5+ also route through util.misc.import_module_class,
-    # which the Router module calls directly.
+    # 5.0-5.4 resolve on the model class; 5.5+ also via util.misc.import_module_class.
     owner = next(
         (c for c in SentenceTransformer.__mro__ if "_load_module_class_from_ref" in vars(c)),
         None,
@@ -460,8 +457,7 @@ def _gate_st_custom_modules() -> None:
             setattr(_load_module_class_from_ref, _ST_GATE_MARKER, True)
             _load_module_class_from_ref.__wrapped__ = original
             setattr(owner, "_load_module_class_from_ref", _load_module_class_from_ref)
-    # 5.0-5.4 Router resolves its sub-module types with import_from_string, past both resolvers.
-    # The embedder never trusts repository code, so non-stock types are refused there outright.
+    # 5.0-5.4 Router imports via import_from_string, past both resolvers.
     try:
         import importlib
 

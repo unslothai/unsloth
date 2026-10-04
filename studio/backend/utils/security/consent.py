@@ -102,8 +102,7 @@ def _config_has_auto_map(
 
 
 def _config_declares_model_file(cfg) -> bool:
-    """Whether a config names a ``model_file``: the MLX loaders exec_module that repo ``.py``
-    just like an ``auto_map`` entry, so it needs the same scan and approval."""
+    """MLX loaders exec a config's ``model_file`` like an ``auto_map`` entry."""
     return isinstance(cfg, dict) and bool(cfg.get("model_file"))
 
 
