@@ -29,7 +29,13 @@ class _LargestTensor(TorchDispatchMode):
         super().__init__()
         self.max_bytes = 0
 
-    def __torch_dispatch__(self, func, types_, args = (), kwargs = None):
+    def __torch_dispatch__(
+        self,
+        func,
+        types_,
+        args = (),
+        kwargs = None,
+    ):
         out = func(*args, **(kwargs or {}))
         for t in out if isinstance(out, (tuple, list)) else (out,):
             if isinstance(t, torch.Tensor):
@@ -104,7 +110,9 @@ def test_mode_leaves_fused_small_masked_and_causal_calls_alone(monkeypatch):
             F.scaled_dot_product_attention(q, q, q, is_causal = True)
             F.scaled_dot_product_attention(q, q, q, dropout_p = 0.1)
         with C.chunked_attention_mode(256 * 256 * 4) as small:
-            assert torch.equal(F.scaled_dot_product_attention(q, q, q), ref)  # at the budget: unchunked
+            assert torch.equal(
+                F.scaled_dot_product_attention(q, q, q), ref
+            )  # at the budget: unchunked
     assert mode.chunked == 0 and small.chunked == 0 and calls == []
 
 
@@ -152,7 +160,9 @@ def test_vae_decode_peak_bounded_and_equal(rocm, monkeypatch, name):
         with probe:
             ref = vae.decode(z).sample
         assert probe.max_bytes >= full
-        monkeypatch.setenv(C.VAE_ATTN_CHUNK_MB_ENV, "1")  # 1 MiB of scores per chunk, well under the 21 MiB matrix
+        monkeypatch.setenv(
+            C.VAE_ATTN_CHUNK_MB_ENV, "1"
+        )  # 1 MiB of scores per chunk, well under the 21 MiB matrix
         assert C.install(vae, rocm) >= 1
         probe = _LargestTensor()
         with probe:

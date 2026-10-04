@@ -75,7 +75,14 @@ def _score_bytes(q: Any, k: Any) -> int:
     return rows * int(k.shape[-2]) * 4
 
 
-def chunked_sdpa(sdpa: Any, q: Any, k: Any, v: Any, budget: int, scale: Optional[float] = None) -> Any:
+def chunked_sdpa(
+    sdpa: Any,
+    q: Any,
+    k: Any,
+    v: Any,
+    budget: int,
+    scale: Optional[float] = None,
+) -> Any:
     """``sdpa(q, k, v)`` over query-row chunks whose fp32 score tile stays within ``budget`` bytes."""
     import torch
 
@@ -125,7 +132,13 @@ def _mode_class() -> Any:
             self.budget = budget
             self.chunked = 0
 
-        def __torch_function__(self, func: Any, types: Any, args: tuple = (), kwargs: Any = None) -> Any:
+        def __torch_function__(
+            self,
+            func: Any,
+            types: Any,
+            args: tuple = (),
+            kwargs: Any = None,
+        ) -> Any:
             kwargs = kwargs or {}
             if func is F.scaled_dot_product_attention:
                 call = _plain_call(args, kwargs)
@@ -202,7 +215,11 @@ def patch_attention_modules(vae: Any) -> int:
     return n
 
 
-def install(vae: Any, target: Any = None, logger: Any = None) -> int:
+def install(
+    vae: Any,
+    target: Any = None,
+    logger: Any = None,
+) -> int:
     """Chunk the VAE attention on ROCm, where no fused SDPA kernel takes head dim > 256. Never raises."""
     try:
         if not wants_install(vae, target):
