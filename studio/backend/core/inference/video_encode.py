@@ -1,13 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Default mp4 export: diffusers' ``encode_video`` stream (libx264, its default CRF 23 / preset medium, yuv420p, same
-audio helpers) with x264 frame threads instead of PyAV's default slice threads.
-
-PyAV opens every codec with ``thread_type = SLICE``, so FFmpeg's libx264 wrapper runs x264 in sliced-threads mode: each
-frame is cut into one slice per thread and every frame waits for its slowest slice. Frame threads (what the ffmpeg CLI
-uses) encode several frames at once instead. Same codec, rate control and pixel format; the bitstream differs, at equal
-quality for the same bytes. ``UNSLOTH_STUDIO_VIDEO_FRAME_THREADS=0`` restores the diffusers call."""
+"""diffusers' ``encode_video`` stream (libx264 defaults, yuv420p, same audio helpers) with x264 frame threads:
+PyAV opens codecs with ``thread_type = SLICE``, so every frame waits for its slowest slice.
+``UNSLOTH_STUDIO_VIDEO_FRAME_THREADS=0`` restores the diffusers call."""
 
 from __future__ import annotations
 
