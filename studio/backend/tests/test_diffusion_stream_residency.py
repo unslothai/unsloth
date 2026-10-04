@@ -143,8 +143,20 @@ def test_q21_int8_8gb_drops_the_double_reserve(stub):
 def test_never_past_free_memory(stub):
     """resident + companions + measured peak + window + slack never exceed the free memory read at load."""
     for loaded, flat, window, family, budgets in (
-        (FLUX_LOADED, FLUX_FLAT, FLUX_WINDOW, "flux.1", ((13668, 16384), (9572, 12288), (5500, 8192))),
-        (Q21_LOADED, Q21_FLAT, Q21_WINDOW, "qwen-image-2.1", ((5476, 8192), (4000, 6144), (9000, 12288))),
+        (
+            FLUX_LOADED,
+            FLUX_FLAT,
+            FLUX_WINDOW,
+            "flux.1",
+            ((13668, 16384), (9572, 12288), (5500, 8192)),
+        ),
+        (
+            Q21_LOADED,
+            Q21_FLAT,
+            Q21_WINDOW,
+            "qwen-image-2.1",
+            ((5476, 8192), (4000, 6144), (9000, 12288)),
+        ),
     ):
         pipe = stub(loaded, window)
         other = sum(m for m, r in loaded.values() if r == "other")
@@ -180,7 +192,14 @@ def test_kill_switch_and_unsized_window_keep_the_flat_room(stub, monkeypatch):
 
 def test_dense_denoisers_keep_the_flat_room(stub, monkeypatch):
     """The dense eager table was measured resident, not streamed: its partial room is unchanged."""
-    pipe = stub({"transformer": (22700, "dit"), "text_encoder_2": (9083, "text_encoder"), "vae": (160, "other")}, 1296)
+    pipe = stub(
+        {
+            "transformer": (22700, "dit"),
+            "text_encoder_2": (9083, "text_encoder"),
+            "vae": (160, "other"),
+        },
+        1296,
+    )
     monkeypatch.setattr(dm, "_pipe_denoisers_hold_torchao", lambda pipe: False)
     monkeypatch.setattr(dm, "_denoiser_compute_bytes", lambda pipe: 2)
     plan = _plan(dict(FLUX_FLAT, model_dense_mib = 32000), 13668, 16384)
@@ -199,7 +218,9 @@ def test_stream_window_is_depth_plus_one_largest_blocks(monkeypatch):
             self.blocks = torch.nn.ModuleList([torch.nn.Linear(1024, 1024, bias = False)] * 1)
             self.single = torch.nn.ModuleList([torch.nn.Linear(512, 1024, bias = False)])
 
-    pipe = types.SimpleNamespace(components = {"transformer": DiT(), "vae": torch.nn.Linear(4096, 4096)})
+    pipe = types.SimpleNamespace(
+        components = {"transformer": DiT(), "vae": torch.nn.Linear(4096, 4096)}
+    )
     # largest block 4 MiB (fp32 1024x1024), depth 2 -> 3 in flight
     assert dm._stream_window_mib(pipe) == 12
     monkeypatch.setenv("UNSLOTH_DIFFUSION_PREFETCH_DEPTH", "4")

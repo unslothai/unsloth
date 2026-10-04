@@ -2455,7 +2455,9 @@ def refine_plan_from_loaded_weights(
                 # pin it whole; during the encode it drops back to the flat room (install_encode_release)
                 encode_room = int(dit_room)
                 dit_room, room, whole_dit = dit, dit, True
-            elif dit_room < dit and dense_mib is None and (policy == OFFLOAD_STREAMING or stream_te):
+            elif (
+                dit_room < dit and dense_mib is None and (policy == OFFLOAD_STREAMING or stream_te)
+            ):
                 # partial: the same fit as the whole tier plus the prefetch window; the encode keeps the flat room
                 window = _stream_window_mib(pipe)
                 streamed_room = min(_streamed_dit_room_mib(memory, headroom, other, window), dit)
