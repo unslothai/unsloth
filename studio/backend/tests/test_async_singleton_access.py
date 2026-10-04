@@ -119,7 +119,11 @@ def _nodes_in_scope(roots: list[ast.AST]) -> list[ast.AST]:
     found, stack = [], list(roots)
     while stack:
         node = stack.pop()
-        if isinstance(node, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef, ast.GeneratorExp)):
+        if isinstance(node, ast.GeneratorExp):
+            # Only the outermost iterable is evaluated when the generator is built.
+            stack.append(node.generators[0].iter)
+            continue
+        if isinstance(node, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         found.append(node)
         stack.extend(ast.iter_child_nodes(node))
@@ -294,6 +298,7 @@ def test_a_lambda_handed_to_to_thread_is_off_the_loop_but_an_inline_call_is_not(
         "    (await asyncio.to_thread(lambda: (helper(model) for _ in range(1)))).__next__()\n"
         "    await dispatcher.to_thread(lambda: helper(model))\n"
         "    (await asyncio.to_thread(lambda: (yield helper(model)))).__next__()\n"
+        "    await asyncio.to_thread(lambda: (x for x in helper(model)))\n"
     ).body[0]
     off_loop = _calls_inside_offloaded_lambdas(fn)
     calls = [
@@ -301,7 +306,7 @@ def test_a_lambda_handed_to_to_thread_is_off_the_loop_but_an_inline_call_is_not(
         for n in ast.walk(fn)
         if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "helper"
     ]
-    assert sorted(n.lineno for n in calls if id(n) in off_loop) == [3, 8]
+    assert sorted(n.lineno for n in calls if id(n) in off_loop) == [3, 8, 13]
     assert sorted(n.lineno for n in calls if id(n) not in off_loop) == [
         2,
         4,
