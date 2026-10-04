@@ -312,3 +312,12 @@ test("host and page wiring for Separate", () => {
   assert.match(page, /setAttempt\(\(n\) => n \+ 1\)/);
   assert.match(page, /failed: sources\.failedIds\.includes\(clip\.id\)/);
 });
+
+test("a stem sent to Clone is adopted, so the old reference's transcript goes with it", () => {
+  const host = readSrc("features/audio/audio-page.tsx");
+  const send = host.slice(host.indexOf("const handleSendStem = useCallback("));
+  assert.match(
+    send,
+    /if \(!transitionWorkflow\("clone"\)\) return;[\s\S]{0,160}?useAudioCloneStore\.getState\(\)\.adoptReference\(\{/,
+  );
+});
