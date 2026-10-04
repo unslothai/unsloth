@@ -702,13 +702,8 @@ def _has_conv3d(vae: Any) -> bool:
 
 
 def _vae_channels_last_3d(vae: Any, logger: Any, *, fused: bool) -> bool:
-    """channels_last for a 3D-conv VAE (Wan, Qwen-Image, HunyuanVideo-1.5, LTX-2, MiniMax-H3), per weight rank.
-
-    ``Module.to(memory_format = channels_last)`` raises at the first 5D weight, after converting any 4D one before it,
-    so these VAEs used to log a failure and keep a partly relaid module. NDHWC only pays where the fused passes hand
-    cuDNN channels-last activations (B200 decode: Wan 1.78 vs 1.82 s, HunyuanVideo-1.5 1.89 vs 1.93 s); without them
-    channels_last_3d slowed HunyuanVideo-1.5 / LTX-2, so it is skipped. Only the decode path is relaid: channels_last
-    encoder weights encoded 2-4% slower (Wan 5B I2V frame 7.12 vs 6.96 ms fp32, Qwen-Image 18.7 vs 18.0 ms bf16)."""
+    """Per-rank channels_last(_3d) on post_quant_conv + decoder; ``Module.to(channels_last)`` raises at the first 5D
+    weight. Skipped without the fused passes (slower there); the encoder is kept (channels_last encoded slower)."""
     import torch
 
     name = type(vae).__name__
@@ -749,9 +744,7 @@ VIDEO_VAE_HALF_ENV = "UNSLOTH_VIDEO_VAE_HALF"
 def _video_vae_half_decode(pipe: Any, target: Any, family: Any, logger: Any) -> bool:
     """fp16 channels_last(_3d) decode for fp32-pinned video VAEs (Wan) on NVIDIA sm75+; non-finite output reruns fp32.
 
-    fp16, not bf16: ComfyUI picks bf16 for this VAE on sm80+, 4.4% faster on B200 (1.70 vs 1.78 s at 1280x704x121)
-    but 9 dB further from fp32 (PSNR 55.3 vs 64.6, max pixel error 57 vs 6 levels). ``UNSLOTH_VIDEO_VAE_HALF=0`` keeps
-    fp32."""
+    fp16, not bf16: bf16 is 9 dB further from fp32. ``UNSLOTH_VIDEO_VAE_HALF=0`` keeps fp32."""
     if not getattr(family, "vae_force_fp32", False) or getattr(target, "device", None) != "cuda":
         return False
     if os.environ.get(VIDEO_VAE_HALF_ENV, "").strip().lower() in _VAE_FALSE_TOKENS:

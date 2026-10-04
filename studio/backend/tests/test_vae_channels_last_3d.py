@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""channels_last on 3D-conv VAEs (Wan, Qwen-Image, HunyuanVideo-1.5, LTX-2, MiniMax-H3): relaid per weight rank under
-the fused VAE passes, skipped (and said so) without them, never left half converted; the Wan half decode kill switch;
-the A14B untiled-decode estimate."""
+"""3D-conv VAE channels_last, the Wan half decode kill switch, the A14B untiled-decode estimate."""
 
 from __future__ import annotations
 
@@ -19,8 +17,7 @@ from core.inference import video_vae_untiled as U  # noqa: E402
 
 
 class _Fake3dVAE(torch.nn.Module):
-    """A Conv2d registered before the first Conv3d, as in the Wan / Qwen-Image resample blocks: Module.to(channels_last)
-    converted it and then raised on the Conv3d."""
+    """Conv2d before the first Conv3d: Module.to(channels_last) converted it, then raised on the Conv3d."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -47,9 +44,8 @@ def test_fused_3d_vae_gets_channels_last_decode_weights_per_rank_without_a_failu
     assert vae.decoder[1].weight.is_contiguous(memory_format = torch.channels_last_3d)
     assert not vae.decoder[1].weight.is_contiguous()
     assert vae.post_quant_conv.weight.is_contiguous(memory_format = torch.channels_last_3d)
-    # the encoder keeps its layout (channels_last encoder weights encoded slower)
     assert {n: p.stride() for n, p in vae.encoder.named_parameters()} == encoder_before
-    assert vae.decoder[2].weight.is_contiguous()  # GroupNorm untouched
+    assert vae.decoder[2].weight.is_contiguous()
     assert "failed" not in caplog.text
     assert "channels_last(_3d) decode weights" in caplog.text
 
@@ -61,7 +57,7 @@ def test_unfused_3d_vae_is_skipped_untouched_and_logged(caplog):
         assert not ds_mod._vae_channels_last(
             types.SimpleNamespace(vae = vae), logging.getLogger("t3d")
         )
-    assert _layouts(vae) == before  # nothing half converted
+    assert _layouts(vae) == before
     assert "channels_last skipped" in caplog.text and "failed" not in caplog.text
 
 
@@ -155,7 +151,7 @@ A14B = "wan2.2-t2v-a14b"
 
 
 def test_a14b_untiled_estimate_covers_the_measured_peak():
-    # B200, Wan2.1 VAE, fp16 + fused + channels_last_3d, untiled: allocator peak over the pre-decode baseline (MiB).
+    # B200 untiled fp16 decode peaks over the pre-decode baseline (MiB).
     measured = {
         (21, 90, 160): 8989.3,
         (21, 60, 104): 3891.4,
@@ -166,7 +162,6 @@ def test_a14b_untiled_estimate_covers_the_measured_peak():
     for (t, h, w), mib in measured.items():
         need = U.untiled_decode_bytes(A14B, (1, 16, t, h, w))
         assert need is not None and mib * 2**20 <= need <= 1.25 * mib * 2**20
-    # fp32 peaked at 17960 MiB at 1280x720x81: the itemsize scaling still covers it
     assert U.untiled_decode_bytes(A14B, (1, 16, 21, 90, 160), itemsize = 4) >= 17960.5 * 2**20
 
 
