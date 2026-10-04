@@ -4790,7 +4790,14 @@ export function ChatPage({
                 className="!h-8.5"
               />
             )}
-            {view.mode !== "compare" && voiceMode !== "off" && <VoiceNamePicker />}
+            {view.mode !== "compare" && voiceMode !== "off" && (
+              <VoiceNamePicker
+                codec={
+                  ttsModels.find((m) => m.id === selectedVoiceModelId)
+                    ?.audioType ?? null
+                }
+              />
+            )}
             {view.mode !== "compare" && currentProjectId && (
               <nav
                 aria-label="Project location"

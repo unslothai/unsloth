@@ -340,6 +340,53 @@ def test_streaming_speech_fits_the_voice_servers_context(monkeypatch, prompt_tok
         assert seen["max_new_tokens"] == 512 - prompt_tokens - reserve
 
 
+def test_streaming_speech_honours_the_requested_model(monkeypatch):
+    """`model` used to be a monitor label only: the first loaded SNAC backend spoke, whichever
+    voice the caller named."""
+    spoken = []
+
+    def _backend(public_id):
+        def _stream(**_kwargs):
+            spoken.append(public_id)
+            yield b"\x00\x00"
+
+        return SimpleNamespace(
+            is_loaded = True,
+            _audio_type = "snac",
+            context_length = None,
+            model_identifier = f"/models/{public_id.split('/')[-1]}/model.gguf",
+            _openai_advertised_id = public_id,
+            _orpheus_voice_prefix_ok = lambda: True,
+            generate_audio_response_stream = _stream,
+        )
+
+    voice = _backend("unsloth/orpheus-3b-0.1-ft-GGUF")
+    chat = _backend("me/my-orpheus-finetune-GGUF")
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice)
+    monkeypatch.setattr(routes_module, "get_llama_cpp_backend", lambda: chat)
+    request = SimpleNamespace(state = SimpleNamespace(skip_api_monitor = True))
+
+    async def _run(model):
+        response = await routes_module.openai_audio_speech_stream(
+            AudioSpeechRequest(input = "hello", model = model), request, "tester"
+        )
+        return [chunk async for chunk in response.body_iterator]
+
+    asyncio.run(_run(None))
+    asyncio.run(_run("me/my-orpheus-finetune-GGUF"))
+    asyncio.run(_run("unsloth/orpheus-3b-0.1-ft-GGUF"))
+    assert spoken == [
+        "unsloth/orpheus-3b-0.1-ft-GGUF",
+        "me/my-orpheus-finetune-GGUF",
+        "unsloth/orpheus-3b-0.1-ft-GGUF",
+    ]
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(_run("unsloth/Spark-TTS-0.5B-GGUF"))
+    assert error.value.status_code == 400
+    assert "Spark-TTS-0.5B-GGUF" in error.value.detail and "Load it first" in error.value.detail
+    assert len(spoken) == 3
+
+
 def test_the_shared_core_guards_before_generating():
     """Wired in _generate_tts_wav so /audio/generate inherits it, not only /audio/speech."""
     import inspect

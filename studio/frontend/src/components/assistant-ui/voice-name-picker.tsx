@@ -22,14 +22,24 @@ const cap = (v: string) => v.charAt(0).toUpperCase() + v.slice(1);
  *  differently (a speaker id or a reference clip), so a named-speaker list does not
  *  apply to them.
  *  Uses the themed dropdown so it tracks light/dark like the other top-bar menus. */
-export function VoiceNamePicker({ className }: { className?: string }) {
+export function VoiceNamePicker({
+  className,
+  codec = null,
+}: {
+  className?: string;
+  /** The selected voice's detected audio type, when the catalog knows it. A renamed
+   *  Orpheus fine-tune is still SNAC, and the backend serves its named speakers. */
+  codec?: string | null;
+}) {
   const voiceModelId = useChatRuntimeStore((s) => s.selectedVoiceModelId);
   const voiceName = useChatRuntimeStore((s) => s.selectedVoiceName);
   const setVoiceName = useChatRuntimeStore((s) => s.setSelectedVoiceName);
 
-  if (!voiceModelId || !voiceModelId.toLowerCase().includes("orpheus")) {
-    return null;
-  }
+  if (!voiceModelId) return null;
+  const isSnac = codec
+    ? codec === "snac"
+    : voiceModelId.toLowerCase().includes("orpheus");
+  if (!isSnac) return null;
 
   return (
     <DropdownMenu>

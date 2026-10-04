@@ -22686,16 +22686,30 @@ async def openai_audio_speech_stream(
         raise HTTPException(status_code = 400, detail = "input must not be empty.")
 
     # The voice slot first, for the same reason as _generate_tts_wav: in voice mode the
-    # chat slot holds the LLM.
+    # chat slot holds the LLM. A named model must be one of the loaded SNAC voices: this
+    # route never loads, and answering with a different voice than asked for is worse
+    # than refusing.
+    requested = public_model_id(body.model) or (body.model or "").strip() or None
     backend = None
     for candidate in (get_voice_llama_backend(), get_llama_cpp_backend()):
-        if candidate.is_loaded and getattr(candidate, "_audio_type", None) == "snac":
-            backend = candidate
-            break
+        if not (candidate.is_loaded and getattr(candidate, "_audio_type", None) == "snac"):
+            continue
+        if requested and requested not in (
+            _llama_public_model_id(candidate),
+            getattr(candidate, "model_identifier", None),
+        ):
+            continue
+        backend = candidate
+        break
     if backend is None:
         raise HTTPException(
             status_code = 400,
-            detail = "Streaming speech requires a loaded SNAC (Orpheus) voice.",
+            detail = (
+                f"Streaming speech serves only a loaded SNAC (Orpheus) voice; {requested!r} "
+                "is not one. Load it first, or omit model."
+                if requested
+                else "Streaming speech requires a loaded SNAC (Orpheus) voice."
+            ),
         )
     # IQ1/IQ2/Q2 Orpheus quants read the "voice:" speaker prefix aloud. The blocking
     # route trims that spoken name off the clip, which needs the whole clip and so has

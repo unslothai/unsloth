@@ -363,6 +363,9 @@ export class StudioWhisperDictationAdapter implements DictationAdapter {
           return;
         }
         audioCtx = new AudioCtx();
+        // Created after the mic await, outside the user gesture; a suspended context delivers
+        // no audioprocess callbacks and the loop only ever hits its no-speech timeout.
+        await audioCtx.resume();
         sampleRate = audioCtx.sampleRate;
         source = audioCtx.createMediaStreamSource(stream);
         processor = audioCtx.createScriptProcessor(4096, 1, 1);

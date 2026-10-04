@@ -13,3 +13,23 @@ test("the voice picker offers no cached CSM GGUF, which /voice/load refuses", ()
   assert.ok(list, "TTS_REPO_KEYWORDS not found");
   assert.doesNotMatch(list[1], /"csm"/);
 });
+
+test("the speaker picker shows for any SNAC voice, not only ids that say orpheus", () => {
+  const picker = readSrc("components/assistant-ui/voice-name-picker.tsx");
+  assert.match(
+    picker,
+    /const isSnac = codec\s*\? codec === "snac"\s*: voiceModelId\.toLowerCase\(\)\.includes\("orpheus"\);/,
+  );
+  // chat-page hands it the catalog's detected audio type for the selected voice.
+  assert.match(
+    readSrc("features/chat/chat-page.tsx"),
+    /<VoiceNamePicker\s+codec=\{\s*ttsModels\.find\(\(m\) => m\.id === selectedVoiceModelId\)\s*\?\.audioType \?\? null\s*\}/,
+  );
+});
+
+test("the dictation mic resumes its AudioContext before expecting frames", () => {
+  const adapter = readSrc(
+    "features/chat/adapters/studio-whisper-dictation-adapter.ts",
+  );
+  assert.match(adapter, /audioCtx = new AudioCtx\(\);[\s\S]{0,400}await audioCtx\.resume\(\);/);
+});
