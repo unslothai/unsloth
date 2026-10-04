@@ -1779,7 +1779,6 @@ function useSoleDownloadedQuants(
     };
   }, []);
 
-  // The follow-up Hub probes share the pool size the disk reads use.
   const hubProbeLimitRef = useRef(createTaskLimiter(SOLE_QUANT_WORKERS));
   const readerRef = useRef<ReturnType<
     typeof createSoleQuantReader<SoleDownloadedQuant>

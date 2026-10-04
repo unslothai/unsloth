@@ -91,7 +91,6 @@ export async function hubWithdrawsSoleQuant<T extends GgufVariantsResponse>(
   );
 }
 
-/** Runs at most *limit* tasks at once, the rest in arrival order. */
 export function createTaskLimiter(limit: number) {
   let active = 0;
   const queue: (() => void)[] = [];
