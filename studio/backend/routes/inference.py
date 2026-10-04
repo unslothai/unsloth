@@ -8649,6 +8649,15 @@ register_serving_backend(_voice_llama_backend)
 
 # Audio types accepted by the voice slot (GGUF TTS via llama-server token generation)
 _VOICE_SLOT_AUDIO_TYPES: frozenset[str] = frozenset({"snac", "bicodec", "dac"})
+_voice_load_locks: dict[asyncio.AbstractEventLoop, asyncio.Lock] = {}
+
+
+def _voice_load_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    lock = _voice_load_locks.get(loop)
+    if lock is None:
+        lock = _voice_load_locks[loop] = asyncio.Lock()
+    return lock
 
 
 def get_llama_cpp_backend() -> LlamaCppBackend:
@@ -20991,184 +21000,187 @@ async def voice_load_model(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
         await asyncio.to_thread(account_access.require_model_access, model_identifier)
-    voice_backend = get_voice_llama_backend()
-    # Read first: unload_model bumps it and load_model never does, so an unload that lands
-    # anywhere in this request (resolution, preflight, the gap before the spawn, where the
-    # cancel event it set gets cleared) is seen after the load.
-    unload_epoch = getattr(voice_backend, "_unload_epoch", None)
+    # One load at a time: two requests past the already-loaded check would each replace
+    # the other's server, and the first caller would be told its voice loaded.
+    async with _voice_load_lock():
+        voice_backend = get_voice_llama_backend()
+        # Read first: unload_model bumps it and load_model never does, so an unload that lands
+        # anywhere in this request (resolution, preflight, the gap before the spawn, where the
+        # cancel event it set gets cleared) is seen after the load.
+        unload_epoch = getattr(voice_backend, "_unload_epoch", None)
 
-    # Resolve model config — auto-selects GGUF variant when gguf_variant is None,
-    # mirroring the ModelConfig.from_identifier() call in /load, including how it
-    # runs: from_identifier scans the HF cache and can resolve Hub metadata, so it
-    # goes to a worker thread under the same offline guard rather than stalling every
-    # other request on the event loop while it does.
-    def _resolve_config():
-        with _hf_offline_if_unreachable_for(model_identifier):
-            return ModelConfig.from_identifier(
-                model_id = model_identifier,
-                hf_token = request.hf_token,
-                gguf_variant = request.gguf_variant,
+        # Resolve model config — auto-selects GGUF variant when gguf_variant is None,
+        # mirroring the ModelConfig.from_identifier() call in /load, including how it
+        # runs: from_identifier scans the HF cache and can resolve Hub metadata, so it
+        # goes to a worker thread under the same offline guard rather than stalling every
+        # other request on the event loop while it does.
+        def _resolve_config():
+            with _hf_offline_if_unreachable_for(model_identifier):
+                return ModelConfig.from_identifier(
+                    model_id = model_identifier,
+                    hf_token = request.hf_token,
+                    gguf_variant = request.gguf_variant,
+                )
+
+        try:
+            config = await asyncio.to_thread(_resolve_config)
+        except Exception as e:
+            raise HTTPException(status_code = 400, detail = f"Could not resolve model: {e}")
+
+        if not config or not config.is_gguf:
+            raise HTTPException(
+                status_code = 400,
+                detail = "Voice slot only accepts GGUF models. The provided identifier did not resolve to a GGUF.",
             )
 
-    try:
-        config = await asyncio.to_thread(_resolve_config)
-    except Exception as e:
-        raise HTTPException(status_code = 400, detail = f"Could not resolve model: {e}")
-
-    if not config or not config.is_gguf:
-        raise HTTPException(
-            status_code = 400,
-            detail = "Voice slot only accepts GGUF models. The provided identifier did not resolve to a GGUF.",
+        # The voice slot starts a second llama-server, so it takes memory exactly like a
+        # chat load does. /load refuses one that would not fit beside a running trainer;
+        # without the same guard here, enabling a voice while training is active would
+        # download and place another model and could OOM or disrupt the run. Modelled as
+        # the equivalent chat load, since that is what the guard is written against.
+        guard_request = LoadRequest(
+            model_path = model_identifier,
+            hf_token = request.hf_token,
+            gguf_variant = config.gguf_variant,
+            max_seq_length = request.n_ctx,
+            load_in_4bit = False,
+        )
+        placement = await _prepare_load_placement(config, guard_request, None)
+        # Off-loop and offline-guarded, exactly as /load runs it: the guard does sync
+        # nvidia-smi and HF work, and an unwrapped call would burn the retry backoff the
+        # forced-offline window exists to skip.
+        await asyncio.to_thread(
+            _offline_guarded,
+            (model_identifier, config.identifier, getattr(config, "base_model", None)),
+            _guard_chat_load_against_training,
+            config,
+            guard_request,
+            load_in_4bit = False,
+            placement = placement,
+            n_parallel = request.parallel,
         )
 
-    # The voice slot starts a second llama-server, so it takes memory exactly like a
-    # chat load does. /load refuses one that would not fit beside a running trainer;
-    # without the same guard here, enabling a voice while training is active would
-    # download and place another model and could OOM or disrupt the run. Modelled as
-    # the equivalent chat load, since that is what the guard is written against.
-    guard_request = LoadRequest(
-        model_path = model_identifier,
-        hf_token = request.hf_token,
-        gguf_variant = config.gguf_variant,
-        max_seq_length = request.n_ctx,
-        load_in_4bit = False,
-    )
-    placement = await _prepare_load_placement(config, guard_request, None)
-    # Off-loop and offline-guarded, exactly as /load runs it: the guard does sync
-    # nvidia-smi and HF work, and an unwrapped call would burn the retry backoff the
-    # forced-offline window exists to skip.
-    await asyncio.to_thread(
-        _offline_guarded,
-        (model_identifier, config.identifier, getattr(config, "base_model", None)),
-        _guard_chat_load_against_training,
-        config,
-        guard_request,
-        load_in_4bit = False,
-        placement = placement,
-        n_parallel = request.parallel,
-    )
+        # Already loaded with the same resolved config — skip reload. Include the
+        # --parallel slot count so changing it in the UI forces a relaunch.
+        if (
+            voice_backend.is_loaded
+            and voice_backend.model_identifier
+            and voice_backend.model_identifier.lower() == config.identifier.lower()
+            and (not config.gguf_variant or voice_backend.hf_variant == config.gguf_variant)
+            and getattr(voice_backend, "_n_parallel", 1) == request.parallel
+            and getattr(voice_backend, "_is_audio", False)
+        ):
+            return {
+                "status": "already_loaded",
+                "model": voice_backend.model_identifier,
+                "audio_type": getattr(voice_backend, "_audio_type", None),
+            }
 
-    # Already loaded with the same resolved config — skip reload. Include the
-    # --parallel slot count so changing it in the UI forces a relaunch.
-    if (
-        voice_backend.is_loaded
-        and voice_backend.model_identifier
-        and voice_backend.model_identifier.lower() == config.identifier.lower()
-        and (not config.gguf_variant or voice_backend.hf_variant == config.gguf_variant)
-        and getattr(voice_backend, "_n_parallel", 1) == request.parallel
-        and getattr(voice_backend, "_is_audio", False)
-    ):
+        # One immutable intent, the same shape /load hands the backend. Everything the
+        # chat slot negotiates -- draft models, vision projectors, tensor split, inherited
+        # extra args -- is deliberately left at its default: a TTS slot loads one small
+        # codec model and none of that applies to it.
+        intent = GgufLoadIntent(
+            model_identifier = config.identifier,
+            # -hf when the repo is known, -m for a local file; never both, or the
+            # loader would have two sources for one slot.
+            hf_repo = config.gguf_hf_repo or None,
+            gguf_path = None if config.gguf_hf_repo else config.gguf_file,
+            hf_variant = config.gguf_variant,
+            hf_token = request.hf_token,
+            n_ctx = request.n_ctx,
+            n_parallel = request.parallel,
+        )
+        # The voice slot is chat-owned GPU use: claim CHAT so a resident Images/Video pipeline is
+        # evicted first, as /load does. A no-op while chat already owns the GPU (voice mode). The
+        # in-flight marker is set under the arbiter lock, so an Images/Video acquire that lands
+        # between the claim and the spawn finds a voice load to cancel instead of an idle slot.
+        # ``alongside``: the claim stays with the account that loaded the chat model.
+        from core.inference.gpu_arbiter import CHAT as _CHAT, acquire_for_request, current_owner
+        from core.inference.llama_cpp import voice_load_in_flight
+
+        in_flight = voice_load_in_flight()
+        await asyncio.to_thread(
+            acquire_for_request, _CHAT, in_flight.__enter__, alongside = True
+        )
+        try:
+            ok = await asyncio.to_thread(voice_backend.load_model, intent)
+        except Exception as e:
+            logger.error("Voice slot load error: %s", e, exc_info = True)
+            raise HTTPException(status_code = 500, detail = f"Failed to load voice model: {e}")
+        finally:
+            in_flight.__exit__(None, None, None)
+
+        if unload_epoch is not None and getattr(voice_backend, "_unload_epoch", None) != unload_epoch:
+            try:
+                await asyncio.to_thread(voice_backend.unload_model)
+            except Exception:
+                pass
+            raise HTTPException(
+                status_code = 409,
+                detail = "The voice model was unloaded while it was loading. Load it again.",
+            )
+        # load_model clears the cancel event an Images/Video eviction set between the claim and the
+        # spawn, so that cancellation is lost. Ownership survives it: same recheck as /load.
+        if current_owner() != _CHAT:
+            try:
+                await asyncio.to_thread(voice_backend.unload_model)
+            except Exception:
+                pass
+            raise HTTPException(
+                status_code = 409,
+                detail = (
+                    "An image or video model took the GPU while the voice model was loading, "
+                    "so the load was cancelled. Unload that model, then try again."
+                ),
+            )
+
+        if not ok:
+            # load_model returned False (e.g. the server became healthy but audio
+            # codec init failed). Tear the half-started slot down before raising so
+            # the llama-server process doesn't linger and occupy memory. Off-loop,
+            # like every other unload here: teardown waits on the subprocess.
+            try:
+                await asyncio.to_thread(voice_backend.unload_model)
+            except Exception:
+                pass
+            raise HTTPException(status_code = 500, detail = "Voice model failed to start.")
+
+        audio_type = getattr(voice_backend, "_audio_type", None)
+        is_audio = getattr(voice_backend, "_is_audio", False)
+
+        if not is_audio or audio_type not in _VOICE_SLOT_AUDIO_TYPES:
+            # Not a supported TTS type — reject and leave slot empty.
+            try:
+                await asyncio.to_thread(voice_backend.unload_model)
+            except Exception:
+                pass
+            raise HTTPException(
+                status_code = 400,
+                detail = (
+                    f"Model is not a supported TTS type for the voice slot "
+                    f"(detected: {audio_type!r}). "
+                    f"Only snac, bicodec, and dac GGUF models are accepted."
+                ),
+            )
+
+        # Prime the pipeline so the FIRST real /speech is fast. The llama-server
+        # completion graph and the codec's first decode each pay a one-time cold cost
+        # (kernel compile / cache alloc -- seconds on ROCm). Run one tiny throwaway
+        # synth now, while the slot still reads as "loading" (voiceSlotLoading), so the
+        # warm-up phase absorbs it instead of freezing the user's first spoken reply.
+        # Best-effort: a priming failure must never fail an otherwise-good load.
+        try:
+            await asyncio.to_thread(voice_backend.generate_audio_response, "Hi there.", audio_type)
+        except Exception as e:
+            logger.warning("Voice slot warmup synth failed (first /speech may be slower): %s", e)
+
+        logger.info("Voice slot loaded: %s (audio_type=%s)", voice_backend.model_identifier, audio_type)
         return {
-            "status": "already_loaded",
+            "status": "loaded",
             "model": voice_backend.model_identifier,
-            "audio_type": getattr(voice_backend, "_audio_type", None),
+            "audio_type": audio_type,
         }
-
-    # One immutable intent, the same shape /load hands the backend. Everything the
-    # chat slot negotiates -- draft models, vision projectors, tensor split, inherited
-    # extra args -- is deliberately left at its default: a TTS slot loads one small
-    # codec model and none of that applies to it.
-    intent = GgufLoadIntent(
-        model_identifier = config.identifier,
-        # -hf when the repo is known, -m for a local file; never both, or the
-        # loader would have two sources for one slot.
-        hf_repo = config.gguf_hf_repo or None,
-        gguf_path = None if config.gguf_hf_repo else config.gguf_file,
-        hf_variant = config.gguf_variant,
-        hf_token = request.hf_token,
-        n_ctx = request.n_ctx,
-        n_parallel = request.parallel,
-    )
-    # The voice slot is chat-owned GPU use: claim CHAT so a resident Images/Video pipeline is
-    # evicted first, as /load does. A no-op while chat already owns the GPU (voice mode). The
-    # in-flight marker is set under the arbiter lock, so an Images/Video acquire that lands
-    # between the claim and the spawn finds a voice load to cancel instead of an idle slot.
-    # ``alongside``: the claim stays with the account that loaded the chat model.
-    from core.inference.gpu_arbiter import CHAT as _CHAT, acquire_for_request, current_owner
-    from core.inference.llama_cpp import voice_load_in_flight
-
-    in_flight = voice_load_in_flight()
-    await asyncio.to_thread(
-        acquire_for_request, _CHAT, in_flight.__enter__, alongside = True
-    )
-    try:
-        ok = await asyncio.to_thread(voice_backend.load_model, intent)
-    except Exception as e:
-        logger.error("Voice slot load error: %s", e, exc_info = True)
-        raise HTTPException(status_code = 500, detail = f"Failed to load voice model: {e}")
-    finally:
-        in_flight.__exit__(None, None, None)
-
-    if unload_epoch is not None and getattr(voice_backend, "_unload_epoch", None) != unload_epoch:
-        try:
-            await asyncio.to_thread(voice_backend.unload_model)
-        except Exception:
-            pass
-        raise HTTPException(
-            status_code = 409,
-            detail = "The voice model was unloaded while it was loading. Load it again.",
-        )
-    # load_model clears the cancel event an Images/Video eviction set between the claim and the
-    # spawn, so that cancellation is lost. Ownership survives it: same recheck as /load.
-    if current_owner() != _CHAT:
-        try:
-            await asyncio.to_thread(voice_backend.unload_model)
-        except Exception:
-            pass
-        raise HTTPException(
-            status_code = 409,
-            detail = (
-                "An image or video model took the GPU while the voice model was loading, "
-                "so the load was cancelled. Unload that model, then try again."
-            ),
-        )
-
-    if not ok:
-        # load_model returned False (e.g. the server became healthy but audio
-        # codec init failed). Tear the half-started slot down before raising so
-        # the llama-server process doesn't linger and occupy memory. Off-loop,
-        # like every other unload here: teardown waits on the subprocess.
-        try:
-            await asyncio.to_thread(voice_backend.unload_model)
-        except Exception:
-            pass
-        raise HTTPException(status_code = 500, detail = "Voice model failed to start.")
-
-    audio_type = getattr(voice_backend, "_audio_type", None)
-    is_audio = getattr(voice_backend, "_is_audio", False)
-
-    if not is_audio or audio_type not in _VOICE_SLOT_AUDIO_TYPES:
-        # Not a supported TTS type — reject and leave slot empty.
-        try:
-            await asyncio.to_thread(voice_backend.unload_model)
-        except Exception:
-            pass
-        raise HTTPException(
-            status_code = 400,
-            detail = (
-                f"Model is not a supported TTS type for the voice slot "
-                f"(detected: {audio_type!r}). "
-                f"Only snac, bicodec, and dac GGUF models are accepted."
-            ),
-        )
-
-    # Prime the pipeline so the FIRST real /speech is fast. The llama-server
-    # completion graph and the codec's first decode each pay a one-time cold cost
-    # (kernel compile / cache alloc -- seconds on ROCm). Run one tiny throwaway
-    # synth now, while the slot still reads as "loading" (voiceSlotLoading), so the
-    # warm-up phase absorbs it instead of freezing the user's first spoken reply.
-    # Best-effort: a priming failure must never fail an otherwise-good load.
-    try:
-        await asyncio.to_thread(voice_backend.generate_audio_response, "Hi there.", audio_type)
-    except Exception as e:
-        logger.warning("Voice slot warmup synth failed (first /speech may be slower): %s", e)
-
-    logger.info("Voice slot loaded: %s (audio_type=%s)", voice_backend.model_identifier, audio_type)
-    return {
-        "status": "loaded",
-        "model": voice_backend.model_identifier,
-        "audio_type": audio_type,
-    }
 
 
 @router.post("/voice/unload")
@@ -21203,6 +21215,10 @@ async def voice_unload_model(current_subject: str = Depends(get_current_subject)
 async def voice_slot_status(current_subject: str = Depends(get_current_subject)):
     """Return the current state of the voice slot."""
     voice_backend = get_voice_llama_backend()
+    # The slot is chat-owned GPU use: another account's resident is not described, as the
+    # chat status does (a local voice's identifier is its absolute path).
+    if voice_backend.is_active and account_access.resident_hidden("chat"):
+        return account_access.hidden_resident_response()
     loaded = voice_backend.is_loaded
     return {
         "loaded": loaded,

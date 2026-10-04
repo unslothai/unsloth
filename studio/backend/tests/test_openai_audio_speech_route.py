@@ -1330,6 +1330,37 @@ def test_voice_load_undoes_itself_when_an_unload_landed_before_the_spawn():
     assert "status_code = 409" in source[check:]
 
 
+def test_voice_status_hides_another_accounts_resident(monkeypatch):
+    """Every authenticated account read the loaded voice's identifier (a local GGUF's absolute
+    path) off the singleton slot; the chat status hides a foreign resident and this now does too."""
+    import json
+
+    voice = type(
+        "Voice",
+        (),
+        {"is_active": True, "is_loaded": True, "model_identifier": "C:/voices/private.gguf"},
+    )()
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice)
+    monkeypatch.setattr(routes_module.account_access, "resident_hidden", lambda *a, **k: True)
+    hidden = asyncio.run(routes_module.voice_slot_status("s"))
+    assert json.loads(hidden.body) == {"loaded": True, "yours": False}
+    monkeypatch.setattr(routes_module.account_access, "resident_hidden", lambda *a, **k: False)
+    shown = asyncio.run(routes_module.voice_slot_status("s"))
+    assert shown["model"] == "C:/voices/private.gguf"
+
+
+def test_voice_loads_run_one_at_a_time():
+    """Two loads for different voices both passed the already-loaded check, and the second then
+    replaced the server the first had just reported as loaded."""
+    import inspect
+
+    source = inspect.getsource(routes_module.voice_load_model)
+    lock = source.index("async with _voice_load_lock():")
+    fast_path = source.index('"status": "already_loaded"')
+    spawn = source.index("await asyncio.to_thread(voice_backend.load_model, intent)")
+    assert lock < fast_path < spawn
+
+
 def test_voice_load_rejects_a_context_above_the_requestable_ceiling():
     """/voice/load models its load as a chat LoadRequest for the training-coexistence
     guard, and that model caps max_seq_length at MAX_REQUESTABLE_CONTEXT. Without the
