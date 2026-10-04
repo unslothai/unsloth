@@ -107,7 +107,7 @@ def test_krea2_pipeline_picks_seed_their_hosted_denoiser():
 
 
 def _krea_pipeline_calls() -> list:
-    source = (_BACKEND / "core" / "inference" / "diffusion.py").read_text()
+    source = (_BACKEND / "core" / "inference" / "diffusion.py").read_text(encoding = "utf-8")
     calls = []
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "load_krea2_pipeline":
