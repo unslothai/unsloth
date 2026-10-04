@@ -989,7 +989,9 @@ def summarise(reps: list[dict[str, dict]]) -> dict[str, dict]:
             if any(key in row for row in rows):
                 merged[key] = all(row.get(key, False) for row in rows)
         if any("activeElementAfterClose" in row for row in rows):
-            failed_focus = next((row for row in rows if not row.get("focusReturnedToTrigger", False)), rows[-1])
+            failed_focus = next(
+                (row for row in rows if not row.get("focusReturnedToTrigger", False)), rows[-1]
+            )
             merged["activeElementAfterClose"] = failed_focus.get("activeElementAfterClose")
         # The headline value from each repetition, unaggregated, so a median can be checked against the spread it came
         # from rather than taken on trust.
