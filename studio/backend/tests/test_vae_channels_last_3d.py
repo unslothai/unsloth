@@ -86,6 +86,7 @@ def test_real_3d_vae_classes_take_the_3d_path(name):
     diffusers = pytest.importorskip("diffusers")
     cls = getattr(diffusers, name, None)
     if cls is None:
+        # Skips because older diffusers releases predate this VAE class.
         pytest.skip(f"{name} not in this diffusers")
     kw = {
         "AutoencoderKLWan": dict(
@@ -105,6 +106,7 @@ def test_real_3d_vae_classes_take_the_3d_path(name):
     try:
         vae = cls(**kw)
     except Exception as exc:  # noqa: BLE001 - constructor signature drift across diffusers releases
+        # Skips because the tiny config's kwargs differ across diffusers releases.
         pytest.skip(f"cannot build a tiny {name}: {exc}")
     assert ds_mod._has_conv3d(vae)
     assert ds_mod._vae_channels_last(types.SimpleNamespace(vae = vae), None, fused = True)
