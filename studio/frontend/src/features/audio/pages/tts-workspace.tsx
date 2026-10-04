@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { AdvancedDisclosure } from "@/components/advanced-disclosure";
 import {
   GalleryItemMenu,
@@ -43,10 +43,16 @@ import {
   PendingClipCard,
 } from "../components/clip-card";
 import { Field } from "../components/field";
+import { MusicSendToMenuItems } from "../components/music-send-to";
+import {
+  VariationChips,
+  VariationGroupRow,
+} from "../components/variation-history";
 import type { AudioHostState } from "../hooks/audio-host-state";
 import type { AudioGallery } from "../hooks/use-audio-gallery";
 import type { AudioModelSlot } from "../hooks/use-audio-model-slot";
 import type { SpeechGeneration } from "../hooks/use-speech-generation";
+import { historyRows, variationSiblings } from "../music/variation-groups";
 import type { AudioWorkflowId } from "../workflows";
 
 export interface GenerateAction {
@@ -528,6 +534,16 @@ export function TtsOutput({
           selectedClip.id === freshClipId ? focusFreshClip : undefined,
         )
       : null;
+  const [openGroups, setOpenGroups] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const toggleGroup = (groupId: string) =>
+    setOpenGroups((open) => {
+      const next = new Set(open);
+      if (!next.delete(groupId)) next.add(groupId);
+      return next;
+    });
+  const siblings = variationSiblings(clips, selectedClip?.id ?? null);
   const clipMenu = (clip: AudioGalleryClip, variant: "row" | "toolbar") => (
     <GalleryItemMenu
       variant={variant}
@@ -559,6 +575,7 @@ export function TtsOutput({
             />
             Copy text
           </DropdownMenuItem>
+          <MusicSendToMenuItems clip={clip} />
         </>
       }
     />
@@ -572,26 +589,33 @@ export function TtsOutput({
         {pending ? (
           <PendingClipCard {...pending} />
         ) : selectedClip ? (
-          <ClipCard
-            // Keyed per clip: a reused player kept the old clip's position.
-            key={selectedClip.id}
-            title={selectedClip.prompt}
-            model={selectedClip.model}
-            createdAt={selectedClip.created_at}
-            durationS={selectedClip.duration_s}
-            src={selectedClipSrc ?? null}
-            peaks={peaksById.get(selectedClip.id) ?? null}
-            onDownload={
-              srcById[selectedClip.id]
-                ? () => handleDownloadClip(selectedClip)
-                : null
-            }
-            menu={clipMenu(selectedClip, "row")}
-            player={customPlayer ?? undefined}
-            status={clipBadge?.(selectedClip) ?? undefined}
-            focusOnMount={selectedClip.id === freshClipId}
-            onFocused={onFreshClipFocused}
-          />
+          <div className="flex w-full flex-col gap-2">
+            <VariationChips
+              siblings={siblings}
+              selectedId={selectedClip.id}
+              onSelect={selectClip}
+            />
+            <ClipCard
+              // Keyed per clip: a reused player kept the old clip's position.
+              key={selectedClip.id}
+              title={selectedClip.prompt}
+              model={selectedClip.model}
+              createdAt={selectedClip.created_at}
+              durationS={selectedClip.duration_s}
+              src={selectedClipSrc ?? null}
+              peaks={peaksById.get(selectedClip.id) ?? null}
+              onDownload={
+                srcById[selectedClip.id]
+                  ? () => handleDownloadClip(selectedClip)
+                  : null
+              }
+              menu={clipMenu(selectedClip, "row")}
+              player={customPlayer ?? undefined}
+              status={clipBadge?.(selectedClip) ?? undefined}
+              focusOnMount={selectedClip.id === freshClipId}
+              onFocused={onFreshClipFocused}
+            />
+          </div>
         ) : fallbackClip ? (
           <ClipCard
             title={fallbackClip.prompt}
@@ -640,50 +664,63 @@ export function TtsOutput({
               }
             }}
           >
-            {clips.map((clip) => (
-              // Shell, not a button: the pin badge and dots menu are buttons and cannot nest.
-              <div
-                key={clip.id}
-                {...historyReorder.tileProps(clip.id)}
-                className={cn(
-                  "group relative flex items-center gap-1 rounded-md pr-1 transition-colors hover:bg-muted",
-                  clip.id === selectedId && "bg-muted",
-                  historyReorder.draggingId === clip.id && "opacity-40",
-                )}
-              >
-                {historyReorder.cue?.id === clip.id && (
-                  <StripDropLine axis="y" edge={historyReorder.cue.edge} />
-                )}
-                <button
-                  type="button"
-                  onClick={() => selectClip(clip.id)}
-                  aria-current={clip.id === selectedId ? "true" : undefined}
-                  className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-ui-13"
+            {historyRows(clips, openGroups).map(({ clip, header, nested }) =>
+              header ? (
+                <VariationGroupRow
+                  key={`group:${header.groupId}`}
+                  clips={header.clips}
+                  open={header.open}
+                  selected={header.clips.some((item) => item.id === selectedId)}
+                  onToggle={() => toggleGroup(header.groupId)}
+                />
+              ) : (
+                // Shell, not a button: the pin badge and dots menu are buttons and cannot nest.
+                <div
+                  key={clip.id}
+                  {...historyReorder.tileProps(clip.id)}
+                  className={cn(
+                    "group relative flex items-center gap-1 rounded-md pr-1 transition-colors hover:bg-muted",
+                    clip.id === selectedId && "bg-muted",
+                    historyReorder.draggingId === clip.id && "opacity-40",
+                    nested && "ml-4",
+                  )}
                 >
-                  <HugeiconsIcon
-                    icon={AudioWave01Icon}
-                    className="size-3.5 shrink-0 text-muted-foreground"
-                  />
-                  <span className="min-w-0 flex-1 truncate">{clip.prompt}</span>
-                  <ClipBadge text={clipBadge?.(clip)} />
-                  <span className="hidden min-w-0 max-w-[45%] shrink truncate text-ui-11p5 text-muted-foreground @[30rem]:block">
-                    {audioModelLabel(clip.model)} ·{" "}
-                    {formatRelativeShort(clip.created_at)}
-                  </span>
-                  <span className="shrink-0 font-mono text-ui-11p5 tabular-nums text-muted-foreground">
-                    {formatClipDuration(clip.duration_s)}
-                  </span>
-                </button>
-                {clip.pinned && (
-                  <GalleryPinBadge
-                    noun="clip"
-                    className="static shrink-0"
-                    onUnpin={() => void handleTogglePin(clip.id, false)}
-                  />
-                )}
-                {clipMenu(clip, "row")}
-              </div>
-            ))}
+                  {historyReorder.cue?.id === clip.id && (
+                    <StripDropLine axis="y" edge={historyReorder.cue.edge} />
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => selectClip(clip.id)}
+                    aria-current={clip.id === selectedId ? "true" : undefined}
+                    className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-ui-13"
+                  >
+                    <HugeiconsIcon
+                      icon={AudioWave01Icon}
+                      className="size-3.5 shrink-0 text-muted-foreground"
+                    />
+                    <span className="min-w-0 flex-1 truncate">
+                      {clip.prompt}
+                    </span>
+                    <ClipBadge text={clipBadge?.(clip)} />
+                    <span className="hidden min-w-0 max-w-[45%] shrink truncate text-ui-11p5 text-muted-foreground @[30rem]:block">
+                      {audioModelLabel(clip.model)} ·{" "}
+                      {formatRelativeShort(clip.created_at)}
+                    </span>
+                    <span className="shrink-0 font-mono text-ui-11p5 tabular-nums text-muted-foreground">
+                      {formatClipDuration(clip.duration_s)}
+                    </span>
+                  </button>
+                  {clip.pinned && (
+                    <GalleryPinBadge
+                      noun="clip"
+                      className="static shrink-0"
+                      onUnpin={() => void handleTogglePin(clip.id, false)}
+                    />
+                  )}
+                  {clipMenu(clip, "row")}
+                </div>
+              ),
+            )}
           </div>
         </div>
       ) : null}

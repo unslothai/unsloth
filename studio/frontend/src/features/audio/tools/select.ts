@@ -8,6 +8,8 @@ import {
   type NativeAudioInstructionsKind,
   nativeAudioInstructionsKind,
 } from "../audio-page-policy";
+import { isMusicGenerationModel } from "../catalog";
+import { parseMusicCapabilities } from "../music/music-types";
 import type { AudioWorkflowId } from "../workflows";
 import type {
   AnyAudioToolPanel,
@@ -24,6 +26,12 @@ export function instructionsKindFor(
   return ctx.musicGeneration
     ? "music"
     : nativeAudioInstructionsKind(ctx.audioType);
+}
+
+/** The Music studio has its own description field, preview included; only a loaded music model
+ *  without studio modes (native MiniMax) keeps the old one. */
+export function legacyMusicDescription(ctx: AudioModelContext): boolean {
+  return ctx.audioMusic !== true && isMusicGenerationModel(null, ctx.audioType);
 }
 
 export function panelApplies(
@@ -56,6 +64,7 @@ export function audioModelContextFor(
     audio_workflows?: readonly string[] | null;
     audio_required_inputs?: readonly string[] | null;
     audio_reference_text?: string | null;
+    audio_music?: unknown;
   } | null,
   page: {
     musicGeneration: boolean;
@@ -81,6 +90,7 @@ export function audioModelContextFor(
       REFERENCE_TEXT_MODES.has(referenceText)
         ? (referenceText as AudioReferenceTextMode)
         : null,
+    audioMusic: parseMusicCapabilities(status?.audio_music) !== null,
   };
 }
 

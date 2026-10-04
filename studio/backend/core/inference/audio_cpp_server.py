@@ -645,7 +645,8 @@ class AudioCppServer:
             except subprocess.TimeoutExpired:
                 process.kill()
                 try:
-                    # A killed server can sit in GPU teardown well past 10 s on a busy card.
+                    # A killed server can sit in GPU context teardown well past 10 s on a busy
+                    # card; the music reload restarts it mid-session and must not fail on that.
                     process.wait(timeout = 120)
                 except subprocess.TimeoutExpired:
                     logger.warning("audiocpp_server %s did not exit after SIGKILL", process.pid)

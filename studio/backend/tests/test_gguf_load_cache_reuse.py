@@ -1080,6 +1080,7 @@ class TestLoadHubDownloadExclusion:
             "audio_workflows",
             "audio_reference_text",
             "audio_required_inputs",
+            "audio_music",
         }
         unresolved = sorted(
             name

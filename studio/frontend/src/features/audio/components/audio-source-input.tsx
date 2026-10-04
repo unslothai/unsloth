@@ -61,6 +61,13 @@ const SOURCE_LABEL: Record<AudioSourceSelection["kind"], string> = {
   voice: "Saved voice",
 };
 
+export interface AudioSourcePreviewView {
+  peaks: number[] | null;
+  durationS: number | null;
+  src: string | null;
+  label: string;
+}
+
 export interface AudioSourceInputHandle {
   focus: () => void;
   browse: () => void;
@@ -93,6 +100,7 @@ export function AudioSourceInput({
   allowSavedVoice = true,
   handleRef,
   onStatusChange,
+  renderWaveform,
   maxRecordSeconds,
   expiredMessage = REFERENCE_EXPIRED_MESSAGE,
   usesFirstSeconds = REFERENCE_MAX_SECONDS,
@@ -108,6 +116,7 @@ export function AudioSourceInput({
   allowSavedVoice?: boolean;
   handleRef?: Ref<AudioSourceInputHandle>;
   onStatusChange?: (status: AudioSourceStatus) => void;
+  renderWaveform?: (preview: AudioSourcePreviewView) => ReactNode;
   maxRecordSeconds?: number;
   /** The card's copy defaults to a clone reference; other pages pass their own. */
   expiredMessage?: string;
@@ -273,12 +282,21 @@ export function AudioSourceInput({
               </span>
             ) : null}
           </div>
-          <Waveform
-            peaks={preview.peaks}
-            durationS={durationS}
-            src={preview.url}
-            label={name || label}
-          />
+          {renderWaveform ? (
+            renderWaveform({
+              peaks: preview.peaks,
+              durationS,
+              src: preview.url,
+              label: name || label,
+            })
+          ) : (
+            <Waveform
+              peaks={preview.peaks}
+              durationS={durationS}
+              src={preview.url}
+              label={name || label}
+            />
+          )}
           {status.phase === "uploading" ? (
             <div className="grid gap-1">
               <Progress

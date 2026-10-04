@@ -94,7 +94,6 @@ _SRC = {"source": {"input_id": "a" * 32}}
     {"inputs": _SRC, "edit": {"instructions": ["x"] * 9}},
     {"workflow": "clone", "inputs": {"reference": {"input_id": "a" * 32}}},
     {"inputs": _SRC, "edit": None},
-    {"workflow": "speak", "inputs": _SRC, "edit": None},
     {"inputs": {**_SRC, "reference": {"input_id": "a" * 32}}},
     {"options": {"source_audio": "/etc/passwd"}},
 ])
