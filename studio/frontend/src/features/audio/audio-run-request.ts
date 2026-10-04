@@ -34,9 +34,7 @@ export function clipReference(clip: {
     id: clip.id,
     name: clip.prompt || "Generated clip",
     durationS: clip.duration_s,
-    // Past the 30 s reference cut the clip's text no longer matches the audio the runtime gets.
-    transcript:
-      (clip.duration_s ?? 0) > REFERENCE_MAX_SECONDS ? null : clip.prompt || null,
+    transcript: clip.prompt || null,
     language: null,
   };
 }
