@@ -2171,10 +2171,7 @@ def test_load_is_dropped_when_the_padding_cannot_be_proven(monkeypatch, tmp_path
 
 
 def test_an_fp8_checkpoint_without_the_activation_floor_is_detected():
-    # A checkpoint built before activation_value_lb bakes hp_value_lb=None into every quantised tensor: torchao's
-    # per-row activation quantiser divides by the row amax, so qwen's all-zero text rows give scale 0 and NaN. The
-    # metadata checks around this one all accept an absent field for back-compat, which is exactly wrong here, so the
-    # floor is read off the TENSORS instead. Measured: 412 of 512 rows non-finite without it, 0 with it.
+    # Pre-floor builds bake hp_value_lb=None (all-zero rows -> scale 0 -> NaN); read off the tensors, not metadata.
     floored = {"blocks.0.attn.to_q.weight": Float8Tensor(hp_value_lb = 1e-12)}
     unfloored = {"blocks.0.attn.to_q.weight": Float8Tensor(hp_value_lb = None)}
     assert pq._fp8_activation_floor_present(floored, None) is True
@@ -2184,9 +2181,7 @@ def test_an_fp8_checkpoint_without_the_activation_floor_is_detected():
 
 
 def test_an_fp8_checkpoint_without_the_floor_loads_with_the_runtime_floor(monkeypatch, tmp_path):
-    # The floor is a field of each tensor's activation kwargs, never weight data (torchao's weight quantiser does not
-    # read it), so an artifact built before it holds the runtime path's exact weights. The hosted FLUX.1-dev,
-    # FLUX.2-klein-4B, FLUX.2-dev and Qwen-Image-2512 FP8 files are such artifacts and were refused outright.
+    # The floor is not weight data, so a pre-floor artifact holds the runtime path's exact weights.
     from core.inference.diffusion_transformer_quant import FP8_ACTIVATION_VALUE_LB
 
     ckpt = _good_ckpt(scheme = "fp8")
