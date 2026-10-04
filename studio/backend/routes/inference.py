@@ -22508,6 +22508,20 @@ def _audio_source_error(exc) -> HTTPException:
     return HTTPException(status_code = exc.status, detail = exc.detail)
 
 
+CONVERT_EXPIRED_DETAIL = {
+    "source": "This recording expired. Add it again.",
+    "target": "This target voice expired. Add it again.",
+}
+
+
+def _convert_role_error(exc, role: str):
+    from core.inference.audio_inputs import AudioInputError
+
+    if exc.status == 404 and exc.detail == "This reference expired. Add it again.":
+        return AudioInputError(404, CONVERT_EXPIRED_DETAIL[role])
+    return exc
+
+
 def _audio_run_settings(body: AudioRunRequest, reference_text_used: bool) -> dict[str, Any]:
     """The run's recipe for history: scalar options only."""
     options = {
@@ -22992,14 +23006,17 @@ async def _run_audio_convert(
     if refs["source"] is None:
         raise HTTPException(status_code = 400, detail = "Add the recording to convert.")
     resolved: dict[str, Any] = {}
-    try:
-        for role, ref in refs.items():
-            if ref is not None:
-                resolved[role] = await asyncio.to_thread(
-                    audio_inputs.resolve_source, ref.model_dump(exclude_none = True)
-                )
-    except audio_inputs.AudioInputError as exc:
-        raise _audio_source_error(exc) from None
+    for role, ref in refs.items():
+        if ref is None:
+            continue
+        try:
+            resolved[role] = await asyncio.to_thread(
+                audio_inputs.resolve_source, ref.model_dump(exclude_none = True)
+            )
+        except audio_inputs.AudioInputError as exc:
+            # Two uploads share one expiry message; naming the side lets the page mark only
+            # the card that expired instead of both.
+            raise _audio_source_error(_convert_role_error(exc, role)) from None
     source, target = resolved["source"], resolved.get("target")
     max_seconds = {"source": CONVERT_SOURCE_MAX_SECONDS, "target": CONVERT_TARGET_MAX_SECONDS}
     seen: dict[str, Any] = {}

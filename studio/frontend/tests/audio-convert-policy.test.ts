@@ -285,7 +285,7 @@ test("only the expired-upload 404 expires uploads, and a re-upload clears it", (
   const hook = readSrc("features/audio/hooks/use-convert-generation.ts");
   assert.match(
     hook,
-    /error\.status === 404 &&\s*error\.message === REFERENCE_EXPIRED_MESSAGE/,
+    /error instanceof AudioApiError && error\.status === 404\s*\?\s*error\.message === CONVERT_EXPIRED_MESSAGE\.source/,
   );
   assert.match(
     hook,
@@ -368,4 +368,17 @@ test("a fresh Convert clip focuses its player, not the Source tab", () => {
   assert.match(workspace, WORKSPACE_FOCUSES_A_FRESH_CUSTOM_PLAYER);
   const page = readSrc("features/audio/pages/convert-page.tsx");
   assert.match(page, /playerRef=\{focusRef\}/);
+});
+
+test("an expired upload marks only its own side, the result opens on Converted, and Source plays the recording", () => {
+  const hook = readSrc("features/audio/hooks/use-convert-generation.ts");
+  // The server names the side that expired; the shared message (an older server) marks both.
+  assert.match(hook, /error\.message === CONVERT_EXPIRED_MESSAGE\.source\s*\?\s*"source"/);
+  assert.match(hook, /error\.message === CONVERT_EXPIRED_MESSAGE\.target\s*\?\s*"target"/);
+  assert.match(hook, /error\.message === REFERENCE_EXPIRED_MESSAGE\s*\?\s*"both"/);
+  // compareSide is persisted, so a user last on Source would open every new result on the input.
+  assert.match(hook, /setCompareSide\("converted"\);\s*await showRunResult\(/);
+  const page = readSrc("features/audio/pages/convert-page.tsx");
+  // The saved copy is the model's mono, resampled, cut input: a fallback, not the A side.
+  assert.match(page, /fetchAudioBlob\(original\)\.catch\([\s\S]*return fetchAudioBlob\(savedUrl\)/);
 });
