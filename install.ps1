@@ -11304,7 +11304,7 @@ main()
         }
     }
 
-    $installedPackageVersion = (& $VenvPython -c "
+    $installedPackageVersion = (& $VenvPython -I -c "
 import sys
 try:
     from studio.install_manifest import installed_version_probe
@@ -11551,7 +11551,7 @@ sys.exit(2 if conflict else (0 if installed else 1))
     if ($script:WoaNativeCudaTorch) {
         $WoaStudioSetup = $null
         try {
-            $WoaStudioSetup = (& $VenvPython -c "import pathlib, studio; print(pathlib.Path(studio.__file__).parent / 'setup.ps1')" 2>$null | Select-Object -First 1)
+            $WoaStudioSetup = (& $VenvPython -I -c "import pathlib, studio; print(pathlib.Path(studio.__file__).parent / 'setup.ps1')" 2>$null | Select-Object -First 1)
         } catch {}
         $WoaStudioAware = $false
         if ($WoaStudioSetup -and (Test-Path -LiteralPath $WoaStudioSetup -PathType Leaf)) {
