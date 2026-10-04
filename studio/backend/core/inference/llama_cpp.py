@@ -36501,6 +36501,7 @@ class LlamaCppBackend:
         on_decode_slot: Optional[Callable[[str, int], None]] = None,
         thinking_budget_tokens: Optional[int] = None,
         mcp_image = None,
+        instruction_anchor_ids = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -36547,7 +36548,8 @@ class LlamaCppBackend:
             raise RuntimeError("llama-server is not loaded")
 
         conversation = list(messages)
-        _rolling_anchor_ids: set[int] = set()
+        # Seeded with tool results an explicit skill load relies on, so fitting keeps them.
+        _rolling_anchor_ids: set[int] = set(instruction_anchor_ids or ())
         # The loop refits on every iteration; recall must fire once per request, or each
         # pass stacks another block of recalled turns onto the prompt.
         _conversation_recall_done = False

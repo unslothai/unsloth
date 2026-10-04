@@ -222,7 +222,7 @@ export interface GgufVariantsResponse {
   variants: GgufVariantDetail[];
   has_vision: boolean;
   default_variant: string | null;
-  /** True only when Hub metadata resolved every required companion. */
+  /** True when Hub metadata or a complete cached download plan proves companion readiness. */
   dependencies_resolved?: boolean;
 }
 
@@ -499,18 +499,19 @@ export async function listGgufVariants(
   repoId: string,
   hfToken?: string,
   options?: {
+    localOnly?: boolean;
     preferLocalCache?: boolean;
     includeCacheLocations?: boolean;
     localPath?: string | null;
     signal?: AbortSignal;
   },
 ): Promise<GgufVariantsResponse> {
-  const offline = isHuggingFaceOffline();
+  const offline = options?.localOnly === true || isHuggingFaceOffline();
   const localPath = options?.localPath?.trim() || null;
   const preferLocalCache = !!options?.preferLocalCache || offline;
   const signal = options?.signal;
   const key = `${repoId}::${fingerprintToken(hfToken)}::${
-    preferLocalCache ? "local" : "remote"
+    offline ? "offline" : preferLocalCache ? "local" : "remote"
   }::${localPathCacheKey(localPath)}::${!!options?.includeCacheLocations}`;
   const now = Date.now();
   const hit = ggufVariantsCache.get(key);

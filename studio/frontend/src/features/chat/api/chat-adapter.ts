@@ -1421,6 +1421,8 @@ function serializeAssistantReplayMessages(
 
     if (part.type === "tool-call") {
       const toolPart = part as ToolCallMessagePart;
+      // Backend preload card is UI evidence, not a model function call.
+      if (toolPart.toolName === "studio_load_skill") continue;
       const toolCall = serializeAssistantToolCallPart(toolPart);
       if (!toolCall) continue;
 
@@ -6976,7 +6978,7 @@ export function createOpenAIStreamAdapter(
               if (toolEvent !== undefined) {
                 // Unsloth's own tool events end the turn that asked for them; finish_reason alone is not
                 // enough, since a hosted tool runs INSIDE the turn and rides a whole chunk.
-                if (!chunk.choices) {
+                if (!chunk.choices && toolEvent.tool_name !== "studio_load_skill") {
                   endProviderTurn();
                 }
                 // Deep Research is an ordinary tool to every loop that runs it, so the handoff is read off the
