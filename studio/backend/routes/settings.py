@@ -11,7 +11,7 @@ import re
 import threading
 import time
 from contextvars import ContextVar
-from typing import Any, Literal, Optional, get_args
+from typing import Annotated, Any, Literal, Optional, get_args
 from urllib.parse import unquote, urlsplit
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
@@ -23,6 +23,7 @@ from pydantic import (
     Field,
     StrictBool,
     StrictInt,
+    StringConstraints,
     ValidationError,
     field_validator,
     model_validator,
@@ -1945,6 +1946,65 @@ class DiffusionAcceleratorFallbackResponse(BaseModel):
     diverting: bool = False
 
 
+PINNED_MODELS_SETTING_KEY = "model_picker_pinned"
+PINNED_CONNECTED_MODELS_SETTING_KEY = "model_picker_pinned_connected"
+MAX_PINNED_MODELS = 512
+# Room for a "::quant" suffix or an "external::<connection>::" prefix on top of a model id.
+_MAX_PIN_KEY_LEN = MAX_MODEL_OVERRIDE_KEY_LEN + 512
+_PinKey = Annotated[str, StringConstraints(min_length = 1, max_length = _MAX_PIN_KEY_LEN)]
+
+
+class PinnedModelsPayload(BaseModel):
+    """Either list may be omitted; only what is sent is replaced."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    pinned: Optional[list[_PinKey]] = Field(default = None, max_length = MAX_PINNED_MODELS)
+    connected: Optional[list[_PinKey]] = Field(default = None, max_length = MAX_PINNED_MODELS)
+
+
+class PinnedModelsResponse(BaseModel):
+    # None = never stored, so the browser seeds it.
+    pinned: Optional[list[str]] = None
+    connected: Optional[list[str]] = None
+
+
+def _pinned_models_response() -> PinnedModelsResponse:
+    from storage.studio_db import get_app_settings
+
+    stored = get_app_settings([PINNED_MODELS_SETTING_KEY, PINNED_CONNECTED_MODELS_SETTING_KEY])
+
+    def _ids(value: Any) -> Optional[list[str]]:
+        return [v for v in value if isinstance(v, str)] if isinstance(value, list) else None
+
+    return PinnedModelsResponse(
+        pinned = _ids(stored.get(PINNED_MODELS_SETTING_KEY)),
+        connected = _ids(stored.get(PINNED_CONNECTED_MODELS_SETTING_KEY)),
+    )
+
+
+@_account_settings_router.get("/pinned-models", response_model = PinnedModelsResponse)
+def get_pinned_models(current_subject: str = Depends(get_current_subject)) -> PinnedModelsResponse:
+    """Per-account picker pins: an account switch clears the browser copy."""
+    return _pinned_models_response()
+
+
+@_account_settings_router.put("/pinned-models", response_model = PinnedModelsResponse)
+def update_pinned_models(
+    payload: PinnedModelsPayload, current_subject: str = Depends(get_current_subject)
+) -> PinnedModelsResponse:
+    from storage.studio_db import upsert_app_settings
+
+    updates: dict[str, Any] = {}
+    if payload.pinned is not None:
+        updates[PINNED_MODELS_SETTING_KEY] = list(dict.fromkeys(payload.pinned))
+    if payload.connected is not None:
+        updates[PINNED_CONNECTED_MODELS_SETTING_KEY] = list(dict.fromkeys(payload.connected))
+    if updates:
+        upsert_app_settings(updates, read_back = False)
+    return _pinned_models_response()
+
+
 def _diffusion_accelerator_fallback_response() -> DiffusionAcceleratorFallbackResponse:
     from core.inference.sd_cpp_backend import accelerator_runtime_failure_state
     return DiffusionAcceleratorFallbackResponse(**accelerator_runtime_failure_state())
@@ -2080,7 +2140,9 @@ def update_openai_auto_switch(
     )
 
 
-@_owner_settings_router.get("/openai-auto-switch/overrides", response_model = ModelOverridesResponse)
+@_account_settings_router.get(
+    "/openai-auto-switch/overrides", response_model = ModelOverridesResponse
+)
 def get_openai_auto_switch_overrides(
     model_id: Optional[str] = None,
     alias_id: Optional[str] = None,
@@ -2254,7 +2316,9 @@ def _serialized_override_write(func):
     return wrapper
 
 
-@_owner_settings_router.put("/openai-auto-switch/overrides", response_model = ModelOverridesResponse)
+@_account_settings_router.put(
+    "/openai-auto-switch/overrides", response_model = ModelOverridesResponse
+)
 @_serialized_override_write
 def update_openai_auto_switch_override(
     payload: ModelOverridePayload, current_subject: str = Depends(get_current_subject)

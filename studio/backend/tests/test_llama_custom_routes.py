@@ -163,6 +163,36 @@ async def test_preflight_refuses_a_bad_config_before_any_eviction(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("managed", [False, True])
+@pytest.mark.parametrize("caller_sent_custom", [False, True])
+async def test_preflight_holds_a_managed_callers_own_config_to_owner_only_paths(
+    monkeypatch, managed, caller_sent_custom
+):
+    compiled = SimpleNamespace(argv = ("--chat-template-file", "/home/owner/secret.jinja"))
+    monkeypatch.setattr(
+        routes,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(prepare_custom_config = lambda intent: compiled),
+    )
+    monkeypatch.setattr(routes, "_classify_diffusion_gguf", lambda config: False)
+    monkeypatch.setattr(routes.account_access, "managed_account", lambda: managed)
+    request = LoadRequest(model_path = "model.gguf", llama_cpp_config = CUSTOM)
+    config = SimpleNamespace(is_gguf = True, identifier = "model.gguf")
+    if managed and caller_sent_custom:
+        with pytest.raises(HTTPException) as caught:
+            await routes._preflight_custom_llama_config(
+                request, config, caller_sent_custom = caller_sent_custom
+            )
+        assert caught.value.status_code == 403
+        return
+    # The owner, or a managed load that inherits the owner's saved override, is unchanged.
+    got = await routes._preflight_custom_llama_config(
+        request, config, caller_sent_custom = caller_sent_custom
+    )
+    assert got is compiled
+
+
+@pytest.mark.asyncio
 async def test_preflight_refuses_non_gguf():
     request = LoadRequest(model_path = "org/model", llama_cpp_config = CUSTOM)
     with pytest.raises(HTTPException):

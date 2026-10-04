@@ -922,6 +922,27 @@ class TestEstimateMemoryRoute:
         assert resp.available is False
         assert resp.reason == "unsupported_source"
 
+    def test_managed_caller_cannot_size_an_owner_only_path(self, monkeypatch):
+        # Sizing reads the file a draft/projector/adapter flag names, so a path the
+        # load would refuse is answered "unsizable" before anything is opened.
+        from utils import openai_auto_switch_settings as settings
+
+        def boom(*a, **kw):
+            raise AssertionError("estimate-memory must not size a refused path")
+
+        monkeypatch.setattr(ri.account_access, "managed_account", lambda: True)
+        monkeypatch.setattr(ri.account_access, "require_model_access", lambda *a, **kw: None)
+        monkeypatch.setattr(settings, "get_model_override", lambda key: {})
+        monkeypatch.setattr(
+            ri, "get_llama_cpp_backend", lambda: SimpleNamespace(last_load_intent = None)
+        )
+        monkeypatch.setattr(ri, "_cached_estimate_config", boom)
+        resp = _estimate(
+            model_path = "/models/m.gguf", llama_extra_args = ["-md", "/home/owner/private.gguf"]
+        )
+        assert resp.available is False
+        assert resp.reason == "unsizable"
+
     def test_the_estimate_asks_the_question_the_worker_asks_of_the_stack(self, monkeypatch):
         import utils.mlx_repair as repair
         monkeypatch.setattr(repair, "is_apple_silicon", lambda: True)
