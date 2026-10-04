@@ -271,3 +271,27 @@ test("follow-up Hub probes never exceed the limiter's concurrency", async () => 
   assert.equal(peak, 2);
   assert.deepEqual(done, [0, 1, 2, -1, 4, 5, 6]);
 });
+
+test("a failed disk phase falls back to the Hub only when it is reachable", async () => {
+  const calls: boolean[] = [];
+  const list = async (localOnly: boolean) => {
+    calls.push(localOnly);
+    if (localOnly) throw new Error("Model not found");
+    return local;
+  };
+  const shown: GgufVariantsResponse[] = [];
+  assert.equal(
+    await loadPickerGgufVariants(list, options, (r) => shown.push(r)),
+    local,
+  );
+  assert.deepEqual(shown, []);
+  await assert.rejects(
+    loadPickerGgufVariants(
+      list,
+      { ...options, canDiscoverRemote: () => false },
+      () => {},
+    ),
+    /Model not found/,
+  );
+  assert.deepEqual(calls, [true, false, true]);
+});

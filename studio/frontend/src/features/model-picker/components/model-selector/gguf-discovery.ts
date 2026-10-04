@@ -37,7 +37,14 @@ export async function loadPickerGgufVariants<T extends GgufVariantsResponse>(
 ): Promise<T> {
   if (!options.onDevice) return list(false);
 
-  const cached = await list(true);
+  let cached: T;
+  try {
+    cached = await list(true);
+  } catch (error) {
+    // A disk answer the Hub can still give (moved cache, token-only access) falls back to it.
+    if (options.signal?.aborted || !options.canDiscoverRemote()) throw error;
+    return list(false);
+  }
   onCached(cached);
   // Remote discovery still runs with All quantizations off: update badges come only from the Hub.
   if (options.signal?.aborted || !options.canDiscoverRemote()) {
