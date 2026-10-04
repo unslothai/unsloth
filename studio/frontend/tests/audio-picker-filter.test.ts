@@ -186,3 +186,24 @@ test("a Hub music model tagged text-to-speech stays on Music", () => {
   assert.equal(audioRowMatchesWorkflow(row, "music"), true);
   assert.equal(audioRowMatchesWorkflow({ id: "hexgrad/Kokoro-82M", task: "text-to-speech" }, "speak"), true);
 });
+
+test("Hub search rows for clone-only families outside the catalog list on Clone, not Speak", () => {
+  for (const id of [
+    "audio-cpp/audio.cpp-gguf/MioTTS-GGUF",
+    "audio-cpp/audio.cpp-gguf/Vevo2-GGUF",
+    "audio-cpp/audio.cpp-gguf/FireRedTTS3-Base-GGUF",
+    "audio-cpp/audio.cpp-gguf/IndexTTS2.5-GGUF",
+  ]) {
+    const row = { id, task: "text-to-speech" };
+    assert.equal(audioRowMatchesWorkflow(row, "clone"), true, id);
+    assert.equal(audioRowMatchesWorkflow(row, "speak"), false, id);
+  }
+  // Backend workflows still win once the row is downloaded.
+  assert.equal(
+    audioRowMatchesWorkflow(
+      { id: "x/MioTTS-GGUF", task: "text-to-speech", audioWorkflows: ["speak"] },
+      "speak",
+    ),
+    true,
+  );
+});

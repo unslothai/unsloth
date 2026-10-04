@@ -302,3 +302,23 @@ def test_log_tail_drops_the_partial_first_line(tmp_path):
     tail = server.log_tail(limit = 50)
     assert tail.endswith("last line")
     assert tail.split("\n")[0] in ("/home/someone/secret/path.gguf", "last line")
+
+
+def test_file_urls_and_colon_prefixed_paths_are_redacted_but_network_urls_kept():
+    from core.inference.audio_errors import sanitize_runtime_detail
+
+    assert sanitize_runtime_detail("failed: file:///home/alice/private/m.gguf") == "failed: m.gguf"
+    assert sanitize_runtime_detail("path:/home/alice/x.gguf bad") == "path:x.gguf bad"
+    url = "see https://huggingface.co/a/b/resolve/main/x.gguf"
+    assert sanitize_runtime_detail(url) == url
+    assert sanitize_runtime_detail("family:cosyvoice3 needs ref") == "family:cosyvoice3 needs ref"
+
+
+def test_log_tail_without_a_newline_drops_the_partial_first_word(tmp_path):
+    from core.inference.audio_cpp_server import AudioCppServer
+
+    server = AudioCppServer.__new__(AudioCppServer)
+    server._config_dir = tmp_path
+    (tmp_path / "server.log").write_bytes(b"token=hf_secretvalue " * 20 + b"end")
+    tail = server.log_tail(limit = 50)
+    assert tail.split(" ")[0] in ("token=hf_secretvalue", "end")
