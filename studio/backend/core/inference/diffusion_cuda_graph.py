@@ -642,7 +642,13 @@ class GraphedForward:
         """Return the dropped graphs' pool segments to the device; ``gc.collect`` alone leaves them in the private pool."""
         try:
             gc.collect()
-            cuda = getattr(_torch(), "cuda", None)
+            torch = _torch()
+            cuda = getattr(torch, "cuda", None)
+            if getattr(self, "placement", None) is not None:
+                # the recordings ran on their own capture stream, whose cuBLAS workspace outlives them
+                clear = getattr(torch._C, "_cuda_clearCublasWorkspaces", None)
+                if callable(clear):
+                    clear()
             if cuda is not None and hasattr(cuda, "empty_cache"):
                 cuda.empty_cache()
         except Exception:  # noqa: BLE001 - best effort

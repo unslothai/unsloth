@@ -548,3 +548,17 @@ def test_a_failed_block_recording_takes_the_allocator_off_its_pool():
         again.free()
     finally:
         Net._repeated_blocks = ["Block"]
+
+
+def test_releasing_an_offloaded_step_graph_frees_its_capture_stream_workspace(monkeypatch):
+    calls = []
+    monkeypatch.setattr(torch._C, "_cuda_clearCublasWorkspaces", lambda: calls.append(1), raising = False)
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: calls.append(2))
+    handle = cg.GraphedForward.__new__(cg.GraphedForward)
+    handle.placement = _Placement(streams = True)
+    handle._release()
+    assert calls == [1, 2]  # the recordings' own cuBLAS workspace first, then the segments
+    handle.placement = None
+    calls.clear()
+    handle._release()
+    assert calls == [2]  # a resident graph's reset keeps the compute stream's workspace
