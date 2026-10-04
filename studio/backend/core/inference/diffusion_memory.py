@@ -4476,10 +4476,13 @@ def raise_on_image_activation_shortfall(
 STREAMING_PREFETCH_ENV = "UNSLOTH_DIFFUSION_STREAMING_PREFETCH"
 
 
-def install_group_prefetch(module: Any, device: Any, logger: Any = None) -> int:
+def install_group_prefetch(
+    module: Any,
+    device: Any,
+    logger: Any = None,
+) -> int:
     """Event-fenced, deeper prefetch for a block-streamed module's offload groups (diffusion_offload_prefetch)."""
     from .diffusion_offload_prefetch import install_group_prefetch as _install
-
     return _install(module, device, logger)
 
 

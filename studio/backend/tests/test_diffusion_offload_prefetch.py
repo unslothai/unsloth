@@ -42,7 +42,12 @@ class _Group:
         self.name = name
 
 
-def _cpu_prefetcher(names, nbytes = 10, depth = 2, window = None):
+def _cpu_prefetcher(
+    names,
+    nbytes = 10,
+    depth = 2,
+    window = None,
+):
     groups = [_Group(n) for n in names]
     pf = op.GroupPrefetcher.__new__(op.GroupPrefetcher)
     pf.module = None
@@ -64,7 +69,11 @@ def _cpu_prefetcher(names, nbytes = 10, depth = 2, window = None):
         pf.inflight_bytes += pf.nbytes[id(group)]
         pf.peak_inflight_bytes = max(pf.peak_inflight_bytes, pf.inflight_bytes)
 
-    def release(group, event, counted = True):
+    def release(
+        group,
+        event,
+        counted = True,
+    ):
         log.append(("free", group.name))
         if counted:
             pf.inflight_bytes -= pf.nbytes[id(group)]
@@ -80,7 +89,11 @@ def _cpu_prefetcher(names, nbytes = 10, depth = 2, window = None):
     return pf, groups, log
 
 
-def _forward(pf, groups, skip = ()):
+def _forward(
+    pf,
+    groups,
+    skip = (),
+):
     pf.begin()
     for g in groups:
         if g.name in skip:
@@ -215,7 +228,9 @@ def test_resident_onload_skips_the_copy_stream_wait_when_fenced(monkeypatch):
     module._unsloth_stream_state["kick"] = lambda: kicks.append(1)
     for g in groups:
         g.onload_()
-    assert Stream.waits == 0 and len(kicks) == 2  # each resident onload may start the forward's prefetch
+    assert (
+        Stream.waits == 0 and len(kicks) == 2
+    )  # each resident onload may start the forward's prefetch
     del module._unsloth_stream_state["kick"]
     module._unsloth_stream_state["fenced"] = False
     for g in groups:
@@ -231,14 +246,23 @@ def _cuda():
 
 
 class _Net(torch.nn.Module):
-    def __init__(self, width = 1024, blocks = 8, sleep_cycles = 0):
+    def __init__(
+        self,
+        width = 1024,
+        blocks = 8,
+        sleep_cycles = 0,
+    ):
         super().__init__()
         self.proj_in = torch.nn.Linear(64, width)
         self.blocks = torch.nn.ModuleList(torch.nn.Linear(width, width) for _ in range(blocks))
         self.proj_out = torch.nn.Linear(width, 64)
         self.sleep_cycles = sleep_cycles
 
-    def forward(self, x, upto = None):
+    def forward(
+        self,
+        x,
+        upto = None,
+    ):
         x = self.proj_in(x)
         for i, block in enumerate(self.blocks):
             if upto is not None and i >= upto:
@@ -250,7 +274,11 @@ class _Net(torch.nn.Module):
         return self.proj_out(x)
 
 
-def _streamed(net, resident_mib = None, **kwargs):
+def _streamed(
+    net,
+    resident_mib = None,
+    **kwargs,
+):
     pipe = types.SimpleNamespace(transformer = net, components = {"transformer": net})
     if resident_mib:
         kwargs["resident_transformer_mib"] = resident_mib
@@ -312,7 +340,9 @@ def test_dense_top_level_upload_never_waits_behind_a_block_copy(tmp_path):
     _streamed(net)
     pf = op.module_prefetcher(net)
     top = net._diffusers_hook.get_hook("group_offloading").group
-    assert top not in pf.groups and "onload_" in top.__dict__ and pf.fence_first  # Studio's pinned upload
+    assert (
+        top not in pf.groups and "onload_" in top.__dict__ and pf.fence_first
+    )  # Studio's pinned upload
     x = torch.randn(4, 64, device = "cuda")
     with torch.no_grad():
         net(x)  # records the order
@@ -329,7 +359,9 @@ def test_dense_top_level_upload_never_waits_behind_a_block_copy(tmp_path):
     h2d = [e for e in events if e.get("cat") == "gpu_memcpy" and "HtoD" in e["name"]]
     top_up = [(e["ts"], e["ts"] + e["dur"]) for e in h2d if e["args"].get("stream") in compute]
     blocks = [(e["ts"], e["ts"] + e["dur"]) for e in h2d if e["args"].get("stream") not in compute]
-    assert len(top_up) == 4 * 4 and len(blocks) == 4 * 2 * len(net.blocks)  # weight + bias per Linear
+    assert len(top_up) == 4 * 4 and len(blocks) == 4 * 2 * len(
+        net.blocks
+    )  # weight + bias per Linear
     assert not [(a, b) for a in top_up for b in blocks if a[0] < b[1] and b[0] < a[1]]
     assert pf.stats["missed"] == 0
 
@@ -359,7 +391,9 @@ def test_slow_gpu_keeps_memory_in_the_window_and_reads_the_right_weights(monkeyp
     net = _Net(width = 2048, blocks = 12, sleep_cycles = 20_000_000)
     with torch.no_grad():
         for b in net.blocks:
-            b.weight.mul_(1.0 + torch.rand(()))  # distinct blocks: a wrong-weight read changes the output
+            b.weight.mul_(
+                1.0 + torch.rand(())
+            )  # distinct blocks: a wrong-weight read changes the output
     ref = copy.deepcopy(net).cuda()
     _streamed(net)
     pf = op.module_prefetcher(net)
@@ -397,7 +431,12 @@ def test_dropped_prefetch_never_lands_in_a_reused_block(drop, monkeypatch):
             super().__init__()
             self.blocks = torch.nn.ModuleList(torch.nn.Linear(H, H, bias = False) for _ in range(8))
 
-        def forward(self, x, upto = 8, boom = False):
+        def forward(
+            self,
+            x,
+            upto = 8,
+            boom = False,
+        ):
             for i, m in enumerate(self.blocks):
                 if i >= upto:
                     break
@@ -466,7 +505,9 @@ def test_unpinned_host_copies_stream_bit_identical(monkeypatch):
     net = _Net()
     ref = copy.deepcopy(net).cuda()
     _streamed(net, stream_text_encoders = True)
-    assert not any(t.is_pinned() for g in dm._offload_groups(net) for t in g.cpu_param_dict.values())
+    assert not any(
+        t.is_pinned() for g in dm._offload_groups(net) for t in g.cpu_param_dict.values()
+    )
     x = torch.randn(4, 64, device = "cuda")
     with torch.no_grad():
         want = ref(x)
@@ -505,7 +546,9 @@ def test_torchao_int8_weights_stream_bit_identical(version):
     x = torch.randn(4, 64, device = "cuda", dtype = torch.bfloat16)
     with torch.no_grad():
         ref(x)
-        want, ref_syncs = _count_syncs(lambda: ref(x))  # whatever the resident int8 op itself syncs (torchao 0.17: 1)
+        want, ref_syncs = _count_syncs(
+            lambda: ref(x)
+        )  # whatever the resident int8 op itself syncs (torchao 0.17: 1)
         net(x)
         for _ in range(3):
             got, syncs = _count_syncs(lambda: net(x))
