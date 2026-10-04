@@ -4383,6 +4383,7 @@ class TestGgufVisionMessages:
             "role": "tool",
             "content": "[1 image returned]",
             "name": "mcp__fs__read_media_file",
+            "tool_call_id": "call_0",
         }
 
     def test_a_replayed_envelope_alone_does_not_demand_a_vision_model(self):
@@ -7501,7 +7502,8 @@ class TestApiMonitorProviderAndCompletionStreams:
             body = b"".join([chunk async for chunk in response.body_iterator])
 
             assert upstream_bodies[0]["return_progress"] is True
-            assert (b": keep-alive" in body) is not client_progress
+            assert (b": prefill-progress" in body) is not client_progress
+            assert (b": keep-alive" in body) is False
             assert upstream_bodies[0]["stream_options"]["include_usage"] is True
             assert b'"usage"' not in body
             assert (b"prompt_progress" in body) is client_progress

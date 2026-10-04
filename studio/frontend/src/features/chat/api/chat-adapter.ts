@@ -94,6 +94,7 @@ import {
   type McpImage,
   planMcpImageBound,
   mcpImagesEnvelope,
+  isImageToolName,
   splitMcpImages,
 } from "./mcp-images";
 import {
@@ -1151,7 +1152,7 @@ function serializeToolResultPart(
     // A client tool's own structured result that merely carries text and images among
     // OTHER fields is not that wrapper, and keeps its normal JSON serialization.
     (isMcpImageToolResult(result) &&
-      (isMcpToolName(tc.toolName) || isBareMcpImageWrapper(result))) ||
+      (isImageToolName(tc.toolName) || isBareMcpImageWrapper(result))) ||
     isSearchImagesToolResult(result) ||
     isSandboxWrapper(result, tc.toolName ?? "")
   ) {
@@ -1161,10 +1162,10 @@ function serializeToolResultPart(
       ? stripSearchImageTokens(result.text)
       : result.text;
     content = replayText.length > 0 ? replayText : JSON.stringify({ result: "" });
-    // Gated on the mcp__ id the backend stamps, not on shape alone: a client tool
+    // Gated on the image-producing tool name, not on shape alone: a client tool
     // is free to answer {text, images:[{data, mimeType}]}, and appending the
     // envelope would hand its bytes to the model as image input.
-    if (isMcpImageToolResult(result) && isMcpToolName(tc.toolName)) {
+    if (isMcpImageToolResult(result) && isImageToolName(tc.toolName)) {
       content += mcpImagesEnvelope(result.images);
     } else if (isMcpToolName(tc.toolName)) {
       const uiImages = mcpUiReplayImages(result, tc.toolName ?? "");
@@ -1874,7 +1875,7 @@ function boundMcpImageResults(
     const byExchange = new Map<number, Carrier[]>();
     toolParts.forEach(({ index, part }, k) => {
       const tc = part as { toolName?: string; result?: unknown };
-      if (!isMcpImageToolResult(tc.result) || !isMcpToolName(tc.toolName)) return;
+      if (!isMcpImageToolResult(tc.result) || !isImageToolName(tc.toolName)) return;
       const carrier = { message: m, part: index, images: tc.result.images };
       const batch = byExchange.get(exchanges[k]) ?? [];
       batch.push(carrier);
@@ -2130,7 +2131,7 @@ export async function buildLocalTokenCountExtras(
     enabled_tools: [
       ...(ragOn ? ["search_knowledge_base"] : []),
       ...(toolsEnabled ? ["web_search"] : []),
-      ...(codeToolsEnabled ? ["python", "terminal", "edit_file"] : []),
+      ...(codeToolsEnabled ? ["python", "terminal", "edit_file", "view_image"] : []),
       ...(artifactsEnabled ? ["render_html"] : []),
       // Same gate as the request: with no enabled skill neither tool is sent, so neither is priced.
       ...(hasEnabledSkills ? ["read_skill", "create_skill"] : []),
@@ -6658,7 +6659,7 @@ export function createOpenAIStreamAdapter(
                       ? ["read_skill", "create_skill"]
                       : []),
                     ...(codeToolsEnabled
-                      ? ["python", "terminal", "edit_file"]
+                      ? ["python", "terminal", "edit_file", "view_image"]
                       : []),
                     ...(renderHtmlToolEnabledForThisTurn
                       ? ["render_html"]

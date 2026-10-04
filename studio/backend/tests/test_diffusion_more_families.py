@@ -81,8 +81,8 @@ def test_flux1_krea_dev_is_trusted_non_gguf():
 
 def test_flux1_krea_dev_generation_defaults():
     # Model-card recipe: 28 steps at guidance 4.5. The generic "krea" key (Turbo's 8-step no-CFG shape) must NOT swallow it, and the krea-2 defaults must stay intact.
-    assert default_generation_params("black-forest-labs/FLUX.1-Krea-dev") == (28, 4.5)
-    assert default_generation_params("QuantStack/FLUX.1-Krea-dev-GGUF") == (28, 4.5)
+    assert default_generation_params("black-forest-labs/FLUX.1-Krea-dev") == (20, 3.5)
+    assert default_generation_params("QuantStack/FLUX.1-Krea-dev-GGUF") == (20, 3.5)
     assert default_generation_params("krea/Krea-2-Turbo") == (8, 0.0)
     assert default_generation_params("krea/Krea-2-Raw") == (52, 3.5)
 
@@ -108,7 +108,7 @@ def test_flux_dev_and_krea_do_not_inherit_the_schnell_nvfp4_checkpoint():
 
 def test_flux2_klein_generation_defaults_distinguish_base_from_distilled():
     for size in ("4B", "9B"):
-        assert default_generation_params(f"unsloth/FLUX.2-klein-base-{size}") == (50, 4.0)
+        assert default_generation_params(f"unsloth/FLUX.2-klein-base-{size}") == (20, 5.0)
         assert default_generation_params(f"unsloth/FLUX.2-klein-{size}") == (4, 1.0)
 
 
@@ -167,10 +167,10 @@ def test_prequant_exclusion_does_not_break_a_family_type_that_lacks_the_field():
 def test_zimage_base_generation_defaults_are_not_the_distilled_recipe():
     # The base is undistilled: 20 steps at guidance 4. The more specific "z-image-turbo" key sits
     # ahead of "z-image", so the 9-step CFG-free Turbo recipe must not swallow it.
-    assert default_generation_params("Tongyi-MAI/Z-Image") == (20, 4.0)
-    assert default_generation_params("unsloth/Z-Image-GGUF") == (20, 4.0)
-    assert default_generation_params("Tongyi-MAI/Z-Image-Turbo") == (9, 0.0)
-    assert default_generation_params("unsloth/Z-Image-Turbo-GGUF") == (9, 0.0)
+    assert default_generation_params("Tongyi-MAI/Z-Image") == (25, 3.0)
+    assert default_generation_params("unsloth/Z-Image-GGUF") == (25, 3.0)
+    assert default_generation_params("Tongyi-MAI/Z-Image-Turbo") == (8, 0.0)
+    assert default_generation_params("unsloth/Z-Image-Turbo-GGUF") == (8, 0.0)
 
 
 # ── lumina-2 family ──────────────────────────────────────────────────────────
@@ -346,8 +346,8 @@ def test_hidream_bf16_component_table_present():
 
 
 def test_ideogram4_generation_defaults():
-    # Model-card settings: 48 steps, guidance 7 (an exact match keeps the pipeline's recommended tapered schedule).
-    assert default_generation_params("ideogram-ai/ideogram-4-fp8") == (48, 7.0)
+    # ComfyUI's template: 20 steps at constant guidance 7 (an explicit 48 / 7 still keeps the card's tapered schedule).
+    assert default_generation_params("ideogram-ai/ideogram-4-fp8") == (20, 7.0)
 
 
 def test_ideogram4_bf16_reservation_table_present():
