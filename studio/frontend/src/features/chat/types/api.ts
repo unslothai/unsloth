@@ -826,7 +826,9 @@ export interface AudioConvertCaps {
   modes: ("speech" | "singing")[];
   target: "audio" | "builtin";
   builtin_voices: { id: string; label: string }[];
-  pitch: Partial<Record<"speech" | "singing", { auto: boolean }>>;
+  pitch: Partial<
+    Record<"speech" | "singing", { auto: boolean; shift_with_auto?: boolean }>
+  >;
   style: boolean;
   route_reloads: boolean;
   source_max_seconds: number;

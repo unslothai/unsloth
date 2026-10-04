@@ -95,7 +95,7 @@ test("a convert run sends the source, the target and the convert settings, and n
   assert.equal("text" in body, false);
 });
 
-test("a convert run to a built-in voice has no target, and Auto sends no pitch", () => {
+test("a convert run to a built-in voice has no target, and Auto keeps its extra shift", () => {
   const body = buildAudioRunBody({
     workflow: "convert",
     inputs: { source: { input_id: "i1" }, target: null, source_text: " " },
@@ -111,7 +111,7 @@ test("a convert run to a built-in voice has no target, and Auto sends no pitch",
     inputs: { source: { input_id: "i1" } },
     convert: {
       mode: "singing",
-      pitch: null,
+      pitch: 5,
       pitch_auto: true,
       voice: "manthos",
     },
@@ -121,7 +121,7 @@ test("a convert run to a built-in voice has no target, and Auto sends no pitch",
     inputs: { source: { input_id: "i1" } },
     convert: { mode: "speech", pitch: -40, pitch_auto: false },
   });
-  assert.equal((low.convert as { pitch: number }).pitch, -12);
+  assert.equal((low.convert as { pitch: number }).pitch, -24);
 });
 
 test("whatever a caller spreads into a convert run, no path or unknown key reaches the body", () => {

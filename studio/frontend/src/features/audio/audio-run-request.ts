@@ -177,10 +177,8 @@ function buildConvertRunBody(
     mode: CONVERT_MODES.has(params?.mode) ? params.mode : "speech",
     pitch_auto: params?.pitch_auto === true,
     pitch:
-      params?.pitch_auto !== true &&
-      typeof params?.pitch === "number" &&
-      Number.isFinite(params.pitch)
-        ? Math.min(12, Math.max(-12, Math.round(params.pitch)))
+      typeof params?.pitch === "number" && Number.isFinite(params.pitch)
+        ? Math.min(24, Math.max(-24, Math.round(params.pitch)))
         : null,
   };
   if (params?.style === "source" || params?.style === "target") {

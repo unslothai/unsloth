@@ -388,7 +388,10 @@ export function useConvertGeneration({
           },
           convert: {
             mode,
-            pitch: pitchSupport.show && !autoPitch ? state.pitch : null,
+            pitch:
+              pitchSupport.show && (!autoPitch || pitchSupport.shiftWithAuto)
+                ? state.pitch
+                : null,
             pitch_auto: autoPitch,
             style: caps.style ? style : undefined,
             voice: builtinTarget ? state.builtinVoice : null,

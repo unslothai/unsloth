@@ -75,10 +75,10 @@ test("every draft field is written through, and no action is", () => {
   });
 });
 
-test("pitch stays a whole number of semitones within ±12", () => {
+test("pitch stays a whole number of semitones within two octaves", () => {
   const state = useAudioConvertStore.getState();
   state.setPitch(30);
-  assert.equal(useAudioConvertStore.getState().pitch, 12);
+  assert.equal(useAudioConvertStore.getState().pitch, 24);
   state.setPitch(-2.6);
   assert.equal(useAudioConvertStore.getState().pitch, -3);
   state.setPitch(Number.NaN);

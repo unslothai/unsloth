@@ -191,20 +191,28 @@ function ConvertInputs({
               />
             </label>
           ) : null}
-          {pitchSupport.auto && convert.pitchAuto ? (
+          {pitchSupport.auto &&
+          convert.pitchAuto &&
+          !pitchSupport.shiftWithAuto ? (
             <p className="text-ui-11p5 leading-snug text-muted-foreground">
               Turn off to set the pitch shift yourself.
             </p>
           ) : (
             <ParamSlider
-              label="Pitch"
+              label={
+                pitchSupport.auto && convert.pitchAuto ? "Extra shift" : "Pitch"
+              }
               value={convert.pitch}
-              min={-12}
-              max={12}
+              min={-24}
+              max={24}
               step={1}
               disabled={disabled}
               displayValue={`${convert.pitch > 0 ? "+" : ""}${convert.pitch} st`}
-              info="Semitones. +12 is an octave up; try -12 to +12 when the target voice is much lower or higher."
+              info={
+                pitchSupport.auto && convert.pitchAuto
+                  ? "Semitones added after matching the target's pitch, e.g. +12 to sing an octave up."
+                  : "Semitones. +12 is an octave up; try -12 to +12 when the target voice is much lower or higher."
+              }
               onChange={(next) => store.setPitch(Math.round(next))}
             />
           )}

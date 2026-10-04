@@ -5209,7 +5209,7 @@ class AudioConvertParams(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
     mode: Literal["speech", "singing"] = "speech"
-    pitch: Optional[int] = Field(None, ge = -12, le = 12)
+    pitch: Optional[int] = Field(None, ge = -24, le = 24)
     pitch_auto: bool = False
     style: Literal["source", "target"] = "source"
     voice: Optional[Literal["default", "manthos", "chocola", "fraise"]] = None

@@ -36,12 +36,17 @@ export function convertPitchSupport(
   caps: AudioConvertCaps | null,
   mode: ConvertMode,
   style: ConvertStyle,
-): { show: boolean; auto: boolean } {
+): { show: boolean; auto: boolean; shiftWithAuto: boolean } {
   const pitch = caps?.modes.includes(mode) ? caps.pitch[mode] : undefined;
   if (!pitch || effectiveConvertStyle(caps, mode, style) === "target") {
-    return { show: false, auto: false };
+    return { show: false, auto: false, shiftWithAuto: false };
   }
-  return { show: true, auto: pitch.auto === true };
+  const auto = pitch.auto === true;
+  return {
+    show: true,
+    auto,
+    shiftWithAuto: auto && pitch.shift_with_auto === true,
+  };
 }
 
 export function convertServerTask(

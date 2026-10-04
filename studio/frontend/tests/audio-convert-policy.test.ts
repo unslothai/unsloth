@@ -50,7 +50,7 @@ const CAPS: Record<string, AudioConvertCaps> = {
   seed_vc: {
     ...base,
     modes: ["speech", "singing"],
-    pitch: { singing: { auto: true } },
+    pitch: { singing: { auto: true, shift_with_auto: true } },
     route_reloads: true,
   },
   meanvc2: base,
@@ -58,7 +58,10 @@ const CAPS: Record<string, AudioConvertCaps> = {
   vevo2: {
     ...base,
     modes: ["speech", "singing"],
-    pitch: { speech: { auto: true }, singing: { auto: true } },
+    pitch: {
+      speech: { auto: true, shift_with_auto: false },
+      singing: { auto: true, shift_with_auto: false },
+    },
     style: true,
   },
 };
@@ -172,27 +175,32 @@ test("Take target style needs the transcript only in Speech", () => {
   assert.equal(convertBlocker({ ...ready, style: "target" }), null);
 });
 
-test("pitch shows per family, mode and style", () => {
+test("pitch shows per family, mode and style; only Seed-VC adds a shift to Auto", () => {
   const cases: [
     AudioConvertCaps | null,
     "speech" | "singing",
     "source" | "target",
     boolean,
     boolean,
+    boolean,
   ][] = [
-    [CAPS.rvc, "speech", "source", true, false],
-    [CAPS.rvc, "singing", "source", false, false],
-    [CAPS.seed_vc, "speech", "source", false, false],
-    [CAPS.seed_vc, "singing", "source", true, true],
-    [CAPS.vevo2, "speech", "source", true, true],
-    [CAPS.vevo2, "speech", "target", false, false],
-    [CAPS.vevo2, "singing", "target", true, true],
-    [CAPS.meanvc2, "speech", "source", false, false],
-    [CAPS.chatterbox, "speech", "source", false, false],
-    [null, "speech", "source", false, false],
+    [CAPS.rvc, "speech", "source", true, false, false],
+    [CAPS.rvc, "singing", "source", false, false, false],
+    [CAPS.seed_vc, "speech", "source", false, false, false],
+    [CAPS.seed_vc, "singing", "source", true, true, true],
+    [CAPS.vevo2, "speech", "source", true, true, false],
+    [CAPS.vevo2, "speech", "target", false, false, false],
+    [CAPS.vevo2, "singing", "target", true, true, false],
+    [CAPS.meanvc2, "speech", "source", false, false, false],
+    [CAPS.chatterbox, "speech", "source", false, false, false],
+    [null, "speech", "source", false, false, false],
   ];
-  for (const [caps, mode, style, show, auto] of cases) {
-    assert.deepEqual(convertPitchSupport(caps, mode, style), { show, auto });
+  for (const [caps, mode, style, show, auto, shiftWithAuto] of cases) {
+    assert.deepEqual(convertPitchSupport(caps, mode, style), {
+      show,
+      auto,
+      shiftWithAuto,
+    });
   }
 });
 

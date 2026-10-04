@@ -386,8 +386,7 @@ _CLONE_FAMILIES: tuple[AudioCppFamily, ...] = (
     AudioCppFamily("fireredtts3", "tts", speaks = False, clone = CloneSpec("optional")),
     # "FireRedAce": under tts it defaults to tts_clone, which needs reference audio.
     AudioCppFamily("firered_audio", "tts", speaks = False, clone = CloneSpec("optional")),
-    # Vevo2 reads a sent transcript as text to speak, so it never gets one. With voice_ref alone
-    # a conversion kept the source's pitch, hence target_voice.
+    # Vevo2 reads a sent transcript as text to speak, so it never gets one.
     AudioCppFamily(
         "vevo2",
         "tts",

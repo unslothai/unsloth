@@ -16,6 +16,7 @@ import { cn } from "@/lib/utils";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactNode } from "react";
 import {
+  CHATTERBOX_CONVERT_GUIDANCE_RANGE,
   CHATTERBOX_CONVERT_STEPS_RANGE,
   type ChatterboxConvertValue,
   type RvcValue,
@@ -265,8 +266,8 @@ export const chatterboxConvertPanel: AudioToolPanel<ChatterboxConvertValue> = {
       <ParamSlider
         label="Guidance"
         value={value.guidance}
-        min={0}
-        max={2}
+        min={CHATTERBOX_CONVERT_GUIDANCE_RANGE.min}
+        max={CHATTERBOX_CONVERT_GUIDANCE_RANGE.max}
         step={0.05}
         disabled={disabled}
         info="How strongly the output is pushed toward the target voice."

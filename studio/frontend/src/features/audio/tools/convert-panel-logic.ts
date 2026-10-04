@@ -158,6 +158,7 @@ export interface ChatterboxConvertValue {
   more?: boolean;
 }
 
+export const CHATTERBOX_CONVERT_GUIDANCE_RANGE = { min: 0, max: 3 } as const;
 export const CHATTERBOX_CONVERT_STEPS_RANGE = { min: 1, max: 50 } as const;
 
 export const chatterboxConvertLogic: AudioToolPanelLogic<ChatterboxConvertValue> =
@@ -173,7 +174,11 @@ export const chatterboxConvertLogic: AudioToolPanelLogic<ChatterboxConvertValue>
     }),
     toRequest: (value) => ({
       options: {
-        s3gen_cfg_rate: clamp(value.guidance, 0, 2),
+        s3gen_cfg_rate: clamp(
+          value.guidance,
+          CHATTERBOX_CONVERT_GUIDANCE_RANGE.min,
+          CHATTERBOX_CONVERT_GUIDANCE_RANGE.max,
+        ),
         num_inference_steps: Math.round(
           clamp(
             value.steps,

@@ -246,7 +246,10 @@ def test_seed_vc_speech_sends_no_pitch_and_its_route_by_model_entry(started):
 def test_seed_vc_singing_reloads_under_svc_and_sends_its_pitch(started):
     model = _model("seed_vc", _SEED_VC_OPTIONS)
     backend = _backend(model, started)
-    request = _convert(backend, mode = "singing", pitch = 3, pitch_auto = True)
+    # The runtime applies the manual shift on top of the matched pitch, as seed-vc does.
+    request = _convert(backend, mode = "singing", pitch = 12, pitch_auto = True)
+    assert request["options"] == {"auto_f0_adjust": "true", "semitone_shift": "12"}
+    request = _convert(backend, mode = "singing", pitch_auto = True)
     assert request["options"] == {"auto_f0_adjust": "true"}
     (server,) = started
     assert server.model.server_task == "svc"
@@ -368,7 +371,7 @@ def test_status_fields_describe_convert_per_family():
             {"id": "chocola", "label": "Chocola"},
             {"id": "fraise", "label": "Fraise"},
         ],
-        "pitch": {"speech": {"auto": False}},
+        "pitch": {"speech": {"auto": False, "shift_with_auto": False}},
         "style": False,
         "route_reloads": False,
         "source_max_seconds": 300,
@@ -384,7 +387,7 @@ def test_status_fields_describe_convert_per_family():
 
     seed_vc = acb.model_info_fields(_model("seed_vc", _SEED_VC_OPTIONS))
     assert seed_vc["audio_convert"]["modes"] == ["speech", "singing"]
-    assert seed_vc["audio_convert"]["pitch"] == {"singing": {"auto": True}}
+    assert seed_vc["audio_convert"]["pitch"] == {"singing": {"auto": True, "shift_with_auto": True}}
     assert seed_vc["audio_convert"]["route_reloads"] is True
     assert seed_vc["audio_workflow_tasks"] == {"convert": "vc", "convert:singing": "svc"}
     assert seed_vc["audio_convert_route"] == "v2_vc"
@@ -392,7 +395,10 @@ def test_status_fields_describe_convert_per_family():
 
     vevo2 = acb.model_info_fields(_model("vevo2"))
     assert vevo2["audio_workflows"] == ["clone", "convert"]
-    assert vevo2["audio_convert"]["pitch"] == {"speech": {"auto": True}, "singing": {"auto": True}}
+    assert vevo2["audio_convert"]["pitch"] == {
+        "speech": {"auto": True, "shift_with_auto": False},
+        "singing": {"auto": True, "shift_with_auto": False},
+    }
     assert vevo2["audio_convert"]["style"] is True
     assert vevo2["audio_workflow_tasks"] == {
         "clone": "tts",

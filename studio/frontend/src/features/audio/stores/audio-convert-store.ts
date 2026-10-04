@@ -30,7 +30,7 @@ interface AudioConvertState {
 }
 
 const clampPitch = (pitch: number) =>
-  Number.isFinite(pitch) ? Math.min(12, Math.max(-12, Math.round(pitch))) : 0;
+  Number.isFinite(pitch) ? Math.min(24, Math.max(-24, Math.round(pitch))) : 0;
 
 export const useAudioConvertStore = create<AudioConvertState>()(
   persist(

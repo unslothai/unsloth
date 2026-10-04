@@ -183,6 +183,17 @@ test("RVC and Chatterbox send their settings within range", () => {
       options: { s3gen_cfg_rate: 0.5, num_inference_steps: 12 },
     },
   );
+  // The option allows 3; Chatterbox's own default is 0.7.
+  assert.equal(
+    chatterboxConvertLogic.toRequest({ guidance: 2.8, steps: 10 }).options
+      ?.s3gen_cfg_rate,
+    2.8,
+  );
+  assert.equal(
+    chatterboxConvertLogic.toRequest({ guidance: 9, steps: 10 }).options
+      ?.s3gen_cfg_rate,
+    3,
+  );
 });
 
 test("Vevo2's style reaches the convert settings; singing always keeps the source's", () => {
