@@ -1733,9 +1733,10 @@ def fix_transformers_untrusted_config_fields():
     try:
         import transformers
 
-        version = Version(transformers.__version__)
-        strip_internal = version < Version("5.3.0")
-        strip_lightglue = version < Version("5.5.0")
+        # PEP 440 order: Version() ranks 5.3.0rc1 above 5.3.0, which would skip the fix on an rc.
+        version = TrueVersion(transformers.__version__)
+        strip_internal = version < TrueVersion("5.3.0")
+        strip_lightglue = version < TrueVersion("5.5.0")
         if not (strip_internal or strip_lightglue):
             return
         from transformers.configuration_utils import PretrainedConfig
@@ -1796,7 +1797,7 @@ def fix_transformers_chat_template_path_traversal():
     the save directory; raise upstream's ValueError before anything is written."""
     try:
         import transformers
-        if Version(transformers.__version__) >= Version("5.10.0"):
+        if TrueVersion(transformers.__version__) >= TrueVersion("5.10.0"):
             return
     except Exception as e:
         logger.info(f"Unsloth: Skipping the chat template name fix ({e})")

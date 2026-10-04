@@ -418,3 +418,33 @@ def test_windows_drive_relative_template_name_is_refused(patched, monkeypatch):
     assert patched._chat_template_name_escapes("..\\evil")
     for name in ("default", "tool_use", "rag", "v2.1-x_y"):
         assert not patched._chat_template_name_escapes(name)
+
+
+@pytest.mark.parametrize("prerelease", ["5.3.0rc1", "5.5.0rc1", "5.10.0rc1", "5.10.0.dev0"])
+def test_prerelease_at_a_fix_boundary_still_gets_the_fix(monkeypatch, prerelease):
+    # A prerelease sorts before its final release (PEP 440), so it may lack the upstream fix.
+    fixes = _load_import_fixes()
+    monkeypatch.setattr(transformers, "__version__", prerelease)
+    before = (
+        PretrainedConfig.__dict__["from_dict"],
+        PreTrainedTokenizerBase.__dict__["save_pretrained"],
+    )
+    try:
+        fixes.fix_transformers_untrusted_config_fields()
+        fixes.fix_transformers_chat_template_path_traversal()
+        flag_cfg = getattr(
+            PretrainedConfig.__dict__["from_dict"].__func__,
+            fixes._UNTRUSTED_CONFIG_PATCH_FLAG,
+            False,
+        )
+        flag_tpl = getattr(
+            PreTrainedTokenizerBase.__dict__["save_pretrained"],
+            fixes._CHAT_TEMPLATE_NAME_PATCH_FLAG,
+            False,
+        )
+        if prerelease.startswith("5.10.0"):
+            assert flag_tpl
+        else:
+            assert flag_cfg
+    finally:
+        PretrainedConfig.from_dict, PreTrainedTokenizerBase.save_pretrained = before
