@@ -1,0 +1,528 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Per-block CUDA graphs for offloaded denoisers (``diffusion_block_graph.py``) and the prefetcher's slot ring.
+
+CPU cases cover the call-tree / key / refusal logic, the weight-placement read-back, installation below the
+offload hooks, the arming decision per placement and the slot assignment. CUDA cases record real blocks under
+Studio's ``_apply_group_offload`` (streamed through the event-fenced prefetcher, partially resident, released and
+restored) and check every replay against the ungraphed forward bit for bit.
+"""
+
+from __future__ import annotations
+
+import copy
+import types
+import warnings
+
+import pytest
+import torch
+
+import core.inference.diffusion_block_graph as bg
+import core.inference.diffusion_cuda_graph as cg
+import core.inference.diffusion_memory as dm
+import core.inference.diffusion_offload_prefetch as op
+
+
+@pytest.fixture(autouse = True)
+def _clean_env(monkeypatch):
+    for name in (
+        bg.BLOCK_GRAPHS_ENV,
+        cg.CUDA_GRAPHS_ENV,
+        cg.CUDA_GRAPH_DISABLE_ENV,
+        op.ASYNC_PREFETCH_ENV,
+        op.PREFETCH_DEPTH_ENV,
+        "UNSLOTH_DIFFUSION_PARTIAL_RESIDENT",
+        "UNSLOTH_DIFFUSION_GROUP_OFFLOAD_PIN",
+        "UNSLOTH_DIFFUSION_PIN_TOP_GROUP",
+    ):
+        monkeypatch.delenv(name, raising = False)
+
+
+class QwenImage21KVLayerCache:  # the diffusers class's shape: k / v set by store(), read by get()
+    def __init__(self):
+        self.k = None
+        self.v = None
+
+    def store(self, k, v):
+        self.k, self.v = k, v
+
+    def get(self):
+        return self.k, self.v
+
+
+class Block(torch.nn.Module):
+    def __init__(self, width = 64):
+        super().__init__()
+        self.lin = torch.nn.Linear(width, width)
+
+    def forward(self, x, temb = None, layer_cache = None, kv_cache_mode = None):
+        y = torch.nn.functional.gelu(self.lin(x))
+        if temb is not None:
+            y = y + temb
+        if layer_cache is not None and kv_cache_mode == "cached":
+            k, v = layer_cache.get()
+            y = y + k.sum() * 0 + v.mean(dim = 0, keepdim = True)
+        return y
+
+
+class Net(torch.nn.Module):
+    _repeated_blocks = ["Block"]
+
+    def __init__(self, width = 64, blocks = 6):
+        super().__init__()
+        self.proj_in = torch.nn.Linear(16, width)
+        self.blocks = torch.nn.ModuleList(Block(width) for _ in range(blocks))
+        self.proj_out = torch.nn.Linear(width, 16)
+
+    def forward(self, x, temb = None, caches = None):
+        x = self.proj_in(x)
+        for i, block in enumerate(self.blocks):
+            if caches is not None:
+                x = block(x, temb = temb, layer_cache = caches[i], kv_cache_mode = "cached")
+            else:
+                x = block(x, temb = temb)
+        return self.proj_out(x)
+
+
+# --- call trees and keys ---------------------------------------------------------------------------------------
+
+
+def test_kv_layer_cache_flattens_to_its_two_tensors_and_rebuilds_a_fresh_cache():
+    cache = QwenImage21KVLayerCache()
+    cache.store(torch.ones(2, 3), torch.zeros(2, 3))
+    live: list = []
+    key = bg._walk(((torch.ones(1),), {"layer_cache": cache, "kv_cache_mode": "cached"}), live)
+    assert [t.shape for t in live] == [torch.Size([1]), torch.Size([2, 3]), torch.Size([2, 3])]
+    hash(key)
+    statics = [torch.full_like(t, 7.0) for t in live]
+    args, kwargs = bg._unwalk(key, iter(statics))
+    assert kwargs["kv_cache_mode"] == "cached"
+    rebuilt = kwargs["layer_cache"]
+    assert type(rebuilt) is QwenImage21KVLayerCache and rebuilt is not cache
+    assert rebuilt.k is statics[1] and rebuilt.v is statics[2]
+    assert cache.k is not statics[1]  # the caller's cache is never touched
+
+
+def test_kv_cache_is_recordable_only_on_a_cached_step():
+    cache = QwenImage21KVLayerCache()
+    cache.store(torch.ones(2, 3), torch.zeros(2, 3))
+    cached = {"layer_cache": cache, "kv_cache_mode": "cached"}
+    extract = {"layer_cache": cache, "kv_cache_mode": "extract"}
+    assert bg._refusal(bg.graph_key(((), cached)), cached) is None
+    assert bg._refusal(bg.graph_key(((), extract)), extract) == "kv_write"
+
+
+def test_key_separates_inference_mode_shape_and_scalars_and_refuses_floats_and_objects():
+    a = torch.zeros(2, 3)
+    with torch.inference_mode():
+        b = torch.zeros(2, 3)
+    assert bg.graph_key(a) != bg.graph_key(b)
+    assert bg.graph_key(a) != bg.graph_key(torch.zeros(3, 2))
+    assert bg._refusal(bg.graph_key(((a,), {"scale": 0.5})), {}) == "float"
+    assert bg._refusal(bg.graph_key(((a,), {"thing": object()})), {}) == "object"
+    assert bg._refusal(bg.graph_key(((a,), {"n": 3, "mode": "x", "none": None})), {}) is None
+
+
+def test_weight_placement_is_none_while_a_weight_is_on_the_host():
+    view = bg._WeightView(Block())
+    assert view.placement(None) is None
+
+
+def test_block_on_the_host_runs_its_compute_and_never_records():
+    block = Block()
+    calls = []
+
+    def compute(*a, **k):
+        calls.append(1)
+        return Block.forward(block, *a, **k)
+
+    graph = bg.BlockGraph(block, compute, bg._Shared(None))
+    with torch.no_grad():
+        for _ in range(3):
+            out = graph(torch.randn(2, 64))
+    assert out.shape == (2, 64) and len(calls) == 3
+    assert graph.stats["refused_host_weight"] == 3 and graph.stats["captures"] == 0
+
+
+def test_grad_mode_runs_the_compute():
+    block = Block()
+    graph = bg.BlockGraph(block, block.forward, bg._Shared(None))
+    graph(torch.randn(2, 64))
+    assert graph.stats["refused_grad"] == 1
+
+
+# --- installation ----------------------------------------------------------------------------------------------
+
+
+def _hooked_net(blocks = 4):
+    pytest.importorskip("diffusers.hooks")
+    from diffusers.hooks import apply_group_offloading
+
+    net = Net(blocks = blocks)
+    apply_group_offloading(
+        net, onload_device = torch.device("cpu"), offload_type = "block_level", num_blocks_per_group = 1
+    )
+    return net
+
+
+def test_install_sits_below_the_group_offload_hook_and_free_restores_it():
+    net = _hooked_net()
+    hook = bg._group_offload_hook(net.blocks[0])
+    assert hook is not None
+    handle, reason = bg.install_block_graphs(net, slots = False)
+    assert reason == "armed" and handle is not None and len(handle.graphs) == 4
+    refs = net.blocks[0]._diffusers_hook._fn_refs
+    assert any(isinstance(r.forward, bg.BlockGraph) for r in refs)
+    x = torch.randn(3, 16)
+    with torch.no_grad():
+        got = net(x)
+    # the hook chain still runs (onload / offload) and the compute is the block's own forward
+    assert all(g.stats["refused_host_weight"] == 1 for g in handle.graphs)
+    handle.free()
+    assert not any(isinstance(r.forward, bg.BlockGraph) for r in refs)
+    with torch.no_grad():
+        assert torch.equal(net(x), got)
+
+
+def test_install_on_an_unhooked_compiled_block_takes_the_compiled_call_slot():
+    net = Net(blocks = 2)
+    marker = lambda *a, **k: "compiled"  # noqa: E731
+    for b in net.blocks:
+        b._compiled_call_impl = marker
+    handle, _ = bg.install_block_graphs(net, slots = False)
+    assert all(isinstance(b._compiled_call_impl, bg.BlockGraph) for b in net.blocks)
+    assert handle.graphs[0].compute is marker
+    handle.free()
+    assert all(b._compiled_call_impl is marker for b in net.blocks)
+
+
+def test_per_layer_offload_hooks_inside_a_block_are_refused():
+    net = Net(blocks = 2)
+    for b in net.blocks:
+        b.lin._hf_hook = object()
+    handle, reason = bg.install_block_graphs(net, slots = False)
+    assert handle is None and "per-layer offload hooks" in reason
+
+
+def test_kill_switches(monkeypatch):
+    net = Net(blocks = 2)
+    monkeypatch.setenv(bg.BLOCK_GRAPHS_ENV, "0")
+    handle, reason = bg.install_block_graphs(net, slots = False)
+    assert handle is None and bg.BLOCK_GRAPHS_ENV in reason
+    monkeypatch.delenv(bg.BLOCK_GRAPHS_ENV)
+    monkeypatch.setenv(cg.CUDA_GRAPHS_ENV, "0")
+    assert cg.cuda_graph_disabled()
+    ok, why = cg.graph_eligible(
+        types.SimpleNamespace(device = "cuda", backend = "cuda"),
+        family = None,
+        pipe = None,
+        offload_active = False,
+        cache_active = False,
+        speed_mode = "default",
+    )
+    assert not ok and cg.CUDA_GRAPHS_ENV in why
+
+
+# --- arming per placement --------------------------------------------------------------------------------------
+
+
+def _pipe_with(net):
+    return types.SimpleNamespace(transformer = net, components = {"transformer": net})
+
+
+def _arm(pipe, monkeypatch, *, hooked, backend = "cuda", cache = False, mode = "default", cuda = True):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda)
+    applied = {"cuda_graph": False}
+    target = types.SimpleNamespace(device = "cuda", backend = backend, torch_device = "cuda")
+    handles = cg.arm_block_graphs(
+        pipe,
+        applied,
+        target = target,
+        family = types.SimpleNamespace(),
+        hooked = hooked,
+        cache_engaged = cache,
+        speed_mode = mode,
+    )
+    return handles, applied
+
+
+def test_an_offloaded_denoiser_is_recorded_per_block(monkeypatch):
+    pipe = _pipe_with(Net(blocks = 3))
+    pipe._unsloth_cuda_graph_reason = "offload active"
+    handles, applied = _arm(pipe, monkeypatch, hooked = True)
+    assert applied["cuda_graph"] and len(handles) == 1 and len(handles[0].graphs) == 3
+    assert "recorded per block" in cg.status_reason(pipe, True)
+    cg.uninstall_all(handles)
+
+
+def test_a_resident_whole_forward_recording_is_kept(monkeypatch):
+    net = Net(blocks = 2)
+    pipe = _pipe_with(net)
+    whole = cg.GraphedForward(net)
+    pipe._unsloth_cuda_graphs = (whole,)
+    handles, applied = _arm(pipe, monkeypatch, hooked = False)
+    assert handles == (whole,)
+    assert cg.status_reason(pipe, True) == cg.WHOLE_REASON
+
+
+def test_a_forward_that_is_not_capture_safe_is_recorded_per_block(monkeypatch):
+    pipe = _pipe_with(Net(blocks = 2))
+    pipe._unsloth_cuda_graph_reason = (
+        "QwenImage21Transformer2DModel forward is not capture-safe (prefix KV cache object)"
+    )
+    handles, applied = _arm(pipe, monkeypatch, hooked = False)
+    assert applied["cuda_graph"] and handles
+    cg.uninstall_all(handles)
+
+
+def test_unrelated_refusals_stay_off_with_their_reason(monkeypatch):
+    pipe = _pipe_with(Net(blocks = 2))
+    pipe._unsloth_cuda_graph_reason = "speed tier off"
+    handles, applied = _arm(pipe, monkeypatch, hooked = False, mode = "off")
+    assert handles == () and not applied["cuda_graph"]
+    for kw, want in (
+        ({"backend": "rocm"}, "backend is rocm"),
+        ({"cache": True}, "step cache active"),
+        ({"mode": "off"}, "speed tier off"),
+    ):
+        pipe = _pipe_with(Net(blocks = 2))
+        handles, applied = _arm(pipe, monkeypatch, hooked = True, **kw)
+        assert handles == () and not applied["cuda_graph"]
+        assert cg.status_reason(pipe, False) == want
+
+
+def test_the_master_switch_turns_block_graphs_off_with_its_name(monkeypatch):
+    monkeypatch.setenv(cg.CUDA_GRAPHS_ENV, "0")
+    pipe = _pipe_with(Net(blocks = 2))
+    handles, applied = _arm(pipe, monkeypatch, hooked = True)
+    assert handles == () and cg.CUDA_GRAPHS_ENV in cg.status_reason(pipe, False)
+
+
+# --- slot ring -------------------------------------------------------------------------------------------------
+
+
+class _G:
+    def __init__(self, name, shape):
+        self.name = name
+        self.modules = []
+        self.parameters = [torch.zeros(shape)]
+        self.buffers = []
+        self.cpu_param_dict = {}
+        self.offload_leader = None
+
+
+def _slot_prefetcher(shapes, depth = 2):
+    groups = [_G(str(i), s) for i, s in enumerate(shapes)]
+    pf = op.GroupPrefetcher.__new__(op.GroupPrefetcher)
+    pf.module = object()
+    pf.depth = depth
+    pf.groups = groups
+    pf.by_id = {id(g): g for g in groups}
+    pf.nbytes = {id(g): 10 for g in groups}
+    pf.ready = {}
+    pf.active = False
+    pf.stats = {"dropped": 0}
+    pf.slot_of, pf.slot_buffers, pf.slot_owner, pf.slot_bytes, pf.slot_bytes_planned = {}, {}, {}, 0, 0
+    released = []
+    pf._release = lambda g, e, counted = True: released.append(g.name)
+    return pf, groups, released
+
+
+def test_slots_are_shared_round_robin_per_tensor_layout():
+    pf, groups, _ = _slot_prefetcher([(4, 4)] * 5 + [(8, 4)] * 2, depth = 2)
+    mib = pf.enable_slots()
+    assert mib == 0  # 10-byte groups
+    slots = [pf.slot_of[id(g)] for g in groups]
+    assert [s[1] for s in slots[:5]] == [0, 1, 2, 0, 1]
+    assert [s[1] for s in slots[5:]] == [0, 1]
+    assert slots[0][0] != slots[5][0]
+    assert pf.slot_bytes_planned == 3 * 10 + 2 * 10
+
+
+def test_a_slot_held_by_a_group_on_the_device_is_never_refilled_ahead():
+    pf, groups, released = _slot_prefetcher([(4, 4)] * 4, depth = 2)
+    pf.enable_slots()
+    a, d = groups[0], groups[3]  # same slot
+    pf.slot_owner[pf.slot_of[id(a)]] = id(a)
+    pf.ready[id(a)] = None  # onloaded, compute in flight
+    assert pf._slot_free(d, must = False) is False
+    # a forced onload of d copies to fresh memory instead (the block then runs ungraphed once)
+    assert pf._slot_free(d, must = True) is None and pf.stats["slot_fallbacks"] == 1
+    # copied ahead but not run yet: a forced onload drops it and takes the slot
+    pf.ready[id(a)] = object()
+    assert pf._slot_free(d, must = True) is True and released == ["0"]
+    # released (no longer on the device): free
+    pf.ready.clear()
+    assert pf._slot_free(d, must = False) is True
+
+
+def test_the_top_level_group_keeps_fresh_copies():
+    pf, groups, _ = _slot_prefetcher([(4, 4)] * 3)
+    groups[0].offload_leader = pf.module
+    pf.enable_slots()
+    assert id(groups[0]) not in pf.slot_of and len(pf.slot_of) == 2
+
+
+# --- memory guard ----------------------------------------------------------------------------------------------
+
+
+def test_block_graph_pools_are_not_credited_as_reclaimable(monkeypatch):
+    target = types.SimpleNamespace(device = "cuda", backend = "cuda")
+    snap = dm.DeviceMemory("cuda", "cuda", "dedicated", 1000, 8000)
+    monkeypatch.setattr(dm, "snapshot_device_memory", lambda t: snap)
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda *a, **k: 600 << 20)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda *a, **k: 100 << 20)
+    monkeypatch.setattr(bg, "pool_bytes", lambda: 0)
+    assert dm.reclaimable_snapshot_device_memory(target).free_mib == 1500
+    monkeypatch.setattr(bg, "pool_bytes", lambda: 300 << 20)
+    assert dm.reclaimable_snapshot_device_memory(target).free_mib == 1200
+
+
+# --- CUDA ------------------------------------------------------------------------------------------------------
+
+
+def _cuda():
+    if not torch.cuda.is_available():
+        pytest.skip("needs CUDA")
+    pytest.importorskip("diffusers.hooks")
+
+
+def _streamed(net, resident_mib = None):
+    pipe = _pipe_with(net)
+    kwargs = {}
+    if resident_mib:
+        kwargs["resident_transformer_mib"] = resident_mib
+    assert dm._apply_group_offload(pipe, "cuda", None, **kwargs)
+    return pipe
+
+
+def _no_syncs(fn):
+    prev = torch.cuda.get_sync_debug_mode()
+    torch.cuda.set_sync_debug_mode("warn")
+    try:
+        with warnings.catch_warnings(record = True) as caught:
+            warnings.simplefilter("always")
+            out = fn()
+    finally:
+        torch.cuda.set_sync_debug_mode(prev)
+    return out, sum(1 for w in caught if "synchroniz" in str(w.message).lower())
+
+
+def _net(width = 256, blocks = 8, dtype = torch.float32):
+    torch.manual_seed(0)
+    return Net(width = width, blocks = blocks).to(dtype)
+
+
+@pytest.mark.parametrize("resident_mib", [None, 1])
+def test_streamed_blocks_replay_from_the_slot_ring_bit_identically(resident_mib):
+    _cuda()
+    net = _net()
+    ref = copy.deepcopy(net).cuda()
+    _streamed(net, resident_mib)
+    pf = op.module_prefetcher(net)
+    assert pf is not None
+    handle, reason = bg.install_block_graphs(net, device = "cuda")
+    assert reason == "armed" and handle.slots_mib >= 0
+    x = torch.randn(4, 16, device = "cuda")
+    temb = torch.randn(1, 256, device = "cuda")
+    with torch.no_grad():
+        want = ref(x, temb = temb)
+        for i in range(4):
+            got, syncs = _no_syncs(lambda: net(x, temb = temb))
+            torch.cuda.synchronize()
+            assert torch.equal(got, want), i
+            if i >= 2:
+                assert syncs == 0
+        # a different input is copied into the same static buffers and replays the same recordings
+        x2 = torch.randn(4, 16, device = "cuda")
+        captures = handle.stats["captures"]
+        assert torch.equal(net(x2, temb = temb), ref(x2, temb = temb))
+        assert handle.stats["captures"] == captures
+    s = handle.stats
+    assert s["replays"] >= 8 and s["fallbacks"] == 0 and s["refused_host_weight"] == 0
+    # one recording per block (weights at their slot), each made once
+    assert s["captures"] == 8 and s["recaptures"] == 0
+    assert pf.stats["slot_fills"] > 0 and pf.stats.get("slot_fallbacks", 0) == 0
+    assert net.blocks[-1].lin.weight.device.type == "cpu"
+    handle.free()
+    with torch.no_grad():
+        assert torch.equal(net(x, temb = temb), want)
+
+
+def test_a_block_whose_weights_moved_records_again_at_the_new_addresses():
+    _cuda()
+    net = _net(blocks = 3).cuda()
+    ref = copy.deepcopy(net)
+    handle, _ = bg.install_block_graphs(net, device = "cuda", slots = False)
+    x = torch.randn(4, 16, device = "cuda")
+    with torch.inference_mode():
+        want = ref(x)
+        for _ in range(3):
+            assert torch.equal(net(x), want)
+        assert handle.stats["captures"] == 3
+        # the 12 GB tier's encode release / restore and model offload's re-upload land weights elsewhere
+        for block in net.blocks:
+            block.lin.weight.data = block.lin.weight.data.clone()
+        for _ in range(3):
+            assert torch.equal(net(x), want)
+        # the moved weights change the result if a stale recording replayed them: perturb and compare
+        net.blocks[1].lin.weight.data = net.blocks[1].lin.weight.data * 2
+        ref.blocks[1].lin.weight.data = ref.blocks[1].lin.weight.data * 2
+        for _ in range(3):
+            assert torch.equal(net(x), ref(x))
+    assert handle.stats["recaptures"] >= 3 and handle.stats["fallbacks"] == 0
+    handle.free()
+
+
+def test_prefix_kv_cache_blocks_replay_on_cached_steps():
+    _cuda()
+    net = _net(blocks = 3).cuda()
+    ref = copy.deepcopy(net)
+    caches = []
+    for _ in range(3):
+        c = QwenImage21KVLayerCache()
+        c.store(torch.randn(5, 256, device = "cuda"), torch.randn(5, 256, device = "cuda"))
+        caches.append(c)
+    handle, _ = bg.install_block_graphs(net, device = "cuda", slots = False)
+    x = torch.randn(4, 16, device = "cuda")
+    with torch.inference_mode():
+        want = ref(x, caches = caches)
+        for _ in range(4):
+            assert torch.equal(net(x, caches = caches), want)
+        # new prefix values (a new prompt) are copied in; the recordings stay
+        for c in caches:
+            c.store(torch.randn(5, 256, device = "cuda"), torch.randn(5, 256, device = "cuda"))
+        captures = handle.stats["captures"]
+        assert torch.equal(net(x, caches = caches), ref(x, caches = caches))
+        assert handle.stats["captures"] == captures
+    assert handle.stats["replays"] > 0 and handle.stats["fallbacks"] == 0
+    handle.free()
+
+
+def test_torchao_int8_weights_stream_through_the_slot_ring_with_graphs():
+    _cuda()
+    torchao = pytest.importorskip("torchao")
+    from torchao.quantization import quantize_
+
+    try:
+        from torchao.quantization import Int8WeightOnlyConfig as Cfg
+    except ImportError:
+        pytest.skip(f"torchao {torchao.__version__} has no Int8WeightOnlyConfig")
+    net = _net(dtype = torch.bfloat16)
+    quantize_(net, Cfg())
+    ref = copy.deepcopy(net).cuda()
+    _streamed(net)
+    pf = op.module_prefetcher(net)
+    assert pf is not None
+    handle, _ = bg.install_block_graphs(net, device = "cuda")
+    x = torch.randn(4, 16, device = "cuda", dtype = torch.bfloat16)
+    with torch.no_grad():
+        want = ref(x)
+        for _ in range(4):
+            got = net(x)
+            torch.cuda.synchronize()
+            assert torch.equal(got, want)
+    assert handle.stats["replays"] > 0 and handle.stats["fallbacks"] == 0
+    assert pf.stats["slot_fills"] > 0
+    handle.free()

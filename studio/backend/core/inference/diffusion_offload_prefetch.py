@@ -146,6 +146,81 @@ def _to_device(src: Any, device: Any) -> Any:
     return src.to(device, non_blocking = True)
 
 
+def _inner(t: Any) -> list:
+    try:
+        from torch.utils._python_dispatch import is_traceable_wrapper_subclass
+
+        if is_traceable_wrapper_subclass(t):
+            names, _ = t.__tensor_flatten__()
+            return [(n, getattr(t, n)) for n in names]
+    except Exception:  # noqa: BLE001 - not a wrapper: a plain tensor
+        pass
+    return []
+
+
+def _tensor_signature(t: Any) -> tuple:
+    inner = _inner(t)
+    if inner:
+        return (type(t).__name__, tuple(t.shape), tuple((n, _tensor_signature(x)) for n, x in inner))
+    return (tuple(t.shape), tuple(t.stride()), str(t.dtype))
+
+
+def _group_signature(group: Any) -> tuple:
+    cpu = getattr(group, "cpu_param_dict", None) or {}
+    return tuple(_tensor_signature(cpu.get(t, t)) for t in _group_tensors(group))
+
+
+def _copy_into(dst: Any, src: Any) -> None:
+    """Copy ``src`` (host) into ``dst`` (device) in place, through wrapper subclasses' inner tensors."""
+    inner = _inner(dst)
+    if inner:
+        for name, d in inner:
+            _copy_into(d, getattr(src, name))
+        return
+    dst.copy_(src, non_blocking = True)
+
+
+def _rewrap(buf: Any) -> Any:
+    """A new wrapper around ``buf``'s inner tensors (no copy), for ``swap_tensors`` to consume."""
+    names, ctx = buf.__tensor_flatten__()
+    return type(buf).__tensor_unflatten__({n: getattr(buf, n) for n in names}, ctx, buf.size(), buf.stride())
+
+
+def _point_at(t: Any, buf: Any, torchao: bool, swap: Any) -> None:
+    """Make parameter / buffer ``t`` read ``buf``'s storage, leaving ``buf`` itself untouched."""
+    if not torchao:
+        t.data = buf
+        return
+    inner = _inner(t)
+    if inner and all(x.device.type == buf.device.type for _, x in _inner(buf)) and t.device == buf.device:
+        for name, _ in _inner(buf):
+            setattr(t, name, getattr(buf, name))
+        return
+    # First time on the device: the wrapper itself must report it, so swap in a fresh wrapper over the slot.
+    if swap is not None:
+        swap(t, _rewrap(buf))
+    else:
+        for name, _ in _inner(buf):
+            setattr(t, name, getattr(buf, name))
+
+
+def _detach_from_slot(group: Any, buffers: list) -> None:
+    """Point a group that aliases slot ``buffers`` at private device copies."""
+    ptrs = set()
+    for b in buffers:
+        for _, x in (_inner(b) or [("", b)]):
+            ptrs.add(x.data_ptr())
+    go = _go()
+    is_torchao = getattr(go, "_is_torchao_tensor", lambda t: False)
+    for t in _group_tensors(group):
+        if is_torchao(t):
+            for name, x in _inner(t):
+                if x.data_ptr() in ptrs:
+                    setattr(t, name, x.clone())
+        elif t.data_ptr() in ptrs:
+            t.data = t.data.clone()
+
+
 def _group_nbytes(group: Any) -> int:
     from .diffusion_memory import _storage_nbytes
 
@@ -191,6 +266,13 @@ class GroupPrefetcher:
         self.stream = streams[0] if streams else None
         self.fence_first = False
         self.stats = {"forwards": 0, "copies": 0, "prefetched": 0, "missed": 0, "dropped": 0}
+        # Slot ring (``enable_slots``): group id -> (layout, slot index); a streamed group's copy lands in place in
+        # that slot's buffers, so the blocks a CUDA graph recorded read the same addresses every step.
+        self.slot_of: dict = {}
+        self.slot_buffers: dict = {}
+        self.slot_owner: dict = {}
+        self.slot_bytes = 0
+        self.slot_bytes_planned = 0
 
     def owns(self, group: Any) -> bool:
         return getattr(group, "__dict__", {}).get("onload_") is getattr(
@@ -201,10 +283,33 @@ class GroupPrefetcher:
         import torch
         return torch.cuda.current_stream(self.device)
 
-    def _issue(self, group: Any) -> None:
-        """Queue ``group``'s host-to-device copy on its copy stream and point its tensors at the destinations."""
+    def _slot_free(self, group: Any, must: bool) -> Optional[bool]:
+        """Whether ``group``'s slot can take its copy now: True, False (wait: the occupant is on the device), or None
+        (no slot / a forced onload whose slot is busy: copy to fresh memory instead)."""
+        where = self.slot_of.get(id(group))
+        if where is None:
+            return None
+        owner = self.slot_owner.get(where)
+        if owner is None or owner == id(group) or owner not in self.ready:
+            return True
+        if not must:
+            return False
+        occupant = self.by_id.get(owner)
+        if occupant is not None and self.ready.get(owner) is not None:
+            # copied ahead but not yet run (the order changed): drop it, it is copied again when reached
+            self._release(occupant, self.ready.pop(owner))
+            return True
+        self.stats["slot_fallbacks"] = self.stats.get("slot_fallbacks", 0) + 1
+        return None
+
+    def _issue(self, group: Any, must: bool = True) -> bool:
+        """Queue ``group``'s host-to-device copy on its copy stream and point its tensors at the destinations.
+        False (nothing queued) only when ``must`` is False and the group's slot is still occupied."""
         import torch
 
+        slot = self._slot_free(group, must) if getattr(self, "slot_of", None) else None
+        if slot is False:
+            return False
         pinner = getattr(group, _BG_PIN_ATTR, None)
         if pinner is not None:
             pinner.wait(group)
@@ -213,18 +318,34 @@ class GroupPrefetcher:
         swap = getattr(go, "_swap_torchao_tensor", None)
         cpu = group.cpu_param_dict
         stream = group.stream
+        where = self.slot_of.get(id(group)) if slot else None
+        buffers = self.slot_buffers.get(where) if where is not None else None
+        made: list = []
         with torch.cuda.stream(stream):
-            for t in _group_tensors(group):
+            for i, t in enumerate(_group_tensors(group)):
                 src = cpu[t]
                 if not src.is_pinned():
                     src = (
                         src.pin_memory()
                     )  # diffusers' low_cpu_mem_usage path: the host allocator fences reuse
+                if buffers is not None:
+                    _copy_into(buffers[i], src)
+                    _point_at(t, buffers[i], is_torchao(t), swap)
+                    continue
                 moved = _to_device(src, self.device)
-                if is_torchao(t) and swap is not None:
+                if where is not None:
+                    made.append(moved)
+                    _point_at(t, moved, is_torchao(t), swap)
+                elif is_torchao(t) and swap is not None:
                     swap(t, moved)
                 else:
                     t.data = moved
+        if where is not None:
+            if buffers is None:
+                self.slot_buffers[where] = made
+                self.slot_bytes += self.nbytes.get(id(group), 0)
+            self.slot_owner[where] = id(group)
+            self.stats["slot_fills"] = self.stats.get("slot_fills", 0) + 1
         ready = torch.cuda.Event()
         ready.record(stream)
         gid = id(group)
@@ -232,6 +353,7 @@ class GroupPrefetcher:
         self.inflight_bytes += self.nbytes.get(gid, 0)
         self.peak_inflight_bytes = max(self.peak_inflight_bytes, self.inflight_bytes)
         self.stats["copies"] += 1
+        return True
 
     def onload(self, group: Any) -> None:
         gid = id(group)
@@ -288,6 +410,8 @@ class GroupPrefetcher:
 
     def _forget_disowned(self) -> None:
         """Groups made resident while on the device (their onload_ replaced) leave the window without a release."""
+        import torch
+
         compute = None
         for gid in list(self.ready):
             group = self.by_id.get(gid)
@@ -298,6 +422,12 @@ class GroupPrefetcher:
                 compute = compute or self._compute()
                 compute.wait_event(event)
             self.inflight_bytes -= self.nbytes.get(gid, 0)
+            if group is not None and getattr(self, "slot_of", None) and self._holds_slot(group):
+                # made resident while it sat in a slot: give it its own copy before the slot is refilled
+                compute = compute or self._compute()
+                with torch.cuda.stream(compute):
+                    _detach_from_slot(group, self.slot_buffers[self.slot_of[gid]])
+                self.slot_owner.pop(self.slot_of[gid], None)
 
     def _fill(self) -> None:
         if not (self.active and self.on_order):
@@ -314,8 +444,62 @@ class GroupPrefetcher:
                 continue
             if self.inflight_bytes + self.nbytes.get(gid, 0) > self.window and self.ready:
                 break
-            self._issue(group)
+            if getattr(self, "slot_of", None):
+                if not self._issue(group, must = False):
+                    break  # its slot still holds a group the compute has not finished with
+            else:
+                self._issue(group)
             ahead += 1
+
+    def _holds_slot(self, group: Any) -> bool:
+        where = self.slot_of.get(id(group))
+        return where is not None and self.slot_owner.get(where) == id(group)
+
+    def enable_slots(self, logger: Any = None) -> int:
+        """Give every streamed block group a slot: groups of one tensor layout share ``min(depth + 1, count)`` buffer
+        sets, assigned round-robin in block order, filled in place. Returns the MiB the ring holds once every slot
+        has been filled (they are made on first use). The top-level group keeps fresh copies: no graph reads it."""
+        if self.slot_of:
+            return self.slot_bytes_planned >> 20
+        classes: dict = {}
+        for group in self.groups:
+            if getattr(group, "offload_leader", None) is self.module:
+                continue
+            try:
+                sig = _group_signature(group)
+            except Exception:  # noqa: BLE001 - a layout we cannot read keeps fresh copies
+                continue
+            classes.setdefault(sig, []).append(group)
+        planned = 0
+        for sig, members in classes.items():
+            count = min(self.depth + 1, len(members))
+            for i, group in enumerate(members):
+                self.slot_of[id(group)] = (sig, i % count)
+            planned += count * max(self.nbytes.get(id(g), 0) for g in members)
+        self.slot_bytes_planned = planned
+        if logger is not None and self.slot_of:
+            logger.info(
+                "diffusion.memory: %s streams %d block groups through a %d MiB slot ring (%d layouts)",
+                type(self.module).__name__,
+                len(self.slot_of),
+                planned >> 20,
+                len(classes),
+            )
+        return planned >> 20
+
+    def disable_slots(self) -> None:
+        """Drop the ring. Only between forwards: every streamed group is back on the host by then."""
+        import torch
+
+        if self.active:
+            return
+        if self.slot_buffers:
+            torch.cuda.synchronize(self.device)
+        self.slot_of = {}
+        self.slot_buffers = {}
+        self.slot_owner = {}
+        self.slot_bytes = 0
+        self.slot_bytes_planned = 0
 
     def begin(self) -> None:
         self.stats["forwards"] += 1
