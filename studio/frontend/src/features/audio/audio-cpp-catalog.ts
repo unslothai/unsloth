@@ -22,6 +22,7 @@ export type AudioCppTask = "tts" | "music" | "asr" | "sep";
 export type AudioCppWorkflow =
   | "speak"
   | "clone"
+  | "edit"
   | "music"
   | "separate"
   | "transcribe";
@@ -67,6 +68,9 @@ export const AUDIO_CPP_MODELS: readonly AudioCppModel[] = [
   { id: folder("CosyVoice3-GGUF"), task: "tts", workflows: ["clone"] },
   { id: folder("Qwen3-TTS-12Hz-1.7B-CustomVoice-GGUF"), task: "tts" },
   { id: folder("Qwen3-TTS-12Hz-1.7B-VoiceDesign-GGUF"), task: "tts" },
+  { id: folder("DotTTS-Edit-GGUF"), task: "tts", workflows: ["speak", "edit"] },
+  { id: folder("Vevo2-GGUF"), task: "tts", workflows: ["clone", "edit"] },
+  { id: folder("FireRedAudio-GGUF"), task: "tts", workflows: ["clone", "edit"] },
   { id: "audio-cpp/MiniMax-Music3-GGUF", task: "music" },
   { id: "audio-cpp/Yue2-3B-GGUF", task: "music" },
   { id: folder("ACE-Step1.5-GGUF"), task: "music" },

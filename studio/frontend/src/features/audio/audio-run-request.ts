@@ -8,6 +8,11 @@ export const AUDIO_INPUT_MAX_BYTES = 200 * 1024 * 1024;
 
 export const REFERENCE_MAX_SECONDS = 30;
 
+/** Longer is refused, not cut: a cut recording no longer matches its transcript. */
+export const EDIT_SOURCE_MAX_SECONDS = 30;
+// The server allows the same slack: a take stopped by the 30 s timer can run a frame over.
+export const EDIT_SOURCE_SLACK_SECONDS = 0.05;
+
 export type AudioSourceRef =
   | { input_id: string }
   | { clip_id: string }
@@ -28,13 +33,18 @@ export function clipReference(clip: {
   id: string;
   prompt: string;
   duration_s: number | null;
+  workflow?: string | null;
+  reference_name?: string | null;
 }): AudioSourceSelection {
+  // Only speech is a transcript: not a Music description, nor the file name an untranscribed edit is titled by.
+  const spoken =
+    clip.workflow !== "music" && clip.prompt !== clip.reference_name;
   return {
     kind: "clip",
     id: clip.id,
     name: clip.prompt || "Generated clip",
     durationS: clip.duration_s,
-    transcript: clip.prompt || null,
+    transcript: (spoken && clip.prompt) || null,
     language: null,
   };
 }
@@ -85,6 +95,14 @@ export function selectionExpired(
 
 export type AudioOptionScalar = boolean | number | string;
 
+export interface AudioRunEditPart {
+  mode: "words" | "delivery";
+  markup?: string | null;
+  instructions?: string[] | null;
+  speed?: number | null;
+  pitch_steps?: number | null;
+}
+
 export interface AudioMusicRunFields {
   mode: "song" | "sfx" | "edit";
   lyrics?: string | null;
@@ -101,7 +119,7 @@ export interface AudioMusicRunFields {
 }
 
 export interface AudioRunRequest {
-  workflow: "clone" | "speak" | "music" | "separate";
+  workflow: "clone" | "speak" | "edit" | "music" | "separate";
   music?: AudioMusicRunFields;
   /** Required for clone, speak and music; separate takes none. */
   text?: string;
@@ -113,7 +131,8 @@ export interface AudioRunRequest {
     reference_text?: string | null;
     emotion?: AudioSourceRef | null;
   };
-  options?: Record<string, boolean | number | string>;
+  edit?: AudioRunEditPart | null;
+  options?: Record<string, AudioOptionScalar>;
   speed?: number | null;
   seed?: number | null;
   max_tokens?: number | null;
@@ -154,6 +173,8 @@ export function buildAudioRunBody(
   const emotion = cleanRef(request.inputs?.emotion);
   if (emotion) inputs.emotion = emotion;
   if (Object.keys(inputs).length > 0) body.inputs = inputs;
+  const edit = cleanEdit(request.edit);
+  if (edit) body.edit = edit;
   const options = Object.fromEntries(
     Object.entries(request.options ?? {}).filter(
       ([name, value]) =>
@@ -174,6 +195,29 @@ export function buildAudioRunBody(
     Object.assign(body, musicRunFields(request.music));
   }
   return body;
+}
+
+function cleanEdit(
+  edit: AudioRunEditPart | null | undefined,
+): Record<string, unknown> | null {
+  if (!edit || (edit.mode !== "words" && edit.mode !== "delivery")) return null;
+  const out: Record<string, unknown> = { mode: edit.mode };
+  if (typeof edit.markup === "string" && edit.markup.trim())
+    out.markup = edit.markup;
+  if (Array.isArray(edit.instructions)) {
+    const instructions = edit.instructions.filter(
+      (line): line is string => typeof line === "string" && line.length > 0,
+    );
+    if (instructions.length > 0) out.instructions = instructions;
+  }
+  if (typeof edit.speed === "number" && Number.isFinite(edit.speed))
+    out.speed = edit.speed;
+  if (
+    typeof edit.pitch_steps === "number" &&
+    Number.isInteger(edit.pitch_steps)
+  )
+    out.pitch_steps = edit.pitch_steps;
+  return out;
 }
 
 function finiteSeconds(value: number | null | undefined): number | null {

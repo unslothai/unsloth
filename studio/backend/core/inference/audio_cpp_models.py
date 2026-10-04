@@ -103,6 +103,23 @@ class CloneSpec:
 
 
 @dataclass(frozen = True)
+class EditSpec:
+    """How a family edits a recording through ``/v1/tasks/run``."""
+
+    server_task: str
+    # markup (DotTTS <sub>/<del>/<ins>), sentence (Vevo2) or instructions (FireRedAudio, chained).
+    style: str
+    source_field: str = "source_audio"
+    route: Optional[str] = None
+    template: Optional[str] = None
+    # Speed/pitch template; None = no delivery control.
+    delivery_template: Optional[str] = None
+    max_changes: Optional[int] = None
+    # Options Studio fills itself, so Advanced never sends them.
+    claims: tuple[str, ...] = ("template_name", "source_text", "target_text", "instruction")
+
+
+@dataclass(frozen = True)
 class SeparationSpec:
     """How a family splits a track into stems on /v1/tasks/run (task ``sep``, 44.1 kHz input)."""
 
@@ -301,6 +318,11 @@ def _bindings_for(
         clone = getattr(family, "clone", None)
         if clone is not None:
             bindings["clone"] = WorkflowBinding(server_task or "tts", "speech", None, _CLONE_INPUTS)
+        edit = getattr(family, "edit", None)
+        if edit is not None:
+            bindings["edit"] = WorkflowBinding(
+                edit.server_task, "tasks", edit.route, ("source", "text", "reference_text")
+            )
         return bindings
     if task == "music":
         return {
@@ -337,6 +359,7 @@ class AudioCppFamily:
     speaks: bool = True
     clone: Optional[CloneSpec] = None
     companions: tuple[CompanionModel, ...] = ()
+    edit: Optional[EditSpec] = None
     separation: Optional[SeparationSpec] = None
     music: Optional[MusicSpec] = field(default = None, hash = False, compare = False)
 
@@ -502,9 +525,30 @@ _CLONE_FAMILIES: tuple[AudioCppFamily, ...] = (
     # Instruct under tts defaults to instruct_tts, which needs reference audio.
     AudioCppFamily("fireredtts3", "tts", speaks = False, clone = CloneSpec("optional")),
     # "FireRedAce": under tts it defaults to tts_clone, which needs reference audio.
-    AudioCppFamily("firered_audio", "tts", speaks = False, clone = CloneSpec("optional")),
-    # Vevo2 reads a sent transcript as text to speak, so it never gets one.
-    AudioCppFamily("vevo2", "tts", speaks = False, clone = CloneSpec("unused")),
+    AudioCppFamily(
+        "firered_audio",
+        "tts",
+        speaks = False,
+        clone = CloneSpec("optional"),
+        edit = EditSpec(
+            "tts",
+            "instructions",
+            source_field = "audio",
+            template = "semantic_edit",
+            delivery_template = "acoustic_edit",
+            max_changes = 5,
+            claims = ("template_name", "instruction"),
+        ),
+    ),
+    # Vevo2 reads a sent transcript as text to speak, so it never gets one. It edits only as an s2s
+    # session, so an edit after a Clone restarts the server.
+    AudioCppFamily(
+        "vevo2",
+        "tts",
+        speaks = False,
+        clone = CloneSpec("unused"),
+        edit = EditSpec("s2s", "sentence", route = "editing"),
+    ),
     # MioCodec's sibling-folder default never matches the umbrella layout: pass it by session option.
     AudioCppFamily(
         "miotts",
@@ -784,6 +828,8 @@ _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
 
 FAMILIES: dict[str, AudioCppFamily] = {f.family: f for f in _FAMILY_LIST}
 
+_DOTS_EDIT = EditSpec("tts", "markup", template = "edit")
+
 # Sessions refuse any backend but CPU ("Niagara ASR CPU variants require --backend cpu").
 CPU_ONLY_FAMILIES: frozenset[str] = frozenset({"niagara_asr"})
 
@@ -915,6 +961,9 @@ def family_policy(
         return replace(policy, music = _stable_audio_music(names))
     if family == "fireredtts3" and re.search(r"(^|[-_ /])base([-_ ./]|$)", " ".join(names).lower()):
         return replace(policy, server_task = "clon")
+    if family == "dots_tts" and re.search(r"(^|[-_ /])edit([-_ ./]|$)", " ".join(names).lower()):
+        # DotTTS-MF and SOAR only speak.
+        return replace(policy, edit = _DOTS_EDIT)
     return policy
 
 
@@ -1814,6 +1863,7 @@ class AudioCppModel:
     clone: Optional[CloneSpec] = None
     companions: tuple[CompanionModel, ...] = ()
     required_inputs: tuple[str, ...] = ()
+    edit: Optional[EditSpec] = None
     separation: Optional[SeparationSpec] = None
     music: Optional[MusicSpec] = field(default = None, hash = False, compare = False)
     # A strict spec (``schema_version``) makes the runtime refuse any undeclared option.
@@ -2187,6 +2237,7 @@ def _resolve_uncached(
         clone = policy.clone,
         companions = policy.companions,
         required_inputs = _required_inputs(spec, embedded, policy),
+        edit = policy.edit,
         separation = policy.separation,
         music = music_with_spec_bounds(policy.music, _raw_request_options(spec, embedded)),
         request_keys = _request_keys(spec, embedded),

@@ -38,6 +38,15 @@ export interface CoreInputs {
   text: string;
   referenceText?: string;
   hasReference?: boolean;
+  edit?: EditCoreInputs;
+}
+
+export interface EditCoreInputs {
+  transcript: string;
+  edited: string;
+  mode: "words" | "delivery";
+  speed: number;
+  pitchSteps: number;
 }
 
 export interface AudioToolPanelProps<V> {

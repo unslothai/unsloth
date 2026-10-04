@@ -73,7 +73,7 @@ test("Speak and Music keep separate drafts that survive a reload", () => {
 test("history is per page, and Clear all clears only that page", () => {
   assert.match(
     gallery,
-    /clips\.filter\(\(clip\) => clipWorkflow\(clip\) === workflow\)/,
+    /clips\.filter\(\(clip\) => clipWorkflow\(clip\) === workflow/,
   );
   assert.match(gallery, /await clearAudioGallery\(workflow\);/);
   assert.match(host, /\(\) => handleClearGallery\(ttsWorkflow\)/);
@@ -94,7 +94,7 @@ test("Generate says why it is off and runs from Mod+Enter anywhere on the page",
   assert.match(host, /!pageRootRef\.current\?\.contains\(event\.target\)/);
   assert.match(
     host,
-    /const handlePageGenerate =\s*ttsWorkflow === "separate" \? separate\.handleGenerate :\s*ttsWorkflow === "clone" \? clone\.handleGenerate : handleGenerate;/,
+    /const handlePageGenerate =\s*ttsWorkflow === "separate" \? separate\.handleGenerate :\s*ttsWorkflow === "clone" \? clone\.handleGenerate :\s*ttsWorkflow === "edit" \? edit\.handleGenerate : handleGenerate;/,
   );
   assert.match(host, /if \(canGenerate\) void handlePageGenerate\(\);/);
 });

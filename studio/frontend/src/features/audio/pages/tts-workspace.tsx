@@ -474,6 +474,7 @@ export function TtsOutput({
   onFreshClipFocused,
   announcement,
   clipBadge,
+  selectedPlayer,
 }: Pick<
   AudioGallery,
   | "srcById"
@@ -513,7 +514,26 @@ export function TtsOutput({
     onFreshClipFocused: () => void;
     announcement: string;
     clipBadge?: (clip: AudioGalleryClip) => string | null;
+    /** Replaces the plain player; `focusRef` goes on its first control. */
+    selectedPlayer?: (
+      clip: AudioGalleryClip,
+      src: string,
+      focusRef: ((element: HTMLElement | null) => void) | undefined,
+    ) => ReactNode;
   }) {
+  const focusFreshClip = (element: HTMLElement | null) => {
+    if (!element) return;
+    element.focus();
+    onFreshClipFocused();
+  };
+  const customPlayer =
+    selectedClip && selectedClipSrc && selectedPlayer
+      ? selectedPlayer(
+          selectedClip,
+          selectedClipSrc,
+          selectedClip.id === freshClipId ? focusFreshClip : undefined,
+        )
+      : null;
   const [openGroups, setOpenGroups] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
@@ -590,6 +610,7 @@ export function TtsOutput({
                   : null
               }
               menu={clipMenu(selectedClip, "row")}
+              player={customPlayer ?? undefined}
               status={clipBadge?.(selectedClip) ?? undefined}
               focusOnMount={selectedClip.id === freshClipId}
               onFocused={onFreshClipFocused}

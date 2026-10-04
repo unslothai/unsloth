@@ -391,6 +391,7 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
         "audio_reference_text": model_info.get("audio_reference_text"),
         "audio_required_inputs": model_info.get("audio_required_inputs"),
         "audio_clone": model_info.get("audio_clone"),
+        "audio_edit": model_info.get("audio_edit"),
         "audio_music": model_info.get("audio_music"),
         "audio_cpp_backend": model_info.get("audio_cpp_backend"),
     }
@@ -3373,6 +3374,7 @@ class InferenceOrchestrator:
         audio_inputs: Optional[dict[str, str]] = None,
         reference_text: Optional[str] = None,
         speed: Optional[float] = None,
+        edit: Optional[dict] = None,
         music: Optional[dict] = None,
         output_dir: Optional[str] = None,
         stats_holder: Optional[dict] = None,
@@ -3457,6 +3459,8 @@ class InferenceOrchestrator:
                     cmd["reference_text"] = reference_text
                 if speed is not None:
                     cmd["speed"] = float(speed)
+                if edit is not None:
+                    cmd["edit"] = dict(edit)
                 if music is not None:
                     cmd["music"] = dict(music)
                     try:

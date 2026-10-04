@@ -288,10 +288,10 @@ test("host and page wiring for Separate", () => {
   );
   assert.match(host, /ttsWorkflow === "separate"\s*\? separate\.blocker/);
   assert.match(host, /reason: "The loaded model separates audio\."/);
-  // Trained speech checkpoints are not separation models.
+  // Trained speech checkpoints are not separation models: only Speak and Music offer them.
   assert.match(
     host,
-    /ttsWorkflow === "clone" \|\| ttsWorkflow === "separate"\s*\? \[\]/,
+    /ttsWorkflow !== "speak" && ttsWorkflow !== "music"\s*\? \[\]/,
   );
   // A stem sent to Transcribe mid-run would be dropped when the run stops.
   assert.match(

@@ -446,6 +446,17 @@ def test_the_orchestrator_command_carries_paths_not_bytes(monkeypatch):
     assert {k: sent[0][k] for k in fields} == fields
     assert all(not isinstance(v, (bytes, bytearray)) for v in sent[0].values())
     assert not CLONE_FIELDS & set(sent[1])
+    sent.clear()
+    edit = {"mode": "words", "instructions": ["Replace 'human' with 'robot'."]}
+    orchestrator.generate_audio_response(
+        "edited", workflow = "edit", audio_inputs = {"source": reference}, edit = edit
+    )
+    (cmd,) = sent
+    assert (cmd["workflow"], cmd["audio_inputs"], cmd["edit"]) == (
+        "edit",
+        {"source": reference},
+        edit,
+    )
 
 
 def test_the_worker_forwards_clone_fields_only_when_present():

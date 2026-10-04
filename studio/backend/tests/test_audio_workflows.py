@@ -105,7 +105,7 @@ def test_workflow_for_audio_type_is_speak_or_music():
     assert aw.workflow_for_audio_type("snac") == "speak"
     assert aw.workflow_for_audio_type("unknown") == "speak"
     assert aw.workflow_for_audio_type(None) == "speak"
-    assert aw.AUDIO_WORKFLOW_IDS == ("speak", "clone", "music", "separate", "transcribe")
+    assert aw.AUDIO_WORKFLOW_IDS == ("speak", "clone", "edit", "music", "separate", "transcribe")
 
 
 def test_workflow_ids_match_the_frontend_order():
@@ -130,6 +130,10 @@ def test_status_carries_the_clone_fields():
         ("VoxCPM2-GGUF", "voxcpm2", ["speak", "clone"]),
         ("Qwen3-TTS-12Hz-0.6B-Base-GGUF", "qwen3_tts", ["clone"]),
         ("Kokoro-82M-GGUF", "kokoro_tts", ["speak"]),
+        ("DotTTS-Edit-GGUF", "dots_tts", ["speak", "edit"]),
+        ("DotTTS-MF-GGUF", "dots_tts", ["speak"]),
+        ("Vevo2-GGUF", "vevo2", ["clone", "edit"]),
+        ("FireRedAudio-GGUF", "firered_audio", ["clone", "edit"]),
     ],
 )
 def test_inventory_rows_of_clone_families_list_clone(tmp_path, folder, family, workflows):
