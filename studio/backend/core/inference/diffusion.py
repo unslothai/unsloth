@@ -8237,6 +8237,8 @@ class DiffusionBackend:
 
         from .diffusion_small_host import (
             cast_resident_,
+            int8_act_device_ok,
+            int8_act_family,
             mark,
             prepare_streamed_encoder_,
             quantize_int8_weight_,
@@ -8260,11 +8262,18 @@ class DiffusionBackend:
                 info["components"][name] = "converted"
             else:
                 # pageable: pinning rounds blocks to powers of two (11.3 GB of FLUX.1 int8 held 18 GB pinned)
+                act_int8 = int8_act_family(fam) and int8_act_device_ok(device)
                 stats = quantize_int8_weight_(
-                    module, compute_dtype = dtype, work_device = device, keep_device = "cpu"
+                    module,
+                    compute_dtype = dtype,
+                    work_device = device,
+                    keep_device = "cpu",
+                    act_int8 = act_int8,
                 )
                 info["components"][name] = (
-                    f"int8 weights ({stats['int8_bytes'] >> 20} MiB, {stats['linears']} linears)"
+                    f"int8 weights ({stats['int8_bytes'] >> 20} MiB, {stats['linears']} linears"
+                    + (", int8 activations" if act_int8 else "")
+                    + ")"
                 )
             if load_token is not None:
                 self._raise_if_load_cancelled(load_token)
