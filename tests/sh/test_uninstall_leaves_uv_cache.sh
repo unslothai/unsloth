@@ -68,6 +68,44 @@ case "$OUT" in
     *) ok "shared-cache note does not lead with prune" ;;
 esac
 
+case "$OUT" in
+    *"uv cache clean --cache-dir '$FIXTURE_HOME/.cache/uv'"*) ok "shared-cache note names the cache to clean" ;;
+    *) nope "shared-cache note does not pass --cache-dir" ;;
+esac
+
+echo "=== shared uv cache path with a quote is pasteable ==="
+
+make_studio
+_q_cache="$FIXTURE_HOME/it's uv"
+mkdir -p "$_q_cache" "$FIXTURE_HOME/.unsloth/studio/cache"
+printf '%s\n' "$_q_cache" > "$FIXTURE_HOME/.unsloth/studio/cache/uv-cache-dir"
+run_uninstall
+_q_cmd=$(printf '%s\n' "$OUT" | sed -n 's/^ *Free it with: //p' | head -n 1)
+_q_arg=$(eval "set -- ${_q_cmd#uv cache clean --cache-dir }"; printf '%s' "$1")
+if [ "$_q_arg" = "$_q_cache" ]; then
+    ok "quoted --cache-dir argument round-trips"
+else
+    nope "quoted --cache-dir argument is '$_q_arg'"
+fi
+
+echo "=== symlinked install root keeps the cache in its target ==="
+
+make_studio
+_real="$FIXTURE_HOME/real-studio"
+mv "$FIXTURE_HOME/.unsloth/studio" "$_real"
+ln -s "$_real" "$FIXTURE_HOME/.unsloth/studio"
+mkdir -p "$_real/cache/uv"
+printf '%s\n' "$FIXTURE_HOME/.unsloth/studio/cache/uv" > "$_real/cache/uv-cache-dir"
+run_uninstall
+if [ -d "$_real/cache/uv" ]; then
+    case "$OUT" in
+        *"uv package cache at $FIXTURE_HOME/.unsloth/studio/cache/uv was left"*) ok "kept cache under a symlinked root is named" ;;
+        *) nope "kept cache under a symlinked root is not named" ;;
+    esac
+else
+    ok "symlinked root target removed with its cache (nothing to name)"
+fi
+
 echo "=== Studio-owned uv cache under the install root ==="
 
 make_studio

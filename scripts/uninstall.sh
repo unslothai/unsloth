@@ -280,6 +280,8 @@ _markers_unavailable() {
 # it; any other is shared and stays. Read before any root is deleted.
 _uv_cache_under_any_root() {
     while IFS= read -r _uv_r; do
+        # A symlinked root is only unlinked, so its target (and any cache in it) stays.
+        [ -L "$_uv_r" ] && continue
         case "$1" in "$_uv_r"|"$_uv_r"/*) return 0 ;; esac
     done < "$_UV_ROOTS_FILE"
     return 1
@@ -309,8 +311,10 @@ _uv_print_leftover_notes() {
     if [ -s "$_UV_LEFTOVER_FILE" ]; then
         awk '!seen[$0]++' "$_UV_LEFTOVER_FILE" 2>/dev/null | while IFS= read -r _uv_path; do
             [ -n "$_uv_path" ] || continue
+            # --cache-dir: a bare `uv cache clean` cleans whichever cache uv resolves now.
+            _uv_q=$(printf '%s' "$_uv_path" | sed "s/'/'\\\\''/g")
             echo "Note: the uv package cache at $_uv_path was left in place (it may be shared with other tools)."
-            echo "      Free it with 'uv cache clean'."
+            echo "      Free it with: uv cache clean --cache-dir '$_uv_q'"
         done
     elif ! _marker_set "$_UV_SAW_MARKER_FLAG"; then
         echo "Note: if install reused a shared uv cache (\`uv cache dir\`), it was left in place."

@@ -559,11 +559,10 @@ Environment:
     function _UvCacheUnderRoot {
         param([string]$Cache, [string]$Root)
         if ([string]::IsNullOrWhiteSpace($Cache) -or [string]::IsNullOrWhiteSpace($Root)) { return $false }
-        $normCache = $Cache.TrimEnd('\', '/')
-        $normRoot = $Root.TrimEnd('\', '/')
+        $normCache = $Cache.Replace('/', '\').TrimEnd('\')
+        $normRoot = $Root.Replace('/', '\').TrimEnd('\')
         if ($normCache -eq $normRoot) { return $true }
-        return $normCache.StartsWith($normRoot + '\', [StringComparison]::OrdinalIgnoreCase) -or
-            $normCache.StartsWith($normRoot + '/', [StringComparison]::OrdinalIgnoreCase)
+        return $normCache.StartsWith($normRoot + '\', [StringComparison]::OrdinalIgnoreCase)
     }
 
     # Hard deny list: never recursively delete a drive root, USERPROFILE, its parent or a system dir.
@@ -1029,6 +1028,9 @@ Environment:
         $uvSawMarker = $true
         $under = $false
         foreach ($root in $ownedRoots) {
+            # A junctioned/symlinked root is only unlinked, so its target (and any cache in it) stays.
+            $item = Get-Item -LiteralPath $root -Force -ErrorAction SilentlyContinue
+            if ($item -and $item.LinkType) { continue }
             if (_UvCacheUnderRoot $rec $root) { $under = $true; break }
         }
         if (-not $under -and $uvLeftovers -notcontains $rec) { $uvLeftovers += $rec }
@@ -1465,7 +1467,9 @@ Environment:
     if ($uvLeftovers.Count -gt 0) {
         foreach ($p in $uvLeftovers) {
             Write-Host "Note: the uv package cache at $p was left in place (it may be shared with other tools)."
-            Write-Host "      Free it with 'uv cache clean'."
+            # --cache-dir: a bare `uv cache clean` cleans whichever cache uv resolves now.
+            $q = "'" + $p.Replace("'", "''") + "'"
+            Write-Host "      Free it with: uv cache clean --cache-dir $q"
         }
     } elseif (-not $uvSawMarker) {
         Write-Host 'Note: if install reused a shared uv cache (`uv cache dir`), it was left in place.'
