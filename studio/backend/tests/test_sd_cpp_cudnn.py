@@ -300,7 +300,9 @@ def test_cancel_kills_the_install_and_is_not_remembered(monkeypatch, tmp_path):
     monkeypatch.setattr(cd, "_installer_config", lambda _uv: {"mirror": True, "unprobed": False})
     monkeypatch.setattr(cd, "_uv_executable", lambda: None)
     monkeypatch.setattr(
-        cd, "install_command", lambda *_a: [sys.executable, "-c", "import time; time.sleep(60)"]
+        cd,
+        "install_command",
+        lambda *_a, **_k: [sys.executable, "-c", "import time; time.sleep(60)"],
     )
     threading.Timer(0.5, cancel.set).start()
     t = time.monotonic()
@@ -409,3 +411,44 @@ def test_status_route_model_carries_the_fields():
     from models.inference import VideoStatusResponse
     fields = VideoStatusResponse.model_fields
     assert "sd_cpp_cudnn_attention" in fields and "sd_cpp_cudnn_reason" in fields
+
+
+# --- round 2 ---------------------------------------------------------------------------------------------------------
+
+
+def test_preflight_refusals_are_rechecked_on_the_next_load(monkeypatch, tmp_path):
+    """Low disk and an unreachable index are rechecked; only a real install failure is remembered."""
+    calls = _fake_installer(monkeypatch)
+    monkeypatch.setattr(cd, "_reachable", lambda _url: False)
+    lib, reason = cd.ensure_library(RT, root = tmp_path)
+    assert lib is None and "not reachable" in reason and RT.cuda_major not in cd._FAILED
+    monkeypatch.setattr(cd, "_reachable", lambda _url: True)
+    lib, reason = cd.ensure_library(RT, root = tmp_path)
+    assert reason is None and lib and "--target" in calls[0]
+
+
+def test_a_plan_that_fails_to_execute_reports_fallback():
+    a = cd.CudnnAttention(cd.STATE_READY, env = ((cd.GGML_CUDNN_LIB_ENV, "/l"),))
+    a.begin_render()
+    for line in (
+        LOADED,
+        PLAN_DIT,
+        "ggml_cuda_cudnn_sdpa: cuDNN SDPA execute failed, keeping the ggml kernel for this shape: x",
+    ):
+        a.feed(line)
+    a.end_render()
+    assert a.state == cd.STATE_FALLBACK and "failed to run" in a.reason
+
+
+def test_the_installer_own_index_is_not_overridden(monkeypatch, tmp_path):
+    """A uv config naming its own default index keeps it; PIP_INDEX_URL is not forced over it."""
+    monkeypatch.delenv("UV_INDEX_URL", raising = False)
+    monkeypatch.delenv("UV_DEFAULT_INDEX", raising = False)
+    monkeypatch.setenv("PIP_INDEX_URL", "https://mirror.example/simple")
+    cmd = cd.install_command(RT, tmp_path / "stage", "/usr/bin/uv", own_index = True)
+    assert "--index-url" not in cmd
+
+
+def test_status_reason_is_redacted_for_remote_callers():
+    from hub.utils.host_paths import HOST_PATH_TEXT_FIELDS
+    assert "sd_cpp_cudnn_reason" in HOST_PATH_TEXT_FIELDS

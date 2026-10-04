@@ -105,6 +105,10 @@ class InstallCancelled(Exception):
     """The load that asked for the install was cancelled; nothing is published or remembered as failed."""
 
 
+class _Refused(str):
+    """A preflight refusal (disk, network): rechecked on the next load, never remembered."""
+
+
 def _off(value: Optional[str]) -> bool:
     return str(value or "").strip().lower() in ("0", "false", "no", "off")
 
@@ -234,12 +238,19 @@ def _installer_config(uv: Optional[str]) -> dict[str, Any]:
         return {"mirror": True, "unprobed": False}
 
 
-def install_command(runtime: CudnnRuntime, target: Path, uv: Optional[str]) -> list[str]:
+def install_command(
+    runtime: CudnnRuntime,
+    target: Path,
+    uv: Optional[str],
+    *,
+    own_index: bool = False,
+) -> list[str]:
     """``--target`` a Studio-managed dir, ``--no-deps``, wheels only: nothing in the venv can change."""
     try:
-        # Carries a pip-only mirror over to uv and a uv-only one over to pip (each ignores the other's env).
+        # Carries a pip-only mirror over to uv and a uv-only one over to pip (each ignores the other's env), unless
+        # the installer's own config already names its index.
         from .diffusion_nvfp4_install import _installer_prefix
-        cmd = _installer_prefix(uv)
+        cmd = _installer_prefix(uv, own_index = own_index)
     except Exception:  # noqa: BLE001
         cmd = (
             [uv, "pip", "install", "--python", sys.executable]
@@ -394,6 +405,8 @@ def ensure_library(
             found = _verified_library(dest, runtime)
             if found:
                 return found, None
+            if isinstance(reason, _Refused):
+                return None, str(reason)
             reason = reason or "the installed cuDNN failed verification"
             _FAILED[runtime.cuda_major] = reason
             return None, reason
@@ -417,12 +430,14 @@ def _install_locked(
     except OSError:
         free = None
     if free is not None and free < _MIN_FREE_BYTES:
-        return f"needs {_MIN_FREE_BYTES >> 30} GiB free beside the Studio home, {free / 2**30:.1f} GiB free"
+        return _Refused(
+            f"needs {_MIN_FREE_BYTES >> 30} GiB free beside the Studio home, {free / 2**30:.1f} GiB free"
+        )
     uv = _uv_executable()
     config = _installer_config(uv)
     # A configured mirror or an ALL_PROXY-only proxy is the installer's to reach; it reports its own failure.
     if not (config.get("mirror") or config.get("unprobed")) and not _reachable(_PYPI_PROBE_URL):
-        return "pypi.org is not reachable"
+        return _Refused("pypi.org is not reachable")
     staging = Path(tempfile.mkdtemp(prefix = ".staging-", dir = str(root)))
     try:
         before = _venv_snapshot()
@@ -433,7 +448,8 @@ def _install_locked(
                 status_cb(msg)
             except Exception:  # noqa: BLE001
                 pass
-        ok, output = _run(install_command(runtime, staging, uv), _INSTALL_TIMEOUT_S, cancel_event)
+        cmd = install_command(runtime, staging, uv, own_index = bool(config.get("own_index")))
+        ok, output = _run(cmd, _INSTALL_TIMEOUT_S, cancel_event)
         after = _venv_snapshot()
         if before != after:
             # Cannot happen with --target; if it ever does, say so loudly rather than run on a moved torch stack.
@@ -521,7 +537,15 @@ class CudnnAttention:
                 self.shapes.add(tuple(int(g) for g in m.groups()))
                 self.state, self.reason = STATE_ENGAGED, None
                 return
-            if _NO_PLAN_RE.search(line) or _EXEC_FAIL_RE.search(line) or _TOO_OLD_RE.search(line):
+            if _EXEC_FAIL_RE.search(line):
+                # A built plan that then fails to run leaves the ggml kernels doing that attention.
+                self._render["fallbacks"] = self._render.get("fallbacks", 0) + 1
+                self.state, self.reason = (
+                    STATE_FALLBACK,
+                    "cuDNN attention failed to run; the ggml kernels ran",
+                )
+                return
+            if _NO_PLAN_RE.search(line) or _TOO_OLD_RE.search(line):
                 self._render["fallbacks"] = self._render.get("fallbacks", 0) + 1
 
     def end_render(self, ok: bool = True) -> None:
