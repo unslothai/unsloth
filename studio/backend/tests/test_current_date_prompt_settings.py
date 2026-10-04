@@ -540,7 +540,7 @@ class TestDateStaysInTheSystemTurn:
 
     def test_a_template_without_a_system_turn_gets_no_date(self, monkeypatch):
         monkeypatch.setattr(
-            self.inference, "_local_template_rejects_system_turn", lambda _image = False: True
+            self.inference, "_local_template_rejects_system_turn", lambda *_args: True
         )
         assert self.inference._apply_current_date_prompt("", object()) == ""
         # a system prompt the caller wrote is still theirs to send, dated.
@@ -558,6 +558,25 @@ class TestDateStaysInTheSystemTurn:
         )
         monkeypatch.setattr(self.inference, "current_date_prompt_line", lambda **_kwargs: "")
         assert self.inference._audio_input_system_prompt("", object()) == instruction
+
+    def test_a_tool_request_probes_the_tool_use_template(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from core.inference import orchestrator
+
+        monkeypatch.undo()
+        named = [
+            {"name": "default", "template": _CHATML},
+            {"name": "tool_use", "template": _REFUSES_SYSTEM},
+        ]
+        info = {"chat_template_info": {"template": named}}
+        backend = SimpleNamespace(active_model_name = "hermes", models = {"hermes": info})
+        monkeypatch.setattr(
+            self.inference, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+        )
+        monkeypatch.setattr(orchestrator, "peek_inference_backend", lambda: backend)
+        assert not self.inference._local_template_rejects_system_turn()
+        assert self.inference._local_template_rejects_system_turn(tools = True)
 
     def test_an_image_request_probes_the_processor_template(self, monkeypatch):
         from types import SimpleNamespace

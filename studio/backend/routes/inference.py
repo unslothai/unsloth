@@ -6495,7 +6495,7 @@ def _date_gate_blocks(request: Any, include_api_key: bool) -> bool:
     return False
 
 
-def _local_chat_template(image: bool = False) -> Optional[str]:
+def _local_chat_template(image: bool = False, tools: bool = False) -> Optional[str]:
     """The template the loaded local model renders this chat with, if any."""
     try:
         llama = get_llama_cpp_backend()
@@ -6519,7 +6519,10 @@ def _local_chat_template(image: bool = False) -> Optional[str]:
                     template = template_info.get("template")
         from core.inference.chat_template_helpers import _selected_template_strings_from_value
 
-        selected = _selected_template_strings_from_value(template)
+        # a tool request renders a named template's tool_use body; a processor never picks it.
+        selected = _selected_template_strings_from_value(
+            template, [{"type": "function"}] if tools else None, prefer_tool_use = not image
+        )
     except Exception:
         return None
     return selected[0] if selected else None
@@ -6529,8 +6532,8 @@ def _local_template_default_system_prompt(today: Any, image: bool = False) -> st
     return template_default_system_prompt(_local_chat_template(image), today)
 
 
-def _local_template_rejects_system_turn(image: bool = False) -> bool:
-    return template_rejects_system_turn(_local_chat_template(image))
+def _local_template_rejects_system_turn(image: bool = False, tools: bool = False) -> bool:
+    return template_rejects_system_turn(_local_chat_template(image, tools))
 
 
 def _apply_current_date_prompt(
@@ -6540,6 +6543,7 @@ def _apply_current_date_prompt(
     include_api_key: bool = False,
     template_default: bool = True,
     image: bool = False,
+    tools: bool = False,
 ) -> str:
     """Prefix the user's system prompt with the date when the setting is on.
 
@@ -6555,7 +6559,7 @@ def _apply_current_date_prompt(
     if stated:
         return refreshed_prompt
     if not system_prompt:
-        if _local_template_rejects_system_turn(image):
+        if _local_template_rejects_system_turn(image, tools):
             # no system turn to carry it, and the date is never written into the user's own turns.
             return ""
         if template_default:
@@ -28828,11 +28832,14 @@ async def produce_openai_chat_completions(
     # applied once so both backends inherit it, with or without tools, and never state it twice.
     _user_system_prompt = system_prompt
     # what makes generation render through the processor's template: an attachment, a clip, or an
-    # MCP picture it promotes (the substring form, as this runs on the event loop).
+    # MCP picture it really promotes, checked off the loop as the envelope can be 12 MB.
     _renders_media = (
         _request_has_attached_image(payload)
-        or _request_has_promotable_mcp_images(payload, exact = False)
         or _request_has_video(payload)
+        or (
+            _request_has_promotable_mcp_images(payload, exact = False)
+            and await asyncio.to_thread(_request_has_promotable_mcp_images, payload)
+        )
     )
     system_prompt = _apply_current_date_prompt(system_prompt, request, image = _renders_media)
 
@@ -29061,6 +29068,7 @@ async def produce_openai_chat_completions(
                 request,
                 include_api_key = True,
                 template_default = False,
+                tools = True,
             )
             gguf_messages = _set_or_prepend_system_message(gguf_messages, system_prompt)
             # ── Tool-use system prompt nudge ──────────────────────
@@ -31189,6 +31197,7 @@ async def produce_openai_chat_completions(
             include_api_key = True,
             template_default = False,
             image = _sf_has_any_image or _video_clip is not None,
+            tools = True,
         )
         if _sf_nudge:
             if _sf_system_prompt:
@@ -31826,6 +31835,7 @@ async def produce_openai_chat_completions(
             request,
             template_default = False,
             image = _sf_has_any_image or _video_clip is not None,
+            tools = True,
         )
         if served_images:
             # One pass over the conversation this renders, so markers and payloads stay in step.
@@ -37826,11 +37836,14 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
     # Only with a request: the helper's requestless mode injects the date unconditionally.
     _user_system_prompt = system_prompt
     # what makes generation render through the processor's template: an attachment, a clip, or an
-    # MCP picture it promotes (the substring form, as this runs on the event loop).
+    # MCP picture it really promotes, checked off the loop as the envelope can be 12 MB.
     _renders_media = (
         _request_has_attached_image(payload)
-        or _request_has_promotable_mcp_images(payload, exact = False)
         or _request_has_video(payload)
+        or (
+            _request_has_promotable_mcp_images(payload, exact = False)
+            and await asyncio.to_thread(_request_has_promotable_mcp_images, payload)
+        )
     )
     if request is not None:
         system_prompt = _apply_current_date_prompt(system_prompt, request, image = _renders_media)
@@ -37951,7 +37964,11 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
         _client_system_prompt = _user_system_prompt
         if request is not None:
             _client_system_prompt = _apply_current_date_prompt(
-                _user_system_prompt, request, template_default = False, image = _renders_media
+                _user_system_prompt,
+                request,
+                template_default = False,
+                image = _renders_media,
+                tools = True,
             )
         messages = _set_or_prepend_system_message(messages, _client_system_prompt)
         system_prompt = ""
@@ -38012,6 +38029,7 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
                 include_api_key = True,
                 template_default = False,
                 image = _renders_media,
+                tools = True,
             )
         if _nudge:
             system_prompt = (system_prompt.rstrip() + "\n\n" + _nudge) if system_prompt else _nudge
@@ -38291,6 +38309,7 @@ async def chat_count_tokens(
                     request,
                     include_api_key = True,
                     template_default = False,
+                    tools = True,
                 ),
             )
             _count_nudge = await _apply_rag_nudge(
