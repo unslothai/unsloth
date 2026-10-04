@@ -130,9 +130,7 @@ class DiffusionFamily:
     supports_torch_compile: bool = True
     # False keeps cudnn.benchmark off (as VideoFamily.cudnn_benchmark): its per-process conv pick changes pixels.
     cudnn_benchmark: bool = True
-    # Compute capabilities, (major, minor), on which this family's regional compile pins inductor's reduction-config
-    # filter (diffusion_speed.pin_reduction_configs): one config per multi-config reduction at codegen instead of a
-    # per-process benchmark whose near-tie picks change the render between servers. Empty = inductor's pick.
+    # (major, minor) archs on which the compile pins inductor's reduction-config filter; empty = inductor's pick.
     filter_reduction_configs_archs: tuple[tuple[int, int], ...] = field(default_factory = tuple)
     # Optional pre-quantized transformer checkpoints as (scheme, repo_id): fetched instead of the dense bf16 (lower
     # load VRAM + download).
@@ -209,12 +207,8 @@ class DiffusionFamily:
         return self.deploy_base_repo or trained_base
 
 
-# Archs where FLUX.1, Z-Image and Qwen-Image rendered 2-4 variants of one seed across fresh servers on main: inductor
-# gives a few of their norm reductions several configs (R0_BLOCK 2048 / 4096, persistent XBLOCK 1 / 8 / 32) that sum in
-# different orders, and each cold-cache server benchmarks them in its own process on near-equal timings. Measured over 6
-# fresh servers: all three on an RTX PRO 6000 (sm120), FLUX.1 and Z-Image on an A100 (sm80), Z-Image on an L4 (sm89);
-# the filter costs at most 0.3% warm. B200 servers were already deterministic for these families, so other archs keep
-# inductor's pick until measured.
+# Fresh servers rendered 2-4 variants of one seed here: near-tied norm-reduction configs, benchmarked per process, sum in
+# different orders. B200 measured deterministic; unmeasured archs keep inductor's pick.
 _REDUCTION_RACE_ARCHS: tuple[tuple[int, int], ...] = ((8, 0), (8, 9), (12, 0))
 
 # Keyed by architecture, not per variant: the base repo is read from the HF base_model tag at load time, so one entry

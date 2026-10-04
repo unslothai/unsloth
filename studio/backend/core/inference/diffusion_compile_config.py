@@ -35,9 +35,7 @@ def reduction_config_filter_available() -> bool:
 
 
 def family_filters_reductions(family: Any) -> bool:
-    """Whether ``family``'s compile pins the reduction-config filter on this process's GPU: ``filter_reduction_configs``
-    on every arch, or the current CUDA device's (major, minor) listed in ``filter_reduction_configs_archs``. Whether
-    torch has the filter is reduction_config_filter_available's call, at the compile."""
+    """``filter_reduction_configs`` on every arch, or the current CUDA device listed in ``filter_reduction_configs_archs``."""
     if family is None:
         return False
     if bool(getattr(family, "filter_reduction_configs", False)):
@@ -50,7 +48,6 @@ def family_filters_reductions(family: Any) -> bool:
 
 
 def _device_capability() -> Any:
-    """(major, minor) of the current CUDA device, or None (no CUDA, ROCm, or the query failed)."""
     try:
         import torch
         if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
