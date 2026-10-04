@@ -19,7 +19,12 @@ from core.inference import diffusion_preview as DP
 from core.inference.diffusion_preview_factors import FACTORS, FAMILY_FACTORS
 
 
-def _spec(layout, channels, patch = 1, down = 8):
+def _spec(
+    layout,
+    channels,
+    patch = 1,
+    down = 8,
+):
     out = 3 * patch * patch
     weight = tuple(tuple(0.01 * ((c + o) % 7) for o in range(out)) for c in range(channels))
     return DP.LatentRGB(layout = layout, down = down, patch = patch, weight = weight, bias = (0.5,) * out)
@@ -108,7 +113,12 @@ def test_scheduler_step_preview_feeds_and_restores():
     seen = []
 
     class _Prev:
-        def on_step(self, latents, scheduler = None, final = False):
+        def on_step(
+            self,
+            latents,
+            scheduler = None,
+            final = False,
+        ):
             seen.append(latents)
 
     class _Sched:
@@ -130,12 +140,24 @@ def test_scheduler_step_preview_feeds_and_restores():
 def test_create_declines_without_a_map_or_off_cuda(monkeypatch):
     monkeypatch.delenv(DP.PREVIEW_ENV, raising = False)
     pub = lambda url, seq: None
-    assert DP.LatentPreviewer.create(family = "no-such", requested = None, height = 64, width = 64,
-                                     device = "cpu", publish = pub) is None
-    assert DP.LatentPreviewer.create(family = "flux.1", requested = None, height = 64, width = 64,
-                                     device = "cpu", publish = pub) is None
-    assert DP.LatentPreviewer.create(family = "flux.1", requested = False, height = 64, width = 64,
-                                     device = "cuda", publish = pub) is None
+    assert (
+        DP.LatentPreviewer.create(
+            family = "no-such", requested = None, height = 64, width = 64, device = "cpu", publish = pub
+        )
+        is None
+    )
+    assert (
+        DP.LatentPreviewer.create(
+            family = "flux.1", requested = None, height = 64, width = 64, device = "cpu", publish = pub
+        )
+        is None
+    )
+    assert (
+        DP.LatentPreviewer.create(
+            family = "flux.1", requested = False, height = 64, width = 64, device = "cuda", publish = pub
+        )
+        is None
+    )
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
@@ -150,8 +172,15 @@ def test_cuda_preview_never_syncs_never_writes_and_publishes(monkeypatch):
         got.append((url, seq))
         done.set()
 
-    prev = DP.LatentPreviewer.create(family = "flux.1", requested = None, height = 512, width = 768,
-                                     device = "cuda", publish = publish, min_interval_s = 0.0)
+    prev = DP.LatentPreviewer.create(
+        family = "flux.1",
+        requested = None,
+        height = 512,
+        width = 768,
+        device = "cuda",
+        publish = publish,
+        min_interval_s = 0.0,
+    )
     assert prev is not None
     lat = torch.randn(1, (512 // 16) * (768 // 16), 64, device = "cuda", dtype = torch.bfloat16)
     before = lat.clone()
@@ -170,7 +199,9 @@ def test_cuda_preview_never_syncs_never_writes_and_publishes(monkeypatch):
         for i in range(4):
             sched._step_index = i + 1
             prev.on_step(lat, sched)
-            lat = lat * 0.9  # the loop moves on; the preview must have read its own copy in stream order
+            lat = (
+                lat * 0.9
+            )  # the loop moves on; the preview must have read its own copy in stream order
     finally:
         torch.cuda.set_sync_debug_mode(0)
     assert not prev.failed
@@ -188,8 +219,15 @@ def test_cuda_preview_never_syncs_never_writes_and_publishes(monkeypatch):
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA")
 def test_cuda_preview_leaves_the_latent_bit_identical(monkeypatch):
     monkeypatch.delenv(DP.PREVIEW_ENV, raising = False)
-    prev = DP.LatentPreviewer.create(family = "flux.1", requested = None, height = 256, width = 256,
-                                     device = "cuda", publish = lambda u, s: None, min_interval_s = 0.0)
+    prev = DP.LatentPreviewer.create(
+        family = "flux.1",
+        requested = None,
+        height = 256,
+        width = 256,
+        device = "cuda",
+        publish = lambda u, s: None,
+        min_interval_s = 0.0,
+    )
     lat = torch.randn(1, 256, 64, device = "cuda", dtype = torch.bfloat16)
     snap = lat.clone()
     for _ in range(3):
@@ -206,9 +244,17 @@ def test_snapshots_are_planned_by_step_and_publishing_keeps_only_the_newest(monk
     newest one the GPU has finished."""
     monkeypatch.delenv(DP.PREVIEW_ENV, raising = False)
     got = []
-    prev = DP.LatentPreviewer.create(family = "flux.1", requested = None, height = 256, width = 256,
-                                     device = "cuda", publish = lambda u, s: got.append(s),
-                                     total_steps = 8, max_snapshots = 4, min_interval_s = 3600.0)
+    prev = DP.LatentPreviewer.create(
+        family = "flux.1",
+        requested = None,
+        height = 256,
+        width = 256,
+        device = "cuda",
+        publish = lambda u, s: got.append(s),
+        total_steps = 8,
+        max_snapshots = 4,
+        min_interval_s = 3600.0,
+    )
     assert prev.stride == 2
     lat = torch.randn(1, 256, 64, device = "cuda")
     # A long kernel queued ahead keeps every snapshot in flight, as a run-ahead host would.

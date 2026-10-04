@@ -5638,7 +5638,8 @@ class VideoGenerateProgressResponse(BaseModel):
     fraction: float = Field(0.0, description = "step / total, clamped to [0,1]")
     eta_seconds: Optional[float] = Field(None, description = "Estimated seconds remaining")
     preview: Optional[str] = Field(
-        None, description = "Live latent preview of the first frame being denoised, as a JPEG data URL"
+        None,
+        description = "Live latent preview of the first frame being denoised, as a JPEG data URL",
     )
     preview_seq: int = Field(0, description = "Moves each time a new preview is published")
     video: Optional[GalleryVideo] = Field(

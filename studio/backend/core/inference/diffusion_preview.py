@@ -228,7 +228,9 @@ def x0_estimate(prev: Any, cur: Any, pair: Optional[tuple]) -> Any:
     import torch
 
     ok = delta.abs() > 1e-6
-    c = torch.where(ok, s_prev / torch.where(ok, delta, torch.ones_like(delta)), torch.zeros_like(delta))
+    c = torch.where(
+        ok, s_prev / torch.where(ok, delta, torch.ones_like(delta)), torch.zeros_like(delta)
+    )
     return prev * (1.0 + c) - cur * c
 
 
@@ -236,7 +238,6 @@ def _hold_off():
     """The CUDA-graph capture hold-off, or an always-clear stand-in when the graph layer is absent."""
     try:
         from .diffusion_cuda_graph import hold_off_capture
-
         return hold_off_capture()
     except Exception:  # noqa: BLE001 - no graph layer means no capture to collide with
         return contextlib.nullcontext(True)
@@ -322,9 +323,7 @@ class LatentPreviewer:
         self.failed = False
         self._stop = threading.Event()
         self._wake = threading.Event()
-        self._worker = threading.Thread(
-            target = self._run, name = "diffusion-preview", daemon = True
-        )
+        self._worker = threading.Thread(target = self._run, name = "diffusion-preview", daemon = True)
         self._worker.start()
 
     # -------------------------------------------------------------------------------------- creation
@@ -362,7 +361,12 @@ class LatentPreviewer:
             return None
 
     # -------------------------------------------------------------------------------------- denoise thread
-    def on_step(self, latents: Any, scheduler: Any = None, final: bool = False) -> None:
+    def on_step(
+        self,
+        latents: Any,
+        scheduler: Any = None,
+        final: bool = False,
+    ) -> None:
         if self.failed or latents is None:
             return
         try:
@@ -373,7 +377,6 @@ class LatentPreviewer:
 
     def _on_step(self, latents: Any, scheduler: Any, final: bool) -> None:
         import torch
-
         if getattr(latents, "device", None) is None or latents.device.type != "cuda":
             return
         with _hold_off() as clear:
@@ -475,7 +478,11 @@ class LatentPreviewer:
             self._wake.wait(poll_s)
             self._wake.clear()
 
-    def _release(self, slot: dict, back_to: str = "free") -> None:
+    def _release(
+        self,
+        slot: dict,
+        back_to: str = "free",
+    ) -> None:
         with self._slot_lock:
             slot["state"] = back_to
 
@@ -493,7 +500,12 @@ class LatentPreviewer:
                 slot["state"] = "free"
 
 
-def encode_jpeg(raw: bytes, width: int, height: int, quality: int = JPEG_QUALITY) -> str:
+def encode_jpeg(
+    raw: bytes,
+    width: int,
+    height: int,
+    quality: int = JPEG_QUALITY,
+) -> str:
     from PIL import Image
 
     img = Image.frombytes("RGB", (int(width), int(height)), raw)

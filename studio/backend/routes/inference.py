@@ -43894,7 +43894,6 @@ def _live_preview_kwarg(generate: Any, requested: Optional[bool]) -> dict:
     """``live_preview`` for an engine whose generate() takes it (sd.cpp's does not), else nothing."""
     try:
         import inspect
-
         if "live_preview" in inspect.signature(generate).parameters:
             return {"live_preview": requested}
     except (TypeError, ValueError):

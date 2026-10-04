@@ -9763,14 +9763,17 @@ class DiffusionBackend:
                 static_skip = state.transformer_cache == TC_STATIC
                 static_chunks_run = 0
 
-                def _publish_preview(url: str, seq: int, gen = gen) -> None:
+                def _publish_preview(
+                    url: str,
+                    seq: int,
+                    gen = gen,
+                ) -> None:
                     gen.preview = url
                     gen.preview_seq = seq
 
                 previewer = None
                 if "callback_on_step_end" in call_params:
                     from .diffusion_preview import LatentPreviewer
-
                     try:
                         # The size the forward runs at (img2img / edit take it from the input image).
                         preview_w, preview_h = _compile_shape_dims(
