@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
+
 """CPU tests for layer-wise LR decay param grouping.
 
 Loads the stdlib-only module directly so no GPU / unsloth import is needed.
