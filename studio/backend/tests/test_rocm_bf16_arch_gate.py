@@ -169,3 +169,19 @@ def test_flow_trainers_nvidia_unchanged(monkeypatch, capability, expected):
     _install(monkeypatch, torch, is_rocm = False)
     assert tc.flow_bf16_trainable() is expected
     assert (tc.bf16_unsupported_reason("minimax-h3") is None) is expected
+
+
+def test_real_rocm_device_arch_is_read():
+    torch = pytest.importorskip("torch")
+    if not (getattr(torch.version, "hip", None) and torch.cuda.is_available()):
+        pytest.skip("needs a ROCm GPU")
+    from core.inference.rocm_bf16 import (
+        _device_gfx_arch,
+        gfx_arch_lacks_native_bf16,
+        rocm_bf16_supported,
+    )
+
+    arch = _device_gfx_arch(torch, 0)
+    assert arch.startswith("gfx"), arch
+    assert rocm_bf16_supported(torch, 0) is (not gfx_arch_lacks_native_bf16(arch))
+    print(f"ROCM_ARCH {arch} bf16={rocm_bf16_supported(torch, 0)}")
