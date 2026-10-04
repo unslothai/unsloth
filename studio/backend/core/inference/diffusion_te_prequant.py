@@ -82,11 +82,13 @@ def quantize_int8_convrot_weight(weight: Any, group_size: int = 256) -> tuple[An
 
     out_features, in_features = weight.shape
     if in_features % group_size:
-        raise ValueError(f"in_features {in_features} is not divisible by the ConvRot group {group_size}")
+        raise ValueError(
+            f"in_features {in_features} is not divisible by the ConvRot group {group_size}"
+        )
     h = build_convrot_hadamard(group_size, device = weight.device, dtype = torch.float32)
-    rotated = (weight.float().reshape(out_features, in_features // group_size, group_size) @ h.T).reshape(
-        out_features, in_features
-    )
+    rotated = (
+        weight.float().reshape(out_features, in_features // group_size, group_size) @ h.T
+    ).reshape(out_features, in_features)
     scale = (rotated.abs().amax(dim = 1, keepdim = True) / 127.0).clamp_min(1e-12)
     return torch.round(rotated / scale).clamp(-127, 127).to(torch.int8), scale
 
@@ -119,6 +121,7 @@ def te_prequant_mirror_path(repo_id: Optional[str], name: Optional[str]) -> Opti
         if candidate.startswith(base.rstrip(os.sep) + os.sep) and os.path.isfile(candidate):
             return candidate
     return None
+
 
 # Components the pipeline-assembly injection covers (text_encoder_4 is family-assembled separately, see
 # diffusion_hidream.py).
@@ -599,7 +602,9 @@ def load_prequant_text_encoder(
                 logger.info(
                     "diffusion.te_prequant: loaded %s int8 ConvRot weight-only checkpoint (%s)",
                     component,
-                    path if source.kind == "path" else f"{source.location}/{os.path.basename(path)}",
+                    path
+                    if source.kind == "path"
+                    else f"{source.location}/{os.path.basename(path)}",
                 )
             return encoder
         if trim and config_ties_lm_head(config):
@@ -1019,7 +1024,6 @@ def te_prequant_hub_files(
         )
         if mirrored is not None:
             import os
-
             found[component] = [(mirrored[0], os.path.getsize(mirrored[1]))]
             continue
         try:

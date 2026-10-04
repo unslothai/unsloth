@@ -72,7 +72,9 @@ def main(argv = None) -> int:
     p.add_argument("--src", default = None, help = "local dense encoder folder (skips the download)")
     p.add_argument("--out", required = True, help = "output .safetensors path")
     p.add_argument("--group", type = int, default = 256)
-    p.add_argument("--device", default = "cuda" if os.environ.get("CUDA_VISIBLE_DEVICES") != "" else "cpu")
+    p.add_argument(
+        "--device", default = "cuda" if os.environ.get("CUDA_VISIBLE_DEVICES") != "" else "cpu"
+    )
     p.add_argument("--hf-token", default = None)
     args = p.parse_args(argv)
 
@@ -92,12 +94,14 @@ def main(argv = None) -> int:
         src = Path(args.src)
     else:
         from huggingface_hub import snapshot_download
-
-        src = Path(
-            snapshot_download(
-                args.base, allow_patterns = [f"{args.component}/*"], token = args.hf_token
+        src = (
+            Path(
+                snapshot_download(
+                    args.base, allow_patterns = [f"{args.component}/*"], token = args.hf_token
+                )
             )
-        ) / args.component
+            / args.component
+        )
     config = json.loads((src / "config.json").read_text())
     index_path = src / "model.safetensors.index.json"
     if index_path.is_file():
@@ -134,7 +138,9 @@ def main(argv = None) -> int:
         "component": args.component,
         "te_class": (config.get("architectures") or [None])[0],
         "torch_dtype": "bfloat16",
-        "quant": dict(quant, weight_only = True, scale = "per_output_channel_absmax_over_127", linears = quantized),
+        "quant": dict(
+            quant, weight_only = True, scale = "per_output_channel_absmax_over_127", linears = quantized
+        ),
         "lm_head": "dropped",
         "torch_version": torch.__version__,
         "transformers_version": transformers.__version__,

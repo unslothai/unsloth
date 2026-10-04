@@ -31,7 +31,10 @@ from core.inference.diffusion_text_encoder_trim import is_trimmed  # noqa: E402
 GROUP = 256
 HIDDEN, VOCAB = 256, 64
 BASE = "Qwen/Qwen-Image-2.1"
-REPO, INT8_NAME = "unsloth/Qwen-Image-2.1-FP8", "Qwen-Image-2.1-text_encoder-INT8-ConvRot.safetensors"
+REPO, INT8_NAME = (
+    "unsloth/Qwen-Image-2.1-FP8",
+    "Qwen-Image-2.1-text_encoder-INT8-ConvRot.safetensors",
+)
 FP8_NAME = "Qwen-Image-2.1-text_encoder-FP8.safetensors"
 CUDA_BF16 = types.SimpleNamespace(device = "cuda", dtype = torch.bfloat16)
 
@@ -65,7 +68,11 @@ def _config():
             head_dim = 64,
             vocab_size = VOCAB,
             tie_word_embeddings = False,
-            rope_scaling = {"rope_type": "default", "mrope_section": [16, 8, 8], "mrope_interleaved": True},
+            rope_scaling = {
+                "rope_type": "default",
+                "mrope_section": [16, 8, 8],
+                "mrope_interleaved": True,
+            },
         ).to_dict(),
         tie_word_embeddings = False,
     )
@@ -75,7 +82,6 @@ def _config():
 
 def _encoder(seed = 0):
     from transformers import Qwen3VLForConditionalGeneration
-
     torch.manual_seed(seed)
     return Qwen3VLForConditionalGeneration(_config()).eval()
 
@@ -85,7 +91,9 @@ def _hidden(encoder, ids):
     handle = lm.norm.register_forward_hook(lambda m, a, o: a[0])
     try:
         with torch.no_grad():
-            out = encoder(input_ids = ids, attention_mask = torch.ones_like(ids), output_hidden_states = True)
+            out = encoder(
+                input_ids = ids, attention_mask = torch.ones_like(ids), output_hidden_states = True
+            )
     finally:
         handle.remove()
     return out.hidden_states
@@ -116,9 +124,15 @@ def _int8_state(encoder):
     """The builder's layout: decoder projections int8 + scale + comfy_quant, lm_head dropped, the rest dense."""
     import re
 
-    lin = re.compile(r"^model\.language_model\.layers\.\d+\.(self_attn\.[qkvo]_proj|mlp\.(gate|up|down)_proj)\.weight$")
+    lin = re.compile(
+        r"^model\.language_model\.layers\.\d+\.(self_attn\.[qkvo]_proj|mlp\.(gate|up|down)_proj)\.weight$"
+    )
     blob = torch.tensor(
-        list(json.dumps({"format": "int8_tensorwise", "convrot": True, "convrot_groupsize": GROUP}).encode()),
+        list(
+            json.dumps(
+                {"format": "int8_tensorwise", "convrot": True, "convrot_groupsize": GROUP}
+            ).encode()
+        ),
         dtype = torch.uint8,
     )
     state = {}
@@ -163,7 +177,11 @@ def int8_file(tmp_path, monkeypatch):
     return encoder, state, path
 
 
-def _load(path, scheme = "int8", trim = True):
+def _load(
+    path,
+    scheme = "int8",
+    trim = True,
+):
     return tpq.load_prequant_text_encoder(
         BASE,
         "text_encoder",
@@ -189,12 +207,19 @@ def test_int8_source_prefers_the_convrot_file_then_the_fp8_one():
     sources = tpq.te_prequant_sources_for_base(fam, BASE, te_quant_mode = "int8", target = CUDA_BF16)
     src = sources["text_encoder"]
     assert (src.kind, src.location) == ("repo", REPO)
-    assert tpq.te_candidate_filenames(src) == (INT8_NAME, FP8_NAME, "Qwen-Image-2.1-text_encoder-FP8.pt")
+    assert tpq.te_candidate_filenames(src) == (
+        INT8_NAME,
+        FP8_NAME,
+        "Qwen-Image-2.1-text_encoder-FP8.pt",
+    )
     # An explicit fp8 request never asks for the int8 file.
     fp8 = tpq.te_prequant_sources(fam, te_quant_mode = "fp8", target = CUDA_BF16)["text_encoder"]
     assert INT8_NAME not in tpq.te_candidate_filenames(fp8)
     # Families without a hosted int8 encoder resolve nothing for int8, as before.
-    assert tpq.te_prequant_sources(get_family("qwen-image"), te_quant_mode = "int8", target = CUDA_BF16) == {}
+    assert (
+        tpq.te_prequant_sources(get_family("qwen-image"), te_quant_mode = "int8", target = CUDA_BF16)
+        == {}
+    )
 
 
 def test_keeping_the_lm_head_resolves_the_fp8_file(monkeypatch):
@@ -221,7 +246,10 @@ def test_int8_file_loads_as_convrot_linears_and_matches_its_dequantized_weights(
     # Vision tower and embedding stay dense.
     assert any(isinstance(m, torch.nn.Linear) for m in encoder.model.visual.modules())
     # Plain tensors only, so Module.to() and group offloading move it like any module.
-    assert all(type(t) in (torch.Tensor, torch.nn.Parameter) for t in [*encoder.parameters(), *encoder.buffers()])
+    assert all(
+        type(t) in (torch.Tensor, torch.nn.Parameter)
+        for t in [*encoder.parameters(), *encoder.buffers()]
+    )
     ids = torch.randint(0, VOCAB, (1, 9))
     expected = _hidden(_dequantized_reference(_encoder(seed = 5), state), ids)
     got = _hidden(encoder, ids)
@@ -281,7 +309,9 @@ def test_mirror_serves_the_int8_file_before_the_hub(tmp_path, monkeypatch):
         def model_info(self, *a, **k):
             raise AssertionError("planning asked the Hub")
 
-    assert tpq.te_prequant_hub_files({"text_encoder": src}, NoApi()) == {"text_encoder": [(INT8_NAME, 7)]}
+    assert tpq.te_prequant_hub_files({"text_encoder": src}, NoApi()) == {
+        "text_encoder": [(INT8_NAME, 7)]
+    }
     # An escaping name is never served.
     assert tpq.te_prequant_mirror_path(REPO, "../x") is None
 
@@ -309,7 +339,9 @@ def test_hosted_int8_encoder_is_reported_and_never_recast(int8_file, monkeypatch
 
     _, _, path = int8_file
     encoder = _load(path)
-    monkeypatch.setattr(prec, "_cast_fp8", lambda *a, **k: pytest.fail("int8 encoder re-cast to fp8"))
+    monkeypatch.setattr(
+        prec, "_cast_fp8", lambda *a, **k: pytest.fail("int8 encoder re-cast to fp8")
+    )
     for offload in (False, True):
         out = quantize_text_encoders(
             _pipe(encoder), CUDA_BF16, mode = "int8", family = "qwen-image-2.1", offload_active = offload
@@ -338,7 +370,9 @@ def test_pipe_kwargs_loads_with_the_requested_scheme(monkeypatch):
         "te_prequant_sources_for_base",
         lambda *a, **k: {"text_encoder": tpq.TePrequantSource(kind = "repo", location = REPO)},
     )
-    monkeypatch.setattr(tpq, "load_prequant_text_encoder", lambda *a, **k: seen.append(k["scheme"]) or object())
+    monkeypatch.setattr(
+        tpq, "load_prequant_text_encoder", lambda *a, **k: seen.append(k["scheme"]) or object()
+    )
     for mode in ("int8", "fp8"):
         tpq.te_prequant_pipe_kwargs(
             get_family("qwen-image-2.1"), BASE, te_quant_mode = mode, target = CUDA_BF16, dtype = None
@@ -356,7 +390,12 @@ def test_an_unreachable_hub_still_takes_the_cached_fp8_file(tmp_path, monkeypatc
     fp8.write_bytes(b"x")
     asked: list = []
 
-    def fake_download(repo_id, filename, local_files_only = False, **_k):
+    def fake_download(
+        repo_id,
+        filename,
+        local_files_only = False,
+        **_k,
+    ):
         asked.append((filename, local_files_only))
         if filename == FP8_NAME and local_files_only:
             return str(fp8)
@@ -397,7 +436,9 @@ def test_an_int8_file_that_will_not_build_falls_back_to_the_fp8_names(monkeypatc
         )
         assert out.get("text_encoder") is expected
         # Only a present-but-unbuildable int8 file earns a second (fp8) attempt; a 404 already fell through.
-        assert calls == ([(INT8_NAME, "int8"), (FP8_NAME, "fp8")] if held else [(INT8_NAME, "int8")])
+        assert calls == (
+            [(INT8_NAME, "int8"), (FP8_NAME, "fp8")] if held else [(INT8_NAME, "int8")]
+        )
 
 
 def test_keep_lm_head_reason_names_the_switch(monkeypatch):
@@ -407,5 +448,7 @@ def test_keep_lm_head_reason_names_the_switch(monkeypatch):
     monkeypatch.setenv(KEEP_LM_HEAD_ENV, "1")
     monkeypatch.setattr(prec, "_cast_fp8", lambda enc, tgt: None)
     monkeypatch.setattr(prec, "te_quant_supported", lambda *a: True)
-    out = quantize_text_encoders(_pipe(torch.nn.Linear(2, 2)), CUDA_BF16, mode = "int8", family = "qwen-image-2.1")
+    out = quantize_text_encoders(
+        _pipe(torch.nn.Linear(2, 2)), CUDA_BF16, mode = "int8", family = "qwen-image-2.1"
+    )
     assert out.mode == "fp8" and KEEP_LM_HEAD_ENV in out.reason

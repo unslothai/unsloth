@@ -286,7 +286,6 @@ def quantize_text_encoders(
             )
             if _family_hosts_te_int8(family):
                 from .diffusion_text_encoder_trim import KEEP_LM_HEAD_ENV, family_trims_lm_head
-
                 downgrade_reason = (
                     f"{KEEP_LM_HEAD_ENV} keeps lm_head, which the int8 ConvRot text encoder does not carry, "
                     "so fp8 was used instead"
@@ -374,7 +373,6 @@ def _hosted_te_scheme(encoder: Any) -> Optional[str]:
 def _family_hosts_te_int8(family: Optional[str]) -> bool:
     try:
         from .diffusion_te_prequant import TE_INT8_CONVROT_FILES
-
         return (family or "").strip().lower() in TE_INT8_CONVROT_FILES
     except Exception:  # noqa: BLE001
         return False
