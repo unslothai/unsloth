@@ -4539,7 +4539,6 @@ export function createOpenAIStreamAdapter(
           topP: params.topP,
           maxTokens: params.maxTokens,
           reasoningRequested,
-          supportsReasoningOff: runtime.supportsReasoningOff,
           reasoningStyle: runtime.reasoningStyle,
           reasoningEffort: runtime.reasoningEffort,
           reasoningEffortLevels: runtime.reasoningEffortLevels,

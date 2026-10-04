@@ -724,8 +724,7 @@ export function ChatProvidersSettings({
         baseUrl,
         apiType: providerType === LEGACY_CUSTOM_PROVIDER_TYPE ? apiType : undefined,
       });
-      // The id list below is all the picker keeps, so the per-model capability
-      // names the catalog carried (Ollama's "thinking") are learned here or lost.
+      // The picker keeps only ids, so per-model capabilities are learned here or lost.
       learnCatalogModelCapabilities(providerType, models);
       const registryDefaults = supportsRemoteModelCatalog(providerType)
         ? []

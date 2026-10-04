@@ -48,8 +48,6 @@ export function buildResearchInferenceRequest(input: {
   topP: number;
   maxTokens: number;
   reasoningRequested: boolean;
-  // Optional: only the reasoning_effort ladders that carry "none" set it; absent reads as no off.
-  supportsReasoningOff?: boolean;
   reasoningStyle: string;
   reasoningEffort: ReasoningEffort;
   reasoningEffortLevels: readonly ReasoningEffort[];
@@ -126,11 +124,9 @@ export function buildResearchInferenceRequest(input: {
     );
   } else if (
     input.reasoningStyle === "reasoning_effort" &&
-    input.supportsReasoningOff
+    input.external?.supportsReasoningOff
   ) {
-    // reasoning_effort has no enableThinking to carry the off, and ollama thinks
-    // when no control arrives. Same explicit off the chat path sends; gated
-    // because "none" is not in every ladder (gpt-5, gpt-5-codex).
+    // Ollama thinks when no control arrives; gated as "none" is not in every ladder (gpt-5).
     request.reasoningEffort = "none";
   }
   return request;

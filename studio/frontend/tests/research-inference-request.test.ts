@@ -7,9 +7,8 @@ import test from "node:test";
 import { buildResearchInferenceRequest } from "../src/features/chat/research-inference-request.ts";
 import { readSrc } from "./helpers/kit.ts";
 
-const clamp = (
-  effort: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max",
-) => (effort === "xhigh" ? ("high" as const) : effort);
+const clamp = (effort: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max") =>
+  effort === "xhigh" ? "high" as const : effort;
 
 test("Codex research keeps provider routing and clamps generation settings", () => {
   assert.deepEqual(
@@ -89,11 +88,7 @@ test("top_p at Off is left out of a connection's research request but kept local
   });
   assert.equal("topP" in external, false);
   assert.equal(external.temperature, 0.2);
-  assert.equal(
-    buildResearchInferenceRequest({ ...base, checkpoint: "local/model.gguf" })
-      .topP,
-    1,
-  );
+  assert.equal(buildResearchInferenceRequest({ ...base, checkpoint: "local/model.gguf" }).topP, 1);
 });
 
 test("the report ceiling the connection resolved reaches the run config", () => {
@@ -169,10 +164,7 @@ test("an explicit connection override is still sent", () => {
 });
 
 test("the request says whether the saved cap is what grounded its ceiling", () => {
-  const build = (
-    maxOutputTokensFromSavedCap: boolean,
-    maxOutputTokens: number | null,
-  ) =>
+  const build = (maxOutputTokensFromSavedCap: boolean, maxOutputTokens: number | null) =>
     buildResearchInferenceRequest({
       checkpoint: "external::p1::some-self-hosted-model",
       external: {
@@ -256,7 +248,6 @@ test("an external run records whether the model reasons and can turn it off", ()
   );
 });
 
-// #9649 reappearing in synthesis: ollama thinks when no control arrives.
 test("Thinking off reaches research synthesis as an explicit none", () => {
   assert.deepEqual(
     buildResearchInferenceRequest({
@@ -268,12 +259,12 @@ test("Thinking off reaches research synthesis as an explicit none", () => {
         maxOutputTokens: null,
         maxOutputTokensFromSavedCap: false,
         maxOutputTokensPublished: null,
+        supportsReasoningOff: true,
       },
       temperature: 0.2,
       topP: 0.9,
       maxTokens: 4096,
       reasoningRequested: false,
-      supportsReasoningOff: true,
       reasoningStyle: "reasoning_effort",
       reasoningEffort: "medium",
       reasoningEffortLevels: ["low", "medium", "high", "max"],
@@ -284,6 +275,7 @@ test("Thinking off reaches research synthesis as an explicit none", () => {
       providerId: "provider",
       providerType: "ollama",
       externalModel: "gpt-oss:20b",
+      supportsReasoningOff: true,
       temperature: 0.2,
       topP: 0.9,
       maxTokens: 4096,
@@ -292,7 +284,6 @@ test("Thinking off reaches research synthesis as an explicit none", () => {
   );
 });
 
-// gpt-5 has no "none": its caps clear supportsReasoningOff, so nothing is sent.
 test("a provider without an off value sends no effort when reasoning is off", () => {
   assert.deepEqual(
     buildResearchInferenceRequest({
@@ -304,12 +295,12 @@ test("a provider without an off value sends no effort when reasoning is off", ()
         maxOutputTokens: null,
         maxOutputTokensFromSavedCap: false,
         maxOutputTokensPublished: null,
+        supportsReasoningOff: false,
       },
       temperature: 0.2,
       topP: 0.9,
       maxTokens: 4096,
       reasoningRequested: false,
-      supportsReasoningOff: false,
       reasoningStyle: "reasoning_effort",
       reasoningEffort: "medium",
       reasoningEffortLevels: ["low", "medium", "high"],
@@ -320,6 +311,7 @@ test("a provider without an off value sends no effort when reasoning is off", ()
       providerId: "provider",
       providerType: "openai",
       externalModel: "gpt-5",
+      supportsReasoningOff: false,
       temperature: 0.2,
       topP: 0.9,
       maxTokens: 4096,

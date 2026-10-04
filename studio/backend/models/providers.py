@@ -164,11 +164,7 @@ class ProviderModelInfo(BaseModel):
     owned_by: Optional[str] = Field(None, description = "Model owner/organization")
     capabilities: Optional[list[str]] = Field(
         None,
-        description = (
-            "Capability names the provider advertises for this model "
-            "(Ollama /api/tags: thinking, tools, vision, ...). None when the "
-            "provider does not describe capabilities per model."
-        ),
+        description = "Per-model capability names (Ollama /api/tags: thinking, tools, vision, ...)",
     )
 
 

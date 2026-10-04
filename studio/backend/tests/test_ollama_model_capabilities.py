@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Ollama advertises reasoning per model, not per connection.
-
-``/api/tags`` reports a ``capabilities`` list per model that names ``thinking``
-for the ones that can reason. ``/v1/models`` answers first on a populated host
-and carries no such field, so the native catalog has to be consulted for its
-capabilities even when the OpenAI-compatible listing already succeeded — that is
-what lets the chat UI key its thinking controls on the selected model instead of
-asking the user to flag the whole connection.
-"""
+"""Ollama /api/tags capabilities layered onto /v1/models (#9649)."""
 
 import asyncio
 
@@ -25,7 +17,6 @@ TAGS = {
     "models": [
         {"name": "qwen3:8b", "capabilities": ["completion", "tools", "thinking"]},
         {"name": "llama3.2:3b", "capabilities": ["completion", "tools"]},
-        # Older Ollama builds report no capabilities at all.
         {"name": "vicuna:7b"},
     ]
 }
@@ -95,7 +86,6 @@ def test_a_populated_v1_catalog_still_gets_capabilities(monkeypatch):
     models, seen = _list_models(monkeypatch, v1_payload = V1_CATALOG)
     assert any(url.endswith("/api/tags") for url in seen), seen
     by_id = {m["id"]: m for m in models}
-    # /v1/models stays the id source, so its own fields survive.
     assert by_id["qwen3:8b"]["owned_by"] == "library"
     assert "thinking" in by_id["qwen3:8b"]["capabilities"]
     assert "thinking" not in by_id["llama3.2:3b"]["capabilities"]

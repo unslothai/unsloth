@@ -7017,9 +7017,7 @@ class ExternalProviderClient:
                 if isinstance(raw_models, list):
                     models = [model for model in raw_models if isinstance(model, dict)]
             if self.provider_type == "ollama":
-                # /v1/models carries no capability field, so Ollama's native
-                # catalog is the only source for the per-model "thinking" flag
-                # the chat UI keys its reasoning controls on.
+                # Only /api/tags carries the per-model "thinking" capability.
                 if not models:
                     models = await self._list_ollama_native_models()
                 else:
@@ -7075,19 +7073,14 @@ class ExternalProviderClient:
 
     @staticmethod
     def _ollama_capability_names(entry: dict[str, Any]) -> Optional[list[str]]:
-        """Capability names an /api/tags row advertises ("thinking", "tools",
-        "vision", ...). None means the row said nothing, which older Ollama
-        builds do for every model — distinct from an explicit empty list.
-        """
+        # None = the row is silent (older Ollama), not "no capabilities".
         raw = entry.get("capabilities")
         if not isinstance(raw, list):
             return None
         return [name for name in raw if isinstance(name, str) and name]
 
     async def _list_ollama_native_models(self) -> list[dict[str, Any]]:
-        """Ollama's native catalog: the fallback when /v1/models returns an
-        empty or null catalog, and the only source of per-model capabilities.
-        """
+        """Ollama's /api/tags catalog, with per-model capabilities when reported."""
         root = self.base_url.removesuffix("/v1").rstrip("/")
         response = await _client().get(
             f"{root}/api/tags",
@@ -7116,13 +7109,7 @@ class ExternalProviderClient:
         return models
 
     async def _with_ollama_capabilities(self, models: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Layer /api/tags capabilities onto an OpenAI-compat /v1/models catalog.
-
-        /v1/models answers first for a populated Ollama host but carries no
-        capability field, so without this the "thinking" flag is only ever
-        visible on the empty-catalog fallback path. A reachable /v1/models must
-        keep working when /api/tags does not, so a failure here is not fatal.
-        """
+        # A working /v1/models must still list when /api/tags fails.
         try:
             native = await self._list_ollama_native_models()
         except (httpx.HTTPError, ValueError) as exc:

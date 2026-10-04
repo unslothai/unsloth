@@ -1003,12 +1003,7 @@ async def list_provider_model_capabilities(
 
 
 def _model_capability_names(model: dict) -> Optional[list[str]]:
-    """Capability names off a catalog row, or None when it declares none.
-
-    Only Ollama's native catalog carries these today, but any OpenAI-compatible
-    server is free to put its own shape under the same key, so an unexpected one
-    is dropped rather than failing the whole listing with a validation error.
-    """
+    # Another server's shape under this key must not fail the listing's validation.
     values = model.get("capabilities")
     if not isinstance(values, list):
         return None

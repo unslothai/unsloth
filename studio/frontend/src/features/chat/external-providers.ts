@@ -115,8 +115,7 @@ export function isPromptCacheTtl(value: unknown): value is "5m" | "1h" {
 }
 
 // Provider types exposing the connection-level "reasoning model" toggle. vLLM's OpenAI-compat
-// endpoint does not advertise this per model. Ollama is not here: its native /api/tags names a
-// "thinking" capability per model, a truer answer than one checkbox on a connection serving both.
+// endpoint does not advertise this per model; Ollama's /api/tags does.
 const REASONING_TOGGLE_PROVIDER_TYPES = new Set(["vllm"]);
 
 export function supportsProviderReasoningToggle(
@@ -172,11 +171,9 @@ export function providerTypeSupportsVision(
 }
 
 
-/** What one model on a provider is known to support. */
 export type ProviderModelCapability = {
   vision?: boolean;
   studio_tools?: boolean;
-  /** Ollama's /api/tags is the only catalog that reports this per model. */
   thinking?: boolean;
 };
 
@@ -319,13 +316,8 @@ export function providerModelSupportsStudioTools(
   return typeof providerDefault === "boolean" ? providerDefault : null;
 }
 
-/** Whether this exact model reasons, per the provider's own catalog.
- *
- * No wildcard fallback: "thinking" is a property of the model, and Ollama hosts
- * a mix of thinking and non-thinking ones under one connection. `null` means the
- * catalog never described the model — a hand-typed id, or a host too old to
- * report capabilities — and callers must not read that as a yes.
- */
+/** No wildcard fallback: one Ollama host serves thinking and non-thinking models. `null` = never
+ *  described (hand-typed id, older Ollama), which is not a yes. */
 export function providerModelSupportsThinking(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
@@ -337,14 +329,8 @@ export function providerModelSupportsThinking(
   return typeof value === "boolean" ? value : null;
 }
 
-/** Fold a freshly fetched model catalog's capability names into the stored map.
- *
- * The catalog is the truth for the rows it describes, so a model that has
- * stopped reporting "thinking" (a re-pulled tag, a downgraded host) is written
- * back as false instead of latching on its last yes. Rows carrying no capability
- * list are left untouched: an Ollama too old to report them is saying nothing,
- * which is not the same as saying no.
- */
+/** Rows with a capability list overwrite `thinking` (a re-pulled tag can lose it); rows without
+ *  one are left alone. */
 export function learnCatalogModelCapabilities(
   providerType: string,
   models: readonly { id: string; capabilities?: string[] | null }[],
