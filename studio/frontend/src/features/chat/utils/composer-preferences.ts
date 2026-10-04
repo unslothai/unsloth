@@ -17,6 +17,84 @@ export type ComposerKeyEvent = {
   keyCode?: number;
 };
 
+// WebKit fires compositionend before the committing keydown (keyCode 229, WebKit bug 165004); ProseMirror's window.
+const IME_COMMIT_KEYDOWN_MS = 500;
+
+/** False only for a plain IME-marked Enter outside any composition, e.g. idle macOS Pinyin (#12137). */
+export function imeKeydownBlocksComposerSubmit(
+  event: ComposerKeyEvent,
+  imeSessionOpen: boolean,
+  msSinceCompositionEnd: number,
+): boolean {
+  return (
+    event.key !== "Enter" ||
+    event.metaKey ||
+    event.ctrlKey ||
+    imeSessionOpen ||
+    msSinceCompositionEnd < IME_COMMIT_KEYDOWN_MS
+  );
+}
+
+export type InputImeState = { open: boolean; endedAt: number };
+
+export function newInputImeState(): InputImeState {
+  return { open: false, endedAt: -Infinity };
+}
+
+export function resetInputIme(ime: InputImeState) {
+  ime.open = false;
+  ime.endedAt = -Infinity;
+}
+
+export function inputImeHandlers(ime: InputImeState) {
+  // compositionend can go missing (#5546); a focus change always ends the composition.
+  const reset = () => resetInputIme(ime);
+  return {
+    onFocus: reset,
+    onBlur: reset,
+    onCompositionStart: () => {
+      ime.open = true;
+    },
+    onCompositionEnd: (event: { timeStamp: number }) => {
+      ime.open = false;
+      ime.endedAt = event.timeStamp;
+    },
+  };
+}
+
+/** True when the keydown belongs to an IME; idle macOS Pinyin Enter (229, #12137) passes. */
+export function imeOwnsInputKeydown(
+  event: ComposerKeyEvent & {
+    timeStamp: number;
+    nativeEvent: { isComposing?: boolean };
+  },
+  ime: InputImeState,
+): boolean {
+  const msSinceCompositionEnd = event.timeStamp - ime.endedAt;
+  ime.endedAt = -Infinity;
+  if (event.nativeEvent.isComposing) return true;
+  if (event.keyCode !== 229) {
+    // Candidate-confirming Enter can arrive as keyCode 13 mid-composition; swallow it once.
+    const confirmsCandidate = ime.open && event.key === "Enter";
+    ime.open = false;
+    return confirmsCandidate;
+  }
+  return imeKeydownBlocksComposerSubmit(event, ime.open, msSinceCompositionEnd);
+}
+
+export function composerKeyEventForImeSubmit(
+  event: ComposerKeyEvent,
+): ComposerKeyEvent {
+  return {
+    key: event.key,
+    metaKey: event.metaKey,
+    ctrlKey: event.ctrlKey,
+    shiftKey: event.shiftKey,
+    altKey: event.altKey,
+    repeat: event.repeat,
+  };
+}
+
 /** The rule in force for `draft`. */
 export function effectiveSendShortcut(
   shortcut: ComposerSendShortcut,

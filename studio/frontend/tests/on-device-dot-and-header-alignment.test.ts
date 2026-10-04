@@ -308,7 +308,7 @@ test("chat and the Hub answer the fit question with one formula", () => {
   );
   assert.match(
     INSPECTOR,
-    /showMemoryBar=\{!runsOnMediaRuntime\}\n\s*mediaRuntime=\{runsOnMediaRuntime\}/,
+    /showMemoryBar=\{!runsOnMediaRuntime\}\n\s*mediaPage=\{mediaPage\}/,
   );
   // Parent rows and the fit gate take the same rule as the quant rows under them, or a media row
   // reads as fitting while everything inside it reads as oom.
@@ -613,19 +613,19 @@ test("every select-model surface shares that one badge", () => {
 });
 
 test("list header actions end where a hovered row's action does", () => {
-  // A row action is `right-0 pr-1.5` inside a pill the list inset by
-  // unrailedRowPadding: 12px in normally, 11px under the desktop titlebar.
+  // A row action is `right-0 pr-0.75` inside a pill the list inset by
+  // unrailedRowPadding: 9px in normally, 8px under the desktop titlebar.
   assert.match(
     CSS,
-    /\.sidebar-row-action \{\n\t\t@apply absolute top-0 bottom-0 right-0[^;]*pr-1\.5/,
+    /\.sidebar-row-action \{\n\t\t@apply absolute top-0 bottom-0 right-0[^;]*pr-0\.75 /,
   );
   const label = CSS.slice(CSS.indexOf(".sidebar-sticky-label {"));
   // pl: unrailedRowPadding + a row's pl-3, so labels start where row content does.
-  assert.match(label.slice(0, 500), /pl-\[18px\] pr-3 /);
+  assert.match(label.slice(0, 500), /pl-\[18px\] pr-\[9px\] /);
 
   assert.ok(
     CSS.includes(
-      ".sidebar-sticky-label.sidebar-sticky-label-desktop {\n\t\tpadding-left: 17px;\n\t\tpadding-right: 11px;",
+      ".sidebar-sticky-label.sidebar-sticky-label-desktop {\n\t\tpadding-left: 17px;\n\t\tpadding-right: 8px;",
     ),
   );
 

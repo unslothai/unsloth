@@ -7,7 +7,7 @@ import test from "node:test";
 import { DOMParser } from "@xmldom/xmldom";
 import { strToU8, zipSync } from "fflate";
 
-import { formatNumber, readPptx, readXlsx } from "../src/components/file-viewer/office.ts";
+import { formatNumber, readDelimited, readPptx, readXlsx } from "../src/components/file-viewer/office.ts";
 
 {
   const proto = Object.getPrototypeOf(new DOMParser().parseFromString("<a/>", "application/xml").documentElement);
@@ -213,4 +213,61 @@ test("xlsx: out-of-range date values do not prevent reading the workbook", () =>
     },
   ));
   assert.deepEqual(sheet?.rows[0]?.map((cell) => cell?.text), ["1700000000", "Mar-23", "42"]);
+});
+
+test("pptx: maxSlides stops reading after that many slides", () => {
+  const P = "http://schemas.openxmlformats.org/presentationml/2006/main";
+  const A = "http://schemas.openxmlformats.org/drawingml/2006/main";
+  const ids = [1, 2, 3].map((n) => `<p:sldId id="${255 + n}" r:id="rId${n}"/>`).join("");
+  const links = [1, 2, 3].map((n) => `<Relationship Id="rId${n}" Type="${REL}/slide" Target="slides/slide${n}.xml"/>`).join("");
+  const slide = (t: string) =>
+    strToU8(`<p:sld xmlns:p="${P}" xmlns:a="${A}"><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>${t}</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>`);
+  const zip = zipSync({
+    "ppt/presentation.xml": strToU8(`<p:presentation xmlns:p="${P}" xmlns:r="${REL}"><p:sldIdLst>${ids}</p:sldIdLst></p:presentation>`),
+    "ppt/_rels/presentation.xml.rels": rels(links),
+    "ppt/slides/slide1.xml": slide("one"),
+    "ppt/slides/slide2.xml": slide("two"),
+    "ppt/slides/slide3.xml": slide("three"),
+  });
+  assert.equal(readPptx(zip).slides.length, 3);
+  const first = readPptx(zip, { maxSlides: 1 });
+  assert.equal(first.slides.length, 1);
+  assert.equal(first.truncated, true);
+  assert.equal(first.slides[0]!.boxes[0]?.paragraphs?.[0]?.text, "one");
+});
+
+test("sheet limits cap rows, columns and parsed sheets", () => {
+  const cells = (r: number) => Array.from({ length: 5 }, (_, c) => `<c r="${"ABCDE"[c]}${r}"><v>${r}</v></c>`).join("");
+  const rows = Array.from({ length: 10 }, (_, i) => `<row r="${i + 1}">${cells(i + 1)}</row>`).join("");
+  const sheet = strToU8(`<worksheet xmlns="${MAIN}"><sheetData>${rows}</sheetData></worksheet>`);
+  const zip = zipSync({
+    "xl/workbook.xml": strToU8(
+      `<workbook xmlns="${MAIN}" xmlns:r="${REL}"><sheets><sheet name="One" sheetId="1" r:id="rId1"/><sheet name="Two" sheetId="2" r:id="rId2"/></sheets></workbook>`,
+    ),
+    "xl/_rels/workbook.xml.rels": rels(
+      `<Relationship Id="rId1" Type="${REL}/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="${REL}/worksheet" Target="worksheets/sheet2.xml"/>`,
+    ),
+    "xl/worksheets/sheet1.xml": sheet,
+    "xl/worksheets/sheet2.xml": sheet,
+  });
+  const full = readXlsx(zip);
+  assert.deepEqual([full.length, full[1]!.rows.length], [2, 10]);
+  const [first, second] = readXlsx(zip, { sheets: 1, rows: 3, columns: 2, extraNames: 1 });
+  assert.equal(readXlsx(zip, { sheets: 1, rows: 3, columns: 2, extraNames: 0 }).length, 1);
+  assert.equal(first!.rows.length, 3);
+  assert.ok(first!.rows.every((row) => row.length <= 2));
+  assert.equal(first!.truncated, true);
+  assert.deepEqual([second!.name, second!.rows.length], ["Two", 0]);
+
+  const csv = readDelimited("a,b,c\n1,2,3\n4,5,6\n7,8,9\n", ",", "x.csv", { sheets: 1, rows: 2, columns: 2 });
+  assert.deepEqual(csv.rows.map((row) => row.map((cell) => cell?.text)), [["a", "b"], ["1", "2"]]);
+});
+
+test("thumbnails render no nested controls: sheet tabs as labels, Word links without href", async () => {
+  const { readFileSync } = await import("node:fs");
+  const view = readFileSync(new URL("../src/components/file-viewer/office-view.tsx", import.meta.url), "utf8");
+  assert.match(view, /return thumbnail \? \(\n\s*<span key=\{index\} className=\{className\}>/);
+  assert.match(view, /sanitizeDocxHtml\(value, THUMBNAIL_DOCX_ELEMENTS, \{ links: false \}\)/);
+  assert.match(view, /attr\.name === "href" && \(!links \|\|/);
+  assert.match(view, /thumbnail=\{thumbnail\}\n\s*\/>/);
 });

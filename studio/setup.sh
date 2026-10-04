@@ -96,6 +96,21 @@ _is_verbose() {
     [ "${UNSLOTH_VERBOSE:-0}" = "1" ]
 }
 
+_filter_download_output() {
+    if _is_verbose; then
+        cat
+        return
+    fi
+    local line
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            "Downloading "*": "*"% ("*") at "*"/s"|"Downloading "*": "*" downloaded at "*"/s")
+                printf '%s\n' "$line"
+                ;;
+        esac
+    done
+}
+
 verbose_substep() {
     if _is_verbose; then
         substep "$1"
@@ -553,7 +568,7 @@ _CAPTURE_LOG=""
 
 _npm_mirror_retry() {
     [ "$(_mirror_failed_host "${_CAPTURE_LOG:-}" npm)" = npm ] && _mirror_take npm || return 1
-    run_quiet_no_exit "$1" npm install --no-fund --no-audit --loglevel=error --registry "${_MT_PAIRS#*=}" || return
+    run_quiet_no_exit "$1" npm "${_NPM_INSTALL:-install}" --no-fund --no-audit --loglevel=error --registry "${_MT_PAIRS#*=}" || return
     export "$_MT_PAIRS"
     _NPM_REGISTRY_ARGS=(--registry "$UNSLOTH_NPM_REGISTRY")
 }
@@ -2216,8 +2231,8 @@ elif [ "$NODE_SOURCE" = bundled ]; then
     _NODE_LOG="$(mktemp)"
     set +e
     for _node_try in default mirror; do
-        if _is_verbose; then
-            "$_NODE_PY" "$SCRIPT_DIR/install_node_prebuilt.py" --install-dir "$NODE_DIR" 2>&1 | tee -a "$_NODE_LOG"
+        if _is_verbose || [ "${UNSLOTH_TAURI_UPDATE:-0}" = "1" ] || [ "${UNSLOTH_TAURI_UPDATE:-0}" = "true" ]; then
+            "$_NODE_PY" "$SCRIPT_DIR/install_node_prebuilt.py" --install-dir "$NODE_DIR" 2>&1 | tee -a "$_NODE_LOG" | _filter_download_output
             _NODE_STATUS=${PIPESTATUS[0]}
         else
             "$_NODE_PY" "$SCRIPT_DIR/install_node_prebuilt.py" --install-dir "$NODE_DIR" >>"$_NODE_LOG" 2>&1
@@ -2273,6 +2288,8 @@ else
 # isolated prefix); on a system Node we install nothing global. Build falls back to npm.
 if command -v bun &>/dev/null; then
     substep "bun already installed ($(bun --version))"
+elif [ -f "$SCRIPT_DIR/frontend/package-lock.json" ]; then
+    verbose_substep "skipping global bun install (package-lock.json installs with npm ci)"
 elif [ "$NODE_SOURCE" = bundled ]; then
     substep "installing bun..."
     # --allow-scripts=bun: npm >=11.16 gates install scripts and bun's
@@ -2306,7 +2323,7 @@ _restore_gitignores() {
 }
 trap _restore_gitignores EXIT
 
-# Use bun for install if available (faster), fall back to npm.
+# package-lock.json always wins (`npm ci`); bun only without one, since bun.lock is gitignored.
 # Build always uses npm (Node runtime -- avoids bun runtime issues on some platforms).
 # NOTE: We intentionally avoid run_quiet for the bun install attempt because
 # run_quiet calls exit on failure, which would kill the script before the npm
@@ -2320,7 +2337,7 @@ trap _restore_gitignores EXIT
 _try_bun_install() {
     local _log _exit_code=0
     _log=$(mktemp)
-    bun install "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" >"$_log" 2>&1 || _exit_code=$?
+    bun install --frozen-lockfile "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" >"$_log" 2>&1 || _exit_code=$?
 
     # bun may create .exe shims on Windows (Git Bash / MSYS2) instead of plain scripts
     if [ "$_exit_code" -eq 0 ] \
@@ -2347,7 +2364,9 @@ _try_bun_install() {
 _FRONTEND_INSTALL_LOG=$(mktemp)
 _CAPTURE_LOG="$_FRONTEND_INSTALL_LOG"
 _bun_install_ok=false
-if command -v bun &>/dev/null; then
+_NPM_INSTALL=install
+[ -f package-lock.json ] && _NPM_INSTALL=ci
+if [ ! -f package-lock.json ] && [ -f bun.lock ] && command -v bun &>/dev/null; then
     substep "using bun for package install (faster)"
     if _try_bun_install; then
         _bun_install_ok=true
@@ -2366,8 +2385,8 @@ if [ "$_bun_install_ok" = false ]; then
     # returns non-zero on failure) so the hint branch is reachable; it also captures
     # the exact exit code. Mirrors the `|| BUILD_OK=false` idiom used below.
     _npm_install_rc=0
-    run_quiet_no_exit "npm install" npm install --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _npm_install_rc=$?
-    if [ "$_npm_install_rc" -ne 0 ] && _npm_mirror_retry "npm install"; then
+    run_quiet_no_exit "npm $_NPM_INSTALL" npm "$_NPM_INSTALL" --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _npm_install_rc=$?
+    if [ "$_npm_install_rc" -ne 0 ] && _npm_mirror_retry "npm $_NPM_INSTALL"; then
         _npm_install_rc=0
     fi
     if [ "$_npm_install_rc" -ne 0 ]; then
@@ -2408,8 +2427,10 @@ if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev
     # `|| _oxc_install_rc=$?` keeps this off `set -e`'s exit path so the hint branch
     # below is reachable; it also captures the exact exit code.
     _oxc_install_rc=0
-    run_quiet_no_exit "npm install (oxc validator runtime)" npm install --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _oxc_install_rc=$?
-    if [ "$_oxc_install_rc" -ne 0 ] && _npm_mirror_retry "npm install (oxc validator runtime)"; then
+    _NPM_INSTALL=install
+    [ -f package-lock.json ] && _NPM_INSTALL=ci
+    run_quiet_no_exit "npm $_NPM_INSTALL (oxc validator runtime)" npm "$_NPM_INSTALL" --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _oxc_install_rc=$?
+    if [ "$_oxc_install_rc" -ne 0 ] && _npm_mirror_retry "npm $_NPM_INSTALL (oxc validator runtime)"; then
         _oxc_install_rc=0
     fi
     _CAPTURE_LOG=""
@@ -4826,8 +4847,8 @@ else
     esac
     _PREBUILT_LOG="$(mktemp)"
     set +e
-    if _is_verbose; then
-        "${_PREBUILT_CMD[@]}" 2>&1 | tee "$_PREBUILT_LOG"
+    if _is_verbose || [ "${UNSLOTH_TAURI_UPDATE:-0}" = "1" ] || [ "${UNSLOTH_TAURI_UPDATE:-0}" = "true" ]; then
+        "${_PREBUILT_CMD[@]}" 2>&1 | tee "$_PREBUILT_LOG" | _filter_download_output
         _PREBUILT_STATUS=${PIPESTATUS[0]}
     else
         "${_PREBUILT_CMD[@]}" >"$_PREBUILT_LOG" 2>&1
@@ -5611,8 +5632,8 @@ else
     fi
     _WHISPER_LOG="$(mktemp)"
     set +e
-    if _is_verbose; then
-        "${_WHISPER_CMD[@]}" 2>&1 | tee "$_WHISPER_LOG"
+    if _is_verbose || [ "${UNSLOTH_TAURI_UPDATE:-0}" = "1" ] || [ "${UNSLOTH_TAURI_UPDATE:-0}" = "true" ]; then
+        "${_WHISPER_CMD[@]}" 2>&1 | tee "$_WHISPER_LOG" | _filter_download_output
         _WHISPER_STATUS=${PIPESTATUS[0]}
     else
         "${_WHISPER_CMD[@]}" >"$_WHISPER_LOG" 2>&1
@@ -5682,6 +5703,54 @@ PY
         fi
         rm -f "$_WHISPER_LOG"
     fi
+fi
+
+# ── audio.cpp (speech, music and dictation engine) ──
+# audio.cpp vendors its own patched ggml, so its bundles are self-contained and do not pair with
+# the llama install. Fail-open like whisper.cpp: every other audio engine keeps working.
+AUDIO_CPP_DIR="$UNSLOTH_HOME/audio.cpp"
+if [ -n "${AUDIOCPP_SERVER_PATH:-}" ] || [ -n "${UNSLOTH_AUDIO_CPP_PATH:-}" ]; then
+    verbose_substep "audio.cpp: using a user-configured binary/dir; skipping managed install"
+elif [ "${UNSLOTH_SKIP_AUDIO_CPP_INSTALL:-0}" = "1" ]; then
+    verbose_substep "audio.cpp: install skipped (UNSLOTH_SKIP_AUDIO_CPP_INSTALL=1)"
+elif [ -f "$SCRIPT_DIR/install_audio_cpp_prebuilt.py" ]; then
+    if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ]; then
+        _assert_studio_owned_or_absent "$AUDIO_CPP_DIR" "audio.cpp install" "$_RUNTIME_ROOT_IS_CUSTOM"
+    fi
+    _AUDIO_CPP_CMD=(python "$SCRIPT_DIR/install_audio_cpp_prebuilt.py" --install-dir "$AUDIO_CPP_DIR")
+    # A host whose GPU is invisible at install time (a Docker image build) names its bundle here.
+    if [ -n "${UNSLOTH_AUDIO_CPP_ACCELERATOR:-}" ]; then
+        _AUDIO_CPP_CMD+=(--accelerator "$UNSLOTH_AUDIO_CPP_ACCELERATOR")
+    fi
+    _AUDIO_CPP_LOG="$(mktemp)"
+    set +e
+    if _is_verbose || [ "${UNSLOTH_TAURI_UPDATE:-0}" = "1" ] || [ "${UNSLOTH_TAURI_UPDATE:-0}" = "true" ]; then
+        "${_AUDIO_CPP_CMD[@]}" 2>&1 | tee "$_AUDIO_CPP_LOG" | _filter_download_output
+        _AUDIO_CPP_STATUS=${PIPESTATUS[0]}
+    else
+        "${_AUDIO_CPP_CMD[@]}" >"$_AUDIO_CPP_LOG" 2>&1
+        _AUDIO_CPP_STATUS=$?
+    fi
+    set -e
+    if [ "$_AUDIO_CPP_STATUS" -eq 0 ]; then
+        if grep -Fq "already matches" "$_AUDIO_CPP_LOG"; then
+            step "audio.cpp" "prebuilt up to date"
+        elif grep -Fq "keeping the existing complete install" "$_AUDIO_CPP_LOG"; then
+            # The release lookup could not answer and the install on disk is complete; "prebuilt
+            # installed" would name a release nothing fetched. whisper.cpp's wording.
+            step "audio.cpp" "update unavailable, existing prebuilt kept" "$C_WARN"
+        else
+            step "audio.cpp" "prebuilt installed"
+        fi
+        if [ "$_RUNTIME_ROOT_IS_CUSTOM" = true ] && [ -d "$AUDIO_CPP_DIR" ]; then
+            : > "$AUDIO_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
+        fi
+    elif [ "$_AUDIO_CPP_STATUS" -eq 3 ]; then
+        step "audio.cpp" "install busy; keeping existing runtime" "$C_WARN"
+    else
+        step "audio.cpp" "prebuilt install failed; audio.cpp models are unavailable; retry setup or inspect verbose output; other audio engines remain available" "$C_WARN"
+    fi
+    rm -f "$_AUDIO_CPP_LOG"
 fi
 
 # Named in the footer: every path to a lost GPU exits 0, and a mid-log line is what #9255's reporters scrolled past.

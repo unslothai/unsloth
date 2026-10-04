@@ -491,3 +491,54 @@ def test_an_alias_for_the_resident_weights_is_not_listed_as_unloaded(monkeypatch
     monkeypatch.setattr(resolver, "local_servable_model", lambda info: (True, ("Q4_K_M",)))
     ids = {m["id"]: m for m in asyncio.run(inf._openai_catalog_objects())}
     assert ids["publisher/Qwen3"]["loaded"] is True
+
+
+def test_embeddings_monitor_row_names_the_loaded_model_not_the_client_alias(monkeypatch):
+    from types import SimpleNamespace
+
+    import httpx
+    from core.inference.api_monitor import ApiMonitor
+
+    class Request:
+        state = SimpleNamespace()
+        url = SimpleNamespace(path = "/v1/embeddings")
+        method = "POST"
+
+        async def json(self):
+            return {"input": "hello", "model": "UNSLOTH-bge-m3"}
+
+        async def is_disconnected(self):
+            return False
+
+    class Client:
+        async def aclose(self):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            return httpx.Response(200, json = {"data": [{"embedding": [0.1]}], "usage": {}})
+
+    llama = SimpleNamespace(
+        is_loaded = True,
+        is_embedding_gguf = True,
+        base_url = "http://llama.test",
+        context_length = 4096,
+        model_identifier = "/cache/models--org--bge-m3/snapshots/abc",
+        hf_variant = "q8_0",
+        _openai_advertised_id = "bge-m3",
+    )
+    monitor = ApiMonitor(max_entries = 3)
+    monkeypatch.setattr(inf, "api_monitor", monitor)
+    monkeypatch.setattr(inf, "_cancelable_nonstreaming_client", Client)
+    monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: llama)
+    monkeypatch.setattr(inf, "_should_validate_before_switch", lambda: False)
+    monkeypatch.setattr(inf, "_names_studio_embedder", lambda _model: None)
+
+    async def _passthrough(request, _subject, **_kwargs):
+        return await request.json()
+
+    monkeypatch.setattr(inf, "_auto_switch_from_request_body", _passthrough)
+
+    response = asyncio.run(inf.openai_embeddings(Request(), current_subject = "test"))
+    assert response.status_code == 200
+    [entry] = monitor.snapshot()
+    assert entry["model"] == "bge-m3:q8_0"

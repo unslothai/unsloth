@@ -44,6 +44,7 @@ import { sameGpuSelection } from "@/hooks/gpu-selection";
 import { resolveBatchSizeSeed } from "./resolve-batch-size-seed";
 import { resolveChatTemplateSeed } from "./resolve-chat-template-seed";
 import { resolveCtxPinSeed } from "./resolve-ctx-pin-seed";
+import { resolveLlamaExtraArgsSeed } from "./resolve-llama-extra-args-seed";
 import { shouldSeedVisionSwitch } from "./resolve-vision-switch-seed";
 
 type LocalReasoningEffort = Extract<ReasoningEffort, "low" | "medium" | "high">;
@@ -157,18 +158,26 @@ export function applyActiveModelStatusToStore(
 
   // Only reached with a model active, so this is the one place both the status poll and the
   // readopt path can publish residency from. Without it a load looks unloaded for up to 10s.
-  useChatRuntimeStore.setState({ residentCheckpoint: checkpointId });
+  useChatRuntimeStore.setState({
+    residentCheckpoint: checkpointId,
+    loadedEngine: status.engine ?? "auto",
+    loadedEnginePrecision: status.engine_precision ?? "auto",
+    loadedEngineParallelism: status.engine_parallelism ?? "tensor",
+  });
   // Before the settings panel can open on it, which reads only the repo id.
   adoptCachedRepoConfig(checkpointId, status.gguf_variant ?? null);
 
   const store = useChatRuntimeStore.getState();
+  if ((store.params.engine ?? "auto") !== (status.engine ?? "auto") || (store.params.enginePrecision ?? "auto") !== (status.engine_precision ?? "auto") || (store.params.engineParallelism ?? "tensor") !== (status.engine_parallelism ?? "tensor")) {
+    store.setParams({ ...store.params, engine: status.engine ?? "auto", enginePrecision: status.engine_precision ?? "auto", engineParallelism: status.engine_parallelism ?? "tensor" });
+  }
   const previousCheckpoint =
     options.previousCheckpoint ?? store.params.checkpoint;
 
   if (status.inference) {
     store.setParams(
       mergeBackendRecommendedInference({
-        current: store.params,
+        current: { ...store.params, engine: status.engine ?? "auto", enginePrecision: status.engine_precision ?? "auto", engineParallelism: status.engine_parallelism ?? "tensor" },
         response: status,
         modelId: checkpointId,
         presetSource: store.activePresetSource,
@@ -468,7 +477,9 @@ export function applyActiveModelStatusToStore(
     specDrafterKind: status.spec_drafter_kind ?? null,
     // Controls follow the server while clean; loaded baselines always describe
     // the settled resident, including same-model reloads from another client.
+    // Never from a custom load: its echo is the INI's tuning.
     ...(seedLoadParams &&
+      status.requested_llama_cpp_config?.mode !== "custom" &&
       (status.speculative_type !== undefined ||
         prevState.loadedSpeculativeType === null ||
         hydratingExistingModel) && {
@@ -480,6 +491,7 @@ export function applyActiveModelStatusToStore(
         }),
       }),
     ...(seedLoadParams &&
+      status.requested_llama_cpp_config?.mode !== "custom" &&
       status.spec_draft_n_max !== undefined && {
         loadedSpecDraftNMax: status.spec_draft_n_max ?? null,
         ...((hydratingExistingModel ||
@@ -488,6 +500,7 @@ export function applyActiveModelStatusToStore(
         }),
       }),
     ...(seedLoadParams &&
+      status.requested_llama_cpp_config?.mode !== "custom" &&
       status.cache_type_kv !== undefined && {
         loadedKvCacheDtype: status.cache_type_kv,
         ...((prevState.loadedKvCacheDtype === null ||
@@ -621,11 +634,17 @@ export function applyActiveModelStatusToStore(
     // status, not just the first: another client can reload the SAME model with different
     // arguments, and a pinned baseline would resurrect arguments that are not running.
     // seedLoadParams still guards it, so a mid-switch poll cannot overwrite performLoad.
-    ...(status.requested_llama_extra_args !== undefined &&
-      (status.is_gguf ?? true) &&
-      seedLoadParams && {
-        loadedLlamaExtraArgs: status.requested_llama_extra_args ?? null,
-      }),
+    ...(status.requested_llama_cpp_config !== undefined && seedLoadParams ? {
+      llamaCppConfig: status.requested_llama_cpp_config ?? undefined,
+      loadedLlamaCppConfig: status.requested_llama_cpp_config ?? null,
+      llamaCppConfigSummary: status.llama_cpp_config_summary ?? null,
+    } : {}),
+    ...resolveLlamaExtraArgsSeed({
+      incoming: status.requested_llama_extra_args,
+      isGguf: status.is_gguf ?? true,
+      hydratingExistingModel,
+      seedLoadParams,
+    }),
     // one rule per batch pair, see resolveBatchSizeSeed
     ...("loaded" in nBatchSeed && { loadedNBatch: nBatchSeed.loaded ?? null }),
     ...("value" in nBatchSeed && { nBatch: nBatchSeed.value ?? null }),
@@ -671,8 +690,9 @@ export function applyActiveModelStatusToStore(
       }),
     // Re-seed on first hydration, model/variant changes, or a same-model backend
     // placement change. placementAndContextFields preserves dirty local edits in the last
-    // case while advancing their loaded baselines.
+    // case while advancing their loaded baselines. Never from a custom load (see above).
     ...(seedLoadParams &&
+      status.requested_llama_cpp_config?.mode !== "custom" &&
       (prevState.loadedGpuMemoryMode === null ||
         hydratingExistingModel ||
         placementOrContextChanged) &&
