@@ -685,8 +685,6 @@ jobs:
         id: sdks-chat
         if: ${{ !cancelled() && steps.assert_llama.outcome == 'success' }}
         timeout-minutes: 5
-        # Sampling parameters use extra_body below, so exercise Anthropic 1.x while
-        # retaining a deliberate major boundary.
         run: pip install 'openai>=1.50,<4' 'anthropic>=1,<2'
 
       - name: Reset auth + boot Unsloth (API-only)
@@ -1332,8 +1330,6 @@ jobs:
         id: sdks-vision
         if: ${{ !cancelled() && steps.assert_llama.outcome == 'success' }}
         timeout-minutes: 5
-        # Sampling parameters use extra_body below, so exercise Anthropic 1.x while
-        # retaining a deliberate major boundary.
         run: pip install 'openai>=1.50,<4' 'anthropic>=1,<2'
 
       - name: Reset auth + boot Unsloth (API-only)
@@ -1602,8 +1598,7 @@ jobs:
               a_msg = anthropic.messages.create(
                   model       = "default",
                   max_tokens  = 80,
-                  # Anthropic 1.x removed sampling parameters from the typed signature;
-                  # extra_body preserves the same request JSON.
+                  # anthropic 1.x rejects a top-level temperature; extra_body sends the same JSON.
                   extra_body  = {"temperature": TEMP, "seed": SEED},
                   messages    = [{
                       "role": "user",

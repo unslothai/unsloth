@@ -42,7 +42,7 @@ ANTHROPIC_PROBES = (
 # Asserting the boundary rather than "some upper bound exists" is what makes this mean anything: `openai>=1.50,<999`
 # contains a `<` and admits every major it is meant to keep out.
 GUARDED = {
-    # Sampling parameters moved to extra_body for v1; guard the next major now.
+    # v1 probes pass sampling parameters through extra_body.
     "anthropic": (2,),
     # 3.3.1 resolves today and the probes pass, so the bound sits above it, not at <2.
     "openai": (4,),
