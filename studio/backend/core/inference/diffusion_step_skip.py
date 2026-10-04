@@ -55,14 +55,17 @@ def static_schedule(
     head: float = DEFAULT_HEAD,
     tail: float = DEFAULT_TAIL,
     every: int = DEFAULT_EVERY,
+    min_steps: int = STATIC_MIN_STEPS,
 ) -> tuple:
-    """Per step, compute (True) or skip (False); empty (compute all) below ``STATIC_MIN_STEPS``."""
+    """Per step, compute (True) or skip (False); empty (compute all) below ``min_steps`` (never below
+    ``STATIC_MIN_STEPS``)."""
     try:
         n = int(steps)  # type: ignore[arg-type]
         every = int(every)
+        floor = max(STATIC_MIN_STEPS, int(min_steps))
     except (TypeError, ValueError):
         return ()
-    if n < STATIC_MIN_STEPS or every < 2:
+    if n < floor or every < 2:
         return ()
     first = max(MIN_HEAD_STEPS, round(n * float(head)))
     last = max(1, round(n * float(tail)))
@@ -109,6 +112,22 @@ def static_skip_settings(env: Optional[dict] = None, logger: Any = None) -> dict
     return out
 
 
+def auto_static_settings(
+    plan: dict,
+    env: Optional[dict] = None,
+    logger: Any = None,
+) -> dict:
+    """Knobs for an AUTO static skip: the family's measured ``every`` and ``min_steps`` over the defaults; an
+    explicit ``UNSLOTH_STATIC_SKIP_*`` value still wins (benchmarking)."""
+    env = os.environ if env is None else env
+    out = static_skip_settings(env, logger)
+    if env.get(ENV_EVERY) in (None, "") and plan.get("every"):
+        out["every"] = int(plan["every"])
+    out["min_steps"] = int(plan.get("min_steps") or STATIC_MIN_STEPS)
+    out["auto"] = True
+    return out
+
+
 def _call_signature(args: tuple, kwargs: dict) -> tuple:
     """Reuse key: latent shape, prefix-KV mode (an ``extract`` call returns a longer sequence), container."""
     hidden = kwargs.get("hidden_states", args[0] if args else None)
@@ -141,6 +160,10 @@ def _split_output(out: Any) -> tuple:
             return out[0], lambda v: (v,)
         if len(out) == 1 and type(out[0]) is list and _same_shape_tensors(out[0]):
             return _torch().stack(out[0]), lambda v: (list(v.unbind(0)),)
+        # Joint predictions (MiniMax-H3: video velocity, audio velocity): one tensor per stream, any shapes, each
+        # reused / extrapolated on its own. A non-tensor member (FLUX.2 klein KV's cache object) still declines.
+        if len(out) >= 2 and all(_is_tensor(v) for v in out):
+            return _Joint(out), lambda v: tuple(v.parts)
         return None, None
     keys = getattr(out, "keys", None)
     if callable(keys) and callable(getattr(out, "to_tuple", None)):
@@ -160,6 +183,25 @@ def _split_output(out: Any) -> tuple:
             return _torch().stack(value), lambda v: cls(**{name: list(v.unbind(0))})
         return None, None
     return None, None
+
+
+class _Joint:
+    """Several predictions from one call, stored and extrapolated stream by stream."""
+
+    __slots__ = ("parts",)
+
+    def __init__(self, parts: Any) -> None:
+        self.parts = tuple(parts)
+
+    @property
+    def shape(self) -> tuple:
+        return tuple(tuple(p.shape) for p in self.parts)
+
+    def detach(self) -> "_Joint":
+        return _Joint(p.detach() for p in self.parts)
+
+    def clone(self) -> "_Joint":
+        return _Joint(p.clone() for p in self.parts)
 
 
 _TIMESTEP_NAMES = ("timestep", "timesteps", "t")
@@ -205,6 +247,8 @@ def _timestep_of(
 
 
 def _extrapolate(v0: Any, t0: Any, v1: Any, t1: Any, t: Any) -> Any:
+    if isinstance(v1, _Joint):
+        return _Joint(_extrapolate(a, t0, b, t1, t) for a, b in zip(v0.parts, v1.parts))
     torch = _torch()
     device = v1.device
     t0, t1, t = t0.to(device), t1.to(device), t.to(device)
@@ -237,6 +281,8 @@ class StaticStepSkip:
         head: float = DEFAULT_HEAD,
         tail: float = DEFAULT_TAIL,
         every: int = DEFAULT_EVERY,
+        min_steps: int = STATIC_MIN_STEPS,
+        auto: bool = False,
         logger: Any = None,
     ) -> None:
         # First, so nothing update_wrapper copies over can shadow the state set below.
@@ -256,6 +302,9 @@ class StaticStepSkip:
         self.inner = inner
         self.mode = mode if mode in SKIP_MODES else DEFAULT_MODE
         self.head, self.tail, self.every = float(head), float(tail), int(every)
+        self.min_steps = int(min_steps)
+        # Installed by the auto policy (status says "auto"), not by an explicit request.
+        self.auto = bool(auto)
         self.logger = logger
         self.armed = True
         self.context: Any = None
@@ -279,7 +328,13 @@ class StaticStepSkip:
         """Start a forward of ``steps`` denoise steps (None: compute all); ``keep_stats`` sums across chunks.
         ``owner`` (arming only) rebinds the counters; a new owner never inherits the previous one's."""
         self.plan = (
-            static_schedule(steps, head = self.head, tail = self.tail, every = self.every)
+            static_schedule(
+                steps,
+                head = self.head,
+                tail = self.tail,
+                every = self.every,
+                min_steps = self.min_steps,
+            )
             if self.armed
             else ()
         )
@@ -316,6 +371,8 @@ class StaticStepSkip:
             "head": self.head,
             "tail": self.tail,
             "every": self.every,
+            "min_steps": self.min_steps,
+            "auto": self.auto,
             "armed": bool(self.armed),
             "planned_skips": self.planned_skips,
             "stats": dict(self.stats if self.stats["calls"] else self.last_stats),
@@ -466,6 +523,8 @@ def install_static_step_skip(
         existing.head = float(knobs.get("head", existing.head))
         existing.tail = float(knobs.get("tail", existing.tail))
         existing.every = int(knobs.get("every", existing.every))
+        existing.min_steps = int(knobs.get("min_steps", STATIC_MIN_STEPS))
+        existing.auto = bool(knobs.get("auto", False))
         existing.reset(None)
         return TC_STATIC
     try:
@@ -477,6 +536,8 @@ def install_static_step_skip(
             head = knobs.get("head", DEFAULT_HEAD),
             tail = knobs.get("tail", DEFAULT_TAIL),
             every = knobs.get("every", DEFAULT_EVERY),
+            min_steps = knobs.get("min_steps", STATIC_MIN_STEPS),
+            auto = knobs.get("auto", False),
             logger = logger,
         )
         prior_ctx = slots.get("cache_context")
@@ -493,11 +554,13 @@ def install_static_step_skip(
         return None
     if logger is not None:
         logger.info(
-            "diffusion.step_skip: static engaged (mode=%s head=%s tail=%s every=%s)",
+            "diffusion.step_skip: static engaged (mode=%s head=%s tail=%s every=%s min_steps=%s%s)",
             skip.mode,
             skip.head,
             skip.tail,
             skip.every,
+            skip.min_steps,
+            ", auto" if skip.auto else "",
         )
     return TC_STATIC
 
@@ -521,6 +584,12 @@ def mark_step_end(pipe: Any) -> None:
     skip = _find(pipe)
     if skip is not None:
         skip.step_end()
+
+
+def static_skip_is_auto(pipe: Any) -> bool:
+    """Whether the installed layer came from the auto policy (measured per workflow) rather than an explicit ask."""
+    skip = _find(pipe)
+    return bool(skip is not None and skip.auto)
 
 
 def static_skip_stats(pipe: Any) -> Optional[dict]:
