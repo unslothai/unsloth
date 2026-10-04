@@ -1908,7 +1908,7 @@ class PinnedModelsPayload(BaseModel):
 
 
 class PinnedModelsResponse(BaseModel):
-    # None means this account never stored that list, which tells a browser to seed it.
+    # None = never stored, so the browser seeds it.
     pinned: Optional[list[str]] = None
     connected: Optional[list[str]] = None
 
@@ -1929,8 +1929,7 @@ def _pinned_models_response() -> PinnedModelsResponse:
 
 @_account_settings_router.get("/pinned-models", response_model = PinnedModelsResponse)
 def get_pinned_models(current_subject: str = Depends(get_current_subject)) -> PinnedModelsResponse:
-    """The model picker's pins, kept in this account's studio.db so an account switch, which clears the
-    browser's copy, does not lose them."""
+    """Per-account picker pins: an account switch clears the browser copy."""
     return _pinned_models_response()
 
 

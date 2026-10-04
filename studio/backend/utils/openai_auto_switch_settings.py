@@ -766,8 +766,7 @@ def _fold_posix_path_variant(value: str) -> str:
 
 
 def get_model_overrides() -> dict[str, dict]:
-    """Per-model launch configs keyed by model id (see normalize_model_override). The acting account's own:
-    every account has its own studio.db, and a managed account's saves land there."""
+    """Per-model launch configs keyed by model id (see normalize_model_override), from the acting account's studio.db."""
     raw = _cached_setting(MODEL_OVERRIDES_SETTING_KEY, None, current_account())
     if not isinstance(raw, dict):
         return {}
@@ -853,7 +852,7 @@ def resolve_override_for_load(
     alias_id: Optional[str] = None,
     variant: Optional[str] = None,
 ) -> tuple[Optional[str], dict]:
-    """``(key, override)`` the load would apply, or ``(None, {})``. Resolution belongs here rather than in a client: the folding rules are Python's (casefold is not toLowerCase), and an ambiguous fold deliberately matches nothing. A managed account that never configured the model gets the owner's settings for it, as it did before it could save its own: same machine, same hardware."""
+    """``(key, override)`` the load would apply, or ``(None, {})``. Resolution belongs here rather than in a client: the folding rules are Python's (casefold is not toLowerCase), and an ambiguous fold deliberately matches nothing. A managed account without its own row falls back to the owner's (same machine)."""
     for key in override_lookup_candidates(load_id, alias_id, variant):
         override = get_model_override(key)
         if override:

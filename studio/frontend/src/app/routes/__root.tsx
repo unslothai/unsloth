@@ -468,8 +468,7 @@ function RootLayout() {
   }, [documentTitle]);
 
   // Settings predating the server override map live only here, so an API load would use
-  // app defaults. Backfill once, after auth. Pins come back from the account's server copy,
-  // since an account switch clears them here.
+  // app defaults. Backfill once, after auth; pins are restored from the account's server copy.
   useEffect(() => {
     if (isAuthFlowRoute) {
       return;
