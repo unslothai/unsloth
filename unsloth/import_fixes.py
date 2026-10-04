@@ -10327,9 +10327,8 @@ def fix_peft_stale_torchao_import_error():
     return patched
 
 
-# Matches the spellings a torchao removal produces: the class name, the module that used to define
-# it, and the whole ``torchao.dtypes`` package (deleted on torchao main after 0.18). Only these, so
-# a torchao that is BROKEN rather than newer still raises.
+# The spellings a torchao removal produces (class, its old module, the whole ``torchao.dtypes`` package on main).
+# Only these, so a BROKEN torchao still raises.
 _PEFT_TORCHAO_MISSING_TENSOR_SUBCLASS = re.compile(
     r"linear_?activation_?quantized_?tensor|affine_?quantized_?tensor"
     r"|no module named '?torchao\.dtypes'?(?![.\w])",

@@ -247,9 +247,7 @@ def convert(
         pass
     source["converter_torch"] = torch.__version__
 
-    # One reader for both kinds, exactly as Studio reads them: weights_only under the constructor allowlist (text
-    # encoders are plain tensors and need none of it). On torchao >= 0.18 the v1 int8 weights come back rebuilt
-    # as Int8Tensor; the wrapper records what each v1 weight held first.
+    # Read exactly as Studio does (allowlisted weights_only); on torchao >= 0.18 v1 int8 comes back as Int8Tensor.
     facts: list = []
     restore = _record_v1_facts(facts)
     try:

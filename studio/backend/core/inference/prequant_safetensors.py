@@ -614,23 +614,18 @@ def load_prequant_safetensors(
         for key in [k for k in tensors if k.startswith(UNSLOTH_ROOT_PREFIX)]
     }
 
-    # int8 / fp8 are rebuilt from the plain tensors and the header by Unsloth's own reader, for the
-    # class THIS torchao uses (v1 int8 on <= 0.17 for an artifact converted from a v1 pickle), so the
-    # load does not depend on torchao's deserializer accepting another release's kwargs. Anything it
-    # does not recognise (nvfp4, mxfp8) returns None and goes through torchao below, as before.
+    # Unsloth's own int8 / fp8 rebuild, independent of torchao's deserializer accepting another release's kwargs;
+    # None (nvfp4, mxfp8, ...) falls through to torchao below.
     from .prequant_native import native_rebuild_enabled, native_unflatten
 
     state_dict = native_unflatten(tensors, raw, path = path) if native_rebuild_enabled() else None
     reader = "native" if state_dict is not None else "torchao"
     if state_dict is None:
-        # A newer torchao can record a field an older one's constructor does not take, which is how a
-        # published int8 checkpoint stopped loading. Dropped here when it is inert; see the helper.
+        # A newer torchao's field an older constructor lacks (how a published int8 file broke): dropped if inert.
         raw = _header_without_unconstructible_fields(unflatten, tensors, raw, path = path)
 
-        # torchao reads its OWN keys out of the same header; ours are namespaced and simply ignored. The second
-        # element is what it could NOT account for: a subclass missing one of its parts (a truncated or hand-edited
-        # file) is skipped there rather than raised, which would reach load_state_dict as a bare missing-key error
-        # saying nothing about the artifact. Name it here instead.
+        # The second element is what torchao could not account for (truncated / hand-edited file): named here, not left
+        # to surface as a bare missing-key error in load_state_dict.
         rebuilt = unflatten(tensors, raw)
         state_dict = _first(rebuilt)
         leftover = rebuilt[1] if isinstance(rebuilt, tuple) and len(rebuilt) > 1 else None

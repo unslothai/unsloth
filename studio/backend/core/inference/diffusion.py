@@ -6424,8 +6424,6 @@ class DiffusionBackend:
                                         )
                                     else:
                                         # The plan was priced on the seed landing, so re-plan at bf16 without it.
-                                        # Named in the status too: the dense path's reason would otherwise only
-                                        # say "dense fast path".
                                         from utils.native_path_leases import redact_native_paths
 
                                         from .diffusion_prequant import last_prequant_failure

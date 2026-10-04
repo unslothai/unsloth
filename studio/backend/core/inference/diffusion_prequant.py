@@ -433,10 +433,8 @@ def local_prequant_path_ready(path: str) -> bool:
     return os.path.isfile(os.path.expanduser(path))
 
 
-# An operator-side local copy of the hosted repos, checked BEFORE the Hub: ``<root>/<owner>/<repo>/<filename>``
-# (``os.pathsep`` separates several roots). Lets a host serve converted artifacts (the safetensors siblings of
-# the published pickles, preferred over the pickle they replace) or run offline without touching the Hub cache.
-# Names come from the family tables, never from a request, and anything that would leave the root is ignored.
+# Operator-side mirror checked BEFORE the Hub: ``<root>/<owner>/<repo>/<filename>``, roots split by ``os.pathsep``.
+# Names come from the family tables, never a request; anything leaving the root is ignored.
 PREQUANT_MIRROR_ENV = "UNSLOTH_DIFFUSION_PREQUANT_MIRROR"
 
 
@@ -1506,8 +1504,7 @@ def _resolve_checkpoint_path(
             names = readable or names
         if not names:
             return None
-        # The operator's mirror answers before the Hub is asked for ANY name: a Hub copy of an earlier name
-        # would otherwise be downloaded and the mirror never used.
+        # Mirror first for EVERY name: else a Hub copy of an earlier name is downloaded and the mirror never used.
         mirrored = _first_mirrored(
             source.location, names, lambda n: restricted_prequant_load_supported(scheme, n)
         )
