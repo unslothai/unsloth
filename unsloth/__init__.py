@@ -340,10 +340,20 @@ if _IS_MLX:
     TextPreprocessor = _raw_text.TextPreprocessor
     del _raw_text, _raw_text_spec, _raw_text_path, _Path
 
+    from . import llmman as _llmman
+
+    def _mlx_from_pretrained(*args, **kwargs):
+        # FastMLXModel bypasses models/loader.py, so resolve oci:// here too.
+        if args:
+            args = (_llmman.maybe_resolve(args[0])[0], *args[1:])
+        elif "model_name" in kwargs:
+            kwargs["model_name"] = _llmman.maybe_resolve(kwargs["model_name"])[0]
+        return FastMLXModel.from_pretrained(*args, **kwargs)
+
     class FastLanguageModel:
         @staticmethod
         def from_pretrained(*args, **kwargs):
-            return FastMLXModel.from_pretrained(*args, **kwargs)
+            return _mlx_from_pretrained(*args, **kwargs)
 
         @staticmethod
         def get_peft_model(*args, **kwargs):
@@ -357,7 +367,7 @@ if _IS_MLX:
         @staticmethod
         def from_pretrained(*args, **kwargs):
             kwargs.setdefault("text_only", False)
-            return FastMLXModel.from_pretrained(*args, **kwargs)
+            return _mlx_from_pretrained(*args, **kwargs)
 
         @staticmethod
         def for_training(*args, **kwargs):
