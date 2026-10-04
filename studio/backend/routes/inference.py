@@ -20741,6 +20741,8 @@ async def _generate_tts_wav(
             ),
             repetition_penalty = payload.repetition_penalty,
             cancel_event = _audio_cancel,
+            # Unset keeps the backend's fixed default, so the same text still yields the same audio.
+            **({} if payload.seed is None else {"seed": payload.seed}),
         )
     else:
         backend = await asyncio.to_thread(get_inference_backend)
