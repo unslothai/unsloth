@@ -8458,7 +8458,6 @@ class TestApiMonitorProviderAndCompletionStreams:
     )
     def test_non_streaming_proxy_disconnect_returns_499(self, monkeypatch, route, path, body):
         import routes.inference as inf_mod
-
         async def _run():
             class Request:
                 state = SimpleNamespace()
@@ -9267,7 +9266,6 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_non_streaming_task_cancel_propagates(self, monkeypatch):
         import routes.inference as inf_mod
-
         async def _run():
             client = HangingCancelableClient()
             monitor, monitor_id = _install_monitor(monkeypatch)
