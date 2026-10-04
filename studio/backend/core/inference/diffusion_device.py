@@ -147,6 +147,85 @@ def install_decoder_sync(
     return True
 
 
+VAE_BF16_DECODE_ENV = "UNSLOTH_VIDEO_VAE_BF16_DECODE"
+# RDNA3 / RDNA3.5 / RDNA4: bf16 WMMA. Measured on gfx1151 (Strix Halo); RDNA2 and older have no bf16 matrix path.
+_ROCM_BF16_DECODE_ARCH_PREFIXES = ("gfx11", "gfx12")
+
+
+def _rocm_bf16_decode_arch(torch: Any, target: DiffusionDeviceTarget) -> Optional[str]:
+    try:
+        index = target.ordinal if target.ordinal is not None else torch.cuda.current_device()
+        arch = str(getattr(torch.cuda.get_device_properties(index), "gcnArchName", "") or "")
+    except Exception:  # noqa: BLE001 -- unreadable arch: keep fp32
+        return None
+    return arch if arch.startswith(_ROCM_BF16_DECODE_ARCH_PREFIXES) else None
+
+
+def _as_float32(value: Any, torch: Any) -> Any:
+    if isinstance(value, torch.Tensor):
+        return value.float() if value.is_floating_point() else value
+    if isinstance(value, tuple):
+        return tuple(_as_float32(v, torch) for v in value)
+    if isinstance(value, list):
+        return [_as_float32(v, torch) for v in value]
+    sample = getattr(value, "sample", None)
+    if isinstance(sample, torch.Tensor):
+        value.sample = _as_float32(sample, torch)
+    return value
+
+
+def install_rocm_vae_bf16_decode(
+    pipe: Any,
+    target: DiffusionDeviceTarget,
+    *,
+    logger: Any = None,
+) -> bool:
+    """Decode an fp32-pinned video VAE (Wan) under bf16 autocast on ROCm RDNA3+ cards.
+
+    The weights stay fp32 exactly as loaded (the reason they are pinned: truncating the fp32 checkpoint to bf16 at
+    load and widening it later is lossy). Only the decode's convolutions run in bf16, per op, the way ComfyUI decodes
+    the Wan VAE on these cards (its working dtypes are bf16 first). In fp32, MIOpen runs Wan's 3D convolutions as
+    im2col plus a small-tile fp32 GEMM with no matrix cores: on a gfx1151 a 1280x704x21 clip spent about 385 s there,
+    against about 43 s for ComfyUI's whole non-denoise time. The output is widened back to fp32 so every consumer
+    sees what it sees today.
+
+    ROCm gfx11 / gfx12 only by default; NVIDIA and every other device keep the fp32 decode. UNSLOTH_VIDEO_VAE_BF16_DECODE
+    = 0 turns it off, 1 also allows it on any CUDA device with bf16."""
+    gate = os.environ.get(VAE_BF16_DECODE_ENV, "auto").strip().lower()
+    if gate in ("0", "false", "off", "no") or target.device != "cuda":
+        return False
+    vae = getattr(pipe, "vae", None)
+    decode = getattr(vae, "decode", None)
+    if not callable(decode) or getattr(decode, "_unsloth_bf16_decode", False):
+        return False
+    import torch
+
+    if getattr(vae, "dtype", None) is not torch.float32:
+        return False
+    if gate in ("1", "true", "on", "yes"):
+        if not torch.cuda.is_bf16_supported():
+            return False
+        arch = "forced"
+    else:
+        if target.backend != "rocm":
+            return False
+        arch = _rocm_bf16_decode_arch(torch, target)
+        if arch is None:
+            return False
+
+    def _bf16_decode(*args: Any, **kwargs: Any) -> Any:
+        with torch.autocast(device_type = "cuda", dtype = torch.bfloat16):
+            out = decode(*args, **kwargs)
+        return _as_float32(out, torch)
+
+    _bf16_decode._unsloth_bf16_decode = True  # type: ignore[attr-defined]
+    _bf16_decode.__wrapped__ = decode  # type: ignore[attr-defined]
+    vae.decode = _bf16_decode
+    if logger is not None:
+        logger.info("video.vae_decode: bf16 autocast on %s (fp32 weights kept)", arch)
+    return True
+
+
 def _studio_device_is(studio_device: Any, device_type: Any, name: str) -> bool:
     """True if ``studio_device`` equals ``DeviceType.<name>`` (when that member exists)."""
     member = getattr(device_type, name, None)

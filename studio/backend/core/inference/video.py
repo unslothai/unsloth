@@ -82,6 +82,7 @@ from .diffusion_device import (
     diffusion_device_scope,
     force_float32_rope,
     install_decoder_sync,
+    install_rocm_vae_bf16_decode,
     pin_cuda_ordinal,
     placed_cuda_ordinal,
     resolve_diffusion_device_target,
@@ -6508,6 +6509,13 @@ class VideoBackend:
                     speed_optims += ("vae_untiled_when_fits",)
             # Wan's decode also grows within a single tile, which tiling alone cannot bound.
             install_decoder_sync(pipe, target, logger = logger)
+            # Last, so the autocast wraps whatever decode path the steps above installed. Not on SPEED_OFF.
+            if (
+                getattr(fam, "vae_force_fp32", False)
+                and effective_speed != SPEED_OFF
+                and install_rocm_vae_bf16_decode(pipe, target, logger = logger)
+            ):
+                speed_optims += ("vae_bf16_decode",)
 
             resolved = build_resolved_record(
                 {
