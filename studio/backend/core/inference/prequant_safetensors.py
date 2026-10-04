@@ -145,7 +145,10 @@ def plain_safetensors_supported() -> bool:
 
 
 def load_plain_prequant_safetensors(
-    path: str, *, device: str = "cpu", skip_names: Iterable[str] = ()
+    path: str,
+    *,
+    device: str = "cpu",
+    skip_names: Iterable[str] = (),
 ) -> dict:
     """Read a plain-tensor prequant checkpoint without torchao; refuses subclass metadata and unlisted tensors.
 

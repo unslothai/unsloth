@@ -574,7 +574,8 @@ def te_prequant_pipe_kwargs(
                 scheme = mode,
                 logger = logger,
                 local_files_only = local_files_only,
-                trim_lm_head = component == "text_encoder" and family_trims_lm_head(getattr(fam, "name", None)),
+                trim_lm_head = component == "text_encoder"
+                and family_trims_lm_head(getattr(fam, "name", None)),
             )
             if encoder is not None:
                 injected[component] = encoder
@@ -604,7 +605,6 @@ def _safetensors_te_class(path: str) -> Optional[str]:
 
 def _read_safetensors_tensor(path: str, name: str) -> Any:
     from safetensors import safe_open
-
     with safe_open(path, framework = "pt", device = "cpu") as handle:
         return handle.get_tensor(name)
 

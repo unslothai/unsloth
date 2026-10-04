@@ -50,7 +50,11 @@ def _config(tie: bool = False):
             vocab_size = VOCAB,
             tie_word_embeddings = tie,
             # transformers 4.57 reads mrope_section from rope_scaling; 5.x maps it onto rope_parameters.
-            rope_scaling = {"rope_type": "default", "mrope_section": [2, 1, 1], "mrope_interleaved": True},
+            rope_scaling = {
+                "rope_type": "default",
+                "mrope_section": [2, 1, 1],
+                "mrope_interleaved": True,
+            },
         ).to_dict(),
         tie_word_embeddings = tie,
     )
@@ -60,7 +64,6 @@ def _config(tie: bool = False):
 
 def _encoder(tie: bool = False, seed: int = 0):
     from transformers import Qwen3VLForConditionalGeneration
-
     torch.manual_seed(seed)
     return Qwen3VLForConditionalGeneration(_config(tie)).eval()
 
@@ -215,7 +218,6 @@ def test_precast_loader_skips_the_head_before_reading_it(monkeypatch, tmp_path, 
 
 def _reference_through_same_cast(encoder):
     from core.inference.diffusion_precision import _cast_fp8
-
     _cast_fp8(encoder, types.SimpleNamespace(dtype = torch.float32))
     return encoder
 
@@ -230,7 +232,9 @@ def test_pipe_kwargs_asks_the_loader_to_trim_only_for_hidden_state_families(monk
         lambda *a, **k: {"text_encoder": tpq.TePrequantSource(kind = "repo", location = "x/y")},
     )
     monkeypatch.setattr(
-        tpq, "load_prequant_text_encoder", lambda *a, **k: seen.append(k.get("trim_lm_head")) or object()
+        tpq,
+        "load_prequant_text_encoder",
+        lambda *a, **k: seen.append(k.get("trim_lm_head")) or object(),
     )
     for name in ("qwen-image-2.1", "qwen-image"):
         tpq.te_prequant_pipe_kwargs(
@@ -259,7 +263,7 @@ def test_plain_reader_skip_names_never_reads_the_tensor(tmp_path, monkeypatch):
     path = str(tmp_path / "e.safetensors")
     save_file({"a.weight": torch.ones(2), "lm_head.weight": torch.ones(3)}, path, metadata = metadata)
     assert set(ps.load_plain_prequant_safetensors(path)["state_dict"]) == set(names)
-    assert set(ps.load_plain_prequant_safetensors(path, skip_names = ["lm_head.weight"])["state_dict"]) == {
-        "a.weight"
-    }
+    assert set(
+        ps.load_plain_prequant_safetensors(path, skip_names = ["lm_head.weight"])["state_dict"]
+    ) == {"a.weight"}
     assert trim_mod.LM_HEAD_KEY == "lm_head.weight"

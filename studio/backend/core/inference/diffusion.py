@@ -7064,7 +7064,9 @@ class DiffusionBackend:
                     # weight is never cast, moved or multiplied. A pre-cast encoder arrives already trimmed.
                     from .diffusion_text_encoder_trim import trim_text_encoder
 
-                    te_trim = trim_text_encoder(getattr(pipe, "text_encoder", None), family = fam.name)
+                    te_trim = trim_text_encoder(
+                        getattr(pipe, "text_encoder", None), family = fam.name
+                    )
                     if te_trim.get("lm_head") == "dropped" and te_trim.get("params"):
                         logger.info(
                             "diffusion.text_encoder: dropped unused lm_head (%.2fM params); hidden states unchanged",
