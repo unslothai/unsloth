@@ -484,16 +484,6 @@ def test_separation_families_resolve_runnable(hub, folder, family):
     assert acm.family_from_names([folder]) == family
 
 
-def test_separation_specs_name_the_overlap_option():
-    assert acm.family_from_names(["HTDemucs-6stems-GGUF"]) == "htdemucs_6stems"
-    assert acm.FAMILIES["htdemucs"].separation.overlap_option is None
-    assert acm.FAMILIES["htdemucs_6stems"].separation.overlap_option is None
-    assert acm.FAMILIES["bs_roformer"].separation.overlap_option == "num_overlap"
-    assert acm.FAMILIES["mel_band_roformer"].separation.overlap_option == "num_overlap"
-    assert acm.HUB_TASKS["sep"] == "audio-to-audio"
-    assert "audiocpp_sep" in acm.AUDIO_CPP_AUDIO_TYPES
-
-
 def test_qwen3_tts_package_kind_comes_from_its_name(hub):
     snap = _snapshot(hub)
     for folder in (

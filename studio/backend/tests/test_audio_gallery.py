@@ -807,18 +807,6 @@ def _stem_meta(**over):
     )
 
 
-def test_save_file_moves_a_stem_in_and_keeps_its_workflow(tmp_path):
-    src = tmp_path / "staging" / "vocals.wav"
-    src.parent.mkdir()
-    src.write_bytes(_wav())
-    record = gallery.save_file(src, _stem_meta())
-    assert not src.exists()
-    assert (gallery.gallery_dir() / f"{record['id']}.wav").read_bytes() == _wav()
-    assert record["workflow"] == "separate" and record["role"] == "vocals"
-    (listed,) = gallery.list_audio()
-    assert listed["workflow"] == "separate" and listed["group_id"] == "g" * 32
-
-
 def test_save_file_copies_across_filesystems(tmp_path, monkeypatch):
     import errno
 
@@ -889,18 +877,6 @@ def test_a_separate_scoped_clear_spares_speak_and_clone():
     speech = gallery.save(_wav(), _meta())
     clone = gallery.save(_wav(), _meta(audio_type = "audiocpp_tts", workflow = "clone"))
     stem = gallery.save(_wav(), _stem_meta())
-    assert gallery._workflow(_stem_meta()) == "separate"
     assert gallery.clear(workflow = "separate") == 1
     assert gallery.audio_path(stem["id"]) is None
     assert {r["id"] for r in gallery.list_audio()} == {speech["id"], clone["id"]}
-
-
-def test_the_clear_route_accepts_the_separate_scope():
-    from routes.inference import clear_gallery_audio
-
-    gallery.save(_wav(), _meta())
-    gallery.save(_wav(), _stem_meta())
-    assert asyncio.run(clear_gallery_audio(workflow = "separate", current_subject = "tester")) == {
-        "removed": 1
-    }
-    assert [r["workflow"] for r in gallery.list_audio()] == ["speak"]

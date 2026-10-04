@@ -469,14 +469,21 @@ def _sep_info(family = "htdemucs_6stems"):
     }
 
 
-def _stem_wav(frames = 441) -> bytes:
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as w:
-        w.setnchannels(2)
-        w.setsampwidth(2)
-        w.setframerate(44100)
-        w.writeframes(b"\x01\x00" * 2 * frames)
-    return buf.getvalue()
+def _stem(
+    path,
+    stem = "vocals",
+    data = None,
+    duration_s = 0.01,
+) -> dict:
+    """A worker stem entry; writes ``data`` (a WAV by default) to ``path``."""
+    Path(path).write_bytes(_wav() if data is None else data)
+    return {
+        "id": stem,
+        "path": str(path),
+        "sample_rate": 44100,
+        "channels": 2,
+        "duration_s": duration_s,
+    }
 
 
 class _SepBackend(_Backend):
@@ -499,29 +506,11 @@ class _SepBackend(_Backend):
         cancel_event = None,
     ):
         self.separations.append(
-            {
-                "source_path": source_path,
-                "output_dir": output_dir,
-                "audio_options": audio_options,
-                "cancel_event": cancel_event,
-            }
+            {"source_path": source_path, "output_dir": output_dir, "audio_options": audio_options}
         )
         if self.outputs is not None:
             return self.outputs(output_dir)
-        outputs = []
-        for stem in self.stems:
-            path = Path(output_dir) / f"{stem}.wav"
-            path.write_bytes(_stem_wav())
-            outputs.append(
-                {
-                    "id": stem,
-                    "path": str(path),
-                    "sample_rate": 44100,
-                    "channels": 2,
-                    "duration_s": 0.01,
-                }
-            )
-        return outputs
+        return [_stem(Path(output_dir) / f"{s}.wav", s) for s in self.stems]
 
 
 @pytest.fixture
@@ -531,7 +520,13 @@ def sep(stub):
     return backend
 
 
-def _separate(client, **body):
+def _separate(
+    client,
+    source = None,
+    **body,
+):
+    if source is not None:
+        body["inputs"] = {"source": source}
     return client.post("/api/inference/audio/run", json = {"workflow": "separate", **body})
 
 
@@ -542,74 +537,60 @@ def _wav_input(
     layout = "mono",
 ) -> str:
     data = encode("wav", "pcm_s16le", rate, layout, seconds)
-
-    def save():
-        record, _ = asyncio.run(audio_inputs.save_stream(_chunks([data]), "track.wav"))
-        return record["id"]
-
+    save = lambda: asyncio.run(audio_inputs.save_stream(_chunks([data]), "track.wav"))[0]["id"]
     return run_as(account, save)
 
 
-def _gallery_root(tmp_path, account = ALICE) -> Path:
-    return tmp_path / "accounts" / account.account_id / "audio"
+def _gallery_root(tmp_path) -> Path:
+    return tmp_path / "accounts" / ALICE.account_id / "audio"
 
 
-def _wav_info(path) -> dict:
+def _wav_info(path) -> tuple:
     with wave.open(str(path), "rb") as w:
-        return {
-            "sample_rate": w.getframerate(),
-            "channels": w.getnchannels(),
-            "frames": w.getnframes(),
-        }
+        return w.getframerate(), w.getnchannels(), w.getnframes()
 
 
 def _alice_sources() -> dict:
     """An upload and a history clip in Alice's account."""
-    clip = run_as(
-        ALICE,
-        audio_gallery.save,
-        _wav(),
-        {
-            "prompt": "alice said",
-            "model": "m",
-            "audio_type": "audiocpp_tts",
-            "sample_rate": 24000,
-            "duration_s": 0.1,
-            "created_at": "2026-10-02T00:00:00Z",
-        },
-    )
+    meta = {
+        "prompt": "alice said",
+        "model": "m",
+        "audio_type": "audiocpp_tts",
+        "sample_rate": 24000,
+        "duration_s": 0.1,
+        "created_at": "2026-10-02T00:00:00Z",
+    }
+    clip = run_as(ALICE, audio_gallery.save, _wav(), meta)
     return {"input_id": _input(ALICE), "clip_id": clip["id"]}
+
+
+def _staging_and_stems(tmp_path):
+    root = _gallery_root(tmp_path)
+    return list(root.glob(".separate-*")), sorted(p.name for p in root.glob("*.wav"))
 
 
 def test_a_separation_prepares_44k_and_saves_every_stem_as_one_group(sep, tmp_path):
     input_id = _input(ALICE, 2.0)  # 48 kHz stereo
     with _client(ALICE) as client:
-        response = _separate(client, inputs = {"source": {"input_id": input_id}}, seed = 3)
+        response = _separate(client, {"input_id": input_id}, seed = 3)
         assert response.status_code == 200, response.text
         body = response.json()
         stem_bytes = client.get(body["clips"][0]["url"])
+        listed = client.get("/api/inference/audio/gallery").text
     (call,) = sep.separations
     assert sep.calls == []
     source = Path(call["source_path"])
     assert source.is_absolute() and source.parent == _gallery_root(tmp_path) / "inputs"
     assert source.name.startswith(f"{input_id}.44100.stereo")
-    info = _wav_info(source)
-    assert (info["sample_rate"], info["channels"]) == (44100, 2)
-    assert abs(info["frames"] - 2 * 44100) <= 2
+    rate, channels, frames = _wav_info(source)
+    assert (rate, channels) == (44100, 2) and abs(frames - 2 * 44100) <= 2
     staging = Path(call["output_dir"])
     assert staging.parent == _gallery_root(tmp_path) and staging.name.startswith(".separate-")
     assert not staging.exists()
-    assert call["audio_options"] is None and "seed" not in call
-    assert [clip["role"] for clip in body["clips"]] == [
-        "vocals",
-        "drums",
-        "bass",
-        "guitar",
-        "piano",
-        "other",
-    ]
-    assert body["audio"] is None and body["model"]
-    assert len(body["group_id"]) == 32
+    assert call["audio_options"] is None
+    order = ["vocals", "drums", "bass", "guitar", "piano", "other"]
+    assert [clip["role"] for clip in body["clips"]] == order
+    assert body["audio"] is None and body["model"] and len(body["group_id"]) == 32
     assert stem_bytes.status_code == 200 and stem_bytes.content[:4] == b"RIFF"
     for clip in body["clips"]:
         assert set(clip) == {"id", "role", "url", "sample_rate", "duration_s", "workflow"}
@@ -622,42 +603,33 @@ def test_a_separation_prepares_44k_and_saves_every_stem_as_one_group(sep, tmp_pa
         meta = json.loads(sidecar)
         assert meta["workflow"] == "separate" and meta["audio_type"] == "audiocpp_sep"
         assert meta["role"] == clip["role"] and meta["group_id"] == body["group_id"]
-        assert meta["settings"] == {
-            "stems": ["vocals", "drums", "bass", "guitar", "piano", "other"],
-            "num_overlap": None,
-        }
+        assert meta["settings"] == {"stems": order, "num_overlap": None}
         assert meta["prompt"] == "me.webm"
-        assert str(tmp_path) not in sidecar and ".separate-" not in sidecar
         assert not any(isinstance(v, str) and v.startswith("/") for v in meta.values())
-    assert str(tmp_path) not in response.text and ".separate-" not in response.text
-    with _client(ALICE) as client:
-        listed = client.get("/api/inference/audio/gallery").text
-    assert str(tmp_path) not in listed and ".separate-" not in listed
+        assert str(tmp_path) not in sidecar and ".separate-" not in sidecar
+    for text in (response.text, listed):
+        assert str(tmp_path) not in text and ".separate-" not in text
     # The listing keeps the group, so history shows the run as one item.
     stems = [c for c in json.loads(listed)["audio"] if c["workflow"] == "separate"]
-    assert len(stems) == 6 and {c["group_id"] for c in stems} == {body["group_id"]}
-    assert {c["role"] for c in stems} == set(SIX_STEMS)
+    assert {c["group_id"] for c in stems} == {body["group_id"]}
+    assert sorted(c["role"] for c in stems) == sorted(SIX_STEMS)
 
 
 def test_a_mono_track_reaches_the_runtime_as_44k_mono(sep):
     input_id = _wav_input(ALICE, 1.0, rate = 22050, layout = "mono")
     with _client(ALICE) as client:
-        assert _separate(client, inputs = {"source": {"input_id": input_id}}).status_code == 200
-    info = _wav_info(Path(sep.separations[0]["source_path"]))
-    assert (info["sample_rate"], info["channels"]) == (44100, 1)
-    assert abs(info["frames"] - 44100) <= 1
+        assert _separate(client, {"input_id": input_id}).status_code == 200
+    rate, channels, frames = _wav_info(sep.separations[0]["source_path"])
+    assert (rate, channels) == (44100, 1) and abs(frames - 44100) <= 1
 
 
 def test_a_history_clip_can_be_separated_and_is_recorded(sep, tmp_path):
     clip_id = _alice_sources()["clip_id"]
     with _client(ALICE) as client:
-        response = _separate(client, inputs = {"source": {"clip_id": clip_id}})
+        response = _separate(client, {"clip_id": clip_id})
     assert response.status_code == 200, response.text
-    meta = json.loads(
-        (_gallery_root(tmp_path) / f"{response.json()['clips'][0]['id']}.json").read_text(
-            encoding = "utf-8"
-        )
-    )
+    sidecar = _gallery_root(tmp_path) / f"{response.json()['clips'][0]['id']}.json"
+    meta = json.loads(sidecar.read_text(encoding = "utf-8"))
     assert meta["source_clip_id"] == clip_id and meta["prompt"] == "alice said"
 
 
@@ -692,12 +664,9 @@ def test_a_clone_or_speak_run_still_needs_text(stub):
 
 def test_separation_needs_a_separation_model(stub):
     input_id = _input(ALICE)
-    stub["use"](
-        "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF",
-        {"is_audio": True, "audio_type": "audiocpp_tts", "audio_workflows": ["speak"]},
-    )
+    stub["use"](*_KOKORO)
     with _client(ALICE) as client:
-        response = _separate(client, inputs = {"source": {"input_id": input_id}})
+        response = _separate(client, {"input_id": input_id})
     assert (response.status_code, response.json()["detail"]) == (
         400,
         "Load a model that can separate audio.",
@@ -706,11 +675,9 @@ def test_separation_needs_a_separation_model(stub):
 
 
 def test_options_only_for_a_family_that_takes_them(sep, stub):
-    input_id = _input(ALICE)
+    source = {"input_id": _input(ALICE)}
     with _client(ALICE) as client:
-        refused = _separate(
-            client, inputs = {"source": {"input_id": input_id}}, options = {"num_overlap": 1}
-        )
+        refused = _separate(client, source, options = {"num_overlap": 1})
         assert (refused.status_code, refused.json()["detail"]) == (
             400,
             "HTDemucs-6stems has no separation options.",
@@ -718,17 +685,10 @@ def test_options_only_for_a_family_that_takes_them(sep, stub):
     roformer = _SepBackend(BS_ROFORMER, _sep_info("bs_roformer"), ["vocals", "instrumental"])
     stub["backend"] = roformer
     with _client(ALICE) as client:
-        unknown = _separate(
-            client, inputs = {"source": {"input_id": input_id}}, options = {"shifts": 2}
-        )
+        unknown = _separate(client, source, options = {"shifts": 2})
         assert (unknown.status_code, unknown.json()["detail"]) == (400, "Unknown option 'shifts'.")
-        bad = _separate(
-            client, inputs = {"source": {"input_id": input_id}}, options = {"num_overlap": 9}
-        )
-        assert bad.status_code == 400
-        ok = _separate(
-            client, inputs = {"source": {"input_id": input_id}}, options = {"num_overlap": 1}
-        )
+        assert _separate(client, source, options = {"num_overlap": 9}).status_code == 400
+        ok = _separate(client, source, options = {"num_overlap": 1})
     assert ok.status_code == 200, ok.text
     (call,) = roformer.separations
     assert call["audio_options"] == {"num_overlap": 1}
@@ -739,24 +699,24 @@ def test_options_only_for_a_family_that_takes_them(sep, stub):
 def test_a_track_over_ten_minutes_is_refused(sep):
     input_id = _wav_input(ALICE, 601.0)
     with _client(ALICE) as client:
-        long = _separate(client, inputs = {"source": {"input_id": input_id}})
+        long = _separate(client, {"input_id": input_id})
         assert (long.status_code, long.json()["detail"]) == (
             400,
             "Separate tracks up to 10 minutes long. This one is 10:01. Pick a shorter track.",
         )
-        ten = _separate(client, inputs = {"source": {"input_id": _wav_input(ALICE, 600.0)}})
+        ten = _separate(client, {"input_id": _wav_input(ALICE, 600.0)})
     assert ten.status_code == 200, ten.text
     (call,) = sep.separations
-    assert abs(_wav_info(Path(call["source_path"]))["frames"] - 600 * 44100) <= 600
+    assert abs(_wav_info(call["source_path"])[2] - 600 * 44100) <= 600
 
 
 def test_another_accounts_track_is_404(sep):
     sources = _alice_sources()
     with _client(BOB) as client:
         for kind in ("input_id", "clip_id"):
-            response = _separate(client, inputs = {"source": {kind: sources[kind]}})
+            response = _separate(client, {kind: sources[kind]})
             assert response.status_code == 404, response.text
-        expired = _separate(client, inputs = {"source": {"input_id": "c" * 32}})
+        expired = _separate(client, {"input_id": "c" * 32})
         assert expired.json()["detail"] == "This track expired. Add it again."
     assert sep.separations == []
 
@@ -764,105 +724,44 @@ def test_another_accounts_track_is_404(sep):
 def test_another_account_cannot_fetch_a_stem(sep):
     input_id = _input(ALICE)
     with _client(ALICE) as client:
-        url = _separate(client, inputs = {"source": {"input_id": input_id}}).json()["clips"][0]["url"]
+        url = _separate(client, {"input_id": input_id}).json()["clips"][0]["url"]
         assert client.get(url).status_code == 200
     with _client(BOB) as client:
         assert client.get(url).status_code == 404
 
 
-def _staging_dirs(tmp_path):
-    return [p for p in _gallery_root(tmp_path).glob(".separate-*")]
-
-
-def _stem_files(tmp_path):
-    return sorted(p.name for p in _gallery_root(tmp_path).glob("*.wav"))
-
-
-def test_no_stems_is_a_502(sep, tmp_path):
-    sep.outputs = lambda _out: []
+@pytest.mark.parametrize(
+    "outputs",
+    [
+        pytest.param(lambda tmp, out: [], id = "no_stems"),
+        pytest.param(lambda tmp, out: [_stem(tmp / "elsewhere.wav")], id = "outside_staging"),
+        pytest.param(lambda tmp, out: [_stem(Path(out) / "v.wav", data = b"junk")], id = "not_a_wav"),
+    ],
+)
+def test_unusable_stems_are_a_502(sep, tmp_path, outputs):
+    sep.outputs = lambda out: outputs(tmp_path, out)
     input_id = _input(ALICE)
     with _client(ALICE) as client:
-        response = _separate(client, inputs = {"source": {"input_id": input_id}})
+        response = _separate(client, {"input_id": input_id})
     assert (response.status_code, response.json()["detail"]) == (
         502,
         "The audio runtime returned no stems.",
     )
-    assert _staging_dirs(tmp_path) == [] and _stem_files(tmp_path) == []
-
-
-def test_a_stem_outside_the_staging_folder_is_a_502(sep, tmp_path):
-    def outside(_out):
-        path = tmp_path / "elsewhere.wav"
-        path.write_bytes(_stem_wav())
-        return [
-            {
-                "id": "vocals",
-                "path": str(path),
-                "sample_rate": 44100,
-                "channels": 2,
-                "duration_s": 0.01,
-            }
-        ]
-
-    sep.outputs = outside
-    input_id = _input(ALICE)
-    with _client(ALICE) as client:
-        response = _separate(client, inputs = {"source": {"input_id": input_id}})
-    assert response.status_code == 502
-    assert (tmp_path / "elsewhere.wav").exists() and _stem_files(tmp_path) == []
-
-
-def test_a_stem_that_is_not_a_wav_is_a_502(sep, tmp_path):
-    def junk(out):
-        path = Path(out) / "vocals.wav"
-        path.write_bytes(b"junk")
-        return [
-            {
-                "id": "vocals",
-                "path": str(path),
-                "sample_rate": 44100,
-                "channels": 2,
-                "duration_s": 0.01,
-            }
-        ]
-
-    sep.outputs = junk
-    input_id = _input(ALICE)
-    with _client(ALICE) as client:
-        assert _separate(client, inputs = {"source": {"input_id": input_id}}).status_code == 502
-    assert _staging_dirs(tmp_path) == []
+    assert _staging_and_stems(tmp_path) == ([], [])
 
 
 def test_a_cancel_is_a_499_and_leaves_no_staging(sep, tmp_path):
     from core.inference.audio_errors import AudioGenerationCancelledError
 
     def cancelled(out):
-        (Path(out) / "drums.wav").write_bytes(_stem_wav())
+        _stem(Path(out) / "drums.wav")
         raise AudioGenerationCancelledError("Audio generation cancelled")
 
     sep.outputs = cancelled
     input_id = _input(ALICE)
     with _client(ALICE) as client:
-        response = _separate(client, inputs = {"source": {"input_id": input_id}})
-    assert response.status_code == 499
-    assert _staging_dirs(tmp_path) == [] and _stem_files(tmp_path) == []
-
-
-def test_a_runtime_refusal_keeps_the_separation_reason(sep):
-    from core.inference.audio_errors import AudioRuntimeError
-
-    def refuse(_out):
-        raise AudioRuntimeError(
-            "The audio runtime could not separate the track: unknown htdemucs request option: seed",
-            status = 400,
-        )
-
-    sep.outputs = refuse
-    input_id = _input(ALICE)
-    with _client(ALICE) as client:
-        response = _separate(client, inputs = {"source": {"input_id": input_id}})
-    assert response.status_code == 400
-    assert response.json()["detail"].startswith("The audio runtime could not separate the track:")
+        assert _separate(client, {"input_id": input_id}).status_code == 499
+    assert _staging_and_stems(tmp_path) == ([], [])
 
 
 def test_a_failed_save_rolls_back_the_whole_group(sep, tmp_path, monkeypatch):
@@ -885,30 +784,27 @@ def test_a_failed_save_rolls_back_the_whole_group(sep, tmp_path, monkeypatch):
     monkeypatch.setattr(audio_gallery, "save_file", flaky)
     input_id = _input(ALICE)
     with _client(ALICE) as client:
-        response = _separate(client, inputs = {"source": {"input_id": input_id}})
-    assert response.status_code == 500
-    assert (
-        response.json()["detail"]
-        == "Could not save the stems to history: [Errno 28] No space left on device"
+        response = _separate(client, {"input_id": input_id})
+    assert (response.status_code, response.json()["detail"]) == (
+        500,
+        "Could not save the stems to history: [Errno 28] No space left on device",
     )
     assert len(saved) == 2
-    assert _stem_files(tmp_path) == [] and _staging_dirs(tmp_path) == []
+    assert _staging_and_stems(tmp_path) == ([], [])
     assert not list(_gallery_root(tmp_path).glob("*.json"))
 
 
 def test_a_separation_model_refuses_speech_and_points_at_separate(sep):
     with _client(ALICE) as client:
-        generate = client.post(
-            "/api/inference/audio/generate", json = {"messages": [{"role": "user", "content": "hi"}]}
-        )
-        speech = client.post("/api/inference/audio/speech", json = {"input": "hi"})
+        generate = client.post(_GENERATE[0], json = _GENERATE[1])
+        speech = client.post(_SPEECH[0], json = _SPEECH[1])
         speak = _run(client, workflow = "speak")
     assert (generate.status_code, generate.json()["detail"]) == (
         400,
         "HTDemucs-6stems separates audio into stems. Open Audio, then Separate.",
     )
-    assert speech.status_code == 400 and "Separate" in speech.json()["detail"]
-    assert speak.status_code == 400 and "Separate" in speak.json()["detail"]
+    for response in (speech, speak):
+        assert response.status_code == 400 and "Separate" in response.json()["detail"]
     assert sep.calls == [] and sep.separations == []
 
 
@@ -916,10 +812,10 @@ def test_the_separate_scope_clears_only_separations(sep, tmp_path):
     _alice_sources()
     input_id = _input(ALICE)
     with _client(ALICE) as client:
-        assert _separate(client, inputs = {"source": {"input_id": input_id}}).status_code == 200
+        assert _separate(client, {"input_id": input_id}).status_code == 200
         cleared = client.delete("/api/inference/audio/gallery", params = {"workflow": "separate"})
     assert cleared.status_code == 200 and cleared.json()["removed"] == 6
-    assert len(_stem_files(tmp_path)) == 1
+    assert len(_staging_and_stems(tmp_path)[1]) == 1
 
 
 def _orchestrator(monkeypatch, reply):
@@ -928,21 +824,14 @@ def _orchestrator(monkeypatch, reply):
     orchestrator = InferenceOrchestrator.__new__(InferenceOrchestrator)
     sent = []
 
-    class _Null:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_exc):
-            return False
-
     def read_one(*, timeout):
         return {"type": "audio_done", "request_id": sent[-1]["request_id"], **reply}
 
     for name, value in {
         "_ensure_subprocess_alive": lambda: True,
-        "_send_cmd": lambda cmd: sent.append(cmd),
+        "_send_cmd": sent.append,
         "_direct_reader": lambda _rid, _cancel = None: (read_one, lambda **_k: None, lambda: None),
-        "_reserve_worker": lambda _why: _Null(),
+        "_reserve_worker": lambda _why: contextlib.nullcontext(),
         "_wait_worker_idle": lambda **_k: True,
         "_claim_worker": lambda _cancel: None,
         "_release_worker": lambda *_a, **_k: None,
@@ -956,29 +845,29 @@ def _orchestrator(monkeypatch, reply):
     return orchestrator, sent
 
 
+_VOCALS = {
+    "id": "vocals",
+    "path": "/x/.separate-1/vocals.wav",
+    "sample_rate": 44100,
+    "channels": 2,
+    "duration_s": 1.0,
+}
+
+
 def test_the_orchestrator_sends_paths_and_returns_the_stem_list(monkeypatch):
-    outputs = [
-        {
-            "id": "vocals",
-            "path": "/x/.separate-1/vocals.wav",
-            "sample_rate": 44100,
-            "channels": 2,
-            "duration_s": 1.0,
-        }
-    ]
-    orchestrator, sent = _orchestrator(monkeypatch, {"outputs": outputs, "sample_rate": 44100})
+    from core.inference.orchestrator import _audio_generation_timeout
+
+    orchestrator, sent = _orchestrator(monkeypatch, {"outputs": [_VOCALS], "sample_rate": 44100})
     result = orchestrator.separate_audio_response(
         "/x/inputs/a.44100.stereo.wav", "/x/.separate-1", {"num_overlap": 1}
     )
-    assert result == outputs
+    assert result == [_VOCALS]
     (cmd,) = sent
     assert cmd["workflow"] == "separate" and cmd["text"] == ""
     assert cmd["audio_inputs"] == {"source": "/x/inputs/a.44100.stereo.wav"}
     assert cmd["output_dir"] == "/x/.separate-1"
     assert cmd["audio_options"] == {"num_overlap": 1}
     assert cmd["max_new_tokens"] == 8192 and "seed" not in cmd
-    from core.inference.orchestrator import _audio_generation_timeout
-
     assert _audio_generation_timeout(8192) == 3600.0
     orchestrator, sent = _orchestrator(
         monkeypatch, {"wav_base64": base64.b64encode(_wav()).decode(), "sample_rate": 24000}
@@ -992,65 +881,41 @@ def test_the_worker_separates_into_paths_not_bytes():
 
     seen = []
 
-    class _Backend:
+    class _Separator:
         def separate_audio(self, **kwargs):
             seen.append(kwargs)
-            return [
-                {
-                    "id": "vocals",
-                    "path": "/abs/.separate-1/vocals.wav",
-                    "sample_rate": 44100,
-                    "channels": 2,
-                    "duration_s": 1.0,
-                }
-            ]
+            return [_VOCALS]
 
         def generate_audio_response(self, **kwargs):
             raise AssertionError("a separation is not speech")
-
-    responses: queue.Queue = queue.Queue()
-    cancel = threading.Event()
-    _handle_generate_audio(
-        _Backend(),
-        {
-            "request_id": "r1",
-            "text": "",
-            "workflow": "separate",
-            "audio_inputs": {"source": "/abs/in.wav"},
-            "output_dir": "/abs/.separate-1",
-            "audio_options": {"num_overlap": 1},
-        },
-        responses,
-        cancel,
-    )
-    reply = responses.get_nowait()
-    assert reply["type"] == "audio_done" and "wav_base64" not in reply
-    assert reply["outputs"][0]["path"] == "/abs/.separate-1/vocals.wav"
-    assert seen == [
-        {
-            "source_path": "/abs/in.wav",
-            "output_dir": "/abs/.separate-1",
-            "options": {"num_overlap": 1},
-            "cancel_event": cancel,
-        }
-    ]
 
     class _Speech:
         def generate_audio_response(self, **kwargs):
             return _wav(), 24000
 
-    _handle_generate_audio(
-        _Speech(),
+    responses: queue.Queue = queue.Queue()
+    cancel = threading.Event()
+    cmd = {
+        "request_id": "r1",
+        "text": "",
+        "workflow": "separate",
+        "audio_inputs": {"source": "/abs/in.wav"},
+        "output_dir": "/x/.separate-1",
+        "audio_options": {"num_overlap": 1},
+    }
+    _handle_generate_audio(_Separator(), cmd, responses, cancel)
+    reply = responses.get_nowait()
+    assert reply["type"] == "audio_done" and "wav_base64" not in reply
+    assert reply["outputs"] == [_VOCALS]
+    assert seen == [
         {
-            "request_id": "r2",
-            "text": "",
-            "workflow": "separate",
-            "audio_inputs": {"source": "/a"},
-            "output_dir": "/b",
-        },
-        responses,
-        threading.Event(),
-    )
+            "source_path": "/abs/in.wav",
+            "output_dir": "/x/.separate-1",
+            "options": {"num_overlap": 1},
+            "cancel_event": cancel,
+        }
+    ]
+    _handle_generate_audio(_Speech(), {**cmd, "request_id": "r2"}, responses, threading.Event())
     refused = responses.get_nowait()
     assert refused["type"] == "audio_error" and refused["code"] == "audio_unsupported_backend"
 

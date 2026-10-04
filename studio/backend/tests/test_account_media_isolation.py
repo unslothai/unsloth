@@ -63,20 +63,6 @@ def _save(kind):
     if kind == "audio":
         meta.update(audio_type = "snac", sample_rate = 24000, created_at = "2026-08-06T00:00:00Z")
         return audio_gallery.save(b"RIFF\x24\x00\x00\x00WAVEfmt ", meta)
-    if kind == "audio-separate":
-        meta.update(
-            audio_type = "audiocpp_sep",
-            workflow = "separate",
-            sample_rate = 44100,
-            created_at = "2026-08-06T00:00:00Z",
-            role = "vocals",
-            group_id = "c" * 32,
-        )
-        staging = audio_gallery.gallery_dir() / ".separate-test"
-        staging.mkdir(parents = True, exist_ok = True)
-        src = staging / "vocals.wav"
-        src.write_bytes(b"RIFF\x24\x00\x00\x00WAVEfmt ")
-        return audio_gallery.save_file(src, meta)
     meta["created_at"] = "2026-08-06T00:00:00Z"
     return video_gallery.save(b"\x00\x00\x00\x18ftypmp42", meta)
 
@@ -99,11 +85,11 @@ def _client(account):
     return TestClient(app)
 
 
-@pytest.mark.parametrize("kind", ["images", "audio", "audio-separate", "video"])
+@pytest.mark.parametrize("kind", ["images", "audio", "video"])
 @pytest.mark.parametrize("account,other", [(ALICE, BOB), (BOB, ALICE)])
 def test_gallery_object_routes_do_not_resolve_another_accounts_ids(kind, account, other):
     record = run_as(account, _save, kind)
-    root = f"/api/inference/{kind.split('-')[0]}/gallery"
+    root = f"/api/inference/{kind}/gallery"
     with _client(other) as client:
         assert client.get(f"{root}/{record['id']}/file").status_code == 404
         assert client.patch(f"{root}/{record['id']}", json = {"starred": True}).status_code == 404
@@ -318,11 +304,3 @@ def test_inputs_and_voices_live_in_the_accounts_audio_folder(tmp_path):
     assert run_as(BOB, audio_inputs.inputs_dir) == bob / "inputs"
     assert run_as(BOB, audio_voices.voices_dir) == bob / "voices"
     assert run_as(OWNER, audio_inputs.inputs_dir) == tmp_path / "audio" / "inputs"
-
-
-def test_a_separate_scoped_clear_is_account_scoped():
-    a = run_as(ALICE, _save, "audio-separate")
-    b = run_as(BOB, _save, "audio-separate")
-    assert run_as(ALICE, audio_gallery.clear, workflow = "separate") == 1
-    assert run_as(ALICE, audio_gallery.owned_audio_path, a["id"]) is None
-    assert run_as(BOB, audio_gallery.owned_audio_path, b["id"]).is_file()

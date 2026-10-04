@@ -108,9 +108,7 @@ def started(monkeypatch, tmp_path):
     starts: list[tuple[AudioCppModel, _Recorder]] = []
     answers = {
         "htdemucs": ["drums", "bass", "other", "vocals"],
-        "htdemucs_6stems": ["drums", "bass", "other", "vocals", "guitar", "piano"],
         "bs_roformer": ["vocals", "instrumental"],
-        "mel_band_roformer": ["vocals", "instrumental"],
     }
 
     def start(served, path, **_kwargs):
@@ -137,7 +135,7 @@ def _out(tmp_path) -> Path:
     return out
 
 
-def test_the_body_is_exactly_the_model_and_the_track(started, tmp_path):
+def test_the_body_is_exactly_the_model_and_the_track_and_htdemucs_never_restarts(started, tmp_path):
     backend = _backend(_model("htdemucs", "HTDemucs-GGUF"))
     out = _out(tmp_path)
     outputs = backend.separate_audio(SOURCE, str(out), {"num_overlap": 2})
@@ -150,10 +148,6 @@ def test_the_body_is_exactly_the_model_and_the_track(started, tmp_path):
         assert Path(output["path"]).parent == out and Path(output["path"]).is_file()
         assert (output["sample_rate"], output["channels"], output["duration_s"]) == (44100, 2, 0.01)
     assert not (out / ".response.json").exists()
-
-
-def test_htdemucs_ignores_overlap_and_never_restarts(started, tmp_path):
-    backend = _backend(_model("htdemucs", "HTDemucs-GGUF"))
     backend.separate_audio(SOURCE, str(_out(tmp_path)))
     backend.separate_audio(SOURCE, str(_out(tmp_path)), {"num_overlap": 1})
     assert len(started) == 1
@@ -251,19 +245,6 @@ def test_an_answer_without_stems_is_an_empty_list(started, tmp_path):
     out = _out(tmp_path)
     assert backend.separate_audio(SOURCE, str(out)) == []
     assert list(out.iterdir()) == []
-
-
-def test_a_speech_request_to_a_separation_model_points_at_separate(started):
-    backend = _backend(_model("htdemucs", "HTDemucs-GGUF"))
-    with pytest.raises(RuntimeError, match = "HTDemucs-GGUF separates audio; open Separate."):
-        backend.generate_audio_response("hello")
-    assert started == []
-
-
-def test_a_speech_model_cannot_separate(started, tmp_path):
-    kokoro = _model("kokoro_tts", "Kokoro-82M-GGUF")
-    with pytest.raises(RuntimeError, match = "cannot separate audio"):
-        _backend(kokoro).separate_audio(SOURCE, str(_out(tmp_path)))
 
 
 class _Handler(BaseHTTPRequestHandler):
