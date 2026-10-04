@@ -59,6 +59,9 @@ _REQUIRE_BF16_SCHEMES = (TQ_FP8, TQ_MXFP8)
 # metadata, so a stale per-TENSOR checkpoint is rejected and rebuilt.
 FP8_GRANULARITY = "per_row"
 
+# torchao ``activation_value_lb``: keeps an all-zero activation row off scale 0 (NaN, black frames); not calibrated.
+FP8_ACTIVATION_VALUE_LB = 1e-12
+
 # Skip linears below this feature size: a small FLOP share, so leaving them bf16 costs ~nothing.
 DEFAULT_MIN_LINEAR_FEATURES = 512
 
@@ -1765,7 +1768,7 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
         fp8_kwargs: dict = {"granularity": PerRow()}
         config_params = _inspect.signature(Float8DynamicActivationFloat8WeightConfig).parameters
         if "activation_value_lb" in config_params:
-            fp8_kwargs["activation_value_lb"] = 1e-12
+            fp8_kwargs["activation_value_lb"] = FP8_ACTIVATION_VALUE_LB
         # Pin the plain-torch quantize kernel: the default AUTO switches to the MSLK kernel whenever an mslk package
         # is importable, changing fp8 scale rounding BITWISE and breaking the prequant bit-identity invariant. It is
         # also slower compiled on B200 (an opaque extern call blocks inductor's quantize fusion), so the pin costs

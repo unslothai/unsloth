@@ -489,17 +489,6 @@ def get_lora_parameters_bias(proj):
     )
 
 
-def _maybe_fake_quantize_activations(X: torch.Tensor, proj: torch.nn.Module) -> torch.Tensor:
-    """Fake-quantize input activations if QAT is enabled, else return as-is.
-    Weights are fake-quantized separately in `get_lora_parameters`.
-    """
-    base_layer = getattr(proj, "base_layer", proj)
-    activation_fake_quantizer = getattr(base_layer, "activation_fake_quantizer", None)
-    if activation_fake_quantizer is not None:
-        X = activation_fake_quantizer(X)
-    return X
-
-
 def _unpack_quant_state(quant_state):
     """(absmax, shape, dtype, blocksize, code, code2, absmax2, offset, blocksize2) from a bnb
     4bit quant state, class or legacy list form. The nested fields are None (and blocksize2 0)

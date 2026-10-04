@@ -48,7 +48,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 SAFETENSORS_SUFFIX = ".safetensors"
 
@@ -144,8 +144,15 @@ def plain_safetensors_supported() -> bool:
     return True
 
 
-def load_plain_prequant_safetensors(path: str, *, device: str = "cpu") -> dict:
-    """Read a plain-tensor prequant checkpoint without torchao; refuses subclass metadata and unlisted tensors."""
+def load_plain_prequant_safetensors(
+    path: str,
+    *,
+    device: str = "cpu",
+    skip_names: Iterable[str] = (),
+) -> dict:
+    """Read a plain-tensor prequant checkpoint without torchao; refuses subclass metadata and unlisted tensors.
+
+    ``skip_names`` are validated but never read."""
     from safetensors import safe_open
 
     with safe_open(path, framework = "pt", device = device) as handle:
@@ -176,7 +183,8 @@ def load_plain_prequant_safetensors(path: str, *, device: str = "cpu") -> dict:
         for name in names:
             if json.loads(raw.get(name) or "null") != {"_type": "Tensor"}:
                 raise ValueError(f"{path} requires a tensor-subclass reader for {name!r}")
-        state_dict = {name: handle.get_tensor(name) for name in names}
+        skip = frozenset(skip_names)
+        state_dict = {name: handle.get_tensor(name) for name in names if name not in skip}
         state_dict.update(
             (key[len(UNSLOTH_ROOT_PREFIX) :], handle.get_tensor(key)) for key in roots
         )

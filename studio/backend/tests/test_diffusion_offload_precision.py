@@ -474,12 +474,13 @@ def planner(monkeypatch):
 
 
 FAMILY_TABLE = {
+    # Krea 2 seeds its hosted int8 denoiser like the generic pipeline families; same offload tiers as on the fly.
     ("krea-2", "krea/Krea-2-Turbo"): {
-        8: ("on-the-fly int8", OFFLOAD_STREAMING),
-        12: ("on-the-fly int8", OFFLOAD_GROUP),
-        16: ("on-the-fly int8", OFFLOAD_GROUP),
-        24: ("on-the-fly int8", OFFLOAD_GROUP),
-        32: ("on-the-fly int8", OFFLOAD_GROUP),
+        8: ("hosted int8", OFFLOAD_STREAMING),
+        12: ("hosted int8", OFFLOAD_GROUP),
+        16: ("hosted int8", OFFLOAD_GROUP),
+        24: ("hosted int8", OFFLOAD_GROUP),
+        32: ("hosted int8", OFFLOAD_GROUP),
     },
     ("lumina-2", "Alpha-VLLM/Lumina-Image-2.0"): {
         8: ("hosted int8", OFFLOAD_STREAMING),
