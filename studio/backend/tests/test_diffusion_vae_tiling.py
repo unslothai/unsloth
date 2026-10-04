@@ -81,6 +81,12 @@ def test_every_ui_size_tiles_without_slivers(width, height):
         assert all(b + vt.OVERLAP_LATENTS <= a + vt.TILE_LATENTS for a, b in zip(starts, starts[1:]))
 
 
+@pytest.fixture(autouse = True)
+def _fixed_decode_tiles(monkeypatch):
+    """CPU decodes use 32x32 tiles anyway; pin it so a CUDA box runs the same geometry."""
+    monkeypatch.setenv(vt.MAX_TILE_ENV, str(vt.TILE_LATENTS))
+
+
 def _diffusers_vae():
     diffusers = pytest.importorskip("diffusers")
     cls = getattr(diffusers, "AutoencoderKLQwenImage21", None)
@@ -271,3 +277,56 @@ def test_encode_within_one_tile_is_untiled_and_kill_switch_keeps_stock(monkeypat
         assert torch.equal(vae._encode(big), stock_big)
     vt.uninstall(vae)
     assert "tiled_encode" not in vae.__dict__
+
+
+def _decoded_latents(height, width, th, tw):
+    return len(vt.tile_starts(height, th)) * th * len(vt.tile_starts(width, tw)) * tw
+
+
+@pytest.mark.parametrize("width, height", UI_SIZES)
+@pytest.mark.parametrize("max_area", [None, 0, 1023, 1024, 1300, 1700, 2600, 5000, 10**6])
+def test_budget_sized_tiles_keep_the_invariants_and_never_decode_more(width, height, max_area):
+    h, w = height // 16, width // 16
+    th, tw = vt.choose_tiles(h, w, max_area)
+    floor = (min(vt.TILE_LATENTS, h), min(vt.TILE_LATENTS, w))
+    if max_area is None or max_area <= floor[0] * floor[1]:
+        assert (th, tw) == floor  # no room: the 32x32 tiles the planner budgets
+    else:
+        assert th * tw <= max_area
+        assert _decoded_latents(h, w, th, tw) <= _decoded_latents(h, w, *floor)
+    if max_area is not None and max_area >= h * w:
+        assert (th, tw) == (h, w)  # the whole canvas fits: untiled
+    for length, side in ((h, th), (w, tw)):
+        assert side >= min(vt.TILE_LATENTS, length) and side <= length
+        starts = vt.tile_starts(length, side)
+        assert starts[0] == 0 and starts[-1] + side == length or starts == [0]
+        assert all(b + vt.OVERLAP_LATENTS <= a + side for a, b in zip(starts, starts[1:]))
+        weights = vt.axis_weights(starts, side, length, 2, torch, "cpu")
+        total = torch.zeros(length * 2)
+        for s, wgt in zip(starts, weights):
+            total[s * 2 : s * 2 + wgt.numel()] += wgt
+        torch.testing.assert_close(total, torch.ones_like(total))
+
+
+def test_budget_comes_from_free_vram_and_the_env_caps_it(monkeypatch):
+    vae = _diffusers_vae()
+    z = torch.zeros(1, 4, 1, 64, 64)
+    assert vt.decode_tile_budget(vae, z) == vt.TILE_LATENTS**2  # the autouse env pin
+    monkeypatch.delenv(vt.MAX_TILE_ENV)
+    assert vt.decode_tile_budget(vae, z) is None  # CPU: no budget, 32x32 tiles
+    assert vt.choose_tiles(64, 64, None) == (32, 32)
+
+
+def test_larger_tiles_decode_like_untiled_when_the_budget_allows():
+    vae = _diffusers_vae()
+    z = torch.randn(1, 4, 1, 40, 64, generator = torch.Generator().manual_seed(7))
+    with torch.no_grad():
+        vae.use_tiling = False
+        untiled = vae.decode(z).sample
+        assert vt.install(vae)
+        whole = vt.tiled_decode(vae, z, return_dict = False, max_area = 40 * 64)[0]
+        two = vt.tiled_decode(vae, z, return_dict = False, max_area = 40 * 40)[0]
+        small = vt.tiled_decode(vae, z, return_dict = False, max_area = 32 * 32)[0]
+    assert torch.equal(whole, untiled)
+    assert vae._unsloth_last_decode_tile == (32, 32)
+    assert _line_error(two, untiled) <= _line_error(small, untiled)

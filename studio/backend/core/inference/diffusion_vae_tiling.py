@@ -11,11 +11,13 @@ thin vertical / horizontal lines, one tile long. A 1024x1024 render is 6x6 such 
 that tiles the decode (streaming / whole-model offload) shows them; resident loads decode untiled. The tiled
 encode (img2img and edit inputs on the same tiers) has the same geometry.
 
-Here a tile is 32 latents with at least a 16-latent overlap (ComfyUI's decode overlap), and the tiles are
-spread evenly so the last one ends at the image edge at full size (no sliver). A tile gets no weight within 4
-latents of an edge it shares with another tile and ramps to full weight over the next 8, normalised where
-more than two tiles meet (any stride under 16 latents, e.g. 1344 or 2400 px, makes three tiles overlap). A
-canvas that fits one tile is decoded / encoded untiled. The encode blends the tiles' moments in latent space.
+Here a tile is at least 32 latents with at least a 16-latent overlap (ComfyUI's decode overlap). A decode
+uses larger tiles, down to one untiled decode, when half the free VRAM holds them: fewer tiles decode less
+overlap, so they are faster and leave fewer seams. Otherwise it uses 32x32, which the planner budgets. Tiles
+are spread evenly so the last one ends at the image edge at full size (no sliver). A tile gets no weight within
+4 latents of an edge it shares with another tile and ramps to full weight over the next 8, normalised where
+more than two tiles meet (a stride under 16 latents, e.g. 1344 or 2400 px). A canvas that fits one tile is
+decoded / encoded untiled. The encode uses 32x32 tiles and blends their moments in latent space.
 Kill switch ``UNSLOTH_DIFFUSION_VAE_WIDE_TILES=0``: at load it skips the install (the fused batched tile
 decode, if any, installs as before); set later, each decode / encode takes the stock tiled path.
 """
@@ -46,10 +48,10 @@ def tile_starts(length: int, tile: int = TILE_LATENTS, overlap: int = OVERLAP_LA
 
     The first tile starts at 0 and the last ends at ``length``; the rest are spread evenly between them."""
     length, tile, overlap = int(length), int(tile), int(overlap)
-    if tile <= overlap or overlap < 0:
-        raise ValueError(f"tile {tile} must exceed overlap {overlap}")
     if length <= tile:
         return [0]
+    if tile <= overlap or overlap < 0:
+        raise ValueError(f"tile {tile} must exceed overlap {overlap}")
     step = tile - overlap
     count = -(-(length - overlap) // step)
     span = length - tile
@@ -100,21 +102,80 @@ def _decode_tile(vae: Any, z: Any) -> Any:
         vae.use_tiling = prev
 
 
-def tiled_decode(vae: Any, z: Any, return_dict: bool = True) -> Any:
-    """Decode ``z`` (B, C, T, H, W) in evenly spread 32-latent tiles with 16-latent overlaps."""
+# Unfused bf16 decode peak per latent of tile area (measured: 1,697 MiB for 32x32, 6,717 MiB for 64x64 untiled).
+DECODE_MIB_PER_LATENT = 1.7
+# Share of the free VRAM a decode tile may take (the fused tile batching takes half as well).
+FREE_FRACTION = 0.5
+MAX_TILE_ENV = "UNSLOTH_DIFFUSION_VAE_MAX_TILE"
+
+
+def _axis_tiles(length: int, count: int) -> Optional[int]:
+    """Smallest tile side (>= 32 latents) that covers ``length`` in ``count`` tiles with 16-latent overlaps."""
+    if count == 1:
+        return length
+    side = max(TILE_LATENTS, -(-(length + (count - 1) * OVERLAP_LATENTS) // count))
+    return side if side < length else None
+
+
+def choose_tiles(height: int, width: int, max_area: Optional[int]) -> tuple[int, int]:
+    """Tile (height, width) in latents: the fewest decoded latents (overlaps counted) whose tile area fits
+    ``max_area``. A canvas that fits decodes untiled; with no room for more, 32x32 tiles as the planner budgets."""
+    floor = (min(TILE_LATENTS, height), min(TILE_LATENTS, width))
+    if max_area is None or max_area <= floor[0] * floor[1]:
+        return floor
+    best, best_cost = floor, None
+    sides_h = [(n, _axis_tiles(height, n)) for n in range(1, len(tile_starts(height)) + 1)]
+    sides_w = [(n, _axis_tiles(width, n)) for n in range(1, len(tile_starts(width)) + 1)]
+    for _, th in sides_h:
+        for _, tw in sides_w:
+            if th is None or tw is None or th * tw > max_area:
+                continue
+            cost = (len(tile_starts(height, th)) * th * len(tile_starts(width, tw)) * tw, th * tw)
+            if best_cost is None or cost < best_cost:
+                best, best_cost = (th, tw), cost
+    return best
+
+
+def decode_tile_budget(vae: Any, z: Any) -> Optional[int]:
+    """Largest decode tile area (latents) that fits ``FREE_FRACTION`` of the free VRAM now; None off CUDA."""
+    raw = (os.environ.get(MAX_TILE_ENV) or "").strip()
+    if raw.isdigit() and int(raw) > 0:
+        return int(raw) ** 2
+    try:
+        import torch
+
+        if getattr(z, "device", None) is None or z.device.type != "cuda":
+            return None
+        free, _ = torch.cuda.mem_get_info(z.device)
+        free += torch.cuda.memory_reserved(z.device) - torch.cuda.memory_allocated(z.device)
+        ratio = int(vae.spatial_compression_ratio)
+        out_bytes = 4 * 4 * z.shape[0] * z.shape[2] * z.shape[-2] * z.shape[-1] * ratio * ratio  # fp32 accumulator
+        elem = next(vae.decoder.parameters()).element_size()
+        mib = FREE_FRACTION * (free - out_bytes) / 2**20
+        return max(0, int(mib / (DECODE_MIB_PER_LATENT * elem / 2)))
+    except Exception:  # noqa: BLE001 - unknown budget: the 32-latent tiles the planner budgeted
+        return None
+
+
+def tiled_decode(vae: Any, z: Any, return_dict: bool = True, max_area: Any = "auto") -> Any:
+    """Decode ``z`` (B, C, T, H, W) in evenly spread tiles with 16-latent overlaps: 32x32 latents at least, larger
+    (down to one untiled decode) when the free VRAM allows, since fewer tiles decode less overlap."""
     import torch
     from diffusers.models.autoencoders.vae import DecoderOutput
 
     _, _, _, height, width = z.shape
     ratio = int(vae.spatial_compression_ratio)
-    hs = tile_starts(height)
-    ws = tile_starts(width)
-    th, tw = min(TILE_LATENTS, height), min(TILE_LATENTS, width)
+    if max_area == "auto":
+        max_area = decode_tile_budget(vae, z)
+    th, tw = choose_tiles(height, width, max_area)
+    vae._unsloth_last_decode_tile = (th, tw)
+    hs = tile_starts(height, th)
+    ws = tile_starts(width, tw)
     if len(hs) == 1 and len(ws) == 1:
         dec = _decode_tile(vae, z)
     else:
-        wy = axis_weights(hs, TILE_LATENTS, height, ratio, torch, z.device)
-        wx = axis_weights(ws, TILE_LATENTS, width, ratio, torch, z.device)
+        wy = axis_weights(hs, th, height, ratio, torch, z.device)
+        wx = axis_weights(ws, tw, width, ratio, torch, z.device)
         out, dtype = None, None
         for i, y in enumerate(hs):
             for j, x in enumerate(ws):
