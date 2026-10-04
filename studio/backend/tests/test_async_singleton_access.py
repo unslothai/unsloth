@@ -101,8 +101,25 @@ def _sync_helpers_that_build_the_singleton(rel: str) -> set[str]:
 # Workers that call a callable they are handed, on the worker thread. to_thread runs only its
 # first argument; a lambda further along is just passed to it, so it counts as off the loop only
 # when that worker is known to invoke it there. Pinned below by reading the worker itself.
-# worker name -> (its file, the name and position of the parameter it calls).
-_WORKERS_THAT_RUN_THEIR_CALLBACK = {"in_slot": ("core/inference/model_slots.py", "fn", 1)}
+# Keyed by the qualified name the routes call it by, so an unrelated in_slot elsewhere is not
+# trusted: "module.function" -> (its file, the name and position of the parameter it calls).
+_WORKERS_THAT_RUN_THEIR_CALLBACK = {
+    "model_slots.in_slot": ("core/inference/model_slots.py", "fn", 1),
+}
+
+
+def _executed_calls(lam: ast.Lambda) -> list[ast.Call]:
+    """Calls the lambda's own body makes when it runs. A lambda or def nested inside it is only
+    created there, and could be returned and called back on the loop, so it is not descended."""
+    found, stack = [], [lam.body]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if isinstance(node, ast.Call):
+            found.append(node)
+        stack.extend(ast.iter_child_nodes(node))
+    return found
 
 
 def _calls_inside_offloaded_lambdas(fn: ast.AST) -> set[int]:
@@ -121,14 +138,18 @@ def _calls_inside_offloaded_lambdas(fn: ast.AST) -> set[int]:
             continue
         worker, *rest = node.args
         lambdas = [worker] if isinstance(worker, ast.Lambda) else []
-        worker_name = getattr(worker, "attr", None) or getattr(worker, "id", None)
+        worker_name = (
+            f"{worker.value.id}.{worker.attr}"
+            if isinstance(worker, ast.Attribute) and isinstance(worker.value, ast.Name)
+            else None
+        )
         if worker_name in _WORKERS_THAT_RUN_THEIR_CALLBACK:
             _file, param, position = _WORKERS_THAT_RUN_THEIR_CALLBACK[worker_name]
             callback = [rest[position]] if len(rest) > position else []
             callback += [kw.value for kw in node.keywords if kw.arg == param]
             lambdas += [a for a in callback if isinstance(a, ast.Lambda)]
         for lam in lambdas:
-            inside.update(id(n) for n in ast.walk(lam.body) if isinstance(n, ast.Call))
+            inside.update(id(n) for n in _executed_calls(lam))
     return inside
 
 
@@ -254,6 +275,9 @@ def test_a_lambda_handed_to_to_thread_is_off_the_loop_but_an_inline_call_is_not(
         "    stored = lambda: helper(model)\n"
         "    helper(model)\n"
         "    (await asyncio.to_thread(identity, lambda: helper(model)))()\n"
+        "    (await asyncio.to_thread(lambda: lambda: helper(model)))()\n"
+        "    await asyncio.to_thread(model_slots.in_slot, None, lambda: helper(model))\n"
+        "    await asyncio.to_thread(other.in_slot, None, lambda: helper(model))\n"
     ).body[0]
     off_loop = _calls_inside_offloaded_lambdas(fn)
     calls = [
@@ -261,8 +285,8 @@ def test_a_lambda_handed_to_to_thread_is_off_the_loop_but_an_inline_call_is_not(
         for n in ast.walk(fn)
         if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "helper"
     ]
-    assert sorted(n.lineno for n in calls if id(n) in off_loop) == [2, 3]
-    assert sorted(n.lineno for n in calls if id(n) not in off_loop) == [4, 5, 6]
+    assert sorted(n.lineno for n in calls if id(n) in off_loop) == [3, 8]
+    assert sorted(n.lineno for n in calls if id(n) not in off_loop) == [2, 4, 5, 6, 7, 9]
 
 
 @pytest.mark.parametrize("worker", sorted(_WORKERS_THAT_RUN_THEIR_CALLBACK))
@@ -270,7 +294,16 @@ def test_each_listed_worker_still_runs_the_callable_it_is_handed(worker):
     """The exemption trusts these workers to call their callback; read that off their source."""
     rel, param, position = _WORKERS_THAT_RUN_THEIR_CALLBACK[worker]
     tree = ast.parse((_BACKEND / rel).read_text(encoding = "utf-8"))
-    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == worker)
+    module, name = worker.split(".")
+    assert Path(rel).stem == module
+    # Every scanned route that calls it by that name must have imported that module.
+    for route in _ROUTE_FILES:
+        source = (_BACKEND / route).read_text(encoding = "utf-8")
+        if f"{worker}(" in source or f"{worker}," in source:
+            assert (
+                f"from core.inference import {module}\n" in source
+            ), f"{route} calls {worker} but does not import it from {rel}"
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
     assert [a.arg for a in fn.args.args][position] == param, f"{worker}'s callback moved"
     # Called directly, or handed on as the callable of context.run / a similar runner.
     runs = [
