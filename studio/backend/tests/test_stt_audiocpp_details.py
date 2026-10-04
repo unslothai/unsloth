@@ -380,6 +380,42 @@ def test_a_retry_joins_the_download_that_stop_left_running(monkeypatch):
     assert audio_cpp_backend._inflight == {}
 
 
+def test_a_retry_into_a_relocated_cache_starts_its_own_download(monkeypatch):
+    """Joining is keyed by cache root too: after Stop, a retry with the Hub cache moved in Settings
+    would otherwise wait on a transfer writing into the old cache and report the new one filled."""
+    import threading
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from core.inference.audio_cpp_backend import AudioCppRequestCancelledError
+    from core.inference.audio_cpp_backend import AudioCppBackend as backend_cls
+    from utils import hf_cache_settings
+
+    release, cache_dirs = threading.Event(), []
+
+    def streaming(*_args, cache_dir, **_kwargs):
+        cache_dirs.append(cache_dir)
+        release.wait(10)
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", streaming)
+    monkeypatch.setattr(
+        audio_cpp_backend.audio_cpp_files, "missing_files", lambda model: [("aligner.gguf", 1)]
+    )
+    monkeypatch.setattr(hf_cache_settings, "active_hf_hub_cache", lambda: Path("/cache/old"))
+    model = SimpleNamespace(repo_id = "org/aligner")
+    stopped = threading.Event()
+    threading.Timer(0.3, stopped.set).start()
+    with pytest.raises(AudioCppRequestCancelledError):
+        backend_cls._download_missing(model, None, stopped)
+    monkeypatch.setattr(hf_cache_settings, "active_hf_hub_cache", lambda: Path("/cache/new"))
+    stopped = threading.Event()
+    threading.Timer(0.3, stopped.set).start()
+    with pytest.raises(AudioCppRequestCancelledError):
+        backend_cls._download_missing(model, None, stopped)
+    assert [Path(c).name for c in cache_dirs] == ["old", "new"]
+    release.set()
+
+
 def test_a_download_error_still_reaches_the_caller_with_a_cancel_event(monkeypatch):
     import threading
     from types import SimpleNamespace

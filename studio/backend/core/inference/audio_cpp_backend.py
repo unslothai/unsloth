@@ -68,7 +68,7 @@ def _raise_if_cancelled(cancel_event) -> None:
 
 
 _inflight_lock = threading.Lock()
-_inflight: dict[tuple[str, str], tuple[threading.Event, list]] = {}
+_inflight: dict[tuple[str, str, str], tuple[threading.Event, list]] = {}
 
 
 def _download_or_cancel(key, download, cancel_event) -> None:
@@ -414,7 +414,9 @@ class AudioCppBackend:
             if cancel_event is None:
                 fetch()
             else:
-                _download_or_cancel((model.repo_id, path), fetch, cancel_event)
+                # The cache root is part of the key: a retry after the Hub cache moved in Settings
+                # must not join a transfer still writing into the old one.
+                _download_or_cancel((cache_dir, model.repo_id, path), fetch, cancel_event)
         return True
 
     def _start_server(
