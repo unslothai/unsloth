@@ -683,6 +683,9 @@ def _vae_channels_last(
         return False
     try:
         import torch
+
+        if _has_conv3d(vae):
+            return _vae_channels_last_3d(vae, logger, fused = fused)
         vae.to(memory_format = torch.channels_last)
         return True
     except Exception as exc:  # noqa: BLE001 - optimisation only
@@ -690,12 +693,67 @@ def _vae_channels_last(
         return False
 
 
+VAE_CHANNELS_LAST_3D_ENV = "UNSLOTH_VAE_CHANNELS_LAST_3D"
+
+
+def _has_conv3d(vae: Any) -> bool:
+    modules = getattr(vae, "modules", None)
+    if not callable(modules):
+        return False
+    import torch
+
+    return any(isinstance(m, torch.nn.Conv3d) for m in modules())
+
+
+def _vae_channels_last_3d(vae: Any, logger: Any, *, fused: bool) -> bool:
+    """Per-rank channels_last(_3d) on post_quant_conv + decoder; ``Module.to(channels_last)`` raises at the first 5D
+    weight. Skipped without the fused passes (slower there); the encoder is kept (channels_last encoded slower)."""
+    import torch
+
+    name = type(vae).__name__
+    if os.environ.get(VAE_CHANNELS_LAST_3D_ENV, "").strip().lower() in _VAE_FALSE_TOKENS:
+        reason = f"{VAE_CHANNELS_LAST_3D_ENV}=0"
+    elif not fused:
+        reason = "3D-conv VAE without the fused VAE passes (channels_last_3d measured slower there)"
+    else:
+        reason = None
+    if reason is not None:
+        if logger is not None:
+            logger.info("diffusion.speed: channels_last skipped for %s: %s", name, reason)
+        return False
+    relaid = 0
+    for part in (getattr(vae, "post_quant_conv", None), getattr(vae, "decoder", None)):
+        if part is None or not callable(getattr(part, "modules", None)):
+            continue
+        for module in part.modules():
+            weight = getattr(module, "weight", None)
+            if not isinstance(module, (torch.nn.Conv2d, torch.nn.Conv3d)) or not isinstance(
+                weight, torch.Tensor
+            ):
+                continue
+            fmt = torch.channels_last if weight.dim() == 4 else torch.channels_last_3d
+            if not weight.is_contiguous(memory_format = fmt):
+                weight.data = weight.data.contiguous(memory_format = fmt)
+            relaid += 1
+    if logger is not None:
+        logger.info(
+            "diffusion.speed: channels_last(_3d) decode weights on %s (%d convs)", name, relaid
+        )
+    return relaid > 0
+
+
+VIDEO_VAE_HALF_ENV = "UNSLOTH_VIDEO_VAE_HALF"
+
+
 def _video_vae_half_decode(pipe: Any, target: Any, family: Any, logger: Any) -> bool:
     """fp16 channels_last(_3d) decode for fp32-pinned video VAEs (Wan) on NVIDIA sm75+; non-finite output reruns fp32.
 
-    fp16, not bf16 (the pin exists because bf16 bands). channels_last_3d alone slows HV1.5 / LTX-2: keep it Wan-only.
-    """
+    fp16, not bf16: bf16 is 9 dB further from fp32. ``UNSLOTH_VIDEO_VAE_HALF=0`` keeps fp32."""
     if not getattr(family, "vae_force_fp32", False) or getattr(target, "device", None) != "cuda":
+        return False
+    if os.environ.get(VIDEO_VAE_HALF_ENV, "").strip().lower() in _VAE_FALSE_TOKENS:
+        if logger is not None:
+            logger.info("diffusion.speed: video VAE decode kept in fp32 (%s=0)", VIDEO_VAE_HALF_ENV)
         return False
     vae = getattr(pipe, "vae", None)
     decoder = getattr(vae, "decoder", None)
