@@ -110,8 +110,38 @@ def test_list_and_call_paths_forward_credentials_to_client(monkeypatch):
         **credentials,
     )
 
+    # MCP Apps widget calls (resource reads, structured tool calls) go through _ui_request_sync.
+    mcp_client._ui_request_sync(
+        "https://calendarmcp.googleapis.com/mcp/v1",
+        None,
+        "MCP resource",
+        lambda client: client.list_tools(),
+        timeout = 5,
+        use_oauth = True,
+        **credentials,
+    )
+
     assert tools == [{"name": "list_events"}]
-    assert [entry[3] for entry in captured] == [credentials, credentials]
+    assert [entry[3] for entry in captured] == [credentials, credentials, credentials]
+
+
+def test_widget_call_kwargs_carry_stored_oauth_credentials():
+    from routes.mcp_servers import _ui_call_kwargs
+
+    kwargs = _ui_call_kwargs(
+        "srv",
+        {
+            "url": "https://calendarmcp.googleapis.com/mcp/v1",
+            "headers_json": None,
+            "use_oauth": 1,
+            "oauth_client_id": "configured-client-id",
+            "oauth_client_secret": "configured-client-secret",
+        },
+        None,
+        None,
+    )
+    assert kwargs["oauth_client_id"] == "configured-client-id"
+    assert kwargs["oauth_client_secret"] == "configured-client-secret"
 
 
 def test_oauth_models_accept_credentials_without_exposing_the_secret():
