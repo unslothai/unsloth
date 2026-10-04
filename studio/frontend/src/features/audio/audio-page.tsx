@@ -135,6 +135,8 @@ const HUB_TASKS_BY_MODE = {
 } as const;
 
 let reuseSeq = 0;
+// A kept input restored after its re-upload failed is known stale: say so, don't wait for a 404.
+const EXPIRED_AT = new Date(0).toISOString();
 
 const RECOMMENDED_MUSIC_MODELS = ["ACE-Step1.5-GGUF", "Stable-Audio-3-Small-Music-GGUF"];
 
@@ -152,7 +154,7 @@ function reuseConvertInputs(clip: AudioGalleryClip) {
     : null;
   // An upload expires within a day; the clip kept what it converted, so upload that copy again.
   // The card stays empty until the live id is known: placed first, the old id let Generate race
-  // the upload and 404 on it. The kept id goes in only when the upload fails, so the card says so.
+  // the upload and 404 on it. The kept id goes in only when the upload fails, marked expired.
   if (!clip.source_clip_id && clip.source_saved && sourceId) {
     const seq = ++reuseSeq;
     const untouched = () => seq === reuseSeq && useAudioConvertStore.getState().source === null;
@@ -173,7 +175,7 @@ function reuseConvertInputs(clip: AudioGalleryClip) {
           });
         },
         () => {
-          if (untouched()) store.setSource(kept);
+          if (untouched()) store.setSource({ ...kept, expiresAt: EXPIRED_AT });
         },
       );
   } else if (kept) {

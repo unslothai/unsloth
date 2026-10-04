@@ -351,7 +351,11 @@ test("Use again re-uploads a conversion's kept source instead of its expiring up
   );
   // The old id is not placed first: Generate could race the upload and 404 on it.
   assert.match(page, /store\.setSource\(null\);\s*void fetchAudioBlob\(/);
-  assert.match(page, /\(\) => \{\s*if \(untouched\(\)\) store\.setSource\(kept\);/);
+  // A failed re-upload restores the kept id as expired, so the blocker shows at once, not after a 404.
+  assert.match(
+    page,
+    /\(\) => \{\s*if \(untouched\(\)\) store\.setSource\(\{ \.\.\.kept, expiresAt: EXPIRED_AT \}\);/,
+  );
 });
 
 const SEND_TO_HAS_CONVERT = /convert: \(\) => handleSendToConvert\(clip\),/;
