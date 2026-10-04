@@ -265,6 +265,36 @@ def test_per_call_guard_budgets_one_wide_tile_at_every_ui_size(width, height):
     assert act.tiled_decode_mib >= 1_697
 
 
+# Extra peak of one encode tile over the weights, unfused bf16 diffusers VAE on a B200: a 512 px input is one
+# 32-latent tile, 1024 px and up encode in 64-latent tiles (one tile at 1024, 2,322 MiB worst at 2048 / 2752).
+_MEASURED_ENCODE_TILE_MIB = {512: 590, 1024: 2_322, 2048: 2_322}
+
+
+@pytest.mark.parametrize("width, height", UI_SIZES)
+def test_per_call_guard_covers_the_encode_tile_at_every_reference_size(width, height):
+    """Qwen-Image-2.1 only encodes edit inputs, at the reference resolution, and the guard charges those as weighted
+    condition pixels. The tiled estimate must still cover one 64-latent encode tile at every output size."""
+    from core.inference.diffusion_families import detect_family
+
+    fam = detect_family("Qwen/Qwen-Image-2.1")
+    assert fam is not None and fam.name == "qwen-image-2.1"
+    assert (
+        fam.img2img_pipeline_class is None
+    )  # no plain img2img: every encode is a conditioned edit
+    for ref in fam.reference_resolutions:
+        cond = int(ref * ref * getattr(fam, "condition_pixel_weight", 1.0))
+        tiled = dm.estimate_tiled_image_runtime_mib(
+            width = width,
+            height = height,
+            family = fam.name,
+            condition_pixels = cond,
+            tile_side = vt.TILE_LATENTS * 16,
+            vae_sliced = True,
+        )
+        assert tiled >= _MEASURED_ENCODE_TILE_MIB[ref], (ref, tiled)
+    assert vt.ENCODE_TILE_LATENTS * 16 == 1024
+
+
 def _line_error_latent(x, ref):
     d = (x - ref).abs().mean(1)[0, 0]
     return max(float(d.mean(0).max()), float(d.mean(1).max()))

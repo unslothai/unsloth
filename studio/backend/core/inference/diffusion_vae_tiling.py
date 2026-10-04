@@ -14,12 +14,14 @@ encode (img2img and edit inputs on the same tiers) has the same geometry.
 Here a tile is at least 32 latents with at least a 16-latent overlap (ComfyUI's decode overlap). A decode
 uses larger tiles, down to one untiled decode, when three quarters of the free VRAM hold them: fewer tiles
 decode less overlap, so they are faster and leave fewer seams. Otherwise it uses 32x32, which the planner
-budgets. Tiles are spread evenly so the last one ends at the image edge at full size (no sliver). A tile gets no weight within
-4 latents of an edge it shares with another tile and ramps to full weight over the next 8, normalised where
-more than two tiles meet (a stride under 16 latents, e.g. 1344 or 2400 px). A canvas that fits one tile is
-decoded / encoded untiled. The encode (img2img and edit inputs on the same tiers) uses 64-latent tiles with
-32-latent overlaps, blended in latent space: the encoder attends over the whole tile, so the stock 16-latent
-tiles shift the condition latent everywhere and derail the edit, not only at the seams.
+budgets. Tiles are spread evenly so the last one ends at the image edge at full size (no sliver). A
+tile gets no weight within 4 latents of an edge it shares with another tile and ramps to full weight over
+the next 8, normalised where more than two tiles meet (a stride under 16 latents, e.g. 1344 or 2400 px).
+A canvas that fits one tile is decoded / encoded untiled. The encode (edit inputs, the only encode this
+family runs) uses 64-latent tiles with 32-latent overlaps, blended in latent space: the encoder attends
+over the whole tile, so the stock 16-latent tiles shift the condition latent everywhere and derail the
+edit, not only at the seams. A 1024 px input is one tile, identical to the untiled encode; the guard
+charges edit inputs as condition pixels, which covers one encode tile at every reference resolution.
 Kill switch ``UNSLOTH_DIFFUSION_VAE_WIDE_TILES=0``: at load it skips the install (the fused batched tile
 decode, if any, installs as before); set later, each decode / encode takes the stock tiled path.
 """
