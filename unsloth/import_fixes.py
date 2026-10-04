@@ -1743,15 +1743,8 @@ def fix_transformers_untrusted_config_fields():
     except Exception as e:
         logger.info(f"Unsloth: Skipping the untrusted config field fix ({e})")
         return
-    current = PretrainedConfig.__dict__.get("from_dict")
-    if not isinstance(current, classmethod):
-        return
-    if getattr(current.__func__, _UNTRUSTED_CONFIG_PATCH_FLAG, False):
-        return
-    original = current.__func__
 
-    @functools.wraps(original)
-    def from_dict(cls, config_dict, *args, **kwargs):
+    def clean(cls, config_dict):
         config_dict = _strip_untrusted_config_fields(config_dict, strip_internal, strip_lightglue)
         # The class being built decides, not the model_type the file claims.
         if (
@@ -1761,13 +1754,35 @@ def fix_transformers_untrusted_config_fields():
             and "trust_remote_code" in config_dict
         ):
             config_dict = {k: v for k, v in config_dict.items() if k != "trust_remote_code"}
-        return original(cls, config_dict, *args, **kwargs)
+        return config_dict
 
-    setattr(from_dict, _UNTRUSTED_CONFIG_PATCH_FLAG, True)
-    try:
-        PretrainedConfig.from_dict = classmethod(from_dict)
-    except Exception as e:
-        logger.info(f"Unsloth: Failed patching PretrainedConfig.from_dict ({e})")
+    def wrap_from_dict(original):
+        @functools.wraps(original)
+        def from_dict(cls, config_dict, *args, **kwargs):
+            return original(cls, clean(cls, config_dict), *args, **kwargs)
+
+        return from_dict
+
+    def wrap_json_reader(original):
+        # from_json_file builds cls(**dict) without from_dict, so its reader is cleaned too.
+        @functools.wraps(original)
+        def _dict_from_json_file(cls, *args, **kwargs):
+            return clean(cls, original(cls, *args, **kwargs))
+
+        return _dict_from_json_file
+
+    for name, wrap in (("from_dict", wrap_from_dict), ("_dict_from_json_file", wrap_json_reader)):
+        current = PretrainedConfig.__dict__.get(name)
+        if not isinstance(current, classmethod) or getattr(
+            current.__func__, _UNTRUSTED_CONFIG_PATCH_FLAG, False
+        ):
+            continue
+        wrapped = wrap(current.__func__)
+        setattr(wrapped, _UNTRUSTED_CONFIG_PATCH_FLAG, True)
+        try:
+            setattr(PretrainedConfig, name, classmethod(wrapped))
+        except Exception as e:
+            logger.info(f"Unsloth: Failed patching PretrainedConfig.{name} ({e})")
 
 
 _CHAT_TEMPLATE_NAME_PATCH_FLAG = "_unsloth_patched_chat_template_names"
@@ -1816,21 +1831,23 @@ def fix_transformers_chat_template_path_traversal():
 
     def wrap(original):
         @functools.wraps(original)
-        def save_pretrained(self, *args, **kwargs):
+        def checked(self, *args, **kwargs):
             _check_chat_template_names(self, kwargs)
             return original(self, *args, **kwargs)
 
-        setattr(save_pretrained, _CHAT_TEMPLATE_NAME_PATCH_FLAG, True)
-        return save_pretrained
+        setattr(checked, _CHAT_TEMPLATE_NAME_PATCH_FLAG, True)
+        return checked
 
+    # save_chat_templates is public too, and writes the same files.
     for target in targets:
-        original = target.__dict__.get("save_pretrained")
-        if original is None or getattr(original, _CHAT_TEMPLATE_NAME_PATCH_FLAG, False):
-            continue
-        try:
-            target.save_pretrained = wrap(original)
-        except Exception as e:
-            logger.info(f"Unsloth: Failed patching {target.__name__}.save_pretrained ({e})")
+        for name in ("save_pretrained", "save_chat_templates"):
+            original = target.__dict__.get(name)
+            if original is None or getattr(original, _CHAT_TEMPLATE_NAME_PATCH_FLAG, False):
+                continue
+            try:
+                setattr(target, name, wrap(original))
+            except Exception as e:
+                logger.info(f"Unsloth: Failed patching {target.__name__}.{name} ({e})")
 
 
 _SDPA_MASK_PATCH_FLAG = "_unsloth_patched_sdpa_mask"

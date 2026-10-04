@@ -260,6 +260,12 @@ def test_kernel_field_from_config_json_is_dropped(patched, kernel_fetches, tmp_p
     assert model.config._attn_implementation in ("eager", "sdpa")
 
 
+def test_kernel_field_from_json_file_is_dropped(patched, tmp_path):
+    from transformers import LlamaConfig
+    config = LlamaConfig.from_json_file(str(_crafted_kernel_repo(tmp_path) / "config.json"))
+    assert config.__dict__.get("_attn_implementation_internal") is None
+
+
 @pytest.mark.skipif(
     not KERNEL_EXPLOITABLE,
     reason = "no Hub kernels before 4.56.0; from 5.3.0 the fix installs nothing and upstream owns them",
@@ -311,6 +317,15 @@ def test_traversing_template_name_is_refused_before_writing(patched, tmp_path):
     tokenizer = AutoTokenizer.from_pretrained(_crafted_template_repo(tmp_path))
     with pytest.raises(ValueError, match = "Invalid chat template name"):
         tokenizer.save_pretrained(tmp_path / "out" / "a" / "saved")
+    assert _escaped_files(tmp_path / "out") == []
+
+
+def test_save_chat_templates_called_directly_is_checked(patched, tmp_path):
+    tokenizer = AutoTokenizer.from_pretrained(_crafted_template_repo(tmp_path))
+    out = tmp_path / "out" / "a" / "saved"
+    out.mkdir(parents = True)
+    with pytest.raises(ValueError, match = "Invalid chat template name"):
+        tokenizer.save_chat_templates(str(out), {}, None, True)
     assert _escaped_files(tmp_path / "out") == []
 
 
