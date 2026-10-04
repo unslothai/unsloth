@@ -40,6 +40,9 @@ FBCACHE_MIN_STEPS = 20
 # == diffusion_speed.SPEED_MAX, spelled out to keep this module import-free.
 AUTO_STEP_CACHE_TIER = "max"
 
+# == diffusion_speed.REDUCTION_FILTER_OPTION, spelled out to keep this module import-free.
+_REDUCTION_FILTER_OPTION = "test_configs.force_filter_reduction_configs"
+
 
 def auto_step_cache_allowed(speed_mode: Optional[str]) -> bool:
     """Takes the EFFECTIVE speed tier."""
@@ -201,7 +204,11 @@ def _compile_hooked_block_inners(transformer: Any, logger: Any = None) -> int:
                 # default tier. Dynamo caches per code object, so re-arming after a toggle is ~free.
                 # Automatic dynamic when the speed layer chose it (max tier or torchao weights), as the blocks do.
                 dynamic = None if getattr(transformer, "_unsloth_auto_dynamic", False) else True
-                compiled = torch.compile(orig, fullgraph = False, dynamic = dynamic)
+                # Same reduction-config filter as the blocks (diffusion_speed.pin_reduction_configs).
+                block_kwargs = getattr(transformer, "_unsloth_regional_compile_kwargs", None) or {}
+                pinned = (block_kwargs.get("options") or {}).get(_REDUCTION_FILTER_OPTION)
+                extra = {"options": {_REDUCTION_FILTER_OPTION: True}} if pinned else {}
+                compiled = torch.compile(orig, fullgraph = False, dynamic = dynamic, **extra)
                 # Same runtime fallback as the block's own compile: a lowering failure on the first computed step
                 # restores the eager inner instead of failing the render.
                 guard = getattr(transformer, "_unsloth_compile_guard", None)
