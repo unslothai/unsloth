@@ -7,6 +7,7 @@ Inference API routes for model loading and text generation.
 
 import math
 import os
+import shutil
 import sys
 import time
 import uuid
@@ -102,7 +103,9 @@ from core.inference.audio_errors import (
     AudioGenerationCancelledError,
     AudioRuntimeError,
     audio_runtime_http_error,
+    sanitize_runtime_detail,
 )
+from core.inference.audio_cpp_outputs import NO_STEMS
 from core.inference import context_refusal
 from core.inference.context_window import (
     estimate_message_tokens as _estimate_message_tokens,
@@ -22176,6 +22179,11 @@ async def _generate_tts_wav(
             stats_holder = stats_holder,
         )
 
+    if audio_type == "audiocpp_sep":
+        raise HTTPException(
+            status_code = 400,
+            detail = f"{_audio_model_label(model_name)} separates audio into stems. Open Audio, then Separate.",
+        )
     if audio_type not in supported_audio_types:
         raise HTTPException(
             status_code = 400,
@@ -22747,9 +22755,11 @@ async def run_audio_workflow(
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
-    """Run one Audio page workflow (Clone, Speak in a saved voice, or Music); clips go to history.
-    Audio is named by id and resolved here in the caller's account; the worker gets a prepared
-    copy's path, never bytes."""
+    """Run one Audio page workflow (Clone, Speak in a saved voice, Music or Separate); clips go to
+    history. Audio is named by id and resolved here in the caller's account; the worker gets a
+    prepared copy's path, never bytes."""
+    if body.workflow == "separate":
+        return await _run_separation(body, request, current_subject)
     import base64
 
     from core.inference import audio_inputs
@@ -22837,6 +22847,254 @@ async def run_audio_workflow(
         return AudioRunResponse(model = model_name, audio = audio)
     clip = {k: record[k] for k in ("id", "url", "sample_rate", "duration_s", "workflow")}
     return AudioRunResponse(clips = [clip], model = model_name)
+
+
+# Stems in the order the Separate page lists them; ids a runtime adds follow in its own order.
+_STEM_ORDER = ("vocals", "drums", "bass", "guitar", "piano", "other", "instrumental")
+_SEPARATE_MAX_SECONDS = 600.0
+_SEPARATE_RATE = 44100
+
+
+def _separation_options(body: AudioRunRequest, family: Optional[str], label: str) -> Optional[dict]:
+    """The run's separation options, checked against what the loaded family takes."""
+    from core.inference.audio_cpp_models import FAMILIES
+
+    options = body.options or {}
+    if not options:
+        return None
+    policy = FAMILIES.get(family or "")
+    if policy is None or policy.separation is None or not policy.separation.overlap_option:
+        raise HTTPException(status_code = 400, detail = f"{label} has no separation options.")
+    for name in options:
+        if name != "num_overlap":
+            raise HTTPException(status_code = 400, detail = f"Unknown option '{name}'.")
+    value = options["num_overlap"]
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 8:
+        raise HTTPException(
+            status_code = 400, detail = "num_overlap must be a whole number from 1 to 8."
+        )
+    return {"num_overlap": value}
+
+
+def _clock(seconds: float) -> str:
+    whole = int(math.ceil(seconds))
+    return f"{whole // 60}:{whole % 60:02d}"
+
+
+def _probe_audio_with_av(path) -> Optional[tuple[int, float]]:
+    """``(channels, seconds)`` of the first audio stream, through FFmpeg; None if unreadable."""
+    try:
+        import av
+
+        from core.inference.audio_inputs import _av_open
+        with _av_open(av, str(path)) as container:
+            stream = container.streams.audio[0]
+            if stream.duration is not None and stream.time_base is not None:
+                seconds = float(stream.duration * stream.time_base)
+            elif container.duration is not None:
+                seconds = container.duration / 1_000_000
+            else:
+                return None
+            return int(stream.channels), seconds
+    except Exception:  # noqa: BLE001 - any failure reads as an unreadable track
+        return None
+
+
+def _prepare_separation_source(ref: dict[str, Any]):
+    """``(source, prepared 44.1 kHz path)``, after the 10-minute cap; stereo stays stereo."""
+    import wave
+
+    from core.inference import audio_inputs
+
+    source = audio_inputs.resolve_source(ref)
+    try:
+        with wave.open(str(source.path), "rb") as wav:
+            channels = wav.getnchannels()
+            seconds = wav.getnframes() / wav.getframerate()
+    except Exception:  # noqa: BLE001 - e.g. a float stem from history, which wave cannot open
+        probed = _probe_audio_with_av(source.path)
+        if probed is None:
+            raise audio_inputs.AudioInputError(400, "This track could not be read. Add it again.")
+        channels, seconds = probed
+    if seconds > _SEPARATE_MAX_SECONDS:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Separate tracks up to 10 minutes long. This one is "
+            f"{_clock(seconds)}. Pick a shorter track.",
+        )
+    return source, audio_inputs.prepared_path(source, _SEPARATE_RATE, stereo = channels == 2)
+
+
+def _stem_rank(ids: list[str]):
+    runtime = {stem_id: index for index, stem_id in enumerate(ids)}
+    return lambda stem_id: (
+        _STEM_ORDER.index(stem_id) if stem_id in _STEM_ORDER else len(_STEM_ORDER),
+        runtime[stem_id],
+    )
+
+
+def _checked_stems(outputs: Any, staging: Path) -> list[dict]:
+    """The worker's stems, each a WAV inside ``staging``, in display order; 502 otherwise."""
+    if not isinstance(outputs, list) or not outputs:
+        raise HTTPException(status_code = 502, detail = NO_STEMS)
+    root = staging.resolve()
+    stems = []
+    for output in outputs:
+        try:
+            path = Path(str(output["path"])).resolve()
+            path.relative_to(root)
+            with open(path, "rb") as f:
+                riff = f.read(4) == b"RIFF"
+            stem = {
+                "id": str(output["id"]),
+                "path": path,
+                "sample_rate": int(output["sample_rate"]),
+                "duration_s": float(output["duration_s"]),
+            }
+        except (KeyError, TypeError, ValueError, OSError):
+            riff = False
+        if not riff:
+            logger.warning("audio.separate: the worker returned an unusable stem")
+            raise HTTPException(status_code = 502, detail = NO_STEMS)
+        stems.append(stem)
+    rank = _stem_rank([stem["id"] for stem in stems])
+    return sorted(stems, key = lambda stem: rank(stem["id"]))
+
+
+def _save_stems(stems: list[dict], base_meta: dict[str, Any]) -> list[dict]:
+    """Save every stem to history under one group, all or none, then prune once."""
+    from core.inference import audio_gallery
+
+    records: list[dict] = []
+    try:
+        for stem in stems:
+            meta = {
+                **base_meta,
+                "sample_rate": stem["sample_rate"],
+                "duration_s": stem["duration_s"],
+                "role": stem["id"],
+            }
+            records.append(audio_gallery.save_file(stem["path"], meta, prune = False))
+    except Exception:
+        for record in records:
+            audio_gallery.delete(record["id"])
+        raise
+    audio_gallery._prune_to_cap()
+    return records
+
+
+async def _run_separation(
+    body: AudioRunRequest, request: Request, current_subject: str
+) -> AudioRunResponse:
+    """Split a track into stems saved as one history group; worker paths are checked to stay in
+    the account's gallery and never reach the client."""
+    from core.inference import audio_gallery, audio_inputs
+
+    if body.text is not None:
+        raise HTTPException(status_code = 400, detail = "Separate takes no text.")
+    if any(
+        name in body.model_fields_set and getattr(body, name) not in (None, False, 1)
+        for name in _MUSIC_ONLY_FIELDS
+    ):
+        raise HTTPException(
+            status_code = 400,
+            detail = "A music mode, lyrics, variations and edits apply to Music only.",
+        )
+    inputs = body.inputs
+    if inputs.reference is not None or inputs.emotion is not None or inputs.reference_text:
+        raise HTTPException(status_code = 400, detail = "Separate takes only a track.")
+    source_ref = inputs.source
+    if source_ref is None:
+        raise HTTPException(status_code = 400, detail = "Add a track to separate.")
+    if source_ref.voice_id:
+        raise HTTPException(status_code = 400, detail = "Pick a track to separate, not a saved voice.")
+    await _maybe_auto_switch_model(
+        _RELOAD_ONLY_MODEL, request, current_subject, claim_resident = False
+    )
+    backend = await asyncio.to_thread(get_inference_backend)
+    model_info = (
+        backend.models.get(backend.active_model_name, {}) if backend.active_model_name else {}
+    )
+    if "separate" not in (model_info.get("audio_workflows") or []):
+        raise HTTPException(status_code = 400, detail = "Load a model that can separate audio.")
+    model_name = _orchestrator_public_model_id(backend)
+    options = _separation_options(
+        body, model_info.get("audio_family"), _audio_model_label(model_name)
+    )
+    ref = source_ref.model_dump(exclude_none = True)
+    try:
+        source, prepared = await asyncio.to_thread(_prepare_separation_source, ref)
+    except audio_inputs.AudioInputError as exc:
+        if exc.status == 404 and source_ref.input_id:
+            raise HTTPException(status_code = 404, detail = "This track expired. Add it again.")
+        raise _audio_source_error(exc) from None
+
+    staging = await asyncio.to_thread(
+        lambda: audio_gallery.gallery_dir() / f".separate-{uuid.uuid4().hex}"
+    )
+    try:
+        await asyncio.to_thread(staging.mkdir, parents = True)
+        cancel = threading.Event()
+        with _TrackedCancel(cancel, model = model_name, kind = "audio"):
+            watcher = asyncio.create_task(_await_disconnect_then_cancel(request, cancel))
+            try:
+                outputs = await asyncio.to_thread(
+                    backend.separate_audio_response, str(prepared), str(staging), options, cancel
+                )
+            except Exception as e:
+                if cancel.is_set() or isinstance(e, AudioGenerationCancelledError):
+                    raise HTTPException(status_code = 499, detail = "Audio generation cancelled")
+                if isinstance(e, AudioBackendUnsupportedError):
+                    raise HTTPException(status_code = 501, detail = e.message)
+                if isinstance(e, AudioRuntimeError):
+                    status_code, detail = audio_runtime_http_error(e)
+                    logger.warning("Audio separation refused by the runtime: %s", e)
+                    raise HTTPException(status_code = status_code, detail = detail)
+                logger.error(f"Audio separation error: {e}", exc_info = True)
+                raise HTTPException(status_code = 500, detail = safe_error_detail(e))
+            finally:
+                await _stop_local_disconnect_cancel_watcher(watcher)
+        stems = _checked_stems(outputs, staging)
+        group_id = uuid.uuid4().hex
+        base_meta: dict[str, Any] = {
+            "prompt": source.name,
+            "model": model_name,
+            "audio_type": "audiocpp_sep",
+            "workflow": "separate",
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "group_id": group_id,
+            "settings": {
+                "stems": [stem["id"] for stem in stems],
+                "num_overlap": (options or {}).get("num_overlap"),
+            },
+        }
+        if source.kind == "clip":
+            base_meta["source_clip_id"] = source.id
+        try:
+            records = await asyncio.to_thread(_save_stems, stems, base_meta)
+        except Exception as exc:  # noqa: BLE001 - every stem of the group was rolled back
+            logger.warning("audio_gallery.separate_save_failed: %s", exc)
+            reason = sanitize_runtime_detail(str(exc)) or "unknown error"
+            raise HTTPException(
+                status_code = 500, detail = f"Could not save the stems to history: {reason}"
+            )
+    finally:
+        await asyncio.to_thread(shutil.rmtree, staging, True)
+    return AudioRunResponse(
+        clips = [
+            {
+                "id": record["id"],
+                "role": record["role"],
+                "url": record["url"],
+                "sample_rate": record["sample_rate"],
+                "duration_s": record["duration_s"],
+                "workflow": record["workflow"],
+            }
+            for record in records
+        ],
+        group_id = group_id,
+        model = model_name,
+    )
 
 
 def _refuse_decision_connection(provider_type: Optional[str], api_type: Optional[str]) -> None:
@@ -34403,7 +34661,7 @@ def _audio_cpp_speech_model_objects(created: int) -> list[dict]:
             return []
         objects = []
         for model in downloaded_models():
-            if model.audio_type is None:
+            if model.audio_type is None or model.task not in ("tts", "music"):
                 continue
             if account_access.managed_account() and not account_access.model_visible(
                 model.repo_id or model.id
@@ -45162,7 +45420,7 @@ async def delete_gallery_audio(audio_id: str, current_subject: str = Depends(get
 
 @studio_router.delete("/audio/gallery")
 async def clear_gallery_audio(
-    workflow: Optional[Literal["speak", "clone", "music"]] = None,
+    workflow: Optional[Literal["speak", "clone", "music", "separate"]] = None,
     current_subject: str = Depends(get_current_subject),
 ):
     from core.inference import audio_gallery

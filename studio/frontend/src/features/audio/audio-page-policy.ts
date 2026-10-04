@@ -7,6 +7,7 @@ import {
   AUDIO_CPP_MUSIC_AUDIO_TYPE,
   AUDIO_CPP_MUSIC_MAX_SECONDS,
   AUDIO_CPP_MUSIC_MIN_SECONDS,
+  AUDIO_CPP_SEP_AUDIO_TYPE,
   AUDIO_CPP_TTS_AUDIO_TYPE,
   type AudioCppRuntimeStatus,
   audioCppDisplayName,
@@ -130,6 +131,7 @@ const TTS_AUDIO_TYPES = new Set([
   "minimax_music3",
   AUDIO_CPP_TTS_AUDIO_TYPE,
   AUDIO_CPP_MUSIC_AUDIO_TYPE,
+  AUDIO_CPP_SEP_AUDIO_TYPE,
 ]);
 // The GGUF runtime's speech and music load from a GGUF too, so a status may call them one.
 const GGUF_TTS_AUDIO_TYPES = new Set([
@@ -138,6 +140,7 @@ const GGUF_TTS_AUDIO_TYPES = new Set([
   "dac",
   AUDIO_CPP_TTS_AUDIO_TYPE,
   AUDIO_CPP_MUSIC_AUDIO_TYPE,
+  AUDIO_CPP_SEP_AUDIO_TYPE,
 ]);
 const NATIVE_TTS_AUDIO_TYPES = new Set([
   "higgs_tts2",
@@ -147,6 +150,7 @@ const NATIVE_TTS_AUDIO_TYPES = new Set([
   "minimax_music3",
   AUDIO_CPP_TTS_AUDIO_TYPE,
   AUDIO_CPP_MUSIC_AUDIO_TYPE,
+  AUDIO_CPP_SEP_AUDIO_TYPE,
 ]);
 export const MOSS_TTS_FRAMES_PER_SECOND = 12.5;
 export const MOSS_TTS_DEFAULT_SECONDS = 15;

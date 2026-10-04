@@ -24,7 +24,7 @@ test("unknown tasks, workflows and audio types are dropped", () => {
   assert.deepEqual(
     validateAudioSearch({
       task: "text-to-image",
-      workflow: "separate",
+      workflow: "convert",
       audioType: "not-a-type",
       loadId: "   ",
     }),
@@ -34,6 +34,9 @@ test("unknown tasks, workflows and audio types are dropped", () => {
     validateAudioSearch({ workflow: 3, task: ["text-to-speech"] }),
     {},
   );
+  assert.deepEqual(validateAudioSearch({ workflow: "separate" }), {
+    workflow: "separate",
+  });
 });
 
 test("the params the route accepted before pass through unchanged", () => {

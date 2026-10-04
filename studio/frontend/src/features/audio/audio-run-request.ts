@@ -101,13 +101,15 @@ export interface AudioMusicRunFields {
 }
 
 export interface AudioRunRequest {
-  workflow: "clone" | "speak" | "music";
+  workflow: "clone" | "speak" | "music" | "separate";
   music?: AudioMusicRunFields;
-  text: string;
+  /** Required for clone, speak and music; separate takes none. */
+  text?: string;
   language?: string | null;
   instructions?: string | null;
   inputs?: {
     reference?: AudioSourceRef | null;
+    source?: AudioSourceRef | null;
     reference_text?: string | null;
     emotion?: AudioSourceRef | null;
   };
@@ -133,10 +135,8 @@ function cleanRef(
 export function buildAudioRunBody(
   request: AudioRunRequest,
 ): Record<string, unknown> {
-  const body: Record<string, unknown> = {
-    workflow: request.workflow,
-    text: request.text,
-  };
+  const body: Record<string, unknown> = { workflow: request.workflow };
+  if (request.workflow !== "separate") body.text = request.text ?? "";
   const language = request.language?.trim();
   if (language) body.language = language;
   const instructions = request.instructions?.trim();
@@ -144,6 +144,8 @@ export function buildAudioRunBody(
   const inputs: Record<string, unknown> = {};
   const reference = cleanRef(request.inputs?.reference);
   if (reference) inputs.reference = reference;
+  const source = cleanRef(request.inputs?.source);
+  if (source) inputs.source = source;
   const rawReferenceText = request.inputs?.reference_text;
   // A cleared field is sent blank, so the server does not refill it from a saved voice.
   if (typeof rawReferenceText === "string") {

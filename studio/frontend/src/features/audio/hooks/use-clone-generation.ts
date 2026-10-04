@@ -55,7 +55,7 @@ export async function showRunResult({
 }: {
   response: AudioRunResponse;
   text: string;
-  workflow: "speak" | "clone" | "music";
+  workflow: "speak" | "clone" | "music" | "separate";
 } & Pick<
   AudioGallery,
   "refreshGallery" | "selectClip" | "setFallbackClip" | "setSelectedId"
