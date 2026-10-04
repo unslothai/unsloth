@@ -109,10 +109,14 @@ _WORKERS_THAT_RUN_THEIR_CALLBACK = {
 
 
 def _executed_calls(lam: ast.Lambda) -> list[ast.Call]:
-    """Calls the lambda's own body makes when it runs. A lambda, def or generator expression
-    nested inside it is only created there, and could be returned and run back on the loop, so
-    it is not descended."""
-    found, stack = [], [lam.body]
+    return _calls_run_in_scope([lam.body])
+
+
+def _calls_run_in_scope(roots: list[ast.AST]) -> list[ast.Call]:
+    """Calls these nodes make when their own scope runs. A lambda, def or generator expression
+    nested inside is only created there, and could be returned and run later on the loop, so it
+    is not descended."""
+    found, stack = [], list(roots)
     while stack:
         node = stack.pop()
         if isinstance(node, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef, ast.GeneratorExp)):
@@ -134,6 +138,8 @@ def _calls_inside_offloaded_lambdas(fn: ast.AST) -> set[int]:
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
             and node.func.attr == "to_thread"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "asyncio"
             and node.args
         ):
             continue
@@ -280,6 +286,7 @@ def test_a_lambda_handed_to_to_thread_is_off_the_loop_but_an_inline_call_is_not(
         "    await asyncio.to_thread(model_slots.in_slot, None, lambda: helper(model))\n"
         "    await asyncio.to_thread(other.in_slot, None, lambda: helper(model))\n"
         "    (await asyncio.to_thread(lambda: (helper(model) for _ in range(1)))).__next__()\n"
+        "    await dispatcher.to_thread(lambda: helper(model))\n"
     ).body[0]
     off_loop = _calls_inside_offloaded_lambdas(fn)
     calls = [
@@ -288,7 +295,7 @@ def test_a_lambda_handed_to_to_thread_is_off_the_loop_but_an_inline_call_is_not(
         if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "helper"
     ]
     assert sorted(n.lineno for n in calls if id(n) in off_loop) == [3, 8]
-    assert sorted(n.lineno for n in calls if id(n) not in off_loop) == [2, 4, 5, 6, 7, 9, 10]
+    assert sorted(n.lineno for n in calls if id(n) not in off_loop) == [2, 4, 5, 6, 7, 9, 10, 11]
 
 
 @pytest.mark.parametrize("worker", sorted(_WORKERS_THAT_RUN_THEIR_CALLBACK))
@@ -311,9 +318,8 @@ def test_each_listed_worker_still_runs_the_callable_it_is_handed(worker):
     # return it uncalled, so it does not count.
     runs = [
         n
-        for n in ast.walk(fn)
-        if isinstance(n, ast.Call)
-        and (
+        for n in _calls_run_in_scope(fn.body)
+        if (
             (isinstance(n.func, ast.Name) and n.func.id == param)
             or (
                 isinstance(n.func, ast.Attribute)
