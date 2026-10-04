@@ -28276,7 +28276,10 @@ async def produce_openai_chat_completions(
                 skill_instruction_ids = set()
                 yield from load_mentioned_skills(
                     gguf_messages,
-                    tools_to_use,
+                    # "none" / a zero budget withdraw read_skill, so they withdraw the preload too.
+                    tools_to_use
+                    if payload.tool_choice != "none" and payload.max_tool_calls_per_message != 0
+                    else [],
                     permission_mode = payload.permission_mode,
                     bypass_permissions = bool(payload.bypass_permissions),
                     confirm_tool_calls = _effective_confirm,

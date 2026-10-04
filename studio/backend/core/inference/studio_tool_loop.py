@@ -1280,7 +1280,8 @@ async def stream_with_studio_tools(
 
     skill_loads = load_mentioned_skills(
         conversation,
-        tools,
+        # "none" / a zero budget withdraw read_skill, so they withdraw the preload too.
+        tools if tool_choice != "none" and (unlimited or remaining > 0) else [],
         permission_mode = permission_mode,
         bypass_permissions = bypass_permissions,
         confirm_tool_calls = confirm_tool_calls,

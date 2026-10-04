@@ -689,7 +689,7 @@ def run_safetensors_tool_loop(
 
     yield from load_mentioned_skills(
         conversation,
-        tools,
+        tools if max_tool_iterations > 0 else [],
         permission_mode = permission_mode,
         bypass_permissions = bypass_permissions,
         confirm_tool_calls = confirm_tool_calls,

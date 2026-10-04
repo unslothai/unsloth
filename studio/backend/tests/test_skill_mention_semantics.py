@@ -351,3 +351,72 @@ def test_external_ask_flushes_skill_approval_before_waiting(mention_client, monk
     # The Allow / Deny card must be followed by its own keepalive write while Ask waits.
     assert events[gate + 1].startswith(":"), events[gate : gate + 2]
     assert any('"status":"loaded"' in e for e in events)
+
+
+@pytest.mark.parametrize("tool_choice, max_calls", [("none", 5), ("auto", 0)])
+def test_external_withdrawn_tools_skip_preload(mention_client, tool_choice, max_calls):
+    from core.inference.studio_tool_loop import (
+        ToolLoopRun,
+        ToolLoopPolicy,
+        stream_with_studio_tools,
+    )
+
+    _, _, path = mention_client
+    captured = []
+
+    class Transport:
+        heals_text_tool_calls = False
+        sanitizes_provider_frames = False
+
+        async def stream(self, **kwargs):
+            captured.append(kwargs)
+            yield 'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}'
+            yield "data: [DONE]"
+
+    async def drive():
+        return [
+            event
+            async for event in stream_with_studio_tools(
+                Transport(),
+                run = ToolLoopRun(
+                    messages = [{"role": "user", "content": "@skill-creator"}],
+                    tool_choice = tool_choice,
+                ),
+                policy = ToolLoopPolicy(
+                    tools = [READ_SKILL_TOOL],
+                    max_calls = max_calls,
+                    timeout = 30,
+                    permission_mode = "auto",
+                    confirm_calls = False,
+                    bypass_permissions = False,
+                    rag_scope = None,
+                    nudge_tool_calls = False,
+                ),
+                cancel_event = threading.Event(),
+            )
+        ]
+
+    events = asyncio.run(drive())
+    assert path.read_text() not in json.dumps([c.get("messages") for c in captured])
+    assert not any('"type":"skill_load"' in event for event in events)
+
+
+@pytest.mark.parametrize("extra", [{"tool_choice": "none"}, {"max_tool_calls_per_message": 0}])
+def test_local_withdrawn_tools_skip_preload(mention_client, extra):
+    client, backend, manifest = mention_client
+    response = client.post(
+        "/chat/completions",
+        json = {
+            "messages": [{"role": "user", "content": "@skill-creator hi"}],
+            "stream": True,
+            "enable_tools": True,
+            "enabled_tools": ["read_skill"],
+            "permission_mode": "auto",
+            **extra,
+        },
+        headers = {"X-Unsloth-Events": "1"},
+    )
+    assert response.status_code == 200, response.text
+    assert backend.requests, response.text
+    assert manifest.read_text() not in json.dumps(backend.requests[0]["messages"])
+    assert '"type": "skill_load"' not in response.text
