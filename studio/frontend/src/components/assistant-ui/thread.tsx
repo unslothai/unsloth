@@ -8464,6 +8464,7 @@ async function exportMessageMarkdown(content: string): Promise<void> {
 const AssistantActionBar: FC = () => {
   const aui = useAui();
   const moreMenuTriggerRef = useRef<HTMLButtonElement>(null);
+  const moreMenuEscapedRef = useRef(false);
   // Not built on DropdownMenuContent, so clear the titlebar and cap the height here.
   const moreMenuCollisionPadding = useWindowChromeCollisionPadding(undefined);
   const { forkMessage, forkDisabled } = useForkMessageAction();
@@ -8551,6 +8552,18 @@ const AssistantActionBar: FC = () => {
             side="bottom"
             align="start"
             collisionPadding={moreMenuCollisionPadding}
+            onEscapeKeyDown={() => {
+              moreMenuEscapedRef.current = true;
+            }}
+            // Escape returns focus to More (WAI-ARIA menu button). Other closes keep it put: a
+            // restore after a pointer pick shows the focus ring and the More tooltip.
+            onCloseAutoFocus={(e) => {
+              if (moreMenuEscapedRef.current) {
+                moreMenuEscapedRef.current = false;
+                return;
+              }
+              e.preventDefault();
+            }}
             className="aui-action-bar-more-content z-50 min-w-32 max-h-(--radix-dropdown-menu-content-available-height) flex flex-col overflow-hidden rounded-[21px] bg-popover px-[calc(9px*var(--ui-space-scale,1))] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-[0_8px_28px_-6px_var(--background)]"
           >
             {/* Scroll an inner viewport: a scrollbar on the rounded surface squares its corners.
