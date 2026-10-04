@@ -1214,7 +1214,9 @@ def test_dense_speed_auto_defers_compile_to_third_generation(fake_runtime, tmp_p
     monkeypatch.setattr(
         dmod,
         "select_attention_backend",
-        lambda target, requested, speed_active = False: ("_native_cudnn" if speed_active else None),
+        lambda target, requested, speed_active = False, family = None, speed_unset = False: (
+            "_native_cudnn" if speed_active else None
+        ),
     )
     monkeypatch.setattr(dmod.compile_cache, "begin", lambda **k: None)
 
@@ -1404,6 +1406,8 @@ def test_deferred_speed_preserves_explicit_attention(fake_runtime, tmp_path, mon
         target,
         requested,
         speed_active = False,
+        family = None,
+        speed_unset = False,
     ):
         if requested in (None, "", "auto"):
             return "_native_cudnn" if speed_active else None

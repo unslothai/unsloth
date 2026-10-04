@@ -6914,7 +6914,11 @@ class DiffusionBackend:
                     attention_engaged = apply_attention_backend(
                         pipe,
                         select_attention_backend(
-                            target, attention_backend, speed_active = effective_speed != SPEED_OFF
+                            target,
+                            attention_backend,
+                            speed_active = effective_speed != SPEED_OFF,
+                            family = fam,
+                            speed_unset = speed_mode is None,
                         ),
                         logger = logger,
                         target = target,
@@ -9156,7 +9160,9 @@ class DiffusionBackend:
         # Re-run the load-time selection with the caller's ORIGINAL request: auto still upgrades to cuDNN here.
         attention_engaged = apply_attention_backend(
             state.pipe,
-            select_attention_backend(target, state.attention_request, speed_active = True),
+            select_attention_backend(
+                target, state.attention_request, speed_active = True, family = state.family
+            ),
             logger = logger,
             target = target,
         )
