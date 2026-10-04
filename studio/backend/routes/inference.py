@@ -6511,9 +6511,12 @@ def _local_template_default_system_prompt() -> str:
                 or info.get("chat_template_override_reason")
             ):
                 template = (info.get("chat_template_info") or {}).get("template")
+        from core.inference.chat_template_helpers import _selected_template_strings_from_value
+
+        selected = _selected_template_strings_from_value(template)
     except Exception:
         return ""
-    return template_default_system_prompt(template if isinstance(template, str) else None)
+    return template_default_system_prompt(selected[0] if selected else None)
 
 
 def _apply_current_date_prompt(

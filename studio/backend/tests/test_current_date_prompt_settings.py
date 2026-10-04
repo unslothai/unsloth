@@ -505,6 +505,29 @@ class TestDateStaysInTheSystemTurn:
         )
         assert self.inference._append_tool_nudge("", "", object()) == ""
 
+    def test_a_named_template_list_is_probed_through_its_default(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from core.inference import orchestrator
+
+        monkeypatch.undo()
+        named = [
+            {"name": "default", "template": _QWEN25_LIKE},
+            {"name": "tool_use", "template": _CHATML},
+        ]
+        backend = SimpleNamespace(
+            active_model_name = "hermes",
+            models = {"hermes": {"chat_template_info": {"template": named}}},
+        )
+        monkeypatch.setattr(
+            self.inference, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+        )
+        monkeypatch.setattr(orchestrator, "peek_inference_backend", lambda: backend)
+        assert (
+            self.inference._local_template_default_system_prompt()
+            == "You are Qwen, a helpful assistant."
+        )
+
     def test_a_tool_nudge_alone_stays_undated_when_the_setting_is_off(self, monkeypatch):
         monkeypatch.setattr(self.inference, "current_date_prompt_line", lambda **_kwargs: "")
         assert self.inference._append_tool_nudge("", "Use the tools.", object()) == "Use the tools."
