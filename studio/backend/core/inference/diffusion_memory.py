@@ -1046,7 +1046,8 @@ _MEASURED_IMAGE_ACTIVATION_MIB: dict[
     str, tuple[tuple[int, int, int, int, int], tuple[int, int, int, int, int]]
 ] = {
     # text encoder, denoise, untiled decode, tiled decode (all at 1024x1024), max(denoise, tiled decode) at 2048x2048
-    "qwen-image-2.1": ((1_849, 666, 7_648, 449, 2_479), (1_849, 2_489, 7_648, 449, 9_602)),
+    # Qwen-Image-2.1 tiled decode: one 512 px tile (diffusion_vae_tiling), unfused bf16, the worst case.
+    "qwen-image-2.1": ((1_849, 666, 7_648, 1_697, 2_479), (1_849, 2_489, 7_648, 1_697, 9_602)),
     "flux.1": ((288, 892, 2_666, 2_456, 2_674), (288, 892, 2_666, 2_456, 2_674)),
     "flux.2-klein": ((1_516, 1_160, 2_645, 2_456, 3_876), (1_516, 1_205, 2_677, 2_456, 3_924)),
     "z-image": ((744, 1_199, 2_666, 2_456, 4_327), (744, 1_271, 2_669, 2_456, 4_327)),
@@ -4099,6 +4100,9 @@ def vae_tile_side(vae: Any) -> Optional[int]:
     """The pixel side a VAE tiles at, or None when it cannot tile at all."""
     if vae is None or not callable(getattr(vae, "enable_tiling", None)):
         return None
+    decode_side = getattr(vae, "_unsloth_decode_tile_side", None)
+    if isinstance(decode_side, int) and not isinstance(decode_side, bool) and decode_side > 0:
+        return max(64, min(4096, decode_side))  # diffusion_vae_tiling decodes in wider tiles than the attributes
     sides: list[int] = []
     for attr in ("tile_sample_min_size", "tile_sample_min_height", "tile_sample_min_width"):
         value = getattr(vae, attr, None)
