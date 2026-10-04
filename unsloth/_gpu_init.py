@@ -293,6 +293,7 @@ from .import_fixes import (
     patch_psutil_cpu_freq,
     patch_enable_input_require_grads,
     patch_unsafe_trainer_rng_load,
+    patch_torch_export_pt2_unsafe_load,
     fix_openenv_no_vllm,
     patch_openspiel_env_async,
     fix_executorch,
@@ -382,6 +383,7 @@ patch_datasets()
 patch_psutil_cpu_freq()
 patch_enable_input_require_grads()
 patch_unsafe_trainer_rng_load()
+patch_torch_export_pt2_unsafe_load()
 fix_openenv_no_vllm()
 patch_openspiel_env_async()
 fix_executorch()

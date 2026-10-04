@@ -33,6 +33,7 @@ import sysconfig
 import threading
 import functools
 import inspect
+import types
 
 # We cannot do from unsloth_zoo.log import logger since FBGEMM might cause seg faults.
 UNSLOTH_ENABLE_LOGGING = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") in (
@@ -4728,6 +4729,111 @@ def patch_unsafe_trainer_rng_load():
     _unsloth_safe_load_rng_state._unsloth_safe_rng_load = True
     Trainer._load_rng_state = _unsloth_safe_load_rng_state
     logger.info("Unsloth: Hardened Trainer._load_rng_state rng loading (CVE-2026-1839).")
+
+
+_PT2_UNSAFE_LOAD_ENV = "UNSLOTH_ALLOW_UNSAFE_PT2_LOAD"
+# torch.export's .pt2 readers: their weights_only=False loads unpickle archive bytes.
+_PT2_LOADER_MODULES = frozenset(
+    (
+        "torch._export.serde.serialize",
+        "torch.export.pt2_archive._package",
+    )
+)
+
+
+def _pt2_unsafe_load_allowed():
+    return os.environ.get(_PT2_UNSAFE_LOAD_ENV, "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _pt2_unsafe_load_error(what):
+    import pickle
+    return pickle.UnpicklingError(
+        f"Unsloth: refused to {what} inside a torch.export .pt2 archive. Unpickling it can run "
+        f"arbitrary code (CVE-2026-4538). If you trust this file, set {_PT2_UNSAFE_LOAD_ENV}=1 "
+        "and load it again."
+    )
+
+
+def _pt2_loader_caller(frame):
+    # Skip Unsloth's own torch.load wrappers (the rng guard may wrap this one).
+    hops = 0
+    while frame is not None and hops < 4:
+        name = frame.f_globals.get("__name__", "")
+        if not name.startswith(("unsloth.", "unsloth_zoo.")) and name != __name__:
+            return name
+        frame = frame.f_back
+        hops += 1
+    return ""
+
+
+class _Pt2PickleModule(types.ModuleType):
+    """Stands in for `pickle` inside torch.export.pt2_archive._package: loads is refused."""
+
+    def __init__(self, real):
+        super().__init__(real.__name__)
+        self._unsloth_pt2_real_pickle = real
+
+    def __getattr__(self, name):
+        return getattr(self._unsloth_pt2_real_pickle, name)
+
+    def loads(self, *args, **kwargs):
+        if _pt2_unsafe_load_allowed():
+            return self._unsloth_pt2_real_pickle.loads(*args, **kwargs)
+        raise _pt2_unsafe_load_error("unpickle an opaque object")
+
+
+def patch_torch_export_pt2_unsafe_load():
+    """Harden torch.export .pt2 loading against CVE-2026-4538 (upstream fix
+    pytorch/pytorch#176791 was never merged). torch.export.load unpickles archive payloads
+    with weights_only=False: always on older torch, as a silent fallback after a failed
+    weights_only=True load on newer torch, for `use_pickle` weights and constants, and via a
+    bare pickle.loads for opaque constants on newest torch. Those loads become
+    weights_only=True and the bare pickle.loads is refused; tensors, parameters and ordinary
+    exported programs still load. Unsloth never loads .pt2 itself, so only user code calling
+    torch.export.load changes, and only for archives that need arbitrary unpickling.
+    UNSLOTH_ALLOW_UNSAFE_PT2_LOAD=1 restores torch's behaviour per call. Idempotent."""
+    try:
+        import torch
+    except Exception:
+        return
+    patched = False
+    load = torch.load
+    if not getattr(load, "_unsloth_pt2_guard", False):
+
+        @functools.wraps(load)
+        def _pt2_guarded_torch_load(*args, **kwargs):
+            if kwargs.get("weights_only") is not False or _pt2_unsafe_load_allowed():
+                return load(*args, **kwargs)
+            if _pt2_loader_caller(sys._getframe(1)) not in _PT2_LOADER_MODULES:
+                return load(*args, **kwargs)
+            kwargs["weights_only"] = True
+            try:
+                return load(*args, **kwargs)
+            except Exception as error:
+                raise _pt2_unsafe_load_error("unpickle a non-tensor payload") from error
+
+        _pt2_guarded_torch_load._unsloth_pt2_guard = True
+        # Carry the rng guard's markers so patch_unsafe_trainer_rng_load stays idempotent.
+        for attribute in ("_unsloth_rng_guard", "_unsloth_rng_flag"):
+            if hasattr(load, attribute):
+                setattr(_pt2_guarded_torch_load, attribute, getattr(load, attribute))
+        torch.load = _pt2_guarded_torch_load
+        patched = True
+
+    # Opaque constants (newest torch) bypass torch.load. `import unsloth` has already imported
+    # the module; import it here only once dynamo is loaded, so a bare import stays cheap.
+    package = sys.modules.get("torch.export.pt2_archive._package")
+    if package is None and "torch._dynamo" in sys.modules:
+        try:
+            import torch.export.pt2_archive._package as package
+        except Exception:
+            package = None
+    real_pickle = getattr(package, "pickle", None)
+    if isinstance(real_pickle, types.ModuleType) and not isinstance(real_pickle, _Pt2PickleModule):
+        package.pickle = _Pt2PickleModule(real_pickle)
+        patched = True
+    if patched:
+        logger.info("Unsloth: Hardened torch.export .pt2 loading (CVE-2026-4538).")
 
 
 def _is_custom_torch_build(raw_version_str):
