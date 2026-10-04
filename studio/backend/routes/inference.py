@@ -22885,7 +22885,9 @@ def _probe_audio_with_av(path) -> Optional[tuple[int, float]]:
     """``(channels, seconds)`` of the first audio stream, through FFmpeg; None if unreadable."""
     try:
         import av
-        with av.open(str(path), mode = "r") as container:
+
+        from core.inference.audio_inputs import _av_open
+        with _av_open(av, str(path)) as container:
             stream = container.streams.audio[0]
             if stream.duration is not None and stream.time_base is not None:
                 seconds = float(stream.duration * stream.time_base)
