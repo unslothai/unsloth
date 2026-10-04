@@ -3533,11 +3533,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # coordinator branch and trigger hardware probing before GPU selection.
     if config.get("parallelism_mode") == "ddp" and not config.get("_ddp_child"):
         from .ddp import run_ddp_training_process
-
         run_ddp_training_process(
-            event_queue=event_queue,
-            stop_queue=stop_queue,
-            config=config,
+            event_queue = event_queue,
+            stop_queue = stop_queue,
+            config = config,
         )
         return
 

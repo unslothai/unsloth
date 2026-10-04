@@ -666,9 +666,7 @@ class TrainingStartRequest(BaseModel):
         if self.parallelism_mode == "single" and len(ids) != 1:
             raise ValueError("parallelism_mode='single' requires exactly one gpu_id.")
         if self.parallelism_mode == "model_parallel" and len(ids) < 2:
-            raise ValueError(
-                "parallelism_mode='model_parallel' requires at least two gpu_ids."
-            )
+            raise ValueError("parallelism_mode='model_parallel' requires at least two gpu_ids.")
         if self.parallelism_mode == "ddp" and len(ids) < 2:
             raise ValueError("parallelism_mode='ddp' requires at least two gpu_ids.")
         return self

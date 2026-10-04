@@ -5734,9 +5734,7 @@ def _describe_rocm_gpus(gpu_ids) -> list[str]:
 
 def reject_gpu_ids_without_torch_kernels(gpu_ids) -> None:
     """Explicit picks bypass auto-selection; reject a known-incompatible Torch device early."""
-    uncovered = sorted(
-        set(int(gpu_id) for gpu_id in gpu_ids) & gpu_ids_without_torch_kernels()
-    )
+    uncovered = sorted(set(int(gpu_id) for gpu_id in gpu_ids) & gpu_ids_without_torch_kernels())
     if not uncovered:
         return
     built_for = ", ".join(_torch_kernel_arch_tokens()) or "other GPU architectures"
