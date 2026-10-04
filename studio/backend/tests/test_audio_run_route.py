@@ -214,6 +214,8 @@ def test_a_clone_run_hands_the_worker_an_account_path_and_saves_the_clip(stub, t
         {"options": {"voice_ref": "/etc/passwd"}},
         {"options": {"source_audio": "/etc/passwd"}},
         {"options": {"codec_model_path": "/etc/passwd"}},
+        {"options": {"video": "/etc/passwd"}},  # ControlFoley
+        {"options": {"reference_image": "/etc/passwd"}},
         {"options": {"nested": {"a": 1}}},
         {"workflow": "transcribe"},
         {"text": ""},
@@ -231,6 +233,7 @@ def test_client_paths_and_unknown_fields_are_422(stub, body):
         {"min_new_audio_steps": 10, "max_new_audio_steps": 900},  # FireRedAudio
         {"no_ref": True},  # Irodori
         {"audio_chunk_threshold_sec": 30, "audio_chunk_duration_sec": 20},  # DramaBox
+        {"use_video": True},
     ],
 )
 def test_settings_named_after_audio_are_not_file_options(options):

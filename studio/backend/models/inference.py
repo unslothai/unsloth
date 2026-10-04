@@ -5172,7 +5172,8 @@ _AUDIO_ID_PATTERN = r"^[A-Za-z0-9_-]{1,128}$"
 _AUDIO_FILE_OPTION_WORDS = frozenset({"path", "paths", "file", "files", "dir", "url", "uri"})
 # ...and a text value under a name ending in these is a clip (source_audio, voice_ref), while
 # min_new_audio_steps, audio_chunk_mode or a boolean no_ref are settings.
-_AUDIO_CLIP_OPTION_ENDINGS = frozenset({"audio", "wav", "ref"})
+# Other media too: ControlFoley's string ``video`` option is a file the runtime would open.
+_AUDIO_CLIP_OPTION_ENDINGS = frozenset({"audio", "wav", "ref", "video", "image", "img", "midi"})
 
 
 def _names_a_file(name: str, value: Any) -> bool:
