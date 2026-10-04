@@ -2307,6 +2307,8 @@ type ToolStatusEntry = {
   owner?: () => void;
 };
 
+export type LoadedModelSummary = { id: string; quant?: string | null; checkpoint?: string };
+
 type ChatRuntimeStore = {
   settingsHydrated: boolean;
   /** The open chat's settings were asked for but have not arrived, so the store shows the
@@ -2343,6 +2345,7 @@ type ChatRuntimeStore = {
   /** What /api/inference/status says is resident, as opposed to what the picker selected.
    *  undefined until the first read, so the header does not flash "not loaded". */
   residentCheckpoint: string | null | undefined;
+  loadedModels: LoadedModelSummary[];
   activeModelIsLocal: boolean;
   loadedContextLength: number | null;
   maxContextLength: number | null;
@@ -2389,6 +2392,8 @@ type ChatRuntimeStore = {
   /** Whether the provider exposes server-side web_fetch (Anthropic `web_fetch_*`). Gates the
    *  composer's Fetch pill, independent of Search. */
   supportsBuiltinWebFetch: boolean;
+  /** Mirrors the backend Settings switch "Keep multiple models loaded". */
+  keepModelsLoaded: boolean;
   toolsEnabled: boolean;
   /** Persisted Code preference. Use codeToolsOn() for the effective value. */
   codeToolsEnabled: boolean;
@@ -2692,6 +2697,7 @@ type ChatRuntimeStore = {
   setReasoningEffort: (effort: ReasoningEffort) => void;
   setPreserveThinking: (value: boolean) => void;
   setToolsEnabled: (enabled: boolean, options?: { persist?: boolean }) => void;
+  setKeepModelsLoaded: (keep: boolean) => void;
   setCodeToolsEnabled: (enabled: boolean) => void;
   setImageToolsEnabled: (enabled: boolean) => void;
   setDeepResearchEnabled: (enabled: boolean) => void;
@@ -4175,6 +4181,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   lastModelLoadError: null,
   activeGgufVariant: null,
   residentCheckpoint: undefined,
+  loadedModels: [],
   activeModelIsLocal: false,
   loadedContextLength: null,
   maxContextLength: null,
@@ -4205,6 +4212,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   supportsBuiltinImageGeneration: false,
   supportsBuiltinWebFetch: false,
   toolsEnabled: loadBool(CHAT_TOOLS_ENABLED_KEY, false),
+  keepModelsLoaded: false,
   codeToolsEnabled: loadBool(CHAT_CODE_TOOLS_ENABLED_KEY, false),
   codeToolsDeclinedUnderFullAccess: false,
   imageToolsEnabled: loadBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false),
@@ -5392,6 +5400,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
     }),
+  setKeepModelsLoaded: (keepModelsLoaded) => set({ keepModelsLoaded }),
   setCodeToolsEnabled: (codeToolsEnabled) =>
     set((state) => {
       saveBool(CHAT_CODE_TOOLS_ENABLED_KEY, codeToolsEnabled);

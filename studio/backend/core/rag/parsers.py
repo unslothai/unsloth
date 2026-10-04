@@ -767,6 +767,11 @@ def _docx_mark_notes(document):
     return label_notes
 
 
+_HIGH_BYTES = bytes(range(0x80, 0x100))
+_ASCII_LETTERS = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+_HIGH_RUN = re.compile(rb"[\x80-\xff]+")
+
+
 def _declared_charset(data: bytes) -> str | None:
     # Lazy: tools is heavy, and only HTML that is not UTF-8 gets here.
     from ..inference.tools import _META_CHARSET_SCAN_BYTES, _sniff_meta_charset
@@ -802,6 +807,44 @@ def _decode_text(data: bytes, *, html: bool = False) -> str:
     non_ascii = len(text) - len(text.encode("ascii", "ignore"))
     if non_ascii >= 2 * text.count("\ufffd"):
         return text
+    high = len(data) - len(data.translate(None, _HIGH_BYTES))
+    letters = len(data) - len(data.translate(None, _ASCII_LETTERS))
+    # A Latin-alphabet text never has half as many accented letters as plain ones; a few bytes say nothing.
+    if high >= 8 and 2 * high > letters:
+        from charset_normalizer import from_bytes
+
+        legacy = [
+            "cp1252",
+            "gb18030",
+            "cp950",
+            "cp932",
+            "cp949",
+            "cp1251",
+            "cp1253",
+            "cp1255",
+            "cp1256",
+        ]
+        results = from_bytes(data, cp_isolation = legacy)
+        match = results.best()
+        if match is not None:
+            guess = str(match)
+            # A tie is ambiguous ("ÜÖÄ" is also Cyrillic); a single-byte page decodes anything, so it needs
+            # language evidence and high-byte words, not lone accents ("À É È"); a CJK guess that paired
+            # no bytes is half-width katakana ("° ± µ").
+            tied = any(
+                other is not match
+                and (other.chaos, other.coherence) == (match.chaos, match.coherence)
+                for other in results
+            )
+            if match.encoding == "cp1252":
+                plausible = True
+            elif match.encoding in ("cp1251", "cp1253", "cp1255", "cp1256"):
+                in_words = sum(len(run) for run in _HIGH_RUN.findall(data) if len(run) >= 3)
+                plausible = match.coherence > 0 and 2 * in_words > high
+            else:
+                plausible = len(guess) < len(data)
+            if not tied and plausible:
+                return guess
     return data.decode("cp1252", errors = "replace")
 
 
