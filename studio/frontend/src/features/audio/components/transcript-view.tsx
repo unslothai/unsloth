@@ -88,7 +88,6 @@ function useSourceAudio(source: TranscriptSource | null): SourceAudio {
   return state;
 }
 
-// The name always accompanies the colour, never the colour alone.
 function SpeakerChip({
   id,
   speakers,
@@ -170,7 +169,6 @@ function SpeakerChip({
   );
 }
 
-/** The source audio, then `children`, then the text or its timed segments. */
 export function TranscriptView({
   text,
   details,

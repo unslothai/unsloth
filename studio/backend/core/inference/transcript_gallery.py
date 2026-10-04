@@ -25,7 +25,6 @@ _MAX_WORDS = 100_000
 _MAX_SPEAKERS = 64
 SPEAKER_NAME_MAX = 40
 _SOURCE_KINDS = ("input", "clip", "voice")
-# The Audio page's input, clip and voice ids (audio_gallery's pattern).
 _SOURCE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 

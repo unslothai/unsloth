@@ -334,7 +334,6 @@ test("a pending engine selection is not replaced by an older resident sidecar", 
 });
 
 test("MediaRecorder setup failures release the acquired microphone stream", () => {
-  // Recording moved into the shared input card; its failure path still releases the stream.
   assert.match(
     audioSourceCard,
     /recorder = createAudioRecorder\(stream\);\s*\} catch \{\s*stopStream\(\);/,
@@ -342,7 +341,6 @@ test("MediaRecorder setup failures release the acquired microphone stream", () =
 });
 
 test("leaving Audio clears an unresolved microphone permission wait", () => {
-  // The card unmounts with the page; the late-permission release is in audio-source-input.test.ts.
   assert.match(
     audioSourceCard,
     /\(\) => \(\) => \{\s*abortAll\(\);\s*for \(const track of streamRef\.current\?\.getTracks\(\) \?\? \[\]\) track\.stop\(\);/,
@@ -528,7 +526,6 @@ test("Record is offered only where the browser can capture audio", () => {
     audioSourceInput,
     /\.\.\.\(recordingSupported\(\) \? \[\{ value: "record", label: "Record" \}\] : \[\]\)/,
   );
-  // Upload stays available, so transcription still works on those hosts.
   assert.match(audioPageSource, /<AudioSourceInput/);
 });
 

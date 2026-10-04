@@ -131,7 +131,6 @@ def test_audio_cpp_reads_a_16k_copy_in_the_account_and_the_record_names_the_sour
         assert record["title"] == "meeting.webm" and record["source"] == complete["source"]
         saved = client.get(f"/api/inference/audio/transcripts/{record['id']}").json()
         assert (saved["segments"], saved["speakers"]) == (SEGMENTS, labels)
-    # No server path anywhere the client or history can see.
     stored = run_as(
         ALICE, lambda: (transcript_gallery.gallery_dir() / f"{record['id']}.json").read_text()
     )

@@ -94,10 +94,8 @@ def test_word_grouping_splits_on_a_pause_a_long_run_and_a_sentence_end():
         ("Three", 1.0, 1.5),
         ("four", 2.5, 3.0),
     ]
-    # No pause, no punctuation: a run is cut once it reaches 10 s.
     runs = stt_details.group_words(_seq([f"w{i}" for i in range(30)]))
     assert len(runs) == 2 and all(r["end"] - r["start"] <= 10.0 for r in runs)
-    # A long sentence splits after its last comma rather than strand its tail.
     text = "the great work is still done by patience, courage, memory and care."
     assert [s["text"] for s in stt_details.group_words(_seq(text.split(), 0.9))] == [
         "the great work is still done by patience, courage,",
@@ -139,14 +137,10 @@ def test_malformed_spans_are_dropped():
             "Friends, neighbors, life—we meet. Again!",
             ["Friends,", "neighbors,", "life—we", "meet.", "Again!"],
         ),
-        # Punctuation-only tokens join the word before.
         (["Friends", "neighbors"], "Friends — neighbors", ["Friends—", "neighbors"]),
-        # A token spanning two words, or no text: nothing lines up.
         (["hello", "world"], "helloworld", ["hello", "world"]),
         (["hello", "world"], "", ["hello", "world"]),
-        # Only the words that match take the text's spelling.
         (["hello", "world"], "Goodbye, world!", ["hello", "world!"]),
-        # A chunk overlap repeated in the text is skipped; "Work" keeps the sentence's case.
         (
             "the great work of a people is done by patience courage and care".split(),
             "the great work of a people is done by patience. "
@@ -176,7 +170,6 @@ def test_aligned_words_take_the_punctuation_of_the_text(words, text, expected):
             "He was in a fevered state",
         ),
         ({"text": "  hello\n world  "}, "parakeet_tdt", "hello world"),
-        # Markers in a family that has no segments are still removed from the prose.
         ({"text": "[0.12][S01] hi there[1.5]"}, "other_asr", "hi there"),
     ],
 )

@@ -15,8 +15,7 @@ export const TRANSCRIBE_LANGUAGES: readonly { code: string; name: string }[] = [
     .map((code) => ({ code, name: NAMES.of(code) ?? code })),
 ];
 
-/** The saved language when the model lists it, else "" (detect): what the rail shows and the
- *  run sends, so a language the model cannot take is never sent behind an Auto label. */
+/** The saved language if the model lists it, else "" (detect), never one hidden behind Auto. */
 export function transcribeLanguageFor(
   saved: string,
   languages: readonly { code: string }[],

@@ -531,7 +531,6 @@ export function AudioPage({
     () => handleClearGallery(ttsWorkflow),
     [handleClearGallery, ttsWorkflow],
   );
-  // Send to: only pages that can take a finished clip today.
   const sendHandlersFor = useCallback(
     (clip: AudioGalleryClip): ClipSendHandlers => ({
       clone: () => {
@@ -714,7 +713,6 @@ export function AudioPage({
   const [expiredTranscribeSourceId, setExpiredTranscribeSourceId] = useState<
     string | null
   >(null);
-  // The persisted pick is "" when there is none.
   const transcribeRepo = (selectedSttRepo ?? lastSttRepo) || null;
   const transcribeCaps = useTranscribeCapabilities(transcribeRepo);
   const transcribeOptions = transcribeSwitches(

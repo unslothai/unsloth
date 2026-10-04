@@ -18,7 +18,6 @@ interface AudioTranscribeState {
   view: TranscriptView;
 }
 
-// Plain data, written with useAudioTranscribeStore.setState.
 export const useAudioTranscribeStore = create<AudioTranscribeState>()(
   persist(
     (): AudioTranscribeState => ({

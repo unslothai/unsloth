@@ -78,7 +78,6 @@ test("timestamps seek once the audio loaded, nothing autoplays, the playing row 
     /controller\.abort\(\);\s*if \(url\) URL\.revokeObjectURL\(url\);/,
   );
   assert.doesNotMatch(view + rail, /autoPlay|\.play\(/);
-  // Follow-along only while playing, so reading ahead while paused is never yanked back.
   assert.match(
     view,
     /if \(!playing \|\| active < 0 \|\| shown !== "segments"\) return;/,
@@ -93,7 +92,6 @@ test("both export menus share the timestamp gate, and a download marks only the 
     hook,
     /const version = transcriptVersion\.current;[\s\S]*?await downloadTranscript\(format,[\s\S]*?names: speakerNames,[\s\S]*?transcriptVersion\.current === version\s*\)\s*setTranscriptExported\(true\);/,
   );
-  // History downloads, TXT included, go through the speaker-aware exporter with the full record.
   assert.match(
     gallery,
     /full = await getTranscript\(record\.id\);[\s\S]*?await downloadTranscript\(format, \{[\s\S]*?details: detailsFrom\(full\),\s*names: full\.speaker_names \?\? \{\},/,

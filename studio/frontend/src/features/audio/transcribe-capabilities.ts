@@ -24,7 +24,6 @@ export interface TranscribeSwitch {
 export interface TranscribeSwitches {
   timestamps: TranscribeSwitch;
   speakers: TranscribeSwitch;
-  /** Said before a run that costs more than usual (an aligner download, a CPU-only model). */
   notice: string | null;
   request: { timestamps: boolean; speakers: boolean };
 }

@@ -60,7 +60,6 @@ def test_qwen3_reports_whether_its_aligner_is_downloaded(hub):
 @pytest.mark.parametrize(
     "model,engine,expected_engine",
     [
-        # The llama.cpp Qwen3-ASR ids and repos, whatever engine was named.
         ("qwen3-asr-0.6b", "mtmd", "mtmd"),
         ("qwen3-asr-0.6b", None, "mtmd"),
         ("unslothai/Qwen3-ASR-0.6B-GGUF", "audiocpp", "mtmd"),

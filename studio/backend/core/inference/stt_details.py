@@ -114,7 +114,6 @@ def _assign_speakers(segments: list[dict], turns: list[tuple[float, float, str]]
         overlap: dict[str, float] = {}
         for start, end, speaker in turns:
             shared = min(segment["end"], end) - max(segment["start"], start)
-            # A zero-length segment inside a turn still belongs to it.
             if shared > 0 or (shared == 0 and start <= segment["start"] <= end):
                 overlap[speaker] = overlap.get(speaker, 0.0) + shared
         if overlap:
@@ -195,7 +194,6 @@ def group_words(words: list[dict]) -> list[dict]:
         if current and word["start"] - current[-1]["end"] >= _SEGMENT_GAP_SECONDS:
             flush()
         elif current and word["end"] - current[0]["start"] >= _SEGMENT_MAX_SECONDS:
-            # A long sentence splits after its last comma, so its tail is not left as one word.
             cut = next(
                 (
                     i

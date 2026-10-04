@@ -84,7 +84,6 @@ test("TXT is the plain text or paragraphs led by the current names; JSON keeps k
     toTxt(timed),
     "Speaker 1: Hello there.\n\nBea: Hi! <b>Tom & Jerry</b>\n",
   );
-  // JSON carries the documented keys, names, and words only when present.
   const json = JSON.parse(toJson(timed));
   assert.deepEqual(
     Object.keys(json).join(),

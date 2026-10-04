@@ -22,8 +22,6 @@ const segments = [
 ];
 
 test("the active segment is found at the edges, in gaps and across overlaps", () => {
-  // Before the first line, at a start, a gap keeps the previous line, an overlap picks the later
-  // start, a shared boundary moves on, past the end stays on the last.
   const at = (seconds: number) => activeSegmentIndex(seconds, segments);
   assert.deepEqual(
     [0, 0.5, 2.5, 4.6, 7, 60, Number.NaN].map(at),
@@ -38,7 +36,6 @@ test("speakers are named by rename, then default label, then raw id, and grouped
   assert.equal(speakerLabel("S01", speakers, { S01: " Alice " }), "Alice");
   assert.equal(speakerLabel("S01", speakers, { S01: "  " }), "Speaker 1");
   assert.equal(speakerLabel("S09", speakers, {}), "S09");
-  // Paragraphs join consecutive lines by one speaker and drop blank ones.
   assert.deepEqual(paragraphs(segments), [
     { speaker: "S01", text: "One two" },
     { speaker: "S02", text: "Three" },

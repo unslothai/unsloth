@@ -51,7 +51,6 @@ test("on_request: opt-in timestamps that say they download the aligner and reloa
   assert.deepEqual(flags(optedOut.timestamps), [false, false]);
   assert.match(optedOut.timestamps.hint, /downloads it \(1\.1 GB\)/);
   assert.deepEqual([optedOut.request, optedOut.notice], [off, null]);
-  // Qwen3 cannot tell speakers apart, so asking for them sends nothing.
   const optedIn = switches(qwen);
   assert.deepEqual(optedIn.request, { timestamps: true, speakers: false });
   assert.match(

@@ -149,7 +149,6 @@ test("Send to lists the other Audio pages from the shared workflow list", () => 
     card,
     /AUDIO_WORKFLOWS\.filter\(\s*\(tab\) => tab\.id !== current && handlers\[tab\.id\],?\s*\)/,
   );
-  // Transcribe takes the clip by id, as its "From history" does; nothing is downloaded first.
   assert.match(
     host,
     /if \(!transitionWorkflow\("transcribe"\)\) return;[\s\S]{0,200}?useAudioTranscribeStore\.setState\(\{\s*source: \{\s*kind: "clip",\s*id: clip\.id,/,

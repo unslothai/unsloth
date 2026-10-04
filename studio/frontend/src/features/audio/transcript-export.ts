@@ -43,7 +43,6 @@ function clock(seconds: number, separator: "," | "."): string {
   return `${pad(Math.floor(whole / 3600))}:${pad(Math.floor((whole % 3600) / 60))}:${pad(whole % 60)}${separator}${pad(millis, 3)}`;
 }
 
-/** Without timing, one cue spans the clip. */
 function cues(input: TranscriptExport) {
   const { segments, duration } = input.details;
   const timed: TranscriptSegment[] =

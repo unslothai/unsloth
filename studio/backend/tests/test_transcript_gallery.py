@@ -186,7 +186,6 @@ def test_malformed_details_are_dropped_and_the_record_survives():
     assert record["segments"] == [{"start": 0.0, "end": 1.0, "text": "kept"}]
     assert record["speakers"] == [{"id": "S01", "label": "Speaker 1"}]
     assert not {"words", "speaker_names", "source"} & set(record)
-    # A hand-edited file loses only its bad optional keys on read.
     path = gallery.gallery_dir() / f"{record['id']}.json"
     data = json.loads(path.read_text(encoding = "utf-8"))
     data.update(segments = {"not": "a list"}, speaker_names = {"S01": 7})
@@ -206,7 +205,6 @@ def test_speaker_names_are_validated_cleared_and_written_atomically(monkeypatch)
             gallery.set_speaker_names(record_id, names)
     assert gallery.get(record_id)["speaker_names"] == {"S01": "Alice"}
     assert "speaker_names" not in gallery.set_speaker_names(record_id, {"S01": ""})
-    # An archived transcript stays archived through a rename.
     gallery.set_archived(record_id, True)
     assert gallery.set_speaker_names(record_id, {"S01": "Al"})["archived"] is True
     monkeypatch.setattr(gallery.os, "replace", lambda *a: (_ for _ in ()).throw(OSError("full")))

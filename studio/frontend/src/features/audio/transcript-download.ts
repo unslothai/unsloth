@@ -10,7 +10,6 @@ import {
   exportTranscript,
 } from "./transcript-export";
 
-/** false when it failed or the user cancelled the save dialog. */
 export async function downloadTranscript(
   format: TranscriptExportFormat,
   input: TranscriptExport,

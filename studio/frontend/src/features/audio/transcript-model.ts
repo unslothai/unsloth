@@ -7,7 +7,6 @@ export interface TranscriptSegment {
   start: number;
   end: number;
   text: string;
-  /** The model's raw id (S01, 0). */
   speaker?: string;
 }
 
@@ -19,11 +18,9 @@ export interface TranscriptWord {
 
 export interface TranscriptSpeaker {
   id: string;
-  /** The default name, "Speaker 1" by first appearance. */
   label: string;
 }
 
-/** Ids only, never a server path. */
 export interface TranscriptSource {
   kind: "input" | "clip" | "voice";
   id: string;
@@ -112,7 +109,6 @@ function finiteSeconds(value: unknown): number | null {
     : null;
 }
 
-/** From a stream result, saved record or draft; malformed entries are dropped. */
 export function detailsFrom(
   value: Partial<Record<keyof TranscriptDetails, unknown>>,
 ): TranscriptDetails {

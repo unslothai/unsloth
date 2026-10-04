@@ -15,7 +15,6 @@ test("Audio exposes the shared picker eject action only while idle", () => {
     source,
     /onEject=\{\s*busy === null && selectorValue && !showLastPageModel\s*\? handleEject\s*: undefined\s*\}/,
   );
-  // Recording lives in the input card and does not depend on the model, so only a run blocks it.
   assert.match(source, /const handleEject = useCallback\(\(\) => \{\s*if \(busy !== null\) \{/);
   assert.match(
     source,

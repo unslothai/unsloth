@@ -10,7 +10,6 @@ import { AUTH_SESSION_ENDING_EVENT } from "../src/features/auth/session-events.t
 import { readTranscriptDraft, writeTranscriptDraft } from "../src/features/audio/transcript-draft.ts";
 
 const source = readAudioWorkspaceSource();
-// Timing and speaker names ride along in the recovery copy.
 const draftDetails = {
   segments: [{ start: 0, end: 1.5, text: "unsaved text", speaker: "S01" }],
   words: [],
@@ -75,7 +74,6 @@ function callback(name: string, scope: Record<string, unknown>) {
 }
 
 test("a run applies a confirmation once and only to the transcript it covered", async () => {
-  // Version 7 is the transcript on screen; an approval for an older one, or none, asks again.
   for (const approvedVersion of [7, 6, undefined]) {
     const events: string[] = [];
     const run = callback("runTranscription", {
@@ -100,7 +98,6 @@ test("a run applies a confirmation once and only to the transcript it covered", 
       undefined,
       approvedVersion,
     );
-    // Declining stops the run before a model loads.
     assert.deepEqual(events, approvedVersion === 7 ? ["prepare"] : ["confirm"]);
   }
 });
@@ -298,11 +295,9 @@ test("a draft restores with or without timing details", () => {
       removeItem: (key: string) => drafts.delete(key),
     },
   });
-  // Written before timestamps existed: restores exactly as it was.
   drafts.set("old-draft", JSON.stringify({ text: "hello", title: "a.wav", model: "tiny" }));
   assert.deepEqual(readTranscriptDraft("old-draft"), { text: "hello", title: "a.wav", model: "tiny" });
 
-  // Names are cleaned and kept only for known speakers.
   const draft = { text: "hi", title: "b.wav", model: "moss", details: draftDetails };
   drafts.set(
     "new-draft",

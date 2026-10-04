@@ -157,7 +157,6 @@ def test_bytes_go_as_json_naming_a_temp_file_removed_after_success_or_error(fake
     body, audio = record["json"], Path(record["json"]["audio"])
     assert record["path"] == "/v1/audio/transcriptions/details"
     assert audio.is_absolute() and audio.parent == stt._stt_tmp_dir() and audio.suffix == ".wav"
-    # The server could read it while answering; it is gone now.
     assert record["audio_existed"] and not list(audio.parent.glob("*.wav"))
     assert (body["language"], body["model"]) == ("en", fake.starts[0]["entry"]["id"])
     assert "options" not in body
@@ -182,7 +181,6 @@ def test_moss_reads_the_source_in_place_with_speakers_and_no_options(fake, side,
     ]
     # MOSS loads without the aligner whatever the request asked.
     assert ALIGNER_KEY not in json.dumps(fake.starts[0]["entry"])
-    # Through the bytes path (dictation) the markers are gone too.
     assert side.transcribe(wav_bytes(), MOSS, None)["text"] == "Hello there. General Kenobi."
 
 
@@ -210,7 +208,6 @@ def test_qwen3_aligner_is_downloaded_loaded_once_and_kept(fake, side, source, hu
         phases.clear()
         return side.transcribe_path(source, QWEN3, None, on_phase = phases.append, **kwargs)
 
-    # Off: plain text, no aligner, no options.
     assert run() == {
         "text": "Concord returned.",
         "language": "English",
@@ -218,7 +215,6 @@ def test_qwen3_aligner_is_downloaded_loaded_once_and_kept(fake, side, source, hu
         "model": QWEN3,
     }
     assert "options" not in fake.bodies[-1] and "session_options" not in fake.starts[0]["entry"]
-    # On: the aligner is downloaded, then the server restarts with it and gets the options.
     result = run(timestamps = True)
     assert phases == ["downloading_aligner", "loading", "transcribing"]
     assert downloads == [stt.QWEN3_ALIGNER.id] and len(fake.starts) == 2
@@ -233,7 +229,6 @@ def test_qwen3_aligner_is_downloaded_loaded_once_and_kept(fake, side, source, hu
         {"start": 1.208, "end": 1.608, "word": "returned."},
     ]
     assert result["segments"] == [{"start": 0.568, "end": 1.608, "text": "Concord returned."}]
-    # Present and loaded now: neither a download nor a restart, on or off.
     run(timestamps = True)
     assert phases == ["transcribing"] and len(downloads) == 1
     run()
