@@ -48,6 +48,7 @@ on:
       - 'studio/package-lock.json'
       - 'studio/frontend/package.json'
       - 'studio/frontend/package-lock.json'
+      - 'studio/.npmrc'
       - 'studio/frontend/.npmrc'
       - 'studio/backend/core/data_recipe/oxc-validator/package-lock.json'
       - 'studio/backend/core/data_recipe/oxc-validator/.npmrc'
