@@ -67,7 +67,6 @@ def _plan(
 
 def test_linux_rocm_apu_with_host_room_loads_what_comfyui_loads(host):
     plan = _plan()
-    # discrete margin (10% of the pool) instead of the unified 20%
     assert plan.estimates["safe_device_budget_mib"] == POOL_FREE - int(POOL_TOTAL * 0.10)
     assert unified_memory_shortfall_message(plan, family = "z-image") is None
 
@@ -121,8 +120,7 @@ def test_fast_budget_follows_the_same_reserve(host):
 
 
 def test_total_capacity_gates_follow_the_same_reserve(host):
-    # 47 GiB resident fits 0.85 * (64 - 6.4) but not 0.85 * (64 - 12.8): the dense prefetch gate must agree with
-    # the free budget, else it declines the shards of a candidate the planner admits and the load falls to GGUF.
+    # 47 GiB fits 0.85 * (64 - 6.4), not 0.85 * (64 - 12.8): a disagreeing prefetch gate drops the load to GGUF.
     memory = DeviceMemory("cuda", "cuda:0", "unified_memory", POOL_FREE, POOL_TOTAL)
     plan = types.SimpleNamespace(
         estimates = {"resident_required_mib": 47 * 1024}, device_memory = memory
