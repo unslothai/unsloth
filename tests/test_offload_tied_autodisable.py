@@ -14,6 +14,7 @@ import ast, os, types
 from contextlib import contextmanager
 
 import pytest
+from real_accelerator import has_real_cuda
 
 # Skip rather than error where torch is absent. Only `nn.Embedding` / `nn.Linear` / `torch.device` are wanted here, no
 # GPU, but a bare module-level import turns a machine without torch into a collection error, which aborts the whole
@@ -438,7 +439,7 @@ def _spare_ns():
     return ns, moved
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a card to offload from")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a card to offload from")
 def test_tied_model_still_offloads_its_per_layer_table():
     ns, moved = _spare_ns()
     model = _PerLayerModel("cuda")
@@ -448,7 +449,7 @@ def test_tied_model_still_offloads_its_per_layer_table():
     assert moved == [model.per_layer]
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a card to offload from")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a card to offload from")
 def test_trainable_or_cpu_model_tables_stay():
     ns, moved = _spare_ns()
     model = _PerLayerModel("cuda")
@@ -469,7 +470,7 @@ class _HeadlessPerLayerModel(_PerLayerModel):
         return None
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a card to offload from")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a card to offload from")
 def test_headless_model_hooks_a_table_the_block_swap_load_left_on_cpu():
     ns, moved = _spare_ns()
     model = _HeadlessPerLayerModel("cuda").requires_grad_(False)
@@ -486,7 +487,7 @@ def test_headless_model_hooks_a_table_the_block_swap_load_left_on_cpu():
     assert moved == []
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a card to offload from")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a card to offload from")
 def test_headless_streamed_table_returns_rows_to_the_decoder_card():
     ns = _load(
         "_embeddings_are_tied",
