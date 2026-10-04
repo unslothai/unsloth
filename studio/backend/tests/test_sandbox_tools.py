@@ -145,6 +145,10 @@ class TestUntrustedHostBlock:
                 id = "c_socket_from_import_connect_blocked",
             ),
             pytest.param(
+                'import _socket; _socket.SocketType().connect_ex(("evil.example", 80))',
+                id = "c_socket_sockettype_alias_blocked",
+            ),
+            pytest.param(
                 'import _socket as s; s.getaddrinfo("evil.example", 80)',
                 id = "c_socket_getaddrinfo_alias_blocked",
             ),

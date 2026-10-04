@@ -17545,6 +17545,7 @@ def _check_signal_escape_patterns(code: str):
         "socket.create_connection",
         "socket.getaddrinfo",
         "_socket.socket",
+        "_socket.SocketType",
         "_socket.getaddrinfo",
         "urllib.request.urlopen",
         "urllib.request.urlretrieve",
@@ -17661,9 +17662,10 @@ def _check_signal_escape_patterns(code: str):
         "urllib3.poolmanager.proxy_from_url",
         "urllib3.contrib.socks.SOCKSProxyManager",
     )
+    # SocketType is an alias of the socket class in both modules.
+    _SOCKET_TYPES = ("socket.socket", "socket.SocketType", "_socket.socket", "_socket.SocketType")
     _SOCKET_CLIENTS = (
-        "socket.socket",
-        "_socket.socket",
+        *_SOCKET_TYPES,
         "paramiko.SSHClient",
         "paramiko.client.SSHClient",
     )
@@ -17745,15 +17747,15 @@ def _check_signal_escape_patterns(code: str):
             "urllib3.util.connection.create_connection": (0, ("address",), "host"),
             **{
                 f"{sock}.{m}": (0, ("address",), "host")
-                for sock in ("socket.socket", "_socket.socket")
+                for sock in _SOCKET_TYPES
                 for m in ("connect", "connect_ex")
             },
             **{f"{opener}.open": (0, ("fullurl",), "url") for opener in _OPENER_CLIENTS},
             "urllib.request.ProxyHandler": (None, (), "proxy"),
             # A datagram names its address per send. `sendto(data, flags, address)` puts the int
             # flags at index 1, which reads as unreadable and fails closed.
-            **{f"{sock}.sendto": (1, (), "host") for sock in ("socket.socket", "_socket.socket")},
-            **{f"{sock}.sendmsg": (3, (), "host") for sock in ("socket.socket", "_socket.socket")},
+            **{f"{sock}.sendto": (1, (), "host") for sock in _SOCKET_TYPES},
+            **{f"{sock}.sendmsg": (3, (), "host") for sock in _SOCKET_TYPES},
             **{
                 f"{client}.connect": (0, ("hostname", "host"), "host")
                 for client in ("paramiko.SSHClient", "paramiko.client.SSHClient")
