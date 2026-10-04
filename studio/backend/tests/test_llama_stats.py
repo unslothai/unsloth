@@ -117,12 +117,25 @@ def test_scrape_parses_labelled_and_bare_metrics(monkeypatch):
     assert m["requests_processing"] == 1.0
 
 
-def test_counter_delta_fallback_without_gauges():
-    # Older binaries expose only the counters; throughput falls back to deltas.
+def test_counters_without_gauges_still_report_what_is_measurable():
+    # Older binaries expose only the counters. The generation pair is not a rate (the
+    # seconds time n_gen - 1 steps while the tokens count n_gen), so no gen_tok_s is
+    # claimed; running=1 keeps the line going out with the fields that are measured.
+    # /metrics renders one table, so a build with prompt_tokens_total has the seconds too.
     snaps = [
-        {"tokens_predicted_total": 100.0, "prompt_tokens_total": 0.0, "requests_processing": 1.0},
-        {"tokens_predicted_total": 100.0, "prompt_tokens_total": 0.0, "requests_processing": 1.0},
+        {
+            "tokens_predicted_total": 100.0,
+            "prompt_tokens_total": 0.0,
+            "prompt_seconds_total": 0.0,
+            "requests_processing": 1.0,
+        },
+        {
+            "tokens_predicted_total": 100.0,
+            "prompt_tokens_total": 0.0,
+            "prompt_seconds_total": 0.0,
+            "requests_processing": 1.0,
+        },
     ]
     stats = _drive(snaps)
-    # running=1 keeps it emitting; gen_tok_s falls back to the (here zero) delta.
-    assert stats and all(s["gen_tok_s"] >= 0.0 for s in stats)
+    assert stats and all("gen_tok_s" not in s for s in stats)
+    assert all(s["prompt_tok_s"] == 0.0 and s["running"] == 1 for s in stats)

@@ -94,11 +94,14 @@ class LocalDatasetsResponse(BaseModel):
 class CachedDatasetItem(BaseModel):
     repo_id: str
     size_bytes: int = 0
+    # epoch seconds; unset when no cache path had a readable mtime
+    last_modified: Optional[float] = None
     cache_path: Optional[str] = None
     load_cache_path: Optional[str] = None
     processed_cache: bool = False
     partial: bool = False
     partial_transport: Optional[str] = None
+    partial_resumable: bool = False
 
 
 class CachedDatasetsResponse(BaseModel):
@@ -118,6 +121,14 @@ class DatasetSplitOption(BaseModel):
 
 class LocalDatasetOptionsResponse(BaseModel):
     cache_available: bool = False
+    splits: List[DatasetSplitOption] = Field(default_factory = list)
+
+
+class HubDatasetOptionsRequest(BaseModel):
+    dataset_name: str
+
+
+class HubDatasetOptionsResponse(BaseModel):
     splits: List[DatasetSplitOption] = Field(default_factory = list)
 
 

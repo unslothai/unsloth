@@ -39,15 +39,38 @@ export interface LlamaUpdateJob {
   finished_at: string | null;
 }
 
+export interface ComponentOffer {
+  update_available: boolean;
+  installed_tag: string | null;
+  latest_tag: string | null;
+  update_size_bytes: number | null;
+}
+
 export interface LlamaUpdateStatus {
   supported: boolean;
   update_available: boolean;
+  source_build: boolean;
   component: "llama.cpp" | "whisper.cpp";
+  // Carried per component whatever the card names: both can be behind at once,
+  // and the card shows whichever one the notification switches allow.
+  llama: ComponentOffer;
+  whisper: ComponentOffer | null;
   installed_tag: string | null;
   latest_tag: string | null;
   // Prebuilt download size in bytes, if known.
   update_size_bytes: number | null;
+  // The install recorded "auto" and detection now resolves elsewhere, so Update would move
+  // it. Independent of update_available: reported only when the release is current.
+  backend_migration_available: boolean;
+  from_backend: string | null;
+  to_backend: string | null;
   job: LlamaUpdateJob;
+}
+
+/** Whether the banner has anything to offer: a newer release, or a backend the
+ *  install's own recorded "auto" would resolve to today. */
+export function llamaUpdateOffered(status: LlamaUpdateStatus): boolean {
+  return status.update_available || status.backend_migration_available;
 }
 
 function parseJob(value: unknown): LlamaUpdateJob {
@@ -94,6 +117,7 @@ function parseStatus(value: unknown): LlamaUpdateStatus | null {
   return {
     supported: s.supported === true,
     update_available: s.update_available === true,
+    source_build: s.source_build === true,
     component,
     installed_tag:
       typeof details.installed_tag === "string" ? details.installed_tag : null,
@@ -103,15 +127,47 @@ function parseStatus(value: unknown): LlamaUpdateStatus | null {
       typeof details.update_size_bytes === "number"
         ? details.update_size_bytes
         : null,
+    // The top-level version fields keep their llama meaning whatever `details` is.
+    llama: {
+      // Absent from a backend older than the whisper piggyback: there the legacy
+      // union is llama's own answer.
+      update_available:
+        typeof s.llama_update_available === "boolean"
+          ? s.llama_update_available
+          : s.update_available === true && component === "llama.cpp",
+      installed_tag: typeof s.installed_tag === "string" ? s.installed_tag : null,
+      latest_tag: typeof s.latest_tag === "string" ? s.latest_tag : null,
+      update_size_bytes:
+        typeof s.update_size_bytes === "number" ? s.update_size_bytes : null,
+    },
+    whisper: whisper
+      ? {
+          update_available: whisper.update_available === true,
+          installed_tag:
+            typeof whisper.installed_tag === "string"
+              ? whisper.installed_tag
+              : null,
+          latest_tag:
+            typeof whisper.latest_tag === "string" ? whisper.latest_tag : null,
+          update_size_bytes:
+            typeof whisper.update_size_bytes === "number"
+              ? whisper.update_size_bytes
+              : null,
+        }
+      : null,
+    // Always from the top level: the backend belongs to the llama.cpp install whatever
+    // component the version fields describe.
+    backend_migration_available: s.backend_migration_available === true,
+    from_backend: typeof s.from_backend === "string" ? s.from_backend : null,
+    to_backend: typeof s.to_backend === "string" ? s.to_backend : null,
     job: parseJob(s.job),
   };
 }
 
-// The backend job persists as "success" until the next update starts (it's a
-// single in-memory record, not per-tab), so a fresh mount -- a new tab, or a
-// page reload of a tab that already resynced -- would otherwise replay the
-// same completed job forever. Persist the handled marker outside React state
-// so it survives both, and is shared across tabs in this browser.
+// The backend job persists as "success" until the next update starts (it's a single in-memory
+// record, not per-tab), so a fresh mount -- a new tab, or a page reload of a tab that already
+// resynced -- would otherwise replay the same completed job forever. Persist the handled marker
+// outside React state so it survives both, and is shared across tabs in this browser.
 const HANDLED_RELOAD_STORAGE_KEY = "unsloth_llama_update_reload_handled_at";
 
 function getHandledReloadAt(): string | null {
@@ -166,6 +222,9 @@ export interface LlamaApplyResult {
   tag?: string | null;
   reloadRequired?: boolean | null;
   error?: string | null;
+  // What the job says it did: a migration can finish at the release and on the backend it
+  // started from, so "updated to <tag>" fits neither.
+  message?: string;
 }
 
 /** Tracks llama.cpp update visibility and apply progress. */
@@ -184,11 +243,10 @@ export function useLlamaUpdateCheck({
   useEffect(() => {
     onReloadRequiredRef.current = onReloadRequired;
   }, [onReloadRequired]);
-  // Fires the callback once per completed job, whether this tab watched it run
-  // or only saw the persisted "success" after the fact (e.g. another tab
-  // applied it). Keyed by finished_at and seeded from localStorage so a fresh
-  // mount (new tab, or a page reload of a tab that already resynced) doesn't
-  // replay a job some tab already handled.
+  // Fires the callback once per completed job, whether this tab watched it run or only saw the
+  // persisted "success" after the fact (e.g. another tab applied it). Keyed by finished_at and
+  // seeded from localStorage so a fresh mount (new tab, or a page reload of a tab that already
+  // resynced) doesn't replay a job some tab already handled.
   const reloadNotifiedForRef = useRef<string | null>(getHandledReloadAt());
 
   const clearPollTimer = useCallback(() => {
@@ -198,18 +256,16 @@ export function useLlamaUpdateCheck({
     }
   }, []);
 
-  // Shared by the poll path (this tab watched the job run), the surface path
-  // (this tab only saw the persisted success), and apply()'s stale-click path
-  // (the job came back embedded in a "not started" response) so none of them
-  // can drop or double-fire the notification.
+  // Shared by the poll path (this tab watched the job run), the surface path (this tab only saw the
+  // persisted success), and apply()'s stale-click path (the job came back embedded in a "not
+  // started" response) so none of them can drop or double-fire the notification.
   const notifyReloadIfNeeded = useCallback(
     (
       job: Pick<LlamaUpdateJob, "state" | "reload_required" | "finished_at">,
     ) => {
-      // "error" is included for partial chained updates: the llama phase can
-      // land (and unload the server) before a later phase fails, and the
-      // backend keeps reload_required set in exactly that case. Without the
-      // resync the chat UI would keep pointing at the unloaded model.
+      // "error" is included for partial chained updates: the llama phase can land (and unload the
+      // server) before a later phase fails, and the backend keeps reload_required set in exactly
+      // that case. Without the resync the chat UI would keep pointing at the unloaded model.
       if (
         (job.state === "success" || job.state === "error") &&
         job.reload_required &&
@@ -231,23 +287,23 @@ export function useLlamaUpdateCheck({
         const s = await fetchStatus();
         if (!s) return;
         setStatus(s);
-        const presentation = llamaUpdatePresentation(s.update_available, s.job);
+        const presentation = llamaUpdatePresentation(llamaUpdateOffered(s), s.job);
         setApplying(presentation.applying);
         setVisible(presentation.visible);
         if (presentation.running) return;
         clearPollTimer();
         if (s.job.state === "success") {
           void refreshHardwareInfo();
-          // The update unloads the running model server-side, so the chat
-          // runtime still points at a model that now 400s on send. Let the
-          // consumer drop the selector to "select model" instead of waiting for
-          // a page reload. Fires here (not just from apply's onDone) so a
+          // The update unloads the running model server-side, so the chat runtime still points at a
+          // model that now 400s on send. Let the consumer drop the selector to "select model"
+          // instead of waiting for a page reload. Fires here (not just from apply's onDone) so a
           // cross-tab update mirrored through this poll is covered too.
           notifyReloadIfNeeded(s.job);
           onDone?.({
             ok: true,
             tag: s.job.to_tag,
             reloadRequired: s.job.reload_required,
+            message: s.job.message,
           });
         } else if (s.job.state === "error") {
           // Keep the banner visible so retry is available. A partial chained
@@ -267,7 +323,7 @@ export function useLlamaUpdateCheck({
       if (!next) return;
       setStatus(next);
       const presentation = llamaUpdatePresentation(
-        next.update_available,
+        llamaUpdateOffered(next),
         next.job,
       );
       setApplying(presentation.applying);
@@ -276,10 +332,9 @@ export function useLlamaUpdateCheck({
         if (!pollTimer.current) startJobPoll();
         return;
       }
-      // A completed job persists as "success" until the next update starts, so
-      // a tab that missed the running window entirely (mounted, or only checks
-      // hourly and misses both the running and just-finished moments) still
-      // needs to resync here, not just from the poll path above.
+      // A completed job persists as "success" until the next update starts, so a tab that missed
+      // the running window entirely (mounted, or only checks hourly and misses both the running and
+      // just-finished moments) still needs to resync here, not just from the poll path above.
       notifyReloadIfNeeded(next.job);
     },
     [startJobPoll, notifyReloadIfNeeded],
@@ -316,11 +371,10 @@ export function useLlamaUpdateCheck({
     };
   }, [enabled, surfaceIfAvailable, clearPollTimer]);
 
-  // Cross-tab nudge: a tab that only checks hourly would otherwise stay
-  // pointed at a server-unloaded model for up to an hour after a DIFFERENT
-  // open tab applies an update. The storage event only fires in other tabs
-  // (never the one that wrote it), so this recheck fires promptly there
-  // without this tab redundantly re-triggering itself.
+  // Cross-tab nudge: a tab that only checks hourly would otherwise stay pointed at a
+  // server-unloaded model for up to an hour after a DIFFERENT open tab applies an update. The
+  // storage event only fires in other tabs (never the one that wrote it), so this recheck fires
+  // promptly there without this tab redundantly re-triggering itself.
   useEffect(() => {
     if (!enabled) return;
     const onStorage = (event: StorageEvent) => {
@@ -388,10 +442,9 @@ export function useLlamaUpdateCheck({
     // open Settings surface disables and follows the same install immediately.
     signalRunningLlamaJob(actionJob);
 
-    // Non-started jobs stay idle; an already-running update is tracked below.
-    // A backend switch is not: it shares this job but installs no new release,
-    // so following it here would toast an update that never happened. The
-    // shared background listener still follows the switch itself.
+    // Non-started jobs stay idle; an already-running update is tracked below. A backend switch is
+    // not: it shares this job but installs no new release, so following it here would toast an
+    // update that never happened. The shared background listener still follows the switch itself.
     if (
       action &&
       action.started === false &&

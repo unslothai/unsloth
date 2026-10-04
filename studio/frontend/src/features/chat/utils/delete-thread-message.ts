@@ -1,17 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * assistant-ui exposes no public `deleteMessage` in our version, but
- * `MessageRepository` already does branch-safe deletion. We import it from
- * `@assistant-ui/core/internal` (the exported internal surface); avoid the
- * deeper `runtime/utils/message-repository` path since newer releases no
- * longer export arbitrary deep paths.
- *
- * Keep this file the only importer of `MessageRepository`. When bumping
- * `@assistant-ui/react` / `core`, re-run chat delete + reload smoke tests;
- * the path or API may change without a semver signal.
- */
+/** assistant-ui exposes no public `deleteMessage` in our version, but `MessageRepository` already
+ *  does branch-safe deletion. Imported from `@assistant-ui/core/internal`, the exported internal
+ *  surface; avoid the deeper `runtime/utils/message-repository` path, which newer releases no
+ *  longer export. Keep this file the only importer, and re-run chat delete plus reload smoke
+ *  tests when bumping `@assistant-ui/react`: the API may change without a semver signal. */
 import { MessageRepository } from "@assistant-ui/core/internal";
 import type {
   CompleteAttachment,
@@ -29,22 +23,30 @@ import {
   reconcileServerManagedMessages,
 } from "./research-message-sync";
 
-function cloneContent(
+// A copy of the list, not of what is in it. assistant-ui replaces parts and attachments rather
+// than mutating them, and the records built from these are serialized straight into the PUT
+// body, so a deep clone of the whole thread bought nothing.
+function snapshotContent(
   content: ThreadMessage["content"],
 ): ThreadMessage["content"] {
   if (typeof content === "string") {
     return content;
   }
-  return Array.isArray(content) ? JSON.parse(JSON.stringify(content)) : [];
+  return Array.isArray(content)
+    ? ([...content] as ThreadMessage["content"])
+    : [];
 }
 
-function cloneAttachments(
+// Epoch millis pass through; `getTime?.()` alone re-dated them to now and reordered the thread.
+function toEpochMillis(value: unknown): number {
+  if (value instanceof Date) return value.getTime();
+  return typeof value === "number" && Number.isFinite(value) ? value : Date.now();
+}
+
+function snapshotAttachments(
   attachments: readonly CompleteAttachment[] | undefined,
 ): readonly CompleteAttachment[] {
-  if (!Array.isArray(attachments)) {
-    return [];
-  }
-  return JSON.parse(JSON.stringify(attachments));
+  return Array.isArray(attachments) ? [...attachments] : [];
 }
 
 export function exportedItemToRecord(
@@ -52,9 +54,9 @@ export function exportedItemToRecord(
   parentId: string | null,
   message: ThreadMessage,
 ): MessageRecord {
-  const content = cloneContent(message.content);
+  const content = snapshotContent(message.content);
   if (message.role === "user") {
-    const attachments = cloneAttachments(message.attachments);
+    const attachments = snapshotAttachments(message.attachments);
     const custom = message.metadata?.custom;
     return {
       id: message.id,
@@ -64,7 +66,7 @@ export function exportedItemToRecord(
       content: content as Extract<ThreadMessage, { role: "user" }>["content"],
       ...(attachments.length > 0 && { attachments }),
       ...(custom && Object.keys(custom).length > 0 && { metadata: custom }),
-      createdAt: message.createdAt?.getTime?.() ?? Date.now(),
+      createdAt: toEpochMillis(message.createdAt),
     };
   }
   const custom = (message.metadata?.custom ?? {}) as Record<string, unknown>;
@@ -78,7 +80,7 @@ export function exportedItemToRecord(
       { role: "assistant" }
     >["content"],
     ...(Object.keys(custom).length > 0 && { metadata: custom }),
-    createdAt: message.createdAt?.getTime?.() ?? Date.now(),
+    createdAt: toEpochMillis(message.createdAt),
   };
 }
 
@@ -89,6 +91,8 @@ async function withStoredResearchMessages(
   if (!records.some((record) => hasResearchMetadata(record.metadata))) {
     return records;
   }
+  // The read below wants the row in place, which is the only reason this path ensures it.
+  await ensureStoredChatThread(remoteId);
   // The backend copy, not the legacy-merged one: only what it stored can be echoed back to it.
   // Swallowing a failure here would send the unreconciled payload, which the server rejects
   // wholesale, so the read failure has to surface as itself rather than as a later 409.
@@ -101,22 +105,24 @@ async function withStoredResearchMessages(
   return reconcileServerManagedMessages(records, stored);
 }
 
-/**
- * Persist exported messages, pruning only for explicit delete flows.
- */
+/** Persist exported messages, pruning only for explicit delete flows. */
 export async function syncExportedRepositoryToBackend(
   remoteId: string,
   exp: ExportedMessageRepository,
-  options: { pruneMissing?: boolean } = {},
+  options: { pruneMissing?: boolean; deletedMessageIds?: string[] } = {},
 ): Promise<void> {
-  await ensureStoredChatThread(remoteId);
+  // No ensureStoredChatThread here: syncStoredChatMessages ensures the row itself, and this used
+  // to make every save pay for the same GET /threads/{id} twice.
   const records = exp.messages.map(({ message, parentId }) =>
     exportedItemToRecord(remoteId, parentId, message),
   );
   await syncStoredChatMessages(
     remoteId,
     await withStoredResearchMessages(remoteId, records),
-    { pruneMissing: options.pruneMissing },
+    {
+      pruneMissing: options.pruneMissing,
+      deletedMessageIds: options.deletedMessageIds,
+    },
   );
 }
 
@@ -125,9 +131,7 @@ type ThreadImportExport = {
   import: (data: ExportedMessageRepository) => void;
 };
 
-/**
- * Remove a message from the thread and mirror the result to backend storage.
- */
+/** Remove a message from the thread and mirror the result to backend storage. */
 export async function deleteThreadMessage(args: {
   thread: ThreadImportExport;
   messageId: string;
@@ -161,6 +165,7 @@ export async function deleteThreadMessage(args: {
   if (remoteId) {
     await syncExportedRepositoryToBackend(remoteId, next, {
       pruneMissing: true,
+      deletedMessageIds: [messageId, ...assistantReplyIds],
     });
   }
   thread.import(next);

@@ -4,7 +4,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { extractYoutubeVideoId } from "../src/features/chat/utils/youtube-url.ts";
+import {
+  extractYoutubeVideoId,
+  extractYoutubeVideoUrlFromClipboard,
+} from "../src/features/chat/utils/youtube-url.ts";
 
 const ID = "dQw4w9WgXcQ";
 
@@ -42,4 +45,35 @@ test("rejects look-alike hosts and non-video URLs", () => {
   ]) {
     assert.equal(extractYoutubeVideoId(url), null, url);
   }
+});
+
+test("finds YouTube links in clipboard text and URI payloads", () => {
+  const shortUrl = `https://youtu.be/${ID}`;
+  const cases: Array<[Record<string, string>, string | null]> = [
+    [{ "text/plain": `Rick Astley\n${shortUrl}` }, shortUrl],
+    [{ "text/uri-list": `# copied link\r\n${shortUrl}\r\n` }, shortUrl],
+    [{ "text/plain": "Rick Astley", "text/uri-list": shortUrl }, shortUrl],
+    [
+      { "text/uri-list": `# source ${shortUrl}\r\nhttps://example.com/video` },
+      null,
+    ],
+  ];
+  for (const [data, expected] of cases) {
+    assert.equal(
+      extractYoutubeVideoUrlFromClipboard({
+        getData: (type: string) => data[type] ?? "",
+      }),
+      expected,
+    );
+  }
+});
+
+test("rejects clipboard payloads without a YouTube video link", () => {
+  assert.equal(extractYoutubeVideoUrlFromClipboard(null), null);
+  assert.equal(
+    extractYoutubeVideoUrlFromClipboard({
+      getData: () => "Read https://example.com/watch?v=dQw4w9WgXcQ",
+    }),
+    null,
+  );
 });

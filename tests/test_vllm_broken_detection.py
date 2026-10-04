@@ -83,9 +83,11 @@ def _fake_vllm(
     saved_meta_path = list(sys.meta_path)
     saved_find_spec = importlib.util.find_spec
     saved_broken = import_fixes.VLLM_BROKEN
+    saved_reason = import_fixes.VLLM_DISABLED_REASON
     saved_modules = {n: sys.modules.get(n) for n in ("vllm", *submodules)}
     try:
         import_fixes.VLLM_BROKEN = False
+        import_fixes.VLLM_DISABLED_REASON = None
         fake_vllm = types.ModuleType("vllm")
         fake_vllm.__path__ = []
         fake_vllm.__spec__ = importlib.machinery.ModuleSpec("vllm", loader = None, is_package = True)
@@ -96,6 +98,7 @@ def _fake_vllm(
         yield import_fixes
     finally:
         import_fixes.VLLM_BROKEN = saved_broken
+        import_fixes.VLLM_DISABLED_REASON = saved_reason
         sys.meta_path[:] = saved_meta_path
         importlib.util.find_spec = saved_find_spec
         for name, module in saved_modules.items():
@@ -134,8 +137,8 @@ def test_disable_broken_vllm_detects_lazy_loaded_broken_extension(broken_ext):
     ids = ["libnccl", "libcuda"],
 )
 def test_disable_broken_vllm_detects_non_cudart_so_failure(error):
-    # A CUDA mismatch can surface through a non-libcudart .so (libnccl, libcuda),
-    # which the old libcudart/libcublas/libnvrtc allow-list let slip through.
+    # A CUDA mismatch can surface through a non-libcudart .so (libnccl, libcuda), which the old
+    # libcudart/libcublas/libnvrtc allow-list let slip through.
     with _fake_vllm(present = {"vllm._C"}, broken = {"vllm._C"}, error = error) as import_fixes:
         detected = import_fixes.disable_broken_vllm()
 
@@ -160,6 +163,52 @@ def test_disable_broken_vllm_keeps_healthy_vllm_enabled(present):
         assert detected is False
         assert import_fixes.VLLM_BROKEN is False
         assert importlib.util.find_spec("vllm") is not None
+
+
+# vllm/transformers_utils/config.py raises this at import on vLLM >= 0.24 under transformers < 5.
+_NEEDS_TRANSFORMERS_V5 = (
+    "Support for Transformers v4 is deprecated and was removed in vLLM v0.24.0. "
+    "Please upgrade to Transformers v5: pip install --upgrade transformers"
+)
+
+
+def _chained(outer, inner):
+    try:
+        try:
+            raise inner
+        except Exception as error:
+            raise outer from error
+    except Exception as error:
+        return error
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ImportError(_NEEDS_TRANSFORMERS_V5),
+        _chained(RuntimeError("vllm import failed"), ImportError(_NEEDS_TRANSFORMERS_V5)),
+    ],
+    ids = ["direct", "chained"],
+)
+def test_disable_broken_vllm_disables_vllm_that_needs_transformers_v5(error):
+    # vLLM >= 0.24 refuses transformers 4.x at import; that used to escape and fail `import unsloth`.
+    with _fake_vllm(present = set(), broken = set()) as import_fixes:
+        assert import_fixes.disable_broken_vllm(error) is True
+        assert import_fixes.VLLM_BROKEN is True
+        assert importlib.util.find_spec("vllm") is None
+        assert "needs transformers >= 5.0" in import_fixes.VLLM_DISABLED_REASON
+
+        from unsloth.models.loader import _vllm_unavailable_error
+
+        message = str(_vllm_unavailable_error())
+        assert "needs transformers >= 5.0" in message and "pip install vllm`" not in message
+
+
+def test_disable_broken_vllm_leaves_unrelated_import_errors_alone():
+    with _fake_vllm(present = set(), broken = set()) as import_fixes:
+        assert import_fixes.disable_broken_vllm(ImportError("No module named 'xformers'")) is False
+        assert import_fixes.VLLM_BROKEN is False
+        assert import_fixes.VLLM_DISABLED_REASON is None
 
 
 if __name__ == "__main__":

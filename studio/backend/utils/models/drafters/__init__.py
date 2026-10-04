@@ -17,6 +17,7 @@ from utils.models.drafters.common import (
     split_listing_is_complete,
     _drafter_stem_rank,
     _drafter_total_size,
+    is_published_drafter_filename,
 )
 from utils.models.drafters.preference import (
     dflash_precision_rank,
@@ -40,6 +41,7 @@ __all__ = [
     "split_listing_is_complete",
     "_drafter_stem_rank",
     "_drafter_total_size",
+    "is_published_drafter_filename",
     "detect_dflash_file",
     "dflash_budget_bytes",
     "dflash_precision_rank",
