@@ -61,6 +61,7 @@ export type {
 export {
   deleteReward,
   exportReward,
+  getRlSamples,
   importReward,
   listRewards,
   previewRewards,
@@ -68,6 +69,7 @@ export {
 export type {
   RewardPreviewResponse,
   RewardRecord,
+  RlSampleGroup,
 } from "./api/rewards-api";
 export { previewCell, useRlWorkspaceStore } from "./stores/rl-workspace-store";
 export {

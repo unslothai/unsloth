@@ -19,6 +19,12 @@ import {
 } from "./sections/run-config-override";
 import { TrainingStartOverlay } from "./training-start-overlay";
 
+const RlSamplesCard = lazy(() =>
+  import("./sections/charts/rl-samples").then((module) => ({
+    default: module.RlSamplesCard,
+  })),
+);
+
 const RlChartsGrid = lazy(() =>
   import("./sections/charts/rl-charts").then((module) => ({
     default: module.RlChartsGrid,
@@ -26,7 +32,7 @@ const RlChartsGrid = lazy(() =>
 );
 
 /** Retry budget for the run-config lookup. The row is inserted at start_training(), but a
-* lookup issued in the same instant can still miss it; a few short retries cover that. */
+ * lookup issued in the same instant can still miss it; a few short retries cover that. */
 const RUN_CONFIG_FETCH_RETRIES = 5;
 const RUN_CONFIG_FETCH_RETRY_MS = 1000;
 
@@ -211,6 +217,10 @@ export function LiveTrainingView(): ReactElement {
         {runtime.rlMetricHistory.length > 0 ? (
           <Suspense fallback={null}>
             <RlChartsGrid history={runtime.rlMetricHistory} />
+            <RlSamplesCard
+              jobId={runtime.jobId}
+              isTraining={viewData.isTrainingRunning}
+            />
           </Suspense>
         ) : null}
       </div>

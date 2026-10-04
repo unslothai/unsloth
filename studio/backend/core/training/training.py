@@ -1163,6 +1163,7 @@ class TrainingBackend:
     mp.Queue."""
 
     FLUSH_THRESHOLD: int = 10
+    RL_SAMPLE_LIMIT: int = 12
 
     def __init__(self):
         init_job_owner(
@@ -1218,6 +1219,8 @@ class TrainingBackend:
         self.eval_loss_history: list = []
         self.eval_step_history: list = []
         self.rl_metric_history: list[dict] = []
+        # Newest last, capped at RL_SAMPLE_LIMIT; each carries a "seq" so a poll can ask for newer ones.
+        self.rl_samples: list[dict] = []
         self.eval_enabled: bool = False
         self.current_theme: str = "light"
 
@@ -1260,6 +1263,7 @@ class TrainingBackend:
             "eval_loss_history",
             "eval_step_history",
             "rl_metric_history",
+            "rl_samples",
         ):
             getattr(self, name).clear()
         self.current_job_id = self.current_start_request_id = None
@@ -1961,6 +1965,7 @@ class TrainingBackend:
             self.eval_loss_history.clear()
             self.eval_step_history.clear()
             self.rl_metric_history.clear()
+            self.rl_samples.clear()
             self.eval_enabled = False
             self._output_dir = config.get("output_dir") if resume_source_run_id else None
             self._progress.output_dir = self._output_dir
@@ -3234,6 +3239,19 @@ class TrainingBackend:
 
             elif etype == "eval_configured":
                 self.eval_enabled = True
+
+            elif etype == "samples":
+                seq = self.rl_samples[-1]["seq"] + 1 if self.rl_samples else 1
+                self.rl_samples.append(
+                    {
+                        "seq": seq,
+                        "step": event.get("step"),
+                        "prompt": event.get("prompt") or "",
+                        "answer": event.get("answer"),
+                        "items": event.get("items") or [],
+                    }
+                )
+                del self.rl_samples[: -self.RL_SAMPLE_LIMIT]
 
             elif etype == "output_dir":
                 event_output_dir = event.get("output_dir")

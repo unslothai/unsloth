@@ -353,6 +353,7 @@ class UnslothTrainer:
         self.training_thread = None
         self.training_progress = TrainingProgress()
         self.progress_callbacks = []
+        self.sample_callbacks: list[Callable[[dict], None]] = []
         self.is_training = False
         self.should_stop = False
         self.save_on_stop = True
@@ -543,6 +544,17 @@ class UnslothTrainer:
 
     def add_progress_callback(self, callback: Callable[[TrainingProgress], None]):
         self.progress_callbacks.append(callback)
+
+    def add_sample_callback(self, callback: Callable[[dict], None]):
+        """GRPO sample answers (one prompt's completions and their reward scores)."""
+        self.sample_callbacks.append(callback)
+
+    def _emit_samples(self, samples: dict) -> None:
+        for callback in self.sample_callbacks:
+            try:
+                callback(samples)
+            except Exception:  # noqa: BLE001 - display only
+                logger.debug("Sample callback failed", exc_info = True)
 
     def _update_progress(self, **kwargs):
         """Update training progress and notify callbacks"""
@@ -4411,6 +4423,7 @@ class UnslothTrainer:
                     config_args = config_args,
                     settings = training_args.get("rl_settings") or {},
                     reward_specs = training_args.get("reward_specs") or [],
+                    sample_sink = self._emit_samples if self.sample_callbacks else None,
                 )
                 if rl_tokenizer is not self.tokenizer:
                     self.trainer.processing_class = self.tokenizer

@@ -87,3 +87,29 @@ export async function previewRewards(
     }),
   );
 }
+
+export interface RlSampleGroup {
+  seq: number;
+  step: number | null;
+  prompt: string;
+  answer: string | null;
+  items: {
+    completion: string;
+    rewards: Record<string, number | null>;
+    total: number;
+  }[];
+}
+
+export async function getRlSamples(
+  jobId: string,
+  after: number,
+): Promise<RlSampleGroup[]> {
+  const params = new URLSearchParams({
+    after: String(after),
+    expected_job_id: jobId,
+  });
+  const body = await readJson<{ samples: RlSampleGroup[] }>(
+    await authFetch(`/api/train/rl-samples?${params}`),
+  );
+  return body.samples;
+}

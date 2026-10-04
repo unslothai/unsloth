@@ -12,7 +12,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import math
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -260,9 +260,10 @@ def build_rl_trainer(
     config_args: dict,
     settings: dict,
     reward_specs: Optional[list[dict]] = None,
+    sample_sink: Optional[Callable[[dict], None]] = None,
 ):
     """Construct the TRL trainer for a non-SFT objective. Unsloth's PatchFastRL has already
-    swapped these classes for its own on import."""
+    swapped these classes for its own on import. ``sample_sink`` receives GRPO sample answers."""
     import trl
 
     max_seq_length = int(config_args.get("max_seq_length") or 2048)
@@ -302,6 +303,7 @@ def build_rl_trainer(
     elif objective == "grpo":
         from core.training.python_rewards import RewardWorker, make_python_reward_funcs
         from core.training.rewards import make_reward_func
+        from core.training.rl_samples import record_samples
 
         if not reward_specs:
             raise ValueError("GRPO needs at least one reward selected.")
@@ -342,8 +344,11 @@ def build_rl_trainer(
             "args": args,
             "train_dataset": train_dataset,
             "processing_class": tokenizer,
-            "reward_funcs": _reward_funcs(
-                reward_specs, RewardWorker, make_python_reward_funcs, make_reward_func
+            "reward_funcs": record_samples(
+                _reward_funcs(reward_specs, RewardWorker, make_python_reward_funcs, make_reward_func),
+                reward_specs,
+                sample_sink,
+                args.num_generations,
             ),
         }
         trainer_cls = trl.GRPOTrainer

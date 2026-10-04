@@ -4225,6 +4225,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     trainer = UnslothTrainer()
 
     trainer.add_progress_callback(_create_trainer_progress_callback(event_queue))
+    trainer.add_sample_callback(
+        lambda samples: event_queue.put({"type": "samples", **samples, "ts": time.time()})
+    )
 
     def _apply_stop(save: bool) -> None:
         trainer.should_stop = True

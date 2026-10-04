@@ -1354,3 +1354,24 @@ class DiffusionDatasetImportResponse(BaseModel):
     imported: int
     license: str
     source_repo: str
+
+
+class RlSampleItem(BaseModel):
+    completion: str
+    rewards: Dict[str, Optional[float]]
+    total: float
+
+
+class RlSampleGroup(BaseModel):
+    """One prompt's GRPO completions and what each reward gave them."""
+
+    seq: int
+    step: Optional[int] = None
+    prompt: str
+    answer: Optional[str] = None
+    items: List[RlSampleItem]
+
+
+class RlSamplesResponse(BaseModel):
+    job_id: str
+    samples: List[RlSampleGroup]
