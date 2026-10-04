@@ -287,7 +287,10 @@ def _pipe_with(net):
     return types.SimpleNamespace(transformer = net, components = {"transformer": net})
 
 
-def _arm(pipe, monkeypatch, *, hooked, backend = "cuda", cache = False, mode = "default", cuda = True, opt_in = True):
+def _arm(
+    pipe, monkeypatch, *, hooked, pinned = False, backend = "cuda", cache = False, mode = "default", cuda = True,
+    opt_in = True,
+):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda)
     if opt_in:
         monkeypatch.setenv(bg.BLOCK_GRAPHS_ENV, "1")
@@ -299,6 +302,7 @@ def _arm(pipe, monkeypatch, *, hooked, backend = "cuda", cache = False, mode = "
         target = target,
         family = types.SimpleNamespace(),
         hooked = hooked,
+        pinned = pinned,
         cache_engaged = cache,
         speed_mode = mode,
     )
@@ -325,6 +329,38 @@ def test_per_block_graphs_are_opt_in_and_say_so(monkeypatch):
     pipe2 = _pipe_with(Net(blocks = 3))
     handles, applied = _arm(pipe2, monkeypatch, hooked = True, opt_in = False)
     assert handles == () and "BLOCK_GRAPHS=0" in cg.status_reason(pipe2, False)
+
+
+def test_blocks_that_stay_on_the_device_record_by_default(monkeypatch):
+    monkeypatch.delenv(bg.BLOCK_GRAPHS_ENV, raising = False)
+    pipe = _pipe_with(Net(blocks = 3))
+    pipe._unsloth_cuda_graph_reason = "offload active"
+    handles, applied = _arm(pipe, monkeypatch, hooked = True, pinned = True, opt_in = False)
+    assert applied["cuda_graph"] and len(handles[0].graphs) == 3
+    assert cg.status_reason(pipe, True).startswith("pinned denoiser recorded per block")
+    cg.uninstall_all(handles)
+    pipe = _pipe_with(Net(blocks = 2))
+    pipe._unsloth_cuda_graph_reason = "QwenImage21Transformer2DModel forward is not capture-safe (prefix KV cache)"
+    handles, applied = _arm(pipe, monkeypatch, hooked = False, opt_in = False)
+    assert applied["cuda_graph"] and handles
+    cg.uninstall_all(handles)
+    monkeypatch.setenv(bg.BLOCK_GRAPHS_ENV, "0")
+    pipe = _pipe_with(Net(blocks = 2))
+    handles, applied = _arm(pipe, monkeypatch, hooked = True, pinned = True, opt_in = False)
+    assert handles == () and "BLOCK_GRAPHS=0" in cg.status_reason(pipe, False)
+
+
+def test_model_offload_stays_opt_in_and_says_why(monkeypatch):
+    monkeypatch.delenv(bg.BLOCK_GRAPHS_ENV, raising = False)
+    net = Net(blocks = 2)
+    net._hf_hook = object()
+    pipe = _pipe_with(net)
+    handles, applied = _arm(pipe, monkeypatch, hooked = True, opt_in = False)
+    assert handles == () and not applied["cuda_graph"]
+    assert "model offload re-uploads" in cg.status_reason(pipe, False)
+    handles, applied = _arm(_pipe_with(net), monkeypatch, hooked = True, opt_in = True)
+    assert applied["cuda_graph"] and handles
+    cg.uninstall_all(handles)
 
 
 def test_a_resident_whole_forward_recording_is_kept(monkeypatch):

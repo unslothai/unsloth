@@ -51,15 +51,21 @@ def block_graphs_disabled() -> bool:
 
 
 def block_graphs_requested() -> bool:
-    """Per-block recording is opt-in: on the measured cards it ties copy-bound streamed tiers and runs about 2%
-    slower on GPU-bound resident blocks (three activation copies per block outweigh the launches it saves), while
-    holding a slot ring and a graph pool."""
+    """Forced on everywhere, streamed and model-offloaded denoisers included."""
     return (os.environ.get(BLOCK_GRAPHS_ENV) or "").strip().lower() in ("1", "on", "true", "yes")
 
 
+# Default (env unset): recorded only where every block stays on the device (a resident forward that is not
+# capture-safe, or a denoiser pinned resident under its offload hooks). There a launch-bound host gains most (B200:
+# Qwen-Image-2.1 steps 2 to 3x faster); streamed steps are copy-bound (a tie that still holds a slot ring and a pool)
+# and model offload re-uploads the weights every render, so every block would record again.
 OPT_IN_REASON = (
-    "offloaded denoiser: per-block CUDA graphs measured no faster than its compiled blocks (streamed steps are "
-    "copy-bound, resident ones GPU-bound) and hold extra VRAM; set " + BLOCK_GRAPHS_ENV + "=1 to record per block"
+    "offloaded denoiser streams its blocks: per-block CUDA graphs measured no faster (streamed steps are "
+    "copy-bound) and hold extra VRAM; set " + BLOCK_GRAPHS_ENV + "=1 to record per block"
+)
+MODEL_OFFLOAD_REASON = (
+    "model offload re-uploads the denoiser every render, so every block would record again; set "
+    + BLOCK_GRAPHS_ENV + "=1 to record per block"
 )
 
 

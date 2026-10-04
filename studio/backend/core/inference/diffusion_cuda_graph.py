@@ -892,12 +892,16 @@ def arm_block_graphs(
     target: Any,
     family: Any,
     hooked: bool,
+    pinned: bool = False,
     cache_engaged: bool = False,
     speed_mode: str = "default",
     family_default: bool = True,
     logger: Any = None,
 ) -> tuple:
     """After placement: keep a whole-forward recording where it holds, else record per block.
+
+    Per-block recording is the default only where every block stays on the device (``not hooked``, or ``pinned``
+    resident under its hooks); streamed and model-offloaded denoisers need ``UNSLOTH_DIFFUSION_BLOCK_GRAPHS=1``.
 
     A whole forward cannot be recorded once an offload hook moves the denoiser (``hooked``) or when the forward is
     not capture-safe (Qwen-Image-2.1's prefix K/V object); its repeated blocks still can, keyed by where their weights
@@ -920,6 +924,7 @@ def arm_block_graphs(
         return ()
     try:
         from .diffusion_block_graph import (
+            MODEL_OFFLOAD_REASON,
             OPT_IN_REASON,
             block_graphs_disabled,
             block_graphs_requested,
@@ -932,15 +937,15 @@ def arm_block_graphs(
         pipe._unsloth_cuda_graphs = ()
         _set_reason(pipe, "offload active" if hooked else prior or "block graphs unavailable")
         return ()
-    if not block_graphs_requested():
+    model_offload = any(getattr(t, "_hf_hook", None) is not None for t in _denoiser_dits(pipe))
+    stays = (not hooked or bool(pinned)) and not model_offload
+    if block_graphs_disabled() or not (stays or block_graphs_requested()):
         applied["cuda_graph"] = False
         pipe._unsloth_cuda_graphs = ()
         if block_graphs_disabled():
             _set_reason(pipe, "disabled by UNSLOTH_DIFFUSION_BLOCK_GRAPHS=0")
-        elif hooked:
-            _set_reason(pipe, OPT_IN_REASON)
         else:
-            _set_reason(pipe, prior + "; per-block graphs are opt-in (UNSLOTH_DIFFUSION_BLOCK_GRAPHS=1)")
+            _set_reason(pipe, MODEL_OFFLOAD_REASON if model_offload else OPT_IN_REASON)
         return ()
     armed: list = []
     reasons: list = []
@@ -959,7 +964,7 @@ def arm_block_graphs(
     pipe._unsloth_cuda_graphs = tuple(armed)
     applied["cuda_graph"] = bool(armed)
     if armed:
-        where = "offloaded denoiser" if hooked else "denoiser"
+        where = "pinned denoiser" if hooked and pinned else "offloaded denoiser" if hooked else "denoiser"
         slots = sum(int(getattr(h, "slots_mib", 0) or 0) for h in armed)
         _set_reason(
             pipe,
