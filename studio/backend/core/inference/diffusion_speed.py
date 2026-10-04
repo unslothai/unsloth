@@ -53,13 +53,15 @@ SPEED_MAX = "max"
 SPEED_MODES = (SPEED_OFF, SPEED_EAGER, SPEED_DEFAULT, SPEED_MAX)
 
 
-# (attribute, snapshot key). All but the first are what torchao's recommended_inductor_config_setter() flips.
+# (attribute, snapshot key). The first and last are Studio's own; the rest are what torchao's
+# recommended_inductor_config_setter() flips.
 _INDUCTOR_FLAGS = (
     ("emulate_precision_casts", "inductor_emulate_precision_casts"),
     ("coordinate_descent_tuning", "inductor_coordinate_descent_tuning"),
     ("coordinate_descent_check_all_directions", "inductor_coordinate_descent_check_all_directions"),
     ("force_fuse_int_mm_with_mul", "inductor_force_fuse_int_mm_with_mul"),
     ("fx_graph_cache", "inductor_fx_graph_cache"),
+    ("dynamic_scale_rblock", "inductor_dynamic_scale_rblock"),
 )
 _INDUCTOR_TRITON_FLAGS = (("unique_kernel_names", "inductor_triton_unique_kernel_names"),)
 _DYNAMO_MODULE = "torch._dynamo.config"
@@ -480,7 +482,11 @@ def apply_speed_optims(
     if on_cuda:
         applied["vae_fused"] = _install_fused_vae(pipe, logger)
 
-    if on_cuda and not _cudnn_benchmark_pointless(pipe):
+    if (
+        on_cuda
+        and getattr(family, "cudnn_benchmark", True)
+        and not _cudnn_benchmark_pointless(pipe)
+    ):
         applied["cudnn_benchmark"] = _enable_cudnn_benchmark(logger)
 
     if on_cuda:
@@ -593,6 +599,38 @@ def apply_speed_optims(
             except Exception as exc:  # noqa: BLE001 - the load proceeds eager
                 _warn(logger, "cuda graph capture", exc)
 
+    return applied
+
+
+def engage_pinned_denoisers(
+    pipe: Any,
+    applied: dict,
+    logger: Any = None,
+) -> dict:
+    """Install the int8 GEMM the plan refused once every denoiser group is pinned (before the first forward). Graphs
+    stay off: an oversized request can still stream the groups, and the hooks' copy-stream wait breaks capture."""
+    if getattr(pipe, "_unsloth_cuda_graph_reason", None) == "offload active":
+        try:
+            pipe._unsloth_cuda_graph_reason = "denoiser pinned resident under offload hooks"
+        except Exception:  # noqa: BLE001
+            pass
+    if not applied.get("compiled") or applied.get("int8_gemm"):
+        return applied
+    try:
+        from .diffusion_int8_gemm import install as install_int8_gemm
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, "int8 fused-dequant gemm", exc)
+        return applied
+    for transformer in _denoiser_dits(pipe):
+        try:
+            transformer._unsloth_int8_gemm = install_int8_gemm(
+                transformer, logger, offload_active = False
+            )
+        except Exception as exc:  # noqa: BLE001 - optimisation only
+            _warn(logger, "int8 fused-dequant gemm", exc)
+    applied["int8_gemm"] = any(
+        bool(getattr(t, "_unsloth_int8_gemm", 0)) for t in _denoiser_dits(pipe)
+    )
     return applied
 
 
@@ -884,6 +922,13 @@ def _compile_repeated_blocks(
         inductor_cfg = _inductor_config()
         if inductor_cfg is not None and hasattr(inductor_cfg, "emulate_precision_casts"):
             compile_config.set_knob(_INDUCTOR_MODULE, "emulate_precision_casts", True)
+        # One R0_BLOCK per reduction: see diffusion_compile_config.DYNAMIC_SCALE_RBLOCK_ENV.
+        if (
+            inductor_cfg is not None
+            and hasattr(inductor_cfg, "dynamic_scale_rblock")
+            and compile_config.reduction_blocks_pinned()
+        ):
+            compile_config.set_knob(_INDUCTOR_MODULE, "dynamic_scale_rblock", False)
     except Exception as exc:  # noqa: BLE001 - optimisation only
         _warn(logger, "compile_repeated_blocks", exc)
         return False

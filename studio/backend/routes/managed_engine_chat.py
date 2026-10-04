@@ -118,7 +118,12 @@ async def managed_tool_chat(
             "No native tool parser is configured for this model's chat template. Use Default for tool calling with this model."
         )
     tools = (
-        await api._select_request_tools(payload, tools_on = tools_on, mcp_allowed = mcp_on)
+        await api._select_request_tools(
+            payload,
+            tools_on = tools_on,
+            mcp_allowed = mcp_on,
+            supports_vision = bool(info.get("is_vision")),
+        )
         if tools_on or mcp_on
         else []
     )

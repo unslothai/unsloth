@@ -1,21 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Cold-start I/O for the image load path. Two levers, each byte-for-byte neutral:
-
-``start_load_prefetch`` warms the page cache with the files the load is about to read (the hosted
-int8 / fp8 denoiser checkpoint first, then the base repo's text encoder, VAE and dense denoiser
-shards). The load reads them one after another, and the checkpoint through ``mmap`` page faults, which
-on a B200 host's NVMe RAID run at about 3 GiB/s; 8 threads each reading one contiguous slice of every
-file in 64 MiB requests read the same file at about 17 GiB/s. A no-op when everything is cached.
-
-``fast_upload`` moves a module's plain CPU tensors to the GPU through a pinned staging ring (8 copy
-threads, one side stream): pageable ``Tensor.to`` from host memory runs at 2-5 GiB/s, the ring at
-about 20 GiB/s. It hands the existing ``.to`` call precomputed copies through a ``TorchFunctionMode``,
-so placement semantics (parameter re-wrapping, tied weights, buffers) stay the module's own; tensor
-subclasses (torchao weights) and anything the ring does not cover take the stock path unchanged.
-
-Kill switches: ``UNSLOTH_DIFFUSION_PREFETCH=0`` and ``UNSLOTH_DIFFUSION_FAST_UPLOAD=0``.
+"""Cold-start I/O for the image load path, byte-for-byte neutral: ``start_load_prefetch`` warms the page
+cache with the files the load reads next (parallel slice reads beat mmap page faults); ``fast_upload``
+moves plain host tensors through a pinned ring and hands them to the existing ``.to`` via a
+``TorchFunctionMode``, so placement semantics stay the module's own. Kill switches
+``UNSLOTH_DIFFUSION_PREFETCH=0`` / ``UNSLOTH_DIFFUSION_FAST_UPLOAD=0``.
 """
 
 from __future__ import annotations
@@ -23,8 +13,9 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import threading
-from typing import Any, Iterator, Optional, Sequence
+from typing import Any, Iterable, Iterator, Optional, Sequence
 
 PREFETCH_ENV = "UNSLOTH_DIFFUSION_PREFETCH"
 FAST_UPLOAD_ENV = "UNSLOTH_DIFFUSION_FAST_UPLOAD"
@@ -32,18 +23,19 @@ _SWITCH_OFF = ("0", "off", "false", "no")
 
 _PREFETCH_THREADS = 8
 _PREFETCH_READ_BYTES = 64 << 20
-# Below this much uncached data the threads cost more than they save.
 _PREFETCH_MIN_BYTES = 256 << 20
 _PREFETCH_THREAD_PREFIX = "unsloth-image-prefetch"
 
 _UPLOAD_THREADS = 8
 _UPLOAD_CHUNK_BYTES = 16 << 20
 _UPLOAD_BUFFERS = 16
-# Small tensors are not worth a ring slot; the stock copy handles them.
 _UPLOAD_MIN_TENSOR_BYTES = 1 << 20
 _UPLOAD_MIN_TOTAL_BYTES = 256 << 20
 
-_WEIGHT_SUFFIXES = (".safetensors",)
+# variant=None: from_pretrained never opens *.fp16.safetensors-style twins.
+_DEFAULT_WEIGHT_RE = re.compile(
+    r"^(?:diffusion_pytorch_model|model)(?:-\d{5}-of-\d{5})?\.safetensors$"
+)
 _DENOISER_COMPONENTS = ("transformer", "unet")
 
 
@@ -57,11 +49,6 @@ def prefetch_enabled() -> bool:
 
 def fast_upload_enabled() -> bool:
     return _switch_on(FAST_UPLOAD_ENV)
-
-
-# --------------------------------------------------------------------------------------------------
-# Page-cache prefetch
-# --------------------------------------------------------------------------------------------------
 
 
 class LoadPrefetch:
@@ -105,7 +92,7 @@ def _on_rotational_disk(path: str) -> bool:
         for queue in (os.path.join(base, "queue"), os.path.join(base, "..", "queue")):
             flag = os.path.join(queue, "rotational")
             if os.path.isfile(flag):
-                with open(flag) as handle:
+                with open(flag, encoding = "utf-8") as handle:
                     return handle.read().strip() == "1"
     except Exception:  # noqa: BLE001 - unknown (non-Linux, overlay, network): not rotational
         pass
@@ -245,7 +232,10 @@ def _snapshot_dir(
 
 
 def pipeline_component_files(
-    snapshot: Optional[str], *, skip_denoiser: bool, skip_text_encoders: bool
+    snapshot: Optional[str],
+    *,
+    skip_denoiser: bool,
+    skip_components: Iterable[str] = (),
 ) -> list[str]:
     """The weight files ``from_pretrained`` reads from a local diffusers snapshot: every component
     ``model_index.json`` names, text encoders first, then the VAE, then the denoiser. Cache only."""
@@ -272,11 +262,12 @@ def pipeline_component_files(
             return 2
         return 1
 
+    skip = set(skip_components or ())
     files: list[str] = []
     for name in sorted(components, key = lambda n: (_rank(n), n)):
         if skip_denoiser and name in _DENOISER_COMPONENTS:
             continue
-        if skip_text_encoders and name.startswith("text_encoder"):
+        if name in skip:
             continue
         folder = os.path.join(snapshot, name)
         if not os.path.isdir(folder):
@@ -286,11 +277,22 @@ def pipeline_component_files(
         except OSError:
             continue
         for entry in entries:
-            if entry.endswith(_WEIGHT_SUFFIXES):
+            if _DEFAULT_WEIGHT_RE.match(entry):
                 path = os.path.join(folder, entry)
                 if os.path.isfile(path):
                     files.append(path)
     return files
+
+
+def te_precast_components(fam: Any, base: str, te_quant_mode: Any, target: Any) -> frozenset:
+    """Encoders a hosted pre-cast checkpoint replaces; a runtime cast still reads the dense shards."""
+    try:
+        from .diffusion_te_prequant import te_prequant_sources_for_base
+        return frozenset(
+            te_prequant_sources_for_base(fam, base, te_quant_mode = te_quant_mode, target = target)
+        )
+    except Exception:  # noqa: BLE001 - a prefetch is only a hint
+        return frozenset()
 
 
 def start_load_prefetch(
@@ -301,7 +303,7 @@ def start_load_prefetch(
     prequant_scheme: Optional[str] = None,
     prequant_path_override: Optional[str] = None,
     prequant_base_repo: Optional[str] = None,
-    text_encoders_replaced: bool = False,
+    text_encoders_replaced: Iterable[str] = (),
     cache_dir: Optional[str] = None,
     logger: Any = None,
 ) -> Optional[LoadPrefetch]:
@@ -332,18 +334,13 @@ def start_load_prefetch(
         paths += pipeline_component_files(
             _snapshot_dir(base, base_local_dir, cache_dir),
             skip_denoiser = seeded,
-            skip_text_encoders = bool(text_encoders_replaced),
+            skip_components = text_encoders_replaced,
         )
         return start_prefetch(paths, logger = logger)
     except Exception as exc:  # noqa: BLE001 - a prefetch is only a hint
         if logger is not None:
             logger.debug("diffusion.prefetch: skipped (%r)", exc)
         return None
-
-
-# --------------------------------------------------------------------------------------------------
-# Pinned-ring upload
-# --------------------------------------------------------------------------------------------------
 
 
 def _upload_candidates(modules: Sequence[Any], device: Any) -> list[Any]:

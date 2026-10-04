@@ -127,13 +127,16 @@ def _fake_snapshot(tmp_path):
     snap.mkdir()
     (snap / "model_index.json").write_text(json.dumps(index))
     layout = {
-        "text_encoder": ["model.safetensors"],
+        "text_encoder": ["model.safetensors", "model.fp16.safetensors"],
         "text_encoder_2": [
             "model-00002-of-00002.safetensors",
             "model-00001-of-00002.safetensors",
             "index.json",
         ],
-        "transformer": ["diffusion_pytorch_model.safetensors"],
+        "transformer": [
+            "diffusion_pytorch_model.safetensors",
+            "diffusion_pytorch_model.fp16-00001-of-00002.safetensors",
+        ],
         "vae": ["diffusion_pytorch_model.safetensors", "diffusion_pytorch_model.bin"],
         "tokenizer": ["vocab.json"],
     }
@@ -147,9 +150,7 @@ def _fake_snapshot(tmp_path):
 def test_component_files_are_the_weights_from_pretrained_reads_text_encoders_first(tmp_path):
     snap = _fake_snapshot(tmp_path)
     rel = lambda paths: [p[len(str(snap)) + 1 :] for p in paths]  # noqa: E731
-    assert rel(
-        fl.pipeline_component_files(str(snap), skip_denoiser = False, skip_text_encoders = False)
-    ) == [
+    assert rel(fl.pipeline_component_files(str(snap), skip_denoiser = False)) == [
         "text_encoder/model.safetensors",
         "text_encoder_2/model-00001-of-00002.safetensors",
         "text_encoder_2/model-00002-of-00002.safetensors",
@@ -157,15 +158,15 @@ def test_component_files_are_the_weights_from_pretrained_reads_text_encoders_fir
         "transformer/diffusion_pytorch_model.safetensors",
     ]
     assert rel(
-        fl.pipeline_component_files(str(snap), skip_denoiser = True, skip_text_encoders = True)
+        fl.pipeline_component_files(
+            str(snap), skip_denoiser = True, skip_components = {"text_encoder_2"}
+        )
     ) == [
+        "text_encoder/model.safetensors",
         "vae/diffusion_pytorch_model.safetensors",
     ]
-    assert fl.pipeline_component_files(None, skip_denoiser = False, skip_text_encoders = False) == []
-    assert (
-        fl.pipeline_component_files(str(tmp_path), skip_denoiser = False, skip_text_encoders = False)
-        == []
-    )
+    assert fl.pipeline_component_files(None, skip_denoiser = False) == []
+    assert fl.pipeline_component_files(str(tmp_path), skip_denoiser = False) == []
 
 
 def test_load_prefetch_puts_the_seeded_checkpoint_first_and_skips_the_dense_denoiser(
@@ -196,16 +197,39 @@ def test_load_prefetch_puts_the_seeded_checkpoint_first_and_skips_the_dense_deno
     assert seen.pop("paths")[0] == str(ckpt)
     fl.start_load_prefetch(object(), str(snap), prequant_scheme = "int8")
     assert not any("transformer/" in p for p in seen.pop("paths"))
-    # No seed (or a seed whose checkpoint is not cached): the dense denoiser shards are what the load reads.
     fl.start_load_prefetch(object(), str(snap), prequant_scheme = None)
     assert seen["paths"][-1].endswith("transformer/diffusion_pytorch_model.safetensors")
     monkeypatch.setattr(pq, "cached_checkpoint_path", lambda source, cache_dir = None: None)
     seen.clear()
-    fl.start_load_prefetch(object(), str(snap), prequant_scheme = "int8", text_encoders_replaced = True)
+    fl.start_load_prefetch(
+        object(),
+        str(snap),
+        prequant_scheme = "int8",
+        text_encoders_replaced = {"text_encoder", "text_encoder_2"},
+    )
     assert [p.split("/snap/")[-1] for p in seen["paths"]] == [
         "vae/diffusion_pytorch_model.safetensors",
         "transformer/diffusion_pytorch_model.safetensors",
     ]
+
+
+def test_only_hosted_precast_encoders_leave_the_prefetch(monkeypatch):
+    import types
+
+    import torch
+    import core.inference.diffusion_precision as prec
+    from core.inference.diffusion_families import detect_family
+
+    monkeypatch.setattr(prec, "te_quant_supported", lambda target, mode: True)
+    fam = detect_family("black-forest-labs/FLUX.1-schnell")
+    target = types.SimpleNamespace(device = "cuda", backend = "cuda", dtype = torch.bfloat16)
+    base = "black-forest-labs/FLUX.1-schnell"
+    # A runtime cast loads the dense shards first, so they stay in the prefetch.
+    for mode in (None, "off", "int8"):
+        assert fl.te_precast_components(fam, base, mode, target) == frozenset()
+    replaced = fl.te_precast_components(fam, base, "fp8", target)
+    assert replaced and replaced <= {"text_encoder_2"}
+    assert fl.te_precast_components(object(), base, "fp8", target) == frozenset()
 
 
 def test_load_prefetch_never_raises(monkeypatch):
@@ -287,7 +311,6 @@ def test_fast_upload_leaves_other_to_calls_alone(monkeypatch):
     weight = module.a.weight
     with fl.fast_upload([module], "cuda") as staged:
         assert staged > 0
-        # A dtype change, a copy, or another device is not what was staged: the stock path answers.
         assert weight.to("cuda", dtype = torch.float32).dtype == torch.float32
         assert weight.to("cuda", copy = True).data_ptr() != weight.to("cuda").data_ptr()
         assert weight.to("cpu").device.type == "cpu"

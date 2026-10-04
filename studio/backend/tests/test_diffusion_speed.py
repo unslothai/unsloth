@@ -565,6 +565,28 @@ def test_speed_default_skips_cudnn_benchmark_on_rocm(monkeypatch, hip, version):
     assert torch.backends.cudnn.benchmark is False
 
 
+def test_speed_default_respects_family_cudnn_benchmark_opt_out(monkeypatch):
+    torch = _stub_torch(monkeypatch)
+    family = types.SimpleNamespace(supports_torch_compile = True, cudnn_benchmark = False)
+    applied = apply_speed_optims(
+        _Pipe(with_compile = True), _target(), is_gguf = False, family = family, speed_mode = SPEED_DEFAULT
+    )
+    assert applied["cudnn_benchmark"] is False
+    assert torch.backends.cudnn.benchmark is False
+    family = types.SimpleNamespace(supports_torch_compile = True, cudnn_benchmark = True)
+    applied = apply_speed_optims(
+        _Pipe(with_compile = True), _target(), is_gguf = False, family = family, speed_mode = SPEED_DEFAULT
+    )
+    assert applied["cudnn_benchmark"] is True and torch.backends.cudnn.benchmark is True
+
+
+def test_cudnn_benchmark_opt_out_image_families():
+    # Unmeasured families keep the benchmark.
+    from core.inference.diffusion_families import _FAMILIES
+    off = {fam.name for fam in _FAMILIES if not fam.cudnn_benchmark}
+    assert off == {"qwen-image", "flux.1", "z-image", "sdxl"}
+
+
 def test_speed_max_enables_tf32_and_fused_qkv(monkeypatch):
     torch = _stub_torch(monkeypatch)
     pipe = _Pipe(with_compile = True, with_fuse = True)
@@ -2333,3 +2355,65 @@ def test_family_compiles_regionally_closes_the_dynamo_import_window_first(monkey
     fam = types.SimpleNamespace(transformer_class = "Lumina2Transformer2DModel")
     assert family_compiles_regionally(fam) is True
     assert events[:2] == ["guard", "probe"]
+
+
+def test_pinned_denoiser_engages_the_int8_gemm_after_placement(monkeypatch):
+    """Pinned after placement: the GEMM installs with offload_active False, only on a compiled DiT."""
+    calls = []
+    fake = types.ModuleType("core.inference.diffusion_int8_gemm")
+
+    def _install(
+        transformer,
+        logger = None,
+        offload_active = False,
+    ):
+        calls.append(offload_active)
+        return 0 if offload_active else 60
+
+    fake.install = _install
+    monkeypatch.setitem(sys.modules, "core.inference.diffusion_int8_gemm", fake)
+    dit = types.SimpleNamespace()
+    pipe = types.SimpleNamespace(_unsloth_cuda_graph_reason = "offload active")
+    monkeypatch.setattr(ds_mod, "_denoiser_dits", lambda p: [dit])
+
+    applied = {"compiled": True, "int8_gemm": False, "cuda_graph": False}
+    ds_mod.engage_pinned_denoisers(pipe, applied)
+    assert calls == [False] and applied["int8_gemm"] and dit._unsloth_int8_gemm == 60
+    assert not applied["cuda_graph"]
+    assert pipe._unsloth_cuda_graph_reason == "denoiser pinned resident under offload hooks"
+
+    calls.clear()
+    eager = {"compiled": False, "int8_gemm": False}
+    ds_mod.engage_pinned_denoisers(pipe, eager)
+    assert calls == [] and not eager["int8_gemm"]
+
+
+@pytest.mark.parametrize(
+    "offload_active, denoiser_offloaded, expected",
+    [(True, False, False), (True, True, True), (True, None, True), (False, None, False)],
+)
+def test_int8_gemm_install_follows_the_denoiser_placement(
+    monkeypatch, offload_active, denoiser_offloaded, expected
+):
+    """Only a moving denoiser keeps the stock GEMM; one pinned under the others' offload rotation takes the fused one."""
+    from core.inference import diffusion_int8_gemm, diffusion_speed as ds_mod
+
+    seen = []
+    monkeypatch.setattr(
+        diffusion_int8_gemm,
+        "install",
+        lambda t, logger = None, offload_active = False: seen.append(offload_active) or 0,
+    )
+
+    class _DiT:
+        def compile_repeated_blocks(self, **kwargs):
+            return None
+
+    monkeypatch.setattr(ds_mod, "_denoiser_dits", lambda pipe: [_DiT()])
+    ds_mod._compile_repeated_blocks(
+        types.SimpleNamespace(),
+        None,
+        offload_active = offload_active,
+        denoiser_offloaded = denoiser_offloaded,
+    )
+    assert seen == [expected]

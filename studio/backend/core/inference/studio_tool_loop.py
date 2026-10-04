@@ -1152,18 +1152,22 @@ def _merge_usage(totals: dict[str, Any], usage: Any) -> None:
                 bucket[detail] = bucket.get(detail, 0) + count
 
 
-def _usage_chunk_line(model: str, totals: dict[str, Any]) -> str | None:
+def _usage_chunk_line(
+    model: str, totals: dict[str, Any], timings: dict[str, Any] | None
+) -> str | None:
     if not totals:
         return None
-    return _sse(
-        {
-            "id": "chatcmpl-external-tools",
-            "object": "chat.completion.chunk",
-            "model": model,
-            "choices": [],
-            "usage": totals,
-        }
-    )
+    chunk: dict[str, Any] = {
+        "id": "chatcmpl-external-tools",
+        "object": "chat.completion.chunk",
+        "model": model,
+        "choices": [],
+        "usage": totals,
+    }
+    if timings is not None:
+        # Report the last turn's timings; speeds cannot be summed.
+        chunk["timings"] = timings
+    return _sse(chunk)
 
 
 def _is_usage_only(payload: dict[str, Any]) -> bool:
@@ -1300,6 +1304,7 @@ async def stream_with_studio_tools(
     executed_any = False
     model_name = run.model or "external"
     usage_totals: dict[str, Any] = {}
+    last_timings: dict[str, Any] | None = None
     # Dedup, one-shot tracking and the force-final-answer transition are the same ledger the local loops keep, so an
     # external model cannot spend the budget repeating one call and a terminal no-op still ends the loop.
     controller = ToolLoopController(
@@ -1331,6 +1336,8 @@ async def stream_with_studio_tools(
             break
         provider_turns += 1
         turn = _Turn(round = provider_turns)
+        # Clear stale timings even if this turn sends no usage chunk.
+        last_timings = None
         # Per turn: ids restart each turn, so a later call_0 is a new card.
         mcp_stamped_ids: set[str] = set()
         healer = StreamToolCallHealer(heal_names, tools) if heal_names else None
@@ -1387,14 +1394,15 @@ async def stream_with_studio_tools(
                     model_name = upstream_model
                 if "usage" in payload:
                     _merge_usage(usage_totals, payload.get("usage"))
+                    if isinstance(payload.get("timings"), dict):
+                        last_timings = payload["timings"]
                     if _is_usage_only(payload):
                         # Withheld: one summed chunk is sent once the loop ends, so a multi-turn answer does not
                         # report a burst of partial counts.
                         continue
-                    # Some providers hang usage off a chunk that also carries a choice, which cannot be withheld
-                    # wholesale without losing the content. Drop just the usage: it is already in the totals, and
-                    # leaving it here makes a client that sums chunks count this turn twice.
+                    # Preserve content, but emit usage and timings only in the final summary chunk.
                     payload.pop("usage", None)
+                    payload.pop("timings", None)
                     line = "data: " + json.dumps(payload, separators = (",", ":"))
                 choices = payload.get("choices")
                 choice = choices[0] if isinstance(choices, list) and choices else {}
@@ -1996,6 +2004,6 @@ async def stream_with_studio_tools(
             # offered
             _append_user_turn(conversation, _BUDGET_EXHAUSTED_NUDGE)
 
-    usage_line = _usage_chunk_line(model_name, usage_totals)
+    usage_line = _usage_chunk_line(model_name, usage_totals, last_timings)
     if usage_line is not None:
         yield usage_line

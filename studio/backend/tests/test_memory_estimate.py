@@ -3066,6 +3066,229 @@ class TestAnInheritedContextIsPriced:
         assert out.n_ctx == 8192
 
 
+class TestAnAutoContextIsMarkedShrinkable:
+    """Only contexts the loader can shrink should use a floor for memory warnings."""
+
+    @pytest.fixture(autouse = True)
+    def wide(self, tmp_path, monkeypatch):
+        gguf = _write_gguf(tmp_path, "qwen3", {**_GQA_FIELDS, "context_length": 262144})
+        config = SimpleNamespace(
+            identifier = "local/wide",
+            gguf_file = gguf,
+            is_gguf = True,
+            gguf_variant = None,
+            gguf_mmproj_file = None,
+            gguf_mtp_file = None,
+            gguf_dspark_file = None,
+            gguf_dflash_file = None,
+        )
+        monkeypatch.setattr(ri, "_cached_estimate_config", lambda *a, **kw: config)
+        monkeypatch.setattr(ri, "_cached_inference_devices", lambda: [(0, 0, 0)])
+        monkeypatch.delenv("LLAMA_ARG_CTX_SIZE", raising = False)
+        monkeypatch.delenv("LLAMA_ARG_FIT_CTX", raising = False)
+        self.fit_ctx_supported(monkeypatch, True)
+        return gguf
+
+    @staticmethod
+    def fit_ctx_supported(monkeypatch, supported):
+        from core.inference.llama_cpp import LlamaCppBackend
+        real = LlamaCppBackend.probe_server_capabilities
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "probe_server_capabilities",
+            classmethod(lambda cls, binary = None: {**real(binary), "supports_fit_ctx": supported}),
+        )
+
+    @pytest.mark.parametrize(
+        ("request_fields", "fit_ctx_supported", "floor_ctx"),
+        [
+            ({}, True, 8192),
+            ({"gpu_memory_mode": "auto"}, True, 8192),
+            # Manual with Auto layers: load_model emits --fit-ctx 8192 where the build takes it.
+            ({"gpu_memory_mode": "manual"}, True, 8192),
+            ({"gpu_memory_mode": "manual"}, False, 4096),
+            # A pass-through --fit-ctx comes last, so it is the floor.
+            ({"gpu_memory_mode": "manual", "llama_extra_args": ["-fitc", "16384"]}, True, 16384),
+            # /load strips Manual's --fit flags, so the fitter still runs.
+            ({"gpu_memory_mode": "manual", "llama_extra_args": ["--fit", "off"]}, True, 8192),
+        ],
+    )
+    def test_an_unnamed_context_is_priced_at_the_fit_floor(
+        self, wide, monkeypatch, request_fields, fit_ctx_supported, floor_ctx
+    ):
+        """Use the loader's fit floor, not the smallest possible context."""
+        self.fit_ctx_supported(monkeypatch, fit_ctx_supported)
+        resp = _estimate(model_path = wide, **request_fields)
+        assert resp.n_ctx == 262144
+        assert resp.context_is_pinned is False
+        config = ri._cached_estimate_config()
+        floor = ri._gguf_memory_breakdown(config, wide, n_ctx = floor_ctx, **request_fields)
+        shorter = ri._gguf_memory_breakdown(config, wide, n_ctx = 256, **request_fields)
+        assert shorter.gpu_bytes < resp.gpu_floor_bytes == floor.gpu_bytes < resp.gpu_bytes
+
+    def test_a_native_context_under_the_fit_floor_has_nothing_to_shrink(
+        self, tmp_path, monkeypatch
+    ):
+        gguf = _write_gguf(
+            tmp_path, "qwen3", {**_GQA_FIELDS, "context_length": 4096}, name = "short.gguf"
+        )
+        config = SimpleNamespace(**{**vars(ri._cached_estimate_config()), "gguf_file": gguf})
+        monkeypatch.setattr(ri, "_cached_estimate_config", lambda *a, **kw: config)
+        resp = _estimate(model_path = gguf)
+        assert resp.context_is_pinned is False
+        assert resp.gpu_floor_bytes == resp.gpu_bytes
+
+    @pytest.mark.parametrize(
+        ("request_fields", "env_ctx", "fit_ctx_supported"),
+        [
+            ({"n_ctx": 8192}, None, True),
+            ({"llama_extra_args": ["-c", "0"]}, None, True),
+            ({"llama_extra_args": ["--ctx-size=4096"]}, None, True),
+            ({"llama_extra_args": ["-nkvo"]}, None, True),
+            ({"gpu_memory_mode": "manual", "gpu_layers": 0}, None, True),
+            ({"gpu_memory_mode": "manual", "gpu_layers": 99}, None, True),
+            # /load folds a Manual -ngl into the layer field, which fixes the placement.
+            ({"gpu_memory_mode": "manual", "llama_extra_args": ["-ngl", "99"]}, None, True),
+            ({}, "4096", True),
+            # Without -c or --fit-ctx, inherited zero preserves native context.
+            ({"gpu_memory_mode": "manual"}, "0", False),
+            # llama.cpp stores --fit-ctx unsigned, so -1 disables the reduction.
+            ({"gpu_memory_mode": "manual", "llama_extra_args": ["--fit-ctx", "-1"]}, None, True),
+        ],
+    )
+    def test_a_context_the_launch_opens_verbatim_stays_pinned(
+        self, wide, monkeypatch, request_fields, env_ctx, fit_ctx_supported
+    ):
+        self.fit_ctx_supported(monkeypatch, fit_ctx_supported)
+        if env_ctx is not None:
+            monkeypatch.setenv("LLAMA_ARG_CTX_SIZE", env_ctx)
+        resp = _estimate(model_path = wide, **request_fields)
+        assert resp.available is True
+        assert resp.context_is_pinned is True, (request_fields, env_ctx)
+        assert resp.gpu_floor_bytes is None
+
+    @pytest.mark.parametrize(("fit_ctx_supported", "floor_ctx"), [(True, 8192), (False, 4096)])
+    def test_manual_ignores_the_fit_variables_its_launch_clears(
+        self, wide, monkeypatch, fit_ctx_supported, floor_ctx
+    ):
+        # _MANUAL_PLACEMENT_ENV_VARS: the child never sees LLAMA_ARG_FIT_CTX or the layers.
+        monkeypatch.setenv("LLAMA_ARG_FIT_CTX", "16384")
+        monkeypatch.setenv("LLAMA_ARG_N_GPU_LAYERS", "20")
+        self.fit_ctx_supported(monkeypatch, fit_ctx_supported)
+        manual = {"gpu_memory_mode": "manual"}
+        floor = ri._gguf_memory_breakdown(
+            ri._cached_estimate_config(), wide, n_ctx = floor_ctx, **manual
+        )
+        resp = _estimate(model_path = wide, **manual)
+        assert resp.gpu_floor_bytes == floor.gpu_bytes
+        assert resp.floor_can_offload is True
+
+    @pytest.mark.parametrize("request_fields", [{}, {"gpu_memory_mode": "manual"}])
+    def test_an_inherited_zero_is_overruled_by_the_launch(self, wide, monkeypatch, request_fields):
+        # Auto placement emits its own -c, and Manual its --fit-ctx, after the environment.
+        monkeypatch.setenv("LLAMA_ARG_CTX_SIZE", "0")
+        assert _estimate(model_path = wide, **request_fields).context_is_pinned is False
+
+    @pytest.mark.parametrize(
+        ("request_fields", "env", "can_offload"),
+        [
+            ({}, {}, True),
+            ({"gpu_memory_mode": "manual"}, {}, True),
+            # Context can shrink even when these settings prevent layer offload.
+            ({"llama_extra_args": ["--fit", "off"]}, {}, False),
+            ({"llama_extra_args": ["-ngl", "99"]}, {}, False),
+            ({}, {"LLAMA_ARG_N_GPU_LAYERS": "20"}, False),
+            # The final -ngl -1 enables offload, overriding earlier arguments and env.
+            ({"llama_extra_args": ["-ngl", "-1"]}, {}, True),
+            ({"llama_extra_args": ["-ngl", "99", "-ngl", "-1"]}, {}, True),
+            ({"llama_extra_args": ["-ngl", "-1"]}, {"LLAMA_ARG_N_GPU_LAYERS": "20"}, True),
+            # llama.cpp's spellings: auto is its default, all a count that stands.
+            ({"llama_extra_args": ["-ngl", "auto"]}, {}, True),
+            ({"llama_extra_args": ["-ngl", "all"]}, {}, False),
+        ],
+    )
+    def test_the_floor_says_whether_layers_can_move_past_it(
+        self, wide, monkeypatch, request_fields, env, can_offload
+    ):
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        resp = _estimate(model_path = wide, **request_fields)
+        assert resp.context_is_pinned is False
+        assert resp.floor_can_offload is can_offload, (request_fields, env)
+
+    @pytest.mark.parametrize(
+        "request_fields",
+        [
+            {"llama_extra_args": ["--fit"]},
+            {"gpu_memory_mode": "manual", "llama_extra_args": ["--fit-ctx"]},
+            {"gpu_memory_mode": "manual", "llama_extra_args": ["-fitc="]},
+        ],
+    )
+    def test_a_half_typed_fit_flag_still_prices(self, wide, request_fields):
+        # The panel prices every keystroke of the extras field.
+        resp = _estimate(model_path = wide, **request_fields)
+        assert resp.available is True
+        assert resp.context_is_pinned is True
+        assert resp.gpu_floor_bytes is None
+
+    def test_a_zero_fit_ctx_can_land_on_the_native_length(self, wide):
+        # The fitter may settle on n_ctx 0, which llama.cpp reads as native.
+        resp = _estimate(model_path = wide, gpu_memory_mode = "manual", llama_extra_args = ["-fitc", "0"])
+        assert resp.context_is_pinned is True
+
+    @pytest.mark.parametrize("selected_gpu_ids", [None, [0, 1]])
+    def test_tensor_mode_takes_the_layer_fallback_floor(self, wide, monkeypatch, selected_gpu_ids):
+        """Tensor mode falls back to a layer split on conditions only the launch sees, which
+        opens at the layer floor and replicates compute buffers per device. The fallback keeps
+        every card the tensor launch had, picked automatically or not, so the floor is priced
+        as that layer split whenever it needs more than tensor mode."""
+        devices = [(0, 0, 0), (1, 0, 0)]
+        monkeypatch.setattr(ri, "_cached_inference_devices", lambda: devices)
+        monkeypatch.setattr(ri, "_tensor_split_possible", lambda ids: True)
+        config = ri._cached_estimate_config()
+        pinned = bool(selected_gpu_ids)
+        cards = ri._guard_device_count(selected_gpu_ids, devices, tensor_parallel = True)
+        assert cards == 2
+        common = dict(
+            n_ctx = 8192, n_devices = cards, tensor_split_possible = True, device_pin_governs = pinned
+        )
+        as_tensor = ri._gguf_memory_breakdown(config, wide, tensor_parallel = True, **common)
+        as_layer = ri._gguf_memory_breakdown(
+            config,
+            wide,
+            tensor_parallel = False,
+            llama_extra_args = ["--split-mode", "layer"],
+            **common,
+        )
+        # The case under test: tensor alone would read as fitting a budget the fallback misses.
+        assert as_tensor.gpu_bytes < as_layer.gpu_bytes
+        resp = _estimate(model_path = wide, tensor_parallel = True, selected_gpu_ids = selected_gpu_ids)
+        assert resp.context_is_pinned is False
+        assert resp.gpu_floor_bytes == as_layer.gpu_bytes
+
+
+class TestTheContextFloorFollowsThePlacementPath:
+    """Auto placement stops shrinking at a floor that depends on the path the load takes."""
+
+    @staticmethod
+    def floor(monkeypatch, *, apple = False):
+        import utils.hardware as hardware
+
+        monkeypatch.setattr(hardware, "is_apple_silicon", lambda: apple)
+        monkeypatch.delenv("LLAMA_ARG_CTX_SIZE", raising = False)
+        monkeypatch.delenv("LLAMA_ARG_N_GPU_LAYERS", raising = False)
+        breakdown = SimpleNamespace(kv_on_gpu = True, kv_estimable = True)
+        return ri._estimate_context_floor(None, [], "auto", None, breakdown)
+
+    def test_a_layer_split_stops_at_the_fit_floor(self, monkeypatch):
+        from core.inference.llama_cpp import _FIT_MIN_CTX
+        assert self.floor(monkeypatch).ctx == _FIT_MIN_CTX == 8192
+
+    def test_metal_reprices_down_to_the_smallest_context_it_searches(self, monkeypatch):
+        from core.inference.llama_cpp import _FIT_FLOOR_MIN_CTX
+        assert self.floor(monkeypatch, apple = True).ctx == _FIT_FLOOR_MIN_CTX == 256
+
+
 class TestTheResolutionTriesOfflineFirst:
     """A repo already on this disk is priced without asking the Hub.
 

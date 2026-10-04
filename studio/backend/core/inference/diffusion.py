@@ -59,6 +59,7 @@ from .diffusion_families import (
     _is_local_path,
     canonical_base,
     cache_holds_files,
+    comfy_flow_shift_for,
     default_generation_params,
     detect_family_for_pick,
     excluded_model_reason,
@@ -131,6 +132,8 @@ from .diffusion_memory import (
     normalize_memory_mode,
     plan_diffusion_memory,
     plan_fits_total_capacity,
+    denoisers_pinned_resident,
+    install_encode_release,
     plan_keeps_transformer_resident,
     prequant_seed_device,
     raise_on_image_activation_shortfall,
@@ -159,6 +162,7 @@ from .diffusion_memory import (
 )
 from .diffusion_torchao_patches import install_torchao_int_mm_patch
 from .image_orientation import exif_upright
+from .mcp_images import flattened_rgb
 from .media_decode_phase import decode_phase
 from .diffusion_speed import (
     SPEED_DEFAULT,
@@ -166,6 +170,7 @@ from .diffusion_speed import (
     SPEED_MAX,
     SPEED_OFF,
     apply_speed_optims,
+    engage_pinned_denoisers,
     auto_dynamic_active,
     compile_dynamic,
     compile_eligible,
@@ -240,16 +245,15 @@ from .diffusion_precision import (
     torchao_quantize_importable,
 )
 from .diffusion_te_prequant import te_prequant_pipe_kwargs
+from .diffusion_fast_load import start_load_prefetch, stop_prefetch, te_precast_components
 from .diffusion_flow_shift import apply_comfy_flow_shift
 from .diffusion_text_length import (
     IDEOGRAM4_COMFY_GUIDANCE,
-    IDEOGRAM4_COMFY_MU,
-    IDEOGRAM4_COMFY_STD,
     ideogram4_comfy_guidance_schedule,
+    ideogram4_comfy_mu_std,
     flux_t5_kwarg,
     true_cfg_needs_empty_negative,
 )
-from .diffusion_fast_load import start_load_prefetch, stop_prefetch
 from .diffusion_denoiser_prequant import (
     DENOISER_COMPONENT,
     PIPELINE_SEED_DECLINED,
@@ -583,7 +587,7 @@ def decode_b64_image(
         raise  # the size guard's own message; don't wrap it as a decode error
     except Exception as exc:  # noqa: BLE001 - surfaced as a 400 to the client
         raise ValueError(f"Could not decode image: {exc}") from exc
-    return img.convert(mode)
+    return flattened_rgb(img) if mode == "RGB" else img.convert(mode)
 
 
 def _snap_to_multiple(img: Any, multiple: int = 16) -> Any:
@@ -6330,8 +6334,7 @@ class DiffusionBackend:
                                 }
                                 if hf_token:
                                     pipe_kwargs["token"] = hf_token
-                                # Warm the page cache with the denoiser checkpoint and the components from_pretrained
-                                # reads next, in parallel; stopped once the pipeline is built.
+                                # Stopped once the pipeline is built.
                                 self._stop_load_prefetch()
                                 self._load_prefetch = start_load_prefetch(
                                     fam,
@@ -6339,8 +6342,9 @@ class DiffusionBackend:
                                     prequant_scheme = pipeline_seed_scheme,
                                     prequant_path_override = transformer_prequant_path,
                                     prequant_base_repo = base,
-                                    text_encoders_replaced = bool(text_encoder_quant)
-                                    and str(text_encoder_quant).lower() not in ("off", "none"),
+                                    text_encoders_replaced = te_precast_components(
+                                        fam, fetch_base, text_encoder_quant, target
+                                    ),
                                     cache_dir = hub_cache_dir(),
                                     logger = logger,
                                 )
@@ -7019,8 +7023,10 @@ class DiffusionBackend:
                         )
 
                     self._raise_if_load_cancelled(_load_token)
-                    # Sample at ComfyUI's static sigma shift where the shipped scheduler differs (before from_pipe copies it).
-                    apply_comfy_flow_shift(pipe, getattr(fam, "comfy_flow_shift", None), logger)
+                    # Before from_pipe copies the scheduler.
+                    apply_comfy_flow_shift(
+                        pipe, comfy_flow_shift_for(fam, gguf_filename, repo_id, base), logger
+                    )
                     # Before the speed optims so their decode compile lands inside the non-finite check; `off` keeps fp32.
                     vae_fp16 = str(
                         speed_mode or ""
@@ -7173,6 +7179,11 @@ class DiffusionBackend:
                         pipe._unsloth_cuda_graphs = ()
                         pipe._unsloth_cuda_graph_reason = "offload active"
                         speed_applied["cuda_graph"] = False
+                    # streams the whole-resident denoiser back to the flat room while the encoders run
+                    install_encode_release(pipe, plan, logger)
+                    # the speed layer saw only the plan; placement may have pinned every denoiser group since
+                    if denoisers_pinned_resident(pipe):
+                        engage_pinned_denoisers(pipe, speed_applied, logger)
 
                     # Per-control provenance for status. cpu_offload=False is the unset default, so only True is
                     # explicit.
@@ -7379,7 +7390,6 @@ class DiffusionBackend:
                     _clear_exception_frames(exc)
                     raise
                 finally:
-                    # A load that failed before its pipeline was built leaves no page-cache reads behind.
                     self._stop_load_prefetch()
                     # Pre-commit failure: roll back the process-wide mutations (symmetric with _unload_locked).
                     if not state_committed:
@@ -9052,6 +9062,8 @@ class DiffusionBackend:
             and _denoiser_hooked(state.pipe),
             logger = logger,
         )
+        if denoisers_pinned_resident(state.pipe):
+            engage_pinned_denoisers(state.pipe, speed_applied, logger)
         if getattr(getattr(state.pipe, "vae", None), "_unsloth_fp16_decode", False):
             speed_applied["vae_fp16_decode"] = True
         object.__setattr__(state, "speed_mode", SPEED_DEFAULT)
@@ -9449,13 +9461,12 @@ class DiffusionBackend:
                     if steps == 48 and abs(float(guidance) - 7.0) < 1e-6:
                         kwargs.pop(state.family.cfg_kwarg, None)
                     else:
-                        # Otherwise ComfyUI's template: its "Default" schedule (mu 0.0, std 1.75; the card taper above
-                        # keeps the pipeline's mu 0 / std 1.5) and, at the default guidance 7, its CFG override to 3
-                        # over the last 30% of sampling, as a per-step schedule. Any other guidance stays constant.
+                        # ComfyUI preset for this step count; the 7 -> 3 CFG override only at guidance 7.
+                        mu, std = ideogram4_comfy_mu_std(steps)
                         if "mu" in call_params:
-                            kwargs["mu"] = IDEOGRAM4_COMFY_MU
+                            kwargs["mu"] = mu
                         if "std" in call_params:
-                            kwargs["std"] = IDEOGRAM4_COMFY_STD
+                            kwargs["std"] = std
                         if abs(float(guidance) - IDEOGRAM4_COMFY_GUIDANCE) < 1e-6:
                             kwargs.pop(state.family.cfg_kwarg, None)
                             kwargs["guidance_schedule"] = ideogram4_comfy_guidance_schedule(
@@ -9497,9 +9508,7 @@ class DiffusionBackend:
                 elif "negative_prompt" in call_params and true_cfg_needs_empty_negative(
                     state.family.cfg_kwarg, guidance
                 ):
-                    # Qwen-Image style pipelines run true CFG only when a negative is PRESENT, so a blank negative
-                    # silently dropped CFG while the UI showed guidance 4. ComfyUI encodes an empty negative and
-                    # applies CFG; do the same.
+                    # Qwen-Image true CFG needs a negative present; ComfyUI encodes an empty one.
                     kwargs["negative_prompt"] = ""
                 if workflow == "controlnet" and control_pil is not None:
                     # CN pipeline takes the control map + scale; guidance start/end bound its step range. Every kwarg
@@ -9699,8 +9708,7 @@ class DiffusionBackend:
                                 chunk_kwargs["negative_prompt"] = [
                                     chunk_kwargs["negative_prompt"]
                                 ] * len(chunk)
-                        # FLUX.1 T5 length as ComfyUI pads it: 256 for prompts up to 256 tokens (diffusers pads every
-                        # prompt to 512); longer prompts keep the 512 bucket. Per chunk, since a prompts list varies.
+                        # Per chunk, since a prompts list varies in length.
                         t5_len = flux_t5_kwarg(state.family.name, pipe, call_params, chunk_kwargs)
                         if t5_len is not None:
                             chunk_kwargs["max_sequence_length"] = t5_len

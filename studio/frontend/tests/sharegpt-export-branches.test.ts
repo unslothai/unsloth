@@ -104,7 +104,8 @@ async function withLiveBranch<T>(
 ): Promise<T> {
   if (!ids) return run();
   const unregister = liveThreadHead.registerLiveThreadView({
-    threadListItem: () => ({ getState: () => ({ remoteId: "thread" }) }),
+    threads: () => ({ getState: () => ({ mainThreadId: "thread" }) }),
+    threadListItem: () => ({ getState: () => ({ id: "thread", remoteId: "thread" }) }),
     thread: () => ({
       getState: () => ({ messages: ids.map((id) => ({ id })) }),
     }),
@@ -210,7 +211,8 @@ test("ShareGPT keeps the picked branch when the chat is switched during the expo
   let unregister = () => {};
   const exporters = loadExporters(regenerated, downloads, () => unregister());
   unregister = liveThreadHead.registerLiveThreadView({
-    threadListItem: () => ({ getState: () => ({ remoteId: "thread" }) }),
+    threads: () => ({ getState: () => ({ mainThreadId: "thread" }) }),
+    threadListItem: () => ({ getState: () => ({ id: "thread", remoteId: "thread" }) }),
     thread: () => ({
       getState: () => ({ messages: [{ id: "u1" }, { id: "a1" }] }),
     }),
