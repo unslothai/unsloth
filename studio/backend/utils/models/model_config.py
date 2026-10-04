@@ -2989,10 +2989,8 @@ def _local_gguf_companion_search_root(selected_path: str, gguf_file: str) -> str
 def _hf_cache_repo_dir(weight_path: str) -> Optional[str]:
     """The ``models--<repo>`` dir *weight_path* was cached into, or None elsewhere.
 
-    Only the remote (-hf) projector lookup widens this far, and only to the repo the
-    weight itself came out of, so a sibling repo's projector stays out of reach. The
-    ``models--`` marker is matched case-insensitively because cache resolution finds a
-    weight in any case variant of the directory.
+    Never wider than the weight's own repo, so a sibling repo's projector stays out of
+    reach. Case-insensitive: cache resolution finds a weight in any case variant.
     """
     for directory in Path(weight_path).parents:
         parent = directory.parent
@@ -3004,14 +3002,8 @@ def _hf_cache_repo_dir(weight_path: str) -> Optional[str]:
 
 
 def _hf_cached_local_mmproj(weight_path: str) -> Optional[str]:
-    """A projector sitting with *weight_path* in the HF cache, or None (#9286).
-
-    For a repo that publishes none: the walk covers the snapshot the weight is in and
-    the two containers above it, which is where a user adding a projector by hand drops
-    it. All three share one ranking pass rather than widening a boundary at a time,
-    because the caller only asks when the repo publishes no projector of its own, so
-    every candidate here was hand-added and metadata pairing is the honest tie-break.
-    """
+    """A hand-added projector in *weight_path*'s snapshot, ``snapshots/`` or
+    ``models--<repo>/``, or None (#9286). Metadata pairing decides between them."""
     return detect_mmproj_file(weight_path, search_root = _hf_cache_repo_dir(weight_path))
 
 
@@ -4270,9 +4262,7 @@ class ModelConfig:
     # ``sizes`` covers that file and every shard beside it.
     gguf_verified: Optional[tuple[str, str, str, tuple[tuple[str, int], ...]]] = None
     gguf_mmproj_file: Optional[str] = None  # Full path to the mmproj .gguf file (vision projection)
-    # A hand-added projector a REMOTE (-hf) load will attach, resolved against the
-    # cached weight. Read by the training guard and the GPU-ownership predicate, never
-    # handed to llama-server, which resolves its own beside the weight it downloads.
+    # Remote (-hf) only: hand-added projector for VRAM accounting, never passed to llama-server.
     gguf_local_mmproj_file: Optional[str] = None
     gguf_mtp_file: Optional[str] = None  # Full path to the separate MTP drafter (local mode)
     gguf_dspark_file: Optional[str] = None  # Full path to a DSpark sidecar (local mode)
@@ -4694,14 +4684,8 @@ class ModelConfig:
                     if sizes:
                         verified_gguf = (identifier, variant, verified_file, sizes)
 
-                # The repo may publish no projector while the user hand-added one beside
-                # the cached weight (#9286). This branch is the only one that never
-                # looked: it takes the Hub listing's word, and load_model resolves a
-                # projector only when the config already says vision, so the file was
-                # invisible wherever it sat. Asked of the verified copy, so there is a
-                # real weight to pair against; before any quant of the repo is cached
-                # there is nothing to pair with and the Apply after the download settles
-                # it.
+                # The listing publishes no projector, but the user may have hand-added
+                # one beside the cached weight (#9286).
                 local_mmproj: Optional[str] = None
                 if not has_vision and verified_file:
                     local_mmproj = _hf_cached_local_mmproj(verified_file)

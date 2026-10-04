@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The projector lookup a remote (-hf) load runs over its own HF cache checkout.
-
-#9286: a repo that publishes no projector took the Hub listing's word for it, so a
-hand-added file was invisible wherever the user put it. Only this lookup widens past
-the weight's own directory; a local selection keeps the root it always had.
-"""
+"""Hand-added projector lookup for a remote (-hf) load over its HF cache repo (#9286)."""
 
 from __future__ import annotations
 
@@ -95,8 +90,7 @@ def test_a_projector_beside_the_weight_is_found(tmp_path):
 
 
 def test_a_projector_at_the_repo_root_is_found(tmp_path):
-    """The snapshot dir is a hex sha, so browsing to "the model folder" often stops
-    one or two levels up."""
+    """Found one or two levels above the snapshot."""
     repo, weight = _hf_repo(tmp_path)
     projector = _projector(repo / "mmproj-kquant.gguf")
 
@@ -111,8 +105,7 @@ def test_a_projector_in_the_snapshots_container_is_found(tmp_path):
 
 
 def test_a_sibling_repo_and_the_cache_root_stay_out_of_reach(tmp_path):
-    """The walk stops at the repo the weight came out of. Reaching the cache root would
-    let any repo borrow any other repo's projector."""
+    """Never above models--<repo>: no borrowing another repo's projector."""
     _repo, weight = _hf_repo(tmp_path)
     sibling, _sibling_weight = _hf_repo(tmp_path, "models--org--Other-GGUF")
     _projector(sibling / "mmproj-kquant.gguf")
@@ -146,9 +139,7 @@ def test_an_empty_projector_is_not_named(tmp_path):
 
 
 def test_a_local_selection_keeps_the_root_it_always_had(tmp_path):
-    """The boundary this change deliberately leaves alone. A directory the user picked
-    by hand is scanned exactly as before, so a native grant, the drafter walk and the
-    cached rows all keep answering what they answered on main."""
+    """The local-selection search root is unchanged."""
     repo, weight = _hf_repo(tmp_path)
     _projector(repo / "mmproj-kquant.gguf")
 

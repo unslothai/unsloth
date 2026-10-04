@@ -19541,9 +19541,7 @@ class LlamaCppBackend:
                 if attempt < 2:
                     cancel_event.wait(2**attempt)
 
-        # What the LIVE listing said, captured before the cache fallback can name a file
-        # the current revision no longer publishes. A caller choosing between the repo's
-        # companion and a local alternative needs that claim, not "a snapshot holds one".
+        # Captured before the cache fallback can name a file the live revision dropped.
         listed_live = (target is not None) if listing_answered else None
 
         if target is None:
@@ -19616,9 +19614,7 @@ class LlamaCppBackend:
                 _shard_total.group(3),
             )
             # Settled, not retryable: the listing answered, so the caller records
-            # absence rather than reloading on every Apply. Absence for the live flag
-            # too: what it named can never be fetched, so nothing is being preferred
-            # over a caller's local alternative.
+            # absence rather than reloading on every Apply.
             if outcome is not None:
                 outcome["listed"] = False
                 outcome["listed_live"] = False
@@ -19689,10 +19685,8 @@ class LlamaCppBackend:
         ``self._cancel_event`` (defaults to it). ``near_path`` prefers a
         copy co-located with the main GGUF's cache snapshot.
 
-        Last, and only when the repo publishes none: a projector the user
-        hand-added in the cache beside the weight (#9286). Placed after the
-        download so a repo that ships a projector resolves exactly as it did
-        before.
+        Falls back to a projector hand-added beside the cached weight, only
+        when the live listing says the repo publishes none (#9286).
         """
 
         cancel_event = cancel_event if cancel_event is not None else self._cancel_event
@@ -19710,25 +19704,16 @@ class LlamaCppBackend:
             outcome = outcome,
         )
         if resolved is not None:
-            # Same rule discovery applies: an interrupted copy is a file llama-server
-            # cannot open and must not shadow one that works. The snapshot and offline
-            # paths check it; what a download resolved out of the cache does not.
+            # An interrupted zero-byte copy must not shadow a working projector.
             try:
                 if Path(resolved).stat().st_size > 0:
                     return resolved
             except OSError:
                 return resolved
-            # And on to the fallback: a zero-byte cache entry is not the dropped fetch
-            # the listing gate below protects, since the next Apply resolves the same
-            # empty file rather than healing it.
             logger.info("Ignoring an empty mmproj resolved for %s: %s", hf_repo, resolved)
         elif outcome.get("listed_live") is True:
-            # "The repo publishes none" and "the fetch dropped" both come back None, and
-            # only the first is what this fallback is for: launching a hand-added file in
-            # place of the repo's own is worse than the retry the next Apply gets. Only
-            # the live listing answers that. An unanswered one (offline, a hub job
-            # holding the fetch) is not the same claim, and there the local file is all
-            # there is.
+            # The repo publishes one and the fetch dropped: retry next Apply rather
+            # than launch a hand-added file in its place. Offline still falls back.
             return None
         if not near_path or cancel_event.is_set():
             return None

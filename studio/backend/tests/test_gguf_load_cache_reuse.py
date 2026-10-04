@@ -754,8 +754,7 @@ class TestLoadReusesCachedCopy:
         assert out == "/remote/image.gguf"
 
     def test_a_dropped_fetch_of_a_published_projector_does_not_fall_back(self, hf_cache):
-        """The repo names one, so None here is a transient failure, not an absence.
-        Launching the hand-added file instead would be the wrong projector."""
+        """The repo lists one, so None is a dropped fetch: no fallback."""
         backend = LlamaCppBackend()
         snap = _build_cache(hf_cache, REPO, {MAIN: 4})
         (snap.parent.parent / "mmproj-F16.gguf").write_bytes(b"mmproj")
@@ -770,9 +769,7 @@ class TestLoadReusesCachedCopy:
             assert backend._download_mmproj(hf_repo = REPO, near_path = str(snap / MAIN)) is None
 
     def test_a_stale_cached_name_does_not_pass_for_a_published_projector(self, hf_cache):
-        """The live listing publishes none; an older snapshot still names one the repo
-        has since removed. The fetch of that name fails, and the hand-added file is the
-        only projector there is."""
+        """Only an older snapshot names a projector; the live listing has none."""
         backend = LlamaCppBackend()
         snap = _build_cache(hf_cache, REPO, {MAIN: 4})
         _build_cache(hf_cache, REPO, {"mmproj-F16.gguf": 2}, snapshot_sha = "b" * 40)
@@ -791,9 +788,7 @@ class TestLoadReusesCachedCopy:
         assert out == str(projector)
 
     def test_an_empty_resolved_projector_does_not_shadow_the_repo_root(self, hf_cache):
-        """An interrupted copy is a file llama-server cannot open. The snapshot and
-        offline paths already refuse one; what a download resolves out of the cache
-        reaches the caller unchecked."""
+        """A zero-byte resolved copy is not returned."""
         backend = LlamaCppBackend()
         snap = _build_cache(hf_cache, REPO, {MAIN: 4})
         empty = snap.parent.parent / "stale-mmproj.gguf"
@@ -807,9 +802,7 @@ class TestLoadReusesCachedCopy:
         assert out == str(projector)
 
     def test_an_empty_published_projector_still_reaches_the_repo_root(self, hf_cache):
-        """The repo names one and the fetch resolves a zero-byte cache entry. That is
-        not the dropped fetch the listing gate protects: the next Apply resolves the
-        same empty file, so the hand-added one is the only projector there is."""
+        """A zero-byte listed copy falls back: the next Apply would not heal it."""
         backend = LlamaCppBackend()
         snap = _build_cache(hf_cache, REPO, {MAIN: 4})
         empty = snap.parent.parent / "published-mmproj.gguf"
@@ -833,8 +826,7 @@ class TestLoadReusesCachedCopy:
         assert out == str(projector)
 
     def test_an_unanswered_listing_still_reaches_the_repo_root(self, hf_cache):
-        """Offline the listing says nothing at all, and the hand-added file is all
-        there is; that is not the same claim as a repo that publishes one."""
+        """An unanswered (offline) listing still falls back."""
         backend = LlamaCppBackend()
         snap = _build_cache(hf_cache, REPO, {MAIN: 4})
         projector = snap.parent.parent / "mmproj-F16.gguf"

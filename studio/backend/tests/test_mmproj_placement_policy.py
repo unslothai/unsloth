@@ -763,9 +763,7 @@ def test_a_remote_projector_of_unknown_kind_is_charged_to_the_guard(tmp_path):
 
 
 def test_the_training_guard_charges_a_hand_added_repo_root_projector(tmp_path):
-    """The repo publishes none, so the Hub listing cannot see the projector the load
-    will attach. Uncharged, the coexistence guard admits a chat load over VRAM a
-    running training job needs."""
+    """A hand-added projector is charged though the listing cannot see it."""
     projector = tmp_path / "mmproj-F16.gguf"
     projector.write_bytes(b"\x00" * (3 * MIB))
     seen = {}
@@ -820,8 +818,7 @@ def test_the_training_guard_charges_a_hand_added_repo_root_projector(tmp_path):
 def test_the_guard_asks_the_local_projector_whether_the_launch_opens_it(
     tmp_path, kwargs, accepts_image, charged, label
 ):
-    """This branch holds the file, unlike the published projector it cannot read, so
-    charging one the launch suppresses is a 409 for a load that fits."""
+    """A local projector the Vision switch suppresses is not charged."""
     projector = tmp_path / "mmproj-F16.gguf"
     projector.write_bytes(b"\x00" * (3 * MIB))
     seen = {}
@@ -865,9 +862,7 @@ def test_the_guard_asks_the_local_projector_whether_the_launch_opens_it(
 
 
 def test_gpu_ownership_reads_the_remote_configs_own_projector(tmp_path):
-    """`_load_keeps_a_projector` decides whether a load needs the GPU, so treating a
-    suppressed image tower as unknown lets a CPU-only chat load evict a running
-    image or video pipeline."""
+    """A suppressed local image tower does not claim the GPU."""
     projector = tmp_path / "mmproj-F16.gguf"
     projector.write_bytes(b"\x00" * MIB)
     config = SimpleNamespace(

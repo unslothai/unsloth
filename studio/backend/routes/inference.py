@@ -11897,13 +11897,8 @@ def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
 
 
 def _projector_survives_vision_off(mmproj_path: str) -> bool:
-    """Whether the Vision switch leaves *mmproj_path* loaded.
-
-    The switch turns IMAGES off, and llama_cpp.py keeps an audio-only projector
-    regardless because there is no image tower in it to drop. Only the file's own
-    metadata separates the two. An unreadable file reads as image-capable upstream,
-    so it reads as suppressed here, which is what the loader will do with it.
-    """
+    """Whether the Vision switch leaves *mmproj_path* loaded (audio-only projectors
+    stay). Unreadable reads as image-capable, hence suppressed, matching the loader."""
     try:
         from utils.models.gguf_metadata import mmproj_accepts_image
         return not mmproj_accepts_image(str(mmproj_path))
@@ -11924,8 +11919,6 @@ def _load_keeps_a_projector(config, *, disable_vision: bool) -> bool:
         return False
     if not disable_vision:
         return True
-    # A remote (-hf) config names its hand-added projector separately; the loader
-    # resolves its own beside the weight, but this is still the file it will open.
     mmproj = getattr(config, "gguf_mmproj_file", None) or getattr(
         config, "gguf_local_mmproj_file", None
     )
@@ -12018,9 +12011,7 @@ def _remote_gguf_companion_bytes(
         # target too, so the guard stops charging for the oversized candidates the
         # fetch itself now refuses.
         dflash_bytes = dflash_budget_bytes(dflash_sizes, _gguf_extra_shards, weight_bytes)
-        # A hand-added local projector and a published one are alternatives: the fetch
-        # only falls back to the local file when the repo publishes none, so the larger
-        # bound covers both without charging two companions for one launch.
+        # Alternatives, never both: the fetch uses the local one only when none is listed.
         total = max(int(local_mmproj_bytes), listed_mmproj_bytes)
         if not dspark_first:
             return total + mtp_bytes + dspark_bytes + dflash_bytes
@@ -13248,9 +13239,6 @@ def _estimate_gguf_required_gb(
             main_bytes = selected.size_bytes if selected is not None else None
             if main_bytes is None:
                 return None
-            # This branch holds the file, so it asks rather than assuming, exactly as the
-            # local branch above does: charging a projector the launch suppresses inflates
-            # the estimate into a 409 for a load that fits.
             _local_mmproj = getattr(config, "gguf_local_mmproj_file", None)
             _local_mmproj_bytes = 0
             # A --mmproj in the extras replaces it and is charged on its own.
@@ -13284,9 +13272,7 @@ def _estimate_gguf_required_gb(
                 # What the DFlash bound measures candidates against, so the guard stops
                 # charging for weights the fetch refuses as too big to be a drafter.
                 weight_bytes = int(main_bytes or 0),
-                # The repo publishes none but the cache holds one the load will attach,
-                # and the listing cannot see it. Left uncharged, the coexistence guard
-                # admits a chat load over VRAM a training run needs.
+                # Hand-added (#9286): invisible to the listing, still resident.
                 local_mmproj_bytes = _local_mmproj_bytes,
                 # ... except where the listing settles it. Auto launches exactly
                 # one drafter, in a fixed order, so once the listing says which

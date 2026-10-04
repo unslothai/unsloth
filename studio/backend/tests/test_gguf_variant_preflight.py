@@ -165,8 +165,7 @@ def test_a_verified_cached_copy_is_carried_to_the_load(remote_gguf_repo, monkeyp
 def test_a_verified_cached_copy_uses_a_projector_beside_it(
     remote_gguf_repo, monkeypatch, hub_cache
 ):
-    """#9286: the repo publishes none, the user dropped one next to the weight, and
-    this branch took the listing's word for it."""
+    """#9286: a projector beside the cached weight flips the config to vision."""
     name = "Llama-3.2-1B-Instruct-Q8_0.gguf"
     cached = _cached(hub_cache, name)
     projector = cached.parent / "mmproj-F16.gguf"
@@ -184,8 +183,7 @@ def test_a_verified_cached_copy_uses_a_projector_beside_it(
 def test_a_verified_cached_copy_uses_its_repo_root_projector(
     remote_gguf_repo, monkeypatch, hub_cache
 ):
-    """The snapshot dir is a hex sha, so a user browsing to "the model folder" often
-    stops at models--<repo> instead."""
+    """A projector dropped in models--<repo>/ is found."""
     name = "Llama-3.2-1B-Instruct-Q8_0.gguf"
     cached = _cached(hub_cache, name)
     projector = cached.parent.parent.parent / "mmproj-F16.gguf"
@@ -202,9 +200,7 @@ def test_a_verified_cached_copy_uses_its_repo_root_projector(
 def test_audio_only_repo_root_projector_still_triggers_companion_loading(
     remote_gguf_repo, monkeypatch, hub_cache
 ):
-    """load_model resolves a projector only when the config says vision, and the
-    metadata that separates an audio encoder from an image tower is read later. So
-    an audio-only file at the repo root has to flip the flag too."""
+    """An audio-only projector flips the flag too; the loader reads its kind later."""
     name = "Llama-3.2-1B-Instruct-Q8_0.gguf"
     cached = _cached(hub_cache, name)
     projector = cached.parent.parent.parent / "mmproj-F16.gguf"
@@ -215,14 +211,11 @@ def test_audio_only_repo_root_projector_still_triggers_companion_loading(
     config = ModelConfig.from_identifier(REPO, gguf_variant = "Q8_0")
 
     assert config.is_vision is True
-    # The remote branch launches with -hf, so the projector stays the loader's to
-    # resolve beside the weight it downloads.
     assert config.gguf_mmproj_file is None
 
 
 def test_a_sibling_repos_projector_is_not_borrowed(remote_gguf_repo, monkeypatch, hub_cache):
-    """The walk stops at the repo the weight came out of, so the cache root and every
-    other repo in it stay invisible."""
+    """The cache root and sibling repos stay invisible."""
     name = "Llama-3.2-1B-Instruct-Q8_0.gguf"
     cached = _cached(hub_cache, name)
     sibling = hub_cache / "models--someone--Other-GGUF"
@@ -240,8 +233,7 @@ def test_a_sibling_repos_projector_is_not_borrowed(remote_gguf_repo, monkeypatch
 def test_nothing_is_named_before_a_quant_of_the_repo_is_cached(
     remote_gguf_repo, monkeypatch, hub_cache
 ):
-    """No weight to pair against yet. The first Apply downloads and launches without
-    the hand-added projector; the Apply after it finds one."""
+    """No weight to pair against yet."""
     repo_root = hub_cache / f"models--{REPO.replace('/', '--')}"
     repo_root.mkdir()
     (repo_root / "mmproj-F16.gguf").write_bytes(b"mmproj")
@@ -257,8 +249,7 @@ def test_nothing_is_named_before_a_quant_of_the_repo_is_cached(
 def test_a_published_projector_does_not_reach_the_local_lookup(
     remote_gguf_repo, monkeypatch, hub_cache
 ):
-    """The listing already answered, so the widened walk never runs and a repo that
-    ships one resolves exactly as it did before."""
+    """A repo that lists a projector never runs the walk."""
     name = "Llama-3.2-1B-Instruct-Q8_0.gguf"
     cached = _cached(hub_cache, name)
     (cached.parent.parent.parent / "mmproj-F16.gguf").write_bytes(b"mmproj")
