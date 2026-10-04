@@ -7908,7 +7908,9 @@ def _owner_chosen_launch(
             intent is not None
             # A snapshot path and its repo id are one model; other paths compare as before.
             and _same_loaded_identifier(
-                _snapshot_repo_or_self(getattr(intent, "model_identifier", None)),
+                _snapshot_repo_or_self(
+                    getattr(intent, "model_identifier", None), require_cache = True
+                ),
                 _snapshot_repo_or_self(identifier, require_cache = True),
             )
             # No variant named: the load resolves the same quant the resident one did.
@@ -16512,6 +16514,13 @@ def _resolve_inherited_extra_args(
                     "load (same model, shadow-stripped): %s",
                     extra_llama_args,
                 )
+        # Inherited path options get the same owner-only check as a sent list.
+        _refuse_managed_custom_projector(
+            extra_llama_args,
+            getattr(request, "model_path", None),
+            getattr(request, "_override_alias_id", None),
+            getattr(config, "gguf_variant", None),
+        )
     return extra_llama_args
 
 

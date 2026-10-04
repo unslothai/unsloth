@@ -1914,6 +1914,10 @@ def test_managed_caller_may_resend_the_resident_same_model_paths(monkeypatch):
     from fastapi import HTTPException
     from types import SimpleNamespace
 
+    import utils.hf_cache_settings as cache_settings
+
+    monkeypatch.setattr(cache_settings, "known_hf_hub_caches", lambda: [Path("/hf/hub")])
+
     intent = SimpleNamespace(
         model_identifier = "m.gguf",
         hf_variant = None,
@@ -1969,10 +1973,57 @@ def test_resident_paths_need_a_real_cache_snapshot_and_follow_an_omitted_variant
     fake = tmp_path / "ws/models--unsloth--B-GGUF/snapshots/x/B.gguf"
     with pytest.raises(HTTPException):
         routes._refuse_managed_custom_projector(["--lora", "/owner/a.gguf"], str(fake))
+    # Nor does an owner load from a look-alike path outside the cache name that repo.
+    outside = SimpleNamespace(
+        **{
+            **vars(intent),
+            "model_identifier": str(tmp_path / "own/models--unsloth--B-GGUF/snapshots/x/B.gguf"),
+        }
+    )
+    monkeypatch.setattr(
+        routes, "get_llama_cpp_backend", lambda: SimpleNamespace(last_load_intent = outside)
+    )
+    with pytest.raises(HTTPException):
+        routes._refuse_managed_custom_projector(["--lora", "/owner/a.gguf"], "unsloth/B-GGUF")
     with pytest.raises(HTTPException):
         routes._refuse_managed_custom_projector(
             ["--lora", "/owner/a.gguf"], "unsloth/B-GGUF", None, "Q8_0"
         )
+
+
+def test_inherited_owner_paths_get_the_same_managed_check(monkeypatch, tmp_path):
+    # A settings Apply omits llama_extra_args and inherits the resident load's list.
+    from fastapi import HTTPException
+    from types import SimpleNamespace
+
+    import utils.hf_cache_settings as cache_settings
+    from models.inference import LoadRequest
+
+    hub = tmp_path / "hub"
+    monkeypatch.setattr(cache_settings, "known_hf_hub_caches", lambda: [hub])
+    resident = str(hub / "models--unsloth--B-GGUF/snapshots/abc/B-Q4_K_M.gguf")
+    backend = SimpleNamespace(
+        extra_args = ["--lora", "/owner/a.gguf"],
+        extra_args_source = (resident, "Q4_K_M"),
+        last_load_intent = SimpleNamespace(
+            model_identifier = resident,
+            hf_variant = "Q4_K_M",
+            extra_args = ("--lora", "/owner/a.gguf"),
+            llama_cpp_config = None,
+        ),
+    )
+    routes = _managed_with_owner(monkeypatch)
+    monkeypatch.setattr(routes, "get_llama_cpp_backend", lambda: backend)
+    config = SimpleNamespace(is_gguf = True, gguf_variant = "Q4_K_M")
+
+    same = LoadRequest(model_path = "unsloth/B-GGUF")
+    assert routes._resolve_inherited_extra_args(same, config, "unsloth/B-GGUF", None) == [
+        "--lora",
+        "/owner/a.gguf",
+    ]
+    fake = str(tmp_path / "ws/models--unsloth--B-GGUF/snapshots/x/B-Q4_K_M.gguf")
+    with pytest.raises(HTTPException):
+        routes._resolve_inherited_extra_args(LoadRequest(model_path = fake), config, fake, None)
 
 
 def test_managed_caller_may_resend_the_owners_custom_config(monkeypatch):
