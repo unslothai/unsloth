@@ -6204,6 +6204,19 @@ def finish_block_swap_load(model, state):
     weight = getattr(head, "weight", None)
     device = weight.device if weight is not None and weight.device.type == "cuda" else None
     if device is None:
+        # Headless backbones (AutoModel): a retained layer names the card, which need not be the current one.
+        swapped = set(state.indices)
+        device = next(
+            (
+                p.device
+                for i, layer in enumerate(state.layers)
+                if i not in swapped
+                for p in layer.parameters()
+                if p.device.type == "cuda"
+            ),
+            None,
+        )
+    if device is None:
         device = torch.device("cuda", torch.cuda.current_device())
     swapper = _new_block_swap(state.layers, state.indices, device = device, placement = "spread")
     state.layers._unsloth_block_swap = swapper

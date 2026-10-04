@@ -599,3 +599,35 @@ def test_generic_load_refuses_unified_memory_before_loading_to_host():
     )
     hits = _refusals(fn, "is_integrated_unified_memory_gpu")
     assert hits and min(hits) < begin
+
+
+def test_headless_load_swaps_onto_the_retained_layers_card():
+    torch = pytest.importorskip("torch")
+    mod = ast.parse(open(UTILS, encoding = "utf-8").read())
+    fn = next(
+        n for n in mod.body if isinstance(n, ast.FunctionDef) and n.name == "finish_block_swap_load"
+    )
+    built = []
+    card = torch.device("cuda", 1)
+    ns = {
+        "torch": types.SimpleNamespace(
+            device = torch.device, cuda = types.SimpleNamespace(current_device = lambda: 0)
+        ),
+        "_new_block_swap": lambda layers, idx, device, placement: built.append(device) or object(),
+    }
+    exec(compile(ast.Module(body = [fn], type_ignores = []), UTILS, "exec"), ns)
+
+    class _Layer:
+        def __init__(self, device):
+            self.device = device
+
+        def parameters(self):
+            return [types.SimpleNamespace(device = self.device)]
+
+    class _Headless:
+        def get_output_embeddings(self):
+            return None
+
+    layers = _Layers([_Layer(card), _Layer(torch.device("cpu")), _Layer(torch.device("cpu"))])
+    ns["finish_block_swap_load"](_Headless(), types.SimpleNamespace(layers = layers, indices = [1, 2]))
+    assert built == [card]
