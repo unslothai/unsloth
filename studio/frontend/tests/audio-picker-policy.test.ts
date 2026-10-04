@@ -118,6 +118,7 @@ import {
 } from "../src/features/model-picker/components/model-selector/model-catalog.ts";
 
 import { readSrc } from "./helpers/kit.ts";
+import { readAudioWorkspaceSource } from "./helpers/audio-workspace.ts";
 
 const pickerSource = readSrc("features/model-picker/components/model-selector/pickers.tsx");
 
@@ -770,7 +771,7 @@ test("the audio page asks the GGUF-aware TTS predicate for trained rows", () => 
   // GGUF_TTS_AUDIO_TYPES leaves csm out because llama.cpp has no CSM decoder. Calling
   // isTtsAudioType without the flag answered off the wider Transformers list and offered
   // a csm GGUF export that fails at load.
-  const source = readSrc("features/audio/audio-page.tsx");
+  const source = readAudioWorkspaceSource();
   assert.match(
     source,
     /isTtsAudioType\(\s*lora\.audio_type,\s*lora\.export_type === "gguf",?\s*\)/,

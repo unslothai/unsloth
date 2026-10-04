@@ -202,8 +202,48 @@ def _audio_cpp_classification(
     audio_type = {
         "tts": acm.AUDIO_CPP_TTS_AUDIO_TYPE,
         "music": acm.AUDIO_CPP_MUSIC_AUDIO_TYPE,
+        "sep": acm.AUDIO_CPP_SEP_AUDIO_TYPE,
     }.get(policy.task)
     return task, audio_type
+
+
+def _audio_cpp_workflows(
+    path: Optional[str | Path], name_hints: tuple[Optional[str], ...]
+) -> Optional[list[str]]:
+    """The Audio page workflows an audio.cpp GGUF serves (a clone-only family lists ``clone``
+    alone), from the same family policy the loader uses; None when it is not a runnable one."""
+    try:
+        from core.inference import audio_cpp_models as acm
+    except Exception:
+        return None
+    header = acm.read_local_header(path) if path is not None else None
+    names = tuple(str(hint) for hint in name_hints if hint)
+    family = (header.family if header is not None else None) or acm.family_from_names(names)
+    if not family:
+        return None
+    policy = acm.family_policy(family, header.spec if header is not None else None, names)
+    if policy.unsupported or not policy.task:
+        return None
+    return list(policy.workflows) or None
+
+
+def _gguf_path_audio_workflows(
+    path: str | Path, id_hints: tuple[Optional[str], ...] = ()
+) -> Optional[list[str]]:
+    """The union of ``_audio_cpp_workflows`` over the audio.cpp GGUFs at ``path`` (a file or a
+    folder): the umbrella repo is one row holding every downloaded family."""
+    from core.inference.audio_workflows import AUDIO_WORKFLOW_IDS
+
+    model_path = Path(path)
+    found: set[str] = set()
+    try:
+        paths = [model_path] if model_path.is_file() else _iter_gguf_paths(model_path)
+        for gguf_path in paths:
+            if is_audio_cpp_gguf_architecture(_gguf_architecture(str(gguf_path))):
+                found.update(_audio_cpp_workflows(gguf_path, id_hints + (gguf_path.name,)) or ())
+    except Exception:
+        return None
+    return [w for w in AUDIO_WORKFLOW_IDS if w in found] or None
 
 
 def _gguf_file_task(path: str | Path, name_hints: tuple[Optional[str], ...]) -> Optional[str]:
@@ -535,6 +575,15 @@ def _local_model_classification_for_task(
         if is_output_audio_type(audio_type):
             task = _SPEECH_TASK
     return task, audio_type
+
+
+def local_audio_workflows(model, audio_type: Optional[str]) -> Optional[list[str]]:
+    """The audio.cpp family's own workflows for a local speech row (a clone-only one is not
+    Speak); None keeps the task-derived default."""
+    if audio_type != "audiocpp_tts":
+        return None
+    model = _local_probe_model(model)
+    return _gguf_path_audio_workflows(model.path, (model.model_id, model.display_name, model.id))
 
 
 def _local_model_classification(model) -> tuple[Optional[str], Optional[str]]:

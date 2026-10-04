@@ -10,15 +10,18 @@ valid record. Dumb storage: the route owns the schema, this reads, writes and so
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
+import shutil
 import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Optional
 
 from core.inference import gallery_flags
+from core.inference.audio_workflows import workflow_for_audio_type
 from loggers import get_logger
 from utils.account_context import is_owner_context
 from utils.paths import ensure_account_dir, studio_root
@@ -63,6 +66,44 @@ def save(wav_bytes: bytes, meta: dict[str, Any]) -> dict[str, Any]:
                 pass
         raise
     _prune_to_cap()
+    return _record(audio_id, meta)
+
+
+def save_file(
+    src: Path,
+    meta: dict[str, Any],
+    *,
+    prune: bool = True,
+) -> dict[str, Any]:
+    """Move a WAV on disk into the gallery with its sidecar; all or nothing.
+
+    Multi-file runs pass ``prune=False`` and prune once at the end, so a cap never splits a run.
+    """
+    audio_id = uuid.uuid4().hex
+    directory = gallery_dir()
+    wav_path = directory / f"{audio_id}.wav"
+    wav_tmp = directory / f".{audio_id}.wav.tmp"
+    sidecar = directory / f"{audio_id}.json"
+    sidecar_tmp = directory / f".{audio_id}.json.tmp"
+    try:
+        try:
+            os.replace(src, wav_path)
+        except OSError as exc:
+            if exc.errno != errno.EXDEV:
+                raise
+            shutil.copyfile(src, wav_tmp)
+            os.replace(wav_tmp, wav_path)
+        sidecar_tmp.write_text(json.dumps(meta), encoding = "utf-8")
+        os.replace(sidecar_tmp, sidecar)
+    except BaseException:
+        for path in (wav_tmp, sidecar_tmp, wav_path, sidecar):
+            try:
+                path.unlink(missing_ok = True)
+            except OSError:
+                pass
+        raise
+    if prune:
+        _prune_to_cap()
     return _record(audio_id, meta)
 
 
@@ -138,6 +179,8 @@ def _prune_to_cap() -> int:
                     if running > byte_cap and index > 0:
                         keep = index
                         break
+            # A run's clips (a separation's stems) go together: a kept clip keeps its siblings.
+            kept_groups = {r["group_id"] for r, _ in entries[:keep] if r.get("group_id")}
             if keep >= len(entries):
                 return 0
 
@@ -147,6 +190,8 @@ def _prune_to_cap() -> int:
             flags = gallery_flags.read_trusted(directory)
             pruned: list[str] = []
             for record, _cursor in entries[keep:]:
+                if record.get("group_id") in kept_groups:
+                    continue
                 audio_id = record["id"]
                 if gallery_flags.is_archived(flags, audio_id) or gallery_flags.pin_rank(
                     flags, audio_id
@@ -193,6 +238,7 @@ def _record(
         flags = gallery_flags.read(gallery_dir())
     return {
         **meta,
+        "workflow": _workflow(meta),
         "id": audio_id,
         "url": f"/api/inference/audio/gallery/{audio_id}/file",
         **gallery_flags.flags_for(flags, audio_id),
@@ -201,6 +247,13 @@ def _record(
             flags, audio_id, _mtime(gallery_dir() / f"{audio_id}.wav")
         ),
     }
+
+
+def _workflow(meta: dict[str, Any]) -> str:
+    workflow = meta.get("workflow")
+    if workflow in ("speak", "clone", "music", "separate"):
+        return workflow
+    return workflow_for_audio_type(meta.get("audio_type"))
 
 
 def audio_path(audio_id: str) -> Optional[Path]:
@@ -416,12 +469,13 @@ def delete(audio_id: str) -> bool:
     return True
 
 
-def clear(include_archived: bool = False) -> int:
+def clear(include_archived: bool = False, workflow: Optional[str] = None) -> int:
     """Delete every Unsloth-owned pair (readable sidecar); return the count removed. Foreign and
     orphan WAVs are preserved, since list_audio already hides them.
 
     Archived clips are spared unless ``include_archived``, and sparing them raises
-    FlagsUnavailable when the flag store cannot be read."""
+    FlagsUnavailable when the flag store cannot be read. A ``workflow`` (speak, clone, music or
+    separate) spares the other workflows' clips."""
     removed = 0
     directory = gallery_dir()
     with gallery_flags.exclusive(directory, require_file_lock = not include_archived):
@@ -432,7 +486,10 @@ def clear(include_archived: bool = False) -> int:
             return 0
         cleared: list[str] = []
         for path in paths:
-            if _read_meta(_sidecar_path(path.stem)) is None:
+            meta = _read_meta(_sidecar_path(path.stem))
+            if meta is None:
+                continue
+            if workflow is not None and _workflow(meta) != workflow:
                 continue
             if not include_archived and gallery_flags.is_archived(flags, path.stem):
                 continue
@@ -446,7 +503,7 @@ def clear(include_archived: bool = False) -> int:
                 _sidecar_path(path.stem).unlink()
             except OSError:
                 pass
-        if include_archived and not gallery_flags.is_trusted(directory):
+        if include_archived and workflow is None and not gallery_flags.is_trusted(directory):
             gallery_flags.reset_locked(directory)
         else:
             gallery_flags.forget_locked(directory, cleared)
