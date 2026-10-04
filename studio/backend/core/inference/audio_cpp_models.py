@@ -45,13 +45,18 @@ _UMBRELLA_PREFIX = AUDIO_CPP_REPO.lower() + "/"
 # The audio_type Studio records for a model served by audio.cpp, per task.
 AUDIO_CPP_TTS_AUDIO_TYPE = "audiocpp_tts"
 AUDIO_CPP_MUSIC_AUDIO_TYPE = "audiocpp_music"
-AUDIO_CPP_AUDIO_TYPES = frozenset((AUDIO_CPP_TTS_AUDIO_TYPE, AUDIO_CPP_MUSIC_AUDIO_TYPE))
+AUDIO_CPP_SEP_AUDIO_TYPE = "audiocpp_sep"
+AUDIO_CPP_AUDIO_TYPES = frozenset(
+    (AUDIO_CPP_TTS_AUDIO_TYPE, AUDIO_CPP_MUSIC_AUDIO_TYPE, AUDIO_CPP_SEP_AUDIO_TYPE)
+)
 
 # Studio task -> the Hub pipeline task its rows carry.
 HUB_TASKS = {
     "tts": "text-to-speech",
     "music": "text-to-audio",
     "asr": "automatic-speech-recognition",
+    # Shares its tag with kinds Studio has no page for; audio_type tells them apart.
+    "sep": "audio-to-audio",
 }
 
 DEFAULT_AUDIO_CPP_STT_MODEL = f"{AUDIO_CPP_REPO}/Qwen3-ASR-0.6B-GGUF"
@@ -124,6 +129,14 @@ class ConvertSpec:
     @property
     def server_tasks(self) -> dict[str, str]:
         return dict(self.modes)
+
+
+@dataclass(frozen = True)
+class SeparationSpec:
+    """How a family splits a track into stems on /v1/tasks/run (task ``sep``, 44.1 kHz input)."""
+
+    # Changing it restarts the server.
+    overlap_option: Optional[str] = None
 
 
 @dataclass(frozen = True)
@@ -329,13 +342,14 @@ def _bindings_for(
         }
     if task == "asr":
         return {"transcribe": WorkflowBinding("asr", "transcriptions", None, ("audio",))}
+    if task == "sep":
+        return {"separate": WorkflowBinding("sep", "tasks", None, ("audio",))}
     return {}
 
 
 @dataclass(frozen = True)
 class AudioCppFamily:
     family: str
-    # Studio task: ``tts`` (speech), ``music`` (generation) or ``asr``; empty when Studio has no feature for it.
     task: str
     # audiocpp_server task when it is not the Studio task's default (a voice-design package runs "vdes").
     server_task: Optional[str] = None
@@ -358,6 +372,7 @@ class AudioCppFamily:
     clone: Optional[CloneSpec] = None
     companions: tuple[CompanionModel, ...] = ()
     convert: Optional[ConvertSpec] = None
+    separation: Optional[SeparationSpec] = None
     music: Optional[MusicSpec] = field(default = None, hash = False, compare = False)
 
     @property
@@ -626,6 +641,14 @@ _CONVERT_FAMILIES: tuple[AudioCppFamily, ...] = (
 )
 
 
+_SEPARATION_FAMILIES: tuple[AudioCppFamily, ...] = (
+    AudioCppFamily("htdemucs", "sep", separation = SeparationSpec()),
+    AudioCppFamily("htdemucs_6stems", "sep", separation = SeparationSpec()),
+    AudioCppFamily("bs_roformer", "sep", separation = SeparationSpec("num_overlap")),
+    AudioCppFamily("mel_band_roformer", "sep", separation = SeparationSpec("num_overlap")),
+)
+
+
 _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
     # Text to speech. Kokoro, KittenTTS, Piper and Inflect phonemize with eSpeak-ng, which the Unsloth
     # bundles link statically (GPL-3.0-or-later) with its data file beside the server.
@@ -844,6 +867,7 @@ _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
             "audio8_asr",
         )
     ),
+    *_SEPARATION_FAMILIES,
     # Package families Studio does not lay out yet.
     *(
         AudioCppFamily(
@@ -864,7 +888,6 @@ _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
         for names, what in (
             (("qwen3_forced_aligner", "mms_forced_aligner"), "Forced-alignment"),
             (("sortformer_diar", "sortformer_diar_v2", "nemotron_3_diar"), "Speaker diarization"),
-            (("htdemucs", "bs_roformer", "mel_band_roformer"), "Source separation"),
             (("pulsevad", "silero_vad", "marblenet_vad"), "Voice activity detection"),
             (("muscriptor", "sheetsage2"), "Music transcription"),
             (("apollo", "audiosr", "universr", "personaplex"), "Speech-to-speech"),
@@ -894,7 +917,7 @@ _SPEC_TO_SERVER_TASK = {
     "design": "vdes",
     "speaker": "spk",
 }
-_SERVER_TO_STUDIO_TASK = {"tts": "tts", "gen": "music", "asr": "asr"}
+_SERVER_TO_STUDIO_TASK = {"tts": "tts", "gen": "music", "asr": "asr", "sep": "sep"}
 _TASK_NAMES = {
     "align": "Forced-alignment",
     "diar": "Speaker diarization",
@@ -925,8 +948,8 @@ def _family_from_spec_tasks(
     tasks = [str(t).lower() for t in (spec or {}).get("tasks") or [] if isinstance(t, str)]
     tokens = [_SPEC_TO_SERVER_TASK.get(t, t) for t in tasks]
     # Speech first, then music, then transcription: a model that speaks is most useful spoken.
-    # A clone-only family comes last: it loads as a cloning session and offers Clone alone.
-    for token in ("tts", "vdes", "gen", "asr", "clon"):
+    # A clone-only family comes next: it loads as a cloning session and offers Clone alone.
+    for token in ("tts", "vdes", "gen", "asr", "clon", "sep"):
         if token in tokens:
             if runtime_knows_family(family) is False:
                 return AudioCppFamily(
@@ -942,6 +965,8 @@ def _family_from_spec_tasks(
                     speaks = False,
                     clone = CloneSpec("optional"),
                 )
+            if token == "sep":
+                return AudioCppFamily(family, "sep", separation = SeparationSpec())
             studio = "tts" if token == "vdes" else _SERVER_TO_STUDIO_TASK[token]
             return AudioCppFamily(family, studio, server_task = token)
     if tokens:
@@ -1812,6 +1837,8 @@ def option_schema(
     dozens of planner and debugging knobs, and the published GGUFs embed a stale copy. Everyone
     else gets the runtime's spec, else the one embedded in the GGUF.
     """
+    if policy.task == "sep":
+        return ()
     if policy.options:
         source = {"options": {"request": list(policy.options)}}
     else:
@@ -1923,6 +1950,7 @@ class AudioCppModel:
     companions: tuple[CompanionModel, ...] = ()
     required_inputs: tuple[str, ...] = ()
     convert: Optional[ConvertSpec] = None
+    separation: Optional[SeparationSpec] = None
     music: Optional[MusicSpec] = field(default = None, hash = False, compare = False)
     # A strict spec (``schema_version``) makes the runtime refuse any undeclared option.
     request_keys: Optional[frozenset[str]] = field(default = None, hash = False, compare = False)
@@ -1949,6 +1977,8 @@ class AudioCppModel:
             return AUDIO_CPP_TTS_AUDIO_TYPE
         if self.task == "music":
             return AUDIO_CPP_MUSIC_AUDIO_TYPE
+        if self.task == "sep":
+            return AUDIO_CPP_SEP_AUDIO_TYPE
         return None
 
     @property
@@ -2302,6 +2332,7 @@ def _resolve_uncached(
         companions = policy.companions,
         required_inputs = _required_inputs(spec, embedded, policy),
         convert = policy.convert,
+        separation = policy.separation,
         music = music_with_spec_bounds(policy.music, _raw_request_options(spec, embedded)),
         request_keys = _request_keys(spec, embedded),
     )
@@ -2427,7 +2458,8 @@ def require_runnable(model: AudioCppModel, task: Optional[str] = None) -> None:
         raise AudioCppModelError(model.unsupported)
     if task == "asr" and model.task != "asr":
         raise AudioCppModelError(f"{model.display_name} is not a speech-to-text model.")
-    if task in ("tts", "music") and model.task not in ("tts", "music"):
+    # The main audio slot, which speech, music and separation models share.
+    if task in ("tts", "music") and model.task not in ("tts", "music", "sep"):
         if model.task == "asr":
             raise AudioCppModelError(
                 f"{model.display_name} is a speech-to-text model; choose it for dictation in "

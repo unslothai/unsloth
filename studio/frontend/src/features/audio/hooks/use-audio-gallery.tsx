@@ -64,7 +64,7 @@ export function useAudioGallery({
     prompt: string;
     model: string;
     saved: boolean;
-    workflow: "speak" | "music" | "clone" | "convert";
+    workflow: "speak" | "music" | "clone" | "convert" | "separate";
   } | null>(null);
   const fallbackClipRef = useRef(fallbackClip);
   fallbackClipRef.current = fallbackClip;
@@ -425,7 +425,7 @@ export function useAudioGallery({
     [refreshGallery],
   );
 
-  const handleClearGallery = useCallback(async (workflow?: "speak" | "clone" | "convert" | "music") => {
+  const handleClearGallery = useCallback(async (workflow?: "speak" | "clone" | "convert" | "music" | "separate") => {
     try {
       await clearAudioGallery(workflow);
       if (workflow) {
@@ -554,7 +554,10 @@ export function useWorkflowHistory({
   loadMore,
   loadingMoreRef,
   selectClip,
-}: { workflow: "speak" | "clone" | "convert" | "music"; enabled: boolean } & Pick<
+}: {
+  workflow: "speak" | "clone" | "convert" | "music" | "separate";
+  enabled: boolean;
+} & Pick<
   AudioGallery,
   | "clips"
   | "hasMore"

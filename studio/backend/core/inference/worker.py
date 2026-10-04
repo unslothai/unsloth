@@ -30,6 +30,7 @@ logger = get_logger(__name__)
 from core.inference.audio_errors import (
     AUDIO_RUNTIME_ERROR_CODE,
     AUDIO_UNSUPPORTED_CODE,
+    AudioBackendUnsupportedError,
     AudioRuntimeError,
 )
 from core.inference.context_refusal import ContextBudgetExceeded
@@ -1614,10 +1615,34 @@ def _audio_runtime(backend) -> dict:
 
 
 def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
-    """Handle TTS audio generation — returns WAV bytes + sample_rate."""
+    """Handle TTS audio generation — returns WAV bytes + sample_rate.
+
+    A separation returns the paths of the stems it wrote under the route's ``output_dir``
+    instead: hundreds of megabytes of audio never cross the queue."""
     request_id = cmd.get("request_id", "")
     try:
         logger.info("Starting audio generation for request_id=%s", request_id)
+        if cmd.get("workflow") == "separate":
+            separate = getattr(backend, "separate_audio", None)
+            if separate is None:
+                raise AudioBackendUnsupportedError("This model cannot separate audio.")
+            outputs = separate(
+                source_path = cmd["audio_inputs"]["source"],
+                output_dir = cmd["output_dir"],
+                options = cmd.get("audio_options"),
+                cancel_event = cancel_event,
+            )
+            _send_response(
+                resp_queue,
+                {
+                    "type": "audio_done",
+                    "request_id": request_id,
+                    "outputs": outputs,
+                    "sample_rate": 44100,
+                },
+            )
+            logger.info("Finished audio separation for request_id=%s", request_id)
+            return
         # Only audio.cpp models take per-model options; other backends never see the keyword.
         extra = {"audio_options": cmd["audio_options"]} if cmd.get("audio_options") else {}
         # Run fields reach only a backend that takes them: a Speak run on a native TTS model carries a
@@ -1680,6 +1705,9 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
         if isinstance(exc, AudioRuntimeError):
             response["code"] = AUDIO_RUNTIME_ERROR_CODE
             response["status"] = exc.status
+        elif isinstance(exc, AudioBackendUnsupportedError):
+            response["code"] = AUDIO_UNSUPPORTED_CODE
+            response["hint"] = exc.hint
         _send_response(resp_queue, response)
 
 

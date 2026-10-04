@@ -6,6 +6,8 @@ import { cn } from "@/lib/utils";
 import { PauseIcon, PlayIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
+  type CSSProperties,
+  type KeyboardEvent,
   type ReactNode,
   type Ref,
   useCallback,
@@ -53,8 +55,6 @@ export function Waveform({
   const duration =
     durationS && durationS > 0 ? durationS : (mediaDuration ?? 0);
   const fraction = duration > 0 ? Math.min(1, position / duration) : 0;
-  const bars = peaks && peaks.length > 0 ? peaks : null;
-  const count = bars?.length ?? WAVEFORM_BARS;
 
   useEffect(() => {
     setPlaying(false);
@@ -106,17 +106,15 @@ export function Waveform({
   }, [onPositionChange, position, playing]);
 
   const slider = (
-    <div
-      role="slider"
-      tabIndex={src ? 0 : -1}
-      aria-label={`${label} playback position`}
-      aria-valuemin={0}
-      aria-valuemax={Math.round(duration)}
-      aria-valuenow={Math.round(position)}
-      aria-valuetext={`${formatSeconds(position)} of ${formatSeconds(duration)}`}
-      aria-disabled={!src}
+    <WaveformBars
+      peaks={peaks}
+      fraction={fraction}
+      label={label}
+      valueNow={position}
+      valueMax={duration}
+      disabled={!src}
       style={tailS > 0 ? { flexGrow: duration > 0 ? duration : 1 } : undefined}
-      className="relative h-[calc(32px*var(--ui-space-scale,1))] min-w-0 flex-1 cursor-pointer rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      onSeek={(next) => seekTo(next * duration)}
       onKeyDown={(event) => {
         if (event.key === " ") {
           event.preventDefault();
@@ -132,43 +130,7 @@ export function Waveform({
           seekTo(0);
         }
       }}
-      onClick={(event) => {
-        const box = event.currentTarget.getBoundingClientRect();
-        if (box.width <= 0) return;
-        seekTo(((event.clientX - box.left) / box.width) * duration);
-      }}
-    >
-      <svg
-        aria-hidden="true"
-        className="size-full"
-        viewBox={`0 0 ${count * 3} 32`}
-        preserveAspectRatio="none"
-      >
-        {Array.from({ length: count }, (_, index) => {
-          const peak = bars ? (bars[index] ?? 0) : 0;
-          const height = Math.max(2, peak * 30);
-          const played = (index + 0.5) / count <= fraction;
-          return (
-            <rect
-              // biome-ignore lint/suspicious/noArrayIndexKey: bars are positional and never reorder.
-              key={index}
-              x={index * 3 + 0.5}
-              y={(32 - height) / 2}
-              width={2}
-              height={height}
-              rx={1}
-              className={cn(
-                "fill-current",
-                played && position > 0
-                  ? "text-foreground"
-                  : "text-muted-foreground",
-                bars ? "opacity-100" : "opacity-40",
-              )}
-            />
-          );
-        })}
-      </svg>
-    </div>
+    />
   );
 
   return (
@@ -226,6 +188,89 @@ export function Waveform({
           }}
         />
       ) : null}
+    </div>
+  );
+}
+
+/** Seekable bars; keys are left to the caller. */
+export function WaveformBars({
+  peaks,
+  fraction,
+  label,
+  valueNow,
+  valueMax,
+  disabled = false,
+  onSeek,
+  onKeyDown,
+  className,
+  style,
+}: {
+  peaks: readonly number[] | null;
+  fraction: number;
+  label: string;
+  valueNow: number;
+  valueMax: number;
+  disabled?: boolean;
+  onSeek?: (fraction: number) => void;
+  onKeyDown?: (event: KeyboardEvent<HTMLDivElement>) => void;
+  className?: string;
+  style?: CSSProperties;
+}) {
+  const bars = peaks && peaks.length > 0 ? peaks : null;
+  const count = bars?.length ?? WAVEFORM_BARS;
+  return (
+    <div
+      role="slider"
+      tabIndex={disabled ? -1 : 0}
+      aria-label={`${label} playback position`}
+      aria-valuemin={0}
+      aria-valuemax={Math.round(valueMax)}
+      aria-valuenow={Math.round(valueNow)}
+      aria-valuetext={`${formatSeconds(valueNow)} of ${formatSeconds(valueMax)}`}
+      aria-disabled={disabled}
+      style={style}
+      className={cn(
+        "relative h-[calc(32px*var(--ui-space-scale,1))] min-w-0 flex-1 cursor-pointer rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        className,
+      )}
+      onKeyDown={onKeyDown}
+      onClick={(event) => {
+        if (disabled || !onSeek) return;
+        const box = event.currentTarget.getBoundingClientRect();
+        if (box.width <= 0) return;
+        onSeek(
+          Math.min(1, Math.max(0, (event.clientX - box.left) / box.width)),
+        );
+      }}
+    >
+      <svg
+        aria-hidden="true"
+        className="size-full"
+        viewBox={`0 0 ${count * 3} 32`}
+        preserveAspectRatio="none"
+      >
+        {Array.from({ length: count }, (_, index) => {
+          const peak = bars ? (bars[index] ?? 0) : 0;
+          const height = Math.max(2, peak * 30);
+          const played = fraction > 0 && (index + 0.5) / count <= fraction;
+          return (
+            <rect
+              // biome-ignore lint/suspicious/noArrayIndexKey: bars are positional and never reorder.
+              key={index}
+              x={index * 3 + 0.5}
+              y={(32 - height) / 2}
+              width={2}
+              height={height}
+              rx={1}
+              className={cn(
+                "fill-current",
+                played ? "text-foreground" : "text-muted-foreground",
+                bars ? "opacity-100" : "opacity-40",
+              )}
+            />
+          );
+        })}
+      </svg>
     </div>
   );
 }

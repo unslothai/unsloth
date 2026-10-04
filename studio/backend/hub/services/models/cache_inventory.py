@@ -670,13 +670,16 @@ def _scan_cached_gguf(
                 )
                 row_audio_type = None
                 row_audio_workflows = None
-                if row_task == "text-to-speech":
+                if row_task in ("text-to-speech", "audio-to-audio"):
                     try:
                         from hub.services.models import catalog_classification
+
                         row_audio_type = catalog_classification._repo_gguf_audio_type(
                             repo_info, gguf_identity.load_snapshot or gguf_snapshot
                         )
-                        if row_audio_type == "audiocpp_tts":
+                        if row_task == "audio-to-audio" and row_audio_type != "audiocpp_sep":
+                            row_audio_type = None
+                        if row_audio_type in ("audiocpp_tts", "audiocpp_sep"):
                             row_audio_workflows = catalog_classification._gguf_path_audio_workflows(
                                 gguf_identity.load_snapshot
                                 or gguf_snapshot

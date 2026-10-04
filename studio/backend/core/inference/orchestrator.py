@@ -3340,6 +3340,26 @@ class InferenceOrchestrator:
         except RuntimeError:
             self._teardown_not_sent()
 
+    def separate_audio_response(
+        self,
+        source_path: str,
+        output_dir: str,
+        audio_options: Optional[dict] = None,
+        cancel_event = None,
+    ) -> list[dict]:
+        """Split a prepared 44.1 kHz WAV into stems under ``output_dir``; the full token budget
+        gives the watchdog the same hour the runtime request has."""
+        outputs, _sample_rate = self.generate_audio_response(
+            text = "",
+            max_new_tokens = AUDIO_GENERATION_MAX_TOKENS,
+            cancel_event = cancel_event,
+            audio_options = audio_options,
+            workflow = "separate",
+            audio_inputs = {"source": source_path},
+            output_dir = output_dir,
+        )
+        return outputs
+
     def generate_audio_response(
         self,
         text: str,
@@ -3366,7 +3386,8 @@ class InferenceOrchestrator:
     ) -> Tuple[bytes, int]:
         """Generate TTS audio. Returns (wav_bytes, sample_rate). Blocking: sends the command and
         waits for the full audio response. ``audio_inputs`` maps a role (reference, emotion,
-        source, target) to a server-local WAV path; audio bytes never cross the queue."""
+        source, target) to a server-local WAV path; audio bytes never cross the queue. A separation
+        (``output_dir`` set) returns (outputs, sample_rate) instead, see ``separate_audio_response``."""
         if not self._ensure_subprocess_alive():
             raise RuntimeError("Inference subprocess is not running")
         if not self.active_model_name:
@@ -3521,6 +3542,8 @@ class InferenceOrchestrator:
                         if rtype == "audio_done":
                             if cancel_event is not None and cancel_event.is_set():
                                 raise AudioGenerationCancelledError("Audio generation cancelled")
+                            if resp.get("outputs") is not None:
+                                return resp["outputs"], int(resp.get("sample_rate") or 0)
                             wav_bytes = base64.b64decode(resp["wav_base64"])
                             sample_rate = resp["sample_rate"]
                             status_patch = resp.get("status_patch")

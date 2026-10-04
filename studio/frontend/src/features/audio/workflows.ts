@@ -7,6 +7,7 @@ import {
   AiVoiceIcon,
   MusicNote03Icon,
   SpeechToTextIcon,
+  SplitIcon,
   UserSwitchIcon,
   VoiceIdIcon,
 } from "@hugeicons/core-free-icons";
@@ -18,6 +19,7 @@ export type AudioWorkflowId =
   | "clone"
   | "convert"
   | "music"
+  | "separate"
   | "transcribe";
 
 export type AudioWorkflowSlot = "speak" | "transcribe";
@@ -64,6 +66,15 @@ export const AUDIO_WORKFLOWS: ReadonlyArray<{
     heading: "Create music",
     icon: MusicNote03Icon,
     hint: "Songs, instrumentals and sound effects",
+    slot: "speak",
+    createTrain: false,
+  },
+  {
+    id: "separate",
+    label: "Separate",
+    heading: "Separate audio",
+    icon: SplitIcon,
+    hint: "Split a track into vocals and instruments",
     slot: "speak",
     createTrain: false,
   },
@@ -120,12 +131,13 @@ export function audioWorkflowForAudioType(
 export function clipWorkflow(clip: {
   workflow?: string | null;
   audio_type?: string | null;
-}): "speak" | "clone" | "convert" | "music" {
+}): "speak" | "clone" | "convert" | "music" | "separate" {
   if (
     clip.workflow === "speak" ||
     clip.workflow === "clone" ||
     clip.workflow === "convert" ||
-    clip.workflow === "music"
+    clip.workflow === "music" ||
+    clip.workflow === "separate"
   ) {
     return clip.workflow;
   }

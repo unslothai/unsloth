@@ -178,6 +178,7 @@ const AUDIO_GGUF_DESCRIPTIONS: Record<AudioCppTask, string> = {
   tts: "Text-to-speech",
   music: "Text-to-music",
   asr: "Speech-to-text",
+  sep: "Source separation",
 };
 
 function audioGgufDescription(model: AudioCppModel): string {
@@ -189,7 +190,8 @@ function audioGgufDescription(model: AudioCppModel): string {
   const converts = workflows.includes("convert");
   if (clones && converts) return "Voice cloning and conversion";
   if (converts) return "Voice conversion";
-  return "Voice cloning";
+  if (clones) return "Voice cloning";
+  return AUDIO_GGUF_DESCRIPTIONS[model.task];
 }
 
 // Recommended audio GGUFs the backend runs on its audio runtime. They are plain GGUF rows, so the
@@ -671,7 +673,7 @@ export const AUDIO_CATALOG: CatalogGroup[] = [
       }),
     ],
   },
-  ...audioGgufGroups(["tts", "music"]),
+  ...audioGgufGroups(["tts", "music", "sep"]),
   // Llasa is deliberately absent: it speaks XCodec2 (65,536 <|s_N|> tokens), which is in neither
   // _AUDIO_TOKEN_PATTERNS nor AudioCodecManager, so a curated row loaded then failed at generation.
   // Training still works (unsloth_Llasa-3B.yaml). Re-add both rows with an xcodec2 decoder.

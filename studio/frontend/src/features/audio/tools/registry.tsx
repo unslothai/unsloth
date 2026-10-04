@@ -10,6 +10,7 @@ import type { AudioWorkflowId } from "../workflows";
 import { CLONE_TOOL_PANELS } from "./clone-panels";
 import { CONVERT_TOOL_PANELS } from "./convert-panels";
 import { MUSIC_TOOL_PANELS } from "./music-panels";
+import { SEPARATE_TOOL_PANELS } from "./separate-panels";
 import {
   instructionsKindFor,
   legacyMusicDescription,
@@ -117,6 +118,7 @@ export const AUDIO_TOOL_PANELS: readonly AnyAudioToolPanel[] = [
   ...CLONE_TOOL_PANELS,
   ...CONVERT_TOOL_PANELS,
   ...MUSIC_TOOL_PANELS,
+  ...SEPARATE_TOOL_PANELS,
 ];
 
 export function audioToolPanelsFor(
