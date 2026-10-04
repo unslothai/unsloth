@@ -185,7 +185,7 @@ def managed_root() -> Path:
 
 def _verified_library(directory: Path, runtime: CudnnRuntime) -> Optional[str]:
     try:
-        marker = json.loads((directory / _MARKER_NAME).read_text())
+        marker = json.loads((directory / _MARKER_NAME).read_text(encoding = "utf-8"))
     except (OSError, ValueError):
         return None
     if marker.get("requirements") != runtime.requirements():
@@ -399,7 +399,8 @@ def _install_locked(
         (staging / _MARKER_NAME).write_text(
             json.dumps(
                 {"requirements": runtime.requirements(), "cudnn_version": int(version)}, indent = 1
-            )
+            ),
+            encoding = "utf-8",
         )
         if dest.exists():
             shutil.rmtree(dest, ignore_errors = True)
