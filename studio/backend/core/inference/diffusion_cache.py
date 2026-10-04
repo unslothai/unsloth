@@ -204,7 +204,7 @@ def _compile_hooked_block_inners(transformer: Any, logger: Any = None) -> int:
                 # default tier. Dynamo caches per code object, so re-arming after a toggle is ~free.
                 # Automatic dynamic when the speed layer chose it (max tier or torchao weights), as the blocks do.
                 dynamic = None if getattr(transformer, "_unsloth_auto_dynamic", False) else True
-                # An opted-in family's reduction-config filter (diffusion_speed.pin_reduction_configs), as the blocks.
+                # Same reduction-config filter as the blocks (diffusion_speed.pin_reduction_configs).
                 block_kwargs = getattr(transformer, "_unsloth_regional_compile_kwargs", None) or {}
                 pinned = (block_kwargs.get("options") or {}).get(_REDUCTION_FILTER_OPTION)
                 extra = {"options": {_REDUCTION_FILTER_OPTION: True}} if pinned else {}

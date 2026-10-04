@@ -24,13 +24,11 @@ def reduction_blocks_pinned() -> bool:
 
 
 def reduction_config_filter_available() -> bool:
-    """Whether a family's compile may pin inductor's reduction-config filter: torch has it (2.10+) and the kill switch
-    is not set."""
+    """torch has the reduction-config filter (2.10+) and the kill switch is unset."""
     if not reduction_blocks_pinned():
         return False
     try:
         import torch
-
         return hasattr(torch._inductor.config.test_configs, "force_filter_reduction_configs")
     except Exception:  # noqa: BLE001 - no torch / inductor: nothing pinned
         return False
