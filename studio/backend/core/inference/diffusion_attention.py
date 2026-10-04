@@ -1095,6 +1095,8 @@ def _ensure_fa4_python_deps(logger: Any = None) -> Optional[str]:
             logger.warning("diffusion.attention: %s; using the default backend", refusal)
         return refusal
     if not reqs:
+        # An NVFP4 FlashInfer install earlier in this process may have added cutlass-dsl without running its .pth.
+        _activate_installed_pth_files()
         return None
     key = "fa4-deps:" + ",".join(reqs)
     if key in _INSTALL_ATTEMPTED:

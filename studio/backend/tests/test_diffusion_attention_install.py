@@ -427,3 +427,12 @@ def test_a_pth_installed_mid_process_is_activated(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "path", list(sys.path))
     att._activate_installed_pth_files()
     assert str(pkg_dir) in sys.path
+
+
+def test_nothing_to_install_still_activates_cutlass_pth(monkeypatch):
+    # An NVFP4 load installs cutlass-dsl through FlashInfer without running its .pth; a later flash4 must still see it.
+    calls = []
+    monkeypatch.setattr(att, "_fa4_python_deps_plan", lambda: ([], None))
+    monkeypatch.setattr(att, "_activate_installed_pth_files", lambda *a: calls.append(a))
+    assert att._ensure_fa4_python_deps() is None
+    assert calls == [()]
