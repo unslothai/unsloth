@@ -1,0 +1,476 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""The whole-step graph of an offloaded denoiser on top of the per-block graphs (diffusion_block_graph).
+
+The step graph records a forward whose blocks compile below their offload hooks; the per-block graphs run their compute
+while it records, and arm as its fallback where they are the default. A streamed placement records its copies into the
+prefetcher's slot ring and keeps a key only when the replay pays, else hands the ring back."""
+
+from __future__ import annotations
+
+import copy
+import types
+import warnings
+
+import pytest
+
+torch = pytest.importorskip("torch")
+
+import core.inference.diffusion_block_graph as bg  # noqa: E402
+import core.inference.diffusion_cuda_graph as cg  # noqa: E402
+import core.inference.diffusion_memory as dm  # noqa: E402
+import core.inference.diffusion_offload_prefetch as op  # noqa: E402
+
+
+@pytest.fixture(autouse = True)
+def _clean_env(monkeypatch):
+    for name in (
+        bg.BLOCK_GRAPHS_ENV,
+        bg.COMPILE_BELOW_HOOKS_ENV,
+        cg.CUDA_GRAPHS_ENV,
+        cg.CUDA_GRAPH_DISABLE_ENV,
+        cg.OFFLOAD_CUDA_GRAPH_ENV,
+        cg.STEP_SLOTS_ENV,
+        op.ASYNC_PREFETCH_ENV,
+        op.PREFETCH_DEPTH_ENV,
+        "UNSLOTH_DIFFUSION_PARTIAL_RESIDENT",
+        "UNSLOTH_DIFFUSION_GROUP_OFFLOAD_PIN",
+        "UNSLOTH_DIFFUSION_PIN_TOP_GROUP",
+    ):
+        monkeypatch.delenv(name, raising = False)
+    # engagement and exactness here; the speed check is driven explicitly where a test needs it
+    monkeypatch.setenv(cg.SPEED_CHECK_ENV, "0")
+    yield
+    cg._POOL_BOX[0] = None
+
+
+class Block(torch.nn.Module):
+    def __init__(self, width):
+        super().__init__()
+        self.lin = torch.nn.Linear(width, width)
+
+    def forward(self, x):
+        return torch.nn.functional.gelu(self.lin(x))
+
+
+class Net(torch.nn.Module):
+    _repeated_blocks = ["Block"]
+
+    def __init__(self, width = 256, blocks = 8):
+        super().__init__()
+        self.proj_in = torch.nn.Linear(16, width)
+        self.blocks = torch.nn.ModuleList(Block(width) for _ in range(blocks))
+        self.proj_out = torch.nn.Linear(width, 16)
+
+    def forward(self, x, t, return_dict = True):
+        x = self.proj_in(x) * t
+        for block in self.blocks:
+            x = block(x)
+        out = self.proj_out(x)
+        return (out,) if not return_dict else {"sample": out}
+
+
+def _pipe(net):
+    return types.SimpleNamespace(transformer = net, components = {"transformer": net})
+
+
+def _target():
+    return types.SimpleNamespace(device = "cuda", backend = "cuda", torch_device = "cuda")
+
+
+# --- CPU -------------------------------------------------------------------------------------------------------
+
+
+def test_a_block_graph_runs_its_compute_while_a_whole_step_records():
+    calls = []
+    shared = bg._Shared(None, None)
+    graph = bg.BlockGraph(Block(4), lambda *a, **k: calls.append(1) or "computed", shared)
+    with cg._recording_step():
+        assert cg.step_recording()
+        assert graph(torch.zeros(2, 4)) == "computed"
+    assert not cg.step_recording()
+    assert calls == [1]
+    # no first sighting, no recording, no eager count: the step above records the kernels themselves
+    assert graph.stats["eager_calls"] == 0 and not graph.seen and not graph.cache
+
+
+def _step_handle(net, mode = "group", plan = None):
+    handle = cg.GraphedForward.__new__(cg.GraphedForward)
+    handle.module = net
+    handle.placement = types.SimpleNamespace(mode = mode) if mode else None
+    handle.plan = plan
+    handle.fallback = None
+    handle.fallback_handle = None
+    return handle
+
+
+def _arm(pipe, monkeypatch, *, hooked, pinned):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    applied = {"cuda_graph": True}
+    handles = cg.arm_block_graphs(
+        pipe,
+        applied,
+        target = _target(),
+        family = types.SimpleNamespace(),
+        hooked = hooked,
+        pinned = pinned,
+    )
+    return handles, applied
+
+
+def test_an_armed_step_graph_stays_primary_with_per_block_graphs_as_its_fallback(monkeypatch):
+    net = Net(blocks = 3)
+    pipe = _pipe(net)
+    step = _step_handle(net)
+    pipe._unsloth_cuda_graphs = (step,)
+    pipe._unsloth_cuda_graph_reason = "captured per input shape: block-streamed (copies recorded in the graph)"
+    handles, applied = _arm(pipe, monkeypatch, hooked = True, pinned = True)
+    assert handles == (step,) and applied["cuda_graph"]
+    assert pipe._unsloth_cuda_graph_mode == "step" and callable(step.fallback)
+    assert cg.status_reason(pipe, True) == (
+        "denoiser step captured per input shape: block-streamed (copies recorded in the graph), replayed bit-identically"
+    )
+    # the fallback arms the per-block layer below the module's blocks, once
+    armed = step.fallback()
+    assert isinstance(armed, bg.BlockGraphSet) and len(armed.graphs) == 3
+    assert cg.status_reason(pipe, True).endswith("; the steps it leaves eager record per block")
+    armed.free()
+
+
+def test_a_streamed_step_graph_gets_a_per_block_fallback_only_when_asked(monkeypatch):
+    net = Net(blocks = 3)
+    pipe = _pipe(net)
+    step = _step_handle(net)
+    pipe._unsloth_cuda_graphs = (step,)
+    _arm(pipe, monkeypatch, hooked = True, pinned = False)
+    assert step.fallback is None  # streamed: per-block graphs are opt-in, as without the step graph
+    monkeypatch.setenv(bg.BLOCK_GRAPHS_ENV, "1")
+    _arm(pipe, monkeypatch, hooked = True, pinned = False)
+    assert callable(step.fallback)
+    model = _step_handle(net, mode = "model")
+    pipe._unsloth_cuda_graphs = (model,)
+    monkeypatch.delenv(bg.BLOCK_GRAPHS_ENV)
+    _arm(pipe, monkeypatch, hooked = True, pinned = True)
+    assert model.fallback is None
+    monkeypatch.setenv(bg.BLOCK_GRAPHS_ENV, "0")
+    pinned = _step_handle(net)
+    pipe._unsloth_cuda_graphs = (pinned,)
+    _arm(pipe, monkeypatch, hooked = True, pinned = True)
+    assert pinned.fallback is None
+
+
+def test_a_planned_resident_step_keeps_its_graph_and_the_blocks_wait_as_fallback(monkeypatch):
+    net = Net(blocks = 2)
+    pipe = _pipe(net)
+    step = _step_handle(net, mode = None, plan = lambda *a: None)
+    pipe._unsloth_cuda_graphs = (step,)
+    pipe._unsloth_cuda_graph_reason = "captured per input shape: resident"
+    handles, _ = _arm(pipe, monkeypatch, hooked = False, pinned = False)
+    assert handles == (step,) and callable(step.fallback)
+    assert cg.status_reason(pipe, True) == cg.WHOLE_REASON
+
+
+class _Ev:
+    def __init__(self, ms):
+        self.ms = ms
+
+    def query(self):
+        return True
+
+    def elapsed_time(self, end):
+        return end.ms - self.ms
+
+
+class _Placement:
+    def __init__(self, streams):
+        self._streams = streams
+        self.declined = None
+        self.mode = "group"
+
+    def streams(self):
+        return self._streams
+
+    def decline(self, reason):
+        self.declined = reason
+
+
+def _judged(placement, eager_ms, graph_ms, others = ()):
+    handle = cg.GraphedForward.__new__(cg.GraphedForward)
+    handle.stats, handle.logger, handle._slower, handle.capture_error = {}, None, None, None
+    handle.placement = placement
+    handle.cache = {"k": object(), **{o: object() for o in others}}
+    handle._dropped, handle._release = set(), lambda: None
+    handle._judge = {
+        "k": {
+            "seen": 3,
+            "eager": [(_Ev(0), _Ev(ms)) for ms in eager_ms],
+            "graph": [(_Ev(0), _Ev(ms)) for ms in graph_ms],
+            "verdict": None,
+        },
+        **{o: {"seen": 3, "eager": [], "graph": [], "verdict": ""} for o in others},
+    }
+    handle._judge_keys()
+    return handle, handle._judge["k"]["verdict"]
+
+
+def test_a_streamed_key_is_kept_only_when_its_replay_pays():
+    # a tie on a streaming placement: the ring and the pool are not worth it, and no other key records this load
+    placement = _Placement(streams = True)
+    handle, why = _judged(placement, [100.0, 100.4], [99.6, 99.8, 99.7], others = ("j",))
+    assert why and "within 1%" in why and placement.declined == why
+    assert handle.cache == {} and handle._dropped == {"k", "j"}
+    # a real gain keeps it
+    placement = _Placement(streams = True)
+    handle, why = _judged(placement, [100.0, 101.0], [97.0, 97.5, 98.0])
+    assert why == "" and placement.declined is None and "k" in handle.cache
+    # pinned (nothing streams): a tie keeps the graph, as before
+    placement = _Placement(streams = False)
+    handle, why = _judged(placement, [100.0, 100.4], [99.6, 99.8, 99.7])
+    assert why == "" and placement.declined is None and "k" in handle.cache
+
+
+def test_a_declined_placement_refuses_every_later_call():
+    placement = cg.OffloadPlacement.__new__(cg.OffloadPlacement)
+    placement.mode = "group"
+    placement._declined = None
+    placement._slots = False
+    placement.decline("replay measured within 1% of the eager step")
+    assert placement.refusal({}) == "replay measured within 1% of the eager step"
+
+
+def test_both_graph_pools_are_kept_out_of_the_reclaimable_memory(monkeypatch):
+    monkeypatch.setattr(dm, "snapshot_device_memory", lambda target: dm.DeviceMemory("cuda", "cuda", "discrete_vram", free_mib = 1000, total_mib = 8000))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda *a: 900 << 20)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda *a: 100 << 20)
+    monkeypatch.setattr(bg, "pool_bytes", lambda: 300 << 20)
+    monkeypatch.setattr(cg, "live_pool_free_bytes", lambda: 200 << 20)
+    mem = dm.reclaimable_snapshot_device_memory(types.SimpleNamespace(device = "cuda"))
+    assert mem.free_mib == 1000 + 800 - 300 - 200
+
+
+# --- CUDA ------------------------------------------------------------------------------------------------------
+
+
+def _cuda():
+    if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+        pytest.skip("needs NVIDIA CUDA")
+    pytest.importorskip("diffusers.hooks")
+
+
+def _streamed(net, resident_mib = None):
+    kwargs = {"resident_transformer_mib": resident_mib} if resident_mib else {}
+    assert dm._apply_group_offload(_pipe(net), "cuda", None, **kwargs)
+    # the background pin swaps host copies (a new placement): let it finish so the counts below are exact
+    for group in dm._offload_groups(net):
+        pinner = getattr(group, op._BG_PIN_ATTR, None)
+        if pinner is not None:
+            pinner.wait(group)
+    return net
+
+
+def _inputs(seed, rows = 8):
+    g = torch.Generator(device = "cpu").manual_seed(seed)
+    return torch.randn(rows, 16, generator = g).cuda(), torch.rand(1, generator = g).cuda()
+
+
+def _call(net, seed, rows = 8):
+    x, t = _inputs(seed, rows)
+    with torch.no_grad():
+        out = net(x, t, return_dict = False)[0].clone()
+    torch.cuda.synchronize()
+    return out
+
+
+def _syncs(fn):
+    prev = torch.cuda.get_sync_debug_mode()
+    torch.cuda.set_sync_debug_mode("warn")
+    try:
+        with warnings.catch_warnings(record = True) as caught:
+            warnings.simplefilter("always")
+            out = fn()
+    finally:
+        torch.cuda.set_sync_debug_mode(prev)
+    return out, sum(1 for w in caught if "synchroniz" in str(w.message).lower())
+
+
+def _net():
+    torch.manual_seed(0)
+    return Net()
+
+
+def _armed_streamed(monkeypatch, slots = True):
+    if not slots:
+        monkeypatch.setenv(cg.STEP_SLOTS_ENV, "0")
+    net = _streamed(_net())
+    handles, reason = cg.arm_after_placement(_pipe(net))
+    assert len(handles) == 1 and handles[0].placement.mode == "group", reason
+    return net, handles[0]
+
+
+def test_streamed_step_copies_land_in_the_slot_ring_not_the_graph_pool(monkeypatch):
+    _cuda()
+    ref = _net().cuda()
+    want = [_call(ref, s) for s in range(4)]
+    pools = {}
+    for slots in (False, True):
+        cg._POOL_BOX[0] = None
+        net, handle = _armed_streamed(monkeypatch, slots)
+        pf = op.module_prefetcher(net)
+        got = [_call(net, 0), _call(net, 1)]  # records, then replays
+        for seed in (2, 3):
+            out, syncs = _syncs(lambda: _call(net, seed))
+            got.append(out)
+        for a, b in zip(got, want):
+            assert torch.equal(a, b)
+        assert handle.stats["captures"] == 1 and handle.stats["replays"] == 4
+        pools[slots] = handle.stats["pool_bytes"]
+        if slots:
+            assert handle.placement._slots and pf.slot_raw and pf.stats["slot_fills"] > 0
+            assert pf.stats.get("slot_fallbacks", 0) == 0
+        else:
+            assert not pf.slot_raw
+        handle.free()
+        monkeypatch.delenv(cg.STEP_SLOTS_ENV, raising = False)
+    # 7 of the 8 blocks stream (256x256 fp32 each, ~0.25 MiB): without the ring the pool holds their copies
+    assert pools[True] < pools[False]
+
+
+def test_a_declined_streamed_placement_hands_the_ring_back_and_runs_eager(monkeypatch):
+    _cuda()
+    ref = _net().cuda()
+    net, handle = _armed_streamed(monkeypatch)
+    pf = op.module_prefetcher(net)
+    _call(net, 0)
+    _call(net, 1)
+    assert pf.slot_raw and handle.stats["replays"] == 2  # the recording call replays too
+    handle.placement.decline("replay measured within 1% of the eager step")
+    handle.cache.clear()
+    for seed in (2, 3):
+        assert torch.equal(_call(net, seed), _call(ref, seed))
+    assert not pf.slot_raw and not pf.slot_of  # dropped at the end of the first forward after the verdict
+    assert handle.stats["captures"] == 1 and handle.capture_error["type"] == "Refused"
+
+
+def test_a_new_slot_ring_is_a_new_placement(monkeypatch):
+    _cuda()
+    net, handle = _armed_streamed(monkeypatch)
+    pf = op.module_prefetcher(net)
+    _call(net, 0)
+    _call(net, 1)
+    assert handle.stats["captures"] == 1
+    pf.disable_slots()
+    pf.enable_slots()
+    ref = _net().cuda()
+    assert torch.equal(_call(net, 2), _call(ref, 2))
+    assert handle.stats["invalidations"] == 1 and handle.stats["captures"] == 2
+
+
+def test_a_failed_pinned_step_graph_hands_its_calls_to_per_block_graphs(monkeypatch):
+    _cuda()
+    ref = _net().cuda()
+    net = _streamed(_net(), resident_mib = 64)  # every group pinned resident under its hooks
+    pipe = _pipe(net)
+    cg.arm_after_placement(pipe)
+    handles = cg.arm_block_graphs(
+        pipe,
+        {"cuda_graph": True},
+        target = _target(),
+        family = types.SimpleNamespace(),
+        hooked = True,
+        pinned = True,
+    )
+    step = handles[0]
+    assert step.placement is not None and callable(step.fallback)
+    assert not step.placement.streams() and not step.placement._slots
+    _call(net, 0)
+    assert step.stats["captures"] == 1 and step.fallback_handle is None
+    step.poisoned = True  # as a failed capture leaves it
+    for seed in (1, 2, 3):
+        assert torch.equal(_call(net, seed), _call(ref, seed))
+    blocks = step.fallback_handle
+    assert isinstance(blocks, bg.BlockGraphSet) and step.fallback is None
+    # first call of each block runs it, the second records and replays, the third replays
+    assert blocks.stats["captures"] == 8 and blocks.stats["replays"] == 16
+    step.free()
+    assert step.fallback_handle is None
+    assert not any(isinstance(r.forward, bg.BlockGraph) for b in net.blocks for r in b._diffusers_hook._fn_refs)
+
+
+def test_per_block_graphs_under_a_recording_step_record_nothing(monkeypatch):
+    _cuda()
+    ref = _net().cuda()
+    net = _streamed(_net(), resident_mib = 64)
+    pipe = _pipe(net)
+    handles, _ = cg.arm_after_placement(pipe)
+    blocks, reason = bg.install_block_graphs(net, device = "cuda")
+    assert reason == "armed"
+    want = [_call(ref, s) for s in range(3)]
+    got = [_call(net, s) for s in range(3)]  # the step records on its first call and replays after
+    for a, b in zip(got, want):
+        assert torch.equal(a, b)
+    assert handles[0].stats["captures"] == 1 and handles[0].stats["replays"] == 3
+    assert blocks.stats["captures"] == 0 and blocks.stats["eager_calls"] == 0
+    blocks.free()
+    handles[0].free()
+
+
+def test_a_compiled_streamed_step_records_with_no_graph_break_and_a_new_shape_adds_none(monkeypatch):
+    _cuda()
+    import torch._dynamo.utils as du
+
+    torch._dynamo.reset()
+    ref = _net().cuda()
+    net = _net()
+    kwargs = {"fullgraph": False, "dynamic": None}
+    for b in net.blocks:
+        b.compile(**kwargs)
+    net._unsloth_regional_compile_kwargs = kwargs
+    _streamed(net)
+    assert bg.compile_below_offload_hooks(net) == 8
+    handles, reason = cg.arm_after_placement(_pipe(net))
+    assert len(handles) == 1, reason
+    breaks = sum(du.counters["graph_break"].values())
+    for rows in (8, 8, 8, 24, 24, 24):
+        torch.testing.assert_close(_call(net, rows, rows), _call(ref, rows, rows), rtol = 1e-4, atol = 1e-4)
+    assert sum(du.counters["graph_break"].values()) == breaks  # the hooks stay outside every compiled region
+    s = handles[0].stats
+    assert s["captures"] == 2 and s["replays"] == 6 and s["fallbacks"] == 0
+    first = _call(net, 5, 24)
+    assert torch.equal(_call(net, 5, 24), first)
+    handles[0].free()
+
+
+def test_a_static_step_skip_under_the_hooks_is_replayed_past_only_while_it_plans_no_skip():
+    _cuda()
+    from core.inference import diffusion_step_skip as sk
+
+    ref = _net().cuda()
+    net = _net()
+    pipe = _pipe(net)
+    assert sk.install_static_step_skip(pipe, settings = {"min_steps": 12}) == sk.TC_STATIC
+    _streamed(net, resident_mib = 64)
+    cg.arm_after_placement(pipe)
+    step = cg.arm_block_graphs(
+        pipe, {"cuda_graph": True}, target = _target(), family = types.SimpleNamespace(), hooked = True, pinned = True
+    )[0]
+    skip = step.placement.skip
+    assert isinstance(skip, sk.StaticStepSkip)
+    # a render below min_steps plans no skip: the step records and replays straight past the skip layer
+    skip.reset(8)
+    for seed in range(3):
+        assert torch.equal(_call(net, seed), _call(ref, seed))
+    assert step.stats["captures"] == 1 and step.stats["replays"] == 3
+    assert skip.stats["calls"] == 3 and skip.stats["computed"] == 3  # the replays are counted as computed steps
+    # a render that plans skips: every call goes through the skip layer, the per-block graphs take the compute
+    skip.reset(16)
+    assert not all(skip.plan)
+    replays = step.stats["replays"]
+    for i in range(16):
+        _call(net, 0)
+        skip.step_end()
+    assert step.stats["replays"] == replays and step.stats["skip_eager"] == 16
+    assert skip.stats["skipped"] > 0
+    assert isinstance(step.fallback_handle, bg.BlockGraphSet) and step.fallback_handle.stats["replays"] > 0
+    step.free()
+    sk.uninstall_static_step_skip(pipe)

@@ -132,6 +132,7 @@ from .diffusion_speed import (
     SPEED_MAX,
     SPEED_OFF,
     apply_speed_optims,
+    arm_graphs_after_placement,
     resolve_speed_mode,
     restore_backend_flags,
     settle_compile_fallback,
@@ -6569,6 +6570,14 @@ class VideoBackend:
                     speed_optims += ("vae_untiled_when_fits",)
             # Wan's decode also grows within a single tile, which tiling alone cannot bound.
             install_decoder_sync(pipe, target, logger = logger)
+            # A family that opts in to graphs arms them against the placement that landed (offload hooks included).
+            graph_applied = arm_graphs_after_placement(
+                pipe, {"cuda_graph": "cuda_graph" in speed_optims}, logger
+            )
+            if graph_applied.get("cuda_graph") and "cuda_graph" not in speed_optims:
+                speed_optims += ("cuda_graph",)
+            elif not graph_applied.get("cuda_graph"):
+                speed_optims = tuple(o for o in speed_optims if o != "cuda_graph")
 
             resolved = build_resolved_record(
                 {
@@ -6593,6 +6602,14 @@ class VideoBackend:
                         cache_engaged or "off",
                         cache_reason,
                         RESOLVED_UNSUPPORTED if static_decline else None,
+                    ),
+                    "cuda_graph": (
+                        None,
+                        "on" if "cuda_graph" in speed_optims else "off",
+                        str(
+                            getattr(pipe, "_unsloth_cuda_graph_reason", None)
+                            or "speed tier does not capture"
+                        ),
                     ),
                     "transformer_quant": (
                         transformer_quant_requested,
@@ -7562,6 +7579,23 @@ class VideoBackend:
                 )
         except Exception as exc:  # noqa: BLE001 -- optimisation only, never fail a load
             logger.warning("video.h3_speed_optims failed, continuing unoptimised: %s", exc)
+        # H3 declines graphs (cuda_graph_decline), so this only acts when a family override forces them: the graph was
+        # deferred to the placement above, so arm it against the hooks that landed, or record why it stays eager,
+        # rather than leaving the pending note in the status.
+        graph_applied = arm_graphs_after_placement(
+            speed_view, {"cuda_graph": "cuda_graph" in speed_optims}, logger
+        )
+        if graph_applied.get("cuda_graph") and "cuda_graph" not in speed_optims:
+            speed_optims += ("cuda_graph",)
+        elif not graph_applied.get("cuda_graph"):
+            speed_optims = tuple(o for o in speed_optims if o != "cuda_graph")
+        if speed_view is not pipe:
+            for attr in ("_unsloth_cuda_graph_reason", "_unsloth_cuda_graphs"):
+                if hasattr(speed_view, attr):
+                    try:
+                        setattr(pipe, attr, getattr(speed_view, attr))
+                    except Exception:  # noqa: BLE001
+                        pass
         # nothing here compiles, so it follows the REQUESTED tier, not the denoiser's eager downgrade above
         try:
             from .video_minimax_h3_vae import apply_h3_vae_speedups

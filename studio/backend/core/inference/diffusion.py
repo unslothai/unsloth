@@ -180,6 +180,7 @@ from .diffusion_speed import (
     fp16_unet_offloaded,
     fresh_compile_count,
     int8_gemm_live,
+    arm_graphs_after_placement,
     normalize_speed_mode,
     resolve_speed_mode,
     restore_backend_flags,
@@ -7258,6 +7259,8 @@ class DiffusionBackend:
                     if not speed_deferred:
                         if _denoiser_hooked(pipe):
                             compile_pipe_below_offload_hooks(pipe, logger)
+                        # the whole-step graph, with the offload copies recorded in it, where placement allows one
+                        arm_graphs_after_placement(pipe, speed_applied, logger)
                         cuda_graph.arm_block_graphs(
                             pipe,
                             speed_applied,
@@ -9208,6 +9211,7 @@ class DiffusionBackend:
             engage_pinned_denoisers(state.pipe, speed_applied, logger)
         if _denoiser_hooked(state.pipe):
             compile_pipe_below_offload_hooks(state.pipe, logger)
+        arm_graphs_after_placement(state.pipe, speed_applied, logger)
         cuda_graph.arm_block_graphs(
             state.pipe,
             speed_applied,
