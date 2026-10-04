@@ -50,6 +50,19 @@ def block_graphs_disabled() -> bool:
     return (os.environ.get(BLOCK_GRAPHS_ENV) or "").strip().lower() in _OFF
 
 
+def block_graphs_requested() -> bool:
+    """Per-block recording is opt-in: on the measured cards it ties copy-bound streamed tiers and runs about 2%
+    slower on GPU-bound resident blocks (three activation copies per block outweigh the launches it saves), while
+    holding a slot ring and a graph pool."""
+    return (os.environ.get(BLOCK_GRAPHS_ENV) or "").strip().lower() in ("1", "on", "true", "yes")
+
+
+OPT_IN_REASON = (
+    "offloaded denoiser: per-block CUDA graphs measured no faster than its compiled blocks (streamed steps are "
+    "copy-bound, resident ones GPU-bound) and hold extra VRAM; set " + BLOCK_GRAPHS_ENV + "=1 to record per block"
+)
+
+
 # ---------------------------------------------------------------------------------------------------------------
 # Call trees. Like diffusion_cuda_graph's, plus the per-layer prefix K/V caches some DiTs pass to each block
 # (Qwen-Image-2.1, FLUX.2): read-only on a cached step, so their two tensors become static buffers too.

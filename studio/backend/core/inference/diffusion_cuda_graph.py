@@ -919,13 +919,28 @@ def arm_block_graphs(
         pipe._unsloth_cuda_graphs = ()
         return ()
     try:
-        from .diffusion_block_graph import install_block_graphs
+        from .diffusion_block_graph import (
+            OPT_IN_REASON,
+            block_graphs_disabled,
+            block_graphs_requested,
+            install_block_graphs,
+        )
         from .diffusion_speed import _denoiser_dits
     except Exception as exc:  # noqa: BLE001
         _warn(logger, "block graph import", exc)
         applied["cuda_graph"] = False
         pipe._unsloth_cuda_graphs = ()
         _set_reason(pipe, "offload active" if hooked else prior or "block graphs unavailable")
+        return ()
+    if not block_graphs_requested():
+        applied["cuda_graph"] = False
+        pipe._unsloth_cuda_graphs = ()
+        if block_graphs_disabled():
+            _set_reason(pipe, "disabled by UNSLOTH_DIFFUSION_BLOCK_GRAPHS=0")
+        elif hooked:
+            _set_reason(pipe, OPT_IN_REASON)
+        else:
+            _set_reason(pipe, prior + "; per-block graphs are opt-in (UNSLOTH_DIFFUSION_BLOCK_GRAPHS=1)")
         return ()
     armed: list = []
     reasons: list = []

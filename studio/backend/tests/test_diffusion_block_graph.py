@@ -287,8 +287,10 @@ def _pipe_with(net):
     return types.SimpleNamespace(transformer = net, components = {"transformer": net})
 
 
-def _arm(pipe, monkeypatch, *, hooked, backend = "cuda", cache = False, mode = "default", cuda = True):
+def _arm(pipe, monkeypatch, *, hooked, backend = "cuda", cache = False, mode = "default", cuda = True, opt_in = True):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda)
+    if opt_in:
+        monkeypatch.setenv(bg.BLOCK_GRAPHS_ENV, "1")
     applied = {"cuda_graph": False}
     target = types.SimpleNamespace(device = "cuda", backend = backend, torch_device = "cuda")
     handles = cg.arm_block_graphs(
@@ -310,6 +312,19 @@ def test_an_offloaded_denoiser_is_recorded_per_block(monkeypatch):
     assert applied["cuda_graph"] and len(handles) == 1 and len(handles[0].graphs) == 3
     assert "recorded per block" in cg.status_reason(pipe, True)
     cg.uninstall_all(handles)
+
+
+def test_per_block_graphs_are_opt_in_and_say_so(monkeypatch):
+    pipe = _pipe_with(Net(blocks = 3))
+    pipe._unsloth_cuda_graph_reason = "offload active"
+    handles, applied = _arm(pipe, monkeypatch, hooked = True, opt_in = False)
+    assert handles == () and not applied["cuda_graph"]
+    assert bg.BLOCK_GRAPHS_ENV + "=1" in cg.status_reason(pipe, False)
+    assert not any(isinstance(b.__dict__.get("forward"), bg.BlockGraph) for b in pipe.transformer.blocks)
+    monkeypatch.setenv(bg.BLOCK_GRAPHS_ENV, "0")
+    pipe2 = _pipe_with(Net(blocks = 3))
+    handles, applied = _arm(pipe2, monkeypatch, hooked = True, opt_in = False)
+    assert handles == () and "BLOCK_GRAPHS=0" in cg.status_reason(pipe2, False)
 
 
 def test_a_resident_whole_forward_recording_is_kept(monkeypatch):
