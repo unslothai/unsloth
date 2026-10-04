@@ -2667,6 +2667,7 @@ _AUTO_UNSAFE_PY_MODULES = frozenset(
         "subprocess",
         "shutil",
         "socket",
+        "_socket",
         "ctypes",
         "multiprocessing",
         "pty",
@@ -17132,6 +17133,8 @@ def _web_search_images_suffix(client, query, wanted, cancel_event, website_polic
 _NETWORK_ROOT_NAMES = frozenset(
     {
         "socket",
+        # The C module behind `socket`: same primitives, so it screens the same.
+        "_socket",
         "urllib",
         "urllib3",
         "http",
@@ -17541,6 +17544,9 @@ def _check_signal_escape_patterns(code: str):
         "socket.socket",
         "socket.create_connection",
         "socket.getaddrinfo",
+        "_socket.socket",
+        "_socket.SocketType",
+        "_socket.getaddrinfo",
         "urllib.request.urlopen",
         "urllib.request.urlretrieve",
         "urllib3.",
@@ -17568,6 +17574,7 @@ def _check_signal_escape_patterns(code: str):
     _NETWORK_MODULES = frozenset(
         {
             "socket",
+            "_socket",
             "urllib.request",
             "urllib3",
             "urllib3.connection",
@@ -17598,6 +17605,7 @@ def _check_signal_escape_patterns(code: str):
         {
             "socket.create_connection",
             "socket.getaddrinfo",
+            "_socket.getaddrinfo",
             "urllib.request.urlopen",
             "urllib.request.urlretrieve",
             "http.client.HTTPConnection",
@@ -17609,7 +17617,7 @@ def _check_signal_escape_patterns(code: str):
             ),
         }
     )
-    _HOST_ARG_ROOTS = ("socket.", "http.client.")
+    _HOST_ARG_ROOTS = ("socket.", "_socket.", "http.client.")
     _NETWORK_DESTINATION_ARG = {
         fq: (
             0,
@@ -17654,7 +17662,13 @@ def _check_signal_escape_patterns(code: str):
         "urllib3.poolmanager.proxy_from_url",
         "urllib3.contrib.socks.SOCKSProxyManager",
     )
-    _SOCKET_CLIENTS = ("socket.socket", "paramiko.SSHClient", "paramiko.client.SSHClient")
+    # SocketType is an alias of the socket class in both modules.
+    _SOCKET_TYPES = ("socket.socket", "socket.SocketType", "_socket.socket", "_socket.SocketType")
+    _SOCKET_CLIENTS = (
+        *_SOCKET_TYPES,
+        "paramiko.SSHClient",
+        "paramiko.client.SSHClient",
+    )
     _OPENER_CLIENTS = ("urllib.request.build_opener", "urllib.request.OpenerDirector")
     _CLIENT_CLASSES = frozenset(
         (*_VERB_CLIENTS, *_POOL_CLIENTS, *_SOCKET_CLIENTS, *_OPENER_CLIENTS)
@@ -17731,13 +17745,17 @@ def _check_signal_escape_patterns(code: str):
                 for conn in ("HTTPConnection", "HTTPSConnection")
             },
             "urllib3.util.connection.create_connection": (0, ("address",), "host"),
-            **{f"socket.socket.{m}": (0, ("address",), "host") for m in ("connect", "connect_ex")},
+            **{
+                f"{sock}.{m}": (0, ("address",), "host")
+                for sock in _SOCKET_TYPES
+                for m in ("connect", "connect_ex")
+            },
             **{f"{opener}.open": (0, ("fullurl",), "url") for opener in _OPENER_CLIENTS},
             "urllib.request.ProxyHandler": (None, (), "proxy"),
             # A datagram names its address per send. `sendto(data, flags, address)` puts the int
             # flags at index 1, which reads as unreadable and fails closed.
-            "socket.socket.sendto": (1, (), "host"),
-            "socket.socket.sendmsg": (3, (), "host"),
+            **{f"{sock}.sendto": (1, (), "host") for sock in _SOCKET_TYPES},
+            **{f"{sock}.sendmsg": (3, (), "host") for sock in _SOCKET_TYPES},
             **{
                 f"{client}.connect": (0, ("hostname", "host"), "host")
                 for client in ("paramiko.SSHClient", "paramiko.client.SSHClient")
