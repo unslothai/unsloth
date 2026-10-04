@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Remote and LAN access cards live on one Settings tab, not two."""
-
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -15,8 +13,7 @@ CARDS = ("<RemoteAccessSection", "<LanAccessSection")
 
 
 def test_remote_and_lan_cards_mount_only_on_the_remote_lan_tab():
-    # #9519: both tabs rendered the same two cards. #9389 left the API copy so
-    # the old path still worked. The dedicated tab is the home now.
+    # #9519: #9389 left a second copy of both cards on the API tab.
     api = API_KEYS_TAB.read_text(encoding = "utf-8")
     remote = REMOTE_LAN_TAB.read_text(encoding = "utf-8")
     for tag in CARDS:
