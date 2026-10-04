@@ -40,9 +40,29 @@ def test_tile_starts_are_full_edge_aligned_tiles_with_wide_overlaps(length):
 # 21:9 ratios at the default 1024 width and flipped, the official 2K presets, the smallest side, a 512 px side that
 # fits one tile, and custom sizes off the presets.
 UI_SIZES = [
-    (1024, 1024), (1024, 672), (672, 1024), (1024, 768), (768, 1024), (1024, 576), (576, 1024), (1024, 448),
-    (448, 1024), (2048, 2048), (2400, 1792), (1792, 2400), (2528, 1696), (1696, 2528), (2752, 1536), (1536, 2752),
-    (1344, 1344), (1312, 1312), (1184, 864), (512, 1536), (256, 256), (256, 2752), (2752, 2752),
+    (1024, 1024),
+    (1024, 672),
+    (672, 1024),
+    (1024, 768),
+    (768, 1024),
+    (1024, 576),
+    (576, 1024),
+    (1024, 448),
+    (448, 1024),
+    (2048, 2048),
+    (2400, 1792),
+    (1792, 2400),
+    (2528, 1696),
+    (1696, 2528),
+    (2752, 1536),
+    (1536, 2752),
+    (1344, 1344),
+    (1312, 1312),
+    (1184, 864),
+    (512, 1536),
+    (256, 256),
+    (256, 2752),
+    (2752, 2752),
 ]
 UI_LENGTHS = sorted({side // 16 for size in UI_SIZES for side in size} | set(range(16, 173, 2)))
 
@@ -61,7 +81,9 @@ def test_axis_weights_partition_unity_and_skip_shared_edges(length):
         total[s * scale : s * scale + w.numel()] += w
         covered[s * scale : s * scale + w.numel()] = True
         edge = vt.MARGIN_LATENTS * scale
-        if s > 0:  # no weight where the tile's decode lacks context, even with three tiles overlapping
+        if (
+            s > 0
+        ):  # no weight where the tile's decode lacks context, even with three tiles overlapping
             assert float(w[:edge].abs().max()) == 0.0
         if s + tile < length:
             assert float(w[-edge:].abs().max()) == 0.0
@@ -78,7 +100,9 @@ def test_every_ui_size_tiles_without_slivers(width, height):
             assert starts == [0]
             continue
         assert starts[0] == 0 and starts[-1] + vt.TILE_LATENTS == length
-        assert all(b + vt.OVERLAP_LATENTS <= a + vt.TILE_LATENTS for a, b in zip(starts, starts[1:]))
+        assert all(
+            b + vt.OVERLAP_LATENTS <= a + vt.TILE_LATENTS for a, b in zip(starts, starts[1:])
+        )
 
 
 def _diffusers_vae():
@@ -165,7 +189,11 @@ def test_install_is_idempotent_and_uninstall_restores():
 
 @pytest.mark.parametrize("name", ["AutoencoderKLWan", "AutoencoderKLQwenImage", "AutoencoderKL"])
 def test_other_vaes_keep_the_stock_tiles(name):
-    vae = type(name, (), {"spatial_compression_ratio": 16, "use_tiling": False, "_decode": lambda self: None})()
+    vae = type(
+        name,
+        (),
+        {"spatial_compression_ratio": 16, "use_tiling": False, "_decode": lambda self: None},
+    )()
     vae.config = types.SimpleNamespace(patch_size = None)
     assert vt.install(vae) is False
     assert "tiled_decode" not in vae.__dict__
