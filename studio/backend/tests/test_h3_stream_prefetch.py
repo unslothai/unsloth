@@ -121,6 +121,7 @@ def _h3_streamed(
     monkeypatch,
     prefetch = True,
     outside_inference = True,
+    pin_top = True,
 ):
     """What the H3 load does at a capped tier: stream groups with record_stream, pinned top group, prefetch."""
     import inspect
@@ -148,7 +149,7 @@ def _h3_streamed(
         # what stream_prequantized_module does for torchao v1 int8: every group move outside inference_mode
         from core.inference.diffusion_prequant import _move_groups_outside_inference_mode
         _move_groups_outside_inference_mode(net)
-    assert res.pin_streamed_top_level_group(net)
+    assert res.pin_streamed_top_level_group(net) is pin_top
     n = res.install_h3_stream_prefetch(net, "cuda") if prefetch else 0
     return n
 
@@ -288,3 +289,50 @@ def test_without_the_prefetch_every_streamed_group_waits_on_the_host(monkeypatch
         net(x)
         _, syncs = _count_syncs(lambda: net(x))
     assert syncs >= len(net.transformer_blocks)
+
+
+def test_top_pin_kill_switch_keeps_diffusers_top_group(monkeypatch):
+    """UNSLOTH_H3_TOP_GROUP_PIN=0: the generic top-group adoption must not pin it behind the H3 switch's back."""
+    _cuda()
+    from core.inference.diffusion_offload_prefetch import module_prefetcher
+
+    import core.inference.diffusion_offload_prefetch as op
+
+    monkeypatch.setenv(res.H3_TOP_GROUP_PIN_ENV, "0")
+    seen = []
+    adopt = op._adopt_top_group
+
+    def _spy(module, *a, **k):
+        top_group, _ = res.h3_offload_groups(module)
+        # H3's top group is torchao: adoption takes it whenever it is unstreamed and its onload_ is not replaced
+        seen.append(top_group.stream is None and "onload_" not in top_group.__dict__)
+        return adopt(module, *a, **k)
+
+    monkeypatch.setattr(op, "_adopt_top_group", _spy)
+    torch.manual_seed(0)
+    net = _DiT().eval()
+    ref = copy.deepcopy(net).cuda()
+    assert _h3_streamed(net, monkeypatch, pin_top = False) == len(net.transformer_blocks)
+    top, _ = res.h3_offload_groups(net)
+    pf = module_prefetcher(net)
+    assert seen == [False]
+    assert top.stream is None and not pf.owns(top)
+    x = torch.randn(4, 64, device = "cuda")
+    with torch.inference_mode():
+        want = ref(x)
+        for _ in range(2):
+            got = net(x)
+            torch.cuda.synchronize()
+            assert torch.equal(got, want)
+
+
+def test_capped_pinned_host_prefetches_one_ahead(monkeypatch):
+    """Windows / WSL2 pin each in-flight group on the fly under a ~1 GiB cap: one ahead, as diffusers holds."""
+    _cuda()
+    import core.inference.diffusion_memory as dm
+    from core.inference.diffusion_offload_prefetch import module_prefetcher
+
+    monkeypatch.setattr(dm, "_pinned_memory_capped", lambda: True)
+    net = _DiT().eval()
+    assert _h3_streamed(net, monkeypatch) == 1 + len(net.transformer_blocks)
+    assert module_prefetcher(net).depth == 1

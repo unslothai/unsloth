@@ -504,17 +504,24 @@ def install_h3_stream_prefetch(
     if not blocks:
         return 0
     depth = h3_stream_prefetch_depth([group_payload_bytes(g) for g in blocks], prefetch_depth())
+    from .diffusion_memory import _pinned_memory_capped
+
+    if _pinned_memory_capped():
+        depth = 1  # each in-flight group is pinned on the fly; diffusers' own path holds two near a ~1 GiB cap
     # The prefetcher refuses groups whose onload_ is replaced: lift the outside-inference_mode wrappers (torchao v1
     # int8 cannot be re-pointed inside it), install, then wrap its moves the same way.
     groups = _all_offload_groups(transformer)
-    lifted = [g for g in groups if _lift_outside_inference_wrappers(g)]
+    # A top-level group the H3 pin left unstreamed (kill switch, host refusal) keeps its wrapper, so the generic
+    # top-group adoption cannot pin it.
+    kept = top if top is not None and getattr(top, "stream", None) is None else None
+    lifted = [g for g in groups if g is not kept and _lift_outside_inference_wrappers(g)]
     try:
         covered = install_group_prefetch(transformer, device, logger, depth = depth)
     except Exception:  # noqa: BLE001 -- install_group_prefetch never raises today; keep the wrappers either way
         covered = 0
-    if lifted:
-        from .diffusion_prequant import _move_groups_outside_inference_mode
-        _move_groups_outside_inference_mode(transformer)
+    for group in lifted:
+        for name in ("onload_", "offload_"):
+            setattr(group, name, _outside_inference_mode(getattr(group, name)))
     if covered:
         from .diffusion_offload_prefetch import module_prefetcher
 
