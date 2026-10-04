@@ -752,3 +752,69 @@ def test_offline_cached_acceptance_still_asks_who_is_asking(client, monkeypatch)
     assert r.status_code == 409
     assert saved.get("model") != "acme/private-embedder"
     hf_tokens.reset_repo_access_cache()
+
+
+def _custom_module_repo(tmp_path):
+    """A local embedding repo whose modules.json names a repo-hosted module class. Importing it
+    drops a marker file, so a test can tell whether the repo's code ran."""
+    import json
+
+    marker = tmp_path / "ran.txt"
+    (tmp_path / "custom_mod.py").write_text(
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('ran')\n"
+        "class Pooling:\n"
+        "    pass\n"
+    )
+    (tmp_path / "modules.json").write_text(
+        json.dumps([{"idx": 0, "name": "0", "path": "", "type": "custom_mod.Pooling"}])
+    )
+    return marker
+
+
+def test_st_gate_refuses_repo_hosted_module_class_on_local_path(tmp_path):
+    # sentence-transformers < 6 trusted repo code for any local path (CVE-2026-68770), and the
+    # embedder loads the cached snapshot directory. The gate must refuse before the code runs.
+    st = pytest.importorskip("sentence_transformers")
+    import core.rag.embeddings as embeddings
+
+    marker = _custom_module_repo(tmp_path)
+    embeddings._gate_st_custom_modules()
+    with pytest.raises(ValueError, match = "not part of Sentence Transformers"):
+        st.SentenceTransformer(str(tmp_path), device = "cpu")
+    assert not marker.exists()
+
+
+def test_st_gate_allows_stock_classes_and_explicit_trust(tmp_path):
+    st = pytest.importorskip("sentence_transformers")
+    import core.rag.embeddings as embeddings
+
+    embeddings._gate_st_custom_modules()
+    owner = next(
+        c for c in st.SentenceTransformer.__mro__ if "_load_module_class_from_ref" in vars(c)
+    )
+    resolve = vars(owner)["_load_module_class_from_ref"]
+    model = object.__new__(st.SentenceTransformer)
+    pooling = resolve(
+        model, "sentence_transformers.models.Pooling", str(tmp_path), False, None, None
+    )
+    assert pooling.__name__ == "Pooling"
+    # An explicit opt-in still reaches the original resolver.
+    _custom_module_repo(tmp_path)
+    resolve(model, "custom_mod.Pooling", str(tmp_path), True, None, None)
+
+
+def test_st_gate_is_idempotent():
+    st = pytest.importorskip("sentence_transformers")
+    import core.rag.embeddings as embeddings
+
+    embeddings._gate_st_custom_modules()
+    owner = next(
+        c for c in st.SentenceTransformer.__mro__ if "_load_module_class_from_ref" in vars(c)
+    )
+    first = vars(owner)["_load_module_class_from_ref"]
+    embeddings._gate_st_custom_modules()
+    assert vars(owner)["_load_module_class_from_ref"] is first
+    if int(st.__version__.split(".")[0]) < 6:
+        assert getattr(first, embeddings._ST_GATE_MARKER, False)
+        assert not getattr(first.__wrapped__, embeddings._ST_GATE_MARKER, False)
