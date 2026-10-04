@@ -1020,7 +1020,8 @@ export function AudioPage({
               additionalOnDeviceModels={
                 mode === "transcribe"
                   ? sttOnDeviceModels
-                  : ttsWorkflow === "clone"
+                  : // Trained speech checkpoints only speak (or make music); no other page loads them.
+                    ttsWorkflow !== "speak" && ttsWorkflow !== "music"
                     ? []
                     : trainedTtsModels.filter(
                       (model) =>
