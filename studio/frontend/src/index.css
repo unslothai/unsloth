@@ -4590,17 +4590,28 @@ html[data-chat-font] .aui-root {
 	}
 }
 
-/* No border line; same drop shadow as the composer (.unsloth-composer-surface).
+/* No border line; a soft layered shadow lifts the toast off the page.
    !important because Sonner injects its base rules at runtime. */
 [data-sonner-toast][data-styled='true'] {
-	padding: calc(12px * var(--ui-space-scale, 1)) calc(18px * var(--ui-space-scale, 1)) !important;
+	padding: calc(16px * var(--ui-space-scale, 1)) calc(20px * var(--ui-space-scale, 1)) calc(18px * var(--ui-space-scale, 1)) !important;
 	align-items: start !important;
-	gap: calc(10px * var(--ui-space-scale, 1)) !important;
-	box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16) !important;
+	gap: calc(12px * var(--ui-space-scale, 1)) !important;
+	box-shadow:
+		0 1px 2px rgba(0, 0, 0, 0.04),
+		0 8px 24px -6px rgba(0, 0, 0, 0.14) !important;
 }
 
+/* Icon starts at the first line's cap height, never above the text. */
 [data-sonner-toast][data-styled='true'] [data-icon] {
-	margin: calc(2px * var(--ui-space-scale, 1)) 0 0 !important;
+	margin: 0.4em 0 0 !important;
+}
+
+/* Single text line: center the icon on it. Title and description line heights are 1.5 and 1.4. */
+[data-sonner-toast][data-styled='true']:not(:has([data-description])) [data-icon] {
+	margin-top: calc((1.5em - var(--ui-icon-size)) / 2) !important;
+}
+[data-sonner-toast][data-styled='true']:not(:has([data-title])) [data-icon] {
+	margin-top: calc((1.4em - var(--ui-icon-size)) / 2) !important;
 }
 
 [data-sonner-toast][data-styled='true'] [data-content] {
@@ -4619,8 +4630,8 @@ html[data-chat-font] .aui-root {
 	display: grid !important;
 	grid-template-columns: minmax(0, 1fr);
 	align-items: start !important;
-	column-gap: calc(10px * var(--ui-space-scale, 1)) !important;
-	row-gap: calc(10px * var(--ui-space-scale, 1)) !important;
+	column-gap: calc(12px * var(--ui-space-scale, 1)) !important;
+	row-gap: calc(8px * var(--ui-space-scale, 1)) !important;
 }
 
 [data-sonner-toast][data-styled='true']:has([data-button]):has([data-icon]) {
@@ -4651,12 +4662,15 @@ html[data-chat-font] .aui-root {
 }
 
 [data-sonner-toast][data-styled='true']:has([data-close-button]) {
-	padding-right: calc(48px * var(--ui-space-scale, 1)) !important;
+	padding-right: calc(52px * var(--ui-space-scale, 1)) !important;
 }
 
-/* Toast buttons are pills, matching the dialog actions they stand in for. */
+/* Toast buttons are pills, matching the dialog actions they stand in for.
+   Padding sizes them instead of Sonner's fixed 24px height. */
 [data-sonner-toast] [data-button] {
 	border-radius: 9999px !important;
+	height: auto !important;
+	padding: calc(6px * var(--ui-space-scale, 1)) calc(14px * var(--ui-space-scale, 1)) !important;
 }
 
 /* Loading toast keeps its own vertical padding from #7683. */
@@ -4664,8 +4678,8 @@ html[data-chat-font] .aui-root {
 	display: flex !important;
 	align-items: center !important;
 	gap: calc(12px * var(--ui-space-scale, 1)) !important;
-	padding-top: calc(14px * var(--ui-space-scale, 1)) !important;
-	padding-bottom: calc(14px * var(--ui-space-scale, 1)) !important;
+	padding-top: calc(16px * var(--ui-space-scale, 1)) !important;
+	padding-bottom: calc(18px * var(--ui-space-scale, 1)) !important;
 }
 
 [data-sonner-toast][data-styled='true'].chat-model-load-toast [data-content] {
@@ -4680,14 +4694,14 @@ html[data-chat-font] .aui-root {
 
 /* Progress bar is the last row; give it room below. */
 [data-sonner-toast][data-styled='true'].chat-model-load-toast:has([role='progressbar']) {
-	padding-bottom: calc(18px * var(--ui-space-scale, 1)) !important;
+	padding-bottom: calc(22px * var(--ui-space-scale, 1)) !important;
 }
 
 /* Dark toasts share the chatbox surface color (.chat-composer-surface
    uses var(--card) in dark); the composer shadow lifts them off the page. */
 .dark [data-sonner-toast][data-styled='true'] {
 	background-color: var(--card) !important;
-	box-shadow: 0 2px 8px -2px var(--background) !important;
+	box-shadow: 0 4px 20px 4px var(--background) !important;
 }
 
 /* Selectable toast text; non-selectable toast buttons. */
@@ -5248,8 +5262,9 @@ html.force-reduced-motion .sidebar-section-drop-line {
 
 /* Keep Sonner close button inside the toast and pin to theme tokens (--gray2 hover ignores data-sonner-theme). */
 [data-sonner-toast][data-styled="true"] [data-close-button] {
-	top: calc(8px * var(--ui-space-scale, 1)) !important;
+	top: calc(11px * var(--ui-space-scale, 1)) !important;
 	transform: none !important;
+	border-radius: 9999px !important;
 	background: var(--popover) !important;
 	color: var(--popover-foreground) !important;
 	border-color: transparent !important;
