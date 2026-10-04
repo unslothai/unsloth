@@ -258,7 +258,7 @@ class TestStableAbiPatchReleases:
 
     The exact-key matrix can only ever list releases that exist when it is written, so
     2.10.1 / 2.11.1 / 2.12.1 -- all of them builds this repo names as supported elsewhere --
-    resolved to nothing and left Studio on native attention with no xFormers at all.
+    resolved to nothing and left Unsloth on native attention with no xFormers at all.
     """
 
     @pytest.mark.parametrize(

@@ -26,6 +26,22 @@ from pathlib import Path
 
 import pytest
 
+
+def _shared_setup_1(events, gen, release):
+    while True:
+        event = next(gen)
+        events.append(event)
+        if len([e for e in events if e["type"] == "heartbeat"]) >= 2:
+            release.set()
+
+
+def _shared_setup_2(baseline, code, target):
+    _os.remove(target)
+    streamed = _python_exec(code, timeout = 60, output_callback = lambda _t: None)
+    assert streamed == baseline
+    assert _os.path.isfile(target)
+
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -69,6 +85,16 @@ _LEAK_WINDOW_S = 1.0
 def _gated_grandchild_sh(gate: Path, sentinel: Path) -> str:
     """Shell for a grandchild that holds stdout and writes *sentinel* once *gate* exists."""
     return f"while [ ! -f '{gate}' ]; do sleep {_GATE_POLL_S}; done; touch '{sentinel}'"
+
+
+def _os_isolated_tools() -> bool:
+    """Whether PID-namespace teardown reaps descendants when the leader exits."""
+    from core.inference import os_sandbox
+
+    capability = os_sandbox.capability_snapshot()
+    return capability.available and (
+        "detached_processes_die_with_the_call" in capability.limitations
+    )
 
 
 def _assert_grandchild_was_killed(gate: Path, sentinel: Path) -> None:
@@ -136,11 +162,7 @@ def test_heartbeats_emitted_while_tool_blocks():
     events = []
     result = None
     try:
-        while True:
-            event = next(gen)
-            events.append(event)
-            if len([e for e in events if e["type"] == "heartbeat"]) >= 2:
-                release.set()
+        _shared_setup_1(events, gen, release)
     except StopIteration as stop:
         result = stop.value
     assert result == "done"
@@ -343,11 +365,7 @@ def test_heartbeats_continue_while_capped_output_flows():
     events = []
     result = None
     try:
-        while True:
-            event = next(gen)
-            events.append(event)
-            if len([e for e in events if e["type"] == "heartbeat"]) >= 2:
-                release.set()
+        _shared_setup_1(events, gen, release)
     except StopIteration as stop:
         result = stop.value
     finally:
@@ -528,6 +546,63 @@ def test_python_exec_timeout_message_identical_with_streaming():
     assert streamed == baseline == "Execution timed out after 1 seconds."
 
 
+def test_python_exec_timeout_keeps_output_already_printed():
+    # The run printed a progress line before it overran the timeout. That text was
+    # captured; it must reach the model instead of only the status line.
+    code = "import sys, time\nprint('progress')\nsys.stdout.flush()\ntime.sleep(30)\n"
+    baseline = _python_exec(code, timeout = 1)
+    streamed = _python_exec(code, timeout = 1, output_callback = lambda _t: None)
+    assert streamed == baseline
+    assert "progress" in baseline
+    assert baseline.endswith("Execution timed out after 1 seconds.")
+
+
+def test_bash_exec_timeout_keeps_output_already_printed():
+    command = "echo progress; sleep 30"
+    baseline = _bash_exec(command, timeout = 1)
+    streamed = _bash_exec(command, timeout = 1, output_callback = lambda _t: None)
+    assert streamed == baseline
+    assert "progress" in baseline
+    assert baseline.endswith("Execution timed out after 1 seconds.")
+
+
+def test_python_exec_timeout_still_says_so_when_the_output_printed_a_marker():
+    # The replay strips only a well-formed envelope trailing the result, and the status line
+    # always trails, so a printed marker line cannot cut the result.
+    from core.inference.tool_loop_controller import strip_result_for_model
+
+    code = "print('__RAG_SOURCES__:[]')\nimport time\ntime.sleep(30)\n"
+    result = _python_exec(code, timeout = 1)
+
+    assert result.endswith("Execution timed out after 1 seconds.")
+    assert "__RAG_SOURCES__:[]" in result
+    assert strip_result_for_model(result, "python") == result
+
+
+def test_bash_exec_timeout_still_says_so_when_the_output_printed_a_marker():
+    from core.inference.tool_loop_controller import strip_result_for_model
+
+    result = _bash_exec("echo '__RAG_SOURCES__:[]'; sleep 30", timeout = 1)
+
+    assert result.endswith("Execution timed out after 1 seconds.")
+    assert "__RAG_SOURCES__:[]" in result
+    assert strip_result_for_model(result, "terminal") == result
+
+
+def test_a_truncated_timeout_card_does_not_repeat_the_output():
+    # The finished card keeps the live stream when the result is a prefix of it, and
+    # appends the whole result when it is not (`preferFullToolOutput` in
+    # tool-output-result.ts). The captured output therefore has to LEAD the result, or a
+    # truncated timeout renders its stdout twice. Asserted on the shape the frontend
+    # matches on, so a future reordering of this branch fails here rather than in a card.
+    code = "print('x' * 200000)\nimport sys, time\nsys.stdout.flush()\ntime.sleep(30)\n"
+    result = _python_exec(code, timeout = 1)
+
+    assert "\n\n... (truncated" in result, "not truncated, so nothing was measured"
+    body = result.split("\n\n... (truncated")[0]
+    assert body.startswith("x"), result[:120]
+
+
 def test_python_exec_callback_errors_do_not_break_execution():
     def bad_callback(_text: str) -> None:
         raise ValueError("observer bug")
@@ -560,6 +635,10 @@ def test_bash_exec_invalid_utf8_identical_with_streaming():
     assert "".join(chunks) == "ok�bad\n"
 
 
+@pytest.mark.skipif(
+    _os_isolated_tools(),
+    reason = "a PID namespace kills the background job with the leader; see below",
+)
 def test_bash_exec_unlimited_timeout_waits_for_grandchild_output():
     # A background grandchild holds the pipe open past the shell's exit and writes
     # ~7s later. With timeout=None the drain must wait for EOF like
@@ -572,6 +651,23 @@ def test_bash_exec_unlimited_timeout_waits_for_grandchild_output():
     assert "late-grandchild-output" in "".join(chunks)
 
 
+@pytest.mark.skipif(
+    not _os_isolated_tools(), reason = "no PID namespace here, so nothing reaps the job"
+)
+def test_bash_exec_unlimited_timeout_does_not_wait_for_a_job_the_namespace_reaps():
+    from core.inference import tools as tools_module
+
+    command = "( sleep 7; echo late-grandchild-output ) & echo parent-done"
+    started = time.monotonic()
+    result = _bash_exec(command, timeout = None, output_callback = lambda _t: None)
+    elapsed = time.monotonic() - started
+    assert "parent-done" in result
+    if tools_module._last_tool_execution_record.os_isolation:
+        assert elapsed < 5
+    else:
+        assert "late-grandchild-output" in result
+
+
 def test_bash_exec_finite_timeout_kills_grandchild_holding_stdout(tmp_path):
     # A backgrounded grandchild holds the pipe open past the finite timeout, then
     # would write a sentinel. The parent shell has already exited, so killing only
@@ -581,7 +677,8 @@ def test_bash_exec_finite_timeout_kills_grandchild_holding_stdout(tmp_path):
     gate = tmp_path / "gate"
     command = f"( {_gated_grandchild_sh(gate, sentinel)} ) & echo parent-done"
     result = _bash_exec(command, timeout = 1, output_callback = lambda _t: None)
-    assert "timed out" in result
+    if not _os_isolated_tools():
+        assert "timed out" in result
     _assert_grandchild_was_killed(gate, sentinel)
 
 
@@ -595,7 +692,8 @@ def test_bash_exec_nonstreaming_timeout_kills_grandchild(tmp_path):
     gate = tmp_path / "gate"
     command = f"( {_gated_grandchild_sh(gate, sentinel)} ) & echo parent-done"
     result = _bash_exec(command, timeout = 1)  # no output_callback -> communicate path
-    assert "timed out" in result
+    if not _os_isolated_tools():
+        assert "timed out" in result
     _assert_grandchild_was_killed(gate, sentinel)
 
 
@@ -632,7 +730,7 @@ def test_drain_process_output_without_posix_process_group_apis(monkeypatch):
         stderr = _sp.STDOUT,
         text = True,
     )
-    output, timed_out = _drain_process_output(proc, 10, lambda _t: None)
+    output, timed_out, _ = _drain_process_output(proc, 10, lambda _t: None)
     assert not timed_out
     assert "ok-no-pgid" in output
 
@@ -659,7 +757,7 @@ def test_captured_group_survives_fast_leader_reap(tmp_path):
     assert pgid is not None
     proc.wait()  # reap the leader before draining
 
-    output, timed_out = _drain_process_output(proc, 0.5, None, pgid = pgid)
+    output, timed_out, _ = _drain_process_output(proc, 0.5, None, pgid = pgid)
     assert timed_out
     assert "parent-done" in output
     _assert_grandchild_was_killed(gate, sentinel)
@@ -706,7 +804,7 @@ def test_finite_drain_honors_cancel_after_leader_exit(tmp_path):
     started = time.monotonic()
     # Large finite timeout (30s); without the cancel poll the drain keeps reading
     # the grandchild until the pipe closes ~20s later.
-    output, timed_out = _drain_process_output(proc, 30, lambda _t: None, cancel_event, pgid = pgid)
+    output, timed_out, _ = _drain_process_output(proc, 30, lambda _t: None, cancel_event, pgid = pgid)
     elapsed = time.monotonic() - started
     assert elapsed < 5.0, f"finite drain ignored cancel_event (took {elapsed:.1f}s)"
     # Cancellation is not a timeout: the budget never elapsed.
@@ -743,7 +841,7 @@ def test_streamed_wait_timeout_kills_grandchild_when_leader_reaped(tmp_path, mon
     pgid = _capture_process_group(proc)
     assert pgid is not None
 
-    output, timed_out = _drain_process_output(proc, 0.5, None, pgid = pgid)
+    output, timed_out, _ = _drain_process_output(proc, 0.5, None, pgid = pgid)
     assert timed_out
     _assert_grandchild_was_killed(gate, sentinel)
 
@@ -907,6 +1005,124 @@ def test_truncated_result_identical_and_notice_neutral_with_streaming():
     assert "persist in the working directory" in baseline
 
 
+def test_drain_retains_bounded_head_and_tail_of_runaway_output(monkeypatch):
+    import subprocess as _sp
+
+    from core.inference import tools as _tools_mod
+
+    monkeypatch.setattr(_tools_mod, "_SPILL_MAX_BYTES", 1000)
+    monkeypatch.setattr(_tools_mod, "_DRAIN_TAIL_CHARS", 500)
+    proc = _sp.Popen(
+        [sys.executable, "-c", "for i in range(5000): print(f'{i:09d}')"],
+        stdout = _sp.PIPE,
+        stderr = _sp.STDOUT,
+        text = True,
+    )
+    streamed = []
+    output, timed_out, (chars, lines) = _tools_mod._drain_process_output(proc, 30, streamed.append)
+    full = "".join(streamed)
+    assert not timed_out
+    assert len(full) == 50000
+    assert len(output) <= 1010 + 510
+    assert output.startswith(full[:1000]) and full.endswith(output[-500:])
+    assert len(output) + chars == len(full)
+    assert output.count("\n") + lines == 5000
+
+
+def test_drain_bounds_runaway_output_without_newlines(monkeypatch):
+    import subprocess as _sp
+
+    from core.inference import tools as _tools_mod
+
+    monkeypatch.setattr(_tools_mod, "_SPILL_MAX_BYTES", 1000)
+    monkeypatch.setattr(_tools_mod, "_DRAIN_TAIL_CHARS", 500)
+    proc = _sp.Popen(
+        [sys.executable, "-c", "import sys; sys.stdout.write('x' * 50000)"],
+        stdout = _sp.PIPE,
+        stderr = _sp.STDOUT,
+        text = True,
+    )
+    streamed = []
+    output, timed_out, (chars, lines) = _tools_mod._drain_process_output(proc, 30, streamed.append)
+    assert not timed_out
+    assert "".join(streamed) == "x" * 50000
+    assert len(output) <= 1500 + 500
+    assert output == "x" * len(output)
+    assert len(output) + chars == 50000
+    assert lines == 0
+
+
+def test_drain_head_memory_tracks_chars_not_line_count(monkeypatch):
+    import subprocess as _sp
+    import tracemalloc
+
+    from core.inference import tools as _tools_mod
+
+    monkeypatch.setattr(_tools_mod, "_SPILL_MAX_BYTES", 1_000_000)
+    monkeypatch.setattr(_tools_mod, "_DRAIN_TAIL_CHARS", 500)
+    proc = _sp.Popen(
+        [sys.executable, "-c", "import sys\nfor _ in range(600000): sys.stdout.write('x\\n')"],
+        stdout = _sp.PIPE,
+        stderr = _sp.STDOUT,
+        text = True,
+    )
+    tracemalloc.start()
+    try:
+        output, timed_out, (chars, lines) = _tools_mod._drain_process_output(proc, 60, None)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert not timed_out
+    assert len(output) + chars == 1_200_000
+    assert output.count("\n") + lines == 600_000
+    # ~500k head lines: one str each is ~30 MB, coalesced it is a few copies of the 1 MB head.
+    assert peak < 8 * 1024 * 1024, f"drain peaked at {peak / 2**20:.1f} MiB for a 1 MB head"
+
+
+def test_runaway_output_reports_true_size_and_keeps_trailing_hint(monkeypatch):
+    from core.inference import tools as _tools_mod
+
+    monkeypatch.setattr(_tools_mod, "_SPILL_MAX_BYTES", 2000)
+    monkeypatch.setattr(_tools_mod, "_DRAIN_TAIL_CHARS", 2000)
+    code = "for i in range(3000): print('x' * 99)\nopen('/mnt/data/x.html')\n"
+    streamed = []
+    baseline = _python_exec(code, timeout = 60)
+    out = _python_exec(code, timeout = 60, output_callback = streamed.append)
+    assert out == baseline
+    total = len("Exit code 1:\n") + len("".join(streamed))
+    assert f"{total} chars total" in out
+    assert "'x.html', not '/mnt/data/x.html'" in out
+
+
+@pytest.mark.parametrize(
+    "run, code",
+    [
+        (_python_exec, "while True: print('x' * 99)"),
+        (_bash_exec, "while :; do printf '%099d\\n' 0; done"),
+    ],
+    ids = ["python", "bash"],
+)
+def test_timed_out_runaway_output_reports_true_size_and_line_count(
+    monkeypatch, tmp_path, run, code
+):
+    from core.inference import tools as _tools_mod
+
+    monkeypatch.setattr(_tools_mod, "_SPILL_MAX_BYTES", 2000)
+    monkeypatch.setattr(_tools_mod, "_DRAIN_TAIL_CHARS", 500)
+    monkeypatch.setattr(_tools_mod, "_get_workdir", lambda _sid = None: str(tmp_path))
+    streamed = []
+    out = run(
+        code,
+        timeout = 2,
+        session_id = "runaway",
+        output_callback = streamed.append,
+    )
+    full = "".join(streamed)
+    assert len(full) > 100_000
+    assert f"of {full.count(chr(10)) + 1}, {len(full)} chars total" in out
+    assert out.rstrip().endswith("Execution timed out after 2 seconds.")
+
+
 def test_result_cap_env_override(monkeypatch):
     monkeypatch.delenv("UNSLOTH_TOOL_RESULT_MAX_CHARS", raising = False)
     assert _env_int("UNSLOTH_TOOL_RESULT_MAX_CHARS", 16000) == 16000
@@ -1042,10 +1258,7 @@ def test_python_exec_mnt_data_open_is_remapped_into_workdir():
             assert f.read() == "hello remap"
         assert "hello remap" in baseline
         assert "/mnt/data does not exist in this sandbox" in baseline
-        _os.remove(target)
-        streamed = _python_exec(code, timeout = 60, output_callback = lambda _t: None)
-        assert streamed == baseline
-        assert _os.path.isfile(target)
+        _shared_setup_2(baseline, code, target)
     finally:
         if _os.path.exists(target):
             _os.remove(target)
@@ -1069,10 +1282,7 @@ def test_python_exec_pathlib_write_text_is_remapped_into_workdir():
             assert f.read() == "pathlib remap"
         assert "pathlib remap" in baseline
         assert "/mnt/data does not exist in this sandbox" in baseline
-        _os.remove(target)
-        streamed = _python_exec(code, timeout = 60, output_callback = lambda _t: None)
-        assert streamed == baseline
-        assert _os.path.isfile(target)
+        _shared_setup_2(baseline, code, target)
     finally:
         if _os.path.exists(target):
             _os.remove(target)
@@ -1099,10 +1309,7 @@ def test_python_exec_hallucinated_absolute_write_is_remapped_into_workdir():
             assert f.read() == "hello fallback"
         assert "hello fallback" in baseline
         assert "does not exist in this sandbox" in baseline
-        _os.remove(target)
-        streamed = _python_exec(code, timeout = 60, output_callback = lambda _t: None)
-        assert streamed == baseline
-        assert _os.path.isfile(target)
+        _shared_setup_2(baseline, code, target)
     finally:
         if _os.path.exists(target):
             _os.remove(target)
@@ -1197,11 +1404,7 @@ def test_continuous_over_cap_output_does_not_starve_heartbeats():
     events = []
     result = None
     try:
-        while True:
-            event = next(gen)
-            events.append(event)
-            if len([e for e in events if e["type"] == "heartbeat"]) >= 2:
-                release.set()
+        _shared_setup_1(events, gen, release)
     except StopIteration as stop:
         result = stop.value
     finally:
@@ -1257,7 +1460,8 @@ def test_bash_exec_nonstreaming_cancel_kills_grandchild_after_leader_exit(tmp_pa
     finally:
         timer.cancel()
     assert time.monotonic() - started < 2.5
-    assert result == "Execution cancelled."
+    if not _os_isolated_tools():
+        assert result == "Execution cancelled."
     _assert_grandchild_was_killed(gate, sentinel)
 
 
@@ -1279,5 +1483,6 @@ def test_python_exec_nonstreaming_cancel_kills_grandchild_after_leader_exit(tmp_
     finally:
         timer.cancel()
     assert time.monotonic() - started < 2.5
-    assert result == "Execution cancelled."
+    if not _os_isolated_tools():
+        assert result == "Execution cancelled."
     _assert_grandchild_was_killed(gate, sentinel)

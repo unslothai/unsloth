@@ -3,6 +3,7 @@
 
 """Model and LoRA configuration handling."""
 
+from utils.audio_tokens import VALID_AUDIO_TYPES
 from .model_config import (
     ModelConfig,
     GgufVariantInfo,
@@ -11,7 +12,6 @@ from .model_config import (
     detect_audio_type,
     detect_audio_type_checked,
     is_audio_input_type,
-    VALID_AUDIO_TYPES,
     scan_trained_models,
     scan_exported_models,
     get_base_model_from_checkpoint,

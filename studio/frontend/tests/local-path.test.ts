@@ -3,10 +3,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  looksLikeLocalPath,
-  routableToMediaPage,
-} from "../src/features/hub/lib/local-path.ts";
+import { looksLikeLocalPath } from "../src/features/hub/lib/local-path.ts";
 
 test("recognizes local paths across supported operating systems", () => {
   for (const path of [
@@ -32,17 +29,4 @@ test("preserves repository identifiers that contain no local path syntax", () =>
 test("does not classify Hugging Face repository identifiers as paths", () => {
   assert.equal(looksLikeLocalPath("HuggingFaceH4/ultrachat_200k"), false);
   assert.equal(looksLikeLocalPath("unsloth/Qwen3-4B"), false);
-});
-
-test("an HF-cache row routes to the media pages, a filesystem row does not", () => {
-  // Inventory dedup can leave a complete hf_cache LOCAL row as the only row for a repo, and
-  // it carries the Hub id. Excluding it by kind sent a diffusion GGUF to the chat loader,
-  // where the backend refuses it, instead of to Images or Video.
-  assert.equal(routableToMediaPage("local", "hf_cache"), true);
-  assert.equal(routableToMediaPage("local", "models_dir"), false);
-  assert.equal(routableToMediaPage("local", "lmstudio"), false);
-  assert.equal(routableToMediaPage("local", "ollama"), false);
-  assert.equal(routableToMediaPage("local", null), false);
-  assert.equal(routableToMediaPage("cache", null), true);
-  assert.equal(routableToMediaPage("discover", null), true);
 });

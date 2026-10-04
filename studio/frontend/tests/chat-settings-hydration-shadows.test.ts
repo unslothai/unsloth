@@ -11,15 +11,13 @@
 // imported (a .tsx barrel in its graph), so the wiring is pinned against the source.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { loadShadowOwnsMirroredSetting } from "../src/features/chat/utils/mirrored-chat-settings.ts";
 
-const store = readFileSync(
-  new URL("../src/features/chat/stores/chat-runtime-store.ts", import.meta.url),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const store = readSrc("features/chat/stores/chat-runtime-store.ts");
 
 function slice(from: string, to: string): string {
   const start = store.indexOf(from);

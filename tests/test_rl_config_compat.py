@@ -9,6 +9,7 @@ The module is loaded by file spec because `import unsloth.models.rl_config_compa
 would run `unsloth/__init__.py` first and drag in torch, numpy and unsloth_zoo.
 """
 
+import ast
 import dataclasses
 import importlib.util
 from pathlib import Path
@@ -31,6 +32,8 @@ def _load_module():
 _MODULE = _load_module()
 filter_config_init_kwargs = _MODULE.filter_config_init_kwargs
 TRL_CONFIG_RENAMES = _MODULE.TRL_CONFIG_RENAMES
+TRANSFORMERS_CONFIG_RENAMES = _MODULE.TRANSFORMERS_CONFIG_RENAMES
+TRANSFORMERS_REMOVED_FIELD_ADVICE = _MODULE.TRANSFORMERS_REMOVED_FIELD_ADVICE
 
 
 @dataclasses.dataclass
@@ -191,6 +194,244 @@ def test_rename_targets_are_real_fields_of_the_modern_config():
         assert new in modern, new
 
 
+def test_the_transformers_tables_do_not_overlap_or_contradict_the_trl_ones():
+    """A name in both tables would resolve to whichever was consulted first."""
+    renames = set(TRANSFORMERS_CONFIG_RENAMES) | set(TRL_CONFIG_RENAMES)
+    advice = set(TRANSFORMERS_REMOVED_FIELD_ADVICE) | set(_MODULE.TRL_REMOVED_FIELD_ADVICE)
+    assert not (renames & advice), sorted(renames & advice)
+    assert not (set(TRANSFORMERS_CONFIG_RENAMES) & set(TRL_CONFIG_RENAMES))
+
+
+def test_a_field_the_installed_version_still_declares_is_never_migrated():
+    """The invariant that makes a table entry safe to write ahead of its removal.
+
+    The 28 arguments did not all go in 5.0.0: `group_by_length` survived to 5.1.0,
+    `warmup_ratio` and `logging_dir` to 5.14.1. An entry is consulted only after
+    the config rejects the name, so on a version that still has it the entry must
+    be inert. Asserted per entry, and per installed version, rather than assuming
+    one cutoff.
+    """
+    transformers = pytest.importorskip("transformers")
+    fields = {f.name for f in dataclasses.fields(transformers.TrainingArguments)}
+
+    for key in list(TRANSFORMERS_CONFIG_RENAMES) + list(TRANSFORMERS_REMOVED_FIELD_ADVICE):
+        if key in fields:
+            verdict, _ = _MODULE.classify_config_kwarg(transformers.TrainingArguments, key)
+            assert verdict == "accepted", f"{key} is still a field but classified {verdict}"
+
+
+def test_a_transformers_rename_target_exists_once_the_old_name_is_gone():
+    """A rename is only reachable after the old name goes, so that is when its
+    target has to be real. A typo there degrades the migration to a plain drop."""
+    transformers = pytest.importorskip("transformers")
+    fields = {f.name for f in dataclasses.fields(transformers.TrainingArguments)}
+
+    checked = 0
+    for old, new in TRANSFORMERS_CONFIG_RENAMES.items():
+        if old in fields:
+            continue
+        assert new in fields, f"{old} renames to {new}, which does not exist"
+        checked += 1
+    if not checked:
+        pytest.skip("this transformers still declares every renamed argument")
+
+
+def test_a_transformers_5_removal_is_carried_across_on_a_real_config():
+    """`warmup_ratio` is the one every notebook sets."""
+    transformers = pytest.importorskip("transformers")
+    fields = {f.name for f in dataclasses.fields(transformers.TrainingArguments)}
+    if "warmup_ratio" in fields:
+        pytest.skip("this transformers still declares warmup_ratio")
+
+    @dataclasses.dataclass
+    class ModernSFTConfig:
+        output_dir: str = "out"
+        warmup_steps: float = 0.0
+
+    messages = []
+    kept = filter_config_init_kwargs(
+        ModernSFTConfig,
+        {"output_dir": "out", "warmup_ratio": 0.1},
+        notify = messages.append,
+    )
+    assert kept == {"output_dir": "out", "warmup_steps": 0.1}
+    assert any("warmup_steps" in m for m in messages)
+
+
+def test_a_rename_survives_a_default_unsloth_overrode_on_the_generated_config():
+    """The bug this guards: `rl.py` mirrors the base parameter under its OWN
+    default (`warmup_steps = 0.1`, `per_device_train_batch_size = 4`), so
+    comparing against TRL's declared default reads Unsloth's injected value as
+    caller intent and silently trains at the injected number instead.
+    """
+
+    @dataclasses.dataclass
+    class ModernSFTConfig:
+        output_dir: str = "out"
+        warmup_steps: float = 0.0  # what TRL declares
+
+    class UnslothSFTConfig(ModernSFTConfig):
+        def __init__(
+            self,
+            output_dir = "out",
+            warmup_steps = 0.1,
+            **kwargs,
+        ):
+            pass  # what rl.py generates: same field, different default
+
+    messages = []
+    kept = filter_config_init_kwargs(
+        ModernSFTConfig,
+        {"output_dir": "out", "warmup_steps": 0.1, "warmup_ratio": 0.03},
+        notify = messages.append,
+        mirrored_from = UnslothSFTConfig,
+    )
+    assert kept["warmup_steps"] == 0.03, "the caller's warmup_ratio was thrown away"
+    assert not any("ignored" in m for m in messages)
+
+
+def test_a_value_the_caller_really_set_still_beats_the_rename():
+    """The other half: `mirrored_from` must not turn every collision into a win."""
+
+    @dataclasses.dataclass
+    class ModernSFTConfig:
+        warmup_steps: float = 0.0
+
+    class UnslothSFTConfig(ModernSFTConfig):
+        def __init__(
+            self,
+            warmup_steps = 0.1,
+            **kwargs,
+        ):
+            pass
+
+    kept, messages = [], []
+    kept = filter_config_init_kwargs(
+        ModernSFTConfig,
+        {"warmup_steps": 0.25, "warmup_ratio": 0.03},
+        notify = messages.append,
+        mirrored_from = UnslothSFTConfig,
+    )
+    assert kept["warmup_steps"] == 0.25
+    assert any("ignored" in m for m in messages)
+
+
+def test_the_renames_rl_py_overrides_the_default_of_are_the_known_ones():
+    """The systemic check behind the `mirrored_from` fix.
+
+    A rename whose target `rl.py` also assigns a default is only correct because
+    the config path passes `mirrored_from`; without it the injected default reads
+    as caller intent and the rename is dropped. Three are in that position today.
+    A fourth appearing means someone added an `rl.py` default or a rename without
+    checking the interaction, so it should fail here rather than in training.
+    """
+    overridden = _rl_py_overridden_defaults()
+    # The entries the audit found, so a matcher that silently stops working fails.
+    assert {"warmup_steps", "per_device_train_batch_size", "include_num_input_tokens_seen"} <= (
+        overridden
+    ), sorted(overridden)
+
+    needing_mirror = {
+        old for old, new in TRANSFORMERS_CONFIG_RENAMES.items() if new in overridden
+    } | {old for old, new in TRL_CONFIG_RENAMES.items() if new in overridden}
+    assert needing_mirror == {
+        "warmup_ratio",
+        "per_gpu_train_batch_size",
+        "per_gpu_eval_batch_size",
+    }, sorted(needing_mirror)
+
+
+def test_setting_the_new_name_to_its_own_default_is_reported_as_ambiguous():
+    """The one case a value comparison cannot decide, so it is stated not hidden.
+
+    `UnslothSFTConfig(warmup_steps = 0.1, warmup_ratio = 0.03)` passes the new
+    name at exactly the default `rl.py` injects. Nothing in a mirrored parameter
+    records whether it was supplied, so the legacy value wins and the message has
+    to say so. Sentinel defaults would resolve it, at the cost of the signature
+    that `HfArgumentParser` and users read. The trainer path is unaffected: it
+    knows which names actually arrived.
+    """
+
+    @dataclasses.dataclass
+    class ModernSFTConfig:
+        warmup_steps: float = 0.0
+
+    class UnslothSFTConfig(ModernSFTConfig):
+        def __init__(
+            self,
+            warmup_steps = 0.1,
+            **kwargs,
+        ):
+            pass
+
+    messages = []
+    kept = filter_config_init_kwargs(
+        ModernSFTConfig,
+        {"warmup_steps": 0.1, "warmup_ratio": 0.03},
+        notify = messages.append,
+        mirrored_from = UnslothSFTConfig,
+    )
+    assert kept["warmup_steps"] == 0.03
+    assert "cannot be distinguished" in messages[0]
+    assert "drop `warmup_ratio`" in messages[0]
+
+    # No `mirrored_from` means no mirrored parameter, so no ambiguity to report.
+    messages = []
+    filter_config_init_kwargs(
+        ModernSFTConfig,
+        {"warmup_ratio": 0.03},
+        notify = messages.append,
+    )
+    assert "cannot be distinguished" not in messages[0]
+
+
+def test_a_legacy_optional_forwarded_at_none_does_not_erase_the_target():
+    """`per_gpu_train_batch_size` really did default to `None` in transformers 4.x
+    (checked against 4.57.6), so a wrapper mirroring that signature forwards a
+    `None` nobody asked for. Writing it onto `per_device_train_batch_size` leaves
+    the trainer doing arithmetic on `None`."""
+
+    @dataclasses.dataclass
+    class ModernSFTConfig:
+        per_device_train_batch_size: int = 8
+
+    kept, messages = _collect(ModernSFTConfig, {"per_gpu_train_batch_size": None})
+    assert kept == {}, "an unset legacy alias must not be migrated"
+    assert messages == []
+
+    # A value that was actually chosen still migrates.
+    kept, _ = _collect(ModernSFTConfig, {"per_gpu_train_batch_size": 16})
+    assert kept == {"per_device_train_batch_size": 16}
+
+
+def test_none_still_migrates_when_the_target_itself_defaults_to_none():
+    """The guard is about losing information, not about `None` being special."""
+
+    @dataclasses.dataclass
+    class ModernSFTConfig:
+        hub_token: str = None
+
+    kept, _ = _collect(ModernSFTConfig, {"push_to_hub_token": None})
+    assert kept == {"hub_token": None}
+
+
+def test_an_alias_whose_target_is_read_during_post_init_is_not_a_rename():
+    """`use_cpu` is consumed by `__post_init__`, which resolves `device` (a
+    cached_property) and `_n_gpu` from it. Measured on transformers 5.16.1: after
+    `setattr(args, "use_cpu", True)` the device stays `cuda:0`, so routing
+    `no_cuda` through the trainer path would report a change that never happened.
+    """
+    assert "no_cuda" in TRANSFORMERS_REMOVED_FIELD_ADVICE
+    assert "no_cuda" not in TRANSFORMERS_CONFIG_RENAMES
+
+
+def test_a_rename_target_normalised_in_post_init_is_not_a_rename():
+    """`setattr` on an existing config skips `__post_init__`, so a field that
+    normalises its own value cannot be migrated by assignment."""
+    assert "include_tokens_per_second" in TRANSFORMERS_REMOVED_FIELD_ADVICE
+    assert "include_tokens_per_second" not in TRANSFORMERS_CONFIG_RENAMES
+
+
 def test_a_default_factory_field_is_compared_not_crashed_on():
     """Reading a `default_factory` default must not raise while resolving a rename."""
 
@@ -204,18 +445,47 @@ def test_a_default_factory_field_is_compared_not_crashed_on():
     assert kept["include_for_metrics"] == []
 
 
-# These two guard the wiring: reverting the rl.py template edit would leave
-# every test above green. rl.py is read as text because importing it pulls in
-# torch, trl and unsloth_zoo.
-
+# These two guard the wiring: reverting the rl.py template edit would leave every test above green.
+# rl.py is read as text because importing it pulls in torch, trl and unsloth_zoo.
 RL_SOURCE = (REPO_ROOT / "unsloth" / "models" / "rl.py").read_text(encoding = "utf-8")
+
+
+def _rl_py_overridden_defaults():
+    """Config parameters whose default `rl.py` rewrites in the generated `__init__`.
+
+    Both spellings it uses: the `replacements = {...}` literals and the later
+    `replacements["warmup_steps"] = 0.1` version-conditional assignments.
+    """
+    names = set()
+    for node in ast.walk(ast.parse(RL_SOURCE)):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if (
+                isinstance(target, ast.Name)
+                and target.id == "replacements"
+                and isinstance(node.value, ast.Dict)
+            ):
+                names.update(
+                    k.value
+                    for k in node.value.keys
+                    if isinstance(k, ast.Constant) and isinstance(k.value, str)
+                )
+            elif (
+                isinstance(target, ast.Subscript)
+                and isinstance(target.value, ast.Name)
+                and target.value.id == "replacements"
+                and isinstance(target.slice, ast.Constant)
+            ):
+                names.add(target.slice.value)
+    return names
 
 
 def test_the_generated_config_routes_super_through_the_filter():
     assert "_unsloth_config_arguments = dict({RLConfig_call_args}{RLConfig_kwargs})" in RL_SOURCE
     assert (
         "super().__init__(**_unsloth_filter_config_init_kwargs("
-        "{RLConfig_name}, _unsloth_config_arguments))"
+        "{RLConfig_name}, _unsloth_config_arguments, mirrored_from = __class__))"
     ) in RL_SOURCE
     # The raw splat is what the fix removes; it must not come back.
     assert "super().__init__({RLConfig_call_args}{RLConfig_kwargs})" not in RL_SOURCE
@@ -226,11 +496,13 @@ def test_the_generated_file_imports_the_filter_with_a_safe_fallback():
         "from unsloth.models.rl_config_compat import filter_config_init_kwargs"
         " as _unsloth_filter_config_init_kwargs"
     ) in RL_SOURCE
-    # An import failure must degrade to the historical passthrough, never to a
-    # NameError inside a generated trainer.
+    # An import failure must degrade to the historical passthrough, never to a NameError inside a generated trainer.
     assert (
-        "def _unsloth_filter_config_init_kwargs(config_class, kwargs): return kwargs" in RL_SOURCE
+        "def _unsloth_filter_config_init_kwargs(config_class, kwargs, **kw): return kwargs"
+        in RL_SOURCE
     )
+    # ...and an older Unsloth, whose filter has no `mirrored_from`, must not see it.
+    assert '"mirrored_from" not in inspect.signature(' in RL_SOURCE
 
 
 if __name__ == "__main__":
