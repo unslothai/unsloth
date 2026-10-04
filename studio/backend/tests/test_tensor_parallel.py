@@ -29,6 +29,25 @@ from pathlib import Path
 
 import pytest
 
+
+def _shared_setup_1(monkeypatch):
+    b = _recovery_backend()
+    proc = _ToggleProcess()
+    b._process = proc
+    fired = threading.Event()
+    monkeypatch.setattr(b, "_maybe_recover_from_mtp_crash", lambda *a, **k: fired.set())
+    b._start_mtp_crash_watchdog()
+    return b, fired, proc
+
+
+def _shared_setup_2(b, monkeypatch):
+    loads: list[GgufLoadIntent] = []
+    monkeypatch.setattr(b, "load_model", lambda intent: loads.append(intent) or True)
+
+    assert b._respawn_if_dead() is False
+    return loads
+
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -512,6 +531,102 @@ def test_runtime_recovery_restores_requested_mode(monkeypatch):
     assert b._spec_fallback_reason == "runtime_error"
 
 
+def test_runtime_recovery_does_not_publish_state_when_reload_is_cancelled(monkeypatch):
+    b = _recovery_backend()
+    b._requested_spec_mode = "auto"
+    b._spec_fallback_reason = "existing"
+    done = threading.Event()
+
+    def _cancelled_load(intent):
+        done.set()
+        return False
+
+    monkeypatch.setattr(b, "load_model", _cancelled_load)
+    assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True
+    assert done.wait(timeout = 5)
+    deadline = time.monotonic() + 2
+    while b._mtp_runtime_fallback_in_progress and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert b._requested_spec_mode == "auto"
+    assert b._spec_fallback_reason == "existing"
+
+
+def test_runtime_recovery_undoes_an_unload_during_reload(monkeypatch):
+    b = _recovery_backend()
+    b._requested_spec_mode = "auto"
+    b._spec_fallback_reason = "existing"
+    done = threading.Event()
+    unloads = []
+
+    def _racing_load(intent):
+        b._unload_epoch += 1
+        done.set()
+        return True
+
+    monkeypatch.setattr(b, "load_model", _racing_load)
+    monkeypatch.setattr(b, "unload_model", lambda: unloads.append(1) or True)
+    assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True
+    assert done.wait(timeout = 5)
+    deadline = time.monotonic() + 2
+    while b._mtp_runtime_fallback_in_progress and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert unloads == [1]
+    assert b._requested_spec_mode == "auto"
+    assert b._spec_fallback_reason == "existing"
+
+
+def test_runtime_recovery_publishes_state_atomically_with_unload(monkeypatch):
+    b = _recovery_backend()
+    b._last_load_intent = replace(
+        b._last_load_intent,
+        extra_args = ("--spec-type", "draft-mtp"),
+        gpu_ids = (0,),
+    )
+    b._requested_extra_args = ["old"]
+    b._requested_spec_mode = "auto"
+    b._spec_fallback_reason = "existing"
+    load_finished = threading.Event()
+    unload_entered = threading.Event()
+    unload_done = threading.Event()
+    unload_threads = []
+
+    def _fake_load(intent):
+        load_finished.set()
+        return True
+
+    def _unload_state():
+        unload_entered.set()
+        b._cancel_event.set()
+        with b._lock:
+            b._unload_epoch += 1
+            b._requested_extra_args = None
+            b._requested_spec_mode = None
+            b._spec_fallback_reason = None
+        unload_done.set()
+
+    def _race_after_epoch_check(extra_args):
+        thread = threading.Thread(target = _unload_state)
+        unload_threads.append(thread)
+        thread.start()
+        assert unload_entered.wait(timeout = 2)
+        unload_done.wait(timeout = 0.2)
+        return list(extra_args)
+
+    monkeypatch.setattr(b, "load_model", _fake_load)
+    monkeypatch.setattr(b, "_strip_device_extra_args", _race_after_epoch_check)
+    assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True
+    assert load_finished.wait(timeout = 5)
+    assert unload_done.wait(timeout = 5)
+    for thread in unload_threads:
+        thread.join(timeout = 2)
+    deadline = time.monotonic() + 2
+    while b._mtp_runtime_fallback_in_progress and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert b._requested_extra_args is None
+    assert b._requested_spec_mode is None
+    assert b._spec_fallback_reason is None
+
+
 def test_runtime_recovery_skips_when_process_replaced(monkeypatch):
     # A newer user load that replaces the process during the death-confirm poll
     # must not be clobbered by the stale recovery replay.
@@ -619,10 +734,7 @@ def test_respawn_defers_to_an_inflight_mtp_reload(monkeypatch):
     # crashing MTP intent and aborts the in-flight no-MTP reload on its "newer load" check.
     b = _recovery_backend()
     b._mtp_runtime_fallback_in_progress = True
-    loads: list[GgufLoadIntent] = []
-    monkeypatch.setattr(b, "load_model", lambda intent: loads.append(intent) or True)
-
-    assert b._respawn_if_dead() is False
+    loads = _shared_setup_2(b, monkeypatch)
     assert loads == []
 
     # Once that reload finishes, an ordinary respawn works again.
@@ -746,10 +858,7 @@ def test_respawn_does_not_resurrect_a_deliberate_unload(monkeypatch):
     b._healthy = True
     b._process = _DyingChild()
     b._cancel_event.set()
-    loads: list[GgufLoadIntent] = []
-    monkeypatch.setattr(b, "load_model", lambda intent: loads.append(intent) or True)
-
-    assert b._respawn_if_dead() is False
+    loads = _shared_setup_2(b, monkeypatch)
     assert loads == [], "resurrected a model the user unloaded"
 
 
@@ -758,10 +867,7 @@ def test_respawn_rechecks_the_cancel_flag_after_the_grace_wait(monkeypatch):
     b = _recovery_backend()
     b._healthy = True
     b._process = _DyingChild(on_death = b._cancel_event.set)
-    loads: list[GgufLoadIntent] = []
-    monkeypatch.setattr(b, "load_model", lambda intent: loads.append(intent) or True)
-
-    assert b._respawn_if_dead() is False
+    loads = _shared_setup_2(b, monkeypatch)
     assert loads == [], "checked the cancel flag only before the wait"
 
 
@@ -911,13 +1017,20 @@ def test_socket_probe_is_false_without_a_port():
     assert b._server_socket_is_open() is False
 
 
-def test_runtime_recovery_rechecks_cancel_before_reload():
-    # recover() must re-check the cancel flag after the death poll (load_model
-    # clears it), so a reload scheduled just before /unload can't resurrect it.
-    src = inspect.getsource(LlamaCppBackend._maybe_recover_from_mtp_crash)
-    cancel = src.rfind("self._cancel_event.is_set()")
-    load = src.find("self.load_model(")
-    assert 0 <= cancel < load, "recovery must re-check cancel before reloading"
+def test_runtime_recovery_rechecks_cancel_after_the_death_poll(monkeypatch):
+    b = _recovery_backend()
+    process = _BlockingDeadProc()
+    b._process = process
+    loads = []
+    monkeypatch.setattr(b, "load_model", lambda intent: loads.append(intent) or True)
+
+    assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True
+    b._cancel_event.set()
+    process.release()
+    deadline = time.monotonic() + 2
+    while b._mtp_runtime_fallback_in_progress and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert loads == []
 
 
 def test_probe_mtp_decode_uses_api_key_auth(monkeypatch):
@@ -973,12 +1086,7 @@ class _ToggleProcess:
 def test_crash_watchdog_triggers_recovery_on_death(monkeypatch):
     # The watchdog must notice the process exit and recover even when no request
     # handler observed it (e.g. the direct proxy endpoints).
-    b = _recovery_backend()
-    proc = _ToggleProcess()
-    b._process = proc
-    fired = threading.Event()
-    monkeypatch.setattr(b, "_maybe_recover_from_mtp_crash", lambda *a, **k: fired.set())
-    b._start_mtp_crash_watchdog()
+    b, fired, proc = _shared_setup_1(monkeypatch)
     assert b._mtp_watchdog_thread is not None
     proc.die()
     assert fired.wait(timeout = 3)
@@ -987,12 +1095,7 @@ def test_crash_watchdog_triggers_recovery_on_death(monkeypatch):
 def test_crash_watchdog_ignores_intentional_termination(monkeypatch):
     # A planned reload/unload stops the watchdog before killing the process, so
     # the resulting death must not be mistaken for a crash.
-    b = _recovery_backend()
-    proc = _ToggleProcess()
-    b._process = proc
-    fired = threading.Event()
-    monkeypatch.setattr(b, "_maybe_recover_from_mtp_crash", lambda *a, **k: fired.set())
-    b._start_mtp_crash_watchdog()
+    b, fired, proc = _shared_setup_1(monkeypatch)
     b._stop_mtp_crash_watchdog()  # what _kill_process does first
     proc.die()
     assert not fired.wait(timeout = 2)
@@ -1018,12 +1121,7 @@ def test_crash_watchdog_not_armed_when_inapplicable(mutate):
 def test_kill_process_stops_crash_watchdog(monkeypatch):
     # _kill_process is the single deliberate-termination chokepoint; it must
     # stop the watchdog so the planned kill isn't seen as a crash.
-    b = _recovery_backend()
-    proc = _ToggleProcess()
-    b._process = proc
-    fired = threading.Event()
-    monkeypatch.setattr(b, "_maybe_recover_from_mtp_crash", lambda *a, **k: fired.set())
-    b._start_mtp_crash_watchdog()
+    b, fired, proc = _shared_setup_1(monkeypatch)
     b._kill_process()
     assert b._mtp_watchdog_thread is None
     assert b._process is None
@@ -1033,7 +1131,11 @@ def test_kill_process_stops_crash_watchdog(monkeypatch):
 def test_kill_process_stops_watchdog_before_terminate():
     # Ordering matters: stop the watchdog before terminating so the watchdog's
     # post-death stop re-check reliably sees a planned kill.
-    src = inspect.getsource(LlamaCppBackend._kill_process)
+    # Both halves: the termination moved into _kill_process_body, and the ordering
+    # this asserts is within that body.
+    src = inspect.getsource(LlamaCppBackend._kill_process) + inspect.getsource(
+        LlamaCppBackend._kill_process_body
+    )
     stop = src.find("_stop_mtp_crash_watchdog()")
     term = src.find(".terminate(")
     assert 0 <= stop < term, "must stop the watchdog before terminating"
@@ -1177,8 +1279,7 @@ def test_tensor_plan_leaves_the_floor_reserve_at_a_full_budget():
 
 def test_split_mode_tensor_arch_failure_message():
     msg = LlamaCppBackend._classify_llama_start_failure(
-        "llama_model_create: LLAMA_SPLIT_MODE_TENSOR not implemented for "
-        "architecture 'deepseek2'",
+        "llama_model_create: LLAMA_SPLIT_MODE_TENSOR not implemented for architecture 'deepseek2'",
         None,
         "unsloth/DeepSeek-V3-GGUF",
     )
@@ -1709,7 +1810,7 @@ def test_load_model_does_not_gate_the_kv_cache_on_tensor_mode():
 
 
 class TestLegacyBuildQuantizedKvInTensorMode:
-    """Studio stopped pre-emptively rewriting a quantized KV cache for the tensor
+    """Unsloth stopped pre-emptively rewriting a quantized KV cache for the tensor
     attempt (ggml-org/llama.cpp#23792, b9455), so an older binary now refuses the
     load itself. That refusal is a clean LLAMA_LOG_ERROR + return nullptr, not a
     GGML_ASSERT, so nothing in the #6415 path can see it -- these pin the marker's
@@ -1778,7 +1879,7 @@ class TestLegacyBuildQuantizedKvInTensorMode:
                 },
             )()
 
-        backend._wait_for_health = lambda timeout: not self._doomed(spawns[-1])
+        backend._wait_for_health = lambda timeout, **_kw: not self._doomed(spawns[-1])
         error: list[BaseException] = []
         with patch.object(subprocess, "Popen", side_effect = fake_popen):
             try:

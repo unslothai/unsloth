@@ -22,7 +22,7 @@ Adding a case here widens the proof for free; the driver iterates this dict.
 
 from __future__ import annotations
 
-#: A 1x1 transparent GIF, left unclosed so a caller appends its own `alt="..."` attribute.
+# : A 1x1 transparent GIF, left unclosed so a caller appends its own `alt="..."` attribute.
 IMG = '<img src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" '
 
 CONSTRUCTS = {
@@ -36,7 +36,7 @@ CONSTRUCTS = {
     "img_alt_inline": f'<p>before{IMG}alt="Tool result 1">after</p>',
     # An image the native iterator SKIPS. Raised in review and confirmed against the real
     # clipboard: inserting alt text for one of these ADDS text the clipboard never carried.
-    # The `invisible` case is Studio's own ImagePreview before the image has loaded.
+    # The `invisible` case is Unsloth's own ImagePreview before the image has loaded.
     "img_alt_display_none": f'<p>before {IMG}alt="SVG preview" style="display:none"> after</p>',
     "img_alt_hidden": f'<p>before {IMG}alt="SVG preview" style="visibility:hidden"> after</p>',
     "img_alt_unselectable": f'<p>before {IMG}alt="SVG preview" style="user-select:none"> after</p>',

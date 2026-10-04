@@ -14,8 +14,19 @@ loop against synthetic events, and covers the split through the route itself.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
+
+
+def _shared_setup_1():
+    import threading
+    import pytest
+
+    torch = pytest.importorskip("torch")
+    inf = pytest.importorskip("core.inference.inference")
+    return inf, pytest, threading, torch
+
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
@@ -23,12 +34,15 @@ if _BACKEND_DIR not in sys.path:
 
 from routes.inference import (
     _ResponsesReasoningExtractor,
+    _sf_parse_think_markers,
     _sf_reasoning_prefill_mode,
     _strip_tool_xml_for_display,
 )
 
 import importlib  # noqa: E402
 import types  # noqa: E402
+
+import pytest  # noqa: E402
 from unittest.mock import MagicMock  # noqa: E402
 
 
@@ -134,6 +148,14 @@ _MESSAGE_SHAPE_TPL = (
     "{% if add_generation_prompt %}<|im_start|>assistant\n"
     "{% if ns.think %}<think>\n{% else %}<think></think>{% endif %}{% endif %}"
 )
+# Qwen override shape: an inline ``<|think_off|>`` in any message closes the block.
+_THINK_OFF_TAG_TPL = (
+    "{% set ns = namespace(off = false) %}"
+    "{% for m in messages %}{% if '<|think_off|>' in m['content'] %}{% set ns.off = true %}"
+    "{% endif %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n{% endfor %}"
+    "{% if add_generation_prompt %}<|im_start|>assistant\n"
+    "{% if ns.off %}<think>\n\n</think>\n\n{% else %}<think>\n{% endif %}{% endif %}"
+)
 # Kimi shape: renders history into the prompt but opens no block of its own.
 _HISTORY_ONLY_TPL = (
     "{% for m in messages %}<|im_user|>{{ m['role'] }}<|im_middle|>{{ m['content'] }}<|im_end|>"
@@ -146,6 +168,7 @@ _STRICT_HISTORY_TPL = (
     "{% endif %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n{% endfor %}"
     "{% if add_generation_prompt %}<|im_start|>assistant\n<think>\n\n</think>\n\n{% endif %}"
 )
+_TINY_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAE0lEQVR4nGM8ISfHAANMcBZeDgA0dgEMydTl/QAAAABJRU5ErkJggg=="
 _ETHINK = {"reasoning_style": "enable_thinking", "supports_reasoning": True}
 _ETHINK_EFFORT = {"reasoning_style": "enable_thinking_effort", "supports_reasoning": True}
 
@@ -413,11 +436,7 @@ def test_s6_reasoning_effort_none_disables_prefill_for_enable_thinking_effort():
 
 
 def test_native_reasoning_streamer_selected_and_errors_raise():
-    import threading
-    import pytest
-
-    torch = pytest.importorskip("torch")
-    inf = pytest.importorskip("core.inference.inference")
+    inf, pytest, threading, torch = _shared_setup_1()
 
     class Batch(dict):
         def to(self, _device):
@@ -469,11 +488,7 @@ def test_native_reasoning_streamer_selected_and_errors_raise():
 
 def test_native_reasoning_streamer_starts_inside_prompt_opened_channel():
     """A post-tool prompt opens the channel, so generation emits only its close."""
-    import threading
-    import pytest
-
-    torch = pytest.importorskip("torch")
-    inf = pytest.importorskip("core.inference.inference")
+    inf, pytest, threading, torch = _shared_setup_1()
 
     class Batch(dict):
         def to(self, _device):
@@ -515,11 +530,7 @@ def test_native_reasoning_streamer_starts_inside_prompt_opened_channel():
 
 
 def test_text_only_vlm_fallback_resolves_native_markers_off():
-    import threading
-    import pytest
-
-    torch = pytest.importorskip("torch")
-    inf = pytest.importorskip("core.inference.inference")
+    inf, pytest, threading, torch = _shared_setup_1()
 
     class Batch(dict):
         def to(self, _device):
@@ -615,8 +626,19 @@ def test_the_eager_import_under_the_stubs_actually_succeeded():
     assert "core.inference.inference" in sys.modules
 
 
-def _sf_route_message(monkeypatch, template, snapshots, **body):
-    """POST a non-streaming safetensors chat completion and return the assistant message."""
+def _sf_route_message(
+    monkeypatch,
+    template,
+    snapshots,
+    is_vision = False,
+    is_mlx = False,
+    features = None,
+    model_info = None,
+    seen = None,
+    status = 200,
+    **body,
+):
+    """POST a safetensors chat completion and return the assistant message, joined if streamed."""
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
@@ -630,18 +652,30 @@ def _sf_route_message(monkeypatch, template, snapshots, **body):
 
     class _Safetensors:
         active_model_name = "qwen"
-        models = {"qwen": {"chat_template_info": {"template": template}}}
+        models = {
+            "qwen": {
+                "chat_template_info": {"template": template},
+                "is_vision": is_vision,
+                "is_mlx": is_mlx,
+                **(model_info or {}),
+            }
+        }
 
         def generate_chat_response(self, **kwargs):
+            if seen is not None:
+                seen.update(kwargs)
             yield from snapshots
 
         def reset_generation_state(self, *_args):
             return None
 
+        def resize_image(self, image):
+            return image
+
     monkeypatch.setattr(
         inference_route,
         "_detect_safetensors_features",
-        lambda backend, chat_template, tools = None: dict(_ETHINK, supports_tools = False),
+        lambda backend, chat_template, tools = None: dict(features or _ETHINK, supports_tools = False),
     )
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _NoGGUF())
     monkeypatch.setattr(inference_route, "get_inference_backend", lambda: _Safetensors())
@@ -658,8 +692,59 @@ def _sf_route_message(monkeypatch, template, snapshots, **body):
             **body,
         },
     )
-    assert resp.status_code == 200, resp.text
-    return resp.json()["choices"][0]["message"]
+    assert resp.status_code == status, resp.text
+    if status != 200:
+        return resp.json()["error"]
+    if not body.get("stream"):
+        return resp.json()["choices"][0]["message"]
+    message = {"content": "", "reasoning_content": ""}
+    for line in resp.text.splitlines():
+        if line.startswith("data: {"):
+            for choice in json.loads(line[6:]).get("choices") or []:
+                for key in message:
+                    message[key] += (choice.get("delta") or {}).get(key) or ""
+    return message
+
+
+@pytest.mark.parametrize("stream", [False, True], ids = ["json", "sse"])
+def test_route_resumes_an_mlx_thought_as_reasoning(monkeypatch, stream):
+    seen = {}
+    message = _sf_route_message(
+        monkeypatch,
+        _TEMPLATE_DEFAULT_OFF_TPL,
+        # The MLX backend re-emits a bare opener ahead of the resumed tail.
+        ["<think>tail", "<think>tail.</think>\n\nanswer"],
+        is_mlx = True,
+        seen = seen,
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "", "reasoning_content": "The head, then the "},
+        ],
+        continue_final_message = True,
+        # The turn is reasoning whatever the toggle now says.
+        enable_thinking = False,
+        stream = stream,
+    )
+    assert seen["continue_final_message"] is True
+    assert message["reasoning_content"] == "tail."
+    assert message["content"] == "\n\nanswer"
+
+
+def test_route_refuses_response_format_on_an_mlx_thought_resume(monkeypatch):
+    error = _sf_route_message(
+        monkeypatch,
+        _TEMPLATE_DEFAULT_OFF_TPL,
+        [],
+        is_mlx = True,
+        status = 400,
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "", "reasoning_content": "The head"},
+        ],
+        continue_final_message = True,
+        response_format = {"type": "json_object"},
+    )
+    assert error["param"] == "response_format"
 
 
 def test_route_returns_the_answer_as_content_when_the_template_closes_its_block(monkeypatch):
@@ -669,3 +754,126 @@ def test_route_returns_the_answer_as_content_when_the_template_closes_its_block(
     message = _sf_route_message(monkeypatch, _TEMPLATE_DEFAULT_OFF_TPL, snapshots)
     assert message["content"] == "The capital of Japan is Tokyo."
     assert not message["reasoning_content"]
+
+
+def test_route_keeps_literal_think_text_when_the_request_turns_thinking_off(monkeypatch):
+    answer = "Use <think>hi</think> in your prompt."
+    message = _sf_route_message(
+        monkeypatch,
+        _TEMPLATE_DEFAULT_OFF_TPL,
+        [answer],
+        enable_thinking = False,
+    )
+    assert message["content"] == answer
+    assert not message["reasoning_content"]
+
+
+def test_route_still_splits_real_thinking_when_the_request_leaves_it_on(monkeypatch):
+    message = _sf_route_message(
+        monkeypatch,
+        _TEMPLATE_DEFAULT_OFF_TPL,
+        ["<think>plan</think>answer"],
+        enable_thinking = True,
+    )
+    assert message["content"] == "answer"
+    assert message["reasoning_content"] == "plan"
+
+
+def test_route_keeps_literal_think_text_on_a_transformers_image_turn(monkeypatch):
+    answer = "Use <think>hi</think> in your prompt."
+    message = _sf_route_message(
+        monkeypatch,
+        _TEMPLATE_DEFAULT_OFF_TPL,
+        [answer],
+        is_vision = True,
+        enable_thinking = False,
+        image_base64 = _TINY_PNG_B64,
+    )
+    assert message["content"] == answer
+    assert not message["reasoning_content"]
+
+
+def test_route_keeps_literal_think_text_on_an_mlx_image_turn(monkeypatch):
+    """Effort alone, so a guard that drops it cannot pass on the boolean."""
+    answer = "Use <think>hi</think> in your prompt."
+    message = _sf_route_message(
+        monkeypatch,
+        _EFFORT_SHAPE_TPL,
+        [answer],
+        features = _ETHINK_EFFORT,
+        is_vision = True,
+        is_mlx = True,
+        reasoning_effort = "none",
+        image_base64 = _TINY_PNG_B64,
+    )
+    assert message["content"] == answer
+    assert not message["reasoning_content"]
+
+
+_THINK_OFF_MESSAGES = [
+    {"role": "system", "content": "You are helpful. <|think_off|>"},
+    {"role": "user", "content": "What is the capital of France?"},
+]
+
+
+@pytest.mark.parametrize(
+    "reason, content, reasoning",
+    [
+        (None, "Paris.", ""),
+        # A refused override is not what renders, so the shipped template's open block decides.
+        ("it could not render a conversation", "", "Paris."),
+    ],
+)
+def test_route_probes_the_applied_mlx_override_not_the_shipped_template(
+    monkeypatch, reason, content, reasoning
+):
+    """An override closing the block on an inline tag must not be read through the shipped one."""
+    message = _sf_route_message(
+        monkeypatch,
+        _THINK_TPL,
+        ["Paris."],
+        is_mlx = True,
+        model_info = {
+            "chat_template_override_requested": _THINK_OFF_TAG_TPL,
+            "chat_template_override_reason": reason,
+        },
+        messages = _THINK_OFF_MESSAGES,
+    )
+    assert (message["content"] or "") == content
+    assert (message["reasoning_content"] or "") == reasoning
+
+
+def test_route_carries_the_effort_field_into_the_gate(monkeypatch):
+    answer = "Use <think>hi</think> in your prompt."
+    message = _sf_route_message(
+        monkeypatch,
+        _EFFORT_SHAPE_TPL,
+        [answer],
+        features = _ETHINK_EFFORT,
+        reasoning_effort = "none",
+    )
+    assert message["content"] == answer
+    assert not message["reasoning_content"]
+
+
+def test_parse_think_markers_gates_on_capability_and_request():
+    assert _sf_parse_think_markers(_ETHINK) is True
+    assert _sf_parse_think_markers(_ETHINK, True) is True
+    assert _sf_parse_think_markers(_ETHINK, False) is False
+    assert _sf_parse_think_markers(dict(_ETHINK, reasoning_always_on = True), False) is True
+    assert _sf_parse_think_markers({"supports_reasoning": False}, True) is False
+
+
+def test_parse_think_markers_reads_only_the_dial_the_template_branches_on():
+    # Plain enable_thinking templates ignore the effort.
+    assert _sf_parse_think_markers(_ETHINK, None, "none") is True
+    # Effort-only ladders ignore the boolean.
+    _EFFORT_ONLY = {"reasoning_style": "reasoning_effort", "supports_reasoning": True}
+    assert _sf_parse_think_markers(_EFFORT_ONLY, False, None) is True
+    assert _sf_parse_think_markers(_EFFORT_ONLY, None, "none") is False
+    assert _sf_parse_think_markers(_EFFORT_ONLY, None, "low") is True
+    # Hybrid templates read enable_thinking first (Kimi-K3).
+    assert _sf_parse_think_markers(_ETHINK_EFFORT, True, "none") is True
+    assert _sf_parse_think_markers(_ETHINK_EFFORT, False, "high") is False
+    assert _sf_parse_think_markers(_ETHINK_EFFORT, None, "none") is False
+    assert _sf_parse_think_markers(_ETHINK_EFFORT, None, "high") is True

@@ -194,7 +194,7 @@ def test_start_vite_refuses_a_tree_with_no_frontend_toolchain(
 ) -> None:
     """The failure #9654 exists to name, and the reason the refusal has to be up front.
 
-    A job that installs Studio from a warm frontend-dist cache never builds the frontend, so
+    A job that installs Unsloth from a warm frontend-dist cache never builds the frontend, so
     setup.sh skips its npm install and node_modules is never created. Reaching npm in that
     state costs a spawn and returns `vite exited with code 127`, which is indistinguishable
     from vite crashing. So the assertion is not only that it raises: it is that nothing was
@@ -294,3 +294,37 @@ def test_an_external_smoke_base_url_is_still_honoured(harness, monkeypatch) -> N
     finally:
         monkeypatch.delenv("SMOKE_BASE_URL", raising = False)
         importlib.reload(module)
+
+
+_READINESS_WAITS = frozenset({"wait_for_smoke_page", "wait_for_health"})
+
+
+def _calls(tree, names):
+    import ast
+    return [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and (getattr(node.func, "id", None) in names or getattr(node.func, "attr", None) in names)
+    ]
+
+
+def test_every_driver_that_starts_vite_waits_for_it_to_serve() -> None:
+    """start_vite returns once npm is spawned, not once vite listens. A driver that navigates
+    straight away races the dev server, and loses as a connection refused on a slow runner."""
+    import ast
+
+    here = Path(__file__).resolve().parent
+    unwaited = []
+    starters = 0
+    for path in sorted(here.glob("playwright_*.py")):
+        tree = ast.parse(path.read_text(encoding = "utf-8"))
+        if not _calls(tree, {"start_vite"}):
+            continue
+        starters += 1
+        if not _calls(tree, _READINESS_WAITS):
+            unwaited.append(path.name)
+    assert (
+        starters >= 5
+    ), "found almost no start_vite callers; the scan is not looking where they live"
+    assert not unwaited, f"these drivers start vite and never wait for it to serve: {unwaited}"

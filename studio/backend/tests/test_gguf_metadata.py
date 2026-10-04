@@ -11,6 +11,9 @@ from pathlib import Path
 from typing import Iterable, Mapping
 from unittest.mock import patch
 
+
+import pytest
+
 from utils.models.gguf_metadata import (
     is_gguf_embedding_architecture,
     is_gguf_embedding_model,
@@ -20,6 +23,7 @@ from utils.models.gguf_metadata import (
     read_gguf_architecture,
     read_gguf_context_length,
     read_gguf_general_metadata,
+    read_gguf_nextn_predict_layers,
     read_gguf_staged_dims,
     read_mmproj_audio_capability,
 )
@@ -166,6 +170,52 @@ def test_context_length_ignores_foreign_arch_key(tmp_path: Path):
         extra_uint32 = {"qwen2.context_length": 8192},
     )
     assert read_gguf_context_length(str(p)) is None
+
+
+def test_nextn_predict_layers_uses_the_active_architecture_namespace(tmp_path: Path, monkeypatch):
+    embedded = _write_synthetic_gguf(
+        tmp_path / "embedded.gguf",
+        {"general.architecture": "qwen35"},
+        extra_uint32 = {
+            "qwen35.nextn_predict_layers": 1,
+            "qwen3.nextn_predict_layers": 9,
+        },
+    )
+    headless = _write_synthetic_gguf(
+        tmp_path / "headless.gguf",
+        {"general.architecture": "qwen35"},
+        extra_uint64 = {"qwen35.nextn_predict_layers": 0},
+    )
+    absent = _write_synthetic_gguf(
+        tmp_path / "absent.gguf",
+        {"general.architecture": "qwen35"},
+        extra_uint32 = {"qwen3.nextn_predict_layers": 7},
+    )
+    malformed = tmp_path / "malformed.gguf"
+    malformed.write_bytes(b"not a GGUF")
+
+    reversed_order = tmp_path / "reversed.gguf"
+    reversed_body = _enc_kv_uint32("qwen35.nextn_predict_layers", 2) + _enc_kv_string(
+        "general.architecture", "qwen35"
+    )
+    reversed_order.write_bytes(struct.pack("<IIQQ", _GGUF_MAGIC, 3, 0, 2) + reversed_body)
+
+    assert read_gguf_nextn_predict_layers(str(embedded)) == 1
+    assert read_gguf_nextn_predict_layers(str(headless)) == 0
+    assert read_gguf_nextn_predict_layers(str(absent)) is None
+    assert read_gguf_nextn_predict_layers(str(malformed)) is None
+
+    assert read_gguf_nextn_predict_layers(str(reversed_order)) == 2
+
+    # Verify the file-identity cache.
+    import utils.models.gguf_metadata as metadata
+
+    monkeypatch.setattr(
+        metadata,
+        "_parse_gguf_arch_uints",
+        lambda *_args, **_kwargs: pytest.fail("cached NextN metadata was reparsed"),
+    )
+    assert read_gguf_nextn_predict_layers(str(embedded)) == 1
 
 
 # --- read_gguf_staged_dims (one pass: context + layer + moe counts) ----
@@ -345,6 +395,94 @@ def test_pairing_score_base_model_url_mismatch():
     assert pairing_score(weight, mmproj) == -1
 
 
+def test_pairing_score_base_model_url_derivative_repack_match():
+    weight = {
+        "general.basename": "gemma-4-26B-A4B-it",
+        "general.base_model.0.repo_url": (
+            "https://huggingface.co/lmstudio-community/gemma-4-26B-A4B-it-GGUF"
+        ),
+    }
+    mmproj = {
+        "general.basename": "gemma-4-26B-A4B-it",
+        "general.base_model.0.repo_url": "https://huggingface.co/google/gemma-4-26B-A4B-it",
+    }
+    assert pairing_score(weight, mmproj) == 90
+
+
+def test_pairing_score_base_model_url_derivative_quant_match():
+    weight = {
+        "general.basename": "gemma-4-26B-A4B-it",
+        "general.base_model.0.repo_url": (
+            "https://huggingface.co/vendor/gemma-4-26B-A4B-it-qat-q4_0-uncensored-heretic"
+        ),
+    }
+    mmproj = {
+        "general.basename": "gemma-4-26B-A4B-it",
+        "general.base_model.0.repo_url": "https://huggingface.co/google/gemma-4-26B-A4B-it",
+    }
+    assert pairing_score(weight, mmproj) == 90
+
+
+def test_pairing_score_derivative_url_handles_non_hf_hosts():
+    weight = {
+        "general.basename": "Model-VL",
+        "general.base_model.0.repo_url": "https://github.com/acme/Model-VL-GGUF",
+    }
+    mmproj = {
+        "general.basename": "Model-VL",
+        "general.base_model.0.repo_url": "https://gitlab.example.com/acme/Model-VL",
+    }
+    assert pairing_score(weight, mmproj) == 90
+
+
+def test_pairing_score_derivative_url_handles_nested_namespaces():
+    weight = {
+        "general.basename": "Model-VL",
+        "general.base_model.0.repo_url": ("https://gitlab.example.com/acme/models/Model-VL-GGUF"),
+    }
+    mmproj = {
+        "general.basename": "Model-VL",
+        "general.base_model.0.repo_url": "https://gitlab.example.com/acme/models/Model-VL",
+    }
+    assert pairing_score(weight, mmproj) == 90
+
+
+def test_pairing_score_derivative_url_handles_bare_repo_ids():
+    weight = {
+        "general.basename": "Model-VL",
+        "general.base_model.0.repo_url": "acme/Model-VL-GGUF",
+    }
+    mmproj = {
+        "general.basename": "Model-VL",
+        "general.base_model.0.repo_url": "acme/Model-VL",
+    }
+    assert pairing_score(weight, mmproj) == 90
+
+
+def test_pairing_score_derivative_url_handles_dotted_bare_owner():
+    weight = {
+        "general.basename": "Model",
+        "general.base_model.0.repo_url": "acme.ai/Model-GGUF",
+    }
+    mmproj = {
+        "general.basename": "Model",
+        "general.base_model.0.repo_url": "acme.ai/Model",
+    }
+    assert pairing_score(weight, mmproj) == 90
+
+
+def test_pairing_score_derivative_url_rejects_basename_mismatch():
+    weight = {
+        "general.basename": "gemma-4-26B-A4B-it",
+        "general.base_model.0.repo_url": "https://huggingface.co/google/gemma-4-26B-A4B-it",
+    }
+    mmproj = {
+        "general.basename": "gemma-4-26B",
+        "general.base_model.0.repo_url": "https://huggingface.co/google/gemma-4-26B",
+    }
+    assert pairing_score(weight, mmproj) == -1
+
+
 def test_pairing_score_base_model_url_trailing_slash_normalised():
     weight = {
         "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-9B/",
@@ -353,6 +491,106 @@ def test_pairing_score_base_model_url_trailing_slash_normalised():
         "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-9B",
     }
     assert pairing_score(weight, mmproj) == 100
+
+
+def test_pairing_score_base_model_url_scheme_and_git_normalised():
+    weight = {
+        "general.base_model.0.repo_url": "http://huggingface.co/Qwen/Qwen3.5-9B.GIT",
+    }
+    mmproj = {
+        "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-9B",
+    }
+    assert pairing_score(weight, mmproj) == 100
+
+
+def test_pairing_score_hosted_and_bare_repo_ids_match():
+    weight = {
+        "general.base_model.0.repo_url": "https://huggingface.co/acme/Model",
+    }
+    mmproj = {
+        "general.base_model.0.repo_url": "acme/Model",
+    }
+    assert pairing_score(weight, mmproj) == 100
+
+
+def test_pairing_score_non_hf_url_and_bare_repo_ids_do_not_match():
+    weight = {
+        "general.base_model.0.repo_url": "https://github.com/acme/Model",
+    }
+    mmproj = {
+        "general.base_model.0.repo_url": "acme/Model",
+    }
+    assert pairing_score(weight, mmproj) == -1
+
+
+def test_pairing_score_derivative_url_requires_basename_evidence():
+    weight = {
+        "general.base_model.0.repo_url": "https://huggingface.co/vendor/model-v2-GGUF",
+    }
+    mmproj = {
+        "general.base_model.0.repo_url": "https://huggingface.co/vendor/model",
+    }
+    assert pairing_score(weight, mmproj) == -1
+
+
+def test_pairing_score_rejects_arbitrary_slug_prefix():
+    weight = {
+        "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-9B",
+        "general.basename": "Qwen3.5",
+    }
+    mmproj = {
+        "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5",
+        "general.basename": "Qwen3.5",
+    }
+    assert pairing_score(weight, mmproj) == -1
+
+
+def test_pairing_score_rejects_qualifier_without_separator():
+    weight = {
+        "general.base_model.0.repo_url": "org/ModelGGUF",
+        "general.basename": "Model",
+    }
+    mmproj = {
+        "general.base_model.0.repo_url": "other/Model",
+        "general.basename": "Model",
+    }
+    assert pairing_score(weight, mmproj) == -1
+
+
+def test_pairing_score_preserves_case_sensitive_repo_paths():
+    weight = {
+        "general.base_model.0.repo_url": "https://git.example.com/Org/Model",
+        "general.basename": "Model",
+    }
+    mmproj = {
+        "general.base_model.0.repo_url": "https://git.example.com/org/model",
+        "general.basename": "Model",
+    }
+    assert pairing_score(weight, mmproj) == -1
+
+
+def test_pairing_score_preserves_case_sensitive_bare_repo_ids():
+    weight = {
+        "general.base_model.0.repo_url": "Org/Model",
+        "general.basename": "Model",
+    }
+    mmproj = {
+        "general.base_model.0.repo_url": "org/Model",
+        "general.basename": "Model",
+    }
+    assert pairing_score(weight, mmproj) == -1
+
+
+def test_pairing_score_rejects_derivative_projector_for_base_weight():
+    weight = {
+        "general.basename": "model",
+        "general.base_model.0.repo_url": "https://huggingface.co/org/model",
+    }
+    mmproj = {
+        "general.basename": "model",
+        "general.base_model.0.repo_url": "https://huggingface.co/other/model-ft",
+    }
+    assert pairing_score(weight, mmproj) == -1
 
 
 def test_pairing_score_basename_plus_org_fallback():

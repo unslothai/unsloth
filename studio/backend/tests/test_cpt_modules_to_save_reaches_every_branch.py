@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Studio's CPT path routes embed_tokens/lm_head through `modules_to_save`.
+"""Unsloth's CPT path routes embed_tokens/lm_head through `modules_to_save`.
 
 Every branch of `Trainer.prepare_model_for_training` that builds an adapter therefore
 has to forward that argument. The audio branches used to omit it, which silently froze

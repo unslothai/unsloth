@@ -4,11 +4,9 @@
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 import { createContext, runInContext } from "node:vm";
 
-const read = (relative: string): string =>
-  readFileSync(fileURLToPath(new URL(relative, import.meta.url)), "utf8");
+import { readText } from "./helpers/kit.ts";
 
 const HTML_COMMENT = /<!--[\s\S]*?-->/g;
 const POLYFILL_TAG = /<script\b[^>]*src="\/crypto-boot\.js"[^>]*>/;
@@ -21,8 +19,10 @@ const UUID_V4 =
 // Check every HTML entry as raw markup so comments cannot satisfy the patterns.
 const PAGES = readdirSync(new URL("../", import.meta.url))
   .filter((name) => name.endsWith(".html"))
-  .map((name) => [name, read(`../${name}`).replace(HTML_COMMENT, "")] as const);
-const BOOT_SCRIPT = read("../public/crypto-boot.js");
+  .map(
+    (name) => [name, readText(`../${name}`).replace(HTML_COMMENT, "")] as const,
+  );
+const BOOT_SCRIPT = readText("../public/crypto-boot.js");
 
 function boot(cryptoStub: unknown): { randomUUID?: () => string } {
   const sandbox = { crypto: cryptoStub } as {

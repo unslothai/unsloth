@@ -8,6 +8,7 @@ import {
   GENERATION_CANCELLED_SENTINEL,
   shouldContinueGenerating,
   shouldReportGenerateError,
+  stopButtonLabel,
 } from "../src/features/images/lib/generation-stop.ts";
 
 test("a mounted page with no stop keeps generating", () => {
@@ -91,4 +92,12 @@ test("a Stop the backend confirmed still silences the run it stopped", () => {
     shouldReportGenerateError({ message: "Bad Gateway", stopRequested: true && true }),
     false,
   );
+});
+
+test("Stop shows Stopping… once clicked, so a cancel waiting on a long step does not look ignored", () => {
+  assert.equal(stopButtonLabel({ stopping: false, done: null, count: 1 }), "Stop");
+  assert.equal(stopButtonLabel({ stopping: false, done: 1, count: 4 }), "Stop (1/4)");
+  assert.equal(stopButtonLabel({ stopping: true, done: 1, count: 4 }), "Stopping…");
+  assert.equal(stopButtonLabel({ stopping: false, done: null, count: 1, idle: "Cancel" }), "Cancel");
+  assert.equal(stopButtonLabel({ stopping: true, done: null, count: 1, idle: "Cancel" }), "Stopping…");
 });

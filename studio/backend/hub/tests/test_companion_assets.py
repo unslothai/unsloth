@@ -92,8 +92,6 @@ def _install(monkeypatch, *repos):
 
 
 # --------------------------------------------------------------------------------------------
-# 1. Compatible quants reuse ONE cached copy of the companion assets.
-# --------------------------------------------------------------------------------------------
 
 
 def test_two_quants_of_one_family_resolve_to_a_single_companion_base():
@@ -104,8 +102,6 @@ def test_two_quants_of_one_family_resolve_to_a_single_companion_base():
     assert required[BASE_REPO.lower()] == {GGUF_REPO}
 
 
-# --------------------------------------------------------------------------------------------
-# 2. Deletion shows what is reclaimed and what remains.
 # --------------------------------------------------------------------------------------------
 
 
@@ -139,8 +135,6 @@ def test_whole_repo_delete_reclaims_every_quant(monkeypatch):
     assert [f["repo_id"] for f in impact["freeable_companions"]] == [BASE_REPO]
 
 
-# --------------------------------------------------------------------------------------------
-# 3. Shared assets are not removed while another installed model needs them. ADVERSARIAL.
 # --------------------------------------------------------------------------------------------
 
 
@@ -184,8 +178,8 @@ def test_a_base_reached_only_through_a_card_tag_is_still_protected(monkeypatch):
     gguf = _repo("unsloth/FLUX.2-klein-9B-GGUF", [("flux-2-klein-9b-Q4_K_M.gguf", Q4_K_M_BYTES)])
     other_base = "black-forest-labs/FLUX.2-klein-9B"
     _install(monkeypatch, gguf, _base_repo(other_base))
-    # Before any load has been recorded: the id says klein-9B, so the curated klein-9B base is
-    # derived even though the family default is klein-4B.
+    # Before any load has been recorded: the id says klein-9B, so the curated klein-9B base is derived
+    # even though the family default is klein-4B.
     assert companion_cleanup.companion_dependents(other_base) == ["unsloth/FLUX.2-klein-9B-GGUF"]
     companion_assets.record_companion_link("unsloth/FLUX.2-klein-9B-GGUF", other_base)
     assert companion_cleanup.companion_dependents(other_base) == ["unsloth/FLUX.2-klein-9B-GGUF"]
@@ -220,8 +214,6 @@ def test_the_guard_leaves_ordinary_repos_alone(monkeypatch):
     assert companion_assets.is_companion_base(BASE_REPO)
 
 
-# --------------------------------------------------------------------------------------------
-# 4. Orphaned companion assets can be found and removed without hand-editing the HF cache.
 # --------------------------------------------------------------------------------------------
 
 
@@ -421,8 +413,8 @@ def test_reusing_an_existing_link_still_refreshes_its_recency(monkeypatch):
     monkeypatch.setattr(companion_assets, "_MAX_LINKS", 2)
     assert companion_assets.record_companion_link("unsloth/old-GGUF", BASE_REPO) is True
     assert companion_assets.record_companion_link("unsloth/new-GGUF", BASE_REPO) is True
-    # The old one resolves again to the SAME base: nothing new to record, but it is now the
-    # freshest link, so the next checkpoint displaces the other one.
+    # The old one resolves again to the SAME base: nothing new to record, but it is now the freshest
+    # link, so the next checkpoint displaces the other one.
     assert companion_assets.record_companion_link("unsloth/old-GGUF", BASE_REPO) is False
     assert companion_assets.read_companion_links()["unsloth/old-gguf"] == [BASE_REPO]
     assert companion_assets.record_companion_link("unsloth/third-GGUF", BASE_REPO) is True
@@ -619,6 +611,72 @@ def test_a_component_repo_holding_a_checkpoint_is_still_a_checkpoint(monkeypatch
         _repo("unsloth/FLUX.2-VAE", [("split_files/vae/flux2-vae.safetensors", 300_000)]),
     )
     assert companion_cleanup.companion_dependents("unsloth/FLUX.2-VAE") == [encoder]
+
+
+def test_a_vae_only_prequant_fetch_is_not_a_dependent(monkeypatch):
+    """#11825: a VAE-only fetch from a prequant repo must not pin the base."""
+    gguf = "unsloth/Qwen-Image-2.1-GGUF"
+    prequant = "unsloth/Qwen-Image-2.1-FP8"
+    base = "Qwen/Qwen-Image-2.1"
+    _install(
+        monkeypatch,
+        _repo(gguf, [("qwen-image-2.1-Q4_K_M.gguf", 4_199_565_024)]),
+        _repo(prequant, [("vae/qwen_image_2.1_vae_bf16.safetensors", 680_000_000)]),
+        _base_repo(base),
+    )
+    assert companion_cleanup.companion_dependents(base) == [gguf]
+    assert companion_cleanup.companion_dependents(base, ignore_repo_ids = [gguf]) == []
+    impact = asyncio.run(companion_cleanup.delete_impact_response(base))
+    assert impact["blocked_by"] == [gguf]
+
+
+def test_a_prequant_repo_holding_its_checkpoint_still_pins_the_base(monkeypatch):
+    """A root prequant checkpoint in the same repo is an installed model and still pins it."""
+    prequant = "unsloth/Qwen-Image-2.1-FP8"
+    base = "Qwen/Qwen-Image-2.1"
+    _install(
+        monkeypatch,
+        _repo(
+            prequant,
+            [
+                ("Qwen-Image-2.1-FP8.safetensors", 7_120_000_000),
+                ("vae/qwen_image_2.1_vae_bf16.safetensors", 680_000_000),
+            ],
+        ),
+        _base_repo(base),
+    )
+    assert companion_cleanup.companion_dependents(base) == [prequant]
+
+
+def test_a_pre_cast_encoder_fetch_is_not_a_dependent(monkeypatch):
+    """Qwen-Image-2.1 defaults to the pre-cast fp8 encoder, fetched to the prequant repo's root."""
+    prequant = "unsloth/Qwen-Image-2.1-FP8"
+    base = "Qwen/Qwen-Image-2.1"
+    _install(
+        monkeypatch,
+        _repo(prequant, [("Qwen-Image-2.1-text_encoder-FP8.safetensors", 9_400_000_000)]),
+        _base_repo(base),
+    )
+    assert companion_cleanup.companion_dependents(base) == []
+    impact = asyncio.run(companion_cleanup.delete_impact_response(base))
+    assert impact["blocked_by"] == []
+
+
+def test_a_prequant_repo_holding_its_checkpoint_and_encoder_still_pins_the_base(monkeypatch):
+    prequant = "unsloth/Qwen-Image-2.1-FP8"
+    base = "Qwen/Qwen-Image-2.1"
+    _install(
+        monkeypatch,
+        _repo(
+            prequant,
+            [
+                ("Qwen-Image-2.1-FP8.safetensors", 7_120_000_000),
+                ("Qwen-Image-2.1-text_encoder-FP8.safetensors", 9_400_000_000),
+            ],
+        ),
+        _base_repo(base),
+    )
+    assert companion_cleanup.companion_dependents(base) == [prequant]
 
 
 def test_a_borrowed_chat_repo_is_never_advertised_as_freeable(monkeypatch):
