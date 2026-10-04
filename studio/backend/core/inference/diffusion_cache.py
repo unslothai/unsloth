@@ -60,12 +60,17 @@ AUTO_STATIC_SKIP: dict = {
     "qwen/qwen-image-2.1": {"default": 3, "max": 3},  # 0.007 (0.03) / 0.012 (0.05)
     "qwen/qwen-image": {"default": 2, "max": 3},  # 0.031 (0.13, floor 0.11) / 0.056
     "black-forest-labs/flux.1-krea-dev": {"default": 2, "max": 3},  # 0.030 (0.09) / 0.060
-    "black-forest-labs/flux.2-klein-base-4b": {"default": 2, "max": 3},  # 0.038 (0.12, floor 0.35) / 0.058
+    "black-forest-labs/flux.2-klein-base-4b": {
+        "default": 2,
+        "max": 3,
+    },  # 0.038 (0.12, floor 0.35) / 0.058
     "wan-ai/wan2.2-ti2v-5b-diffusers": {"default": 2, "max": 3},  # 0.034 (0.064) / 0.057
     # every2 0.050 but 0.29 on a dense-texture prompt (floor 0.06), so not default; every3 0.083 on max, where
     # FBCache measured 0.136 at the same speed
     "black-forest-labs/flux.1-dev": {"max": 3},
-    "hunyuanvideo-community/hunyuanimage-2.1-diffusers": {"max": 2},  # 0.064 (floor 0.064); every3 0.102
+    "hunyuanvideo-community/hunyuanimage-2.1-diffusers": {
+        "max": 2
+    },  # 0.064 (floor 0.064); every3 0.102
     "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-480p_t2v": {"max": 2},  # 0.085; every3 0.120
     "minimaxai/minimax-h3": {"max": 2},  # 0.055 (0.058), deterministic so no floor; every3 0.114
 }
@@ -81,8 +86,9 @@ ENV_AUTO_STEP_SKIP = "UNSLOTH_DIFFUSION_AUTO_STEP_SKIP"
 
 def auto_step_skip_disabled(env: Optional[dict] = None) -> bool:
     import os
-
-    raw = str((os.environ if env is None else env).get(ENV_AUTO_STEP_SKIP, "") or "").strip().lower()
+    raw = (
+        str((os.environ if env is None else env).get(ENV_AUTO_STEP_SKIP, "") or "").strip().lower()
+    )
     return raw in ("0", "false", "off", "no", "none")
 
 

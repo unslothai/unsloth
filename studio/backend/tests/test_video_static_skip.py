@@ -509,7 +509,13 @@ class _H3LoopPipe:
     def __setattr__(self, name, value):
         setattr(object.__getattribute__(self, "_inner"), name, value)
 
-    def __call__(self, *, num_inference_steps = None, num_frames = None, **kwargs):
+    def __call__(
+        self,
+        *,
+        num_inference_steps = None,
+        num_frames = None,
+        **kwargs,
+    ):
         for _ in range(int(num_inference_steps or 1)):
             self.outputs.append(self.transformer(timestep = None, return_dict = False))
             self.scheduler.step(object(), 0, object())
@@ -561,7 +567,9 @@ def test_modular_workflow_engages_an_explicit_static_skip(h3_runtime, monkeypatc
 
 
 def test_modular_workflow_auto_follows_the_table_and_the_kill_switch(h3_runtime, monkeypatch):
-    monkeypatch.setattr(dcache, "AUTO_STATIC_SKIP", {"minimaxai/minimax-h3": {"default": 2, "max": 2}})
+    monkeypatch.setattr(
+        dcache, "AUTO_STATIC_SKIP", {"minimaxai/minimax-h3": {"default": 2, "max": 2}}
+    )
     backend = VideoBackend()
     status = _load_h3(backend, None)
     entry = status["resolved"]["transformer_cache"]

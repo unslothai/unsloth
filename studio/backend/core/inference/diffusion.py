@@ -6953,10 +6953,7 @@ class DiffusionBackend:
                         and cache_engaged != TC_STATIC
                         and (
                             cache_engaged is not None
-                            or (
-                                cache_request is None
-                                and step_cache_supported(pipe, logger = logger)
-                            )
+                            or (cache_request is None and step_cache_supported(pipe, logger = logger))
                         )
                     )
                     if cache_auto:
@@ -9748,7 +9745,9 @@ class DiffusionBackend:
                         if static_skip:
                             # An AUTO skip was measured on text-to-image only: every other workflow (edit, reference,
                             # img2img, inpaint, upscale, ControlNet) computes every step. Explicit "static" applies to all.
-                            auto_only_txt2img = workflow != "txt2img" and static_skip_is_auto(state.pipe)
+                            auto_only_txt2img = workflow != "txt2img" and static_skip_is_auto(
+                                state.pipe
+                            )
                             reset_static_step_skip(
                                 state.pipe,
                                 None if auto_only_txt2img else denoise_steps,

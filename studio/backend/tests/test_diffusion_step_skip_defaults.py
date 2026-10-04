@@ -152,7 +152,13 @@ class _JointDiT:
     def __init__(self):
         self.calls = 0
 
-    def forward(self, hidden_states = None, audio_hidden_states = None, timestep = None, return_dict = True):
+    def forward(
+        self,
+        hidden_states = None,
+        audio_hidden_states = None,
+        timestep = None,
+        return_dict = True,
+    ):
         self.calls += 1
         t = float(timestep.reshape(-1).max())
         return torch.full((1, 6, 2), t), torch.full((1, 3), 2 * t)
@@ -208,7 +214,12 @@ def test_a_non_tensor_member_still_declines():
 def _probe_plan(entry):
     """The real plan function over a one-row table, whatever ids the loader passes (a tmp-path GGUF here)."""
 
-    def plan(ids, tier, steps, env = None):
+    def plan(
+        ids,
+        tier,
+        steps,
+        env = None,
+    ):
         saved = dict(dcache.AUTO_STATIC_SKIP)
         dcache.AUTO_STATIC_SKIP.clear()
         dcache.AUTO_STATIC_SKIP["probe/model"] = entry
@@ -220,9 +231,15 @@ def _probe_plan(entry):
 
     return plan
 
+
 @pytest.mark.parametrize(
     "speed, killed, want_static",
-    [("default", False, True), ("max", False, True), ("eager", False, False), ("default", True, False)],
+    [
+        ("default", False, True),
+        ("max", False, True),
+        ("eager", False, False),
+        ("default", True, False),
+    ],
 )
 def test_auto_load_installs_static_for_a_listed_model(
     fake_runtime, tmp_path, monkeypatch, speed, killed, want_static
@@ -241,7 +258,9 @@ def test_auto_load_installs_static_for_a_listed_model(
         "install_static_step_skip",
         lambda pipe, settings = None, logger = None: installs.append(settings) or dcache.TC_STATIC,
     )
-    monkeypatch.setattr(dmod, "apply_step_cache", lambda pipe, mode = None, **k: fb.append(mode) or None)
+    monkeypatch.setattr(
+        dmod, "apply_step_cache", lambda pipe, mode = None, **k: fb.append(mode) or None
+    )
     (tmp_path / "model.gguf").write_bytes(b"weights")
     backend = dmod.DiffusionBackend()
     status = _load_into(backend, tmp_path, speed_mode = speed, transformer_cache = None)
@@ -265,7 +284,9 @@ def test_explicit_requests_ignore_the_table(fake_runtime, tmp_path, monkeypatch)
 
     monkeypatch.setattr(dmod, "auto_static_skip_plan", _probe_plan({"default": 3, "max": 3}))
     monkeypatch.setattr(
-        dmod, "install_static_step_skip", lambda *a, **k: pytest.fail("explicit off installed static")
+        dmod,
+        "install_static_step_skip",
+        lambda *a, **k: pytest.fail("explicit off installed static"),
     )
     (tmp_path / "model.gguf").write_bytes(b"weights")
     backend = dmod.DiffusionBackend()
@@ -282,7 +303,9 @@ def test_auto_static_declined_falls_back_to_the_previous_auto(fake_runtime, tmp_
     monkeypatch.delenv(dcache.ENV_AUTO_STEP_SKIP, raising = False)
     monkeypatch.setattr(dmod, "install_static_step_skip", lambda *a, **k: None)
     modes = []
-    monkeypatch.setattr(dmod, "apply_step_cache", lambda pipe, mode = None, **k: modes.append(mode) or None)
+    monkeypatch.setattr(
+        dmod, "apply_step_cache", lambda pipe, mode = None, **k: modes.append(mode) or None
+    )
     (tmp_path / "model.gguf").write_bytes(b"weights")
     backend = dmod.DiffusionBackend()
     _load_into(backend, tmp_path, speed_mode = "max", transformer_cache = None)
@@ -290,10 +313,11 @@ def test_auto_static_declined_falls_back_to_the_previous_auto(fake_runtime, tmp_
     backend.unload()
 
 
-
 # --------------------------------------------------------------------------------------------- generate scope
 @pytest.mark.parametrize("auto", [True, False])
-def test_auto_skip_runs_on_txt2img_only_explicit_everywhere(fake_runtime, tmp_path, monkeypatch, auto):
+def test_auto_skip_runs_on_txt2img_only_explicit_everywhere(
+    fake_runtime, tmp_path, monkeypatch, auto
+):
     from core.inference import diffusion as dmod
 
     from .test_diffusion_backend import _loaded_backend, _tiny_png_b64

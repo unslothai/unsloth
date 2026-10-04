@@ -112,7 +112,11 @@ def static_skip_settings(env: Optional[dict] = None, logger: Any = None) -> dict
     return out
 
 
-def auto_static_settings(plan: dict, env: Optional[dict] = None, logger: Any = None) -> dict:
+def auto_static_settings(
+    plan: dict,
+    env: Optional[dict] = None,
+    logger: Any = None,
+) -> dict:
     """Knobs for an AUTO static skip: the family's measured ``every`` and ``min_steps`` over the defaults; an
     explicit ``UNSLOTH_STATIC_SKIP_*`` value still wins (benchmarking)."""
     env = os.environ if env is None else env

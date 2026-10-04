@@ -7562,7 +7562,9 @@ class VideoBackend:
         try:
             h3_cache_request = normalize_transformer_cache(transformer_cache)
         except ValueError:
-            h3_cache_request = str(transformer_cache)  # the routes refuse it first; a direct call runs uncached
+            h3_cache_request = str(
+                transformer_cache
+            )  # the routes refuse it first; a direct call runs uncached
         h3_cache_auto = transformer_cache is None or h3_cache_request == TC_AUTO
         h3_static_plan = (
             auto_static_skip_plan((repo_id, base), h3_vae_speed, fam.default_steps)
@@ -7578,7 +7580,9 @@ class VideoBackend:
                 logger = logger,
             )
             if h3_cache_engaged is None:
-                h3_cache_reason = "static step skip is unavailable for this pipeline; it runs uncached"
+                h3_cache_reason = (
+                    "static step skip is unavailable for this pipeline; it runs uncached"
+                )
             elif h3_static_plan:
                 h3_cache_reason = (
                     f"auto: static step skip (every {h3_static_plan['every']}) for this model at "
@@ -7593,7 +7597,9 @@ class VideoBackend:
                 else "auto: not enabled for this model"
             )
         elif h3_cache_request is not None:
-            h3_cache_reason = "only static step skip is supported by this modular workflow; running uncached"
+            h3_cache_reason = (
+                "only static step skip is supported by this modular workflow; running uncached"
+            )
         else:
             h3_cache_reason = "requested"
         if offload_policy != "none" and (te_streamed or denoiser_streamed):
