@@ -1,10 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# _llama_relocatable_rpath_args() from studio/setup.sh: a source build is configured in
-# llama.cpp.build.<pid> and renamed into place, so CMake's default build-tree RUNPATH dies
-# at the mv and llama-server cannot open the libllama*.so next to it (#12392). The configure
-# call must bake an $ORIGIN install RUNPATH on Linux, and only on Linux.
+# _llama_relocatable_rpath_args() from studio/setup.sh (#12392): $ORIGIN RUNPATH on Linux only.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -17,7 +14,7 @@ if [ ! -s "$_FUNC_FILE" ]; then
     exit 1
 fi
 
-# $1 = what `uname -s` answers. A shell function shadows the binary inside the subshell.
+# $1 = what `uname -s` answers.
 run_args() {
     UNAME_S="$1" bash -c ". '$_FUNC_FILE'; uname() { printf '%s' \"\$UNAME_S\"; }; _llama_relocatable_rpath_args"
 }
@@ -25,19 +22,17 @@ run_args() {
 echo "=== test_llama_relocatable_rpath ==="
 
 LINUX="$(run_args Linux)"
-# 1) $ORIGIN is passed literally: the loader expands it, not the shell at configure time.
+# $ORIGIN must stay literal: the loader expands it, not the shell.
 assert_contains "Linux bakes an \$ORIGIN install RUNPATH" "$LINUX" '-DCMAKE_INSTALL_RPATH=$ORIGIN'
 assert_contains "Linux builds with the install RUNPATH" "$LINUX" '-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON'
-# 2) Toolchain directories (ROCm, CUDA, a Nix store) stay on the RUNPATH beside $ORIGIN.
 assert_contains "Linux keeps the link path" "$LINUX" '-DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON'
 assert_not_contains "no build-tree path is named" "$LINUX" 'llama.cpp.build'
 
-# 3) macOS keeps its own @loader_path arrangement in the Metal branch; nothing is added here.
+# macOS gets @loader_path in the Metal branch instead.
 assert_eq "Darwin adds nothing" "" "$(run_args Darwin)"
 assert_eq "unknown host adds nothing" "" "$(run_args "")"
 
-# 4) The base CMAKE_ARGS line consumes the helper, so the CPU fallback inherits it too
-#    (CPU_FALLBACK_CMAKE_ARGS is copied from CMAKE_ARGS after this line).
+# CPU_FALLBACK_CMAKE_ARGS must be copied after the base line to inherit the flags.
 BASE_LINE="$(grep -n 'CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release' "$SETUP_SH" | head -1)"
 assert_contains "configure line calls the helper" "$BASE_LINE" '$(_llama_relocatable_rpath_args)'
 FALLBACK_LINE="$(grep -n 'CPU_FALLBACK_CMAKE_ARGS="\$CMAKE_ARGS"' "$SETUP_SH" | head -1 | cut -d: -f1)"

@@ -743,12 +743,8 @@ _resolve_cuda_archs() {
 # above that: it must also cover MSVC and hipcc, older and far heavier CUDA
 # toolkits (ggml-org/llama.cpp#17844 climbs past 16 GiB), and the link step.
 # Erring high costs build time; erring low costs the machine.
-# A source build is configured in llama.cpp.build.<pid> and renamed into place, so CMake's
-# default build-tree RUNPATH names a directory that stops existing at the mv, and llama-server
-# cannot find the libllama*.so beside it (#12392). Bake the install RUNPATH at configure time
-# instead: $ORIGIN resolves the siblings wherever the tree lands, and the link path keeps the
-# toolchain directories (ROCm, CUDA, a Nix store) a stock loader would not search on its own.
-# The Metal build does the same with @loader_path; Windows has no RUNPATH.
+# The build dir is renamed into place, so CMake's build-tree RUNPATH dies at the mv (#12392):
+# $ORIGIN finds the sibling libllama*.so; USE_LINK_PATH keeps toolchain dirs (ROCm, CUDA, Nix).
 _llama_relocatable_rpath_args() {
     case "$(uname -s 2>/dev/null)" in
         Linux) printf '%s' '-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DCMAKE_INSTALL_RPATH=$ORIGIN -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON' ;;
