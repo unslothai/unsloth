@@ -1206,6 +1206,7 @@ def load_prequantized_transformer(
         # The only check reading what the artifact HOLDS: corruption after build passes the rest.
         if not _verify_packed_fingerprint(state_dict, ckpt.get("metadata") or {}, logger = logger):
             return None
+        _repair_legacy_checkpoint(ckpt, scheme, logger)
         _pin_kernel_preference(state_dict, logger)
 
         # Read from the root that actually supplied the checkpoint: after a mid-session cache change the pinned root
@@ -1529,7 +1530,12 @@ def _load_transformer_config(
 _FLOAT8_TENSOR_CLASS = "Float8Tensor"
 
 
-def _fp8_activation_floor_present(state_dict: Any, logger: Any) -> bool:
+def _fp8_activation_floor_present(
+    state_dict: Any,
+    logger: Any,
+    *,
+    warn: bool = True,
+) -> bool:
     """True unless the first Float8Tensor has no activation lower bound (by class: NVFP4Tensor lacks one too)."""
     from .diffusion_transformer_quant import TQ_FP8
 
@@ -1543,6 +1549,8 @@ def _fp8_activation_floor_present(state_dict: Any, logger: Any) -> bool:
                 continue
             if getattr(kwargs, "hp_value_lb", None):
                 return True
+            if not warn:
+                return False
             _warn(
                 logger,
                 TQ_FP8,
@@ -1556,6 +1564,77 @@ def _fp8_activation_floor_present(state_dict: Any, logger: Any) -> bool:
     except Exception:  # noqa: BLE001 -- an unreadable state dict is the other checks' problem
         return True
     return True
+
+
+def _fp8_kwargs_missing_floor(tensor: Any) -> Optional[Any]:
+    if type(tensor).__name__ != _FLOAT8_TENSOR_CLASS:
+        return None
+    kwargs = getattr(tensor, "act_quant_kwargs", None)
+    if kwargs is None or getattr(kwargs, "hp_value_lb", None):
+        return None
+    return kwargs
+
+
+def _fp8_activation_floor_restorable(state_dict: Any) -> bool:
+    """Whether every unfloored Float8Tensor differs from the runtime config in the floor alone.
+
+    torchao's fp8 weight quantiser never reads ``hp_value_lb``, so the weight bytes of an artifact built before
+    ``activation_value_lb`` equal what ``_make_quant_config`` builds today."""
+    try:
+        items = state_dict.items() if hasattr(state_dict, "items") else ()
+        for _name, tensor in items:
+            kwargs = _fp8_kwargs_missing_floor(tensor)
+            if kwargs is None:
+                continue
+            if (
+                not hasattr(kwargs, "hp_value_lb")
+                or getattr(kwargs, "hp_value_ub", None) is not None
+            ):
+                return False
+    except Exception:  # noqa: BLE001 -- cannot prove it: keep refusing
+        return False
+    return True
+
+
+def _restore_fp8_activation_floor(state_dict: Any, logger: Any = None) -> int:
+    """Write the runtime activation floor into every unfloored Float8Tensor; returns how many.
+    Fresh kwargs per tensor: a pickle may share one instance between tensors."""
+    import copy
+    import dataclasses
+
+    from .diffusion_transformer_quant import FP8_ACTIVATION_VALUE_LB
+
+    restored = 0
+    for _name, tensor in list(state_dict.items()):
+        kwargs = _fp8_kwargs_missing_floor(tensor)
+        if kwargs is None:
+            continue
+        if dataclasses.is_dataclass(kwargs) and not isinstance(kwargs, type):
+            fixed = dataclasses.replace(kwargs, hp_value_lb = FP8_ACTIVATION_VALUE_LB)
+        else:
+            fixed = copy.copy(kwargs)
+            fixed.hp_value_lb = FP8_ACTIVATION_VALUE_LB
+        tensor.act_quant_kwargs = fixed
+        restored += 1
+    if restored and logger is not None:
+        logger.info(
+            "diffusion.prequant: restored the fp8 activation scale floor (%g) on %d weights built "
+            "before activation_value_lb",
+            FP8_ACTIVATION_VALUE_LB,
+            restored,
+        )
+    return restored
+
+
+def _repair_legacy_checkpoint(
+    ckpt: Any,
+    scheme: str,
+    logger: Any = None,
+) -> None:
+    from .diffusion_nvfp4_policy import declares_policy
+    from .diffusion_transformer_quant import TQ_FP8
+    if scheme == TQ_FP8 or declares_policy(ckpt.get("metadata") or {}):
+        _restore_fp8_activation_floor(ckpt["state_dict"], logger)
 
 
 def _validate_activation_rotation(ckpt_format: Any, meta: Any, scheme: str, logger: Any) -> bool:
@@ -1737,8 +1816,16 @@ def _validate_checkpoint(
     # act_quant_kwargs.hp_value_lb, so an artifact built before the fix stays broken however it is loaded, and it
     # predates any metadata field we could stamp -- and "absent is accepted for back-compat", the convention every
     # check above follows, is exactly wrong here. Reading the tensors is fail-closed and needs no format bump.
-    if holds_fp8 and not _fp8_activation_floor_present(ckpt.get("state_dict"), logger):
-        return False
+    # Unless the floor is the only difference: it is not weight data, so ``_repair_legacy_checkpoint`` writes it in.
+    if holds_fp8 and not _fp8_activation_floor_present(ckpt.get("state_dict"), logger, warn = False):
+        if not _fp8_activation_floor_restorable(ckpt.get("state_dict")):
+            _fp8_activation_floor_present(ckpt.get("state_dict"), logger)
+            return False
+        if logger is not None:
+            logger.info(
+                "diffusion.prequant: fp8 checkpoint predates activation_value_lb; the runtime "
+                "floor will be written into its weights"
+            )
     ckpt_base = meta.get("base_model_id")
     if base:
         # Keys matching a different base can load strict=True and generate from the wrong weights. Our builder always
