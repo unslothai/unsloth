@@ -136,7 +136,7 @@ test("classification separates timeout, abort, offline and opaque failures", () 
   const opaque = classifyFetchFailure(new TypeError("Failed to fetch"), HF);
   assert.equal(opaque.kind, "network-opaque");
   assert.match(opaque.message, /huggingface\.co/);
-  assert.match(opaque.message, /extension|antivirus|filter/i);
+  assert.doesNotMatch(opaque.message, /offline/i);
 });
 
 test("a browser reporting itself offline is named as such", () => {

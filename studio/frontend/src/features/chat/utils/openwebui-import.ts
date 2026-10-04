@@ -626,7 +626,8 @@ export function openWebUIRecordToConversation(
 
     const id = crypto.randomUUID();
     keptIdByOriginal.set(node.id, id);
-    const ts = Math.max(previousTs + 1, epochMs(node.raw.timestamp) ?? 0);
+    const sourceTimestamp = epochMs(node.raw.timestamp);
+    const ts = Math.max(previousTs + 1, sourceTimestamp ?? 0);
     previousTs = ts;
 
     messages.push({
@@ -639,6 +640,9 @@ export function openWebUIRecordToConversation(
         ? { attachments: attachments as MessageRecord["attachments"] }
         : {}),
       createdAt: ts,
+      ...((sourceTimestamp === null || ts !== sourceTimestamp) && {
+        metadata: { createdAtEstimated: true },
+      }),
     });
   }
 

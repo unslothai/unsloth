@@ -23,7 +23,7 @@ export type ResourceTypeFilter = "models" | "datasets";
 
 export type HubModelType = "text" | "vision" | "audio" | "embeddings";
 
-export type ModelFormatFilter = "all" | "gguf" | "checkpoint" | "mlx";
+export type ModelFormatFilter = "all" | "gguf" | "checkpoint" | "mlx" | "npu";
 
 export type CapabilityFilter = "all" | CapabilityKey;
 
@@ -66,6 +66,8 @@ export interface SelectedModelView {
   isPartial?: boolean;
   partialTransport?: string | null;
   partialResumable?: boolean;
+  /** Holds only a GGUF load's borrowed companions: deletable, but neither on device nor partial. */
+  companionPrefetch?: boolean;
   capabilities: Capability[];
   license: string | null;
   pipelineTag?: string;

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** Imports Studio chat backups, Open WebUI JSON arrays, OpenAI/ShareGPT JSONL, and role/content
- *  CSV. JSON records stream individually so large exports never become one JS string. */
+/** Imports Studio chat backups, Open WebUI JSON arrays, OpenAI/ShareGPT JSONL, role/content
+ *  CSV, and Studio markdown transcripts. JSON records stream individually so large exports
+ *  never become one JS string. */
 
 import {
   ChatThreadWriteError,
@@ -37,9 +38,10 @@ import {
   studioBackupProjects,
   studioBackupToConversations,
 } from "./studio-backup-import";
+import { parseConversationMarkdownDocument } from "./conversation-markdown-import";
 
-/** CSV has no record framing to stream on, so it is still read whole. */
-const CSV_MAX_BYTES = 64 * 1024 * 1024;
+/** CSV and markdown have no record framing to stream on, so they are still read whole. */
+const WHOLE_FILE_MAX_BYTES = 64 * 1024 * 1024;
 
 /** Matches MAX_CHAT_IMPORT_CHUNK_BYTES in src-tauri/src/native_file_dialogs.rs. */
 const NATIVE_CHUNK_BYTES = 8 * 1024 * 1024;
@@ -63,6 +65,8 @@ export interface ImportProgress {
 
 export interface ImportOptions {
   onProgress?: (progress: ImportProgress) => void;
+  /** Each chat saved, by its row id (a comparison's pair id), so a caller can file it. */
+  onSaved?: (rowId: string) => void;
 }
 
 export interface ImportResult {
@@ -217,6 +221,8 @@ function oaiMessagesToRecords(
       role: (role === "developer" ? "system" : role) as MessageRecord["role"],
       content: content as MessageRecord["content"],
       createdAt: baseTs + idx,
+      // Ordering only: these formats do not carry a per-message send time.
+      metadata: { createdAtEstimated: true },
     });
     prevId = id;
     idx++;
@@ -260,6 +266,43 @@ function sharegptToRecords(
       role,
       content: [{ type: "text", text: value }] as MessageRecord["content"],
       createdAt: baseTs + idx,
+      // Ordering only: these formats do not carry a per-message send time.
+      metadata: { createdAtEstimated: true },
+    });
+    prevId = id;
+    idx++;
+  }
+  return records;
+}
+
+function markdownToRecords(
+  messages: Array<{ role: string; content: string }>,
+  threadId: string,
+  baseTs: number,
+): MessageRecord[] {
+  const records: MessageRecord[] = [];
+  let prevId: string | null = null;
+  let idx = 0;
+  for (const { role, content } of messages) {
+    if (!content.trim()) continue;
+    const normalizedRole = role.trim().toLowerCase();
+    const validRole =
+      normalizedRole === "user" ||
+      normalizedRole === "assistant" ||
+      normalizedRole === "system"
+        ? normalizedRole
+        : normalizedRole.length > 0
+          ? normalizedRole
+          : "user";
+    const id = crypto.randomUUID();
+    records.push({
+      id,
+      threadId,
+      parentId: prevId,
+      role: validRole as MessageRecord["role"],
+      content: [{ type: "text", text: content }] as MessageRecord["content"],
+      createdAt: baseTs + idx,
+      metadata: { createdAtEstimated: true },
     });
     prevId = id;
     idx++;
@@ -287,6 +330,8 @@ function csvToRecords(csvText: string, threadId: string, baseTs: number): Messag
       role: validRole as MessageRecord["role"],
       content: [{ type: "text", text: content }] as MessageRecord["content"],
       createdAt: baseTs + idx,
+      // Ordering only: these formats do not carry a per-message send time.
+      metadata: { createdAtEstimated: true },
     });
     prevId = id;
     idx++;
@@ -328,6 +373,16 @@ export function parseImportText(
   filename: string,
 ): ParsedConversation[] {
   const basename = filename.replace(/\.[^.]+$/, "");
+  if (/\.(?:md|markdown)$/i.test(filename)) {
+    const baseTs = Date.now();
+    return parseConversationMarkdownDocument(text, basename).flatMap(
+      ({ title, messages }) => {
+        const threadId = crypto.randomUUID();
+        const records = markdownToRecords(messages, threadId, baseTs);
+        return records.length > 0 ? [{ title, threadId, messages: records }] : [];
+      },
+    );
+  }
   if (/\.csv$/i.test(filename)) {
     const threadId = crypto.randomUUID();
     const messages = csvToRecords(text, threadId, Date.now());
@@ -445,12 +500,20 @@ export async function importConversationsFromSource(
     totalBytes: source.size,
   };
   const report = () => options.onProgress?.({ ...progress });
+  const saved = (conversation: { threadId: string; thread?: { pairId?: string } }) =>
+    options.onSaved?.(conversation.thread?.pairId ?? conversation.threadId);
 
-  if (/\.csv$/i.test(source.name)) {
-    const text = await readAllText(source, CSV_MAX_BYTES, "CSV");
+  if (/\.(?:csv|md|markdown)$/i.test(source.name)) {
+    const label = /\.csv$/i.test(source.name) ? "CSV" : "Markdown";
+    const text = await readAllText(source, WHOLE_FILE_MAX_BYTES, label);
     for (const conversation of parseImportText(text, source.name)) {
-      await writeConversation(conversation, projectId);
-      progress.imported++;
+      try {
+        await writeConversation(conversation, projectId);
+        progress.imported++;
+        saved(conversation);
+      } catch {
+        progress.failed++;
+      }
     }
     if (progress.imported > 0) notifyChatHistoryUpdated();
     report();
@@ -497,6 +560,7 @@ export async function importConversationsFromSource(
         const task = writeConversation(conversation, projectId)
           .then(() => {
             progress.imported++;
+            saved(conversation);
           })
           .catch(() => {
             // Keep importing after one conversation fails to save.
@@ -524,6 +588,7 @@ export async function importConversationsFromSource(
       try {
         await writeConversation(conversation, projectId);
         progress.imported++;
+        saved(conversation);
       } catch {
         progress.failed++;
       }

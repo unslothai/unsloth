@@ -451,13 +451,13 @@ function Sidebar({
           data-sidebar="sidebar"
           data-slot="sidebar-inner"
           className={cn(
-            "bg-sidebar flex size-full flex-col overflow-hidden border-r border-sidebar-border dark:border-r-0",
+            "bg-sidebar flex size-full flex-col overflow-hidden",
             "group-data-[variant=floating]:ring-sidebar-border group-data-[variant=floating]:rounded-lg group-data-[variant=floating]:shadow-sm group-data-[variant=floating]:ring-1",
           )}
         >
           {children}
         </div>
-        {(!collapseToZero || pinned) && (
+        {state === "expanded" && (!collapseToZero || pinned) && (
           <SidebarResizeHandle
             side={side}
             // The shared handle hides itself below `sm`, a viewport rule that

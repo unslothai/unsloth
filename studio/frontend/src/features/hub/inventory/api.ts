@@ -71,6 +71,7 @@ export interface CachedModelRepo {
   inventory_id?: string | null;
   load_id?: string | null;
   model_format?: ModelInventoryFormat | null;
+  artifact_kind?: LocalArtifactKind | null;
   runtime?: ModelInventoryRuntime | null;
   format_variant?: string | null;
   capabilities?: BackendModelCapabilities | null;
@@ -103,6 +104,7 @@ export interface LocalModelInfo {
   path: string;
   size_bytes?: number;
   model_format?: ModelInventoryFormat | null;
+  artifact_kind?: LocalArtifactKind | null;
   runtime?: ModelInventoryRuntime | null;
   format_variant?: string | null;
   capabilities?: BackendModelCapabilities | null;
@@ -118,6 +120,8 @@ export interface LocalModelInfo {
   partial_transport?: string | null;
   /** This partial can be continued byte for byte. */
   partial_resumable?: boolean;
+  /** Pipeline repo holding only a GGUF load's VAE / text encoder: not a download to continue. */
+  companion_prefetch?: boolean;
   pipeline_tag?: string | null;
   task?: string | null;
   audio_type?: string | null;
@@ -125,6 +129,16 @@ export interface LocalModelInfo {
   library_name?: string | null;
   quant_method?: string | null;
 }
+
+export type LocalArtifactKind =
+  | "diffusers_pipeline"
+  | "diffusers_modular_pipeline"
+  | "diffusers_dual_pipeline"
+  | "transformers_model"
+  | "single_file_checkpoint"
+  | "gguf"
+  | "adapter"
+  | "unknown";
 
 export interface LocalModelListResponse {
   models_dir: string;

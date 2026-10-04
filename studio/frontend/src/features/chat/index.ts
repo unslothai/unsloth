@@ -77,6 +77,7 @@ export {
   GPU_LAYERS_AUTO,
 } from "./stores/chat-runtime-store";
 export { resolveStagedDiffusionClassification } from "./lib/gpu-placement";
+export { offloadCountsFrom, offloadWarning } from "./lib/partial-offload";
 export {
   preferFullToolOutput,
   preferSanitizedFullToolOutput,
@@ -88,7 +89,7 @@ export {
   useToolPaneScope,
 } from "./tool-output-scope";
 export { useToolAwaitingApproval } from "./tool-approval";
-export { PermissionModeDropdown } from "./permission-mode-select";
+export { PermissionModeDropdown, useActivePermissionMode } from "./permission-mode-select";
 export { useChatSearchStore } from "./stores/chat-search-store";
 export type { ChatNavigationState } from "./stores/chat-navigation-store";
 export {
@@ -141,8 +142,19 @@ export {
   useSidebarDrag,
   SPRING_OPEN_DELAY_MS,
   DRAG_THRESHOLD_PX,
-  DRAGGING_BODY_CLASS,
+  markDragging,
+  DROP_CUE_CLASS,
+  liftCopy,
+  placeCue,
+  placeGhost,
+  type RowGhost,
 } from "./hooks/use-sidebar-drag";
+export {
+  useSectionDrag,
+  sectionKeyLanding,
+  SECTION_ATTR,
+  type SectionLanding,
+} from "./hooks/use-section-drag";
 export { usePinnedChatsStore } from "./stores/pinned-chats-store";
 export { usePinnedProjectsStore } from "./stores/pinned-projects-store";
 export {
@@ -160,13 +172,25 @@ export {
   RECENTS_ORDER_SCOPE,
   SIDEBAR_ORGANIZATION_STORAGE_KEY,
   useSidebarOrganizationStore,
+  customSectionScope,
+  customSectionIdOf,
+  normalizeSectionName,
+  CUSTOM_SECTION_NAME_MAX,
+  PROJECTS_SECTION_KEY,
+  PINNED_SECTION_KEY,
+  inSectionOrder,
+  resolveSectionOrder,
+  assignmentMap,
 } from "./stores/sidebar-organization-store";
 export type {
+  SidebarCustomSection,
   SidebarChatSort,
   SidebarProjectSort,
   SidebarOrganizeBy,
 } from "./stores/sidebar-organization-store";
 export { useChatPreferencesStore } from "./stores/chat-preferences-store";
+export { SectionNameDialog } from "./components/section-name-dialog";
+export { removeCustomSectionWithUndo } from "./stores/remove-custom-section";
 export {
   usePromptQueueUI,
   type PromptQueueUIEntry,
@@ -249,6 +273,7 @@ export type { ChatModelLoadedInput } from "./lib/chat-model-loaded";
 export {
   customProviderDisplayName,
   isCustomProviderType,
+  isDecisionConnection,
   isExternalModelId,
   parseExternalModelId,
 } from "./external-providers";
@@ -267,10 +292,29 @@ export {
   attachmentTextLanguage,
   countAttachmentTextLines,
   isAudioAttachment,
+  attachmentBodyText,
   parseAttachmentText,
+  isTextAttachment,
   readAttachmentText,
+  repackDocxAttachmentArchive,
+  repackDocxPreviewArchive,
   truncateAttachmentPreviewText,
 } from "./attachment-content";
+export { normalizeChatImage } from "./image-normalize";
+export {
+  ATTACHMENT_KIND_ICON_CLASS,
+  ATTACHMENT_KIND_ICONS,
+  attachmentFileKind,
+  attachmentKindLabel,
+  type AttachmentFileKind,
+} from "./lib/attachment-file-kind";
+export {
+  COMPOSER_ATTACHMENT_MAX_ROWS,
+  SENT_ATTACHMENT_LIST_MAX,
+  composerAttachmentsOverflow,
+  sentAttachmentLayout,
+  type SentAttachmentLayout,
+} from "./lib/attachment-layout";
 export { ApiProviderLogo } from "./api-provider-logo";
 export { useExternalProvidersStore } from "./stores/external-providers-store";
 export { DeleteChatFilesSwitch } from "./components/delete-chat-files-switch";
@@ -290,10 +334,18 @@ export {
   sandboxSessionIdsHolding,
   type ConversationExportFormat,
 } from "./components/chat-row-menu";
-export { OpenChatFolderUnavailableItem } from "./components/open-chat-folder-item";
+export {
+  OpenChatFolderItem,
+  OpenChatFolderUnavailableItem,
+  OpenProjectFolderItem,
+} from "./components/open-chat-folder-item";
+export { BulkExportItems, exportThreads } from "./components/bulk-export-items";
+export { useFileProjectInSection } from "./hooks/use-file-project-in-section";
+export { pickAndImportChats } from "./utils/import-chats";
 export { useForkInFlight } from "./utils/fork-in-flight";
 export { showForkCreatedToast } from "./utils/fork-toast";
 export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
+export { stopRecoveredRun } from "./utils/chat-generation-recovery";
 export { offerToDeleteKeptSandboxes } from "./utils/offer-kept-sandbox-files";
 export { pasteClipboardFiles } from "./utils/clipboard-files";
 export {
@@ -334,6 +386,8 @@ export {
   getStoredChatThread,
   isThreadIncognito,
   listStoredChatMessages,
+  listStoredChatMessagesMany,
+  countStoredChatMessages,
   listStoredChatProjects,
   listStoredChatThreads,
   markThreadIncognito,
@@ -480,10 +534,20 @@ export {
   composerSubmitIntent,
   composerFollowUpBehavior,
   composerShortcutLabels,
+  composerKeyEventForImeSubmit,
   effectiveSendShortcut,
   followUpSubmitIntent,
+  imeKeydownBlocksComposerSubmit,
   steeringInsertionIndex,
   type ComposerSendShortcut,
   type ComposerFollowUpBehavior,
   type ComposerSubmitIntent,
 } from "./utils/composer-preferences";
+export { isTextAttachmentName } from "./text-attachment-accept";
+
+export {
+  ggufVariantsQuery,
+  runBoundedVariantsRequest,
+} from "./api/gguf-variants-request";
+export type { ChatModelSummary, ChatLoraSummary } from "./types/runtime";
+export { startLlamaCppAutoReload } from "./llama-cpp-auto-reload";

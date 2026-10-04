@@ -3,6 +3,7 @@
 
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { AppSidebar } from "@/components/app-sidebar";
+import { CommandPalette } from "@/components/command-palette";
 import { Navbar } from "@/components/navbar";
 import { SidebarEdgeTrigger } from "@/components/sidebar-edge-trigger";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
@@ -13,6 +14,7 @@ import {
   AUTH_SESSION_CLEARED_EVENT,
   AUTH_SESSION_STORED_EVENT,
   hasAuthToken,
+  hasSettledAuthSession,
   useIsAccountOwner,
 } from "@/features/auth";
 import {
@@ -21,6 +23,7 @@ import {
   clearNewChatDraft,
   hydrateModelDisclaimerPreference,
   openFolderAsProject,
+  startLlamaCppAutoReload,
   StopRunningChatsDialog,
   useOpeningFolder,
   useChatRuntimeStore,
@@ -28,17 +31,19 @@ import {
 import { useExportRuntimeLifecycle } from "@/features/export";
 import { FIND_SCOPE_ATTRIBUTE, FindInPage } from "@/features/find-in-page";
 import { HfTokenWarningDialog } from "@/features/hf-auth";
+import { InterfaceZoom, zoomInterfaceFromMenu } from "@/features/interface-zoom";
 import { bootstrapPersistedCredentials } from "@/features/credentials/bootstrap";
+import { SharedRunConfigLinkHandler } from "@/features/model-picker";
 import { backfillModelOverrides } from "@/features/model-picker/api/migrate-model-overrides";
+import { hydratePins } from "@/features/model-picker/components/model-selector/pins-mirror";
 import { usePersonalizationSync } from "@/features/profile";
 import { RemoteCodeConsentDialog } from "@/features/security";
 import {
   SETTINGS_TABS,
   SettingsDialogMount,
   settingsTabVisible,
-  stepInterfaceScale,
   triggerShortcut,
-  useInterfaceScaleStore,
+  useHubSourceNotice,
   useSettingsDialogStore,
   useShortcut,
   useShortcutAvailable,
@@ -46,6 +51,7 @@ import {
 import { useLowDiskNotice } from "@/features/settings/hooks/use-low-disk-notice";
 import { useTrainingUnloadGuard } from "@/features/training";
 import { TransformersUpgradeDialog } from "@/features/transformers-upgrade";
+import { LlmCompressorConsentDialog } from "@/features/export/components/llm-compressor-consent-dialog";
 import { useNativePathLeasesSupported } from "@/features/native-intents";
 import { useRagAvailabilityStore } from "@/features/rag";
 import { useIsMobileShell } from "@/hooks/use-mobile";
@@ -53,6 +59,7 @@ import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useTypeToActivate } from "@/hooks/use-type-to-activate";
 import { type TranslationKey, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
+import { createNavigationNonce } from "@/lib/navigation-nonce";
 import {
   Outlet,
   createRootRoute,
@@ -168,8 +175,12 @@ const AudioPage = lazy(() =>
   import("@/features/audio").then((m) => ({ default: m.AudioPage })),
 );
 
+// Enabled once the session is settled, not once a token exists. The first read runs once per session, so a read
+// refused mid password change would leave personalization unhydrated, and every save paused, until a reload. The
+// pathname subscription re-reads the gate on the navigation that ends the change.
 function PersonalizationSyncMount() {
-  usePersonalizationSync(hasAuthToken());
+  useRouterState({ select: (s) => s.location.pathname });
+  usePersonalizationSync(hasSettledAuthSession());
   return null;
 }
 
@@ -179,6 +190,11 @@ function PersonalizationSyncMount() {
 // subscribed across navigation, instead of coming and going with /studio.
 function LowDiskNoticeMount() {
   useLowDiskNotice();
+  return null;
+}
+
+function HubSourceNoticeMount() {
+  useHubSourceNotice();
   return null;
 }
 
@@ -241,6 +257,10 @@ function CredentialBootstrapGate({
       window.removeEventListener(AUTH_SESSION_STORED_EVENT, reconcile);
     };
   }, [active]);
+  useEffect(() => {
+    if (active && ready) return startLlamaCppAutoReload();
+  }, [active, ready]);
+
   return (
     <>
       <SettingsDialogMount active={active && ready} />
@@ -421,7 +441,7 @@ function RootLayout() {
   // leave --studio-titlebar-height at 0 for the pages sized off it.
   const nonChatTopInset = useIsMobileShell()
     ? "pt-14"
-    : "pt-[var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))] [--studio-titlebar-height:var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]";
+    : "pt-[calc(var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))-var(--studio-non-chat-scroller-top,0px))] [--studio-titlebar-height:var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]";
 
   useTrainingUnloadGuard();
   useTypeToActivate();
@@ -451,12 +471,13 @@ function RootLayout() {
   }, [documentTitle]);
 
   // Settings predating the server override map live only here, so an API load would use
-  // app defaults. Backfill once, after auth.
+  // app defaults. Backfill once, after auth; pins are restored from the account's server copy.
   useEffect(() => {
     if (isAuthFlowRoute) {
       return;
     }
     void backfillModelOverrides();
+    void hydratePins();
   }, [isAuthFlowRoute]);
 
   useEffect(() => {
@@ -499,7 +520,7 @@ function RootLayout() {
     chatRuntime.setIncognito(Boolean(options?.incognito));
     void navigate({
       to: "/chat",
-      search: projectId ? { project: projectId } : { new: crypto.randomUUID() },
+      search: projectId ? { project: projectId } : { new: createNavigationNonce() },
     });
   };
 
@@ -530,10 +551,6 @@ function RootLayout() {
   const nextChatMounted = useShortcutAvailable("nextChat", isTauri);
   const viaShortcut = (id: Parameters<typeof triggerShortcut>[0], mounted: boolean) =>
     mounted ? () => void triggerShortcut(id) : null;
-  const zoomBy = (direction: 1 | -1) => () => {
-    const scale = useInterfaceScaleStore.getState();
-    scale.setScale(stepInterfaceScale(scale.scale, direction));
-  };
   // Help opens settings or a web page, so it works anywhere past sign-in.
   // Pages this account cannot open stay disabled, as in Go > Settings.
   const isOwner = useIsAccountOwner();
@@ -573,9 +590,9 @@ function RootLayout() {
     "next-chat": viaShortcut("nextChat", nextChatMounted),
     "back": routeShortcutEnabled ? () => window.history.back() : null,
     "forward": routeShortcutEnabled ? () => window.history.forward() : null,
-    "zoom-in": zoomBy(1),
-    "zoom-out": zoomBy(-1),
-    "actual-size": () => useInterfaceScaleStore.getState().reset(),
+    "zoom-in": () => zoomInterfaceFromMenu(1),
+    "zoom-out": () => zoomInterfaceFromMenu(-1),
+    "actual-size": () => zoomInterfaceFromMenu(0),
     "help-documentation": helpAction("help-documentation"),
     "help-keyboard-shortcuts": helpAction("help-keyboard-shortcuts"),
     "help-whats-new": helpAction("help-whats-new"),
@@ -655,6 +672,8 @@ function RootLayout() {
   const content = (
     <>
       <PersonalizationSyncMount />
+      {/* Every route, sign-in included. */}
+      <InterfaceZoom />
       <ReloadSnapshotPrivacy />
       {!isAuthFlowRoute && <ChatSettingsHydrationMount />}
       {!isAuthFlowRoute && <LowDiskNoticeMount />}
@@ -663,8 +682,10 @@ function RootLayout() {
       <HfTokenWarningDialog />
       <RemoteCodeConsentDialog />
       <TransformersUpgradeDialog />
+      <LlmCompressorConsentDialog />
       {/* At the root, not under /chat: a swap can start from the Hub too. */}
       <StopRunningChatsDialog />
+      {!hideNavbar && <CommandPalette />}
       {hideNavbar ? (
         <main className="flex-1 pt-[var(--studio-hidden-route-top-inset,0px)] [--studio-titlebar-height:var(--studio-hidden-route-top-inset,0px)]">
           <RouteBoundary readyWhenCommitted={!routeOwnsReloadReadiness}>
@@ -686,8 +707,8 @@ function RootLayout() {
                 ? "overflow-hidden"
                 : // Reserve the scrollbar so the Library does not shift when it appears.
                   isLibraryRoute
-                  ? "overflow-y-auto [scrollbar-gutter:stable]"
-                  : "overflow-y-auto"
+                  ? "mt-[var(--studio-non-chat-scroller-top,0px)] overflow-y-auto [scrollbar-gutter:stable]"
+                  : "mt-[var(--studio-non-chat-scroller-top,0px)] overflow-y-auto"
             }
           >
             <Navbar />
@@ -797,12 +818,17 @@ function RootLayout() {
           </SidebarInset>
         </SidebarProvider>
       )}
+      {/* This side-effect-only mount stays last so it cannot shift existing React useId paths. */}
+      {!isAuthFlowRoute && <HubSourceNoticeMount />}
     </>
   );
 
   return (
     <AppProvider>
       <CredentialBootstrapGate active={!isAuthFlowRoute}>
+        <SharedRunConfigLinkHandler
+          chatSearch={shouldMountChat ? chatSearch : null}
+        />
         {content}
       </CredentialBootstrapGate>
     </AppProvider>

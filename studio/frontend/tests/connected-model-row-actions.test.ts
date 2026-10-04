@@ -103,7 +103,11 @@ test("modality comes from the resolvers the app already has", () => {
     audioAdapter,
     /const activeModel = state\.models\.find\(\(m\) => m\.id === checkpoint\);/,
   );
-  assert.match(audioAdapter, /\} else if \(!activeModel\?\.hasAudioInput\) \{/);
+  assert.match(audioAdapter, /if \(modelLoaded && !activeModel\?\.hasAudioInput\) \{/);
+  assert.match(
+    readSrc("features/chat/lib/attached-media-gate.ts"),
+    /if \(audio && !activeModel\?\.hasAudioInput\) \{/,
+  );
   // So the filter drops its Audio option rather than offering one that matches nothing.
   assert.match(
     pickers,
@@ -805,4 +809,16 @@ test("a served catalogue cannot take away a context window it has no field for",
   assert.equal(resolveModelCatalogEntry("openai", "gpt-4-turbo")?.contextLength, bundled);
 
   setModelsDevCatalog({ fetched_at: Date.now(), providers: {} } as never);
+});
+
+test("connection saves write back the live store, not the render snapshot", () => {
+  const liveWrites = providersDialog.match(
+    /onProvidersChange\(\s*\[?\s*(\.\.\.)?useExternalProvidersStore\.getState\(\)\.providers\.(map|filter)\(/g,
+  );
+  assert.equal(liveWrites?.length, 3);
+  assert.match(providersDialog, /models: keepSavedModels \? undefined : modelsToSave,/);
+  assert.match(providersDialog, /availableModels: keepSavedModels \? undefined : availableModelsToSave,/);
+  // An empty response (row never backfilled) keeps this browser's lists instead of blanking them.
+  assert.match(providersDialog, /updated\.models\?\.length \? updated\.models : existing\.models/);
+  assert.match(providersDialog, /updated\.available_models\?\.length\s*\?\s*updated\.available_models\s*:\s*existing\.availableModels/);
 });

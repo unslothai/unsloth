@@ -12,6 +12,7 @@ import errno
 import fnmatch
 import glob
 import hashlib
+import importlib.util
 import json
 import os
 import platform
@@ -2765,7 +2766,7 @@ def _list_rocm_gfx_targets(out: str) -> list[str]:
     return _tokens
 
 
-def _pick_rocm_gfx_target(out: str) -> str | None:
+def _pick_rocm_gfx_target(out: str, rocr_filtered: bool = False) -> str | None:
     """Choose the gfx target rocminfo / hipinfo report for the active GPU.
 
     A bare first-match picked the wrong device on mixed APU + dGPU hosts (Strix Halo gfx1151
@@ -2784,12 +2785,20 @@ def _pick_rocm_gfx_target(out: str) -> str | None:
         return None
 
     _vis_raw = None
-    # AMD's HIP runtime honours all three env vars with identical semantics.
-    for _env in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+    # rocminfo output is already ROCr-filtered and renumbered: only HIP-layer masks index it.
+    _masks = (
+        ("HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+        if rocr_filtered
+        else ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+    )
+    for _env in _masks:
         _val = os.environ.get(_env)
         if _val is not None:
             _vis_raw = _val
             break
+    # Still an explicit selection: survivor 0, so the discrete repick below must not override it.
+    if _vis_raw is None and rocr_filtered and os.environ.get("ROCR_VISIBLE_DEVICES") is not None:
+        _vis_raw = "0" if os.environ["ROCR_VISIBLE_DEVICES"].strip() not in ("", "-1") else ""
     if _vis_raw is not None:
         _vis = _vis_raw.strip()
         # Empty or "-1" means "no AMD GPU visible" (matches the rest of Unsloth).
@@ -3104,7 +3113,9 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
                 if _check(_result.stdout):
                     has_rocm = True
                     rocm_gfx_targets = _list_rocm_gfx_targets(_result.stdout)
-                    rocm_gfx_target = _pick_rocm_gfx_target(_result.stdout)
+                    rocm_gfx_target = _pick_rocm_gfx_target(
+                        _result.stdout, rocr_filtered = _cmd[0] == "rocminfo"
+                    )
                     break
     elif is_windows and (probe_rocm_with_nvidia or not has_usable_nvidia):
         # Windows: prefer active probes that validate GPU presence.
@@ -4433,10 +4444,8 @@ def ensure_diffusion_visual_server(
         return
 
     try:
-        assets = github_release_assets(DEFAULT_PUBLISHED_REPO, release_tag)
         match = None
-        unapproved_matches: list[str] = []
-        for asset_name, url in assets.items():
+        for asset_name, approved in approved_checksums.artifacts.items():
             low = asset_name.lower()
             if "llama-diffusion-gemma-visual-server" not in low:
                 continue
@@ -4444,28 +4453,18 @@ def ensure_diffusion_visual_server(
                 continue
             if (not host.is_windows) and low.endswith(".exe"):
                 continue
-            # This binary is chmod'd executable and later launched by the
-            # backend, so it must be covered by the approved checksum manifest
-            # just like every other prebuilt artifact. An asset that matches the
-            # name but is missing from the manifest is refused rather than run.
-            approved = approved_checksums.artifacts.get(asset_name)
-            if approved is None:
-                unapproved_matches.append(asset_name)
+            if approved.repo and approved.repo != DEFAULT_PUBLISHED_REPO:
+                continue
+            url = release_asset_download_url(DEFAULT_PUBLISHED_REPO, release_tag, asset_name)
+            if not url:
                 continue
             match = (asset_name, url, approved.sha256)
             break
         if match is None:
-            if unapproved_matches:
-                log(
-                    "diffusion visual server asset(s) were present but omitted from the "
-                    "approved checksum manifest; refusing unverified native executable: "
-                    + ", ".join(unapproved_matches)
-                )
-            else:
-                log(
-                    "diffusion visual server not found in the published release; native "
-                    "DiffusionGemma serving needs DG_VISUAL_BIN or a source build"
-                )
+            log(
+                "diffusion visual server not in the approved checksum manifest for this "
+                "release; native DiffusionGemma serving needs DG_VISUAL_BIN or a source build"
+            )
             return
         bin_dir.mkdir(parents = True, exist_ok = True)
         download_file_verified(
@@ -10851,6 +10850,61 @@ class BackendRoute:
     rocm_fallback_host: HostInfo | None = None
 
 
+# Quoted values only: non-ROCm builds write `hip: Optional[str] = None`. Mirrors install_python_stack.
+_TORCH_VERSION_PY_HIP_RE = re.compile(r"""^hip\s*(?::[^=]*)?=\s*['"]([^'"]*)['"]""", re.MULTILINE)
+# AMD's Radeon SDK wheels leave hip None and carry the tag here (2.9.0+rocmsdk20251116).
+_TORCH_VERSION_PY_VERSION_RE = re.compile(
+    r"""^__version__\s*(?::[^=]*)?=\s*['"]([^'"]*)['"]""", re.MULTILINE
+)
+
+
+def _torch_version_py_is_rocm(version_py: Path) -> bool | None:
+    try:
+        text = version_py.read_text(encoding = "utf-8", errors = "replace")
+    except OSError:
+        return None
+    hip = _TORCH_VERSION_PY_HIP_RE.search(text)
+    version = _TORCH_VERSION_PY_VERSION_RE.search(text)
+    return bool((hip and hip.group(1)) or (version and "rocm" in version.group(1).lower()))
+
+
+def _installed_torch_is_rocm() -> bool | None:
+    """Read off disk: importing torch here is slow and can fail."""
+    try:
+        spec = importlib.util.find_spec("torch")
+        if spec is None or not spec.origin:
+            return None
+        return _torch_version_py_is_rocm(Path(spec.origin).with_name("version.py"))
+    except Exception:
+        return None
+
+
+def _rocm_torch_preferred() -> bool:
+    if (os.environ.get("UNSLOTH_FORCE_ROCM_TORCH") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        return True
+    return _installed_torch_is_rocm() is True
+
+
+def _auto_host_following_rocm_torch(host: HostInfo) -> HostInfo:
+    """Only moves off CUDA on live AMD evidence (stale ROCm torch keeps CUDA)."""
+    if not host.has_usable_nvidia:
+        return host
+    probed = host if host.has_rocm else detect_host(probe_rocm_with_nvidia = True)
+    # Marker-replayed arches outlive a removed card; setup.sh forwards none while NVIDIA is usable.
+    if not (probed.has_rocm or _normalize_forwarded_gfx(os.environ.get("UNSLOTH_ROCM_GFX_ARCH"))):
+        return host
+    log(
+        "ROCm torch is installed or requested; Automatic prefers the ROCm llama.cpp build "
+        "over CUDA on this mixed NVIDIA+AMD host"
+    )
+    return dataclasses_replace(probed, has_physical_nvidia = False, has_usable_nvidia = False)
+
+
 def route_backend_request(
     *,
     backend: str | None,
@@ -10880,6 +10934,8 @@ def route_backend_request(
             has_physical_nvidia = False,
             has_usable_nvidia = False,
         )
+    elif backend in (None, "auto") and _rocm_torch_preferred():
+        detected_host = _auto_host_following_rocm_torch(detected_host)
     force_cpu = cpu_mechanism or backend == "cpu"
     resolved_host = _apply_host_overrides(
         detected_host,
