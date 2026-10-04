@@ -4789,7 +4789,9 @@ _PT2_FINDER_SENTINEL = "_unsloth_pt2_package_finder"
 
 def _install_pt2_pickle_proxy(package):
     real_pickle = getattr(package, "pickle", None)
-    if isinstance(real_pickle, types.ModuleType) and not isinstance(real_pickle, _Pt2PickleModule):
+    # Marker, not isinstance: a reloaded import_fixes defines a new _Pt2PickleModule class.
+    already = hasattr(real_pickle, "_unsloth_pt2_real_pickle")
+    if isinstance(real_pickle, types.ModuleType) and not already:
         package.pickle = _Pt2PickleModule(real_pickle)
         return True
     return False
