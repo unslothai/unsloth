@@ -924,3 +924,59 @@ def test_a_separate_scoped_clear_spares_speak_and_clone():
     assert gallery.clear(workflow = "separate") == 1
     assert gallery.audio_path(stem["id"]) is None
     assert {r["id"] for r in gallery.list_audio()} == {speech["id"], clone["id"]}
+
+
+def test_a_convert_clip_keeps_its_workflow_meta_and_scoped_clear():
+    from models.inference import AudioGalleryItem
+    from routes.inference import clear_gallery_audio, _persist_tts_clip
+
+    speech = gallery.save(_wav(), _meta())
+    convert = _persist_tts_clip(
+        _wav(),
+        16000,
+        "take.wav → Manthos",
+        "rvc",
+        "audiocpp_tts",
+        {
+            "role": "output",
+            "source_input_id": "i" * 32,
+            "source_name": "take.wav",
+            "reference_name": "Manthos",
+            "target_builtin": "manthos",
+            "settings": {"mode": "speech", "pitch": 3, "pitch_auto": False, "options": {}},
+        },
+        "convert",
+    )
+    listed = {r["id"]: r for r in gallery.list_audio()}
+    item = AudioGalleryItem(**listed[convert["id"]])
+    assert item.workflow == "convert" and item.prompt == "take.wav → Manthos"
+    assert (item.source_input_id, item.source_name) == ("i" * 32, "take.wav")
+    assert (item.reference_name, item.target_builtin) == ("Manthos", "manthos")
+    assert gallery.set_flags(convert["id"], pinned = True)["workflow"] == "convert"
+    assert asyncio.run(clear_gallery_audio(workflow = "convert", current_subject = "tester")) == {
+        "removed": 1
+    }
+    assert [r["id"] for r in gallery.list_audio()] == [speech["id"]]
+
+
+def test_a_kept_source_goes_with_its_clip(tmp_path):
+    source = tmp_path / "source.wav"
+    source.write_bytes(_wav())
+    kept = gallery.save(_wav(), _meta(), source)
+    plain = gallery.save(_wav(), _meta())
+    assert kept["source_saved"] is True and "source_saved" not in plain
+    copy = gallery.gallery_dir() / f"{kept['id']}.source.wav"
+    assert copy.read_bytes() == source.read_bytes()
+    assert gallery.owned_source_path(kept["id"]) == copy
+    assert gallery.owned_source_path(plain["id"]) is None
+    # Never a clip of its own, in the listing or a move.
+    assert sorted(r["id"] for r in gallery.list_audio()) == sorted([kept["id"], plain["id"]])
+    assert gallery.move(plain["id"], None)["id"] == plain["id"]
+    # Archiving keeps it with the clip; a clear that spares archived clips leaves it.
+    gallery.set_flags(kept["id"], archived = True)
+    assert gallery.clear() == 1 and copy.is_file()
+    assert gallery.clear(include_archived = True) == 1
+    assert not copy.exists()
+    again = gallery.save(_wav(), _meta(), source)
+    assert gallery.delete(again["id"])
+    assert not (gallery.gallery_dir() / f"{again['id']}.source.wav").exists()

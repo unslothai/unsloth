@@ -87,6 +87,92 @@ test("whatever a caller spreads in, no path or bytes reach the body", () => {
   assert.doesNotMatch(JSON.stringify(body), PATHLIKE);
 });
 
+test("a convert run sends the source, the target and the convert settings, and no text", () => {
+  const body = buildAudioRunBody({
+    workflow: "convert",
+    inputs: {
+      source: { clip_id: "c1" },
+      target: { voice_id: "v1" },
+      source_text: "  Hello there.  ",
+    },
+    convert: { mode: "speech", pitch: 3.4, pitch_auto: false, style: "target" },
+    options: { route: "v2_vc", length_adjust: 1.1, bad: Number.NaN },
+    seed: 7,
+  });
+  assert.deepEqual(body, {
+    workflow: "convert",
+    inputs: {
+      source: { clip_id: "c1" },
+      target: { voice_id: "v1" },
+      source_text: "Hello there.",
+    },
+    convert: { mode: "speech", pitch: 3, pitch_auto: false, style: "target" },
+    options: { route: "v2_vc", length_adjust: 1.1 },
+    seed: 7,
+  });
+  assert.equal("text" in body, false);
+});
+
+test("a convert run to a built-in voice has no target, and Auto keeps its extra shift", () => {
+  const body = buildAudioRunBody({
+    workflow: "convert",
+    inputs: { source: { input_id: "i1" }, target: null, source_text: " " },
+    convert: {
+      mode: "singing",
+      pitch: 5,
+      pitch_auto: true,
+      voice: " manthos ",
+    },
+  });
+  assert.deepEqual(body, {
+    workflow: "convert",
+    inputs: { source: { input_id: "i1" } },
+    convert: {
+      mode: "singing",
+      pitch: 5,
+      pitch_auto: true,
+      voice: "manthos",
+    },
+  });
+  const low = buildAudioRunBody({
+    workflow: "convert",
+    inputs: { source: { input_id: "i1" } },
+    convert: { mode: "speech", pitch: -40, pitch_auto: false },
+  });
+  assert.equal((low.convert as { pitch: number }).pitch, -24);
+});
+
+test("whatever a caller spreads into a convert run, no path or unknown key reaches the body", () => {
+  const sneaky = {
+    workflow: "convert" as const,
+    text: "should not be sent",
+    voice_ref: "/abs/ref.wav",
+    inputs: {
+      source: { input_id: "i1", path: "/x.wav" } as never,
+      target: { voice_id: "v1", clip_id: "c2" } as never,
+      reference: { voice_id: "v9" },
+      target_voice: "/abs/target.wav",
+    } as never,
+    convert: {
+      mode: "humming",
+      pitch: null,
+      pitch_auto: false,
+      route: "v1_svc",
+      source_audio: "/abs/src.wav",
+    } as never,
+    options: { retrieval_blend: 0.5, nested: { path: "/x" } } as never,
+  };
+  const body = buildAudioRunBody(sneaky);
+  assert.deepEqual(body, {
+    workflow: "convert",
+    inputs: { source: { input_id: "i1" } },
+    convert: { mode: "speech", pitch: null, pitch_auto: false },
+    options: { retrieval_blend: 0.5 },
+  });
+  assert.doesNotMatch(JSON.stringify(body), PATHLIKE);
+  assert.doesNotMatch(JSON.stringify(body), /target_voice|source_audio|"text"/);
+});
+
 test("selections become one-id refs and server URLs", () => {
   assert.deepEqual(
     sourceRefOf({ kind: "input", id: "i1", name: "a", durationS: 1 }),

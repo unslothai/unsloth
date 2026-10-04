@@ -284,6 +284,25 @@ def test_transcribe_sends_a_16k_mono_copy_and_saves_nothing(client, monkeypatch)
     assert [r["id"] for r in gallery.list_audio()] == [clip_q["clip_id"]]
 
 
+def test_a_convert_source_is_transcribed_past_the_clone_reference_cap(client, monkeypatch):
+    from routes import inference
+
+    seconds = []
+
+    async def fake_transcribe(raw, *args, **kwargs):
+        with wave.open(io.BytesIO(raw)) as w:
+            seconds.append(round(w.getnframes() / w.getframerate()))
+        return {"text": "words"}
+
+    monkeypatch.setattr(inference, "_transcribe_audio_result", fake_transcribe)
+    record = _upload(client, encode("wav", "pcm_s16le", 16000, "mono", 40.0), "long.wav").json()
+    url = f"{INPUTS}/{record['id']}/transcribe"
+    for purpose in ("reference", "convert"):
+        response = client.post(url, json = {"model": "m", "purpose": purpose})
+        assert response.status_code == 200, response.text
+    assert seconds == [30, 40]
+
+
 def test_the_byte_cap_counts_only_kept_inputs(client, monkeypatch):
     clock = [1_000_000.0]
     monkeypatch.setattr(audio_inputs, "_now", lambda: clock[0])

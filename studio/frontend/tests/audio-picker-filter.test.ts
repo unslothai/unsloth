@@ -18,8 +18,15 @@ const { audioCppModelSpeaks } = await import(
   "../src/features/audio/audio-cpp-catalog.ts"
 );
 
-type Workflow = "speak" | "clone" | "edit" | "music" | "transcribe";
-const WORKFLOWS: Workflow[] = ["speak", "clone", "edit", "music", "transcribe"];
+type Workflow = "speak" | "clone" | "edit" | "convert" | "music" | "transcribe";
+const WORKFLOWS: Workflow[] = [
+  "speak",
+  "clone",
+  "edit",
+  "convert",
+  "music",
+  "transcribe",
+];
 
 type Row = Parameters<typeof audioRowMatchesWorkflow>[0];
 
@@ -76,6 +83,40 @@ test("a clone-only speech model lists only on Clone", () => {
       task: "text-to-speech",
     }),
     ["speak", "clone"],
+  );
+});
+
+test("voice conversion models list on Convert only; Chatterbox and Vevo2 on Clone and Convert", () => {
+  for (const [name, workflows] of [
+    ["RVC-GGUF", ["convert"]],
+    ["SeedVC-MLX-GGUF", ["convert"]],
+    ["MeanVC2-GGUF", ["convert"]],
+    ["Chatterbox-GGUF", ["clone", "convert"]],
+    ["Vevo2-GGUF", ["clone", "edit", "convert"]],
+  ] as const) {
+    const id = `audio-cpp/audio.cpp-gguf/${name}`;
+    assert.deepEqual(
+      workflowsFor({ id, task: "text-to-speech", audioType: "audiocpp_tts" }),
+      workflows,
+      name,
+    );
+    assert.equal(audioCppModelSpeaks(id), false, name);
+  }
+  assert.deepEqual(
+    workflowsFor({
+      id: "audio-cpp/audio.cpp-gguf/RVC-GGUF",
+      task: "text-to-speech",
+      audioWorkflows: ["convert"],
+    }),
+    ["convert"],
+  );
+  assert.deepEqual(
+    workflowsFor({
+      id: "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF",
+      task: "text-to-speech",
+      audioType: "audiocpp_tts",
+    }),
+    ["speak"],
   );
 });
 
@@ -182,7 +223,7 @@ test("a speech editing model lists on Edit beside its other pages", () => {
     // DotTTS's other packages do not edit.
     ["DotTTS-MF-GGUF", { audioWorkflows: ["speak"] }, ["speak"]],
     // Without the backend's list, the catalog seed decides.
-    ["Vevo2-GGUF", { audioType: "audiocpp_tts" }, ["clone", "edit"]],
+    ["Vevo2-GGUF", { audioType: "audiocpp_tts" }, ["clone", "edit", "convert"]],
   ];
   for (const [folder, row, workflows] of rows) {
     const id = `audio-cpp/audio.cpp-gguf/${folder}`;

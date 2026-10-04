@@ -1396,6 +1396,21 @@ class _InferenceRuntimeFields(BaseModel):
             "None for a model the Music studio does not drive (and native MiniMax)."
         ),
     )
+    audio_options_by_workflow: Optional[Dict[str, List[Dict[str, Any]]]] = Field(
+        None, description = "Options per Audio workflow where they differ from audio_options."
+    )
+    audio_workflow_tasks: Optional[Dict[str, str]] = Field(
+        None, description = "audio.cpp server task per workflow, e.g. {'convert:singing': 'svc'}."
+    )
+    audio_server_task: Optional[str] = Field(
+        None, description = "audio.cpp server task the running server was started with."
+    )
+    audio_convert: Optional[Dict[str, Any]] = Field(
+        None, description = "What the model offers on Convert; None when it does not convert."
+    )
+    audio_convert_route: Optional[str] = Field(
+        None, description = "Seed-VC route the running server was started with."
+    )
 
     @model_validator(mode = "after")
     def derive_audio_workflows(self):
@@ -5150,7 +5165,7 @@ class AudioGalleryItem(BaseModel):
     archived: bool = Field(False, description = "Moved to the archived shelf, hidden from history")
     workflow: Optional[str] = Field(
         None,
-        description = "Audio page workflow that made the clip: speak, clone, edit, music or separate",
+        description = "Audio page workflow that made the clip: speak, clone, edit, convert, music or separate",
     )
     order_at: Optional[float] = Field(
         None,
@@ -5166,6 +5181,20 @@ class AudioGalleryItem(BaseModel):
         None, description = "Language, options, speed and whether a transcript was used"
     )
     reference_name: Optional[str] = Field(None, description = "Name of the reference clip or voice")
+    source_input_id: Optional[str] = Field(
+        None, description = "Uploaded input a conversion took its recording from"
+    )
+    source_name: Optional[str] = Field(None, description = "Name of the recording a run converted")
+    target_builtin: Optional[str] = Field(
+        None, description = "Built-in voice a conversion converted to"
+    )
+    target_clip_id: Optional[str] = Field(
+        None, description = "History clip a conversion took its target voice from"
+    )
+    target_input_id: Optional[str] = Field(
+        None, description = "Uploaded input a conversion took its target voice from"
+    )
+    source_saved: bool = Field(False, description = "Served at /audio/gallery/{id}/source/file")
 
 
 _AUDIO_ID_PATTERN = r"^[A-Za-z0-9_-]{1,128}$"
@@ -5179,7 +5208,8 @@ _AUDIO_CLIP_OPTION_ENDINGS = frozenset({"audio", "wav", "ref", "video", "image",
 
 def _names_a_file(name: str, value: Any) -> bool:
     words = re.split(r"[^a-z0-9]+", name.lower())
-    if any(word in _AUDIO_FILE_OPTION_WORDS for word in words):
+    # Vevo2's target_voice is a file, but neither of its words gives that away.
+    if name.lower() == "target_voice" or any(word in _AUDIO_FILE_OPTION_WORDS for word in words):
         return True
     return isinstance(value, str) and words[-1] in _AUDIO_CLIP_OPTION_ENDINGS
 
@@ -5208,6 +5238,19 @@ class AudioRunInputs(BaseModel):
     source: Optional[AudioSourceRef] = None
     reference_text: Optional[str] = Field(None, max_length = 4000)
     emotion: Optional[AudioSourceRef] = None
+    target: Optional[AudioSourceRef] = None
+    # A 5 minute source (CONVERT_SOURCE_MAX_SECONDS) runs well past 4000 characters of speech.
+    source_text: Optional[str] = Field(None, max_length = 16000)
+
+
+class AudioConvertParams(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    mode: Literal["speech", "singing"] = "speech"
+    pitch: Optional[int] = Field(None, ge = -24, le = 24)
+    pitch_auto: bool = False
+    style: Literal["source", "target"] = "source"
+    voice: Optional[Literal["default", "manthos", "chocola", "fraise"]] = None
 
 
 class AudioRunEdit(BaseModel):
@@ -5252,8 +5295,8 @@ class AudioRunRequest(BaseModel):
 
     model_config = ConfigDict(extra = "forbid")
 
-    workflow: Literal["clone", "speak", "edit", "music", "separate"]
-    # Required except for a separation (the route answers a separation given text with a 400).
+    workflow: Literal["clone", "speak", "edit", "convert", "music", "separate"]
+    # Required except for a conversion or a separation (the routes answer those given text with a 400).
     text: Optional[str] = None
     language: Optional[str] = Field(None, max_length = 64)
     instructions: Optional[str] = Field(None, max_length = 4000)
@@ -5271,6 +5314,27 @@ class AudioRunRequest(BaseModel):
     speed: Optional[float] = Field(None, ge = 0.25, le = 4.0)
     seed: Optional[int] = Field(None, ge = -(2**63), le = 2**64 - 1)
     max_tokens: Optional[int] = Field(None, ge = 1)
+    convert: Optional[AudioConvertParams] = None
+
+    @model_validator(mode = "after")
+    def _fields_of_the_workflow(self):
+        inputs = self.inputs
+        if self.workflow == "convert":
+            if self.text is not None:
+                raise ValueError("A conversion takes no text.")
+            if inputs.reference is not None or inputs.emotion is not None:
+                raise ValueError("A conversion takes inputs.source and inputs.target.")
+            if self.convert is None:
+                self.convert = AudioConvertParams()
+            return self
+        if self.text is None and self.workflow != "separate":
+            raise ValueError("text is required.")
+        # inputs.source also carries a Music edit's clip; the route refuses it elsewhere.
+        if self.convert is not None or any(
+            v is not None for v in (inputs.target, inputs.source_text)
+        ):
+            raise ValueError("convert and the target inputs are for workflow convert.")
+        return self
 
     @model_validator(mode = "after")
     def _edit_fields(self):
@@ -5303,7 +5367,7 @@ class AudioRunRequest(BaseModel):
                 raise ValueError("Pick a music mode: song, sfx or edit.")
             if self.text is None:
                 raise ValueError("text is required for music.")
-        elif self.workflow != "separate" and not self.text:
+        elif self.workflow not in ("convert", "separate") and not self.text:
             raise ValueError("text must not be empty.")
         return self
 
@@ -5350,6 +5414,7 @@ class AudioInputTranscribeRequest(BaseModel):
     engine: Optional[str] = Field(None, max_length = 64)
     device: Optional[Literal["auto", "cpu", "gpu"]] = None
     language: Optional[str] = Field(None, max_length = 64)
+    purpose: Literal["reference", "convert"] = "reference"
 
 
 class AudioInputTranscript(BaseModel):

@@ -526,6 +526,16 @@ _CLONE_TABLE = {
 }
 
 
+# family -> (load task, mode -> server task, target, source rate)
+_CONVERT_TABLE = {
+    "rvc": ("vc", {"speech": "vc"}, "builtin", 16000),
+    "seed_vc": ("vc", {"speech": "vc", "singing": "svc"}, "audio", 44100),
+    "meanvc2": ("vc", {"speech": "vc"}, "audio", 16000),
+    "chatterbox": ("clon", {"speech": "vc"}, "audio", 16000),
+    "vevo2": ("tts", {"speech": "vc", "singing": "svc"}, "audio", 24000),
+}
+
+
 def test_every_task_family_binds_its_workflows():
     workflow_for = {"tts": "speak", "music": "music", "asr": "transcribe", "sep": "separate"}
     endpoint_for = {
@@ -540,9 +550,26 @@ def test_every_task_family_binds_its_workflows():
         if not family.task:
             assert bindings == {}, family.family
             continue
+        if family.convert is not None:
+            load_task, modes, target, source_rate = _CONVERT_TABLE[family.family]
+            assert family.default_server_task == load_task, family.family
+            assert family.convert.server_tasks == modes, family.family
+            assert family.convert.target == target, family.family
+            convert = bindings["convert"]
+            assert (convert.endpoint, convert.server_task, family.convert.source_rate) == (
+                "tasks",
+                modes["speech"],
+                source_rate,
+            ), family.family
+            assert convert.inputs == ("source", "target", "source_text")
+            if family.clone is None:
+                assert list(bindings) == ["convert"], family.family
+                continue
         if family.clone is not None:
             server_task, speaks, reference_text = _CLONE_TABLE[family.family]
             expected = (["speak"] if speaks else []) + ["clone"]
+            if family.convert is not None:
+                expected.append("convert")
             assert list(bindings) == expected, family.family
             assert family.default_server_task == server_task, family.family
             assert family.clone.reference_text == reference_text, family.family
@@ -555,6 +582,10 @@ def test_every_task_family_binds_its_workflows():
         assert binding.endpoint == endpoint_for[workflow]
         assert binding.server_task == family.default_server_task
     assert set(_CLONE_TABLE) == {f.family for f in acm.FAMILIES.values() if f.clone is not None}
+    assert set(_CONVERT_TABLE) == {f.family for f in acm.FAMILIES.values() if f.convert is not None}
+    # Chatterbox-Turbo is its own family and still speaks.
+    assert list(acm.FAMILIES["chatterbox_turbo"].workflows) == ["speak"]
+    assert acm.FAMILIES["chatterbox_turbo"].default_server_task == "tts"
     assert acm.family_from_names(["Chatterbox-Turbo-GGUF", "chatterbox-turbo-q8_0.gguf"]) == (
         "chatterbox_turbo"
     )
@@ -586,7 +617,9 @@ def test_edit_families_bind_the_edit_workflow():
     for names in (["DotTTS-MF-GGUF"], ["DotTTS-SOAR-GGUF"], []):
         assert list(acm.family_policy("dots_tts", names = names).workflows) == ["speak"], names
     vevo2, firered = acm.FAMILIES["vevo2"], acm.FAMILIES["firered_audio"]
-    assert list(vevo2.workflows) == list(firered.workflows) == ["clone", "edit"]
+    assert list(firered.workflows) == ["clone", "edit"]
+    # Vevo2 also converts a voice.
+    assert list(vevo2.workflows) == ["clone", "edit", "convert"]
     # Vevo2 edits in an s2s session though it loads as tts.
     assert vevo2.default_server_task == "tts"
     assert (vevo2.workflows["edit"].server_task, vevo2.workflows["edit"].route) == (
@@ -2157,6 +2190,115 @@ def test_required_inputs_come_from_the_raw_spec(hub):
     design_spec = {**maya_spec, "family": "qwen3_tts"}
     _put(snap, f"{folder}/m-q8_0.gguf", _gguf_bytes(family = "qwen3_tts", spec = design_spec))
     assert acm.resolve(f"{AUDIO_CPP_REPO}/{folder}", network = False).required_inputs == ()
+
+
+def _opt_spec(name, type_, **kw):
+    return {"name": name, "type": type_, "description": name, **kw}
+
+
+# The request options of the runtime's rvc and seed_vc specs (model_specs/*.json at the pin).
+RVC_SPEC = {
+    "family": "rvc",
+    "tasks": ["vc"],
+    "options": {
+        "request": [
+            _opt_spec("voice_id", "enum", values = ["default", "manthos", "chocola", "fraise"]),
+            _opt_spec("voice_model_path", "path"),
+            _opt_spec("pitch_extractor", "enum", values = ["rmvpe"], default = "rmvpe"),
+            _opt_spec("pitch_path", "path"),
+            _opt_spec("retrieval_index_path", "path"),
+            _opt_spec("retrieval_blend", "float", default = 0.0, min = 0.0, max = 1.0),
+            _opt_spec("semitone_shift", "int", default = 0),
+            _opt_spec("pitch_filter_radius", "int", default = 3, min = 0),
+            _opt_spec("output_sample_rate", "int", default = 0, min = 0),
+            _opt_spec("rms_mix_rate", "float", default = 0.25),
+            _opt_spec("unvoiced_protection", "float", default = 0.33, min = 0.0, max = 1.0),
+            _opt_spec("speaker_id", "int", default = 0, min = 0),
+            _opt_spec("audio_pad_duration_sec", "int", default = 1, min = 1),
+            _opt_spec("split_query_sec", "int", default = 5, min = 1),
+        ]
+    },
+}
+SEED_VC_SPEC = {
+    "family": "seed_vc",
+    "tasks": ["vc", "svc"],
+    "options": {
+        "request": [
+            _opt_spec(
+                "route",
+                "enum",
+                values = ["v2_vc", "v1_svc", "v1_whisper_bigvgan_vc", "v1_xlsr_hift_vc"],
+            ),
+            _opt_spec("length_adjust", "float", default = 1.0, min = 0.0),
+            _opt_spec("num_inference_steps", "int", default = 30, min = 1),
+            _opt_spec("inference_guidance_scale", "float", default = 0.7, min = 0.0),
+            _opt_spec("intelligibility_guidance_scale", "float", default = 0.7, min = 0.0),
+            _opt_spec("similarity_guidance_scale", "float", default = 0.7, min = 0.0),
+            _opt_spec("voice_anonymization", "bool", default = False),
+            _opt_spec("seed", "int", min = 0),
+            _opt_spec("noise_path", "path"),
+            _opt_spec("f0_condition", "bool"),
+            _opt_spec("auto_f0_adjust", "bool", default = False),
+            _opt_spec("semitone_shift", "int", default = 0),
+        ]
+    },
+}
+MEANVC2_SPEC = {
+    "family": "meanvc2",
+    "tasks": ["vc"],
+    "options": {"request": [_opt_spec("seed", "int", default = 42, min = 0)]},
+}
+_NEVER_IN_CONVERT = {
+    "voice_model_path",
+    "retrieval_index_path",
+    "pitch_path",
+    "noise_path",
+    "audio_pad_duration_sec",
+    "seed",
+}
+
+
+def test_voice_conversion_families_resolve_and_offer_convert_alone(hub):
+    snap = _snapshot(hub)
+    _put(snap, "RVC-GGUF/rvc-f16.gguf", _gguf_bytes(family = "rvc", spec = RVC_SPEC))
+    for name in ("seed-vc-mlx-q8_0", "seed-vc-mlx-f16", "seed-vc-mlx-q4_k"):
+        _put(
+            snap,
+            f"SeedVC-MLX-GGUF/{name}.gguf",
+            _gguf_bytes(family = "seed_vc", spec = SEED_VC_SPEC),
+        )
+    for name in ("meanvc2-120ms-40ms-fp32", "meanvc2-120ms-40ms-q4_k"):
+        _put(
+            snap,
+            f"MeanVC2-GGUF/{name}.gguf",
+            _gguf_bytes(family = "meanvc2", spec = MEANVC2_SPEC),
+        )
+    rvc = acm.resolve(f"{AUDIO_CPP_REPO}/RVC-GGUF", network = False)
+    seed_vc = acm.resolve(f"{AUDIO_CPP_REPO}/SeedVC-MLX-GGUF", network = False)
+    meanvc2 = acm.resolve(f"{AUDIO_CPP_REPO}/MeanVC2-GGUF", network = False)
+    for model in (rvc, seed_vc, meanvc2):
+        assert model.unsupported is None, model.family
+        assert (model.task, model.server_task, model.speaks) == ("tts", "vc", False)
+        assert list(model.workflows) == ["convert"]
+        acm.require_runnable(model, "tts")
+        names = {o["name"] for o in model.convert_options}
+        assert not names & _NEVER_IN_CONVERT, model.family
+        assert not names & acm.CONVERT_DRIVEN_OPTIONS, model.family
+    assert seed_vc.variant.key == "Q8_0"
+    assert meanvc2.variant.key == "FP32"
+    assert [o["name"] for o in rvc.convert_options] == [
+        "retrieval_blend",
+        "pitch_filter_radius",
+        "output_sample_rate",
+        "rms_mix_rate",
+        "unvoiced_protection",
+        "split_query_sec",
+    ]
+    assert {"route", "length_adjust", "similarity_guidance_scale"} <= {
+        o["name"] for o in seed_vc.convert_options
+    }
+    assert "f0_condition" not in {o["name"] for o in seed_vc.options}
+    assert meanvc2.convert_options == ()
 
 
 def test_samsone_is_refused_for_transcription(hub):

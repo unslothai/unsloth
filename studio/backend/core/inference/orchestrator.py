@@ -391,6 +391,12 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
         "audio_reference_text": model_info.get("audio_reference_text"),
         "audio_required_inputs": model_info.get("audio_required_inputs"),
         "audio_clone": model_info.get("audio_clone"),
+        "audio_options_by_workflow": model_info.get("audio_options_by_workflow"),
+        "audio_workflow_tasks": model_info.get("audio_workflow_tasks"),
+        "audio_server_task": model_info.get("audio_server_task"),
+        "audio_convert": model_info.get("audio_convert"),
+        "audio_convert_route": model_info.get("audio_convert_route"),
+        "audio_convert_rules": model_info.get("audio_convert_rules"),
         "audio_edit": model_info.get("audio_edit"),
         "audio_music": model_info.get("audio_music"),
         "audio_cpp_backend": model_info.get("audio_cpp_backend"),
@@ -3374,6 +3380,7 @@ class InferenceOrchestrator:
         audio_inputs: Optional[dict[str, str]] = None,
         reference_text: Optional[str] = None,
         speed: Optional[float] = None,
+        convert: Optional[dict] = None,
         edit: Optional[dict] = None,
         music: Optional[dict] = None,
         output_dir: Optional[str] = None,
@@ -3381,7 +3388,7 @@ class InferenceOrchestrator:
     ) -> Tuple[bytes, int]:
         """Generate TTS audio. Returns (wav_bytes, sample_rate). Blocking: sends the command and
         waits for the full audio response. ``audio_inputs`` maps a role (reference, emotion,
-        source) to a server-local WAV path; audio bytes never cross the queue. A separation
+        source, target) to a server-local WAV path; audio bytes never cross the queue. A separation
         (``output_dir`` set) returns (outputs, sample_rate) instead, see ``separate_audio_response``."""
         if not self._ensure_subprocess_alive():
             raise RuntimeError("Inference subprocess is not running")
@@ -3459,6 +3466,8 @@ class InferenceOrchestrator:
                     cmd["reference_text"] = reference_text
                 if speed is not None:
                     cmd["speed"] = float(speed)
+                if convert is not None:
+                    cmd["convert"] = dict(convert)
                 if edit is not None:
                     cmd["edit"] = dict(edit)
                 if music is not None:
@@ -3526,6 +3535,13 @@ class InferenceOrchestrator:
                             self._mark_worker_started(cancel_event)
                             worker_started = True
                             continue
+
+                        if rtype in ("audio_done", "audio_error") and isinstance(
+                            resp.get("audio_runtime"), dict
+                        ):
+                            entry = self.models.get(expected_model)
+                            if entry is not None:
+                                entry.update(resp["audio_runtime"])
 
                         if rtype == "audio_done":
                             if cancel_event is not None and cancel_event.is_set():

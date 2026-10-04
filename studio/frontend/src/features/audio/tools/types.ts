@@ -1,9 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { AudioConvertCaps } from "@/features/chat/types/api";
 import type { ComponentType } from "react";
 import type { AudioOptionSpec, AudioOptionValues } from "../audio-options";
-import type { AudioSourceRef } from "../audio-run-request";
+import type {
+  AudioSourceRef,
+  ConvertMode,
+  ConvertStyle,
+} from "../audio-run-request";
 import type { AudioWorkflowId } from "../workflows";
 
 export type AudioReferenceTextMode = "required" | "optional" | "unused";
@@ -18,6 +23,8 @@ export interface AudioModelContext {
   audioWorkflows?: readonly string[];
   requiredInputs?: readonly string[];
   referenceTextMode?: AudioReferenceTextMode | null;
+  convert?: AudioConvertCaps | null;
+  convertMode?: ConvertMode;
   audioMusic?: boolean;
   /** Ids of the saved voices, once the list has loaded. */
   savedVoiceIds?: readonly string[] | null;
@@ -32,6 +39,8 @@ export interface AudioRunPatch {
   text?: string;
   speed?: number;
   referenceTextMode?: "required" | "optional" | "hidden";
+  /** `route` mirrors options.route so the page can tell a run reloads the model. */
+  convert?: { style?: ConvertStyle; route?: string };
 }
 
 export interface CoreInputs {
@@ -69,7 +78,7 @@ export interface AudioToolPanel<V> {
   appliesTo?: (ctx: AudioModelContext) => boolean;
   initial: (specs: AudioOptionSpec[]) => V;
   Component: ComponentType<AudioToolPanelProps<V>>;
-  toRequest: (value: V) => AudioRunPatch;
+  toRequest: (value: V, ctx?: AudioModelContext) => AudioRunPatch;
   validate?: (
     value: V,
     core: CoreInputs,

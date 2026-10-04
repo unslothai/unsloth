@@ -20,16 +20,19 @@ const {
   workflowForLoadedModel,
 } = await import("../src/features/audio/workflows.ts");
 
-test("the Audio page offers Speak, Clone, Edit, Music, Separate and Transcribe in that order", () => {
+test("the Audio page offers Speak, Clone, Edit, Convert, Music, Separate and Transcribe in that order", () => {
   assert.deepEqual(
     AUDIO_WORKFLOWS.map((tab) => tab.id),
-    ["speak", "clone", "edit", "music", "separate", "transcribe"],
+    ["speak", "clone", "edit", "convert", "music", "separate", "transcribe"],
   );
   assert.equal(audioWorkflowTab("separate").heading, "Separate audio");
   assert.equal(audioWorkflowTab("speak").heading, "Text to speech");
   assert.equal(audioWorkflowTab("clone").heading, "Clone a voice");
   assert.equal(audioWorkflowTab("edit").heading, "Edit speech");
   assert.equal(audioWorkflowTab("edit").label, "Edit");
+  assert.equal(audioWorkflowTab("convert").heading, "Convert voice");
+  assert.equal(audioWorkflowTab("convert").label, "Convert");
+  assert.equal(audioWorkflowTab("convert").hint, "Make a recording sound like another voice");
   assert.equal(audioWorkflowTab("music").heading, "Create music");
   assert.equal(audioWorkflowTab("transcribe").heading, "Transcribe");
 });
@@ -38,6 +41,7 @@ test("Speak, Clone and Music share the main slot; only Transcribe uses the sidec
   assert.equal(slotForWorkflow("speak"), "speak");
   assert.equal(slotForWorkflow("clone"), "speak");
   assert.equal(slotForWorkflow("edit"), "speak");
+  assert.equal(slotForWorkflow("convert"), "speak");
   assert.equal(slotForWorkflow("music"), "speak");
   assert.equal(slotForWorkflow("separate"), "speak");
   assert.equal(slotForWorkflow("transcribe"), "transcribe");
@@ -47,6 +51,7 @@ test("Create|Train is offered on Speak, Clone and Transcribe, not Music", () => 
   assert.equal(audioWorkflowTab("speak").createTrain, true);
   assert.equal(audioWorkflowTab("clone").createTrain, true);
   assert.equal(audioWorkflowTab("edit").createTrain, false);
+  assert.equal(audioWorkflowTab("convert").createTrain, false);
   assert.equal(audioWorkflowTab("music").createTrain, false);
   assert.equal(audioWorkflowTab("separate").createTrain, false);
   assert.equal(audioWorkflowTab("transcribe").createTrain, true);
@@ -60,7 +65,8 @@ test("pipeline tags map onto workflows and anything else is ignored", () => {
   assert.equal(audioWorkflowForTask(undefined), null);
   assert.equal(isAudioWorkflowId("music"), true);
   assert.equal(isAudioWorkflowId("separate"), true);
-  assert.equal(isAudioWorkflowId("convert"), false);
+  assert.equal(isAudioWorkflowId("convert"), true);
+  assert.equal(isAudioWorkflowId("remix"), false);
 });
 
 test("a clip without a workflow falls back to its audio type", () => {
@@ -71,6 +77,7 @@ test("a clip without a workflow falls back to its audio type", () => {
   assert.equal(clipWorkflow({ workflow: "music", audio_type: "snac" }), "music");
   assert.equal(clipWorkflow({ workflow: "clone", audio_type: "audiocpp_tts" }), "clone");
   assert.equal(clipWorkflow({ workflow: "edit", audio_type: "audiocpp_tts" }), "edit");
+  assert.equal(clipWorkflow({ workflow: "convert", audio_type: "audiocpp_tts" }), "convert");
   assert.equal(clipWorkflow({ workflow: "separate", audio_type: "audiocpp_sep" }), "separate");
   assert.equal(clipWorkflow({ workflow: "remix", audio_type: "audiocpp_music" }), "music");
   assert.equal(audioWorkflowForAudioType(null), "speak");
@@ -115,4 +122,18 @@ test("only a model that lists Clone can run the Clone page", () => {
   assert.equal(loadedModelRunsWorkflow({ workflow: "speak", audioWorkflows: ["clone"], music: false }), false);
   assert.equal(loadedModelRunsWorkflow({ workflow: "clone", audioWorkflows: undefined, music: false }), false);
   assert.equal(loadedModelRunsWorkflow({ workflow: "music", audioWorkflows: undefined, music: true }), true);
+});
+
+test("a convert-only model opens Convert and runs nothing else", () => {
+  assert.equal(
+    workflowForLoadedModel({ current: "speak", audioWorkflows: ["convert"], music: false }),
+    "convert",
+  );
+  assert.equal(
+    workflowForLoadedModel({ current: "convert", audioWorkflows: ["clone", "convert"], music: false }),
+    "convert",
+  );
+  assert.equal(loadedModelRunsWorkflow({ workflow: "convert", audioWorkflows: ["convert"], music: false }), true);
+  assert.equal(loadedModelRunsWorkflow({ workflow: "speak", audioWorkflows: ["convert"], music: false }), false);
+  assert.equal(loadedModelRunsWorkflow({ workflow: "convert", audioWorkflows: ["clone"], music: false }), false);
 });

@@ -20,6 +20,7 @@ import {
   audioCppDisplayName,
   audioCppModelFor,
   audioCppSizeLabel,
+  audioCppWorkflowsFor,
   isAudioCppFolderId,
 } from "../src/features/audio/audio-cpp-catalog.ts";
 import {
@@ -158,6 +159,28 @@ test("recommended models are plain GGUF Audio rows named as on the Hub", () => {
       assert.equal(option.isGguf, true);
       assert.equal(option.descriptionSuffix, "GGUF");
     }
+  }
+});
+
+test("voice conversion models are seeded with the pages they run on", () => {
+  for (const [name, workflows, description] of [
+    ["RVC-GGUF", ["convert"], "Voice conversion"],
+    ["SeedVC-MLX-GGUF", ["convert"], "Voice conversion"],
+    ["MeanVC2-GGUF", ["convert"], "Voice conversion"],
+    ["Chatterbox-GGUF", ["clone", "convert"], "Voice cloning and conversion"],
+    ["Vevo2-GGUF", ["clone", "edit", "convert"], "Voice cloning and conversion"],
+    ["IndexTTS2-GGUF", ["clone"], "Voice cloning"],
+  ] as const) {
+    const id = `${AUDIO_CPP_REPO}/${name}`;
+    const model = audioCppModelFor(id);
+    assert.ok(model, name);
+    assert.equal(model.task, "tts", name);
+    assert.deepEqual(audioCppWorkflowsFor(model), workflows, name);
+    assert.equal(
+      groupForRepoId(id, AUDIO_CATALOG)?.description,
+      description,
+      name,
+    );
   }
 });
 
@@ -525,6 +548,8 @@ test("the capability line names GGUF audio and music, never the runtime's intern
   assert.equal(audioCapabilityLine("tts", "audiocpp_tts"), "Text-to-speech · GGUF");
   assert.equal(audioCapabilityLine("music", "audiocpp_music"), "Music generation · GGUF");
   assert.equal(audioCapabilityLine("clone", "audiocpp_tts"), "Voice cloning · GGUF");
+  assert.equal(audioCapabilityLine("convert", "audiocpp_tts"), "Voice conversion · GGUF");
+  assert.equal(audioCapabilityLine("convert"), "Voice conversion");
   assert.equal(audioCapabilityLine("tts", "higgs_tts2"), "Text-to-speech · higgs_tts2");
   assert.equal(audioCapabilityLine("stt", "ready"), "Speech-to-text · ready");
 });

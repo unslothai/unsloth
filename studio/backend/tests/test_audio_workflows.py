@@ -105,7 +105,15 @@ def test_workflow_for_audio_type_is_speak_or_music():
     assert aw.workflow_for_audio_type("snac") == "speak"
     assert aw.workflow_for_audio_type("unknown") == "speak"
     assert aw.workflow_for_audio_type(None) == "speak"
-    assert aw.AUDIO_WORKFLOW_IDS == ("speak", "clone", "edit", "music", "separate", "transcribe")
+    assert aw.AUDIO_WORKFLOW_IDS == (
+        "speak",
+        "clone",
+        "edit",
+        "convert",
+        "music",
+        "separate",
+        "transcribe",
+    )
 
 
 def test_workflow_ids_match_the_frontend_order():
@@ -122,17 +130,51 @@ def test_status_carries_the_clone_fields():
     assert status.model_dump().items() >= clone.items()
 
 
+def test_status_and_load_carry_the_convert_fields():
+    caps = {
+        "modes": ["speech", "singing"],
+        "target": "audio",
+        "builtin_voices": [],
+        "pitch": {"singing": {"auto": True}},
+        "style": False,
+        "route_reloads": True,
+        "source_max_seconds": 300,
+    }
+    fields = dict(
+        is_audio = True,
+        audio_type = AUDIO_CPP_TTS_AUDIO_TYPE,
+        audio_workflows = ["convert"],
+        audio_options_by_workflow = {"convert": [{"name": "length_adjust", "type": "float"}]},
+        audio_workflow_tasks = {"convert": "vc", "convert:singing": "svc"},
+        audio_server_task = "svc",
+        audio_convert = caps,
+        audio_convert_route = "v1_svc",
+    )
+    dumped = InferenceStatusResponse(**fields).model_dump()
+    assert dumped["audio_convert"] == caps
+    assert dumped["audio_workflow_tasks"]["convert:singing"] == "svc"
+    assert (dumped["audio_server_task"], dumped["audio_convert_route"]) == ("svc", "v1_svc")
+    assert dumped["audio_options_by_workflow"]["convert"][0]["name"] == "length_adjust"
+    load = LoadResponse(status = "loaded", model = "m", display_name = "m", inference = {}, **fields)
+    assert load.audio_convert == caps and load.audio_server_task == "svc"
+    plain = InferenceStatusResponse(is_audio = True, audio_type = AUDIO_CPP_TTS_AUDIO_TYPE)
+    assert plain.audio_convert is None and plain.audio_workflow_tasks is None
+
+
 @pytest.mark.parametrize(
     "folder, family, workflows",
     [
-        ("Chatterbox-GGUF", "chatterbox", ["clone"]),
+        ("Chatterbox-GGUF", "chatterbox", ["clone", "convert"]),
         ("Chatterbox-Turbo-GGUF", "chatterbox_turbo", ["speak"]),
         ("VoxCPM2-GGUF", "voxcpm2", ["speak", "clone"]),
         ("Qwen3-TTS-12Hz-0.6B-Base-GGUF", "qwen3_tts", ["clone"]),
         ("Kokoro-82M-GGUF", "kokoro_tts", ["speak"]),
+        ("RVC-GGUF", "rvc", ["convert"]),
+        ("SeedVC-MLX-GGUF", "seed_vc", ["convert"]),
+        ("MeanVC2-GGUF", "meanvc2", ["convert"]),
         ("DotTTS-Edit-GGUF", "dots_tts", ["speak", "edit"]),
         ("DotTTS-MF-GGUF", "dots_tts", ["speak"]),
-        ("Vevo2-GGUF", "vevo2", ["clone", "edit"]),
+        ("Vevo2-GGUF", "vevo2", ["clone", "edit", "convert"]),
         ("FireRedAudio-GGUF", "firered_audio", ["clone", "edit"]),
     ],
 )

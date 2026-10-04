@@ -8255,6 +8255,11 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         audio_workflows = None,
         audio_reference_text = None,
         audio_required_inputs = None,
+        audio_options_by_workflow = None,
+        audio_workflow_tasks = None,
+        audio_server_task = None,
+        audio_convert = None,
+        audio_convert_route = None,
         audio_music = None,
         # Older/custom backend doubles predate this additive runtime field.
         preserve_thinking_default = bool(getattr(llama_backend, "preserve_thinking_default", False)),
@@ -19169,6 +19174,11 @@ async def _load_model_impl(
             audio_options = _model_info.get("audio_options"),
             audio_workflows = _model_info.get("audio_workflows"),
             audio_reference_text = _model_info.get("audio_reference_text"),
+            audio_options_by_workflow = _model_info.get("audio_options_by_workflow"),
+            audio_workflow_tasks = _model_info.get("audio_workflow_tasks"),
+            audio_server_task = _model_info.get("audio_server_task"),
+            audio_convert = _model_info.get("audio_convert"),
+            audio_convert_route = _model_info.get("audio_convert_route"),
             audio_required_inputs = _model_info.get("audio_required_inputs"),
             audio_music = _model_info.get("audio_music"),
             is_mlx = bool(_model_info.get("is_mlx", False)),
@@ -21851,6 +21861,11 @@ async def _slot_status(current_subject: str):
             audio_family = model_info.get("audio_family"),
             audio_options = model_info.get("audio_options"),
             audio_workflows = model_info.get("audio_workflows"),
+            audio_options_by_workflow = model_info.get("audio_options_by_workflow"),
+            audio_workflow_tasks = model_info.get("audio_workflow_tasks"),
+            audio_server_task = model_info.get("audio_server_task"),
+            audio_convert = model_info.get("audio_convert"),
+            audio_convert_route = model_info.get("audio_convert_route"),
             audio_reference_text = model_info.get("audio_reference_text"),
             audio_required_inputs = model_info.get("audio_required_inputs"),
             audio_music = model_info.get("audio_music"),
@@ -22047,8 +22062,17 @@ def _audio_request_problem(
         if not model_info.get("audio_music"):
             return _audio_music_unavailable(label)
         return None
-    cloning = bool(run_inputs) and (run_inputs.get("workflow") == "clone" or bool(inputs))
-    if cloning:
+    converting = bool(run_inputs) and run_inputs.get("workflow") == "convert"
+    cloning = (
+        bool(run_inputs)
+        and not converting
+        and (run_inputs.get("workflow") == "clone" or bool(inputs))
+    )
+    if converting:
+        problem = _audio_convert_problem(model_info, label, run_inputs)
+        if problem:
+            return problem
+    elif cloning:
         if not workflows or "clone" not in workflows:
             return "Load a model that can clone a voice."
         if not inputs.get("reference"):
@@ -22070,11 +22094,44 @@ def _audio_request_problem(
         and "clone" in workflows
     ):
         return f"{label} speaks in a voice cloned from a recording. Open Clone and add one."
+    elif (
+        workflows is not None
+        and audio_type == "audiocpp_tts"
+        and "speak" not in workflows
+        and "convert" in workflows
+    ):
+        return f"{label} converts recordings. Open Convert and add one."
     if (
         "instruct" in (model_info.get("audio_required_inputs") or [])
         and not str(payload.audio_instructions or "").strip()
     ):
         return f"{label} needs a voice description."
+    return None
+
+
+def _audio_convert_problem(model_info: dict, label: str, run_inputs: dict) -> Optional[str]:
+    caps = model_info.get("audio_convert")
+    if "convert" not in (model_info.get("audio_workflows") or []) or not caps:
+        return "Load a model that can convert a voice."
+    given = run_inputs.get("convert_inputs") or ()
+    if "source" not in given:
+        return "Add the recording to convert."
+    builtin = caps.get("target") == "builtin"
+    if builtin and "target" in given:
+        return f"{label} converts to its built-in voices; pick one under Built-in."
+    if not builtin and "target" not in given:
+        return "Add the target voice."
+    params = run_inputs.get("convert") or {}
+    mode = params.get("mode") or "speech"
+    if mode not in (caps.get("modes") or []):
+        return f"{label} does not convert {mode}."
+    if (
+        caps.get("style")
+        and params.get("style") == "target"
+        and mode == "speech"
+        and not str(params.get("source_text") or "").strip()
+    ):
+        return "Type what's said in the recording, or press Transcribe."
     return None
 
 
@@ -22091,7 +22148,8 @@ async def _generate_tts_wav(
 ) -> tuple[bytes, int, str, Optional[str]]:
     """Shared core of /audio/generate, /audio/speech and /audio/run. Returns
     (wav_bytes, sample_rate, model_name, audio_type). ``run_inputs`` is /audio/run's ``workflow``,
-    ``audio_inputs`` (role -> server-local WAV path), ``reference_text`` and ``speed``."""
+    ``audio_inputs`` (role -> server-local WAV path), ``reference_text``, ``speed`` and ``convert``;
+    a conversion fills ``audio_inputs`` via ``prepare_audio_inputs(model_info)``."""
     # A named target must be budgeted against its own context after preflight.
     if requested_model == _RELOAD_ONLY_MODEL:
         _raise_if_prompt_leaves_no_speech_budget(text)
@@ -22193,6 +22251,7 @@ async def _generate_tts_wav(
                     "audio_inputs",
                     "reference_text",
                     "speed",
+                    "convert",
                     "edit",
                     "music",
                     "output_dir",
@@ -22217,6 +22276,10 @@ async def _generate_tts_wav(
     )
     if _request_problem:
         raise HTTPException(status_code = 400, detail = _request_problem)
+    _prepare_audio_inputs = (run_inputs or {}).get("prepare_audio_inputs")
+    if _prepare_audio_inputs is not None:
+        # The gen lambda reads run_inputs when it runs, so the prepared paths reach the worker.
+        run_inputs["audio_inputs"] = await asyncio.to_thread(_prepare_audio_inputs, model_info)
     if audio_type == "minimax_music3" and not str(payload.audio_instructions or "").strip():
         raise HTTPException(status_code = 400, detail = _MINIMAX_NEEDS_DESCRIPTION)
     if audio_type == "audiocpp_music" and (run_inputs or {}).get("workflow") != "music":
@@ -22306,6 +22369,7 @@ def _persist_tts_clip(
     audio_type: Optional[str],
     extra_meta: Optional[dict] = None,
     workflow: Optional[str] = None,
+    source_wav: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
     """Best-effort gallery save: persistence never fails the request that produced
     the audio. Blocking, so callers run it off the event loop."""
@@ -22323,6 +22387,8 @@ def _persist_tts_clip(
     }
     meta.update({k: v for k, v in (extra_meta or {}).items() if v is not None})
     try:
+        if source_wav is not None:
+            return audio_gallery.save(wav_bytes, meta, Path(source_wav))
         return audio_gallery.save(wav_bytes, meta)
     except Exception as exc:  # noqa: BLE001 - log and serve the audio anyway
         logger.warning("audio_gallery.persist_failed: %s", exc)
@@ -22904,21 +22970,135 @@ async def _run_music_workflow(
     return AudioRunResponse(clips = clips, group_id = group_id, model = model_name)
 
 
+async def _run_audio_convert(
+    body: AudioRunRequest, request: Request, current_subject: str
+) -> AudioRunResponse:
+    from core.inference import audio_inputs
+    from core.inference.audio_cpp_convert import (
+        CONVERT_SOURCE_MAX_SECONDS,
+        CONVERT_TARGET_MAX_SECONDS,
+    )
+
+    if any(
+        name in body.model_fields_set and getattr(body, name) not in (None, False, 1)
+        for name in _MUSIC_ONLY_FIELDS
+    ):
+        raise HTTPException(
+            status_code = 400,
+            detail = "A music mode, lyrics, variations and edits apply to Music only.",
+        )
+    params = body.convert.model_dump()
+    refs = {"source": body.inputs.source, "target": body.inputs.target}
+    if refs["source"] is None:
+        raise HTTPException(status_code = 400, detail = "Add the recording to convert.")
+    resolved: dict[str, Any] = {}
+    try:
+        for role, ref in refs.items():
+            if ref is not None:
+                resolved[role] = await asyncio.to_thread(
+                    audio_inputs.resolve_source, ref.model_dump(exclude_none = True)
+                )
+    except audio_inputs.AudioInputError as exc:
+        raise _audio_source_error(exc) from None
+    source, target = resolved["source"], resolved.get("target")
+    max_seconds = {"source": CONVERT_SOURCE_MAX_SECONDS, "target": CONVERT_TARGET_MAX_SECONDS}
+    seen: dict[str, Any] = {}
+
+    def _prepare(model_info: dict) -> dict[str, str]:
+        seen["model_info"] = model_info
+        rules = model_info.get("audio_convert_rules") or {}
+        try:
+            seen["paths"] = {
+                role: str(
+                    audio_inputs.prepared_path(
+                        item,
+                        int(rules.get(f"{role}_rate") or 16000),
+                        max_seconds = max_seconds[role],
+                    )
+                )
+                for role, item in resolved.items()
+            }
+        except audio_inputs.AudioInputError as exc:
+            raise _audio_source_error(exc) from None
+        return seen["paths"]
+
+    source_text = (body.inputs.source_text or "").strip() or None
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": source.name}],
+        audio_options = body.options,
+        seed = body.seed,
+    )
+    wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
+        source.name,
+        payload,
+        request,
+        current_subject,
+        run_inputs = {
+            "workflow": "convert",
+            "audio_inputs": None,
+            "convert": {**params, "source_text": source_text},
+            "convert_inputs": tuple(resolved),
+            "prepare_audio_inputs": _prepare,
+        },
+    )
+    builtin = None
+    if target is not None:
+        target_name = target.name
+    else:
+        voices = ((seen.get("model_info") or {}).get("audio_convert") or {}).get("builtin_voices")
+        voices = voices or [{"id": params.get("voice"), "label": "Built-in"}]
+        voice = next((v for v in voices if v.get("id") == params.get("voice")), voices[0])
+        builtin, target_name = voice.get("id"), voice.get("label") or voice.get("id")
+    extra_meta: dict[str, Any] = {
+        "role": "output",
+        "source_name": source.name,
+        "reference_name": target_name,
+        "target_builtin": builtin,
+        "settings": {
+            **{key: params.get(key) for key in ("mode", "pitch", "pitch_auto", "style")},
+            "options": _audio_run_settings(body, False)["options"],
+        },
+    }
+    if source.kind == "clip":
+        extra_meta["source_clip_id"] = source.id
+    elif source.kind == "input":
+        extra_meta["source_input_id"] = source.id
+    if target is not None:
+        key = {"voice": "voice_id", "clip": "target_clip_id", "input": "target_input_id"}
+        if target.kind in key:
+            extra_meta[key[target.kind]] = target.id
+    record = await asyncio.to_thread(
+        _persist_tts_clip,
+        wav_bytes,
+        sample_rate,
+        f"{source.name} → {target_name}",
+        model_name,
+        audio_type,
+        extra_meta,
+        "convert",
+        # An upload expires within a day; a history clip does not.
+        (seen.get("paths") or {}).get("source") if source.kind == "input" else None,
+    )
+    return _audio_run_response(record, wav_bytes, sample_rate, model_name)
+
+
 @router.post("/audio/run", response_model = AudioRunResponse)
 async def run_audio_workflow(
     body: AudioRunRequest,
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
-    """Run one Audio page workflow (Clone, Speak in a saved voice, Edit, Music or Separate); clips
-    go to history. Audio is named by id and resolved here in the caller's account; the worker gets
-    a prepared copy's path, never bytes."""
+    """Run one Audio page workflow (Clone, Speak in a saved voice, Edit, Convert, Music or
+    Separate); clips go to history. Audio is named by id and resolved here in the caller's account;
+    the worker gets a prepared copy's path, never bytes."""
     if body.workflow == "separate":
         return await _run_separation(body, request, current_subject)
     import base64
 
     from core.inference import audio_inputs
 
+    if body.workflow == "convert":
+        return await _run_audio_convert(body, request, current_subject)
     if body.workflow == "edit":
         return await _run_audio_edit(body, request, current_subject)
     if body.workflow == "music":
@@ -45496,6 +45676,25 @@ async def get_gallery_audio_file(
     )
 
 
+@studio_router.get("/audio/gallery/{audio_id}/source/file")
+async def get_gallery_audio_source_file(
+    audio_id: str, current_subject: str = Depends(get_current_subject)
+):
+    """The upload a conversion clip converted, when it kept a copy."""
+    from core.inference import audio_gallery
+
+    path = await asyncio.to_thread(audio_gallery.owned_source_path, audio_id)
+    if path is None:
+        raise HTTPException(status_code = 404, detail = "Audio not found.")
+    from fastapi.responses import FileResponse
+
+    return FileResponse(
+        path,
+        media_type = "audio/wav",
+        headers = {"Cache-Control": "private, max-age=31536000, immutable"},
+    )
+
+
 @studio_router.patch("/audio/gallery/{audio_id}", response_model = AudioGalleryItem)
 async def update_gallery_audio_flags(
     audio_id: str,
@@ -45573,7 +45772,7 @@ async def delete_gallery_audio(audio_id: str, current_subject: str = Depends(get
 
 @studio_router.delete("/audio/gallery")
 async def clear_gallery_audio(
-    workflow: Optional[Literal["speak", "clone", "edit", "music", "separate"]] = None,
+    workflow: Optional[Literal["speak", "clone", "edit", "convert", "music", "separate"]] = None,
     current_subject: str = Depends(get_current_subject),
 ):
     from core.inference import audio_gallery
@@ -45651,6 +45850,7 @@ async def transcribe_audio_input(
     """What is said in an input (or, with the path id ``source``, a history clip or saved voice),
     over the first 30 s a clone uses. Saves nothing to the transcript history."""
     from core.inference import audio_inputs
+    from core.inference.audio_cpp_convert import CONVERT_SOURCE_MAX_SECONDS
 
     ref = {
         # ``source`` (or ``-``) stands for "the clip_id or voice_id in the query". A real input id
@@ -45662,7 +45862,10 @@ async def transcribe_audio_input(
 
     def _prepare() -> bytes:
         source = audio_inputs.resolve_source(ref)
-        cap = None if source.kind == "voice" else audio_inputs.REFERENCE_MAX_SECONDS
+        if body.purpose == "convert":
+            cap = CONVERT_SOURCE_MAX_SECONDS
+        else:
+            cap = None if source.kind == "voice" else audio_inputs.REFERENCE_MAX_SECONDS
         path = audio_inputs.prepared_path(source, 16000, max_seconds = cap)
         return path.read_bytes()
 

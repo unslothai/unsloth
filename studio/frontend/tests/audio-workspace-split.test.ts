@@ -94,7 +94,7 @@ test("Generate says why it is off and runs from Mod+Enter anywhere on the page",
   assert.match(host, /!pageRootRef\.current\?\.contains\(event\.target\)/);
   assert.match(
     host,
-    /const handlePageGenerate =\s*ttsWorkflow === "separate" \? separate\.handleGenerate :\s*ttsWorkflow === "clone" \? clone\.handleGenerate :\s*ttsWorkflow === "edit" \? edit\.handleGenerate : handleGenerate;/,
+    /const handlePageGenerate =\s*ttsWorkflow === "separate" \? separate\.handleGenerate :\s*ttsWorkflow === "clone" \? clone\.handleGenerate :\s*ttsWorkflow === "edit" \? edit\.handleGenerate :\s*ttsWorkflow === "convert" \? convert\.handleGenerate : handleGenerate;/,
   );
   assert.match(host, /if \(canGenerate\) void handlePageGenerate\(\);/);
 });

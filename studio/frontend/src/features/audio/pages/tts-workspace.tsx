@@ -474,7 +474,10 @@ export function TtsOutput({
   onFreshClipFocused,
   announcement,
   clipBadge,
+  renderPlayer,
   selectedPlayer,
+  useAgainLabel = "Use text again",
+  showCopyText = true,
 }: Pick<
   AudioGallery,
   | "srcById"
@@ -513,7 +516,19 @@ export function TtsOutput({
     freshClipId: string | null;
     onFreshClipFocused: () => void;
     announcement: string;
-    clipBadge?: (clip: AudioGalleryClip) => string | null;
+    /** A short tag after a clip's text, such as the voice a clone used. */
+    clipBadge?: (
+      clip: AudioGalleryClip,
+      place: "selected" | "history",
+    ) => string | null;
+    /** Replaces the selected clip's waveform, such as Convert's Source/Converted compare. */
+    renderPlayer?: (
+      clip: AudioGalleryClip,
+      src: string,
+      focusRef: ((element: HTMLAudioElement | null) => void) | undefined,
+    ) => ReactNode;
+    useAgainLabel?: string;
+    showCopyText?: boolean;
     /** Replaces the plain player; `focusRef` goes on its first control. */
     selectedPlayer?: (
       clip: AudioGalleryClip,
@@ -565,16 +580,18 @@ export function TtsOutput({
               strokeWidth={1.75}
               className="size-icon"
             />
-            Use text again
+            {useAgainLabel}
           </DropdownMenuItem>
-          <DropdownMenuItem onClick={() => void handleCopyPrompt(clip.prompt)}>
-            <HugeiconsIcon
-              icon={Copy01Icon}
-              strokeWidth={1.75}
-              className="size-icon"
-            />
-            Copy text
-          </DropdownMenuItem>
+          {showCopyText ? (
+            <DropdownMenuItem onClick={() => void handleCopyPrompt(clip.prompt)}>
+              <HugeiconsIcon
+                icon={Copy01Icon}
+                strokeWidth={1.75}
+                className="size-icon"
+              />
+              Copy text
+            </DropdownMenuItem>
+          ) : null}
           <MusicSendToMenuItems clip={clip} />
         </>
       }
@@ -610,8 +627,17 @@ export function TtsOutput({
                   : null
               }
               menu={clipMenu(selectedClip, "row")}
-              player={customPlayer ?? undefined}
-              status={clipBadge?.(selectedClip) ?? undefined}
+              player={
+                customPlayer ??
+                (renderPlayer && selectedClipSrc
+                  ? renderPlayer(
+                      selectedClip,
+                      selectedClipSrc,
+                      selectedClip.id === freshClipId ? focusFreshClip : undefined,
+                    )
+                  : undefined)
+              }
+              status={clipBadge?.(selectedClip, "selected") ?? undefined}
               focusOnMount={selectedClip.id === freshClipId}
               onFocused={onFreshClipFocused}
             />
@@ -701,7 +727,7 @@ export function TtsOutput({
                     <span className="min-w-0 flex-1 truncate">
                       {clip.prompt}
                     </span>
-                    <ClipBadge text={clipBadge?.(clip)} />
+                    <ClipBadge text={clipBadge?.(clip, "history")} />
                     <span className="hidden min-w-0 max-w-[45%] shrink truncate text-ui-11p5 text-muted-foreground @[30rem]:block">
                       {audioModelLabel(clip.model)} ·{" "}
                       {formatRelativeShort(clip.created_at)}

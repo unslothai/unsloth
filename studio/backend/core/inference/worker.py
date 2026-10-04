@@ -795,6 +795,12 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "audio_reference_text",
                         "audio_required_inputs",
                         "audio_clone",
+                        "audio_options_by_workflow",
+                        "audio_workflow_tasks",
+                        "audio_server_task",
+                        "audio_convert",
+                        "audio_convert_route",
+                        "audio_convert_rules",
                         "audio_edit",
                         "audio_music",
                         "audio_cpp_backend",
@@ -1598,6 +1604,17 @@ def _handle_share_object(backend, cmd: dict, resp_queue: Any) -> None:
         )
 
 
+def _audio_runtime(backend) -> dict:
+    fields = getattr(backend, "runtime_fields", None)
+    if not callable(fields):
+        return {}
+    try:
+        return {"audio_runtime": dict(fields())}
+    except Exception as exc:  # noqa: BLE001 - status detail, never fails the request
+        logger.debug("audio runtime fields unavailable: %s", exc)
+        return {}
+
+
 def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) -> None:
     """Handle TTS audio generation — returns WAV bytes + sample_rate.
 
@@ -1633,7 +1650,7 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
         # workflow its backend has no keyword for.
         params = inspect.signature(backend.generate_audio_response).parameters
         takes_any = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
-        for key in ("workflow", "audio_inputs", "reference_text", "speed", "edit"):
+        for key in ("workflow", "audio_inputs", "reference_text", "speed", "convert", "edit"):
             if cmd.get(key) is None:
                 continue
             if takes_any or key in params:
@@ -1665,6 +1682,7 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
             "request_id": request_id,
             "wav_base64": base64.b64encode(wav_bytes).decode("ascii"),
             "sample_rate": sample_rate,
+            **_audio_runtime(backend),
             "stats": getattr(backend, "last_generation_stats", None),
         }
         take_status_patch = getattr(backend, "take_status_patch", None)
@@ -1683,6 +1701,7 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
             # Flag a shared-event cancel (unload, training, arbiter) so the orchestrator does not report HTTP 500.
             "cancelled": bool(cancel_event is not None and cancel_event.is_set()),
             "stack": traceback.format_exc(limit = 20),
+            **_audio_runtime(backend),
         }
         if isinstance(exc, AudioRuntimeError):
             response["code"] = AUDIO_RUNTIME_ERROR_CODE

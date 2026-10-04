@@ -6,7 +6,7 @@
 import type { AudioOptionValues } from "./audio-options";
 import type {
   AudioRunEditPart,
-  AudioRunRequest,
+  AudioTextRunRequest,
   AudioSourceRef,
 } from "./audio-run-request";
 import {
@@ -248,7 +248,7 @@ export function editAdapterFor(
 export function buildEditRun(
   adapter: EditAdapter,
   input: EditRunInput,
-): AudioRunRequest {
+): AudioTextRunRequest {
   const mode: EditMode =
     input.mode === "delivery" && adapter.delivery ? "delivery" : "words";
   const transcript = input.transcript.trim();
@@ -256,10 +256,10 @@ export function buildEditRun(
     mode === "delivery"
       ? transcript || input.sourceName?.trim() || "Recording"
       : input.edited.trim();
-  const inputs: NonNullable<AudioRunRequest["inputs"]> = {};
+  const inputs: NonNullable<AudioTextRunRequest["inputs"]> = {};
   if (input.source) inputs.source = { ...input.source };
   if (transcript) inputs.reference_text = transcript;
-  const run: AudioRunRequest = {
+  const run: AudioTextRunRequest = {
     workflow: "edit",
     text,
     inputs,
@@ -282,7 +282,7 @@ export function buildEditRun(
 /** The progress line for a chained run, or null when it is one pass. */
 export function editPhaseLabel(
   adapter: EditAdapter,
-  run: AudioRunRequest,
+  run: AudioTextRunRequest,
 ): string | null {
   if (adapter.style !== "instructions") return null;
   const delivery = run.edit?.mode === "delivery";

@@ -5,7 +5,7 @@
 
 import type {
   AudioOptionScalar,
-  AudioRunRequest,
+  AudioTextRunRequest,
   AudioSourceSelection,
 } from "../audio-run-request";
 import { sourceRefOf } from "../audio-run-request";
@@ -285,7 +285,7 @@ export function buildMusicRunRequest(
     options?: Record<string, AudioOptionScalar>;
     seed?: number | null;
   },
-): AudioRunRequest {
+): AudioTextRunRequest {
   const { rule } = inputs;
   const base = {
     workflow: "music" as const,

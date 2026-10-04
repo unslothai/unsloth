@@ -36,9 +36,12 @@ export function clipReference(clip: {
   workflow?: string | null;
   reference_name?: string | null;
 }): AudioSourceSelection {
-  // Only speech is a transcript: not a Music description, nor the file name an untranscribed edit is titled by.
+  // Only speech is a transcript: not a Music description, a Convert label, nor the file name an
+  // untranscribed edit is titled by.
   const spoken =
-    clip.workflow !== "music" && clip.prompt !== clip.reference_name;
+    clip.workflow !== "music" &&
+    clip.workflow !== "convert" &&
+    clip.prompt !== clip.reference_name;
   return {
     kind: "clip",
     id: clip.id,
@@ -118,7 +121,33 @@ export interface AudioMusicRunFields {
   source?: AudioSourceRef | null;
 }
 
-export interface AudioRunRequest {
+export type ConvertMode = "speech" | "singing";
+
+export type ConvertStyle = "source" | "target";
+
+export interface AudioConvertParams {
+  mode: ConvertMode;
+  pitch: number | null;
+  pitch_auto: boolean;
+  style?: ConvertStyle;
+  voice?: string | null;
+}
+
+export interface AudioConvertRunRequest {
+  workflow: "convert";
+  inputs: {
+    source: AudioSourceRef;
+    target?: AudioSourceRef | null;
+    source_text?: string | null;
+  };
+  convert: AudioConvertParams;
+  options?: Record<string, AudioOptionScalar>;
+  seed?: number | null;
+}
+
+export type AudioRunRequest = AudioTextRunRequest | AudioConvertRunRequest;
+
+export interface AudioTextRunRequest {
   workflow: "clone" | "speak" | "edit" | "music" | "separate";
   music?: AudioMusicRunFields;
   /** Required for clone, speak and music; separate takes none. */
@@ -150,10 +179,64 @@ function cleanRef(
   return Object.keys(out).length === 1 ? out : null;
 }
 
+function cleanOptions(
+  options: Record<string, AudioOptionScalar> | undefined,
+): Record<string, AudioOptionScalar> {
+  return Object.fromEntries(
+    Object.entries(options ?? {}).filter(
+      ([name, value]) =>
+        name &&
+        (typeof value === "boolean" ||
+          typeof value === "string" ||
+          (typeof value === "number" && Number.isFinite(value))),
+    ),
+  );
+}
+
+const CONVERT_MODES: ReadonlySet<string> = new Set(["speech", "singing"]);
+
+/** Ids only, never a path: the route resolves them in the caller's account. */
+function buildConvertRunBody(
+  request: AudioConvertRunRequest,
+): Record<string, unknown> {
+  const inputs: Record<string, unknown> = {};
+  const source = cleanRef(request.inputs?.source);
+  if (source) inputs.source = source;
+  const target = cleanRef(request.inputs?.target);
+  if (target) inputs.target = target;
+  const sourceText = request.inputs?.source_text?.trim();
+  if (sourceText) inputs.source_text = sourceText;
+  const params = request.convert;
+  const convert: Record<string, unknown> = {
+    mode: CONVERT_MODES.has(params?.mode) ? params.mode : "speech",
+    pitch_auto: params?.pitch_auto === true,
+    pitch:
+      typeof params?.pitch === "number" && Number.isFinite(params.pitch)
+        ? Math.min(24, Math.max(-24, Math.round(params.pitch)))
+        : null,
+  };
+  if (params?.style === "source" || params?.style === "target") {
+    convert.style = params.style;
+  }
+  const voice = params?.voice?.trim();
+  if (voice) convert.voice = voice;
+  const body: Record<string, unknown> = {
+    workflow: "convert",
+    inputs,
+    convert,
+  };
+  const options = cleanOptions(request.options);
+  if (Object.keys(options).length > 0) body.options = options;
+  if (typeof request.seed === "number" && Number.isInteger(request.seed))
+    body.seed = request.seed;
+  return body;
+}
+
 /** Allowed keys only, empty values dropped: the route 422s on extra keys. */
 export function buildAudioRunBody(
   request: AudioRunRequest,
 ): Record<string, unknown> {
+  if (request.workflow === "convert") return buildConvertRunBody(request);
   const body: Record<string, unknown> = { workflow: request.workflow };
   if (request.workflow !== "separate") body.text = request.text ?? "";
   const language = request.language?.trim();
@@ -175,15 +258,7 @@ export function buildAudioRunBody(
   if (Object.keys(inputs).length > 0) body.inputs = inputs;
   const edit = cleanEdit(request.edit);
   if (edit) body.edit = edit;
-  const options = Object.fromEntries(
-    Object.entries(request.options ?? {}).filter(
-      ([name, value]) =>
-        name &&
-        (typeof value === "boolean" ||
-          typeof value === "string" ||
-          (typeof value === "number" && Number.isFinite(value))),
-    ),
-  );
+  const options = cleanOptions(request.options);
   if (Object.keys(options).length > 0) body.options = options;
   if (typeof request.speed === "number" && Number.isFinite(request.speed))
     body.speed = request.speed;

@@ -69,6 +69,7 @@ export type AudioBusy =
 
 export type AudioGenerationPhase =
   | "preparing"
+  | "switching"
   | "generating"
   | "stopping"
   | "finishing"
@@ -84,6 +85,7 @@ export type AudioGenerationPresentation = {
  *  browser-visible numeric progress, so these labels never imply a fraction or ETA. */
 export function audioGenerationPresentation(
   phase: AudioGenerationPhase,
+  detail?: string | null,
 ): AudioGenerationPresentation | null {
   switch (phase) {
     case "preparing":
@@ -91,6 +93,12 @@ export function audioGenerationPresentation(
         status: "Preparing audio…",
         actionLabel: "Preparing…",
         canStop: false,
+      };
+    case "switching":
+      return {
+        status: detail || "Switching model…",
+        actionLabel: "Stop",
+        canStop: true,
       };
     case "generating":
       return {

@@ -55,7 +55,7 @@ export async function showRunResult({
 }: {
   response: AudioRunResponse;
   text: string;
-  workflow: "speak" | "clone" | "edit" | "music" | "separate";
+  workflow: "speak" | "clone" | "edit" | "convert" | "music" | "separate";
 } & Pick<
   AudioGallery,
   "refreshGallery" | "selectClip" | "setFallbackClip" | "setSelectedId"
@@ -364,6 +364,8 @@ export function useCloneGeneration({
         setFallbackClip,
         setSelectedId,
       });
+      // The run can restart audio.cpp under another task (Chatterbox: clon after vc).
+      await refreshStatus();
     } catch (error) {
       if (!controller.signal.aborted) {
         updateGenerationPhase("finishing");
@@ -385,8 +387,9 @@ export function useCloneGeneration({
         // Kept under Generate so the reason outlives the toast; expiry is already on the card.
         setGenerationError(message);
         if (!expired) toast.error(message);
-        await refreshStatus();
       }
+      // Also after Stop: the run may already have restarted audio.cpp under another task.
+      await refreshStatus();
     } finally {
       generateAbort.current = null;
       updateGenerationPhase(null);

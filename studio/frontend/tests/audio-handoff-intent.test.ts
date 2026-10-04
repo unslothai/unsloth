@@ -24,7 +24,7 @@ test("unknown tasks, workflows and audio types are dropped", () => {
   assert.deepEqual(
     validateAudioSearch({
       task: "text-to-image",
-      workflow: "convert",
+      workflow: "remix",
       audioType: "not-a-type",
       loadId: "   ",
     }),

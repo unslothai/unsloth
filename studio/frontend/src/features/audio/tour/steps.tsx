@@ -11,10 +11,11 @@ const modeStep: TourStep = {
   body: (
     <>
       Open the page title to switch pages. Speak turns text into speech, Clone
-      speaks in the voice from a short recording, Music makes songs and sound
-      effects, Separate splits a track into vocals and instruments, and
-      Transcribe turns a recording into text. Each lists only the models that
-      can do it, so the picker above follows the page.
+      speaks in the voice from a short recording, Edit changes words in a
+      recording, Convert makes a recording sound like another voice, Music
+      makes songs and sound effects, Separate splits a track into vocals and
+      instruments, and Transcribe turns a recording into text. Each lists only
+      the models that can do it, so the picker above follows the page.
     </>
   ),
 };
@@ -25,6 +26,8 @@ const MODEL_STEP_BODY: Record<AudioWorkflowId, string> = {
   clone:
     "Models that can speak in the voice of a short recording you give them.",
   edit: "Models that can change words in a recording and keep the voice.",
+  convert:
+    "Voice conversion models. Loading one replaces the model in the main slot.",
   music: "Music models. Loading one replaces the model in the main slot.",
   separate:
     "Source separation models. Loading one replaces the model in the main slot.",
@@ -139,6 +142,44 @@ export function buildAudioTourSteps({
         body: <>What the cloned voice should say.</>,
       },
       outputStep,
+    ];
+  }
+
+  if (workflow === "convert") {
+    return [
+      modeStep,
+      modelStep(workflow),
+      {
+        id: "source",
+        target: "audio-convert-source",
+        title: "Recording",
+        body: (
+          <>
+            Upload, record or pick the speech or singing to convert. Its words
+            and timing stay; only the voice changes.
+          </>
+        ),
+      },
+      {
+        id: "target",
+        target: "audio-convert-target",
+        title: "Target voice",
+        body: (
+          <>
+            The voice it should sound like: a short clip, a saved voice, or one
+            of the model's built-in voices.
+          </>
+        ),
+      },
+      {
+        ...outputStep,
+        body: (
+          <>
+            Results play here and stay in the history list. Switch between
+            Source and Converted to hear the difference at the same moment.
+          </>
+        ),
+      },
     ];
   }
 

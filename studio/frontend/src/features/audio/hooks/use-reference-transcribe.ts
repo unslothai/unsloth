@@ -13,9 +13,12 @@ import { sttEngineForRepoId, sttSidecarKeyFor } from "../catalog";
 export function useReferenceTranscribe({
   sttRepo,
   onText,
+  purpose = "reference",
 }: {
   sttRepo: string | null;
   onText: (text: string, reference: AudioSourceSelection) => void;
+  /** "convert" transcribes up to Convert's cap instead of the 30 s clone reference. */
+  purpose?: "reference" | "convert";
 }) {
   const [transcribing, setTranscribing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -41,6 +44,7 @@ export function useReferenceTranscribe({
             model,
             engine: sttRepo ? sttEngineForRepoId(sttRepo) : sttEngineFor(model),
             device: voice.sttDevice,
+            purpose,
           },
           controller.signal,
         );
@@ -67,7 +71,7 @@ export function useReferenceTranscribe({
         }
       }
     },
-    [sttRepo],
+    [sttRepo, purpose],
   );
 
   const cancel = useCallback(() => {

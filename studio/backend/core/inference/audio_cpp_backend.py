@@ -28,7 +28,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
-from core.inference import audio_cpp_files
+from core.inference import audio_cpp_convert, audio_cpp_files
 from core.inference import audio_cpp_music as cm
 from core.inference.audio_cpp_models import (
     MUSIC_MAX_VARIATIONS,
@@ -123,6 +123,25 @@ def model_info_fields(model: AudioCppModel) -> dict[str, Any]:
         "audio_clone": clone_rules(model),
         "audio_edit": edit_rules(model),
         "audio_music": music_rules(model),
+        "audio_options_by_workflow": (
+            {"convert": [dict(option) for option in model.convert_options]}
+            if model.convert is not None
+            else None
+        ),
+        "audio_workflow_tasks": audio_cpp_convert.workflow_tasks(model),
+        "audio_convert": audio_cpp_convert.convert_caps(model),
+        "audio_convert_rules": model.convert
+        and {"source_rate": model.convert.source_rate, "target_rate": model.convert.target_rate},
+        **server_runtime_fields(model, None),
+    }
+
+
+def server_runtime_fields(model: AudioCppModel, running: Optional[AudioCppModel]) -> dict[str, Any]:
+    """Task and Seed-VC route of the running server (``model``'s own when none runs)."""
+    served = running or model
+    return {
+        "audio_server_task": served.server_task,
+        "audio_convert_route": audio_cpp_convert.served_route(served),
     }
 
 
@@ -379,9 +398,18 @@ class AudioCppBackend:
 
     def _running_server(self, model: AudioCppModel, cancel_event) -> AudioCppServer:
         with self._server_lock:
-            if self._server is None or not self._server.alive() or self._server.model != model:
+            if (
+                self._server is None
+                or not self._server.alive()
+                or self._server.model != model
+                # Seed-VC's route: model equality leaves model_options out.
+                or _request_defaults(self._server.model) != _request_defaults(model)
+            ):
                 logger.info("audio.cpp: (re)starting the server for %s", model.id)
-                self._start_server(model, cancel_event)
+                try:
+                    self._start_server(model, cancel_event)
+                finally:
+                    self._record_runtime()
             return self._server
 
     # Generation
@@ -405,6 +433,7 @@ class AudioCppBackend:
         audio_inputs: Optional[dict] = None,
         reference_text: Optional[str] = None,
         speed: Optional[float] = None,
+        convert: Optional[dict] = None,
         edit: Optional[dict] = None,
         music: Optional[dict] = None,
         output_dir: Optional[str] = None,
@@ -430,23 +459,56 @@ class AudioCppBackend:
                 cancel_event,
             )
         editing = workflow == "edit"
+        converting = workflow == "convert"
         # Speak in a saved voice sends a reference with workflow "speak": a clone too.
-        cloning = not editing and (workflow == "clone" or bool(audio_inputs))
+        cloning = not (editing or converting) and (workflow == "clone" or bool(audio_inputs))
         if editing and model.edit is None:
             raise RuntimeError(f"{model.display_name} cannot edit speech.")
-        if cloning and model.clone is None:
-            raise RuntimeError(f"{model.display_name} cannot clone a voice.")
-        if editing:
+        if converting:
+            if model.convert is None:
+                raise RuntimeError(f"{model.display_name} cannot convert a voice.")
+            convert = convert or {}
+            mode = str(convert.get("mode") or "speech")
+            try:
+                served, options = audio_cpp_convert.served_model(
+                    model, mode, validate_options(model.convert_options, audio_options)
+                )
+                request = audio_cpp_convert.convert_request(
+                    model,
+                    mode = mode,
+                    source = (audio_inputs or {}).get("source"),
+                    target = (audio_inputs or {}).get("target"),
+                    voice = convert.get("voice"),
+                    pitch = convert.get("pitch"),
+                    pitch_auto = bool(convert.get("pitch_auto")),
+                    style = str(convert.get("style") or "source"),
+                    source_text = convert.get("source_text"),
+                    options = {name: _option_string(value) for name, value in options.items()},
+                    seed = seed,
+                )
+            except audio_cpp_convert.ConvertRequestError as exc:
+                raise RuntimeError(str(exc)) from exc
+        elif editing:
             options = validate_options(edit_options(model), audio_options)
             served = _served_for_edit(model)
         else:
+            if cloning and model.clone is None:
+                raise RuntimeError(f"{model.display_name} cannot clone a voice.")
+            served = model
             options = validate_options(
                 model.clone_options if cloning else model.options, audio_options
             )
-            served = model
         server = self._running_server(served, cancel_event)
         try:
-            if editing:
+            if converting:
+                ctype, data = server.post_json(
+                    "/v1/tasks/run",
+                    {"model": server.model_id, "request": request},
+                    timeout = _GENERATE_TIMEOUT_SECONDS,
+                    cancel_event = cancel_event,
+                )
+                wav = _audio_from_task_response(ctype, data)
+            elif editing:
                 wav = self._generate_edit(
                     server,
                     model,
@@ -500,6 +562,20 @@ class AudioCppBackend:
             ) from exc
         _raise_if_cancelled(cancel_event)
         return wav, _wav_sample_rate(wav)
+
+    def runtime_fields(self) -> dict[str, Any]:
+        model = self._model
+        if model is None:
+            return {}
+        with self._server_lock:
+            server = self._server
+            running = server.model if server is not None and server.alive() else None
+        return server_runtime_fields(model, running)
+
+    def _record_runtime(self) -> None:
+        entry = self.models.get(self.active_model_name or "")
+        if entry is not None:
+            entry.update(self.runtime_fields())
 
     def separate_audio(
         self,
@@ -571,6 +647,7 @@ class AudioCppBackend:
         # request starts a fresh one.
         with self._server_lock:
             self._stop_server_locked()
+            self._record_runtime()
 
     @staticmethod
     def _generate_speech(
@@ -957,6 +1034,10 @@ def _with_companions(model: AudioCppModel) -> AudioCppModel:
         companion_model = _resolve_companion(model, companion, network = False)
         session[companion.session_option] = audio_cpp_files.materialize(companion_model)
     return replace(model, model_options = {**model.model_options, "session_options": session})
+
+
+def _request_defaults(model: AudioCppModel) -> Any:
+    return (model.model_options or {}).get("default_request_options")
 
 
 _MAX_BATCH_OPTION = "stable_audio.max_batch"
