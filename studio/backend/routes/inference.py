@@ -30542,6 +30542,7 @@ async def produce_openai_chat_completions(
                         continue
 
                     if event["type"] == "skill_load":
+                        approval_flush_pending = event.get("status") == "awaiting_approval"
                         if _ui_events:
                             yield f"data: {json.dumps(event)}\n\n"
                         elif _drop_keepalive.due():

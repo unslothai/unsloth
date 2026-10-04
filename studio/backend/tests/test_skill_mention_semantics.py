@@ -300,3 +300,54 @@ def test_safetensors_gets_complete_manifest_before_first_turn(mention_client):
     )
     assert path.read_text() in captured[0][0]["content"]
     assert any(event["type"] == "skill_load" and event["status"] == "loaded" for event in events)
+
+
+def test_external_ask_flushes_skill_approval_before_waiting(mention_client, monkeypatch):
+    from core.inference.studio_tool_loop import (
+        ToolLoopRun,
+        ToolLoopPolicy,
+        stream_with_studio_tools,
+    )
+
+    def slow_allow(*args, **kwargs):
+        import time
+        time.sleep(0.3)
+        return "allow"
+
+    monkeypatch.setattr(mentions, "wait_tool_decision", slow_allow)
+
+    class Transport:
+        heals_text_tool_calls = False
+        sanitizes_provider_frames = False
+
+        async def stream(self, **kwargs):
+            yield 'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}'
+            yield "data: [DONE]"
+
+    async def drive():
+        return [
+            event
+            async for event in stream_with_studio_tools(
+                Transport(),
+                run = ToolLoopRun(
+                    messages = [{"role": "user", "content": "@skill-creator"}], session_id = "s"
+                ),
+                policy = ToolLoopPolicy(
+                    tools = [READ_SKILL_TOOL],
+                    max_calls = 1,
+                    timeout = 30,
+                    permission_mode = "ask",
+                    confirm_calls = True,
+                    bypass_permissions = False,
+                    rag_scope = None,
+                    nudge_tool_calls = False,
+                ),
+                cancel_event = threading.Event(),
+            )
+        ]
+
+    events = asyncio.run(drive())
+    gate = next(i for i, e in enumerate(events) if '"status":"awaiting_approval"' in e)
+    # The Allow / Deny card must be followed by its own keepalive write while Ask waits.
+    assert events[gate + 1].startswith(":"), events[gate : gate + 2]
+    assert any('"status":"loaded"' in e for e in events)
