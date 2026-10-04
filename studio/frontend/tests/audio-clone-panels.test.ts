@@ -19,6 +19,7 @@ const {
   CLONE_PANEL_LOGIC,
   COSYVOICE_INSTRUCTION_MISSING,
   EMOTION_AUDIO_MISSING,
+  SAVED_VOICE_DELETED,
   SAVED_VOICE_MISSING,
   chatterboxExpressivenessLogic,
   cosyVoiceModeLogic,
@@ -344,6 +345,16 @@ test("a saved voice on Speak becomes the run's reference", () => {
   );
 });
 
+test("a saved voice deleted on Clone holds Speak's Generate", () => {
+  const saved = { source: "saved" as const, voiceId: "v1" };
+  const check = (savedVoiceIds: readonly string[] | null) =>
+    speakVoiceLogic.validate?.(saved, { text: "hi" }, ctx({ savedVoiceIds }));
+  assert.equal(check(["v2"]), SAVED_VOICE_DELETED);
+  assert.equal(check(["v1", "v2"]), null);
+  // Not loaded yet, or the list failed: nothing to compare against.
+  assert.equal(check(null), null);
+});
+
 test("formatVibeVoiceScript prefixes plain text only", () => {
   assert.equal(
     formatVibeVoiceScript("Hello there."),
@@ -397,7 +408,7 @@ test("Clone's blockers come in rail order", () => {
   assert.equal(cloneBlocker(base)?.kind, "reference");
   assert.equal(
     cloneBlocker({ ...base, referenceExpired: true })?.reason,
-    "This reference expired. Add it again.",
+    "This reference expired.",
   );
   const reference = {
     kind: "input" as const,
