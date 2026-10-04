@@ -281,6 +281,13 @@ def test_check_instructions():
         # Words that are not in the transcripts.
         (["Replace 'alien' with 'robot'."], EDITED, mismatch),
         (["Replace 'human' with 'cat'."], EDITED, mismatch),
+        # Every word is in the right transcript, but the instructions do not produce the target:
+        # the runtime would edit one thing and history would say another.
+        (["Replace 'Cemo' with 'human'."],
+         ORIGINAL.replace("Cemo", "human").replace("a human voice", "a Cemo voice"), mismatch),
+        (["Replace 'human' with 'robot'."], EDITED, mismatch),
+        (["Delete 'Okay,'."], ORIGINAL.replace("Okay, I'm", "I'm Okay,"), mismatch),
+        (["Replace 'human' with 'robot'."], ORIGINAL.replace("human", "robot"), None),
     ):
         check = audio_edit.check_instructions(instructions, ORIGINAL, edited, 5, "FireRedAudio")
         assert check == problem, instructions

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
@@ -94,7 +95,8 @@ def check_instructions(
     label: str = "FireRedAudio",
 ) -> Optional[str]:
     """Why FireRedAudio ``instructions`` are refused; None when each is a known form whose old words
-    (or anchor) are in ``original`` and new words in ``edited``."""
+    (or anchor) are in ``original`` and new words in ``edited``, and the words they remove and add
+    turn the one transcript into the other."""
     items = list(instructions or ())
     if not items:
         return NO_CHANGE
@@ -104,21 +106,31 @@ def check_instructions(
             "Make fewer changes, or use DotTTS Edit."
         )
     before, after = _collapse(original), _collapse(edited)
+    # The runtime gets the instructions and history gets ``edited``, so the two have to agree.
+    # Which occurrence of a repeated word an instruction means is the runtime's call, so the
+    # check is on words as a bag, which every page-built diff satisfies whatever the positions.
+    words = Counter(before.split())
     for instruction in items:
         match = INSTRUCTION_RE.match(str(instruction))
         if match is None:
             return UNKNOWN_INSTRUCTION
         old, new, deleted, inserted, anchor = match.groups()
         if old is not None:
-            olds, news = [old], [new]
+            olds, news, removed = [old], [new], [old]
         elif deleted is not None:
-            olds, news = [deleted], []
+            olds, news, removed = [deleted], [], [deleted]
         else:
-            olds, news = [anchor], [inserted]
+            olds, news, removed = [anchor], [inserted], []
         if not all(_collapse(o) and _collapse(o) in before for o in olds):
             return MISMATCH
         if not all(_collapse(n) and _collapse(n) in after for n in news):
             return MISMATCH
+        for phrase in removed:
+            words.subtract(phrase.split())
+        for phrase in news:
+            words.update(phrase.split())
+    if +words != Counter(after.split()):
+        return MISMATCH
     return None
 
 
