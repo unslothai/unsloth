@@ -44,9 +44,13 @@ test("only the page commits a workflow; the sidebar's request goes through the s
 test("a loaded model opens the page that fits it", () => {
   assert.match(
     slot,
-    /const loadedWorkflow = isMusicGenerationModel\(repoId, res\.audio_type\)\s*\? "music"\s*: "speak";[\s\S]{0,200}?if \(modeRef\.current === "speak"\) \{\s*useAudioWorkspaceStore\.getState\(\)\.commitWorkflow\(loadedWorkflow\);/,
+    /const loadedWorkflow = workflowForLoadedModel\(\{\s*current: useAudioWorkspaceStore\.getState\(\)\.workflow,\s*audioWorkflows: res\.audio_workflows,\s*music: isMusicGenerationModel\(repoId, res\.audio_type\),\s*\}\);[\s\S]{0,200}?rememberModel\(loadedWorkflow, repoId\);\s*if \(modeRef\.current === "speak"\) workspace\.commitWorkflow\(loadedWorkflow\);/,
   );
-  assert.match(host, /adoptWorkflow\("music"\)/);
+  // A model already resident on mount uses the same rule, so a clone-only one opens Clone.
+  assert.match(
+    host,
+    /workflowForLoadedModel\(\{\s*current: store\.workflow,\s*audioWorkflows: status\.audio_workflows,\s*music: musicGeneration,\s*\}\);\s*if \(next !== "speak" && next !== store\.workflow\) store\.adoptWorkflow\(next\);/,
+  );
 });
 
 test("?workflow= names the page ahead of ?task=, and both go through the workflow gate", () => {
@@ -92,7 +96,11 @@ test("Generate says why it is off and runs from Mod+Enter anywhere on the page",
   assert.match(host, /\{ label: "Choose a music model", onClick: openSelector \}/);
   assert.match(host, /if \(busy === "generating"\) setGenerationError\(null\);/);
   assert.match(host, /!pageRootRef\.current\?\.contains\(event\.target\)/);
-  assert.match(host, /if \(canGenerate\) void handleGenerate\(\);/);
+  assert.match(
+    host,
+    /const handlePageGenerate =\s*ttsWorkflow === "clone" \? clone\.handleGenerate : handleGenerate;/,
+  );
+  assert.match(host, /if \(canGenerate\) void handlePageGenerate\(\);/);
 });
 
 test("each page tours its own model and settings", () => {

@@ -183,15 +183,6 @@ export function nativeAudioInstructionsKind(
   return null;
 }
 
-export function instructionsFieldKind(
-  workflow: "speak" | "music",
-  audioType?: string | null,
-): NativeAudioInstructionsKind | null {
-  if (workflow === "music") return "music";
-  const kind = nativeAudioInstructionsKind(audioType);
-  return kind === "music" ? null : kind;
-}
-
 /** The music length range the loaded model honours. The GGUF runtime clamps tighter than the
  *  MiniMax Music 3 pipeline; both take the same 25 frames per second. */
 export function musicDurationRange(requiresCuda: boolean): {

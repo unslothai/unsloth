@@ -93,7 +93,7 @@ export function TtsRailFields({
   ttsLoaded,
   handleEject,
   samplingControls,
-  audioOptionSpecs,
+  audioOptionSpecs: allAudioOptionSpecs,
   advancedOpen,
   setAdvancedOpen,
   temperature,
@@ -111,6 +111,8 @@ export function TtsRailFields({
   audioOptionValues,
   handleAudioOptionChange,
   handleAudioOptionsReset,
+  inputs,
+  claimedOptions,
 }: Pick<
   SpeechGeneration,
   | "prompt"
@@ -141,7 +143,12 @@ export function TtsRailFields({
     isRecording: boolean;
     setAudioDeviceState: (next: string) => void;
     advancedOpen: boolean;
+    inputs?: ReactNode;
+    claimedOptions?: ReadonlySet<string>;
   }) {
+  const audioOptionSpecs = claimedOptions?.size
+    ? allAudioOptionSpecs.filter((spec) => !claimedOptions.has(spec.name))
+    : allAudioOptionSpecs;
   return (
     <>
       {/* Field inlined: its label needs a form control to point
@@ -183,27 +190,29 @@ export function TtsRailFields({
             : "New loads use the GPU when there is one, and the CPU otherwise."}
         </p>
       </div>
-      <Field
-        label={musicGeneration ? "Lyrics" : "Text"}
-        htmlFor="audio-prompt"
-        hint={
-          musicGeneration
-            ? "Lyrics may use sections such as [verse] and [chorus]. The completed song lands in the gallery."
-            : "What the model should say. Generation runs on the loaded TTS model and lands in the gallery."
-        }
-      >
-        <Textarea
-          id="audio-prompt"
-          value={prompt}
-          onChange={(event) => setPrompt(event.target.value)}
-          placeholder={
+      {inputs ?? (
+        <Field
+          label={musicGeneration ? "Lyrics" : "Text"}
+          htmlFor="audio-prompt"
+          hint={
             musicGeneration
-              ? "[verse]\nMorning light through the pines…\n\n[chorus]\n…"
-              : "Type the sentence to speak…"
+              ? "Lyrics may use sections such as [verse] and [chorus]. The completed song lands in the gallery."
+              : "What the model should say. Generation runs on the loaded TTS model and lands in the gallery."
           }
-          className="min-h-28"
-        />
-      </Field>
+        >
+          <Textarea
+            id="audio-prompt"
+            value={prompt}
+            onChange={(event) => setPrompt(event.target.value)}
+            placeholder={
+              musicGeneration
+                ? "[verse]\nMorning light through the pines…\n\n[chorus]\n…"
+                : "Type the sentence to speak…"
+            }
+            className="min-h-28"
+          />
+        </Field>
+      )}
       {toolPanels}
       {musicGeneration || samplingControls || audioOptionSpecs.length > 0 ? (
         <AdvancedDisclosure
@@ -305,6 +314,7 @@ export function TtsFooter({
   shortcutLabel,
   error,
   elapsedSeconds,
+  secondaryAction,
   loadNote = null,
 }: Pick<
   SpeechGeneration,
@@ -321,6 +331,7 @@ export function TtsFooter({
     shortcutLabel: string;
     error: GenerateBlocker | null;
     elapsedSeconds: number | null;
+    secondaryAction?: ReactNode;
     loadNote?: string | null;
   }) {
   return (
@@ -351,46 +362,50 @@ export function TtsFooter({
           {loadNote}
         </p>
       ) : null}
-      <Button
-        className={cn(
-          "relative z-10 mx-auto h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100",
-          // Same Stop as Images: outline, neutral hover. Destructive is for deleting, not for stopping.
-          generationPresentation && "hover:bg-muted dark:hover:bg-muted",
-        )}
-        onClick={
-          generationPresentation?.canStop
-            ? handleStopGeneration
-            : handleGenerate
-        }
-        disabled={
-          generationPresentation
-            ? !generationPresentation.canStop
-            : busy !== null ||
-              !ttsLoaded ||
-              (!prompt.trim() && !lyricsOptional) ||
-              (musicNeedsDescription && !audioInstructions.trim())
-        }
-        variant={generationPresentation ? "outline" : "default"}
-        aria-describedby={blocker ? "audio-generate-blocker" : undefined}
-        aria-keyshortcuts="Control+Enter Meta+Enter"
-        title={
-          generationPresentation ? undefined : `Generate (${shortcutLabel})`
-        }
-      >
-        {generationPresentation?.canStop ? (
-          <>
-            <HugeiconsIcon icon={StopIcon} className="mr-2 size-4" />
-            Stop
-          </>
-        ) : generationPresentation ? (
-          <>
-            <Spinner className="mr-2 size-4" />
-            {generationPresentation.actionLabel}
-          </>
-        ) : (
-          "Generate"
-        )}
-      </Button>
+      <div className="flex flex-wrap items-center justify-center gap-2">
+        {secondaryAction}
+        <Button
+          className={cn(
+            "relative z-10 mx-auto h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100",
+            // Same Stop as Images: outline, neutral hover. Destructive is for deleting, not for stopping.
+            generationPresentation && "hover:bg-muted dark:hover:bg-muted",
+          )}
+          onClick={
+            generationPresentation?.canStop
+              ? handleStopGeneration
+              : handleGenerate
+          }
+          disabled={
+            generationPresentation
+              ? !generationPresentation.canStop
+              : busy !== null ||
+                !ttsLoaded ||
+                (!prompt.trim() && !lyricsOptional) ||
+                (musicNeedsDescription && !audioInstructions.trim()) ||
+                blocker !== null
+          }
+          variant={generationPresentation ? "outline" : "default"}
+          aria-describedby={blocker ? "audio-generate-blocker" : undefined}
+          aria-keyshortcuts="Control+Enter Meta+Enter"
+          title={
+            generationPresentation ? undefined : `Generate (${shortcutLabel})`
+          }
+        >
+          {generationPresentation?.canStop ? (
+            <>
+              <HugeiconsIcon icon={StopIcon} className="mr-2 size-4" />
+              Stop
+            </>
+          ) : generationPresentation ? (
+            <>
+              <Spinner className="mr-2 size-4" />
+              {generationPresentation.actionLabel}
+            </>
+          ) : (
+            "Generate"
+          )}
+        </Button>
+      </div>
       {blocker && !generationPresentation ? (
         <p
           id="audio-generate-blocker"
@@ -412,6 +427,18 @@ export function TtsFooter({
   );
 }
 
+function ClipBadge({ text }: { text: string | null | undefined }) {
+  if (!text) return null;
+  return (
+    <span
+      title={text}
+      className="max-w-[40%] shrink-0 truncate rounded-4xl bg-muted px-2 py-0.5 text-ui-11 text-muted-foreground"
+    >
+      {text}
+    </span>
+  );
+}
+
 export function TtsOutput({
   workflow,
   clips,
@@ -424,6 +451,7 @@ export function TtsOutput({
   fallbackClip,
   handleDownloadFallbackClip,
   emptyText,
+  emptyActions,
   handleClearGallery,
   historyReorder,
   hasMore,
@@ -441,6 +469,7 @@ export function TtsOutput({
   freshClipId,
   onFreshClipFocused,
   announcement,
+  clipBadge,
 }: Pick<
   AudioGallery,
   | "srcById"
@@ -475,9 +504,11 @@ export function TtsOutput({
       onStop: () => void;
     } | null;
     emptyText: string;
+    emptyActions?: ReactNode;
     freshClipId: string | null;
     onFreshClipFocused: () => void;
     announcement: string;
+    clipBadge?: (clip: AudioGalleryClip) => string | null;
   }) {
   const clipMenu = (clip: AudioGalleryClip, variant: "row" | "toolbar") => (
     <GalleryItemMenu
@@ -538,6 +569,7 @@ export function TtsOutput({
                 : null
             }
             menu={clipMenu(selectedClip, "row")}
+            status={clipBadge?.(selectedClip) ?? undefined}
             focusOnMount={selectedClip.id === freshClipId}
             onFocused={onFreshClipFocused}
           />
@@ -556,7 +588,10 @@ export function TtsOutput({
             }
           />
         ) : (
-          <p className="text-ui-13 text-muted-foreground">{emptyText}</p>
+          <div className="grid justify-items-center gap-3">
+            <p className="text-ui-13 text-muted-foreground">{emptyText}</p>
+            {emptyActions}
+          </div>
         )}
       </div>
       {clips.length > 0 ? (
@@ -611,6 +646,7 @@ export function TtsOutput({
                     className="size-3.5 shrink-0 text-muted-foreground"
                   />
                   <span className="min-w-0 flex-1 truncate">{clip.prompt}</span>
+                  <ClipBadge text={clipBadge?.(clip)} />
                   <span className="hidden min-w-0 max-w-[45%] shrink truncate text-ui-11p5 text-muted-foreground @[30rem]:block">
                     {audioModelLabel(clip.model)} ·{" "}
                     {formatRelativeShort(clip.created_at)}

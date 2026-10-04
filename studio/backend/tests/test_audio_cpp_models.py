@@ -317,7 +317,7 @@ def test_an_unknown_family_follows_its_spec_tasks_or_is_refused(hub):
         ("new_music", ["music"], "music", "gen"),
         ("new_clone_music", ["clone", "music"], "music", "gen"),
         ("new_clone_asr", ["clone", "asr"], "asr", "asr"),
-        ("new_clone_only", ["clone"], "", ""),
+        ("new_clone_only", ["clone"], "tts", "clon"),
         ("new_sep", ["sep"], "", ""),
     ):
         repo = f"someone/{family}-GGUF"
@@ -328,7 +328,7 @@ def test_an_unknown_family_follows_its_spec_tasks_or_is_refused(hub):
     sep = acm.resolve("someone/new_sep-GGUF", network = False)
     assert "Source separation" in sep.unsupported
     clone_only = acm.resolve("someone/new_clone_only-GGUF", network = False)
-    assert "only clones a reference voice" in clone_only.unsupported
+    assert list(clone_only.workflows) == ["clone"] and clone_only.clone.reference_text == "optional"
 
 
 def test_unsupported_task_tokens_are_refused_by_a_readable_name(hub):
@@ -430,7 +430,7 @@ def test_a_spec_fallback_family_the_runtime_lacks_is_refused(hub, monkeypatch, t
     samsone = acm.resolve(f"{AUDIO_CPP_REPO}/Samsone-GGUF", network = False)
     assert (samsone.task, samsone.unsupported) == ("asr", None)
     crisper = acm.resolve(f"{AUDIO_CPP_REPO}/CrisperWhisper2.0-GGUF", network = False)
-    assert crisper.task == ""
+    assert crisper.task == "" and crisper.workflows == {}
     assert crisper.unsupported == (
         "CrisperWhisper2.0-GGUF needs a newer audio runtime than the one installed."
     )
@@ -472,7 +472,80 @@ def test_qwen3_tts_package_kind_comes_from_its_name(hub):
         voice["default"] == "vivian" and len(voice["values"]) == 9 and "uncle_fu" in voice["values"]
     )
     assert not any(o["name"] == "voice" for o in design.options)
-    assert "reference voice" in base.unsupported
+    assert base.unsupported is None and list(base.workflows) == ["clone"]
+    assert base.clone.reference_text == "required" and base.clone.language_names
+    assert [o["name"] for o in base.clone.tool_options] == ["x_vector_only_mode"]
+    assert list(custom.workflows) == ["speak"] and list(design.workflows) == ["speak"]
+
+
+# family -> (server task, speaks, reference_text), from the audio.cpp sources.
+_CLONE_TABLE = {
+    "chatterbox": ("clon", False, "unused"),
+    "f5_tts": ("tts", False, "required"),
+    "index_tts2": ("tts", False, "unused"),
+    "cosyvoice3": ("tts", False, "required"),
+    "voxcpm2": ("tts", True, "optional"),
+    "fish_audio": ("tts", True, "required"),
+    "echo_tts": ("clon", False, "unused"),
+    "confucius4_tts": ("clon", False, "unused"),
+    "fireredtts3": ("tts", False, "optional"),
+    "firered_audio": ("tts", False, "optional"),
+    "vevo2": ("tts", False, "unused"),
+    "miotts": ("tts", False, "unused"),
+}
+
+
+def test_every_task_family_binds_its_workflows():
+    workflow_for = {"tts": "speak", "music": "music", "asr": "transcribe"}
+    endpoint_for = {"speak": "speech", "music": "tasks", "transcribe": "transcriptions"}
+    for family in acm.FAMILIES.values():
+        bindings = family.workflows
+        if not family.task:
+            assert bindings == {}, family.family
+            continue
+        if family.clone is not None:
+            server_task, speaks, reference_text = _CLONE_TABLE[family.family]
+            expected = (["speak"] if speaks else []) + ["clone"]
+            assert list(bindings) == expected, family.family
+            assert family.default_server_task == server_task, family.family
+            assert family.clone.reference_text == reference_text, family.family
+            clone = bindings["clone"]
+            assert (clone.endpoint, clone.server_task) == ("speech", server_task)
+            continue
+        assert family.family not in _CLONE_TABLE
+        ((workflow, binding),) = bindings.items()
+        assert workflow == workflow_for[family.task], family.family
+        assert binding.endpoint == endpoint_for[workflow]
+        assert binding.server_task == family.default_server_task
+    assert set(_CLONE_TABLE) == {f.family for f in acm.FAMILIES.values() if f.clone is not None}
+    assert acm.family_from_names(["Chatterbox-Turbo-GGUF", "chatterbox-turbo-q8_0.gguf"]) == (
+        "chatterbox_turbo"
+    )
+    base = acm.family_policy("fireredtts3", names = ["FireRedTTS3-Base-GGUF"])
+    assert base.default_server_task == "clon" and list(base.workflows) == ["clone"]
+    (codec,) = acm.FAMILIES["miotts"].companions
+    assert codec.id == f"{AUDIO_CPP_REPO}/MioCodec-25Hz-44.1kHz-v2-GGUF"
+    assert (codec.variant, codec.session_option) == ("Q8_0", "miotts.codec_model_path")
+    assert "pick MioTTS" in acm.family_policy("miocodec").unsupported
+    assert acm.FAMILIES["kokoro_tts"].workflows["speak"].server_task == "tts"
+    assert acm.FAMILIES["moss_voicegen"].workflows["speak"].server_task == "vdes"
+    assert acm.FAMILIES["ace_step"].workflows["music"] == acm.WorkflowBinding(
+        "gen", "tasks", None, ("text", "lyrics", "duration_seconds")
+    )
+    assert acm.FAMILIES["moonshine_asr"].workflows["transcribe"].inputs == ("audio",)
+    design = acm.family_policy("qwen3_tts", names = ["Qwen3-TTS-12Hz-1.7B-VoiceDesign-GGUF"])
+    assert design.workflows["speak"].server_task == "vdes"
+    assert acm.family_policy("htdemucs").workflows == {}
+
+
+def test_a_resolved_model_carries_its_workflow_binding(hub):
+    snap = _snapshot(hub)
+    folder = "Qwen3-TTS-12Hz-1.7B-VoiceDesign-GGUF"
+    _put(snap, f"{folder}/{folder.lower()}-q8_0.gguf", _gguf_bytes(family = "qwen3_tts"))
+    model = acm.resolve(f"{AUDIO_CPP_REPO}/{folder}", network = False)
+    assert list(model.workflows) == ["speak"] and model.workflows["speak"].server_task == "vdes"
+    _put(snap, "HTDemucs-GGUF/htdemucs-q8_0.gguf", _gguf_bytes(family = "htdemucs"))
+    assert acm.resolve(f"{AUDIO_CPP_REPO}/HTDemucs-GGUF", network = False).workflows == {}
 
 
 def test_sub_folders_and_same_quant_files_become_named_variants(hub):
@@ -1976,3 +2049,27 @@ def test_missing_files_are_counted_in_the_snapshot_downloads_land_in(hub):
     _put(main, gguf.path, b"GGUF")
     _put(main, voice.path, b"v")
     assert audio_cpp_files.missing_files(model, hub_cache = hub) == []
+
+
+def test_required_inputs_come_from_the_raw_spec(hub):
+    snap = _snapshot(hub)
+    maya_spec = {
+        "family": "maya1",
+        "tasks": ["tts"],
+        "options": {
+            "request": [
+                {"name": "instruct", "type": "string", "required": True},
+                {"name": "temperature", "type": "float"},
+            ]
+        },
+    }
+    _put(snap, "Maya1-GGUF/maya1-q8_0.gguf", _gguf_bytes(family = "maya1", spec = maya_spec))
+    maya = acm.resolve(f"{AUDIO_CPP_REPO}/Maya1-GGUF", network = False)
+    # instruct travels as the request's description, not as an option.
+    assert maya.required_inputs == ("instruct",)
+    assert [o["name"] for o in maya.options] == ["temperature"]
+    # A voice-design package fills instruct itself.
+    folder = "Qwen3-TTS-12Hz-1.7B-VoiceDesign-GGUF"
+    design_spec = {**maya_spec, "family": "qwen3_tts"}
+    _put(snap, f"{folder}/m-q8_0.gguf", _gguf_bytes(family = "qwen3_tts", spec = design_spec))
+    assert acm.resolve(f"{AUDIO_CPP_REPO}/{folder}", network = False).required_inputs == ()

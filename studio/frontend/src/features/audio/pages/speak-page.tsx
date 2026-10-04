@@ -3,6 +3,7 @@
 
 import type { ComponentProps } from "react";
 import type { ModelOption } from "@/features/model-picker/components/model-selector/types";
+import { audioCppModelSpeaks } from "../audio-cpp-catalog";
 import { isMusicGenerationModel, macTtsCatalogChoiceIsRunnable } from "../catalog";
 import { TtsOutput, TtsRailFields } from "./tts-workspace";
 
@@ -13,6 +14,7 @@ export function speakPageModels(
   return models.filter(
     (model) =>
       !isMusicGenerationModel(model.id, model.audioType) &&
+      audioCppModelSpeaks(model.id) &&
       (!isMac || macTtsCatalogChoiceIsRunnable(model.id)),
   );
 }

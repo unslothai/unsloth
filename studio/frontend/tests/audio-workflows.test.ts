@@ -14,28 +14,33 @@ const {
   audioWorkflowTab,
   clipWorkflow,
   isAudioWorkflowId,
+  loadedModelRunsWorkflow,
   MUSIC_AUDIO_TYPES,
   slotForWorkflow,
+  workflowForLoadedModel,
 } = await import("../src/features/audio/workflows.ts");
 
-test("the Audio page offers Speak, Music and Transcribe in that order", () => {
+test("the Audio page offers Speak, Clone, Music and Transcribe in that order", () => {
   assert.deepEqual(
     AUDIO_WORKFLOWS.map((tab) => tab.id),
-    ["speak", "music", "transcribe"],
+    ["speak", "clone", "music", "transcribe"],
   );
   assert.equal(audioWorkflowTab("speak").heading, "Text to speech");
+  assert.equal(audioWorkflowTab("clone").heading, "Clone a voice");
   assert.equal(audioWorkflowTab("music").heading, "Create music");
   assert.equal(audioWorkflowTab("transcribe").heading, "Transcribe");
 });
 
-test("Speak and Music share the main slot; only Transcribe uses the sidecar", () => {
+test("Speak, Clone and Music share the main slot; only Transcribe uses the sidecar", () => {
   assert.equal(slotForWorkflow("speak"), "speak");
+  assert.equal(slotForWorkflow("clone"), "speak");
   assert.equal(slotForWorkflow("music"), "speak");
   assert.equal(slotForWorkflow("transcribe"), "transcribe");
 });
 
-test("Create|Train is offered on Speak and Transcribe, not Music", () => {
+test("Create|Train is offered on Speak, Clone and Transcribe, not Music", () => {
   assert.equal(audioWorkflowTab("speak").createTrain, true);
+  assert.equal(audioWorkflowTab("clone").createTrain, true);
   assert.equal(audioWorkflowTab("music").createTrain, false);
   assert.equal(audioWorkflowTab("transcribe").createTrain, true);
 });
@@ -56,6 +61,7 @@ test("a clip without a workflow falls back to its audio type", () => {
   assert.equal(clipWorkflow({ audio_type: "audiocpp_tts" }), "speak");
   assert.equal(clipWorkflow({ audio_type: "snac" }), "speak");
   assert.equal(clipWorkflow({ workflow: "music", audio_type: "snac" }), "music");
+  assert.equal(clipWorkflow({ workflow: "clone", audio_type: "audiocpp_tts" }), "clone");
   assert.equal(clipWorkflow({ workflow: "edit", audio_type: "audiocpp_music" }), "music");
   assert.equal(audioWorkflowForAudioType(null), "speak");
 });
@@ -70,4 +76,29 @@ test("the music audio types match the backend's list", () => {
     ),
   );
   assert.deepEqual(names, new Set(MUSIC_AUDIO_TYPES));
+});
+
+test("a loaded model keeps the open page when it can run it, else opens its own", () => {
+  assert.equal(
+    workflowForLoadedModel({ current: "clone", audioWorkflows: ["speak", "clone"], music: false }),
+    "clone",
+  );
+  assert.equal(
+    workflowForLoadedModel({ current: "speak", audioWorkflows: ["clone"], music: false }),
+    "clone",
+  );
+  assert.equal(
+    workflowForLoadedModel({ current: "speak", audioWorkflows: ["transcribe"], music: true }),
+    "music",
+  );
+  assert.equal(workflowForLoadedModel({ current: "clone", audioWorkflows: null, music: false }), "speak");
+  assert.equal(workflowForLoadedModel({ current: "speak", audioWorkflows: [], music: true }), "music");
+});
+
+test("only a model that lists Clone can run the Clone page", () => {
+  assert.equal(loadedModelRunsWorkflow({ workflow: "clone", audioWorkflows: ["speak"], music: false }), false);
+  assert.equal(loadedModelRunsWorkflow({ workflow: "clone", audioWorkflows: ["speak", "clone"], music: false }), true);
+  assert.equal(loadedModelRunsWorkflow({ workflow: "speak", audioWorkflows: ["clone"], music: false }), false);
+  assert.equal(loadedModelRunsWorkflow({ workflow: "clone", audioWorkflows: undefined, music: false }), false);
+  assert.equal(loadedModelRunsWorkflow({ workflow: "music", audioWorkflows: undefined, music: true }), true);
 });

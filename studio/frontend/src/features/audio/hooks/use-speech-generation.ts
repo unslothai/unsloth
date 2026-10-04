@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { readLastPrompt, saveLastPrompt } from "@/lib/last-prompt";
 import { toast } from "@/lib/toast";
-import { generateAudio } from "../api";
+import { generateAudio, runAudio } from "../api";
 import {
   audioOptionLabel,
   audioOptionsForRequest,
@@ -38,7 +38,17 @@ import {
 import { TTS_MAX_TOKENS } from "../audio-workspace-constants";
 import type { AudioHostState } from "./audio-host-state";
 import { galleryCache } from "./use-audio-gallery";
+import { useAudioCloneStore } from "../stores/audio-clone-store";
+import { useAudioVoicesStore } from "../stores/audio-voices-store";
 import { useAudioWorkspaceStore } from "../stores/audio-workspace-store";
+import { audioToolPanelsFor, isInstructionPanel } from "../tools/registry";
+import {
+  audioModelContextFor,
+  claimedOptionNames,
+  collectToolRequest,
+  toolValueKey,
+} from "../tools/select";
+import { showRunResult } from "./use-clone-generation";
 import type { AudioWorkflowId } from "../workflows";
 import type { AudioGallery } from "./use-audio-gallery";
 import type { AudioModelSlot } from "./use-audio-model-slot";
@@ -213,6 +223,81 @@ export function useSpeechGeneration({
     ? "music"
     : nativeAudioInstructionsKind(status?.audio_type);
 
+  // Instruction panels edit the page's instruction draft; other panels keep a value per model.
+  const voices = useAudioVoicesStore((state) => state.voices);
+  const voicesLoaded = useAudioVoicesStore(
+    (state) => state.loaded && !state.error,
+  );
+  const toolContext = useMemo(
+    () => ({
+      ...audioModelContextFor(status, {
+        musicGeneration: workflow === "music",
+        cudaMusicGeneration,
+        musicNeedsDescription,
+      }),
+      savedVoiceIds: voicesLoaded ? voices.map((voice) => voice.id) : null,
+    }),
+    [status, workflow, cudaMusicGeneration, musicNeedsDescription, voices, voicesLoaded],
+  );
+  const toolPanels = useMemo(
+    () => audioToolPanelsFor(workflow, toolContext),
+    [workflow, toolContext],
+  );
+  const storedToolValues = useAudioCloneStore((state) => state.toolValues);
+  const toolValues = useMemo(() => {
+    const values: Record<string, unknown> = {};
+    for (const panel of toolPanels) {
+      values[panel.id] = isInstructionPanel(panel.id)
+        ? { instructions: audioInstructions, language: audioLanguage }
+        : storedToolValues[toolValueKey(audioOptionsModel, workflow, panel.id)];
+    }
+    return values;
+  }, [
+    toolPanels,
+    audioInstructions,
+    audioLanguage,
+    storedToolValues,
+    audioOptionsModel,
+    workflow,
+  ]);
+  const handleToolValueChange = useCallback(
+    (panelId: string, value: unknown) => {
+      if (isInstructionPanel(panelId)) {
+        const next = value as { instructions?: string; language?: string };
+        if (typeof next.instructions === "string")
+          setAudioInstructions(next.instructions);
+        if (typeof next.language === "string") setAudioLanguage(next.language);
+        return;
+      }
+      useAudioCloneStore
+        .getState()
+        .setToolValue(
+          toolValueKey(audioOptionsModel, workflow, panelId),
+          value,
+        );
+    },
+    [setAudioInstructions, audioOptionsModel, workflow],
+  );
+  const toolRequest = useMemo(
+    () =>
+      collectToolRequest(
+        toolPanels,
+        toolValues,
+        { text: prompt },
+        toolContext,
+        audioOptionSpecs,
+      ),
+    [toolPanels, toolValues, prompt, toolContext, audioOptionSpecs],
+  );
+  const claimedOptions = useMemo(
+    () => claimedOptionNames(toolPanels),
+    [toolPanels],
+  );
+  const advancedOptionSpecs = useMemo(
+    () => audioOptionSpecs.filter((spec) => !claimedOptions.has(spec.name)),
+    [audioOptionSpecs, claimedOptions],
+  );
+
   const handleGenerate = useCallback(async () => {
     const text = prompt.trim();
     if (!text && !lyricsOptional) return;
@@ -234,11 +319,20 @@ export function useSpeechGeneration({
       updateGenerationPhase(null);
       busyRef.current = null;
       setBusy(null);
-      toast.error("Add a music description. This model needs one beside the lyrics.");
+      toast.error(
+        "Add a music description. This model needs one beside the lyrics.",
+      );
+      return;
+    }
+    if (toolRequest.error) {
+      updateGenerationPhase(null);
+      busyRef.current = null;
+      setBusy(null);
+      toast.error(toolRequest.error);
       return;
     }
     const missingOptions = missingRequiredAudioOptions(
-      audioOptionSpecs,
+      advancedOptionSpecs,
       audioOptionValues,
     );
     if (missingOptions.length > 0) {
@@ -251,12 +345,61 @@ export function useSpeechGeneration({
       );
       return;
     }
-    const requestOptions = audioOptionsForRequest(
-      audioOptionSpecs,
-      audioOptionValues,
-    );
+    const requestOptions = {
+      ...audioOptionsForRequest(advancedOptionSpecs, audioOptionValues),
+      ...toolRequest.patch.options,
+    };
+    const savedVoice =
+      workflow === "speak" ? toolRequest.patch.inputs?.reference : undefined;
     const language = audioLanguage.trim();
     saveLastPrompt(ttsDraftKey("prompt", workflow), prompt);
+    if (savedVoice) {
+      const voiceController = new AbortController();
+      generateAbort.current = voiceController;
+      updateGenerationPhase("generating");
+      try {
+        const response = await runAudio(
+          {
+            workflow: "speak",
+            text,
+            instructions:
+              instructionsKind !== null && instructions ? instructions : null,
+            language: mossLocalGeneration && language ? language : null,
+            inputs: { reference: savedVoice },
+            options: requestOptions,
+            speed: toolRequest.patch.speed ?? null,
+          },
+          voiceController.signal,
+        );
+        updateGenerationPhase("finishing");
+        await showRunResult({
+          response,
+          text,
+          workflow: "speak",
+          refreshGallery,
+          selectClip,
+          setFallbackClip,
+          setSelectedId,
+        });
+      } catch (error) {
+        if (!voiceController.signal.aborted) {
+          updateGenerationPhase("finishing");
+          const message =
+            error instanceof Error ? error.message : "Audio generation failed.";
+          setGenerationError(message);
+          toast.error(message);
+          await refreshStatus();
+        }
+      } finally {
+        generateAbort.current = null;
+        updateGenerationPhase(null);
+        busyRef.current = null;
+        setBusy(null);
+        if (activeRef.current && modeRef.current === "speak")
+          replayQueuedTtsPick();
+      }
+      return;
+    }
     const controller = new AbortController();
     generateAbort.current = controller;
     updateGenerationPhase("generating");
@@ -344,8 +487,9 @@ export function useSpeechGeneration({
     musicGeneration,
     musicNeedsDescription,
     lyricsOptional,
-    audioOptionSpecs,
+    advancedOptionSpecs,
     audioOptionValues,
+    toolRequest,
     setAdvancedOpen,
     mossLocalGeneration,
     mossFrameLimit,
@@ -399,6 +543,13 @@ export function useSpeechGeneration({
     handleGenerate,
     generationError,
     setGenerationError,
+    toolContext,
+    toolPanels,
+    toolValues,
+    handleToolValueChange,
+    toolBlocker: toolRequest.error,
+    claimedOptions,
+    advancedOptionSpecs,
   };
 }
 
