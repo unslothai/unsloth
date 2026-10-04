@@ -344,3 +344,68 @@ def test_pipe_kwargs_loads_with_the_requested_scheme(monkeypatch):
             get_family("qwen-image-2.1"), BASE, te_quant_mode = mode, target = CUDA_BF16, dtype = None
         )
     assert seen == ["int8", "fp8"]
+
+
+def test_an_unreachable_hub_still_takes_the_cached_fp8_file(tmp_path, monkeypatch):
+    """Online, int8 never cached, Hub down: the cached fp8 file loads instead of a dense pull."""
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    monkeypatch.setattr(ps, "_torchao_helpers", lambda: None)
+    monkeypatch.delenv(tpq.TE_PREQUANT_MIRROR_ENV, raising = False)
+    fp8 = tmp_path / FP8_NAME
+    fp8.write_bytes(b"x")
+    asked: list = []
+
+    def fake_download(repo_id, filename, local_files_only = False, **_k):
+        asked.append((filename, local_files_only))
+        if filename == FP8_NAME and local_files_only:
+            return str(fp8)
+        raise LocalEntryNotFoundError("connection error")
+
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_download)
+    src = tpq.resolve_te_prequant_source(get_family("qwen-image-2.1"), "text_encoder", "int8")
+    assert tpq._resolve_checkpoint_path(src, None, cache_dir = str(tmp_path)) == str(fp8)
+    assert asked == [(INT8_NAME, False), (FP8_NAME, True)]
+    # Nothing cached at all: the outage itself surfaces.
+    monkeypatch.setattr(
+        huggingface_hub,
+        "hf_hub_download",
+        lambda *a, **k: (_ for _ in ()).throw(LocalEntryNotFoundError("connection error")),
+    )
+    with pytest.raises(LocalEntryNotFoundError):
+        tpq._resolve_checkpoint_path(src, None, cache_dir = str(tmp_path))
+
+
+def test_an_int8_file_that_will_not_build_falls_back_to_the_fp8_names(monkeypatch):
+    calls: list = []
+    sentinel = object()
+    src = tpq.resolve_te_prequant_source(get_family("qwen-image-2.1"), "text_encoder", "int8")
+    monkeypatch.setattr(tpq, "te_prequant_sources_for_base", lambda *a, **k: {"text_encoder": src})
+
+    def fake_load(base, component, source, **k):
+        calls.append((source.filename, k["scheme"]))
+        return None if source.filename == INT8_NAME else sentinel
+
+    monkeypatch.setattr(tpq, "load_prequant_text_encoder", fake_load)
+    for held, expected in ((True, sentinel), (False, None)):
+        calls.clear()
+        monkeypatch.setattr(tpq, "_held_locally", lambda *a, held = held: held)
+        out = tpq.te_prequant_pipe_kwargs(
+            get_family("qwen-image-2.1"), BASE, te_quant_mode = "int8", target = CUDA_BF16, dtype = None
+        )
+        assert out.get("text_encoder") is expected
+        # Only a present-but-unbuildable int8 file earns a second (fp8) attempt; a 404 already fell through.
+        assert calls == ([(INT8_NAME, "int8"), (FP8_NAME, "fp8")] if held else [(INT8_NAME, "int8")])
+
+
+def test_keep_lm_head_reason_names_the_switch(monkeypatch):
+    import core.inference.diffusion_precision as prec
+    from core.inference.diffusion_text_encoder_trim import KEEP_LM_HEAD_ENV
+
+    monkeypatch.setenv(KEEP_LM_HEAD_ENV, "1")
+    monkeypatch.setattr(prec, "_cast_fp8", lambda enc, tgt: None)
+    monkeypatch.setattr(prec, "te_quant_supported", lambda *a: True)
+    out = quantize_text_encoders(_pipe(torch.nn.Linear(2, 2)), CUDA_BF16, mode = "int8", family = "qwen-image-2.1")
+    assert out.mode == "fp8" and KEEP_LM_HEAD_ENV in out.reason

@@ -985,13 +985,17 @@ def test_an_unreachable_hub_is_not_a_missing_filename(monkeypatch):
 
     def unreachable(**kw):
         asked.append(kw["filename"])
+        online.append(not kw.get("local_files_only"))
         raise LocalEntryNotFoundError("Hub unreachable")
 
+    online: list = []
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", unreachable)
-    # ONLINE: surfaces as itself, and the second candidate is never attempted.
-    with pytest.raises(LocalEntryNotFoundError):
+    # ONLINE: surfaces as itself, and the second candidate is never fetched: only looked up in the cache, which
+    # costs no network attempt (a cached fallback is still usable during an outage).
+    with pytest.raises(LocalEntryNotFoundError, match = "Hub unreachable"):
         tpq._resolve_checkpoint_path(src, None, cache_dir = "/tmp/x", local_files_only = False)
-    assert asked == ["hosted-text_encoder-FP8.safetensors"], asked
+    assert asked == ["hosted-text_encoder-FP8.safetensors", "hosted-text_encoder-FP8.pt"], asked
+    assert online == [True, False], online
 
     # OFFLINE: a cache miss is the only verdict there is, so the chain is walked.
     asked.clear()

@@ -690,6 +690,7 @@ def te_prequant_pipe_kwargs(
         mode = normalize_te_quant(te_quant_mode) or TE_QUANT_FP8
         injected: dict[str, Any] = {}
         for component, source in sources.items():
+            trim = component == "text_encoder" and family_trims_lm_head(getattr(fam, "name", None))
             encoder = load_prequant_text_encoder(
                 base,
                 component,
@@ -699,15 +700,63 @@ def te_prequant_pipe_kwargs(
                 scheme = mode,
                 logger = logger,
                 local_files_only = local_files_only,
-                trim_lm_head = component == "text_encoder"
-                and family_trims_lm_head(getattr(fam, "name", None)),
+                trim_lm_head = trim,
             )
+            fp8_names = tuple(
+                n for n in te_candidate_filenames(source) if n != getattr(source, "filename", None)
+            )
+            if (
+                encoder is None
+                and mode == "int8"
+                and source.kind == "repo"
+                and fp8_names
+                and _held_locally(source.location, source.filename, hf_token)
+            ):
+                # The int8 file resolved but would not build (or was refused): the plan already dropped the dense
+                # shards for this source, so take its fp8 names rather than a surprise dense download.
+                encoder = load_prequant_text_encoder(
+                    base,
+                    component,
+                    TePrequantSource(
+                        kind = "repo",
+                        location = source.location,
+                        filename = fp8_names[0],
+                        fallback_filenames = fp8_names[1:],
+                    ),
+                    dtype = dtype,
+                    hf_token = hf_token,
+                    scheme = TE_QUANT_FP8,
+                    logger = logger,
+                    local_files_only = local_files_only,
+                    trim_lm_head = trim,
+                )
             if encoder is not None:
                 injected[component] = encoder
         return injected
     except Exception as exc:  # noqa: BLE001 - injection is an optimisation, never a blocker
         _warn(logger, "pipe_kwargs", exc)
         return {}
+
+
+def _held_locally(repo_id: str, name: Optional[str], hf_token: Optional[str]) -> bool:
+    """Whether ``repo_id/name`` is on this machine (mirror or Hub cache), without touching the network."""
+    try:
+        if te_prequant_mirror_path(repo_id, name) is not None:
+            return True
+        from huggingface_hub import hf_hub_download
+
+        from utils.hf_cache_settings import active_hf_hub_cache
+
+        hf_hub_download(
+            repo_id = repo_id,
+            filename = name,
+            token = hf_token,
+            cache_dir = active_hf_hub_cache(),
+            local_files_only = True,
+        )
+        return True
+    except Exception:  # noqa: BLE001 - not cached, or unanswerable
+        return False
 
 
 def _build_int8_convrot_encoder(
@@ -870,9 +919,23 @@ def _resolve_checkpoint_path(
                 )
             except LocalEntryNotFoundError:
                 # Online this is the Hub being unreachable, not a missing name: re-raise as itself
-                # rather than blaming the next candidate for it.
+                # rather than blaming the next candidate for it. First take any later name this
+                # install already holds: with a preferred name that was never cached (an int8 file
+                # published after the fp8 one was), an outage must not cost the cached fallback.
                 if not local_files_only:
-                    raise
+                    unreachable = sys.exc_info()[1]
+                    for cached_name in names[names.index(name) + 1 :]:
+                        try:
+                            return hf_hub_download(
+                                repo_id = source.location,
+                                filename = cached_name,
+                                token = hf_token,
+                                cache_dir = cache_dir,
+                                local_files_only = True,
+                            )
+                        except (EntryNotFoundError, LocalEntryNotFoundError):
+                            continue
+                    raise unreachable
                 last = sys.exc_info()[1]
                 continue
             except miss as exc:
