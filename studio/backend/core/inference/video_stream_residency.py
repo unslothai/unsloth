@@ -16,8 +16,14 @@ request's runtime estimate (``estimate_video_runtime_mib``, which covers the dec
 request, so a longer clip streams some blocks again first. Resident groups keep their host copy, so streaming them
 again is a pointer swap.
 
+After a request completes (decode and export included), its peak CUDA allocation above what was allocated when it
+started is recorded per load. A later request no larger than a recorded one (pixels x frames) is sized from that
+measured peak instead: room = free + unused cache + resident - measured peak x 1.15 - 1 GiB. The estimate stays the
+floor of the room, so the measured path only ever widens it, and a cancelled or failed request records nothing.
+
 Kill switches: ``UNSLOTH_VIDEO_DIT_RESIDENT=0`` streams everything as before; ``UNSLOTH_VIDEO_DIT_RESIDENT_BLOCKS=0``
-keeps only the top-level group resident.
+keeps only the top-level group resident; ``UNSLOTH_VIDEO_DIT_RESIDENT_MEASURED=0`` sizes every request from the
+estimate.
 """
 
 from __future__ import annotations
@@ -27,8 +33,20 @@ from typing import Any, Optional
 
 VIDEO_DIT_RESIDENT_ENV = "UNSLOTH_VIDEO_DIT_RESIDENT"
 VIDEO_DIT_RESIDENT_BLOCKS_ENV = "UNSLOTH_VIDEO_DIT_RESIDENT_BLOCKS"
+VIDEO_DIT_RESIDENT_MEASURED_ENV = "UNSLOTH_VIDEO_DIT_RESIDENT_MEASURED"
+# A measured peak is scaled by this and a fixed slack is kept on top (allocator fragmentation, cuDNN workspaces).
+MEASURED_PEAK_MARGIN = 1.15
+MEASURED_SLACK_MIB = 1024
 
-_COUNTS: dict[str, int] = {"fits": 0, "promoted_mib": 0, "released_mib": 0, "resident_mib": 0, "groups": 0}
+_COUNTS: dict[str, int] = {
+    "fits": 0,
+    "measured_fits": 0,
+    "recorded": 0,
+    "promoted_mib": 0,
+    "released_mib": 0,
+    "resident_mib": 0,
+    "groups": 0,
+}
 
 
 def counts() -> dict[str, int]:
@@ -45,6 +63,10 @@ def residency_enabled() -> bool:
 
 def blocks_enabled() -> bool:
     return not _off(VIDEO_DIT_RESIDENT_BLOCKS_ENV)
+
+
+def measured_enabled() -> bool:
+    return not _off(VIDEO_DIT_RESIDENT_MEASURED_ENV)
 
 
 def applies(
@@ -123,6 +145,54 @@ def room_mib(
     return max(0, available - need)
 
 
+def measured_room_mib(
+    *,
+    free_mib: int,
+    unused_cache_mib: int,
+    resident_mib_now: int,
+    peak_extra_mib: int,
+) -> int:
+    """Room from a measured request peak: what the request allocated above its start, plus margin and slack."""
+    available = int(free_mib) + max(0, int(unused_cache_mib)) + max(0, int(resident_mib_now))
+    need = int(max(0, int(peak_extra_mib)) * MEASURED_PEAK_MARGIN) + MEASURED_SLACK_MIB
+    return max(0, available - need)
+
+
+def _measured_extra_mib(module: Any, work: int) -> Optional[int]:
+    """The recorded peak of the smallest completed request at least as large as ``work``; None when none covers it."""
+    peaks = getattr(module, "_unsloth_video_peaks", None) or {}
+    covering = [extra for w, extra in peaks.items() if w >= work]
+    return max(covering) if covering else None
+
+
+def record_request_peak(pipe: Any, *, logger: Any = None) -> Optional[int]:
+    """Record the completed request's peak CUDA allocation above its start (on the device its fit read). Call only
+    after decode and export."""
+    module = getattr(pipe, "transformer", None)
+    pending = getattr(module, "_unsloth_video_pending", None)
+    if module is None or pending is None:
+        return None
+    try:
+        import torch
+
+        module._unsloth_video_pending = None
+        work, start, dev = pending
+        extra = (int(torch.cuda.max_memory_allocated(dev)) - int(start)) >> 20
+        if extra <= 0:
+            return None
+        peaks = getattr(module, "_unsloth_video_peaks", None)
+        if not isinstance(peaks, dict):
+            peaks = {}
+            module._unsloth_video_peaks = peaks
+        peaks[work] = max(extra, peaks.get(work, 0))
+        _COUNTS["recorded"] += 1
+        if logger is not None:
+            logger.info("video.dit_resident: request peak %d MiB above its start recorded", extra)
+        return extra
+    except Exception:  # noqa: BLE001 -- unrecorded keeps the estimate
+        return None
+
+
 def fit_for_request(
     pipe: Any,
     *,
@@ -149,6 +219,9 @@ def fit_for_request(
         free, _total = torch.cuda.mem_get_info(dev)
         unused = int(torch.cuda.memory_reserved(dev)) - int(torch.cuda.memory_allocated(dev))
         current = resident_mib(module)
+        # an earlier request that never reached record_request_peak (cancelled, failed) leaves nothing measured
+        module._unsloth_video_pending = None
+        work = int(width) * int(height) * int(frames)
         room = room_mib(
             free_mib = int(free) >> 20,
             unused_cache_mib = unused >> 20,
@@ -158,6 +231,17 @@ def fit_for_request(
             height = height,
             frames = frames,
         )
+        measured = _measured_extra_mib(module, work) if measured_enabled() else None
+        if measured is not None:
+            wider = measured_room_mib(
+                free_mib = int(free) >> 20,
+                unused_cache_mib = unused >> 20,
+                resident_mib_now = current,
+                peak_extra_mib = measured,
+            )
+            if wider > room:
+                room = wider
+                _COUNTS["measured_fits"] += 1
         if not blocks_enabled():
             top = _top_group_mib(module)
             room = min(room, top) if top else 0
@@ -171,9 +255,13 @@ def fit_for_request(
                 released = max(0, current - resident_mib(module))
         after_release = resident_mib(module)
         if room > after_release:
+            # contiguous room for the promoted weights; the request's own allocations come after
+            torch.cuda.empty_cache()
             _keep_groups_resident(module, room, dev, logger)
             promoted = max(0, resident_mib(module) - after_release)
         kept = resident_mib(module)
+        torch.cuda.reset_peak_memory_stats(dev)
+        module._unsloth_video_pending = (work, int(torch.cuda.memory_allocated(dev)), dev)
         try:
             # release_resident_groups' restore reads it back; keep it at this request's room
             module._unsloth_resident_room = room if room > 0 else None
@@ -191,15 +279,19 @@ def fit_for_request(
         if logger is not None and (promoted or released):
             logger.info(
                 "video.dit_resident: %d MiB of the streamed denoiser resident (%d groups) for %dx%d at %d frames; "
-                "room %d MiB, +%d / -%d MiB",
+                "room %d MiB (%s), +%d / -%d MiB; free %d, unused cache %d, floor %d MiB",
                 kept,
                 _COUNTS["groups"],
                 width,
                 height,
                 frames,
                 room,
+                f"measured peak {measured} MiB" if measured is not None else "estimate",
                 promoted,
                 released,
+                int(free) >> 20,
+                unused >> 20,
+                int(floor_mib),
             )
         return kept
     except Exception as exc:  # noqa: BLE001 -- residency is a speed-up; stream everything again

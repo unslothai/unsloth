@@ -215,3 +215,54 @@ def test_blocks_kill_switch_keeps_only_the_top_level_group(monkeypatch):
     for _ in range(2):
         assert torch.equal(net(x.cuda()).cpu(), ref)
         assert next(net.proj_in.parameters()).device.type == "cuda"
+
+
+def test_measured_room_and_cover_lookup():
+    common = dict(free_mib = 9000, unused_cache_mib = 500, resident_mib_now = 2000)
+    assert vr.measured_room_mib(peak_extra_mib = 2000, **common) == 11500 - int(2000 * vr.MEASURED_PEAK_MARGIN) - vr.MEASURED_SLACK_MIB
+    assert vr.measured_room_mib(peak_extra_mib = 20000, **common) == 0
+    net = types.SimpleNamespace(_unsloth_video_peaks = {100: 1500, 300: 2500})
+    assert vr._measured_extra_mib(net, 100) == 2500  # every recorded request at least this large
+    assert vr._measured_extra_mib(net, 200) == 2500
+    assert vr._measured_extra_mib(net, 301) is None  # larger than anything measured: the estimate sizes it
+    assert vr._measured_extra_mib(types.SimpleNamespace(), 1) is None
+
+
+def test_only_a_completed_request_is_recorded(monkeypatch):
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(torch.cuda, "max_memory_allocated", lambda *a: 5000 << 20)
+    net = types.SimpleNamespace(_unsloth_video_pending = (100, 1000 << 20, "cuda"))
+    pipe = types.SimpleNamespace(transformer = net)
+    assert vr.record_request_peak(pipe) == 4000
+    assert net._unsloth_video_peaks == {100: 4000}
+    assert net._unsloth_video_pending is None
+    assert vr.record_request_peak(pipe) is None  # recorded once per fit
+
+
+def test_video_request_path_records_the_peak_after_export():
+    src = (Path(__file__).resolve().parents[1] / "core" / "inference" / "video.py").read_text()
+    record = src.index("video_stream_residency.record_request_peak(")
+    assert src.index("mp4_bytes = self._encode_mp4(") < record < src.index('"mp4_bytes": mp4_bytes')
+
+
+def test_measured_peak_widens_the_next_request(monkeypatch):
+    torch, net, pipe, x, ref = _streamed_net()
+    est = {"room": 1 + 4 + 1}  # top-level + 1 block from the estimate
+    monkeypatch.setattr(vr, "room_mib", lambda **kw: est["room"])
+    fit = lambda: vr.fit_for_request(pipe, device = "cuda", floor_mib = 1, width = 64, height = 64, frames = 1)  # noqa: E731
+    fit()
+    assert _placed(net) == ["cuda"] + ["cpu"] * 5
+    assert torch.equal(net(x.cuda()).cpu(), ref)
+    vr.record_request_peak(pipe)
+    net._unsloth_video_peaks = {64 * 64 * 1: 1}
+    fit()  # the measured room on a large card holds every block
+    assert _placed(net) == ["cuda"] * 6
+    assert torch.equal(net(x.cuda()).cpu(), ref)
+    monkeypatch.setenv(vr.VIDEO_DIT_RESIDENT_MEASURED_ENV, "0")
+    fit()
+    assert _placed(net) == ["cuda"] + ["cpu"] * 5
+    assert torch.equal(net(x.cuda()).cpu(), ref)
+    # a larger request than anything measured is sized by the estimate
+    monkeypatch.delenv(vr.VIDEO_DIT_RESIDENT_MEASURED_ENV)
+    vr.fit_for_request(pipe, device = "cuda", floor_mib = 1, width = 64, height = 64, frames = 2)
+    assert _placed(net) == ["cuda"] + ["cpu"] * 5

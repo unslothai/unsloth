@@ -8772,6 +8772,11 @@ class VideoBackend:
                 # A cancel during the blocking export/mux must still discard the clip; re-check before it is persisted.
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
+                if len(video_frames) and not fam.modular_workflow:
+                    from . import video_stream_residency
+
+                    # decode and export done: this request's peak sizes the next one of its size
+                    video_stream_residency.record_request_peak(pipe, logger = logger)
                 duration_s = len(video_frames) / float(out_fps) if out_fps else 0.0
                 self._gen = {"active": False}
                 # Deregister under cancel_generate's own lock before the trim: it blocks for a few
