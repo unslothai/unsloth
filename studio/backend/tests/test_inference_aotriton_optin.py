@@ -54,6 +54,8 @@ def test_import_does_not_pull_torch():
         "import core.inference\n"
         "print('TORCH=' + str('torch' in sys.modules))\n"
     )
-    out = subprocess.run([sys.executable, "-c", code], env = env, capture_output = True, text = True, timeout = 120)
+    out = subprocess.run(
+        [sys.executable, "-c", code], env = env, capture_output = True, text = True, timeout = 120
+    )
     assert out.returncode == 0, out.stderr[-2000:]
     assert "TORCH=False" in out.stdout
