@@ -9,15 +9,14 @@ function withHubState<V extends GgufVariantDetail>(
   published: V | undefined,
 ): V {
   const drafter = local.pending_drafter_filename ? local : published;
-  const update = published?.update_available === true;
   return {
     ...published,
     ...local,
     update_available: published?.update_available ?? local.update_available,
     pending_drafter_filename: drafter?.pending_drafter_filename,
     pending_drafter_size_bytes: drafter?.pending_drafter_size_bytes,
-    // An update downloads the published revision, so its transfer size is the Hub's.
-    ...(update
+    // The Hub's sizes count companions (mmproj, drafter) and an update's new revision.
+    ...(published
       ? {
           size_bytes: published.size_bytes,
           download_size_bytes: published.download_size_bytes,

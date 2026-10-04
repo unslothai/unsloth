@@ -295,3 +295,22 @@ test("a failed disk phase falls back to the Hub only when it is reachable", asyn
   );
   assert.deepEqual(calls, [true, false, true]);
 });
+
+test("an up-to-date cached quant keeps the Hub's companion-inclusive size", async () => {
+  const result = await loadPickerGgufVariants(
+    async (localOnly) =>
+      localOnly
+        ? {
+            ...local,
+            variants: [{ ...local.variants[0], download_size_bytes: 256 }],
+          }
+        : {
+            ...local,
+            variants: [{ ...local.variants[0], download_size_bytes: 900 }],
+          },
+    options,
+    () => {},
+  );
+  assert.equal(result.variants[0].download_size_bytes, 900);
+  assert.equal(result.variants[0].cache_path, "/cache/old");
+});
