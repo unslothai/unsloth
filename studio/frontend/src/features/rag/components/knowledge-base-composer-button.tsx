@@ -25,9 +25,8 @@ import { listKnowledgeBases } from "../api/rag-api";
 import type { KnowledgeBase } from "../types/rag";
 import { KnowledgeBaseDialog } from "./knowledge-base-dialog";
 
-// Matches the Thinking/MCP pill chevron.
-// Picks the retrieval source. Shown whenever retrieval is on; dims but stays
-// interactive (so it can be turned off) while the loaded model can't run it.
+// Matches the Thinking/MCP pill chevron. Picks the retrieval source. Shown whenever retrieval is
+// on; dims but stays interactive (so it can be turned off) while the loaded model can't run it.
 export function KnowledgeBaseComposerButton({
   side = "bottom",
 }: {
@@ -114,12 +113,12 @@ export function KnowledgeBaseComposerButton({
               <HugeiconsIcon
                 icon={FileDatabaseIcon}
                 strokeWidth={2}
-                className="size-[15px]"
+                className="size-[calc(15px*var(--ui-space-scale,1))]"
               />
               <XIcon className="composer-pill-x" />
             </span>
             <span>RAG</span>
-            <ChevronDownIcon strokeWidth={1.5} className="composer-pill-caret size-[15px]" />
+            <ChevronDownIcon strokeWidth={1.5} className="composer-pill-caret size-[calc(15px*var(--ui-space-scale,1))]" />
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent
@@ -127,7 +126,7 @@ export function KnowledgeBaseComposerButton({
           align="start"
           sideOffset={2}
           avoidCollisions={true}
-          className="unsloth-plus-menu mcp-menu w-[232px]"
+          className="unsloth-plus-menu mcp-menu w-[calc(232px*var(--ui-space-scale,1))]"
         >
           <DropdownMenuLabel>Retrieve from</DropdownMenuLabel>
           <DropdownMenuItem

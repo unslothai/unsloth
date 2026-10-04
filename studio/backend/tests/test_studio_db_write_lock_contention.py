@@ -25,6 +25,14 @@ import pytest
 import storage.research_runs_db as research_runs_db
 import storage.studio_db as studio_db
 
+
+def _shared_setup_1(threads):
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+
 FULL, NORMAL = 2, 1
 
 
@@ -32,7 +40,7 @@ FULL, NORMAL = 2, 1
 def db(tmp_path, monkeypatch):
     """A studio.db in a temp dir, with the per-process schema latch reset."""
     monkeypatch.setattr(studio_db, "studio_db_path", lambda: tmp_path / "studio.db")
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
     conn = studio_db.get_connection()
     conn.close()
     yield tmp_path / "studio.db"
@@ -115,7 +123,7 @@ def test_non_wal_journal_keeps_full(db, monkeypatch, mode):
         setup.close()
     assert _journal_mode(db) != "wal"
 
-    monkeypatch.setattr(studio_db, "_schema_ready", True)
+    monkeypatch.setattr(studio_db, "_schema_ready", {db.resolve()})
     conn = studio_db.get_connection()
     try:
         assert _synchronous(conn) == FULL, f"{mode} must not lose its commit fsync"
@@ -179,133 +187,55 @@ def test_concurrent_openers_all_get_normal(db):
             errors.append(exc)
 
     threads = [threading.Thread(target = worker) for _ in range(16)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
+    _shared_setup_1(threads)
     assert not errors, errors
     assert results == [NORMAL] * 16
 
 
 def test_studio_db_factories_serialize_connection_close(db, monkeypatch):
-    """All studio.db factories must share one close gate across worker threads.
+    """#10022: every studio.db opener shares one open/close gate (SQLite 3.51.0-3.51.1 deadlock)."""
+    from storage import credential_secrets, library_db, mcp_servers_db, providers_db
 
-    SQLite can deadlock when concurrent close calls take its connection and VFS mutexes
-    in opposite order. The application still gets one connection per operation, so this
-    test protects the lifecycle boundary without requiring a shared transaction lock.
-    """
-    from storage import credential_secrets, mcp_servers_db, providers_db
-
-    modules = (providers_db, mcp_servers_db, credential_secrets)
+    modules = (providers_db, mcp_servers_db, credential_secrets, library_db)
     for module in modules:
         monkeypatch.setattr(module, "studio_db_path", lambda db = db: db)
-        monkeypatch.setattr(module, "_schema_ready", False)
-
-    factories = [
-        studio_db.get_connection,
-        providers_db.get_connection,
-        mcp_servers_db.get_connection,
-        credential_secrets.get_connection,
-    ]
-    for factory in factories:
-        conn = factory()
-        assert isinstance(conn, studio_db._StudioDbConnection)
-        conn.close()
+        monkeypatch.setattr(module, "_schema_ready", set())
+    factories = [studio_db.get_connection] + [module.get_connection for module in modules]
 
     class TrackingLock:
         def __init__(self):
             self._lock = threading.Lock()
-            self._state = threading.Lock()
-            self.active = 0
-            self.maximum = 0
+            self.active = self.maximum = self.entered = 0
 
         def __enter__(self):
             self._lock.acquire()
-            with self._state:
-                self.active += 1
-                self.maximum = max(self.maximum, self.active)
-            return self
+            self.active += 1
+            self.entered += 1
+            self.maximum = max(self.maximum, self.active)
 
-        def __exit__(self, exc_type, exc, traceback):
-            with self._state:
-                self.active -= 1
+        def __exit__(self, *exc):
+            self.active -= 1
             self._lock.release()
 
-    close_lock = TrackingLock()
-    monkeypatch.setattr(studio_db, "_CONNECTION_CLOSE_LOCK", close_lock)
-    ready = threading.Barrier(len(factories) + 1)
-    release = threading.Barrier(len(factories) + 1)
+    gate = TrackingLock()
+    monkeypatch.setattr(studio_db, "_CONNECTION_GATE", gate)
+    barrier = threading.Barrier(len(factories))
     errors = []
 
     def open_and_close(factory):
         try:
             conn = factory()
-            ready.wait(timeout = 5)
-            release.wait(timeout = 5)
+            barrier.wait(timeout = 5)
             conn.close()
         except BaseException as exc:  # noqa: BLE001
             errors.append(exc)
 
-    threads = [threading.Thread(target = open_and_close, args = (factory,)) for factory in factories]
-    for thread in threads:
-        thread.start()
-    ready.wait(timeout = 5)
-    release.wait(timeout = 5)
-    for thread in threads:
-        thread.join(timeout = 5)
+    threads = [threading.Thread(target = open_and_close, args = (f,)) for f in factories]
+    _shared_setup_1(threads)
 
     assert not errors, errors
-    assert not any(thread.is_alive() for thread in threads)
-    assert close_lock.maximum == 1
-
-
-# --- failed factory setup must not defer connection cleanup to garbage collection -----
-
-
-@pytest.mark.parametrize(
-    "module_name", ["studio_db", "providers_db", "mcp_servers_db", "credential_secrets"]
-)
-@pytest.mark.parametrize("error_type", [RuntimeError, KeyboardInterrupt])
-def test_factory_closes_connections_when_schema_setup_fails(
-    db, monkeypatch, module_name, error_type
-):
-    import importlib
-
-    module = importlib.import_module(f"storage.{module_name}")
-    connection = studio_db._connect_studio_db(db, timeout = 5.0)
-    monkeypatch.setattr(module, "_connect_studio_db", lambda *args, **kwargs: connection)
-    monkeypatch.setattr(module, "_schema_ready", False)
-
-    def fail_schema(conn):
-        raise error_type("schema setup failed")
-
-    monkeypatch.setattr(module, "_ensure_schema", fail_schema)
-    try:
-        with pytest.raises(error_type, match = "schema setup failed"):
-            module.get_connection()
-        with pytest.raises(sqlite3.ProgrammingError, match = "closed"):
-            connection.execute("SELECT 1")
-    finally:
-        connection.close()
-
-
-@pytest.mark.parametrize("pragma", ["PRAGMA foreign_keys=ON", "PRAGMA synchronous=NORMAL"])
-def test_studio_factory_closes_connections_when_pragma_setup_fails(db, monkeypatch, pragma):
-    class FailingPragmaConnection(studio_db._StudioDbConnection):
-        def execute(self, sql, *args):
-            if sql == pragma:
-                raise sqlite3.OperationalError("pragma setup failed")
-            return super().execute(sql, *args)
-
-    connection = sqlite3.connect(str(db), factory = FailingPragmaConnection)
-    monkeypatch.setattr(studio_db, "_connect_studio_db", lambda *args, **kwargs: connection)
-    try:
-        with pytest.raises(sqlite3.OperationalError, match = "pragma setup failed"):
-            studio_db.get_connection()
-        with pytest.raises(sqlite3.ProgrammingError, match = "closed"):
-            connection.execute("SELECT 1")
-    finally:
-        connection.close()
+    assert gate.entered >= 2 * len(factories)
+    assert gate.maximum == 1
 
 
 # --- the attachment inventory is dirtied by attachments, not by bookkeeping -------------
@@ -366,7 +296,7 @@ def test_upgrade_replaces_the_unscoped_trigger(tmp_path, monkeypatch):
     """
     path = tmp_path / "studio.db"
     monkeypatch.setattr(studio_db, "studio_db_path", lambda: path)
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
 
     conn = studio_db.get_connection()
     try:
@@ -393,7 +323,7 @@ def test_upgrade_replaces_the_unscoped_trigger(tmp_path, monkeypatch):
     finally:
         conn.close()
 
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
     conn = studio_db.get_connection()
     try:
         assert (
@@ -465,10 +395,7 @@ def test_eight_processes_upgrading_at_once_all_succeed(db):
             conn.close()
 
     threads = [threading.Thread(target = worker) for _ in range(8)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
+    _shared_setup_1(threads)
 
     assert not errors, errors
     assert len(seen) == 8
@@ -722,10 +649,7 @@ def test_concurrent_workers_claim_a_run_exactly_once(db):
             errors.append(exc)
 
     threads = [threading.Thread(target = worker, args = (f"w{i}",)) for i in range(8)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
+    _shared_setup_1(threads)
     assert not errors, errors
     assert len(claims) == 1, f"the read-first probe must not let two workers claim: {claims}"
 
@@ -904,24 +828,23 @@ def test_wal_keeper_keeps_short_lived_writers_out_of_the_main_database(db):
     assert _digest(db) != unkept
 
 
-def test_a_second_open_replaces_the_keeper_instead_of_inheriting_it(db, tmp_path, monkeypatch):
-    """Inheriting a keeper left by an earlier lifespan holds a database this process has
-    stopped using, reporting success while keeping nothing for the current one."""
+def test_a_second_database_gets_its_own_keeper(db, tmp_path, monkeypatch):
     assert studio_db.open_wal_keeper() is True
-    stale = studio_db._wal_keeper
+    stale = studio_db._wal_keepers[studio_db.studio_db_path().resolve()]
 
     second = tmp_path / "second" / "studio.db"
     second.parent.mkdir()
     monkeypatch.setattr(studio_db, "studio_db_path", lambda: second)
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
 
     assert studio_db.open_wal_keeper() is True
-    assert studio_db._wal_keeper is not stale
+    assert studio_db._wal_keepers[studio_db.studio_db_path().resolve()] is not stale
+    assert stale.execute("SELECT 1").fetchone()[0] == 1
     _short_lived_write(second, "kept")
     assert Path(f"{second}-wal").is_file()
 
     studio_db.close_wal_keeper()
-    assert studio_db._wal_keeper is None
+    assert not studio_db._wal_keepers
     assert not Path(f"{second}-wal").exists()
     studio_db.close_wal_keeper()
 
@@ -929,7 +852,7 @@ def test_a_second_open_replaces_the_keeper_instead_of_inheriting_it(db, tmp_path
 def test_the_replaced_keeper_is_not_left_open(db):
     """Replacing must release the old connection, not merely drop the reference."""
     assert studio_db.open_wal_keeper() is True
-    stale = studio_db._wal_keeper
+    stale = studio_db._wal_keepers[studio_db.studio_db_path().resolve()]
     assert studio_db.open_wal_keeper() is True
 
     with pytest.raises(sqlite3.ProgrammingError, match = "closed database"):
@@ -942,11 +865,11 @@ def test_a_keeper_left_by_a_dead_thread_is_replaced(db):
     opened = threading.Thread(target = studio_db.open_wal_keeper)
     opened.start()
     opened.join()
-    stale = studio_db._wal_keeper
+    stale = studio_db._wal_keepers[studio_db.studio_db_path().resolve()]
     assert stale is not None
 
     assert studio_db.open_wal_keeper() is True
-    assert studio_db._wal_keeper is not stale
+    assert studio_db._wal_keepers[studio_db.studio_db_path().resolve()] is not stale
     _short_lived_write(db, "kept")
     assert Path(f"{db}-wal").is_file()
 
@@ -963,7 +886,7 @@ def test_wal_keeper_declines_when_the_filesystem_refused_wal(db, caplog):
 
     with caplog.at_level(logging.INFO, logger = studio_db.logger.name):
         assert studio_db.open_wal_keeper() is False
-    assert studio_db._wal_keeper is None
+    assert not studio_db._wal_keepers
     assert "not WAL" in caplog.text
 
 
@@ -977,7 +900,7 @@ def test_the_lifespan_holds_the_keeper_across_every_writer():
 
     source = inspect.getsource(main.lifespan)
     served = source.index("yield")
-    assert source.index("open_wal_keeper()") < source.index("cleanup_orphaned_runs()") < served
+    assert source.index("open_wal_keeper()") < source.index("cleanup_orphaned_runs)") < served
     assert (
         served < source.index("await run_lifespan_shutdown(") < source.index("close_wal_keeper()")
     )

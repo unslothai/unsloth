@@ -2113,10 +2113,141 @@ class TestWhatTheLoopAppendsIsPricedToo:
 
         _within_room(out + TOOL_ERROR_NUDGE, 400)
 
+    def test_a_result_whose_first_byte_is_a_newline_pays_for_one_too(self, monkeypatch):
+        """`is_tool_error` lstrips before it matches, so a result that opens with a blank
+        line and then an error prefix does carry the nudge. Measured on the unstripped
+        text it reserved nothing, and the room was then overspent by the whole nudge."""
+        from core.inference.tool_call_parser import TOOL_ERROR_NUDGE
+
+        # As above, and the leading newline is the whole difference: the same prefixes,
+        # one byte further in.
+        failed = self._fitted(monkeypatch, "\nError: ")
+        fine = self._fitted(monkeypatch, "\nAlpha: ")
+
+        assert fine - failed >= len(TOOL_ERROR_NUDGE) * 0.9, (failed, fine)
+
     def test_an_ordinary_result_does_not_pay_for_one(self, monkeypatch):
         """The control: charged to the results that carry it, not to every result. A
         reserve taken from all of them spends room the thread has."""
         assert self._fitted(monkeypatch, "Alpha: ") == self._fitted(monkeypatch, "Bravo: ")
+
+
+class TestATimedOutCallIsPricedWithItsStatusLine:
+    """A timed-out `python` or `terminal` call hands back the output it had already
+    printed with the status line after it. The two are fitted separately against the same
+    `_request_result_room`, so without a reserve the output takes all of it and the line
+    is spent on top -- and `python` and `terminal` are the tools that cap themselves, so
+    no `_fit_result_to_room` downstream corrects the overspend.
+
+    Measured the way the retry nudge is: the same captured output, fitted once with a
+    status line coming after it and once without, and the difference is what the line
+    costs.
+    """
+
+    PRINTED = 40_000
+
+    def _completed(self, monkeypatch, room: int) -> str:
+        """The same output from a run that finished, so nothing is appended to it."""
+        _window(monkeypatch, 4096)
+        _tokenizer(monkeypatch)
+        return tools.execute_tool(
+            "python", {"code": f"print('x' * {self.PRINTED})"}, result_budget_tokens = room
+        )
+
+    def _timed_out(self, monkeypatch, room: int) -> str:
+        """The same output, from a run that then overran its limit."""
+        _window(monkeypatch, 4096)
+        _tokenizer(monkeypatch)
+        code = (
+            f"print('x' * {self.PRINTED})\nimport sys, time\nsys.stdout.flush()\ntime.sleep(30)\n"
+        )
+        return tools.execute_tool("python", {"code": code}, timeout = 1, result_budget_tokens = room)
+
+    def _captured_everything(self, out: str) -> None:
+        """The notice counts the whole captured text, so this is what says the drain got
+        all of it. Without it a short capture would satisfy the size comparison below for
+        the wrong reason."""
+        assert f"{self.PRINTED + 1} chars total" in out, out[-200:]
+
+    def test_the_status_line_is_deducted_from_what_the_output_may_take(self, monkeypatch):
+        completed = self._completed(monkeypatch, 400)
+        timed_out = self._timed_out(monkeypatch, 400)
+        self._captured_everything(completed)
+        self._captured_everything(timed_out)
+
+        line = "\nExecution timed out after 1 seconds."
+        assert timed_out.endswith(line)
+        body = timed_out[: -len(line)]
+
+        # In characters, at the rate the fixture's counter charges them.
+        assert len(completed) - len(body) >= len(line) * 0.9, (len(body), len(completed))
+
+    def test_the_terminal_side_pays_for_it_too(self, monkeypatch):
+        _window(monkeypatch, 4096)
+        _tokenizer(monkeypatch)
+        printing = f"awk 'BEGIN {{ for (i = 0; i < {self.PRINTED}; i++) printf \"x\" }}'"
+
+        completed = tools.execute_tool("terminal", {"command": printing}, result_budget_tokens = 400)
+        timed_out = tools.execute_tool(
+            "terminal",
+            {"command": f"{printing}; sleep 30"},
+            timeout = 1,
+            result_budget_tokens = 400,
+        )
+        assert f"{self.PRINTED} chars total" in completed
+        assert f"{self.PRINTED} chars total" in timed_out
+
+        line = "\nExecution timed out after 1 seconds."
+        assert timed_out.endswith(line)
+        body = timed_out[: -len(line)]
+
+        assert len(completed) - len(body) >= len(line) * 0.9, (len(body), len(completed))
+
+    def test_the_output_and_the_status_line_fit_the_room_together(self, monkeypatch):
+        """The invariant the deduction buys: what the model is handed is inside the room."""
+        out = self._timed_out(monkeypatch, 400)
+
+        assert out.endswith("Execution timed out after 1 seconds.")
+        assert "x" in out, "the captured output was dropped, so nothing was measured"
+        _within_room(out, 400)
+
+    def test_a_room_with_no_space_for_output_gets_the_status_line_alone(self, monkeypatch):
+        """At zero room the output's omission stub would overrun what the status line fits."""
+        out = self._timed_out(monkeypatch, 20)
+
+        assert out == "Execution timed out after 1 seconds."
+        _within_room(out, 20)
+
+    def test_output_that_reads_as_an_error_pays_for_the_nudge_it_brings(self, monkeypatch):
+        """Error-looking output brings the retry nudge, so it is kept only where that fits."""
+        from core.inference.tool_call_parser import TOOL_ERROR_NUDGE
+        from core.inference.tool_loop_controller import is_tool_error
+
+        _window(monkeypatch, 4096)
+        _tokenizer(monkeypatch)
+        code = "import sys, time\nprint('Error: failed')\nsys.stdout.flush()\ntime.sleep(30)\n"
+
+        tight = tools.execute_tool("python", {"code": code}, timeout = 1, result_budget_tokens = 40)
+        assert tight == "Execution timed out after 1 seconds."
+        _within_room(tight + (TOOL_ERROR_NUDGE if is_tool_error(tight) else ""), 40)
+
+        roomy = tools.execute_tool("python", {"code": code}, timeout = 1, result_budget_tokens = 400)
+        assert roomy.startswith("Error: failed"), roomy
+
+    def test_a_silent_timeout_pays_nothing_for_output_it_never_had(self, monkeypatch):
+        """The control: charged to the calls that carry output, and a command that printed
+        nothing still gets exactly the sentence it always did."""
+        _window(monkeypatch, 4096)
+        _tokenizer(monkeypatch)
+
+        out = tools.execute_tool(
+            "python",
+            {"code": "import time\ntime.sleep(30)\n"},
+            timeout = 1,
+            result_budget_tokens = 400,
+        )
+
+        assert out == "Execution timed out after 1 seconds."
 
 
 class TestTheResultIsFittedAsItIsReplayed:

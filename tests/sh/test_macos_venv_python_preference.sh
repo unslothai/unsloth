@@ -84,7 +84,8 @@ _STREAM=$(mktemp)
     printf 'C_ERR=""; TAURI_MODE=true; UNSLOTH_VERBOSE=false\n'
     printf 'step() { :; }\ntauri_log() { :; }\n'
     for _f in _is_verbose tauri_stream_log tauri_clear_install_error _redact_install_output \
-              run_install_cmd _macos_has_selected_install_name_tool _run_uv_venv _uv_venv_arm64; do
+              run_install_cmd _ric_tee _ric_run _run_install_cmd_once _mirror_retry_install _mirror_failed_host \
+              _macos_has_selected_install_name_tool _run_uv_venv _uv_venv_arm64; do
         sed -n "/^$_f()/,/^}/p" "$INSTALL_SH"
     done
 } > "$_STREAM"

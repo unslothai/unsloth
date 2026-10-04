@@ -15,6 +15,7 @@ exists beside a compiled cache.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import pickle
@@ -35,12 +36,29 @@ def patched():
 
 
 def _make(config_class, output_dir):
-    return config_class(
-        output_dir = str(output_dir),
-        bf16 = False,
-        fp16 = False,
-        use_cpu = True,
+    """Build `config_class` pinned to CPU, asking only for the knobs it declares.
+
+    The precision flags are not decoration. TRL resolves `bf16 = None` to True in
+    `__post_init__`, and transformers then refuses on a machine with no accelerator:
+
+        ValueError: Your setup doesn't support bf16/gpu. You need to assign use_cpu
+        if you want to train the model on CPU.
+
+    None of these tests are about precision or hardware, so a CPU-only runner must
+    not be able to answer them. Filtered against the declared fields rather than
+    passed blind, because the sweep below hands this every `trl.*Config` there is and
+    they do not all take the same three.
+    """
+    kwargs = {"output_dir": str(output_dir)}
+    declared = (
+        {field.name for field in dataclasses.fields(config_class)}
+        if dataclasses.is_dataclass(config_class)
+        else None
     )
+    for name, value in (("bf16", False), ("fp16", False), ("use_cpu", True)):
+        if declared is None or name in declared:
+            kwargs[name] = value
+    return config_class(**kwargs)
 
 
 def test_patched_config_answers_to_the_trl_name(patched):
@@ -177,8 +195,9 @@ def test_every_patched_config_pickles_portably(tmp_path):
         if not isinstance(config_class, type):
             continue
         try:
-            args = config_class(output_dir = str(tmp_path))
+            args = _make(config_class, tmp_path)
         except TypeError:
+            # Not a config that takes an output_dir; nothing to pickle.
             continue
         pickle.dumps(args, protocol = 2)
         assert not config_class.__module__.startswith("Unsloth"), (
@@ -189,9 +208,29 @@ def test_every_patched_config_pickles_portably(tmp_path):
     assert checked > 0, "no TRL configs were exercised"
 
 
+def _assert_the_patch_applied(patched):
+    """Fail by naming the patcher, not by naming what the patcher would have built.
+
+    `_patch_trl_rl_trainers` (unsloth/models/rl.py) swallows a failed source anchor
+    into a warning and returns, leaving `trl.SFTConfig` pristine. Every assertion
+    below then reads the UNPATCHED class and reports something true but useless --
+    `assert 'TrainingArguments' == 'SFTConfig'`, which is just the pristine config's
+    own base. That is how zoo #1192's added `# noqa` comment (fixed in #10854) read
+    from here, and the message pointed at neither repo. Same check, same reason, as
+    `_fake_sft_self` in tests/utils/test_packing.py.
+    """
+    assert getattr(patched, "_unsloth_patched_rl_config", False), (
+        f"trl.SFTConfig is {patched.__name__!r} from {patched.__module__!r} but carries "
+        "no _unsloth_patched_rl_config, so Unsloth's RL patch fell back and these tests "
+        "are describing TRL's own class. `import unsloth` reports the cause as a warning "
+        "(_patch_trl_rl_trainers in unsloth/models/rl.py), not an error."
+    )
+
+
 def test_patched_config_still_subclasses_the_pristine_one(patched):
     """The generated class is renamed onto TRL's name, which must not tempt a
     later patching pass into making it its own base."""
+    _assert_the_patch_applied(patched)
     base = patched.__mro__[1]
     assert base is not patched
     assert base.__name__ == "SFTConfig"
