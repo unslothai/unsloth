@@ -1942,6 +1942,39 @@ def test_managed_caller_may_resend_the_resident_same_model_paths(monkeypatch):
         routes._refuse_managed_custom_projector(["--lora", "/owner/a.gguf"], "m.gguf", None, "Q8_0")
 
 
+def test_resident_paths_need_a_real_cache_snapshot_and_follow_an_omitted_variant(
+    monkeypatch, tmp_path
+):
+    from fastapi import HTTPException
+    from types import SimpleNamespace
+
+    import utils.hf_cache_settings as cache_settings
+
+    hub = tmp_path / "hub"
+    monkeypatch.setattr(cache_settings, "known_hf_hub_caches", lambda: [hub])
+    intent = SimpleNamespace(
+        model_identifier = str(hub / "models--unsloth--B-GGUF/snapshots/abc/B-Q4_K_M.gguf"),
+        hf_variant = "Q4_K_M",
+        extra_args = ("--lora", "/owner/a.gguf"),
+        llama_cpp_config = None,
+    )
+    routes = _managed_with_owner(monkeypatch, intent = intent)
+    # The same repo, by id or by its real cache path, with the variant omitted or named.
+    routes._refuse_managed_custom_projector(["--lora", "/owner/a.gguf"], "unsloth/B-GGUF")
+    routes._refuse_managed_custom_projector(
+        ["--lora", "/owner/a.gguf"], "unsloth/B-GGUF", None, "Q4_K_M"
+    )
+    routes._refuse_managed_custom_projector(["--lora", "/owner/a.gguf"], intent.model_identifier)
+    # A look-alike snapshot path in an account workspace is not the resident repo.
+    fake = tmp_path / "ws/models--unsloth--B-GGUF/snapshots/x/B.gguf"
+    with pytest.raises(HTTPException):
+        routes._refuse_managed_custom_projector(["--lora", "/owner/a.gguf"], str(fake))
+    with pytest.raises(HTTPException):
+        routes._refuse_managed_custom_projector(
+            ["--lora", "/owner/a.gguf"], "unsloth/B-GGUF", None, "Q8_0"
+        )
+
+
 def test_managed_caller_may_resend_the_owners_custom_config(monkeypatch):
     import asyncio
     from fastapi import HTTPException

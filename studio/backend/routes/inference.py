@@ -7909,9 +7909,13 @@ def _owner_chosen_launch(
             # A snapshot path and its repo id are one model; other paths compare as before.
             and _same_loaded_identifier(
                 _snapshot_repo_or_self(getattr(intent, "model_identifier", None)),
-                _snapshot_repo_or_self(identifier),
+                _snapshot_repo_or_self(identifier, require_cache = True),
             )
-            and (getattr(intent, "hf_variant", None) or "").casefold() == (variant or "").casefold()
+            # No variant named: the load resolves the same quant the resident one did.
+            and (
+                variant is None
+                or (getattr(intent, "hf_variant", None) or "").casefold() == variant.casefold()
+            )
         ):
             sources.append(
                 (getattr(intent, "extra_args", None), getattr(intent, "llama_cpp_config", None))
@@ -7925,9 +7929,28 @@ def _owner_chosen_launch(
     return pairs, configs
 
 
-def _snapshot_repo_or_self(model_id):
+def _snapshot_repo_or_self(model_id, require_cache = False):
     from core.inference.model_ids import hf_cache_repo_id
-    return (hf_cache_repo_id(model_id) or model_id) if model_id else model_id
+
+    repo = hf_cache_repo_id(model_id) if model_id else None
+    # A caller's look-alike models--org--name/snapshots path outside the HF cache is not that repo.
+    if repo and (not require_cache or _inside_hf_cache(model_id)):
+        return repo
+    return model_id
+
+
+def _inside_hf_cache(path) -> bool:
+    from utils.hf_cache_settings import known_hf_hub_caches
+
+    target = os.path.normcase(os.path.abspath(str(path)))
+    for root in known_hf_hub_caches():
+        root = os.path.normcase(os.path.abspath(str(root)))
+        try:
+            if os.path.commonpath([root, target]) == root:
+                return True
+        except ValueError:
+            continue
+    return False
 
 
 def _refuse_managed_custom_projector(
