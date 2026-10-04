@@ -1226,12 +1226,13 @@ def test_voice_load_claims_the_gpu_for_chat_before_spawning():
     import inspect
 
     source = inspect.getsource(routes_module.voice_load_model)
-    claim = source.index("acquire_for_request, _CHAT, in_flight.__enter__, alongside = True")
+    claim = source.index("acquire_for_request, _CHAT, None, alongside = True")
     spawn = source.index("await asyncio.to_thread(voice_backend.load_model, intent)")
     assert claim < spawn
-    # The in-flight marker is registered under the arbiter lock and dropped once the load
-    # returns, so a competing Images/Video acquire in that window finds a load to cancel.
-    assert source.index("in_flight.__exit__(None, None, None)") > spawn
+    # The in-flight marker covers the whole request, resolution and warm-up included, so an
+    # unload or an Images/Video acquire anywhere in it finds a load to cancel.
+    assert source.index("in_flight.__enter__()") < source.index("_resolve_config")
+    assert source.index("in_flight.__exit__(None, None, None)") > source.index('"status": "loaded"')
     unload = inspect.getsource(routes_module.voice_unload_model)
     assert "require_no_foreign_generations(scope)" in unload
 
@@ -1346,11 +1347,14 @@ def test_voice_load_undoes_itself_when_an_unload_landed_before_the_spawn():
     source = inspect.getsource(routes_module.voice_load_model)
     read = source.index('unload_epoch = getattr(voice_backend, "_unload_epoch", None)')
     resolve = source.index("resolve_audio_model_config(") if "resolve_audio_model_config(" in source else source.index("GgufLoadIntent(")
-    claim = source.index("acquire_for_request, _CHAT, in_flight.__enter__, alongside = True")
+    claim = source.index("acquire_for_request, _CHAT, None, alongside = True")
     spawn = source.index("await asyncio.to_thread(voice_backend.load_model, intent)")
     check = source.index('getattr(voice_backend, "_unload_epoch", None) != unload_epoch')
-    # Read before the model is resolved, so an unload during resolution or preflight counts too.
-    assert read < resolve < claim < spawn < check
+    warm = source.index('generate_audio_response, "Hi there."')
+    after_warm = source.index('getattr(voice_backend, "_unload_epoch", None) != unload_epoch', warm)
+    # Read before the model is resolved, so an unload during resolution or preflight counts too,
+    # and checked again after the warm-up, whose errors are swallowed.
+    assert read < resolve < claim < spawn < check < warm < after_warm
     assert "status_code = 409" in source[check:]
 
 
@@ -1421,3 +1425,15 @@ def test_audio_generate_answers_with_the_text_the_clip_speaks(monkeypatch):
     )
     assert resp.status_code == 200
     assert resp.json()["choices"][0]["message"]["content"] == text
+
+
+def test_a_foreign_resident_voice_is_not_served(monkeypatch):
+    """Account B could take speech from account A's loaded voice through the omitted-model form
+    of /audio/speech and through the stream route, while /voice/status hid it."""
+    import inspect
+
+    tts = inspect.getsource(routes_module._generate_tts_wav)
+    serves = tts.index("_voice_slot_serves = bool(")
+    assert 'not account_access.resident_hidden("chat")' in tts[serves : serves + 400]
+    stream = inspect.getsource(routes_module.openai_audio_speech_stream)
+    assert stream.index('account_access.resident_hidden("chat")') < stream.index("loaded = [")
