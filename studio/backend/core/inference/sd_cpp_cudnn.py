@@ -88,7 +88,8 @@ _MARKER_NAME = "unsloth-cudnn.json"
 _MIN_FREE_BYTES = 4 << 30
 _INSTALL_TIMEOUT_S = 1800
 _VERIFY_TIMEOUT_S = 120
-_LOCK_TIMEOUT_S = _INSTALL_TIMEOUT_S + 60
+# The holder installs, then verifies, then publishes.
+_LOCK_TIMEOUT_S = _INSTALL_TIMEOUT_S + _VERIFY_TIMEOUT_S + 120
 _PYPI_PROBE_URL = "https://pypi.org/simple/nvidia-cudnn-cu12/"
 _CANCELLED = "cancelled"
 
