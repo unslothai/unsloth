@@ -141,9 +141,6 @@ def test_apply_speed_optims_passes_the_onload_device_only_when_asked(monkeypatch
     assert seen == ["cuda:2", None, "cuda:2", None]
 
 
-# ------------------------------------------------------------------------------------------------ GPU
-
-
 def _cuda_ready() -> bool:
     if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
         return False
