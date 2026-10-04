@@ -3,6 +3,7 @@
 
 import { Button } from "@/components/ui/button";
 import { useT } from "@/i18n";
+import { isTauri } from "@/lib/api-base";
 import { openExternalLink } from "@/lib/open-link";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -160,7 +161,15 @@ function PageError({
       <p className="text-sm text-muted-foreground">
         {resubmit
           ? t("browser.error.resubmit")
-          : t(botCheck ? "browser.error.botCheckDescription" : "browser.error.description", { host: hostOf(url) })}
+          : t(
+              botCheck
+                ? // The desktop app's native views pass these checks; point web users there.
+                  isTauri
+                  ? "browser.error.botCheckDescription"
+                  : "browser.error.botCheckDescriptionWeb"
+                : "browser.error.description",
+              { host: hostOf(url) },
+            )}
       </p>
       {message ? (
         <p className="break-all rounded-lg bg-muted/60 px-3 py-2 font-mono text-xs text-muted-foreground">{message}</p>

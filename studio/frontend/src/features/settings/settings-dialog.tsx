@@ -13,13 +13,13 @@ import {
 import { type TranslationKey, useT } from "@/i18n";
 import { useHubSource } from "@/lib/hf-endpoint";
 import { MicIcon } from "@/lib/mic-icon";
+import { AppWindowIcon } from "@/features/browser/icons";
 import { cn } from "@/lib/utils";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { scheduleIdleTask } from "@/lib/schedule-idle-task";
 import {
   BotIcon,
-  BrowserIcon,
   Cancel01Icon,
   CloudIcon,
   ComputerTerminal01Icon,
@@ -258,7 +258,7 @@ const TABS: TabDef[] = [
   {
     id: "browser",
     labelKey: "browser.settingsTitle",
-    icon: BrowserIcon,
+    icon: AppWindowIcon,
   },
   {
     id: "debugging",

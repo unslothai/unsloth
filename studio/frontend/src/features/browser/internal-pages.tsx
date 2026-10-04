@@ -2,18 +2,20 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { Calendar } from "@/components/ui/calendar";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
 import { ATTACHMENT_KIND_ICONS, ATTACHMENT_KIND_ICON_CLASS, attachmentFileKind } from "@/features/chat";
 import { useLocale, useT } from "@/i18n";
 import { useSettingsDialogStore } from "@/features/settings";
+import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
   ArrowDown01Icon,
@@ -21,7 +23,7 @@ import {
   ArrowUp01Icon,
   Cancel01Icon,
   Delete02Icon,
-  FilterHorizontalIcon,
+  FilterMailIcon,
   InternetIcon,
   LinkSquare02Icon,
   MoreHorizontalIcon,
@@ -29,6 +31,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import type { DateRange } from "react-day-picker";
 import { hostOf } from "./address";
 import { ClearBrowsingDataDialog } from "./clear-data-dialog";
 import { proxiedFavicon } from "./favicon";
@@ -110,7 +113,7 @@ function PageShell({
             {clearLabel}
           </Button>
         </div>
-        <label className="flex h-9 items-center gap-2 rounded-full border border-border/80 bg-card px-3.5 focus-within:ring-2 focus-within:ring-ring/40 dark:border-transparent dark:bg-accent">
+        <label className="flex h-9 items-center gap-2 rounded-full border border-border/80 bg-card px-3.5 dark:border-transparent dark:bg-accent">
           <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-4 shrink-0 text-muted-foreground" />
           <input
             value={query}
@@ -203,7 +206,8 @@ const HOVER_WASH = "hover:bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(-
 const OPEN_WASH = "data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)]";
 const BUTTON_WASH = "bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)]";
 
-type HistoryRange = "all" | "today" | "week" | "month";
+type HistoryRange = "all" | "today" | "week" | "month" | "custom";
+type PresetRange = Exclude<HistoryRange, "custom">;
 
 const HISTORY_PAGE_ROWS = 100;
 
@@ -214,12 +218,21 @@ const RANGE_LABELS = {
   month: { menu: "browser.pages.lastMonth", heading: "browser.pages.lastMonth" },
 } as const;
 
-function rangeStart(range: HistoryRange): number {
+/** The visit times a range keeps: from `since` up to but not including `until`. */
+function rangeBounds(range: HistoryRange, dates: DateRange | undefined): { since: number; until: number } {
   const today = startOfDay(Date.now());
-  if (range === "today") return today;
-  if (range === "week") return today - 6 * DAY_MS;
-  if (range === "month") return today - 29 * DAY_MS;
-  return 0;
+  if (range === "today") return { since: today, until: Infinity };
+  if (range === "week") return { since: today - 6 * DAY_MS, until: Infinity };
+  if (range === "month") return { since: today - 29 * DAY_MS, until: Infinity };
+  if (range === "custom" && dates?.from) {
+    const since = startOfDay(dates.from.getTime());
+    const last = startOfDay((dates.to ?? dates.from).getTime());
+    // The next local midnight, which DAY_MS misses on a daylight saving change.
+    const until = new Date(last);
+    until.setDate(until.getDate() + 1);
+    return { since, until: until.getTime() };
+  }
+  return { since: 0, until: Infinity };
 }
 
 /** The site's favicon through the guarded proxy, fetched once the row is on screen. */
@@ -386,18 +399,22 @@ function HistoryPage({ tabId }: { tabId: string }) {
   const history = useBrowserHistoryStore((state) => state.history);
   const [query, setQuery] = useState("");
   const [range, setRange] = useState<HistoryRange>("all");
+  const [dates, setDates] = useState<DateRange | undefined>();
+  const [datesOpen, setDatesOpen] = useState(false);
+  // Opened once the filter menu has closed, so its focus return doesn't dismiss the picker.
+  const openDatesOnClose = useRef(false);
   const [selection, setSelection] = useState<ReadonlySet<string>>(() => new Set());
   const [clearOpen, setClearOpen] = useState(false);
   const needle = query.trim().toLowerCase();
   // A page of rows at a time; history holds 1000.
   const [limit, setLimit] = useState(HISTORY_PAGE_ROWS);
   const { groups, more } = useMemo(() => {
-    const since = rangeStart(range);
+    const { since, until } = rangeBounds(range, dates);
     const dateFormat = new Intl.DateTimeFormat(locale, { dateStyle: "medium" });
     const days: { key: number; label: string; items: HistoryItem[] }[] = [];
     let shown = 0;
     for (const item of history) {
-      if (item.visitedAt < since) continue;
+      if (item.visitedAt < since || item.visitedAt >= until) continue;
       if (needle && !item.title.toLowerCase().includes(needle) && !item.url.toLowerCase().includes(needle)) continue;
       if (shown === limit) return { groups: days, more: true };
       shown += 1;
@@ -407,7 +424,20 @@ function HistoryPage({ tabId }: { tabId: string }) {
       else days.push({ key, label: dateFormat.format(key), items: [item] });
     }
     return { groups: days, more: false };
-  }, [history, needle, range, locale, limit]);
+  }, [history, needle, range, dates, locale, limit]);
+  const heading = useMemo(() => {
+    if (range !== "custom") return t(RANGE_LABELS[range].heading);
+    if (!dates?.from) return t("browser.pages.customDates");
+    const format = new Intl.DateTimeFormat(locale, { dateStyle: "medium" });
+    return format.formatRange(dates.from, dates.to ?? dates.from);
+  }, [range, dates, locale, t]);
+  const filterOption = (label: string, checked: boolean, onSelect: () => void) => (
+    <DropdownMenuItem key={label} role="menuitemradio" aria-checked={checked} onSelect={onSelect}>
+      <span className="flex-1">{label}</span>
+      {/* Always rendered so the menu width does not change when ticked. */}
+      <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className={cn("ml-2 size-4", !checked && "invisible")} />
+    </DropdownMenuItem>
+  );
   const timeFormat = useMemo(() => new Intl.DateTimeFormat(locale, { timeStyle: "short" }), [locale]);
   // Drop selected rows that are gone, e.g. removed from their own menu.
   const selected = useMemo(() => {
@@ -442,41 +472,82 @@ function HistoryPage({ tabId }: { tabId: string }) {
       </nav>
       <div className="mx-auto flex w-full max-w-3xl flex-col px-6 pb-12 pt-10">
         <h1 className="text-ui-30 font-medium text-foreground">{t("browser.historySetting")}</h1>
-        <label className="mt-8 flex h-11 items-center gap-2.5 rounded-full border border-border pl-4 pr-1.5 focus-within:ring-2 focus-within:ring-ring/40">
-          <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-4.5 shrink-0 text-muted-foreground" />
-          <input
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder={t("browser.pages.searchHistory")}
-            aria-label={t("browser.pages.searchHistory")}
-            spellCheck={false}
-            className="min-w-0 flex-1 bg-transparent text-ui-14 outline-none placeholder:text-muted-foreground"
-          />
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                aria-label={t("browser.pages.filter")}
-                className={cn(
-                  "flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                  HOVER_WASH,
-                  range !== "all" && "text-foreground",
-                )}
-              >
-                <HugeiconsIcon icon={FilterHorizontalIcon} strokeWidth={1.75} className="size-4" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="min-w-44">
-              <DropdownMenuRadioGroup value={range} onValueChange={(value) => setRange(value as HistoryRange)}>
-                {(Object.keys(RANGE_LABELS) as HistoryRange[]).map((id) => (
-                  <DropdownMenuRadioItem key={id} value={id}>
-                    {t(RANGE_LABELS[id].menu)}
-                  </DropdownMenuRadioItem>
-                ))}
-              </DropdownMenuRadioGroup>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </label>
+        <Popover open={datesOpen} onOpenChange={setDatesOpen}>
+          <PopoverAnchor asChild>
+            <label className="mt-8 flex h-11 items-center gap-2.5 rounded-full border border-border pl-4 pr-1.5">
+              <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-4.5 shrink-0 text-muted-foreground" />
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder={t("browser.pages.searchHistory")}
+                aria-label={t("browser.pages.searchHistory")}
+                spellCheck={false}
+                className="min-w-0 flex-1 bg-transparent text-ui-14 outline-none placeholder:text-muted-foreground"
+              />
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    aria-label={t("browser.pages.filter")}
+                    className={cn(
+                      "flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      HOVER_WASH,
+                      range !== "all" && "text-foreground",
+                    )}
+                  >
+                    <HugeiconsIcon icon={FilterMailIcon} strokeWidth={1.75} className="size-5" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent
+                  align="end"
+                  sideOffset={4}
+                  className="library-menu w-max min-w-44"
+                  onCloseAutoFocus={(event) => {
+                    if (!openDatesOnClose.current) return;
+                    openDatesOnClose.current = false;
+                    event.preventDefault();
+                    setDatesOpen(true);
+                  }}
+                >
+                  {(Object.keys(RANGE_LABELS) as PresetRange[]).map((id) =>
+                    filterOption(t(RANGE_LABELS[id].menu), range === id, () => setRange(id)),
+                  )}
+                  <DropdownMenuSeparator className="mx-3" />
+                  {filterOption(t("browser.pages.customDates"), range === "custom", () => {
+                    openDatesOnClose.current = true;
+                  })}
+                  {range !== "all" && (
+                    <>
+                      <DropdownMenuSeparator className="mx-3" />
+                      <DropdownMenuItem
+                        onSelect={() => {
+                          setRange("all");
+                          setDates(undefined);
+                        }}
+                      >
+                        <span className="text-muted-foreground">{t("browser.pages.clearFilter")}</span>
+                      </DropdownMenuItem>
+                    </>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </label>
+          </PopoverAnchor>
+          <PopoverContent align="end" sideOffset={6} className="w-auto rounded-2xl p-0">
+            <Calendar
+              mode="range"
+              selected={dates}
+              onSelect={(next) => {
+                setDates(next);
+                setRange(next?.from ? "custom" : "all");
+              }}
+              defaultMonth={dates?.from ?? new Date()}
+              endMonth={new Date()}
+              disabled={{ after: new Date() }}
+              autoFocus
+            />
+          </PopoverContent>
+        </Popover>
         <div className="mt-8 flex h-9 items-center gap-2">
           {selected.size > 0 ? (
             <>
@@ -501,7 +572,7 @@ function HistoryPage({ tabId }: { tabId: string }) {
             </>
           ) : (
             <>
-              <h2 className="flex-1 text-ui-15 font-medium text-foreground">{t(RANGE_LABELS[range].heading)}</h2>
+              <h2 className="flex-1 text-ui-15 font-medium text-foreground">{heading}</h2>
               <button
                 type="button"
                 disabled={history.length === 0}

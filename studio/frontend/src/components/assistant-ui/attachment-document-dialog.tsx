@@ -52,6 +52,9 @@ export const AttachmentViewer: FC<{
   saveAs?: { name: string; contentType: string };
   flush?: boolean;
   extra?: ReactNode;
+  /** The Library's own actions on the attachment, for one it lists. */
+  libraryActions?: Pick<MediaViewerActions, "favorite" | "onToggleFavorite" | "onDelete">;
+  variant?: "card" | "lightbox";
   children: ReactNode;
 }> = ({
   trigger,
@@ -66,6 +69,8 @@ export const AttachmentViewer: FC<{
   saveAs,
   flush = true,
   extra,
+  libraryActions,
+  variant,
   children,
 }) => {
   const t = useT();
@@ -98,6 +103,7 @@ export const AttachmentViewer: FC<{
             .then((blob) => downloadFile(blob, name, contentType || undefined))
             .catch(() => toast.error(t("library.toast.downloadFailed", { name })))
       : undefined,
+    ...libraryActions,
   };
   return (
     <>
@@ -125,6 +131,7 @@ export const AttachmentViewer: FC<{
           redactFromReload={redactFromReload}
           extra={extra}
           actions={actions}
+          variant={variant}
         >
           {open && children}
         </MediaViewer>

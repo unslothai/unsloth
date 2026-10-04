@@ -5830,7 +5830,7 @@ html:has([data-blocking-screen]) .interface-zoom-position {
 }
 
 .dark .browser-file-toolbar > :not([aria-hidden]) {
-	box-shadow: 0 2px 8px rgb(0 0 0 / 0.35);
+	box-shadow: 0 1px 3px rgb(0 0 0 / 0.1);
 }
 
 /* Request edits: the comment bubble is the pointer over the document; its own controls keep theirs. */

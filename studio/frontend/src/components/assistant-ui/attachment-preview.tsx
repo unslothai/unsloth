@@ -24,7 +24,7 @@ import {
   useAttachmentSource,
 } from "@/components/assistant-ui/use-attachment-source";
 import { CodeSourceView } from "@/components/code-source-view";
-import { ScaleMenu } from "@/components/media-viewer";
+import { type MediaViewerActions, ScaleMenu } from "@/components/media-viewer";
 import { Spinner } from "@/components/ui/spinner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
@@ -38,9 +38,12 @@ import {
   readAttachmentText,
   truncateAttachmentPreviewText,
 } from "@/features/chat";
+import { ConfirmDeleteDialog, useLibraryFavorite } from "@/features/library";
 import { useT } from "@/i18n";
 import { MAX_HIGHLIGHT_CHARS } from "@/lib/markdown-plugins";
+import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { useAuiState } from "@assistant-ui/react";
 import { PlayIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -77,23 +80,33 @@ const Zoomed: FC<{ scale: number; children: ReactNode }> = ({ scale, children })
   </div>
 );
 
+type ImageLibraryActions = Pick<MediaViewerActions, "favorite" | "onToggleFavorite" | "onDelete">;
+
 const AttachmentImageDialog: FC<
-  PropsWithChildren<{ source: AttachmentSource; src: string; redactFromReload?: boolean }>
-> = ({ children, source, src, redactFromReload = false }) => {
+  PropsWithChildren<{
+    source: AttachmentSource;
+    src: string;
+    redactFromReload?: boolean;
+    open: boolean;
+    onOpenChange: (open: boolean) => void;
+    libraryActions?: ImageLibraryActions;
+  }>
+> = ({ children, source, src, redactFromReload = false, open, onOpenChange, libraryActions }) => {
   const t = useT();
-  const [open, setOpen] = useState(false);
   const [failed, setFailed] = useState(false);
   return (
     <AttachmentViewer
       trigger={children}
       open={open}
-      onOpenChange={setOpen}
+      onOpenChange={onOpenChange}
       source={source}
       meta={attachmentViewerMeta(source, source.file?.size)}
       media={!failed}
       noun="image"
       redactFromReload={redactFromReload}
       load={() => (source.file ? Promise.resolve(source.file) : fetchBlob(src))}
+      libraryActions={libraryActions}
+      variant="lightbox"
     >
       {failed ? (
         <p className="m-auto text-sm text-muted-foreground">{t("library.preview.cannotPreview")}</p>
@@ -102,10 +115,77 @@ const AttachmentImageDialog: FC<
           src={src}
           alt={source.name || "Image attachment"}
           onError={() => setFailed(true)}
-          className="size-full object-contain"
+          className="size-full rounded-lg object-contain shadow-[0_8px_40px_-12px_rgba(0,0,0,0.35)]"
         />
       )}
     </AttachmentViewer>
+  );
+};
+
+const ComposerImageDialog: FC<PropsWithChildren<{ source: AttachmentSource; src: string }>> = ({
+  children,
+  source,
+  src,
+}) => {
+  const [open, setOpen] = useState(false);
+  return (
+    <AttachmentImageDialog source={source} src={src} redactFromReload={true} open={open} onOpenChange={setOpen}>
+      {children}
+    </AttachmentImageDialog>
+  );
+};
+
+/** A sent image is a Library item too, so its viewer has the Library's star and delete. */
+const SentImageDialog: FC<PropsWithChildren<{ source: AttachmentSource; src: string }>> = ({
+  children,
+  source,
+  src,
+}) => {
+  const t = useT();
+  const messageId = useAuiState(({ message }) => message.id);
+  const attachmentId = useAuiState(({ attachment }) => attachment.id);
+  const [open, setOpen] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  // The Library's id for it: see _attachment_id in backend/core/library.py.
+  const itemId = `attachment:${encodeURIComponent(messageId)}:${attachmentId}`;
+  const { favorite, toggleFavorite } = useLibraryFavorite(itemId, open);
+  const name = source.name || t("imageViewer.title");
+  return (
+    <>
+      <AttachmentImageDialog
+        source={source}
+        src={src}
+        open={open}
+        onOpenChange={setOpen}
+        libraryActions={{
+          favorite,
+          onToggleFavorite: toggleFavorite,
+          onDelete: () => setConfirming(true),
+        }}
+      >
+        {children}
+      </AttachmentImageDialog>
+      <ConfirmDeleteDialog
+        open={confirming}
+        title={t("library.dialog.deleteTitle", { name })}
+        description={t("library.dialog.deleteAttachment")}
+        confirmLabel={t("common.delete")}
+        onOpenChange={setConfirming}
+        onConfirm={() => {
+          setConfirming(false);
+          setOpen(false);
+          // Removing it from the Library also takes it out of this message. The store loads
+          // lazily, as the chat's other uses of it do.
+          import("@/features/library/store")
+            .then(({ removeLibraryItem }) => removeLibraryItem(itemId))
+            .catch((error: unknown) =>
+              toast.error(t("library.toast.deleteFailed"), {
+                description: error instanceof Error ? error.message : undefined,
+              }),
+            );
+        }}
+      />
+    </>
   );
 };
 
@@ -442,12 +522,15 @@ const AttachmentPreviewBody: FC<PropsWithChildren<{ source: AttachmentSource; re
   redactFromReload,
 }) => {
   if (source.kind === "image") {
-    return source.src ? (
-      <AttachmentImageDialog source={source} src={source.src} redactFromReload={redactFromReload}>
+    if (!source.src) return children;
+    return redactFromReload ? (
+      <ComposerImageDialog source={source} src={source.src}>
         {children}
-      </AttachmentImageDialog>
+      </ComposerImageDialog>
     ) : (
-      children
+      <SentImageDialog source={source} src={source.src}>
+        {children}
+      </SentImageDialog>
     );
   }
 

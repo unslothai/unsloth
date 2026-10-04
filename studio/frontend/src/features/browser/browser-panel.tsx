@@ -483,7 +483,7 @@ function AddressBar({ tab }: { tab: BrowserTab | undefined }) {
           autoCorrect="off"
           className={cn(
             PILL,
-            "h-8 w-full min-w-0 rounded-full px-4 text-ui-13 text-foreground outline-none transition-colors placeholder:text-center placeholder:text-muted-foreground focus:ring-2 focus:ring-ring/40 focus:placeholder:text-left",
+            "h-8 w-full min-w-0 rounded-full px-4 text-ui-13 text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:bg-[color-mix(in_oklab,var(--card),var(--foreground)_5%)] dark:focus:bg-[color-mix(in_oklab,var(--accent),var(--foreground)_6%)]",
             // The input keeps the full URL, so focusing never changes its text or selection.
             !editing && address && "text-transparent",
           )}
@@ -1316,7 +1316,7 @@ export const BrowserPanel = memo(function BrowserPanel() {
       <TabStrip tabs={tabs} activeTabId={activeTabId} />
       <div
         className={cn(
-          "relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-tl-[14px] border-t border-border/60 dark:border-transparent",
+          "relative flex min-h-0 flex-1 flex-col overflow-hidden border-t border-border/60 dark:border-transparent",
           documentShown
             ? "bg-[color-mix(in_oklab,var(--muted)_55%,var(--card))]"
             : "bg-card",
