@@ -126,8 +126,11 @@ export function buildAudioRunBody(
   const inputs: Record<string, unknown> = {};
   const reference = cleanRef(request.inputs?.reference);
   if (reference) inputs.reference = reference;
-  const referenceText = request.inputs?.reference_text?.trim();
-  if (referenceText) inputs.reference_text = referenceText;
+  const rawReferenceText = request.inputs?.reference_text;
+  // A cleared field is sent blank, so the server does not refill it from a saved voice.
+  if (typeof rawReferenceText === "string") {
+    inputs.reference_text = rawReferenceText.trim();
+  }
   const emotion = cleanRef(request.inputs?.emotion);
   if (emotion) inputs.emotion = emotion;
   if (Object.keys(inputs).length > 0) body.inputs = inputs;
