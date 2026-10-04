@@ -76,7 +76,9 @@ def guarded(monkeypatch):
     package = sys.modules.get(_PACKAGE)
     if package is not None and original_pickle is not None:
         package.pickle = original_pickle
-    elif package is not None and isinstance(package.pickle, import_fixes._Pt2PickleModule):
+    elif package is not None and hasattr(
+        getattr(package, "pickle", None), "_unsloth_pt2_real_pickle"
+    ):
         package.pickle = package.pickle._unsloth_pt2_real_pickle
 
 
