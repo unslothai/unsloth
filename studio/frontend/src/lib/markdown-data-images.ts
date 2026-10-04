@@ -8,8 +8,8 @@
  * of the image. Streamdown extends its own schema with caller `allowedTags` only when it receives
  * its default pipeline (identity check), so callers that pass one must carry that merge themselves.
  *
- * Sanitize also drops every tag outside the schema, which erases `<placeholder>` and `Vec<T>` from
- * replies, so those become text before `raw`. Sanitize and harden still decide every element.
+ * Sanitize also drops every tag outside the schema, which erases `<placeholder>` and `Vec<T>`, so
+ * those become text before `raw`. Sanitize and harden still decide every element.
  */
 import type { Element, Root, RootContent } from "hast";
 import type { Pluggable, Plugin } from "unified";
@@ -23,13 +23,64 @@ interface SanitizeSchema {
 
 const HTML_TAG_NAME = /^\s*<\/?([a-z][^\s/<>]*)/i;
 const INNER_TAG = /<(\/?)([a-z][^\s/<>]*)/gi;
+// Formatting tags outside the schema that documents use as markup. Where a pipeline opts in, they are
+// left for sanitize to unwrap so their text shows: always in a raw HTML block, which closes them
+// implicitly, and in prose only when matched, so "the <small> tag" stays text like any unknown tag.
+const UNWRAPPED_TAGS = new Set([
+  "abbr",
+  "big",
+  "center",
+  "cite",
+  "dfn",
+  "figcaption",
+  "figure",
+  "font",
+  "mark",
+  "nobr",
+  "small",
+  "u",
+]);
 
-const rehypeLiteralUnknownTags: Plugin<[string[]], Root> =
-  function rehypeLiteralUnknownTags(tagNames) {
-    const known = new Set(tagNames);
+/** `child:offset` of every matched formatting-tag opener and closer among the raw children. */
+function matchedFormattingTags(children: RootContent[]): Set<string> {
+  const matched = new Set<string>();
+  const open = new Map<string, string[]>();
+  children.forEach((child, index) => {
+    if (child.type !== "raw") return;
+    for (const tag of child.value.matchAll(INNER_TAG)) {
+      const name = tag[2].toLowerCase();
+      if (!UNWRAPPED_TAGS.has(name)) continue;
+      const key = `${index}:${tag.index}`;
+      const openers = open.get(name) ?? [];
+      open.set(name, openers);
+      if (!tag[1]) {
+        openers.push(key);
+        continue;
+      }
+      const opener = openers.pop();
+      if (opener) matched.add(opener).add(key);
+    }
+  });
+  return matched;
+}
+
+interface LiteralTagOptions {
+  tagNames: string[];
+  unwrapFormatting: boolean;
+}
+
+// One options object: Streamdown keys its processor cache on a plugin's first option only.
+const rehypeLiteralUnknownTags: Plugin<[LiteralTagOptions], Root> =
+  function rehypeLiteralUnknownTags({ tagNames, unwrapFormatting }) {
+    const schemaTags = new Set(tagNames);
     return (tree) => {
       function walk(node: Root | Element): void {
         const children: RootContent[] = node.children;
+        const matched = unwrapFormatting
+          ? matchedFormattingTags(children)
+          : new Set<string>();
+        const isSchemaTag = (name: string) =>
+          schemaTags.has(name.toLowerCase());
         children.forEach((child, index) => {
           if (child.type === "element") {
             walk(child);
@@ -38,11 +89,20 @@ const rehypeLiteralUnknownTags: Plugin<[string[]], Root> =
           if (child.type !== "raw") return;
           const tag = HTML_TAG_NAME.exec(child.value)?.[1];
           if (!tag) return;
-          if (known.has(tag.toLowerCase())) {
+          if (
+            isSchemaTag(tag) ||
+            (unwrapFormatting &&
+              node.type === "root" &&
+              UNWRAPPED_TAGS.has(tag.toLowerCase())) ||
+            matched.has(`${index}:${child.value.indexOf("<")}`)
+          ) {
             child.value = child.value.replace(
               INNER_TAG,
               (match, slash, name) =>
-                known.has(name.toLowerCase()) ? match : `&lt;${slash}${name}`,
+                isSchemaTag(name) ||
+                (unwrapFormatting && UNWRAPPED_TAGS.has(name.toLowerCase()))
+                  ? match
+                  : `&lt;${slash}${name}`,
             );
             return;
           }
@@ -65,12 +125,16 @@ const rehypeLiteralUnknownTags: Plugin<[string[]], Root> =
     };
   };
 
-/** Keep data images, show disallowed tags as text, resolve sandbox paths before URL hardening. */
-export function withDataImageSupport(
+function literalTagPipeline(
   allowedTags: Record<string, string[]>,
-  beforeHarden: Pluggable[] = [],
+  srcProtocols: string[],
+  beforeHarden: Pluggable[],
+  unwrapFormatting: boolean,
 ): Pluggable[] {
-  const sanitize = defaultRehypePlugins.sanitize as [Plugin<[SanitizeSchema]>, SanitizeSchema];
+  const sanitize = defaultRehypePlugins.sanitize as [
+    Plugin<[SanitizeSchema]>,
+    SanitizeSchema,
+  ];
   const [sanitizePlugin, schema] = sanitize;
   // Positional by design: Streamdown itself builds its default pipeline as `Object.values` of this
   // same object, so spreading it in the same order reproduces that pipeline exactly. Naming the keys
@@ -78,7 +142,7 @@ export function withDataImageSupport(
   const [raw, , harden] = Object.values(defaultRehypePlugins);
   const tagNames = [...(schema.tagNames ?? []), ...Object.keys(allowedTags)];
   return [
-    [rehypeLiteralUnknownTags, tagNames],
+    [rehypeLiteralUnknownTags, { tagNames, unwrapFormatting }],
     raw,
     [
       sanitizePlugin,
@@ -88,12 +152,29 @@ export function withDataImageSupport(
         attributes: { ...schema.attributes, ...allowedTags },
         protocols: {
           ...schema.protocols,
-          // Harden still gates the scheme on `allowDataImages` and only honors `data:image/*`.
-          src: [...(schema.protocols?.src ?? []), "data"],
+          src: [...(schema.protocols?.src ?? []), ...srcProtocols],
         },
       },
     ],
     ...beforeHarden,
     harden,
   ];
+}
+
+/** Streamdown's default pipeline plus `allowedTags` for documents: tags outside the schema stay text,
+ * formatting tags used as markup are unwrapped. */
+export function withLiteralUnknownTags(
+  allowedTags: Record<string, string[]> = {},
+): Pluggable[] {
+  return literalTagPipeline(allowedTags, [], [], true);
+}
+
+/** Keep data images, keep tags outside the schema as text, resolve sandbox paths before URL hardening. */
+export function withDataImageSupport(
+  allowedTags: Record<string, string[]>,
+  beforeHarden: Pluggable[] = [],
+): Pluggable[] {
+  // Harden still gates the scheme on `allowDataImages` and only honors `data:image/*`.
+  // Replies mention tags in prose more often than they format with them, so none are unwrapped.
+  return literalTagPipeline(allowedTags, ["data"], beforeHarden, false);
 }

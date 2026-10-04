@@ -1655,6 +1655,8 @@
 	--border: var(--border-base);
 	--input: var(--input-base);
 	--sidebar-border: var(--sidebar-border-base);
+	--sidebar-edge: color-mix(in srgb, var(--foreground-base) calc(12% * var(--contrast-seam-gain, 1)), var(--sidebar));
+	--panel-edge: color-mix(in srgb, var(--foreground-base) calc(12% * clamp(0.85, var(--contrast-edge-gain, 1), 1.1)), var(--background));
 	/* Slider fill and thumb, the one panel control that takes neither. */
 	--panel-slider-fg: var(--panel-slider-fg-base);
 	/* Ink: body copy, headings, menu and sidebar labels. */
@@ -1981,6 +1983,8 @@ html[data-chat-font] .aui-root {
 	--color-verified: var(--verified);
 	--color-sidebar-ring: var(--ring-soft);
 	--color-sidebar-border: var(--sidebar-border);
+	--color-sidebar-edge: var(--sidebar-edge);
+	--color-panel-edge: var(--panel-edge);
 	--color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
 	--color-sidebar-accent: var(--sidebar-accent);
 	--color-tabs-line-indicator: var(--tabs-line-indicator);
@@ -2302,7 +2306,7 @@ html[data-chat-font] .aui-root {
 	}
 
 	.sidebar-row-action {
-		@apply absolute top-0 bottom-0 right-0 inline-flex cursor-pointer items-center justify-end pl-2 pr-1.5 opacity-0 pointer-events-none outline-none;
+		@apply absolute top-0 bottom-0 right-0 inline-flex cursor-pointer items-center justify-end pl-2 pr-0.75 opacity-0 pointer-events-none outline-none;
 	}
 	@media (pointer: coarse) {
 		/* Chat and project rows reserve touch padding (#7276); other rows stay hover-revealed to avoid clipped labels. */
@@ -2336,21 +2340,39 @@ html[data-chat-font] .aui-root {
 	.sidebar-row-action-glyph {
 		@apply inline-flex size-6 items-center justify-center rounded-full text-sidebar-foreground/55;
 	}
+	/* The hover circle is painted on the icon, padded out to the glyph box. On the glyph it kept
+	   subpixel precision while the icon snapped to whole pixels, so the icon sat up to half a
+	   pixel off centre. !important: outranks the icon's own size-* utility. */
+	.sidebar-row-action-glyph > svg {
+		--glyph-icon: var(--icon-size);
+		box-sizing: border-box;
+		width: 100% !important;
+		height: 100% !important;
+		padding: calc((100% - var(--glyph-icon)) / 2);
+		border-radius: 9999px;
+		overflow: visible;
+	}
+	.sidebar-row-action-glyph > svg.size-4 {
+		--glyph-icon: calc(var(--spacing) * 4);
+	}
+	.sidebar-row-action-glyph > svg.size-3\.5 {
+		--glyph-icon: calc(var(--spacing) * 3.5);
+	}
 	/* A disclosure stays put while its list is open, unlike the hover-only row actions. */
 	.sidebar-row-action.is-disclosure-open {
 		@apply opacity-100 pointer-events-auto;
 	}
-	/* The pin sits just left of the "…" options button, and the 14px trough
+	/* The pin sits just left of the "…" options button, and the 11px trough
 	   between their ~16px icons is the two paddings that face each other: the
-	   pin's pr-1.5 and the options button's pl-2. Drop those, and the pin's
-	   right edge lands exactly on the options button's left edge (30px = its
-	   pr-1.5 plus a size-6 glyph). Closing the gap by moving the pin instead
+	   pin's pr-0.75 and the options button's pl-2. Drop those, and the pin's
+	   right edge lands exactly on the options button's left edge (27px = its
+	   pr-0.75 plus a size-6 glyph). Closing the gap by moving the pin instead
 	   would slide it under that pl-2, and the options button, later in the DOM,
 	   would take the clicks over the pin's own glyph. What is left of the pin's
-	   own padding-right is the whole gap: the glyph boxes meet at 30px, so 2px
+	   own padding-right is the whole gap: the glyph boxes meet at 27px, so 2px
 	   here is 2px between them and 10px between the drawn icons. */
 	.sidebar-row-action.is-unpin-action {
-		right: calc(1.875rem * var(--ui-space-scale, 1));
+		right: calc(1.6875rem * var(--ui-space-scale, 1));
 		padding-right: calc(0.125rem * var(--ui-space-scale, 1));
 		/* The base pl-2 faces the options button, which is what opens the gap between the two
 		   icons. On the pin there is nothing to its left but the title, so that padding is
@@ -2374,6 +2396,9 @@ html[data-chat-font] .aui-root {
 	.sidebar-row-action:hover .sidebar-row-action-glyph,
 	.sidebar-row-action[data-state="open"] .sidebar-row-action-glyph {
 		@apply text-nav-fg;
+	}
+	.sidebar-row-action:hover .sidebar-row-action-glyph > svg,
+	.sidebar-row-action[data-state="open"] .sidebar-row-action-glyph > svg {
 		/* A step darker than the row hover so the circle reads on top of it. */
 		background-color: color-mix(in srgb, var(--foreground) calc(11% * var(--contrast-wash-gain, 1)), transparent);
 	}
@@ -2383,23 +2408,23 @@ html[data-chat-font] .aui-root {
 	}
 
 	/* pl: the list's px-1.5 plus a row's pl-3 = 18px, so labels start where row content does.
-	   pr-3, not pr-4: header actions end where a hovered row's "…" does (right-0
-	   + pr-1.5 inside a pill the list inset by px-1.5 = 12px). The desktop
+	   pr 9px: header actions end where a hovered row's "…" does (right-0
+	   + pr-0.75 inside a pill the list inset by px-1.5 = 9px). The desktop
 	   titlebar insets by 5px, so those headers override this in app-sidebar.tsx. */
 	.sidebar-sticky-label {
-		@apply rounded-none bg-sidebar pt-0 pb-[calc(8px*var(--ui-space-scale,1))] pl-[calc(18px*var(--ui-space-scale,1))] pr-3 text-ui-14! leading-ui-17 font-medium normal-case focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
+		@apply rounded-none bg-sidebar pt-0 pb-[calc(8px*var(--ui-space-scale,1))] pl-[calc(18px*var(--ui-space-scale,1))] pr-[calc(9px*var(--ui-space-scale,1))] text-ui-14! leading-ui-17 font-medium normal-case focus-visible:ring-0! focus-visible:outline-none transition-shadow duration-150;
 		/* Muted section-header gray, matching Gemini's "Notebooks"/"Recents".
 		   Lightened from #5f6368 so the label reads as a header, clearly
 		   lighter than the near-black nav items. Follows the contrast slider. */
 		color: color-mix(in oklab, #80868b, var(--contrast-panel-target, var(--contrast-target, transparent)) var(--contrast-text-mix, 0%));
 		letter-spacing: 0;
 	}
-	/* These compound selectors must beat the base label's pr-3 declaration.
+	/* These compound selectors must beat the base label's pr declaration.
 	   Tailwind emits utility classes before this components block, so putting
-	   pr-[calc(11px*var(--ui-space-scale,1))]/pr-[calc(13px*var(--ui-space-scale,1))] on the element would lose the cascade. */
+	   pr-[calc(8px*var(--ui-space-scale,1))] on the element would lose the cascade. */
 	.sidebar-sticky-label.sidebar-sticky-label-desktop {
 		padding-left: calc(17px * var(--ui-space-scale, 1));
-		padding-right: calc(11px * var(--ui-space-scale, 1));
+		padding-right: calc(8px * var(--ui-space-scale, 1));
 	}
 	.sidebar-sticky-label-following {
 		@apply pt-[calc(21px*var(--ui-space-scale,1))];
@@ -3096,7 +3121,7 @@ html[data-chat-font] .aui-root {
 	}
 
 	.composer-pill-btn {
-		@apply flex cursor-pointer items-center gap-1.5 rounded-full py-1.5 pl-2 pr-2.5 text-ui-14 font-medium text-muted-foreground/70 dark:text-foreground transition-colors hover:bg-primary/10 dark:hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40;
+		@apply flex cursor-pointer select-none items-center gap-1.5 rounded-full py-1.5 pl-2 pr-2.5 text-ui-14 font-medium text-muted-foreground/70 dark:text-foreground transition-colors hover:bg-primary/10 dark:hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40;
 	}
 
 	/* Caret pills (RAG, MCP): the chevron carries its own whitespace, so the
@@ -3157,40 +3182,36 @@ html[data-chat-font] .aui-root {
 	.composer-pill-btn[data-active="true"] {
 		color: var(--primary);
 	}
+	/* A pill keeps its hover fill while its menu is open. */
+	.composer-pill-btn[data-state="open"] {
+		@apply bg-primary/10 dark:bg-accent;
+	}
 	/* Permission-level pill: higher-contrast grey than the resting pills so
 	   the active level stays legible (darker in light mode, lighter in dark).
-	   Full access keeps the danger yellow below. */
-	.composer-pill-btn.composer-pill-permissions:not([data-variant="danger"]) {
+	   Full access looks like every other level. */
+	.composer-pill-btn.composer-pill-permissions {
 		color: color-mix(in oklab, var(--foreground) 60%, transparent);
 	}
-	.dark .composer-pill-btn.composer-pill-permissions:not([data-variant="danger"]) {
+	.dark .composer-pill-btn.composer-pill-permissions {
 		/* Full ink, like the rest of the composer's controls. */
 		color: var(--foreground);
-	}
-	/* Bypass permissions badge: bright yellow text, no resting fill; the
-	   rounded hover pill picks up the yellow accent like other toggles. */
-	.composer-pill-btn[data-variant="danger"] {
-		background-color: transparent;
-		color: var(--bypass);
-	}
-	.composer-pill-btn[data-variant="danger"]:hover {
-		background-color: color-mix(in oklab, var(--bypass) 7%, transparent);
-	}
-	/* Match the hover-X circle to the yellow accent instead of the green primary. */
-	.composer-pill-btn[data-variant="danger"] .composer-pill-x {
-		background-color: color-mix(in oklab, var(--bypass) 13%, transparent);
 	}
 
 	/* Fixed-width icon slot so every pill's icon occupies the same space and
 	   the labels line up on an even rhythm, regardless of icon size. */
 	.composer-pill-glyph {
-		@apply relative inline-flex w-[var(--ui-icon-size)] shrink-0 items-center justify-center transition-opacity;
+		@apply inline-grid w-[var(--ui-icon-size)] shrink-0 place-items-center transition-opacity;
+	}
+	/* Icon and X share one cell. Not relative + absolute: a positioned slot next to the
+	   spinning plus got its own WebKit layer and jumped a pixel each spin. */
+	.composer-pill-glyph > * {
+		grid-area: 1 / 1;
 	}
 
 	/* On hover the icon swaps for an X inside a soft circle (ChatGPT-style),
 	   filling the icon slot so every pill's X is identical and centered. */
 	.composer-pill-x {
-		@apply pointer-events-none absolute inset-0 m-auto size-[var(--ui-icon-size)] rounded-full bg-primary/15 p-[calc(3px*var(--ui-space-scale,1))] opacity-0 transition-opacity dark:bg-[rgb(255_255_255_/_calc(0.14*var(--contrast-wash-gain,1)))];
+		@apply pointer-events-none size-[var(--ui-icon-size)] rounded-full bg-primary/15 p-[calc(3px*var(--ui-space-scale,1))] opacity-0 transition-opacity dark:bg-[rgb(255_255_255_/_calc(0.14*var(--contrast-wash-gain,1)))];
 	}
 
 	/* Hovering an active pill swaps the icon for an X (click to turn off). */
@@ -3541,6 +3562,11 @@ html[data-chat-font] .aui-root {
 	.unsloth-composer-plus:focus-visible {
 		outline: none;
 		box-shadow: 0 0 0 1px var(--ring-soft);
+	}
+	/* A menu refocusing its pill after a click is not keyboard focus. */
+	html[data-input-modality="pointer"]
+		:is(.composer-pill-btn, .unsloth-thinking-pill, .unsloth-composer-plus):focus-visible {
+		box-shadow: none;
 	}
 
 	/* Clickable controls never show the browser's blue outline (Radix re-focuses
@@ -3947,6 +3973,14 @@ html[data-chat-font] .aui-root {
 		svg:not(.unsloth-tick) {
 		width: var(--ui-icon-size) !important;
 		height: var(--ui-icon-size) !important;
+	}
+
+	/* Permission menu tick, 2px above the icons. Outranks the rule above. */
+	:is([data-slot="dropdown-menu-content"], .unsloth-plus-menu)
+		[data-slot="dropdown-menu-item"]
+		svg.permission-mode-tick:not(.unsloth-tick) {
+		width: calc(var(--ui-icon-size) + 2px) !important;
+		height: calc(var(--ui-icon-size) + 2px) !important;
 	}
 
 	/* The rule above pins svg size with !important, straight off --ui-icon-size, so a glyph
@@ -4556,17 +4590,28 @@ html[data-chat-font] .aui-root {
 	}
 }
 
-/* No border line; same drop shadow as the composer (.unsloth-composer-surface).
+/* No border line; a soft layered shadow lifts the toast off the page.
    !important because Sonner injects its base rules at runtime. */
 [data-sonner-toast][data-styled='true'] {
-	padding: calc(12px * var(--ui-space-scale, 1)) calc(18px * var(--ui-space-scale, 1)) !important;
+	padding: calc(16px * var(--ui-space-scale, 1)) calc(20px * var(--ui-space-scale, 1)) calc(18px * var(--ui-space-scale, 1)) !important;
 	align-items: start !important;
-	gap: calc(10px * var(--ui-space-scale, 1)) !important;
-	box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16) !important;
+	gap: calc(12px * var(--ui-space-scale, 1)) !important;
+	box-shadow:
+		0 1px 2px rgba(0, 0, 0, 0.04),
+		0 8px 24px -6px rgba(0, 0, 0, 0.14) !important;
 }
 
+/* Icon starts at the first line's cap height, never above the text. */
 [data-sonner-toast][data-styled='true'] [data-icon] {
-	margin: calc(2px * var(--ui-space-scale, 1)) 0 0 !important;
+	margin: 0.4em 0 0 !important;
+}
+
+/* Single text line: center the icon on it. Title and description line heights are 1.5 and 1.4. */
+[data-sonner-toast][data-styled='true']:not(:has([data-description])) [data-icon] {
+	margin-top: calc((1.5em - var(--ui-icon-size)) / 2) !important;
+}
+[data-sonner-toast][data-styled='true']:not(:has([data-title])) [data-icon] {
+	margin-top: calc((1.4em - var(--ui-icon-size)) / 2) !important;
 }
 
 [data-sonner-toast][data-styled='true'] [data-content] {
@@ -4585,8 +4630,8 @@ html[data-chat-font] .aui-root {
 	display: grid !important;
 	grid-template-columns: minmax(0, 1fr);
 	align-items: start !important;
-	column-gap: calc(10px * var(--ui-space-scale, 1)) !important;
-	row-gap: calc(10px * var(--ui-space-scale, 1)) !important;
+	column-gap: calc(12px * var(--ui-space-scale, 1)) !important;
+	row-gap: calc(8px * var(--ui-space-scale, 1)) !important;
 }
 
 [data-sonner-toast][data-styled='true']:has([data-button]):has([data-icon]) {
@@ -4617,12 +4662,15 @@ html[data-chat-font] .aui-root {
 }
 
 [data-sonner-toast][data-styled='true']:has([data-close-button]) {
-	padding-right: calc(48px * var(--ui-space-scale, 1)) !important;
+	padding-right: calc(52px * var(--ui-space-scale, 1)) !important;
 }
 
-/* Toast buttons are pills, matching the dialog actions they stand in for. */
+/* Toast buttons are pills, matching the dialog actions they stand in for.
+   Padding sizes them instead of Sonner's fixed 24px height. */
 [data-sonner-toast] [data-button] {
 	border-radius: 9999px !important;
+	height: auto !important;
+	padding: calc(6px * var(--ui-space-scale, 1)) calc(14px * var(--ui-space-scale, 1)) !important;
 }
 
 /* Loading toast keeps its own vertical padding from #7683. */
@@ -4630,8 +4678,8 @@ html[data-chat-font] .aui-root {
 	display: flex !important;
 	align-items: center !important;
 	gap: calc(12px * var(--ui-space-scale, 1)) !important;
-	padding-top: calc(14px * var(--ui-space-scale, 1)) !important;
-	padding-bottom: calc(14px * var(--ui-space-scale, 1)) !important;
+	padding-top: calc(16px * var(--ui-space-scale, 1)) !important;
+	padding-bottom: calc(18px * var(--ui-space-scale, 1)) !important;
 }
 
 [data-sonner-toast][data-styled='true'].chat-model-load-toast [data-content] {
@@ -4646,14 +4694,14 @@ html[data-chat-font] .aui-root {
 
 /* Progress bar is the last row; give it room below. */
 [data-sonner-toast][data-styled='true'].chat-model-load-toast:has([role='progressbar']) {
-	padding-bottom: calc(18px * var(--ui-space-scale, 1)) !important;
+	padding-bottom: calc(22px * var(--ui-space-scale, 1)) !important;
 }
 
 /* Dark toasts share the chatbox surface color (.chat-composer-surface
    uses var(--card) in dark); the composer shadow lifts them off the page. */
 .dark [data-sonner-toast][data-styled='true'] {
 	background-color: var(--card) !important;
-	box-shadow: 0 2px 8px -2px var(--background) !important;
+	box-shadow: 0 4px 20px 4px var(--background) !important;
 }
 
 /* Selectable toast text; non-selectable toast buttons. */
@@ -4725,23 +4773,67 @@ html[data-chat-font] .aui-root {
 }
 
 .sidebar-row-ghost {
+	--row-ghost-surface: var(--sidebar);
 	position: fixed;
 	top: 0;
 	z-index: 60;
 	display: flex;
 	align-items: center;
 	border-radius: 10px;
-	background: var(--sidebar-accent);
-	box-shadow:
-		0 0 0 1px color-mix(in oklab, var(--foreground) 8%, transparent),
-		0 8px 24px -8px rgb(0 0 0 / 0.35);
 	pointer-events: none;
 	will-change: transform;
+}
+
+.sidebar-section-ghost {
+	--row-ghost-surface: var(--sidebar);
+	display: flex;
+	align-items: center;
+	border-radius: 10px;
+	will-change: transform;
+}
+
+:is(.sidebar-row-ghost, .sidebar-section-ghost, .model-picker-row-ghost) {
+	background: color-mix(in oklab, color-mix(in oklab, var(--row-ghost-surface), black 4%) 62%, transparent);
+	-webkit-backdrop-filter: blur(0.5px) saturate(1.05);
+	backdrop-filter: blur(0.5px) saturate(1.05);
+	box-shadow:
+		0 0 0 1px rgb(0 0 0 / 0.06),
+		0 4px 12px -4px rgb(0 0 0 / 0.12);
+}
+
+.dark :is(.sidebar-row-ghost, .sidebar-section-ghost, .model-picker-row-ghost) {
+	background: color-mix(in oklab, color-mix(in oklab, var(--row-ghost-surface), black 22%) 62%, transparent);
+	box-shadow:
+		0 0 0 1px rgb(255 255 255 / 0.045),
+		0 6px 16px -6px rgb(0 0 0 / 0.5);
 }
 
 .sidebar-section-ghost > *,
 .sidebar-row-ghost * {
 	pointer-events: none;
+}
+
+.model-picker-row-ghost {
+	--row-ghost-surface: var(--popover);
+	position: fixed;
+	top: 0;
+	z-index: 60;
+	display: flex;
+	align-items: center;
+	pointer-events: none;
+	will-change: transform;
+}
+
+.model-picker-row-ghost * {
+	pointer-events: none;
+}
+
+/* Margin dropped: the pill was sized without it, so a Connected row's ml-4 would offset the copy. */
+.model-picker-row-ghost > * {
+	width: 100%;
+	height: 100%;
+	margin: 0;
+	background: transparent;
 }
 
 /* The drop cue under a carried row's copy, drawn again above it (use-sidebar-drag.ts). */
@@ -4753,7 +4845,7 @@ html[data-chat-font] .aui-root {
 	pointer-events: none;
 }
 
-/* A row's copy is its face as drawn, lit like a hovered row but never like the open chat. */
+/* A row's copy is its face as drawn, never lit like the open chat. */
 .sidebar-row-ghost > [data-sidebar="menu-button"] {
 	width: 100%;
 	height: 100%;
@@ -4933,11 +5025,11 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	margin-inline: var(--scroll-radius, 0px);
 }
 
-/* Firefox has no track to inset, so clip the box back to its radius. 1px out keeps a ring-1.
-   The clip also cuts an outer shadow: dialogs, which carry one, are watched and clipped only while
-   they overflow (lib/scroll-overflow.ts), and shadowed menus and panels scroll an inner viewport. */
+/* Firefox has no track to inset, so clip the box back to its radius. 1px out keeps a ring-1;
+   an outer shadow would be clipped, so surfaces with one scroll an inner viewport instead.
+   overflow-hidden has no scrollbar to clip: chat search and every CommandDialog keep their shadow. */
 @supports (-moz-appearance: none) {
-	:is(.scroll-rounded:not([data-overflow-watched]), .scroll-rounded[data-overflowing], .hub-readme-prose pre) {
+	:is(.scroll-rounded:not(.overflow-hidden), .hub-readme-prose pre) {
 		clip-path: inset(-1px round calc(var(--scroll-radius, 0px) + 1px));
 	}
 }
@@ -5170,8 +5262,9 @@ html.force-reduced-motion .sidebar-section-drop-line {
 
 /* Keep Sonner close button inside the toast and pin to theme tokens (--gray2 hover ignores data-sonner-theme). */
 [data-sonner-toast][data-styled="true"] [data-close-button] {
-	top: calc(8px * var(--ui-space-scale, 1)) !important;
+	top: calc(11px * var(--ui-space-scale, 1)) !important;
 	transform: none !important;
+	border-radius: 9999px !important;
 	background: var(--popover) !important;
 	color: var(--popover-foreground) !important;
 	border-color: transparent !important;

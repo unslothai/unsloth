@@ -54,7 +54,14 @@ HOST_PATH_HANDLE_FIELDS = frozenset(
 
 # Scrubbed, not blanked: the only account of WHY a run failed.
 HOST_PATH_TEXT_FIELDS = frozenset(
-    {"error_message", "error", "detail", "message", "transformer_quant_backend_reason"}
+    {
+        "error_message",
+        "error",
+        "detail",
+        "message",
+        "transformer_quant_backend_reason",
+        "sd_cpp_cudnn_reason",
+    }
 )
 
 # The same text, one per entry. A run's warnings quote the file they are about ("missing
@@ -102,7 +109,7 @@ HOST_PATH_IDENTITY_FIELDS = (
     "dataset_name",
     "base_repo",
 )
-HOST_PATH_IDENTITY_LIST_FIELDS = ("loaded", "loading")
+HOST_PATH_IDENTITY_LIST_FIELDS = ("loaded", "loading", "serving", "serving_checkpoints")
 # The subset a LOCAL row is named by, referenced on source alone; the others only on value.
 HOST_PATH_ROW_IDENTITY_FIELDS = ("id", "load_id")
 HOST_PATH_ENCODED_IDENTITY_FIELD = "inventory_id"

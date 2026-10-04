@@ -37,6 +37,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
 } from "react";
@@ -166,6 +167,11 @@ import {
   shouldPreserveGenerationMetadata,
   subscribeGenerationRecoveryTriggers,
 } from "./utils/chat-generation-recovery";
+import {
+  beginSavedHistoryReconciliation,
+  isSavedHistoryReconciliationSuperseded,
+  reconcileOrdinarySavedMessagesInView,
+} from "./utils/saved-history-reconciliation";
 import { createGenerationToolRecovery } from "./utils/generation-tool-recovery";
 import { mergeContextTruncation } from "./utils/context-truncation";
 import { registerLiveThreadView } from "./utils/live-thread-head";
@@ -189,8 +195,10 @@ import {
   getStoredChatThreadReadResult,
   isExpectedBackgroundChatStorageError,
   listStoredChatMessages,
+  readStoredChatMessages,
   listStoredChatThreads,
   markThreadIncognito,
+  registerNewThreadIdSource,
   saveStoredChatMessage,
   saveStoredChatThread,
   syncStoredChatMessages,
@@ -2263,8 +2271,25 @@ function useStudioRuntimeAdapters(
     const recoverCurrentThread = () => {
       const remoteId = aui.threadListItem().getState().remoteId;
       if (!remoteId) return;
-      void listStoredChatMessages(remoteId)
-        .then((messages) => {
+      const generation = beginSavedHistoryReconciliation(remoteId);
+      void readStoredChatMessages(remoteId)
+        .then(({ messages, fromBackend }) => {
+          if (isSavedHistoryReconciliationSuperseded(remoteId, generation)) {
+            return;
+          }
+          if (aui.threadListItem().getState().remoteId !== remoteId) {
+            return;
+          }
+          // A legacy browser copy served during an outage is older, not an external update.
+          if (fromBackend) {
+            reconcileOrdinarySavedMessagesInView(aui, remoteId, messages, {
+              editingMessageId:
+                useChatRuntimeStore.getState().editingMessageId ?? null,
+            });
+          }
+          if (isSavedHistoryReconciliationSuperseded(remoteId, generation)) {
+            return;
+          }
           for (const message of messages) {
             if (
               message.role === "assistant" &&
@@ -3290,6 +3315,17 @@ function ThreadNewChatSwitch({
   return null;
 }
 
+function NewThreadIdRegistrar(): null {
+  const aui = useAui();
+  // Register before passive effects read storage.
+  useLayoutEffect(
+    () =>
+      registerNewThreadIdSource(() => aui.threads().getState().newThreadId),
+    [aui],
+  );
+  return null;
+}
+
 function ActiveThreadSync({
   enabled,
 }: { enabled: boolean }): ReactElement | null {
@@ -3954,6 +3990,7 @@ export function ChatRuntimeProvider({
       <ChatProjectScopeContext.Provider value={projectId ?? null}>
       <ToolPaneScopeContext.Provider value={toolPaneScope(modelType, pairId)}>
         <ComparePaneContext.Provider value={Boolean(pairId)}>
+        <NewThreadIdRegistrar />
         <ActiveThreadSync
           enabled={
             modelType === "base" &&

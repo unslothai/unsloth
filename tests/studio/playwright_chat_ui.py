@@ -222,6 +222,12 @@ def soft_fail(m):
     info(f"WARN (strict-off): {m}")
 
 
+# Slots the shared AlertDialog parts render (studio/frontend/src/components/ui/alert-dialog.tsx).
+FULL_ACCESS_TITLE = '[data-slot="alert-dialog-title"]'
+FULL_ACCESS_CANCEL = '[data-slot="alert-dialog-cancel"]'
+FULL_ACCESS_CONFIRM = '[data-slot="alert-dialog-action"]'
+
+
 def exercise_permission_mode_controls(page, shoot):
     """Exercise labels, migration, persistence, confirmation, and focus."""
     step("permission levels: labels, persistence, confirmation, and focus")
@@ -476,21 +482,26 @@ def exercise_permission_mode_controls(page, shoot):
     if stored != "off":
         fail(f"Run automatically persisted {stored!r}, expected 'off'")
 
-    # Full access requires explicit consent and never overwrites persistence.
+    # Full access requires explicit consent and never overwrites persistence. The dialog is found by
+    # its alert-dialog slots, not its wording: #12630 rewrote the copy ("Enable Full access?" became
+    # "Turn on Full access?", "I understand" became "Turn on") and the step failed on main with the
+    # consent flow intact. What it still pins is the substance: the title names the mode and the body
+    # warns that the sandbox goes away.
     choose("Full access")
     dialog = page.get_by_role("alertdialog")
     expect(dialog).to_be_visible()
-    expect(dialog.get_by_role("heading", name = "Enable Full access?")).to_be_visible()
-    expect(dialog).to_contain_text("the code sandbox")
-    dialog.get_by_role("button", name = "Cancel").click()
+    expect(dialog.locator(FULL_ACCESS_TITLE)).to_contain_text("Full access")
+    expect(dialog).to_contain_text("sandbox")
+    dialog.locator(FULL_ACCESS_CANCEL).click()
     expect(dialog).to_be_hidden()
     expect_mode("Run automatically")
 
     choose("Full access")
     expect(dialog).to_be_visible()
-    dialog.get_by_role("button", name = "I understand").click()
+    dialog.locator(FULL_ACCESS_CONFIRM).click()
+    # expect_mode reads the pill's data-pill-label. #12630 dropped the pill's danger styling for Full
+    # access on purpose, so there is no data-variant left to check.
     expect_mode("Full access")
-    expect(pill).to_have_attribute("data-variant", "danger")
     active_icon = pill.locator(".composer-pill-glyph > :first-child")
     pill.hover()
     # Read the opacity once the hover transition has finished, not at a fixed delay into it.

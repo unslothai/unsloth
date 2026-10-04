@@ -180,9 +180,10 @@ def foreign_media_generations(account_id: str) -> int:
             total += sum(count for account, count in counts.items() if account != account_id)
         for holders in _generation_holders.values():
             total += sum(1 for holder in holders if holder != account_id)
-    # sys.modules, not an import: no video job is in flight before its module loads.
+    # sys.modules, not an import: no job is in flight before (or while) its module loads.
     video = sys.modules.get("core.inference.video")
-    reserved = video.generation_account_in_flight() if video is not None else None
+    in_flight = getattr(video, "generation_account_in_flight", None) if video is not None else None
+    reserved = in_flight() if callable(in_flight) else None
     if reserved is not None and reserved != account_id:
         total += 1
     return total

@@ -45,5 +45,5 @@ test("the Tensor Parallelism row is gated out for diffusion models", () => {
 test("the Vision row it sits beside stays gated too", () => {
   // Both rows are unsupported for the same reason; regating one and not the other is
   // the state this change exists to end.
-  assert.equal(gateAbove("checked={!config.disableVision}"), "!isDiffusion");
+  assert.equal(gateAbove("hideVision ? null : <VisionRow config={config} update={update} />"), "!isDiffusion");
 });
