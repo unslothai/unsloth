@@ -19,6 +19,8 @@ export interface AudioModelContext {
   requiredInputs?: readonly string[];
   referenceTextMode?: AudioReferenceTextMode | null;
   audioMusic?: boolean;
+  /** Ids of the saved voices, once the list has loaded. */
+  savedVoiceIds?: readonly string[] | null;
 }
 
 export interface AudioRunPatch {

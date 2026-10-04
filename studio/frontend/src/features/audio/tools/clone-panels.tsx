@@ -27,6 +27,7 @@ import {
   type TimbreOnlyValue,
   chatterboxExpressivenessLogic,
   cosyVoiceModeLogic,
+  emotionSourceProblem,
   f5SpeedDialectLogic,
   indexTts2EmotionLogic,
   qwen3TimbreLogic,
@@ -127,6 +128,12 @@ const indexTts2EmotionPanel: AudioToolPanel<EmotionValue> = {
           hint="Its mood is copied, not its voice."
           value={value.source}
           onChange={(source) => onChange({ ...value, source })}
+          onStatusChange={(status) => {
+            const sourceProblem = emotionSourceProblem(status);
+            if (sourceProblem !== (value.sourceProblem ?? null)) {
+              onChange({ ...value, sourceProblem });
+            }
+          }}
           disabled={disabled}
           allowSavedVoice={false}
         />

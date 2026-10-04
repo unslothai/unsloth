@@ -100,7 +100,8 @@ export function cloneBlocker(
   if (input.referenceExpired) {
     return {
       kind: "reference-expired",
-      reason: "This reference expired. Add it again.",
+      // The "Add it again" action follows the reason under Generate.
+      reason: "This reference expired.",
     };
   }
   if (input.referenceBusy) {
@@ -109,7 +110,8 @@ export function cloneBlocker(
       reason: "Waiting for the reference to finish uploading.",
     };
   }
-  if (input.referenceError && !input.reference) {
+  // A failed replacement hides the kept clip, so Generate waits until it is dismissed.
+  if (input.referenceError) {
     return { kind: "reference-error", reason: input.referenceError };
   }
   if (!input.reference) {

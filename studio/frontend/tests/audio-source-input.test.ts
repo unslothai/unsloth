@@ -282,3 +282,16 @@ test("a long history prompt or voice name truncates and keeps the duration visib
   assert.match(voices, /<ul className="[^"]*\bmin-w-0\b[^"]*grid-cols-\[minmax\(0,1fr\)\]/);
   assert.match(voices, /"group flex min-w-0 items-center/);
 });
+
+test("a saved voice cannot take a name another voice already has", () => {
+  const dialog = readSrc("features/audio/components/save-voice-dialog.tsx");
+  // Case-insensitive, and the voice being edited may keep its own name.
+  assert.match(
+    dialog,
+    /voice\.id !== voiceId &&\s*voice\.name\.trim\(\)\.toLowerCase\(\) === clean\.toLowerCase\(\)/,
+  );
+  assert.match(dialog, /disabled=\{!clean \|\| taken \|\| saving\}/);
+  assert.match(dialog, /You already have a voice named \{clean\}/);
+  const picker = readSrc("features/audio/components/voice-picker.tsx");
+  assert.match(picker, /mode="edit"\s*voiceId=\{editing\?\.id\}/);
+});

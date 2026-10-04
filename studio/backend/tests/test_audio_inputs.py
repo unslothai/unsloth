@@ -6,6 +6,8 @@ from __future__ import annotations
 import asyncio
 import io
 import math
+import os
+import time
 import wave
 from urllib.parse import quote
 
@@ -135,7 +137,11 @@ def test_an_upload_decodes_dedupes_and_deletes(client, fmt, codec, rate, layout,
         assert (w.getframerate(), w.getnchannels(), w.getsampwidth()) == (rate, channels, 2)
     assert (directory := audio_inputs.inputs_dir()) == gallery.gallery_dir() / "inputs"
     again = _upload(client, data, "other.wav")
-    assert again.status_code == 200 and again.json() == record
+    assert again.status_code == 200
+    # A re-upload refreshes the expiry, which can cross a second boundary.
+    reused = again.json()
+    assert reused.pop("expires_at") >= record["expires_at"]
+    assert reused == {k: v for k, v in record.items() if k != "expires_at"}
     assert len(list(directory.glob("*.json"))) == 1
     assert audio_inputs.prepare_reference({"input_id": record["id"]})[1].is_file()
     assert client.delete(f"{INPUTS}/{record['id']}").json() == {"removed": True}
@@ -209,6 +215,20 @@ def test_a_prepared_reference_is_24k_mono_cut_to_thirty_seconds_and_cached():
     mtime = path.stat().st_mtime_ns
     assert audio_inputs.prepare_reference({"input_id": record["id"]})[1].stat().st_mtime_ns == mtime
     assert _frames(audio_inputs.prepared_path(source, 24000, max_seconds = 1.0))[2] == 24000
+
+
+def test_preparing_a_clip_copy_sweeps_expired_copies_without_an_upload(tmp_path):
+    # Cloning from history never uploads, so the sweep has to run from here too.
+    directory = audio_inputs.inputs_dir()
+    stale = directory / "c-old.24000.mono.m30.wav"
+    stale.write_bytes(wav_bytes(0.2))
+    old = time.time() - audio_inputs.TTL_SECONDS - 60
+    os.utime(stale, (old, old))
+    clip = tmp_path / "clip.wav"
+    clip.write_bytes(wav_bytes(0.5))
+    source = audio_inputs.Source(kind = "clip", id = "fresh", path = clip, name = "clip.wav")
+    fresh = audio_inputs.prepared_path(source, 24000, max_seconds = 30.0)
+    assert fresh.is_file() and not stale.exists()
 
 
 @pytest.mark.parametrize("bad", ["../escape", "a/b", "..", "x" * 129, "name.wav", ""])
