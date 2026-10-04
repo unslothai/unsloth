@@ -16,9 +16,12 @@ torch = pytest.importorskip("torch")
 @pytest.fixture(autouse = True)
 def _clean(monkeypatch):
     monkeypatch.delenv(g8.INT8_GEMM_ENV, raising = False)
+    monkeypatch.delenv(g8.INT8_ROTQUANT_ENV, raising = False)
     g8._DEVICE_CFG.clear()
+    g8._ROTQ_DEVICE.clear()
     yield
     g8._DEVICE_CFG.clear()
+    g8._ROTQ_DEVICE.clear()
 
 
 @pytest.mark.parametrize(
@@ -79,6 +82,48 @@ def test_dense_linear_is_not_eligible():
     assert g8._eligible(torch.nn.Linear(128, 128)) is None
 
 
+def test_probe_shapes_stay_on_the_16_byte_grid():
+    ns = [n for _m, n, _k, _b, _x in g8._PROBE_SHAPES]
+    ks = [k for _m, _n, k, _b, _x in g8._PROBE_SHAPES]
+    assert all(n % 16 == 0 for n in ns) and all(k % 16 == 0 for k in ks)
+    for bk in (64, 128):  # every shipped BLOCK_K still sees a ragged K
+        assert any(k % bk for k in ks)
+    assert any(n % 128 for n in ns)  # and BLOCK_N a ragged N
+
+
+def test_misaligned_operands_take_the_stock_epilogue(monkeypatch):
+    launched, stock = [], []
+    monkeypatch.setattr(g8, "_launch", lambda a, w, *rest: launched.append(a.shape) or "fused")
+    monkeypatch.setattr(g8, "reference", lambda a, w, *rest: stock.append(a.shape) or "stock")
+    g8._DEVICE_CFG[None] = g8._FALLBACK_CONFIG  # CPU tensors report device index None
+    xs, ws = torch.ones(32), torch.ones(64)
+
+    def run(a, w):
+        return g8._run(a, w, xs, ws, None)
+
+    assert (
+        run(torch.zeros(32, 1024, dtype = torch.int8), torch.zeros(64, 1024, dtype = torch.int8))
+        == "fused"
+    )
+    assert (
+        run(torch.zeros(32, 1000, dtype = torch.int8), torch.zeros(64, 1000, dtype = torch.int8))
+        == "stock"
+    )
+    flat = torch.zeros(64 * 1024 + 8, dtype = torch.int8)
+    assert (
+        run(flat[8 : 8 + 32 * 1024].view(32, 1024), torch.zeros(64, 1024, dtype = torch.int8))
+        == "stock"
+    )
+    assert run(torch.zeros(32, 1024, dtype = torch.int8), flat[8:].view(64, 1024)) == "stock"
+    wide = torch.zeros(64, 1032, dtype = torch.int8)[:, :1024]  # row stride 1032: off 16
+    assert run(torch.zeros(32, 1024, dtype = torch.int8), wide) == "stock"
+    assert (
+        run(torch.zeros(32, 1024, dtype = torch.int8), torch.zeros(72, 1024, dtype = torch.int8))
+        == "stock"
+    )
+    assert len(launched) == 1 and len(stock) == 5
+
+
 def _cuda_ready() -> bool:
     if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
         return False
@@ -125,7 +170,7 @@ def _int8_linear(k, n, bias, version):
     "m, k, n, bias, xs32",
     [
         (4096, 4096, 4096, False, False),
-        (1037, 520, 1400, True, False),
+        (1037, 528, 1400, True, False),
         (17, 256, 1024, True, True),
         (300, 12288, 256, False, False),
     ],
@@ -143,6 +188,74 @@ def test_op_is_bit_exact_vs_torchao_epilogue(forced, m, k, n, bias, xs32, ws32):
     out = g8._op()(a, w, xs, ws, b)
     assert out.dtype == torch.bfloat16
     assert torch.equal(out, g8.reference(a, w, xs, ws, b))
+
+
+def _tie_operands(k = 4096, rows = 32):
+    """int8 a, w whose int32 products sit one or two units off a bf16 midpoint in [2^24, 2^26), both signs."""
+    k1 = k - 128
+    targets = []
+    for e in (24, 25):
+        for mult in (0, 3, 50, 100):
+            mid = (1 << e) + mult * (1 << (e - 7)) + (1 << (e - 8))
+            for d in (-1, 1, -2, 2):
+                targets += [mid + d, -(mid + d)]
+    w = torch.zeros(len(targets), k, dtype = torch.int8)
+    for j, t in enumerate(targets):
+        s1, s2 = divmod(abs(t), 127)
+        full, rem = divmod(s1, 127)
+        sign = 1 if t >= 0 else -1
+        w[j, :full] = 127 * sign
+        w[j, full] = rem * sign
+        w[j, k1] = s2 * sign
+    a = torch.ones(rows, k, dtype = torch.int8)
+    a[:, :k1] = 127
+    return a.cuda(), w.cuda(), torch.tensor(targets, dtype = torch.int32)
+
+
+@needs_cuda
+@pytest.mark.parametrize("cfg", sorted({g8._FALLBACK_CONFIG, *g8._ARCH_CONFIG.values()}))
+@pytest.mark.parametrize("ws32", [False, True])
+def test_epilogue_rounds_large_accumulators_twice_like_torch(cfg, ws32):
+    # Arch-independent epilogue math: every tile config is launched directly, past the arch gate.
+    a, w, targets = _tie_operands()
+    assert torch.equal(torch._int_mm(a, w.t())[0].cpu(), targets)
+    assert (
+        int((_one_rounding_bf16(targets) != targets.float().to(torch.bfloat16).float()).sum()) >= 8
+    )
+    xs = torch.ones(a.shape[0], device = "cuda", dtype = torch.bfloat16)
+    ws = torch.ones(w.shape[0], device = "cuda", dtype = torch.float32 if ws32 else torch.bfloat16)
+    try:
+        out = g8._launch(a, w, xs, ws, None, cfg)
+    except Exception as exc:  # noqa: BLE001 - a tile this part's shared memory cannot hold
+        pytest.skip(f"tile {cfg} does not launch here: {exc}")
+    ref = g8.reference(a, w, xs, ws, None)
+    assert torch.equal(ref[0].float().cpu(), targets.float().to(torch.bfloat16).float())
+    assert torch.equal(out, ref)
+
+
+@needs_cuda
+def test_probe_covers_the_double_rounding():
+    a, w = g8.tie_operands(torch.device("cuda"))
+    c = torch._int_mm(a, w.t())[0].cpu()
+    assert int((_one_rounding_bf16(c) != c.float().to(torch.bfloat16).float()).sum()) >= 8
+    xs = torch.ones(a.shape[0], device = "cuda", dtype = torch.bfloat16)
+    ws = torch.ones(w.shape[0], device = "cuda", dtype = torch.bfloat16)
+    out = g8._launch(a, w, xs, ws, None, g8._FALLBACK_CONFIG)
+    assert torch.equal(out, g8.reference(a, w, xs, ws, None))
+
+
+def _one_rounding_bf16(c):
+    """int32 -> bf16 with ONE round-to-nearest-even (exact, in int64), as fp32 values."""
+    v = c.to(torch.int64)
+    a = v.abs()
+    e = torch.floor(torch.log2(a.double().clamp(min = 1))).to(torch.int64)
+    shift = (e - 7).clamp(min = 1)
+    q = torch.bitwise_right_shift(a, shift)
+    r = a - torch.bitwise_left_shift(q, shift)
+    half = torch.bitwise_left_shift(torch.ones_like(a), shift - 1)
+    q = q + ((r > half) | ((r == half) & (q % 2 == 1))).to(torch.int64)
+    out = (torch.bitwise_left_shift(q, shift) * v.sign()).double()
+    return torch.where(a < 256, v.double(), out).float()
 
 
 @needs_cuda
@@ -196,6 +309,26 @@ def test_prequant_style_fp32_weight_scale(forced, bias):
 
 
 @needs_cuda
+def test_no_compiled_variant_spills_to_local_memory(forced):
+    g = torch.Generator().manual_seed(0)
+    for m, k, n in ((4096, 3072, 3072), (300, 1040, 528), (300, 1040, 520), (300, 1000, 384)):
+        a = torch.randint(-127, 128, (m, k), generator = g, dtype = torch.int8).cuda()
+        w = torch.randint(-127, 128, (n, k), generator = g, dtype = torch.int8).cuda()
+        xs = (torch.rand(m, generator = g) * 0.02).to(torch.bfloat16).cuda()
+        ws = (torch.rand(n, generator = g) * 0.002).to(torch.bfloat16).cuda()
+        assert torch.equal(g8._op()(a, w, xs, ws, None), g8.reference(a, w, xs, ws, None))
+    torch.cuda.synchronize()
+    caches = getattr(g8._kernels().i8mm_dq, "device_caches", None)
+    if caches is None:
+        pytest.skip("Triton without per-device kernel caches")
+    variants = [ck for cache in caches.values() for ck in cache[0].values()]
+    assert variants
+    for ck in variants:
+        ck._init_handles()
+        assert ck.n_spills == 0, ck.n_spills
+
+
+@needs_cuda
 def test_small_m_and_misaligned_keep_stock(forced):
     lin = _int8_linear(1000, 768, False, None)  # K off the 64 grid
     assert g8._eligible(lin) is None
@@ -208,6 +341,83 @@ def test_small_m_and_misaligned_keep_stock(forced):
             torch.randn(16, 1024, device = "cuda", dtype = torch.bfloat16)
         )  # M = 16 < _int_mm's floor: stock
     assert g8.call_count() == before
+
+
+@needs_cuda
+def test_pinned_group_offloaded_denoiser_takes_the_gemm_and_survives_release(forced, monkeypatch):
+    """Every group pinned: the GEMM engages after placement, bit-identical to torchao through release and restore."""
+    pytest.importorskip("diffusers.hooks")
+    from diffusers.hooks import apply_group_offloading
+    import types as _types
+
+    from core.inference import diffusion_memory as dm
+    from core.inference import diffusion_speed as ds
+
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_PARTIAL_RESIDENT", raising = False)
+
+    class Dit(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj_in = torch.nn.Linear(256, 512).to(torch.bfloat16)
+            self.blocks = torch.nn.ModuleList(
+                torch.nn.Sequential(
+                    torch.nn.Linear(512, 1024), torch.nn.GELU(), torch.nn.Linear(1024, 512)
+                )
+                for _ in range(4)
+            )
+
+        def forward(self, x):
+            x = self.proj_in(x)
+            for block in self.blocks:
+                x = x + block(x)
+            return x
+
+    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, quantize_
+
+    torch.manual_seed(0)
+    dit = Dit().cuda().to(torch.bfloat16)
+    cfg = Int8DynamicActivationInt8WeightConfig(set_inductor_config = False)
+    if not hasattr(cfg, "version"):
+        pytest.skip("torchao without config versions")
+    cfg.version = (
+        2  # what streams under diffusers group offloading (v1's subclass rejects is_pinned)
+    )
+    quantize_(dit.blocks, cfg)
+    x = torch.randn(300, 256, device = "cuda", dtype = torch.bfloat16)
+    with torch.no_grad():
+        ref = dit(x)
+    dit.to("cpu")
+    kwargs = dict(
+        onload_device = torch.device("cuda"),
+        offload_device = torch.device("cpu"),
+        offload_type = "block_level",
+        num_blocks_per_group = 1,
+        use_stream = True,
+        record_stream = True,
+        non_blocking = True,
+    )
+    apply_group_offloading(dit, **dm._torchao_group_offload_kwargs(dit, kwargs, [0]))
+    pipe = _types.SimpleNamespace(transformer = dit, components = {"transformer": dit})
+    assert dm._keep_groups_resident(dit, 1024, "cuda") > 0
+    assert dm.denoisers_pinned_resident(pipe)
+
+    monkeypatch.setattr(ds, "_denoiser_dits", lambda p: [dit])
+    applied = {"compiled": True, "int8_gemm": False}
+    ds.engage_pinned_denoisers(pipe, applied)
+    assert applied["int8_gemm"] and dit._unsloth_int8_gemm == 8
+    # inference_mode rejects moving torchao weights
+    with torch.no_grad():
+        before = g8.call_count()
+        assert torch.equal(dit(x), ref)
+        assert g8.call_count() == before + 8
+        restore = dm.release_resident_groups(pipe, 1024)
+        assert restore is not None and not dm.denoisers_pinned_resident(pipe)
+        for _ in range(2):  # first streamed forward traces the prefetch order
+            assert torch.equal(dit(x), ref)
+        restore()
+        assert dm.denoisers_pinned_resident(pipe)
+        assert torch.equal(dit(x), ref)
+    g8.uninstall(dit)
 
 
 @needs_cuda
@@ -263,3 +473,281 @@ def test_status_drops_int8_gemm_once_the_deferred_probe_swapped_nothing():
     dit._unsloth_int8_gemm = 0
     assert int8_gemm_live(pipe, ("compiled", "int8_gemm")) == ["compiled"]
     assert int8_gemm_live(pipe, ("compiled",)) == ["compiled"]
+
+
+def _convrot(lin, group = 256):
+    from core.inference.diffusion_convrot import _install_rotation
+    _install_rotation(lin, group)
+    return lin
+
+
+def test_convrot_linear_is_eligible_with_its_group(monkeypatch):
+    monkeypatch.delenv(g8.INT8_GEMM_CONVROT_ENV, raising = False)
+    scale = torch.ones(256, dtype = torch.bfloat16)
+    monkeypatch.setattr(g8, "_v1_parts", lambda w: (torch.zeros(256, 512, dtype = torch.int8), scale))
+    lin = _convrot(torch.nn.Linear(512, 256, bias = False))
+    rec = g8._eligible(lin)
+    assert rec is not None and rec[:2] == ("v1", 256) and rec[3] is lin.weight
+    monkeypatch.setenv(g8.INT8_GEMM_CONVROT_ENV, "0")
+    assert g8._eligible(lin) is None
+    assert g8._eligible(torch.nn.Linear(512, 256, bias = False))[:2] == ("v1", None)
+
+
+def test_other_linear_subclasses_and_bad_groups_stay_stock(monkeypatch):
+    monkeypatch.delenv(g8.INT8_GEMM_CONVROT_ENV, raising = False)
+    monkeypatch.setattr(
+        g8,
+        "_v1_parts",
+        lambda w: (torch.zeros(256, 512, dtype = torch.int8), torch.ones(256, dtype = torch.bfloat16)),
+    )
+
+    class Other(torch.nn.Linear):
+        pass
+
+    assert g8._eligible(Other(512, 256, bias = False)) is None
+    lin = _convrot(torch.nn.Linear(512, 256, bias = False))
+    lin.convrot_groupsize = 1024  # does not divide in_features: the forward could not rotate it
+    assert g8._eligible(lin) is None
+
+
+@needs_cuda
+@pytest.mark.parametrize("version", [None, 2])
+def test_convrot_linear_swap_is_bit_identical_eager_and_compiled(forced, monkeypatch, version):
+    """MiniMax-H3's rotated int8 Linear (and its fused QKV): rotation, act quant, fused GEMM == ConvRotLinear.forward."""
+    from torch._dynamo.utils import counters
+
+    monkeypatch.delenv(g8.INT8_GEMM_CONVROT_ENV, raising = False)
+    stock = _convrot(_int8_linear(1024, 768, False, version))
+    fused = _convrot(_int8_linear(1024, 768, False, version))
+    holder = torch.nn.Sequential(fused)
+    assert g8.install(holder) == 1 and g8.is_installed(fused)
+    x = torch.randn(2, 300, 1024, device = "cuda", dtype = torch.bfloat16) * 3
+    x[0, 7, :5] *= 200  # an outlier row, what the rotation exists for
+    with torch.inference_mode():
+        before = g8.call_count()
+        assert torch.equal(fused(x), stock(x))
+        assert g8.call_count() == before + 1
+        counters.clear()
+        torch._dynamo.reset()
+        with torch._inductor.config.patch(emulate_precision_casts = True):
+            out = torch.compile(fused, fullgraph = True)(x)
+            assert not counters["graph_break"]
+            if fused.__dict__[g8._REC][2]:
+                # the opaque fused op is eager-exact; Inductor's compiled act quant is not on every torch
+                assert torch.equal(out, stock(x))
+            else:
+                assert torch.equal(out, torch.compile(stock, fullgraph = True)(x))
+    g8.uninstall(holder)
+    assert not g8.is_installed(fused)
+
+
+@needs_cuda
+def test_convrot_kill_switch_keeps_rotated_linears_stock(forced, monkeypatch):
+    monkeypatch.setenv(g8.INT8_GEMM_CONVROT_ENV, "0")
+    rotated = _convrot(_int8_linear(1024, 768, False, None))
+    plain = _int8_linear(1024, 768, False, None)
+    holder = torch.nn.Sequential(rotated, plain)
+    assert g8.install(holder) == 1
+    assert g8.is_installed(plain) and not g8.is_installed(rotated)
+
+
+@needs_cuda
+@pytest.mark.parametrize("use_stream, version", [(False, None), (False, 2), (True, 2)])
+def test_block_streamed_denoiser_installs_against_its_onload_device(
+    forced, monkeypatch, use_stream, version
+):
+    """Group-offloaded int8 blocks (H3 on 40 GB): installed while on the host, the fused GEMM follows each onload."""
+    hooks = pytest.importorskip("diffusers.hooks")
+    monkeypatch.delenv(g8.INT8_GEMM_CONVROT_ENV, raising = False)
+    monkeypatch.delenv(g8.INT8_GEMM_STREAMED_ENV, raising = False)
+
+    class Holder(torch.nn.Module):
+        def __init__(self, lin):
+            super().__init__()
+            self.blocks = torch.nn.ModuleList([torch.nn.Sequential(lin)])
+
+        def forward(self, x):
+            return self.blocks[0](x)
+
+    stock = _convrot(_int8_linear(1024, 768, False, version))
+    fused = _convrot(_int8_linear(1024, 768, False, version))
+    holder = Holder(fused).requires_grad_(False).cpu()
+    hooks.apply_group_offloading(
+        holder,
+        onload_device = torch.device("cuda"),
+        offload_device = torch.device("cpu"),
+        offload_type = "block_level",
+        num_blocks_per_group = 1,
+        use_stream = use_stream,
+    )
+    assert fused.weight.device.type == "cpu"
+    assert (
+        g8.install(holder, offload_active = True) == 0
+    )  # no onload device: an offloaded denoiser stays stock
+    assert g8.install(holder, device = "cuda") == 1 and g8.is_installed(fused)
+    x = torch.randn(300, 1024, device = "cuda", dtype = torch.bfloat16) * 3
+    with torch.no_grad():  # group offload's swap_tensors onload cannot run on inference tensors
+        before = g8.call_count()
+        out = holder(x)
+        assert g8.call_count() == before + 1
+        assert torch.equal(out, stock(x))
+        assert torch.equal(holder(x), out)
+    if not use_stream:  # the stream path keeps the last group resident until the next onload
+        assert fused.weight.device.type == "cpu"
+
+
+@needs_cuda
+def test_streamed_kill_switch(forced, monkeypatch):
+    monkeypatch.setenv(g8.INT8_GEMM_STREAMED_ENV, "0")
+    holder = torch.nn.Sequential(_int8_linear(1024, 768, False, None))
+    assert g8.install(holder, device = "cuda") == 0 and not g8.is_installed(holder[0])
+
+
+@pytest.mark.parametrize(
+    "cap, on",
+    [
+        ((8, 0), True),  # A100: measured end to end (streamed H3)
+        ((8, 6), False),
+        ((8, 9), False),  # L4: H3 Diffusers does not load there (host RAM floor), never measured
+        ((9, 0), False),
+        ((10, 0), False),
+        ((12, 0), True),
+    ],
+)
+def test_rotquant_arch_gate(cap, on):
+    assert (g8.rotquant_config(cap, "auto") is not None) is on
+
+
+def test_rotquant_kill_switch_and_force(monkeypatch):
+    assert (
+        g8.rotquant_config((12, 0), "off") is None
+    )  # the fused GEMM's own kill switch also turns it off
+    assert g8.rotquant_config((10, 0), "force") is not None
+    assert g8.rotquant_config((7, 5), "force") is None
+    assert g8.rotquant_config((8, 0), "off") is None
+    monkeypatch.setenv(g8.INT8_ROTQUANT_ENV, "0")
+    assert g8.rotquant_config((12, 0), "auto") is None
+    assert g8.rotquant_config((8, 0), "auto") is None
+    assert g8.rotquant_config((10, 0), "force") is None
+
+
+@pytest.fixture
+def forced_rotq(forced):
+    cfg = g8.rotquant_device_config(torch.cuda.current_device())
+    if cfg is None:
+        pytest.skip("fused rotation probe refused this device")
+    return cfg
+
+
+def _act(m, k, seed):
+    g = torch.Generator().manual_seed(seed)
+    x = torch.randn(m, k, generator = g) * (torch.rand(1, k, generator = g) * 4)
+    x[:, :5] *= 80  # outlier channels, what the rotation is for
+    x[min(1, m - 1)] = 0  # a zero row: the eps clamp
+    return x.to(torch.bfloat16).cuda()
+
+
+@needs_cuda
+@pytest.mark.parametrize(
+    "m, k", [(17, 256), (300, 256 * 3), (1037, 5376), (257, 7168), (129, 14336), (19, 256 * 128)]
+)
+@pytest.mark.parametrize("kind", ["v1", "v2"])
+def test_rotquant_kernel_is_bit_exact_vs_rotation_then_torchao_quant(forced_rotq, m, k, kind):
+    x = _act(m, k, m + k)
+    q, s = g8._rotq_op()(x, 256, kind == "v2")
+    rq, rs = g8.rotquant_reference(x, 256, kind)
+    # torchao's own activation-scale dtype: bf16, except v2 on torchao >= 0.18 (fp32)
+    want = torch.float32 if kind == "v2" and g8._v2_act_scale_fp32() else torch.bfloat16
+    assert q.dtype == torch.int8 and s.dtype == want and s.shape == (m,)
+    assert torch.equal(q, rq) and torch.equal(s, rs)
+
+
+@needs_cuda
+def test_rotquant_probe_accepts_this_torchao(forced):
+    # with 0.17's bf16 roundings on 0.18, ~4% of codes differed and the probe refused every device
+    assert g8.rotquant_device_config(torch.cuda.current_device()) is not None
+
+
+@needs_cuda
+def test_rotquant_fake_op_matches_the_real_scale_dtype(forced_rotq):
+    from torch._subclasses.fake_tensor import FakeTensorMode
+    x = _act(40, 768, 9)
+    for v2 in (False, True):
+        _, s = g8._rotq_op()(x, 256, v2)
+        with FakeTensorMode() as mode:
+            _, fs = g8._rotq_op()(mode.from_tensor(x), 256, v2)
+        assert fs.dtype == s.dtype
+
+
+@needs_cuda
+def test_rotquant_unsupported_shapes_take_the_stock_math(forced_rotq):
+    x = _act(40, 256 * 129, 3)  # more groups than one tile holds
+    assert not g8.rotquant_supported(x, 256, forced_rotq)
+    assert not g8.rotquant_supported(_act(40, 1024, 4), 64, forced_rotq)
+    assert not g8.rotquant_supported(_act(40, 1024, 5).half(), 256, forced_rotq)
+    q, s = g8._rotq_op()(x, 256, True)
+    rq, rs = g8.rotquant_reference(x, 256, "v2")
+    assert torch.equal(q, rq) and torch.equal(s, rs)
+    xt = _act(1024, 300, 6).t()  # non-contiguous input: made contiguous, same result
+    q, s = g8._rotq_op()(xt, 256, True)
+    rq, rs = g8.rotquant_reference(xt.contiguous(), 256, "v2")
+    assert torch.equal(q, rq) and torch.equal(s, rs)
+
+
+@needs_cuda
+@pytest.mark.parametrize("version", [None, 2])
+def test_convrot_linear_fuses_rotation_into_act_quant_eager_and_compiled(
+    forced_rotq, monkeypatch, version
+):
+    """The rotated Linear quantizes its activation with the fused kernel: same output as ConvRotLinear.forward, eager
+    and compiled, one graph, no graph break, no recompile on a second call."""
+    from torch._dynamo.utils import counters
+
+    monkeypatch.delenv(g8.INT8_GEMM_CONVROT_ENV, raising = False)
+    stock = _convrot(_int8_linear(1024, 768, False, version))
+    fused = _convrot(_int8_linear(1024, 768, False, version))
+    holder = torch.nn.Sequential(fused)
+    assert g8.install(holder) == 1 and fused.__dict__[g8._REC][2] is True
+    x = torch.randn(2, 300, 1024, device = "cuda", dtype = torch.bfloat16) * 3
+    x[0, 7, :5] *= 200
+    x2 = (
+        x * 0.5
+    )  # made outside inference_mode like x, so a recompile here would be the op's own guards
+    with torch.inference_mode():
+        before = g8.rotquant_call_count()
+        assert torch.equal(fused(x), stock(x))
+        assert g8.rotquant_call_count() == before + 1
+        counters.clear()
+        torch._dynamo.reset()
+        with torch._inductor.config.patch(emulate_precision_casts = True):
+            compiled = torch.compile(fused, fullgraph = True)
+            out = compiled(x)
+            out2 = compiled(x2)
+            assert not counters["graph_break"]
+            assert counters["stats"]["unique_graphs"] == 1
+            assert torch.equal(out, stock(x)) and torch.equal(out2, stock(x2))
+    g8.uninstall(holder)
+
+
+@needs_cuda
+def test_rotquant_kill_switch_keeps_the_stock_rotation(forced, monkeypatch):
+    monkeypatch.delenv(g8.INT8_GEMM_CONVROT_ENV, raising = False)
+    monkeypatch.setenv(g8.INT8_ROTQUANT_ENV, "0")
+    stock = _convrot(_int8_linear(1024, 768, False, 2))
+    fused = _convrot(_int8_linear(1024, 768, False, 2))
+    holder = torch.nn.Sequential(fused)
+    assert g8.install(holder) == 1 and fused.__dict__[g8._REC][2] is False
+    x = torch.randn(300, 1024, device = "cuda", dtype = torch.bfloat16)
+    with torch.inference_mode():
+        before, gemm = g8.rotquant_call_count(), g8.call_count()
+        assert torch.equal(fused(x), stock(x))
+        assert g8.rotquant_call_count() == before and g8.call_count() == gemm + 1
+    g8.uninstall(holder)
+
+
+@needs_cuda
+def test_rotquant_probe_refusal_keeps_the_stock_rotation(forced, monkeypatch):
+    monkeypatch.delenv(g8.INT8_GEMM_CONVROT_ENV, raising = False)
+    monkeypatch.setattr(g8, "_rotq_probe", lambda index, cfg: False)
+    fused = _convrot(_int8_linear(1024, 768, False, 2))
+    assert g8.install(torch.nn.Sequential(fused)) == 1 and fused.__dict__[g8._REC][2] is False

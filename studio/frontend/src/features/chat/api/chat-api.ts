@@ -233,8 +233,10 @@ export async function listLoras(
 
 export async function getInferenceStatus(
   signal?: AbortSignal,
+  model?: string,
 ): Promise<InferenceStatusResponse> {
-  const response = await authFetch("/api/inference/status", { signal });
+  const query = model ? `?${new URLSearchParams({ model }).toString()}` : "";
+  const response = await authFetch(`/api/inference/status${query}`, { signal });
   return parseJsonOrThrow<InferenceStatusResponse>(response);
 }
 
@@ -273,8 +275,11 @@ export interface ActiveGenerationsResponse {
 
 /** Chats generating on the backend right now. Authoritative where `runningByThreadId` is not: that
  *  map is per-tab, empty after a reload and blind to a second tab, and /load 409s on these. */
-export async function getActiveGenerations(): Promise<ActiveGenerationsResponse> {
-  const response = await authFetch("/api/inference/active-generations");
+export async function getActiveGenerations(
+  model?: string,
+): Promise<ActiveGenerationsResponse> {
+  const query = model ? `?model=${encodeURIComponent(model)}` : "";
+  const response = await authFetch(`/api/inference/active-generations${query}`);
   return parseJsonOrThrow<ActiveGenerationsResponse>(response);
 }
 
