@@ -26,3 +26,29 @@ except:
 from .dpo import PatchDPOTrainer, PatchKTOTrainer
 from ._utils import is_bfloat16_supported, is_vLLM_available, __version__
 from .rl import PatchFastRL, vLLMSamplingParams
+from .sao import SAOConfig, SAOTrainer
+
+__all__ = [
+    "FastLlamaModel",
+    "FastLanguageModel",
+    "FastVisionModel",
+    "FastTextModel",
+    "FastModel",
+    "FastMistralModel",
+    "FastQwen2Model",
+    "FastQwen3Model",
+    "FastQwen3MoeModel",
+    "FastGraniteModel",
+    "FastSentenceTransformer",
+    "PatchDPOTrainer",
+    "PatchKTOTrainer",
+    "is_bfloat16_supported",
+    "is_vLLM_available",
+    "__version__",
+    "PatchFastRL",
+    "vLLMSamplingParams",
+    "SAOConfig",
+    "SAOTrainer",
+]
+if "FastFalconH1Model" in dir():
+    __all__.append("FastFalconH1Model")
