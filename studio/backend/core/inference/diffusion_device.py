@@ -190,7 +190,9 @@ def _vae_bf16_decode_request(gate: str) -> tuple[str, bool]:
 def _cast_float_args(torch: Any, dtype: Any) -> Any:
     def _hook(module: Any, args: tuple) -> tuple:
         return tuple(
-            a.to(dtype) if isinstance(a, torch.Tensor) and a.is_floating_point() and a.dtype != dtype else a
+            a.to(dtype)
+            if isinstance(a, torch.Tensor) and a.is_floating_point() and a.dtype != dtype
+            else a
             for a in args
         )
 

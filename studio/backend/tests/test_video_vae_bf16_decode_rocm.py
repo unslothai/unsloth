@@ -16,7 +16,11 @@ from core.inference import diffusion_device as dd
 from core.inference.diffusion_device import DiffusionDeviceTarget, install_rocm_vae_bf16_decode
 
 
-def _target(backend = "rocm", vendor = "amd", device = "cuda"):
+def _target(
+    backend = "rocm",
+    vendor = "amd",
+    device = "cuda",
+):
     return DiffusionDeviceTarget(
         device = device,
         dtype = torch.bfloat16,
@@ -34,7 +38,11 @@ class _FakeVAE:
         self.calls = []
         self.weight = torch.ones(2, dtype = dtype)
 
-    def decode(self, z, return_dict = False):
+    def decode(
+        self,
+        z,
+        return_dict = False,
+    ):
         self.calls.append(_AUTOCAST[-1] if _AUTOCAST else None)
         dtype = torch.bfloat16 if _AUTOCAST else torch.float32
         return (z.to(dtype) * 2,)
@@ -58,7 +66,9 @@ def gpu(monkeypatch):
     monkeypatch.setattr(torch, "autocast", fake_autocast)
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
     monkeypatch.setattr(
-        torch.cuda, "get_device_properties", lambda i: types.SimpleNamespace(gcnArchName = state["arch"])
+        torch.cuda,
+        "get_device_properties",
+        lambda i: types.SimpleNamespace(gcnArchName = state["arch"]),
     )
     monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda *a, **k: state["bf16"])
     monkeypatch.delenv(dd.VAE_BF16_DECODE_ENV, raising = False)
@@ -79,7 +89,9 @@ def test_rocm_rdna3_plus_decodes_under_bf16_autocast_and_returns_fp32(gpu, arch,
     out = pipe.vae.decode(torch.ones(3), return_dict = False)
     assert pipe.vae.calls == [("cuda", torch.bfloat16)]
     assert out[0].dtype == torch.float32 and torch.equal(out[0], torch.full((3,), 2.0))
-    assert pipe.vae.dtype is torch.float32 and pipe.vae.weight.dtype == torch.float32  # weights untouched
+    assert (
+        pipe.vae.dtype is torch.float32 and pipe.vae.weight.dtype == torch.float32
+    )  # weights untouched
     assert pipe.vae.decode.__wrapped__ == original
 
 
@@ -114,7 +126,10 @@ def test_kill_switch(gpu, monkeypatch):
 
 def test_force_allows_nvidia_with_bf16(gpu, monkeypatch):
     monkeypatch.setenv(dd.VAE_BF16_DECODE_ENV, "1")
-    assert install_rocm_vae_bf16_decode(_pipe(), _target(backend = "cuda", vendor = "nvidia")) == "autocast"  # no decoder module to cast: autocast
+    assert (
+        install_rocm_vae_bf16_decode(_pipe(), _target(backend = "cuda", vendor = "nvidia"))
+        == "autocast"
+    )  # no decoder module to cast: autocast
     gpu["bf16"] = False
     assert install_rocm_vae_bf16_decode(_pipe(), _target(backend = "cuda", vendor = "nvidia")) is None
 
@@ -122,7 +137,9 @@ def test_force_allows_nvidia_with_bf16(gpu, monkeypatch):
 def test_only_fp32_vaes_and_only_once(gpu):
     assert install_rocm_vae_bf16_decode(_pipe(torch.bfloat16), _target()) is None
     pipe = _pipe()
-    assert install_rocm_vae_bf16_decode(pipe, _target()) == "autocast"  # no decoder module to cast: autocast
+    assert (
+        install_rocm_vae_bf16_decode(pipe, _target()) == "autocast"
+    )  # no decoder module to cast: autocast
     assert install_rocm_vae_bf16_decode(pipe, _target()) is None  # no double wrap
     pipe.vae.decode(torch.ones(1))
     assert pipe.vae.calls == [("cuda", torch.bfloat16)]
@@ -136,7 +153,9 @@ def test_decoder_output_object_is_widened(gpu):
     vae = _FakeVAE()
     vae.decode = lambda z, return_dict = True: Out(z.to(torch.bfloat16))
     pipe = types.SimpleNamespace(vae = vae)
-    assert install_rocm_vae_bf16_decode(pipe, _target()) == "autocast"  # no decoder module to cast: autocast
+    assert (
+        install_rocm_vae_bf16_decode(pipe, _target()) == "autocast"
+    )  # no decoder module to cast: autocast
     assert pipe.vae.decode(torch.ones(2)).sample.dtype == torch.float32
 
 
@@ -146,7 +165,10 @@ def test_video_backend_gates_on_fp32_families_and_speed_tier():
     src = (Path(dd.__file__).with_name("video.py")).read_text(encoding = "utf-8")
     i = src.index("install_rocm_vae_bf16_decode(pipe, target")
     window = src[i - 400 : i]
-    assert 'getattr(fam, "vae_force_fp32", False)' in window and "effective_speed != SPEED_OFF" in window
+    assert (
+        'getattr(fam, "vae_force_fp32", False)' in window
+        and "effective_speed != SPEED_OFF" in window
+    )
 
 
 @pytest.fixture
@@ -173,7 +195,9 @@ def test_default_casts_only_the_decode_half_and_matches_fp32(tiny_wan_vae, gpu, 
     assert all(p.dtype == torch.bfloat16 for p in vae.decoder.parameters())
     assert all(p.dtype == torch.bfloat16 for p in vae.post_quant_conv.parameters())
     assert all(p.dtype == torch.float32 for p in vae.encoder.parameters())
-    assert vae.dtype == torch.float32  # pipelines keep handing it fp32 latents; the encode stays fp32
+    assert (
+        vae.dtype == torch.float32
+    )  # pipelines keep handing it fp32 latents; the encode stays fp32
     with torch.no_grad():
         out = vae.decode(z, return_dict = False)[0]
         assert vae.encode(torch.randn(1, 3, 1, 8, 8)).latent_dist.mean.dtype == torch.float32
@@ -186,13 +210,20 @@ def test_decoder_reached_without_vae_decode_still_gets_bf16_inputs(tiny_wan_vae,
     pipe = types.SimpleNamespace(vae = vae)
     assert install_rocm_vae_bf16_decode(pipe, _target()) == "weights"
     with torch.no_grad():
-        x = vae.post_quant_conv(torch.randn(1, 4, 1, 4, 4))  # fp32 input, bf16 weights: the pre-hook casts
+        x = vae.post_quant_conv(
+            torch.randn(1, 4, 1, 4, 4)
+        )  # fp32 input, bf16 weights: the pre-hook casts
     assert x.dtype == torch.bfloat16
 
 
 def test_weights_mode_with_tiling_matches_fp32(tiny_wan_vae, gpu):
     vae = tiny_wan_vae
-    vae.enable_tiling(tile_sample_min_height = 16, tile_sample_min_width = 16, tile_sample_stride_height = 8, tile_sample_stride_width = 8)
+    vae.enable_tiling(
+        tile_sample_min_height = 16,
+        tile_sample_min_width = 16,
+        tile_sample_stride_height = 8,
+        tile_sample_stride_width = 8,
+    )
     z = torch.randn(1, 4, 2, 4, 4)
     with torch.no_grad():
         ref = vae.decode(z, return_dict = False)[0]
@@ -211,5 +242,10 @@ def test_autocast_mode_keeps_every_weight_fp32(tiny_wan_vae, gpu, monkeypatch):
 
 def test_nvidia_real_vae_untouched(tiny_wan_vae, gpu):
     vae = tiny_wan_vae
-    assert install_rocm_vae_bf16_decode(types.SimpleNamespace(vae = vae), _target(backend = "cuda", vendor = "nvidia")) is None
+    assert (
+        install_rocm_vae_bf16_decode(
+            types.SimpleNamespace(vae = vae), _target(backend = "cuda", vendor = "nvidia")
+        )
+        is None
+    )
     assert all(p.dtype == torch.float32 for p in vae.parameters())
