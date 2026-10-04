@@ -207,8 +207,8 @@ class DiffusionFamily:
         return self.deploy_base_repo or trained_base
 
 
-# Fresh servers rendered 2-4 variants of one seed here: near-tied norm-reduction configs, benchmarked per process, sum in
-# different orders. B200 measured deterministic; unmeasured archs keep inductor's pick.
+# Fresh servers rendered 2-4 variants of one seed here (FLUX.1, Z-Image, Qwen-Image; the edit siblings share their DiT):
+# near-tied norm-reduction configs, benchmarked per process, sum in different orders. B200 measured deterministic.
 _REDUCTION_RACE_ARCHS: tuple[tuple[int, int], ...] = ((8, 0), (8, 9), (12, 0))
 
 # Keyed by architecture, not per variant: the base repo is read from the HF base_model tag at load time, so one entry
@@ -329,6 +329,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # FLUX instruction editing: FluxKontextPipeline takes an image + instruction. Specific aliases first so
         # detect_family prefers this over "flux.1".
         name = "flux.1-kontext",
+        filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS,
         pipeline_class = "FluxKontextPipeline",
         transformer_class = "FluxTransformer2DModel",
         base_repo = "black-forest-labs/FLUX.1-Kontext-dev",
@@ -339,6 +340,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # Qwen instruction editing: the 2511 checkpoint ships as QwenImageEditPlusPipeline. Specific aliases first so
         # detect_family prefers this over "qwen-image".
         name = "qwen-image-edit",
+        filter_reduction_configs_archs = _REDUCTION_RACE_ARCHS,
         comfy_flow_shift = 3.1,  # ComfyUI ModelSamplingAuraFlow 3.1 (Qwen-Image-Edit 2511 template)
         # The 2509 template samples at ModelSamplingAuraFlow 3.
         comfy_flow_shift_variants = (("qwen-image-edit-2509", 3.0),),

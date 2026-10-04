@@ -22,7 +22,7 @@ from core.inference import diffusion_speed as ds  # noqa: E402
 
 _SM120 = (12, 0)
 _MEASURED_ARCHS = ((8, 0), (8, 9), (12, 0))
-_IMAGE_FAMILIES = ("flux.1", "z-image", "qwen-image")
+_IMAGE_FAMILIES = ("flux.1", "z-image", "qwen-image", "flux.1-kontext", "qwen-image-edit")
 
 
 def _family(name):
@@ -63,7 +63,7 @@ def test_image_family_opts_in_on_the_measured_archs(monkeypatch, name, cap):
     assert _filter_reaching_compile(monkeypatch, fam) is True
 
 
-def test_the_three_families_share_one_arch_list():
+def test_the_race_families_share_one_arch_list():
     from core.inference import diffusion_families
     for name in _IMAGE_FAMILIES:
         assert (
