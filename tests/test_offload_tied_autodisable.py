@@ -459,3 +459,27 @@ def test_trainable_or_cpu_model_tables_stay():
         # A model on the CPU has nothing to offload.
         assert ns["offload_spare_embeddings"](model) == 0
     assert moved == []
+
+
+class _HeadlessPerLayerModel(_PerLayerModel):
+    """AutoModel backbone: no output head."""
+
+    def get_output_embeddings(self):
+        return None
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a card to offload from")
+def test_headless_model_hooks_a_table_the_block_swap_load_left_on_cpu():
+    ns, moved = _spare_ns()
+    model = _HeadlessPerLayerModel("cuda").requires_grad_(False)
+    # The block swap load streamed the table to host without hooks; the backbone stays on the card.
+    model.per_layer.to("cpu")
+    with _as_platform("posix"):
+        assert ns["offload_spare_embeddings"](model) == 1
+    # Nothing ties the input embedding without a head, so it may go too.
+    assert any(m is model.per_layer for m in moved)
+    moved.clear()
+    model = _HeadlessPerLayerModel("cpu").requires_grad_(False)
+    with _as_platform("posix"):
+        assert ns["offload_spare_embeddings"](model) == 0
+    assert moved == []

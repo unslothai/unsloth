@@ -908,8 +908,11 @@ def offload_spare_embeddings(model, require_frozen = True):
         return 0
     # Already on the host only via the block swap load (unhooked, decoder on an accelerator); CPU models have nothing to offload.
     head = getattr(out_embed, "weight", None)
-    if head is not None and head.device.type in ("cpu", "meta"):
-        head = None
+    if head is not None:
+        accelerated = head.device.type not in ("cpu", "meta")
+    else:
+        # Headless backbone (AutoModel): the decoder's own weights say whether it runs on an accelerator.
+        accelerated = any(p.device.type not in ("cpu", "meta") for p in model.parameters())
     candidates = []
     for embedding in found:
         weight = getattr(embedding, "weight", None)
@@ -918,7 +921,9 @@ def offload_spare_embeddings(model, require_frozen = True):
             or weight.device.type == "meta"
             or (
                 weight.device.type == "cpu"
-                and (head is None or getattr(embedding, "_unsloth_offload_hooks_installed", False))
+                and (
+                    not accelerated or getattr(embedding, "_unsloth_offload_hooks_installed", False)
+                )
             )
             or _embeddings_are_tied(embedding, out_embed)
             or _embedding_dispatch_device(embedding) is not None
