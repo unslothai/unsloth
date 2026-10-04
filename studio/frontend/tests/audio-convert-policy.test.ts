@@ -354,7 +354,7 @@ test("Use again re-uploads a conversion's kept source instead of its expiring up
   // A failed re-upload restores the kept id as expired, so the blocker shows at once, not after a 404.
   assert.match(
     page,
-    /\(\) => \{\s*if \(untouched\(\)\) store\.setSource\(\{ \.\.\.kept, expiresAt: EXPIRED_AT \}\);/,
+    /\(\) => \{\s*if \(untouched\(\) && kept\) store\.setSource\(\{ \.\.\.kept, expiresAt: EXPIRED_AT \}\);/,
   );
 });
 

@@ -175,7 +175,7 @@ function reuseConvertInputs(clip: AudioGalleryClip) {
           });
         },
         () => {
-          if (untouched()) store.setSource({ ...kept, expiresAt: EXPIRED_AT });
+          if (untouched() && kept) store.setSource({ ...kept, expiresAt: EXPIRED_AT });
         },
       );
   } else if (kept) {
