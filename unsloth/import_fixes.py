@@ -1698,8 +1698,7 @@ def fix_transformers5_image_processing_reexports():
 
 
 _UNTRUSTED_CONFIG_PATCH_FLAG = "_unsloth_patched_untrusted_config_fields"
-# Set only through attn_implementation= / experts_implementation=; transformers' to_dict never writes
-# them, so a config.json carrying them was crafted (CVE-2026-4372, fixed upstream in 5.3.0).
+# to_dict never writes these, so a config.json carrying them was crafted (CVE-2026-4372).
 _INTERNAL_IMPLEMENTATION_KEYS = (
     "_attn_implementation_internal",
     "_experts_implementation_internal",
@@ -1728,16 +1727,9 @@ def _strip_untrusted_config_fields(config_dict, strip_internal, strip_lightglue)
 
 
 def fix_transformers_untrusted_config_fields():
-    """Drop config.json fields that let a model repo run code without trust_remote_code.
-
-    CVE-2026-4372 (transformers < 5.3.0): `_attn_implementation_internal` read from config.json
-    names a Hub kernel repo, which `kernels` downloads and imports when the model is built.
-    CVE-2026-5241 (transformers 4.54.0 - 5.4.x): LightGlueConfig takes `trust_remote_code` from
-    config.json and forwards it to a nested AutoConfig.from_pretrained on a repo the config names.
-    Both enter through PretrainedConfig.from_dict, so the loaded dict is cleaned there. Keyword
-    arguments are applied after from_dict and are left alone, so an explicit
-    attn_implementation="kernels-community/..." keeps working.
-    """
+    """Drop config.json fields that run repo code without trust_remote_code: a Hub kernel named by
+    `_attn_implementation_internal` (CVE-2026-4372, < 5.3.0) and LightGlue's nested `trust_remote_code`
+    (CVE-2026-5241, < 5.5.0). Keyword arguments apply after from_dict, so explicit ones still work."""
     try:
         import transformers
 
@@ -1753,7 +1745,6 @@ def fix_transformers_untrusted_config_fields():
     current = PretrainedConfig.__dict__.get("from_dict")
     if not isinstance(current, classmethod):
         return
-    # The mark travels on the wrapper, so a second call or a reload is detected rather than stacked.
     if getattr(current.__func__, _UNTRUSTED_CONFIG_PATCH_FLAG, False):
         return
     original = current.__func__
@@ -1782,9 +1773,7 @@ _CHAT_TEMPLATE_NAME_PATCH_FLAG = "_unsloth_patched_chat_template_names"
 
 
 def _chat_template_name_escapes(template_name):
-    # Upstream's test (#46191: the resolved parent must be the template dir), without touching disk.
-    # A drive prefix (Windows `C:evil`) joins onto the probe base unchanged but not onto a
-    # save directory on another drive.
+    # Upstream's check (#46191), plus drive prefixes: Windows `C:evil` lands on another drive.
     if os.path.splitdrive(template_name)[0]:
         return True
     base = os.path.abspath(os.path.join(os.sep, "unsloth_chat_templates"))
@@ -1794,8 +1783,7 @@ def _chat_template_name_escapes(template_name):
 
 def _check_chat_template_names(obj, kwargs):
     chat_template = getattr(obj, "chat_template", None)
-    # Checked whatever save_jinja_files says: processor save_pretrained writes named templates
-    # without consulting it, and no legitimate template name escapes the directory.
+    # Regardless of save_jinja_files: processor save_pretrained ignores it.
     if not isinstance(chat_template, dict):
         return
     for template_name in chat_template:
@@ -1804,13 +1792,8 @@ def _check_chat_template_names(obj, kwargs):
 
 
 def fix_transformers_chat_template_path_traversal():
-    """Refuse to save a named chat template whose name escapes the save directory.
-
-    CVE-2026-9856 (transformers < 5.10.0): tokenizer and processor save_pretrained write each
-    named chat template to `additional_chat_templates/<name>.jinja`, and the name comes from the
-    loaded tokenizer_config.json, so a repo naming one `../../x` writes outside the save directory
-    on the next save. Raises upstream's ValueError, before anything is written.
-    """
+    """CVE-2026-9856 (< 5.10.0): a repo-supplied chat template name like `../../x` is written outside
+    the save directory; raise upstream's ValueError before anything is written."""
     try:
         import transformers
         if Version(transformers.__version__) >= Version("5.10.0"):

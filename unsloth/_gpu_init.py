@@ -321,8 +321,7 @@ fix_transformers5_bare_annotation_configs()
 # same process is covered too (#9708).
 fix_transformers_fully_masked_rows()
 fix_transformers_chunked_mask_block_sequence_ids()
-# Version-gated security fixes (CVE-2026-4372, CVE-2026-5241, CVE-2026-9856): no-ops on a transformers
-# that carries the upstream fix. Before anything loads a config, so a plain from_pretrained is covered.
+# CVE-2026-4372 / 5241 / 9856, no-ops once transformers carries the fix; before any config loads.
 fix_transformers_untrusted_config_fields()
 fix_transformers_chat_template_path_traversal()
 # Probe-gated: no-ops unless this transformers merges a submodule's own prefix renaming into a
