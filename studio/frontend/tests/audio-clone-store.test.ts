@@ -206,3 +206,25 @@ test("a voice list fetched across a save, rename or delete is fetched again", ()
     assert.match(src, new RegExp(`await ${call};\\s*mutations \\+= 1;`), call);
   }
 });
+
+test("a reference longer than the 30 s cut brings no transcript, since only 30 s is sent", () => {
+  const store = () => useAudioCloneStore.getState();
+  store().adoptReference(null);
+  store().setReferenceText("");
+  store().adoptReference({
+    kind: "clip" as const,
+    id: "long",
+    name: "A long story.",
+    durationS: 45,
+    transcript: "A long story.",
+  });
+  assert.equal(store().referenceText, "");
+  store().adoptReference({
+    kind: "clip" as const,
+    id: "short",
+    name: "Hi.",
+    durationS: 4,
+    transcript: "Hi.",
+  });
+  assert.equal(store().referenceText, "Hi.");
+});
