@@ -1,0 +1,408 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""In-memory, host-RAM LRU of text-encoder outputs for diffusion/video pipes.
+
+``UNSLOTH_DIFFUSION_PROMPT_CACHE=0`` disables; ``UNSLOTH_DIFFUSION_PROMPT_CACHE_MB`` (default 256, capped on
+small hosts) bounds it. Hits return fresh copies so in-place edits cannot poison later renders.
+"""
+
+from __future__ import annotations
+
+import collections
+import hashlib
+import inspect
+import json
+import os
+import threading
+import weakref
+from typing import Any, Optional
+
+_ENV_ENABLE = "UNSLOTH_DIFFUSION_PROMPT_CACHE"
+_ENV_BUDGET_MB = "UNSLOTH_DIFFUSION_PROMPT_CACHE_MB"
+_DEFAULT_BUDGET_MB = 256
+_FALSE_TOKENS = ("0", "false", "no", "off")
+
+_KEY_EXCLUDED_ARGS = frozenset({"device", "generator"})
+_TEXT_ENCODER_ATTRS = ("text_encoder", "text_encoder_2", "text_encoder_3", "text_encoder_4")
+
+
+def enabled() -> bool:
+    return (os.environ.get(_ENV_ENABLE) or "").strip().lower() not in _FALSE_TOKENS
+
+
+def budget_bytes() -> int:
+    raw = (os.environ.get(_ENV_BUDGET_MB) or "").strip()
+    try:
+        mb = float(raw) if raw else float(_DEFAULT_BUDGET_MB)
+    except ValueError:
+        mb = float(_DEFAULT_BUDGET_MB)
+        raw = ""  # malformed = unset, so the automatic cap still applies
+    budget = int(max(0.0, mb) * 1024 * 1024)
+    if not raw:
+        total = _host_ram_bytes()
+        if total:
+            budget = min(budget, max(16 * 1024 * 1024, total // 64))
+    return budget
+
+
+def _host_ram_bytes() -> int:
+    """Entries live in host RAM, so an enforcing cgroup limit caps the budget too."""
+    try:
+        total = int(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES"))
+    except (AttributeError, ValueError, OSError):
+        total = 0
+    try:
+        from .diffusion_memory import _cgroup_memory_limit_mib
+        limit_mib = _cgroup_memory_limit_mib()
+    except Exception:  # noqa: BLE001 - unreadable means no limit
+        limit_mib = None
+    if limit_mib:
+        limit = int(limit_mib) * 1024 * 1024
+        total = min(total, limit) if total else limit
+    return total
+
+
+def _torch():
+    import torch
+    return torch
+
+
+def _plain(value: Any) -> Any:
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_plain(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _plain(v) for k, v in value.items()}
+    torch = _torch()
+    if isinstance(value, (torch.dtype, torch.device)):
+        return str(value)
+    raise TypeError(type(value).__name__)
+
+
+def _is_tensor(obj: Any) -> bool:
+    return hasattr(obj, "detach") and hasattr(obj, "clone") and hasattr(obj, "element_size")
+
+
+def _map_tensors(obj: Any, fn: Any) -> Any:
+    if _is_tensor(obj):
+        return fn(obj)
+    if isinstance(obj, tuple):
+        return tuple(_map_tensors(o, fn) for o in obj)
+    if isinstance(obj, list):
+        return [_map_tensors(o, fn) for o in obj]
+    if isinstance(obj, dict) and type(obj) is dict:
+        return {k: _map_tensors(v, fn) for k, v in obj.items()}
+    if obj is None or isinstance(obj, (bool, int, float, str)):
+        return obj
+    raise TypeError(type(obj).__name__)
+
+
+def _nbytes(obj: Any) -> int:
+    total = [0]
+
+    def count(t: Any) -> Any:
+        total[0] += int(t.numel()) * int(t.element_size())
+        return t
+
+    _map_tensors(obj, count)
+    return total[0]
+
+
+class PromptCache:
+    def __init__(self, budget: Optional[int] = None) -> None:
+        self.budget = budget_bytes() if budget is None else int(budget)
+        self._entries: "collections.OrderedDict[str, tuple[Any, int]]" = collections.OrderedDict()
+        self._lock = threading.Lock()
+        self.bytes = 0
+        self.stats = {"hits": 0, "misses": 0, "bypassed": 0, "evictions": 0, "stored": 0}
+
+    def get(self, key: str, device: Any) -> Any:
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is None:
+                return None
+            self._entries.move_to_end(key)
+            self.stats["hits"] += 1
+            stored = entry[0]
+        return _map_tensors(stored, lambda t: _fresh(t, device))
+
+    def put(self, key: str, result: Any) -> bool:
+        try:
+            size = _nbytes(result)
+        except TypeError:
+            return False
+        if size <= 0 or size > self.budget:
+            return False
+        stored = _map_tensors(result, _store_copy)
+        with self._lock:
+            old = self._entries.pop(key, None)
+            if old is not None:
+                self.bytes -= old[1]
+            self._entries[key] = (stored, size)
+            self.bytes += size
+            self.stats["stored"] += 1
+            while self.bytes > self.budget and self._entries:
+                _, (_, dropped) = self._entries.popitem(last = False)
+                self.bytes -= dropped
+                self.stats["evictions"] += 1
+        return True
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+            self.bytes = 0
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def describe(self) -> dict:
+        with self._lock:
+            return {
+                "entries": len(self._entries),
+                "bytes": self.bytes,
+                "budget": self.budget,
+                **self.stats,
+            }
+
+
+def _store_copy(t: Any) -> Any:
+    t = t.detach()
+    device = t.device
+    # Not pinned: pin_memory() is a fresh cudaHostAlloc per entry (60 ms to 1.6 s for 4 MB on a busy host) to save
+    # ~0.3 ms per hit.
+    stored = t.to("cpu", copy = True)
+    stored._unsloth_src_device = device
+    return stored
+
+
+def _fresh(t: Any, device: Any) -> Any:
+    target = device if device is not None else getattr(t, "_unsloth_src_device", t.device)
+    torch = _torch()
+    target = torch.device(target)
+    if target.type == t.device.type and (target.index is None or target.index == t.device.index):
+        return t.clone()
+    return t.to(target, copy = True)
+
+
+def _encoder_identity(pipe: Any) -> list:
+    ident = []
+    for attr in _TEXT_ENCODER_ATTRS:
+        module = getattr(pipe, attr, None)
+        if module is not None:
+            ident.append([attr, type(module).__name__, id(module)])
+    return ident
+
+
+def _lora_state(pipe: Any) -> Any:
+    try:
+        return _plain(tuple(getattr(pipe, "_unsloth_loras", ()) or ()))
+    except TypeError:
+        return None
+
+
+def _hash(payload: dict) -> str:
+    raw = json.dumps(payload, sort_keys = True, separators = (",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def cache_for(pipe: Any) -> Optional[PromptCache]:
+    return getattr(pipe, "_unsloth_prompt_cache", None)
+
+
+def install(
+    pipe: Any,
+    *,
+    identity: Optional[dict] = None,
+    lora_owner: Any = None,
+    logger: Any = None,
+) -> bool:
+    """``lora_owner``: the ``from_pipe`` source that tracks adapters; its store is shared."""
+    if not enabled() or pipe is None:
+        return False
+    if cache_for(pipe) is not None:
+        return True
+    cache = cache_for(lora_owner) if lora_owner is not None else None
+    try:
+        if cache is None:
+            cache = PromptCache()
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, "setup", exc)
+        return False
+    if cache.budget <= 0:
+        return False
+    load_fp = _plain(identity or {})
+    wrapped = _wrap_encode_prompt(pipe, cache, load_fp, lora_owner or pipe, logger)
+    registered = _register_h3(pipe, cache, load_fp, logger)
+    if not (wrapped or registered):
+        return False
+    try:
+        pipe._unsloth_prompt_cache = cache
+    except Exception as exc:  # noqa: BLE001
+        _warn(logger, "attach", exc)
+        return False
+    if logger is not None:
+        logger.info(
+            "diffusion.prompt_cache: on (%.0f MB budget; %s)",
+            cache.budget / 1024**2,
+            "encode_prompt" if wrapped else "modular text encoder",
+        )
+    return True
+
+
+def release(pipe: Any) -> None:
+    cache = cache_for(pipe)
+    if cache is not None:
+        cache.clear()
+
+
+def _wrap_encode_prompt(
+    pipe: Any, cache: PromptCache, load_fp: Any, lora_owner: Any, logger: Any
+) -> bool:
+    encode = getattr(pipe, "encode_prompt", None)
+    if not callable(encode):
+        return False
+    try:
+        signature = inspect.signature(encode)
+    except (TypeError, ValueError):
+        return False
+
+    def cached_encode_prompt(*args: Any, **kwargs: Any) -> Any:
+        try:
+            bound = signature.bind(*args, **kwargs)
+            bound.apply_defaults()
+            keyed = {
+                k: _plain(v) for k, v in bound.arguments.items() if k not in _KEY_EXCLUDED_ARGS
+            }
+            key = _hash(
+                {
+                    "load": load_fp,
+                    "encoders": _encoder_identity(pipe),
+                    "loras": _lora_state(lora_owner),
+                    "args": keyed,
+                }
+            )
+            hit = cache.get(key, bound.arguments.get("device"))
+        except TypeError:
+            cache.stats["bypassed"] += 1
+            return encode(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001 - never fail a render over the cache
+            _warn(logger, "lookup", exc)
+            return encode(*args, **kwargs)
+        if hit is not None:
+            return hit
+        result = encode(*args, **kwargs)
+        cache.stats["misses"] += 1
+        try:
+            cache.put(key, result)
+        except Exception as exc:  # noqa: BLE001 - a failed store only skips reuse
+            _warn(logger, "store", exc)
+        return result
+
+    cached_encode_prompt.__signature__ = signature
+    cached_encode_prompt.__wrapped__ = encode
+    pipe.encode_prompt = cached_encode_prompt
+    return True
+
+
+# MiniMax-H3 steps call this module global, so it is shimmed process-wide and routed per text encoder.
+_H3_MODULE = "diffusers.modular_pipelines.minimax_h3.encoders"
+_H3_FUNC = "get_qwen3vl_prompt_embeds"
+_H3_REGISTRY: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+_H3_LOCK = threading.Lock()
+
+
+def _register_h3(pipe: Any, cache: PromptCache, load_fp: Any, logger: Any) -> bool:
+    text_encoder = _modular_text_encoder(pipe)
+    if text_encoder is None:
+        return False
+    try:
+        import importlib
+        module = importlib.import_module(_H3_MODULE)
+    except Exception:  # noqa: BLE001 - not an H3-capable diffusers
+        return False
+    with _H3_LOCK:
+        original = getattr(module, _H3_FUNC, None)
+        if not callable(original):
+            return False
+        if not getattr(original, "_unsloth_prompt_cache_shim", False):
+            shim = _make_h3_shim(original, logger)
+            setattr(module, _H3_FUNC, shim)
+        try:
+            _H3_REGISTRY[text_encoder] = (cache, load_fp)
+        except TypeError:
+            return False
+    return True
+
+
+def _modular_text_encoder(pipe: Any) -> Any:
+    if callable(getattr(pipe, "encode_prompt", None)):
+        return None
+    if not hasattr(pipe, "blocks") and "Modular" not in type(pipe).__name__:
+        return None
+    try:
+        return getattr(pipe, "text_encoder", None)
+    except Exception:  # noqa: BLE001 - a lazy component that is not loaded
+        return None
+
+
+def _make_h3_shim(original: Any, logger: Any) -> Any:
+    try:
+        signature = inspect.signature(original)
+    except (TypeError, ValueError):
+        signature = None
+
+    def get_qwen3vl_prompt_embeds(*args: Any, **kwargs: Any) -> Any:
+        if signature is None:
+            return original(*args, **kwargs)
+        try:
+            bound = signature.bind(*args, **kwargs)
+            bound.apply_defaults()
+            arguments = bound.arguments
+            text_encoder = arguments.get("text_encoder")
+            registered = _H3_REGISTRY.get(text_encoder) if text_encoder is not None else None
+        except Exception:  # noqa: BLE001
+            registered = None
+        if registered is None:
+            return original(*args, **kwargs)
+        cache, load_fp = registered
+        try:
+            if arguments.get("vision_inputs"):
+                raise TypeError("vision inputs")
+            key = _hash(
+                {
+                    "load": load_fp,
+                    "encoder": [type(text_encoder).__name__, id(text_encoder)],
+                    "token_ids": _plain(list(arguments.get("token_ids") or ())),
+                    "layer": _plain(arguments.get("text_encoder_layer")),
+                    "dtype": _plain(arguments.get("dtype")),
+                }
+            )
+            hit = cache.get(key, arguments.get("device"))
+        except TypeError:
+            cache.stats["bypassed"] += 1
+            return original(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001
+            _warn(logger, "h3 lookup", exc)
+            return original(*args, **kwargs)
+        if hit is not None:
+            return hit
+        result = original(*args, **kwargs)
+        cache.stats["misses"] += 1
+        try:
+            cache.put(key, result)
+        except Exception as exc:  # noqa: BLE001
+            _warn(logger, "h3 store", exc)
+        return result
+
+    get_qwen3vl_prompt_embeds._unsloth_prompt_cache_shim = True
+    get_qwen3vl_prompt_embeds.__wrapped__ = original
+    if signature is not None:
+        get_qwen3vl_prompt_embeds.__signature__ = signature
+    return get_qwen3vl_prompt_embeds
+
+
+def _warn(logger: Any, what: str, exc: Any) -> None:
+    if logger is not None:
+        logger.warning("diffusion.prompt_cache: %s failed: %s", what, exc)

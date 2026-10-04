@@ -5,12 +5,10 @@
 Unsloth becomes reachable: a public Cloudflare URL (``--secure`` / ``--cloudflare``)
 or a raw non-loopback bind such as ``-H 0.0.0.0``.
 
-Masked input echoes one ``*`` per keystroke (unlike ``getpass``). Works on
-Windows (``msvcrt``) and Linux/macOS (``termios``). All output goes to stderr so
-redirected stdout never swallows the prompt.
-
-Mirrored for the CLI at ``unsloth_cli/commands/_password_prompt.py`` (the CLI
-cannot import the Unsloth backend package); keep the two in sync.
+Masked input echoes one ``*`` per keystroke (unlike ``getpass``). Works on Windows (``msvcrt``) and Linux/macOS
+(``termios``). All output goes to stderr so redirected stdout never swallows the prompt. Mirrored for the CLI at
+``unsloth_cli/commands/_password_prompt.py`` (the CLI cannot import the Unsloth backend package); keep the two
+in sync.
 """
 
 from __future__ import annotations
@@ -41,11 +39,9 @@ def _getch_windows() -> str:  # pragma: no cover - exercised via fake on Linux C
 
 
 class _RestoreTtyOnSignals:
-    """Restore terminal attrs if SIGTERM/SIGHUP kills the prompt mid-read.
-
-    A finally block can't run when a signal terminates the process, leaving the
-    shared terminal in cbreak/no-echo. Best-effort: no-op off the main thread or
-    where the signals are absent.
+    """Restore terminal attrs if SIGTERM/SIGHUP kills the prompt mid-read. A finally block can't run when a
+    signal terminates the process, leaving the shared terminal in cbreak/no-echo. Best-effort: no-op off the
+    main thread or where the signals are absent.
     """
 
     def __init__(self, fd: int, old_attrs) -> None:
@@ -276,24 +272,25 @@ def prompt_for_password_change(
     exposure: str = "on the public internet",
     first_key_timeout: "float | None" = None,
     refusal_aborts: bool = True,
-) -> bool:
-    """Force a new admin password before exposure; True on success.
+) -> "bool | None":
+    """Force a new admin password before exposure.
 
     Loops until a valid, confirmed password is committed via ``apply_change``.
-    Ctrl-C / EOF returns False; ``refusal_aborts`` tells the banner what the
-    caller does with that, so it never promises an abort that will not happen:
-    True for a tunnel (caller aborts), False for a raw bind (launch proceeds,
-    because it worked before this prompt existed).
+    Returns True on success, False when the operator aborts with Ctrl-C / EOF,
+    and None when the first-key deadline detects an unattended terminal.
 
     ``exposure`` names where this launch is reachable: a tunnel really is the
     public internet, a raw bind is every interface (LAN behind NAT, or the
     internet on a cloud box). Claiming the wrong one trains people to ignore it.
 
     ``first_key_timeout`` bounds the wait for the FIRST keystroke, returning
-    False if it never comes. Only a caller that must not block a launch passes
+    None if it never comes. Only a caller that must not block a launch passes
     it: a detached pty (``tmux new -d``, ``docker run -dt``) looks exactly like
     an attended terminal, so undeadlined it waits forever and never binds its
     socket. Unset (the tunnel) blocks indefinitely.
+
+    ``refusal_aborts`` is accepted and ignored: an OLDER run.py beside this file
+    still passes it, and an unexpected keyword would kill that launch.
     """
     if out is None:
         out = sys.stderr
@@ -344,8 +341,9 @@ def prompt_for_password_change(
             "No response at the terminal; leaving the auto-generated admin password in place.\n"
         )
         out.flush()
-        return False
+        return None
     except (KeyboardInterrupt, EOFError):
+        # Must agree with the banner: a caller that continues cannot claim otherwise.
         out.write(
             "Password change aborted; not exposing Unsloth.\n"
             if refusal_aborts
@@ -356,13 +354,10 @@ def prompt_for_password_change(
 
 
 def resolve_supplied_password(cli_value: "str | None", out: "TextIO | None" = None) -> "str | None":
-    """Resolve a non-interactive initial admin password, or None if unset.
-
-    Precedence: an explicit ``--password`` (literal ``-`` reads a line from
-    stdin), then the ``UNSLOTH_STUDIO_PASSWORD`` env var; empty/omitted means off.
-    A literal argv value is visible in the process list, so a note points at the
-    env var or stdin instead. Mirror of the CLI helper -- keep the two in sync.
-    """
+    """Resolve a non-interactive initial admin password, or None if unset. Precedence: an explicit
+    ``--password`` (literal ``-`` reads a line from stdin), then the ``UNSLOTH_STUDIO_PASSWORD`` env
+    var; empty/omitted means off. A literal argv value is visible in the process list, so a note
+    points at the env var or stdin instead. Mirror of the CLI helper -- keep the two in sync."""
     if out is None:
         out = sys.stderr
     if cli_value == "-":

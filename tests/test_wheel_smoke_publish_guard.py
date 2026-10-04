@@ -21,7 +21,7 @@ STEP_NAME = "Publishing path uploads the wheel only"
 
 
 def _workflow():
-    return yaml.safe_load(WORKFLOW.read_text())
+    return yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
 
 
 def _on_block(wf):
@@ -183,7 +183,7 @@ def test_commented_out_upload_is_not_an_artifact(tmp_path):
 
 
 def test_real_build_sh_passes_the_guard(tmp_path):
-    r = _run_guard(tmp_path, (REPO / "build.sh").read_text())
+    r = _run_guard(tmp_path, (REPO / "build.sh").read_text(encoding = "utf-8"))
     assert r.returncode == 0, r.stdout + r.stderr
 
 

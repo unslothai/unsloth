@@ -2,21 +2,16 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
 
-type Load = { status: string; url?: string };
+import { readSrc } from "./helpers/kit.ts";
+
+type Load = { status: string; url?: string; blob?: unknown };
 
 function imageHook() {
-  const source = readFileSync(
-    new URL(
-      "../src/components/assistant-ui/use-sandbox-image.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const source = readSrc("components/assistant-ui/use-sandbox-image.ts");
   const code = ts.transpileModule(source.replace(/^import .*$/gm, ""), {
     compilerOptions: {
       module: ts.ModuleKind.CommonJS,
@@ -98,7 +93,8 @@ function imageHook() {
 const flush = async () => {
   for (let i = 0; i < 8; i++) await Promise.resolve();
 };
-const response = { ok: true, blob: async () => ({ type: "image/png" }) };
+const imageBlob = { type: "image/png" };
+const response = { ok: true, blob: async () => imageBlob };
 
 for (const previous of ["loaded", "failed"] as const) {
   test(`A to B to A does not reuse a cancelled ${previous} result`, async () => {
@@ -109,7 +105,9 @@ for (const previous of ["loaded", "failed"] as const) {
     await flush();
     const old = hook.render("A");
     assert.equal(old.status, previous);
-    assert.equal(hook.render("B").status, "idle");
+    const pendingB = hook.render("B");
+    assert.equal(pendingB.status, "idle");
+    assert.equal(pendingB.blob, undefined);
     hook.commit();
     assert.equal(hook.requests[0].signal.aborted, true);
     assert.equal(hook.live.size, 0);
@@ -130,6 +128,7 @@ for (const previous of ["loaded", "failed"] as const) {
     await flush();
     const current = hook.render("A");
     assert.equal(current.status, "loaded");
+    assert.equal(current.blob, imageBlob, "downloads reuse the fetched bytes");
     assert.ok(current.url && hook.live.has(current.url));
     assert.notEqual(current.url, old.url);
     hook.unmount();

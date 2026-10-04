@@ -3,6 +3,7 @@
 
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { cn } from "@/lib/utils";
+import { autoscrollDelta, clipSpan } from "./autoscroll";
 import { flipShifts, insertionIndex, ownsDrag } from "./reorder";
 import { GripVerticalIcon, XIcon } from "lucide-react";
 import {
@@ -100,8 +101,21 @@ function nextUid(): string {
   return `i${uidSeq}`;
 }
 
-// Rows are keyed by a synthetic uid, not array index: index keys would swap the values under
-// the caret on reorder and break the animation.
+// Scrollable ancestors, nearest first, so running the inner pane out hands off to the dialog.
+function findScrollParents(el: HTMLElement | null): HTMLElement[] {
+  const out: HTMLElement[] = [];
+  let node = el?.parentElement ?? null;
+  while (node) {
+    const overflowY = getComputedStyle(node).overflowY;
+    // Scrollability is checked per frame instead: rows grow as you type.
+    if (overflowY === "auto" || overflowY === "scroll") out.push(node);
+    node = node.parentElement;
+  }
+  return out;
+}
+
+// Rows are keyed by a synthetic uid, not array index: index keys would swap the
+// values under the caret on reorder and break the animation.
 export function SortablePromptItems({
   items,
   onChange,
@@ -134,8 +148,7 @@ export function SortablePromptItems({
     setUids(rowUids);
   }
 
-  // Layout offsets, not client rects: a rect moves with the scroll position, so scrolling the
-  // pane between reorders would bake that distance into every transform.
+  // Layout offsets, not client rects: rects shift with scroll, which autoscroll changes per frame.
   const measureOffsets = useCallback(() => {
     const offsets = new Map<string, number>();
     rowRefs.current.forEach((el, uid) => offsets.set(uid, el.offsetTop));
@@ -207,6 +220,8 @@ export function SortablePromptItems({
     if (!draggingUid) return;
     const container = containerRef.current;
     if (!container) return;
+    const scrollers = findScrollParents(container);
+    let raf = 0;
 
     const evaluate = () => {
       const order = uidsRef.current;
@@ -223,6 +238,30 @@ export function SortablePromptItems({
       const to = insertionIndex(boxes, from, localY);
       if (to !== from) applyOrder(from, to);
     };
+
+    // pointerdown suppresses native drag scrolling, so scroll here and re-run the hit-test.
+    const tick = () => {
+      for (let i = 0; i < scrollers.length; i++) {
+        const scroller = scrollers[i];
+        const limit = scroller.scrollHeight - scroller.clientHeight;
+        if (limit <= 0) continue;
+        const span = clipSpan(scroller.getBoundingClientRect(), [
+          ...scrollers.slice(i + 1).map((el) => el.getBoundingClientRect()),
+          { top: 0, bottom: window.innerHeight },
+        ]);
+        if (!span) continue;
+        const delta = autoscrollDelta(pointerYRef.current, span.top, span.bottom);
+        if (delta === 0) continue;
+        const before = scroller.scrollTop;
+        const next = Math.max(0, Math.min(limit, before + delta));
+        if (next === before) continue;
+        scroller.scrollTop = next;
+        evaluate();
+        break;
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
 
     const endDrag = () => {
       pointerIdRef.current = null;
@@ -257,6 +296,7 @@ export function SortablePromptItems({
     // Release entirely outside the page, where no move follows to catch it.
     window.addEventListener("blur", endDrag);
     return () => {
+      cancelAnimationFrame(raf);
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onPointerEnd);
       window.removeEventListener("pointercancel", onPointerEnd);

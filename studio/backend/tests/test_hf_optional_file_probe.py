@@ -16,6 +16,7 @@ import pytest
 from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
 
 from utils.hf_probe import hf_file_definitely_absent
+import huggingface_hub
 
 
 def _http_error(name: str, *, fallback: str | None = None) -> Exception:
@@ -65,7 +66,6 @@ def _raise(exc):
 
 
 def _patch_metadata(monkeypatch, behavior):
-    import huggingface_hub
     monkeypatch.setattr(huggingface_hub, "get_hf_file_metadata", behavior)
 
 
@@ -153,8 +153,6 @@ def test_the_probe_writes_nothing_to_the_cache(monkeypatch, tmp_path):
 
 
 def test_the_lora_base_probe_skips_the_download_when_the_file_is_absent(monkeypatch):
-    import huggingface_hub
-
     from utils.models import model_config
 
     calls = []
@@ -170,8 +168,6 @@ def test_the_lora_base_probe_skips_the_download_when_the_file_is_absent(monkeypa
 
 
 def test_a_present_adapter_config_still_resolves_its_base(monkeypatch, tmp_path):
-    import huggingface_hub
-
     from utils.models import model_config
 
     cfg = tmp_path / "adapter_config.json"
@@ -184,8 +180,6 @@ def test_a_present_adapter_config_still_resolves_its_base(monkeypatch, tmp_path)
 
 def test_the_chat_template_search_skips_paths_the_listing_does_not_name(monkeypatch):
     """The existing path lookup must gate absent template downloads."""
-    import huggingface_hub
-
     from picker import service
 
     listed: list[str] = []
@@ -220,7 +214,9 @@ def _functions(path: Path) -> dict:
 
 
 def _called_names(node: ast.AST) -> set[str]:
-    """Every function and method name called anywhere inside *node*, nested defs included."""
+    """Every function and method name called anywhere inside *node*, nested defs included. A
+    read handed to the rejected-token retry (``call_hub_with_anonymous_retry(hf_hub_download,
+    ...)``) is called by it, so it counts as called here."""
     names: set[str] = set()
     for child in ast.walk(node):
         if not isinstance(child, ast.Call):
@@ -229,6 +225,13 @@ def _called_names(node: ast.AST) -> set[str]:
             names.add(child.func.id)
         elif isinstance(child.func, ast.Attribute):
             names.add(child.func.attr)
+        callee = getattr(child.func, "id", None) or getattr(child.func, "attr", None)
+        if callee == "call_hub_with_anonymous_retry" and child.args:
+            wrapped = child.args[0]
+            if isinstance(wrapped, ast.Name):
+                names.add(wrapped.id)
+            elif isinstance(wrapped, ast.Attribute):
+                names.add(wrapped.attr)
     return names
 
 

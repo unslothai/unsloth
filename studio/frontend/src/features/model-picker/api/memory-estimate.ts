@@ -18,10 +18,11 @@ export type MemoryEstimateReason =
 export interface MemoryEstimate {
   available: boolean;
   reason: MemoryEstimateReason | null;
-  /** Files that become resident: weights, projector, drafter. */
   weightsBytes: number;
   /** KV cache at the priced context and slot count. Meaningless unless `kvEstimable`. */
   kvBytes: number;
+  /** Host RAM checkpoints included in `kvBytes`, capped at `kvBytes`. */
+  kvCheckpointBytes: number;
   /** Compute / graph buffers, flat plus the context-linear growth. */
   computeBytes: number;
   /** A separate drafter's own cache and rollback state, on top of its file. */
@@ -48,6 +49,13 @@ export interface MemoryEstimate {
   kvOnGpu: boolean;
   /** What was actually priced, after overrides and clamps resolve. */
   nCtx: number;
+  contextFitted: number | null;
+  /** False when Auto can shrink the priced context to fit. */
+  contextIsPinned: boolean;
+  /** GPU bytes at the loader's context floor; null when pinned. */
+  gpuFloorBytes: number | null;
+  /** Whether a load still over the card at the floor moves layers to the CPU. */
+  floorCanOffload: boolean;
   cacheTypeKv: string | null;
   nParallel: number;
   layerCount: number | null;
@@ -65,6 +73,8 @@ export interface MemoryEstimateRequest {
   nativePathToken?: string | null;
   nCtx?: number | null;
   cacheTypeKv?: string | null;
+  maxSeqLength?: number | null;
+  mlxKvQuant?: string | null;
   nParallel?: number | null;
   nBatch?: number | null;
   nUbatch?: number | null;
@@ -86,6 +96,7 @@ const UNAVAILABLE: MemoryEstimate = {
   reason: "unsizable",
   weightsBytes: 0,
   kvBytes: 0,
+  kvCheckpointBytes: 0,
   computeBytes: 0,
   drafterRuntimeBytes: 0,
   drafterRuntimeGpuBytes: 0,
@@ -97,6 +108,10 @@ const UNAVAILABLE: MemoryEstimate = {
   kvEstimable: false,
   kvOnGpu: true,
   nCtx: 0,
+  contextFitted: null,
+  contextIsPinned: true,
+  gpuFloorBytes: null,
+  floorCanOffload: false,
   cacheTypeKv: null,
   nParallel: 1,
   layerCount: null,
@@ -109,6 +124,7 @@ interface ApiEstimateResponse {
   reason: MemoryEstimateReason | null;
   weights_bytes: number;
   kv_bytes: number;
+  kv_checkpoint_bytes?: number;
   compute_bytes: number;
   drafter_runtime_bytes: number;
   drafter_runtime_gpu_bytes: number;
@@ -120,6 +136,10 @@ interface ApiEstimateResponse {
   kv_estimable: boolean;
   kv_on_gpu: boolean;
   n_ctx: number;
+  context_fitted?: number | null;
+  context_is_pinned?: boolean;
+  gpu_floor_bytes?: number | null;
+  floor_can_offload?: boolean;
   cache_type_kv: string | null;
   n_parallel: number;
   layer_count: number | null;
@@ -138,6 +158,8 @@ function estimateRequestBody(
     native_path_lease: nativePathLease,
     n_ctx: payload.nCtx ?? null,
     cache_type_kv: payload.cacheTypeKv ?? null,
+    max_seq_length: payload.maxSeqLength ?? null,
+    mlx_kv_quant: payload.mlxKvQuant ?? null,
     n_parallel: payload.nParallel ?? null,
     n_batch: payload.nBatch ?? null,
     n_ubatch: payload.nUbatch ?? null,
@@ -195,6 +217,7 @@ const ESTIMATE_REASONS: readonly MemoryEstimateReason[] = [
 
 function toMemoryEstimate(body: ApiEstimateResponse): MemoryEstimate {
   const drafterRuntimeBytes = finiteBytes(body.drafter_runtime_bytes, 0);
+  const kvBytes = finiteBytes(body.kv_bytes, 0);
   return {
     available: flag(body.available, false),
     // A reason the panel has no copy for is not a reason. An unknown string would reach the copy
@@ -203,7 +226,12 @@ function toMemoryEstimate(body: ApiEstimateResponse): MemoryEstimate {
       ? (body.reason as MemoryEstimateReason)
       : null,
     weightsBytes: finiteBytes(body.weights_bytes, 0),
-    kvBytes: finiteBytes(body.kv_bytes, 0),
+    kvBytes,
+    // Default to zero for older backends; clamp to avoid a negative KV cache row.
+    kvCheckpointBytes: Math.min(
+      kvBytes,
+      finiteBytes(body.kv_checkpoint_bytes, 0),
+    ),
     computeBytes: finiteBytes(body.compute_bytes, 0),
     drafterRuntimeBytes,
     // Absent on a backend predating the split: fall back to the whole term, which keeps the old
@@ -225,6 +253,11 @@ function toMemoryEstimate(body: ApiEstimateResponse): MemoryEstimate {
     kvEstimable: flag(body.kv_estimable, false),
     kvOnGpu: flag(body.kv_on_gpu, true),
     nCtx: finiteCount(body.n_ctx, 0),
+    contextFitted: nullableCount(body.context_fitted),
+    // Preserve older backends' verdicts when these fields are absent.
+    contextIsPinned: flag(body.context_is_pinned, true),
+    gpuFloorBytes: nullableCount(body.gpu_floor_bytes),
+    floorCanOffload: flag(body.floor_can_offload, false),
     cacheTypeKv:
       typeof body.cache_type_kv === "string" ? body.cache_type_kv : null,
     nParallel: finiteCount(body.n_parallel, 1),
@@ -256,10 +289,6 @@ export function resetMemoryEstimateRouteMemo(): void {
   routeAbsentAt = null;
 }
 
-/** Price a prospective GGUF load from its header. Allocates nothing, loads nothing. Never
- *  throws for a backend answer: an absent route, an auth expiry, a 500, an HTML error page
- *  served as 200 or a truncated body all come back as an unavailable estimate, so the panel
- *  hides the row. The statuses are told apart only to decide whether the miss is memoable. */
 export async function fetchMemoryEstimate(
   payload: MemoryEstimateRequest,
   signal?: AbortSignal,

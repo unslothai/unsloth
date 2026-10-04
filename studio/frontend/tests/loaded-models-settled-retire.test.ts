@@ -9,16 +9,12 @@
 // loading off the card, on the strength of a request that failed.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
-function read(path: string): string {
-  return readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf8");
-}
+import { readText } from "./helpers/kit.ts";
 
-const HOOK = read("../src/features/loaded-models/use-loaded-models.ts");
-const API = read("../src/features/loaded-models/loaded-models-api.ts");
+const HOOK = readText("../src/features/loaded-models/use-loaded-models.ts");
+const API = readText("../src/features/loaded-models/loaded-models-api.ts");
 
 test("the read reports which sources it could not see", () => {
   assert.match(API, /export type LoadedModelsRead = \{/);

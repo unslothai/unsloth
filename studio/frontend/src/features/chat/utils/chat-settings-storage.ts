@@ -10,6 +10,7 @@ import {
   type PersistedChatSettings,
   type PersistedInferenceParams,
 } from "../api/chat-settings-api";
+import { isMinPMode, normalizeSavedMinP } from "../lib/min-p-policy";
 import { normalizePresetLoadConfig } from "../presets/preset-load-config";
 import {
   BUILTIN_PRESETS,
@@ -22,10 +23,6 @@ import {
 } from "../presets/preset-policy";
 import type { ReasoningEffort } from "../stores/chat-runtime-store";
 import { MAX_SAMPLING_SEED } from "../types/runtime";
-import {
-  sanitizeCompactionHeadroomRatio,
-  sanitizeContextPolicy,
-} from "./auto-compaction";
 import {
   assignSanitizedMirroredSettings,
   hasNoMirroredSettings,
@@ -144,6 +141,7 @@ function sanitizeInferenceParams(
   if (!isRecord(value)) return undefined;
 
   const params: PersistedInferenceParams = {};
+  if (isMinPMode(value.minPMode)) params.minPMode = value.minPMode;
   for (const field of NUMERIC_INFERENCE_FIELDS) {
     const fieldValue = value[field];
     if (typeof fieldValue === "number" && Number.isFinite(fieldValue)) {
@@ -197,7 +195,7 @@ function toFullPreset(preset: PersistedChatPreset): Preset {
     name: preset.name,
     params: {
       ...defaultInferenceParams,
-      ...preset.params,
+      ...normalizeSavedMinP(preset.params),
       checkpoint: defaultInferenceParams.checkpoint,
     },
     ...(loadConfig ? { loadConfig } : {}),
@@ -257,6 +255,29 @@ function sanitizeInt(value: unknown, min: number): number | undefined {
     : undefined;
 }
 
+/** Read-only migration; outgoing numeric patches do not imply user intent. */
+export function normalizeSavedChatSettings(value: unknown): PersistedChatSettings {
+  const settings = sanitizeChatSettings(value);
+  if (settings.inferenceParams) {
+    settings.inferenceParams = normalizeSavedMinP(settings.inferenceParams);
+  }
+  if (settings.inferenceParamsByModel) {
+    settings.inferenceParamsByModel = Object.fromEntries(
+      Object.entries(settings.inferenceParamsByModel).map(([id, params]) => [
+        id,
+        normalizeSavedMinP(params),
+      ]),
+    );
+  }
+  if (settings.customPresets) {
+    settings.customPresets = settings.customPresets.map((preset) => ({
+      ...preset,
+      params: normalizeSavedMinP(preset.params),
+    }));
+  }
+  return settings;
+}
+
 export function sanitizeChatSettings(value: unknown): PersistedChatSettings {
   if (!isRecord(value)) return {};
 
@@ -278,11 +299,7 @@ export function sanitizeChatSettings(value: unknown): PersistedChatSettings {
   const autoHealToolCalls = sanitizeBool(value.autoHealToolCalls);
   const nudgeToolCalls = sanitizeBool(value.nudgeToolCalls);
   const autoCompactEnabled = sanitizeBool(value.autoCompactEnabled);
-  const contextPolicy = sanitizeContextPolicy(value.contextPolicy);
-  const compactionHeadroomRatio = sanitizeCompactionHeadroomRatio(
-    value.compactionHeadroomRatio,
-  );
-  const maxToolCallsPerMessage = sanitizeInt(value.maxToolCallsPerMessage, 1);
+  const maxToolCallsPerMessage = sanitizeInt(value.maxToolCallsPerMessage, 0);
   const toolCallTimeout = sanitizeInt(value.toolCallTimeout, 1);
 
   if (inferenceParams) settings.inferenceParams = inferenceParams;
@@ -315,10 +332,6 @@ export function sanitizeChatSettings(value: unknown): PersistedChatSettings {
   }
   if (autoCompactEnabled !== undefined) {
     settings.autoCompactEnabled = autoCompactEnabled;
-  }
-  if (contextPolicy) settings.contextPolicy = contextPolicy;
-  if (compactionHeadroomRatio !== undefined) {
-    settings.compactionHeadroomRatio = compactionHeadroomRatio;
   }
   if (maxToolCallsPerMessage !== undefined) {
     settings.maxToolCallsPerMessage = maxToolCallsPerMessage;
@@ -385,8 +398,6 @@ export function isEmptyChatSettings(settings: PersistedChatSettings): boolean {
     settings.autoHealToolCalls === undefined &&
     settings.nudgeToolCalls === undefined &&
     settings.autoCompactEnabled === undefined &&
-    settings.contextPolicy === undefined &&
-    settings.compactionHeadroomRatio === undefined &&
     settings.maxToolCallsPerMessage === undefined &&
     settings.toolCallTimeout === undefined &&
     hasNoMirroredSettings(settings)
@@ -419,7 +430,7 @@ export function loadLegacyChatSettings(): PersistedChatSettings {
   const allowArtifactNetworkAccess = loadBool(ALLOW_ARTIFACT_NETWORK_ACCESS_KEY);
   const autoHealToolCalls = loadBool(AUTO_HEAL_TOOL_CALLS_KEY);
   const nudgeToolCalls = loadBool(NUDGE_TOOL_CALLS_KEY);
-  const maxToolCallsPerMessage = loadInt(MAX_TOOL_CALLS_KEY, 1);
+  const maxToolCallsPerMessage = loadInt(MAX_TOOL_CALLS_KEY, 0);
   const toolCallTimeout = loadInt(TOOL_CALL_TIMEOUT_KEY, 1);
   const allCustomPresets = sanitizeCustomPresets([
     ...(customPresets ?? []),
@@ -453,7 +464,7 @@ export function loadLegacyChatSettings(): PersistedChatSettings {
   }
   if (toolCallTimeout !== undefined) settings.toolCallTimeout = toolCallTimeout;
 
-  return settings;
+  return normalizeSavedChatSettings(settings);
 }
 
 export interface LoadedChatSettings {
@@ -474,7 +485,7 @@ export interface LoadedChatSettings {
 export async function loadChatSettingsWithLegacyImport(): Promise<LoadedChatSettings> {
   let dbSettings: PersistedChatSettings;
   try {
-    dbSettings = sanitizeChatSettings(await getChatSettings());
+    dbSettings = normalizeSavedChatSettings(await getChatSettings());
   } catch (error) {
     const legacySettings = loadLegacyChatSettings();
     if (isEmptyChatSettings(legacySettings)) {
@@ -493,7 +504,7 @@ export async function loadChatSettingsWithLegacyImport(): Promise<LoadedChatSett
     }
     try {
       return {
-        settings: sanitizeChatSettings(
+        settings: normalizeSavedChatSettings(
           await saveChatSettingsPatch(legacySettings),
         ),
         fromServer: true,
@@ -519,7 +530,7 @@ export async function loadChatSettingsWithLegacyImport(): Promise<LoadedChatSett
     },
   };
   try {
-    const savedSettings = sanitizeChatSettings(
+    const savedSettings = normalizeSavedChatSettings(
       await saveChatSettingsPatch(mergedSettings),
     );
     markLegacySettingsImportDone();
@@ -533,7 +544,7 @@ export async function savePersistedChatSettingsPatch(
   patch: PersistedChatSettings,
   options: { keepalive?: boolean } = {},
 ): Promise<PersistedChatSettings> {
-  return sanitizeChatSettings(
+  return normalizeSavedChatSettings(
     await saveChatSettingsPatch(sanitizeChatSettings(patch), options),
   );
 }
@@ -551,7 +562,7 @@ export async function savePersistedChatSettingsPatchIfCurrent(
     expectedAbsentPaths,
   );
   return {
-    settings: sanitizeChatSettings(result.settings),
+    settings: normalizeSavedChatSettings(result.settings),
     applied: result.applied,
   };
 }

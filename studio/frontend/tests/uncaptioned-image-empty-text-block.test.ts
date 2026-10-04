@@ -2,19 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 
+import { readSrc } from "./helpers/kit.ts";
+
 // chat-adapter.ts drags in the stores, so lift the source; assistant is a stub.
-const adapterSource = readFileSync(
-  fileURLToPath(
-    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-  ),
-  "utf8",
-);
+const adapterSource = readSrc("features/chat/api/chat-adapter.ts");
 
 function liftAdapterFunction(opener: string): string {
   const start = adapterSource.indexOf(opener);
@@ -26,6 +21,7 @@ function liftAdapterFunction(opener: string): string {
 
 const serializeJs = ts.transpileModule(
   [
+    "function modelVisibleMessage(message) { return message; }",
     "function serializeAssistantReplayMessages() { throw new Error('not under test'); }",
     liftAdapterFunction("function collectTextParts("),
     liftAdapterFunction("function collectImageParts("),
