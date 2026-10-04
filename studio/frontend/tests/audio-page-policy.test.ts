@@ -886,3 +886,11 @@ test("paging for a visible row skips hidden edit originals, like the list does",
     /const countVisible = \(\) =>\s*galleryCache\.clips\.filter\(\s*\(clip\) => clipWorkflow\(clip\) === workflow && clip\.role !== "source",\s*\)\.length;/,
   );
 });
+
+test("trained speech checkpoints are offered only on Speak and Music", () => {
+  const host = readSrc("features/audio/audio-page.tsx");
+  assert.match(
+    host,
+    /ttsWorkflow !== "speak" && ttsWorkflow !== "music"\s*\?\s*\[\]\s*:\s*trainedTtsModels\.filter\(/,
+  );
+});
