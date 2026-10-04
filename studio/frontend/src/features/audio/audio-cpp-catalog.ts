@@ -70,6 +70,8 @@ export const AUDIO_CPP_MODELS: readonly AudioCppModel[] = [
   { id: folder("Canary-180M-Flash-GGUF"), task: "asr", languages: ["en", "de", "es", "fr"] },
   { id: folder("Moonshine-Streaming-GGUF"), task: "asr", languages: ENGLISH },
   { id: folder("Nemotron-3.5-ASR-Streaming-0.6B-GGUF"), task: "asr", languages: ENGLISH },
+  // Diarizes; Transcribe offers it for the Speakers switch.
+  { id: folder("MOSS-Transcribe-Diarize-GGUF"), task: "asr" },
 ];
 
 // Families the backend marks speaks=False (audio_cpp_models.FAMILIES), by repo name: Hub rows
