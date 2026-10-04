@@ -1922,6 +1922,20 @@ def test_managed_caller_may_resend_the_resident_same_model_paths(monkeypatch):
     )
     routes = _managed_with_owner(monkeypatch, intent = intent)
     routes._refuse_managed_custom_projector(["--lora", "/owner/a.gguf"], "m.gguf")
+    # Resident recorded as an HF cache snapshot path; the resend names the repo id.
+    snapshot = SimpleNamespace(
+        model_identifier = "/hf/hub/models--unsloth--B-GGUF/snapshots/abc/B-Q4_K_M.gguf",
+        hf_variant = None,
+        extra_args = ("--lora", "/owner/a.gguf"),
+        llama_cpp_config = None,
+    )
+    monkeypatch.setattr(
+        routes, "get_llama_cpp_backend", lambda: SimpleNamespace(last_load_intent = snapshot)
+    )
+    routes._refuse_managed_custom_projector(["--lora", "/owner/a.gguf"], "unsloth/B-GGUF")
+    monkeypatch.setattr(
+        routes, "get_llama_cpp_backend", lambda: SimpleNamespace(last_load_intent = intent)
+    )
     with pytest.raises(HTTPException):
         routes._refuse_managed_custom_projector(["--lora", "/owner/a.gguf"], "other.gguf")
     with pytest.raises(HTTPException):

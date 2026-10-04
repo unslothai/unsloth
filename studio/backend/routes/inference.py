@@ -7906,7 +7906,11 @@ def _owner_chosen_launch(
         intent = getattr(get_llama_cpp_backend(), "last_load_intent", None)
         if (
             intent is not None
-            and _same_loaded_identifier(getattr(intent, "model_identifier", None), identifier)
+            # A snapshot path and its repo id are one model; other paths compare as before.
+            and _same_loaded_identifier(
+                _snapshot_repo_or_self(getattr(intent, "model_identifier", None)),
+                _snapshot_repo_or_self(identifier),
+            )
             and (getattr(intent, "hf_variant", None) or "").casefold() == (variant or "").casefold()
         ):
             sources.append(
@@ -7919,6 +7923,11 @@ def _owner_chosen_launch(
         if source is not None:
             configs.append(parse_config_source(source))
     return pairs, configs
+
+
+def _snapshot_repo_or_self(model_id):
+    from core.inference.model_ids import hf_cache_repo_id
+    return (hf_cache_repo_id(model_id) or model_id) if model_id else model_id
 
 
 def _refuse_managed_custom_projector(
