@@ -313,6 +313,10 @@ def test_request_problem_per_style():
         (dots, {"mode": "words", "markup": "<del>" + ORIGINAL + "</del>"}, " ", ORIGINAL, audio_edit.EMPTY_TARGET),
         (vevo, words, "", ORIGINAL, audio_edit.EMPTY_TARGET),
         (firered, {"mode": "words", "instructions": ["Delete 'a'."]}, "  ", ORIGINAL, audio_edit.EMPTY_TARGET),
+        # No word changed: a marker or an instruction that maps a word onto itself passes the
+        # per-style validators, so the no-op answer comes first.
+        (dots, {"mode": "words", "markup": ORIGINAL.replace("Cemo", '<sub targ="Cemo">Cemo</sub>')}, ORIGINAL, ORIGINAL, no_change),
+        (firered, {"mode": "words", "instructions": ["Replace 'Cemo' with 'Cemo'."]}, ORIGINAL, ORIGINAL, no_change),
     ):
         assert audio_edit.request_problem(rules, edit, text, reference, "DotTTS-Edit") == problem
 # fmt: on

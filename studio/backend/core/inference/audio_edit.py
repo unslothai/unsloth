@@ -160,14 +160,17 @@ def request_problem(
         if not delivery_instructions(edit.get("speed"), edit.get("pitch_steps")):
             return NO_DELIVERY
         return None
-    # The page holds Generate when every word is deleted; a direct request gets the same answer.
-    if style in ("markup", "instructions", "sentence") and not _collapse(text):
-        return EMPTY_TARGET
+    # The page holds Generate when every word is deleted or none is changed; a direct request
+    # gets the same answers. Before the per-style checks: a no-op marker such as
+    # <sub targ="x">x</sub>, or "Replace 'x' with 'x'.", passes both of them.
+    if style in ("markup", "instructions", "sentence"):
+        if not _collapse(text):
+            return EMPTY_TARGET
+        if _collapse(text) == _collapse(original):
+            return NO_CHANGE
     if style == "markup":
         markup = edit.get("markup")
         if not markup:
-            if _collapse(text) == _collapse(original):
-                return NO_CHANGE
             return f"{label} needs the marked-up changes."
         return check_markup(markup, original, text)
     if style == "instructions":
@@ -175,8 +178,6 @@ def request_problem(
             edit.get("instructions") or (), original, text, rules.get("max_changes"), label
         )
     if style == "sentence":
-        if original.strip() and _collapse(text) == _collapse(original):
-            return NO_CHANGE
         return None
     return "Load a model that can edit speech."
 
