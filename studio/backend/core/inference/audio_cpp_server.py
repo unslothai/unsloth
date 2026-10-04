@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from core.inference.audio_cpp_models import AudioCppModel
-from core.inference.audio_errors import sanitize_runtime_detail
+from core.inference.audio_errors import sanitize_runtime_tail
 from loggers import get_logger
 from utils.prebuilt.child_env import isolate_home, scrub_env
 from utils.prebuilt.runtime_libs import dedupe_existing_dirs
@@ -475,7 +475,11 @@ class AudioCppServer:
             data = (self._config_dir / "server.log").read_bytes()
         except OSError:
             return ""
-        return data[-limit:].decode("utf-8", "replace").strip()
+        tail = data[-limit:]
+        if len(data) > limit:
+            # The cut can split a path or token; drop that partial first line.
+            tail = tail.split(b"\n", 1)[-1]
+        return tail.decode("utf-8", "replace").strip()
 
     def alive(self) -> bool:
         return self.process.poll() is None
@@ -491,7 +495,7 @@ class AudioCppServer:
                 raise AudioCppUnavailableError(
                     "The audio runtime exited before becoming ready; the model file may be "
                     "incomplete or unsupported by this build."
-                    + (f" Last output: {sanitize_runtime_detail(tail[-280:])}" if tail else "")
+                    + (f" Last output: {sanitize_runtime_tail(tail)}" if tail else "")
                 )
             if self._probe():
                 return
@@ -578,7 +582,7 @@ class AudioCppServer:
                 raise AudioCppUnavailableError(
                     "The audio runtime stopped while serving the request."
                     + (
-                        f" Last output: {sanitize_runtime_detail(self.log_tail()[-280:])}"
+                        f" Last output: {sanitize_runtime_tail(self.log_tail())}"
                         if self.log_tail()
                         else ""
                     )

@@ -145,3 +145,16 @@ test("a chat picker handoff opens its page before the load, not only after it su
     /if \(busyRef\.current !== null\) return;[\s\S]*?if \(\s*isAudioWorkflowId\(routedWorkflow\) &&\s*!transitionWorkflow\(routedWorkflow\)\s*\) \{\s*return;\s*\}\s*handledRouteModel\.current = key;\s*handleModelSelect\(wanted,/,
   );
 });
+
+test("a model deep link without a workflow opens the page its task names before loading", () => {
+  const handoff = readSrc("features/audio/hooks/use-audio-handoff.ts");
+  assert.match(
+    handoff,
+    /const routedWorkflow = isAudioWorkflowId\(routeSearch\.workflow\)\s*\?\s*routeSearch\.workflow\s*:\s*audioWorkflowForPick\(\{\s*id: wanted,\s*task: routeSearch\.task,\s*audioType: routeSearch\.audioType,\s*\}\);/,
+  );
+  assert.equal(
+    audioWorkflowForPick({ id: "some/model", task: "text-to-audio" }),
+    "music",
+  );
+  assert.equal(audioWorkflowForPick({ id: "some/model" }), null);
+});

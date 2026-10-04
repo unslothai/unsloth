@@ -182,6 +182,14 @@ test("a failed voice deletion puts back only that voice", () => {
   assert.match(handler, /voices\.splice\(Math\.min\(index, voices\.length\), 0, failed\)/);
 });
 
+test("a failed voice rename puts back only that voice", () => {
+  const src = readSrc("features/audio/stores/audio-voices-store.ts");
+  const body = src.slice(src.indexOf("rename: async (id, patch) => {"));
+  const handler = body.slice(0, body.indexOf("\n  },"));
+  assert.doesNotMatch(handler, /set\(\{ voices: before \}\)/);
+  assert.match(handler, /voice\.id === id \? previous : voice/);
+});
+
 test("voice previews are bounded, stale ones dropped, and the menu follows disabled", () => {
   const src = readSrc("features/audio/components/voice-picker.tsx");
   assert.match(src, /const voiceUrls = new BlobUrlCache\(/);

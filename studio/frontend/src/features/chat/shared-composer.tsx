@@ -1819,6 +1819,7 @@ export function SharedComposer({
         const loadRequestId = crypto.randomUUID();
         const resp = await loadModel({
           model_path: sel.id,
+          alongside: useChatRuntimeStore.getState().keepModelsLoaded,
           load_request_id: loadRequestId,
           hf_token: useChatRuntimeStore.getState().hfToken || null,
           max_seq_length: compareMaxSeqLength,

@@ -646,6 +646,7 @@ class ExportOrchestrator:
         hf_token: HfTokenArg = None,
         imatrix_file = None,
         private: bool = False,
+        npu_q4nx: bool = False,
     ) -> Tuple[bool, str, Optional[str]]:
         """Export model in GGUF format. `quantization_method` may be a single method or a list."""
         return self._run_export(
@@ -658,6 +659,7 @@ class ExportOrchestrator:
                 "hf_token": hf_token,
                 "imatrix_file": imatrix_file,
                 "private": private,
+                "npu_q4nx": npu_q4nx,
             },
         )
 
