@@ -1,18 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Hand FLUX.1's first single-stream block the same input layout as the other 37, so it reuses their compiled graph.
+"""Give FLUX.1's first single block the slice layout of blocks 1..37 so all 38 share one compiled graph.
 
-Diffusers' ``FluxSingleTransformerBlock`` returns ``hidden_states`` and ``encoder_hidden_states`` as two slices of one
-``[B, text + image, D]`` tensor, so blocks 2..38 see a batch stride of ``(text + image) * D``. Block 1 gets the double
-stream's two separate tensors instead, whose batch stride is ``image * D`` and ``text * D``. Dynamo guards on every
-stride, so the regional compile traces, lowers and autotunes the single block TWICE: a whole extra graph on the first
-render after every start (FLUX ``1/1`` recompile: "stride mismatch at index 0").
-
-Block 1's two inputs are copied into one ``[B, text + image, D]`` buffer here, text first, the order the block
-concatenates them in, and it is handed the two slices: the layout every later block already sees. The block reads
-the same values (it concatenates the two inputs before touching them), one graph serves all 38 blocks, and the copy
-is a few microseconds per step. ``UNSLOTH_DIFFUSION_BLOCK_RESTRIDE=0`` disables it.
+Block 0 gets two separate tensors; the rest get two slices of one ``[B, text + image, D]`` buffer. Dynamo guards on
+strides, so block 0 otherwise compiles a second graph ("stride mismatch at index 0"). The block concatenates its
+inputs first, so copying them into one buffer is value-identical. ``UNSLOTH_DIFFUSION_BLOCK_RESTRIDE=0`` disables it.
 """
 
 from __future__ import annotations
@@ -23,7 +16,6 @@ from typing import Any
 
 _ENV = "UNSLOTH_DIFFUSION_BLOCK_RESTRIDE"
 _FALSE = ("0", "false", "no", "off")
-# Transformer class -> (ModuleList attribute, block class) whose first entry gets the restride.
 _TARGETS = {
     "FluxTransformer2DModel": ("single_transformer_blocks", "FluxSingleTransformerBlock"),
 }
@@ -35,7 +27,6 @@ def enabled() -> bool:
 
 
 def _takes_both_streams(block: Any) -> bool:
-    """The block concatenates ``encoder_hidden_states`` + ``hidden_states`` itself (diffusers >= 0.32 layout)."""
     try:
         params = inspect.signature(type(block).forward).parameters
     except (TypeError, ValueError):
@@ -59,7 +50,6 @@ def _restrided(hidden: Any, encoder: Any) -> Any:
         return None
     batch, text, dim = encoder.shape
     image = hidden.shape[1]
-    # Already the slice layout (a caller that concatenated itself): nothing to do.
     if hidden.stride() == ((text + image) * dim, dim, 1) and encoder.stride() == hidden.stride():
         return None
     buf = torch.empty((batch, text + image, dim), dtype = hidden.dtype, device = hidden.device)
@@ -90,7 +80,6 @@ def install(transformer: Any, logger: Any = None) -> bool:
             return True
 
         def restride(*args: Any, **kwargs: Any) -> Any:
-            # Keyword call is what diffusers' FluxTransformer2DModel.forward makes; anything else passes through.
             if not args and "hidden_states" in kwargs and "encoder_hidden_states" in kwargs:
                 pair = _restrided(kwargs["hidden_states"], kwargs["encoder_hidden_states"])
                 if pair is not None:

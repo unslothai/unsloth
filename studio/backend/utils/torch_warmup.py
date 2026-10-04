@@ -610,8 +610,7 @@ def _early_quant_probe() -> None:
     try:
         from core.inference.diffusion_probe_cache import has_file  # noqa: PLC0415 - stdlib only
         if has_file():
-            # A later start: the table is on disk, so there is no child to start early, and importing the probe
-            # module here would only compete with the warm. The post-warm path reads it as before.
+            # A later start reads the persisted table; importing the probe module here would only slow the warm.
             return
         if not _a_local_model_would_load_through_diffusers():
             return
@@ -622,13 +621,8 @@ def _early_quant_probe() -> None:
 
 
 def _kick_early_quant_probe() -> Optional[threading.Thread]:
-    """Start the quant smoke probe's child while the warm is still importing transformers / datasets.
-
-    The probe's child process spends ~4 s importing torch and torchao. Run from the post-warm worker it started
-    after the diffusers import, so a first-ever image load posted right after the warm waited 3.2 s for it on a
-    B200 (load thread asleep in ``_child_probe_table``). Same gate and same function, ~2 s earlier, on its own daemon
-    thread so no warm stage waits on it. The table persists, so later starts skip it. ``UNSLOTH_DIFFUSION_PROBE_EARLY=0``
-    keeps the old timing; ``UNSLOTH_DIFFUSION_PROBE_PREWARM=0`` disables both."""
+    """Start the quant smoke probe's child during the warm instead of after the diffusers import (a load posted right
+    after the warm waited ~3 s for it). ``UNSLOTH_DIFFUSION_PROBE_EARLY=0`` keeps the old timing."""
     if os.environ.get(EARLY_PROBE_ENV_VAR, "").strip().lower() in ("0", "false", "no", "off"):
         return None
     thread = threading.Thread(target = _early_quant_probe, name = "early-quant-probe", daemon = True)

@@ -1,22 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Build the fused VAE's Triton kernels in a short-lived child process while a first start compiles its denoiser.
+"""Build the fused VAE's Triton kernels in a child process while a first start compiles its denoiser.
 
-The fused VAE passes (``diffusion_vae_fused``) are plain ``@triton.jit`` kernels: the first decode of a process with an
-empty Triton cache JIT-compiles every one of them, 2.8-3.4 s of render 1 on an RTX PRO 6000 (first decode + post
-3.4-3.9 s on a first start vs 0.5-0.6 s on a restart, FLUX.1 / Z-Image / Qwen-Image). Triton keeps compiled kernels in
-``TRITON_CACHE_DIR``, which every later start already reads.
-
-At the end of a load that found no compile bundle (the first start for that model), a spawned child builds the same
-VAE class from the same config with no weights, installs the same fused passes and decodes zeros once at a small
-latent (every integer the kernels specialise on keeps its divisibility class). It writes the kernels into the shared
-Triton cache while the parent spends ~8-12 s compiling its denoiser on render 1, so the parent's first decode loads
-them instead of compiling. Its own process (no GIL, no thread shared with the parent's compiles), its own CUDA
-context, gone when it finishes; the parent never waits for it, and kernels it has not finished are simply compiled
-by the parent as before. Same kernel source, same specialisation, so the same binary either way.
-
-Kill switch: ``UNSLOTH_DIFFUSION_VAE_PREBUILD=0``.
+The first decode with an empty Triton cache JIT-compiles every fused VAE kernel (~3 s of render 1 on an RTX PRO 6000).
+On a load with no compile bundle, a spawned child rebuilds the VAE from its config without weights, installs the same
+fused passes and decodes zeros at a small latent (same divisibility classes), filling the shared Triton cache. The
+parent never waits; kernels the child has not finished are compiled by the parent as before.
+``UNSLOTH_DIFFUSION_VAE_PREBUILD=0`` disables it.
 """
 
 from __future__ import annotations
@@ -27,9 +18,9 @@ from typing import Any, Optional
 
 _ENV = "UNSLOTH_DIFFUSION_VAE_PREBUILD"
 _FALSE = ("0", "false", "no", "off")
-# Latent side the child decodes: small enough to cost well under 1 GiB, a multiple of 16 at every decoder stage.
+# Multiple of 16 at every decoder stage, well under 1 GiB.
 _LATENT_SIDE = 64
-# Free VRAM the parent must still have after its load before a second CUDA context is opened next to it.
+# Free VRAM needed after the load before a second CUDA context opens.
 _MIN_FREE_BYTES = 6 * 1024**3
 _CHILD_TIMEOUT_S = 180.0
 

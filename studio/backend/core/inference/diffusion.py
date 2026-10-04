@@ -7378,8 +7378,6 @@ class DiffusionBackend:
                         self._raise_if_load_cancelled(_load_token)
                         self._state = state
                         state_committed = True
-                    # First start for this model: build the fused VAE's Triton kernels in a child while render 1
-                    # compiles the denoiser, so its first decode reads them from the Triton cache.
                     try:
                         from . import diffusion_vae_prebuild
                         diffusion_vae_prebuild.maybe_kick(pipe, compile_ctx, logger)
