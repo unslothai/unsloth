@@ -5208,7 +5208,9 @@ def test_chat_count_tokens_prices_the_current_date(monkeypatch):
         "current_date_prompt_line",
         lambda **_kwargs: "The current date is 2026-08-15.",
     )
-    monkeypatch.setattr(inference_route, "_local_template_default_system_prompt", lambda: "")
+    monkeypatch.setattr(
+        inference_route, "_local_template_default_system_prompt", lambda _today: ""
+    )
     thread = [{"role": "user", "content": "hi"}]
 
     _counted_body(_count_request(thread))

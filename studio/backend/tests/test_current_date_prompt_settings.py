@@ -419,31 +419,44 @@ _GEMMA_LIKE = (
 )
 
 
+_DAY = date(2026, 10, 4)
+
+
 class TestTemplateDefaultSystemPrompt:
     def test_a_template_with_its_own_default_returns_it(self):
         assert (
-            current_date_settings.template_default_system_prompt(_QWEN25_LIKE)
+            current_date_settings.template_default_system_prompt(_QWEN25_LIKE, _DAY)
             == "You are Qwen, a helpful assistant."
         )
 
     @pytest.mark.parametrize("template", [_CHATML, _GEMMA_LIKE, None, "", "{% if %}"])
     def test_templates_without_a_default_return_nothing(self, template):
-        assert current_date_settings.template_default_system_prompt(template) == ""
+        assert current_date_settings.template_default_system_prompt(template, _DAY) == ""
 
-    def test_a_default_that_dates_itself_is_marked_not_frozen(self):
+    def test_a_default_that_dates_itself_is_dated_for_the_given_day(self):
         dated = _QWEN25_LIKE.replace(
-            "You are Qwen, a helpful assistant.", "Today is ' + strftime_now('%Y-%m-%d') + '."
+            "You are Qwen, a helpful assistant.",
+            "Today is ' + strftime_now('%B %d, %Y') + ', yesterday was the '"
+            " + ((strftime_now('%d') | int) - 1) | string + 'th.",
         )
-        assert current_date_settings.template_default_system_prompt(dated) == (
-            f"Today is {current_date_settings.TEMPLATE_DATE_PROBE}."
+        assert current_date_settings.template_default_system_prompt(dated, _DAY) == (
+            "Today is October 04, 2026, yesterday was the 3th."
         )
+
+    def test_a_template_that_reads_content_parts_returns_its_default(self):
+        parts = (
+            "{% for m in messages if m['role'] == 'system' %}{% else %}<|system|>\nBe helpful.\n"
+            "{% endfor %}{% for m in messages %}<|{{ m['role'] }}|>\n"
+            "{{ m['content'][0]['text'] }}\n{% endfor %}"
+        )
+        assert current_date_settings.template_default_system_prompt(parts, _DAY) == "Be helpful."
 
     def test_a_template_that_refuses_a_system_turn_returns_nothing(self):
         refuses = (
             "{% if messages[0]['role'] == 'system' %}{{ raise_exception('no system') }}{% endif %}"
             + _CHATML
         )
-        assert current_date_settings.template_default_system_prompt(refuses) == ""
+        assert current_date_settings.template_default_system_prompt(refuses, _DAY) == ""
 
 
 class TestDateStaysInTheSystemTurn:
@@ -457,7 +470,7 @@ class TestDateStaysInTheSystemTurn:
             lambda **_kwargs: "The current date is 2026-10-04.",
         )
         monkeypatch.setattr(inference, "_request_has_api_key", lambda _request: False)
-        monkeypatch.setattr(inference, "_local_template_default_system_prompt", lambda: "")
+        monkeypatch.setattr(inference, "_local_template_default_system_prompt", lambda _today: "")
         self.inference = inference
 
     def test_without_a_system_prompt_the_date_is_its_own_system_turn(self):
@@ -468,7 +481,7 @@ class TestDateStaysInTheSystemTurn:
 
     def test_a_template_default_system_prompt_is_kept_after_the_date(self, monkeypatch):
         monkeypatch.setattr(
-            self.inference, "_local_template_default_system_prompt", lambda: "You are Qwen."
+            self.inference, "_local_template_default_system_prompt", lambda _today: "You are Qwen."
         )
         assert self.inference._apply_current_date_prompt("", object()) == (
             "The current date is 2026-10-04.\n\nYou are Qwen."
@@ -477,33 +490,21 @@ class TestDateStaysInTheSystemTurn:
             "The current date is 2026-10-04.\n\nBe terse."
         )
 
-    def test_a_template_default_that_dates_itself_is_left_to_the_template(self, monkeypatch):
-        from utils.current_date_prompt_settings import TEMPLATE_DATE_PROBE
+    def test_a_template_default_that_dates_itself_is_dated_for_the_user(self, monkeypatch):
         monkeypatch.setattr(
             self.inference,
             "_local_template_default_system_prompt",
-            lambda: f"Today's Date: {TEMPLATE_DATE_PROBE}.\nYou are Granite.",
+            lambda today: f"Today's Date: {today:%B %d, %Y}.\nYou are Granite.",
         )
-        assert self.inference._apply_current_date_prompt("", object()) == ""
-
-    def test_a_tool_nudge_that_displaces_a_dated_template_default_carries_the_date(
-        self, monkeypatch
-    ):
-        from utils.current_date_prompt_settings import TEMPLATE_DATE_PROBE
-
-        monkeypatch.setattr(
-            self.inference,
-            "_local_template_default_system_prompt",
-            lambda: f"Today's Date: {TEMPLATE_DATE_PROBE}.\nYou are Granite.",
+        # the system turn the tool nudge is appended to, so a tool request keeps the date too.
+        expected = (
+            "The current date is 2026-10-04.\n\nToday's Date: October 04, 2026.\nYou are Granite."
         )
-        system = self.inference._apply_current_date_prompt("", object(), include_api_key = True)
-        assert self.inference._append_tool_nudge(system, "Use the tools.", object()) == (
-            "The current date is 2026-10-04.\n\nUse the tools."
+        assert self.inference._apply_current_date_prompt("", object()) == expected
+        assert (
+            self.inference._apply_current_date_prompt("", object(), include_api_key = True)
+            == expected
         )
-        assert self.inference._append_tool_nudge("Be terse.", "Use the tools.", object()) == (
-            "Be terse.\n\nUse the tools."
-        )
-        assert self.inference._append_tool_nudge("", "", object()) == ""
 
     def test_a_named_template_list_is_probed_through_its_default(self, monkeypatch):
         from types import SimpleNamespace
@@ -524,13 +525,9 @@ class TestDateStaysInTheSystemTurn:
         )
         monkeypatch.setattr(orchestrator, "peek_inference_backend", lambda: backend)
         assert (
-            self.inference._local_template_default_system_prompt()
+            self.inference._local_template_default_system_prompt(_DAY)
             == "You are Qwen, a helpful assistant."
         )
-
-    def test_a_tool_nudge_alone_stays_undated_when_the_setting_is_off(self, monkeypatch):
-        monkeypatch.setattr(self.inference, "current_date_prompt_line", lambda **_kwargs: "")
-        assert self.inference._append_tool_nudge("", "Use the tools.", object()) == "Use the tools."
 
     def test_a_chat_started_days_ago_keeps_every_user_turn_verbatim(self):
         history = [

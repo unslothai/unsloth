@@ -3965,7 +3965,7 @@ import base64
 import zlib
 
 from utils.current_date_prompt_settings import (
-    TEMPLATE_DATE_PROBE,
+    CURRENT_DATE_PROMPT_PREFIX,
     contains_current_date_prompt_line,
     current_date_prompt_line,
     template_default_system_prompt,
@@ -6494,7 +6494,7 @@ def _date_gate_blocks(request: Any, include_api_key: bool) -> bool:
     return False
 
 
-def _local_template_default_system_prompt() -> str:
+def _local_template_default_system_prompt(today: Any) -> str:
     try:
         llama = get_llama_cpp_backend()
         if llama.is_loaded:
@@ -6516,7 +6516,7 @@ def _local_template_default_system_prompt() -> str:
         selected = _selected_template_strings_from_value(template)
     except Exception:
         return ""
-    return template_default_system_prompt(selected[0] if selected else None)
+    return template_default_system_prompt(selected[0] if selected else None, today)
 
 
 def _apply_current_date_prompt(
@@ -6539,23 +6539,13 @@ def _apply_current_date_prompt(
     if stated:
         return refreshed_prompt
     if not system_prompt:
-        # a system turn displaces the chat template's default one, so carry that default along.
-        system_prompt = _local_template_default_system_prompt()
-        if TEMPLATE_DATE_PROBE in system_prompt:
-            # that default states today's date itself; sending none lets it.
-            return ""
+        from datetime import date
+
+        # a system turn displaces the chat template's default one, so carry that default along,
+        # rendered for the user's day rather than the server's.
+        today = date.fromisoformat(date_line[len(CURRENT_DATE_PROMPT_PREFIX) : -1])
+        system_prompt = _local_template_default_system_prompt(today)
     return f"{date_line}\n\n{system_prompt.lstrip()}" if system_prompt else date_line
-
-
-def _append_tool_nudge(system_prompt: str, nudge: str, request: Any) -> str:
-    if not nudge:
-        return system_prompt
-    if system_prompt:
-        return system_prompt.rstrip() + "\n\n" + nudge
-    if request is None:
-        return nudge
-    # the nudge's system turn displaces a template default that dated itself, so it carries the date.
-    return _apply_current_date_prompt(nudge, request, include_api_key = True)
 
 
 # Ollama applies the Modelfile SYSTEM only when `req.Messages[0].Role != "system"` (its
@@ -29054,7 +29044,11 @@ async def produce_openai_chat_completions(
             )
 
             if _nudge:
-                system_prompt = _append_tool_nudge(system_prompt, _nudge, request)
+                # Append nudge to system prompt (preserve user's prompt)
+                if system_prompt:
+                    system_prompt = system_prompt.rstrip() + "\n\n" + _nudge
+                else:
+                    system_prompt = _nudge
                 gguf_messages = _set_or_prepend_system_message(gguf_messages, system_prompt)
 
             _gguf_auto_heal_tool_calls = (
@@ -31155,7 +31149,11 @@ async def produce_openai_chat_completions(
             request,
             include_api_key = True,
         )
-        _sf_system_prompt = _append_tool_nudge(_sf_system_prompt, _sf_nudge, request)
+        if _sf_nudge:
+            if _sf_system_prompt:
+                _sf_system_prompt = _sf_system_prompt.rstrip() + "\n\n" + _sf_nudge
+            else:
+                _sf_system_prompt = _sf_nudge
 
         _sf_auto_heal_tool_calls = (
             payload.auto_heal_tool_calls if payload.auto_heal_tool_calls is not None else True
@@ -37951,7 +37949,8 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
                 request,
                 include_api_key = True,
             )
-        system_prompt = _append_tool_nudge(system_prompt, _nudge, request)
+        if _nudge:
+            system_prompt = (system_prompt.rstrip() + "\n\n" + _nudge) if system_prompt else _nudge
         _auto_heal = (
             payload.auto_heal_tool_calls if payload.auto_heal_tool_calls is not None else True
         )
@@ -38220,12 +38219,14 @@ async def chat_count_tokens(
         tools_to_use = tools_to_use + _mcp_tools
         if tools_to_use:
             openai_tools = tools_to_use
-            _count_system_prompt = _apply_current_date_prompt(
-                _system_prompt,
-                request,
-                include_api_key = True,
+            openai_messages = _set_or_prepend_system_message(
+                openai_messages,
+                _apply_current_date_prompt(
+                    _system_prompt,
+                    request,
+                    include_api_key = True,
+                ),
             )
-            openai_messages = _set_or_prepend_system_message(openai_messages, _count_system_prompt)
             _count_nudge = await _apply_rag_nudge(
                 _build_tool_action_nudge(
                     tools = tools_to_use,
@@ -38235,8 +38236,6 @@ async def chat_count_tokens(
                 tools_to_use,
                 rag_scope = payload.rag_scope,
             )
-            if not _count_system_prompt:
-                _count_nudge = _append_tool_nudge("", _count_nudge, request)
             openai_messages = _append_to_system_message(openai_messages, _count_nudge)
 
             # The GGUF tool path strips leaked markup from replayed history before rendering,
