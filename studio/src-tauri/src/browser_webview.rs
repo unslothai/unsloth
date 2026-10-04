@@ -588,12 +588,8 @@ fn with_page_profile<R: Runtime>(
     }
     #[cfg(not(target_os = "macos"))]
     {
-        // Replaces wry's defaults, so repeats them; Chromium bypasses the proxy for loopback otherwise.
         #[cfg(windows)]
-        let builder = builder.additional_browser_args(&format!(
-            "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection \
-             --proxy-server=http://{proxy} --proxy-bypass-list=<-loopback>"
-        ));
+        let builder = builder.additional_browser_args(&page_browser_args(&proxy.to_string()));
         #[cfg(not(windows))]
         let builder = builder
             .proxy_url(Url::parse(&format!("http://{proxy}")).map_err(|error| error.to_string())?);
@@ -602,6 +598,17 @@ fn with_page_profile<R: Runtime>(
             Err(_) => builder.incognito(true),
         })
     }
+}
+
+/// WebView2 arguments for pages' own environment. They replace wry's defaults, so repeat those
+/// except SmartScreen, which stays on as in Edge since these are open-web pages; Chromium bypasses
+/// the proxy for loopback otherwise.
+#[cfg(any(windows, test))]
+fn page_browser_args(proxy: &str) -> String {
+    format!(
+        "--disable-features=msWebOOUI,msPdfOOUI --proxy-server=http://{proxy} \
+         --proxy-bypass-list=<-loopback>"
+    )
 }
 
 /// The page's address. wry's `url()` panics on macOS while WebKit has none (a failed load).
@@ -1320,6 +1327,14 @@ mod tests {
 
     fn allowed(url: &str) -> bool {
         navigation_allowed(&Url::parse(url).unwrap())
+    }
+
+    #[test]
+    fn windows_pages_keep_smartscreen_and_the_proxy() {
+        let args = page_browser_args("127.0.0.1:9");
+        assert!(!args.contains("SmartScreen"), "{args}");
+        assert!(args.contains("--proxy-server=http://127.0.0.1:9"), "{args}");
+        assert!(args.contains("--proxy-bypass-list=<-loopback>"), "{args}");
     }
 
     #[test]
