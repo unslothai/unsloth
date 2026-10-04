@@ -222,6 +222,12 @@ def soft_fail(m):
     info(f"WARN (strict-off): {m}")
 
 
+# Slots the shared AlertDialog parts render (studio/frontend/src/components/ui/alert-dialog.tsx).
+FULL_ACCESS_TITLE = '[data-slot="alert-dialog-title"]'
+FULL_ACCESS_CANCEL = '[data-slot="alert-dialog-cancel"]'
+FULL_ACCESS_CONFIRM = '[data-slot="alert-dialog-action"]'
+
+
 def exercise_permission_mode_controls(page, shoot):
     """Exercise labels, migration, persistence, confirmation, and focus."""
     step("permission levels: labels, persistence, confirmation, and focus")
@@ -320,9 +326,41 @@ def exercise_permission_mode_controls(page, shoot):
     # went out as Cache-Control: no-store (#12148): its own 30s timeout never fired, and the step sat
     # there until the 180s watchdog killed the job (Chat UI Tests (chat) on main at 1dddc1437). The
     # pill is the one thing the next assertion needs, and waiting for it is bounded.
+    #
+    # One more reload, only when the app never booted. Seen once on the Windows msedge permissions lane
+    # (#12438's run 36881445186): after the reload the server served /chat and the three boot scripts and
+    # then no /api request at all, the page stayed on "Loading...", and the pill never mounted. That is
+    # the app shell failing to start, not this step's assertion, so it gets one retry with the evidence
+    # logged; a page that booted and still lacks the pill fails at once, and so does a second boot failure.
+    def _boot_state():
+        try:
+            return page.evaluate(
+                """() => ({
+                    url: location.href,
+                    readyState: document.readyState,
+                    composer: !!document.querySelector('textarea[aria-label="Message input"]'),
+                    root: (document.getElementById("root")?.innerText || "").trim().slice(0, 80),
+                })"""
+            )
+        except Exception as exc:
+            return {"evaluate_failed": repr(exc)}
+
     def reload_and_wait_for_pill():
         page.reload(wait_until = "load")
+        try:
+            expect(pill).to_be_visible(timeout = 30_000)
+            return
+        except AssertionError:
+            state = _boot_state()
+            shoot("04-permission-pill-missing")
+            info(f"WARN permission pill missing 30s after reload; page state {state}")
+            if state.get("composer") or state.get("evaluate_failed"):
+                raise
+        page.reload(wait_until = "load")
         expect(pill).to_be_visible(timeout = 30_000)
+        info(
+            "WARN the app did not boot on the first reload and did on the second; see the state above"
+        )
 
     # choose() only drives THIS tab.
     # The mirror to /api/chat/settings is a 400ms trailing-edge debounce (SETTINGS_DEBOUNCE_MS, chat-runtime-store.ts)
@@ -444,21 +482,26 @@ def exercise_permission_mode_controls(page, shoot):
     if stored != "off":
         fail(f"Run automatically persisted {stored!r}, expected 'off'")
 
-    # Full access requires explicit consent and never overwrites persistence.
+    # Full access requires explicit consent and never overwrites persistence. The dialog is found by
+    # its alert-dialog slots, not its wording: #12630 rewrote the copy ("Enable Full access?" became
+    # "Turn on Full access?", "I understand" became "Turn on") and the step failed on main with the
+    # consent flow intact. What it still pins is the substance: the title names the mode and the body
+    # warns that the sandbox goes away.
     choose("Full access")
     dialog = page.get_by_role("alertdialog")
     expect(dialog).to_be_visible()
-    expect(dialog.get_by_role("heading", name = "Enable Full access?")).to_be_visible()
-    expect(dialog).to_contain_text("the code sandbox")
-    dialog.get_by_role("button", name = "Cancel").click()
+    expect(dialog.locator(FULL_ACCESS_TITLE)).to_contain_text("Full access")
+    expect(dialog).to_contain_text("sandbox")
+    dialog.locator(FULL_ACCESS_CANCEL).click()
     expect(dialog).to_be_hidden()
     expect_mode("Run automatically")
 
     choose("Full access")
     expect(dialog).to_be_visible()
-    dialog.get_by_role("button", name = "I understand").click()
+    dialog.locator(FULL_ACCESS_CONFIRM).click()
+    # expect_mode reads the pill's data-pill-label. #12630 dropped the pill's danger styling for Full
+    # access on purpose, so there is no data-variant left to check.
     expect_mode("Full access")
-    expect(pill).to_have_attribute("data-variant", "danger")
     active_icon = pill.locator(".composer-pill-glyph > :first-child")
     pill.hover()
     # Read the opacity once the hover transition has finished, not at a fixed delay into it.

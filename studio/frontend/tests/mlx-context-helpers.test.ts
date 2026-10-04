@@ -22,6 +22,7 @@ const {
   isServedByMlx,
   loadedContextFields,
   residentIsServedByMlx,
+  resumesThought,
 } = await import(
   "../src/features/model-picker/model-config/per-model-config.ts"
 );
@@ -134,6 +135,18 @@ test("a load that reported a non-GGUF backend outranks a stale variant", () => {
   // A .gguf checkpoint before any load still reads as llama.cpp.
   assert.equal(isServedByLlamaCpp({ checkpoint: "/m/model.gguf" }), true);
   assert.equal(isServedByLlamaCpp({ checkpoint: "external::openai/gpt-4" }), false);
+});
+
+test("a thought resumes on llama-server and on a load MLX reports serving", () => {
+  assert.equal(resumesThought({ loadedIsGguf: true }), true);
+  assert.equal(resumesThought({ loadedIsGguf: false, loadedIsMlx: true }), true);
+  // Transformers, an unloaded pick, and an external provider cannot.
+  assert.equal(resumesThought({ loadedIsGguf: false, loadedIsMlx: false }), false);
+  assert.equal(resumesThought({ loadedIsMlx: null }), false);
+  assert.equal(
+    resumesThought({ loadedIsMlx: true, checkpoint: "external::openai/gpt-4" }),
+    false,
+  );
 });
 
 test("MLX is a Mac non-GGUF load, and the reasons that rule it out", () => {
@@ -375,4 +388,32 @@ test("a background load cannot leave the visible model reading another model's w
   ]) {
     assert.match(list, new RegExp(`"${key}"`), `${key} is not preserved`);
   }
+});
+
+test("a queued run keeps its own model's MLX thought-resume verdict", async () => {
+  const { snapshotQueuedChatRunSettings } = await import(
+    "../src/features/chat/utils/queued-chat-run-settings.ts"
+  );
+  const resident = {
+    params: { checkpoint: "mlx-community/Qwen3-0.6B-4bit" },
+    activeGgufVariant: null,
+    activeNativePathToken: null,
+    loadedIsGguf: false,
+    loadedIsMlx: true,
+  };
+  const queued = snapshotQueuedChatRunSettings(
+    resident as unknown as Parameters<typeof snapshotQueuedChatRunSettings>[0],
+  );
+  const live = { ...resident, ...loadedContextFields(null) };
+  const runtime = { ...live, ...queued };
+  assert.equal(
+    resumesThought({
+      loadedIsGguf: runtime.loadedIsGguf,
+      loadedIsMlx: runtime.loadedIsMlx,
+      activeGgufVariant: runtime.activeGgufVariant,
+      activeNativePathToken: runtime.activeNativePathToken,
+      checkpoint: runtime.params.checkpoint,
+    }),
+    true,
+  );
 });

@@ -49,6 +49,21 @@ foreach ($artifact in $shArtifacts) {
     Check "uninstall.ps1 removes ~/.unsloth/$artifact" ($ps1Text -match [regex]::Escape($artifact))
 }
 
+# Every install lock uninstall.sh removes from ~/.unsloth, uninstall.ps1 removes too (the lock
+# list and the stale-lock pattern alike): one surviving lock blocks the ~/.unsloth prune.
+$shLocks = [regex]::Matches($shText, '_remove_lock_file\s+"\$HOME/\.unsloth/\.([^"/]+)\.install\.lock"') |
+    ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+Check "found the POSIX lock list" ($shLocks -contains "audio.cpp")
+$stalePattern = [regex]::Match($ps1Text, "StaleLockPattern = '([^']+)'").Groups[1].Value
+foreach ($lock in $shLocks) {
+    Check "uninstall.ps1 removes ~/.unsloth/.$lock.install.lock" ($ps1Text -match [regex]::Escape("`".$lock.install.lock`""))
+    Check "uninstall.ps1 sweeps stale .$lock.install.lock" (".$lock.install.lock.stale.123" -match $stalePattern)
+}
+
+# audio.cpp's model link farm beside the Hugging Face hub cache goes on both sides.
+Check "uninstall.sh removes the audio.cpp link farm"  ($shText  -match 'unsloth-audiocpp-links')
+Check "uninstall.ps1 removes the audio.cpp link farm" ($ps1Text -match 'unsloth-audiocpp-links')
+
 # The stale-lock sweep must exist on both sides: a crash between the rename and
 # the unlink in install_node_prebuilt.py strands a `.stale.<pid>` file, and that
 # alone blocks the ~/.unsloth prune.

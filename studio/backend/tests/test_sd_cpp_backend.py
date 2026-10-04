@@ -754,6 +754,12 @@ def test_map_guidance_cfg_family_off_when_distilled():
     assert _map_guidance(detect_family("qwen-image"), 4.0) == (4.0, None)
 
 
+def test_map_guidance_z_image_converts_diffusers_g_to_standard_cfg():
+    # The shared default is diffusers' g = 3 (ComfyUI cfg 4); sd.cpp's standard CFG must get 4, Turbo's 0 stays off.
+    assert _map_guidance(detect_family("Tongyi-MAI/Z-Image"), 3.0) == (4.0, None)
+    assert _map_guidance(detect_family("Tongyi-MAI/Z-Image-Turbo"), 0.0) == (1.0, None)
+
+
 # ── status ────────────────────────────────────────────────────────────────────
 
 
