@@ -21207,6 +21207,9 @@ async def voice_unload_model(current_subject: str = Depends(get_current_subject)
     except Exception as e:
         logger.error("Voice slot unload error: %s", e, exc_info = True)
         raise HTTPException(status_code = 500, detail = f"Failed to unload voice model: {e}")
+    # The slot may have been the last CHAT resident: left claimed, the next account would be
+    # told a foreign model is resident when nothing is. The idle predicate is voice-aware.
+    await asyncio.to_thread(release_chat_gpu_claim)
     logger.info("Voice slot unloaded: %s", model_id)
     return {"status": "unloaded", "model": model_id}
 

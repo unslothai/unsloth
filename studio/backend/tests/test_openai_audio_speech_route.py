@@ -1313,6 +1313,30 @@ def test_voice_unload_cancels_a_load_that_has_not_spawned_yet(monkeypatch):
     assert calls == ["unload"]
 
 
+def test_voice_unload_drops_an_empty_chat_claim(monkeypatch):
+    """The voice slot as the last CHAT resident left the claim with the previous account after
+    its unload, so the next account saw a hidden foreign resident with no model behind it."""
+    import core.inference.gpu_arbiter as arb
+
+    monkeypatch.setattr(arb, "_owner", None)
+    monkeypatch.setattr(arb, "_owner_account", None)
+    live = {"active": True}
+    voice = type(
+        "Voice",
+        (),
+        {
+            "is_active": property(lambda self: live["active"]),
+            "model_identifier": "voice.gguf",
+            "unload_model": lambda self: live.update(active = False) or True,
+        },
+    )()
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice)
+    monkeypatch.setattr(routes_module.account_access, "account_scope", lambda: None)
+    arb.acquire_for(arb.CHAT)
+    assert asyncio.run(routes_module.voice_unload_model("s"))["status"] == "unloaded"
+    assert arb.current_owner() is None
+
+
 def test_voice_load_undoes_itself_when_an_unload_landed_before_the_spawn():
     """An unload between the in-flight mark and load_model set a cancel event load_model then
     cleared, with CHAT still the owner, so the server came up after an explicit unload. The
