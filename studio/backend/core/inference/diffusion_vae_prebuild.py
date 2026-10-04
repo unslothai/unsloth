@@ -23,7 +23,6 @@ _LATENT_SIDE = 64
 # Free VRAM needed after the load before a second CUDA context opens.
 _MIN_FREE_BYTES = 6 * 1024**3
 _CHILD_TIMEOUT_S = 180.0
-# Live children, so an unload can stop one before the next load measures free VRAM.
 _LIVE: set = set()
 _LIVE_LOCK = threading.Lock()
 
