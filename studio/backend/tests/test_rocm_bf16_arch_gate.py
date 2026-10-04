@@ -19,7 +19,12 @@ import core.training.diffusion_train_common as tc
 BF16, FP16, FP32 = "bf16", "fp16", "fp32"
 
 
-def _fake_torch(*, hip, arch = "", capability = (8, 0)):
+def _fake_torch(
+    *,
+    hip,
+    arch = "",
+    capability = (8, 0),
+):
     torch = types.ModuleType("torch")
     torch.bfloat16, torch.float16, torch.float32 = BF16, FP16, FP32
     torch.version = types.SimpleNamespace(hip = hip)
@@ -135,7 +140,9 @@ def test_selected_ordinal_arch_is_read(monkeypatch):
     assert rocm_bf16_supported(torch) is True
 
 
-@pytest.mark.parametrize("arch,expected", [("gfx1030", FP16), ("gfx906", FP16), ("gfx90a", BF16), ("gfx1151", BF16)])
+@pytest.mark.parametrize(
+    "arch,expected", [("gfx1030", FP16), ("gfx906", FP16), ("gfx90a", BF16), ("gfx1151", BF16)]
+)
 def test_laya_precision_by_arch(monkeypatch, arch, expected):
     import core.systemone.laya_runtime as lr
 
@@ -144,3 +151,21 @@ def test_laya_precision_by_arch(monkeypatch, arch, expected):
     monkeypatch.delenv("UNSLOTH_SYSTEMONE_FP32", raising = False)
     device = types.SimpleNamespace(type = "cuda", index = 0)
     assert lr._precision(device, fp16_checkpoint = False) == (expected, expected)
+
+
+@pytest.mark.parametrize("arch", ["gfx1030", "gfx906", "gfx90a", "gfx1151"])
+def test_flow_trainers_stay_admitted_on_rocm(monkeypatch, arch):
+    # DiT / MiniMax-H3 train in bf16 only: an emulated-bf16 ROCm card keeps training (slowly) as before the gate.
+    torch = _fake_torch(hip = "6.4", arch = arch)
+    _install(monkeypatch, torch, is_rocm = True)
+    assert tc.flow_bf16_trainable() is True
+    assert tc.bf16_unsupported_reason("minimax-h3") is None
+    assert "bf16" in tc.train_precision_modes()[0]
+
+
+@pytest.mark.parametrize("capability,expected", [((7, 5), False), ((8, 0), True)])
+def test_flow_trainers_nvidia_unchanged(monkeypatch, capability, expected):
+    torch = _fake_torch(hip = None, capability = capability)
+    _install(monkeypatch, torch, is_rocm = False)
+    assert tc.flow_bf16_trainable() is expected
+    assert (tc.bf16_unsupported_reason("minimax-h3") is None) is expected
