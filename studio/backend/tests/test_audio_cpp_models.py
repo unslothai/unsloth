@@ -418,7 +418,7 @@ def test_a_spec_fallback_family_the_runtime_lacks_is_refused(hub, monkeypatch, t
     monkeypatch.setattr(acm, "runtime_knows_family", _REAL_RUNTIME_KNOWS_FAMILY)
     _fake_runtime(monkeypatch, tmp_path, tag = AUDIO_CPP_SPEC_FAMILIES_TAG)
     for family, folder, tasks in (
-        ("samsone", "Samsone-GGUF", ["asr"]),
+        ("gigaam_asr", "GigaAM-v3-GGUF", ["asr"]),
         ("crisperwhisper", "CrisperWhisper2.0-GGUF", ["asr"]),
         ("kugelaudio", "KugelAudio-0-Open-GGUF", ["tts"]),
     ):
@@ -427,8 +427,8 @@ def test_a_spec_fallback_family_the_runtime_lacks_is_refused(hub, monkeypatch, t
             f"{folder}/m-q8_0.gguf",
             _gguf_bytes(family = family, spec = {"tasks": tasks}),
         )
-    samsone = acm.resolve(f"{AUDIO_CPP_REPO}/Samsone-GGUF", network = False)
-    assert (samsone.task, samsone.unsupported) == ("asr", None)
+    gigaam = acm.resolve(f"{AUDIO_CPP_REPO}/GigaAM-v3-GGUF", network = False)
+    assert (gigaam.task, gigaam.unsupported) == ("asr", None)
     crisper = acm.resolve(f"{AUDIO_CPP_REPO}/CrisperWhisper2.0-GGUF", network = False)
     assert crisper.task == "" and crisper.workflows == {}
     assert crisper.unsupported == (
@@ -2213,3 +2213,14 @@ def test_voice_conversion_families_resolve_and_offer_convert_alone(hub):
     }
     assert "f0_condition" not in {o["name"] for o in seed_vc.options}
     assert meanvc2.convert_options == ()
+
+
+def test_samsone_is_refused_for_transcription(hub):
+    from core.inference import stt_audiocpp_sidecar as s
+    from core.inference.stt_sidecar import SttModelIdError
+
+    spec = {"category": "asr", "tasks": ["asr"]}
+    _put(_snapshot(hub), "Samsone-GGUF/s-q8_0.gguf", _gguf_bytes(family = "samsone", spec = spec))
+    with pytest.raises(SttModelIdError, match = "describes audio"):
+        s.resolve_audio_cpp_stt_model(f"{AUDIO_CPP_REPO}/Samsone-GGUF")
+    assert f"{AUDIO_CPP_REPO}/Samsone-GGUF" not in s.downloaded_model_ids()

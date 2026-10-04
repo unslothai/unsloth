@@ -126,15 +126,10 @@ test("transcription survives page deactivation and aborts on unmount", () => {
   );
   assert.match(
     source,
-    /transcribeWithProgress\(\s*blob,\s*name,\s*\{[\s\S]*signal: controller\.signal/,
+    /transcribeSourceWithProgress\(\s*sourceRefOf\(source\),\s*source\.name,\s*\{[\s\S]*signal: controller\.signal/,
   );
-  const lifecycle = source.slice(
-    source.indexOf("// Release the microphone"),
-    source.indexOf("const handleTranscribeFile"),
-  );
-  assert.match(lifecycle, /if \(!active\) \{\s*stopAndDiscardRecording\(\);\s*\}/);
   assert.match(
-    lifecycle,
+    source,
     /useEffect\(\(\) => \(\) => transcriptionAbort\.current\?\.abort\(\), \[\]\)/,
   );
   assert.doesNotMatch(

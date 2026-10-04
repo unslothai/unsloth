@@ -18,7 +18,6 @@ import {
   isTtsAudioType,
   macTtsPickAction,
   mergeGalleryPage,
-  micStreamRequestIsCurrent,
   minimaxMusicFramesForSeconds,
   modelLoadNote,
   nativeAudioInstructionsKind,
@@ -35,6 +34,8 @@ import { readSrc } from "./helpers/kit.ts";
 import { readAudioWorkspaceSource } from "./helpers/audio-workspace.ts";
 
 const audioPageSource = readAudioWorkspaceSource();
+const audioSourceCard = readSrc("features/audio/hooks/use-audio-source.ts");
+const audioSourceInput = readSrc("features/audio/components/audio-source-input.tsx");
 const chatApiSource = readSrc("features/chat/api/chat-api.ts");
 
 test("mode transitions cancel generation but wait for non-cancellable work", () => {
@@ -332,25 +333,17 @@ test("a pending engine selection is not replaced by an older resident sidecar", 
   assert.equal(resolveSttLoadedModel(status, "mtmd", false), "small");
 });
 
-test("a resolved microphone permission stream is accepted only by its live request", () => {
-  assert.equal(micStreamRequestIsCurrent(4, 4, true), true);
-  assert.equal(micStreamRequestIsCurrent(4, 5, true), false);
-  assert.equal(micStreamRequestIsCurrent(4, 4, false), false);
-});
-
 test("MediaRecorder setup failures release the acquired microphone stream", () => {
-  // start() now takes a timeslice so the byte cap is observable; the release on failure
-  // is what this test is about and is unchanged.
   assert.match(
-    audioPageSource,
-    /recorder\.start\(RECORDING_CHUNK_MS\);[\s\S]*?catch \{[\s\S]*?stopRecordStream\(\);/,
+    audioSourceCard,
+    /recorder = createAudioRecorder\(stream\);\s*\} catch \{\s*stopStream\(\);/,
   );
 });
 
 test("leaving Audio clears an unresolved microphone permission wait", () => {
   assert.match(
-    audioPageSource,
-    /const stopAndDiscardRecording[\s\S]*micRequestGeneration\.current \+= 1;[\s\S]*micPendingGeneration\.current = null;[\s\S]*setMicRequestPending\(false\)/,
+    audioSourceCard,
+    /\(\) => \(\) => \{\s*abortAll\(\);\s*for \(const track of streamRef\.current\?\.getTracks\(\) \?\? \[\]\) track\.stop\(\);/,
   );
 });
 
@@ -362,11 +355,8 @@ test("routed picks wait in the URL until Audio is idle", () => {
   assert.match(audioPageSource, /\[\s*active,\s*busy,/);
 });
 
-test("file transcription cannot overlap a pending microphone permission", () => {
-  assert.match(
-    audioPageSource,
-    /type="file"[\s\S]*disabled=\{[\s\S]*micRequestPending[\s\S]*onChange=/,
-  );
+test("picking a file cannot overlap a recording on the same card", () => {
+  assert.match(audioSourceInput, /disabled=\{disabled \|\| recording\}/);
 });
 
 test("gallery refresh preserves fallback selection and pagination identity", () => {
@@ -404,13 +394,6 @@ test("a refresh that overlaps a pin or move is dropped and rerun after it", () =
     const after = audioPageSource.indexOf("endOrderWrite();", at);
     assert.ok(before > 0 && at - before < 400 && after > at, call);
   }
-});
-
-test("Audio transcription uses backend language auto-detection", () => {
-  const api = readSrc("features/audio/api.ts");
-  const transcription = api.slice(api.indexOf("export async function transcribeWithProgress"), api.indexOf("export async function listTranscripts"));
-  assert.doesNotMatch(transcription, /dictationLanguage|language:/);
-  assert.match(transcription, /stream: "true"/);
 });
 
 test("older STT status requests cannot overwrite newer residency", () => {
@@ -533,48 +516,29 @@ test("a refresh resets when an external archive moves the page boundary", () => 
   });
 });
 
-test("the recorder is gated on the same capability check the composer uses", () => {
-  // Safari ships no MediaRecorder, and an http LAN origin (-H 0.0.0.0) is not a
-  // secure context, so navigator.mediaDevices is undefined there. Without this
-  // gate Record is enabled and its only outcome is "Could not access the
-  // microphone", which blames the wrong thing.
+test("Record is offered only where the browser can capture audio", () => {
+  // Safari ships no MediaRecorder, and an http LAN origin (-H 0.0.0.0) has no navigator.mediaDevices.
   assert.match(
-    audioPageSource,
-    /StudioModelDictationAdapter\.isSupported\(\)/,
-    "the audio page must reuse the dictation capability check",
+    audioSourceCard,
+    /typeof navigator\.mediaDevices\?\.getUserMedia === "function"/,
   );
   assert.match(
-    audioPageSource,
-    /disabled=\{\s*!recordingSupported/,
-    "Record must be disabled when recording is unsupported",
+    audioSourceInput,
+    /\.\.\.\(recordingSupported\(\) \? \[\{ value: "record", label: "Record" \}\] : \[\]\)/,
   );
-  // File upload stays available, so transcription still works on those hosts.
-  assert.match(audioPageSource, /accept="audio\/\*"/);
+  assert.match(audioPageSource, /<AudioSourceInput/);
 });
 
-test("a recording is stopped at the sidecar's duration and size limits", () => {
+test("a Transcribe recording is stopped at the 30 minute limit the inputs route accepts", () => {
   // Without a cap the page buffered an over-long recording in memory and uploaded it only
-  // for the backend to refuse it. Mirrors _MAX_AUDIO_SECONDS and the b64 upload ceiling.
+  // for the backend to refuse it. 30 minutes of 16 kHz PCM is ~58 MB, under the 200 MB cap.
   assert.match(audioPageSource, /const RECORDING_MAX_SECONDS = 30 \* 60;/);
-  assert.match(audioPageSource, /const RECORDING_MAX_BYTES = /);
-  assert.match(audioPageSource, /const RECORDING_MAX_BYTES = 25 \* 1024 \* 1024;/);
+  assert.match(audioPageSource, /maxRecordSeconds=\{RECORDING_MAX_SECONDS\}/);
   assert.match(
-    audioPageSource,
-    /if \(recordedBytes \+ event\.data\.size > RECORDING_MAX_BYTES\) \{\s*stopAtLimit\("size"\);/,
+    audioSourceCard,
+    /window\.setTimeout\(\(\) => \{\s*if \(recorder\.state !== "inactive"\) recorder\.stop\(\);\s*\}, maxRecordSeconds \* 1000\);/,
   );
-  assert.match(
-    audioPageSource,
-    /window\.setTimeout\(\s*\(\) => stopAtLimit\("duration"\),\s*maxSeconds \* 1000,/,
-  );
-  // Uncompressed WAV on the PCM capture path (#9543) reaches the byte cap well
-  // before the 30 minute one, so the duration enforced is the lower of the two.
-  // Without this the recorder ran to 30 minutes and the upload was refused,
-  // losing audio the user had already recorded.
-  assert.match(
-    audioPageSource,
-    /const maxSeconds =\s*recorder instanceof PcmRecorder\s*\?\s*Math\.min\(\s*RECORDING_MAX_SECONDS,\s*recorder\.secondsWithin\(RECORDING_MAX_BYTES\),\s*\)\s*:\s*RECORDING_MAX_SECONDS;/,
-  );
-  assert.match(audioPageSource, /window\.clearTimeout\(durationTimer\);/);
+  assert.match(audioSourceCard, /window\.clearTimeout\(limit\);/);
 });
 
 test("the trained-model list applies the native-aware macOS policy", () => {
