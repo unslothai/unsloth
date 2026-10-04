@@ -800,6 +800,8 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "audio_convert",
                         "audio_convert_route",
                         "audio_convert_rules",
+                        "audio_music",
+                        "audio_cpp_backend",
                     )
                     if k in _entry
                 }
@@ -1629,6 +1631,9 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
                 extra[key] = cmd[key]
             elif key == "audio_inputs":
                 raise AudioRuntimeError("This model cannot clone a voice.", status = 400)
+        for key in ("music", "output_dir"):
+            if cmd.get(key) is not None:
+                extra[key] = cmd[key]
         wav_bytes, sample_rate = backend.generate_audio_response(
             text = cmd["text"],
             temperature = cmd.get("temperature", 0.6),
@@ -1646,17 +1651,19 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
         )
 
         # Send WAV bytes as base64 (bytes can't go through mp.Queue directly).
-        _send_response(
-            resp_queue,
-            {
-                "type": "audio_done",
-                "request_id": request_id,
-                "wav_base64": base64.b64encode(wav_bytes).decode("ascii"),
-                "sample_rate": sample_rate,
-                **_audio_runtime(backend),
-                "stats": getattr(backend, "last_generation_stats", None),
-            },
-        )
+        done = {
+            "type": "audio_done",
+            "request_id": request_id,
+            "wav_base64": base64.b64encode(wav_bytes).decode("ascii"),
+            "sample_rate": sample_rate,
+            **_audio_runtime(backend),
+            "stats": getattr(backend, "last_generation_stats", None),
+        }
+        take_status_patch = getattr(backend, "take_status_patch", None)
+        status_patch = take_status_patch() if callable(take_status_patch) else None
+        if isinstance(status_patch, dict) and status_patch:
+            done["status_patch"] = status_patch
+        _send_response(resp_queue, done)
         logger.info("Finished audio generation for request_id=%s", request_id)
 
     except Exception as exc:

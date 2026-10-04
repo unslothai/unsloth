@@ -25,6 +25,7 @@ export interface AudioModelContext {
   referenceTextMode?: AudioReferenceTextMode | null;
   convert?: AudioConvertCaps | null;
   convertMode?: ConvertMode;
+  audioMusic?: boolean;
   /** Ids of the saved voices, once the list has loaded. */
   savedVoiceIds?: readonly string[] | null;
 }

@@ -91,6 +91,21 @@ export function selectionExpired(
 
 export type AudioOptionScalar = boolean | number | string;
 
+export interface AudioMusicRunFields {
+  mode: "song" | "sfx" | "edit";
+  lyrics?: string | null;
+  instrumental?: boolean;
+  duration_s?: number | null;
+  variations?: number | null;
+  edit?: {
+    action: "repaint" | "extend" | "cover" | "continue" | "inpaint" | "restyle";
+    ranges?: { start_s: number; end_s: number }[];
+    strength?: number | null;
+    extend_s?: number | null;
+  } | null;
+  source?: AudioSourceRef | null;
+}
+
 export type ConvertMode = "speech" | "singing";
 
 export type ConvertStyle = "source" | "target";
@@ -118,7 +133,8 @@ export interface AudioConvertRunRequest {
 export type AudioRunRequest = AudioTextRunRequest | AudioConvertRunRequest;
 
 export interface AudioTextRunRequest {
-  workflow: "clone" | "speak";
+  workflow: "clone" | "speak" | "music";
+  music?: AudioMusicRunFields;
   text: string;
   language?: string | null;
   instructions?: string | null;
@@ -230,7 +246,63 @@ export function buildAudioRunBody(
     body.seed = request.seed;
   if (typeof request.max_tokens === "number" && request.max_tokens > 0)
     body.max_tokens = request.max_tokens;
+  if (request.workflow === "music" && request.music) {
+    Object.assign(body, musicRunFields(request.music));
+  }
   return body;
+}
+
+function finiteSeconds(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : null;
+}
+
+function musicRunFields(music: AudioMusicRunFields): Record<string, unknown> {
+  const out: Record<string, unknown> = { mode: music.mode };
+  if (music.mode === "song") {
+    const lyrics = music.lyrics?.trim();
+    if (lyrics) out.lyrics = lyrics;
+    if (music.instrumental) out.instrumental = true;
+  }
+  if (music.mode !== "edit" || music.edit?.action === "continue") {
+    const duration = finiteSeconds(music.duration_s);
+    if (duration !== null && duration > 0) out.duration_s = duration;
+  }
+  if (music.mode !== "edit") {
+    const variations = music.variations;
+    if (
+      typeof variations === "number" &&
+      Number.isInteger(variations) &&
+      variations > 1
+    )
+      out.variations = variations;
+    return out;
+  }
+  const source = cleanRef(music.source);
+  if (source && !("voice_id" in source)) {
+    out.inputs = { source };
+  }
+  if (music.edit) {
+    const edit: Record<string, unknown> = { action: music.edit.action };
+    const ranges = (music.edit.ranges ?? [])
+      .filter(
+        (range) =>
+          finiteSeconds(range.start_s) !== null &&
+          Number.isFinite(range.end_s) &&
+          range.end_s > range.start_s,
+      )
+      .map((range) => ({ start_s: range.start_s, end_s: range.end_s }));
+    if (ranges.length > 0) edit.ranges = ranges;
+    const strength = music.edit.strength;
+    if (typeof strength === "number" && Number.isFinite(strength))
+      edit.strength = Math.min(1, Math.max(0, strength));
+    const extend = finiteSeconds(music.edit.extend_s);
+    if (music.edit.action === "extend" && extend !== null && extend > 0)
+      edit.extend_s = extend;
+    out.edit = edit;
+  }
+  return out;
 }
 
 export interface AudioVoiceCreateRequest {

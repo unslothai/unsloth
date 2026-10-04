@@ -644,9 +644,10 @@ class AudioCppServer:
                 process.wait(timeout = 10)
             except subprocess.TimeoutExpired:
                 process.kill()
-                # Seed-VC took ~54 s to exit after a run; a slow exit must not fail the next request.
+                # A killed server can sit in GPU context teardown well past 10 s on a busy card (Seed-VC
+                # took ~54 s); the music reload restarts it mid-session and must not fail on that.
                 try:
-                    process.wait(timeout = 60)
+                    process.wait(timeout = 120)
                 except subprocess.TimeoutExpired:
                     logger.warning(
                         "audio.cpp: server pid %s still exiting after SIGKILL", process.pid

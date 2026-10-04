@@ -548,6 +548,7 @@ export function useSpeechGeneration({
     toolValues,
     handleToolValueChange,
     toolBlocker: toolRequest.error,
+    toolOptions: toolRequest.patch.options,
     claimedOptions,
     advancedOptionSpecs,
   };
