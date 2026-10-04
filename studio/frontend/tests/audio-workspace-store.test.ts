@@ -35,3 +35,11 @@ test("a request does not move the committed workflow until the page takes it", (
   assert.equal(store.getState().requestedWorkflow, null);
   store.getState().commitWorkflow("speak");
 });
+
+test("any committed switch settles a pending request, so it never fires later", () => {
+  const store = useAudioWorkspaceStore;
+  store.getState().requestWorkflow("music");
+  store.getState().commitWorkflow("transcribe");
+  assert.equal(store.getState().requestedWorkflow, null);
+  store.getState().commitWorkflow("speak");
+});

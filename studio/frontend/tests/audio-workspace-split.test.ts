@@ -28,10 +28,12 @@ test("the host calls its hooks in the order their effects ran in the single page
 });
 
 test("only the page commits a workflow; the sidebar's request goes through the same gate", () => {
+  // A refused request is kept and retried when busy settles; the commit is what clears it.
   assert.match(
     host,
-    /useAudioWorkspaceStore\.getState\(\)\.clearRequestedWorkflow\(\);\s*transitionWorkflow\(requestedWorkflow\);/,
+    /if \(!active \|\| requestedWorkflow === null\) return;\s*transitionWorkflow\(requestedWorkflow\);\s*\}, \[active, busy, requestedWorkflow, transitionWorkflow\]\);/,
   );
+  assert.doesNotMatch(host, /clearRequestedWorkflow\(\)/);
   assert.match(
     slot,
     /\} else if \(!transitionMode\(slotForWorkflow\(next\)\)\) \{\s*return false;\s*\}\s*store\.commitWorkflow\(next\);/,
@@ -47,20 +49,13 @@ test("a loaded model opens the page that fits it", () => {
   assert.match(host, /adoptWorkflow\("music"\)/);
 });
 
-test("?workflow= names the page ahead of ?task=, and both clear the URL", () => {
-  const workflowAt = handoff.indexOf(
-    "const routedWorkflow = routeSearch.workflow;",
-  );
-  const taskAt = handoff.indexOf("const task = routeSearch.task;");
-  assert.ok(workflowAt > 0 && workflowAt < taskAt);
+test("?workflow= names the page ahead of ?task=, and both go through the workflow gate", () => {
+  // Task-only links take the same gate as ?workflow=, so a Speak/Music switch never skips the busy check.
   assert.match(
     handoff,
-    /if \(!transitionWorkflow\(routedWorkflow\)\) return;\s*void navigateSelf\(\{ to: "\/audio", search: \{\}, replace: true \}\);/,
+    /const routedWorkflow = audioRouteIntent\(routeSearch\);\s*if \(routedWorkflow === null\) return;[\s\S]{0,120}?if \(!transitionWorkflow\(routedWorkflow\)\) return;\s*void navigateSelf\(\{ to: "\/audio", search: \{\}, replace: true \}\);/,
   );
-  assert.match(
-    handoff,
-    /void navigateSelf\(\{ to: "\/audio", search: \{\}, replace: true \}\);\s*\/\/[^\n]*\n\s*useAudioWorkspaceStore\s*\.getState\(\)\s*\.commitWorkflow\(audioWorkflowForTask\(task\) \?\? intended\);/,
-  );
+  assert.doesNotMatch(handoff, /commitWorkflow\(/);
   assert.match(handoff, /transitionWorkflow\(clipWorkflow\(clip\)\)/);
 });
 

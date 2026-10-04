@@ -6,13 +6,8 @@ import { translate } from "@/i18n";
 import { loadGalleryUntil } from "@/lib/gallery-deep-link";
 import { toast } from "@/lib/toast";
 import { useNavigate, useSearch } from "@tanstack/react-router";
-import { audioWorkflowForPick } from "../route-search";
-import { useAudioWorkspaceStore } from "../stores/audio-workspace-store";
-import {
-  audioWorkflowForTask,
-  clipWorkflow,
-  isAudioWorkflowId,
-} from "../workflows";
+import { audioRouteIntent, audioWorkflowForPick } from "../route-search";
+import { clipWorkflow, isAudioWorkflowId } from "../workflows";
 import type { AudioHostState } from "./audio-host-state";
 import { type AudioGallery, galleryCache } from "./use-audio-gallery";
 import type { AudioModelSlot } from "./use-audio-model-slot";
@@ -21,20 +16,15 @@ export function useAudioHandoff({
   active,
   busy,
   busyRef,
-  mode,
   modeRef,
   handleModelSelect,
-  transitionMode,
   transitionWorkflow,
   refreshGallery,
   loadMore,
   loadingMoreRef,
   selectClip,
-}: Pick<AudioHostState, "active" | "busy" | "busyRef" | "mode" | "modeRef"> &
-  Pick<
-    AudioModelSlot,
-    "handleModelSelect" | "transitionMode" | "transitionWorkflow"
-  > &
+}: Pick<AudioHostState, "active" | "busy" | "busyRef" | "modeRef"> &
+  Pick<AudioModelSlot, "handleModelSelect" | "transitionWorkflow"> &
   Pick<
     AudioGallery,
     "refreshGallery" | "loadMore" | "loadingMoreRef" | "selectClip"
@@ -56,23 +46,12 @@ export function useAudioHandoff({
     const wanted = routeSearch.model;
     if (!wanted) {
       handledRouteModel.current = null;
-      const routedWorkflow = routeSearch.workflow;
-      if (isAudioWorkflowId(routedWorkflow)) {
-        // Left in the URL when refused, so it retries once busy releases.
-        if (!transitionWorkflow(routedWorkflow)) return;
-        void navigateSelf({ to: "/audio", search: {}, replace: true });
-        return;
-      }
-      const task = routeSearch.task;
-      if (!task) return;
-      const intended =
-        task === "automatic-speech-recognition" ? "transcribe" : "speak";
-      if (intended !== mode && !transitionMode(intended)) return;
+      // An explicit workflow, else the one the task names (text-to-audio is Music).
+      const routedWorkflow = audioRouteIntent(routeSearch);
+      if (routedWorkflow === null) return;
+      // Left in the URL when refused, so it retries once busy releases.
+      if (!transitionWorkflow(routedWorkflow)) return;
       void navigateSelf({ to: "/audio", search: {}, replace: true });
-      // text-to-audio is Music; the other tags name their page directly.
-      useAudioWorkspaceStore
-        .getState()
-        .commitWorkflow(audioWorkflowForTask(task) ?? intended);
       return;
     }
     const key = `${wanted}|${routeSearch.quant ?? ""}|${routeSearch.ggufQuant ?? ""}|${routeSearch.task ?? ""}|${routeSearch.audioType ?? ""}|${routeSearch.loadId ?? ""}|${routeSearch.workflow ?? ""}`;
@@ -113,7 +92,6 @@ export function useAudioHandoff({
   }, [
     active,
     busy,
-    mode,
     routeSearch.model,
     routeSearch.quant,
     routeSearch.ggufQuant,
@@ -123,7 +101,6 @@ export function useAudioHandoff({
     routeSearch.loadId,
     handleModelSelect,
     navigateSelf,
-    transitionMode,
     transitionWorkflow,
   ]);
 
