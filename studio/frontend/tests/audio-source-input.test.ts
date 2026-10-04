@@ -295,3 +295,16 @@ test("a saved voice cannot take a name another voice already has", () => {
   const picker = readSrc("features/audio/components/voice-picker.tsx");
   assert.match(picker, /mode="edit"\s*voiceId=\{editing\?\.id\}/);
 });
+
+test("a deleted clip or voice keeps the card in error, which holds Clone's Generate", () => {
+  // A 404 for a history clip or saved voice fails the card instead of marking it loaded, and the
+  // card refetches (and fails again) after Dismiss while the stale selection stays.
+  assert.match(hook, /"This saved voice was deleted\. Pick another one\."/);
+  assert.match(hook, /"This clip was deleted\. Pick another one\."/);
+  const generation = readSrc("features/audio/hooks/use-clone-generation.ts");
+  assert.match(
+    generation,
+    /referenceError:\s*referenceStatus\.phase === "error" \? referenceStatus\.message : null/,
+  );
+  assert.match(generation, /"reference-error": \[addReference\]/);
+});

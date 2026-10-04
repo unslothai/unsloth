@@ -206,6 +206,22 @@ def test_the_sweep_drops_the_oldest_past_the_byte_cap_then_all_past_the_ttl(clie
     assert not list(audio_inputs.inputs_dir().iterdir())
 
 
+def test_expired_inputs_are_swept_without_waiting_for_another_upload(monkeypatch, tmp_path):
+    from auth import storage
+
+    clock = [1_000_000.0]
+    monkeypatch.setattr(audio_inputs, "_now", lambda: clock[0])
+    input_id = _save(wav_bytes(0.5), "a.wav")["id"]
+    clock[0] += audio_inputs.TTL_SECONDS + 1
+    # An account that never uploaded gets no inputs folder from the sweep.
+    other = {"account_id": "acct-b", "username": "bob", "role": "user"}
+    monkeypatch.setattr(storage, "list_accounts", lambda: [other])
+    monkeypatch.setattr(audio_inputs, "account_path", lambda rel: tmp_path / "acct-b" / rel)
+    assert audio_inputs.sweep_all_accounts() == 1
+    assert audio_inputs.input_path(input_id) is None
+    assert not (tmp_path / "acct-b").exists()
+
+
 def test_a_prepared_reference_is_24k_mono_cut_to_thirty_seconds_and_cached():
     record = _save(wav_bytes(seconds = 31.0, rate = 8000), "long.wav")
     source, path = audio_inputs.prepare_reference({"input_id": record["id"]})

@@ -864,6 +864,10 @@ async def lifespan(app: FastAPI):
     # Embeddings stay cold until ingestion or retrieval actually requests vectors.
     _start_helper_precache_if_enabled()
 
+    from core.inference.audio_inputs import start_sweeper as _start_audio_input_sweeper
+
+    _start_audio_input_sweeper()
+
     from core.research_runs import ResearchSupervisor
 
     app.state.research_supervisor = ResearchSupervisor(app)
