@@ -475,6 +475,22 @@ function specFallbackMessage({
   }
 }
 
+function TimeVariableCacheNote({ prompt }: { prompt: string }) {
+  if (!promptUsesHighPrecisionTimeVariables(prompt)) {
+    return null;
+  }
+  return (
+    <p
+      role="note"
+      className="px-1 pt-1.5 text-ui-11 text-amber-600 dark:text-amber-400"
+    >
+      {"{{$now}}"} and {"{{$time}}"} change on every message, so the prompt
+      cache never matches and each reply re-processes the whole chat. Use{" "}
+      {"{{$date}}"} to keep replies fast.
+    </p>
+  );
+}
+
 export function ChatSettingsPanel({
   open,
   onOpenChange,
@@ -1501,6 +1517,7 @@ export function ChatSettingsPanel({
               )}
             />
           </div>
+          <TimeVariableCacheNote prompt={currentSystemPrompt} />
         </CollapsibleSection>
 
         <CollapsibleSection label="Sampling" defaultOpen={true}>
@@ -1812,16 +1829,7 @@ export function ChatSettingsPanel({
                 rows={14}
               />
             </div>
-            {promptUsesHighPrecisionTimeVariables(systemPromptDraft) ? (
-              <p
-                role="note"
-                className="px-1 text-ui-11 text-amber-600 dark:text-amber-400"
-              >
-                {"{{$now}}"} and {"{{$time}}"} change on every message, so the
-                prompt cache never matches and each reply re-processes the
-                whole chat. Use {"{{$date}}"} to keep replies fast.
-              </p>
-            ) : null}
+            <TimeVariableCacheNote prompt={systemPromptDraft} />
           </div>
           <DialogFooter className="flex-wrap gap-2 sm:justify-between">
             <Button
