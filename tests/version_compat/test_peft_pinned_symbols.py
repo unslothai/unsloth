@@ -21,6 +21,7 @@ PEFT_TAGS = [
     "v0.18.1",
     "v0.19.0",
     "v0.19.1",
+    "v0.20.0",
     "main",
 ]
 
@@ -293,19 +294,17 @@ def test_peft_version_parseable(tag: str):
     ), f"{tag}: peft.__version__ not exported via any known mechanism"
 
 
-# 11. peft.tuners.lora.variants.MiCALinearVariant
-
-
-@pytest.mark.parametrize("tag", PEFT_TAGS)
+# 11. init_lora_weights="mica": check_mica_init imports MiCALinearVariant; PEFT inits via LoraLayer.mica_init
+#     and freezes lora_B via _freeze_non_trainable_peft_weights (freeze_peft_variant_weights). PEFT >= 0.20.0.
 def test_peft_mica_variant_and_init(tag: str):
     variants_src = fetch_text("huggingface/peft", tag, "src/peft/tuners/lora/variants.py")
     if variants_src is None or not has_def(variants_src, "MiCALinearVariant", "class"):
-        pytest.skip(f"{tag}: MiCA not present in this PEFT version")
-
+        pytest.skip(f"{tag}: MiCA not yet introduced (peft 0.20)")
     layer_src = fetch_text("huggingface/peft", tag, "src/peft/tuners/lora/layer.py")
-    assert layer_src is not None, f"{tag}: layer.py missing"
-    assert has_def(layer_src, "mica_init", "func"), (
-        f"{tag}: MiCALinearVariant present but LoraLayer.mica_init missing — "
-        f'unsloth\'s `init_lora_weights="mica"` gate imports the class but PEFT '
-        f"needs the init hook to actually initialize the adapter"
-    )
+    tuners_src = fetch_text("huggingface/peft", tag, "src/peft/tuners/tuners_utils.py")
+    assert layer_src is not None and has_def(
+        layer_src, "mica_init", "func"
+    ), f"{tag}: mica_init missing"
+    assert tuners_src is not None and has_def(
+        tuners_src, "_freeze_non_trainable_peft_weights", "func"
+    ), f"{tag}: _freeze_non_trainable_peft_weights missing"

@@ -3737,21 +3737,7 @@ class FastLlamaModel:
                 )
 
         if init_lora_weights == "mica":
-            try:
-                from peft.tuners.lora.variants import MiCALinearVariant
-            except ImportError:
-                import peft
-                raise RuntimeError(
-                    f"Unsloth: Your PEFT version of {peft.__version__} does not support MiCA init.\n"
-                    "MiCA is not yet in a released version. Install from source:\n"
-                    "`pip install git+https://github.com/huggingface/peft.git`"
-                )
-            if getattr(model.config, "quantization_config", None) is not None:
-                raise ValueError(
-                    "Unsloth: You are using `mica` init, yet your model is quantized (e.g. `load_in_4bit = True`).\n"
-                    "MiCA runs SVD on the base weights and requires fp32/fp16/bf16 — PEFT will refuse quantized weights.\n"
-                    "Reload your model without quantization by setting `load_in_4bit = False` and `load_in_8bit = False`."
-                )
+            check_mica_init(model)
 
         assert type(use_rslora) is bool
         if use_rslora:
@@ -4144,6 +4130,7 @@ class FastLlamaModel:
             use_gradient_checkpointing = use_gradient_checkpointing,
             use_reentrant = True,
         )
+        freeze_peft_variant_weights(model)
 
         for active_adapter in model.peft_config.keys():
             if False:

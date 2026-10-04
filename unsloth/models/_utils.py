@@ -75,6 +75,8 @@ __all__ = [
     "set_task_config_attr",
     "patch_fast_lora",
     "validate_loftq_config",
+    "check_mica_init",
+    "freeze_peft_variant_weights",
     "RaiseUninitialized",
     "fast_inference_setup",
     "patch_peft_fast_inference",
@@ -5627,6 +5629,30 @@ for function in ("__reduce__", "__reduce_ex__", "__getstate__", "__setstate__"):
         pass
 
 
+def check_mica_init(model):
+    try:
+        from peft.tuners.lora.variants import MiCALinearVariant
+    except ImportError:
+        import peft
+        raise RuntimeError(
+            f"Unsloth: Your PEFT version of {peft.__version__} does not support MiCA init.\n"
+            "Please install PEFT 0.20.0 or higher: `pip install --upgrade peft`"
+        )
+    if getattr(model.config, "quantization_config", None) is not None:
+        raise ValueError(
+            "Unsloth: You are using `mica` init, yet your model is quantized.\n"
+            "MiCA runs an SVD of the base weights, which PEFT only supports for float32/float16/bfloat16.\n"
+            "Reload your model with `load_in_4bit = False` and `load_in_8bit = False`."
+        )
+
+
+def freeze_peft_variant_weights(model):
+    # prepare_model_for_training re-enables every lora_A/lora_B; PEFT variants such as MiCA freeze lora_B.
+    for module in model.modules():
+        if getattr(module, "frozen_peft_weight_names", None):
+            module._freeze_non_trainable_peft_weights()
+
+
 def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, model):
     from peft import LoraConfig
 
@@ -5656,7 +5682,7 @@ def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, m
         or init_lora_weights == "mica"
     ):
         raise ValueError(
-            'Unsloth: `init_lora_weights` must be either [True, False, "gaussian", "loftq", "corda" , "mica"].'
+            'Unsloth: `init_lora_weights` must be either [True, False, "gaussian", "loftq", "corda", "mica"].'
         )
 
     if init_lora_weights == "loftq":
@@ -5682,21 +5708,7 @@ def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, m
                 "Reload your model without any quantization by setting `load_in_4bit = False`."
             )
     if init_lora_weights == "mica":
-        try:
-            from peft.tuners.lora.variants import MiCALinearVariant
-        except ImportError:
-            import peft
-            raise RuntimeError(
-                f"Unsloth: Your PEFT version of {peft.__version__} does not support MiCA init.\n"
-                "MiCA is not yet in a released version. Install from source:\n"
-                "`pip install git+https://github.com/huggingface/peft.git`"
-            )
-        if getattr(model.config, "quantization_config", None) is not None:
-            raise ValueError(
-                "Unsloth: You are using `mica` init, yet your model is quantized (e.g. `load_in_4bit = True`).\n"
-                "MiCA runs SVD on the base weights and requires fp32/fp16/bf16 — PEFT will refuse quantized weights.\n"
-                "Reload your model without quantization by setting `load_in_4bit = False` and `load_in_8bit = False`."
-            )
+        check_mica_init(model)
 
     return loftq_config
 
