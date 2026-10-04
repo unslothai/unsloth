@@ -343,6 +343,43 @@ def test_stop_mid_file_returns_before_the_download_finishes(monkeypatch):
     release.set()
 
 
+def test_a_retry_joins_the_download_that_stop_left_running(monkeypatch):
+    """Stop then retry: the file is still missing, so without sharing the retry would start a second
+    transfer of the same 1.1 GB and each cycle would leave another thread behind."""
+    import threading
+    from types import SimpleNamespace
+
+    from core.inference.audio_cpp_backend import AudioCppRequestCancelledError
+    from core.inference.audio_cpp_backend import AudioCppBackend as backend_cls
+
+    release, calls = threading.Event(), []
+
+    def streaming(*_args, **_kwargs):
+        calls.append(1)
+        release.wait(10)
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", streaming)
+    monkeypatch.setattr(
+        audio_cpp_backend.audio_cpp_files, "missing_files", lambda model: [("aligner.gguf", 1)]
+    )
+    model = SimpleNamespace(repo_id = "org/aligner")
+    stopped = threading.Event()
+    threading.Timer(0.3, stopped.set).start()
+    with pytest.raises(AudioCppRequestCancelledError):
+        backend_cls._download_missing(model, None, stopped)
+    # The retry waits on the same transfer and gets its result once the file lands.
+    outcome = []
+    retry = threading.Thread(
+        target = lambda: outcome.append(backend_cls._download_missing(model, None, threading.Event()))
+    )
+    retry.start()
+    threading.Timer(0.3, release.set).start()
+    retry.join(10)
+    assert outcome == [True]
+    assert calls == [1]
+    assert audio_cpp_backend._inflight == {}
+
+
 def test_a_download_error_still_reaches_the_caller_with_a_cancel_event(monkeypatch):
     import threading
     from types import SimpleNamespace

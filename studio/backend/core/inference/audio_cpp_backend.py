@@ -67,20 +67,32 @@ def _raise_if_cancelled(cancel_event) -> None:
         raise AudioGenerationCancelledError("Audio generation cancelled")
 
 
-def _download_or_cancel(download, cancel_event) -> None:
+_inflight_lock = threading.Lock()
+_inflight: dict[tuple[str, str], tuple[threading.Event, list]] = {}
+
+
+def _download_or_cancel(key, download, cancel_event) -> None:
     """hf_hub_download has no cancel hook, so it runs on its own thread and the caller stops waiting
-    when the event fires. The thread finishes into the Hub cache, so the next request finds the file."""
-    done, failure = threading.Event(), []
+    when the event fires. The thread finishes into the Hub cache, so the next request finds the file,
+    and a retry while it is still streaming joins that thread instead of starting a second transfer."""
+    with _inflight_lock:
+        flight = _inflight.get(key)
+        if flight is None:
+            flight = _inflight[key] = (threading.Event(), [])
+            done, failure = flight
 
-    def run():
-        try:
-            download()
-        except BaseException as exc:  # noqa: BLE001 - re-raised on the caller's thread
-            failure.append(exc)
-        finally:
-            done.set()
+            def run():
+                try:
+                    download()
+                except BaseException as exc:  # noqa: BLE001 - re-raised on the caller's thread
+                    failure.append(exc)
+                finally:
+                    with _inflight_lock:
+                        _inflight.pop(key, None)
+                    done.set()
 
-    threading.Thread(target = run, name = "audio-cpp-download", daemon = True).start()
+            threading.Thread(target = run, name = "audio-cpp-download", daemon = True).start()
+    done, failure = flight
     while not done.wait(0.2):
         if cancel_event.is_set():
             raise AudioCppRequestCancelledError("Request cancelled.")
@@ -402,7 +414,7 @@ class AudioCppBackend:
             if cancel_event is None:
                 fetch()
             else:
-                _download_or_cancel(fetch, cancel_event)
+                _download_or_cancel((model.repo_id, path), fetch, cancel_event)
         return True
 
     def _start_server(
