@@ -51,6 +51,8 @@ def _isolated(monkeypatch):
     monkeypatch.setattr(att, "warn_if_sdpa_math_only", lambda *a, **k: False)
     monkeypatch.setattr(att, "_indexed_cuda_device", lambda device: device)
     monkeypatch.setattr(att, "_sage_version_too_old", lambda: None, raising = False)
+    # These exercise the pip SageAttention 2 path; the kernels-hub path is tested in test_diffusion_attention_install.py.
+    monkeypatch.setattr(att, "_pip_sage2_installed", lambda: True, raising = False)
     backends = dispatch._AttentionBackendRegistry._backends
     saved = backends[dispatch.AttentionBackendName.SAGE]
     saved_fa4 = backends[dispatch.AttentionBackendName.FLASH_4_HUB]
@@ -473,15 +475,19 @@ def test_sage_version_floor(monkeypatch, installed, refused):
         assert f"sageattention {installed} is older than 2.1.1" in reason
 
 
-def test_old_sageattention_falls_back_with_a_reason(monkeypatch):
+def test_old_sageattention_is_ignored_for_the_hub_build(monkeypatch):
+    # PyPI's sageattention 1.0.6 is SageAttention 1: never probed or engaged; the request goes to the kernels-hub build,
+    # and with no build that loads the load keeps the default backend and says why.
     seen: list = []
-    monkeypatch.setattr(att, "_run_sage_probe", lambda d, dt, hd = 128: seen.append(hd) or "")
+    monkeypatch.setattr(att, "_run_sage_probe", lambda d, dt, hd = 128, **k: seen.append(hd) or "")
+    monkeypatch.setattr(att, "_pip_sage2_installed", lambda: False)
     monkeypatch.setattr(
         att,
         "_sage_version_too_old",
         lambda: "sageattention 1.0.6 is older than 2.1.1, the "
         "SageAttention 2 release diffusers needs",
     )
+    monkeypatch.setattr(att, "_load_sage_hub_kernel", lambda: (None, "no build for this torch"))
     t, log = _Transformer(128), _Logger()
     assert (
         apply_attention_backend(
@@ -489,8 +495,11 @@ def test_old_sageattention_falls_back_with_a_reason(monkeypatch):
         )
         is None
     )
-    assert "sage" not in t.calls and seen == []
-    assert any("1.0.6 is older than 2.1.1" in w for w in log.warnings)
+    assert "sage" not in t.calls and "sage_hub" not in t.calls and seen == []
+    assert any(
+        "no build for this torch" in w and "source build or a community wheel" in w
+        for w in log.warnings
+    )
 
 
 def test_sm100_explicit_sage_falls_back_and_auto_never_picks_it(monkeypatch):
