@@ -7086,6 +7086,7 @@ _ALWAYS_SAFE_TOOLS = frozenset(
         "read_skill",
         "deep_research",
         "mcp_tool_schema",
+        "view_image",
     }
 )
 
@@ -13186,11 +13187,15 @@ CREATE_SKILL_TOOL = {
 }
 
 
+from .view_image import VIEW_IMAGE_TOOL
+
+
 ALL_TOOLS = [
     WEB_SEARCH_TOOL,
     PYTHON_TOOL,
     TERMINAL_TOOL,
     EDIT_FILE_TOOL,
+    VIEW_IMAGE_TOOL,
     RENDER_HTML_TOOL,
     SEARCH_KNOWLEDGE_BASE_TOOL,
     SEARCH_CONVERSATION_TOOL,
@@ -14088,8 +14093,13 @@ def execute_tool(
                 tool_execution_mode = tool_execution_mode,
                 host_access_approved = host_access_approved,
             )
-    # Same in-flight guard as the two above: it writes into the session workdir, so a chat deleted mid-call must not
-    # unlink it underneath.
+    if name == "view_image":
+        from .view_image import view_image
+        with _session_in_flight(session_id):
+            return _fit_result_to_room(
+                view_image(arguments.get("path"), _get_workdir(session_id), cancel_event), name
+            )
+    # Keep the workdir alive if the chat is deleted during an edit.
     if name == "edit_file":
         with _session_in_flight(session_id):
             return _fit_result_to_room(
@@ -14697,6 +14707,22 @@ def rag_autoinject_reaches_retrieval(
     return bool(enabled), whole_doc_requested
 
 
+def _thread_document_ids(thread_id) -> set | None:
+    """Ids of the thread's indexed attachments; None when the store cannot say."""
+    try:
+        from core.rag import store
+        from storage import rag_db
+
+        conn = rag_db.get_connection()
+        try:
+            docs = store.list_documents(conn, store.thread_scope(thread_id))
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        return None
+    return {d["id"] for d in docs if d.get("status") == "completed" and d.get("num_chunks")}
+
+
 def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> dict | None:
     """Pre-retrieve the latest user turn; if a hit clears the cosine floor return ``{"events": [...],
     "messages": [...]}`` to splice into the loop, else ``None``. Toggle via ``rag_scope.autoinject``
@@ -14726,7 +14752,8 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     # Cap at the lean top_k, but honor a lower user setting.
     lean_k = _autoinject_top_k()
     sidebar_k = _opt_int(rag_scope.get("default_top_k"))
-    top_k = min(sidebar_k, lean_k) if sidebar_k is not None else lean_k
+    # Zero or below is no limit to the search, which then returns its own default count.
+    top_k = min(sidebar_k, lean_k) if sidebar_k is not None and sidebar_k > 0 else lean_k
     budget: int | None = None
     # The window the budget was sized against, so `_text_token_cost` only trusts a GGUF actually serving this same
     # window.
@@ -14800,19 +14827,34 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
         found = search_for_autoinject(query = query, top_k = top_k, **scope)
         return _trim(found[0], found[1], max_tokens) if found else None
 
+    thread_docs = _thread_document_ids(thread_id) if whole_doc_requested and text is None else set()
+
+    def retrieve_thread_unfloored(*, max_tokens = None):
+        # Lexical-only finds nothing for a generic request ("summarize this") whose words are not in the file, so
+        # this mandatory grounding retries with the dense leg. Chats with no attachment skip the query embedding.
+        if thread_docs is not None and not thread_docs:
+            return None
+        scope_kwargs = _scope_retrieval_kwargs(rag_scope)
+        found = retrieve(
+            max_tokens = max_tokens, scope_thread_id = thread_id, min_dense_score = None, **scope_kwargs
+        )
+        if not found and scope_kwargs["mode"] == "lexical":
+            found = retrieve(
+                max_tokens = max_tokens,
+                scope_thread_id = thread_id,
+                min_dense_score = None,
+                mode = "hybrid",
+            )
+        return found
+
     # An oversized thread attachment is mandatory grounding: with auto-injection off, search it alone, without the
     # optional-auto relevance floor, then add project context if the combination still fits. The budget binds on that
     # path only: with auto-injection on this stays the single combined unbudgeted search, so a small context cannot
-    # silently switch RAG off.
+    # silently switch RAG off, and the thread is searched again without the floor when none of it cleared.
     if text is None and (enabled or whole_doc_requested):
         try:
             if whole_doc_requested and not enabled:
-                found = retrieve(
-                    max_tokens = budget,
-                    scope_thread_id = thread_id,
-                    min_dense_score = None,
-                    **_scope_retrieval_kwargs(rag_scope),
-                )
+                found = retrieve_thread_unfloored(max_tokens = budget)
                 project_id = rag_scope.get("project_id")
                 if found and project_id:
                     # Isolated like the whole-document companion above: an unavailable project index must not send the
@@ -14839,6 +14881,28 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
                     min_dense_score = floor,
                     **_scope_retrieval_kwargs(rag_scope),
                 )
+                # Project hits clearing the floor must not crowd out the attachment: without one of its passages,
+                # it goes first.
+                grounded = (
+                    bool(found)
+                    and thread_docs is not None
+                    and any(s.get("documentId") in thread_docs for s in found[1])
+                )
+                if (
+                    whole_doc_requested
+                    and (not found or rag_scope.get("project_id"))
+                    and not grounded
+                ):
+                    thread_found = retrieve_thread_unfloored()
+                    if thread_found and found:
+                        cited = thread_docs or {s.get("documentId") for s in thread_found[1]}
+                        if not any(s.get("documentId") in cited for s in found[1]):
+                            # Still the lean top_k in total, so the unbudgeted path never doubles the injection.
+                            n_proj = min(len(found[1]), top_k // 2)
+                            merged = thread_found[1][: top_k - n_proj] + found[1][:n_proj]
+                            found = (render_sources(merged), merged)
+                    elif thread_found:
+                        found = thread_found
         except Exception as exc:  # noqa: BLE001
             logger.warning("RAG auto-inject retrieval failed: %s", exc)
             return None

@@ -190,6 +190,29 @@ def _reset_gpu_query_cache():
 
 
 @pytest.fixture(autouse = True)
+def _restore_fp32_matmul_precision():
+    # torchao's default config handler sets set_float32_matmul_precision("high") process-wide.
+    def _get():
+        getter = getattr(sys.modules.get("torch"), "get_float32_matmul_precision", None)
+        return getter() if getter is not None else None
+
+    before = _get() or "highest"
+    yield
+    after = _get()
+    if after is not None and after != before:
+        sys.modules["torch"].set_float32_matmul_precision(before)
+
+
+@pytest.fixture(autouse = True)
+def _reset_media_import_window(monkeypatch):
+    # A load path claims the window for the process; later prewarm tests would skip.
+    warm = sys.modules.get("utils.torch_warmup")
+    if warm is not None and hasattr(warm, "_media_import_claimed"):
+        monkeypatch.setattr(warm, "_media_import_claimed", False)
+        monkeypatch.setattr(warm, "_media_import_owner", None)
+
+
+@pytest.fixture(autouse = True)
 def _isolate_studio_home(_studio_home_root, monkeypatch):
     home = _studio_home_root / f"home-{next(_studio_home_counter)}"
     home.mkdir()

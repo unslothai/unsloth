@@ -89,7 +89,7 @@ export {
   useToolPaneScope,
 } from "./tool-output-scope";
 export { useToolAwaitingApproval } from "./tool-approval";
-export { PermissionModeDropdown } from "./permission-mode-select";
+export { PermissionModeDropdown, useActivePermissionMode } from "./permission-mode-select";
 export { useChatSearchStore } from "./stores/chat-search-store";
 export type { ChatNavigationState } from "./stores/chat-navigation-store";
 export {
