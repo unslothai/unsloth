@@ -1,6 +1,10 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+#
+# #9184: a desktop install left an older `unsloth` ahead of the ~/.local/bin shim, so
+# `unsloth start` never reached the managed CLI. The PATH persistence block is extracted from
+# install.sh and run under /bin/sh, as the installer runs.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -18,104 +22,74 @@ if [ -z "$_fn_start" ] || [ -z "$_guard_end" ]; then
 fi
 sed -n "${_fn_start},${_guard_end}p" "$INSTALL_SH" > "$WORK/path_guard.sh"
 
+EXACT_LINE='export PATH="$HOME/.local/bin:$PATH"'
+
+# $1 home  $2 TAURI_MODE  $3 login PATH  $4 _STUDIO_HOME_REDIRECT
 _run_guard() {
-    _home="$1"
-    _tauri="$2"
-    _redirect="${3:-default}"
-    mkdir -p "$_home/.local/bin" "$_home/foreign"
-    printf '#!/bin/sh\n' > "$_home/.local/bin/unsloth"
-    printf '#!/bin/sh\n' > "$_home/foreign/unsloth"
-    chmod +x "$_home/.local/bin/unsloth" "$_home/foreign/unsloth"
-    (
-        set +e
-        step() { :; }
-        HOME="$_home"; export HOME
-        SHELL="/bin/bash"; export SHELL
-        TAURI_MODE="$_tauri"; export TAURI_MODE
-        PATH="$_home/foreign:$_home/.local/bin:/usr/bin:/bin"; export PATH
+    env -u CONDA_PREFIX -u CONDA_DEFAULT_ENV HOME="$1" SHELL=/bin/bash TAURI_MODE="$2" \
+        LOGIN_PATH="$3" REDIRECT="${4:-default}" GUARD="$WORK/path_guard.sh" sh -c '
+        set -e
+        step() { echo "$*"; }
+        substep() { :; }
+        C_WARN=""
+        PATH="$LOGIN_PATH"
         _LOCAL_BIN="$HOME/.local/bin"
-        _STUDIO_HOME_REDIRECT="$_redirect"
+        _STUDIO_HOME_REDIRECT="$REDIRECT"
         _UNSLOTH_LOGIN_PATH="$PATH"
         _UNSLOTH_UV_BIN_DIR=""
-        # shellcheck disable=SC1090
-        . "$WORK/path_guard.sh"
-    ) >/dev/null 2>&1
+        . "$GUARD"
+        echo guard-finished
+    '
 }
 
-_tauri_home="$WORK/tauri"
-mkdir -p "$_tauri_home"
-printf 'export PATH="%s/foreign:$HOME/.local/bin:$PATH"\n' "$_tauri_home" > "$_tauri_home/.bashrc"
-_run_guard "$_tauri_home" true
-_run_guard "$_tauri_home" true
+_mk_home() {
+    mkdir -p "$1/.local/bin" "$1/foreign"
+    printf '#!/bin/sh\n' > "$1/foreign/unsloth"
+    printf '#!/bin/sh\n' > "$1/venv_unsloth"
+    chmod +x "$1/foreign/unsloth" "$1/venv_unsloth"
+    ln -sfn "$1/venv_unsloth" "$1/.local/bin/unsloth"
+    printf 'export PATH="%s/foreign:$HOME/.local/bin:$PATH"\n' "$1" > "$1/.bashrc"
+}
 
-_exact_line='export PATH="$HOME/.local/bin:$PATH"'
-_exact_count=$(grep -cF "$_exact_line" "$_tauri_home/.bashrc" || true)
-if [ "$_exact_count" = 1 ]; then
-    echo "  PASS: Tauri adds one idempotent managed CLI prepend"
-else
-    echo "  FAIL: Tauri adds one idempotent managed CLI prepend (count=$_exact_count)"
-    exit 1
-fi
+_fail() { echo "  FAIL: $*"; exit 1; }
 
-_resolved=$(HOME="$_tauri_home" PATH="/usr/bin:/bin" bash --noprofile --norc -c 'source "$HOME/.bashrc"; command -v unsloth')
-if [ "$_resolved" = "$_tauri_home/.local/bin/unsloth" ]; then
-    echo "  PASS: a fresh shell resolves the managed CLI before the foreign launcher"
-else
-    echo "  FAIL: a fresh shell resolves the managed CLI before the foreign launcher (got=$_resolved)"
-    exit 1
-fi
+# 1. Shadowed desktop install: one prepend, idempotent, and a fresh shell resolves the shim.
+H="$WORK/tauri"; _mk_home "$H"
+_run_guard "$H" true "$H/foreign:$H/.local/bin:/usr/bin:/bin" > /dev/null
+_run_guard "$H" true "$H/foreign:$H/.local/bin:/usr/bin:/bin" > /dev/null
+[ "$(grep -cxF "$EXACT_LINE" "$H/.bashrc")" = 1 ] || _fail "shadowed desktop install did not add exactly one prepend"
+_resolved=$(HOME="$H" PATH="/usr/bin:/bin" bash --noprofile --norc -c 'source "$HOME/.bashrc"; command -v unsloth')
+[ "$_resolved" = "$H/.local/bin/unsloth" ] || _fail "fresh shell resolves $_resolved"
+echo "  PASS: shadowed desktop install prepends once and the shim wins"
 
-_normal_home="$WORK/normal"
-mkdir -p "$_normal_home"
-printf 'export PATH="%s/foreign:$HOME/.local/bin:$PATH"\n' "$_normal_home" > "$_normal_home/.bashrc"
-_run_guard "$_normal_home" false
-if grep -qF "$_exact_line" "$_normal_home/.bashrc"; then
-    echo "  FAIL: non-Tauri install rewrites an existing PATH entry"
-    exit 1
-else
-    echo "  PASS: non-Tauri install keeps existing PATH behavior"
-fi
+# 2. Nothing shadows the shim: the rc file is left alone (directory first, or the same binary).
+H="$WORK/first"; _mk_home "$H"; cp "$H/.bashrc" "$WORK/first.orig"
+_run_guard "$H" true "$H/.local/bin:$H/foreign:/usr/bin:/bin" > /dev/null
+cmp -s "$H/.bashrc" "$WORK/first.orig" || _fail "unshadowed desktop install edited the rc file"
+H="$WORK/same"; _mk_home "$H"; cp "$H/.bashrc" "$WORK/same.orig"
+mkdir -p "$H/venvbin"; ln -sfn "$H/venv_unsloth" "$H/venvbin/unsloth"
+_run_guard "$H" true "$H/venvbin:$H/.local/bin:/usr/bin:/bin" > /dev/null
+cmp -s "$H/.bashrc" "$WORK/same.orig" || _fail "same binary earlier on PATH was treated as a shadow"
+echo "  PASS: unshadowed desktop install leaves the rc file untouched"
 
-_custom_home="$WORK/custom"
-mkdir -p "$_custom_home"
-printf 'export PATH="%s/foreign:$HOME/.local/bin:$PATH"\n' "$_custom_home" > "$_custom_home/.bashrc"
-_run_guard "$_custom_home" true env
-if grep -qF "$_exact_line" "$_custom_home/.bashrc"; then
-    echo "  FAIL: a custom Studio root rewrites the shell profile"
-    exit 1
-fi
-echo "  PASS: custom Studio roots remain session-only"
+# 3. Non-desktop install, custom Studio root and an active conda env keep their behaviour.
+H="$WORK/normal"; _mk_home "$H"
+_run_guard "$H" false "$H/foreign:$H/.local/bin:/usr/bin:/bin" > /dev/null
+! grep -qxF "$EXACT_LINE" "$H/.bashrc" || _fail "non-desktop install added a prepend"
+H="$WORK/custom"; _mk_home "$H"
+_run_guard "$H" true "$H/foreign:$H/.local/bin:/usr/bin:/bin" env > /dev/null
+! grep -qxF "$EXACT_LINE" "$H/.bashrc" || _fail "custom Studio root wrote the rc file"
+H="$WORK/conda"; _mk_home "$H"
+env HOME="$H" SHELL=/bin/bash CONDA_PREFIX=/opt/conda LOGIN_PATH="$H/foreign:$H/.local/bin:/usr/bin:/bin" \
+    GUARD="$WORK/path_guard.sh" sh -c '
+    set -e; step() { :; }; substep() { :; }; C_WARN=""; TAURI_MODE=true
+    PATH="$LOGIN_PATH"; _LOCAL_BIN="$HOME/.local/bin"; _STUDIO_HOME_REDIRECT=default
+    _UNSLOTH_LOGIN_PATH="$PATH"; _UNSLOTH_UV_BIN_DIR=""; . "$GUARD"' > /dev/null
+! grep -qxF "$EXACT_LINE" "$H/.bashrc" || _fail "desktop install inside conda added a prepend (#5871)"
+echo "  PASS: non-desktop, custom-root and conda installs unchanged"
 
-# Force an append failure without depending on root's treatment of chmod 0444.
-mkdir "$WORK/rc-directory"
-_failure_output=$(
-    set -e
-    step() { echo "$*"; }
-    substep() { :; }
-    HOME="$_tauri_home"; export HOME
-    SHELL=/bin/bash
-    TAURI_MODE=true
-    _LOCAL_BIN="$HOME/.local/bin"
-    _STUDIO_HOME_REDIRECT=default
-    _UNSLOTH_LOGIN_PATH="$PATH"
-    _UNSLOTH_UV_BIN_DIR=""
-    C_WARN=""
-    . "$WORK/path_guard.sh"
-    _persist_login_path_dir "$_LOCAL_BIN" '$HOME/.local/bin' '~/.local/bin' '\.local/bin' "$WORK/rc-directory" true
-    echo 'append-failure-survived'
-)
-if [[ "$_failure_output" != *"could not write"* ]] || [[ "$_failure_output" != *"append-failure-survived"* ]]; then
-    echo "  FAIL: a failed profile append aborts the desktop install"
-    exit 1
-fi
-echo "  PASS: a failed profile append warns and preserves install success"
-
-_tauri_marker=$(grep -n 'Tauri mode: done, skip shortcuts and auto-launch' "$INSTALL_SH" | head -1 | cut -d: -f1)
-_tauri_exit=$(awk -v start="$_tauri_marker" 'NR > start && /exit 0/ { print NR; exit }' "$INSTALL_SH")
-_shadow_probe=$(grep -n 'PATH="\$_UNSLOTH_LOGIN_PATH" command -v unsloth' "$INSTALL_SH" | head -1 | cut -d: -f1)
-if [ -n "$_tauri_marker" ] && [ -n "$_tauri_exit" ] && [ -n "$_shadow_probe" ] && [ "$_shadow_probe" -lt "$_tauri_exit" ]; then
-    echo "  PASS: Tauri checks the inherited PATH before its success exit"
-else
-    echo "  FAIL: Tauri shadow check is not before its success exit"
-    exit 1
-fi
+# 4. An rc file that cannot be written warns and the install carries on.
+H="$WORK/rofail"; _mk_home "$H"; rm -f "${H:?}/.bashrc"; mkdir "$H/.bashrc" "$H/.profile"
+_out=$(_run_guard "$H" true "$H/foreign:$H/.local/bin:/usr/bin:/bin")
+case "$_out" in *"could not write"*guard-finished*) ;; *) _fail "failed append aborted the install: $_out" ;; esac
+echo "  PASS: failed profile append warns and the install continues"

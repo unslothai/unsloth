@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.tool_healing import parse_tool_calls_from_text, strip_tool_call_markup
 
-ENABLED = {"terminal", "web_search"}
+ENABLED = {"get_weather", "web_search"}
 FENCE = "`" * 3
 
 
@@ -32,23 +32,23 @@ def _names(content, enabled_tool_names = ENABLED):
 
 
 QUOTED = {
-    "fenced": f'Docs:\n{FENCE}\nterminal[ARGS]{{"command": "id"}}\n{FENCE}',
-    "fenced_with_language": f'{FENCE}json\nterminal[ARGS]{{"command": "id"}}\n{FENCE}',
-    "fenced_indented": f'  {FENCE}\n  terminal[ARGS]{{"command": "id"}}\n  {FENCE}',
-    "tilde_fence": '~~~\nterminal[ARGS]{"command": "id"}\n~~~',
-    "inline_span": 'Write `terminal[ARGS]{"command": "id"}` to run it.',
+    "fenced": f'Docs:\n{FENCE}\nget_weather[ARGS]{{"command": "id"}}\n{FENCE}',
+    "fenced_with_language": f'{FENCE}json\nget_weather[ARGS]{{"command": "id"}}\n{FENCE}',
+    "fenced_indented": f'  {FENCE}\n  get_weather[ARGS]{{"command": "id"}}\n  {FENCE}',
+    "tilde_fence": '~~~\nget_weather[ARGS]{"command": "id"}\n~~~',
+    "inline_span": 'Write `get_weather[ARGS]{"command": "id"}` to run it.',
     # A span opened with N backticks closes on a run of N, so it is one span rather
     # than two empty pairs around live markup.
-    "inline_double_backtick": 'Write ``terminal[ARGS]{"command": "id"}`` as docs.',
+    "inline_double_backtick": 'Write ``get_weather[ARGS]{"command": "id"}`` as docs.',
     # A lone backtick is valid content inside a doubled span, so only a run of two closes it.
     "inline_double_with_inner_backtick": (
-        'Write ``terminal[ARGS]{"command": "id"} and `x` `` as docs.'
+        'Write ``get_weather[ARGS]{"command": "id"} and `x` `` as docs.'
     ),
-    "blockquoted_fence": f'> {FENCE}\n> terminal[ARGS]{{"command": "id"}}\n> {FENCE}',
+    "blockquoted_fence": f'> {FENCE}\n> get_weather[ARGS]{{"command": "id"}}\n> {FENCE}',
     # A block still streaming has no closing fence yet; it must not execute in the
     # window before the fence arrives.
-    "unclosed_fence": f'{FENCE}\nterminal[ARGS]{{"command": "id"}}',
-    "crlf_fence": f'{FENCE}\r\nterminal[ARGS]{{"command": "id"}}\r\n{FENCE}',
+    "unclosed_fence": f'{FENCE}\nget_weather[ARGS]{{"command": "id"}}',
+    "crlf_fence": f'{FENCE}\r\nget_weather[ARGS]{{"command": "id"}}\r\n{FENCE}',
 }
 
 
@@ -57,14 +57,14 @@ QUOTED = {
 LIVE_AFTER = {
     # A backtick fence info string cannot contain backticks, so this opens an inline span,
     # not a fence running to EOF.
-    "line_start_inline_span": f'{FENCE}example{FENCE} then terminal[ARGS]{{"command": "id"}}',
-    "crlf_closed_fence": f'{FENCE}\r\ndocs\r\n{FENCE}\r\nterminal[ARGS]{{"command": "id"}}',
+    "line_start_inline_span": f'{FENCE}example{FENCE} then get_weather[ARGS]{{"command": "id"}}',
+    "crlf_closed_fence": f'{FENCE}\r\ndocs\r\n{FENCE}\r\nget_weather[ARGS]{{"command": "id"}}',
 }
 
 
 @pytest.mark.parametrize("case", sorted(LIVE_AFTER))
 def test_call_after_fence_like_text_still_runs(case):
-    assert _names(LIVE_AFTER[case]) == ["terminal"]
+    assert _names(LIVE_AFTER[case]) == ["get_weather"]
 
 
 @pytest.mark.parametrize("case", sorted(QUOTED))
@@ -80,19 +80,19 @@ def test_quoted_rehearsal_stays_visible(case):
 
 
 def test_unquoted_rehearsal_still_calls():
-    content = 'Running now. terminal[ARGS]{"command": "id"}'
-    assert _names(content) == ["terminal"]
+    content = 'Running now. get_weather[ARGS]{"command": "id"}'
+    assert _names(content) == ["get_weather"]
     assert strip_tool_call_markup(content, enabled_tool_names = ENABLED) == "Running now. "
 
 
 def test_rehearsal_after_a_closed_fence_still_calls():
-    content = f'{FENCE}\nx = 1\n{FENCE}\nterminal[ARGS]{{"command": "id"}}'
-    assert _names(content) == ["terminal"]
+    content = f'{FENCE}\nx = 1\n{FENCE}\nget_weather[ARGS]{{"command": "id"}}'
+    assert _names(content) == ["get_weather"]
 
 
 def test_indented_rehearsal_outside_code_still_calls():
     """Leading whitespace alone is not a code block."""
-    assert _names('  terminal[ARGS]{"command": "id"}') == ["terminal"]
+    assert _names('  get_weather[ARGS]{"command": "id"}') == ["get_weather"]
 
 
 @pytest.mark.parametrize(
@@ -113,14 +113,14 @@ def test_unrestricted_mode_also_skips_quoted_rehearsal():
 
 def test_unmatched_backtick_does_not_hide_a_later_call():
     """An inline span needs a closing run, so a stray backtick stays prose."""
-    assert _names('cost is 5` then terminal[ARGS]{"command": "id"}') == ["terminal"]
+    assert _names('cost is 5` then get_weather[ARGS]{"command": "id"}') == ["get_weather"]
 
 
 def test_many_quoted_examples_stay_linear():
     """Ordered spans are bisected, not rescanned per candidate (264 KB / 8k examples)."""
     import time
 
-    content = " ".join('`terminal[ARGS]{"command": "id"}`' for _ in range(8000))
+    content = " ".join('`get_weather[ARGS]{"command": "id"}`' for _ in range(8000))
     start = time.perf_counter()
     assert _names(content) == []
     assert strip_tool_call_markup(content, enabled_tool_names = ENABLED) == content
@@ -132,24 +132,24 @@ def test_unmatched_backtick_runs_stay_linear():
     import time
 
     body = "".join("`" * n + " text " for n in range(1, 300))
-    content = body + ' terminal[ARGS]{"command": "id"}'
+    content = body + ' get_weather[ARGS]{"command": "id"}'
     start = time.perf_counter()
-    assert _names(content) == ["terminal"]
+    assert _names(content) == ["get_weather"]
     assert time.perf_counter() - start < 2.0
 
 
 def test_truncated_call_after_a_quoted_example_is_still_stripped():
     """The tail pattern runs to EOF, so a quoted opener must not shield a real call."""
-    content = '`terminal[ARGS]{"command": "doc"}` then terminal[ARGS]{"command": '
+    content = '`get_weather[ARGS]{"command": "doc"}` then get_weather[ARGS]{"command": '
     stripped = strip_tool_call_markup(content, final = True, enabled_tool_names = ENABLED)
-    assert stripped == '`terminal[ARGS]{"command": "doc"}` then'
+    assert stripped == '`get_weather[ARGS]{"command": "doc"}` then'
 
 
 def test_quoted_example_alone_survives_the_final_pass():
-    content = '`terminal[ARGS]{"command": "doc"}`'
+    content = '`get_weather[ARGS]{"command": "doc"}`'
     assert strip_tool_call_markup(content, final = True, enabled_tool_names = ENABLED) == content
 
 
 def test_backtick_inside_arguments_does_not_hide_a_later_call():
-    content = 'web_search[ARGS]{"query": "what is `ls`"}\nterminal[ARGS]{"command": "id"}'
-    assert _names(content) == ["web_search", "terminal"]
+    content = 'web_search[ARGS]{"query": "what is `ls`"}\nget_weather[ARGS]{"command": "id"}'
+    assert _names(content) == ["web_search", "get_weather"]

@@ -160,6 +160,30 @@ def test_load_checkpoint_omits_device_map_on_single_gpu(monkeypatch, tmp_path):
     assert "device_map" not in kwargs  # loader default (sequential) untouched
 
 
+def test_whisper_checkpoint_loads_with_its_processor_like_training(monkeypatch, tmp_path):
+    mod = _export_mod(monkeypatch)
+    _RecordingLoader.calls = []
+    monkeypatch.setattr(sys.modules["unsloth"], "FastModel", _RecordingLoader, raising = False)
+    transformers = types.ModuleType("transformers")
+    transformers.WhisperForConditionalGeneration = object
+    monkeypatch.setitem(sys.modules, "transformers", transformers)
+    monkeypatch.setattr(mod, "detect_audio_type", lambda *a, **k: "whisper")
+    monkeypatch.setattr(mod, "_hf_offline", lambda *a, **k: False)
+    monkeypatch.setattr(mod, "_offline_window_if", lambda flag: contextlib.nullcontext())
+    monkeypatch.setattr(mod, "_multi_gpu_device_map_kwargs", lambda: {})
+
+    checkpoint = tmp_path / "checkpoint-100"
+    checkpoint.mkdir()
+    backend = mod.ExportBackend.__new__(mod.ExportBackend)
+    backend.cleanup_memory = lambda: None
+    ok, message = backend.load_checkpoint(str(checkpoint))
+
+    assert ok, message
+    assert len(_RecordingLoader.calls) == 1
+    assert _RecordingLoader.calls[0]["whisper_language"] == "English"
+    assert _RecordingLoader.calls[0]["whisper_task"] == "transcribe"
+
+
 def test_load_checkpoint_repairs_legacy_cache_identity_without_rewriting_adapter(
     monkeypatch, tmp_path
 ):

@@ -259,6 +259,52 @@ def test_real_tokenizer_chat_bos_survives_save_reload(tmp_path, prefix):
     assert tok("Hello")["input_ids"] == [2, 3]
 
 
+# Llama 2 and its many derivatives put bos_token inside a larger expression rather than in a
+# template action of its own, so stripping it has to leave the surrounding `{{ ... }}` intact.
+LLAMA2_TEMPLATE = (
+    "{% for message in messages %}"
+    "{% if message['role'] == 'user' %}"
+    "{{ bos_token + '[INST] ' + message['content'].strip() + ' [/INST]' }}"
+    "{% else %}"
+    "{{ ' ' + message['content'].strip() + ' ' + eos_token }}"
+    "{% endif %}"
+    "{% endfor %}"
+)
+
+
+def _render(template, **kwargs):
+    jinja2 = pytest.importorskip("jinja2")
+    return jinja2.Template(template).render(
+        messages = [{"role": "user", "content": "hi"}],
+        bos_token = "<s>",
+        eos_token = "</s>",
+        **kwargs,
+    )
+
+
+def test_stripping_bos_from_an_expression_keeps_the_template_valid():
+    stripped = tu._strip_bos_from_chat_template_text(LLAMA2_TEMPLATE)
+    assert "bos_token" not in stripped
+    # The rest of the expression has to stay an expression: dropping the opening `{{` too would
+    # leave a dangling `}}` and render the Jinja source as literal text.
+    assert stripped.count("{{") == stripped.count("}}")
+    assert _render(stripped) == "[INST] hi [/INST]"
+
+
+def test_stripping_a_standalone_bos_action_is_unchanged():
+    template = "{{ bos_token }}{% for m in messages %}<t>{{ m['content'] }}</t>{% endfor %}"
+    stripped = tu._strip_bos_from_chat_template_text(template)
+    assert stripped == "{% for m in messages %}<t>{{ m['content'] }}</t>{% endfor %}"
+    assert _render(stripped) == "<t>hi</t>"
+
+
+def test_dedupe_leaves_a_renderable_template_for_an_expression_bos():
+    tok = _gemma4_base(add_bos_token = True, chat_template = LLAMA2_TEMPLATE)
+    tu._dedupe_bos_chat_template(tok)
+    assert "bos_token" not in tok.chat_template
+    assert _render(tok.chat_template) == "[INST] hi [/INST]"
+
+
 def test_export_helper_strips_dict_chat_template_without_crash():
     tok = _gemma4_base(
         add_bos_token = True,
