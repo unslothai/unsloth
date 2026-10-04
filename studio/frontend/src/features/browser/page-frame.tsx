@@ -15,8 +15,9 @@ const frames = new Map<string, HTMLIFrameElement>();
 export type FrameCommand =
   | { command: "find"; query: string; backwards?: boolean }
   | { command: "zoom"; value: number }
-  | { command: "annotate"; on: boolean }
-  | { command: "annotateForget"; id: number };
+  | { command: "annotate"; on: boolean; color?: string }
+  | { command: "annotateForget"; id: number }
+  | { command: "annotateNumbers"; numbers: Array<[number, number]> };
 
 // Who hears a tab's annotate reports: the panel's annotate layer, while it is on.
 const annotateListeners = new Map<string, (event: AnnotateEvent) => void>();

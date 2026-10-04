@@ -25,16 +25,15 @@ export type FrameMessage =
 /** A box in the page's viewport. */
 export type AnnotateRect = { left: number; top: number; width: number; height: number };
 
-/** What the page reports while annotating: see `annotation` in the frame shell (routes/browser.py). */
+/** What the page reports while annotating: see `annotation` in the frame shell (routes/browser.py).
+ *  The page draws its own outlines; the panel only needs where the marks are, for their comments. */
 export type AnnotateEvent =
   | { kind: "ready" }
   | { kind: "up" }
   | { kind: "escape" }
-  | { kind: "pointer"; point: { x: number; y: number } | null }
-  | { kind: "hover"; rect: AnnotateRect | null }
-  | { kind: "area"; rect: AnnotateRect | null }
+  | { kind: "open"; id: number }
   | { kind: "mark"; id: number; rect: AnnotateRect | null; quote: string; image: boolean; alt: string }
-  | { kind: "rects"; rects: Array<[number, AnnotateRect | null]>; hover: AnnotateRect | null };
+  | { kind: "rects"; rects: Array<[number, AnnotateRect | null]> };
 
 // Same limits as the fetch endpoint.
 const MAX_URL_CHARS = 8192;
@@ -72,16 +71,10 @@ function annotateEvent(message: Record<string, unknown>): AnnotateEvent | null {
     case "up":
     case "escape":
       return { kind: message.event };
-    case "pointer": {
-      const point = message.point as Record<string, unknown> | null;
-      if (point === null) return { kind: "pointer", point: null };
-      const x = coord(point?.x);
-      const y = coord(point?.y);
-      return x === null || y === null ? null : { kind: "pointer", point: { x, y } };
-    }
-    case "hover":
-    case "area":
-      return { kind: message.event, rect: rect(message.rect) };
+    case "open":
+      return typeof message.id === "number" && Number.isSafeInteger(message.id)
+        ? { kind: "open", id: message.id }
+        : null;
     case "mark": {
       const id = message.id;
       if (typeof id !== "number" || !Number.isSafeInteger(id)) return null;
@@ -100,7 +93,7 @@ function annotateEvent(message: Record<string, unknown>): AnnotateEvent | null {
         if (!Array.isArray(entry) || typeof entry[0] !== "number") return [];
         return [[entry[0], rect(entry[1])]];
       });
-      return { kind: "rects", rects, hover: rect(message.hover) };
+      return { kind: "rects", rects };
     }
     default:
       return null;

@@ -314,19 +314,30 @@ _FRAME_HTML = r"""<!doctype html>
         // is the panel's: the page only reports the block under the pointer, what a click or drag
         // marks, and where the marks sit as it scrolls.
         const annotation = (() => {
-          const BLOCK = "p, li, h1, h2, h3, h4, h5, h6, pre, blockquote, td, th, dt, dd, figcaption, caption, img, picture, video, svg, button, label";
+          // Clicks mark these whole; anything else marks the nearest element that holds text itself.
+          const BLOCK = "p, li, h1, h2, h3, h4, h5, h6, pre, blockquote, td, th, dt, dd, figcaption, caption, img, picture, video, svg, button, label, a[href], input, textarea, select";
           // A list item marks its own line, not the lists nested under it.
           const NESTED = "ul, ol, table, pre, blockquote, div";
           const MEDIA = /^(img|picture|video|svg)$/i;
-          const PAD = 5, DRAG = 4, MAX_QUOTE = 280;
+          const PAD = 5, DRAG = 4, MAX_QUOTE = 280, PIN = 28;
+          // An element covering most of the view is a layout box, not something to ask about.
+          const MAX_SHARE = 0.6;
           const marks = new Map();
-          let on = false, press = null, hover = null, nextId = 1, rectFrame = 0, moveFrame = 0, lastMove = null;
+          let on = false, press = null, hover = null, nextId = 1, color = "#3b82f6";
+          let frame = 0, pending = null, lastMove = null, overlay = null;
           const send = (event, data) => post({ type: "annotate", event, ...data });
           const hasOwnText = (element) =>
             [...element.childNodes].some((node) => node.nodeType === Node.TEXT_NODE && node.textContent.trim());
+          const tooBig = (element) => {
+            const rect = element.getBoundingClientRect();
+            return rect.width * rect.height > innerWidth * innerHeight * MAX_SHARE;
+          };
           const rangeOf = (element) => {
             const range = document.createRange();
-            if (MEDIA.test(element.tagName) || !element.textContent.trim()) { range.selectNode(element); return range; }
+            if (MEDIA.test(element.tagName) || /^(input|textarea|select)$/i.test(element.tagName) || !element.textContent.trim()) {
+              range.selectNode(element);
+              return range;
+            }
             range.selectNodeContents(element);
             if (element.tagName === "LI") {
               const nested = [...element.children].find((child) => child.matches(NESTED));
@@ -334,30 +345,39 @@ _FRAME_HTML = r"""<!doctype html>
             }
             return range;
           };
-          // Its block, else the nearest element holding text itself, else what is under the pointer.
           const blockAt = (target) => {
-            if (!(target instanceof Element)) return null;
+            if (!(target instanceof Element) || target === overlay) return null;
             let element = target.closest(BLOCK);
             if (!element) {
-              let node = target;
-              while (node && node !== document.body && !hasOwnText(node)) node = node.parentElement;
-              element = node && node !== document.body ? node : target;
+              element = target;
+              while (element && element !== document.body && !hasOwnText(element)) element = element.parentElement;
             }
-            if (element === document.body || element === document.documentElement) return null;
+            if (!element || element === document.body || element === document.documentElement || tooBig(element)) return null;
             return [rangeOf(element)];
           };
           const overlaps = (a, b) =>
             a.width > 0 && a.height > 0 && a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
           // Everything a dragged area touches, block by block, leaving out blocks around other hits.
           const blocksIn = (area) => {
-            const found = [...document.body.querySelectorAll(BLOCK)]
-              .filter((element) => overlaps(element.getBoundingClientRect(), area))
+            // The blocks, and the plain elements a page puts its text in directly (a snippet's div).
+            const found = [...document.body.querySelectorAll("*")]
+              .filter((element) => element !== overlay && (element.matches(BLOCK) || hasOwnText(element)))
+              .filter((element) => overlaps(element.getBoundingClientRect(), area) && !tooBig(element))
               .map((element) => ({ element, range: rangeOf(element) }))
               .filter(({ range }) => [...range.getClientRects()].some((rect) => overlaps(rect, area)));
-            const hits = found.filter(({ element }) => !found.some((other) => other.element !== element && element.contains(other.element)));
+            // The outermost hit wins, so a snippet keeps its bold words; but an element mostly
+            // outside the area gives way to the hits inside it.
+            const mostlyInside = (element) => {
+              const rect = element.getBoundingClientRect();
+              const width = Math.max(0, Math.min(rect.right, area.right) - Math.max(rect.left, area.left));
+              const height = Math.max(0, Math.min(rect.bottom, area.bottom) - Math.max(rect.top, area.top));
+              return width * height >= rect.width * rect.height * 0.5;
+            };
+            const kept = found.filter(({ element }) =>
+              mostlyInside(element) || !found.some((other) => other.element !== element && element.contains(other.element)));
+            const hits = kept.filter(({ element }) => !kept.some((other) => other.element !== element && other.element.contains(element)));
             if (hits.length) return hits.map(({ range }) => range);
-            const middle = document.elementFromPoint(area.left + area.width / 2, area.top + area.height / 2);
-            return blockAt(middle) || [];
+            return blockAt(document.elementFromPoint(area.left + area.width / 2, area.top + area.height / 2)) || [];
           };
           const boxOf = (ranges) => {
             let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
@@ -372,8 +392,15 @@ _FRAME_HTML = r"""<!doctype html>
             return { left: left - PAD, top: top - PAD, width: right - left + PAD * 2, height: bottom - top + PAD * 2 };
           };
           const quoteOf = (ranges) => {
-            const text = ranges.map((range) => range.toString()).join(" ").replace(/\s+/g, " ").trim();
-            return text.length > MAX_QUOTE ? text.slice(0, MAX_QUOTE - 1) + "\u2026" : text;
+            const text = ranges.map((range) => {
+              const node = range.startContainer.childNodes?.[range.startOffset];
+              // A field says what it holds, or what it is for.
+              if (node instanceof Element && /^(input|textarea|select)$/i.test(node.tagName)) {
+                return node.value || node.getAttribute("placeholder") || node.getAttribute("aria-label") || "";
+              }
+              return range.toString();
+            }).join(" ").replace(/\s+/g, " ").trim();
+            return text.length > MAX_QUOTE ? text.slice(0, MAX_QUOTE - 1) + "…" : text;
           };
           // The first picture marked, by its alt text; null when none is.
           const pictureOf = (ranges) => {
@@ -384,123 +411,200 @@ _FRAME_HTML = r"""<!doctype html>
             return null;
           };
           const same = (a, b) =>
-            a && b && a.length === b.length && a.every((range, index) =>
+            a === b || (a && b && a.length === b.length && a.every((range, index) =>
               range.startContainer === b[index].startContainer && range.startOffset === b[index].startOffset &&
-              range.endContainer === b[index].endContainer && range.endOffset === b[index].endOffset);
-          const setHover = (next) => {
-            if (same(next, hover) || (!next && !hover)) return;
-            hover = next;
-            send("hover", { rect: next ? boxOf(next) : null });
+              range.endContainer === b[index].endContainer && range.endOffset === b[index].endOffset));
+
+          // Drawn here rather than in the panel, so outlines follow the pointer and the page with no
+          // round trip. A closed shadow root keeps the page's styles off them.
+          let root = null, outline = null, area = null;
+          const zoomOf = () => parseFloat(document.documentElement.style.zoom) || 1;
+          const place = (element, box, display = "block") => {
+            if (!box) { element.style.display = "none"; return; }
+            Object.assign(element.style, {
+              display, left: box.left + "px", top: box.top + "px", width: box.width + "px", height: box.height + "px",
+            });
           };
-          const mark = (ranges) => {
+          const build = () => {
+            overlay = document.createElement("unsloth-annotate");
+            overlay.style.cssText = "all: initial; position: fixed; inset: 0; pointer-events: none; z-index: 2147483647;";
+            root = overlay.attachShadow({ mode: "closed" });
+            root.innerHTML = `<style>
+              :host { --c: ${color}; }
+              div { position: fixed; box-sizing: border-box; border-radius: 6px; display: none; }
+              .hover { border: 1.5px solid color-mix(in srgb, var(--c) 75%, transparent); transition: left .08s, top .08s, width .08s, height .08s; }
+              .area, .mark { border: 1.5px dashed color-mix(in srgb, var(--c) 70%, transparent); background: color-mix(in srgb, var(--c) 6%, transparent); }
+              .pin { width: ${PIN}px; height: ${PIN}px; border-radius: 50% 50% 50% 4px; background: var(--c); box-shadow: 0 0 0 2px #fff, 0 1px 4px rgb(0 0 0 / .3);
+                align-items: center; justify-content: center; color: #fff; font: 600 12px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-variant-numeric: tabular-nums; }
+            </style><div class="hover"></div><div class="area"></div>`;
+            outline = root.querySelector(".hover");
+            area = root.querySelector(".area");
+          };
+          const pinBox = (box) => ({ left: box.left + box.width - 14, top: box.top - 18, width: PIN, height: PIN });
+          const draw = () => {
+            frame = 0;
+            if (!on) return;
+            const zoom = zoomOf();
+            overlay.style.zoom = zoom === 1 ? "" : String(1 / zoom);
+            place(outline, hover ? boxOf(hover) : null);
+            const rects = [];
+            for (const [id, mark] of marks) {
+              const box = boxOf(mark.ranges);
+              place(mark.box, box);
+              place(mark.pin, box && pinBox(box), "flex");
+              mark.at = box;
+              rects.push([id, box]);
+            }
+            send("rects", { rects });
+          };
+          const redraw = () => { if (on && !frame) frame = requestAnimationFrame(draw); };
+          const setHover = (next) => {
+            if (same(next, hover)) return;
+            hover = next;
+            place(outline, next ? boxOf(next) : null);
+          };
+          const addMark = (ranges) => {
             if (!ranges || !ranges.length) return;
             const quote = quoteOf(ranges);
             const picture = pictureOf(ranges);
             if (!quote && picture === null) return;
             const id = nextId++;
-            marks.set(id, ranges);
-            send("mark", { id, rect: boxOf(ranges), quote, image: picture !== null, alt: picture || "" });
+            const box = document.createElement("div");
+            box.className = "mark";
+            const pin = document.createElement("div");
+            pin.className = "pin";
+            root.append(box, pin);
+            const at = boxOf(ranges);
+            place(box, at);
+            place(pin, at && pinBox(at), "flex");
+            marks.set(id, { ranges, box, pin, at });
+            send("mark", { id, rect: at, quote, image: picture !== null, alt: picture || "" });
           };
-          // Positions after a scroll or resize: the page moves, the panel draws.
-          const reportRects = () => {
-            rectFrame = 0;
-            send("rects", { rects: [...marks].map(([id, ranges]) => [id, boxOf(ranges)]), hover: hover ? boxOf(hover) : null });
+          // The panel numbers the marks, as they will be read in the chat.
+          const number = (numbers) => {
+            if (!Array.isArray(numbers)) return;
+            for (const entry of numbers) {
+              const mark = Array.isArray(entry) ? marks.get(Number(entry[0])) : null;
+              const value = Array.isArray(entry) ? Number(entry[1]) : NaN;
+              if (mark && Number.isInteger(value) && value > 0 && value < 1000) mark.pin.textContent = String(value);
+            }
           };
-          const scheduleRects = () => { if (on && !rectFrame) rectFrame = requestAnimationFrame(reportRects); };
+          const forget = (id) => {
+            const mark = marks.get(id);
+            if (!mark) return;
+            mark.box.remove();
+            mark.pin.remove();
+            marks.delete(id);
+          };
+          // A press on a mark's pin reopens its comment.
+          const pinAt = (x, y) => {
+            for (const [id, mark] of marks) {
+              const pin = mark.at && pinBox(mark.at);
+              if (pin && x >= pin.left && x <= pin.left + pin.width && y >= pin.top && y <= pin.top + pin.height) return id;
+            }
+            return null;
+          };
           const areaFrom = (event) => ({
             left: Math.min(press.x, event.clientX), top: Math.min(press.y, event.clientY),
             width: Math.abs(event.clientX - press.x), height: Math.abs(event.clientY - press.y),
           });
           const swallow = (event) => { event.preventDefault(); event.stopPropagation(); };
           const handleMove = (event) => {
-            send("pointer", { point: { x: event.clientX, y: event.clientY } });
             if (press) {
               if (!press.dragging && Math.hypot(event.clientX - press.x, event.clientY - press.y) < DRAG) return;
               press.dragging = true;
               setHover(null);
-              send("area", { rect: areaFrom(event) });
+              place(area, areaFrom(event));
               return;
             }
-            setHover(blockAt(event.target));
+            setHover(pinAt(event.clientX, event.clientY) === null ? blockAt(event.target) : null);
           };
           const onMove = (event) => {
             event.stopPropagation();
             lastMove = event;
-            if (moveFrame) return;
-            moveFrame = requestAnimationFrame(() => {
-              moveFrame = 0;
-              const latest = lastMove;
-              lastMove = null;
-              if (latest && on) handleMove(latest);
+            if (pending) return;
+            pending = requestAnimationFrame(() => {
+              pending = null;
+              if (lastMove && on) handleMove(lastMove);
             });
           };
           const onDown = (event) => {
             swallow(event);
             if (event.button !== 0) return;
-            press = { x: event.clientX, y: event.clientY, dragging: false };
+            press = { x: event.clientX, y: event.clientY, dragging: false, pin: pinAt(event.clientX, event.clientY) };
+            // Keep the drag ours when it leaves the page.
+            try { document.documentElement.setPointerCapture(event.pointerId); } catch {}
           };
           const onUp = (event) => {
             swallow(event);
             if (!press) return;
-            const { dragging } = press;
-            const area = dragging ? areaFrom(event) : null;
+            const { dragging, pin } = press;
+            const box = dragging ? areaFrom(event) : null;
             press = null;
+            place(area, null);
+            try { document.documentElement.releasePointerCapture(event.pointerId); } catch {}
             // Before the mark, so the panel keeps the comment it had open.
             send("up");
-            if (area) {
-              send("area", { rect: null });
-              mark(blocksIn(new DOMRect(area.left, area.top, area.width, area.height)));
-            } else mark(blockAt(event.target));
+            if (box) addMark(blocksIn(new DOMRect(box.left, box.top, box.width, box.height)));
+            else if (pin !== null) send("open", { id: pin });
+            else addMark(blockAt(document.elementFromPoint(event.clientX, event.clientY) || event.target));
           };
-          const onLeave = (event) => {
-            if (event.relatedTarget) return;
-            send("pointer", { point: null });
-            setHover(null);
-          };
+          const onLeave = (event) => { if (!event.relatedTarget && !press) setHover(null); };
           const onKey = (event) => {
             if (event.key !== "Escape") return;
             swallow(event);
             send("escape");
           };
           const style = document.createElement("style");
-          style.textContent = "*, *::before, *::after { cursor: none !important; user-select: none !important; -webkit-user-select: none !important; }";
+          const cursor = () => {
+            const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="30" height="30"><path d="M3 27V15A12 12 0 1 1 15 27Z" fill="${color}" stroke="white" stroke-width="2"/></svg>`;
+            return `url("data:image/svg+xml,${encodeURIComponent(svg)}") 3 27, crosshair`;
+          };
           const listeners = [
             ["pointerdown", onDown], ["pointermove", onMove], ["pointerup", onUp], ["click", swallow],
             ["dblclick", swallow], ["auxclick", swallow], ["mousedown", swallow], ["mouseup", swallow],
-            ["contextmenu", swallow], ["dragstart", swallow], ["keydown", onKey],
+            ["contextmenu", swallow], ["dragstart", swallow], ["selectstart", swallow], ["keydown", onKey],
           ];
-          const start = () => {
+          const start = (accent) => {
+            // Only a plain colour: it goes into a style and an SVG.
+            if (typeof accent === "string" && /^(#[0-9a-f]{3,8}|rgba?\([\d.,\s%]+\))$/i.test(accent)) color = accent;
             if (on) return;
             on = true;
+            build();
+            style.textContent = `*, *::before, *::after { cursor: ${cursor()} !important; user-select: none !important; -webkit-user-select: none !important; }`;
             for (const [type, listener] of listeners) window.addEventListener(type, listener, true);
             document.addEventListener("mouseout", onLeave, true);
-            window.addEventListener("scroll", scheduleRects, true);
-            window.addEventListener("resize", scheduleRects);
+            window.addEventListener("scroll", redraw, true);
+            window.addEventListener("resize", redraw);
             (document.head || document.documentElement).appendChild(style);
+            document.documentElement.appendChild(overlay);
+            redraw();
           };
           const stop = () => {
             if (!on) return;
             on = false;
             for (const [type, listener] of listeners) window.removeEventListener(type, listener, true);
             document.removeEventListener("mouseout", onLeave, true);
-            window.removeEventListener("scroll", scheduleRects, true);
-            window.removeEventListener("resize", scheduleRects);
+            window.removeEventListener("scroll", redraw, true);
+            window.removeEventListener("resize", redraw);
             style.remove();
-            cancelAnimationFrame(rectFrame);
-            cancelAnimationFrame(moveFrame);
-            rectFrame = moveFrame = 0;
-            press = hover = lastMove = null;
+            overlay?.remove();
+            cancelAnimationFrame(frame);
+            if (pending) cancelAnimationFrame(pending);
+            frame = 0;
+            pending = press = hover = lastMove = overlay = root = null;
             marks.clear();
           };
-          return { start, stop, forget: (id) => marks.delete(id) };
+          return { start, stop, forget, number };
         })();
         // Commands from the panel, relayed by the shell (the only parent this page has).
         window.addEventListener("message", (event) => {
           if (event.source !== parent) return;
           const data = event.data;
           if (!data || data.type !== "unsloth:browser-command") return;
-          if (data.command === "annotate") data.on === true ? annotation.start() : annotation.stop();
+          if (data.command === "annotate") data.on === true ? annotation.start(data.color) : annotation.stop();
           else if (data.command === "annotateForget") annotation.forget(Number(data.id));
+          else if (data.command === "annotateNumbers") annotation.number(data.numbers);
           else if (data.command === "zoom") applyZoom(data.value);
           else if (data.command === "find" && typeof data.query === "string" && data.query) {
             let found = false;

@@ -1,10 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  StudioDictationAdapter,
+  isStudioDictationAvailable,
+  notifyStudioDictationUnavailable,
+} from "@/features/chat";
 import { useT } from "@/i18n";
 import { DragDropVerticalIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ArrowUpIcon } from "lucide-react";
+import { MicIcon } from "@/lib/mic-icon";
+import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   type PointerEvent as ReactPointerEvent,
@@ -444,12 +450,13 @@ export function AnnotateLayer({
           style={area}
         />
       ) : null}
-      {items.map((item) => {
+      {items.map((item, index) => {
         const box = item.id === pending?.id ? null : boxOf(item.ranges, origin);
         return box ? (
           <Mark
             key={item.id}
             box={box}
+            number={index + 1}
             onOpen={() => {
               saveRef.current();
               setPending({
@@ -465,7 +472,7 @@ export function AnnotateLayer({
       })}
       {pending && pendingBox ? (
         <>
-          <Mark box={pendingBox} label={draft} />
+          <Mark box={pendingBox} label={draft} number={markNumber(items, pending.id)} />
           <CommentForm
             inputRef={inputRef}
             box={pendingBox}
@@ -473,17 +480,18 @@ export function AnnotateLayer({
             draft={draft}
             onDraft={setDraft}
             onSave={save}
-            canSave={Boolean(draft.trim()) || pending.id !== null}
           />
         </>
       ) : null}
-      <AnnotateBar
-        count={count}
-        canSend={canSend}
-        sendDisabled={!sendAnnotations}
-        onSend={send}
-        onExit={exit}
-      />
+      {count > 0 ? (
+        <AnnotateBar
+          count={count}
+          canSend={canSend}
+          sendDisabled={!sendAnnotations}
+          onSend={send}
+          onExit={exit}
+        />
+      ) : null}
       <div ref={cursorRef} aria-hidden={true} data-shown="false" className={CURSOR} />
     </div>
   );
@@ -492,8 +500,9 @@ export function AnnotateLayer({
 function Mark({
   box,
   label,
+  number,
   onOpen,
-}: { box: Box; label: string; onOpen?: () => void }) {
+}: { box: Box; label: string; number: number; onOpen?: () => void }) {
   return (
     <>
       <div
@@ -507,9 +516,11 @@ function Mark({
         title={label}
         onClick={onOpen}
         disabled={!onOpen}
-        className="pointer-events-auto absolute size-8 animate-in cursor-pointer rounded-full rounded-bl-[4px] bg-primary shadow-md ring-2 ring-background transition-transform fade-in-0 zoom-in-50 duration-150 hover:scale-110 disabled:cursor-default"
+        className="pointer-events-auto absolute flex size-8 animate-in cursor-pointer items-center justify-center rounded-full rounded-bl-[4px] bg-primary text-ui-13 font-semibold tabular-nums text-primary-foreground shadow-md ring-2 ring-background transition-transform fade-in-0 zoom-in-50 duration-150 hover:scale-110 disabled:cursor-default"
         style={{ left: box.left + box.width - 14, top: box.top - 18 }}
-      />
+      >
+        {number}
+      </button>
     </>
   );
 }
@@ -518,7 +529,62 @@ function Mark({
 const CURSOR =
   "absolute top-0 left-0 size-7 rounded-full rounded-bl-[4px] bg-primary shadow-md ring-2 ring-background transition-[opacity,scale] duration-100 data-[shown=false]:scale-50 data-[shown=false]:opacity-0 motion-reduce:transition-none";
 
-/** The comment field for a mark: below it, or above when there is no room under it. */
+/** A mark's number: its place among the saved ones, or the next one for a new mark. */
+function markNumber<Item extends { id: number }>(items: Item[], id: number | null): number {
+  const index = id === null ? -1 : items.findIndex((item) => item.id === id);
+  return index === -1 ? items.length + 1 : index + 1;
+}
+
+// Light in light mode, dark in dark mode, raised off the page either way.
+const SURFACE =
+  "border border-border bg-background text-foreground shadow-[0_8px_28px_-6px_rgba(0,0,0,0.18)] dark:border-transparent dark:bg-neutral-800 dark:text-white dark:shadow-xl";
+
+/** Voice typing into a comment, as the composer's microphone does: the words land after what the
+ *  comment held when it started, the ones still being heard shown as they come. */
+function useCommentDictation(draft: string, onDraft: (value: string) => void) {
+  const t = useT();
+  const session = useRef<ReturnType<StudioDictationAdapter["listen"]> | null>(null);
+  const [listening, setListening] = useState(false);
+  useEffect(() => () => session.current?.cancel(), []);
+  const start = () => {
+    if (!isStudioDictationAvailable()) {
+      notifyStudioDictationUnavailable();
+      return;
+    }
+    let base = draft;
+    const joined = (text: string) =>
+      base && text && !base.endsWith(" ") ? `${base} ${text}` : base + text;
+    try {
+      const next = new StudioDictationAdapter({ chatId: null }).listen();
+      session.current = next;
+      setListening(true);
+      next.onSpeech((result) => {
+        if (session.current !== next) return;
+        const text = joined(result.transcript);
+        if (result.isFinal !== false) base = text;
+        onDraft(text);
+      });
+      const end = () => {
+        if (session.current !== next) return;
+        session.current = null;
+        setListening(false);
+      };
+      next.onSpeechEnd(end);
+      next.onEnd?.(end);
+    } catch (error) {
+      session.current = null;
+      setListening(false);
+      toast.error(t("browser.annotate.dictateFailed"), {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    }
+  };
+  const stop = () => void session.current?.stop();
+  return { listening, toggle: () => (listening ? stop() : start()) };
+}
+
+/** The comment field for a mark: below it, or above when there is no room under it. Enter saves;
+ *  the microphone dictates into it. */
 function CommentForm({
   inputRef,
   box,
@@ -526,7 +592,6 @@ function CommentForm({
   draft,
   onDraft,
   onSave,
-  canSave,
   placeholder,
 }: {
   placeholder?: string;
@@ -536,15 +601,16 @@ function CommentForm({
   draft: string;
   onDraft: (value: string) => void;
   onSave: () => void;
-  canSave: boolean;
 }) {
   const t = useT();
+  const dictation = useCommentDictation(draft, onDraft);
   const width = Math.min(448, Math.max(240, layer.width - 24));
   const top =
     box.top + box.height + 8 + 48 > layer.height
       ? Math.max(8, box.top - 56)
       : box.top + box.height + 8;
   const left = Math.min(Math.max(12, box.left + box.width - width), layer.width - width - 12);
+  const micLabel = t(dictation.listening ? "browser.annotate.stopDictating" : "browser.annotate.dictate");
   return (
     <form
       data-annotate-ui=""
@@ -552,7 +618,10 @@ function CommentForm({
         event.preventDefault();
         onSave();
       }}
-      className="pointer-events-auto absolute flex h-12 animate-in items-center gap-2 rounded-full bg-neutral-800 pr-1.5 pl-5 text-white shadow-xl fade-in-0 zoom-in-95 duration-150"
+      className={cn(
+        "pointer-events-auto absolute flex h-12 animate-in items-center gap-2 rounded-full pr-1.5 pl-5 fade-in-0 zoom-in-95 duration-150",
+        SURFACE,
+      )}
       style={{ top, left, width }}
     >
       <input
@@ -561,16 +630,24 @@ function CommentForm({
         onChange={(event) => onDraft(event.target.value)}
         placeholder={placeholder ?? t("browser.annotate.placeholder")}
         aria-label={placeholder ?? t("browser.annotate.placeholder")}
-        className="min-w-0 flex-1 bg-transparent text-ui-15 outline-none placeholder:text-neutral-400"
+        className="min-w-0 flex-1 bg-transparent text-ui-15 outline-none placeholder:text-muted-foreground dark:placeholder:text-neutral-400"
       />
       <button
-        type="submit"
-        aria-label={t("browser.annotate.save")}
-        disabled={!canSave}
-        // The chat composer's own send button.
-        className="flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-full bg-primary text-primary-foreground transition-[background-color,opacity] hover:bg-primary/80 disabled:cursor-default disabled:opacity-40 disabled:hover:bg-primary"
+        type="button"
+        aria-label={micLabel}
+        title={micLabel}
+        aria-pressed={dictation.listening}
+        onClick={() => {
+          dictation.toggle();
+          inputRef.current?.focus();
+        }}
+        className={cn(
+          "flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground dark:text-neutral-300 dark:hover:bg-neutral-700 dark:hover:text-white",
+          dictation.listening &&
+            "animate-pulse bg-primary text-primary-foreground hover:bg-primary hover:text-primary-foreground dark:bg-primary dark:text-primary-foreground dark:hover:bg-primary dark:hover:text-primary-foreground",
+        )}
       >
-        <ArrowUpIcon className="size-[calc(21px*var(--ui-space-scale,1))] stroke-2" />
+        <MicIcon className="size-4.5" />
       </button>
     </form>
   );
@@ -583,9 +660,7 @@ function AnnotateBar({
   sendDisabled,
   onSend,
   onExit,
-  hint,
 }: {
-  hint?: string;
   count: number;
   canSend: boolean;
   sendDisabled: boolean;
@@ -594,25 +669,42 @@ function AnnotateBar({
 }) {
   const t = useT();
   const [offset, setOffset] = useState({ x: 0, y: 0 });
-  const dragBar = (event: ReactPointerEvent<HTMLButtonElement>) => {
+  const barRef = useRef<HTMLDivElement | null>(null);
+  const drag = useRef<{ x: number; y: number; id: number } | null>(null);
+  // Captured, so the drag keeps going over a web page's frame, which would otherwise take the
+  // pointer's moves for itself; kept inside the panel.
+  const startDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
-    const start = { x: event.clientX - offset.x, y: event.clientY - offset.y };
-    const move = (moveEvent: PointerEvent) =>
-      setOffset({
-        x: moveEvent.clientX - start.x,
-        y: moveEvent.clientY - start.y,
-      });
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
+    event.currentTarget.setPointerCapture(event.pointerId);
+    drag.current = { x: event.clientX - offset.x, y: event.clientY - offset.y, id: event.pointerId };
+  };
+  const moveDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const start = drag.current;
+    const bar = barRef.current;
+    const layer = bar?.parentElement;
+    if (!start || start.id !== event.pointerId || !bar || !layer) return;
+    const bounds = layer.getBoundingClientRect();
+    const width = bar.offsetWidth;
+    const height = bar.offsetHeight;
+    // The bar sits centred, 20px off the bottom, before its offset.
+    const maxX = Math.max(0, (bounds.width - width) / 2 - 8);
+    const minY = -(bounds.height - height - 20 - 8);
+    setOffset({
+      x: Math.min(maxX, Math.max(-maxX, event.clientX - start.x)),
+      y: Math.min(12, Math.max(minY, event.clientY - start.y)),
+    });
+  };
+  const endDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (drag.current?.id === event.pointerId) drag.current = null;
   };
   return (
     <div
+      ref={barRef}
       data-annotate-ui=""
-      className="pointer-events-auto absolute bottom-5 left-1/2 flex h-12 items-center gap-1 rounded-2xl bg-neutral-800 pr-1.5 pl-1 text-ui-15 text-white shadow-xl"
+      className={cn(
+        "pointer-events-auto absolute bottom-5 left-1/2 flex h-12 items-center gap-1 rounded-2xl pr-1.5 pl-2.5 text-ui-15",
+        SURFACE,
+      )}
       style={{
         transform: `translate(calc(-50% + ${offset.x}px), ${offset.y}px)`,
       }}
@@ -620,21 +712,22 @@ function AnnotateBar({
       <button
         type="button"
         aria-label={t("browser.annotate.move")}
-        onPointerDown={dragBar}
-        className="flex h-9 w-7 cursor-grab touch-none items-center justify-center text-neutral-400 active:cursor-grabbing"
+        onPointerDown={startDrag}
+        onPointerMove={moveDrag}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+        className="flex h-9 w-7 cursor-grab touch-none items-center justify-center text-muted-foreground active:cursor-grabbing dark:text-neutral-400"
       >
         <HugeiconsIcon icon={DragDropVerticalIcon} strokeWidth={2} className="size-4.5" />
       </button>
       <span className="whitespace-nowrap px-2">
-        {count === 0
-          ? (hint ?? t("browser.annotate.hint"))
-          : t(count === 1 ? "browser.annotate.countOne" : "browser.annotate.countMany", { count })}
+        {t(count === 1 ? "browser.annotate.countOne" : "browser.annotate.countMany", { count })}
       </span>
-      {canSend ? <span aria-hidden={true} className="mx-1 h-5 w-px bg-neutral-600" /> : null}
+      {canSend ? <span aria-hidden={true} className="mx-1 h-5 w-px bg-border dark:bg-neutral-600" /> : null}
       <button
         type="button"
         onClick={onExit}
-        className="h-9 cursor-pointer whitespace-nowrap rounded-xl px-3 transition-colors hover:bg-neutral-700"
+        className="h-9 cursor-pointer whitespace-nowrap rounded-xl px-3 transition-colors hover:bg-muted dark:hover:bg-neutral-700"
       >
         {t("browser.annotate.cancel")}
       </button>
@@ -655,10 +748,27 @@ function AnnotateBar({
 type WebMark = { id: number; quote: string; request: string };
 type WebPending = { id: number; quote: string; saved: boolean };
 
+/** The theme's accent as rgb(), which the page can put in a style and an SVG as is. */
+function accentColor(): string {
+  const probe = document.createElement("span");
+  probe.style.color = "var(--primary)";
+  document.body.append(probe);
+  const value = getComputedStyle(probe).color;
+  probe.remove();
+  // Computed colours can come back as oklch(); a canvas reads any of them out as RGB.
+  const context = document.createElement("canvas").getContext("2d");
+  if (!context) return value;
+  context.fillStyle = value;
+  context.fillRect(0, 0, 1, 1);
+  const [r, g, b] = context.getImageData(0, 0, 1, 1).data;
+  return `rgb(${r}, ${g}, ${b})`;
+}
+
 /**
- * Ask about a web page: the same marks and comments as a file's, drawn over the page's frame. The
- * page is another origin, so its own script finds what is under the pointer (see `annotation` in
- * routes/browser.py) and reports boxes in its viewport; this layer moves them onto the frame.
+ * Ask about a web page: the same marks and comments as a file's. The page is another origin, so
+ * its own script finds what is under the pointer and draws the outlines and marks, with no round
+ * trip per move (see `annotation` in routes/browser.py). This layer holds the comments and the bar,
+ * placing each comment by the box the page reports for its mark.
  */
 export function WebAnnotateLayer({
   tabId,
@@ -668,11 +778,6 @@ export function WebAnnotateLayer({
   const t = useT();
   const layerRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const lastHover = useRef<AnnotateRect | null>(null);
-  const settleRef = useRef(0);
-  const [hover, setHover] = useState<AnnotateRect | null>(null);
-  const [area, setArea] = useState<AnnotateRect | null>(null);
-  const [pointer, setPointer] = useState<{ x: number; y: number } | null>(null);
   const [rects, setRects] = useState<ReadonlyMap<number, AnnotateRect | null>>(new Map());
   const [items, setItems] = useState<WebMark[]>([]);
   const [pending, setPending] = useState<WebPending | null>(null);
@@ -682,6 +787,8 @@ export function WebAnnotateLayer({
 
   const exit = () => setAnnotating(null);
   const forget = (id: number) => sendFrameCommand(tabId, { command: "annotateForget", id });
+  const start = () =>
+    sendFrameCommand(tabId, { command: "annotate", on: true, color: accentColor() });
 
   /** The marks with the open comment applied; an emptied comment removes its mark. */
   const committed = (): WebMark[] => {
@@ -726,7 +833,7 @@ export function WebAnnotateLayer({
   const handle = (event: AnnotateEvent) => {
     switch (event.kind) {
       case "ready":
-        sendFrameCommand(tabId, { command: "annotate", on: true });
+        start();
         break;
       case "up":
         save();
@@ -735,15 +842,13 @@ export function WebAnnotateLayer({
         if (pending) discard();
         else exit();
         break;
-      case "pointer":
-        setPointer(event.point);
+      case "open": {
+        const item = items.find((entry) => entry.id === event.id);
+        if (!item) break;
+        setPending({ id: item.id, quote: item.quote, saved: true });
+        setDraft(item.request);
         break;
-      case "hover":
-        setHover(event.rect);
-        break;
-      case "area":
-        setArea(event.rect);
-        break;
+      }
       case "mark": {
         const quote =
           event.quote || (event.image ? event.alt || t("browser.annotate.imageQuote") : "");
@@ -756,16 +861,9 @@ export function WebAnnotateLayer({
         setDraft("");
         break;
       }
-      case "rects": {
-        // Outlines glide between blocks, but track a scrolling page exactly.
-        const layer = layerRef.current;
-        layer?.setAttribute("data-scrolling", "");
-        window.clearTimeout(settleRef.current);
-        settleRef.current = window.setTimeout(() => layer?.removeAttribute("data-scrolling"), 150);
+      case "rects":
         setRects(new Map(event.rects));
-        setHover(event.hover);
         break;
-      }
     }
   };
   const handleRef = useRef(handle);
@@ -774,7 +872,7 @@ export function WebAnnotateLayer({
   useEffect(() => {
     const stop = onFrameAnnotate(tabId, (event) => handleRef.current(event));
     // Now, for a page already loaded; a page still loading asks with "ready".
-    sendFrameCommand(tabId, { command: "annotate", on: true });
+    sendFrameCommand(tabId, { command: "annotate", on: true, color: accentColor() });
     return () => {
       stop();
       sendFrameCommand(tabId, { command: "annotate", on: false });
@@ -804,87 +902,50 @@ export function WebAnnotateLayer({
     if (pending) inputRef.current?.focus();
   }, [pending]);
 
+  // The page draws the pins; it numbers them as the chat will read them.
+  useEffect(() => {
+    const numbers: Array<[number, number]> = items.map((item, index) => [item.id, index + 1]);
+    if (pending && !pending.saved) numbers.push([pending.id, items.length + 1]);
+    sendFrameCommand(tabId, { command: "annotateNumbers", numbers });
+  }, [tabId, items, pending]);
+
   const origin = layerRef.current?.getBoundingClientRect() ?? new DOMRect();
   const frame = frameRect(tabId) ?? origin;
-  const dx = frame.left - origin.left;
-  const dy = frame.top - origin.top;
-  const onLayer = (rect: AnnotateRect | null | undefined): Box | null =>
-    rect ? { left: rect.left + dx, top: rect.top + dy, width: rect.width, height: rect.height } : null;
-  const hoverBox = onLayer(hover);
-  if (hoverBox) lastHover.current = hover;
-  const shownHover = hoverBox ?? onLayer(lastHover.current);
-  const pendingBox = pending ? onLayer(rects.get(pending.id)) : null;
+  const rect = pending ? rects.get(pending.id) : null;
+  const pendingBox: Box | null = rect
+    ? {
+        left: rect.left + frame.left - origin.left,
+        top: rect.top + frame.top - origin.top,
+        width: rect.width,
+        height: rect.height,
+      }
+    : null;
   const count = items.length;
   const canSend = count > 0 || (pending?.saved === false && draft.trim() !== "");
 
   return (
-    <div
-      ref={layerRef}
-      className="group/annotate pointer-events-none absolute inset-0 z-10 overflow-hidden"
-    >
-      {shownHover ? (
-        <div
-          className={cn(
-            "absolute rounded-md border-[1.5px] border-primary/70 transition-[left,top,width,height,opacity] duration-150 ease-out group-data-[scrolling]/annotate:transition-none motion-reduce:transition-none",
-            hoverBox && !area ? "opacity-100" : "opacity-0",
-          )}
-          style={shownHover}
-        />
-      ) : null}
-      {area ? (
-        <div
-          className="absolute rounded-md border-[1.5px] border-dashed border-primary/70 bg-primary/5"
-          style={onLayer(area) ?? undefined}
-        />
-      ) : null}
-      {items.map((item) => {
-        const box = item.id === pending?.id ? null : onLayer(rects.get(item.id));
-        return box ? (
-          <Mark
-            key={item.id}
-            box={box}
-            label={item.request}
-            onOpen={() => {
-              save();
-              setPending({ id: item.id, quote: item.quote, saved: true });
-              setDraft(item.request);
-            }}
-          />
-        ) : null;
-      })}
+    <div ref={layerRef} className="pointer-events-none absolute inset-0 z-10 overflow-hidden">
       {pending && pendingBox ? (
-        <>
-          <Mark box={pendingBox} label={draft} />
-          <CommentForm
-            inputRef={inputRef}
-            box={pendingBox}
-            layer={origin}
-            draft={draft}
-            onDraft={setDraft}
-            onSave={save}
-            canSave={Boolean(draft.trim()) || pending.saved}
-            placeholder={t("browser.annotate.pagePlaceholder")}
-          />
-        </>
+        <CommentForm
+          key={pending.id}
+          inputRef={inputRef}
+          box={pendingBox}
+          layer={origin}
+          draft={draft}
+          onDraft={setDraft}
+          onSave={save}
+          placeholder={t("browser.annotate.pagePlaceholder")}
+        />
       ) : null}
-      <AnnotateBar
-        count={count}
-        canSend={canSend}
-        sendDisabled={!sendAnnotations}
-        onSend={send}
-        onExit={exit}
-        hint={t("browser.annotate.pageHint")}
-      />
-      <div
-        aria-hidden={true}
-        data-shown={pointer ? "true" : "false"}
-        className={CURSOR}
-        style={
-          pointer
-            ? { transform: `translate(${pointer.x + dx}px, ${pointer.y + dy - BUBBLE}px)` }
-            : undefined
-        }
-      />
+      {count > 0 ? (
+        <AnnotateBar
+          count={count}
+          canSend={canSend}
+          sendDisabled={!sendAnnotations}
+          onSend={send}
+          onExit={exit}
+        />
+      ) : null}
     </div>
   );
 }
