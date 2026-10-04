@@ -342,7 +342,7 @@ test("the host renders Separate's rail, footer and output and the page reuses th
   // A stem sent to Transcribe mid-run would be dropped when the run stops.
   assert.match(
     host,
-    /target\.workflow === "transcribe"\) \{[^}]*busyRef\.current !== null/,
+    /target\.workflow === "transcribe"\) \{[\s\S]*?busyRef\.current === null[\s\S]*?fetchAudioBlob\(clip\.url\)[\s\S]*?if \(busyNow\(\)\) return;\s*if \(!transitionWorkflow\("transcribe"\)\)/,
   );
   const page = readSrc("features/audio/pages/separate-page.tsx");
   assert.match(page, /<AudioSourceInput\s+id="separate-source"/);

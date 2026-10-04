@@ -626,10 +626,12 @@ export function AudioPage({
       }
       if (target.workflow === "transcribe") {
         // As in sendHandlersFor: switching mid-run would stop the run and drop the stem.
-        if (busyRef.current !== null) {
+        const busyNow = () => {
+          if (busyRef.current === null) return false;
           toast.info("Wait for the current audio task to finish, then send the stem.");
-          return;
-        }
+          return true;
+        };
+        if (busyNow()) return;
         let file: File;
         try {
           const blob = await fetchAudioBlob(clip.url);
@@ -638,6 +640,8 @@ export function AudioPage({
           toast.error("Could not load the stem.");
           return;
         }
+        // Checked again: a run started while the stem downloaded would be stopped the same way.
+        if (busyNow()) return;
         if (!transitionWorkflow("transcribe")) return;
         if (!sttSelected) {
           toast.info(
