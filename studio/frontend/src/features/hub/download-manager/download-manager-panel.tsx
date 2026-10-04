@@ -7,6 +7,11 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useEngines } from "@/features/model-picker/hooks/use-engines";
+import {
+  audioCppDisplayName,
+  isAudioCppFolderId,
+} from "../../audio/audio-cpp-catalog";
 import { hasAuthToken, mustChangePassword } from "@/features/auth/session";
 import { isTauri } from "@/lib/api-base";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
@@ -74,6 +79,12 @@ function canUseDownloadManager(pathname: string): boolean {
   return hasAuthToken() && !mustChangePassword();
 }
 
+/** The repo as a row names it. A package folder of the shared GGUF audio repo is known by its
+ *  folder name, as the Hub and the pickers show it; every other id reads as itself. */
+function repoLabel(repoId: string): string {
+  return isAudioCppFolderId(repoId) ? audioCppDisplayName(repoId) : repoId;
+}
+
 function variantSuffix(job: ManagedDownload): string {
   if (job.variant?.startsWith("@")) {
     // The staging page tagged the entry it picked, which is the only reliable answer: a checkpoint
@@ -122,9 +133,11 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
     <li className="flex flex-col gap-1.5 py-2.5 pl-4 pr-3">
       <div className="flex items-center gap-2">
         <span className="min-w-0 flex-1 truncate text-ui-12p5 font-medium text-foreground">
-          {job.presentation?.label ?? job.repoId}
+          {job.presentation?.label ?? repoLabel(job.repoId)}
           <span className="text-muted-foreground">
-            {job.presentation ? ` · ${job.repoId}` : variantSuffix(job)}
+            {job.presentation
+              ? ` · ${repoLabel(job.repoId)}`
+              : variantSuffix(job)}
           </span>
         </span>
         {job.state === "complete" && (
@@ -180,7 +193,16 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
           bytesPerSec={job.bytesPerSec}
           cancelling={job.state === "cancelling"}
           etaSeconds={job.etaSeconds}
+          activity={job.activity}
         />
+      ) : null}
+      {job.details?.length ? (
+        <details className="text-ui-11">
+          <summary>Installation details</summary>
+          <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all">
+            {job.details.join("\n")}
+          </pre>
+        </details>
       ) : null}
       {terminal || job.state === "cancelling" || job.error ? (
         <div className="px-0 text-ui-11 text-muted-foreground tabular-nums">
@@ -196,6 +218,7 @@ export function DownloadManagerPanel({
 }: { positioned?: boolean } = {}) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const enabled = canUseDownloadManager(pathname);
+  useEngines(enabled, true);
   useHubDownloadQueue();
   const [collapsed, setCollapsed] = useState(false);
 

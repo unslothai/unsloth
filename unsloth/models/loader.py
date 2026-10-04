@@ -1664,8 +1664,10 @@ class FastModel(FastBaseModel):
         return FastBaseModel.for_inference(model)
 
     @staticmethod
-    def for_training(model, use_gradient_checkpointing = True):
+    def for_training(model, use_gradient_checkpointing = None):
         if getattr(model, "_unsloth_slow_diffusion", False):
+            if use_gradient_checkpointing is None:
+                use_gradient_checkpointing = getattr(model, "_unsloth_gradient_checkpointing", True)
             return FastDiffusionModel.for_training(model, use_gradient_checkpointing)
         return FastBaseModel.for_training(model, use_gradient_checkpointing)
 
@@ -2515,7 +2517,9 @@ class FastModel(FastBaseModel):
                         "Use FastVisionModel for multimodal inputs."
                     )
                     # Remap VLM text weights (tf >= 5) while model_config is still the parent (#5816).
-                    _apply_text_only_key_mapping(kwargs, model_config, text_config)
+                    _text_key_mapping = _apply_text_only_key_mapping(
+                        kwargs, model_config, text_config
+                    )
                     model_config = text_config
                     is_vlm = False
                     # model_config is no longer the repo's config, so anything rebuilding it from model_name (the device-map planner) sees a different model.

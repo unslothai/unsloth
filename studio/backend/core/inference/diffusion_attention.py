@@ -155,7 +155,9 @@ def _probe_sdpa_kernels(device: str, dtype: Any) -> tuple[str, ...]:
             continue
         try:
             with sdpa_kernel([backend]):
-                torch.nn.functional.scaled_dot_product_attention(q, q, q)
+                out = torch.nn.functional.scaled_dot_product_attention(q, q, q)
+            # Windows ROCm raises a failed fused launch only at the next checked kernel: take it here.
+            out.float().sum().item()
             available.append(name)
         except Exception:  # noqa: BLE001 - "No available kernel" is the answer, not an error
             continue
@@ -206,6 +208,11 @@ def sdpa_math_only(target: Any) -> bool:
     if not available:
         return False
     return SDPA_MATH in available and not any(k in available for k in _SDPA_SUBQUADRATIC)
+
+
+def sdpa_subquadratic_confirmed(target: Any) -> bool:
+    """True only when a sub-quadratic SDPA kernel was seen to run; an unanswered probe is False."""
+    return any(k in _SDPA_SUBQUADRATIC for k in available_sdpa_kernels(target))
 
 
 SDPA_MATH_ONLY_MESSAGE = (

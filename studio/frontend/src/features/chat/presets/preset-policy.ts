@@ -274,6 +274,7 @@ interface BackendInferenceDefaults {
   top_k?: number;
   min_p?: number;
   presence_penalty?: number;
+  repetition_penalty?: number;
   trust_remote_code?: boolean;
 }
 
@@ -330,6 +331,9 @@ export function mergeBackendRecommendedInference({
     presencePenalty:
       toFiniteNumber(inference?.presence_penalty) ??
       defaultInferenceParams.presencePenalty,
+    // Only a custom llama.cpp config reports one; otherwise the slider keeps its value.
+    repetitionPenalty:
+      toFiniteNumber(inference?.repetition_penalty) ?? next.repetitionPenalty,
   };
 }
 

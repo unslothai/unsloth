@@ -26,6 +26,7 @@ import re
 import sys
 import threading
 import time
+import weakref
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Optional
@@ -381,6 +382,7 @@ def sd_cpp_accelerator_device_verdict(binary: str) -> Optional[bool]:
     indistinguishable from a real accelerator, so an unreadable re-probe would read as a build
     that changed underneath the load and refuse it."""
     text = _sd_cpp_probe_output(binary, "--list-devices")
+    _remember_device_listing(binary, text)
     if text is None:
         return None
     names = [line.split("\t", 1)[0].strip() for line in text.splitlines() if "\t" in line]
@@ -421,6 +423,67 @@ def sd_cpp_device_name_for_ordinal(binary: Optional[str], ordinal: Optional[int]
         "was unreadable" if text is None else "does not list it",
     )
     return None
+
+
+# ggml-cuda's init log on stderr; a HIP build says "ROCm devices", so only CUDA builds match.
+_CUDA_INIT_RE = re.compile(r"ggml_cuda_init: found \d+ CUDA devices")
+_CUDA_DEVICE_CC_RE = re.compile(
+    r"^\s*Device (\d+): .*?, compute capability (\d+)\.(\d+)", re.MULTILINE
+)
+
+
+# Last --list-devices answer per binary + (size, mtime_ns); only the capability read reuses it, never the verdict.
+_LAST_DEVICE_LISTING: dict = {}
+
+
+def _binary_stat_identity(binary: str) -> Optional[tuple[int, int]]:
+    try:
+        st = os.stat(binary)
+    except OSError:
+        return None
+    return (st.st_size, st.st_mtime_ns)
+
+
+def _remember_device_listing(binary: Optional[str], text: Optional[str]) -> None:
+    if not binary:
+        return
+    if text is None:
+        _LAST_DEVICE_LISTING.pop(binary, None)
+        return
+    _LAST_DEVICE_LISTING[binary] = (_binary_stat_identity(binary), text)
+
+
+def sd_cpp_cuda_compute_capability(
+    binary: Optional[str],
+    device_name: Optional[str],
+    *,
+    probe: bool = True,
+) -> Optional[tuple[int, int]]:
+    """Compute capability the CUDA build reports for ``device_name`` (``CUDA<i>``); the lowest card
+    when unpinned. None when unsure (unreadable, non-CUDA build, unlisted device). ``probe = False``
+    only reads the listing the last accelerator verdict took of this file."""
+    if not binary:
+        return None
+    text = None
+    seen = _LAST_DEVICE_LISTING.get(binary)
+    if seen is not None and seen[0] == _binary_stat_identity(binary):
+        text = seen[1]
+    elif probe:
+        text = _sd_cpp_probe_output(binary, "--list-devices")
+    if text is None or not _CUDA_INIT_RE.search(text):
+        return None
+    caps = {
+        int(m.group(1)): (int(m.group(2)), int(m.group(3)))
+        for m in _CUDA_DEVICE_CC_RE.finditer(text)
+    }
+    if not caps:
+        return None
+    if device_name is None:
+        return min(caps.values())
+    head = device_name.rstrip("0123456789")
+    if head.upper() != "CUDA" or not device_name[len(head) :]:
+        return None
+    return caps.get(int(device_name[len(head) :]))
 
 
 # Every namespace ggml names a device in; the narrower list above is physical-index schemes only.
@@ -1568,7 +1631,33 @@ def _managed_tree_in_use() -> bool:
     Reads the singleton without a lock on purpose: a stale answer either defers an upgrade to the
     next load (harmless) or lets one through in a window the load path guards anyway.
     """
-    return _tree_in_use(_sd_cpp_backend)
+    return _tree_in_use(_sd_cpp_backend) or _external_tree_holder_alive()
+
+
+# Other backends' processes running out of the managed tree (the H3 video sd-server), so an install stands down for
+# them too. Weak: a dropped runtime cannot pin the tree.
+_external_tree_holders: "weakref.WeakSet[Any]" = weakref.WeakSet()
+
+
+def register_tree_holder(holder: Any) -> None:
+    with _tree_state:
+        _external_tree_holders.add(holder)
+
+
+def unregister_tree_holder(holder: Any) -> None:
+    with _tree_state:
+        _external_tree_holders.discard(holder)
+        _tree_state.notify_all()
+
+
+def _external_tree_holder_alive() -> bool:
+    for holder in list(_external_tree_holders):
+        try:
+            if holder.is_alive():
+                return True
+        except Exception:  # noqa: BLE001 -- a broken holder must not wedge installs either way
+            continue
+    return False
 
 
 def _accelerator_changed(binary: str, accelerator: str) -> bool:
@@ -2148,6 +2237,9 @@ def _map_guidance(
     ``--cfg-scale``. A distilled 0/1 means CFG off (sd-cli's 1.0); a value > 1 is real CFG."""
     if fam.name in ("flux.1", "flux.2-klein", "flux.2-dev"):
         return None, (float(guidance) if guidance is not None else None)
+    if fam.name == "z-image":
+        # diffusers Z-Image computes pos + g * (pos - neg), so its g is standard CFG minus 1 (sd.cpp's cfg 4 == g 3).
+        return (float(guidance) + 1.0 if guidance is not None and guidance > 0.0 else 1.0), None
     cfg = float(guidance) if (guidance is not None and guidance > 1.0) else 1.0
     return cfg, None
 

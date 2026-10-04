@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { createRoute } from "@tanstack/react-router";
+import { AUDIO_CPP_AUDIO_TYPES } from "../../features/audio/audio-cpp-catalog.ts";
 import { requireAuth } from "../auth-guards";
 import { Route as rootRoute } from "./__root";
 
@@ -11,6 +12,7 @@ const NATIVE_AUDIO_TYPES = new Set([
   "moss_tts_nano",
   "higgs_tts3",
   "minimax_music3",
+  ...AUDIO_CPP_AUDIO_TYPES,
 ]);
 
 // RootLayout renders AudioPage persistently (so an in-flight generation is not cancelled when leaving the tab); this route only owns the URL + auth gate.
