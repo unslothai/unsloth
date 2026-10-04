@@ -758,10 +758,11 @@ class GraphedForward:
                     f"{eager:.1f} ms), not worth the memory a streamed recording holds"
                 )
             state["verdict"] = reason
+            ring = False
             if streams:
                 # One placement, one verdict: its other keys stream the same copies, so none records again this load
                 # and the slot ring goes back to the allocator.
-                placement.decline(reason)
+                ring = bool(placement.decline(reason))
                 for other in list(self.cache):
                     if other != key:
                         self.cache.pop(other, None)
@@ -778,7 +779,10 @@ class GraphedForward:
                 _drop_pool_if_unused()
             if not self.cache:
                 self.capture_error = {"type": "Refused", "msg": reason}
-                self._release()
+                if not ring:
+                    # (with a ring, its drop at the end of this forward flushes once, pool and workspace included: a
+                    # flush here too, mid-forward, left the compute stream's cache fragmented higher on an RTX PRO 6000)
+                    self._release()
 
     def _timed_eager(self, call: Any, args: tuple, kwargs: dict, key: Any) -> Any:
         """One of the caller's eager steps before ``key`` records (its eager reference).
@@ -1364,19 +1368,21 @@ class OffloadPlacement:
         except Exception:  # noqa: BLE001
             pass
 
-    def decline(self, reason: str) -> None:
-        """No more recording on this placement for the load; hand the slot ring back after the current forward
-        (unless per-block graphs read it)."""
+    def decline(self, reason: str) -> bool:
+        """No more recording on this placement for the load; hand the slot ring back after the current forward.
+        True when that drop is scheduled (it then also releases the dropped graphs' pool)."""
         self._declined = reason
         if not self._slots:
-            return
+            return False
         self._slots = False
         try:
             pf = self._prefetcher()
             if pf is not None and callable(getattr(pf, "drop_slots_after_forward", None)):
                 pf.drop_slots_after_forward()
+                return True
         except Exception:  # noqa: BLE001
             pass
+        return False
 
     def uninstall(self, handle: Any) -> None:
         if self._inner is not None and self._inner.forward is self._inner_safe:

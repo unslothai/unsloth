@@ -620,13 +620,17 @@ class GroupPrefetcher:
         import torch
 
         self._drop_slots_at_end = False
-        had = bool(self.slot_raw)
         self.disable_slots()
-        if had:
-            try:
-                torch.cuda.empty_cache()  # the ring's segments go back to the device, not just to the cache
-            except Exception:  # noqa: BLE001
-                pass
+        try:
+            import gc
+
+            gc.collect()  # a declined step graph's recordings, whose pool is flushed below with the ring
+            clear = getattr(torch._C, "_cuda_clearCublasWorkspaces", None)
+            if callable(clear):
+                clear()  # and the workspace cuBLAS made for their capture stream
+            torch.cuda.empty_cache()  # the ring's segments go back to the device, not just to the cache
+        except Exception:  # noqa: BLE001
+            pass
 
     def disable_slots(self) -> None:
         """Drop the ring. Only between forwards: every streamed group is back on the host by then."""

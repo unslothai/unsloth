@@ -183,8 +183,9 @@ class _Ev:
 
 
 class _Placement:
-    def __init__(self, streams):
+    def __init__(self, streams, ring = False):
         self._streams = streams
+        self.ring = ring
         self.declined = None
         self.mode = "group"
 
@@ -193,6 +194,7 @@ class _Placement:
 
     def decline(self, reason):
         self.declined = reason
+        return self.ring
 
 
 def _judged(placement, eager_ms, graph_ms, others = ()):
@@ -200,7 +202,8 @@ def _judged(placement, eager_ms, graph_ms, others = ()):
     handle.stats, handle.logger, handle._slower, handle.capture_error = {}, None, None, None
     handle.placement = placement
     handle.cache = {"k": object(), **{o: object() for o in others}}
-    handle._dropped, handle._release = set(), lambda: None
+    handle._dropped, handle.released = set(), []
+    handle._release = lambda: handle.released.append(1)
     handle._judge = {
         "k": {
             "seen": 3,
@@ -219,7 +222,11 @@ def test_a_streamed_key_is_kept_only_when_its_replay_pays():
     placement = _Placement(streams = True)
     handle, why = _judged(placement, [100.0, 100.4], [99.6, 99.8, 99.7], others = ("j",))
     assert why and "within 1%" in why and placement.declined == why
-    assert handle.cache == {} and handle._dropped == {"k", "j"}
+    assert handle.cache == {} and handle._dropped == {"k", "j"} and handle.released == [1]
+    # with a slot ring the flush waits for the ring's drop at the end of the forward: one flush, not one mid-forward
+    placement = _Placement(streams = True, ring = True)
+    handle, why = _judged(placement, [100.0, 100.4], [99.6, 99.8, 99.7])
+    assert placement.declined == why and handle.cache == {} and handle.released == []
     # a real gain keeps it
     placement = _Placement(streams = True)
     handle, why = _judged(placement, [100.0, 101.0], [97.0, 97.5, 98.0])
