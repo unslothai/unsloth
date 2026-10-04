@@ -31,6 +31,7 @@ from .test_explicit_skill_loading import mention_client  # noqa: F401 -- shared 
         ("@Skill-creator @skill-creator/README.md @skill-creator_foo", []),
         ("@skill-creator, please", ["skill-creator"]),
         ("```@literal```\n@skill-creator", ["skill-creator"]),
+        ("````\n````python\n@skill-creator\n````\n@another", ["another"]),
         ("```\n```x```\n@skill-creator\n```\n@another", ["another"]),
     ],
 )

@@ -34,7 +34,11 @@ def mentioned_skill_names(text: str) -> list[str]:
         if marker:
             if fence is None:
                 fence = (marker[1][0], len(marker[1]))
-            elif marker[1][0] == fence[0] and len(marker[1]) >= fence[1]:
+            elif (
+                marker[1][0] == fence[0]
+                and len(marker[1]) >= fence[1]
+                and not stripped[len(marker[1]) :].strip()
+            ):
                 fence = None
             lines.append("\n")
         elif fence or stripped.startswith(">") or line.startswith(("    ", "\t")):
