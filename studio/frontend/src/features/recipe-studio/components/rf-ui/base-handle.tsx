@@ -17,7 +17,7 @@ export function BaseHandle({
     <Handle
       {...props}
       className={cn(
-        "h-[12px] w-[12px] rounded-full border border-border/80 bg-muted shadow-[0_0_0_1px_hsl(var(--background))] transition-all hover:scale-110 hover:border-primary/70 hover:bg-primary/20",
+        "h-[calc(12px*var(--ui-space-scale,1))] w-[calc(12px*var(--ui-space-scale,1))] rounded-full border border-border/80 bg-muted shadow-[0_0_0_1px_hsl(var(--background))] transition-all hover:scale-110 hover:border-primary/70 hover:bg-primary/20",
         className,
       )}
     >

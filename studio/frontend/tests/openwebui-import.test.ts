@@ -93,6 +93,10 @@ test("the branch the user had open is imported last, so the thread reopens where
   const stamps = conversation.messages.map((message) => message.createdAt);
   assert.deepEqual([...stamps].sort((a, b) => a - b), stamps);
   assert.equal(new Set(stamps).size, stamps.length);
+  // The selected sibling was imported after a later sibling, so preserving
+  // traversal order moved its timestamp. Do not present that synthetic value
+  // as the original send time.
+  assert.equal(conversation.messages[3].metadata?.createdAtEstimated, true);
 });
 
 test("a parent cycle and a dangling currentId are imported instead of hanging or dropping the chat", () => {
@@ -1048,4 +1052,14 @@ test("reasoning survives an empty summary next to populated content", () => {
   );
   assert.ok(both);
   assert.deepEqual(parts(both, 0), [{ type: "reasoning", text: "the summary" }]);
+});
+
+test("missing send times are distinguished from real Open WebUI timestamps", () => {
+  const conversation = openWebUIRecordToConversation(recordOf([
+    { id: "u", role: "user", content: "unknown", parentId: null },
+    { id: "a", role: "assistant", content: "known", parentId: "u", timestamp: 1_700_000_100 },
+  ], "a"), "Imported");
+  assert.ok(conversation);
+  assert.equal(conversation.messages[0].metadata?.createdAtEstimated, true);
+  assert.notEqual(conversation.messages[1].metadata?.createdAtEstimated, true);
 });

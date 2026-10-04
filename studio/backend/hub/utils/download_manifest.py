@@ -1,33 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Hub download manifest + cancel-marker primitives.
-
-Manifests record what a download was supposed to fetch (path + declared
-size per expected file). Consumed by:
-  - the worker post-download, to verify on-disk sizes match what HF
-    declared, so a resume that no-ops doesn't get classified as success;
-  - the inventory scanner, to mark a row partial when expected files
-    are absent or undersized, so a half-finished GGUF/dataset doesn't
-    masquerade as a complete on-device row.
-
-Cancel markers record that a user-initiated cancel landed for a
-(repo_type, repo_id, variant) triple. *Existence* is the signal the
-scanner reads; the body carries debuggability metadata. Markers are
-cleared at the start of a new download attempt (supersedes prior cancel)
-and on successful completion (defensive, in case the start clear failed).
-
-I/O contracts:
-  - Writes are atomic via ``tmp + os.replace``: a SIGKILL mid-write
-    cannot leave a half-written file readable to the next reader.
-  - Manifest reads fail *open*: missing/corrupt/schema-mismatched
-    manifests return ``None`` and the scanner falls through to the
-    legacy on-disk-only check (matches HF-cache imports and pre-fix
-    downloads that never wrote a manifest).
-  - Cancel-marker reads fail *closed*: file existence is the signal
-    regardless of body parseability, so a corrupt marker still
-    suppresses the "on device" classification.
-"""
+"""Hub download manifest + cancel-marker primitives. Manifests record what a download was supposed to fetch (path + declared size per expected file), consumed by the worker post-download to verify on-disk sizes match what HF declared, so a resume that no-ops is not classified as success, and by the inventory scanner to mark a row partial when expected files are absent or undersized, so a half-finished GGUF/dataset does not masquerade as complete. Cancel markers record that a user-initiated cancel landed for a (repo_type, repo_id, variant) triple: *existence* is the signal the scanner reads, the body carries debuggability metadata, and markers are cleared at the start of a new download attempt (a fresh attempt supersedes a prior cancel) and again on successful completion, in case the start clear failed. I/O contracts: writes are atomic via ``tmp + os.replace``, so a SIGKILL mid-write cannot leave a half-written file readable; manifest reads fail *open*, since missing/corrupt/schema-mismatched manifests return ``None`` and the scanner falls through to the legacy on-disk-only check (matching HF-cache imports and pre-fix downloads that never wrote one); cancel-marker reads fail *closed*, since file existence is the signal regardless of body parseability, so a corrupt marker still suppresses the "on device" classification."""
 
 from __future__ import annotations
 
@@ -119,9 +93,7 @@ class VariantState:
     def has_marker(self, variant: str) -> bool:
         if variant.lower() in self._markers:
             return True
-        # An unreadable marker loses its payload, so its only identity is the filename, which for a
-        # variant stored hashed is the digest rather than the variant: a plain lookup missed it and left a
-        # cancelled variant advertised as complete.
+        # An unreadable marker loses its payload, so its only identity is the filename, which for a variant stored hashed is the digest rather than the variant: a plain lookup missed it and left a cancelled variant advertised as complete.
         try:
             fragments = variant_key_fragments(variant)
         except (UnicodeError, ValueError):
@@ -157,22 +129,14 @@ class VerifyResult:
 def _hub_cache_spellings(
     hub_cache: Optional[str | Path] = None,
 ) -> tuple[Optional[str], Optional[str | Path]]:
-    """``(canonical, as supplied)`` for one cache path, defaulting to the active cache.
-
-    The canonical half is what ownership comparisons and the scope digest are
-    built from. The raw half exists only so a reader can also probe the digest
-    of the spelling it was handed: the two differ exactly when ``resolve``
-    changes the path, and state written while ``resolve`` was unavailable sits
-    under the raw one.
-    """
+    """``(canonical, as supplied)`` for one cache path, defaulting to the active cache. The canonical half is what ownership comparisons and the scope digest are built from. The raw half exists only so a reader can also probe the digest of the spelling it was handed: the two differ exactly when ``resolve`` changes the path, and state written while ``resolve`` was unavailable sits under the raw one."""
     if hub_cache is None:
         try:
             from utils.hf_cache_settings import get_hf_cache_paths
             hub_cache = get_hf_cache_paths().hub_cache
         except Exception:
             return None, None
-    # Shared with state_dir.cache_scope_name so the ownership string recorded in a payload and the
-    # cache-<digest> directory it is filed under can never come from two different normalizations.
+    # Shared with state_dir.cache_scope_name so the ownership string recorded in a payload and the cache-<digest> directory it is filed under can never come from two different normalizations.
     return normalize_hub_cache(hub_cache), hub_cache
 
 
@@ -181,26 +145,7 @@ def _canonical_hub_cache(hub_cache: Optional[str | Path] = None) -> Optional[str
 
 
 def _scope_spellings(hub_cache: str | Path) -> tuple[str, ...]:
-    """Every scope dir this cache's state can sit in, for a caller whose own
-    spelling may already be resolved.
-
-    ``cache_scope_names`` recovers the pre-``resolve`` digest only from an
-    unresolved path: hand it one that resolves to itself and it returns the
-    canonical digest alone. The read path is fed the raw configured setting and
-    so gets both, but the delete and the inventory index are not -- every
-    production caller of ``purge_all_state_for_repo`` passes
-    ``resolve_delete_target_root``, whose every branch resolves, and
-    ``build_variant_state_index``'s inventory callers pass a directory derived
-    from ``huggingface_hub.scan_cache_dir``, which resolves too. Left alone,
-    reads probe two scopes while deletes clear one: a purged variant stays on
-    disk under the legacy digest for the next read to resurrect, and the two
-    inventory endpoints disagree about state the progress endpoint can see.
-
-    So also probe the configured cache's own spelling -- but only when it names
-    the same directory as the path we were handed. Without that guard, deleting
-    a repo out of a NON-active cache would sweep the active cache's state for
-    the same repo, which is a far worse failure than the one being fixed.
-    """
+    """Every scope dir this cache's state can sit in, for a caller whose own spelling may already be resolved. ``cache_scope_names`` recovers the pre-``resolve`` digest only from an unresolved path: hand it one that resolves to itself and it returns the canonical digest alone. The read path is fed the raw configured setting and so gets both, but the delete and the inventory index are not, since every production caller of ``purge_all_state_for_repo`` passes ``resolve_delete_target_root``, whose every branch resolves, and ``build_variant_state_index``'s inventory callers pass a directory derived from ``huggingface_hub.scan_cache_dir``, which resolves too. Left alone, reads probe two scopes while deletes clear one: a purged variant stays on disk under the legacy digest for the next read to resurrect, and the two inventory endpoints disagree about state the progress endpoint can see. So also probe the configured cache's own spelling, but only when it names the same directory as the path we were handed: without that guard, deleting a repo out of a NON-active cache would sweep the active cache's state for the same repo, a far worse failure than the one being fixed."""
     scopes = list(cache_scope_names(hub_cache))
     canonical = normalize_hub_cache(hub_cache)
     try:
@@ -219,8 +164,7 @@ def _scope_spellings(hub_cache: str | Path) -> tuple[str, ...]:
 def _read_state_payload(path: Path) -> Optional[dict]:
     try:
         data = json.loads(path.read_text(encoding = "utf-8"))
-    # The decoder raises RecursionError for adversarially deep JSON, and one corrupt state file must not
-    # abort the shared one-pass index.
+    # The decoder raises RecursionError for adversarially deep JSON, and one corrupt state file must not abort the shared one-pass index.
     except (OSError, ValueError, RecursionError) as exc:
         logger.debug("Could not read Hub state %s: %s", path, exc)
         return None
@@ -300,13 +244,7 @@ def _legacy_state_applies(
     *,
     fail_closed: bool = False,
 ) -> bool:
-    """Whether an old unscoped state file belongs to the requested cache.
-
-    Transitional files that recorded their cache keep that ownership. Older
-    files with no ownership can only be attributed to the currently selected
-    cache, which matches the single-cache behavior under which they were
-    written without leaking them into remembered inactive caches.
-    """
+    """Whether an old unscoped state file belongs to the requested cache. Transitional files that recorded their cache keep that ownership; older files with no ownership can only be attributed to the currently selected cache, which matches the single-cache behavior under which they were written without leaking them into remembered inactive caches."""
     data = _read_state_payload(path)
     if data is not None:
         raw_recorded = data.get("hub_cache")
@@ -332,8 +270,7 @@ def _state_read_path(
     def applies(path: Path) -> bool:
         payload = _read_state_payload(path)
         plausible = _state_payload_identity_matches_entry(path, payload, repo_type)
-        # Cancellation stays fail-closed when a marker cannot identify its owner; parseable state from
-        # another repository is never borrowed.
+        # Cancellation stays fail-closed when a marker cannot identify its owner; parseable state from another repository is never borrowed.
         if fail_closed and not plausible:
             return True
         if plausible and variant is not None:
@@ -381,24 +318,8 @@ def _state_paths(
     *,
     raw_hub_cache: Optional[str | Path] = None,
 ) -> tuple[Path, ...]:
-    """Canonical-first read/delete paths across the filename migration.
-
-    Writers use only the default state-dir path. Readers and cleanup also probe
-    the prior repository and double-hyphen variant encodings, plus the
-    pre-``resolve`` cache-scope digest, deduplicating when a repository, variant
-    or cache scope never needed migration.
-
-    ``raw_hub_cache`` is the caller's own spelling of ``hub_cache`` before
-    canonicalization, and is what the extra scope digest has to come from: the
-    canonical string resolves to itself, so deriving the fallback from it would
-    reproduce the canonical digest and probe nothing. The scope fan-out
-    collapses to one entry whenever the two spellings agree, which is every path
-    that resolves to itself.
-    """
-    # _scope_spellings, not cache_scope_names: the single-variant delete route hands over a root
-    # resolve_delete_target_root has ALREADY resolved, so the raw spelling reproduces the canonical
-    # digest and the pre-resolve scope is never probed, leaving state for the next read to resurrect.
-    # It adds the configured cache's own spelling only when it names the same directory.
+    """Canonical-first read/delete paths across the filename migration. Writers use only the default state-dir path; readers and cleanup also probe the prior repository and double-hyphen variant encodings, plus the pre-``resolve`` cache-scope digest, deduplicating when a repository, variant or cache scope never needed migration. ``raw_hub_cache`` is the caller's own spelling of ``hub_cache`` before canonicalization, and is what the extra scope digest has to come from: the canonical string resolves to itself, so deriving the fallback from it would reproduce the canonical digest and probe nothing. The scope fan-out collapses to one entry whenever the two spellings agree, which is every path that resolves to itself."""
+    # _scope_spellings, not cache_scope_names: the single-variant delete route hands over a root resolve_delete_target_root has ALREADY resolved, so the raw spelling reproduces the canonical digest and the pre-resolve scope is never probed, leaving state for the next read to resurrect. It adds the configured cache's own spelling only when it names the same directory.
     scopes = (
         (None,)
         if hub_cache is None
@@ -482,12 +403,7 @@ def write_manifest(
     metadata_derived: bool = False,
     _schema_version: int = _LEGACY_MANIFEST_VERSION,
 ) -> bool:
-    """Write/overwrite the manifest for this triple. Best-effort.
-
-    ``False`` on write failure must not be treated as fatal: the
-    worst-case fallback is the pre-fix scanner behavior (one missed
-    partial detection), which is no regression.
-    """
+    """Write/overwrite the manifest for this triple. Best-effort: ``False`` on write failure must not be treated as fatal, since the worst case is the pre-fix scanner behavior (one missed partial detection), which is no regression."""
     recorded_hub_cache = _canonical_hub_cache(hub_cache)
     path = manifest_path(
         repo_type,
@@ -546,14 +462,7 @@ def read_manifest(
     *,
     hub_cache: Optional[str | Path] = None,
 ) -> Optional[Manifest]:
-    """Return the manifest if present and parseable; ``None`` otherwise.
-
-    Treats missing-file, parse-error, and any schema mismatch all as
-    ``None`` (fail-open). Scanner callers fall through to on-disk-only
-    behavior on ``None`` so this never regresses legacy/imported repos
-    that have no manifest.
-
-    """
+    """Return the manifest if present and parseable; ``None`` otherwise. Treats missing-file, parse-error and any schema mismatch all as ``None`` (fail-open), and scanner callers fall through to on-disk-only behavior on ``None`` so this never regresses legacy/imported repos that have no manifest."""
     path = _state_read_path(
         manifest_path,
         repo_type,
@@ -802,25 +711,11 @@ def migrate_ordinary_v2_manifests_for_downgrade() -> int:
 
 
 def verify_against_disk(manifest: Manifest, snapshot_dir: Path) -> VerifyResult:
-    """Check every expected file is present in *snapshot_dir* at its declared size.
-
-    Presence + size only, not content integrity: it converts a
-    no-op-on-cached ``snapshot_download`` into a clear error when shards are
-    missing or truncated, and marks a scanner row partial when expected bytes
-    aren't on disk. Byte-level integrity is already covered upstream by
-    ``huggingface_hub`` (size check on HTTP, content-addressed chunk hashes on
-    XET), so re-hashing finalized multi-GB weights here would only duplicate
-    that at a large cost. ``Path.stat()`` follows symlinks, so HF's symlink and
-    Windows copy cache layouts both verify correctly.
-    """
+    """Check every expected file is present in *snapshot_dir* at its declared size. Presence + size only, not content integrity: it converts a no-op-on-cached ``snapshot_download`` into a clear error when shards are missing or truncated, and marks a scanner row partial when expected bytes are not on disk. Byte-level integrity is already covered upstream by ``huggingface_hub`` (size check on HTTP, content-addressed chunk hashes on XET), so re-hashing finalized multi-GB weights here would only duplicate that at a large cost. ``Path.stat()`` follows symlinks, so HF's symlink and Windows copy cache layouts both verify correctly."""
     missing: list[str] = []
     mismatched: list[str] = []
     for expected in manifest.expected_files:
-        # Counted missing rather than skipped, so an unverifiable entry can never read as verified. A
-        # Windows-separator path cannot be folded onto its posix spelling in expected_path_is_safe: that
-        # guard also fronts resolved_dataset_snapshot_file, which splits on PurePosixPath, where "a\b" is
-        # one component and accepting it would hand a traversal through. No writer here produces one (HF
-        # rfilenames are posix and expected_files_from_snapshot_dir calls as_posix).
+        # Counted missing rather than skipped, so an unverifiable entry can never read as verified. A Windows-separator path cannot be folded onto its posix spelling in expected_path_is_safe: that guard also fronts resolved_dataset_snapshot_file, which splits on PurePosixPath, where "a\b" is one component and accepting it would hand a traversal through. No writer here produces one (HF rfilenames are posix and expected_files_from_snapshot_dir calls as_posix).
         if not expected_path_is_safe(expected.path):
             missing.append(expected.path)
             continue
@@ -841,20 +736,10 @@ def verify_against_disk(manifest: Manifest, snapshot_dir: Path) -> VerifyResult:
 
 
 def expected_files_from_snapshot_dir(snapshot_dir: Path) -> list[ExpectedFile]:
-    """Derive expected-file entries from a completed snapshot directory.
-
-    Last-resort manifest source for when HF metadata was unreachable for the
-    whole download. ``snapshot_download`` has already exited cleanly, so every
-    regular file is a finished, correctly-sized blob; recording them keeps the
-    scanner's completion check in agreement with the worker's exit-0 success
-    instead of leaving a finished repo perpetually partial. ``stat()`` follows
-    HF's symlink layout and Windows copies, so the recorded sizes match what
-    ``verify_against_disk`` later reads.
-    """
+    """Derive expected-file entries from a completed snapshot directory. Last-resort manifest source for when HF metadata was unreachable for the whole download: ``snapshot_download`` has already exited cleanly, so every regular file is a finished, correctly-sized blob, and recording them keeps the scanner's completion check in agreement with the worker's exit-0 success instead of leaving a finished repo perpetually partial. ``stat()`` follows HF's symlink layout and Windows copies, so the recorded sizes match what ``verify_against_disk`` later reads."""
     out: list[ExpectedFile] = []
     try:
-        # Baking a companion into the completion contract makes the download read as partial forever once
-        # macOS cleans it up.
+        # Baking a companion into the completion contract makes the download read as partial forever once macOS cleans it up.
         entries = drop_appledouble_metadata(sorted(snapshot_dir.rglob("*")))
     except OSError:
         return out
@@ -883,12 +768,7 @@ def write_cancel_marker(
     *,
     hub_cache: Optional[str | Path] = None,
 ) -> bool:
-    """Record that this triple was cancelled. Idempotent across repeated cancels.
-
-    ``transport`` ("http"/"xet") is surfaced via partial_transport on
-    inventory rows so the UI only offers a byte-resume for an HTTP partial.
-    None is accepted for forward-compat.
-    """
+    """Record that this triple was cancelled. Idempotent across repeated cancels. ``transport`` ("http"/"xet") is surfaced via partial_transport on inventory rows so the UI only offers a byte-resume for an HTTP partial; None is accepted for forward-compat."""
     recorded_hub_cache = _canonical_hub_cache(hub_cache)
     path = marker_path(
         repo_type,
@@ -918,21 +798,7 @@ def read_cancel_marker_transport(
     *,
     hub_cache: Optional[str | Path] = None,
 ) -> Optional[str]:
-    """Return the transport recorded in the cancel marker, or ``None`` if no
-    marker exists or it is unreadable.
-
-    Cases:
-
-    * No marker on disk → ``None``.
-    * Legacy v1 marker → ``"http"``: v1 markers were only written by the
-      HTTP path, so the transport is unambiguous despite the absent field.
-    * v2 marker with a valid ``"http"`` / ``"xet"`` transport → that value.
-    * Corrupt, non-dict, or v2-with-missing-transport marker → ``None``.
-      Defaulting these to ``"http"`` misled the UI into showing a
-      byte-resume "Continue" label for what may have been an XET cancel;
-      ``None`` keeps the neutral "Retry" label.
-    * Unknown future versions → ``None`` (unknown layout, unknown transport).
-    """
+    """Return the transport recorded in the cancel marker, or ``None`` if no marker exists or it is unreadable. No marker on disk gives ``None``. A legacy v1 marker gives ``"http"``: v1 markers were only written by the HTTP path, so the transport is unambiguous despite the absent field. A v2 marker with a valid ``"http"`` / ``"xet"`` transport gives that value. A corrupt, non-dict, or v2-with-missing-transport marker gives ``None``, since defaulting these to ``"http"`` misled the UI into showing a byte-resume "Continue" label for what may have been an XET cancel, while ``None`` keeps the neutral "Retry" label. Unknown future versions give ``None`` too: unknown layout, unknown transport."""
     path = _state_read_path(
         marker_path,
         repo_type,
@@ -1009,12 +875,7 @@ def clear_cancel_marker(
     *,
     hub_cache: Optional[str | Path] = None,
 ) -> None:
-    """Remove the cancel marker for this triple if present.
-
-    Idempotent: a missing marker is not an error. Called at
-    download-start (a fresh attempt supersedes prior cancel state) and
-    again at successful completion (cleans up if the start clear failed).
-    """
+    """Remove the cancel marker for this triple if present. Idempotent, since a missing marker is not an error. Called at download-start (a fresh attempt supersedes prior cancel state) and again at successful completion (cleans up if the start clear failed)."""
     requested, raw = _hub_cache_spellings(hub_cache)
     paths = _owned_state_paths(
         marker_path,
@@ -1098,12 +959,7 @@ def purge_state(
     *,
     hub_cache: Optional[str | Path] = None,
 ) -> bool:
-    """Remove manifest + cancel marker for this triple. Returns ``True``
-    when anything was present on disk before the call. Idempotent.
-
-    With ``hub_cache`` set, only that cache's scoped state (plus any legacy
-    unscoped file that belongs to it) is removed, so purging one cache's copy
-    never clears another cache's resumable/cancel state."""
+    """Remove manifest + cancel marker for this triple. Returns ``True`` when anything was present on disk before the call. Idempotent. With ``hub_cache`` set, only that cache's scoped state (plus any legacy unscoped file that belongs to it) is removed, so purging one cache's copy never clears another cache's resumable/cancel state."""
     if hub_cache is None:
         paths = (
             *_all_matching_state_paths(manifests_dir(), repo_type, repo_id, variant),
@@ -1112,9 +968,7 @@ def purge_state(
     else:
         requested, raw = _hub_cache_spellings(hub_cache)
         candidates: list[Path] = []
-        # Legacy unscoped state is shared: an unowned file belongs to the active cache, so purge it only
-        # when it belongs to the cache being deleted, else deleting an inactive cache erases the active
-        # cache's state.
+        # Legacy unscoped state is shared: an unowned file belongs to the active cache, so purge it only when it belongs to the cache being deleted, else deleting an inactive cache erases the active cache's state.
         for path_factory, fail_closed in (
             (manifest_path, False),
             (marker_path, True),
@@ -1151,21 +1005,7 @@ def purge_all_state_for_repo(
     *,
     hub_cache: Optional[str | Path] = None,
 ) -> int:
-    """Remove the snapshot-level manifest + marker AND every variant-keyed
-    manifest + marker for this repo. Used by the route delete handlers so
-    scanner state never outlives the cache it described. Returns the count
-    of (repo, variant) triples that had any state on disk.
-
-    With ``hub_cache`` set, only that cache's scoped state (plus any legacy
-    unscoped file) is enumerated and removed, so deleting one cache's copy does
-    not clear another cache's resumable/cancel state.
-
-    Variant entries are unlinked by their enumerated paths, never by
-    reconstructing the paired manifest/marker name. The legacy filename scheme
-    is not injective when repository IDs or variants contain ``variant``
-    delimiters, so a reconstructed counterpart can belong to another repo.
-    Valid payload identity decides ownership. Corrupt delimiter-ambiguous state
-    is retained as a safe orphan instead of risking an active download marker."""
+    """Remove the snapshot-level manifest + marker AND every variant-keyed manifest + marker for this repo. Used by the route delete handlers so scanner state never outlives the cache it described. Returns the count of (repo, variant) triples that had any state on disk. With ``hub_cache`` set, only that cache's scoped state (plus any legacy unscoped file) is enumerated and removed, so deleting one cache's copy does not clear another cache's resumable/cancel state. Variant entries are unlinked by their enumerated paths, never by reconstructing the paired manifest/marker name: the legacy filename scheme is not injective when repository IDs or variants contain ``variant`` delimiters, so a reconstructed counterpart can belong to another repo. Valid payload identity decides ownership, and corrupt delimiter-ambiguous state is retained as a safe orphan instead of risking an active download marker."""
     removed = 0
     if purge_state(repo_type, repo_id, None, hub_cache = hub_cache):
         removed += 1
@@ -1193,13 +1033,9 @@ def purge_all_state_for_repo(
             if parent is not None
         ]
     else:
-        # This cache's scoped dirs plus the legacy unscoped base; glob (not rglob) so other caches are untouched.
-        # Both scope spellings, else a repo delete leaves the pre-resolve copy behind for a later read to
-        # resurrect as state for a cache that is gone.
+        # This cache's scoped dirs plus the legacy unscoped base; glob (not rglob) so other caches are untouched. Both scope spellings, else a repo delete leaves the pre-resolve copy behind for a later read to resurrect as state for a cache that is gone.
         search = []
-        # _scope_spellings, not cache_scope_names: every production caller resolves its target root first,
-        # so the raw-spelling probe would be inert here while the read path still has it - a purged
-        # variant that the next read brings back.
+        # _scope_spellings, not cache_scope_names: every production caller resolves its target root first, so the raw-spelling probe would be inert here while the read path still has it, and a purged variant would come back on the next read.
         scopes = _scope_spellings(hub_cache)
         for path_factory, base, cancel_markers in (
             (manifest_path, manifests_dir(create = False), False),
@@ -1276,10 +1112,7 @@ def _payload_text(value: object) -> Optional[str]:
 
 
 def _payload_file_path(value: object) -> Optional[str]:
-    """Accept only path text that Python filesystem APIs can consume.
-
-    Rejecting the whole malformed manifest preserves its fail-open contract.
-    """
+    """Accept only path text that Python filesystem APIs can consume. Rejecting the whole malformed manifest preserves its fail-open contract."""
     text = _payload_text(value)
     if text is None or "\0" in text or text in ("", "."):
         return None
@@ -1320,11 +1153,7 @@ def _state_payload_identity(payload: Optional[dict]) -> Optional[tuple[Optional[
 def _state_payload_identity_matches_entry(
     entry: Path, payload: Optional[dict], fallback_repo_type: RepoType
 ) -> bool:
-    """Whether payload ownership could have generated this exact state name.
-
-    False means corrupt ownership, not automatically foreign ownership; callers
-    retain fail-closed or ambiguity-safe behavior according to their operation.
-    """
+    """Whether payload ownership could have generated this exact state name. False means corrupt ownership, not automatically foreign ownership; callers retain fail-closed or ambiguity-safe behavior according to their operation."""
     identity = _state_payload_identity(payload)
     if identity is None:
         return False
@@ -1347,8 +1176,7 @@ def _state_entry_belongs_to_repo(
     repo_id: str,
     variant: Optional[str] = None,
 ) -> bool:
-    """Attribute an exact state path without guessing across legacy delimiter
-    collisions; unreadable ambiguous names are retained rather than deleted."""
+    """Attribute an exact state path without guessing across legacy delimiter collisions; unreadable ambiguous names are retained rather than deleted."""
     payload_identity = _state_payload_identity(payload)
     # A parseable payload is authoritative even when its filename has multiple splits.
     if payload_identity is not None and _state_payload_identity_matches_entry(
@@ -1437,10 +1265,7 @@ def build_variant_state_index(
                 repo_keys.setdefault(prefix[: -len("--variant--")], set()).add(
                     (repo_type, normalized_repo)
                 )
-        # Both spellings of the scope dir, derived from the caller's own rather than the canonical one, so
-        # state filed under the pre-resolve digest is indexed instead of read as "no manifest": the
-        # inventory callers arrive with a directory huggingface_hub.scan_cache_dir already resolved, so
-        # the raw probe alone finds nothing.
+        # Both spellings of the scope dir, derived from the caller's own rather than the canonical one, so state filed under the pre-resolve digest is indexed instead of read as "no manifest": the inventory callers arrive with a directory huggingface_hub.scan_cache_dir already resolved, so the raw probe alone finds nothing.
         for scope in _scope_spellings(hub_cache):
             caches_by_scope.setdefault(scope, set()).add(canonical_cache)
 
@@ -1481,10 +1306,7 @@ def build_variant_state_index(
         try:
             canonical = marker_path(repo_type, repo_id, variant, create = False)
         except (UnicodeError, ValueError, OSError):
-            # A state filename can carry a byte the filesystem encoding cannot decode, which iterdir()
-            # surfaces as a lone surrogate, and hashing it raises UnicodeEncodeError. This index is built once
-            # for the whole scan and outside the per-repo try, so letting it escape turns one corrupt filename
-            # into a 500 that hides every cached model; treat the entry as non-canonical and keep indexing.
+            # A state filename can carry a byte the filesystem encoding cannot decode, which iterdir() surfaces as a lone surrogate, and hashing it raises UnicodeEncodeError. This index is built once for the whole scan and outside the per-repo try, so letting it escape turns one corrupt filename into a 500 that hides every cached model; treat the entry as non-canonical and keep indexing.
             canonical = None
         add_entry(
             cache,
@@ -1568,10 +1390,7 @@ def _iter_variant_state_files(
         return
     path_factory = marker_path if cancel_markers else manifest_path
     requested, raw = _hub_cache_spellings(hub_cache)
-    # Every scope this cache's state can sit in, so a variant filed under the pre-resolve digest is
-    # enumerated instead of reading as "no variant state".
-    # _scope_spellings, since cache_scope_names recovers the legacy digest only from an UNRESOLVED path,
-    # while a variant request carrying local_path arrives here already resolved.
+    # Every scope this cache's state can sit in, so a variant filed under the pre-resolve digest is enumerated instead of reading as "no variant state". _scope_spellings, since cache_scope_names recovers the legacy digest only from an UNRESOLVED path, while a variant request carrying local_path arrives here already resolved.
     scopes = _scope_spellings(raw) if requested is not None and raw is not None else (None,)
     scoped_dirs: list[Path] = []
     for scope in scopes:
@@ -1646,8 +1465,7 @@ def _iter_variant_state_files(
                     variant_payload = None
                 variant = _variant_from_state_payload(variant_payload, fallback)
                 try:
-                    # Unscoped: only the basename is compared below, and a scoped path would re-derive the digest, and
-                    # pay its resolve, once per candidate file.
+                    # Unscoped: only the basename is compared below, and a scoped path would re-derive the digest, and pay its resolve, once per candidate file.
                     canonical = path_factory(
                         repo_type,
                         repo_id,
@@ -1656,8 +1474,7 @@ def _iter_variant_state_files(
                         create = False,
                     )
                 except (UnicodeError, ValueError, OSError):
-                    # Same undecodable-filename case as add_path: letting the hash escape would abort the whole
-                    # iteration and lose the repo's valid state alongside it.
+                    # Same undecodable-filename case as add_path: letting the hash escape would abort the whole iteration and lose the repo's valid state alongside it.
                     canonical = None
                 priority = (not legacy, canonical is not None and canonical.name == entry.name)
                 key = variant.lower()
@@ -1673,9 +1490,7 @@ def iter_variant_manifests(
     *,
     hub_cache: Optional[str | Path] = None,
 ) -> Iterator[tuple[str, Path]]:
-    """Yield (variant, manifest_path) for every variant-keyed manifest
-    written for this repo. Used by is_gguf_repo_partial to enumerate all
-    variants present on disk so the all-variants-broken gate can run."""
+    """Yield (variant, manifest_path) for every variant-keyed manifest written for this repo. Used by is_gguf_repo_partial to enumerate all variants present on disk so the all-variants-broken gate can run."""
     yield from _iter_variant_state_files(
         manifests_dir(create = False),
         repo_type,
@@ -1691,9 +1506,7 @@ def iter_variant_markers(
     *,
     hub_cache: Optional[str | Path] = None,
 ) -> Iterator[tuple[str, Path]]:
-    """Yield (variant, marker_path) for every variant-keyed cancel marker.
-    Companion to iter_variant_manifests: catches variants cancelled
-    before download-start ever wrote a manifest (very early failures)."""
+    """Yield (variant, marker_path) for every variant-keyed cancel marker. Companion to iter_variant_manifests: catches variants cancelled before download-start ever wrote a manifest (very early failures)."""
     yield from _iter_variant_state_files(
         cancelled_dir(create = False),
         repo_type,

@@ -17,6 +17,7 @@ from utils.hardware.hardware import (
     DeviceType,
     apply_gpu_ids,
     auto_select_gpu_ids,
+    gpu_ids_with_torch_kernels,
     rocm_gpu_ids_without_torch_kernels,
 )
 
@@ -420,6 +421,66 @@ class TestSelectorWiring:
             ),
         ):
             return auto_select_gpu_ids("unsloth/test")[0]
+
+
+class TestExportWorkerVisibility:
+    """Export workers hide GPUs with missing torch kernels (#11870)."""
+
+    def test_the_reported_host_keeps_only_the_discrete_card(self, monkeypatch, no_mask):
+        _install(monkeypatch, _fake_torch([_props("gfx1101"), _props("gfx1036")]))
+        assert gpu_ids_with_torch_kernels() == [0]
+
+    def test_a_covered_host_inherits_the_parent_visibility(self, monkeypatch, no_mask):
+        _install(monkeypatch, _fake_torch([_props("gfx1101"), _props("gfx1100")]))
+        assert gpu_ids_with_torch_kernels() is None
+
+    def test_a_cuda_host_inherits_the_parent_visibility(self, monkeypatch, no_mask):
+        _install(
+            monkeypatch,
+            _fake_torch([_props(""), _props("")], arch_list = ["sm_80"], vendor = "nvidia"),
+        )
+        assert gpu_ids_with_torch_kernels() is None
+
+    def test_only_the_uncovered_card_is_hidden(self, monkeypatch, no_mask):
+        monkeypatch.setattr("utils.hardware.hardware.get_physical_gpu_count", lambda: 3)
+        _install(
+            monkeypatch,
+            _fake_torch([_props("gfx1101"), _props("gfx1036"), _props("gfx1100")]),
+        )
+        assert gpu_ids_with_torch_kernels() == [0, 2]
+
+    def test_a_card_amd_smi_missed_is_kept(self, monkeypatch, no_mask):
+        monkeypatch.setattr("utils.hardware.hardware.get_physical_gpu_count", lambda: 1)
+        _install(monkeypatch, _fake_torch([_props("gfx1036"), _props("gfx1101")]))
+        assert rocm_gpu_ids_without_torch_kernels() == {0}
+        assert gpu_ids_with_torch_kernels() == [1]
+
+    def test_an_inherited_mask_keeps_its_physical_ids(self, monkeypatch, no_mask):
+        monkeypatch.setenv("HIP_VISIBLE_DEVICES", "2,3")
+        _install(monkeypatch, _fake_torch([_props("gfx1101"), _props("gfx1036")]))
+        assert gpu_ids_with_torch_kernels() == [2]
+
+    def test_load_checkpoint_hands_the_covered_ids_to_the_worker(
+        self, monkeypatch, no_mask, tmp_path
+    ):
+        from core.export.orchestrator import ExportOrchestrator
+
+        _install(monkeypatch, _fake_torch([_props("gfx1101"), _props("gfx1036")]))
+        backend = ExportOrchestrator()
+        spawned = {}
+        monkeypatch.setattr(backend, "_ensure_subprocess_alive", lambda: False)
+        monkeypatch.setattr(backend, "_spawn_subprocess", spawned.update)
+        monkeypatch.setattr(
+            backend, "_wait_response", lambda *a, **k: {"success": True, "message": "loaded"}
+        )
+        assert backend.load_checkpoint(str(tmp_path), load_in_4bit = True)[0]
+        assert spawned["resolved_gpu_ids"] == [0]
+        assert spawned["device_backend"] == DeviceType.CUDA.value
+
+        with patch.dict(os.environ):
+            monkeypatch.setattr(sys, "platform", "win32")
+            apply_gpu_ids(spawned["resolved_gpu_ids"], backend = spawned["device_backend"])
+            assert os.environ["HIP_VISIBLE_DEVICES"] == "0"
 
 
 class TestThePinLandsOnTheKeptCard:

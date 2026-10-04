@@ -7,15 +7,13 @@ GET  /api/llama/update-status  -> is a newer prebuilt available + job state
 GET  /api/llama/update-changelog -> new carried changes since the installed build
 POST /api/llama/update         -> download + atomically swap to the latest
 
-Detection reuses utils.llama_cpp_freshness; the swap reuses
-install_llama_prebuilt.py via utils.llama_cpp_update. Both fail open so the UI
-never blocks on a missing marker / offline GitHub.
+Detection reuses utils.llama_cpp_freshness; the swap reuses install_llama_prebuilt.py via
+utils.llama_cpp_update. Both fail open so the UI never blocks on a missing marker / offline GitHub.
 
-whisper.cpp updates piggyback here: the status payload carries a whisper
-sub-status (update_available is the llama OR whisper union) and the apply job
-chains a whisper phase after the llama phase when whisper is behind, with a
-per-phase breakdown in job.phases. All pre-existing top-level fields keep
-their shape, so older clients keep working unchanged.
+whisper.cpp updates piggyback here: the status payload carries a whisper sub-status (update_available is the
+llama OR whisper union) and the apply job chains a whisper phase after the llama phase when whisper is behind,
+with a per-phase breakdown in job.phases. All pre-existing top-level fields keep their shape, so older clients
+keep working unchanged.
 """
 
 from __future__ import annotations
@@ -27,6 +25,7 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
+from auth import policy
 from auth.authentication import get_current_subject
 from loggers import get_logger
 from utils.llama_cpp_update import (
@@ -199,7 +198,12 @@ async def llama_update_status(
     return resp
 
 
-@router.post("/update", response_model = LlamaUpdateActionResponse)
+# Replaces the installation's llama and whisper executables for everyone, so it is owner-only.
+@router.post(
+    "/update",
+    response_model = LlamaUpdateActionResponse,
+    dependencies = [Depends(get_current_subject), Depends(policy.require_owner)],
+)
 async def llama_update(
     current_subject: str = Depends(get_current_subject),
 ) -> LlamaUpdateActionResponse:
@@ -303,7 +307,11 @@ async def llama_backend_status(
     return LlamaBackendStatusResponse(**status)
 
 
-@router.post("/backend", response_model = LlamaUpdateActionResponse)
+@router.post(
+    "/backend",
+    response_model = LlamaUpdateActionResponse,
+    dependencies = [Depends(get_current_subject), Depends(policy.require_owner)],
+)
 async def llama_backend_switch(
     request: LlamaBackendRequest, current_subject: str = Depends(get_current_subject)
 ) -> LlamaUpdateActionResponse:

@@ -87,7 +87,7 @@ export function computeStats(entries: ApiMonitorEntry[]): MonitorStats {
         activeContextUsage =
           activeContextUsage == null ? usage : Math.max(activeContextUsage, usage);
       }
-      // Entries arrive newest-first. Keep the first one when timestamps tie.
+      // Newest-first input: strict > keeps the newer entry on a tie.
       if (entry.updated_at > latestContextUpdatedAt) {
         latestContextUpdatedAt = entry.updated_at;
         latestContextUsage = usage;
@@ -129,8 +129,7 @@ export function computeStats(entries: ApiMonitorEntry[]): MonitorStats {
     avgDurationMs: durationCount > 0 ? durationSum / durationCount : null,
     maxDurationMs,
     totalTokens,
-    // Completed-request usage must not stand in for a running request whose
-    // backend has not reported tokens yet (many only report at completion).
+    // Never show a finished request's usage for a running one: many backends report usage only at the end.
     contextUsage: active > 0 ? activeContextUsage : latestContextUsage,
     errorRate: finished > 0 ? errors / finished : null,
     tokensPerSecond:

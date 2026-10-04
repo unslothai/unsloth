@@ -6,6 +6,10 @@ import {
   type NativeIntent,
 } from "@/features/native-intents";
 import { toast } from "@/lib/toast";
+import {
+  isBackendDownForDesktopUpdate,
+  isSilencedDesktopUpdateFailure,
+} from "@/lib/desktop-update-activity";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   PROJECT_SOURCES_CHANGED_EVENT,
@@ -121,6 +125,9 @@ export function useRagDocuments(
   // True while upload() runs, so the scope-change effect can tell a real switch
   // from lazy thread materialization mid-upload (which must not reset).
   const uploadInFlightRef = useRef(false);
+  // The scope an upload begun with none resolved to. Leaving the null scope keeps its jobs only
+  // when this is where it lands; landing anywhere else is a navigation.
+  const materializedKeyRef = useRef<string | null>(null);
   const uploadGenerationRef = useRef(0);
   const activeUploadsRef = useRef(new Set<object>());
   useEffect(
@@ -280,6 +287,7 @@ export function useRagDocuments(
   const refresh = useCallback(
     async (opts?: { quiet?: boolean; silentErrors?: boolean }) => {
       if (!scopeKey) return true;
+      const downWhenIssued = isBackendDownForDesktopUpdate();
       const requestId = ++refreshSeq.current;
       refreshInFlight.current = true;
       if (!opts?.quiet) setLoading(true);
@@ -310,6 +318,8 @@ export function useRagDocuments(
         // A superseded failure describes a scope no longer shown, and a host
         // without RAG 503s every one of these: no toast per composer opened.
         if (refreshSeq.current !== requestId) return true;
+        // The indexing poll keeps running under the update screen.
+        if (isSilencedDesktopUpdateFailure(err, downWhenIssued)) return false;
         if (
           !opts?.silentErrors &&
           !useRagAvailabilityStore.getState().isUnavailable()
@@ -341,8 +351,7 @@ export function useRagDocuments(
       try {
         for (let attempt = 0; attempt < REFRESH_RETRIES; attempt += 1) {
           const last = attempt === REFRESH_RETRIES - 1;
-          // True for a request that published, and for one a newer request has
-          // already outranked.
+          // True for a request that published, and for one a newer request has already outranked.
           if (await refresh({ quiet: opts?.quiet, silentErrors: !last })) return;
           if (last) break;
           await new Promise((resolve) =>
@@ -367,7 +376,17 @@ export function useRagDocuments(
     const jobs = trackedJobs.current;
     const prev = prevScopeKeyRef.current;
     prevScopeKeyRef.current = scopeKey;
-    if (prev !== null && prev !== scopeKey) {
+    const materialized = materializedKeyRef.current;
+    if (scopeKey !== null) materializedKeyRef.current = null;
+    // Leaving the null scope for a chat other than the one its upload materialized: the cleanup
+    // below kept that upload's jobs, so drop them here as any other switch would.
+    const leftForAnotherChat =
+      prev === null &&
+      scopeKey !== null &&
+      !uploadInFlightRef.current &&
+      (jobs.size > 0 || materialized !== null) &&
+      materialized !== scopeKey;
+    if ((prev !== null && prev !== scopeKey) || leftForAnotherChat) {
       for (const controller of jobs.values()) controller.abort();
       jobs.clear();
       sigByDocId.current.clear();
@@ -389,10 +408,9 @@ export function useRagDocuments(
           ? loadProjectSources(scope.projectId)
           : refresh());
       } else {
-        // Nothing is coming for the scope just dropped, and the request that
-        // was is now behind the sequence, so it will not clear these itself.
-        // Left set, the composer reads the list as still unknown and holds
-        // every send.
+        // Nothing is coming for the scope just dropped, and the request that was is now behind the
+        // sequence, so it will not clear these itself. Left set, the composer reads the list as
+        // still unknown and holds every send.
         refreshInFlight.current = false;
         // eslint-disable-next-line react-hooks/set-state-in-effect
         setLoading(false);
@@ -404,20 +422,22 @@ export function useRagDocuments(
     }
     return () => {
       // Preserve in-flight tracking when cleanup is the materialization flip,
-      // not a real switch/unmount.
-      if (uploadInFlightRef.current) return;
+      // not a real switch/unmount. Leaving no scope may be that flip even once
+      // the upload has finished, since React can commit the new id after the POST
+      // returned, so the next setup decides: it keeps the jobs only for the scope
+      // the upload materialized. An unmount aborts in the unmount effect.
+      if (uploadInFlightRef.current || scopeKey === null) return;
       for (const controller of jobs.values()) controller.abort();
       jobs.clear();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scopeKey]);
 
-  // Safety net: a big upload opens one SSE stream per doc, but HTTP/1.1 caps
-  // concurrent connections, so streams past the cap may never deliver a terminal
-  // frame and leave a chip spinning. While anything is indexing, reconcile against
-  // the document list (one request covers every doc) so chips always resolve.
-  // Work on this project running elsewhere: an upload from the other instance,
-  // or a folder sync. Neither has a row here until it lands.
+  // Safety net: a big upload opens one SSE stream per doc, but HTTP/1.1 caps concurrent
+  // connections, so streams past the cap may never deliver a terminal frame and leave a chip
+  // spinning. While anything is indexing, reconcile against the document list (one request covers
+  // every doc) so chips always resolve. Work on this project running elsewhere: an upload from the
+  // other instance, or a folder sync. Neither has a row here until it lands.
   const [workElsewhere, setWorkElsewhere] = useState(0);
   const workScopeId = scope?.type === "project" ? scope.projectId : null;
   useEffect(() => {
@@ -453,10 +473,9 @@ export function useRagDocuments(
     documents.some((d) => d.status === "pending" || d.status === "running");
   useEffect(() => {
     if (!scopeKey || !hasIndexing) return;
-    // Skip a tick while one is still out. Starting another would retire it
-    // through the sequence gate, and a list slower than the interval would
-    // then never publish: the row this is watching never reaches completed and
-    // a queued send waits forever.
+    // Skip a tick while one is still out. Starting another would retire it through the sequence
+    // gate, and a list slower than the interval would then never publish: the row this is watching
+    // never reaches completed and a queued send waits forever.
     const id = setInterval(() => {
       if (!refreshInFlight.current) {
         void refresh({ quiet: true });
@@ -558,9 +577,8 @@ export function useRagDocuments(
     [trackJob],
   );
 
-  // `overrideScope` lets a caller pass a freshly-resolved scope (or a promise of
-  // one), since the thread bar's id is still null on the first click; falls back to
-  // the hook scope.
+  // `overrideScope` lets a caller pass a freshly-resolved scope (or a promise of one), since the
+  // thread bar's id is still null on the first click; falls back to the hook scope.
   const upload = useCallback(
     async (
       files: FileList | File[] | RagUploadItem[],
@@ -577,10 +595,9 @@ export function useRagDocuments(
       // job tracking and optimistic chips alone.
       uploadInFlightRef.current = true;
       setUploading(true);
-      // Published before the first await so the other instance gates from the
-      // moment the upload starts, not once the bytes are in.
-      // The composer passes its project scope explicitly, since the hook's own
-      // can still be null on the render that starts the upload.
+      // Published before the first await so the other instance gates from the moment the upload
+      // starts, not once the bytes are in. The composer passes its project scope explicitly, since
+      // the hook's own can still be null on the render that starts the upload.
       const knownScope =
         overrideScope instanceof Promise || typeof overrideScope === "function"
           ? null
@@ -658,6 +675,11 @@ export function useRagDocuments(
           const tempIds = new Set(fresh.map((f) => f.tempId));
           setDocuments((rows) => rows.filter((row) => !tempIds.has(row.id)));
           return;
+        }
+        // Whenever the hook itself has no scope yet, passed in or materialized alike: the job this
+        // starts may be running before React commits the scope it belongs to.
+        if (liveKey === null) {
+          materializedKeyRef.current = resolvedKey;
         }
 
         for (const { tempId, item } of fresh) {

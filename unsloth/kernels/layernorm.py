@@ -1,12 +1,9 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 # Copyright 2024-present Andrej Karpathy & the llm.c team. All rights reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-#
 #     http://www.apache.org/licenses/LICENSE-2.0
-#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -107,7 +104,10 @@ class Fast_Layernorm(torch.autograd.Function):
     def forward(ctx, X, W, b, eps):
         shape = X.shape
         dim = shape[-1]
-        X = X.view(-1, dim)
+        X = X.reshape(-1, dim).contiguous()
+        # The kernels read W and b at unit stride, and these are the ones saved for backward.
+        W = W.contiguous()
+        b = b.contiguous()
         n_rows, n_cols = X.shape
         BLOCK_SIZE, num_warps = calculate_settings(n_cols)
         device = X.device
@@ -140,7 +140,7 @@ class Fast_Layernorm(torch.autograd.Function):
     def backward(ctx, dY):
         shape = dY.shape
         dim = shape[-1]
-        dY = dY.view(-1, dim)
+        dY = dY.reshape(-1, dim).contiguous()
         X, W, b, r, mu = ctx.saved_tensors
         n_rows, n_cols = dY.shape
 
