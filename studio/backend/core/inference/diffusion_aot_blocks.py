@@ -158,6 +158,19 @@ def _plain_inputs(x: Any) -> bool:
     return x is None or isinstance(x, (bool, int, float, str))
 
 
+def _inference_inputs(x: Any) -> bool:
+    """Any inference tensor among the inputs (a block's inputs are all of one kind in practice)."""
+    import torch
+
+    if isinstance(x, torch.Tensor):
+        return bool(x.is_inference())
+    if isinstance(x, (list, tuple)):
+        return any(_inference_inputs(y) for y in x)
+    if isinstance(x, dict):
+        return any(_inference_inputs(v) for v in x.values())
+    return False
+
+
 def _global_state() -> list:
     """Global modes a dynamo guard would check but ``aot_compile`` does not serialise (it drops global guards)."""
     import torch
@@ -400,9 +413,11 @@ class Registry:
         self.loaded = False
         self.failed: Optional[str] = None
         self.entries: dict[str, list[Any]] = {}
-        # Block classes whose first graph in THIS process went through _compile_now (or was refused by it). A class
+        # (block class, inference-tensor inputs) whose first graph in THIS process went through _compile_now. A class
         # with loaded artifacts that serve no call still compiles its first graph through aot_compile: that hits the
-        # FX / autograd caches its first start filled, where the normal path's own key would miss them.
+        # FX / autograd caches its first start filled, where the normal path's own key would miss them. Inference
+        # tensors are guarded apart from ordinary ones (their dispatch keys differ), and which kind a block's first
+        # call sees can differ between a first start and a restart, so each kind gets its own first graph.
         self.compiled_classes: set = set()
         # Block classes aot_compile could not serialise: never retried (persisted, so a restart does not either).
         self.refused: set = set()
@@ -426,7 +441,6 @@ class Registry:
         n = 0
         for ent in man.get("refused", []):
             self.refused.add(str(ent))
-            self.compiled_classes.add(str(ent))
         for ent in man.get("entries", []):
             path = self.dir / Path(str(ent.get("file", ""))).name
             try:
@@ -471,7 +485,7 @@ class Registry:
                 self.failed = f"{type(exc).__name__}: {str(exc)[:200]}"
                 self._log("warning", "diffusion.aot_blocks: disabled for this load (%s)", self.failed)
                 exc.__traceback__ = None
-        if self._compile_first_allowed(module):
+        if self._compile_first_allowed(module, args, kwargs):
             done, out = self._compile_now(module, args, kwargs)
             if done:
                 return out
@@ -509,7 +523,7 @@ class Registry:
             fp = self._fingerprints[module] = _code_fingerprint(module)
         return fp
 
-    def _compile_first_allowed(self, module: Any) -> bool:
+    def _compile_first_allowed(self, module: Any, args: tuple, kwargs: dict) -> bool:
         """The first graph of a block class (or any graph of a static compile) is compiled through ``aot_compile``.
 
         That IS the compile the normal path would run (same forward code, same inputs, so the same automatic-dynamic
@@ -520,7 +534,8 @@ class Registry:
         cls = type(module).__name__
         if cls in self.refused:
             return False
-        return self.compile_kwargs.get("dynamic") is False or cls not in self.compiled_classes
+        return self.compile_kwargs.get("dynamic") is False or (cls, _inference_inputs((args, kwargs))) not in \
+            self.compiled_classes
 
     def _compile_now(self, module: Any, args: tuple, kwargs: dict) -> tuple[bool, Any]:
         import torch
@@ -551,12 +566,11 @@ class Registry:
                 raise
             self._log("info", "diffusion.aot_blocks: %s compiles on the normal path (%s: %s)", type(module).__name__,
                       type(exc).__name__, str(exc).splitlines()[0][:200] if str(exc) else "")
-            self.compiled_classes.add(type(module).__name__)
             self._refuse(type(module).__name__)
             exc.__traceback__ = None
             return False, None
         cls = type(module).__name__
-        self.compiled_classes.add(cls)
+        self.compiled_classes.add((cls, _inference_inputs((args, kwargs))))
         self.entries.setdefault(cls, []).append((state, code, fn))
         self.stats["compiled"] = self.stats.get("compiled", 0) + 1
         self._log("info", "diffusion.aot_blocks: compiled a %s graph in %.1f s", cls, time.perf_counter() - t0)

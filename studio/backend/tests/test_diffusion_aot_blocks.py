@@ -308,8 +308,13 @@ _SCRIPT = textwrap.dedent(
         diffusion_block_restride.install(model, None)  # as Studio does: single block 0 shares blocks 1..N's graph
     pipe = types.SimpleNamespace(transformer = model)
     aot.bind(pipe, types.SimpleNamespace(dir = os.environ["KEYDIR"]))
-    with torch.inference_mode():
-        out = run()
+    if os.environ.get("INPUTS") == "ordinary":
+        # A call path whose block inputs are ordinary tensors (allocated outside inference mode), grad off.
+        with torch.no_grad():
+            out = run()
+    else:
+        with torch.inference_mode():
+            out = run()
     torch.save(out.cpu(), os.environ["OUT"])
     print("RESULT", json.dumps({"stats": reg.describe() if reg is not None else None, "classes": sorted(names),
                                 "frames": counters["stats"]["unique_graphs"]}))
@@ -390,3 +395,31 @@ def test_real_flux_blocks_with_torchao_int8_weights_persist_and_restart_bit_iden
     hooked = _run(tmp_path, "hooked", dict(flux, HOOK = "1"))
     assert hooked["stats"]["misses"] >= 1 and not torch.equal(torch.load(tmp_path / "first.pt"),
                                                               torch.load(tmp_path / "hooked.pt"))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "CUDA only")
+def test_ordinary_and_inference_inputs_each_get_a_persisted_graph(tmp_path):
+    """A first start whose blocks first see ordinary tensors and a restart that sees inference tensors (their dispatch
+    keys differ, so one graph's guards reject the other): the restart compiles its kind once through aot_compile,
+    and every later start is served from artifacts for both kinds."""
+    if not aot.supported():
+        pytest.skip("this torch has no aot_compile")
+    first = _run(tmp_path, "first", {"INPUTS": "ordinary"})
+    assert first["stats"]["compiled"] == 1 and first["stats"]["saved"] == 1, first
+    restart = _run(tmp_path, "restart", {"INPUTS": "inference"})
+    assert restart["stats"]["loaded"] == 1 and restart["stats"]["compiled"] == 1, restart
+    assert restart["stats"]["misses"] == 0 and restart["stats"]["miss_reasons"]["Block"], restart
+    again = _run(tmp_path, "again", {"INPUTS": "inference"})
+    assert again["stats"]["loaded"] == 2 and again["stats"].get("compiled", 0) == 0, again
+    assert again["stats"]["hits"] == 3 and again["frames"] == 0, again
+    back = _run(tmp_path, "back", {"INPUTS": "ordinary"})
+    assert back["stats"].get("compiled", 0) == 0 and back["stats"]["hits"] == 3 and back["frames"] == 0, back
+    assert torch.equal(torch.load(tmp_path / "first.pt"), torch.load(tmp_path / "back.pt"))
+    assert torch.equal(torch.load(tmp_path / "restart.pt"), torch.load(tmp_path / "again.pt"))
+
+
+def test_inference_inputs_flag():
+    with torch.inference_mode():
+        inf = torch.zeros(2)
+    assert aot._inference_inputs(((torch.zeros(1), (inf,)), {}))
+    assert not aot._inference_inputs(((torch.zeros(1),), {"t": torch.zeros(1), "n": 3}))
