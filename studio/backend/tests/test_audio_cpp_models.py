@@ -556,10 +556,7 @@ def test_edit_families_bind_the_edit_workflow():
         "editing",
     )
     assert firered.workflows["edit"].server_task == "tts"
-    assert {name for name, f in acm.FAMILIES.items() if f.edit is not None} == {
-        "vevo2",
-        "firered_audio",
-    }
+    assert {n for n, f in acm.FAMILIES.items() if f.edit is not None} == {"vevo2", "firered_audio"}
     assert acm.family_policy("auk").unsupported
     for family in (dots_edit, vevo2, firered):
         hash(family)
