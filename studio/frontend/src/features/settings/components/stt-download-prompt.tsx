@@ -59,8 +59,7 @@ export function SttDownloadPrompt() {
     }
     try {
       await startSttDownload(request.model, hfApiToken(hfToken));
-      // Progress goes to the shared download panel; the model loads itself
-      // when it lands.
+      // Progress goes to the shared download panel; the model loads itself when it lands.
       trackSttDownload(request.model);
     } catch (error) {
       toast.error(t("settings.voice.dictation.sttDownloadFailed"), {

@@ -2,15 +2,15 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import {
   mergedToolCallArgumentsText,
   toolCallArgumentsText,
   toolCallReplayArguments,
 } from "../src/features/chat/tool-call-arguments.ts";
+
+import { readSrc } from "./helpers/kit.ts";
 
 const WIRE =
   '{"arguments":{"id":9007199254740993},"arguments_text":"{\\"id\\":9007199254740993}"}';
@@ -97,21 +97,8 @@ test("prompt replay prefers exact parsable argument text", () => {
 });
 
 // Read as source: the helpers only hold the line if the adapter routes through them.
-const ADAPTER = readFileSync(
-  fileURLToPath(
-    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-  ),
-  "utf8",
-);
-const PROMPT_STORAGE = readFileSync(
-  fileURLToPath(
-    new URL(
-      "../src/features/chat/prompt-storage/prompt-storage-dialog.tsx",
-      import.meta.url,
-    ),
-  ),
-  "utf8",
-);
+const ADAPTER = readSrc("features/chat/api/chat-adapter.ts");
+const PROMPT_STORAGE = readSrc("features/chat/prompt-storage/prompt-storage-dialog.tsx");
 
 test("the adapter builds tool-call argument text through the helpers", () => {
   assert.match(ADAPTER, /toolCallArgumentsText\(\s*toolEvent\.arguments_text/);

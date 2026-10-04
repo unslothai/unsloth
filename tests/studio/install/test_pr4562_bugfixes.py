@@ -240,7 +240,7 @@ class TestResolveRequestedLlamaTag:
             lambda repo, published_release_tag = "": iter([invalid, valid]),
         )
 
-        def fake_load(repo, release_tag):
+        def fake_load(repo, release_tag, assets):
             if release_tag == "v2.0":
                 raise MOD.PrebuiltFallback("checksum asset missing")
             return ApprovedReleaseChecksums(
@@ -735,7 +735,7 @@ class TestSourceCodePatterns:
         # GGML_CUDA=OFF (undetectable-arch CPU fallback, #5854), so anchor on GGML_CUDA=ON and the final (no-GPU)
         # GGML_CUDA=OFF.
         flag_idx = content.index("-allow-unsupported-compiler")
-        cuda_guard_idx = content.index("if ($HasNvidiaSmi -and $NvccPath)")
+        cuda_guard_idx = content.index("if ($HasNvidiaDriverEvidence -and $NvccPath)")
         cuda_on_idx = content.index("'-DGGML_CUDA=ON'")
         cpu_else_idx = content.rindex("'-DGGML_CUDA=OFF'")
         assert cuda_guard_idx < cuda_on_idx < flag_idx < cpu_else_idx, (

@@ -1,11 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+export type MinPMode = "server-default" | "custom";
+
 export interface InferenceParams {
+  engineParallelism?: "tensor" | "pipeline" | "data";
+  enginePrecision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
+  engine?: "auto" | "vllm" | "sglang";
   temperature: number;
   topP: number;
   topK: number;
   minP: number;
+  minPMode?: MinPMode;
   repetitionPenalty: number;
   presencePenalty: number;
   maxSeqLength: number;
@@ -53,7 +59,7 @@ export function modelReadsSamplingSeed(
 /** The params that survive a reload. `checkpoint` names the model rather than being one of its
  *  settings, so it is not one of them. */
 export type PersistedInferenceParams = Partial<
-  Omit<InferenceParams, "checkpoint">
+  Omit<InferenceParams, "checkpoint" | "engine" | "enginePrecision" | "engineParallelism">
 >;
 
 export const DEFAULT_INFERENCE_PARAMS: InferenceParams = {
@@ -61,6 +67,7 @@ export const DEFAULT_INFERENCE_PARAMS: InferenceParams = {
   topP: 0.95,
   topK: 20,
   minP: 0.01,
+  minPMode: "server-default",
   repetitionPenalty: 1.0,
   presencePenalty: 0.0,
   maxSeqLength: 4096,
@@ -96,6 +103,7 @@ export interface ChatLoraSummary {
   updatedAt?: number;
   source?: "training" | "exported";
   exportType?: "lora" | "merged" | "gguf";
+  sizeBytes?: number | null;
   /** Codec when the checkpoint fine-tunes an audio model, else null. */
   audioType?: string | null;
 }

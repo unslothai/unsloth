@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Regression coverage for Unsloth's PowerShell resolution (#9440)."""
+"""Regression coverage for Unsloth's PowerShell resolution and launch arguments."""
 
 import ntpath
 import os
@@ -69,6 +69,8 @@ def _windows_studio(monkeypatch):
 
 
 class _Process:
+    returncode = 0
+
     def wait(self):
         return 0
 
@@ -142,3 +144,80 @@ def test_the_launcher_refresh_spawns_the_resolved_interpreter(monkeypatch, tmp_p
     studio._refresh_desktop_shortcuts()
 
     assert spawned and spawned[0][0] == _RESOLVED, spawned
+
+
+@pytest.mark.parametrize("interactive", [False, True], ids = ["redirected", "console"])
+@pytest.mark.parametrize("flow", ["setup", "local-refresh", "fetched-refresh"])
+def test_windows_launch_uses_process_flags_without_windowstyle(
+    monkeypatch, tmp_path, interactive, flow
+):
+    """Cover Python argv for test_installer_av_shapes.py's Hidden/Bypass rule.
+
+    Inspect the actual handoffs, including refresh's separate -Command/-File paths;
+    the shell-script scan cannot see arguments assembled across Python functions.
+    """
+    studio = _windows_studio(monkeypatch)
+    monkeypatch.setattr(studio.sys.stdout, "isatty", lambda: interactive)
+    monkeypatch.setattr(studio.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising = False)
+    monkeypatch.setattr(studio, "_with_studio_uv_cache", lambda env, **kw: env)
+    monkeypatch.setattr(studio, "_backfill_uv_cache_marker", lambda env: None)
+    monkeypatch.setattr(studio, "_probe_profile_proxy_defaults", lambda hosts: None)
+
+    repo_root = tmp_path / "owner's repo"
+    (repo_root / "studio").mkdir(parents = True)
+    setup_script = repo_root / "studio" / "setup.ps1"
+    setup_script.write_text("", encoding = "utf-8")
+    installer = repo_root / "install.ps1"
+    installer.write_text("", encoding = "utf-8")
+    fetched = b"Write-Output 'refresh'"
+    spawned = []
+
+    def capture(argv, **kwargs):
+        spawned.append((list(argv), kwargs))
+        if "-File" in argv:
+            path = Path(argv[argv.index("-File") + 1])
+            assert path.read_bytes() == b"\xef\xbb\xbf" + fetched
+        return _Process()
+
+    monkeypatch.setattr(studio.subprocess, "Popen", capture)
+    monkeypatch.setattr(studio.subprocess, "run", capture)
+    if flow == "setup":
+        studio._run_setup_script(repo_root = repo_root)
+    else:
+        monkeypatch.setattr(
+            studio,
+            "_installers_on_disk",
+            lambda candidates: [installer] if flow == "local-refresh" else [],
+        )
+        monkeypatch.setattr(studio, "_fetch_installer", lambda *a, **kw: fetched)
+        studio._refresh_desktop_shortcuts()
+
+    assert len(spawned) == 1
+    argv, kwargs = spawned[0]
+    assert argv[0] == _RESOLVED
+    assert "-NoProfile" in argv
+    assert "-WindowStyle" not in argv
+    assert argv[argv.index("-ExecutionPolicy") + 1] == "Bypass"
+    if interactive:
+        assert "-NonInteractive" not in argv
+        assert "creationflags" not in kwargs
+        assert "startupinfo" not in kwargs
+    else:
+        assert "-NonInteractive" in argv
+        assert "-NoLogo" in argv
+        assert kwargs["creationflags"] & 0x08000000
+    if flow == "fetched-refresh":
+        script_path = Path(argv[argv.index("-File") + 1])
+        assert argv[-1] == "--shortcuts-only"
+        assert not script_path.exists()
+    else:
+        script = setup_script if flow == "setup" else installer
+        quoted = str(script).replace("'", "''")
+        command = argv[argv.index("-Command") + 1]
+        assert f"& '{quoted}'" in command
+        assert command.endswith("*>&1")
+        if flow == "local-refresh":
+            assert "--shortcuts-only" in command
+        else:
+            assert "stdout" in kwargs
+            assert "stderr" in kwargs

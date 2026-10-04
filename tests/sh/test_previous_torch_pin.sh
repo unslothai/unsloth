@@ -11,10 +11,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/_harness.sh"
 INSTALL_SH="${1:-$SCRIPT_DIR/../../install.sh}"
-PASS=0
-FAIL=0
-
 # Extract _previous_torch_pin and its dependency _torch_release_in_window.
 _FUNC_FILE=$(mktemp)
 {
@@ -25,15 +23,6 @@ _FUNC_FILE=$(mktemp)
 # shellcheck disable=SC1090
 . "$_FUNC_FILE"
 rm -f "$_FUNC_FILE"
-
-assert_eq() {
-    _label="$1"; _expected="$2"; _actual="$3"
-    if [ "$_actual" = "$_expected" ]; then
-        echo "  PASS: $_label"; PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected '$_expected', got '$_actual')"; FAIL=$((FAIL + 1))
-    fi
-}
 
 unset UNSLOTH_TORCH_UPGRADE
 
@@ -150,7 +139,7 @@ assert_eq "flavor repair routed through the kept-release helper" "yes" "$(grep -
 # The kept-release install must pair the companions with the kept minor:
 # torchaudio no longer exact-pins torch, so unconstrained it resolves a newer
 # mismatched build (verified: torch==2.9.0 pulled torchaudio 2.11.0 on cu130).
-assert_eq "kept-release install pairs torchvision/torchaudio to the kept minor" "yes" "$(grep -q 'torchaudio==2.\${_itdi_minor}.\*' "$INSTALL_SH" && grep -q 'torchvision==0.\$((_itdi_minor + 15)).\*' "$INSTALL_SH" && echo yes)"
+assert_eq "kept-release install pairs torchvision/torchaudio to the kept minor" "yes" "$(grep -q '_itdi_ta=\$(_torchaudio_for_torch_minor "\$_itdi_minor")' "$INSTALL_SH" && grep -q 'torchvision==0.\$((_itdi_minor + 15)).\*' "$INSTALL_SH" && echo yes)"
 # The Radeon direct-wheel path must also honor the pin: an exact-first kept-trio
 # attempt (exact patch, else the kept minor's newest patch, with paired
 # vision/audio) runs BEFORE the newest-trio search, and the newest-trio search
