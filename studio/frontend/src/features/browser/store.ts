@@ -451,13 +451,15 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       releaseFiles(remaining);
       pageDownloads.delete(tabId);
       const { [tabId]: _closed, ...fileViews } = get().fileViews;
+      const annotateTabId = get().annotateTabId === tabId ? null : get().annotateTabId;
       if (remaining.length === 0) {
-        set({ tabs: [], activeTabId: null, open: false, fileViews });
+        // Closing the last tab closes the panel, as closePanel does.
+        set({ tabs: [], activeTabId: null, open: false, fullView: false, annotateTabId: null, fileViews });
         return;
       }
       const nextActive =
         activeTabId === tabId ? (remaining[Math.min(index, remaining.length - 1)]?.id ?? null) : activeTabId;
-      set({ tabs: remaining, activeTabId: nextActive, fileViews });
+      set({ tabs: remaining, activeTabId: nextActive, annotateTabId, fileViews });
     },
     updateTab: (tabId, patch) =>
       set((state) => {

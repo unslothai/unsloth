@@ -872,8 +872,10 @@ export function WebAnnotateLayer({
             : event.area
               ? t("browser.annotate.areaQuote")
               : "");
-        // The page can post marks itself: past the cap, new ones are dropped.
-        if (!quote || (!rects.has(event.id) && rects.size >= MAX_MARKS)) {
+        // The page can post marks itself: past the cap, new ones are dropped. Both counts, since
+        // the page can also empty its rects report while committed marks pile up.
+        const full = !rects.has(event.id) && (rects.size >= MAX_MARKS || items.length >= MAX_MARKS);
+        if (!quote || full) {
           forget(event.id);
           break;
         }

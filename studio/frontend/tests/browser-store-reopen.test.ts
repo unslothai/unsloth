@@ -76,3 +76,13 @@ test("a reload refetches its own page, not the pages behind it", () => {
   assert.equal(cachedPage(second), undefined);
   assert.ok(cachedPage(first));
 });
+
+test("closing the last tab leaves full view, so the browser reopens beside the chat", () => {
+  const store = useBrowserStore.getState();
+  for (const tab of useBrowserStore.getState().tabs) store.closeTab(tab.id);
+  store.openUrl("https://a.example/", { newTab: true });
+  store.setFullView(true);
+  store.closeTab(useBrowserStore.getState().activeTabId ?? "");
+  assert.equal(useBrowserStore.getState().open, false);
+  assert.equal(useBrowserStore.getState().fullView, false);
+});
