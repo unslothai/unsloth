@@ -611,8 +611,7 @@ def apply_speed_optims(
 
 
 def _onload_device(target: Any) -> Optional[str]:
-    """The CUDA device an offloaded denoiser computes on (indexed when a card was selected), else None. NVIDIA only:
-    ROCm reports device "cuda" but runs int8 weight-only, which the fused GEMM never serves."""
+    """Onload device of an offloaded denoiser, else None. NVIDIA only: ROCm runs int8 weight-only, never this GEMM."""
     if getattr(target, "device", None) != "cuda" or getattr(target, "backend", "cuda") != "cuda":
         return None
     device = getattr(target, "torch_device", None)
@@ -1005,10 +1004,8 @@ def _compile_repeated_blocks(
         try:
             from .diffusion_int8_gemm import install as install_int8_gemm
 
-            # Keyed on the DENOISER's placement: a group plan that streams only the encoders keeps it resident. A
-            # denoiser that moves still runs every Linear on its onload device (the offload hooks place the weights
-            # before the forward reads them), so it installs against that device now; a weight found elsewhere at
-            # call time keeps the stock path.
+            # Keyed on the DENOISER's placement (an encoder-only stream keeps it resident). A moved denoiser installs
+            # against its onload device; a weight found elsewhere at call time keeps the stock path.
             moved = offload_active if denoiser_offloaded is None else bool(denoiser_offloaded)
             if moved and onload_device is not None:
                 transformer._unsloth_int8_gemm = install_int8_gemm(
