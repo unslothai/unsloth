@@ -801,6 +801,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "audio_convert",
                         "audio_convert_route",
                         "audio_convert_rules",
+                        "audio_edit",
                         "audio_music",
                         "audio_cpp_backend",
                     )
@@ -1649,7 +1650,7 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
         # workflow its backend has no keyword for.
         params = inspect.signature(backend.generate_audio_response).parameters
         takes_any = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
-        for key in ("workflow", "audio_inputs", "reference_text", "speed", "convert"):
+        for key in ("workflow", "audio_inputs", "reference_text", "speed", "convert", "edit"):
             if cmd.get(key) is None:
                 continue
             if takes_any or key in params:

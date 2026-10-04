@@ -269,6 +269,6 @@ test("the registry lists the Convert panels after Clone's", () => {
   const registry = readSrc("features/audio/tools/registry.tsx");
   assert.match(
     registry,
-    /\.\.\.CLONE_TOOL_PANELS,\s*\.\.\.CONVERT_TOOL_PANELS,/,
+    /\.\.\.CLONE_TOOL_PANELS,[\s\S]*?\.\.\.CONVERT_TOOL_PANELS,/,
   );
 });

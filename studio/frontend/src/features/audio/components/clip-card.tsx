@@ -84,16 +84,12 @@ export function ClipCard({
   status?: string;
   focusOnMount?: boolean;
   onFocused?: () => void;
-  /** Shown in place of the waveform player, such as Convert's Source/Converted compare. */
+  /** Replaces the waveform player, e.g. Edit's Original/Edited or Convert's Source/Converted compare. */
   player?: ReactNode;
 }) {
   const focusPlay = (element: HTMLDivElement | null) => {
     if (!(element && focusOnMount && src)) return;
-    // A custom player (Convert's Source/Converted compare) leads with its tabs: focus its audio.
-    (
-      element.querySelector<HTMLElement>("audio[controls]") ??
-      element.querySelector<HTMLButtonElement>("button")
-    )?.focus();
+    element.querySelector<HTMLButtonElement>("button")?.focus();
     onFocused?.();
   };
   return (
@@ -119,16 +115,16 @@ export function ClipCard({
         </Button>
         {menu}
       </div>
-      <div ref={focusPlay}>
-        {player ?? (
+      {player ?? (
+        <div ref={focusPlay}>
           <Waveform
             peaks={peaks}
             durationS={durationS}
             src={src}
             label={title || "audio clip"}
           />
-        )}
-      </div>
+        </div>
+      )}
     </Card>
   );
 }

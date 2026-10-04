@@ -475,6 +475,7 @@ export function TtsOutput({
   announcement,
   clipBadge,
   renderPlayer,
+  selectedPlayer,
   useAgainLabel = "Use text again",
   showCopyText = true,
 }: Pick<
@@ -528,7 +529,26 @@ export function TtsOutput({
     ) => ReactNode;
     useAgainLabel?: string;
     showCopyText?: boolean;
+    /** Replaces the plain player; `focusRef` goes on its first control. */
+    selectedPlayer?: (
+      clip: AudioGalleryClip,
+      src: string,
+      focusRef: ((element: HTMLElement | null) => void) | undefined,
+    ) => ReactNode;
   }) {
+  const focusFreshClip = (element: HTMLElement | null) => {
+    if (!element) return;
+    element.focus();
+    onFreshClipFocused();
+  };
+  const customPlayer =
+    selectedClip && selectedClipSrc && selectedPlayer
+      ? selectedPlayer(
+          selectedClip,
+          selectedClipSrc,
+          selectedClip.id === freshClipId ? focusFreshClip : undefined,
+        )
+      : null;
   const [openGroups, setOpenGroups] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
@@ -608,9 +628,14 @@ export function TtsOutput({
               }
               menu={clipMenu(selectedClip, "row")}
               player={
-                renderPlayer && selectedClipSrc
-                  ? renderPlayer(selectedClip, selectedClipSrc, undefined)
-                  : undefined
+                customPlayer ??
+                (renderPlayer && selectedClipSrc
+                  ? renderPlayer(
+                      selectedClip,
+                      selectedClipSrc,
+                      selectedClip.id === freshClipId ? focusFreshClip : undefined,
+                    )
+                  : undefined)
               }
               status={clipBadge?.(selectedClip, "selected") ?? undefined}
               focusOnMount={selectedClip.id === freshClipId}

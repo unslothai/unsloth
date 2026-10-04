@@ -55,13 +55,13 @@ export async function showRunResult({
 }: {
   response: AudioRunResponse;
   text: string;
-  workflow: "speak" | "clone" | "convert" | "music" | "separate";
+  workflow: "speak" | "clone" | "edit" | "convert" | "music" | "separate";
 } & Pick<
   AudioGallery,
   "refreshGallery" | "selectClip" | "setFallbackClip" | "setSelectedId"
 >): Promise<void> {
-  const clip =
-    response.clips.find((item) => item.role === "output") ?? response.clips[0];
+  // An edit whose output was not saved returns only its source clip: play the inline audio.
+  const clip = response.clips.find((item) => item.role === "output");
   const refreshed = await refreshGallery();
   if (clip) {
     const listed = persistedClipForGeneration(clip.id, refreshed);

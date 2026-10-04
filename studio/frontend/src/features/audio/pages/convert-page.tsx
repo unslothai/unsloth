@@ -22,7 +22,7 @@ import { audioModelLabel } from "../audio-workspace-utils";
 import { audioCppModelFor, audioCppWorkflowsFor } from "../audio-cpp-catalog";
 import { sourceFileUrl } from "../audio-run-request";
 import { macTtsCatalogChoiceIsRunnable } from "../catalog";
-import { ABCompare } from "../components/ab-compare";
+import { ABCompare } from "../components/convert-ab-compare";
 import { Field } from "../components/field";
 import {
   AudioHistoryProvider,

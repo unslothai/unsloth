@@ -545,7 +545,8 @@ def test_every_task_family_binds_its_workflows():
         "separate": "tasks",
     }
     for family in acm.FAMILIES.values():
-        bindings = family.workflows
+        # Edit is checked by its own table below.
+        bindings = {k: v for k, v in family.workflows.items() if k != "edit"}
         if not family.task:
             assert bindings == {}, family.family
             continue
@@ -605,6 +606,31 @@ def test_every_task_family_binds_its_workflows():
     assert acm.family_policy("htdemucs").workflows == {
         "separate": acm.WorkflowBinding("sep", "tasks", None, ("audio",))
     }
+
+
+def test_edit_families_bind_the_edit_workflow():
+    edit_names = ["DotTTS-Edit-GGUF", "dots-tts-edit-q8_0.gguf"]
+    dots_edit = acm.family_policy("dots_tts", names = edit_names)
+    binding = dots_edit.workflows["edit"]
+    assert list(dots_edit.workflows) == ["speak", "edit"]
+    assert (binding.server_task, binding.endpoint) == ("tts", "tasks")
+    for names in (["DotTTS-MF-GGUF"], ["DotTTS-SOAR-GGUF"], []):
+        assert list(acm.family_policy("dots_tts", names = names).workflows) == ["speak"], names
+    vevo2, firered = acm.FAMILIES["vevo2"], acm.FAMILIES["firered_audio"]
+    assert list(firered.workflows) == ["clone", "edit"]
+    # Vevo2 also converts a voice.
+    assert list(vevo2.workflows) == ["clone", "edit", "convert"]
+    # Vevo2 edits in an s2s session though it loads as tts.
+    assert vevo2.default_server_task == "tts"
+    assert (vevo2.workflows["edit"].server_task, vevo2.workflows["edit"].route) == (
+        "s2s",
+        "editing",
+    )
+    assert firered.workflows["edit"].server_task == "tts"
+    assert {n for n, f in acm.FAMILIES.items() if f.edit is not None} == {"vevo2", "firered_audio"}
+    assert acm.family_policy("auk").unsupported
+    for family in (dots_edit, vevo2, firered):
+        hash(family)
 
 
 def test_a_resolved_model_carries_its_workflow_binding(hub):

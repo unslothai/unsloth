@@ -19,7 +19,9 @@ from __future__ import annotations
 import base64
 import io
 import json
+import os
 import re
+import tempfile
 import threading
 import wave
 from dataclasses import replace
@@ -119,6 +121,7 @@ def model_info_fields(model: AudioCppModel) -> dict[str, Any]:
         "audio_reference_text": model.clone.reference_text if model.clone else None,
         "audio_required_inputs": list(model.required_inputs),
         "audio_clone": clone_rules(model),
+        "audio_edit": edit_rules(model),
         "audio_music": music_rules(model),
         "audio_options_by_workflow": (
             {"convert": [dict(option) for option in model.convert_options]}
@@ -153,6 +156,74 @@ def clone_rules(model: AudioCppModel) -> Optional[dict[str, Any]]:
         ],
         "emotion_audio": clone.emotion_audio,
     }
+
+
+def edit_rules(model: AudioCppModel) -> Optional[dict[str, Any]]:
+    edit = getattr(model, "edit", None)
+    if edit is None:
+        return None
+    return {
+        "style": edit.style,
+        "delivery": edit.delivery_template is not None,
+        "max_changes": edit.max_changes,
+    }
+
+
+def edit_options(model: AudioCppModel) -> tuple[dict, ...]:
+    claims = set(model.edit.claims) if model.edit is not None else set()
+    return tuple(option for option in model.options if option["name"] not in claims)
+
+
+def edit_request_bodies(
+    model: AudioCppModel,
+    text: str,
+    reference_text: Optional[str],
+    edit: Optional[dict],
+    options: dict,
+    seed: Optional[int],
+    model_id: str,
+) -> list[dict[str, Any]]:
+    """The ``/v1/tasks/run`` bodies an edit posts, in order, without the recording field: the
+    first call reads the source, each later one the previous call's output."""
+    spec = model.edit
+    if spec is None:
+        raise RuntimeError(f"{model.display_name} cannot edit speech.")
+    edit = edit or {}
+    advanced = {name: _option_string(value) for name, value in options.items()}
+    top: dict[str, Any] = {"model": model_id}
+    if seed is not None:
+        top["seed"] = str(int(seed))
+    if spec.style == "markup":
+        markup = str(edit.get("markup") or "")
+        if not markup.strip():
+            raise RuntimeError(f"{model.display_name} needs the marked-up changes.")
+        return [{**top, "text": markup, "options": {"template_name": spec.template, **advanced}}]
+    if spec.style == "sentence":
+        body = {**top, "target_text": text}
+        if spec.route:
+            body["route"] = spec.route
+        original = str(reference_text or "").strip()
+        if original:
+            body["reference_text"] = original
+        if advanced:
+            body["options"] = advanced
+        return [body]
+    if edit.get("mode") == "delivery":
+        from core.inference.audio_edit import delivery_instructions
+
+        template = spec.delivery_template
+        if template is None:
+            raise RuntimeError("Delivery changes need FireRedAudio.")
+        instructions = delivery_instructions(edit.get("speed"), edit.get("pitch_steps"))
+    else:
+        template = spec.template
+        instructions = [str(item) for item in edit.get("instructions") or ()]
+    if not instructions:
+        raise RuntimeError("Change at least one word.")
+    return [
+        {**top, "options": {"template_name": template, "instruction": line, **advanced}}
+        for line in instructions
+    ]
 
 
 def language_name(language: Optional[str]) -> Optional[str]:
@@ -363,6 +434,7 @@ class AudioCppBackend:
         reference_text: Optional[str] = None,
         speed: Optional[float] = None,
         convert: Optional[dict] = None,
+        edit: Optional[dict] = None,
         music: Optional[dict] = None,
         output_dir: Optional[str] = None,
     ) -> Tuple[bytes, int]:
@@ -386,8 +458,13 @@ class AudioCppBackend:
                 output_dir,
                 cancel_event,
             )
-        cloning = workflow != "convert" and (workflow == "clone" or bool(audio_inputs))
-        if workflow == "convert":
+        editing = workflow == "edit"
+        converting = workflow == "convert"
+        # Speak in a saved voice sends a reference with workflow "speak": a clone too.
+        cloning = not (editing or converting) and (workflow == "clone" or bool(audio_inputs))
+        if editing and model.edit is None:
+            raise RuntimeError(f"{model.display_name} cannot edit speech.")
+        if converting:
             if model.convert is None:
                 raise RuntimeError(f"{model.display_name} cannot convert a voice.")
             convert = convert or {}
@@ -411,6 +488,9 @@ class AudioCppBackend:
                 )
             except audio_cpp_convert.ConvertRequestError as exc:
                 raise RuntimeError(str(exc)) from exc
+        elif editing:
+            options = validate_options(edit_options(model), audio_options)
+            served = _served_for_edit(model)
         else:
             if cloning and model.clone is None:
                 raise RuntimeError(f"{model.display_name} cannot clone a voice.")
@@ -420,7 +500,7 @@ class AudioCppBackend:
             )
         server = self._running_server(served, cancel_event)
         try:
-            if workflow == "convert":
+            if converting:
                 ctype, data = server.post_json(
                     "/v1/tasks/run",
                     {"model": server.model_id, "request": request},
@@ -428,6 +508,18 @@ class AudioCppBackend:
                     cancel_event = cancel_event,
                 )
                 wav = _audio_from_task_response(ctype, data)
+            elif editing:
+                wav = self._generate_edit(
+                    server,
+                    model,
+                    text,
+                    audio_inputs or {},
+                    reference_text,
+                    edit,
+                    options,
+                    seed,
+                    cancel_event,
+                )
             elif cloning:
                 wav = self._generate_clone(
                     server,
@@ -697,6 +789,44 @@ class AudioCppBackend:
         return data
 
     @staticmethod
+    def _generate_edit(
+        server: AudioCppServer,
+        model: AudioCppModel,
+        text: str,
+        audio_inputs: dict,
+        reference_text: Optional[str],
+        edit: Optional[dict],
+        options: dict,
+        seed: Optional[int],
+        cancel_event,
+    ) -> bytes:
+        """Edit ``audio_inputs["source"]`` (a server-local WAV). A chain hands each output to the
+        next call through a temporary WAV. The runtime's answer ``text`` is not the edited
+        transcript (FireRedAudio), so it is never read."""
+        source = audio_inputs.get("source")
+        if not source:
+            raise RuntimeError(f"{model.display_name} needs a recording to edit.")
+        bodies = edit_request_bodies(
+            model, text, reference_text, edit, options, seed, server.model_id
+        )
+        with tempfile.TemporaryDirectory(prefix = "unsloth-audio-edit-") as scratch:
+            path = str(source)
+            for index, body in enumerate(bodies):
+                _raise_if_cancelled(cancel_event)
+                if index:
+                    path = os.path.join(scratch, f"step{index}.wav")
+                    with open(path, "wb") as handle:
+                        handle.write(wav)
+                ctype, data = server.post_json(
+                    "/v1/tasks/run",
+                    {**body, model.edit.source_field: path},
+                    timeout = _GENERATE_TIMEOUT_SECONDS,
+                    cancel_event = cancel_event,
+                )
+                wav = _audio_from_task_response(ctype, data)
+        return wav
+
+    @staticmethod
     def _generate_music(
         server: AudioCppServer,
         model: AudioCppModel,
@@ -886,6 +1016,13 @@ def _resolve_companion(
         name = companion.id.rsplit("/", 1)[-1]
         raise RuntimeError(f"{model.display_name} needs {name}, which Studio could not find.")
     return found
+
+
+def _served_for_edit(model: AudioCppModel) -> AudioCppModel:
+    edit = model.edit
+    if edit is None or edit.server_task == model.server_task:
+        return model
+    return replace(model, server_task = edit.server_task)
 
 
 def _with_companions(model: AudioCppModel) -> AudioCppModel:

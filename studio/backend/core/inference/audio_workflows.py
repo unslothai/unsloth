@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Which Audio page workflows (Speak, Clone, Convert, Music, Separate, Transcribe) a model or a
-clip belongs to.
+"""Which Audio page workflows (Speak, Clone, Edit, Convert, Music, Separate, Transcribe) a model
+or a clip belongs to.
 
 Mirrors ``studio/frontend/src/features/audio/workflows.ts``. This module reads the audio.cpp
 constants; ``audio_cpp_models`` never imports it.
@@ -18,7 +18,7 @@ from core.inference.audio_cpp_models import (
     HUB_TASKS,
 )
 
-AUDIO_WORKFLOW_IDS = ("speak", "clone", "convert", "music", "separate", "transcribe")
+AUDIO_WORKFLOW_IDS = ("speak", "clone", "edit", "convert", "music", "separate", "transcribe")
 
 # Generation audio types that make music; every other generation audio type speaks.
 MUSIC_AUDIO_TYPES = frozenset(("minimax_music3", AUDIO_CPP_MUSIC_AUDIO_TYPE))

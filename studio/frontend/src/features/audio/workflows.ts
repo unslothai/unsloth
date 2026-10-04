@@ -6,6 +6,7 @@
 import {
   AiVoiceIcon,
   MusicNote03Icon,
+  QuillWrite01Icon,
   SpeechToTextIcon,
   SplitIcon,
   UserSwitchIcon,
@@ -17,6 +18,7 @@ import { AUDIO_CPP_MUSIC_AUDIO_TYPE } from "./audio-cpp-catalog";
 export type AudioWorkflowId =
   | "speak"
   | "clone"
+  | "edit"
   | "convert"
   | "music"
   | "separate"
@@ -50,6 +52,15 @@ export const AUDIO_WORKFLOWS: ReadonlyArray<{
     hint: "Speak in the voice from a short recording",
     slot: "speak",
     createTrain: true,
+  },
+  {
+    id: "edit",
+    label: "Edit",
+    heading: "Edit speech",
+    icon: QuillWrite01Icon,
+    hint: "Change words in a recording, same voice",
+    slot: "speak",
+    createTrain: false,
   },
   {
     id: "convert",
@@ -131,10 +142,11 @@ export function audioWorkflowForAudioType(
 export function clipWorkflow(clip: {
   workflow?: string | null;
   audio_type?: string | null;
-}): "speak" | "clone" | "convert" | "music" | "separate" {
+}): "speak" | "clone" | "edit" | "convert" | "music" | "separate" {
   if (
     clip.workflow === "speak" ||
     clip.workflow === "clone" ||
+    clip.workflow === "edit" ||
     clip.workflow === "convert" ||
     clip.workflow === "music" ||
     clip.workflow === "separate"

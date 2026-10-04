@@ -7,7 +7,7 @@ import test from "node:test";
 import { readSrc } from "./helpers/kit.ts";
 
 const { nextPlayback } = await import(
-  "../src/features/audio/components/ab-compare-state.ts"
+  "../src/features/audio/components/convert-ab-compare-state.ts"
 );
 
 test("switching sides keeps the moment and play state, clamped to the new side", () => {
@@ -32,7 +32,7 @@ test("switching sides keeps the moment and play state, clamped to the new side",
 });
 
 test("one player, swapped by a Tab-reachable toggle", () => {
-  const jsx = readSrc("features/audio/components/ab-compare.tsx");
+  const jsx = readSrc("features/audio/components/convert-ab-compare.tsx");
   assert.equal(jsx.match(/<audio\b/g)?.length, 1);
   assert.match(jsx, /<PillTabs\b/);
   assert.doesNotMatch(jsx, /autoPlay/);

@@ -148,19 +148,20 @@ export function audioModelsForTask(task: AudioTask): ModelOption[] {
 }
 
 const CAPABILITY_LABEL: Record<
-  AudioTask | "music" | "clone" | "convert" | "separate",
+  AudioTask | "music" | "clone" | "edit" | "convert" | "separate",
   string
 > = {
   music: "Music generation",
   separate: "Source separation",
   clone: "Voice cloning",
+  edit: "Speech editing",
   convert: "Voice conversion",
   tts: "Text-to-speech",
   stt: "Speech-to-text",
 };
 
 export function audioCapabilityLine(
-  task: AudioTask | "music" | "clone" | "convert" | "separate",
+  task: AudioTask | "music" | "clone" | "edit" | "convert" | "separate",
   detail?: string | null,
 ): string {
   const base = CAPABILITY_LABEL[task];

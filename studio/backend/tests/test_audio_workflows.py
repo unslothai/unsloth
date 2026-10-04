@@ -105,7 +105,15 @@ def test_workflow_for_audio_type_is_speak_or_music():
     assert aw.workflow_for_audio_type("snac") == "speak"
     assert aw.workflow_for_audio_type("unknown") == "speak"
     assert aw.workflow_for_audio_type(None) == "speak"
-    assert aw.AUDIO_WORKFLOW_IDS == ("speak", "clone", "convert", "music", "separate", "transcribe")
+    assert aw.AUDIO_WORKFLOW_IDS == (
+        "speak",
+        "clone",
+        "edit",
+        "convert",
+        "music",
+        "separate",
+        "transcribe",
+    )
 
 
 def test_workflow_ids_match_the_frontend_order():
@@ -164,7 +172,10 @@ def test_status_and_load_carry_the_convert_fields():
         ("RVC-GGUF", "rvc", ["convert"]),
         ("SeedVC-MLX-GGUF", "seed_vc", ["convert"]),
         ("MeanVC2-GGUF", "meanvc2", ["convert"]),
-        ("Vevo2-GGUF", "vevo2", ["clone", "convert"]),
+        ("DotTTS-Edit-GGUF", "dots_tts", ["speak", "edit"]),
+        ("DotTTS-MF-GGUF", "dots_tts", ["speak"]),
+        ("Vevo2-GGUF", "vevo2", ["clone", "edit", "convert"]),
+        ("FireRedAudio-GGUF", "firered_audio", ["clone", "edit"]),
     ],
 )
 def test_inventory_rows_of_clone_families_list_clone(tmp_path, folder, family, workflows):

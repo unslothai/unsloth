@@ -168,7 +168,7 @@ test("voice conversion models are seeded with the pages they run on", () => {
     ["SeedVC-MLX-GGUF", ["convert"], "Voice conversion"],
     ["MeanVC2-GGUF", ["convert"], "Voice conversion"],
     ["Chatterbox-GGUF", ["clone", "convert"], "Voice cloning and conversion"],
-    ["Vevo2-GGUF", ["clone", "convert"], "Voice cloning and conversion"],
+    ["Vevo2-GGUF", ["clone", "edit", "convert"], "Voice cloning and conversion"],
     ["IndexTTS2-GGUF", ["clone"], "Voice cloning"],
   ] as const) {
     const id = `${AUDIO_CPP_REPO}/${name}`;

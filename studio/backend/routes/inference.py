@@ -22042,6 +22042,21 @@ def _audio_request_problem(
     workflows = model_info.get("audio_workflows")
     label = _audio_model_label(model_name)
     inputs = (run_inputs or {}).get("audio_inputs") or {}
+    if (run_inputs or {}).get("workflow") == "edit":
+        from core.inference import audio_edit
+
+        # The llama.cpp direct path reports no workflows.
+        if not workflows or "edit" not in workflows or not model_info.get("audio_edit"):
+            return "Load a model that can edit speech."
+        if not inputs.get("source"):
+            return "Add a recording to edit."
+        return audio_edit.request_problem(
+            model_info.get("audio_edit"),
+            run_inputs.get("edit"),
+            str(run_inputs.get("text") or ""),
+            run_inputs.get("reference_text"),
+            label,
+        )
     if run_inputs and run_inputs.get("workflow") == "music":
         # The model may have changed since the route checked the mode.
         if not model_info.get("audio_music"):
@@ -22237,6 +22252,7 @@ async def _generate_tts_wav(
                     "reference_text",
                     "speed",
                     "convert",
+                    "edit",
                     "music",
                     "output_dir",
                 )
@@ -22506,6 +22522,138 @@ def _audio_run_settings(body: AudioRunRequest, reference_text_used: bool) -> dic
         "reference_text_used": reference_text_used,
         "speed": body.speed,
     }
+
+
+def _audio_edit_settings(body: AudioRunRequest) -> dict[str, Any]:
+    """An edit's recipe for history; never a file or server path."""
+    from core.inference import audio_edit
+
+    edit = body.edit.model_dump(exclude_none = True) if body.edit is not None else {}
+    settings: dict[str, Any] = {
+        "mode": edit.get("mode", "words"),
+        "changes": audio_edit.change_count(edit),
+        "original_text": (body.inputs.reference_text or "").strip() or None,
+        "options": _audio_run_settings(body, False)["options"],
+    }
+    if edit.get("mode") == "delivery":
+        for name in ("speed", "pitch_steps"):
+            if edit.get(name) is not None:
+                settings[name] = edit[name]
+    return settings
+
+
+def _audio_run_clip(record: dict[str, Any], role: str = "output") -> dict[str, Any]:
+    return {
+        "role": role,
+        **{k: record[k] for k in ("id", "url", "sample_rate", "duration_s", "workflow")},
+    }
+
+
+def _audio_run_response(
+    record: Optional[dict[str, Any]],
+    wav_bytes: bytes,
+    sample_rate: int,
+    model_name: str,
+    sources: list[dict[str, Any]] = (),
+) -> AudioRunResponse:
+    """The clips a run made; the WAV inline when history could not keep it."""
+    import base64
+
+    if record is None:
+        audio = {"data": base64.b64encode(wav_bytes).decode("ascii"), "sample_rate": sample_rate}
+        return AudioRunResponse(clips = list(sources), model = model_name, audio = audio)
+    return AudioRunResponse(clips = [_audio_run_clip(record), *sources], model = model_name)
+
+
+async def _run_audio_edit(
+    body: AudioRunRequest, request: Request, current_subject: str
+) -> AudioRunResponse:
+    """Edit speech on a recording from the caller's account, prepared as 24 kHz mono. Over 30 s is
+    refused, never cut; an uploaded recording is kept in history as the run's source."""
+    from core.inference import audio_edit, audio_inputs
+
+    if any(
+        name in body.model_fields_set and getattr(body, name) not in (None, False, 1)
+        for name in _MUSIC_ONLY_FIELDS
+        if name != "edit"
+    ):
+        raise HTTPException(
+            status_code = 400,
+            detail = "A music mode, lyrics and variations apply to Music only.",
+        )
+    source_ref = body.inputs.source
+    if source_ref is None:
+        raise HTTPException(status_code = 400, detail = "Add a recording to edit.")
+    if source_ref.voice_id:
+        raise HTTPException(status_code = 400, detail = "Pick a recording or a history clip to edit.")
+    ref = source_ref.model_dump(exclude_none = True)
+    limit = audio_edit.EDIT_SOURCE_MAX_SECONDS + 0.05
+
+    def prepare():
+        source = audio_inputs.resolve_source(ref)
+        seconds = audio_edit.wav_seconds(source.path)
+        if seconds is not None and seconds > limit:
+            raise audio_inputs.AudioInputError(400, audio_edit.TOO_LONG)
+        path = audio_inputs.prepared_path(source, audio_inputs.REFERENCE_RATE)
+        if seconds is None and (audio_edit.wav_seconds(path) or 0.0) > limit:
+            raise audio_inputs.AudioInputError(400, audio_edit.TOO_LONG)
+        return source, path
+
+    try:
+        source, source_path = await asyncio.to_thread(prepare)
+    except audio_inputs.AudioInputError as exc:
+        raise _audio_source_error(exc) from None
+    reference_text = (body.inputs.reference_text or "").strip() or None
+    edit = body.edit.model_dump(exclude_none = True) if body.edit is not None else {}
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": body.text}],
+        max_tokens = body.max_tokens,
+        audio_options = body.options,
+        seed = body.seed,
+    )
+    wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
+        body.text,
+        payload,
+        request,
+        current_subject,
+        run_inputs = {
+            "workflow": "edit",
+            "audio_inputs": {"source": str(source_path)},
+            "reference_text": reference_text,
+            "edit": edit,
+            # For the request check; the worker gets the text as the prompt.
+            "text": body.text,
+        },
+    )
+    source_record = None
+    try:
+        source_record = await asyncio.to_thread(
+            audio_edit.save_source_clip, source, source_path, reference_text
+        )
+    except Exception as exc:  # noqa: BLE001 - the edit is served even when its source is not kept
+        logger.warning("audio_edit.source_save_failed: %s", exc)
+    if source_record is not None:
+        source_clip_id = source_record["id"]
+    else:
+        source_clip_id = source.id if source.kind == "clip" else None
+    extra_meta: dict[str, Any] = {
+        "role": "output",
+        "source_clip_id": source_clip_id,
+        "reference_name": source.name,
+        "settings": _audio_edit_settings(body),
+    }
+    record = await asyncio.to_thread(
+        _persist_tts_clip,
+        wav_bytes,
+        sample_rate,
+        body.text,
+        model_name,
+        audio_type,
+        extra_meta,
+        "edit",
+    )
+    sources = [_audio_run_clip(source_record, "source")] if source_record is not None else []
+    return _audio_run_response(record, wav_bytes, sample_rate, model_name, sources)
 
 
 _REPAINT_BEYOND_END_S = 30.0
@@ -22822,35 +22970,6 @@ async def _run_music_workflow(
     return AudioRunResponse(clips = clips, group_id = group_id, model = model_name)
 
 
-def _audio_run_response(
-    record: Optional[dict], wav_bytes: bytes, sample_rate: int, model_name: str
-) -> AudioRunResponse:
-    import base64
-    if record is None:
-        return AudioRunResponse(
-            clips = [],
-            model = model_name,
-            audio = {
-                "data": base64.b64encode(wav_bytes).decode("ascii"),
-                "format": "wav",
-                "sample_rate": sample_rate,
-            },
-        )
-    return AudioRunResponse(
-        clips = [
-            {
-                "id": record["id"],
-                "role": "output",
-                "url": record["url"],
-                "sample_rate": record["sample_rate"],
-                "duration_s": record["duration_s"],
-                "workflow": record["workflow"],
-            }
-        ],
-        model = model_name,
-    )
-
-
 async def _run_audio_convert(
     body: AudioRunRequest, request: Request, current_subject: str
 ) -> AudioRunResponse:
@@ -22969,9 +23088,9 @@ async def run_audio_workflow(
     request: Request,
     current_subject: str = Depends(get_current_subject),
 ):
-    """Run one Audio page workflow (Clone, Speak in a saved voice, Convert, Music or Separate);
-    clips go to history. Audio is named by id and resolved here in the caller's account; the worker
-    gets a prepared copy's path, never bytes."""
+    """Run one Audio page workflow (Clone, Speak in a saved voice, Edit, Convert, Music or
+    Separate); clips go to history. Audio is named by id and resolved here in the caller's account;
+    the worker gets a prepared copy's path, never bytes."""
     if body.workflow == "separate":
         return await _run_separation(body, request, current_subject)
     import base64
@@ -22980,6 +23099,8 @@ async def run_audio_workflow(
 
     if body.workflow == "convert":
         return await _run_audio_convert(body, request, current_subject)
+    if body.workflow == "edit":
+        return await _run_audio_edit(body, request, current_subject)
     if body.workflow == "music":
         return await _run_music_workflow(body, request, current_subject)
     music_fields = sorted(
@@ -45651,7 +45772,7 @@ async def delete_gallery_audio(audio_id: str, current_subject: str = Depends(get
 
 @studio_router.delete("/audio/gallery")
 async def clear_gallery_audio(
-    workflow: Optional[Literal["speak", "clone", "convert", "music", "separate"]] = None,
+    workflow: Optional[Literal["speak", "clone", "edit", "convert", "music", "separate"]] = None,
     current_subject: str = Depends(get_current_subject),
 ):
     from core.inference import audio_gallery

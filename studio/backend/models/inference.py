@@ -5165,7 +5165,7 @@ class AudioGalleryItem(BaseModel):
     archived: bool = Field(False, description = "Moved to the archived shelf, hidden from history")
     workflow: Optional[str] = Field(
         None,
-        description = "Audio page workflow that made the clip: speak, clone, convert, music or separate",
+        description = "Audio page workflow that made the clip: speak, clone, edit, convert, music or separate",
     )
     order_at: Optional[float] = Field(
         None,
@@ -5253,6 +5253,21 @@ class AudioConvertParams(BaseModel):
     voice: Optional[Literal["default", "manthos", "chocola", "fraise"]] = None
 
 
+class AudioRunEdit(BaseModel):
+    """Words: client-rendered DotTTS markup or FireRedAudio instructions, checked against both
+    transcripts. Delivery (FireRedAudio): numbers only."""
+
+    model_config = ConfigDict(extra = "forbid")
+
+    mode: Literal["words", "delivery"] = "words"
+    markup: Optional[str] = Field(None, max_length = 8000)
+    instructions: Optional[List[Annotated[str, Field(min_length = 1, max_length = 300)]]] = Field(
+        None, max_length = 8
+    )
+    speed: Optional[float] = Field(None, ge = 0.5, le = 2.0)
+    pitch_steps: Optional[int] = Field(None, ge = 1, le = 12)
+
+
 class AudioMusicRange(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
@@ -5280,7 +5295,7 @@ class AudioRunRequest(BaseModel):
 
     model_config = ConfigDict(extra = "forbid")
 
-    workflow: Literal["clone", "speak", "convert", "music", "separate"]
+    workflow: Literal["clone", "speak", "edit", "convert", "music", "separate"]
     # Required except for a conversion or a separation (the routes answer those given text with a 400).
     text: Optional[str] = None
     language: Optional[str] = Field(None, max_length = 64)
@@ -5291,7 +5306,8 @@ class AudioRunRequest(BaseModel):
     instrumental: bool = False
     duration_s: Optional[float] = Field(None, ge = 0.5, le = 600)
     variations: int = Field(1, ge = 1, le = 4)
-    edit: Optional[AudioMusicEdit] = None
+    # Music edits carry an action; speech edits (workflow edit) never do.
+    edit: Optional[Union[AudioMusicEdit, AudioRunEdit]] = None
     options: Optional[Dict[str, Any]] = Field(
         None, description = "Per-model options, as listed in audio_options or by a tool panel"
     )
@@ -5318,6 +5334,18 @@ class AudioRunRequest(BaseModel):
             v is not None for v in (inputs.target, inputs.source_text)
         ):
             raise ValueError("convert and the target inputs are for workflow convert.")
+        return self
+
+    @model_validator(mode = "after")
+    def _edit_fields(self):
+        if self.workflow == "edit" and not isinstance(self.edit, AudioRunEdit):
+            raise ValueError("Send edit with workflow edit.")
+        if isinstance(self.edit, AudioRunEdit) and self.workflow != "edit":
+            raise ValueError("A speech edit is for workflow edit.")
+        if self.workflow == "edit" and (
+            self.inputs.reference is not None or self.inputs.emotion is not None
+        ):
+            raise ValueError("An edit takes inputs.source, not a reference or emotion clip.")
         return self
 
     @field_validator("options")

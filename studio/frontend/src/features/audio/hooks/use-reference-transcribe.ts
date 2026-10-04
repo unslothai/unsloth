@@ -28,7 +28,9 @@ export function useReferenceTranscribe({
 
   const transcribe = useCallback(
     async (reference: AudioSourceSelection | null) => {
-      if (!reference || abort.current) return;
+      if (!reference) return;
+      // A newer clip wins, so its own transcription is never skipped.
+      abort.current?.abort();
       const controller = new AbortController();
       abort.current = controller;
       setTranscribing(true);
@@ -63,14 +65,23 @@ export function useReferenceTranscribe({
             : "Could not transcribe the clip.",
         );
       } finally {
-        if (abort.current === controller) abort.current = null;
-        setTranscribing(false);
+        if (abort.current === controller) {
+          abort.current = null;
+          setTranscribing(false);
+        }
       }
     },
     [sttRepo, purpose],
   );
 
+  const cancel = useCallback(() => {
+    abort.current?.abort();
+    abort.current = null;
+    setTranscribing(false);
+    setError(null);
+  }, []);
+
   useEffect(() => () => abort.current?.abort(), []);
 
-  return { transcribe, transcribing, error };
+  return { transcribe, cancel, transcribing, error };
 }

@@ -353,9 +353,9 @@ test("Use again re-uploads a conversion's kept source instead of its expiring up
 
 const SEND_TO_HAS_CONVERT = /convert: \(\) => handleSendToConvert\(clip\),/;
 const SEND_TO_CLONE_KEEPS_LABELS_OUT =
-  /adoptReference\(clipReference\(clip, clipWorkflow\(clip\)\)\)/;
-const CARD_FOCUSES_CUSTOM_AUDIO =
-  /element\.querySelector<HTMLElement>\("audio\[controls\]"\) \?\?\s*element\.querySelector<HTMLButtonElement>\("button"\)/;
+  /adoptReference\(clipReference\(\{ \.\.\.clip, workflow: clipWorkflow\(clip\) \}\)\)/;
+const WORKSPACE_FOCUSES_A_FRESH_CUSTOM_PLAYER =
+  /renderPlayer\(\s*selectedClip,\s*selectedClipSrc,\s*selectedClip\.id === freshClipId \? focusFreshClip : undefined,?\s*\)/;
 
 test("Send to offers Convert, and a Convert clip sent to Clone brings no label as its transcript", () => {
   const page = readSrc("features/audio/audio-page.tsx");
@@ -364,6 +364,8 @@ test("Send to offers Convert, and a Convert clip sent to Clone brings no label a
 });
 
 test("a fresh Convert clip focuses its player, not the Source tab", () => {
-  const card = readSrc("features/audio/components/clip-card.tsx");
-  assert.match(card, CARD_FOCUSES_CUSTOM_AUDIO);
+  const workspace = readSrc("features/audio/pages/tts-workspace.tsx");
+  assert.match(workspace, WORKSPACE_FOCUSES_A_FRESH_CUSTOM_PLAYER);
+  const page = readSrc("features/audio/pages/convert-page.tsx");
+  assert.match(page, /playerRef=\{focusRef\}/);
 });
