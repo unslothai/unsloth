@@ -618,9 +618,7 @@ def _note_fa4_reroute(reason: str) -> None:
     _note_reroute("FlashAttention 4", reason, _FA4_ROUTED, _FA4_ROUTED_LOGGED)
 
 
-# The hub FA4 kernel (CuTe DSL + tvm-ffi) is not traceable: 5 graph breaks per Flux block on torch 2.11 / 2.12
-# (`active_fake_mode` is marked skipped, tvm-ffi `Function.__call__`), so the fullgraph regional compile failed and the
-# load ran eager. The same opaque op as Sage keeps the block compiled.
+# The hub FA4 launch (CuTe DSL, tvm-ffi) breaks a fullgraph compile 5 times per Flux block: keep it opaque, like Sage.
 _FA4_OP_NAME = "unsloth_studio::flash_4_hub_attention_nhd"
 
 
