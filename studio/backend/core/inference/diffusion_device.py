@@ -404,7 +404,6 @@ def _cuda_or_rocm_target(
         # path) are gated by gfx arch, like pre-Ampere NVIDIA below. It takes no device argument, so the selected card
         # is asked by scoping the current device.
         from .rocm_bf16 import rocm_bf16_supported
-
         try:
             with diffusion_device_scope(ordinal):
                 bf16_ok = rocm_bf16_supported(torch, ordinal)
