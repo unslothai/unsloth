@@ -4,6 +4,7 @@
 import {
   normalizeProviderMaxOutputTokens,
   providerModelSupportsStudioTools,
+  providerModelSupportsThinking,
 } from "./external-providers";
 import {
   type ModelCatalogEntry,
@@ -38,7 +39,10 @@ export type ExternalReasoningCapabilities = {
   supportsReasoning: boolean;
   // Mirrors the store's ReasoningStyle. "enable_thinking_effort" exists so a local model's
   // caps can be assigned here without narrowing.
-  reasoningStyle: "enable_thinking" | "reasoning_effort" | "enable_thinking_effort";
+  reasoningStyle:
+    | "enable_thinking"
+    | "reasoning_effort"
+    | "enable_thinking_effort";
   reasoningAlwaysOn: boolean;
   supportsReasoningOff: boolean;
   reasoningEffortLevels: readonly ReasoningEffortLevel[];
@@ -80,7 +84,9 @@ export function clampReasoningEffortToLevels(
       effortLevels.includes(level),
     );
     const rungs =
-      candidate === "none" ? offered : offered.filter((level) => level !== "none");
+      candidate === "none"
+        ? offered
+        : offered.filter((level) => level !== "none");
     const searchable = rungs.length > 0 ? rungs : offered;
     const below = searchable.filter(
       (level) => REASONING_EFFORT_SCALE.indexOf(level) < rank,
@@ -269,8 +275,16 @@ export function getGroundedExternalMaxOutputTokens(
   connectionMaxOutputTokens?: number | null,
 ): number | null {
   const override = normalizeProviderMaxOutputTokens(connectionMaxOutputTokens);
-  if (override == null && _publishedMaxOutputTokens(providerType, modelId) == null) return null;
-  return getExternalMaxOutputTokens(providerType, modelId, connectionMaxOutputTokens);
+  if (
+    override == null &&
+    _publishedMaxOutputTokens(providerType, modelId) == null
+  )
+    return null;
+  return getExternalMaxOutputTokens(
+    providerType,
+    modelId,
+    connectionMaxOutputTokens,
+  );
 }
 
 /**
@@ -307,7 +321,9 @@ function _publishedMaxOutputTokens(
   modelId: string | null | undefined,
 ): number | null {
   if (providerType === "openrouter") {
-    return resolveModelCatalogEntry(providerType, modelId)?.maxOutputTokens ?? null;
+    return (
+      resolveModelCatalogEntry(providerType, modelId)?.maxOutputTokens ?? null
+    );
   }
   return _documentedMaxOutputTokens(providerType, modelId);
 }
@@ -325,7 +341,10 @@ function _documentedMaxOutputTokens(
   const normalized = modelId.trim().toLowerCase();
   if (!normalized) return null;
   if (providerType === "openrouter") {
-    const live = resolveModelCatalogEntry(providerType, normalized)?.maxOutputTokens;
+    const live = resolveModelCatalogEntry(
+      providerType,
+      normalized,
+    )?.maxOutputTokens;
     if (live != null) return live;
   }
   const stripped =
@@ -334,7 +353,7 @@ function _documentedMaxOutputTokens(
       : normalized;
   const effectiveProvider =
     providerType === "openrouter"
-      ? _inferProviderFromOpenrouterId(normalized) ?? providerType
+      ? (_inferProviderFromOpenrouterId(normalized) ?? providerType)
       : providerType === "openai_codex"
         ? "openai_codex"
         : providerType;
@@ -366,9 +385,7 @@ export function resolveExternalMaxTokensClamp(input: {
   return input.maxTokensMax;
 }
 
-function _inferProviderFromOpenrouterId(
-  normalizedId: string,
-): string | null {
+function _inferProviderFromOpenrouterId(normalizedId: string): string | null {
   if (normalizedId.startsWith("openai/")) return "openai";
   if (normalizedId.startsWith("anthropic/")) return "anthropic";
   if (normalizedId.startsWith("google/")) return "gemini";
@@ -484,7 +501,9 @@ function isOpenAICloudBaseUrl(baseUrl: string | null | undefined): boolean {
   }
 }
 
-function isAzureOpenAICloudBaseUrl(baseUrl: string | null | undefined): boolean {
+function isAzureOpenAICloudBaseUrl(
+  baseUrl: string | null | undefined,
+): boolean {
   if (!baseUrl) return false;
   try {
     return isAzureOpenAICloudHost(new URL(baseUrl).hostname.toLowerCase());
@@ -542,7 +561,11 @@ export function providerSupportsBuiltinCodeExecution(
 
 /** Whether this connection has its own code sandbox, model aside. Coarser than the
  *  per-model check: it asks whether running the code locally would be a relocation. */
-const PROVIDER_TYPES_WITH_CODE_SANDBOX = new Set(["openai", "anthropic", "gemini"]);
+const PROVIDER_TYPES_WITH_CODE_SANDBOX = new Set([
+  "openai",
+  "anthropic",
+  "gemini",
+]);
 
 export function providerHostsCodeExecution(
   providerType: string | null | undefined,
@@ -808,7 +831,9 @@ const OPENROUTER_MANDATORY_REASONING_MODELS = new Set([
 
 function isOpenRouterMandatoryReasoningModel(modelId: string): boolean {
   const normalized = modelId.trim().toLowerCase();
-  const canonical = normalized.startsWith("~") ? normalized.slice(1) : normalized;
+  const canonical = normalized.startsWith("~")
+    ? normalized.slice(1)
+    : normalized;
   return OPENROUTER_MANDATORY_REASONING_MODELS.has(canonical);
 }
 type ReasoningCaps = {
@@ -891,7 +916,9 @@ function matchesModelPrefix(
   });
 }
 
-function resolveAnthropicReasoningEffortCapabilities(modelId: string): ReasoningCaps {
+function resolveAnthropicReasoningEffortCapabilities(
+  modelId: string,
+): ReasoningCaps {
   const normalized = modelId.trim().toLowerCase();
   const matched = ANTHROPIC_REASONING_MODELS.find((entry) =>
     matchesModelPrefix(normalized, entry.prefixes),
@@ -978,9 +1005,12 @@ const OPENAI_REASONING_MODELS = [
  * on family, and a family prefix silently swallows its own `-chat` variant. */
 const OPENAI_NON_REASONING_CHAT_ALIAS = /-chat(?:-latest)?$/;
 
-function resolveOpenAIReasoningEffortCapabilities(modelId: string): ReasoningCaps {
+function resolveOpenAIReasoningEffortCapabilities(
+  modelId: string,
+): ReasoningCaps {
   const normalized = modelId.trim().toLowerCase();
-  if (OPENAI_NON_REASONING_CHAT_ALIAS.test(normalized)) return NO_REASONING_CAPS;
+  if (OPENAI_NON_REASONING_CHAT_ALIAS.test(normalized))
+    return NO_REASONING_CAPS;
   const matched = OPENAI_REASONING_MODELS.find((entry) =>
     matchesModelPrefix(normalized, entry.prefixes),
   );
@@ -1004,7 +1034,9 @@ function withEnableThinkingStyle(
   };
 }
 
-function withReasoningEffortStyle(caps: ReasoningCaps): ExternalReasoningCapabilities {
+function withReasoningEffortStyle(
+  caps: ReasoningCaps,
+): ExternalReasoningCapabilities {
   return {
     ...DEFAULT_EXTERNAL_REASONING_CAPABILITIES,
     supportsReasoning: true,
@@ -1014,7 +1046,9 @@ function withReasoningEffortStyle(caps: ReasoningCaps): ExternalReasoningCapabil
   };
 }
 
-function resolveKimiReasoningCapabilities(modelId: string): ExternalReasoningCapabilities {
+function resolveKimiReasoningCapabilities(
+  modelId: string,
+): ExternalReasoningCapabilities {
   // Kimi has a boolean thinking toggle, not an effort scale: k2.6 on by default and
   // toggleable, k2-thinking always on, k2.5 and others none.
   // k2.6 is toggled via extra_body: {thinking: {type: enabled|disabled}}.
@@ -1048,16 +1082,9 @@ const GEMINI3_FLASH_PREFIXES = [
   "gemini-flash-latest",
   "gemini-flash-lite-latest",
 ];
-const GEMINI25_PRO_PREFIXES = [
-  "gemini-2.5-pro",
-];
-const GEMINI25_FLASH_PREFIXES = [
-  "gemini-2.5-flash",
-];
-const GEMINI_IMAGE_HINTS = [
-  "-image",
-  "nano-banana",
-];
+const GEMINI25_PRO_PREFIXES = ["gemini-2.5-pro"];
+const GEMINI25_FLASH_PREFIXES = ["gemini-2.5-flash"];
+const GEMINI_IMAGE_HINTS = ["-image", "nano-banana"];
 function resolveGeminiReasoningCapabilities(
   modelId: string,
 ): ExternalReasoningCapabilities {
@@ -1083,7 +1110,10 @@ function resolveGeminiReasoningCapabilities(
       ] as const,
     });
   }
-  if (GEMINI3_PRO_PATTERN.test(m) || GEMINI3_PRO_PREFIXES.some((p) => m.startsWith(p))) {
+  if (
+    GEMINI3_PRO_PATTERN.test(m) ||
+    GEMINI3_PRO_PREFIXES.some((p) => m.startsWith(p))
+  ) {
     // Gemini 3.x Pro: thinkingLevel low/medium/high; cannot fully disable, and "minimal" is rejected on Pro.
     // Refs: https://ai.google.dev/gemini-api/docs/thinking and
     // https://docs.cloud.google.com/vertex-ai/generative-ai/docs/models/gemini/3-1-pro.
@@ -1093,17 +1123,15 @@ function resolveGeminiReasoningCapabilities(
       reasoningEffortLevels: ["low", "medium", "high"] as const,
     });
   }
-  if (GEMINI3_FLASH_PATTERN.test(m) || GEMINI3_FLASH_PREFIXES.some((p) => m.startsWith(p))) {
+  if (
+    GEMINI3_FLASH_PATTERN.test(m) ||
+    GEMINI3_FLASH_PREFIXES.some((p) => m.startsWith(p))
+  ) {
     // Gemini 3 Flash: thinkingLevel minimal/low/medium/high. Minimal is the closest to "off" Google offers on Gemini 3.
     return withReasoningEffortStyle({
       supportsReasoning: true,
       supportsReasoningOff: false,
-      reasoningEffortLevels: [
-        "minimal",
-        "low",
-        "medium",
-        "high",
-      ] as const,
+      reasoningEffortLevels: ["minimal", "low", "medium", "high"] as const,
     });
   }
   if (GEMINI25_PRO_PREFIXES.some((p) => m.startsWith(p))) {
@@ -1120,19 +1148,15 @@ function resolveGeminiReasoningCapabilities(
     return withReasoningEffortStyle({
       supportsReasoning: true,
       supportsReasoningOff: true,
-      reasoningEffortLevels: [
-        "none",
-        "low",
-        "medium",
-        "high",
-        "max",
-      ] as const,
+      reasoningEffortLevels: ["none", "low", "medium", "high", "max"] as const,
     });
   }
   return withEnableThinkingStyle();
 }
 
-function resolveMistralReasoningCapabilities(modelId: string): ExternalReasoningCapabilities {
+function resolveMistralReasoningCapabilities(
+  modelId: string,
+): ExternalReasoningCapabilities {
   if (modelId === "magistral-medium-latest") {
     return withReasoningEffortStyle({
       supportsReasoning: true,
@@ -1141,7 +1165,10 @@ function resolveMistralReasoningCapabilities(modelId: string): ExternalReasoning
       reasoningEffortLevels: ["medium", "high"] as const,
     });
   }
-  if (modelId === "mistral-small-latest" || modelId === "mistral-vibe-cli-latest") {
+  if (
+    modelId === "mistral-small-latest" ||
+    modelId === "mistral-vibe-cli-latest"
+  ) {
     return withReasoningEffortStyle({
       supportsReasoning: true,
       supportsReasoningOff: true,
@@ -1170,15 +1197,33 @@ export function effectiveExternalReasoningProviderType(
     : normalizedProvider;
 }
 
-// vLLM has no per-model reasoning signal on OpenAI-compat, so pin via user toggle.
-function resolveConnectionLevelReasoning(
+// ollama's /v1/chat/completions also accepts "none", which Thinking off sends.
+// https://docs.ollama.com/api/openai-compatibility
+const OLLAMA_EFFORT_LEVELS = ["low", "medium", "high", "max"] as const;
+
+// vLLM has no per-model reasoning signal on OpenAI-compat, so pin via user toggle. Ollama does:
+// /api/tags names a "thinking" capability per model, learned into the capability map when the
+// catalog is fetched, and Ollama errors a thinking request at a model that cannot think, so the
+// ladder appears only once that model is known to reason (#9649).
+function resolveProviderReasoning(
   normalizedProvider: string,
+  modelId: string,
   options: ExternalReasoningResolveOptions | undefined,
 ): ExternalReasoningCapabilities | null {
   if (normalizedProvider === "vllm" && options?.isReasoningProvider) {
     return withEnableThinkingStyle({
       supportsReasoning: true,
       supportsReasoningOff: true,
+    });
+  }
+  if (
+    normalizedProvider === "ollama" &&
+    providerModelSupportsThinking(normalizedProvider, modelId) === true
+  ) {
+    return withReasoningEffortStyle({
+      supportsReasoning: true,
+      supportsReasoningOff: true,
+      reasoningEffortLevels: OLLAMA_EFFORT_LEVELS,
     });
   }
   return null;
@@ -1203,10 +1248,17 @@ const CATALOG_REASONING_WIRE: Record<string, ReasoningWire> = {
   openai: { levels: null, off: "none-level" },
   openai_codex: { levels: null, off: "none-level" },
   anthropic: { levels: null, off: "unified" },
-  gemini: { levels: ["minimal", "low", "medium", "high", "xhigh", "max"], off: "unified" },
+  gemini: {
+    levels: ["minimal", "low", "medium", "high", "xhigh", "max"],
+    off: "unified",
+  },
   mistral: { levels: ["high"], off: "unified" },
   kimi: { levels: [], off: "unified" },
-  deepseek: { levels: ["low", "high", "max"], aliases: { minimal: "low", medium: "high", xhigh: "high" }, off: "unified" },
+  deepseek: {
+    levels: ["low", "high", "max"],
+    aliases: { minimal: "low", medium: "high", xhigh: "high" },
+    off: "unified",
+  },
   qwen: { levels: [], off: "unified" },
   huggingface: { levels: null, off: "unified" },
   ollama: { levels: null, off: "unified" },
@@ -1236,12 +1288,15 @@ function projectCatalogEntry(
       supportsReasoningOff: supportsOff,
     });
   }
-  const ladder: ReasoningEffortLevel[] = supportsOff ? ["none", ...levels] : levels;
+  const ladder: ReasoningEffortLevel[] = supportsOff
+    ? ["none", ...levels]
+    : levels;
   // Checked against the final ladder: OpenRouter reports default_effort "none" for models such as openai/gpt-5.1.
   const mappedDefault = entry.defaultEffort
     ? (wire.aliases?.[entry.defaultEffort] ?? entry.defaultEffort)
     : null;
-  const defaultEffort = mappedDefault && ladder.includes(mappedDefault) ? mappedDefault : null;
+  const defaultEffort =
+    mappedDefault && ladder.includes(mappedDefault) ? mappedDefault : null;
   return {
     ...withReasoningEffortStyle({
       supportsReasoning: true,
@@ -1283,23 +1338,30 @@ export function getExternalReasoningCapabilities(
   modelId: string | null | undefined,
   options?: ExternalReasoningResolveOptions,
 ): ExternalReasoningCapabilities {
-  const normalizedModel = modelId?.trim().toLowerCase() ?? "";
+  // The capability map is keyed by the id the catalog reported, so the lookup
+  // gets the trimmed id rather than the case-folded one used for matching.
+  const catalogModel = modelId?.trim() ?? "";
+  const normalizedModel = catalogModel.toLowerCase();
   const normalizedProvider = effectiveExternalReasoningProviderType(
     providerType,
     options?.apiType,
   );
-  const connectionLevel = resolveConnectionLevelReasoning(
+  const providerLevel = resolveProviderReasoning(
     normalizedProvider,
+    catalogModel,
     options,
   );
-  if (connectionLevel) {
-    return connectionLevel;
+  if (providerLevel) {
+    return providerLevel;
   }
   if (!normalizedModel) {
     return withEnableThinkingStyle();
   }
 
-  if (normalizedProvider === "openrouter" && !normalizedModel.startsWith("openrouter/")) {
+  if (
+    normalizedProvider === "openrouter" &&
+    !normalizedModel.startsWith("openrouter/")
+  ) {
     const catalog = catalogCapabilities(normalizedProvider, normalizedModel);
     if (catalog) return catalog;
   }
@@ -1317,7 +1379,7 @@ export function getExternalReasoningCapabilities(
   // OpenRouter ids are namespaced (e.g. "openai/gpt-5.5").
   const modelForMatching =
     normalizedProvider === "openrouter" && normalizedModel.includes("/")
-      ? normalizedModel.split("/").at(-1) ?? normalizedModel
+      ? (normalizedModel.split("/").at(-1) ?? normalizedModel)
       : normalizedModel;
 
   switch (normalizedProvider) {
@@ -1347,7 +1409,10 @@ export function getExternalReasoningCapabilities(
       }
       const table = resolveGeminiReasoningCapabilities(modelForMatching);
       // Image models take no thinkingConfig (the backend strips it), so the table's "no control" is deliberate.
-      if (table.supportsReasoning || GEMINI_IMAGE_HINTS.some((hint) => normalizedModel.includes(hint))) {
+      if (
+        table.supportsReasoning ||
+        GEMINI_IMAGE_HINTS.some((hint) => normalizedModel.includes(hint))
+      ) {
         return table;
       }
       return catalogCapabilities("gemini", normalizedModel) ?? table;
@@ -1356,10 +1421,16 @@ export function getExternalReasoningCapabilities(
     case "deepseek":
     case "qwen":
     case "huggingface":
-      return catalogCapabilities(normalizedProvider, normalizedModel) ?? withEnableThinkingStyle();
+      return (
+        catalogCapabilities(normalizedProvider, normalizedModel) ??
+        withEnableThinkingStyle()
+      );
     case "vllm":
     case "llama_cpp":
-      return catalogCapabilities(normalizedProvider, normalizedModel, true) ?? withEnableThinkingStyle();
+      return (
+        catalogCapabilities(normalizedProvider, normalizedModel, true) ??
+        withEnableThinkingStyle()
+      );
     case "openai":
     case "openai_codex":
     case "anthropic": {
@@ -1370,12 +1441,17 @@ export function getExternalReasoningCapabilities(
       if (providerCaps.supportsReasoning) {
         return withReasoningEffortStyle(providerCaps);
       }
-      if (isOpenAIProvider && OPENAI_NON_REASONING_CHAT_ALIAS.test(modelForMatching)) {
+      if (
+        isOpenAIProvider &&
+        OPENAI_NON_REASONING_CHAT_ALIAS.test(modelForMatching)
+      ) {
         return withEnableThinkingStyle();
       }
       return (
-        catalogCapabilities(isOpenAIProvider ? "openai" : "anthropic", modelForMatching) ??
-        withEnableThinkingStyle()
+        catalogCapabilities(
+          isOpenAIProvider ? "openai" : "anthropic",
+          modelForMatching,
+        ) ?? withEnableThinkingStyle()
       );
     }
     default:
@@ -1385,7 +1461,11 @@ export function getExternalReasoningCapabilities(
 
 export type RuntimeReasoningFields = Pick<
   ExternalReasoningCapabilities,
-  "supportsReasoning" | "reasoningAlwaysOn" | "reasoningStyle" | "supportsReasoningOff" | "reasoningEffortLevels"
+  | "supportsReasoning"
+  | "reasoningAlwaysOn"
+  | "reasoningStyle"
+  | "supportsReasoningOff"
+  | "reasoningEffortLevels"
 > & { reasoningEffort: ReasoningEffortLevel; reasoningEnabled: boolean };
 
 /** Runtime reasoning fields for a catalog that lands after the model is selected. A chosen effort the new ladder
@@ -1406,7 +1486,9 @@ export function reasoningFieldsAfterCatalogRefresh(
         ? clampReasoningEffortToLevels(current.reasoningEffort, levels)
         : current.reasoningEffort,
     reasoningEnabled:
-      caps.supportsReasoning && !caps.supportsReasoningOff ? true : current.reasoningEnabled,
+      caps.supportsReasoning && !caps.supportsReasoningOff
+        ? true
+        : current.reasoningEnabled,
   };
 }
 

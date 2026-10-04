@@ -76,6 +76,7 @@ import {
   LEGACY_CUSTOM_PROVIDER_TYPE,
   CUSTOM_PROVIDER_DISPLAY_NAME,
   getProviderModelCapabilities,
+  learnCatalogModelCapabilities,
   providerModelSupportsStudioTools,
   setProviderModelCapabilities,
   removeExternalProviderApiKey,
@@ -723,6 +724,9 @@ export function ChatProvidersSettings({
         baseUrl,
         apiType: providerType === LEGACY_CUSTOM_PROVIDER_TYPE ? apiType : undefined,
       });
+      // The id list below is all the picker keeps, so the per-model capability
+      // names the catalog carried (Ollama's "thinking") are learned here or lost.
+      learnCatalogModelCapabilities(providerType, models);
       const registryDefaults = supportsRemoteModelCatalog(providerType)
         ? []
         : (registryByType.get(providerType)?.default_models ?? []);
