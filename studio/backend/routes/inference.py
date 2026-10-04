@@ -20992,6 +20992,10 @@ async def voice_load_model(
         )
         await asyncio.to_thread(account_access.require_model_access, model_identifier)
     voice_backend = get_voice_llama_backend()
+    # Read first: unload_model bumps it and load_model never does, so an unload that lands
+    # anywhere in this request (resolution, preflight, the gap before the spawn, where the
+    # cancel event it set gets cleared) is seen after the load.
+    unload_epoch = getattr(voice_backend, "_unload_epoch", None)
 
     # Resolve model config — auto-selects GGUF variant when gguf_variant is None,
     # mirroring the ModelConfig.from_identifier() call in /load, including how it
@@ -21083,10 +21087,6 @@ async def voice_load_model(
     from core.inference.gpu_arbiter import CHAT as _CHAT, acquire_for_request, current_owner
     from core.inference.llama_cpp import voice_load_in_flight
 
-    # unload_model bumps this; load_model never does. An unload that lands between the
-    # in-flight mark and the spawn sets a cancel event load_model then clears, so the
-    # epoch is what survives.
-    unload_epoch = getattr(voice_backend, "_unload_epoch", None)
     in_flight = voice_load_in_flight()
     await asyncio.to_thread(
         acquire_for_request, _CHAT, in_flight.__enter__, alongside = True

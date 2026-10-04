@@ -1321,10 +1321,12 @@ def test_voice_load_undoes_itself_when_an_unload_landed_before_the_spawn():
 
     source = inspect.getsource(routes_module.voice_load_model)
     read = source.index('unload_epoch = getattr(voice_backend, "_unload_epoch", None)')
+    resolve = source.index("resolve_audio_model_config(") if "resolve_audio_model_config(" in source else source.index("GgufLoadIntent(")
     claim = source.index("acquire_for_request, _CHAT, in_flight.__enter__, alongside = True")
     spawn = source.index("await asyncio.to_thread(voice_backend.load_model, intent)")
     check = source.index('getattr(voice_backend, "_unload_epoch", None) != unload_epoch')
-    assert read < claim < spawn < check
+    # Read before the model is resolved, so an unload during resolution or preflight counts too.
+    assert read < resolve < claim < spawn < check
     assert "status_code = 409" in source[check:]
 
 
