@@ -636,6 +636,12 @@ def _resolve_checkpoint_path(
         )
         names = [n for n in te_candidate_filenames(source) if te_candidate_is_readable(n)]
         last: Optional[Exception] = None
+        from .diffusion_prequant import _first_mirrored
+
+        # The operator's mirror answers before the Hub is asked for any name (and so also offline).
+        mirrored = _first_mirrored(source.location, names, te_candidate_is_readable)
+        if mirrored is not None:
+            return mirrored
         for name in names:
             try:
                 return hf_hub_download(
