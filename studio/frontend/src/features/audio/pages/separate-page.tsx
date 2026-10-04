@@ -282,12 +282,11 @@ function saveBlob(blob: Blob, name: string) {
 
 async function downloadGroup(group: SeparationGroup) {
   try {
-    const files = await Promise.all(
-      group.stems.map(async (clip) => ({
-        name: stemFileName(group.title, stemLabel(clip.role ?? "")),
-        blob: await fetchAudioBlob(clip.url),
-      })),
-    );
+    // Each stem is fetched when the zip reaches it, so a long song never holds every stem at once.
+    const files = group.stems.map((clip) => ({
+      name: stemFileName(group.title, stemLabel(clip.role ?? "")),
+      blob: () => fetchAudioBlob(clip.url),
+    }));
     saveBlob(await zipStems(files), stemZipName(group.title));
   } catch {
     toast.error("Could not download the stems.");

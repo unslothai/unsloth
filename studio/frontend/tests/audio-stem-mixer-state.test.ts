@@ -135,3 +135,19 @@ test("zipStems stores every file under its name", async () => {
   assert.equal(strFromU8(files["t - Vocals (2).wav"]), "second");
   assert.equal(files["t - Drums.wav"].length, 0);
 });
+
+test("zipStems loads each stem only when the archive reaches it", async () => {
+  const order: string[] = [];
+  const lazy = (name: string, body: string) => async () => {
+    order.push(name);
+    return new Blob([body]);
+  };
+  const zip = await zipStems([
+    { name: "a.wav", blob: lazy("a", "first") },
+    { name: "b.wav", blob: lazy("b", "second") },
+  ]);
+  assert.deepEqual(order, ["a", "b"]);
+  const files = unzipSync(new Uint8Array(await zip.arrayBuffer()));
+  assert.equal(strFromU8(files["a.wav"]), "first");
+  assert.equal(strFromU8(files["b.wav"]), "second");
+});

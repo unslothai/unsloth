@@ -51,26 +51,42 @@ export function uniqueStemNames(names: readonly string[]): string[] {
   });
 }
 
-/** Blobs are streamed in, so no second contiguous copy is held. */
+// Zip output is moved into Blob parts at this size, so it leaves the JS heap as it is written.
+const ZIP_FLUSH_BYTES = 32 * 1024 * 1024;
+
+/** Blobs are streamed in one at a time (a loader is called only when its turn comes), and the
+ *  output is flushed into Blob parts, so neither all stems nor the whole archive sit in the heap. */
 export async function zipStems(
-  files: readonly { name: string; blob: Blob }[],
+  files: readonly { name: string; blob: Blob | (() => Promise<Blob>) }[],
 ): Promise<Blob> {
   const names = uniqueStemNames(files.map((file) => file.name));
-  const chunks: Uint8Array[] = [];
+  const parts: Blob[] = [];
+  let pending: Uint8Array[] = [];
+  let pendingBytes = 0;
+  const flush = () => {
+    if (pending.length === 0) return;
+    parts.push(new Blob(pending as BlobPart[]));
+    pending = [];
+    pendingBytes = 0;
+  };
   await new Promise<void>((resolve, reject) => {
     const zip = new Zip((error, data, final) => {
       if (error) {
         reject(error);
         return;
       }
-      chunks.push(data);
+      pending.push(data);
+      pendingBytes += data.byteLength;
+      if (pendingBytes >= ZIP_FLUSH_BYTES) flush();
       if (final) resolve();
     });
     const write = async () => {
       for (const [index, file] of files.entries()) {
+        const blob =
+          typeof file.blob === "function" ? await file.blob() : file.blob;
         const entry = new ZipPassThrough(names[index]);
         zip.add(entry);
-        const reader = file.blob.stream().getReader();
+        const reader = blob.stream().getReader();
         for (;;) {
           const { done: end, value } = await reader.read();
           if (end) break;
@@ -82,5 +98,6 @@ export async function zipStems(
     };
     write().catch(reject);
   });
-  return new Blob(chunks as BlobPart[], { type: "application/zip" });
+  flush();
+  return new Blob(parts, { type: "application/zip" });
 }
