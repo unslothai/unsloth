@@ -273,17 +273,21 @@ test("picking a new source clears an earlier error", () => {
   );
 });
 
-test("a history pick carries a transcript only from Speak and Clone clips", async () => {
-  assert.match(card, /onChange\(clipReference\(clip, clipWorkflow\(clip\)\)\)/);
+test("a history pick carries a transcript only from speech clips", async () => {
+  assert.match(
+    card,
+    /onChange\(clipReference\(\{ \.\.\.clip, workflow: clipWorkflow\(clip\) \}\)\)/,
+  );
   const { clipReference } = await import(
     "../src/features/audio/audio-run-request.ts"
   );
   const clip = { id: "c", prompt: "Hello there.", duration_s: 2 };
-  assert.equal(clipReference(clip, "speak").transcript, "Hello there.");
-  assert.equal(clipReference(clip, "clone").transcript, "Hello there.");
+  for (const workflow of ["speak", "clone", "edit"]) {
+    assert.equal(clipReference({ ...clip, workflow }).transcript, "Hello there.");
+  }
   // Convert and Music prompts are labels, not what the clip says.
-  assert.equal(clipReference(clip, "convert").transcript, null);
-  assert.equal(clipReference(clip, "music").transcript, null);
+  assert.equal(clipReference({ ...clip, workflow: "convert" }).transcript, null);
+  assert.equal(clipReference({ ...clip, workflow: "music" }).transcript, null);
 });
 
 test("a new selection clears the old one's error or expiry so it loads", () => {
