@@ -63,9 +63,10 @@ import { OpenChatFolderItem } from "./open-chat-folder-item";
 const MENU = "library-actions-menu";
 const ICON = "size-icon";
 const LABEL = "px-3 pb-1 pt-2 font-normal text-muted-foreground";
-/** The header's "…" buttons, saved chat's and temporary chat's alike. */
+/** The header's "…" buttons, saved chat's and temporary chat's alike. Open reads from
+ *  aria-expanded: the tooltip around the trigger writes its own data-state over the menu's. */
 export const CHAT_MENU_TRIGGER =
-  "flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring data-[state=open]:bg-nav-surface-hover data-[state=open]:text-black dark:hover:text-white dark:data-[state=open]:text-white";
+  "flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring aria-expanded:bg-nav-surface-hover aria-expanded:text-black dark:hover:text-white dark:aria-expanded:text-white";
 export const CHAT_MENU = MENU;
 const MOVE_TO_LIST =
   "no-scrollbar -my-0.5 max-h-[calc(260px*var(--ui-space-scale,1))] overflow-y-auto overscroll-contain";
