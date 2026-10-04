@@ -73,10 +73,10 @@ def test_full_access_descriptions_drop_the_isolation_claim(tool):
     assert "sandbox is disabled" in description
     assert "wherever Unsloth Studio is running" in description
     # Docker is a documented deployment, where only mounted paths are visible,
-    # so the reach is the Studio process's, not a whole machine's.
+    # so the reach is the Unsloth process's, not a whole machine's.
     assert "container with only some paths mounted" in description
     # The remote modes (--secure / -H 0.0.0.0, README) put the tools on the host
-    # serving Studio, not on the device the user is looking at, so the prompt
+    # serving Unsloth, not on the device the user is looking at, so the prompt
     # must not claim the two are the same.
     assert "user's own machine" not in description
     # The workdir really is still the per-session dir in bypass mode
@@ -184,7 +184,7 @@ def test_python_full_access_description_still_omits_the_shell():
 
 def test_full_access_drops_the_local_desktop_promise(monkeypatch):
     """The Git Bash branch of the shell note says a detached program opens a
-    window on the user's desktop, which only holds while Studio is local. The
+    window on the user's desktop, which only holds while Unsloth is local. The
     Full access text now says it may be remote or containerized, so the two
     would contradict each other."""
     monkeypatch.setattr(sys, "platform", "win32")
@@ -282,7 +282,7 @@ def test_nudge_states_the_environment_under_full_access():
     nudge = _build_tool_action_nudge(tools = _CODE_TOOLS, model_name = "test-8B", full_access = True)
     assert "where Unsloth Studio is running" in nudge
     assert "code sandbox and the approval prompts disabled" in nudge
-    # Containerized Studio sees only its mounts, so the claim is scoped to what
+    # Containerized Unsloth sees only its mounts, so the claim is scoped to what
     # the process can reach rather than to the machine.
     assert "whatever that process can reach" in nudge
     assert "container that mounts only some" in nudge
@@ -313,7 +313,7 @@ def test_the_tip_names_only_the_selected_code_tools(enabled, expected):
     for absent in {"python", "terminal"} - set(enabled):
         assert f"The {absent} tool runs where" not in nudge
         assert f"and {absent} tools run where" not in nudge
-    # Studio can be served remotely, so the tools' host is not necessarily the
+    # Unsloth can be served remotely, so the tools' host is not necessarily the
     # device in front of the user.
     assert "not necessarily the device the user is viewing this on" in nudge
     # The actual reported failure: the model asserted isolation instead of

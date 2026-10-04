@@ -60,7 +60,7 @@ PARENT = textwrap.dedent(
     argv = _get_shell_cmd('"%s" -c "%s"' % (sys.executable, payload))
     kw = {}
     if sys.argv[3] == "job":
-        # The helper Studio's own spawns go through: PR_SET_PDEATHSIG on Linux,
+        # The helper Unsloth's own spawns go through: PR_SET_PDEATHSIG on Linux,
         # nothing on macOS, job inheritance on Windows.
         from utils.process_lifetime import child_popen_kwargs
         kw = child_popen_kwargs()

@@ -10,6 +10,38 @@ import {
 
 export type WindowLayoutGuard = () => boolean;
 
+export async function prepareSetupWindow(options: {
+  resetLayout: () => Promise<unknown>;
+  unmaximize: () => Promise<void>;
+  clearConstraints: () => Promise<void>;
+  enableResize: () => Promise<void>;
+  resizeForSetup: () => Promise<boolean>;
+  disableResize: () => Promise<void>;
+  isCurrent: WindowLayoutGuard;
+}): Promise<boolean> {
+  const {
+    resetLayout,
+    unmaximize,
+    clearConstraints,
+    enableResize,
+    resizeForSetup,
+    disableResize,
+    isCurrent,
+  } = options;
+  await resetLayout();
+  if (!isCurrent()) return false;
+  await unmaximize();
+  if (!isCurrent()) return false;
+  await clearConstraints();
+  if (!isCurrent()) return false;
+  // GTK can ignore a size change on a non-resizable restored window.
+  await enableResize();
+  if (!isCurrent()) return false;
+  if (!(await resizeForSetup()) || !isCurrent()) return false;
+  await disableResize();
+  return isCurrent();
+}
+
 type WorkAreaMonitor = {
   scaleFactor: number;
   workArea: {
@@ -38,10 +70,17 @@ type WindowMonitorReader<Monitor extends WorkAreaMonitor> = {
   outerSize?: () => Promise<PhysicalWindowSize>;
 };
 
-/** Size bounds the window has to stay within on its current monitor. */
+/**
+ * Size bounds the window has to stay within on its current monitor.
+ *
+ * `logicalPerCssPx` reports the webview's zoom above a monitor's display scale,
+ * keeping the resize floor a CSS-pixel floor under Windows text scaling. It
+ * defaults to a no-op, which is every platform without it.
+ */
 export async function measureWindowLayout<Monitor extends WorkAreaMonitor>(
   reader: WindowMonitorReader<Monitor>,
   isCurrent: WindowLayoutGuard,
+  logicalPerCssPx: (monitorScale: number) => number = () => 1,
 ): Promise<MeasuredWindowLayout<Monitor> | null> {
   // Some platforms cannot resolve the monitor for a hidden window.
   const monitor =
@@ -75,18 +114,62 @@ export async function measureWindowLayout<Monitor extends WorkAreaMonitor>(
   }
 
   const bounds = availableInnerSize
-    ? calculateWindowSizeBounds(availableInnerSize)
+    ? calculateWindowSizeBounds(
+        availableInnerSize,
+        monitor ? logicalPerCssPx(monitor.scaleFactor) : 1,
+      )
     : DEFAULT_APP_WINDOW_SIZE_BOUNDS;
   return { bounds, monitor, frameSize };
 }
 
 export function shouldFinishWindowLayoutWait(
-  sawPostShowChange: boolean,
+  sawNativeChange: boolean,
 ): boolean {
-  return sawPostShowChange;
+  return sawNativeChange;
+}
+
+type ResolutionQuery = {
+  addEventListener: (type: "change", listener: () => void) => void;
+  removeEventListener: (type: "change", listener: () => void) => void;
+};
+
+export type PixelRatioSource = {
+  devicePixelRatio: () => number;
+  matchResolution: (dppx: number) => ResolutionQuery | null;
+};
+
+/**
+ * Reports a change in the webview's device pixel ratio, which moves the
+ * CSS-pixel resize floor and is otherwise only read at launch. There is no
+ * event for the ratio itself, so a query for the ratio in force stands in: it
+ * stops matching, and a fresh query for the new one takes over.
+ */
+export function observeDevicePixelRatio(
+  source: PixelRatioSource,
+  onChange: () => void,
+): () => void {
+  let query: ResolutionQuery | null = null;
+  let disposed = false;
+  const listen = () => {
+    query?.removeEventListener("change", handle);
+    query = disposed ? null : source.matchResolution(source.devicePixelRatio());
+    query?.addEventListener("change", handle);
+  };
+  function handle() {
+    listen();
+    if (!disposed) onChange();
+  }
+  listen();
+  return () => {
+    disposed = true;
+    query?.removeEventListener("change", handle);
+    query = null;
+  };
 }
 type FinalizeAppWindowLayoutOptions<Monitor extends WorkAreaMonitor> = {
   restored: boolean;
+  /** Geometry was restored natively while hidden; settle after the reveal instead. */
+  nativeRestored?: boolean;
   measured: MeasuredWindowLayout<Monitor>;
   show: () => Promise<boolean>;
   waitForSettled?: () => Promise<void>;
@@ -96,9 +179,10 @@ type FinalizeAppWindowLayoutOptions<Monitor extends WorkAreaMonitor> = {
   isCurrent: WindowLayoutGuard;
 };
 
-/** Shows the app window, then applies bounds from the visible monitor. */
+/** Reveals the settled app window, then applies bounds from the visible monitor. */
 export async function finalizeAppWindowLayout<Monitor extends WorkAreaMonitor>({
   restored,
+  nativeRestored = false,
   measured,
   show,
   waitForSettled,
@@ -108,16 +192,20 @@ export async function finalizeAppWindowLayout<Monitor extends WorkAreaMonitor>({
   isCurrent,
 }: FinalizeAppWindowLayoutOptions<Monitor>): Promise<void> {
   if (!isCurrent()) return;
+  // restoreState returns before native resize lands; showing now flashes the setup size.
+  if (restored && !nativeRestored) {
+    await waitForSettled?.();
+    if (!isCurrent()) return;
+  }
   const shown = await show();
   if (!isCurrent()) return;
   // A restored hidden autostart cannot reliably resolve its saved monitor yet.
   // Keep the plugin-restored geometry untouched until native tray reveal.
   if (restored && !shown) return;
-
-  // Native restore calls complete before GTK/Cocoa move and resize events have
-  // necessarily updated Tauri's cached geometry.
+  // Showing can change the resolved monitor (e.g. a compact secondary).
   if (restored) {
-    await waitForSettled?.();
+    // A hidden GTK window only refreshes its cached size once mapped.
+    if (nativeRestored) await waitForSettled?.();
     if (!isCurrent()) return;
     measured = (await measure()) ?? measured;
     if (!isCurrent()) return;

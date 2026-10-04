@@ -6,12 +6,12 @@ import { KeylessApiAccessSection } from "../components/keyless-api-access-sectio
 import { LanAccessSection } from "../components/lan-access-section";
 import { RemoteAccessSection } from "../components/remote-access-section";
 
-/** Reaching Studio from another device, without the API token list in the way. */
+/** Reaching Unsloth from another device, without the API token list in the way. */
 export function RemoteLanTab() {
   const t = useT();
 
   return (
-    <div className="flex min-w-0 max-w-full flex-col gap-6">
+    <div className="settings-page">
       {/* data-settings-label lets indexed settings search scroll to these. */}
       <header className="flex min-w-0 flex-col gap-1">
         <h1

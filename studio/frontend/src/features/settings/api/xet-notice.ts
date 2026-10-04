@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // Asking the backend for one of the three Xet notices. The count was in per-origin
-// localStorage, and a Studio origin moves whenever port 8888 is taken, so every new
+// localStorage, and an Unsloth origin moves whenever port 8888 is taken, so every new
 // origin handed out a fresh three and the notice never stopped.
 
 import { authFetch } from "@/features/auth/api";

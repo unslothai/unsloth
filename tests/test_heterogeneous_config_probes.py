@@ -168,7 +168,7 @@ def _saved_gemma4_text_config():
 
 
 def _to_namespace(value):
-    """Studio's `_load_config_for_gpu_estimate`, verbatim: it never builds a
+    """Unsloth's `_load_config_for_gpu_estimate`, verbatim: it never builds a
     transformers config, it reads config.json and recursively wraps every dict
     in a SimpleNamespace, so the per-layer mapping arrives as an object whose
     attribute names are the layer indices.
@@ -191,7 +191,7 @@ def test_a_serialized_per_layer_config_is_read_from_a_dict():
 
 
 def test_a_serialized_per_layer_config_is_read_from_a_namespace():
-    """Studio's VRAM estimate reads config.json, so this is the shape it sees."""
+    """Unsloth's VRAM estimate reads config.json, so this is the shape it sees."""
     config = _to_namespace({"model_type": "gemma4", "text_config": _saved_gemma4_text_config()})
     assert _utils._get_max_attention_head_dim(config) == 512
     assert _utils._get_flash_attention_disable_reason(config) is not None

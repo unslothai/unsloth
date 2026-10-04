@@ -42,21 +42,21 @@ from typing import Any, Sequence
 
 from .schema import Measure
 
-#: Perceptual constant. A frame longer than this reads as an interruption regardless of display.
+#:Perceptual constant. A frame longer than this reads as an interruption regardless of display.
 JANK_FRAME_MS = 100.0
 
-#: Detection floors. Below these the recorder cannot distinguish a reading from its own noise.
+#:Detection floors. Below these the recorder cannot distinguish a reading from its own noise.
 FLOOR_FRAME_MS = 0.5
 FLOOR_TIME_IN_JANK_PCT = 0.1
 FLOOR_JANK_INDEX = 0.05
 
-#: A refresh interval outside this range is not a display, it is a broken recorder.
+#:A refresh interval outside this range is not a display, it is a broken recorder.
 REFRESH_MIN_MS = 3.0
 REFRESH_MAX_MS = 60.0
 REFRESH_FALLBACK_MS = 1000.0 / 60.0
 
-#: Log-spaced histogram edges, in ms. Chosen so that the interesting region (one frame, a few
-#: frames, a visible hitch, a freeze) each gets its own bucket rather than all landing in ">33".
+#: Log-spaced histogram edges, in ms. Chosen so the interesting region (one frame, a few frames, a
+#: visible hitch, a freeze) each gets its own bucket rather than all landing in ">33".
 HISTOGRAM_EDGES_MS: tuple[float, ...] = (
     0.0,
     4.0,
@@ -179,10 +179,10 @@ def compute_frame_stats(
         budget_ms, refresh_source = measure_refresh_interval_ms(usable)
 
     if not usable:
-        # The recorder was installed and produced nothing. That is the rAF-unscheduled trap:
-        # a compositor that decided nothing is visible stops SCHEDULING callbacks, and the naive
-        # reading is "zero dropped frames". Every metric here reads as a failed measurement so
-        # the tri-clock gate upstream is what decides whether the window survives.
+        # The recorder was installed and produced nothing: the rAF-unscheduled trap, where a compositor
+        # that decided nothing is visible stops SCHEDULING callbacks and the naive reading is "zero dropped
+        # frames". Every metric here reads as a failed measurement so the tri-clock gate upstream decides
+        # whether the window survives.
         reason = "frame recorder produced no frames (rAF may be unscheduled)"
         return FrameStats(
             frames_total = 0,

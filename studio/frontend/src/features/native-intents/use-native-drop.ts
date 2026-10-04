@@ -368,7 +368,7 @@ export function useNativeModelDrop(
               (dropped.kind === "attach" && dropped.video.length > 0);
             if (needsRagDocuments && !canAttachDocs(currentOptions)) {
               toast.error("Attaching files needs the desktop backend", {
-                description: "Retry once Studio has finished starting up.",
+                description: "Retry once Unsloth has finished starting up.",
               });
               return;
             }

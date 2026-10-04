@@ -21,6 +21,8 @@ type Settings = {
   defaultEmbeddingModel: string;
   defaultEmbeddingGgufRepo: string;
   isCustom: boolean;
+  loaded: boolean;
+  backendLoaded: boolean;
 };
 
 function settings(model: string): Settings {
@@ -30,6 +32,8 @@ function settings(model: string): Settings {
     defaultEmbeddingModel: "unsloth/bge-small-en-v1.5",
     defaultEmbeddingGgufRepo: "",
     isCustom: model !== "unsloth/bge-small-en-v1.5",
+    loaded: false,
+    backendLoaded: false,
   };
 }
 
@@ -51,6 +55,7 @@ function respondWith(model: string, release?: Promise<void>): void {
         default_embedding_gguf_repo: "",
         // biome-ignore lint/style/useNamingConvention: API schema
         is_custom: model !== "unsloth/bge-small-en-v1.5",
+        loaded: false,
       }),
     } as unknown as Response;
   }) as typeof fetch;
@@ -180,6 +185,30 @@ test("an older save cannot land on top of a newer one", async () => {
   );
 });
 
+test("selection order is reserved before an older preflight finishes", async () => {
+  reset();
+  const store = useEmbeddingModelStore.getState();
+  const olderSelection = store.beginSave();
+  const newerSelection = store.beginSave();
+  let olderWriteRan = false;
+
+  assert.equal(
+    await store.save(async () => {
+      olderWriteRan = true;
+      return settings("org/older");
+    }, olderSelection),
+    false,
+  );
+  assert.equal(olderWriteRan, false, "the superseded preflight cannot write");
+  assert.ok(
+    await store.save(async () => settings("org/newer"), newerSelection),
+  );
+  assert.equal(
+    useEmbeddingModelStore.getState().settings?.embeddingModel,
+    "org/newer",
+  );
+});
+
 test("a superseded save is reconciled against the backend", async () => {
   reset();
   const store = useEmbeddingModelStore.getState();
@@ -280,4 +309,27 @@ test("the settle flag does not carry into the next save", async () => {
   await store.save(async () => settings("unsloth/bge-small-en-v1.5"));
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(reads, 0, "the earlier overlap was already settled");
+});
+
+test("unloading does not retire an in-flight selection's reservation", async () => {
+  reset();
+  const store = useEmbeddingModelStore.getState();
+  // The user starts a selection on one surface, switches to the other while its
+  // preflight is still running, and unloads. Unloading releases residency and
+  // leaves the selection alone, so the selection must still be the current save.
+  const selection = store.beginSave();
+  await store.applyResidency(async () => settings("org/selected"));
+
+  assert.ok(
+    useEmbeddingModelStore.getState().isSaveCurrent(selection),
+    "the unload took the selection's place in save order",
+  );
+  assert.ok(
+    await store.save(async () => settings("org/selected"), selection),
+    "the selection was dropped without ever persisting",
+  );
+  assert.equal(
+    useEmbeddingModelStore.getState().settings?.embeddingModel,
+    "org/selected",
+  );
 });

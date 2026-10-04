@@ -128,7 +128,7 @@ def _healthy_diffusers(healthy_diffusers):
 
 @pytest.fixture
 def run_dir(tmp_path, monkeypatch):
-    """A run output directory inside the (per-test) Studio outputs root, since the resume
+    """A run output directory inside the (per-test) Unsloth outputs root, since the resume
     path resolver refuses anything outside it."""
     from utils.paths import outputs_root
 

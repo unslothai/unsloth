@@ -91,7 +91,13 @@ def _build(
             or (
                 isinstance(node, ast.Assign)
                 and getattr(node.targets[0], "id", None)
-                in ("UNSLOTH_DEVICE_MAP", "DEFAULT_DEVICE_MAP", "_SIZE_UNITS")
+                in (
+                    "UNSLOTH_DEVICE_MAP",
+                    "UNSLOTH_BALANCED_DEVICE_MAP",
+                    "_PLANNED_DEVICE_MAPS",
+                    "DEFAULT_DEVICE_MAP",
+                    "_SIZE_UNITS",
+                )
             )
         )
         if keep:
@@ -174,8 +180,6 @@ def test_sentence_transformers_hands_the_nested_load_a_plain_value():
 
 
 # --------------------------------------------------------------------------------------
-# 2. max_memory arrived twice.
-# --------------------------------------------------------------------------------------
 
 
 def test_a_caller_supplied_max_memory_does_not_collide_with_the_measured_one():
@@ -233,7 +237,7 @@ def test_the_cap_is_read_without_needing_accelerate_importable():
     the cap conditional on an import that runs while placement is still being decided: on an
     install without accelerate, or one that moves the symbol, every budget came back
     unreadable and the caller's cap was dropped in silence. Found by the cross-platform run,
-    whose runners carry pytest and the Studio requirements but no accelerate."""
+    whose runners carry pytest and the Unsloth requirements but no accelerate."""
     import builtins
 
     as_bytes = _build()["_as_bytes"]

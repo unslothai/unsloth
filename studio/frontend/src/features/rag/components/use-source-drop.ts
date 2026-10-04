@@ -128,7 +128,7 @@ export function useSourceDrop({
   }, []);
 
   // Every drag is cancelled, not just a file one: nothing above these surfaces
-  // cancels a link drop, so the browser would navigate away from Studio.
+  // cancels a link drop, so the browser would navigate away from Unsloth.
   const dropProps: SourceDropProps = {
     onDragEnter: (event) => {
       event.preventDefault();

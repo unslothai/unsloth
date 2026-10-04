@@ -2,10 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { register } from "node:module";
 import test from "node:test";
-import { readFile } from "node:fs/promises";
 
-import {
+// network.ts resolves the Hub origin through "@/lib/hf-endpoint", the way vite
+// resolves the alias. Bare node does not, so the import has to go through the
+// resolver, which in turn means a dynamic import after register().
+register("./store-stub-resolver.mjs", import.meta.url);
+const {
   classifyFetchFailure,
   clearRemoteBackoff,
   fetchWithTimeout,
@@ -18,7 +22,12 @@ import {
   markRemoteNetworkOffline,
   markRemoteNetworkOnline,
   sanitizeHubErrorMessage,
-} from "../src/features/hub/lib/network.ts";
+} = await import("../src/features/hub/lib/network.ts");
+const { resetHfEndpoints, setHfEndpoints } = await import("../src/lib/hf-endpoint.ts");
+const { updateHubSource } = await import("../src/features/settings/api/hub-settings.ts");
+const { setAuthFetchHandler } = await import("./helpers/store-stubs/auth.ts");
+
+import { readSrcAsync } from "./helpers/kit.ts";
 
 const HF = "https://huggingface.co";
 
@@ -127,7 +136,7 @@ test("classification separates timeout, abort, offline and opaque failures", () 
   const opaque = classifyFetchFailure(new TypeError("Failed to fetch"), HF);
   assert.equal(opaque.kind, "network-opaque");
   assert.match(opaque.message, /huggingface\.co/);
-  assert.match(opaque.message, /extension|antivirus|filter/i);
+  assert.doesNotMatch(opaque.message, /offline/i);
 });
 
 test("a browser reporting itself offline is named as such", () => {
@@ -249,6 +258,36 @@ test("a connectivity failure still does", async () => {
   }
 });
 
+test("a relay that cannot reach its endpoint counts as the endpoint unreachable", async () => {
+  reset();
+  const relay = "http://127.0.0.1:8888/api/hub/proxy/t";
+  setHfEndpoints(relay, null, "huggingface", { endpoint: true });
+  const original = globalThis.fetch;
+  let upstream = false;
+  globalThis.fetch = (async () =>
+    new Response("{}", { status: 502, headers: upstream ? { "X-Hub-Upstream": "1" } : {} })) as typeof fetch;
+  try {
+    await assert.rejects(fetchWithTimeout(`${relay}/api/models`, {}, 1_000));
+    assert.equal(getLastHubFailure("http://127.0.0.1:8888")?.kind, "network-opaque");
+    setAuthFetchHandler(() =>
+      Response.json({
+        hf_endpoint: "",
+        datasets_server_follows_endpoint: false,
+        source: "modelscope",
+        active_source: "modelscope",
+      }),
+    );
+    await updateHubSource("modelscope");
+    assert.equal(isRemoteNetworkOffline("http://127.0.0.1:8888"), false);
+    upstream = true;
+    assert.equal((await fetchWithTimeout(`${relay}/api/models`, {}, 1_000)).status, 502);
+  } finally {
+    globalThis.fetch = original;
+    setAuthFetchHandler(null);
+    resetHfEndpoints();
+  }
+});
+
 test("a successful response clears a prior failure", async () => {
   reset();
   markRemoteNetworkOffline(HF, 60_000, {
@@ -349,10 +388,7 @@ test("a generator that threw is not pulled again", async () => {
   assert.equal((await iter.next()).done, true, "it is finished once it throws");
   assert.equal(requests, 2, "reusing it issues no request, so done is a lie");
 
-  const src = await readFile(
-    new URL("../src/features/hub/hooks/use-hub-paginated-search.ts", import.meta.url),
-    "utf8",
-  );
+  const src = await readSrcAsync("features/hub/hooks/use-hub-paginated-search.ts");
   // Set on the failure path, cleared only where a new generator is built.
   assert.match(src, /iterDeadRef\.current = true;/);
   assert.match(src, /iterRef\.current = iter;\s*\n\s*iterDeadRef\.current = false;/);

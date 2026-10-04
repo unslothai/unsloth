@@ -294,7 +294,7 @@ class BenchContext:
     context: Any            # BrowserContext
     page: Any               # the page under measurement
     cdp: Any | None
-    base_url: str           # the Studio the session is driving
+    base_url: str           # the Unsloth the session is driving
     session_id: str
     tier: str
     instrument_level: int
@@ -333,7 +333,7 @@ condition and adds four:
 | `anchored_at_end` | the app reports itself at the bottom (`.aui-thread-scroll-to-bottom` carrying `invisible`), falling back to the scrollTop arithmetic only when it does not |
 | `pin_settled` | `--aui-scroll-stabilizer` is off the viewport, i.e. the autoscroll has finished pinning |
 
-**This is a contract the arm must meet, not a signal that exists today.** Studio ships no
+**This is a contract the arm must meet, not a signal that exists today.** Unsloth ships no
 virtualization and no ordinal attributes anywhere in the chat thread. WAI-ARIA already requires a
 list whose items are not all in the DOM to publish `aria-setsize` and `aria-posinset`, so an arm
 that omits them is unusable with a screen reader whatever it does to the frame rate, and refusing
@@ -508,7 +508,7 @@ comes back is wall clock wearing the shape of a UI change. Same family as every 
 `outputs/rp/INSTRUMENT-DEFECTS.md`: **measuring at a moment whose meaning is not stable across the
 things being compared.**
 
-You cannot recognise it by its size. Mid-stream Studio does not show a prefix of the finished
+You cannot recognise it by its size. Mid-stream Unsloth does not show a prefix of the finished
 reply: `parseIncompleteMarkdown` runs remend over the tail and closes the half-arrived construct,
 KaTeX renders the repaired formula and writes its parse error and character offset into a `title`,
 Shiki re-tokenises the repaired fence, and the trailing code block carries `data-incomplete`.

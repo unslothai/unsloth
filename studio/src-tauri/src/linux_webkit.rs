@@ -18,29 +18,45 @@ const DISABLE_DMABUF: &str = "WEBKIT_DISABLE_DMABUF_RENDERER";
 // disable-nvidia-dmabuf.patch's own opt-out, read inside isNVIDIA(). WebKit returns on
 // DISABLE_DMABUF first, so it never gets there unless we honour it ourselves.
 const FORCE_DMABUF: &str = "WEBKIT_FORCE_DMABUF_RENDERER";
+// Turns accelerated compositing off outright, a level above the transport switches above.
+// WebKit is not assumed to special-case "0" here, so presence alone is an operator override
+// and the setting below is the documented way off.
+const DISABLE_COMPOSITING: &str = "WEBKIT_DISABLE_COMPOSITING_MODE";
+// Ours, not WebKit's; compositing_setting parses it.
+const DISABLE_COMPOSITING_SETTING: &str = "UNSLOTH_WEBKIT_DISABLE_COMPOSITING";
 // Comma-joined list of the variables we set, so a relaunch tells our own inherited output
 // from an operator's value. Tauri's process::restart does not env_clear. WebKit never reads it.
 const APPLIED_WORKAROUND: &str = "UNSLOTH_WEBKIT_RENDERER_WORKAROUND";
 const FORCE_SHARED_MEMORY_MIN_VERSION: (u32, u32) = (2, 44);
 // both the proprietary and open nvidia modules publish this; nouveau does not and is unaffected
 const NVIDIA_DRIVER_VERSION_PATH: &str = "/proc/driver/nvidia/version";
+// The open modules announce themselves in the same file the presence probe already reads.
+const OPEN_KERNEL_MODULE_MARKER: &str = "Open Kernel Module";
+const DRM_CLASS_DIR: &str = "/sys/class/drm";
 
 const NVIDIA_REASON: &str = "NVIDIA driver loaded (no Wayland session)";
+const NVIDIA_APPIMAGE_X11_REASON: &str = "NVIDIA driver loaded (AppImage on X11)";
 const NVIDIA_WAYLAND_REASON: &str = "NVIDIA driver loaded (Wayland session)";
 const NVIDIA_APPIMAGE_GLES_REASON: &str =
     "NVIDIA driver loaded; AppImage without a usable GLES library";
 const WAYLAND_REASON: &str = "Wayland session";
 const APPIMAGE_GLES_REASON: &str = "AppImage without a usable GLES library";
+const COMPOSITING_REASON: &str =
+    "Wayland session on NVIDIA with mixed GPU vendors and the open kernel module";
+const COMPOSITING_FORCED_REASON: &str = "compositing workaround requested by the environment";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RenderingWorkaround {
     ForceSharedMemory,
     /// Only for a host the probe confirmed is NVIDIA. On a patched library isNVIDIA()
-    /// returns before mode.add(SharedMemory) in 2.50.4 and 2.52.6, so FORCE_SHM alone is
-    /// never read there; FORCE_DMABUF stands that check down so selection reaches it.
-    /// Unpatched libraries ignore the variable.
+    /// returns before mode.add(SharedMemory), so FORCE_DMABUF stands that check down and
+    /// lets selection reach FORCE_SHM. Unpatched libraries ignore the variable.
     ForceSharedMemoryOnNvidia,
+    DisableCompositingOnNvidiaX11,
     DisableDmabuf,
+    /// Not a transport at all. The others choose how buffers reach the compositor; this
+    /// stops WebKit compositing on the GPU at all.
+    DisableCompositing,
 }
 
 impl RenderingWorkaround {
@@ -48,7 +64,11 @@ impl RenderingWorkaround {
         match self {
             Self::ForceSharedMemory => &[FORCE_SHARED_MEMORY],
             Self::ForceSharedMemoryOnNvidia => &[FORCE_SHARED_MEMORY, FORCE_DMABUF],
+            Self::DisableCompositingOnNvidiaX11 => {
+                &[FORCE_SHARED_MEMORY, FORCE_DMABUF, DISABLE_COMPOSITING]
+            }
             Self::DisableDmabuf => &[DISABLE_DMABUF],
+            Self::DisableCompositing => &[DISABLE_COMPOSITING],
         }
     }
 }
@@ -65,7 +85,7 @@ enum RenderingPlan {
 /// order, and the first backend whose display opens wins. '*' expands to the built-in
 /// order, which is wayland before x11 on Linux. Membership is not selection: `x11,wayland`
 /// runs on X11 whenever an X display opens, and on NVIDIA that decides between the
-/// shared-memory switch and the empty transport set.
+/// X11 compositing fallback and the empty transport set.
 ///
 /// A display cannot be opened here, so `wayland_open` is the socket probe below standing in
 /// for GDK's own opener. A named backend that cannot open is not the selection, it is
@@ -98,6 +118,16 @@ fn force_dmabuf_requested(value: &OsStr) -> bool {
     value.as_encoded_bytes().first() != Some(&b'0')
 }
 
+/// Lenient: matching `"0"` byte for byte would strand someone who wrote `false` on the
+/// fallback they were opting out of.
+fn compositing_setting(value: &OsStr) -> Option<bool> {
+    match value.to_string_lossy().trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
 fn rendering_plan(
     env: impl Fn(&str) -> Option<OsString>,
     webkit_version: (u32, u32, u32),
@@ -105,6 +135,8 @@ fn rendering_plan(
     nvidia_driver_loaded: bool,
     wayland_socket: bool,
     x11_open: bool,
+    mixed_gpu_vendors: bool,
+    open_kernel_module: bool,
 ) -> RenderingPlan {
     // Either renderer variable is an operator override when present, `=0` and an empty
     // value included, unless the marker says we wrote it. Without that test a launch
@@ -128,6 +160,9 @@ fn rendering_plan(
     if env(FORCE_SHARED_MEMORY).is_some() && !ours(FORCE_SHARED_MEMORY) {
         return RenderingPlan::PreserveEnvironment;
     }
+    if env(DISABLE_COMPOSITING).is_some() && !ours(DISABLE_COMPOSITING) {
+        return RenderingPlan::PreserveEnvironment;
+    }
 
     // Stands the NVIDIA branch down and nothing else: it answers that patch's question,
     // not the missing-GLES one below, and that launch cannot render without its fallback.
@@ -146,37 +181,57 @@ fn rendering_plan(
         wayland_socket,
         x11_open,
     );
+    let nvidia_x11 = nvidia_driver_loaded
+        && !force_dmabuf
+        && !wayland_session
+        && gles_usable
+        && supports_force_shared_memory(webkit_version);
 
-    // The DMA-BUF transport breaks on the proprietary driver on either display server, so
-    // this cannot be gated on a Wayland session. Upstream declined the fix (bug 262607
-    // WONTFIX, PR 18614 closed), so Debian and Ubuntu carry disable-nvidia-dmabuf.patch
-    // and Fedora, Arch and the tarballs do not. Both shipped artifacts get a patched
-    // library anyway (the .deb from the host, the AppImage bundles Ubuntu 22.04's), so
-    // here this covers hosts where that patch's GL_VENDOR probe disagrees with the module
-    // probe, plus the GBM open and throwaway GL context isNVIDIA() does at startup.
+    // A freeze, not a transport failure, and none of the switches below reach it. The
+    // WebKit web process stops executing about 45 seconds in and never resumes: every
+    // frontend timer stops together while the native watchdog, in another process, keeps
+    // answering. One Wayland NVIDIA host froze under FORCE_SHM, under DISABLE_DMABUF and
+    // under neither, and ran clean with compositing off or off Wayland.
     //
-    // The two switches are not interchangeable, so pick per failure mode, not per GPU:
-    //   Wayland  DISABLE_DMABUF. The failure is the explicit-sync disconnect, and
-    //            FORCE_SHM routes every commit down the wl_shm path that trips it
-    //            (bug 315436). It is also the switch reported to fix Error 71.
-    //   X11      FORCE_SHM. No explicit-sync protocol there, the failure is hardware
-    //            DMA-BUF allocation, and shared memory fixes it without the empty set.
-    // The empty set is not just slower: DISABLE_DMABUF returns before the SharedMemory
-    // add, so checkRequirements() is false, AcceleratedBackingStore::create() returns
-    // nullptr, and webkitWebViewBaseEnterAcceleratedCompositingMode() dereferences it
-    // behind an ASSERT release builds drop. block/buzz#3654 hits that SIGSEGV on NVIDIA
-    // X11, on the same iGPU-presenting topology the probe below over-triggers on.
-    //
-    // That probe is module presence, not the GPU that will render, so a PRIME laptop on
-    // its iGPU takes a workaround it does not need. Deliberate: reading the rendering GPU
-    // needs a GL context and this runs before GTK init so that none exists. Those hosts
-    // opt out with WEBKIT_DISABLE_DMABUF_RENDERER=0.
+    // Not gated on Wayland plus NVIDIA alone: a second host on the same driver and the
+    // same WebKitGTK does not freeze, and that predicate would take accelerated
+    // compositing off a machine that is demonstrably fine. The two axes separating them
+    // are mixed GPU vendors (an Intel iGPU beside the NVIDIA dGPU) and the open kernel
+    // module. Requiring BOTH is overfitted on purpose: with one host on each side neither
+    // axis is established, so the conservative rule leaves every measured machine as it is
+    // today. Anyone outside it reporting the same freeze gets the setting above.
+    let setting = env(DISABLE_COMPOSITING_SETTING);
+    let requested = |wanted: bool| setting.as_deref().and_then(compositing_setting) == Some(wanted);
+    if !requested(false)
+        && (requested(true)
+            || (wayland_session && nvidia_driver_loaded && mixed_gpu_vendors && open_kernel_module))
+    {
+        let reason = if requested(true) {
+            COMPOSITING_FORCED_REASON
+        } else {
+            COMPOSITING_REASON
+        };
+        let workaround = if requested(true) && nvidia_x11 {
+            RenderingWorkaround::DisableCompositingOnNvidiaX11
+        } else {
+            RenderingWorkaround::DisableCompositing
+        };
+        return RenderingPlan::Apply(workaround, reason);
+    }
+
+    // Per display server, not per GPU. Wayland: DISABLE_DMABUF, FORCE_SHM still hits the
+    // failing explicit-sync path (bug 315436). X11: SHM plus compositing off for the
+    // sync-file leak (#10795); DISABLE_DMABUF is WRONG there, it can leave no backing-store
+    // transport at all (block/buzz#3654). Over-matches a PRIME iGPU laptop, which opts out
+    // with WEBKIT_DISABLE_DMABUF_RENDERER=0 or UNSLOTH_WEBKIT_DISABLE_COMPOSITING=0.
     if nvidia_driver_loaded && !force_dmabuf {
         let missing_appimage_gles = is_appimage && !gles_usable;
         let reason = if missing_appimage_gles {
             NVIDIA_APPIMAGE_GLES_REASON
         } else if wayland_session {
             NVIDIA_WAYLAND_REASON
+        } else if is_appimage {
+            NVIDIA_APPIMAGE_X11_REASON
         } else {
             NVIDIA_REASON
         };
@@ -187,8 +242,10 @@ fn rendering_plan(
             || !supports_force_shared_memory(webkit_version)
         {
             RenderingWorkaround::DisableDmabuf
-        } else {
+        } else if requested(false) {
             RenderingWorkaround::ForceSharedMemoryOnNvidia
+        } else {
+            RenderingWorkaround::DisableCompositingOnNvidiaX11
         };
         return RenderingPlan::Apply(workaround, reason);
     }
@@ -292,6 +349,43 @@ fn nvidia_driver_loaded() -> bool {
     std::path::Path::new(NVIDIA_DRIVER_VERSION_PATH).exists()
 }
 
+/// Is more than one GPU vendor present, e.g. an Intel iGPU beside an NVIDIA dGPU?
+///
+/// Reads PCI vendor ids out of sysfs, opening no device and no GL context, so it is safe
+/// before GTK init. That is the same constraint that stops the NVIDIA probe asking which
+/// GPU will actually render.
+fn mixed_gpu_vendors_in(dir: &str) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    let mut seen: Vec<String> = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        // cardN only. `cardN-CONNECTOR` entries are outputs of a card already counted, and
+        // renderDN is the same device under a second node.
+        if !name.starts_with("card") || name.contains('-') {
+            continue;
+        }
+        // A card with no readable vendor is a virtual framebuffer (simpledrm and friends),
+        // and such hosts are not rare. Counting "missing" as a vendor of its own would make
+        // every one of them look hybrid.
+        let Ok(vendor) = std::fs::read_to_string(entry.path().join("device/vendor")) else {
+            continue;
+        };
+        let vendor = vendor.trim().to_owned();
+        if !vendor.is_empty() && !seen.iter().any(|known| *known == vendor) {
+            seen.push(vendor);
+        }
+    }
+    seen.len() > 1
+}
+
+/// The open kernel modules say so in the file the presence probe already reads.
+fn open_kernel_module_at(path: &str) -> bool {
+    std::fs::read_to_string(path).is_ok_and(|text| text.contains(OPEN_KERNEL_MODULE_MARKER))
+}
+
 fn gles_is_usable() -> bool {
     // Match libepoxy's runtime load, including unresolved dependencies.
     unsafe {
@@ -341,6 +435,8 @@ pub fn configure_renderer() -> Option<(&'static [&'static str], &'static str)> {
         nvidia_driver_loaded(),
         wayland_socket_present(),
         x11_display_open(std::env::var_os(X11_DISPLAY), X11_SOCKET_DIR),
+        mixed_gpu_vendors_in(DRM_CLASS_DIR),
+        open_kernel_module_at(NVIDIA_DRIVER_VERSION_PATH),
     ) {
         RenderingPlan::Apply(workaround, reason) => {
             let variables = workaround.variables();
@@ -423,6 +519,36 @@ mod tests {
             nvidia_driver_loaded,
             wayland_socket,
             x11_open,
+            // Every pre-existing case models a single-vendor host on the proprietary
+            // module, which is what they asserted before the compositing rule existed.
+            // Keeping that default here is what makes those assertions still mean the
+            // same thing: the new rule cannot fire in any of them.
+            false,
+            false,
+        )
+    }
+
+    /// The compositing rule's own inputs, which no other case varies.
+    fn plan_on_graphics(
+        vars: &[(&str, &str)],
+        nvidia_driver_loaded: bool,
+        mixed_gpu_vendors: bool,
+        open_kernel_module: bool,
+    ) -> RenderingPlan {
+        let live = named(vars, WAYLAND_DISPLAY);
+        rendering_plan(
+            |name| {
+                vars.iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| OsString::from(value))
+            },
+            MODERN_WEBKIT,
+            true,
+            nvidia_driver_loaded,
+            live,
+            named(vars, X11_DISPLAY),
+            mixed_gpu_vendors,
+            open_kernel_module,
         )
     }
 
@@ -473,25 +599,23 @@ mod tests {
     }
 
     #[test]
-    fn nvidia_on_x11_drops_to_shared_memory_rather_than_the_empty_transport_set() {
-        // No explicit-sync protocol to violate here, and DISABLE_DMABUF leaves the null
-        // backing store release builds dereference (block/buzz#3654).
+    fn native_nvidia_x11_disables_compositing_like_the_appimage() {
         assert_eq!(
             plan_on_nvidia(&[]),
             RenderingPlan::Apply(
-                RenderingWorkaround::ForceSharedMemoryOnNvidia,
+                RenderingWorkaround::DisableCompositingOnNvidiaX11,
                 NVIDIA_REASON
             )
         );
     }
 
     #[test]
-    fn nvidia_under_an_explicit_x11_backend_still_applies() {
+    fn nvidia_appimage_under_an_explicit_x11_backend_disables_compositing() {
         assert_eq!(
-            plan_on_nvidia(&[(GDK_BACKEND, "x11")]),
+            plan_on_nvidia(&[(APPIMAGE, "/tmp/Unsloth.AppImage"), (GDK_BACKEND, "x11")]),
             RenderingPlan::Apply(
-                RenderingWorkaround::ForceSharedMemoryOnNvidia,
-                NVIDIA_REASON
+                RenderingWorkaround::DisableCompositingOnNvidiaX11,
+                NVIDIA_APPIMAGE_X11_REASON
             )
         );
     }
@@ -561,10 +685,10 @@ mod tests {
     fn a_zero_force_dmabuf_value_does_not_stand_the_workaround_down() {
         // The patch tests the first byte against '0', so "0" is not a request.
         assert_eq!(
-            plan_on_nvidia(&[(FORCE_DMABUF, "0")]),
+            plan_on_nvidia(&[(APPIMAGE, "/tmp/Unsloth.AppImage"), (FORCE_DMABUF, "0")]),
             RenderingPlan::Apply(
-                RenderingWorkaround::ForceSharedMemoryOnNvidia,
-                NVIDIA_REASON
+                RenderingWorkaround::DisableCompositingOnNvidiaX11,
+                NVIDIA_APPIMAGE_X11_REASON
             )
         );
     }
@@ -687,6 +811,14 @@ mod tests {
     }
 
     #[test]
+    fn the_nvidia_shared_memory_plan_stands_down_the_distribution_patch() {
+        assert_eq!(
+            RenderingWorkaround::ForceSharedMemoryOnNvidia.variables(),
+            &[FORCE_SHARED_MEMORY, FORCE_DMABUF]
+        );
+    }
+
+    #[test]
     fn a_named_wayland_that_cannot_open_falls_through_to_the_next_backend() {
         // GDK tries wayland first, its opener fails with no socket to connect to, and the
         // loop continues to x11. Calling that a Wayland session hands an X11 host the
@@ -694,7 +826,7 @@ mod tests {
         assert_eq!(
             plan_on_nvidia(&[(GDK_BACKEND, "wayland,x11"), (X11_DISPLAY, ":0")]),
             RenderingPlan::Apply(
-                RenderingWorkaround::ForceSharedMemoryOnNvidia,
+                RenderingWorkaround::DisableCompositingOnNvidiaX11,
                 NVIDIA_REASON
             )
         );
@@ -722,13 +854,17 @@ mod tests {
     }
 
     #[test]
-    fn forcing_shared_memory_also_opts_out_of_the_distro_patch() {
+    fn the_nvidia_x11_fallback_keeps_a_nonempty_transport() {
         // isNVIDIA() returns before mode.add(SharedMemory) on 2.50.4 and 2.52.6, so
-        // FORCE_SHM on its own is never read there and the set is empty regardless.
+        // FORCE_SHM on its own is never read there and the set is empty regardless, so
+        // both must survive beside the compositing switch a WebKit may ignore.
         assert_eq!(
-            RenderingWorkaround::ForceSharedMemoryOnNvidia.variables(),
-            &[FORCE_SHARED_MEMORY, FORCE_DMABUF]
+            RenderingWorkaround::DisableCompositingOnNvidiaX11.variables(),
+            &[FORCE_SHARED_MEMORY, FORCE_DMABUF, DISABLE_COMPOSITING]
         );
+        assert!(!RenderingWorkaround::DisableCompositingOnNvidiaX11
+            .variables()
+            .contains(&DISABLE_DMABUF));
         assert_eq!(
             RenderingWorkaround::DisableDmabuf.variables(),
             &[DISABLE_DMABUF]
@@ -737,18 +873,27 @@ mod tests {
 
     #[test]
     fn our_own_force_dmabuf_does_not_read_back_as_an_opt_out() {
-        // We set it as half of ForceSharedMemory; a relaunch must not see its own output
-        // as an operator standing the NVIDIA branch down.
+        // Older launches set it beside FORCE_SHM; a relaunch must not see its own output
+        // as an operator standing the NVIDIA branch down while migrating to the new plan.
         let claimed = [FORCE_SHARED_MEMORY, FORCE_DMABUF].join(",");
+        let inherited = [
+            (FORCE_SHARED_MEMORY, "1"),
+            (FORCE_DMABUF, "1"),
+            (APPLIED_WORKAROUND, claimed.as_str()),
+        ];
         assert_eq!(
-            plan_on_nvidia(&[
-                (FORCE_SHARED_MEMORY, "1"),
-                (FORCE_DMABUF, "1"),
-                (APPLIED_WORKAROUND, &claimed),
-            ]),
+            plan_on_nvidia(&inherited),
             RenderingPlan::Apply(
-                RenderingWorkaround::ForceSharedMemoryOnNvidia,
+                RenderingWorkaround::DisableCompositingOnNvidiaX11,
                 NVIDIA_REASON
+            )
+        );
+        let appimage = [&[(APPIMAGE, "/tmp/Unsloth.AppImage")], &inherited[..]].concat();
+        assert_eq!(
+            plan_on_nvidia(&appimage),
+            RenderingPlan::Apply(
+                RenderingWorkaround::DisableCompositingOnNvidiaX11,
+                NVIDIA_APPIMAGE_X11_REASON
             )
         );
     }
@@ -815,7 +960,7 @@ mod tests {
                 (X11_DISPLAY, ":0"),
             ]),
             RenderingPlan::Apply(
-                RenderingWorkaround::ForceSharedMemoryOnNvidia,
+                RenderingWorkaround::DisableCompositingOnNvidiaX11,
                 NVIDIA_REASON
             )
         );
@@ -922,7 +1067,7 @@ mod tests {
         assert_eq!(
             plan_on_host_with_socket(&[(X11_DISPLAY, ":0")], MODERN_WEBKIT, true, true, false),
             RenderingPlan::Apply(
-                RenderingWorkaround::ForceSharedMemoryOnNvidia,
+                RenderingWorkaround::DisableCompositingOnNvidiaX11,
                 NVIDIA_REASON
             )
         );
@@ -1055,7 +1200,7 @@ mod tests {
         assert_eq!(
             plan_on_displays(session, MODERN_WEBKIT, true, true, true, true),
             RenderingPlan::Apply(
-                RenderingWorkaround::ForceSharedMemoryOnNvidia,
+                RenderingWorkaround::DisableCompositingOnNvidiaX11,
                 NVIDIA_REASON
             )
         );
@@ -1069,7 +1214,7 @@ mod tests {
         assert_eq!(
             plan_on_host_with_socket(session, MODERN_WEBKIT, true, true, false),
             RenderingPlan::Apply(
-                RenderingWorkaround::ForceSharedMemoryOnNvidia,
+                RenderingWorkaround::DisableCompositingOnNvidiaX11,
                 NVIDIA_REASON
             )
         );
@@ -1077,5 +1222,222 @@ mod tests {
             plan_on_host_with_socket(session, MODERN_WEBKIT, true, false, false),
             RenderingPlan::PreserveEnvironment
         );
+    }
+    // The compositing rule. Two real hosts sit on either side of it, and these tests are
+    // named after what each one measured rather than after the branch it exercises.
+
+    const WAYLAND: &[(&str, &str)] = &[(WAYLAND_DISPLAY, "wayland-0")];
+
+    #[test]
+    fn the_freezing_host_gets_compositing_turned_off() {
+        // Ubuntu 26.04, GNOME Wayland, Intel Arc iGPU beside an RTX 4050 Mobile, open
+        // kernel module. Froze at about 45s under FORCE_SHM, under DISABLE_DMABUF and
+        // under neither, and kept polling for a full run with compositing off.
+        assert_eq!(
+            plan_on_graphics(WAYLAND, true, true, true),
+            RenderingPlan::Apply(RenderingWorkaround::DisableCompositing, COMPOSITING_REASON)
+        );
+    }
+
+    #[test]
+    fn the_healthy_nvidia_wayland_host_is_left_alone() {
+        // Linux Mint 22, Cinnamon on Wayland, two discrete NVIDIA cards on the proprietary
+        // module, same driver and same WebKitGTK as the host above, and it does not freeze.
+        // Gating on Wayland plus NVIDIA alone would take compositing off a machine that is
+        // measurably fine, so it keeps the transport workaround it has today.
+        let plan = plan_on_graphics(WAYLAND, true, false, false);
+        assert_ne!(
+            plan,
+            RenderingPlan::Apply(RenderingWorkaround::DisableCompositing, COMPOSITING_REASON)
+        );
+        assert_eq!(
+            plan,
+            RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_WAYLAND_REASON)
+        );
+    }
+
+    #[test]
+    fn either_axis_alone_is_not_enough() {
+        // With one host on each side neither axis is established on its own, so a machine
+        // matching only one keeps today's behaviour.
+        for (mixed, open) in [(true, false), (false, true)] {
+            assert_eq!(
+                plan_on_graphics(WAYLAND, true, mixed, open),
+                RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_WAYLAND_REASON),
+                "mixed_gpu_vendors={mixed} open_kernel_module={open}"
+            );
+        }
+    }
+
+    #[test]
+    fn nvidia_x11_takes_its_dedicated_compositing_fallback() {
+        let appimage: &[(&str, &str)] = &[(APPIMAGE, "/tmp/Unsloth.AppImage"), (X11_DISPLAY, ":0")];
+        assert_eq!(
+            plan_on_graphics(appimage, true, false, false),
+            RenderingPlan::Apply(
+                RenderingWorkaround::DisableCompositingOnNvidiaX11,
+                NVIDIA_APPIMAGE_X11_REASON
+            )
+        );
+        let native: &[(&str, &str)] = &[(X11_DISPLAY, ":0")];
+        assert_eq!(
+            plan_on_graphics(native, true, false, false),
+            RenderingPlan::Apply(
+                RenderingWorkaround::DisableCompositingOnNvidiaX11,
+                NVIDIA_REASON
+            )
+        );
+    }
+
+    #[test]
+    fn the_setting_settles_a_report_without_a_new_predicate() {
+        // Both directions without shipping code: a host outside the rule that reports the
+        // same freeze, and a host inside it that the rule is wrong about.
+        let forced: &[(&str, &str)] = &[(DISABLE_COMPOSITING_SETTING, "1")];
+        assert_eq!(
+            plan_on_graphics(forced, false, false, false),
+            RenderingPlan::Apply(
+                RenderingWorkaround::DisableCompositing,
+                COMPOSITING_FORCED_REASON
+            )
+        );
+        let off: &[(&str, &str)] = &[
+            (WAYLAND_DISPLAY, "wayland-0"),
+            (DISABLE_COMPOSITING_SETTING, "0"),
+        ];
+        assert_eq!(
+            plan_on_graphics(off, true, true, true),
+            RenderingPlan::Apply(RenderingWorkaround::DisableDmabuf, NVIDIA_WAYLAND_REASON)
+        );
+
+        let nvidia_x11_off: &[(&str, &str)] = &[
+            (APPIMAGE, "/tmp/Unsloth.AppImage"),
+            (DISABLE_COMPOSITING_SETTING, "0"),
+        ];
+        assert_eq!(
+            plan_on_graphics(nvidia_x11_off, true, false, false),
+            RenderingPlan::Apply(
+                RenderingWorkaround::ForceSharedMemoryOnNvidia,
+                NVIDIA_APPIMAGE_X11_REASON
+            )
+        );
+        let native_off: &[(&str, &str)] = &[(DISABLE_COMPOSITING_SETTING, "0")];
+        assert_eq!(
+            plan_on_graphics(native_off, true, false, false),
+            RenderingPlan::Apply(
+                RenderingWorkaround::ForceSharedMemoryOnNvidia,
+                NVIDIA_REASON
+            )
+        );
+    }
+
+    #[test]
+    fn the_setting_reads_the_spellings_people_write() {
+        // An unrecognized opt-out is no longer a no-op: it leaves the host on the fallback.
+        for off in ["0", "false", "no", "off", "FALSE", "Off", " 0 ", "\tno\n"] {
+            assert_eq!(
+                plan_on_graphics(&[(DISABLE_COMPOSITING_SETTING, off)], true, false, false),
+                RenderingPlan::Apply(
+                    RenderingWorkaround::ForceSharedMemoryOnNvidia,
+                    NVIDIA_REASON
+                ),
+                "{off:?} should keep compositing"
+            );
+        }
+        for on in ["1", "true", "yes", "on", "TRUE", "On", " 1 "] {
+            assert_eq!(
+                plan_on_graphics(&[(DISABLE_COMPOSITING_SETTING, on)], false, false, false),
+                RenderingPlan::Apply(
+                    RenderingWorkaround::DisableCompositing,
+                    COMPOSITING_FORCED_REASON
+                ),
+                "{on:?} should force the workaround"
+            );
+        }
+        for unknown in ["", "maybe", "2", "-1", "enabled"] {
+            assert_eq!(
+                plan_on_graphics(
+                    &[(DISABLE_COMPOSITING_SETTING, unknown)],
+                    true,
+                    false,
+                    false
+                ),
+                plan_on_graphics(&[], true, false, false),
+                "{unknown:?} should not read as an instruction"
+            );
+        }
+    }
+
+    #[test]
+    fn forcing_the_nvidia_x11_workaround_keeps_its_transport_fallback() {
+        let forced: &[(&str, &str)] = &[
+            (APPIMAGE, "/tmp/Unsloth.AppImage"),
+            (DISABLE_COMPOSITING_SETTING, "1"),
+        ];
+        let native: &[(&str, &str)] = &[(DISABLE_COMPOSITING_SETTING, "1")];
+        for vars in [forced, native] {
+            assert_eq!(
+                plan_on_graphics(vars, true, false, false),
+                RenderingPlan::Apply(
+                    RenderingWorkaround::DisableCompositingOnNvidiaX11,
+                    COMPOSITING_FORCED_REASON
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn an_operator_who_set_the_variable_keeps_their_environment() {
+        let theirs: &[(&str, &str)] = &[(WAYLAND_DISPLAY, "wayland-0"), (DISABLE_COMPOSITING, "1")];
+        assert_eq!(
+            plan_on_graphics(theirs, true, true, true),
+            RenderingPlan::PreserveEnvironment
+        );
+    }
+
+    #[test]
+    fn a_virtual_framebuffer_does_not_make_a_host_look_hybrid() {
+        // A card with no readable vendor is a virtual framebuffer, and hosts pair one with
+        // real GPUs. Counting a missing vendor as its own would make them all match.
+        let dir = std::env::temp_dir().join(format!("unsloth-drm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let card = |name: &str| dir.join(name).join("device");
+        std::fs::create_dir_all(card("card0")).unwrap();
+        std::fs::create_dir_all(card("card1")).unwrap();
+        std::fs::write(card("card1").join("vendor"), "0x10de\n").unwrap();
+        let path = dir.to_string_lossy().into_owned();
+        assert!(!mixed_gpu_vendors_in(&path), "one real vendor is not mixed");
+
+        // A connector entry is an output of a card already counted, not a second device.
+        std::fs::create_dir_all(card("card1-DP-1")).unwrap();
+        std::fs::write(card("card1-DP-1").join("vendor"), "0x8086\n").unwrap();
+        assert!(!mixed_gpu_vendors_in(&path), "connectors are not devices");
+
+        std::fs::create_dir_all(card("card2")).unwrap();
+        std::fs::write(card("card2").join("vendor"), "0x8086\n").unwrap();
+        assert!(mixed_gpu_vendors_in(&path), "Intel beside NVIDIA is mixed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_open_module_is_read_from_the_file_the_probe_already_opens() {
+        let dir = std::env::temp_dir().join(format!("unsloth-nvrm-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let open = dir.join("open");
+        let proprietary = dir.join("proprietary");
+        std::fs::write(
+            &open,
+            "NVRM version: NVIDIA UNIX Open Kernel Module for x86_64  580.173.02\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &proprietary,
+            "NVRM version: NVIDIA UNIX x86_64 Kernel Module  580.173.02\n",
+        )
+        .unwrap();
+        assert!(open_kernel_module_at(&open.to_string_lossy()));
+        assert!(!open_kernel_module_at(&proprietary.to_string_lossy()));
+        assert!(!open_kernel_module_at("/nonexistent/nvidia/version"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

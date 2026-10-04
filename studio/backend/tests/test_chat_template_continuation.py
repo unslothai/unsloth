@@ -11,6 +11,7 @@ assistant turn can be resumed, so anything else renders normally instead of rais
 
 from __future__ import annotations
 
+import copy
 import importlib
 import sys
 import types
@@ -25,8 +26,10 @@ if str(_BACKEND) not in sys.path:
 from core.inference.chat_template_helpers import (  # noqa: E402
     append_assistant_turn,
     apply_chat_template_for_generation,
+    detect_think_prefill,
     last_user_text,
     render_prompt_with_boundary,
+    ThoughtUnresumableError,
     trailing_assistant_text,
 )
 
@@ -567,6 +570,35 @@ def test_native_fallback_preserves_assistant_reasoning_content():
     }
 
 
+def test_native_fallback_keeps_participant_names():
+    InferenceBackend = _inference_backend()
+    seen = {}
+
+    class _Tokenizer:
+        chat_template = "template"
+
+        def apply_chat_template(self, messages, **_kwargs):
+            seen["messages"] = messages
+            return "rendered"
+
+    backend = InferenceBackend.__new__(InferenceBackend)
+    backend.active_model_name = "m"
+    backend.models = {
+        "m": {
+            "tokenizer": _Tokenizer(),
+            "chat_template_info": {"has_template": False},
+        }
+    }
+
+    conversation = [
+        {"role": "user", "name": "alice", "content": "hi"},
+        {"role": "assistant", "name": "researcher", "content": "hello"},
+        {"role": "user", "content": "again"},
+    ]
+    assert backend.format_chat_prompt(conversation) == "rendered"
+    assert seen["messages"] == conversation
+
+
 def test_a_text_part_partial_merges_rather_than_doubling_the_turn():
     """The merge follows the same rule as the prompt boundary.
 
@@ -585,6 +617,67 @@ def test_a_text_part_partial_merges_rather_than_doubling_the_turn():
     assert len(conversation) == 2
     assert conversation[-1]["content"] == "Looking that up now."
     assert conversation[-1]["tool_calls"] == [{"id": "c1"}]
+
+
+def test_a_resumed_partial_keeps_the_metadata_the_continuation_does_not_repeat():
+    """Gemini pins the text part's signature back on from extra_content alone.
+
+    The merge used to assign the continuation into the slot, so every key the
+    partial carried and the continuation did not was dropped and the replayed
+    turn was rejected.
+    """
+    conversation = [
+        {"role": "user", "content": "q"},
+        {
+            "role": "assistant",
+            "content": "Looking that ",
+            "extra_content": {"google": {"thought_signature": "SIG-PARTIAL"}},
+        },
+    ]
+    append_assistant_turn(
+        conversation,
+        {"role": "assistant", "content": "up now."},
+        continue_final_message = True,
+    )
+
+    assert conversation[-1]["content"] == "Looking that up now."
+    assert conversation[-1]["extra_content"] == {"google": {"thought_signature": "SIG-PARTIAL"}}
+
+
+def test_a_merge_leaves_the_callers_message_alone():
+    """The caller owns the dict it passed and may still read it afterwards."""
+    conversation = [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "Looking that "},
+    ]
+    generated = {"role": "assistant", "content": "up now."}
+    append_assistant_turn(conversation, generated, continue_final_message = True)
+
+    assert conversation[-1]["content"] == "Looking that up now."
+    assert generated["content"] == "up now."
+
+
+def test_a_continuation_still_wins_on_a_key_it_does_repeat():
+    """Merging must not resurrect a stale value the new turn deliberately set."""
+    conversation = [
+        {"role": "user", "content": "q"},
+        {
+            "role": "assistant",
+            "content": "Looking that ",
+            "extra_content": {"google": {"thought_signature": "STALE"}},
+        },
+    ]
+    append_assistant_turn(
+        conversation,
+        {
+            "role": "assistant",
+            "content": "up now.",
+            "extra_content": {"google": {"thought_signature": "FRESH"}},
+        },
+        continue_final_message = True,
+    )
+
+    assert conversation[-1]["extra_content"] == {"google": {"thought_signature": "FRESH"}}
 
 
 def test_a_merge_stops_once_the_turn_is_no_longer_the_resumed_one():
@@ -745,6 +838,9 @@ def _sf_completion(
     monkeypatch,
     events,
     stats = None,
+    messages = None,
+    is_mlx = False,
+    seen = None,
     **body,
 ):
     """POST a non-streaming safetensors tool-loop chat and return the assistant message."""
@@ -761,9 +857,11 @@ def _sf_completion(
 
     class _Safetensors:
         active_model_name = "qwen3"
-        models = {"qwen3": {"chat_template_info": {"template": _THINK_TEMPLATE}}}
+        models = {"qwen3": {"chat_template_info": {"template": _THINK_TEMPLATE}, "is_mlx": is_mlx}}
 
         def generate_chat_completion_with_tools(self, **kwargs):
+            if seen is not None:
+                seen.update(kwargs)
             # The worker fills this on gen_done; the route reads it for usage and
             # for finish_reason "length".
             if stats is not None:
@@ -789,7 +887,8 @@ def _sf_completion(
     resp = TestClient(app).post(
         "/v1/chat/completions",
         json = {
-            "messages": [
+            "messages": messages
+            or [
                 {"role": "user", "content": "weather?"},
                 {"role": "assistant", "content": "Let me check the "},
             ],
@@ -820,6 +919,150 @@ def test_a_resumed_turn_without_a_tool_keeps_the_partial_visible(monkeypatch):
     message = _sf_completion(monkeypatch, _RESUMED_PLAIN_EVENTS)["message"]
     assert message["content"] == "oven to 200C. leaked"
     assert not message["reasoning_content"]
+
+
+_CUT_THOUGHT = [
+    {"role": "user", "content": "weather?"},
+    {"role": "assistant", "content": "", "reasoning_content": "\nThe user wants the "},
+]
+# The MLX backend re-emits a bare opener ahead of a resumed thought's tail.
+_RESUMED_THOUGHT_EVENTS = [
+    {"type": "content", "text": "<think>forecast.</think>\n\nIt is 21C."},
+    {"type": "status", "text": ""},
+]
+
+
+def test_mlx_resumes_a_thought_and_reports_its_tail_as_reasoning(monkeypatch):
+    seen = {}
+    message = _sf_completion(
+        monkeypatch,
+        _RESUMED_THOUGHT_EVENTS,
+        messages = _CUT_THOUGHT,
+        is_mlx = True,
+        seen = seen,
+        # The turn is reasoning whatever the toggle now says.
+        enable_thinking = False,
+    )["message"]
+    assert seen["continue_final_message"] is True
+    assert message["reasoning_content"] == "forecast."
+    assert message["content"] == "\n\nIt is 21C."
+
+
+def test_transformers_answers_after_a_thought_instead_of_resuming_it(monkeypatch):
+    seen = {}
+    _sf_completion(monkeypatch, _RESUMED_THOUGHT_EVENTS, messages = _CUT_THOUGHT, seen = seen)
+    assert seen["continue_final_message"] is False
+
+
+class _ThinkTokenizer(_ChatMLTokenizer):
+    chat_template = "{{ '<think>' }}"
+
+    def __init__(self, prefill):
+        self.prefill = prefill
+
+    def apply_chat_template(
+        self,
+        messages,
+        *,
+        add_generation_prompt = True,
+        **kw,
+    ):
+        out = super().apply_chat_template(
+            messages, add_generation_prompt = add_generation_prompt, **kw
+        )
+        return out + self.prefill if add_generation_prompt else out
+
+
+@pytest.mark.parametrize(
+    "prefill", ["", "<think>\n", "<think>\n\n</think>\n\n"], ids = ["none", "open", "closed"]
+)
+def test_a_thought_resumes_inside_its_reasoning_block(prefill):
+    thought = "\nTry 2 then"
+    prompt = apply_chat_template_for_generation(
+        _ThinkTokenizer(prefill),
+        [
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": "", "reasoning_content": thought},
+        ],
+        continue_final_message = True,
+    )
+    assert prompt == "<|im_start|>user\nq<|im_end|>\n<|im_start|>assistant\n<think>\nTry 2 then"
+    assert detect_think_prefill(prompt, resumes_thought = True) == "<think>"
+    assert detect_think_prefill(prompt) == ""
+
+
+def test_a_think_in_history_is_not_taken_for_the_prefill():
+    history = [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "<think>a</think>b"},
+        {"role": "user", "content": "r"},
+    ]
+    prompt = apply_chat_template_for_generation(
+        _ThinkTokenizer(""),
+        history + [{"role": "assistant", "content": "", "reasoning_content": "c"}],
+        continue_final_message = True,
+    )
+    assert prompt.endswith("<|im_start|>user\nr<|im_end|>\n<|im_start|>assistant\n<think>c")
+    assert "<think>a</think>b" in prompt
+
+
+class _GemmaTokenizer(_ChatMLTokenizer):
+    chat_template = "{{ '<think>' }}<|channel>thought\n"
+
+
+@pytest.mark.parametrize(
+    "tokenizer", [_ChatMLTokenizer, _GemmaTokenizer], ids = ["no-think", "native"]
+)
+def test_a_template_without_a_think_opener_refuses_to_resume_a_thought(tokenizer):
+    with pytest.raises(ThoughtUnresumableError) as refused:
+        apply_chat_template_for_generation(
+            tokenizer(),
+            [
+                {"role": "user", "content": "q"},
+                {"role": "assistant", "content": "", "reasoning_content": "x"},
+            ],
+            continue_final_message = True,
+        )
+    # The worker forwards only a public refusal, and the route answers its parameter with a 400.
+    assert refused.value.public and refused.value.openai_param == "continue_final_message"
+
+
+def test_mlx_refuses_a_thought_its_decoder_would_never_close():
+    from core.inference.mlx_inference import _think_prefix
+
+    prompt = "<|im_start|>assistant\n<think>\nThe user wants the "
+    closer = ["</think>"]
+    assert (
+        _think_prefix(prompt, closer, _CUT_THOUGHT, True, preserves_think_close = True) == "<think>"
+    )
+    with pytest.raises(ThoughtUnresumableError):
+        _think_prefix(prompt, closer, _CUT_THOUGHT, True)
+    assert _think_prefix(prompt, closer, _CUT_THOUGHT, False) == ""
+
+
+def test_the_tool_loop_replays_a_resumed_thought_whole():
+    from core.inference.safetensors_agentic import _append_raw_turn
+
+    conversation = copy.deepcopy(_CUT_THOUGHT)
+    _append_raw_turn(
+        conversation,
+        {"role": "assistant", "content": "<think>forecast.</think>Checking.", "tool_calls": [{}]},
+        continue_final_message = True,
+    )
+    assert conversation[1:] == [
+        {
+            "role": "assistant",
+            "content": "<think>\nThe user wants the forecast.</think>Checking.",
+            "tool_calls": [{}],
+        }
+    ]
+    conversation = copy.deepcopy(_CUT_THOUGHT)
+    _append_raw_turn(
+        conversation,
+        {"role": "assistant", "content": "I will search."},
+        continue_final_message = True,
+    )
+    assert conversation[1:] == [{"role": "assistant", "content": "I will search."}]
 
 
 @pytest.mark.parametrize("gguf", [False, True], ids = ["safetensors", "gguf"])

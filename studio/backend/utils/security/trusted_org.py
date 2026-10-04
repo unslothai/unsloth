@@ -23,9 +23,10 @@ logger = get_logger(__name__)
 # Orgs we auto-enable remote code for.
 TRUSTED_ORGS: frozenset[str] = frozenset({"unsloth", "nvidia"})
 
-# Keyed on (name, verify_remote, token) so an unauthenticated failure can't poison
-# a later authenticated lookup; token is hashed, never stored raw.
-_verdict_cache: dict[tuple[str, bool, str], bool] = {}
+# Keyed on (name, verify_remote, token) so an unauthenticated failure cannot poison a later
+# authenticated lookup; the token is hashed, never stored raw. And on the endpoint, which
+# decides who owns the name.
+_verdict_cache: dict[tuple[str, bool, str, str], bool] = {}
 
 
 def _token_key(hf_token: Optional[str]) -> str:
@@ -53,12 +54,19 @@ def is_trusted_org_repo(
     """
     if not name or not isinstance(name, str):
         return False
+    from utils.hub_settings import MODELSCOPE, active_source
 
-    cache_key = (name, verify_remote, _token_key(hf_token))
+    if active_source() == MODELSCOPE:
+        return False
+
+    from huggingface_hub import constants
+
+    endpoint = constants.ENDPOINT.rstrip("/")
+    cache_key = (name, verify_remote, _token_key(hf_token), endpoint)
     if cache_key in _verdict_cache:
         return _verdict_cache[cache_key]
 
-    verdict = _evaluate(name, hf_token, verify_remote)
+    verdict = _evaluate(name, hf_token, verify_remote, endpoint)
     _verdict_cache[cache_key] = verdict
     return verdict
 
@@ -71,7 +79,7 @@ def _namespace(name: str) -> Optional[str]:
     return parts[0].lower()
 
 
-def _evaluate(name: str, hf_token: Optional[str], verify_remote: bool) -> bool:
+def _evaluate(name: str, hf_token: Optional[str], verify_remote: bool, endpoint: str) -> bool:
     # Local paths are never a trusted remote repo (the spoof this guards against).
     try:
         if is_local_path(name):
@@ -88,11 +96,10 @@ def _evaluate(name: str, hf_token: Optional[str], verify_remote: bool) -> bool:
     if not verify_remote or _env_offline():
         return True
 
-    # Online: confirm the id resolves to a trusted-org repo.
     try:
         from huggingface_hub import HfApi
 
-        info = HfApi().model_info(name, token = hf_token)
+        info = HfApi(endpoint = endpoint).model_info(name, token = hf_token)
         resolved_id = getattr(info, "id", None) or name
         resolved_ns = _namespace(resolved_id)
         author = getattr(info, "author", None)
@@ -106,7 +113,7 @@ def _evaluate(name: str, hf_token: Optional[str], verify_remote: bool) -> bool:
             resolved_id,
         )
         return False
-    except Exception as exc:  # network/404/auth -> fail closed
+    except Exception as exc:
         logger.warning(
             "is_trusted_org_repo(%s): Hub verification failed (%s) -> not trusted",
             name,

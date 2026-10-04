@@ -127,6 +127,9 @@ def _make_backend(
     b._kv_key_length_swa = None
     b._kv_value_length_swa = None
     b._draft_backend_cache = None
+    # The speculative compute buffers ride on this reserve too; test_compute_buffer
+    # prices them, and these cases pin the cache and rollback terms.
+    b._mtp_draft_compute_bytes = lambda *args, **kwargs: 0
     return b
 
 
@@ -1249,7 +1252,7 @@ class TestUnemittableCacheTypeFallsBackToTheEnvBudget:
     """A type llama.cpp's kv_cache_type_from_str does not know is never emitted
     (_VALID_CACHE_TYPES), so the child inherits LLAMA_ARG_CACHE_TYPE_K/_V instead.
 
-    Before ggml-org/llama.cpp#23792 Studio's tensor gate happened to cover this:
+    Before ggml-org/llama.cpp#23792 Unsloth's tensor gate happened to cover this:
     it dropped any type outside {f16,bf16,f32} -- including an unknown one -- and
     then re-adopted the heavier env type for the reserve, with the comment "Else
     the child allocates f32 KV against an f16 budget." Removing the gate removed

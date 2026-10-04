@@ -3,7 +3,7 @@
 
 """Log volume must not regress, and every polled path must be classified.
 
-Studio's log-reduction work is several PRs deep and every round of it started with someone
+Unsloth's log-reduction work is several PRs deep and every round of it started with someone
 noticing a log was huge. Nothing stopped the next chatty endpoint. These are the two guards
 that do: an envelope on how much an idle app writes, and a closure check that makes it
 impossible to add a poll without saying which suppression rule owns it.
@@ -148,7 +148,7 @@ class TestVolumeEnvelope:
                 f"Biggest contributors:\n  {worst}\n\n"
                 "If you added an endpoint, give it a heartbeat class in "
                 "loggers/handlers.py rather than raising the envelope. Raising it is a "
-                "decision about how much Studio is allowed to write when nobody is using "
+                "decision about how much Unsloth is allowed to write when nobody is using "
                 "it."
             )
 

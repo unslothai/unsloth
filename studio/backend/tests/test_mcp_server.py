@@ -202,8 +202,8 @@ def test_export_gguf_forwards_hf_token_and_imatrix(monkeypatch):
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
-    async def fake_export(request, current_subject):
-        return {"current_subject": current_subject}
+    async def fake_export(request, current_subject, allow_ambient):
+        return {"current_subject": current_subject, "allow_ambient": allow_ambient}
 
     _stub_module(monkeypatch, "models", ExportGGUFRequest = FakeExportGGUFRequest)
     _stub_module(monkeypatch, "routes")
@@ -229,6 +229,9 @@ def test_export_gguf_forwards_hf_token_and_imatrix(monkeypatch):
     assert captured["quantization_method"] == ["Q4_K_M", "Q8_0"]
     assert captured["private"] is True
     assert result["current_subject"] == "mcp"
+    # A direct call skips FastAPI, so the route's Depends default never resolves; MCP has to
+    # name the policy itself or allow_ambient arrives as a truthy Depends object.
+    assert result["allow_ambient"] is False
 
 
 def test_load_checkpoint_forwards_token_and_fingerprint(monkeypatch):
@@ -238,15 +241,15 @@ def test_load_checkpoint_forwards_token_and_fingerprint(monkeypatch):
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
-    async def fake_load(request, current_subject):
-        return {"current_subject": current_subject}
+    async def fake_load(request, current_subject, allow_ambient):
+        return {"current_subject": current_subject, "allow_ambient": allow_ambient}
 
     _stub_module(monkeypatch, "models", LoadCheckpointRequest = FakeLoadCheckpointRequest)
     _stub_module(monkeypatch, "routes")
     _stub_module(monkeypatch, "routes.export", load_checkpoint = fake_load)
 
     tool = _get_tool("load_checkpoint")
-    asyncio.run(
+    result = asyncio.run(
         tool.fn(
             checkpoint_path = "/tmp/ckpt",
             approved_remote_code_fingerprint = "sha256:abc",
@@ -256,6 +259,31 @@ def test_load_checkpoint_forwards_token_and_fingerprint(monkeypatch):
 
     assert captured["hf_token"] == "hf_secret"
     assert captured["approved_remote_code_fingerprint"] == "sha256:abc"
+    assert result["allow_ambient"] is False
+
+
+@pytest.mark.parametrize("load_in_4bit", [None, True, False])
+def test_load_checkpoint_leaves_unset_load_in_4bit_to_the_route(monkeypatch, load_in_4bit):
+    from models.export import LoadCheckpointRequest
+
+    captured = {}
+
+    async def fake_load(request, current_subject, allow_ambient):
+        captured["fields_set"] = request.model_fields_set
+        captured["load_in_4bit"] = request.load_in_4bit
+        return {}
+
+    _stub_module(monkeypatch, "models", LoadCheckpointRequest = LoadCheckpointRequest)
+    _stub_module(monkeypatch, "routes")
+    _stub_module(monkeypatch, "routes.export", load_checkpoint = fake_load)
+
+    extra = {} if load_in_4bit is None else {"load_in_4bit": load_in_4bit}
+    asyncio.run(_get_tool("load_checkpoint").fn(checkpoint_path = "/tmp/ckpt", **extra))
+
+    # The route only picks 16-bit for a full fine-tune when load_in_4bit was not sent.
+    assert ("load_in_4bit" in captured["fields_set"]) is (load_in_4bit is not None)
+    if load_in_4bit is not None:
+        assert captured["load_in_4bit"] is load_in_4bit
 
 
 def test_stop_training_forwards_job_scope(monkeypatch):

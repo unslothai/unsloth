@@ -13,15 +13,15 @@ python -m tests.studio.studiobench --doctor
 
 `--doctor` is always the first command. It works on a machine with nothing installed, because every
 heavy import is lazy, and it names what is missing and what each missing piece costs you. It does
-NOT check that it can log in to a Studio you point it at, so read the next section before you
+NOT check that it can log in to an Unsloth you point it at, so read the next section before you
 conclude that a `--doctor: PASS` means a run will start.
 
-### You need a Studio, and you need its password
+### You need an Unsloth, and you need its password
 
-Every command below other than `--doctor` drives a real Studio, and Studio requires
+Every command below other than `--doctor` drives a real Unsloth, and Unsloth requires
 authentication. There are two ways to give it one.
 
-**Attach to a Studio you are already running.** This is the cheap path, and it needs the
+**Attach to an Unsloth you are already running.** This is the cheap path, and it needs the
 credentials, which are NOT optional and default to nothing:
 
 ```
@@ -32,13 +32,13 @@ python -m tests.studio.studiobench --tier fast \
 
 `--username` defaults to `unsloth`, `--password` defaults to empty. Without a correct password the
 run aborts with `HTTP 401 from .../api/auth/login` after the browser has already started. If you
-launched Studio with a non-default `UNSLOTH_STUDIO_HOME`, the password file is
+launched Unsloth with a non-default `UNSLOTH_STUDIO_HOME`, the password file is
 `$UNSLOTH_STUDIO_HOME/auth/.bootstrap_password`.
 
 Note that studiobench **rotates** the password to its own bench value on first login, so a second
-run against the same Studio does not need `--password` again.
+run against the same Unsloth does not need `--password` again.
 
-**Or let studiobench install and launch its own Studio** with `--branch REF`. No password needed,
+**Or let studiobench install and launch its own Unsloth** with `--branch REF`. No password needed,
 because it owns the instance, but the first run clones this repository and runs `install.sh`, which
 is a multi-gigabyte download budgeted at up to 45 minutes. The wall-clock figures in the table
 below are the measurement only and do not include that install.
@@ -54,13 +54,13 @@ Then pick a path. There are two that matter:
 ceiling hunt. Neither is the loop you work in.
 
 ```
-# iterate against a Studio you are already running (see the password note above)
+# iterate against an Unsloth you are already running (see the password note above)
 python -m tests.studio.studiobench --tier fast \
     --attach http://127.0.0.1:5401 \
     --password "$(cat ~/.unsloth/studio/auth/.bootstrap_password)" \
     --out outputs/iterate
 
-# confirm, letting studiobench install and launch its own Studio from a ref
+# confirm, letting studiobench install and launch its own Unsloth from a ref
 python -m tests.studio.studiobench --tier standard --branch main --reps 4 --out outputs/confirm
 
 # read the payload back as a scored report; writes <out>/summary.md beside it
@@ -122,7 +122,7 @@ So Layer 1 runs the shipped app, through its own backend, over real SSE bytes.
 ## How the real path is arranged
 
 ```
-studiobench pacer  --SSE-->  Studio backend relay  --SSE-->  the SPA's own TextDecoder,
+studiobench pacer  --SSE-->  Unsloth backend relay  --SSE-->  the SPA's own TextDecoder,
 (ThreadingHTTPServer)         (external provider,             SSE parser, delta accumulation,
                                provider_type "custom")        parseAssistantContent, Streamdown,
                                                               the autoscroll observer
@@ -178,7 +178,7 @@ built on different corpora, or to score one against a floor from another, rather
 corpus change as a performance change.
 
 Rungs are **1K / 10K / 100K / 500K / 1M tokens**, and the characters-per-token ratio is
-**measured** per rung (tiktoken, else Studio's own counter, else a labelled estimate) rather than
+**measured** per rung (tiktoken, else Unsloth's own counter, else a labelled estimate) rather than
 assumed at 4.0.
 
 Bulk thread mass is **seeded** over `PUT /api/chat/threads/{id}/messages`; only the last reply
@@ -254,7 +254,7 @@ exceeds 10 ms, `busy_pct` is `null` **with a reason**, never `0.2%`.
   about 3.2x, so a measurement there would confirm any hypothesis. Two checks:
   `/@vite/client` must not serve a JavaScript module, and `bundleType: 0` must appear in the same
   chunk as `rendererPackageName: "react-dom"`.
-  - The `/@vite/client` probe checks **what came back**, not just the status: Studio serves its SPA
+  - The `/@vite/client` probe checks **what came back**, not just the status: Unsloth serves its SPA
     for any unknown path, so a production build answers 200 with `index.html`.
   - The marker regex accepts **backticks**: the production bundle is minified with a pass that
     rewrites short string literals as template literals.
@@ -294,7 +294,7 @@ complete emits a `cell` row with `completed: false`, its failure mode and its RS
 an output path.)
 
 `--report <out>/payload.jsonl` scores that file and prints the summary, writing it to
-`<out>/summary.md` as well. It needs no browser, no Studio and no network, which is the point of
+`<out>/summary.md` as well. It needs no browser, no Unsloth and no network, which is the point of
 shipping a single-file benchmark: the numbers come back as a file and the analysis happens
 wherever the analyst is. Pass the same `--tier` (or `--rungs`) the run used, or the ladder will
 report rungs you never declared as incomplete.

@@ -1,4 +1,4 @@
-# Proving a Studio performance change
+# Proving an Unsloth performance change
 
 This is the protocol for turning "it feels faster" into a number a reviewer can trust. It exists
 because an audit of 40 frontend pull requests found that **30 of them had no effect distinguishable
@@ -43,19 +43,19 @@ python -m tests.studio.studiobench.sweep.floor_table --floor outputs/null output
 # 4. Parity: prove you did not change what is rendered
 python -m tests.studio.studiobench.sweep.ui_parity --null outputs/null outputs/mine
 
-# 5. Read the payload back as a scored report. No Studio, no browser, no network.
+# 5. Read the payload back as a scored report. No Unsloth, no browser, no network.
 python -m tests.studio.studiobench --report outputs/mine/payload.jsonl --tier standard
 ```
 
-The three commands in steps 1 and 2 drive a real Studio and therefore need credentials. The rest
+The three commands in steps 1 and 2 drive a real Unsloth and therefore need credentials. The rest
 read a payload that already exists: `--assert-liveness`, `floor_table`, `ui_parity` and `--report`
-run offline, with no Studio, no browser and no network.
-See **"You need a Studio, and you need its password"** in [README.md](README.md) before you
+run offline, with no Unsloth, no browser and no network.
+See **"You need an Unsloth, and you need its password"** in [README.md](README.md) before you
 run the first one: a missing `--password` fails as an HTTP 401 only after the browser has
 already started, and `--doctor` reports PASS on that exact configuration. If you drive the wave
-against Studios you started yourself rather than letting studiobench install them, `--ab` needs
+against Unsloth instances you started yourself rather than letting studiobench install them, `--ab` needs
 `--attach` **and** `--attach-b`, one URL per arm, or it exits before measuring anything. It also
-needs `--password` **and** `--password-b`, one per arm: two separately booted Studios mint two
+needs `--password` **and** `--password-b`, one per arm: two separately booted Unsloth instances mint two
 different bootstrap passwords, so a single `--password` is a 401 on the treatment alone, after
 the browser is already up.
 
@@ -503,7 +503,7 @@ has nothing to do with rendering.
 
 `arms/content_visibility_probe.js` is the working probe. Install it with
 `SBENCH_EXTRA_INIT_SCRIPT`, read it back with `SBENCH_PAGE_CONSOLE="CVPOT "`. Both are unset by
-default, so a scored run is unaffected. A probe run drives a real Studio like everything else in
+default, so a scored run is unaffected. A probe run drives a real Unsloth like everything else in
 the loop, so it needs the credentials above; the file's own header carries the full command.
 
 A run carrying a probe is **not scorable**, because the probe samples the DOM and forces layout on
@@ -530,7 +530,7 @@ does not parse also leaves the scene scripts alone.
 On **webkit**, the default engine on Linux and macOS, it does not: Playwright hands webkit its init
 scripts as one bootstrap unit, so a syntax error in the probe stops dom.js, parity.js and
 surfaces.js as well. The probe is installed as plain source rather than through `eval` because
-Studio serves `script-src 'self'` with no `'unsafe-eval'`, and webkit enforces that against an init
+Unsloth serves `script-src 'self'` with no `'unsafe-eval'`, and webkit enforces that against an init
 script, so an eval-installed probe never ran there at all. The source **opens** its script, with
 nothing put in front of it, so a probe that begins `"use strict"` keeps its directive prologue and
 runs under the semantics the file was written for.

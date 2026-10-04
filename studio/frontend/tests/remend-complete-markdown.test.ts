@@ -14,7 +14,7 @@ import { Streamdown } from "streamdown";
 
 /**
  * WHY THIS FILE EXISTS. `remend` is the incomplete-markdown repair Streamdown runs over a message
- * before parsing it, and Studio runs it on every SETTLED body: `markdown-text.tsx` passes
+ * before parsing it, and Unsloth runs it on every SETTLED body: `markdown-text.tsx` passes
  * `parseIncompleteMarkdown={!incrementalRender}` and `incrementalRender` is null exactly when the
  * message is not streaming. So this dependency decides what a finished message LOOKS like, not
  * only what a half-written one looks like, and a version bump is a rendering change.
@@ -38,7 +38,7 @@ import { Streamdown } from "streamdown";
 
 // remend 1.3.0 does not recognise `\( ... \)` or `\[ ... \]` as math, so it counts the `_` of a
 // subscript as an unmatched emphasis marker and "completes" it by appending another one. The
-// document is COMPLETE, so there is nothing to complete, and Studio renders the extra character
+// document is COMPLETE, so there is nothing to complete, and Unsloth renders the extra character
 // literally at the end of the message. Shared with the copy sweep below, which runs the same four
 // documents through every remend on disk rather than through the one this file imports.
 const COMPLETE_LATEX_DOCUMENTS = [
@@ -170,7 +170,7 @@ test("the settled render path runs the repair, not just the package", () => {
     assert.ok(
       renderSettled(truncated).includes(repaired),
       `a settled <Streamdown> rendered ${JSON.stringify(truncated)} without repairing it: no ` +
-        `${repaired} in the output. The repair is off on the path Studio actually renders, ` +
+        `${repaired} in the output. The repair is off on the path Unsloth actually renders, ` +
         "whatever the direct calls to remend above report.",
     );
   }
@@ -246,7 +246,7 @@ function collectRemendCopies(nodeModules: string, found: string[]): string[] {
 }
 
 test("every remend in the tree is the pinned one, including Streamdown's", async () => {
-  // THE COPY THIS FILE IMPORTS IS NOT NECESSARILY THE ONE THE UI RUNS. Studio renders settled
+  // THE COPY THIS FILE IMPORTS IS NOT NECESSARILY THE ONE THE UI RUNS. Unsloth renders settled
   // bodies through `<Streamdown parseIncompleteMarkdown>`, and streamdown@2.5.0 depends on
   // `"remend": "1.3.0"` EXACTLY, so its own `import remend from "remend"` resolves against
   // `node_modules/streamdown/node_modules` first. Bumping the top-level pin to 1.3.1 therefore
@@ -289,7 +289,7 @@ test("every remend in the tree is the pinned one, including Streamdown's", async
     };
     for (const complete of COMPLETE_LATEX_DOCUMENTS) {
       // `undefined`, not `{}`: Streamdown forwards its optional `remend` prop straight through, and
-      // Studio does not pass one.
+      // Unsloth does not pass one.
       assert.equal(
         loaded.default(complete, undefined),
         complete,

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Replay a Studio session through the real middleware in virtual time.
+"""Replay an Unsloth session through the real middleware in virtual time.
 
 No sleeping and no wall clock. The middleware takes its timestamps from
 ``time.perf_counter`` in its own module namespace, so swapping that namespace for a clock

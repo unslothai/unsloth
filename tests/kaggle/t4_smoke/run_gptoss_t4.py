@@ -23,10 +23,15 @@ not in the path at all.
   probe saw `UNSLOTH_FORCE_FLOAT32=1`, `fp16=False`, `bf16=False`, and
   `UNSLOTH_FORCE_CUSTOM_DTYPE` pinning `down_projs` and `mlp.router` to float32.
   That path exists for this card and nothing else in CI exercises it.
-* **No offload.** 12.78 GB reserved of 14.56, every parameter on `cuda:0`, no
-  `hf_device_map`. About 1.8 GB of headroom, thin enough that placement is
-  counted on every run rather than assumed -- and asserted, since a run that
-  offloads passes everything else.
+* **One deliberate offload, and nothing else.** 12.7 GB reserved of 14.56, no
+  `hf_device_map`, every parameter on `cuda:0` EXCEPT `model.embed_tokens.weight`,
+  which unsloth puts in RAM on purpose -- `Unsloth: Offloading embeddings to RAM
+  to save 1.08 GB`, with forward hooks carrying ids down and vectors back up.
+  That was read as a spill twice before anyone looked at the name; 579133440 is
+  exactly 201088 x 2880, this checkpoint's vocab by its hidden size. Placement is
+  counted on every run rather than assumed, and the embedding is excused only
+  when its hook flag is set, because an embedding that reached the CPU without
+  them is a real bug that looks identical in a device count.
 * **torch.compile engages**: 32 unique graphs, 779 calls captured, 2 graph
   breaks, both `_warnings.warn`. A silent fall back to eager leaves every other
   number healthy while the leg's coverage goes unexercised, so this is asserted.
@@ -72,6 +77,8 @@ import json
 import os
 import platform
 import sys
+import shutil
+import tempfile
 import time
 import traceback
 from pathlib import Path
@@ -152,15 +159,51 @@ def placement(model) -> dict:
     landed on the CPU (correct, slow) from one on meta (loaded nothing).
     """
     counts: dict = {}
+    off_gpu: list = []
     try:
-        for param in model.parameters():
+        for name, param in model.named_parameters():
             key = str(param.device)
             counts[key] = counts.get(key, 0) + param.numel()
+            if not key.startswith("cuda"):
+                # NAMED, not just counted. `{'cpu': 579133440}` is a number
+                # nobody can act on; `model.embed_tokens.weight` is a bug
+                # report. The two readings cost the same walk, and the first
+                # one already reached hardware twice before anyone could say
+                # which tensor it was.
+                off_gpu.append({"name": name, "numel": param.numel(), "device": key})
     except Exception as exc:  # noqa: BLE001
         counts = {"error": f"{type(exc).__name__}: {exc}"}
+    # Is the one tensor allowed off the card the one unsloth DELIBERATELY put
+    # there? `offload_embedding` moves the input embedding to RAM and installs
+    # a pre/post forward hook pair that carries the ids down and the vectors
+    # back up (`unsloth/models/vision.py:_install_offload_embedding_hooks`).
+    # The flag it sets is the difference between that optimisation and a
+    # weight that landed on the CPU by accident, and the two are identical in a
+    # device count.
+    embed = {}
+    try:
+        module = model.get_input_embeddings()
+        weight = getattr(module, "weight", None)
+        for name, candidate in model.named_modules():
+            if candidate is module:
+                embed["module"] = name
+                break
+        embed["weight_name"] = f"{embed.get('module')}.weight" if "module" in embed else None
+        embed["device"] = str(weight.device) if weight is not None else None
+        embed["offload_hooks_installed"] = bool(
+            getattr(module, "_unsloth_offload_hooks_installed", False)
+        )
+    except Exception as exc:  # noqa: BLE001
+        embed = {"error": f"{type(exc).__name__}: {exc}"}
+
     device_map = getattr(model, "hf_device_map", None)
     return {
+        "input_embedding": embed,
         "parameters_by_device": counts,
+        # Largest first, capped: a genuinely offloaded model has thousands of
+        # these and the report is read by a human.
+        "off_gpu_parameters": sorted(off_gpu, key = lambda p: -p["numel"])[:20],
+        "off_gpu_parameter_count": len(off_gpu),
         "hf_device_map_devices": (
             sorted({str(v) for v in device_map.values()}) if isinstance(device_map, dict) else None
         ),
@@ -206,6 +249,91 @@ def build_dataset(tokenizer, rows: list[dict]):
             )
         )
     return Dataset.from_dict({"text": texts})
+
+
+def build_completion_dataset(tokenizer, rows: list[dict]):
+    """The same rows as a PROMPT/COMPLETION pair, so the loss covers only the
+    answer.
+
+    Two columns rather than a collator: TRL treats a dataset with `prompt` and
+    `completion` columns as prompt-completion and masks the prompt itself
+    (`completion_only_loss` defaults to True for that shape). The older
+    `DataCollatorForCompletionOnlyLM` route needs a response template string
+    that has to match the chat template exactly, and a template change turns it
+    silently into "mask nothing" -- which trains on everything and passes every
+    assertion about losses.
+
+    The prompt ends with the generation prompt, so the boundary is exactly where
+    the model would start generating. That is what makes the mask meaningful
+    rather than approximately right.
+    """
+    from datasets import Dataset
+
+    prompts, completions = [], []
+    for row in rows:
+        prompts.append(
+            tokenizer.apply_chat_template(
+                [{"role": "user", "content": row["question"]}],
+                tokenize = False,
+                add_generation_prompt = True,
+            )
+        )
+        completions.append(row["answer"])
+    return Dataset.from_dict({"prompt": prompts, "completion": completions})
+
+
+def masking_evidence(trainer) -> dict:
+    """Whether the prompt tokens are ACTUALLY masked out of the loss.
+
+    This is the whole point of the feature and the one thing a loss curve
+    cannot show: a run that masks nothing trains on prompt and answer alike,
+    converges perfectly well, and reports numbers indistinguishable from a
+    correct one. So the labels are read off a real collated batch.
+
+    Never raises: a diagnostic that kills the leg is worse than a missing one.
+    """
+    record: dict = {}
+    try:
+        batch = next(iter(trainer.get_train_dataloader()))
+        labels = batch["labels"]
+        total = int(labels.numel())
+        masked = int((labels == -100).sum())
+        record["label_tokens"] = total
+        record["masked_tokens"] = masked
+        record["masked_fraction"] = round(masked / total, 4) if total else None
+        record["columns"] = sorted(batch.keys())
+    except BaseException as exc:  # noqa: BLE001
+        record["error"] = f"{type(exc).__name__}: {exc}"[:400]
+    return record
+
+
+def masking_failures(record: dict | None, *, expected: bool) -> list[str]:
+    """The rule, as a pure function, so it is checkable without a GPU."""
+    if not expected:
+        return []
+    if not record:
+        return ["completions-only training was requested but no masking evidence was collected"]
+    if record.get("error"):
+        return [f"could not read the collated labels: {record['error']}"]
+
+    total = record.get("label_tokens") or 0
+    masked = record.get("masked_tokens")
+    if not total:
+        return ["the collated batch carried no labels at all"]
+    if not masked:
+        # The failure this function exists for. Every loss-based assertion
+        # passes in this state.
+        return [
+            "completions-only training was requested and NOTHING was masked "
+            f"({masked} of {total} label tokens are -100), so the prompt is in "
+            f"the loss and this leg is not testing what it says it is"
+        ]
+    if masked >= total:
+        return [
+            f"every one of the {total} label tokens is masked, so there is no "
+            f"completion left to learn from"
+        ]
+    return []
 
 
 def train_and_infer(args) -> dict:
@@ -270,13 +398,22 @@ def train_and_infer(args) -> dict:
         for line in Path(args.dataset).read_text(encoding = "utf-8").splitlines()
         if line.strip()
     ]
-    dataset = build_dataset(tokenizer, rows)
+    # Prompt/completion when the loss should cover only the answer, one `text`
+    # column otherwise. `dataset_text_field` must go with the second shape and
+    # NOT the first: naming a text field TRL cannot find is how a
+    # prompt-completion dataset silently falls back to training on everything.
+    if args.train_on_completions:
+        dataset = build_completion_dataset(tokenizer, rows)
+    else:
+        dataset = build_dataset(tokenizer, rows)
+    result["train_on_completions"] = bool(args.train_on_completions)
+    result["dataset_columns"] = sorted(dataset.column_names)
 
     from trl import SFTConfig, SFTTrainer
 
     config = SFTConfig(
         output_dir = str(Path(args.outdir) / "trainer"),
-        dataset_text_field = "text",
+        **({} if args.train_on_completions else {"dataset_text_field": "text"}),
         per_device_train_batch_size = 1,
         gradient_accumulation_steps = 1,
         max_length = args.max_seq_length,
@@ -308,6 +445,13 @@ def train_and_infer(args) -> dict:
         train_dataset = dataset,
         args = config,
     )
+
+    # Read BEFORE training, off a real collated batch. After training the
+    # dataloader has been consumed and a re-created one is not necessarily the
+    # object the trainer used.
+    if args.train_on_completions:
+        result["masking"] = masking_evidence(trainer)
+        _log(f"masking {json.dumps(result['masking'])}")
 
     # The precision after Unsloth's patches have had their say. On a T4 this
     # should be float32 and NOT fp16; fp16 here means FORCE_FLOAT32 stopped
@@ -392,6 +536,87 @@ def train_and_infer(args) -> dict:
     result["generated"] = generated
     result["canary_found"] = CANARY in generated
     result["memory_peak"] = memory()
+
+    # GGUF, LAST, because it merges a 20B checkpoint and the merge is the
+    # heaviest thing in the leg. Anything after it would be measuring a session
+    # that has just written ~28GB.
+    #
+    # ASK for q8_0, ACCEPT only mxfp4. That pairing looks backwards and is the
+    # only one that works, which cost a probe to learn.
+    #
+    # gpt-oss overrides the request, out loud:
+    #
+    #   GPT-OSS does not support GGUF quantization (requested: q8_0).
+    #     Overriding to MXFP4 format.
+    #   GPT-OSS model - skipping additional quantizations
+    #
+    # The obvious response is to ask for mxfp4 directly. unsloth REJECTS it as
+    # an input -- measured on kernel unsloth-probe-gptoss-r3-832c85:
+    #
+    #   Unsloth: Quant method = [mxfp4] not supported. Choose from below:
+    #   [not_quantized] [fast_quantized] [quantized] [f32] [bf16] ...
+    #
+    # So the documented override is the ONLY route to an MXFP4 file, and the
+    # leg has to travel it. Accepting only mxfp4 is what keeps that honest: a
+    # run that somehow produced a real q8_0 would fail, which is right, because
+    # gpt-oss q8_0 is documented impossible.
+    if getattr(args, "export_gguf", False):
+        from gguf_export import export_gguf, llama_cpp_facts, run_gguf
+
+        install_log = ""
+        llama_dir = None
+        try:
+            import contextlib
+            import io
+
+            # After `import unsloth`, which has happened by now: unsloth_zoo's
+            # llama_cpp raises "Please install Unsloth via pip install unsloth!"
+            # if it is reached first. A probe already lost a session to that.
+            from unsloth_zoo.llama_cpp import install_llama_cpp
+
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                returned = install_llama_cpp()
+            install_log = buffer.getvalue()
+            facts = llama_cpp_facts(install_log, returned)
+            llama_dir = facts.get("dir")
+        except BaseException as exc:  # noqa: BLE001
+            facts = {"error": f"{type(exc).__name__}: {exc}"[:2000]}
+        _log(f"llama.cpp: {json.dumps(facts)}")
+
+        # NOT under args.outdir, and this is measured. `/kaggle/working` is
+        # 21.0GB total; the gpt-oss export consumes 27.6GB of transient disk
+        # (3 mxfp4 safetensors shards at 13.76GB plus the GGUF). Exporting
+        # there fails in 2.8s with
+        #   Unsloth: Failed saving locally - no disk space left
+        # which is a disk fact wearing the costume of an export bug.
+        #
+        # `/tmp` on a Kaggle session is the overlay: 8656.9GB total, 1102.5GB
+        # free, measured on kernel unsloth-probe-disk. tempfile honours TMPDIR
+        # and lands there. The artifact keeps the RECORD -- path, size, seconds
+        # -- and not the 27.6GB, which nobody wants collected anyway.
+        gguf_dir = tempfile.mkdtemp(prefix = "gptoss_gguf_")
+        record = export_gguf(
+            model,
+            tokenizer,
+            gguf_dir,
+            quantization = args.gguf_quantization,
+        )
+        record["disk_free_gb_before"] = round(shutil.disk_usage(gguf_dir).free / 1e9, 1)
+        record["llama_cpp"] = facts
+        result["gguf_export"] = record
+        _log(f"gguf export: {json.dumps({k: v for k, v in record.items() if k != 'llama_cpp'})}")
+
+        # Deliberately NOT run through llama.cpp here, and the reason is
+        # measured: the prebuilt bundle is the -cpu build, and a 20B MXFP4 file
+        # on 4 vCPUs is not a few seconds of work. The Default leg already
+        # covers "the exported file runs" on a 610MB Q8_0, where the claim is
+        # affordable. Asserting the export and not the run is a smaller claim,
+        # and it is the one this leg can honestly make.
+        ggufs = record.get("ggufs") or []
+        result["gguf_ran"] = False
+        if ggufs:
+            _log(f"largest gguf: {ggufs[0]['path']} ({ggufs[0]['mb']} MB), not executed here")
     _log(f"generated {generated!r}")
     return result
 
@@ -427,13 +652,41 @@ def _placement_failures(placement: dict | None) -> list[str]:
             device: n for device, n in counts.items() if not str(device).startswith("cuda")
         }
         if elsewhere:
-            failures.append(
-                f"parameters are off the GPU: {elsewhere} (all devices: {counts}). "
-                f"This leg's result is that the 20B checkpoint fits and trains "
-                f"wholly on one T4; a run that offloads to CPU, disk or meta is "
-                f"not a slower version of that, it is a different run, and "
-                f"accelerate's offload does not support training at all"
+            # The ONE tensor allowed off the card, and only on its own terms.
+            # `offload_embedding` puts the input embedding in RAM and hooks the
+            # lookup so ids go down and vectors come back up; measured saving
+            # 1.08GB on gpt-oss-20b. Accepting "cpu" wholesale would excuse a
+            # real spill, so this names the exact parameter AND requires the
+            # hook flag: an embedding that reached the CPU without them is a
+            # bug, and it looks identical in a device count.
+            embed = placement.get("input_embedding") or {}
+            deliberate = (
+                embed.get("offload_hooks_installed") is True
+                and str(embed.get("device", "")).startswith("cpu")
+                and embed.get("weight_name")
             )
+            unexplained = [
+                p
+                for p in (placement.get("off_gpu_parameters") or [])
+                if not (deliberate and p.get("name") == embed.get("weight_name"))
+            ]
+            if unexplained or not (placement.get("off_gpu_parameters") or []):
+                named = (
+                    ", ".join(
+                        f"{p.get('name')} ({p.get('numel')} on {p.get('device')})"
+                        for p in unexplained
+                    )
+                    or "the walk recorded no names"
+                )
+                failures.append(
+                    f"parameters are off the GPU: {elsewhere} [{named}] (all devices: "
+                    f"{counts}), and unsloth's deliberate embedding offload does not "
+                    f"account for them (input_embedding {embed}). This leg's result is "
+                    f"that the 20B checkpoint fits and trains wholly on one T4; a run "
+                    f"that offloads to CPU, disk or meta is not a slower version of "
+                    f"that, it is a different run, and accelerate's offload does not "
+                    f"support training at all"
+                )
     # The accelerate-side answer, which is absent on a healthy run and says
     # `cpu`/`disk` when dispatch offloaded. Three-way: `placement()` always
     # writes a bool, so anything else is a record this file cannot read.
@@ -455,6 +708,16 @@ def failures_for(result: dict, args) -> list[str]:
     that costs a Kaggle session has to be checkable without one.
     """
     failures: list[str] = []
+    if getattr(args, "export_gguf", False):
+        from gguf_export import export_failures
+
+        # MXFP4 only. gpt-oss refuses every other quantization by design, so a
+        # wider accept list would let a silently-overridden export pass as
+        # though the request had been honoured.
+        failures += export_failures(result.get("gguf_export"), accept_quantizations = ("mxfp4",))
+    failures += masking_failures(
+        result.get("masking"), expected = bool(getattr(args, "train_on_completions", False))
+    )
     metrics = result.get("metrics") or []
     if len(metrics) != args.max_steps:
         failures.append(f"expected {args.max_steps} logged steps, got " f"{len(metrics)}")
@@ -619,6 +882,20 @@ def main() -> int:
     ap.add_argument("--max-seq-length", type = int, default = 1024)
     ap.add_argument("--lora-r", type = int, default = 8)
     ap.add_argument("--max-new-tokens", type = int, default = 32)
+    ap.add_argument(
+        # On by default: the leg is specified to train on completions, and a
+        # flag that has to be remembered at every call site is one that will be
+        # forgotten at one of them.
+        "--train-on-completions",
+        dest = "train_on_completions",
+        action = "store_true",
+        default = True,
+    )
+    ap.add_argument("--no-train-on-completions", dest = "train_on_completions", action = "store_false")
+    ap.add_argument("--export-gguf", dest = "export_gguf", action = "store_true", default = False)
+    # q8_0 as the REQUEST. `mxfp4` is not an accepted input value; the override
+    # is the only way to reach that format. See the export block above.
+    ap.add_argument("--gguf-quantization", default = "q8_0")
     ap.add_argument("--require-compile", dest = "require_compile", action = "store_true", default = True)
     ap.add_argument("--no-require-compile", dest = "require_compile", action = "store_false")
     ap.add_argument(

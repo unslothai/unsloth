@@ -147,7 +147,7 @@ def _run_preexec(monkeypatch, *, owner_pid, getppid):
 
 
 def test_pdeathsig_keeps_child_whose_parent_is_pid_1(monkeypatch):
-    # Studio as a container entrypoint runs as pid 1, so a healthy child sees
+    # Unsloth as a container entrypoint runs as pid 1, so a healthy child sees
     # getppid() == 1; killing it took down every llama-server spawn (#7886).
     _run_preexec(monkeypatch, owner_pid = 1, getppid = 1)
 
@@ -337,7 +337,8 @@ def test_terminate_all_skips_recycled_pid(monkeypatch):
 
 
 @pytest.mark.skipif(not IS_LINUX, reason = "PR_SET_PDEATHSIG is Linux-only")
-def test_bind_kills_multiprocessing_child_on_parent_death(tmp_path):
+@pytest.mark.parametrize("lifetime_thread", [False, True])
+def test_bind_kills_multiprocessing_child_on_parent_death(tmp_path, lifetime_thread):
     # multiprocessing workers can't take a preexec_fn, so the child binds itself
     # via bind_current_process_to_parent_lifetime(). Killing the parent must reap
     # it (the gap reviewers found in adopt_pid alone).
@@ -345,13 +346,17 @@ def test_bind_kills_multiprocessing_child_on_parent_death(tmp_path):
     mid.write_text(
         "import sys, time, multiprocessing as mp\n"
         f"sys.path.insert(0, {str(_BACKEND)!r})\n"
-        "from utils.process_lifetime import bind_current_process_to_parent_lifetime\n"
-        "def _child():\n"
+        "from utils.process_lifetime import bind_current_process_to_parent_lifetime, spawn_on_lifetime_thread\n"
+        "def _child(ready):\n"
         "    bind_current_process_to_parent_lifetime()\n"
+        "    ready.set()\n"
         "    time.sleep(300)\n"
         "if __name__ == '__main__':\n"
-        "    p = mp.get_context('spawn').Process(target = _child, daemon = True)\n"
-        "    p.start()\n"
+        "    ctx = mp.get_context('spawn')\n"
+        "    ready = ctx.Event()\n"
+        "    p = ctx.Process(target = _child, args = (ready,), daemon = True)\n"
+        f"    {'spawn_on_lifetime_thread(p.start)' if lifetime_thread else 'p.start()'}\n"
+        "    assert ready.wait(10), 'child did not arm its parent-death signal'\n"
         "    print(p.pid, flush = True)\n"
         "    time.sleep(300)\n"
     )

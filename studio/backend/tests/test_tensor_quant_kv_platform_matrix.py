@@ -78,7 +78,7 @@ CACHE_CELLS = [
     # iq4_nl is in _VALID_CACHE_TYPES, so the gate removal admits it. ggml-org/
     # llama.cpp#27116 reports it still asserting under a tensor split on b10441;
     # that abort carries split_axis, so _should_record_tensor_split_abort latches
-    # it and the route falls back. Studio's job is only to emit what was asked.
+    # it and the route falls back. Unsloth's job is only to emit what was asked.
     ("iq4_nl", "iq4_nl", "iq4_nl"),
 ]
 
@@ -126,7 +126,7 @@ def test_the_requested_cache_reaches_every_platform_unchanged(
 ):
     """No OS and no accelerator rewrites the requested KV cache type.
 
-    Studio emits one type on both axes for a managed request, so both must equal
+    Unsloth emits one type on both axes for a managed request, so both must equal
     what was asked, on every cell, whether or not tensor mode survives.
     """
     tensor_viable = accelerator[5]
@@ -217,7 +217,7 @@ def test_an_inherited_quantized_kv_env_survives_on_every_platform(
         # is left to the child. Pinned so the cache assertions above cannot be
         # read as a claim about placement.
         assert env["LLAMA_ARG_TENSOR_SPLIT"] == "9,1"
-    # Env-only: Studio emits no flag of its own, so it records no type. Pinned
+    # Env-only: Unsloth emits no flag of its own, so it records no type. Pinned
     # because /status and the reload matcher both read this, and the matcher
     # compares it against an intent field that is also None for this shape.
     assert backend.cache_type_kv is None
@@ -292,16 +292,16 @@ def _stable_join(cmd: list[str]) -> str:
 
 
 def test_a_config_saved_by_a_pre_23792_studio_still_loads(tmp_path, monkeypatch):
-    """Upgrading Studio must not invalidate a saved model config.
+    """Upgrading Unsloth must not invalidate a saved model config.
 
     A user who set "Tensor Parallelism + q8_0" before this change had it silently
     coerced to f16. The same saved config now gets what it asked for -- which is
     the fix -- and nothing about reading it changes: no field is added, removed or
-    renamed, so an old config loads here and a new one loads on an old Studio.
+    renamed, so an old config loads here and a new one loads on an old Unsloth.
     """
     backend, gguf = _cell_backend(tmp_path, monkeypatch, PLATFORMS[0], ACCELERATORS[0])
 
-    # Exactly the fields a pre-#23792 Studio wrote for this combination.
+    # Exactly the fields a pre-#23792 Unsloth wrote for this combination.
     cmd = _launch(backend, gguf, tensor_parallel = True, cache_type_kv = "q8_0")["cmd"]
 
     assert cmd[cmd.index("--split-mode") + 1] == "tensor"
@@ -312,7 +312,7 @@ def test_the_load_intent_gained_no_field(tmp_path):
     """Schema tripwire for both directions of the upgrade.
 
     The fix threads a second cache type through the planner, and the cheap way to
-    do that would have been a new GgufLoadIntent field -- which an older Studio
+    do that would have been a new GgufLoadIntent field -- which an older Unsloth
     reading a newer config would reject. It is a function parameter instead; this
     fails if that ever changes.
     """
