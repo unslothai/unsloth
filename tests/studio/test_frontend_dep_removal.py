@@ -29,7 +29,7 @@ class Case:
     id: str
     desc: str
     remove: list[str]
-    expected_status: str  # "PASS" | "FAIL"
+    expected_status: str
     expected_failures: list[str]
     move_to_dev: list[str] | None = None  # rare: deps moved, not removed
 
@@ -37,10 +37,11 @@ class Case:
 CASES: list[Case] = [
     Case(
         "C1",
-        "removing next-themes breaks 2 src imports",
+        "removing next-themes is a no-op: replaced by the custom theme store, "
+        "no longer a declared dep or src import",
         ["next-themes"],
-        "FAIL",
-        ["next-themes"],
+        "PASS",
+        [],
     ),
     Case(
         "C2",
@@ -52,8 +53,7 @@ CASES: list[Case] = [
     ),
     Case(
         "C3",
-        "removing katex is safe: streamdown/math, mermaid, "
-        "rehype-katex all keep it at top level",
+        "removing katex is safe: streamdown/math, mermaid, rehype-katex all keep it at top level",
         ["katex"],
         "PASS",
         [],
@@ -68,8 +68,7 @@ CASES: list[Case] = [
     ),
     Case(
         "C6",
-        "removing @radix-ui/react-slot is safe: pulled by "
-        "radix-ui umbrella + @assistant-ui/react",
+        "removing @radix-ui/react-slot is safe: pulled by radix-ui umbrella + @assistant-ui/react",
         ["@radix-ui/react-slot"],
         "PASS",
         [],
@@ -85,10 +84,11 @@ CASES: list[Case] = [
     ),
     Case(
         "C8",
-        "multi-remove with mixed safety: next-themes + @huggingface/hub + dexie all unsafe",
+        "multi-remove with mixed safety: next-themes is now a no-op (removed), "
+        "@huggingface/hub + dexie still unsafe",
         ["next-themes", "@huggingface/hub", "dexie"],
         "FAIL",
-        ["next-themes", "@huggingface/hub", "dexie"],
+        ["@huggingface/hub", "dexie"],
     ),
     Case(
         "C9",
@@ -311,8 +311,6 @@ def run_case(case: Case, head_pkg: dict) -> tuple[bool, str]:
 
 
 # Classifier unit tests: feed snippets into classify(), assert the kind.
-# Covers sneaky import shapes used to obscure a real usage.
-
 # Import classify() by file path so this test needs no installed package.
 import importlib.util as _ilu
 
@@ -336,7 +334,6 @@ class ClassifyCase:
 
 
 CLASSIFY_CASES: list[ClassifyCase] = [
-    # Bog-standard shapes
     ClassifyCase(
         "U01",
         "single-line static import",
@@ -377,7 +374,6 @@ CLASSIFY_CASES: list[ClassifyCase] = [
         '@import "tailwindcss";',
         "css_import",
     ),
-    # Sneaky shapes
     ClassifyCase(
         "U06",
         "multi-line static import",
@@ -490,7 +486,6 @@ CLASSIFY_CASES: list[ClassifyCase] = [
         '"@dagrejs/dagre": path.resolve(__dirname, "./..."),',
         "string_literal",
     ),
-    # False-positive guards (these should NOT detect)
     ClassifyCase(
         "U20",
         "different package with shared prefix",
@@ -628,8 +623,6 @@ CLASSIFY_CASES: list[ClassifyCase] = [
         'type C = import("react").ComponentType;',
         "dynamic_import",
     ),
-    # File-type gating: JS classifiers must not fire on non-script files
-    # (.py/.md/.sh/.yml), whose JS-shaped strings are docs/test data, not usages.
     ClassifyCase(
         "U37",
         "JS import snippet inside a Python fixture string is NOT a usage",
@@ -638,6 +631,7 @@ CLASSIFY_CASES: list[ClassifyCase] = [
         "snippet = 'import x from \"next-themes\";'",
         None,
     ),
+    # File-type gating: JS classifiers must not fire on non-script files
     ClassifyCase(
         "U38",
         "JS import snippet inside a Markdown code fence is NOT a usage",
@@ -662,8 +656,8 @@ CLASSIFY_CASES: list[ClassifyCase] = [
         "run: echo 'import x from \"next-themes\";'",
         None,
     ),
-    # HTML script/link must respect package-name boundaries: a
-    # `/node_modules/foo-extra/...` reference does NOT use `foo`.
+    # HTML script/link must respect package-name boundaries: a `/node_modules/foo-extra/...` reference does NOT use
+    # `foo`.
     ClassifyCase(
         "U41",
         "HTML <script src=...> with similar-prefix package is NOT a match",
@@ -728,7 +722,6 @@ def run_classify_unit_tests() -> int:
 
 # Adversarial end-to-end cases: drop a synthetic file into src/, run the
 # checker, clean up. Catches regressions in the full grep+classify pipeline.
-
 ADVERSARIAL_TMP_DIR = REPO / "studio/frontend/src/__dep_check_adversarial__"
 
 
@@ -850,13 +843,13 @@ ADV_CASES: list[AdvCase] = [
         "A12",
         "JSDoc @import of removed pkg should FAIL",
         "adv12.ts",
-        '/** @type {import("__adv_only_pkg_l__").Foo} */\n' "const x = null;\n",
+        '/** @type {import("__adv_only_pkg_l__").Foo} */\nconst x = null;\n',
         "__adv_only_pkg_l__",
         "FAIL",
         ["__adv_only_pkg_l__"],
     ),
-    # Prettier puts `import` ~22 lines from the `from "pkg"` clause; the old
-    # ±4-line classify fallback missed it. Exercises the widened (±25) window.
+    # Prettier puts `import` ~22 lines from the `from "pkg"` clause; the old ±4-line classify fallback missed it.
+    # Exercises the widened (±25) window.
     AdvCase(
         "A13",
         "Prettier-style 22-identifier multi-line import should FAIL "
@@ -872,15 +865,13 @@ ADV_CASES: list[AdvCase] = [
 ]
 
 
-# package.json field-reference cases: simulate prettier/eslintConfig/overrides/
-# peerDependenciesMeta etc., testing package_json_extra_refs() coverage.
-
-
+# package.json field-reference cases: simulate prettier/eslintConfig/overrides/ peerDependenciesMeta etc., testing
+# package_json_extra_refs() coverage.
 @dataclass
 class PkgFieldCase:
     id: str
     desc: str
-    field_patch: dict  # extra fields to merge into synth_head package.json
+    field_patch: dict
     target_pkg: str
     expected_status: str
     expected_failures: list[str]
@@ -1045,15 +1036,13 @@ PKG_FIELD_CASES: list[PkgFieldCase] = [
 
 
 def run_pkg_field_cases() -> int:
-    head_pkg = json.loads(HEAD_PKG.read_text())
+    head_pkg = json.loads(HEAD_PKG.read_text(encoding = "utf-8"))
     passed = 0
     for pc in PKG_FIELD_CASES:
         synth_head = json.loads(json.dumps(head_pkg))
-        # Apply the field patch (deep-merge isn't needed; we control the keys).
         for k, v in pc.field_patch.items():
             synth_head[k] = v
-        # Base declares the target; head drops it from deps but references it
-        # via the extra field.
+        # Base declares the target; head drops it from deps but references it via the extra field.
         synth_base = json.loads(json.dumps(head_pkg))
         synth_base.setdefault("dependencies", {})[pc.target_pkg] = "^1.0.0"
         with tempfile.NamedTemporaryFile("w", suffix = ".json", delete = False) as f:
@@ -1108,15 +1097,14 @@ def run_pkg_field_cases() -> int:
 
 def run_adversarial_cases() -> int:
     ADVERSARIAL_TMP_DIR.mkdir(parents = True, exist_ok = True)
-    head_pkg = json.loads(HEAD_PKG.read_text())
+    head_pkg = json.loads(HEAD_PKG.read_text(encoding = "utf-8"))
     passed = 0
     for ac in ADV_CASES:
-        # Drop the synthetic file.
         fpath = ADVERSARIAL_TMP_DIR / ac.filename
         try:
-            fpath.write_text(ac.content)
-            # Base adds the target pkg; real head lacks it, so the script
-            # treats it as removed and scans the repo (now with our file).
+            fpath.write_text(ac.content, encoding = "utf-8")
+            # Base adds the target pkg; real head lacks it, so the script treats it as removed and scans the repo (now
+            # with our file).
             synth_base = json.loads(json.dumps(head_pkg))
             synth_base.setdefault("dependencies", {})[ac.target_pkg] = "^1.0.0"
             with tempfile.NamedTemporaryFile("w", suffix = ".json", delete = False) as f:
@@ -1164,7 +1152,6 @@ def run_adversarial_cases() -> int:
                 fpath.unlink()
             except FileNotFoundError:
                 pass
-    # Clean up the directory.
     try:
         ADVERSARIAL_TMP_DIR.rmdir()
     except OSError:
@@ -1172,9 +1159,6 @@ def run_adversarial_cases() -> int:
     print()
     print(f"{passed}/{len(ADV_CASES)} adversarial cases pass")
     return 0 if passed == len(ADV_CASES) else 1
-
-
-# Dead-dep enumeration cases
 
 
 @dataclass
@@ -1257,7 +1241,7 @@ ENUM_CASES: list[EnumCase] = [
 
 
 def run_enum_cases() -> int:
-    head_pkg = json.loads(HEAD_PKG.read_text())
+    head_pkg = json.loads(HEAD_PKG.read_text(encoding = "utf-8"))
     passed = 0
     ADVERSARIAL_TMP_DIR.mkdir(parents = True, exist_ok = True)
     for ec in ENUM_CASES:
@@ -1266,7 +1250,6 @@ def run_enum_cases() -> int:
         synth_head.setdefault("devDependencies", {}).update(ec.add_dev_deps)
         for k, v in ec.field_patch.items():
             synth_head[k] = v
-        # Drop any temp source file if needed.
         fpath = None
         if ec.extra_file:
             rel, content = ec.extra_file
@@ -1300,7 +1283,6 @@ def run_enum_cases() -> int:
                     fpath.unlink()
                 except FileNotFoundError:
                     pass
-        # Parse the dead-dep enumeration output.
         unused: set[str] = set()
         orphans: set[str] = set()
         in_unused = False
@@ -1340,7 +1322,6 @@ def run_enum_cases() -> int:
                 print(f"      {ln}")
         if ok:
             passed += 1
-    # Cleanup tmp dir if empty.
     try:
         ADVERSARIAL_TMP_DIR.rmdir()
     except OSError:
@@ -1350,11 +1331,8 @@ def run_enum_cases() -> int:
     return 0 if passed == len(ENUM_CASES) else 1
 
 
-# Script-wrapper cases: scripts_bin_refs / _next_real_bin must credit the real
-# bin (`biome` -> @biomejs/biome), not the wrapper. The old "first non-env
-# token" heuristic missed cross-env / dotenv / etc.
-
-
+# Script-wrapper cases: scripts_bin_refs / _next_real_bin must credit the real bin (`biome` -> @biomejs/biome), not the
+# wrapper. The old "first non-env token" heuristic missed cross-env / dotenv / etc.
 @dataclass
 class WrapperCase:
     id: str
@@ -1449,8 +1427,8 @@ def run_wrapper_cases() -> int:
         if ok:
             passed += 1
 
-    # End-to-end: feed scripts_bin_refs a head_pkg whose scripts use a wrapper
-    # and confirm the wrapped bin's owner is credited (the find_command_usage path).
+    # End-to-end: feed scripts_bin_refs a head_pkg whose scripts use a wrapper and confirm the wrapped bin's owner is
+    # credited (the find_command_usage path).
     int_total = 0
     int_passed = 0
     int_cases = [
@@ -1480,7 +1458,7 @@ def run_wrapper_cases() -> int:
             "&& chain: both halves credit their owning packages",
             {"build": "tsc -b && cross-env CI=1 biome check"},
             {"tsc": "typescript", "biome": "@biomejs/biome"},
-            None,  # checked via owning_pkgs below
+            None,
         ),
     ]
     for case_id, desc, scripts, bin_to_pkg, expect_owner in int_cases:
@@ -1506,7 +1484,7 @@ def run_wrapper_cases() -> int:
 
 
 def main() -> int:
-    head_pkg = json.loads(HEAD_PKG.read_text())
+    head_pkg = json.loads(HEAD_PKG.read_text(encoding = "utf-8"))
     print(f"Running {len(CASES)} edge cases against {SCRIPT.relative_to(REPO)}")
     print()
     results: list[tuple[Case, bool, str]] = []

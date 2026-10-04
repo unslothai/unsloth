@@ -159,7 +159,10 @@ assert_contains \
     "$SETUP_SH" 'if [ "$_RESOLVED_LOCAL" = "$_CANON_LLAMA_CPP_DIR" ]; then'
 assert_contains \
     "setup.ps1: ignores a local dir equal to the canonical install location" \
-    "$SETUP_PS1" 'if ($ResolvedLocal -eq $LlamaCppDir) {'
+    "$SETUP_PS1" '$LocalIsCanonical = ($ResolvedLocal -eq $LlamaCppDir)'
+assert_contains \
+    "setup.ps1: the canonical check actually gates the no-op branch" \
+    "$SETUP_PS1" 'if ($LocalIsCanonical) {'
 
 echo ""
 echo "=== Results ==="

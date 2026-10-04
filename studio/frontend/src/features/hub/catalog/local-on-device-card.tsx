@@ -1,77 +1,79 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { TrainIcon } from "../components/train-icon";
-import {
-  HUB_GGUF_RUN_ACTIONS_VISIBLE,
-  HUB_POST_DOWNLOAD_ACTIONS_VISIBLE,
-} from "../lib/hub-feature-flags";
+import { useHfEndpoint } from "@/lib/hf-endpoint";
+import { ModelMemoryBarFor } from "@/components/model-memory-bar";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { Spinner } from "@/components/ui/spinner";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import {
-  type BaseModelSource,
-  type LocalModelInfo,
-  type ModelInventoryFormat,
-  deleteCachedModel,
-} from "../inventory";
+import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { cn } from "@/lib/utils";
+import { Alert02Icon, CubeIcon, Share05Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { useCallback, useMemo, useState } from "react";
 import {
   downloadManager,
   jobKeyOf,
   selectActiveJob,
   useDownloadManagerStore,
 } from "../download-manager";
-import { formatBytes } from "../lib/format";
-import { ggufVariantsMatch } from "../lib/model-identity";
-import { cn } from "@/lib/utils";
-import { confirmExternalLink } from "../stores/external-link-confirm";
-import { useHfTokenStore } from "../stores/hf-token-store";
+import { useOnlineStatus } from "../hooks/use-online-status";
 import {
-  Alert02Icon,
-  CubeIcon,
-  PencilEdit02Icon,
-  PlayIcon,
-  Share05Icon,
-} from "@hugeicons/core-free-icons";
-import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
-import { useCallback, useMemo, useState } from "react";
+  type BaseModelSource,
+  type LocalModelInfo,
+  type ModelInventoryFormat,
+  deleteCachedModel,
+} from "../inventory";
+import { formatBytes } from "../lib/format";
+import type { HubModelRunSelection } from "../lib/model-run-selection";
+
+import {
+  ggufFilenamesMatch,
+  ggufSelectionOverrideMatchesIntent,
+} from "../lib/gguf-filename";
 import {
   ggufVariantDisplayLabel,
+  resolveLocalGgufVariant,
   sortLocalGgufVariants,
 } from "../lib/gguf-variant-sort";
+import { ggufVariantsMatch } from "../lib/model-identity";
+import { confirmExternalLink } from "../stores/external-link-confirm";
+import { useHfTokenStore } from "../stores/hf-token-store";
+import { DeleteImpactSummary, useDeleteImpact } from "./delete-impact";
 import { DotTag } from "./dot-tag";
 import {
   CardDeleteButton,
+  CardDivider,
   CardUpdateButton,
   DeleteConfirmDialog,
+  ModelRunActionButton,
   UpdateConfirmDialog,
 } from "./download-card";
 import { PathInfoButton } from "./path-info-button";
 import { TransportConflictDialog } from "./transport-conflict-dialog";
 import { useCardDelete } from "./use-card-delete";
 import { useGgufVariantFetchState } from "./use-gguf-variant-fetch-state";
-import { useOnlineStatus } from "../hooks/use-online-status";
-
-type LocalLoadOptions = {
-  ggufVariant?: string;
-  expectedBytes?: number;
-};
 
 interface LocalOnDeviceCardProps {
   modelId: string;
+  displayName: string;
   repoId: string | null;
   sourceLabel: string;
   source: LocalModelInfo["source"];
   path: string;
+  /** False for a local diffusion / audio / video GGUF: it runs through the media
+   *  planner rather than llama.cpp, so the KV estimator describes the wrong
+   *  runtime -- and it still falls back to the file size, so it draws a
+   *  confident weights-only verdict rather than nothing. */
+  showMemoryBar?: boolean;
   isGguf: boolean;
   requiresVariant?: boolean;
   modelFormat: ModelInventoryFormat | null;
@@ -81,17 +83,19 @@ interface LocalOnDeviceCardProps {
   baseModelSummary?: string | null;
   adapterType?: string | null;
   trainingMethod?: string | null;
-  canRun?: boolean;
   isActive: boolean;
   activeGgufVariant?: string | null;
   isLoading: boolean;
-  loadingPhase?: "downloading" | "starting";
+  preferredFile?: string | null;
+  preferredFileIntent?: number;
+
   gpuGb?: number;
+  /** GPUs gpuGb sums, for the loader's per-card VRAM reserve. */
+  gpuCount?: number;
   systemRamGb?: number;
   unsupportedReason?: string | null;
-  onLoad: (opts?: LocalLoadOptions) => void;
-  onUseInChat: () => void;
-  onTrain?: () => void;
+  onRun?: (selection: HubModelRunSelection) => void;
+  runPending?: boolean;
   onChange?: () => void;
 }
 
@@ -124,6 +128,8 @@ function BaseModelReference({
   baseModelSummary?: string | null;
 }) {
   const canOpenHub = baseModelSource === "huggingface" && !!baseModelHubId;
+  const hfEndpoint = useHfEndpoint();
+  const hubUrl = `${hfEndpoint}/${baseModelHubId}`;
   return (
     <div className="flex min-w-0 items-center gap-2 rounded-[10px] border border-border/55 bg-muted/35 px-3 py-2">
       <div className="flex size-7 shrink-0 items-center justify-center rounded-[8px] bg-background/70 text-muted-foreground">
@@ -135,31 +141,31 @@ function BaseModelReference({
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-1.5">
-          <span className="shrink-0 text-[11px] font-medium text-muted-foreground">
+          <span className="shrink-0 text-ui-11 font-medium text-muted-foreground">
             {baseModelSourceLabel(baseModelSource)}
           </span>
-          <span className="truncate text-[12px] font-medium text-foreground">
+          <span className="truncate text-ui-12 font-medium text-foreground">
             {baseModel}
           </span>
         </div>
         {baseModelSummary && (
-          <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
+          <p className="mt-0.5 truncate text-ui-11 text-muted-foreground">
             {baseModelSummary}
           </p>
         )}
       </div>
       {canOpenHub && (
         <Tooltip>
-          <TooltipTrigger asChild>
+          <TooltipTrigger asChild={true}>
             <a
-              href={`https://huggingface.co/${baseModelHubId}`}
+              href={hubUrl}
               target="_blank"
               rel="noopener noreferrer"
               aria-label={`Open ${baseModelHubId} on Hugging Face`}
               className="inline-flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
               onClick={(event) => {
                 event.stopPropagation();
-                if (confirmExternalLink(`https://huggingface.co/${baseModelHubId}`)) {
+                if (confirmExternalLink(hubUrl)) {
                   event.preventDefault();
                 }
               }}
@@ -182,10 +188,12 @@ function BaseModelReference({
 
 export function LocalOnDeviceCard({
   modelId,
+  displayName,
   repoId,
   sourceLabel,
   source,
   path,
+  showMemoryBar = true,
   isGguf,
   requiresVariant = false,
   modelFormat,
@@ -195,17 +203,18 @@ export function LocalOnDeviceCard({
   baseModelSummary,
   adapterType,
   trainingMethod,
-  canRun = true,
   isActive,
   activeGgufVariant = null,
   isLoading,
-  loadingPhase,
+  preferredFile = null,
+  preferredFileIntent = 0,
+
   gpuGb,
+  gpuCount,
   systemRamGb,
   unsupportedReason,
-  onLoad,
-  onUseInChat,
-  onTrain,
+  onRun,
+  runPending = false,
   onChange,
 }: LocalOnDeviceCardProps) {
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -237,10 +246,17 @@ export function LocalOnDeviceCard({
   // Update availability is derived from the GGUF variant metadata; offline rows
   // keep the button hidden because there is no remote revision to fetch.
   const online = useOnlineStatus();
+  const deleteImpact = useDeleteImpact(
+    deleteOpen && Boolean(repoId),
+    repoId ?? "",
+  );
   const { deleting, runDelete } = useCardDelete({
     action: async () => {
       if (!repoId) return;
-      await deleteCachedModel(repoId, undefined, hfToken || undefined);
+      // Delete is only offered for hf_cache rows (see canDelete), so `path` is
+      // the cache snapshot path: pass it so the delete targets the cache this
+      // card shows instead of falling back to the active cache.
+      await deleteCachedModel(repoId, undefined, hfToken || undefined, path);
     },
     resourceName: "model",
     successMessage: () => `Deleted ${repoId}`,
@@ -271,13 +287,19 @@ export function LocalOnDeviceCard({
   const [selectedVariantState, setSelectedVariantState] = useState<{
     key: string;
     quant: string | null;
+    preferredFile?: string | null;
+    preferredFileIntent?: number;
   }>(() => ({
     key: variantKey,
     quant: null,
   }));
 
   const canDelete =
-    source === "hf_cache" && !!repoId && !isActive && !isLoading;
+    source === "hf_cache" &&
+    !!repoId &&
+    !isActive &&
+    !isLoading &&
+    !runPending;
   const variants = useMemo(() => {
     const localVariants = currentVariantState.variants;
     const remoteVariants = remoteVariantState.variants;
@@ -291,50 +313,60 @@ export function LocalOnDeviceCard({
         ...variant,
         download_size_bytes:
           remoteVariant.download_size_bytes || variant.download_size_bytes,
+        // Both sides measure the same cache; keep the local reading and let the
+        // remote one cover a row the local listing could not price.
+        download_remaining_bytes:
+          variant.download_remaining_bytes ??
+          remoteVariant.download_remaining_bytes,
         update_available: remoteVariant.update_available === true,
       };
     });
   }, [currentVariantState.variants, remoteVariantState.variants]);
+  // The same live VRAM Budget the memory bar on this card reads. Without it the quant menu ranked
+  // against the 0.97 default while the bar beside it used the saved fraction, so an over-budget
+  // variant could sit above a smaller one that actually fits.
+  const budgetFraction = useVramBudgetFraction() ?? undefined;
   const sortedVariants = useMemo(
     () =>
       variants
         ? sortLocalGgufVariants(variants, {
             defaultVariant: currentVariantState.defaultVariant,
-            activeGgufVariant: isActive ? activeGgufVariant : null,
             gpuGb,
+            gpuCount,
             systemRamGb,
+            budgetFraction,
           })
         : null,
     [
       variants,
       currentVariantState.defaultVariant,
-      isActive,
-      activeGgufVariant,
       gpuGb,
+      gpuCount,
       systemRamGb,
+      budgetFraction,
     ],
   );
+  const preferredQuant = preferredFile
+    ? (variants?.find((variant) =>
+        ggufFilenamesMatch(variant.filename, preferredFile),
+      )?.quant ?? null)
+    : null;
   const selectedVariantOverride =
-    selectedVariantState.key === variantKey ? selectedVariantState.quant : null;
-  const selectedQuant =
-    selectedVariantOverride &&
-    sortedVariants?.some((variant) =>
-      ggufVariantsMatch(variant.quant, selectedVariantOverride),
+    selectedVariantState.key === variantKey &&
+    ggufSelectionOverrideMatchesIntent(
+      preferredFile,
+      preferredFileIntent,
+      selectedVariantState.preferredFile,
+      selectedVariantState.preferredFileIntent,
     )
-      ? selectedVariantOverride
-      : (sortedVariants?.find(
-          (variant) =>
-            isActive && ggufVariantsMatch(variant.quant, activeGgufVariant),
-        )?.quant ??
-        sortedVariants?.find((variant) =>
-          ggufVariantsMatch(variant.quant, currentVariantState.defaultVariant),
-        )?.quant ??
-        sortedVariants?.[0]?.quant ??
-        null);
-  const selectedVariant =
-    sortedVariants?.find((variant) =>
-      ggufVariantsMatch(variant.quant, selectedQuant),
-    ) ?? null;
+      ? selectedVariantState.quant
+      : preferredQuant;
+  const selectedVariant = resolveLocalGgufVariant(sortedVariants, {
+    selectedVariant: selectedVariantOverride,
+    activeVariant: isActive ? activeGgufVariant : null,
+    defaultVariant: currentVariantState.defaultVariant,
+  });
+  const selectedQuant = selectedVariant?.quant ?? null;
   // True while a managed download/update for this repo+variant is in flight.
   const updateJobActive = useDownloadManagerStore((s) =>
     repoId
@@ -361,40 +393,30 @@ export function LocalOnDeviceCard({
     !!repoId &&
     !isActive &&
     !isLoading &&
+    !runPending &&
     !updateJobActive &&
     updateAvailable;
-  // Update runs as a MANAGED download (same path as a normal download) so it
-  // shows in the Downloads panel with manifest-based progress and a working
-  // Cancel. The worker re-resolves `main` and pulls changed blobs while the old
-  // cached copy stays runnable until the new revision verifies.
+  // Update runs as a MANAGED download (same path as a normal download) so it shows in the Downloads
+  // panel with manifest-based progress and a working Cancel. The worker re-resolves `main` and
+  // pulls changed blobs while the old cached copy stays runnable until the new revision verifies.
   const handleConfirmUpdate = () => {
     if (!repoId || !updateTargetVariant) return;
     setUpdateOpen(false);
-    void downloadManager.requestStart({
-      kind: "model",
-      repoId,
-      variant: updateTargetVariant,
-      expectedBytes: updateExpectedBytes,
-    }).then((outcome) => {
-      if (outcome === "conflict") {
-        setUpdateConflictKey(jobKeyOf("model", repoId, updateTargetVariant));
-      }
-      void currentVariantState.refresh();
-      void remoteVariantState.refresh();
-    });
+    void downloadManager
+      .requestStart({
+        kind: "model",
+        repoId,
+        variant: updateTargetVariant,
+        expectedBytes: updateExpectedBytes,
+      })
+      .then((outcome) => {
+        if (outcome === "conflict") {
+          setUpdateConflictKey(jobKeyOf("model", repoId, updateTargetVariant));
+        }
+        void currentVariantState.refresh();
+        void remoteVariantState.refresh();
+      });
   };
-  const selectedVariantIsActive =
-    needsVariantSelection && selectedQuant
-      ? isActive && ggufVariantsMatch(activeGgufVariant, selectedQuant)
-      : isActive;
-  const variantUnavailable =
-    needsVariantSelection &&
-    (currentVariantState.loading ||
-      currentVariantState.error !== null ||
-      selectedVariant === null);
-  const variantActionPending =
-    needsVariantSelection && currentVariantState.loading;
-
   const formatLabel =
     modelFormat === "gguf"
       ? "GGUF"
@@ -408,14 +430,16 @@ export function LocalOnDeviceCard({
   const formatTone =
     modelFormat === "adapter" ? "adapter" : isGguf ? "gguf" : "checkpoint";
   const showOldCacheHint = source === "hf_cache" && !!unsupportedReason;
-  const runActionsVisible = isGguf
-    ? HUB_GGUF_RUN_ACTIONS_VISIBLE
-    : HUB_POST_DOWNLOAD_ACTIONS_VISIBLE;
+  const selectedVariantReady =
+    !needsVariantSelection ||
+    (selectedVariant?.downloaded === true && selectedVariant.partial !== true);
+  const showRunAction =
+    Boolean(onRun) && selectedVariantReady && !updateJobActive && !isLoading;
 
   return (
     <div className="flex w-full flex-col gap-2">
       {showOldCacheHint && (
-        <div className="flex items-start gap-2 rounded-[12px] border border-amber-500/20 bg-amber-500/8 px-3 py-2 text-[12px] leading-5 text-amber-700 dark:text-amber-300">
+        <div className="flex items-start gap-2 rounded-[12px] border border-amber-500/20 bg-amber-500/8 px-3 py-2 text-ui-12 leading-5 text-amber-700 dark:text-amber-300">
           <HugeiconsIcon
             icon={Alert02Icon}
             strokeWidth={1.75}
@@ -427,22 +451,25 @@ export function LocalOnDeviceCard({
             can still keep it on disk, or delete it to free space.
           </span>
         </div>
-      )}<div className="hub-download-card">
+      )}
+      <div className="hub-download-card">
         <div className="group/dl flex items-center">
           <div className="relative flex h-9 min-w-0 flex-1 items-center pl-3 pr-2">
-            <span className="flex min-w-0 items-center gap-1.5 text-[12px] text-muted-foreground">
-              <DotTag
-                tone="success"
-                label={selectedVariantIsActive ? "Loaded" : "On device"}
-              />
+            <span className="flex min-w-0 items-center gap-1.5 text-ui-12 text-muted-foreground">
+              <DotTag tone="success" label="On device" />
               <DotTag tone={formatTone} label={formatLabel} />
               {needsVariantSelection && (
-                <Popover open={variantOpen} onOpenChange={setVariantOpen}>
+                <Popover
+                  open={runPending ? false : variantOpen}
+                  onOpenChange={(nextOpen) => {
+                    if (!runPending) setVariantOpen(nextOpen);
+                  }}
+                >
                   <PopoverTrigger asChild={true}>
                     <button
                       type="button"
-                      disabled={currentVariantState.loading}
-                      className="inline-flex h-6 max-w-[170px] shrink-0 cursor-pointer items-center gap-1.5 rounded-[8px] border border-format-gguf/35 px-2 font-mono text-[10.5px] leading-none text-format-gguf transition-colors hover:bg-format-gguf/8 disabled:cursor-not-allowed disabled:opacity-60"
+                      disabled={currentVariantState.loading || runPending}
+                      className="inline-flex h-6 max-w-[calc(170px*var(--ui-space-scale,1))] shrink-0 cursor-pointer items-center gap-1.5 rounded-[8px] border border-format-gguf/35 px-2 font-mono text-ui-10p5 leading-none text-format-gguf transition-colors hover:bg-format-gguf/8 disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       <span className="truncate">
                         {currentVariantState.loading
@@ -454,7 +481,7 @@ export function LocalOnDeviceCard({
                               : "Select"}
                       </span>
                       {selectedVariant && (
-                        <span className="shrink-0 font-sans text-[10px] text-muted-foreground tabular-nums">
+                        <span className="shrink-0 font-sans text-ui-10 text-muted-foreground tabular-nums">
                           {formatBytes(selectedVariant.size_bytes)}
                         </span>
                       )}
@@ -469,18 +496,15 @@ export function LocalOnDeviceCard({
                     side="bottom"
                     sideOffset={8}
                     avoidCollisions={false}
-                    className="hub-menu-instant menu-soft-surface w-[var(--radix-popover-trigger-width)] min-w-[220px] gap-0 overflow-hidden p-0 py-2 ring-0"
+                    className="hub-menu-instant menu-soft-surface w-[var(--radix-popover-trigger-width)] min-w-[min(calc(220px*var(--ui-space-scale,1)),calc(100vw-32px))] gap-0 overflow-hidden p-0 py-2 ring-0"
                   >
-                    <div className="max-h-[280px] overflow-y-auto [scrollbar-width:thin]">
+                    <div className="max-h-[calc(280px*var(--ui-space-scale,1))] overflow-y-auto [scrollbar-width:thin]">
                       {sortedVariants?.map((variant) => {
                         const label = ggufVariantDisplayLabel(variant);
                         const isSelected = ggufVariantsMatch(
                           variant.quant,
                           selectedQuant,
                         );
-                        const isLoaded =
-                          ggufVariantsMatch(variant.quant, activeGgufVariant) &&
-                          isActive;
                         return (
                           <button
                             key={variant.filename}
@@ -489,24 +513,24 @@ export function LocalOnDeviceCard({
                               setSelectedVariantState({
                                 key: variantKey,
                                 quant: variant.quant,
+
+                                preferredFile,
+                                preferredFileIntent,
                               });
                               setVariantOpen(false);
                             }}
                             className={cn(
-                              "mx-2 flex w-[calc(100%-1rem)] min-w-0 cursor-pointer items-center gap-2 rounded-[10px] px-2.5 py-2 text-left transition-colors",
+                              "mx-2 flex w-[calc(100%-1rem*var(--ui-space-scale,1))] min-w-0 cursor-pointer items-center gap-2 rounded-[10px] px-2.5 py-2 text-left transition-colors",
                               isSelected
-                                ? "bg-foreground/[0.07] dark:bg-foreground/[0.12]"
-                                : "hover:bg-foreground/[0.05] dark:hover:bg-foreground/[0.06]",
+                                ? "bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] dark:bg-[color-mix(in_oklab,var(--foreground)_calc(12%*var(--contrast-wash-gain,1)),transparent)]"
+                                : "hover:bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] dark:hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)]",
                             )}
                           >
-                            <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-format-gguf">
+                            <span className="min-w-0 flex-1 truncate font-mono text-ui-12 text-format-gguf">
                               {label}
                             </span>
                             <span className="flex shrink-0 items-center gap-1.5">
-                              {isLoaded && (
-                                <DotTag tone="success" label="Loaded" />
-                              )}
-                              <span className="text-[10px] text-muted-foreground tabular-nums">
+                              <span className="text-ui-10 text-muted-foreground tabular-nums">
                                 {formatBytes(variant.size_bytes)}
                               </span>
                             </span>
@@ -539,7 +563,7 @@ export function LocalOnDeviceCard({
               {canUpdate && (
                 <CardUpdateButton
                   label={`Update ${repoId}`}
-                  emphasized
+                  emphasized={true}
                   onClick={() => setUpdateOpen(true)}
                 />
               )}
@@ -549,93 +573,53 @@ export function LocalOnDeviceCard({
                   onClick={() => setDeleteOpen(true)}
                 />
               )}
-              <PathInfoButton
-                path={path}
-                title={sourceLabel}
-                description="Where this model lives on disk."
-              />
+              <PathInfoButton path={path} />
             </div>
           </div>
-          {onTrain && HUB_POST_DOWNLOAD_ACTIONS_VISIBLE && (
-            <div
-              aria-hidden="true"
-              className="ml-1 mr-0 h-5 w-px shrink-0 bg-foreground/[0.06] opacity-100 transition-opacity duration-150 group-hover/dl:opacity-0 dark:bg-white/[0.04]"
-            />
+          {showRunAction && onRun && (
+            <>
+              <CardDivider />
+              <ModelRunActionButton
+                label={`Configure and run ${displayName.trim() || "this model"}`}
+                loading={runPending}
+                onClick={() =>
+                  onRun(
+                    needsVariantSelection && selectedVariant
+                      ? {
+                          ggufVariant: selectedVariant.quant,
+                          ggufFilename: selectedVariant.filename,
+                          expectedBytes:
+                            selectedVariant.download_size_bytes &&
+                            selectedVariant.download_size_bytes > 0
+                              ? selectedVariant.download_size_bytes
+                              : selectedVariant.size_bytes,
+                        }
+                      : {},
+                  )
+                }
+              />
+            </>
           )}
-          <div
-            className={cn(
-              "group/pair flex h-9 shrink-0 items-stretch gap-1.5",
-              !runActionsVisible && "hidden",
-            )}
-          >
-            {onTrain && HUB_POST_DOWNLOAD_ACTIONS_VISIBLE && (
-              <button
-                type="button"
-                onClick={() => onTrain()}
-                className="hub-action-btn w-24"
-              >
-                <HugeiconsIcon icon={TrainIcon} strokeWidth={1.75} />
-                Train
-              </button>
-            )}
-            <button
-              type="button"
-              disabled={isLoading || variantUnavailable || !canRun}
-              onClick={() => {
-                if (!canRun) return;
-                if (selectedVariantIsActive) {
-                  onUseInChat();
-                  return;
-                }
-                if (needsVariantSelection) {
-                  if (!selectedVariant) return;
-                  onLoad({
-                    ggufVariant: selectedVariant.quant,
-                    expectedBytes: selectedVariant.size_bytes,
-                  });
-                  return;
-                }
-                onLoad();
-              }}
-              className={cn(
-                isLoading ||
-                  selectedVariantIsActive ||
-                  variantUnavailable ||
-                  !canRun
-                  ? "hub-action-btn w-24"
-                  : "hub-run-action-btn w-24",
-                (isLoading || variantUnavailable || !canRun) && "opacity-70",
-              )}
-            >
-              {isLoading ? (
-                <>
-                  <Spinner />
-                  {loadingPhase === "downloading" ? "Preparing…" : "Loading…"}
-                </>
-              ) : selectedVariantIsActive ? (
-                <>
-                  <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} />
-                  Chat
-                </>
-              ) : variantActionPending ? (
-                <>
-                  <Spinner />
-                  Loading…
-                </>
-              ) : !canRun ? (
-                <>
-                  <HugeiconsIcon icon={Alert02Icon} strokeWidth={1.75} />
-                  No run
-                </>
-              ) : (
-                <>
-                  <HugeiconsIcon icon={PlayIcon} strokeWidth={1.75} />
-                  Run
-                </>
-              )}
-            </button>
-          </div>
         </div>
+        {/* Render the full-width memory bar below the horizontal card row so it
+            does not compete with row controls for width. */}
+        {/* A direct .gguf path skips variant selection, so selectedQuant is null.
+            The path itself still supplies the local artifact identity. */}
+        {showMemoryBar &&
+        (repoId || localGgufPath) &&
+        (selectedQuant || localGgufPath.toLowerCase().endsWith(".gguf")) ? (
+          <ModelMemoryBarFor
+            // The card's exact path identifies the downloaded artifact across
+            // cache roots and revisions. It is also the only identity available
+            // for a custom or local GGUF when repoId is null.
+            repoId={repoId || localGgufPath}
+            loadId={localGgufPath}
+            quant={selectedQuant ?? ""}
+            sizeBytes={selectedVariant?.size_bytes}
+            gpuGb={gpuGb}
+            className="px-3 pb-2"
+          />
+        ) : null}
       </div>
       {baseModel && (
         <BaseModelReference
@@ -652,12 +636,16 @@ export function LocalOnDeviceCard({
         }}
         title="Delete cached model?"
         deleting={deleting}
+        // Same gate the model row menu applies: when an installed image model still needs these
+        // assets the summary says so, and leaving Delete enabled only bought the user a 400.
+        blocked={(deleteImpact?.blocked_by.length ?? 0) > 0}
         onConfirm={() => void runDelete()}
         description={
           <>
             This will remove{" "}
             <span className="font-medium text-foreground">{repoId}</span> and
             its downloaded files from disk. You can re-download it later.
+            <DeleteImpactSummary impact={deleteImpact} />
           </>
         }
       />

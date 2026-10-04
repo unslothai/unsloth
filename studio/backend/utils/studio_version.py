@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Network-free Studio release version resolution for display-only UI."""
+"""Network-free Unsloth release version resolution for display-only UI."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ _MAX_VERSION_LENGTH = 64
 
 
 def is_valid_studio_release_version(value: object) -> bool:
-    """Return True for Studio release tags such as ``v0.1.39-beta``."""
+    """Return True for Unsloth release tags such as ``v0.1.39-beta``."""
     if not isinstance(value, str):
         return False
     version = value.strip()
@@ -60,6 +60,8 @@ def _exact_git_studio_tag(repo_root: Path) -> str | None:
             stdout = subprocess.PIPE,
             stderr = subprocess.DEVNULL,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = _GIT_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -81,6 +83,8 @@ def _git_branch(repo_root: Path) -> str | None:
             stdout = subprocess.PIPE,
             stderr = subprocess.DEVNULL,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = _GIT_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -102,7 +106,7 @@ def _git_branch(repo_root: Path) -> str | None:
 
 
 def get_studio_version(repo_root: Path | None = None) -> str:
-    """Return the installed Studio release tag for display, or ``dev``.
+    """Return the installed Unsloth release tag for display, or ``dev``.
 
     Intentionally separate from the PyPI ``unsloth`` package version used by
     update checks. Never performs network requests.

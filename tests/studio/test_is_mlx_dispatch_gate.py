@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""Regression tests for the CUDA-vs-MLX dispatch gates Studio relies on.
+"""Regression tests for the CUDA-vs-MLX dispatch gates Unsloth relies on.
 
 Two gates: (1) ``unsloth._IS_MLX`` (import-time, delegates to the zoo MLX
 runtime gate behind a local precheck barrier); (2)
@@ -22,12 +22,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 UNSLOTH_INIT = REPO_ROOT / "unsloth" / "__init__.py"
 
 
-# 1. Source-level structure check on _IS_MLX (no platform dependencies).
-
-
 def test_is_mlx_gate_uses_three_required_predicates():
     """_IS_MLX must AND Darwin+arm64+importable-mlx; dropping any breaks dispatch."""
-    tree = ast.parse(UNSLOTH_INIT.read_text())
+    tree = ast.parse(UNSLOTH_INIT.read_text(encoding = "utf-8"))
 
     target = None
     for node in ast.walk(tree):
@@ -70,11 +67,7 @@ def test_is_mlx_gate_uses_three_required_predicates():
     ), "_IS_MLX helper must run the local MLX precheck before importing zoo"
 
 
-# 2. Runtime gate behavior with platform spoofed to Apple Silicon + fake mlx.
-#    Re-evaluates the expression rather than reloading unsloth (avoids a torch
-#    cascade-reload).
-
-
+# Runtime gate behavior with platform spoofed to Apple Silicon + fake mlx.
 def _evaluate_is_mlx_precheck(platform_module, importlib_util, os_module):
     """Re-evaluate the local _is_mlx_available precheck with injected deps."""
     return (
@@ -147,7 +140,7 @@ def test_is_mlx_gate_false_on_non_apple_silicon():
 
 
 def _import_studio_hardware():
-    """Lazy import of the Studio hardware module (studio/backend on sys.path)."""
+    """Lazy import of the Unsloth hardware module (studio/backend on sys.path)."""
     studio_backend = REPO_ROOT / "studio" / "backend"
     if str(studio_backend) not in sys.path:
         sys.path.insert(0, str(studio_backend))
@@ -178,9 +171,8 @@ def test_detect_hardware_picks_mlx_when_only_apple_silicon_available(monkeypatch
     monkeypatch.setitem(sys.modules, "mlx", fake_mlx)
     monkeypatch.setitem(sys.modules, "mlx.core", fake_mlx_core)
 
-    # detect_hardware now gates MLX on the full stack via _has_usable_mlx_stack()
-    # (utils.mlx_repair.mlx_stack_available imports mlx_lm/mlx_vlm and checks
-    # versions); faking mlx.core alone no longer satisfies it. This test asserts the
+    # detect_hardware now gates MLX on the full stack via _has_usable_mlx_stack() (utils.mlx_repair.mlx_stack_available
+    # imports mlx_lm/mlx_vlm and checks versions); faking mlx.core alone no longer satisfies it. This test asserts the
     # dispatch decision when the stack IS usable, so model that directly.
     monkeypatch.setattr(hw, "_has_usable_mlx_stack", lambda: True)
 

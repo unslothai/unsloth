@@ -17,7 +17,7 @@ def _module_calls(source: str):
 
 def test_top_level_run_alias_registered():
     """`app.command("run", ...)` must be invoked with studio_run as its target."""
-    source = _CLI_INIT.read_text()
+    source = _CLI_INIT.read_text(encoding = "utf-8")
 
     # Find ``app.command("run", ...)`` call -- the decorator-call form.
     found_decorator_call = False
@@ -46,7 +46,7 @@ def test_top_level_run_alias_registered():
 
 def test_studio_run_imported_for_alias():
     """The alias must wire up to the studio.run function, not redefine it."""
-    source = _CLI_INIT.read_text()
+    source = _CLI_INIT.read_text(encoding = "utf-8")
     tree = ast.parse(source)
     has_import = False
     for node in ast.walk(tree):

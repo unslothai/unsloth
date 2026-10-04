@@ -20,9 +20,10 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import {
-  ArrowReloadHorizontalIcon,
+  Refresh01Icon,
   Delete02Icon,
   Download01Icon,
+  PlayIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -30,7 +31,10 @@ import {
   type DownloadJob,
   type DownloadJobProgress,
 } from "../download-manager";
-import { DownloadCancelIndicator } from "./download-cancel-indicator";
+import {
+  type DownloadStopMode,
+  DownloadStopIndicator,
+} from "./download-cancel-indicator";
 import { TransportConflictDialog } from "./transport-conflict-dialog";
 import {
   downloadActionAriaLabel,
@@ -47,19 +51,31 @@ export function DownloadCard({
   progress,
   children,
   dialogs,
+  footer,
 }: {
   job: DownloadJob;
   progress: DownloadJobProgress | null;
   children: ReactNode;
   dialogs?: ReactNode;
+  footer?: ReactNode;
 }) {
   return (
     <>
       <div className="hub-download-card">
         <div className="group/dl flex items-center">{children}</div>
         {progress && (
-          <DownloadProgressBar progress={progress} bytesPerSec={job.bytesPerSec} />
+          // Match the row's inner text bounds: the trigger and the action button both inset 12px,
+          // so the bar lines up with the quant label on the left and the percentage on the right.
+          <div className="px-3">
+            <DownloadProgressBar
+              progress={progress}
+              bytesPerSec={job.bytesPerSec}
+              cancelling={job.cancelling}
+              etaSeconds={job.etaSeconds}
+            />
+          </div>
         )}
+        {footer}
       </div>
       <TransportConflictDialog
         conflict={job.transportConflict}
@@ -77,8 +93,41 @@ export function CardDivider() {
   return (
     <div
       aria-hidden="true"
-      className="ml-1 mr-0 h-5 w-px shrink-0 bg-foreground/[0.06] opacity-100 transition-opacity duration-150 group-hover/dl:opacity-0 dark:bg-white/[0.04]"
+      className="ml-1 mr-0 h-5 w-px shrink-0 bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] opacity-100 transition-opacity duration-150 group-hover/dl:opacity-0 dark:bg-[rgb(255_255_255_/_calc(0.04*var(--contrast-wash-gain,1)))]"
     />
+  );
+}
+
+export function ModelRunActionButton({
+  label,
+  onClick,
+  loading = false,
+}: {
+  label: string;
+  onClick: () => void;
+  loading?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={loading ? `${label}. Opening configuration.` : label}
+      aria-busy={loading}
+      disabled={loading}
+      onClick={onClick}
+      className="hub-run-action-btn w-28"
+    >
+      {loading ? (
+        <>
+          <Spinner />
+          Opening…
+        </>
+      ) : (
+        <>
+          <HugeiconsIcon icon={PlayIcon} strokeWidth={1.75} />
+          Run
+        </>
+      )}
+    </button>
   );
 }
 
@@ -140,10 +189,10 @@ export function CardUpdateButton({
               e.stopPropagation();
               onClick();
             }}
-            className="inline-flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded-full bg-amber-500/[0.07] pl-2 pr-2.5 text-[12px] font-medium text-amber-800/90 transition-colors duration-150 hover:bg-amber-500/[0.12] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/25 dark:bg-amber-400/[0.08] dark:text-amber-200/85 dark:hover:bg-amber-400/[0.16]"
+            className="inline-flex h-7 shrink-0 cursor-pointer items-center gap-1.5 rounded-full bg-amber-500/[0.07] pl-2 pr-2.5 text-ui-12 font-medium text-amber-800/90 transition-colors duration-150 hover:bg-amber-500/[0.12] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-500/25 dark:bg-amber-400/[0.08] dark:text-amber-200/85 dark:hover:bg-amber-400/[0.16]"
           >
             <HugeiconsIcon
-              icon={ArrowReloadHorizontalIcon}
+              icon={Refresh01Icon}
               strokeWidth={2}
               className="size-3.5"
             />
@@ -169,7 +218,7 @@ export function CardUpdateButton({
           className="inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-0 transition-[opacity,background-color,color] duration-150 hover:bg-amber-500/10 hover:text-amber-600 focus-visible:opacity-100 group-hover/dl:opacity-100 dark:hover:bg-amber-500/15 dark:hover:text-amber-400"
         >
           <HugeiconsIcon
-            icon={ArrowReloadHorizontalIcon}
+            icon={Refresh01Icon}
             strokeWidth={1.75}
             className="size-4"
           />
@@ -188,7 +237,8 @@ export function DownloadActionButton({
   cancelling,
   loading = false,
   isPartial = false,
-  partialTransport = null,
+  partialResumable = false,
+  stopMode = "cancel",
   progressPercent = null,
   disabled,
   onClick,
@@ -198,7 +248,10 @@ export function DownloadActionButton({
   cancelling: boolean;
   loading?: boolean;
   isPartial?: boolean;
-  partialTransport?: string | null;
+  /** This row's partial can be continued byte for byte (backend verdict). */
+  partialResumable?: boolean;
+  /** What stopping the running job costs; see downloadStopMode. */
+  stopMode?: DownloadStopMode;
   progressPercent?: number | null;
   disabled: boolean;
   onClick: () => void;
@@ -209,7 +262,7 @@ export function DownloadActionButton({
       type="button"
       disabled={disabled}
       onClick={onClick}
-      aria-label={downloadActionAriaLabel(downloading, cancelling)}
+      aria-label={downloadActionAriaLabel(downloading, cancelling, stopMode)}
       className={cn(
         "hub-action-btn w-28",
         (loading || cancelling) && "opacity-70",
@@ -226,7 +279,7 @@ export function DownloadActionButton({
         </span>
       ) : downloading ? (
         <>
-          <DownloadCancelIndicator />
+          <DownloadStopIndicator mode={stopMode} />
           {progressPercent != null ? `${progressPercent}%` : null}
         </>
       ) : loading ? (
@@ -237,7 +290,7 @@ export function DownloadActionButton({
       ) : (
         <>
           <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} />
-          {downloadActionLabel(isPartial, partialTransport)}
+          {downloadActionLabel(isPartial, partialResumable)}
         </>
       )}
     </button>
@@ -251,6 +304,7 @@ export function DeleteConfirmDialog({
   title,
   description,
   deleting,
+  blocked = false,
   onConfirm,
 }: {
   open: boolean;
@@ -258,6 +312,8 @@ export function DeleteConfirmDialog({
   title: string;
   description: ReactNode;
   deleting: boolean;
+  /** Another installed model needs these files. Confirming would 400, so do not offer it. */
+  blocked?: boolean;
   onConfirm: () => void;
 }) {
   return (
@@ -271,7 +327,7 @@ export function DeleteConfirmDialog({
           <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
           <AlertDialogAction
             variant="destructive"
-            disabled={deleting}
+            disabled={deleting || blocked}
             onClick={(e) => {
               e.preventDefault();
               onConfirm();

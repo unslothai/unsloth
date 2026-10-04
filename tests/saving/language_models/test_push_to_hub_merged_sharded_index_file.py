@@ -1,3 +1,15 @@
+# tests/saving scripts run their whole body at import, so plain pytest collection would download checkpoints and train.
+import sys as _sys
+from pathlib import Path as _Path
+
+_sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
+from tests.utils.os_utils import require_opt_in as _require_opt_in
+
+_require_opt_in(
+    "UNSLOTH_RUN_SAVING_SCRIPTS",
+    "GPU + Hub saving script; its body runs at import.",
+)
+
 from unsloth import FastLanguageModel, FastVisionModel, UnslothVisionDataCollator
 from unsloth.chat_templates import get_chat_template
 from trl import SFTTrainer, SFTConfig
@@ -32,7 +44,6 @@ from tests.utils.perplexity_eval import (
 )
 
 
-# Define helper functions outside of main
 def formatting_prompts_func(examples):
     convos = examples["messages"]
     texts = [
@@ -134,7 +145,6 @@ trainer = train_on_responses_only(
 trainer_stats = trainer.train()
 
 
-# Resolve HF username + token (prompt if unset).
 hf_username = os.environ.get("HF_USER", "")
 if not hf_username:
     hf_username = input("Please enter your Hugging Face username: ").strip()
@@ -153,7 +163,6 @@ success = {
     "download": False,
 }
 
-# Stage 1: Upload model to Hub
 try:
     print("\n" + "=" * 80)
     print("=== UPLOADING MODEL TO HUB ===".center(80))
@@ -165,7 +174,6 @@ except Exception as e:
     print(f"❌ Failed to upload model: {e}")
     raise Exception("Model upload failed.")
 
-# Stage 2: Verify safetensors.index.json exists
 try:
     print("\n" + "=" * 80)
     print("=== VERIFYING REPO CONTENTS ===".center(80))
@@ -184,14 +192,12 @@ except Exception as e:
     print(f"❌ Verification failed: {e}")
     raise Exception("Repo verification failed.")
 
-# Stage 3: Test downloading the model (even if cached)
 safe_remove_directory("./RTannous")
 
 try:
     print("\n" + "=" * 80)
     print("=== TESTING MODEL DOWNLOAD ===".center(80))
     print("=" * 80 + "\n")
-    # Force download even if cached
     model, tokenizer = FastLanguageModel.from_pretrained(f"{hf_username}/merged_llama_text_model")
     success["download"] = True
     print("✅ Model downloaded successfully!")
@@ -199,7 +205,6 @@ except Exception as e:
     print(f"❌ Download failed: {e}")
     raise Exception("Model download failed.")
 
-# Final report
 print("\n" + "=" * 80)
 print("=== VALIDATION REPORT ===".center(80))
 print("=" * 80 + "\n")
@@ -213,6 +218,5 @@ if all(success.values()):
 else:
     raise Exception("Validation failed for one or more stages.")
 
-# final cleanup
 safe_remove_directory("./outputs")
 safe_remove_directory("./unsloth_compiled_cache")

@@ -1,11 +1,8 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-#
 #     http://www.apache.org/licenses/LICENSE-2.0
-#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -53,6 +50,27 @@ def _has_mtp(config):
     return False
 
 
+def compressed_ignore_patterns(config):
+    """Modules the compressed recipe refuses to quantize, as llm-compressor `ignore` entries.
+
+    Module level, and reachable without importing anything outside the stdlib, so `save.py`
+    can size the quantized sibling from the same list the recipe is built from rather than a
+    second copy of it that drifts. This module is still only ever *executed* by file path.
+
+    Matching is compressed-tensors' `is_match`: a `re:` prefix is `re.match(pattern, name)`
+    against the module's fully qualified name, anything else is an exact name (or parent
+    class name) match.
+    """
+    ignore = ["lm_head"]
+    # Skip the same modules RedHatAI/NVIDIA skip for the Qwen3.5 / Qwen3-Next family: their shapes are
+    # not divisible by the grouped-scheme group_size and would error. No-ops elsewhere.
+    ignore += ["re:.*\\.linear_attn\\..*", "re:.*\\.visual\\..*", "re:.*mtp.*"]
+    if _is_moe(config):
+        # Keep MoE routing layers unquantized: the router gate and (Qwen) shared-expert gate.
+        ignore += ["re:.*\\.gate$", "re:.*\\.shared_expert_gate$"]
+    return ignore
+
+
 def _build_calibration_dataset(tokenizer, kind, value, num_samples, max_seq_length):
     from datasets import DatasetDict, load_dataset, load_from_disk
 
@@ -74,8 +92,8 @@ def _build_calibration_dataset(tokenizer, kind, value, num_samples, max_seq_leng
         except (ValueError, KeyError):
             from datasets import get_dataset_split_names
             try:
-                # Resolve the first split name so only num_samples rows are fetched, instead of
-                # downloading/materializing the whole dataset just to take a small slice.
+                # Resolve the first split name so only num_samples rows are fetched, instead of materializing the
+                # whole dataset just to take a small slice.
                 split = get_dataset_split_names(value)[0]
                 ds = load_dataset(value, split = f"{split}[:{num_samples}]")
             except Exception:
@@ -114,16 +132,16 @@ def _build_calibration_dataset(tokenizer, kind, value, num_samples, max_seq_leng
 
     cols = set(ds.column_names)
     if "input_ids" in cols:
-        # Drop non-model-input columns (e.g. a leftover 'messages' list) so llm-compressor's
-        # collator does not try to batch them.
+        # Drop non-model-input columns (e.g. a leftover 'messages' list) so llm-compressor's collator does
+        # not try to batch them.
         keep = {"input_ids", "attention_mask", "labels", "position_ids"}
         extra = [c for c in ds.column_names if c not in keep]
         if extra:
             ds = ds.remove_columns(extra)
         return ds
     if "messages" in cols:
-        # Base / non-chat tokenizers have no chat template; concatenate message contents instead
-        # of calling apply_chat_template (which would raise).
+        # Base / non-chat tokenizers have no chat template, and apply_chat_template would raise, so
+        # concatenate message contents instead.
         has_chat_template = bool(getattr(_tok, "chat_template", None))
 
         def _content_to_text(content):
@@ -203,6 +221,7 @@ def main():
     ap.add_argument("--max-seq-length", type = int, default = 2048)
     ap.add_argument("--is-vlm", action = "store_true")
     ap.add_argument("--trust-remote-code", action = "store_true")
+    ap.add_argument("--trust-remote-code-tokenizer", action = "store_true")
     ap.add_argument("--variant", default = "", help = "weight-filename variant for the output shards")
     args = ap.parse_args()
 
@@ -210,8 +229,8 @@ def main():
     from llmcompressor import oneshot
     from llmcompressor.modifiers.quantization import QuantizationModifier
 
-    # Import the VLM auto-class only when needed - some transformers versions lack it, and the
-    # text path must not fail just because that newer class is unavailable.
+    # Import the VLM auto-class only when needed: some transformers versions lack it, and the text path
+    # must not fail over a newer class.
     if args.is_vlm:
         from transformers import AutoProcessor
         try:
@@ -232,7 +251,11 @@ def main():
     model.eval()
     # A tokenizer may be absent if the caller saved it separately; only calibration needs one.
     try:
-        tokenizer = auto_proc.from_pretrained(args.model, trust_remote_code = args.trust_remote_code)
+        # The tokenizer/processor has its own trust flag: consent for one component must not let the other's
+        # custom code run.
+        tokenizer = auto_proc.from_pretrained(
+            args.model, trust_remote_code = args.trust_remote_code_tokenizer
+        )
     except Exception:
         if args.needs_calibration:
             raise RuntimeError(
@@ -241,13 +264,11 @@ def main():
             )
         tokenizer = None
 
-    # MoE models: keep the router/gate unquantized (it decides expert routing) and calibrate every
-    # expert even if the sample set does not route tokens to all of them.
-    is_moe = _is_moe(getattr(model, "config", None))
-    ignore = ["lm_head"]
-    if is_moe:
-        # Keep MoE routing layers unquantized: the router gate and (Qwen) shared-expert gate.
-        ignore += ["re:.*\\.gate$", "re:.*\\.shared_expert_gate$"]
+    # MoE models: keep the router/gate unquantized and calibrate every expert even if the sample set
+    # does not route tokens to all of them.
+    config = getattr(model, "config", None)
+    is_moe = _is_moe(config)
+    ignore = compressed_ignore_patterns(config)
     moe_kwargs = {"moe_calibrate_all_experts": True} if is_moe else {}
 
     def _make_recipe():
@@ -261,10 +282,9 @@ def main():
             args.num_calibration_samples,
             args.max_seq_length,
         )
-        # Use the sequential pipeline: it onloads layer-by-layer, so models that do not fit in
-        # memory at once can still calibrate. Running here in a clean process (Unsloth's attention
-        # patches are absent) means tracing works; fall back to the memory-hungry "basic" pipeline
-        # only if tracing fails.
+        # The sequential pipeline onloads layer-by-layer, so a model that does not fit at once still
+        # calibrates; tracing works only because this runs in a clean process without Unsloth's attention
+        # patches. Fall back to the memory-hungry "basic" pipeline only if tracing fails.
         try:
             oneshot(
                 model = model,
@@ -281,10 +301,8 @@ def main():
                 "retrying with the 'basic' pipeline (needs the full model to fit in memory).",
                 flush = True,
             )
-            # Free the partially-processed model before loading a fresh copy, so the fallback does
-            # not transiently hold two copies on GPU. llm-compressor keeps the model in a global
-            # session after a failed run, so reset it first; also drop the traceback frames (e) and
-            # the local reference that pin the model.
+            # Free the partially-processed model before loading a fresh copy so the fallback never holds two
+            # on GPU: llm-compressor keeps the model in a global session after a failed run.
             import gc as _gc
             import torch as _torch
 

@@ -4,7 +4,7 @@
 """Unit tests for Anthropic server-side context compaction wiring.
 
 Compaction is a beta (header ``compact-2026-01-12``) gated to Opus 4.6/4.7,
-Sonnet 4.6, and Mythos preview. When enabled, Studio attaches
+Sonnet 4.6, and Mythos preview. When enabled, Unsloth attaches
 ``context_management.edits[{type:"compact_20260112", trigger:{type:"input_tokens",
 value:N}}]``; the 50k-token minimum is clamped up so the request doesn't 400.
 

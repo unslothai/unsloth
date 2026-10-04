@@ -12,6 +12,7 @@ run on a daemon thread, and are skipped entirely when update checks are disabled
 from __future__ import annotations
 
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -25,7 +26,11 @@ import main  # noqa: E402
 import utils.llama_cpp_freshness as freshness  # noqa: E402
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 
-SLEEP = 5.0
+# Deadlock backstops, not pacing. Nothing waits these out on a passing run: the
+# freshness stub blocks until the test releases it, and the test releases it as
+# soon as the non-blocking claim has been checked. They exist so a regression
+# hangs for 30s and fails rather than hanging CI forever.
+_BACKSTOP_S = 30.0
 
 
 class _FakeApp:
@@ -57,10 +62,19 @@ def _fast_capability_probe(monkeypatch):
 
 def test_probe_does_not_block_startup(monkeypatch):
     """`_start_llama_cpp_probes_if_enabled` returns immediately even though the
-    freshness check sleeps for SLEEP seconds, then populates app.state later."""
+    freshness check is still stalled, then populates app.state later."""
+
+    entered = threading.Event()
+    release = threading.Event()
 
     def _slow_freshness(_bin, **_kw):
-        time.sleep(SLEEP)
+        # Blocks until the test lets it go rather than for a fixed number of
+        # seconds. Strictly stronger than the old `time.sleep(5)`: the check is
+        # stalled for as long as the caller-blocking assertion needs it to be,
+        # so a probe that ran inline would hang here forever instead of merely
+        # being 5s slow, and the suite pays no wall clock for it.
+        entered.set()
+        assert release.wait(_BACKSTOP_S), "the test never released the freshness check"
         return {"stale": False, "behind": False}
 
     monkeypatch.setattr(freshness, "check_prebuilt_freshness", _slow_freshness)
@@ -72,10 +86,15 @@ def test_probe_does_not_block_startup(monkeypatch):
 
     assert elapsed < 0.5, f"startup probe blocked the caller for {elapsed:.2f}s"
 
-    # The daemon thread eventually populates app.state once the slow check returns.
-    deadline = time.monotonic() + SLEEP + 5
+    # The stall has to be real for the timing above to mean anything: the probe
+    # must actually be sitting inside the freshness check while the caller runs on.
+    assert entered.wait(_BACKSTOP_S), "the probe thread never reached the freshness check"
+    release.set()
+
+    # The daemon thread eventually populates app.state once the check returns.
+    deadline = time.monotonic() + _BACKSTOP_S
     while app.state.llama_cpp_freshness is None and time.monotonic() < deadline:
-        time.sleep(0.1)
+        time.sleep(0.01)
     assert app.state.llama_cpp_freshness == {"stale": False, "behind": False}
 
 
@@ -91,8 +110,16 @@ def test_disable_env_skips_probe_entirely(monkeypatch):
     monkeypatch.setenv("UNSLOTH_DISABLE_UPDATE_CHECK", "1")
 
     app = _FakeApp()
+    before = {t for t in threading.enumerate()}
     main._start_llama_cpp_probes_if_enabled(app)
-    time.sleep(0.5)
 
+    # Checked, not slept for. The old `time.sleep(0.5)` only proved the probe had
+    # not called back *within 0.5s*; enumerating the threads proves no probe thread
+    # was ever created, which is what "skips the probe entirely" means, and it is
+    # true the instant the call returns.
+    started = [
+        t for t in threading.enumerate() if t not in before and t.name == "llama-cpp-startup-probe"
+    ]
+    assert started == [], "a probe thread was started despite UNSLOTH_DISABLE_UPDATE_CHECK=1"
     assert calls == [], "freshness check ran despite UNSLOTH_DISABLE_UPDATE_CHECK=1"
     assert app.state.llama_cpp_freshness is None

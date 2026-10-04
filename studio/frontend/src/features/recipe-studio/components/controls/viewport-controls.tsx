@@ -1,10 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { type ReactElement, useCallback } from "react";
-import { Lock, LockOpen, Maximize2, Minus, Plus } from "lucide-react";
-import { Panel, useReactFlow } from "@xyflow/react";
 import { Button } from "@/components/ui/button";
+import { Panel, useReactFlow } from "@xyflow/react";
+import {
+  Focus,
+  Lock,
+  LockOpen,
+  Maximize2,
+  Minimize2,
+  Minus,
+  Plus,
+} from "lucide-react";
+import { type ReactElement, useCallback } from "react";
 import { buildFitViewOptions } from "../../utils/graph/fit-view";
 import { RECIPE_FLOATING_ICON_BUTTON_CLASS } from "../recipe-floating-icon-button-class";
 
@@ -12,12 +20,16 @@ type ViewportControlsProps = {
   interactive: boolean;
   lockDisabled?: boolean;
   onToggleInteractive: () => void;
+  maximized: boolean;
+  onToggleMaximize: () => void;
 };
 
 export function ViewportControls({
   interactive,
   lockDisabled = false,
   onToggleInteractive,
+  maximized,
+  onToggleMaximize,
 }: ViewportControlsProps): ReactElement {
   const { zoomIn, zoomOut, fitView, getNodes } = useReactFlow();
 
@@ -33,8 +45,12 @@ export function ViewportControls({
     fitView(buildFitViewOptions(getNodes()));
   }, [fitView, getNodes]);
 
+  // Stack vertically on narrow canvases to clear the Run / Check bar.
   return (
-    <Panel position="bottom-left" className="m-3 flex items-center gap-2">
+    <Panel
+      position="bottom-left"
+      className="m-3 flex items-center gap-2 @max-[48rem]/canvas:flex-col-reverse"
+    >
       <Button
         type="button"
         variant="ghost"
@@ -61,9 +77,23 @@ export function ViewportControls({
         size="icon"
         className={RECIPE_FLOATING_ICON_BUTTON_CLASS}
         onClick={handleFitView}
-        aria-label="Fit view"
+        aria-label="Center view"
       >
-        <Maximize2 className="size-4" />
+        <Focus className="size-4" />
+      </Button>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        className={RECIPE_FLOATING_ICON_BUTTON_CLASS}
+        onClick={onToggleMaximize}
+        aria-label={maximized ? "Exit full view" : "Expand to full view"}
+      >
+        {maximized ? (
+          <Minimize2 className="size-4" />
+        ) : (
+          <Maximize2 className="size-4" />
+        )}
       </Button>
       <Button
         type="button"
@@ -74,7 +104,11 @@ export function ViewportControls({
         onClick={onToggleInteractive}
         aria-label={interactive ? "Lock interaction" : "Unlock interaction"}
       >
-        {interactive ? <LockOpen className="size-4" /> : <Lock className="size-4" />}
+        {interactive ? (
+          <LockOpen className="size-4" />
+        ) : (
+          <Lock className="size-4" />
+        )}
       </Button>
     </Panel>
   );

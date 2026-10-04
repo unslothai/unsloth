@@ -29,7 +29,7 @@ export function ExecutionSidebar({
   onSelectExecution,
 }: ExecutionSidebarProps): ReactElement {
   return (
-    <aside className="w-72 shrink-0 border-r border-border/60 bg-card/20">
+    <aside className="w-72 shrink-0 overflow-y-auto border-r border-border/60 bg-card/20 max-md:max-h-48 max-md:w-full max-md:border-r-0 max-md:border-b">
       <div className="flex items-center justify-between  border-border/60 px-3 py-2">
         <p className="text-xs font-semibold uppercase text-muted-foreground">
           Runs
@@ -55,7 +55,7 @@ export function ExecutionSidebar({
                 className={cn(
                   "w-full rounded-xl corner-squircle border border-r-2 border-border/60 bg-card/60 p-3 text-left transition-colors",
                   selectedExecutionId === execution.id
-                    ? "border-primary/35 bg-primary/[0.045]"
+                    ? "border-ring-strong bg-primary/[0.045]"
                     : "hover:bg-muted/25",
                   statusRightBorder(execution.status),
                 )}
@@ -66,7 +66,7 @@ export function ExecutionSidebar({
                   </p>
                   <Badge
                     variant="outline"
-                    className={cn("capitalize text-[11px]", statusTone(execution.status))}
+                    className={cn("capitalize text-ui-11", statusTone(execution.status))}
                   >
                     {formatStatus(execution.status)}
                   </Badge>

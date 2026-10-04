@@ -19,12 +19,16 @@ ST_TAGS = [
     "v5.2.3",
     "v5.3.0",
     "v5.4.1",
+    "v5.5.1",
+    "v5.6.0",
     "master",
 ]
 
+# Every check runs once per tag; one that cannot skips from inside so the tag stays in the report.
+pytestmark = pytest.mark.parametrize("tag", ST_TAGS)
+
 
 # Top-level: SentenceTransformer + SentenceTransformerTrainer must be importable.
-@pytest.mark.parametrize("tag", ST_TAGS)
 def test_st_top_level_exports(tag: str):
     src = fetch_text("UKPLab/sentence-transformers", tag, "sentence_transformers/__init__.py")
     assert src is not None, f"{tag}: sentence_transformers/__init__.py missing"
@@ -37,12 +41,10 @@ def test_st_top_level_exports(tag: str):
 
 
 # Sub-modules: unsloth walks `sentence_transformers.models` for these classes.
-@pytest.mark.parametrize("tag", ST_TAGS)
 def test_st_models_re_exports(tag: str):
     """Transformer / Pooling / Normalize must stay reachable via
     `sentence_transformers.models` despite the ST 5.4 package reorg."""
     # Layout 1 (legacy < 5.4): sentence_transformers/models[.py|/__init__.py].
-    # Layout 2 (>= 5.4): top-level re-exports; modules under base/modules + sentence_transformer/.
     legacy_candidates = [
         "sentence_transformers/models/__init__.py",
         "sentence_transformers/models.py",
@@ -59,9 +61,8 @@ def test_st_models_re_exports(tag: str):
         )
         return
 
-    # ST 5.4+ modular layout: classes moved under base/modules and
-    # sentence_transformer/modules; backward compat wired via
-    # setup_deprecated_module_imports in __init__.py.
+    # ST 5.4+ modular layout: classes moved under base/modules and sentence_transformer/modules;
+    # backward compat wired via setup_deprecated_module_imports in __init__.py.
     expected_paths = {
         "Transformer": [
             "sentence_transformers/base/modules/transformer.py",
@@ -73,6 +74,11 @@ def test_st_models_re_exports(tag: str):
             "sentence_transformers/sentence_transformer/Pooling.py",
         ],
         "Normalize": [
+            # ST master moved Normalize down beside Transformer under base/modules, which is where the reorg has been
+            # heading: Transformer above already lists its base/modules path first.
+            # Released 5.4 through 5.6 still keep it under sentence_transformer/modules, so both spellings stay listed
+            # and every tag in ST_TAGS resolves.
+            "sentence_transformers/base/modules/normalize.py",
             "sentence_transformers/sentence_transformer/modules/normalize.py",
             "sentence_transformers/sentence_transformer/Normalize.py",
         ],
@@ -89,8 +95,7 @@ def test_st_models_re_exports(tag: str):
     top = fetch_text("UKPLab/sentence-transformers", tag, "sentence_transformers/__init__.py")
     assert top is not None, f"{tag}: sentence_transformers/__init__.py missing"
     has_shim = bool(
-        re.search(r"setup_deprecated_module_imports\s*\(", top)
-        or "import_from_string" in top  # fallback signal
+        re.search(r"setup_deprecated_module_imports\s*\(", top) or "import_from_string" in top
     )
     assert has_shim, (
         f"{tag}: ST 5.4+ layout: deprecated-module shim NOT wired in "
@@ -101,7 +106,6 @@ def test_st_models_re_exports(tag: str):
 
 
 # Transformer base class: unsloth probes alternate paths; at least ONE must resolve.
-@pytest.mark.parametrize("tag", ST_TAGS)
 def test_st_transformer_base_class_either_path(tag: str):
     candidates = [
         "sentence_transformers/models/Transformer.py",
@@ -120,8 +124,42 @@ def test_st_transformer_base_class_either_path(tag: str):
     )
 
 
+# Transformer.load classmethod: unsloth builds saved-ST modules through it (#6881).
+def test_st_transformer_load_accepts_unsloth_kwargs(tag: str):
+    """unsloth builds saved ST models via Transformer.load(...) so the saved
+    modality_config is honored (#6881). If .load stops accepting the hub kwargs it
+    passes (and has no **kwargs), update the fix before it silently regresses. Not
+    locating .load is a SKIP (may be inherited); the live test guards the install."""
+    candidates = [
+        "sentence_transformers/models/Transformer.py",
+        "sentence_transformers/models/transformer.py",
+        "sentence_transformers/base/modules/transformer.py",
+        "sentence_transformers/base/modules/module.py",
+    ]
+    for p in candidates:
+        src = fetch_text("UKPLab/sentence-transformers", tag, p)
+        if src is None or not has_def(src, "load", "func"):
+            continue
+        m = re.search(r"def\s+load\s*\((.*?)\)\s*(?:->[^:]*)?:", src, re.S)
+        if m is None:
+            continue
+        sig = m.group(1)
+        accepts_var_kw = "**" in sig
+        missing = [
+            kw
+            for kw in ("token", "cache_folder", "revision", "trust_remote_code")
+            if not (accepts_var_kw or re.search(rf"\b{re.escape(kw)}\b", sig))
+        ]
+        assert not missing, (
+            f"{tag}: Transformer.load in {p} no longer accepts {missing} and has no "
+            f"**kwargs; update unsloth.models.sentence_transformer._create_transformer_module "
+            f"(#6881) before it silently falls back to Transformer(...)."
+        )
+        return
+    pytest.skip(f"{tag}: Transformer.load not locatable in {candidates} (may be inherited)")
+
+
 # sentence_transformers.util: import_from_string + load_dir_path helpers unsloth calls.
-@pytest.mark.parametrize("tag", ST_TAGS)
 def test_st_util_helpers(tag: str):
     """util.{import_from_string, load_dir_path} must resolve; accept either the
     flat or the ST 5.4+ package layout, or a re-export from a util submodule."""
@@ -136,7 +174,6 @@ def test_st_util_helpers(tag: str):
         defined_here = has_def(src, fn, "func")
         reexported = bool(re.search(rf"\b{re.escape(fn)}\b", src))
         if not (defined_here or reexported):
-            # Modular-layout subfiles.
             subpaths = [
                 "sentence_transformers/util/import_utils.py",
                 "sentence_transformers/util/file_utils.py",
