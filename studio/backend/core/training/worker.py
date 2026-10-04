@@ -3526,9 +3526,11 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     """Subprocess entrypoint. Fresh Python, no stale module state. ``event_queue`` carries
     progress/status/error events to the parent, ``stop_queue`` carries stop commands from it, and
     ``config`` is the training config dict."""
-    # DDP has one clean Studio worker per selected GPU.  Its coordinator must
+    # DDP has one clean Studio worker per selected GPU. Its coordinator must
     # run before this worker touches CUDA; child ranks re-enter here with the
-    # marker set and each sees only its own physical card.
+    # marker set and each sees only its own physical card. Do not import the
+    # DDP dtype helper at module scope: that would import ddp.py before this
+    # coordinator branch and trigger hardware probing before GPU selection.
     if config.get("parallelism_mode") == "ddp" and not config.get("_ddp_child"):
         from .ddp import run_ddp_training_process
 
@@ -5392,7 +5394,11 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
     warmup_steps_val = config.get("warmup_steps")
     log_frequency = config.get("log_frequency", 50)
 
-    from core.training.trainer import _drop_hf_stdout_callbacks, _hf_stdout_progress_disabled
+    from core.training.trainer import (
+        _drop_hf_stdout_callbacks,
+        _hf_stdout_progress_disabled,
+        _training_precision_flags,
+    )
     from core.training.training import apply_save_strategy
 
     training_args_kwargs = {
@@ -5400,8 +5406,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         "per_device_train_batch_size": batch_size,
         "gradient_accumulation_steps": gradient_accumulation_steps,
         "learning_rate": lr_value,
-        "fp16": not is_bfloat16_supported(),
-        "bf16": is_bfloat16_supported(),
+        **_training_precision_flags(),
         "logging_steps": 1,
         "report_to": ["wandb"] if config.get("enable_wandb") else "none",
         "lr_scheduler_type": config.get("lr_scheduler_type", "linear"),
