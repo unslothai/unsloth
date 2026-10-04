@@ -416,9 +416,10 @@ _FRAME_HTML = r"""<!doctype html>
           const quoteOf = (ranges) => {
             const text = ranges.map((range) => {
               const node = range.startContainer.childNodes?.[range.startOffset];
-              // A field says what it holds, or what it is for.
+              // A field says what it holds, or what it is for; never a password, which the chat would keep.
               if (node instanceof Element && /^(input|textarea|select)$/i.test(node.tagName)) {
-                return node.value || node.getAttribute("placeholder") || node.getAttribute("aria-label") || "";
+                const value = node.type === "password" ? "" : node.value;
+                return value || node.getAttribute("placeholder") || node.getAttribute("aria-label") || "";
               }
               return range.toString();
             }).join(" ").replace(/\s+/g, " ").trim();
@@ -513,7 +514,7 @@ _FRAME_HTML = r"""<!doctype html>
             const anchor = { element, dx: area.left - rect.left, dy: area.top - rect.top, width: area.width, height: area.height };
             createMark({ anchor }, { quote: "", image: false, alt: "", area: true });
           };
-          // The panel numbers the marks, as they will be read in the chat.
+          // The panel numbers the marks, matching the order they take in the chat.
           const number = (numbers) => {
             if (!Array.isArray(numbers)) return;
             for (const entry of numbers) {

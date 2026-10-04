@@ -209,7 +209,7 @@ function WebPage({
   const { reloadKey } = tab;
   // Keyed per load; starts from the cache on back and forward.
   const [state, setState] = useState<LoadState>(() => {
-    const page = cachedPage(entry, reloadKey);
+    const page = cachedPage(entry);
     if (page) return { status: "ready", page };
     if (method === "POST" && sentPosts.has(entry) && !resubmits.has(entry)) {
       return { status: "error", message: "", botCheck: false, resubmit: true };
@@ -233,7 +233,7 @@ function WebPage({
         updateTab(tab.id, { title: hostOf(page.url), displayUrl: page.url === url ? null : page.url });
       }
     };
-    const cached = cachedPage(entry, reloadKey);
+    const cached = cachedPage(entry);
     if (cached) {
       show(cached);
       return () => setPageDownload(tab.id, null);
@@ -250,7 +250,7 @@ function WebPage({
     updateTab(tab.id, { loading: true });
     fetchBrowserPage({ url, method, body }, controller.signal)
       .then((page) => {
-        cachePage(entry, reloadKey, page);
+        cachePage(entry, page);
         setState({ status: "ready", page });
         show(page);
       })

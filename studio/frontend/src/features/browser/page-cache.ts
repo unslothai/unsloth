@@ -13,7 +13,7 @@ export function pageBytes(page: BrowserPage): number {
   return page.kind === "raw" ? page.blob.size : page.html.length * 2;
 }
 
-type Cached = { page: BrowserPage; reloadKey: number; bytes: number };
+type Cached = { page: BrowserPage; bytes: number };
 
 /** Loaded pages by history entry, least recently used first, within a byte budget. */
 export class PageCache<Key extends object> {
@@ -37,19 +37,19 @@ export class PageCache<Key extends object> {
     return this.pages.size;
   }
 
-  get(key: Key, reloadKey: number): BrowserPage | undefined {
+  get(key: Key): BrowserPage | undefined {
     const hit = this.pages.get(key);
-    if (!hit || hit.reloadKey !== reloadKey) return undefined;
+    if (!hit) return undefined;
     this.pages.delete(key);
     this.pages.set(key, hit);
     return hit.page;
   }
 
-  set(key: Key, reloadKey: number, page: BrowserPage): void {
+  set(key: Key, page: BrowserPage): void {
     this.delete(key);
     const bytes = pageBytes(page);
     if (bytes > this.maxPageBytes) return;
-    this.pages.set(key, { page, reloadKey, bytes });
+    this.pages.set(key, { page, bytes });
     this.total += bytes;
     for (const [oldest] of this.pages) {
       if (this.pages.size <= this.maxPages && this.total <= this.maxTotalBytes) break;

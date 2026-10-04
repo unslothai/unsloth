@@ -6,7 +6,7 @@ import { register } from "node:module";
 import { test } from "node:test";
 
 register("./helpers/browser-store-resolver.mjs", import.meta.url);
-const { browserFile, currentEntry, setNativeWebHistory, useBrowserStore } = await import(
+const { browserFile, cachePage, cachedPage, currentEntry, setNativeWebHistory, useBrowserStore } = await import(
   "../src/features/browser/store.ts"
 );
 
@@ -55,4 +55,24 @@ test("a native tab's navigations replace its entry unless asked to keep it", () 
     ["https://b.example/", "https://c.example/"],
   );
   setNativeWebHistory(false);
+});
+
+test("a reload refetches its own page, not the pages behind it", () => {
+  const store = useBrowserStore.getState();
+  store.openUrl("https://a.example/", { newTab: true });
+  const id = useBrowserStore.getState().activeTabId ?? "";
+  const entry = () => {
+    const tab = useBrowserStore.getState().tabs.find((candidate) => candidate.id === id);
+    assert.ok(tab);
+    return currentEntry(tab);
+  };
+  const page = (url: string) => ({ kind: "html" as const, url, base: url, html: "<p>x</p>", refresh: null });
+  const first = entry();
+  cachePage(first, page("https://a.example/"));
+  store.navigate(id, { url: "https://b.example/" });
+  const second = entry();
+  cachePage(second, page("https://b.example/"));
+  store.reload(id);
+  assert.equal(cachedPage(second), undefined);
+  assert.ok(cachedPage(first));
 });

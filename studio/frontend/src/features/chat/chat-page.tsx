@@ -352,10 +352,10 @@ function messageHasImage(message: MessageRecord): boolean {
 function sendDocumentAnnotations(
   aui: ReturnType<typeof useAui>,
   annotations: DocumentAnnotations,
-): void {
+): Promise<boolean> {
   const composer = aui.composer();
   const hasDraft = composer.getState().text.trim().length > 0;
-  void composer
+  return composer
     .addAttachment(createAnnotationsFile(annotations))
     .then(() => {
       const form = [
@@ -369,7 +369,7 @@ function sendDocumentAnnotations(
         document
           .querySelector<HTMLTextAreaElement>(COMPOSER_INPUT_SELECTOR)
           ?.focus();
-        return;
+        return true;
       }
       // Two frames, so the composer has rendered the attachment it now sends. Text typed
       // meanwhile is the next message: leave the annotations staged with it.
@@ -379,8 +379,9 @@ function sendDocumentAnnotations(
           form.requestSubmit();
         }),
       );
+      return true;
     })
-    .catch(() => undefined);
+    .catch(() => false);
 }
 
 /** A stored chat's title, kept current as chats are renamed. Undefined for a chat not saved yet. */

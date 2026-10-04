@@ -38,11 +38,16 @@ import { proxiedFavicon } from "./favicon";
 import { type DownloadItem, type HistoryItem, useBrowserHistoryStore } from "./history-store";
 import { type InternalPage, useBrowserStore } from "./store";
 
-const DAY_MS = 24 * 60 * 60 * 1000;
-
 function startOfDay(time: number): number {
   const date = new Date(time);
   date.setHours(0, 0, 0, 0);
+  return date.getTime();
+}
+
+/** Local midnight `days` calendar days after `day`; a fixed 24 h misses it across a daylight saving change. */
+function addDays(day: number, days: number): number {
+  const date = new Date(day);
+  date.setDate(date.getDate() + days);
   return date.getTime();
 }
 
@@ -59,7 +64,7 @@ function useDayGroups<Item>(items: Item[], timeOf: (item: Item) => number) {
       const label =
         day === today
           ? t("browser.pages.today")
-          : day === today - DAY_MS
+          : day === addDays(today, -1)
             ? t("browser.pages.yesterday")
             : dateFormat.format(day);
       const last = groups[groups.length - 1];
@@ -222,15 +227,12 @@ const RANGE_LABELS = {
 function rangeBounds(range: HistoryRange, dates: DateRange | undefined): { since: number; until: number } {
   const today = startOfDay(Date.now());
   if (range === "today") return { since: today, until: Infinity };
-  if (range === "week") return { since: today - 6 * DAY_MS, until: Infinity };
-  if (range === "month") return { since: today - 29 * DAY_MS, until: Infinity };
+  if (range === "week") return { since: addDays(today, -6), until: Infinity };
+  if (range === "month") return { since: addDays(today, -29), until: Infinity };
   if (range === "custom" && dates?.from) {
     const since = startOfDay(dates.from.getTime());
     const last = startOfDay((dates.to ?? dates.from).getTime());
-    // The next local midnight, which DAY_MS misses on a daylight saving change.
-    const until = new Date(last);
-    until.setDate(until.getDate() + 1);
-    return { since, until: until.getTime() };
+    return { since, until: addDays(last, 1) };
   }
   return { since: 0, until: Infinity };
 }

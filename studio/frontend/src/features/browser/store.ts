@@ -31,7 +31,8 @@ export type ChatDock = "minimized" | "composer" | "expanded";
 
 export type RequestEdits = (prompt: string) => void;
 
-export type SendAnnotations = (annotations: DocumentAnnotations) => void;
+/** Resolves false when the composer refused them (it says why), so the marks stay. */
+export type SendAnnotations = (annotations: DocumentAnnotations) => Promise<boolean>;
 
 export type OpenInCanvas = (file: { title: string; code: string }) => void;
 
@@ -110,7 +111,7 @@ export function setNativeWebHistory(native: boolean): void {
 // Caps history for pages that keep redirecting.
 const MAX_HISTORY = 50;
 
-// Loaded pages by history entry, so back and forward skip the fetch. Reload bumps reloadKey.
+// Loaded pages by history entry, so back and forward skip the fetch. Reload drops only its own entry.
 const pageCache = new PageCache<BrowserEntry>();
 
 const entryIds = new WeakMap<BrowserEntry, number>();
@@ -126,12 +127,12 @@ export function entryKey(entry: BrowserEntry): number {
   return id;
 }
 
-export function cachedPage(entry: BrowserEntry, reloadKey: number): BrowserPage | undefined {
-  return pageCache.get(entry, reloadKey);
+export function cachedPage(entry: BrowserEntry): BrowserPage | undefined {
+  return pageCache.get(entry);
 }
 
-export function cachePage(entry: BrowserEntry, reloadKey: number, page: BrowserPage): void {
-  pageCache.set(entry, reloadKey, page);
+export function cachePage(entry: BrowserEntry, page: BrowserPage): void {
+  pageCache.set(entry, page);
 }
 
 export function clearPageCache(): void {
@@ -433,10 +434,13 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
           tab.index < tab.history.length - 1 ? moveTo(tab, tab.index + 1) : tab,
         ),
       })),
-    reload: (tabId) =>
+    reload: (tabId) => {
+      const tab = get().tabs.find((candidate) => candidate.id === tabId);
+      if (tab) pageCache.delete(currentEntry(tab));
       set((state) => ({
         tabs: patchTab(state.tabs, tabId, (tab) => ({ ...tab, reloadKey: tab.reloadKey + 1 })),
-      })),
+      }));
+    },
     activateTab: (tabId) => set({ activeTabId: tabId, findOpen: false, findMiss: false, annotateTabId: null }),
     closeTab: (tabId) => {
       const { tabs, activeTabId } = get();

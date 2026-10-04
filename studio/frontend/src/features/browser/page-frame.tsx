@@ -105,12 +105,10 @@ export function PageFrame({
       }
       if (isUserAction(message)) {
         if (!userActive(frame, message)) return;
-        // Shortcuts move focus off the page or replace it, so they bound themselves.
-        if (message.type !== "shortcut") {
-          const now = performance.now();
-          if (now - lastUserAction < USER_ACTION_INTERVAL_MS) return;
-          lastUserAction = now;
-        }
+        // Shortcuts too: a script can queue many before the first one moves focus off the page.
+        const now = performance.now();
+        if (now - lastUserAction < USER_ACTION_INTERVAL_MS) return;
+        lastUserAction = now;
       }
       if (message.type === "loaded") {
         if (loaded) message = { type: "title", title: message.title };

@@ -214,9 +214,10 @@ export async function nativeFind(tabId: string, query: string, backwards: boolea
   return call<boolean>("browser_view_find", { tabId, query, backwards }).catch(() => false);
 }
 
-// Studio UI that covers the panel. Not tooltips, or every hover would blank the page.
+// Studio UI that covers the panel. Not tooltips, or every hover would blank the page; toasts only
+// when they carry an action (a mailto: or popup prompt), which would be unclickable under the page.
 const OVERLAY_SELECTOR =
-  '[data-radix-popper-content-wrapper], [role="dialog"], [role="alertdialog"], [data-slot$="-overlay"]';
+  '[data-radix-popper-content-wrapper], [role="dialog"], [role="alertdialog"], [data-slot$="-overlay"], [data-sonner-toast]:has([data-action])';
 
 function intersects(a: DOMRect, b: DOMRect): boolean {
   return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;

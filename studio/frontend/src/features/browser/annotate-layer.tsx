@@ -241,14 +241,14 @@ export function AnnotateLayer({
   const saveRef = useRef(save);
   saveRef.current = save;
 
-  const send = () => {
+  const send = async () => {
     const outgoing = committed();
-    if (outgoing.length === 0) return;
-    sendAnnotations?.({
+    if (outgoing.length === 0 || !sendAnnotations) return;
+    const sent = await sendAnnotations({
       file: fileName,
       items: outgoing.map(({ quote, request }) => ({ quote, request })),
     });
-    exit();
+    if (sent) exit();
   };
 
   useEffect(() => {
@@ -833,15 +833,15 @@ export function WebAnnotateLayer({
     setDraft("");
   };
 
-  const send = () => {
+  const send = async () => {
     const outgoing = committed();
-    if (outgoing.length === 0) return;
-    sendAnnotations?.({
+    if (outgoing.length === 0 || !sendAnnotations) return;
+    const sent = await sendAnnotations({
       file: title || url,
       url,
       items: outgoing.map(({ quote, request }) => ({ quote, request })),
     });
-    exit();
+    if (sent) exit();
   };
 
   // Read on each report, so one always sees this render's state.

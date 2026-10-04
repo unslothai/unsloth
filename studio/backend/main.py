@@ -1352,6 +1352,7 @@ _BODY_PROTECTED_PREFIXES = (
     "/api/train",
     "/api/export",
     "/api/library",
+    "/api/browser",
     "/mcp",
 )
 _DATASET_UPLOAD_PASSTHROUGH_PREFIXES = (

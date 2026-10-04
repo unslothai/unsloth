@@ -9,8 +9,6 @@ export type DocumentAnnotations = { file: string; url?: string; items: DocumentA
 
 const TAG = "document_annotations";
 const MIME = "text/plain";
-// The header, file name included, always fits in this; parsing never reads the whole body to decide.
-const HEADER_SCAN_CHARS = 1024;
 
 // Like pasted text: the File identity marks it while it sits in the composer.
 const annotationsByFile = new WeakMap<File, DocumentAnnotations>();
@@ -31,7 +29,8 @@ export function annotationsOfFile(
   return file === undefined ? undefined : annotationsByFile.get(file);
 }
 
-const quoteAttr = (value: string) => value.replace(/[\n"]/g, " ");
+// One line with no quotes or tags: a page picks its title, and must not end the block early.
+const quoteAttr = (value: string) => value.replace(/[\r\n"<>]/g, " ");
 
 /** What the model reads: JSON items, so the chip can parse them back from a stored message. */
 export function annotationsContentText({
@@ -44,8 +43,8 @@ export function annotationsContentText({
       ? `<${TAG} file="${quoteAttr(file)}" url="${quoteAttr(url)}">`
       : `<${TAG} file="${quoteAttr(file)}">`,
     url
-      ? `The user selected parts of the web page ${file} (${url}) and asked a question or made a request about each. Answer each request about its selection.`
-      : `The user selected parts of ${file} and asked for a change or a question on each. Apply each request to its selection.`,
+      ? `The user selected parts of the web page ${quoteAttr(file)} (${quoteAttr(url)}) and asked a question or made a request about each. Answer each request about its selection.`
+      : `The user selected parts of ${quoteAttr(file)} and asked for a change or a question on each. Apply each request to its selection.`,
     JSON.stringify(
       items.map((item) => ({ selection: item.quote, request: item.request })),
       null,
@@ -64,8 +63,9 @@ export function parseAnnotationsContent(
   text: string | undefined,
 ): DocumentAnnotations | null {
   if (!text || !isAnnotationsContent(text)) return null;
+  // The header is the first line: its attributes never hold a newline, but a page's address can be long.
   const header = /^<document_annotations file="([^"]*)"(?: url="([^"]*)")?>/.exec(
-    text.slice(0, HEADER_SCAN_CHARS),
+    text.split("\n", 1)[0],
   );
   const file = header?.[1] ?? "";
   const source = header?.[2] ? { file, url: header[2] } : { file };
