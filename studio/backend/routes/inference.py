@@ -6568,6 +6568,15 @@ def _apply_current_date_prompt(
     return f"{date_line}\n\n{system_prompt.lstrip()}" if system_prompt else date_line
 
 
+# The backends' own instruction for an audio turn that brings no system prompt, stated here so the
+# date goes ahead of it rather than replacing it.
+_AUDIO_INPUT_SYSTEM_PROMPT = "You are an assistant that transcribes speech accurately."
+
+
+def _audio_input_system_prompt(system_prompt: str, request: Any) -> str:
+    return _apply_current_date_prompt(system_prompt or _AUDIO_INPUT_SYSTEM_PROMPT, request)
+
+
 # Ollama applies the Modelfile SYSTEM only when `req.Messages[0].Role != "system"` (its
 # server/routes.go ChatHandler, which /v1/chat/completions also routes into), so only a turn at
 # index 0 displaces it.
@@ -28354,7 +28363,7 @@ async def produce_openai_chat_completions(
                 system_prompt, chat_messages, _ = await _extract_content_parts_async(
                     payload.messages
                 )
-                system_prompt = _apply_current_date_prompt(system_prompt, request)
+                system_prompt = _audio_input_system_prompt(system_prompt, request)
             except _DecodedAudioTooLongError as e:
                 # A limit the caller can act on, not a server fault.
                 api_monitor.fail(monitor_id, str(e))

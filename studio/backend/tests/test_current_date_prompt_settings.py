@@ -548,6 +548,17 @@ class TestDateStaysInTheSystemTurn:
             "The current date is 2026-10-04.\n\nBe terse."
         )
 
+    def test_an_audio_turn_keeps_its_transcription_instruction(self, monkeypatch):
+        instruction = self.inference._AUDIO_INPUT_SYSTEM_PROMPT
+        assert self.inference._audio_input_system_prompt("", object()) == (
+            f"The current date is 2026-10-04.\n\n{instruction}"
+        )
+        assert self.inference._audio_input_system_prompt("Be terse.", object()) == (
+            "The current date is 2026-10-04.\n\nBe terse."
+        )
+        monkeypatch.setattr(self.inference, "current_date_prompt_line", lambda **_kwargs: "")
+        assert self.inference._audio_input_system_prompt("", object()) == instruction
+
     def test_an_image_request_probes_the_processor_template(self, monkeypatch):
         from types import SimpleNamespace
 
