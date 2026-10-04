@@ -37,20 +37,14 @@ export class VideoAttachmentAdapter implements AttachmentAdapter {
     const activeModel = state.models.find((m) => m.id === checkpoint);
     const modelLoaded = !!checkpoint && !state.modelLoading;
     let unavailableReason: string | null = null;
-    if (!modelLoaded) {
-      // Mirror the image and audio gates: a failed load reads differently from no model picked.
-      unavailableReason = state.lastModelLoadError
-        ? "The last model failed to load. Check the server logs, then load a model before adding video."
-        : "Load a model before adding video.";
-    } else if (!activeModel?.hasVideoInput) {
+    if (modelLoaded && !activeModel?.hasVideoInput) {
       const label =
         activeModel?.name ||
         externalModelLabel(checkpoint) ||
         checkpoint ||
         "Current model";
-      // Three causes land here and the server does not say which, so name all three: /props reports
-      // video only when all of them line up.
-      unavailableReason = `${label} cannot accept video. Video needs a GGUF model whose mmproj supports video, a llama.cpp build with video enabled, and ffmpeg installed on this machine.`;
+      // The server does not say which cause applies, so name what each backend needs.
+      unavailableReason = `${label} cannot accept video. Video needs a GGUF model whose mmproj supports video, with a llama.cpp build with video enabled and ffmpeg installed on this machine, or an MLX vision model that reads video.`;
     }
     if (unavailableReason) {
       toast.error(unavailableReason);

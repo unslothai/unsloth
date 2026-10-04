@@ -6,7 +6,9 @@
 from __future__ import annotations
 
 import importlib.util
+import errno
 import inspect
+import os
 import shutil
 import subprocess
 import sys
@@ -16,6 +18,38 @@ from pathlib import Path
 import pytest
 
 
+def _shared_setup_1(launcher, monkeypatch, studio):
+    monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
+    monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
+
+    _update(studio)
+
+    assert launcher.read_bytes() == ORIGINAL_LAUNCHER
+
+
+def _shared_setup_2(monkeypatch, setup, studio):
+    monkeypatch.setattr(studio, "_run_setup_script", setup)
+    monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
+
+    _update(studio)
+
+
+def _shared_setup_3(launcher, studio):
+    with pytest.raises(studio.typer.Exit):
+        _update(studio)
+
+    assert launcher.read_bytes() == ORIGINAL_LAUNCHER
+
+
+def _shared_setup_4(monkeypatch, studio):
+    monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
+    calls = []
+    monkeypatch.setattr(studio.subprocess, "run", _successful_version_run(calls))
+
+    _update(studio)
+    return calls
+
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 STUDIO_COMMAND = REPO_ROOT / "unsloth_cli" / "commands" / "studio.py"
 ORIGINAL_LAUNCHER = b"MZ-original-launcher"
@@ -23,7 +57,7 @@ REAL_MSVCRT = sys.modules.get("msvcrt")
 
 
 @pytest.fixture
-def studio(monkeypatch):
+def studio(monkeypatch, tmp_path):
     package = types.ModuleType("unsloth_cli")
     package.__path__ = [str(REPO_ROOT / "unsloth_cli")]
     commands = types.ModuleType("unsloth_cli.commands")
@@ -49,6 +83,10 @@ def studio(monkeypatch):
     module = importlib.util.module_from_spec(spec)
     monkeypatch.setitem(sys.modules, module_name, module)
     spec.loader.exec_module(module)
+    # update() takes an exclusive flock under STUDIO_HOME, which defaults to the real
+    # ~/.unsloth/studio. Another xdist worker holding it made update() exit 1 before
+    # the call order these tests check, and the tests wrote into the user's home.
+    monkeypatch.setattr(module, "STUDIO_HOME", tmp_path / "studio_home")
     return module
 
 
@@ -115,6 +153,23 @@ def _successful_version_run(calls = None):
     return run
 
 
+def _unrunnable_version_run(calls):
+    """What running one of these stubs answers, without running it.
+
+    The launchers in this file are a few bytes behind an MZ, never a real PE image. Handing one to
+    CreateProcess on a Windows desktop can raise the modal "Unsupported 16-Bit Application" dialog,
+    and elsewhere it fails with an exec format error. That failure is the answer the recovery path
+    is exercised against, so it is raised here directly and the file is never started.
+    """
+
+    def run(argv, **kwargs):
+        # The bytes it would have started, so a caller can tell which file was asked.
+        calls.append((argv, Path(argv[0]).read_bytes()))
+        raise OSError(errno.ENOEXEC, os.strerror(errno.ENOEXEC), argv[0])
+
+    return run
+
+
 def _update(studio, *, verify = True):
     studio.update(local = False, package = "unsloth", verbose = False, verify = verify)
 
@@ -142,11 +197,7 @@ assert "unsloth_cli.commands.train" not in sys.modules
 
 def test_setup_noop_preserves_launcher_and_removes_backup(monkeypatch, studio, tmp_path):
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
-    monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
-    calls = []
-    monkeypatch.setattr(studio.subprocess, "run", _successful_version_run(calls))
-
-    _update(studio)
+    calls = _shared_setup_4(monkeypatch, studio)
 
     assert launcher.read_bytes() == ORIGINAL_LAUNCHER
     assert not (scripts / "unsloth.exe.update-backup").exists()
@@ -162,10 +213,7 @@ def test_a_recoverable_copy_exists_while_setup_runs(monkeypatch, studio, tmp_pat
         assert (scripts / "unsloth.exe.update-backup").read_bytes() == ORIGINAL_LAUNCHER
         assert (scripts / "unsloth.exe.update-stale").read_bytes() == ORIGINAL_LAUNCHER
 
-    monkeypatch.setattr(studio, "_run_setup_script", setup)
-    monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
-
-    _update(studio)
+    _shared_setup_2(monkeypatch, setup, studio)
 
 
 def test_installer_setup_frees_the_running_launcher_for_metadata_repair(
@@ -196,9 +244,13 @@ def test_setup_failure_restores_original_and_propagates(monkeypatch, studio, tmp
         raise RuntimeError("setup failed")
 
     monkeypatch.setattr(studio, "_run_setup_script", setup)
+    calls = []
+    monkeypatch.setattr(studio.subprocess, "run", _unrunnable_version_run(calls))
 
     with pytest.raises(RuntimeError, match = "setup failed"):
         _update(studio)
+
+    assert calls, "the restore never asked a launcher for --version"
 
     assert launcher.read_bytes() == ORIGINAL_LAUNCHER
     assert (scripts / "unsloth.exe.update-backup").read_bytes() == ORIGINAL_LAUNCHER
@@ -207,12 +259,7 @@ def test_setup_failure_restores_original_and_propagates(monkeypatch, studio, tmp
 def test_setup_publishing_no_launcher_restores_it_and_succeeds(monkeypatch, studio, tmp_path):
     # The bug this exists for: pip finds unsloth current and writes no launcher, and the old updater deleted its .deleteme.
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
-    monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
-    monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
-
-    _update(studio)
-
-    assert launcher.read_bytes() == ORIGINAL_LAUNCHER
+    _shared_setup_1(launcher, monkeypatch, studio)
     assert not (scripts / "unsloth.exe.update-stale").exists()
 
 
@@ -222,11 +269,15 @@ def test_invalid_launcher_is_restored_and_update_fails(monkeypatch, studio, tmp_
     monkeypatch.setattr(
         studio, "_run_setup_script", lambda **_kwargs: launcher.write_bytes(invalid)
     )
+    calls = []
+    monkeypatch.setattr(studio.subprocess, "run", _unrunnable_version_run(calls))
 
-    with pytest.raises(studio.typer.Exit):
-        _update(studio)
-
-    assert launcher.read_bytes() == ORIGINAL_LAUNCHER
+    _shared_setup_3(launcher, studio)
+    # The invalid file is refused before anything runs; only the restored original is asked.
+    assert calls and all(
+        argv == [str(launcher), "--version"] and started == ORIGINAL_LAUNCHER
+        for argv, started in calls
+    )
     assert (scripts / "unsloth.exe.update-backup").exists()
 
 
@@ -242,10 +293,7 @@ def test_runtime_check_failure_restores_launcher(monkeypatch, studio, tmp_path, 
 
     monkeypatch.setattr(studio.subprocess, "run", run)
 
-    with pytest.raises(studio.typer.Exit):
-        _update(studio)
-
-    assert launcher.read_bytes() == ORIGINAL_LAUNCHER
+    _shared_setup_3(launcher, studio)
     assert (scripts / "unsloth.exe.update-backup").exists()
 
 
@@ -273,10 +321,7 @@ def test_legacy_backup_recovers_only_when_launcher_is_missing(monkeypatch, studi
     def setup(**_kwargs):
         assert (scripts / "unsloth.exe.update-stale").read_bytes() == ORIGINAL_LAUNCHER
 
-    monkeypatch.setattr(studio, "_run_setup_script", setup)
-    monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
-
-    _update(studio)
+    _shared_setup_2(monkeypatch, setup, studio)
 
     assert launcher.read_bytes() == ORIGINAL_LAUNCHER
     assert not legacy.exists()
@@ -375,24 +420,14 @@ def test_a_missing_launcher_is_recovered_from_the_path_shim(monkeypatch, studio,
     # The old updater left neither launcher nor .deleteme; the shim is a hardlink, so it survives.
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path, launcher = None)
     _shim(studio)
-    monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
-    monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
-
-    _update(studio)
-
-    assert launcher.read_bytes() == ORIGINAL_LAUNCHER
+    _shared_setup_1(launcher, monkeypatch, studio)
 
 
 def test_an_invalid_launcher_is_recovered_from_the_backup(monkeypatch, studio, tmp_path):
     # Gating recovery on existence left a zero-byte launcher in place beside a usable backup.
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path, launcher = b"")
     (scripts / "unsloth.exe.update-backup").write_bytes(ORIGINAL_LAUNCHER)
-    monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
-    monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
-
-    _update(studio)
-
-    assert launcher.read_bytes() == ORIGINAL_LAUNCHER
+    _shared_setup_1(launcher, monkeypatch, studio)
 
 
 def test_no_launcher_and_no_recovery_source_still_runs_setup(monkeypatch, studio, tmp_path):
@@ -404,10 +439,7 @@ def test_no_launcher_and_no_recovery_source_still_runs_setup(monkeypatch, studio
         ran.append(True)
         launcher.write_bytes(ORIGINAL_LAUNCHER)
 
-    monkeypatch.setattr(studio, "_run_setup_script", setup)
-    monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
-
-    _update(studio)
+    _shared_setup_2(monkeypatch, setup, studio)
 
     assert ran == [True]
     assert launcher.read_bytes() == ORIGINAL_LAUNCHER
@@ -447,10 +479,7 @@ def test_an_existing_backup_survives_an_unvalidated_launcher(monkeypatch, studio
 
     monkeypatch.setattr(studio.subprocess, "run", failing_version)
 
-    with pytest.raises(studio.typer.Exit):
-        _update(studio)
-
-    assert launcher.read_bytes() == ORIGINAL_LAUNCHER
+    _shared_setup_3(launcher, studio)
 
 
 def test_the_launcher_is_resolved_from_the_managed_studio_venv(monkeypatch, studio, tmp_path):
@@ -462,11 +491,7 @@ def test_the_launcher_is_resolved_from_the_managed_studio_venv(monkeypatch, stud
     managed_launcher = managed / "Scripts" / "unsloth.exe"
     managed_launcher.write_bytes(b"MZ-managed-launcher")
 
-    monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
-    calls = []
-    monkeypatch.setattr(studio.subprocess, "run", _successful_version_run(calls))
-
-    _update(studio)
+    calls = _shared_setup_4(monkeypatch, studio)
 
     assert calls[0][0] == [str(managed_launcher), "--version"]
     assert managed_launcher.read_bytes() == b"MZ-managed-launcher"
@@ -570,10 +595,7 @@ def test_the_update_lock_lives_outside_the_replaceable_venv(monkeypatch, studio,
         seen["venv_locks"] = list(scripts.glob("*.update-lock"))
         seen["home_locks"] = list((studio.STUDIO_HOME).glob("*.update-lock"))
 
-    monkeypatch.setattr(studio, "_run_setup_script", setup)
-    monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
-
-    _update(studio)
+    _shared_setup_2(monkeypatch, setup, studio)
 
     assert seen["venv_locks"] == []
     assert len(seen["home_locks"]) == 1
@@ -601,10 +623,7 @@ def test_a_failed_move_aside_warns_that_unsloth_may_not_upgrade(
         ran.append(True)
         seen["backup"] = (scripts / "unsloth.exe.update-backup").read_bytes()
 
-    monkeypatch.setattr(studio, "_run_setup_script", setup)
-    monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
-
-    _update(studio)
+    _shared_setup_2(monkeypatch, setup, studio)
 
     assert ran == [True]
     err = capsys.readouterr().err
@@ -671,10 +690,7 @@ def test_a_policy_block_with_a_broken_package_still_fails(monkeypatch, studio, t
         _blocked_exe_run(lambda argv, **_kwargs: types.SimpleNamespace(returncode = 3)),
     )
 
-    with pytest.raises(studio.typer.Exit):
-        _update(studio)
-
-    assert launcher.read_bytes() == ORIGINAL_LAUNCHER
+    _shared_setup_3(launcher, studio)
     assert (scripts / "unsloth.exe.update-backup").exists()
 
 
@@ -736,11 +752,7 @@ def test_the_policy_block_helper_only_matches_1260(studio):
 def test_a_quarantined_away_launcher_falls_back_to_the_interpreter(monkeypatch, studio, tmp_path):
     """Quarantine removes the stub rather than denying it: nothing to run, nothing to put back."""
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path, launcher = None)
-    monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
-    calls = []
-    monkeypatch.setattr(studio.subprocess, "run", _successful_version_run(calls))
-
-    _update(studio)
+    calls = _shared_setup_4(monkeypatch, studio)
 
     assert not launcher.exists()
     # A successful update cleans its recovery copies up; a rollback would keep them.
@@ -784,12 +796,7 @@ def test_a_restorable_launcher_is_restored_before_the_interpreter_is_asked(
 ):
     """Absence is only excused once recovery failed, or a no-op update would quietly strip the console script."""
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
-    monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
-    monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
-
-    _update(studio)
-
-    assert launcher.read_bytes() == ORIGINAL_LAUNCHER
+    _shared_setup_1(launcher, monkeypatch, studio)
 
 
 def test_the_package_answers_for_a_quarantined_console_script(monkeypatch, studio, tmp_path):
@@ -1103,12 +1110,7 @@ def test_an_unrecoverable_launcher_keeps_its_recovery_copies(monkeypatch, studio
 
 def test_a_restored_launcher_still_cleans_up(monkeypatch, studio, tmp_path):
     scripts, launcher = _configure_windows(monkeypatch, studio, tmp_path)
-    monkeypatch.setattr(studio, "_run_setup_script", lambda **_kwargs: None)
-    monkeypatch.setattr(studio.subprocess, "run", _successful_version_run())
-
-    _update(studio)
-
-    assert launcher.read_bytes() == ORIGINAL_LAUNCHER
+    _shared_setup_1(launcher, monkeypatch, studio)
     assert not (scripts / "unsloth.exe.update-backup").exists()
     assert not (scripts / "unsloth.exe.update-stale").exists()
     assert not (scripts / "unsloth.exe.deleteme").exists()

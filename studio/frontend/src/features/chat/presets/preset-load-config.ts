@@ -12,11 +12,13 @@ import {
   MAX_SEQ_LENGTH_MAX,
   DEFAULT_MAX_SEQ_LENGTH,
   KV_CACHE_DTYPES,
-  MLX_KV_BITS,
+  mlxKvQuantLabel,
+  normalizeMlxKvQuant,
   N_BATCH_MAX,
   N_BATCH_MIN,
   N_PARALLEL_MAX,
   N_PARALLEL_MIN,
+  isReasoningBudgetMessageValid,
   canonicalizeLoadMode,
   isServedByLlamaCpp,
   isServedByMlx,
@@ -44,10 +46,12 @@ export type PresetLoadConfig = Pick<
   | "customContextLength"
   | "maxSeqLength"
   | "kvCacheDtype"
-  | "mlxKvBits"
+  | "mlxKvQuant"
   | "speculativeType"
   | "specDraftNMax"
   | "nParallel"
+  | "reasoningBudget"
+  | "reasoningBudgetMessage"
   | "nBatch"
   | "nUbatch"
   | "loadMode"
@@ -68,10 +72,12 @@ export const EMPTY_PRESET_LOAD_CONFIG: PresetLoadConfig = {
   customContextLength: null,
   maxSeqLength: null,
   kvCacheDtype: null,
-  mlxKvBits: null,
+  mlxKvQuant: null,
   speculativeType: null,
   specDraftNMax: null,
   nParallel: null,
+  reasoningBudget: -1,
+  reasoningBudgetMessage: "",
   nBatch: null,
   nUbatch: null,
   loadMode: null,
@@ -145,11 +151,7 @@ export function normalizePresetLoadConfig(
   const normalized: PresetLoadConfig = {
     customContextLength: requestableContextLength(partial.customContextLength),
     maxSeqLength: normalizeMaxSeqLength(partial.maxSeqLength as number | null),
-    mlxKvBits:
-      typeof partial.mlxKvBits === "number" &&
-      MLX_KV_BITS.includes(partial.mlxKvBits)
-        ? partial.mlxKvBits
-        : null,
+    mlxKvQuant: normalizeMlxKvQuant(partial.mlxKvQuant, partial.mlxKvBits),
     kvCacheDtype:
       typeof partial.kvCacheDtype === "string" &&
       VALID_KV_CACHE_DTYPES.has(partial.kvCacheDtype)
@@ -168,6 +170,19 @@ export function normalizePresetLoadConfig(
             Math.min(N_PARALLEL_MAX, Math.round(partial.nParallel)),
           )
         : null,
+    reasoningBudget:
+      typeof partial.reasoningBudget === "number" &&
+      Number.isFinite(partial.reasoningBudget)
+        ? Math.max(
+            -1,
+            Math.min(2_147_483_647, Math.trunc(partial.reasoningBudget)),
+          )
+        : -1,
+    reasoningBudgetMessage:
+      typeof partial.reasoningBudgetMessage === "string" &&
+      isReasoningBudgetMessageValid(partial.reasoningBudgetMessage)
+        ? partial.reasoningBudgetMessage
+        : "",
     nBatch:
       typeof partial.nBatch === "number" && Number.isFinite(partial.nBatch)
         ? Math.max(N_BATCH_MIN, Math.min(N_BATCH_MAX, Math.round(partial.nBatch)))
@@ -238,14 +253,21 @@ export function capturePresetLoadConfig(): PresetLoadConfig | undefined {
       loadedContextLength: store.loadedContextLength,
     }),
   );
+  // A diffusion GGUF is still a GGUF: its resolved context has to capture like
+  // any other. Only the reasoning flags, which it takes none of, are suppressed.
+  const capturesReasoning = isGguf && !store.loadedIsDiffusion;
   const captured: PresetLoadConfig = {
     customContextLength: effectiveContextLength ?? null,
     maxSeqLength: isMlx ? null : normalizeMaxSeqLength(snapshot.maxSeqLength),
     kvCacheDtype: snapshot.kvCacheDtype ?? null,
-    mlxKvBits: snapshot.mlxKvBits ?? null,
+    mlxKvQuant: snapshot.mlxKvQuant ?? null,
     speculativeType: normalizeSpeculativeType(snapshot.speculativeType),
     specDraftNMax: snapshot.specDraftNMax ?? null,
     nParallel: snapshot.nParallel ?? null,
+    reasoningBudget: capturesReasoning ? snapshot.reasoningBudget : -1,
+    reasoningBudgetMessage: capturesReasoning
+      ? snapshot.reasoningBudgetMessage
+      : "",
     nBatch: snapshot.nBatch ?? null,
     nUbatch: snapshot.nUbatch ?? null,
     loadMode: snapshot.loadMode ?? null,
@@ -293,37 +315,40 @@ function coalesceDefaultLoadKnobs(
   return result;
 }
 
-export function applyPresetLoadConfig(
-  config?: PresetLoadConfig | null,
-): void {
+export function applyPresetLoadConfig(config?: PresetLoadConfig | null): void {
   if (config == null) {
     return;
   }
   const store = useChatRuntimeStore.getState();
-  applyPerModelConfigToRuntime({
-    ...DEFAULT_PER_MODEL_CONFIG,
-    maxSeqLength: normalizeMaxSeqLength(config.maxSeqLength) ?? DEFAULT_MAX_SEQ_LENGTH,
-    customContextLength: config.customContextLength ?? null,
-    kvCacheDtype: config.kvCacheDtype ?? null,
-    mlxKvBits: config.mlxKvBits ?? null,
-    speculativeType: config.speculativeType ?? null,
-    specDraftNMax: config.specDraftNMax ?? null,
-    nParallel: config.nParallel ?? null,
-    nBatch: config.nBatch ?? null,
-    nUbatch: config.nUbatch ?? null,
-    loadMode: config.loadMode ?? null,
-    specDraftCacheDtype: config.specDraftCacheDtype ?? null,
-    ctxCheckpoints: config.ctxCheckpoints ?? null,
-    cacheRam: config.cacheRam ?? null,
-    tensorParallel: config.tensorParallel ?? false,
-    disableVision: config.disableVision ?? false,
-    chatTemplateOverride: null,
-    gpuMemoryMode: config.gpuMemoryMode,
-    gpuLayers: config.gpuLayers,
-    nCpuMoe: config.nCpuMoe,
-    selectedGpuIds: store.selectedGpuIds,
-    selectedGpuIndexKind: store.selectedGpuIndexKind,
-  });
+  applyPerModelConfigToRuntime(
+    {
+      ...DEFAULT_PER_MODEL_CONFIG,
+      maxSeqLength: normalizeMaxSeqLength(config.maxSeqLength) ?? DEFAULT_MAX_SEQ_LENGTH,
+      customContextLength: config.customContextLength ?? null,
+      kvCacheDtype: config.kvCacheDtype ?? null,
+      mlxKvQuant: config.mlxKvQuant ?? null,
+      speculativeType: config.speculativeType ?? null,
+      specDraftNMax: config.specDraftNMax ?? null,
+      nParallel: config.nParallel ?? null,
+      nBatch: config.nBatch ?? null,
+      nUbatch: config.nUbatch ?? null,
+      loadMode: config.loadMode ?? null,
+      specDraftCacheDtype: config.specDraftCacheDtype ?? null,
+      ctxCheckpoints: config.ctxCheckpoints ?? null,
+      cacheRam: config.cacheRam ?? null,
+      reasoningBudget: config.reasoningBudget ?? -1,
+      reasoningBudgetMessage: config.reasoningBudgetMessage ?? "",
+      tensorParallel: config.tensorParallel ?? false,
+      disableVision: config.disableVision ?? false,
+      chatTemplateOverride: null,
+      gpuMemoryMode: config.gpuMemoryMode,
+      gpuLayers: config.gpuLayers,
+      nCpuMoe: config.nCpuMoe,
+      selectedGpuIds: store.selectedGpuIds,
+      selectedGpuIndexKind: store.selectedGpuIndexKind,
+    },
+    { isDiffusion: store.loadedIsDiffusion },
+  );
 }
 
 export function formatPresetLoadConfigSummary(
@@ -339,14 +364,22 @@ export function formatPresetLoadConfigSummary(
   if (config.kvCacheDtype) {
     parts.push(`KV ${config.kvCacheDtype}`);
   }
-  if (config.mlxKvBits) {
-    parts.push(`MLX KV ${config.mlxKvBits}-bit`);
+  if (config.mlxKvQuant) {
+    parts.push(`MLX KV ${mlxKvQuantLabel(config.mlxKvQuant)}`);
   }
   if (config.speculativeType && config.speculativeType !== "auto") {
     parts.push(`Spec ${config.speculativeType}`);
   }
   if (config.nParallel != null) {
     parts.push(`${config.nParallel} slots`);
+  }
+  if (config.reasoningBudget !== -1) {
+    parts.push(`Reasoning ${config.reasoningBudget}`);
+  }
+  // A marker, not the text: the message is free prose up to 8 KiB. Without it a
+  // message-only preset is non-default but summarises to null, hiding both lines.
+  if (config.reasoningBudgetMessage) {
+    parts.push("Budget msg");
   }
   if (config.nBatch != null) {
     parts.push(`Batch ${config.nBatch}`);

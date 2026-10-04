@@ -53,9 +53,8 @@ def hidream_te4_kwargs(
     import torch  # noqa: F401 -- dtype values are torch dtypes; import keeps parity with callers
     from transformers import AutoTokenizer, LlamaForCausalLM
 
-    # pin the LIVE hub root: an unpinned lookup uses the import-time root and fails under local_files_only
-    # Pinned to the LIVE hub root: ``encoder_repo_complete`` verifies these assets there, so an unpinned lookup after a
-    # mid-session cache-folder change searches huggingface_hub's import-time root instead and fails under
+    # Pinned to the LIVE hub root: ``encoder_repo_complete`` verifies these assets there, so an unpinned lookup after
+    # a mid-session cache-folder change searches huggingface_hub's import-time root instead and fails under
     # local_files_only for a 16 GB encoder that is present, after the resident image pipeline was evicted.
     from utils.hf_cache_settings import active_hf_hub_cache
 

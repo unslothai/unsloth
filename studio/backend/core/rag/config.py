@@ -39,7 +39,15 @@ CONVERSATION_RECALL_ORDER = os.environ.get("RAG_CONVERSATION_RECALL_ORDER", "chr
 # still the right turn.
 CONVERSATION_FORCED_MIN_SCORE = float(os.environ.get("RAG_CONVERSATION_FORCED_MIN_SCORE", "0.0"))
 
-UPLOAD_EXTS = {".pdf", ".txt", ".md", ".markdown", ".docx", ".html", ".htm"}
+# Types parsers.parse handles; frontend and Rust parity tests read this literal.
+SUPPORTED_UPLOAD_EXTS = {".pdf", ".txt", ".md", ".markdown", ".docx", ".html", ".htm"}
+# RAG_UPLOAD_EXTS (e.g. ".md,.markdown") can only narrow: a type without a parser would fail every ingest.
+_requested_exts = {
+    "." + ext.strip().lstrip(".").lower()
+    for ext in os.environ.get("RAG_UPLOAD_EXTS", "").split(",")
+    if ext.strip().lstrip(".")
+}
+UPLOAD_EXTS = (SUPPORTED_UPLOAD_EXTS & _requested_exts) or set(SUPPORTED_UPLOAD_EXTS)
 # 0 disables the cap; bounds parse + vision work at ingest.
 MAX_UPLOAD_BYTES = int(os.environ.get("RAG_MAX_UPLOAD_BYTES", str(200 * 1024 * 1024)))
 
@@ -47,10 +55,7 @@ MAX_UPLOAD_BYTES = int(os.environ.get("RAG_MAX_UPLOAD_BYTES", str(200 * 1024 * 1
 FOLDER_SYNC_INTERVAL_S = float(os.environ.get("RAG_FOLDER_SYNC_INTERVAL_S", "30"))
 FOLDER_MAX_FILES = int(os.environ.get("RAG_FOLDER_MAX_FILES", "10000"))
 FOLDER_JOB_HISTORY_LIMIT = int(os.environ.get("RAG_FOLDER_JOB_HISTORY_LIMIT", "200"))
-# Keep parsing/chunking work ahead of the serialized embedder without allowing a
-# linked-folder pass to materialize an unbounded number of documents at once. The
-# reconciliation code clamps this value to a small safe range before constructing
-# its executor.
+# Linked-folder documents ingested concurrently, clamped to 1..4.
 FOLDER_INGEST_WORKERS = int(os.environ.get("RAG_FOLDER_INGEST_WORKERS", "2"))
 
 # Falls back to plain PyMuPDF text when off, when pymupdf4llm is missing, or when extraction fails.
@@ -71,7 +76,8 @@ FIGURE_TILE_OVERLAP = float(os.environ.get("RAG_FIGURE_TILE_OVERLAP", "0.12"))
 FIGURE_FULLPAGE = os.environ.get("RAG_FIGURE_FULLPAGE", "1") == "1"
 CAPTION_MAX_PAGES = int(os.environ.get("RAG_CAPTION_MAX_PAGES", "4"))
 
-# Needs a vision model, else the page stays empty; MIN_CHARS is the text length below which a page counts as scanned.
+# OCR uses the loaded vision model, falling back to local Tesseract language data.
+# MIN_CHARS is the text length below which a page is considered for transcription.
 OCR_SCANNED = os.environ.get("RAG_OCR_SCANNED", "1") == "1"
 OCR_MIN_CHARS = int(os.environ.get("RAG_OCR_MIN_CHARS", "16"))
 OCR_MAX_PAGES = int(os.environ.get("RAG_OCR_MAX_PAGES", "20"))
@@ -102,16 +108,19 @@ def embedding_identity(
     model: str,
     *,
     gguf_repo: str | None = None,
+    pooling: str | None = None,
 ) -> str:
     """Tagged identity for ``documents.embedding_model``.
 
     The configured model comes first so a row written before identities carried a tag
     still compares equal on it. llama-server appends the GGUF repo it actually embeds
-    through, which is the part that can differ from the model's ST form."""
+    through, which is the part that can differ from the model's ST form, and any pooling
+    other than the CLS it once forced on every GGUF."""
     model = _escape_identity_segment(model)
     if gguf_repo is None:
         return f"{backend}:{model}"
-    return f"{backend}:{model}:{_escape_identity_segment(gguf_repo)}"
+    identity = f"{backend}:{model}:{_escape_identity_segment(gguf_repo)}"
+    return identity if pooling is None else f"{identity}:{pooling}"
 
 
 def embedding_identity_model(identity: str | None) -> str | None:

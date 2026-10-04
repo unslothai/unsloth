@@ -29,10 +29,9 @@ export const toolArgText = (value: unknown): string => {
   if (typeof value === "string") return value;
   try {
     if (typeof value === "object") {
-      // SERIALISED, not coerced: `String({"toString":null})` throws "Cannot
-      // convert object to primitive value", the exact crash this stops. JSON
-      // also shows what arrived, which "[object Object]" never did.
-      // `?? ""` because a `toJSON` returning undefined makes stringify do so.
+      // SERIALISED, not coerced: `String({"toString":null})` throws "Cannot convert object to
+      // primitive value", the exact crash this stops. JSON also shows what arrived, which "[object
+      // Object]" never did. `?? ""` because a `toJSON` returning undefined makes stringify do so.
       const json = JSON.stringify(value) ?? "";
       return json.length > MAX_SERIALISED_LENGTH
         ? `${json.slice(0, MAX_SERIALISED_LENGTH)}…`
@@ -42,10 +41,9 @@ export const toolArgText = (value: unknown): string => {
     // (ECMA-262 22.1.1.1), `${sym}` throws.
     return String(value);
   } catch {
-    // Load-bearing, not defensive. All three engines parse 4,000,000 levels of
-    // nesting; Firefox then throws "InternalError: too much recursion" and
-    // Safari a RangeError out of JSON.stringify where Chrome succeeds. Keep the
-    // binding bare: Firefox's is not a RangeError.
+    // Load-bearing, not defensive. All three engines parse 4,000,000 levels of nesting; Firefox
+    // then throws "InternalError: too much recursion" and Safari a RangeError out of JSON.stringify
+    // where Chrome succeeds. Keep the binding bare: Firefox's is not a RangeError.
     return "";
   }
 };

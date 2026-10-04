@@ -3,6 +3,61 @@
 
 import type { ModelSelectorChangeMeta } from "@/features/model-picker/components/model-selector/types";
 import { nativeAudioCheckpointIsLoadable } from "../model-picker/components/model-selector/audio-picker-policy.ts";
+import {
+  AUDIO_CPP_MUSIC_AUDIO_TYPE,
+  AUDIO_CPP_MUSIC_MAX_SECONDS,
+  AUDIO_CPP_MUSIC_MIN_SECONDS,
+  AUDIO_CPP_TTS_AUDIO_TYPE,
+  type AudioCppRuntimeStatus,
+  audioCppDisplayName,
+  audioCppModelFor,
+} from "./audio-cpp-catalog.ts";
+
+/** Why the installed audio runtime cannot run this recommended speech or music model, or null
+ *  when it can or cannot be told (no status yet, a server that predates the runtime block, or a
+ *  repo the backend judges at load). Mirrors the backend's model_runtime_problem so a pick is
+ *  refused before its load returns 501. */
+export function audioCppRuntimeProblem(
+  id: string | null | undefined,
+  runtime: AudioCppRuntimeStatus | null | undefined,
+): string | null {
+  const model = audioCppModelFor(id);
+  if (!model || model.task === "asr" || !runtime) return null;
+  if (!runtime.available) {
+    return "The audio runtime is not installed. Run `unsloth studio update` to install it.";
+  }
+  if (model.needsEspeak && !runtime.espeak) {
+    return (
+      `${audioCppDisplayName(model.id)} needs an audio runtime built with eSpeak-ng, and the ` +
+      "installed one has none. Run `unsloth studio update` to install the Unsloth bundle."
+    );
+  }
+  return null;
+}
+
+/** GGUF music families whose prompt needs a description beside the lyrics: MiniMax Music 3
+ *  takes it as the caption and YuE2 as the style. The others fall back to the lyrics. */
+const DESCRIBED_MUSIC_FAMILIES = new Set(["minimax_music3", "yue2"]);
+
+/** Whether the loaded music model refuses to generate without a description. */
+export function musicNeedsDescription(
+  audioType?: string | null,
+  audioFamily?: string | null,
+): boolean {
+  return (
+    audioType === "minimax_music3" ||
+    (audioType === AUDIO_CPP_MUSIC_AUDIO_TYPE &&
+      DESCRIBED_MUSIC_FAMILIES.has(audioFamily ?? ""))
+  );
+}
+
+/** YuE2 can sing from its style description alone, so an empty lyrics field is an instrumental request. */
+export function musicLyricsOptional(
+  audioType?: string | null,
+  audioFamily?: string | null,
+): boolean {
+  return audioType === AUDIO_CPP_MUSIC_AUDIO_TYPE && audioFamily === "yue2";
+}
 
 export type AudioBusy =
   | "loading"
@@ -61,7 +116,7 @@ export function audioGenerationPresentation(
 
 export type AudioPickTask = "tts" | "stt" | null;
 export type AudioCreateMode = "speak" | "transcribe";
-export type SttEngine = "transformers" | "gguf" | "mtmd";
+export type SttEngine = "transformers" | "gguf" | "mtmd" | "audiocpp";
 
 const TTS_AUDIO_TYPES = new Set([
   "snac",
@@ -73,14 +128,25 @@ const TTS_AUDIO_TYPES = new Set([
   "moss_tts_nano",
   "higgs_tts3",
   "minimax_music3",
+  AUDIO_CPP_TTS_AUDIO_TYPE,
+  AUDIO_CPP_MUSIC_AUDIO_TYPE,
 ]);
-const GGUF_TTS_AUDIO_TYPES = new Set(["snac", "bicodec", "dac"]);
+// The GGUF runtime's speech and music load from a GGUF too, so a status may call them one.
+const GGUF_TTS_AUDIO_TYPES = new Set([
+  "snac",
+  "bicodec",
+  "dac",
+  AUDIO_CPP_TTS_AUDIO_TYPE,
+  AUDIO_CPP_MUSIC_AUDIO_TYPE,
+]);
 const NATIVE_TTS_AUDIO_TYPES = new Set([
   "higgs_tts2",
   "moss_tts_local",
   "moss_tts_nano",
   "higgs_tts3",
   "minimax_music3",
+  AUDIO_CPP_TTS_AUDIO_TYPE,
+  AUDIO_CPP_MUSIC_AUDIO_TYPE,
 ]);
 export const MOSS_TTS_FRAMES_PER_SECOND = 12.5;
 export const MOSS_TTS_DEFAULT_SECONDS = 15;
@@ -93,7 +159,7 @@ export const MINIMAX_MUSIC_MAX_FRAMES = 9000;
 export const MINIMAX_MUSIC_MAX_SECONDS =
   MINIMAX_MUSIC_MAX_FRAMES / MINIMAX_MUSIC_FRAMES_PER_SECOND;
 
-export type NativeAudioInstructionsKind = "scene" | "style" | "music";
+export type NativeAudioInstructionsKind = "scene" | "style" | "voice" | "music";
 
 export function nativeAudioInstructionsKind(
   audioType?: string | null,
@@ -104,10 +170,34 @@ export function nativeAudioInstructionsKind(
   if (audioType === "moss_tts_local") {
     return "style";
   }
-  if (audioType === "minimax_music3") {
+  // Forwarded as the runtime's instruction; families without one ignore it.
+  if (audioType === AUDIO_CPP_TTS_AUDIO_TYPE) {
+    return "voice";
+  }
+  if (
+    audioType === "minimax_music3" ||
+    audioType === AUDIO_CPP_MUSIC_AUDIO_TYPE
+  ) {
     return "music";
   }
   return null;
+}
+
+/** The music length range the loaded model honours. The GGUF runtime clamps tighter than the
+ *  MiniMax Music 3 pipeline; both take the same 25 frames per second. */
+export function musicDurationRange(requiresCuda: boolean): {
+  min: number;
+  max: number;
+} {
+  return requiresCuda
+    ? { min: 1, max: MINIMAX_MUSIC_MAX_SECONDS }
+    : { min: AUDIO_CPP_MUSIC_MIN_SECONDS, max: AUDIO_CPP_MUSIC_MAX_SECONDS };
+}
+
+/** Whether temperature and token length reach the model. GGUF runtime speech keeps each
+ *  family's own sampling and lets the server bound the length, so both would be ignored. */
+export function audioSamplingControlsApply(audioType?: string | null): boolean {
+  return audioType !== AUDIO_CPP_TTS_AUDIO_TYPE;
 }
 
 export function minimaxMusicFramesForSeconds(seconds: number): number {
@@ -183,6 +273,7 @@ type SttDownloadedStatus = {
   transformers?: { downloaded_models?: readonly string[] };
   gguf?: { downloaded_models?: readonly string[] };
   mtmd?: { downloaded_models?: readonly string[] };
+  audiocpp?: { downloaded_models?: readonly string[] };
 };
 
 export interface SttDownloadedArtifact {
@@ -205,6 +296,7 @@ export function sttDownloadedArtifacts(
     ["transformers", status.transformers],
     ["gguf", status.gguf],
     ["mtmd", status.mtmd],
+    ["audiocpp", status.audiocpp],
   ];
   for (const [engine, block] of blocks) {
     for (const sidecarKey of block?.downloaded_models ?? []) {
@@ -425,6 +517,7 @@ type SttResidencyStatus = SttEngineResidency & {
   transformers?: SttEngineResidency;
   gguf?: SttEngineResidency;
   mtmd?: SttEngineResidency;
+  audiocpp?: SttEngineResidency;
 };
 
 /** Resolve the resident model from the engine-aware status shape. The legacy top-level fields
@@ -479,6 +572,9 @@ export function resolveSttResidency(
   }
   if (status.mtmd?.loaded_model) {
     return { model: status.mtmd.loaded_model, engine: "mtmd" };
+  }
+  if (status.audiocpp?.loaded_model) {
+    return { model: status.audiocpp.loaded_model, engine: "audiocpp" };
   }
   return null;
 }

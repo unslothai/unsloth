@@ -3,41 +3,13 @@
 
 """Is this run's step count one that can train anything? Answered before paying.
 
-``max_steps`` is a free-text ``workflow_dispatch`` input, and both ways of
-getting it wrong cost a Kaggle session and report the pull request RED for
-something that is not a code defect:
+``max_steps`` is a free-text ``workflow_dispatch`` input, and both ways of getting it wrong cost a Kaggle session and report the pull request RED for something that is not a code defect. Not an integer: ``foo`` travels into the payload's argv, argparse rejects it and the process exits 2 with no report written, and the generated cell turns that into a failing report on purpose (a crashed payload must not read as missing evidence), so three legs come back as assertion failures after the kernels were pushed, the model downloaded and the quota spent. Too small to apply an optimizer update: under fp16 the dynamic gradient scaler starts at 65536, halves on each overflow and SKIPS the step it overflowed on, and the workflow passes no ``--init-loss-scale``, so the first steps of every run are skipped ones and a run shorter than that prefix applies zero updates, which ``optimisation_failures`` reports as red having measured nothing.
 
-* **Not an integer.** ``foo`` travels all the way into the payload's argv, where
-  argparse rejects it and the process exits 2 with no report written. The
-  generated cell turns that into a failing report on purpose (a crashed payload
-  must not read as missing evidence), so three legs come back as assertion
-  failures -- after the kernels were pushed, the model downloaded and the quota
-  spent.
-* **Too small to apply an optimizer update.** Under fp16 the dynamic gradient
-  scaler starts at 65536, halves on each overflow and SKIPS the step it
-  overflowed on. The workflow passes no ``--init-loss-scale``, so the first
-  steps of every run are skipped ones, and a run shorter than that prefix
-  applies zero updates: ``optimisation_failures`` says so and the leg goes red
-  having measured nothing.
+Both are stand-downs, the same answer this workflow gives an unresolvable ref: a warning and a green job, because nothing was learned about the code under test.
 
-Both are stand-downs, the same answer this workflow gives an unresolvable ref: a
-warning and a green job, because nothing was learned about the code under test.
+THE FLOOR IS MEASURED, NOT DECLARED. It is the shortest prefix of the COMMITTED reference trace that the payload's own ``optimisation_failures`` accepts, so it follows the reference and that function rather than a number written here that would go stale the moment either moved. The prefix is the right comparison because the payload trains on a constant schedule with no warmup (``lr_scheduler_type="constant"``, ``warmup_steps=0``) and logs every step, so an n-step run IS the first n steps of the committed 10-step one. On the committed trace that comes out at 5: steps 1-3 have grad_norm NaN (all skipped, no update applied) and step 4's loss is above step 1's, so 4 fails the "loss did not decrease" check too.
 
-THE FLOOR IS MEASURED, NOT DECLARED. It is the shortest prefix of the COMMITTED
-reference trace that the payload's own ``optimisation_failures`` accepts, so it
-follows the reference and that function rather than a number written here that
-would go stale the moment either moved. The prefix is the right comparison
-because the payload trains on a constant schedule with no warmup
-(``lr_scheduler_type="constant"``, ``warmup_steps=0``) and logs every step, so
-an n-step run IS the first n steps of the committed 10-step one.
-
-On the committed trace that comes out at 5: steps 1-3 have grad_norm NaN (all
-skipped, no update applied) and step 4's loss is above step 1's, so 4 fails the
-"loss did not decrease" check too, which is why the file docstring's "about
-five" is a measurement rather than a guess.
-
-Exits 0 whatever it decides. The stand-down travels as the ``stand_down``
-output, like gate.py's.
+Exits 0 whatever it decides. The stand-down travels as the ``stand_down`` output, like gate.py's.
 """
 
 from __future__ import annotations
@@ -68,12 +40,7 @@ def _out(key: str, value: str) -> None:
 
 
 def parse_steps(raw: str) -> int | None:
-    """The dispatched value as a positive integer, or None if it is not one.
-
-    ``int()`` alone is not the test: it accepts ``+7`` and surrounding
-    whitespace, which are fine, and returns 0 or a negative for values the
-    trainer cannot run at all.
-    """
+    """The dispatched value as a positive integer, or None if it is not one. ``int()`` alone is not the test: it accepts ``+7`` and surrounding whitespace, which are fine, and returns 0 or a negative for values the trainer cannot run at all."""
     try:
         steps = int(str(raw).strip())
     except (TypeError, ValueError):
@@ -84,16 +51,9 @@ def parse_steps(raw: str) -> int | None:
 def reference_steps(payload_dir: Path, leg: str = "control") -> int | None:
     """The step count the committed reference declares, read the payload's way.
 
-    The build step drops the band when this run's count is not the reference's,
-    and ``check_reference`` refuses the same pairing from the other side, so the
-    two have to mean the same thing by "the reference's count". This calls the
-    payload's own ``reference_step_count`` rather than reading the JSON a second
-    time, and finds the file through the leg registry rather than naming it.
+    The build step drops the band when this run's count is not the reference's, and ``check_reference`` refuses the same pairing from the other side, so the two have to mean the same thing by "the reference's count". This calls the payload's own ``reference_step_count`` rather than reading the JSON a second time, and finds the file through the leg registry rather than naming it.
 
-    None when it cannot be established, which the build step already treats as
-    not comparable: the payload's answer for a reference that does not say is
-    ``reference_step_count_unknown``, a hard failure, so a band left on here
-    would be red for the reference rather than for the code.
+    None when it cannot be established, which the build step already treats as not comparable: the payload's answer for a reference that does not say is ``reference_step_count_unknown``, a hard failure, so a band left on here would be red for the reference rather than for the code.
     """
     try:
         name = LEGS[leg].reference
@@ -109,11 +69,7 @@ def reference_steps(payload_dir: Path, leg: str = "control") -> int | None:
 
 
 def reference_metrics(payload_dir: Path, leg: str = "control") -> list[dict]:
-    """The committed trace the floor is measured from.
-
-    Read through the leg registry rather than by naming the file again: the leg
-    is what decides which reference this CI runs against.
-    """
+    """The committed trace the floor is measured from, read through the leg registry rather than by naming the file again: the leg is what decides which reference this CI runs against."""
     name = LEGS[leg].reference
     if not name:
         return []
@@ -124,12 +80,7 @@ def reference_metrics(payload_dir: Path, leg: str = "control") -> list[dict]:
 
 
 def minimum_steps(metrics: list[dict], failures) -> int | None:
-    """Shortest prefix of ``metrics`` the payload's own verdict accepts.
-
-    None when no prefix does, including the empty trace: an unmeasurable floor
-    is not a floor of zero, and answering "any step count will do" is how a
-    check that cannot fail gets written.
-    """
+    """Shortest prefix of ``metrics`` the payload's own verdict accepts. None when no prefix does, including the empty trace: an unmeasurable floor is not a floor of zero, and answering "any step count will do" is how a check that cannot fail gets written."""
     for n in range(1, len(metrics) + 1):
         if not failures(metrics[:n]):
             return n
@@ -202,13 +153,7 @@ def main() -> int:
     _out("stand_down", "true" if stand_down else "false")
     _out("reason", reason)
 
-    # The PARSED value, for everything downstream, so that the one place which normalises the dispatched string is the
-    # one place that validated it.
-    # parse_steps deliberately accepts "+10", "010" and surrounding whitespace as the ten they are, and the payload's
-    # argparse agrees, so the build step comparing the raw string against the reference's count used to read those as
-    # a different run and drop the reference band from it: a green run with the committed band never applied,
-    # announced as a step count that was not actually different. The reference's own count comes from here too, for
-    # the same reason -- one definition, the payload's.
+    # The PARSED value, for everything downstream, so the one place that normalises the dispatched string is the one place that validated it. parse_steps deliberately accepts "+10", "010" and surrounding whitespace as the ten they are, and the payload's argparse agrees, so the build step comparing the raw string against the reference's count used to read those as a different run and drop the reference band: a green run with the committed band never applied, announced as a step count that was not actually different. The reference's own count comes from here too, for the same reason.
     steps = parse_steps(args.max_steps)
     if steps is not None:
         _out("steps", str(steps))
