@@ -575,9 +575,8 @@ def test_generate_hooks_the_resident_transformer_only_when_the_release_falls_sho
     src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
         encoding = "utf-8"
     )
-    at = src.index(
-        "if request_condition_pixels > 0 and extra_mib > resident_group_mib(state.pipe):"
-    )
+    at = src.index("releasable_mib = resident_group_mib(state.pipe)")
+    assert "if request_condition_pixels > 0 and extra_mib > releasable_mib:" in src[at : at + 200]
     assert "hook_resident_denoiser(state.pipe," in src[at : at + 600]
     assert (
         src.index("restore_resident = release_resident_groups(state.pipe, extra_mib, logger)") > at
