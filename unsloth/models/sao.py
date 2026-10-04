@@ -558,7 +558,9 @@ class SAOTrainer(_SAOTrainerBase):
 
         rewards = self._rewards(prompt_texts, completion_texts, batch)
         token_rewards = torch.zeros_like(rollout_logprobs)
-        last_action = action_mask.sum(dim = 1).clamp(min = 1) - 1
+        # The final action's sequence index differs from its ordinal when
+        # observation tokens are interleaved in the trajectory.
+        last_action = action_mask.to(dtype = torch.long).cumsum(dim = 1).argmax(dim = 1)
         token_rewards[torch.arange(token_rewards.shape[0]), last_action] = rewards
 
         full_mask = torch.cat([prompt_mask, torch.ones_like(completion_ids)], dim = 1)
