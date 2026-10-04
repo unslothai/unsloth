@@ -1,7 +1,5 @@
-# Model defaults for unsloth/Qwen3.5-35B-A3B (MoE, 3B active parameters)
-# Qwen3.5 is a vision-language family with hybrid linear attention
-# (GatedDeltaNet); all-linear covers the linear-attention projections too.
-# Routed experts are packed parameters and stay frozen under LoRA.
+# Model defaults for unsloth/Qwen3.5-35B-A3B
+# all-linear reaches the GatedDeltaNet projections and the vision tower; routed experts are packed parameters and stay frozen.
 # Also applies to: Qwen/Qwen3.5-35B-A3B
 
 training:
@@ -29,6 +27,7 @@ lora:
     - "all-linear"
   use_rslora: false
   use_loftq: false
+  use_dora: false
   finetune_vision_layers: true
   finetune_language_layers: true
   finetune_attention_modules: true
@@ -40,9 +39,3 @@ logging:
   enable_tensorboard: false
   tensorboard_dir: "runs"
   log_frequency: 10
-
-inference:
-  temperature: 0.7
-  top_p: 0.8
-  top_k: 20
-  min_p: 0.0

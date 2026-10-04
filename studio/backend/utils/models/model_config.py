@@ -515,7 +515,7 @@ MODEL_NAME_MAPPING = {
         "Qwen/Qwen3-VL-8B-Instruct",
         "unsloth/Qwen3-VL-8B-Instruct-bnb-4bit",
     ],
-    # Qwen3.5 models (vision-language, hybrid linear attention)
+    # Qwen3.5
     "unsloth_Qwen3.5-0.8B.yaml": [
         "unsloth/Qwen3.5-0.8B",
         "Qwen/Qwen3.5-0.8B",

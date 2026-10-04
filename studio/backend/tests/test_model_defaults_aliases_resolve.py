@@ -104,3 +104,22 @@ def test_claimed_alias_loads_its_own_defaults(config_name, alias):
 def test_lfm2_supported_ids_use_all_linear_defaults(model_id):
     config = _load_tuned(model_id, "unsloth_LFM2-1.2B.yaml")
     assert config["lora"]["target_modules"] == ["all-linear"]
+
+
+_QWEN35_SIZES = ["0.8B", "2B", "4B", "9B", "27B", "35B-A3B"]
+
+
+@pytest.mark.parametrize("org", ["unsloth", "Qwen"])
+@pytest.mark.parametrize("size", _QWEN35_SIZES)
+def test_qwen35_ids_use_all_linear_defaults(org, size):
+    # default.yaml's q/k/v/o list leaves the GatedDeltaNet layers and the vision tower without LoRA.
+    config = _load_tuned(f"{org}/Qwen3.5-{size}", f"unsloth_Qwen3.5-{size}.yaml")
+    assert config["lora"]["target_modules"] == ["all-linear"]
+
+
+@pytest.mark.parametrize("size", _QWEN35_SIZES)
+def test_qwen35_yaml_keeps_family_sampling(size):
+    from utils.inference.inference_config import load_inference_config
+    assert load_inference_config(f"unsloth/Qwen3.5-{size}") == load_inference_config(
+        f"unsloth/Qwen3.5-{size}-GGUF"
+    )
