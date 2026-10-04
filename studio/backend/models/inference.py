@@ -5718,6 +5718,17 @@ class VideoStatusResponse(BaseModel):
         description = "Attention backend engaged via the diffusers dispatcher (e.g. "
         "_native_cudnn), or null for the default SDPA",
     )
+    sd_cpp_cudnn_attention: Optional[str] = Field(
+        None,
+        description = "MiniMax-H3 on stable-diffusion.cpp only: cuDNN fused attention state. ready (a "
+        "CUDA 12 cuDNN is named to sd.cpp, no render yet) | engaged | fallback (sd.cpp kept its own "
+        "kernels) | unavailable (no CUDA 12 cuDNN could be provided) | off (switched off) | null "
+        "(not applicable: the build has no cuDNN attention, or the card, platform or engine is not "
+        "eligible).",
+    )
+    sd_cpp_cudnn_reason: Optional[str] = Field(
+        None, description = "Why sd_cpp_cudnn_attention is not engaged or ready, when known"
+    )
     transformer_cache: Optional[str] = Field(
         None, description = "Step cache engaged: fbcache | static | null"
     )

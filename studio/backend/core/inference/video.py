@@ -3575,6 +3575,25 @@ class VideoBackend:
         if native_device != "cpu":
             from .video_minimax_h3 import h3_quant_cublas_env
             native_env += h3_quant_cublas_env(native_cuda_cc, sage = h3_sage)
+        from .sd_cpp_cudnn import CudnnAttention, plan_cudnn_attention
+
+        try:
+            native_cudnn = (
+                plan_cudnn_attention(
+                    binary,
+                    native_cuda_cc,
+                    allow_install = allow_install,
+                    cancel_event = cancel_event,
+                )
+                if native_device != "cpu"
+                else CudnnAttention()
+            )
+        except Exception as exc:  # noqa: BLE001 - an optional speedup never fails a load
+            logger.warning("video.h3_cudnn_plan_failed (ggml kernels): %s", exc)
+            native_cudnn = CudnnAttention()
+        native_env += native_cudnn.env
+        if cancel_event.is_set():
+            raise RuntimeError(VIDEO_CANCELLED_MSG)
         from .video_minimax_h3 import H3_QUANT_CUBLAS_ENV, H3_QUANT_CUBLAS_MIN_CC
 
         # The fork ignores the env below sm80, so a user value there is not the route.
@@ -3612,6 +3631,7 @@ class VideoBackend:
             files = native_files,
             offload_flags = native_offload,
             env = native_env,
+            cudnn = native_cudnn,
             server_slot = (
                 H3NativeServerSlot(
                     server_binary,
@@ -9167,9 +9187,14 @@ class VideoBackend:
         denoise_close = re.compile(r"sampling completed", re.IGNORECASE)
         step_bar = re.compile(r"\|\s*(\d+)\s*/\s*(\d+)\s*-\s*[\d.]+\s*(?:it/s|s/it)")
         denoising = False
+        cudnn = getattr(runtime, "cudnn", None)
+        if cudnn is not None:
+            cudnn.begin_render()
 
         def on_log(line: str) -> None:
             nonlocal denoising
+            if cudnn is not None:
+                cudnn.feed(line)
             if denoise_open.search(line):
                 denoising = True
                 return
@@ -9286,6 +9311,8 @@ class VideoBackend:
                     raise
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
+                if cudnn is not None:
+                    cudnn.end_render()
                 self._gen.update(phase = "export", eta_seconds = None)
                 actual_width, actual_height, actual_frames, has_audio = inspect_video(generated)
                 mp4_bytes = transcode_video_to_mp4(generated, fps = fps)
@@ -9547,6 +9574,8 @@ class VideoBackend:
                 "speed_mode": None,
                 "speed_optims": [],
                 "attention_backend": None,
+                "sd_cpp_cudnn_attention": None,
+                "sd_cpp_cudnn_reason": None,
                 "transformer_cache": None,
                 "transformer_cache_stats": None,
                 "transformer_quant": None,
@@ -9605,6 +9634,7 @@ class VideoBackend:
             if getattr(state, "bg_compile", None) is not None
             else None,
             "attention_backend": state.attention_backend,
+            **_sd_cpp_cudnn_status(state),
             "transformer_cache": state.transformer_cache,
             "transformer_cache_stats": (
                 static_skip_stats(state.pipe) if state.transformer_cache == TC_STATIC else None
@@ -9639,6 +9669,14 @@ class VideoBackend:
             },
             "resolved": resolved,
         }
+
+
+def _sd_cpp_cudnn_status(state: Any) -> dict[str, Any]:
+    """Whether the native runtime's sd.cpp children run attention on cuDNN; nulls for every other runtime."""
+    cudnn = getattr(getattr(state, "pipe", None), "cudnn", None)
+    if cudnn is None or state.engine != "sd_cpp":
+        return {"sd_cpp_cudnn_attention": None, "sd_cpp_cudnn_reason": None}
+    return cudnn.status_fields()
 
 
 _backend: Optional[VideoBackend] = None
