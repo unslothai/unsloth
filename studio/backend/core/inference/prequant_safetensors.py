@@ -152,8 +152,7 @@ def load_plain_prequant_safetensors(
 ) -> dict:
     """Read a plain-tensor prequant checkpoint without torchao; refuses subclass metadata and unlisted tensors.
 
-    ``skip_names`` are validated like every other tensor but never read, so a caller that has no module for them (a
-    text encoder whose unused ``lm_head`` was dropped) does not pull their bytes into host RAM."""
+    ``skip_names`` are validated but never read."""
     from safetensors import safe_open
 
     with safe_open(path, framework = "pt", device = device) as handle:

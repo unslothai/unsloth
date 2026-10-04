@@ -1,28 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Drop the language-model head of a Qwen3-VL text encoder that is only read for hidden states.
+"""Drop the unused ``lm_head`` of a Qwen3-VL text encoder whose pipeline reads only hidden states.
 
-Qwen-Image-2.1 conditions on ``hidden_states[-1]`` of a ``Qwen3VLForConditionalGeneration``
-(diffusers ``QwenImage21Pipeline._get_qwen_prompt_embeds``). The encoder's ``lm_head`` is a
-151936 x 4096 projection (622M parameters, 1.16 GiB in bfloat16, 0.58 GiB in the hosted fp8 file)
-that sits AFTER every hidden state: ``Qwen3VLForConditionalGeneration.forward`` computes
-``logits = self.lm_head(hidden_states[:, slice_indices, :])`` on the decoder output and nothing
-upstream reads it. Its untied weight (``tie_word_embeddings`` is false for this checkpoint) is still
-read from disk, cast, moved to the GPU, and multiplied against every prompt token on each encode,
-because ``logits_to_keep`` defaults to 0, which keeps all positions.
-
-Replacing it with :class:`NoLogitsHead` keeps the module tree and every hidden state bit-identical
-(the head is the last op), returns an empty ``[..., 0]`` logits view for zero FLOPs, and frees the
-weight. On a pipeline loaded dense (mmap) the trim runs before the first device move, so the head's
-pages are never read; on the pre-cast fp8 path the key is filtered out of the state dict before
-``load_state_dict``.
-
-The vision tower is NOT trimmed: the same loaded pipeline serves image-conditioned (edit) requests,
-which run ``model.visual``.
-
-Applies only to text encoders whose pipeline is known to read hidden states and never logits; any
-other class is left alone. Kill switch: ``UNSLOTH_TE_KEEP_LM_HEAD=1``.
+Qwen-Image-2.1 reads ``hidden_states[-1]`` (diffusers ``QwenImage21Pipeline._get_qwen_prompt_embeds``); the untied
+151936 x 4096 head runs after every hidden state, so replacing it with :class:`NoLogitsHead` is bit-identical. The
+vision tower stays: edit requests on the same pipeline run ``model.visual``. Kill switch: ``UNSLOTH_TE_KEEP_LM_HEAD=1``.
 """
 
 from __future__ import annotations
@@ -33,11 +16,9 @@ from typing import Any, Optional
 
 KEEP_LM_HEAD_ENV = "UNSLOTH_TE_KEEP_LM_HEAD"
 
-# Text-encoder classes whose diffusion pipeline reads ``hidden_states`` only. Keyed by class name so this module never
-# imports transformers.
+# By class name so this module never imports transformers.
 _HIDDEN_STATE_ONLY_CLASSES = frozenset({"Qwen3VLForConditionalGeneration"})
 
-# Families whose pipeline reads the encoder's hidden states only (never logits or generate()).
 _HIDDEN_STATE_ONLY_FAMILIES = frozenset({"qwen-image-2.1"})
 
 LM_HEAD_KEY = "lm_head.weight"
@@ -56,7 +37,6 @@ def class_trims_lm_head(class_name: Optional[str]) -> bool:
 
 
 def config_ties_lm_head(config: Any) -> bool:
-    """True when ``config`` (or its ``text_config``) ties ``lm_head`` to the input embedding."""
     if config is None:
         return False
     text_config = getattr(config, "text_config", None) or config
@@ -93,11 +73,7 @@ def is_trimmed(text_encoder: Any) -> bool:
 
 
 def trim_text_encoder(text_encoder: Any, *, family: Optional[str] = None) -> dict:
-    """Replace ``text_encoder.lm_head`` with :class:`NoLogitsHead` in place.
-
-    Returns a small record (``{"lm_head": "dropped", "params": N}`` or the reason it was kept).
-    Never raises for an unsupported encoder: it is left unchanged.
-    """
+    """Replace ``text_encoder.lm_head`` in place; returns ``{"lm_head": "dropped", "params": N}`` or why it was kept."""
     if text_encoder is None:
         return {"lm_head": "kept", "reason": "no encoder"}
     if not trim_enabled():
@@ -113,7 +89,6 @@ def trim_text_encoder(text_encoder: Any, *, family: Optional[str] = None) -> dic
     if head is None or weight is None or getattr(weight, "ndim", 0) != 2:
         return {"lm_head": "kept", "reason": "no 2D lm_head weight"}
     if config_ties_lm_head(getattr(text_encoder, "config", None)):
-        # A tied head shares storage with embed_tokens: dropping it frees nothing.
         return {"lm_head": "kept", "reason": "tied to embed_tokens"}
     out_features, in_features = int(weight.shape[0]), int(weight.shape[1])
     params = int(weight.numel())

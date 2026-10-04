@@ -391,10 +391,8 @@ def load_prequant_text_encoder(
     standalone repo like HiDream's Llama TE4). ``config_overrides`` sets config fields
     the pipeline's assembly normally passes to ``from_pretrained`` (forward-behaviour
     flags only; the state dict is unaffected by them).
-
-    ``trim_lm_head`` (the family reads hidden states only, see ``diffusion_text_encoder_trim``)
-    builds the encoder without its untied ``lm_head`` and never reads ``lm_head.weight`` from the
-    artifact. Hidden states are unchanged: the head is the encoder's last op."""
+    ``trim_lm_head`` builds the encoder without its untied ``lm_head`` and never reads that tensor
+    (``diffusion_text_encoder_trim``)."""
     try:
         if source.kind == "path" and not _local_prequant_path_allowed(source.location):
             _warn(
@@ -439,7 +437,6 @@ def load_prequant_text_encoder(
         te_class = None
         skip = ()
         if is_safetensors_checkpoint(path):
-            # The header names te_class, so the head can be skipped before a byte of it is read.
             if trim_lm_head:
                 te_class = _safetensors_te_class(path)
             skip = (LM_HEAD_KEY,) if trim_lm_head and class_trims_lm_head(te_class) else ()
@@ -480,7 +477,7 @@ def load_prequant_text_encoder(
         for key, value in (config_overrides or {}).items():
             setattr(config, key, value)
         if trim and config_ties_lm_head(config):
-            # A tied head shares the embedding's storage, so there is nothing to drop; restore it if it was skipped.
+            # Tied: nothing to drop.
             trim = False
             if LM_HEAD_KEY in skip:
                 state_dict[LM_HEAD_KEY] = _read_safetensors_tensor(path, LM_HEAD_KEY)
@@ -587,7 +584,6 @@ def te_prequant_pipe_kwargs(
 
 
 def _safetensors_te_class(path: str) -> Optional[str]:
-    """``te_class`` from a safetensors artifact's metadata header, without reading any tensor. None on any problem."""
     try:
         import json
 
