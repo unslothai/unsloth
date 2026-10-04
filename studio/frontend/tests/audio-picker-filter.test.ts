@@ -291,6 +291,25 @@ test("the clone-only name hint follows the backend's speaks=False families", asy
   }
 });
 
+test("Hub search rows for conversion families outside the catalog list on Convert", () => {
+  // The backend resolves these repos by name (family_from_names), so Convert can run them.
+  for (const id of ["someone/RVC-v2-GGUF", "x/Seed-VC-GGUF", "x/MeanVC2-GGUF"]) {
+    const row = { id, task: "text-to-speech" };
+    assert.equal(audioRowMatchesWorkflow(row, "convert"), true, id);
+    assert.equal(audioRowMatchesWorkflow(row, "clone"), false, id);
+    assert.equal(audioRowMatchesWorkflow(row, "speak"), false, id);
+  }
+  for (const id of ["ResembleAI/chatterbox", "x/Vevo2-GGUF"]) {
+    const row = { id, task: "text-to-speech" };
+    assert.equal(audioRowMatchesWorkflow(row, "convert"), true, id);
+    assert.equal(audioRowMatchesWorkflow(row, "clone"), true, id);
+    assert.equal(audioRowMatchesWorkflow(row, "speak"), false, id);
+  }
+  const turbo = { id: "x/Chatterbox-Turbo-GGUF", task: "text-to-speech" };
+  assert.equal(audioRowMatchesWorkflow(turbo, "convert"), false);
+  assert.equal(audioRowMatchesWorkflow(turbo, "speak"), true);
+});
+
 test("a Fish Audio Hub row lists on both Speak and Clone before download", () => {
   const row = { id: "fishaudio/fish-speech-1.5-GGUF", task: "text-to-speech" };
   assert.equal(audioRowMatchesWorkflow(row, "speak"), true);
