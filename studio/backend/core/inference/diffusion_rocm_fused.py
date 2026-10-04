@@ -15,8 +15,9 @@ bandwidth-bound APU (gfx1151) each pass re-reads the activation. Here each is on
 
 Scope: diffusers ``transformer_flux`` / ``transformer_flux2`` loads, inference only (no grad), never while compiling
 (a compiled block keeps the stock code). Every call that does not match the kernel's preconditions runs the forward
-that was live at install. Switches (``auto`` = ROCm only, so NVIDIA is untouched unless forced on):
-``UNSLOTH_DIFFUSION_FUSED_ROPE=auto|0|1`` and ``UNSLOTH_DIFFUSION_FUSED_ADALN=auto|0|1``.
+that was live at install. Switches: ``UNSLOTH_DIFFUSION_FUSED_ROPE=auto|0|1`` (``auto`` = ROCm only, so NVIDIA is
+untouched unless forced on) and ``UNSLOTH_DIFFUSION_FUSED_ADALN=auto|0|1`` (``auto`` = off everywhere: on gfx1151 it
+bought no speed and is not bit-identical, so it is opt-in).
 """
 
 from __future__ import annotations
@@ -63,9 +64,15 @@ def _is_rocm() -> bool:
     return bool(getattr(torch.version, "hip", None))
 
 
+# What "auto" turns on, per switch. Measured on gfx1151 (FLUX.2-klein-4B, 1024^2, 4 steps): fused RoPE alone takes the
+# render from 8.76 to 8.09 s, pixel-identical to stock; adding fused AdaLN changes nothing in speed (8.07 s) and moves
+# pixels (PSNR 34-45 dB vs stock, LPIPS 0.004), so AdaLN is opt-in only.
+_AUTO_ON = {FUSED_ROPE_ENV: True, FUSED_ADALN_ENV: False}
+
+
 def _switch_on(env: str) -> bool:
     mode = _mode(env)
-    return mode == "on" or (mode == "auto" and _is_rocm())
+    return mode == "on" or (mode == "auto" and _AUTO_ON.get(env, False) and _is_rocm())
 
 
 def wanted(env: str, dtype: Any, device: Any = "cuda") -> bool:

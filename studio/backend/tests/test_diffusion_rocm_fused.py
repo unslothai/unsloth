@@ -55,11 +55,20 @@ def test_auto_is_inert_off_rocm(fake_kernels, monkeypatch):
     assert not rf.is_installed()
 
 
-def test_auto_engages_on_rocm(fake_kernels, monkeypatch):
+def test_auto_engages_rope_only_on_rocm(fake_kernels, monkeypatch):
+    # auto = the bit-identical RoPE kernel on ROCm; fused AdaLN bought no speed on gfx1151 and is opt-in.
     monkeypatch.setattr(torch.version, "hip", "7.2.0", raising = False)
     got = rf.install_for_pipe(_PipeLike(), torch.bfloat16, "cuda")
-    assert got == {"rope": True, "adaln": 3}
+    assert got == {"rope": True, "adaln": 0}
     assert fmod.apply_rotary_emb is rf._ROPE_FNS[rf._MODULES[0]]
+    assert nm.AdaLayerNormZero.forward is _STOCK_FWD["AdaLayerNormZero"]
+
+
+def test_adaln_opt_in_on_rocm(fake_kernels, monkeypatch):
+    monkeypatch.setattr(torch.version, "hip", "7.2.0", raising = False)
+    monkeypatch.setenv(rf.FUSED_ADALN_ENV, "1")
+    got = rf.install_for_pipe(_PipeLike(), torch.bfloat16, "cuda")
+    assert got == {"rope": True, "adaln": 3}
     assert nm.AdaLayerNormZero.forward is rf._adaln_zero_forward
 
 
