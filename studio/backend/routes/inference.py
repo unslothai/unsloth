@@ -11505,7 +11505,7 @@ def release_chat_gpu_claim() -> bool:
     """Drop the CHAT claim once nothing is resident or loading, else the arbiter hides an empty GPU
     from other accounts. release_if runs under the arbiter lock, so a re-registered load keeps it."""
     from core.inference.gpu_arbiter import CHAT, release_if
-    from core.inference.llama_cpp import chat_load_active
+    from core.inference.llama_cpp import chat_load_active, voice_load_active
 
     def chat_idle() -> bool:
         if model_slots.busy():
@@ -11513,6 +11513,11 @@ def release_chat_gpu_claim() -> bool:
         llama = get_llama_cpp_backend()
         # is_active, not is_loaded: a starting model holds VRAM, and an HF load has no process yet.
         if llama.is_active or chat_load_active():
+            return False
+        # The voice slot holds VRAM under the same claim; releasing it would let Images/Video
+        # allocate beside the voice server.
+        voice = get_voice_llama_backend()
+        if voice.is_active or voice_load_active():
             return False
         backend = _peek_inference_backend()
         # A managed engine whose stop failed keeps its VRAM with no model name left.
@@ -21059,15 +21064,24 @@ async def voice_load_model(
         n_parallel = request.parallel,
     )
     # The voice slot is chat-owned GPU use: claim CHAT so a resident Images/Video pipeline is
-    # evicted first, as /load does. A no-op while chat already owns the GPU (voice mode).
+    # evicted first, as /load does. A no-op while chat already owns the GPU (voice mode). The
+    # in-flight marker is set under the arbiter lock, so an Images/Video acquire that lands
+    # between the claim and the spawn finds a voice load to cancel instead of an idle slot.
+    # ``alongside``: the claim stays with the account that loaded the chat model.
     from core.inference.gpu_arbiter import CHAT as _CHAT, acquire_for_request
+    from core.inference.llama_cpp import voice_load_in_flight
 
-    await asyncio.to_thread(acquire_for_request, _CHAT)
+    in_flight = voice_load_in_flight()
+    await asyncio.to_thread(
+        acquire_for_request, _CHAT, in_flight.__enter__, alongside = True
+    )
     try:
         ok = await asyncio.to_thread(voice_backend.load_model, intent)
     except Exception as e:
         logger.error("Voice slot load error: %s", e, exc_info = True)
         raise HTTPException(status_code = 500, detail = f"Failed to load voice model: {e}")
+    finally:
+        in_flight.__exit__(None, None, None)
 
     if not ok:
         # load_model returned False (e.g. the server became healthy but audio
@@ -21120,9 +21134,15 @@ async def voice_load_model(
 @router.post("/voice/unload")
 async def voice_unload_model(current_subject: str = Depends(get_current_subject)):
     """Unload whatever model is in the voice slot."""
+    from core.inference.gpu_arbiter import require_no_foreign_generations
+
     voice_backend = get_voice_llama_backend()
     if not voice_backend.is_active:
         return {"status": "not_loaded"}
+    # One slot for every account: another account mid-generation keeps its voice, as /unload does.
+    scope = account_access.account_scope()
+    if scope is not None:
+        require_no_foreign_generations(scope)
     model_id = voice_backend.model_identifier
     # Off the event loop, as /unload runs the chat slot's teardown: unload_model
     # waits on the llama-server subprocess, and a sync call would block every

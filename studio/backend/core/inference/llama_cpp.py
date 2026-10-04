@@ -3889,6 +3889,28 @@ def chat_load_active() -> bool:
         return _CHAT_LOADS_IN_FLIGHT > 0
 
 
+# The voice slot's counterpart: marked under the arbiter lock, so a competing Images/Video
+# acquire sees the load before its llama-server exists.
+_VOICE_LOADS_IN_FLIGHT = 0
+
+
+@contextlib.contextmanager
+def voice_load_in_flight():
+    global _VOICE_LOADS_IN_FLIGHT
+    with _LOADS_IN_FLIGHT_LOCK:
+        _VOICE_LOADS_IN_FLIGHT += 1
+    try:
+        yield
+    finally:
+        with _LOADS_IN_FLIGHT_LOCK:
+            _VOICE_LOADS_IN_FLIGHT = max(0, _VOICE_LOADS_IN_FLIGHT - 1)
+
+
+def voice_load_active() -> bool:
+    with _LOADS_IN_FLIGHT_LOCK:
+        return _VOICE_LOADS_IN_FLIGHT > 0
+
+
 def zero_vram_chat_load(
     gpu_memory_mode: str,
     gpu_layers: int,

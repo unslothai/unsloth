@@ -154,6 +154,16 @@ def test_evict_chat_unloads_the_voice_slot_too(monkeypatch):
 
     assert unloaded == ["voice"]
 
+    # A voice load that has not spawned yet is still a load to cancel, as a chat HF load is.
+    from core.inference import llama_cpp
+
+    _Voice.is_active = False
+    with llama_cpp.voice_load_in_flight():
+        arb._evict_chat()
+    assert unloaded == ["voice", "voice"]
+    arb._evict_chat()
+    assert unloaded == ["voice", "voice"]
+
 
 def test_release_if_drops_only_when_predicate_true(calls):
     arb.acquire_for(arb.DIFFUSION)

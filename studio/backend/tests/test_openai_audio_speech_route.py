@@ -1226,9 +1226,32 @@ def test_voice_load_claims_the_gpu_for_chat_before_spawning():
     import inspect
 
     source = inspect.getsource(routes_module.voice_load_model)
-    claim = source.index("await asyncio.to_thread(acquire_for_request, _CHAT)")
+    claim = source.index("acquire_for_request, _CHAT, in_flight.__enter__, alongside = True")
     spawn = source.index("await asyncio.to_thread(voice_backend.load_model, intent)")
     assert claim < spawn
+    # The in-flight marker is registered under the arbiter lock and dropped once the load
+    # returns, so a competing Images/Video acquire in that window finds a load to cancel.
+    assert source.index("in_flight.__exit__(None, None, None)") > spawn
+    unload = inspect.getsource(routes_module.voice_unload_model)
+    assert "require_no_foreign_generations(scope)" in unload
+
+
+def test_release_chat_gpu_claim_keeps_chat_while_the_voice_slot_is_live(monkeypatch):
+    """Unloading the chat model released CHAT with the voice llama-server still holding VRAM, so
+    the next Images/Video load saw no owner and allocated beside it."""
+    import core.inference.gpu_arbiter as arb
+
+    monkeypatch.setattr(arb, "_owner", None)
+    monkeypatch.setattr(arb, "_owner_account", None)
+    live = {"active": True}
+    voice = type("Voice", (), {"is_active": property(lambda self: live["active"])})()
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice)
+    arb.acquire_for(arb.CHAT)
+    assert routes_module.release_chat_gpu_claim() is False
+    assert arb.current_owner() == arb.CHAT
+    live["active"] = False
+    assert routes_module.release_chat_gpu_claim() is True
+    assert arb.current_owner() is None
 
 
 def test_voice_load_rejects_a_context_above_the_requestable_ceiling():
