@@ -51,6 +51,7 @@ SCANNED_SCRIPTS = ENTRY_POINTS + (
     "studio/install_mxc_prebuilt.py",
     "studio/install_node_prebuilt.py",
     "studio/install_python_stack.py",
+    "studio/install_q4nx_converter.py",
     "studio/install_sd_cpp_prebuilt.py",
     "studio/install_whisper_prebuilt.py",
     "studio/nvidia_probe.py",

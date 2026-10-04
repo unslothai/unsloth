@@ -173,6 +173,14 @@ jobs:
       - name: No new code shapes that heuristic scanners quarantine
         run: python scripts/lint_av_shapes.py
 
+      - name: Risky-loader gate self-test
+        run: python scripts/lint_risky_loaders.py --self-test
+
+      # Dynamic imports, trust_remote_code turned on in code, unpinned code fetches and
+      # unsafe deserialization. Existing sites live in scripts/risky_loaders_baseline.json.
+      - name: No new risky loader call sites
+        run: python scripts/lint_risky_loaders.py
+
       - name: Python ruff check (whole repo)
         # The narrow rule set in pyproject.toml [tool.ruff.lint]
         # selects E9 / F63 / F7 / F82 -- syntax errors, broken

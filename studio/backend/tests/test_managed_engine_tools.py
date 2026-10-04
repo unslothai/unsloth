@@ -575,3 +575,22 @@ def test_managed_messages_keep_the_current_date_note(native, monkeypatch, tools)
     messages = requests[-1]["messages"] if tools else seen[-1]
     user = [m for m in messages if m["role"] == "user"][-1]
     assert "[DATE NOTE]" in json.dumps(user["content"])
+
+
+@pytest.mark.parametrize("vision", [False, True])
+def test_managed_engine_offers_image_viewer_to_vision_models_only(native, monkeypatch, vision):
+    from core.inference import studio_tool_loop
+
+    native[0].models["sf-model"]["is_vision"] = vision
+    monkeypatch.setattr(studio_tool_loop, "execute_tool", lambda *a, **kw: "3973")
+    run(
+        route_test._request(
+            enable_tools = True,
+            enabled_tools = ["python", "view_image"],
+            permission_mode = "off",
+            max_tool_calls_per_message = 1,
+        )
+    )
+    names = [t["function"]["name"] for t in native[1][0]["tools"]]
+    assert "python" in names
+    assert ("view_image" in names) == vision

@@ -3121,7 +3121,7 @@ html[data-chat-font] .aui-root {
 	}
 
 	.composer-pill-btn {
-		@apply flex cursor-pointer items-center gap-1.5 rounded-full py-1.5 pl-2 pr-2.5 text-ui-14 font-medium text-muted-foreground/70 dark:text-foreground transition-colors hover:bg-primary/10 dark:hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40;
+		@apply flex cursor-pointer select-none items-center gap-1.5 rounded-full py-1.5 pl-2 pr-2.5 text-ui-14 font-medium text-muted-foreground/70 dark:text-foreground transition-colors hover:bg-primary/10 dark:hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40;
 	}
 
 	/* Caret pills (RAG, MCP): the chevron carries its own whitespace, so the
@@ -3182,28 +3182,19 @@ html[data-chat-font] .aui-root {
 	.composer-pill-btn[data-active="true"] {
 		color: var(--primary);
 	}
+	/* A pill keeps its hover fill while its menu is open. */
+	.composer-pill-btn[data-state="open"] {
+		@apply bg-primary/10 dark:bg-accent;
+	}
 	/* Permission-level pill: higher-contrast grey than the resting pills so
 	   the active level stays legible (darker in light mode, lighter in dark).
-	   Full access keeps the danger yellow below. */
-	.composer-pill-btn.composer-pill-permissions:not([data-variant="danger"]) {
+	   Full access looks like every other level. */
+	.composer-pill-btn.composer-pill-permissions {
 		color: color-mix(in oklab, var(--foreground) 60%, transparent);
 	}
-	.dark .composer-pill-btn.composer-pill-permissions:not([data-variant="danger"]) {
+	.dark .composer-pill-btn.composer-pill-permissions {
 		/* Full ink, like the rest of the composer's controls. */
 		color: var(--foreground);
-	}
-	/* Bypass permissions badge: bright yellow text, no resting fill; the
-	   rounded hover pill picks up the yellow accent like other toggles. */
-	.composer-pill-btn[data-variant="danger"] {
-		background-color: transparent;
-		color: var(--bypass);
-	}
-	.composer-pill-btn[data-variant="danger"]:hover {
-		background-color: color-mix(in oklab, var(--bypass) 7%, transparent);
-	}
-	/* Match the hover-X circle to the yellow accent instead of the green primary. */
-	.composer-pill-btn[data-variant="danger"] .composer-pill-x {
-		background-color: color-mix(in oklab, var(--bypass) 13%, transparent);
 	}
 
 	/* Fixed-width icon slot so every pill's icon occupies the same space and
@@ -3571,6 +3562,11 @@ html[data-chat-font] .aui-root {
 	.unsloth-composer-plus:focus-visible {
 		outline: none;
 		box-shadow: 0 0 0 1px var(--ring-soft);
+	}
+	/* A menu refocusing its pill after a click is not keyboard focus. */
+	html[data-input-modality="pointer"]
+		:is(.composer-pill-btn, .unsloth-thinking-pill, .unsloth-composer-plus):focus-visible {
+		box-shadow: none;
 	}
 
 	/* Clickable controls never show the browser's blue outline (Radix re-focuses
@@ -3977,6 +3973,14 @@ html[data-chat-font] .aui-root {
 		svg:not(.unsloth-tick) {
 		width: var(--ui-icon-size) !important;
 		height: var(--ui-icon-size) !important;
+	}
+
+	/* Permission menu tick, 2px above the icons. Outranks the rule above. */
+	:is([data-slot="dropdown-menu-content"], .unsloth-plus-menu)
+		[data-slot="dropdown-menu-item"]
+		svg.permission-mode-tick:not(.unsloth-tick) {
+		width: calc(var(--ui-icon-size) + 2px) !important;
+		height: calc(var(--ui-icon-size) + 2px) !important;
 	}
 
 	/* The rule above pins svg size with !important, straight off --ui-icon-size, so a glyph
@@ -4586,17 +4590,28 @@ html[data-chat-font] .aui-root {
 	}
 }
 
-/* No border line; same drop shadow as the composer (.unsloth-composer-surface).
+/* No border line; a soft layered shadow lifts the toast off the page.
    !important because Sonner injects its base rules at runtime. */
 [data-sonner-toast][data-styled='true'] {
-	padding: calc(12px * var(--ui-space-scale, 1)) calc(18px * var(--ui-space-scale, 1)) !important;
+	padding: calc(16px * var(--ui-space-scale, 1)) calc(20px * var(--ui-space-scale, 1)) calc(18px * var(--ui-space-scale, 1)) !important;
 	align-items: start !important;
-	gap: calc(10px * var(--ui-space-scale, 1)) !important;
-	box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16) !important;
+	gap: calc(12px * var(--ui-space-scale, 1)) !important;
+	box-shadow:
+		0 1px 2px rgba(0, 0, 0, 0.04),
+		0 8px 24px -6px rgba(0, 0, 0, 0.14) !important;
 }
 
+/* Icon starts at the first line's cap height, never above the text. */
 [data-sonner-toast][data-styled='true'] [data-icon] {
-	margin: calc(2px * var(--ui-space-scale, 1)) 0 0 !important;
+	margin: 0.4em 0 0 !important;
+}
+
+/* Single text line: center the icon on it. Title and description line heights are 1.5 and 1.4. */
+[data-sonner-toast][data-styled='true']:not(:has([data-description])) [data-icon] {
+	margin-top: calc((1.5em - var(--ui-icon-size)) / 2) !important;
+}
+[data-sonner-toast][data-styled='true']:not(:has([data-title])) [data-icon] {
+	margin-top: calc((1.4em - var(--ui-icon-size)) / 2) !important;
 }
 
 [data-sonner-toast][data-styled='true'] [data-content] {
@@ -4615,8 +4630,8 @@ html[data-chat-font] .aui-root {
 	display: grid !important;
 	grid-template-columns: minmax(0, 1fr);
 	align-items: start !important;
-	column-gap: calc(10px * var(--ui-space-scale, 1)) !important;
-	row-gap: calc(10px * var(--ui-space-scale, 1)) !important;
+	column-gap: calc(12px * var(--ui-space-scale, 1)) !important;
+	row-gap: calc(8px * var(--ui-space-scale, 1)) !important;
 }
 
 [data-sonner-toast][data-styled='true']:has([data-button]):has([data-icon]) {
@@ -4647,12 +4662,15 @@ html[data-chat-font] .aui-root {
 }
 
 [data-sonner-toast][data-styled='true']:has([data-close-button]) {
-	padding-right: calc(48px * var(--ui-space-scale, 1)) !important;
+	padding-right: calc(52px * var(--ui-space-scale, 1)) !important;
 }
 
-/* Toast buttons are pills, matching the dialog actions they stand in for. */
+/* Toast buttons are pills, matching the dialog actions they stand in for.
+   Padding sizes them instead of Sonner's fixed 24px height. */
 [data-sonner-toast] [data-button] {
 	border-radius: 9999px !important;
+	height: auto !important;
+	padding: calc(6px * var(--ui-space-scale, 1)) calc(14px * var(--ui-space-scale, 1)) !important;
 }
 
 /* Loading toast keeps its own vertical padding from #7683. */
@@ -4660,8 +4678,8 @@ html[data-chat-font] .aui-root {
 	display: flex !important;
 	align-items: center !important;
 	gap: calc(12px * var(--ui-space-scale, 1)) !important;
-	padding-top: calc(14px * var(--ui-space-scale, 1)) !important;
-	padding-bottom: calc(14px * var(--ui-space-scale, 1)) !important;
+	padding-top: calc(16px * var(--ui-space-scale, 1)) !important;
+	padding-bottom: calc(18px * var(--ui-space-scale, 1)) !important;
 }
 
 [data-sonner-toast][data-styled='true'].chat-model-load-toast [data-content] {
@@ -4676,14 +4694,14 @@ html[data-chat-font] .aui-root {
 
 /* Progress bar is the last row; give it room below. */
 [data-sonner-toast][data-styled='true'].chat-model-load-toast:has([role='progressbar']) {
-	padding-bottom: calc(18px * var(--ui-space-scale, 1)) !important;
+	padding-bottom: calc(22px * var(--ui-space-scale, 1)) !important;
 }
 
 /* Dark toasts share the chatbox surface color (.chat-composer-surface
    uses var(--card) in dark); the composer shadow lifts them off the page. */
 .dark [data-sonner-toast][data-styled='true'] {
 	background-color: var(--card) !important;
-	box-shadow: 0 2px 8px -2px var(--background) !important;
+	box-shadow: 0 4px 20px 4px var(--background) !important;
 }
 
 /* Selectable toast text; non-selectable toast buttons. */
@@ -4774,7 +4792,6 @@ html[data-chat-font] .aui-root {
 	will-change: transform;
 }
 
-/* A carried row or header: faintly frosted, a shade darker than its list, on a hairline. */
 :is(.sidebar-row-ghost, .sidebar-section-ghost, .model-picker-row-ghost) {
 	background: color-mix(in oklab, color-mix(in oklab, var(--row-ghost-surface), black 4%) 62%, transparent);
 	-webkit-backdrop-filter: blur(0.5px) saturate(1.05);
@@ -4796,7 +4813,6 @@ html[data-chat-font] .aui-root {
 	pointer-events: none;
 }
 
-/* A Pinned row carried in the model picker (use-pinned-row-drag.ts). */
 .model-picker-row-ghost {
 	--row-ghost-surface: var(--popover);
 	position: fixed;
@@ -4812,8 +4828,7 @@ html[data-chat-font] .aui-root {
 	pointer-events: none;
 }
 
-/* The row fills the pill, which paints the tint. Its margin stays behind: the pill was sized
-   without it, so a Connected row's ml-4 would push the copy off its own pill. */
+/* Margin dropped: the pill was sized without it, so a Connected row's ml-4 would offset the copy. */
 .model-picker-row-ghost > * {
 	width: 100%;
 	height: 100%;
@@ -5247,8 +5262,9 @@ html.force-reduced-motion .sidebar-section-drop-line {
 
 /* Keep Sonner close button inside the toast and pin to theme tokens (--gray2 hover ignores data-sonner-theme). */
 [data-sonner-toast][data-styled="true"] [data-close-button] {
-	top: calc(8px * var(--ui-space-scale, 1)) !important;
+	top: calc(11px * var(--ui-space-scale, 1)) !important;
 	transform: none !important;
+	border-radius: 9999px !important;
 	background: var(--popover) !important;
 	color: var(--popover-foreground) !important;
 	border-color: transparent !important;
