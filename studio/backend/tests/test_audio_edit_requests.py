@@ -309,6 +309,10 @@ def test_request_problem_per_style():
         (firered, {"mode": "delivery", "speed": 1.0}, EDITED, ORIGINAL, "Pick a speed or a pitch change."),
         (firered, {"mode": "delivery", "pitch_steps": 3}, ORIGINAL, ORIGINAL, None),
         (firered, words, EDITED, ORIGINAL, no_change),
+        # Every word deleted: the page holds Generate, and a raw request is refused the same way.
+        (dots, {"mode": "words", "markup": "<del>" + ORIGINAL + "</del>"}, " ", ORIGINAL, audio_edit.EMPTY_TARGET),
+        (vevo, words, "", ORIGINAL, audio_edit.EMPTY_TARGET),
+        (firered, {"mode": "words", "instructions": ["Delete 'a'."]}, "  ", ORIGINAL, audio_edit.EMPTY_TARGET),
     ):
         assert audio_edit.request_problem(rules, edit, text, reference, "DotTTS-Edit") == problem
 # fmt: on

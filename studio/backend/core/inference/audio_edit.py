@@ -23,6 +23,7 @@ EDIT_SOURCE_MAX_SECONDS = 30.0
 
 TOO_LONG = "Edit works on recordings up to 30 s. Record or upload a shorter take."
 NO_CHANGE = "Change at least one word."
+EMPTY_TARGET = "Keep at least one word."
 MISMATCH = "The changes do not match the transcript. Check ① and ② again."
 UNKNOWN_INSTRUCTION = "That change is not one FireRedAudio understands."
 NEEDS_DELIVERY_MODEL = "Delivery changes need FireRedAudio."
@@ -159,6 +160,9 @@ def request_problem(
         if not delivery_instructions(edit.get("speed"), edit.get("pitch_steps")):
             return NO_DELIVERY
         return None
+    # The page holds Generate when every word is deleted; a direct request gets the same answer.
+    if style in ("markup", "instructions", "sentence") and not _collapse(text):
+        return EMPTY_TARGET
     if style == "markup":
         markup = edit.get("markup")
         if not markup:
