@@ -42,7 +42,9 @@ except Exception:  # pragma: no cover
 
 REPO = Path(__file__).resolve().parent.parent
 TF_VERSION = Version(transformers.__version__.split("+")[0].split("rc")[0].split(".dev")[0])
-KERNEL_AFFECTED = TF_VERSION < Version("5.3.0")
+KERNEL_AFFECTED = TF_VERSION < Version("5.3.0")  # the fix installs below this
+# Hub kernels are only reachable from attn_implementation since 4.56.0.
+KERNEL_EXPLOITABLE = Version("4.56.0") <= TF_VERSION < Version("5.3.0")
 LIGHTGLUE_AFFECTED = Version("4.54.0") <= TF_VERSION < Version("5.5.0")
 TEMPLATE_AFFECTED = TF_VERSION < Version("5.10.0")
 
@@ -149,7 +151,9 @@ def _crafted_kernel_repo(tmp_path):
 
 def _crafted_lightglue_repo(tmp_path):
     marker = tmp_path / "LIGHTGLUE_CODE_RAN"
-    detector = tmp_path / "evil_detector"
+    # A per-test module name: transformers caches dynamic modules by name, so a shared one would
+    # import once per process and leave later tests unable to see the code run.
+    detector = tmp_path / f"evil_detector_{tmp_path.name}"
     detector.mkdir()
     (detector / "configuration_evil.py").write_text(
         "import pathlib\n"
@@ -229,7 +233,7 @@ def test_unpatched_kernel_field_reaches_the_kernel_fetch(unpatched, kernel_fetch
         AutoModelForCausalLM.from_pretrained(repo)
     except Exception:
         pass
-    assert (kernel_fetches == ["attacker/evil-kernel"]) == KERNEL_AFFECTED
+    assert (kernel_fetches == ["attacker/evil-kernel"]) == KERNEL_EXPLOITABLE
 
 
 @pytest.mark.skipif(TF_VERSION < Version("4.54.0"), reason = "LightGlue was added in 4.54.0")
@@ -267,7 +271,8 @@ def test_kernel_field_from_config_json_is_dropped(patched, kernel_fetches, tmp_p
 
 
 @pytest.mark.skipif(
-    not KERNEL_AFFECTED, reason = "fix installs nothing here; upstream owns explicit kernel loading"
+    not KERNEL_EXPLOITABLE,
+    reason = "no Hub kernels before 4.56.0; from 5.3.0 the fix installs nothing and upstream owns them",
 )
 def test_explicit_kernel_attn_implementation_still_reaches_the_hub(
     patched, kernel_fetches, tmp_path
