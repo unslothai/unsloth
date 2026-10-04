@@ -209,6 +209,7 @@ def test_apply_failed_kernel_restores_native_when_polluted(monkeypatch):
     # The set itself must be what fails here, not the sageattention version floor in front of it.
     monkeypatch.setattr(att, "_sage_version_too_old", lambda: None)
     monkeypatch.setattr(att, "_pip_sage2_installed", lambda: True)
+    monkeypatch.setattr(att, "_install_sage_dispatch_guard", lambda: True)
 
     class _FailOnceTransformer:
         def __init__(self):

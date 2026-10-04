@@ -357,7 +357,7 @@ def test_studio_pins_a_kernels_release_diffusers_accepts_for_flash4():
     req = pathlib.Path(att.__file__).resolve().parents[2] / "requirements" / "extras-no-deps.txt"
     pins = [
         line.split("==", 1)[1].strip()
-        for line in req.read_text().splitlines()
+        for line in req.read_text(encoding = "utf-8").splitlines()
         if line.startswith("kernels==")
     ]
     assert pins and all(att._version_tuple(v) >= att.FA4_KERNELS_MIN for v in pins), pins

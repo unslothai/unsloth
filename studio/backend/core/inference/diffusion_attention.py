@@ -284,8 +284,7 @@ def _cudnn_attention_supported() -> bool:
     return have is None or have >= (8, 0)
 
 
-# sageattn's arch set varies by build (community sm75 works, sm100 never does), so a run per card is the gate, not a
-# static capability row. (device, dtype, head_dim) -> "" or why the kernel is not used.
+# Arch support varies by sageattn build, so a run per card is the gate. (device, dtype, head_dim) -> "" or why not.
 _SAGE_PROBE_CACHE: dict[tuple[str, str, int], str] = {}
 
 _SAGE_MAX_HEAD_DIM = 128  # sageattn raises above 128
@@ -420,7 +419,6 @@ _SAGE_ROUTED_LOGGED: set[str] = set()
 
 
 def _sage_reroute_reason(query: Any, key: Any, value: Any, attn_mask: Any) -> Optional[str]:
-    """Why this call cannot run on Sage, or None when it can."""
     import torch
 
     if attn_mask is not None:
@@ -479,7 +477,7 @@ _SAGE_OP_LOCK = threading.Lock()
 
 
 def _sage_custom_op(sage_fn: Any, op_name: str = _SAGE_OP_NAME) -> Optional[Any]:
-    """An opaque ``torch.library`` op around diffusers' sage function (NHD in, NHD out), or None when unavailable."""
+    """An opaque ``torch.library`` op around diffusers' sage function (NHD), or None."""
     with _SAGE_OP_LOCK:
         slot = _SAGE_OPS.setdefault(op_name, {})
         if "op" in slot:
@@ -513,7 +511,7 @@ def _sage_custom_op(sage_fn: Any, op_name: str = _SAGE_OP_NAME) -> Optional[Any]
                 return query.new_empty((*query.shape[:-1], value.shape[-1]))
 
             slot["op"] = _op
-        except Exception:  # noqa: BLE001 - old torch or a re-registered name: call the function directly
+        except Exception:  # noqa: BLE001 - old torch: call the function directly
             slot["op"] = None
         return slot["op"]
 
@@ -586,7 +584,6 @@ def _install_dispatch_guard(
 
 
 def _install_sage_dispatch_guard() -> bool:
-    """Per-call guard on diffusers' ``sage`` backend, through the custom op."""
     return _install_dispatch_guard(
         "sage", lambda *a: _sage_reroute_reason(*a), _note_sage_reroute, _sage_custom_op
     )
