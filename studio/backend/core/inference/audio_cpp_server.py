@@ -477,8 +477,8 @@ class AudioCppServer:
             return ""
         tail = data[-limit:]
         if len(data) > limit:
-            # The cut can split a path or token; drop that partial first line.
-            tail = tail.split(b"\n", 1)[-1]
+            # The cut can split a path or token; drop that partial first line (or word).
+            tail = tail.split(b"\n", 1)[-1] if b"\n" in tail else tail.split(None, 1)[-1]
         return tail.decode("utf-8", "replace").strip()
 
     def alive(self) -> bool:
