@@ -7041,15 +7041,6 @@ class DiffusionBackend:
                     )
                     if vae_fp16:
                         speed_applied["vae_fp16_decode"] = True
-                    # Persisted dynamo-included block graphs: bound to this load's bundle key, and loaded on the render
-                    # thread while the rest of this load (encoders, placement) runs.
-                    try:
-                        from . import diffusion_aot_blocks
-
-                        if diffusion_aot_blocks.bind(pipe, compile_ctx):
-                            diffusion_aot_blocks.preload(pipe, placed_cuda_ordinal(target))
-                    except Exception as exc:  # noqa: BLE001 - optimisation only
-                        logger.warning("diffusion.aot_blocks: bind failed: %s", exc)
                     self._raise_if_load_cancelled(_load_token)
                     if (
                         transformer_quant_engaged is not None
@@ -9063,12 +9054,6 @@ class DiffusionBackend:
         )
         if getattr(getattr(state.pipe, "vae", None), "_unsloth_fp16_decode", False):
             speed_applied["vae_fp16_decode"] = True
-        try:
-            from . import diffusion_aot_blocks
-
-            diffusion_aot_blocks.bind(state.pipe, getattr(state, "compile_cache_ctx", None))
-        except Exception:  # noqa: BLE001 - optimisation only
-            pass
         object.__setattr__(state, "speed_mode", SPEED_DEFAULT)
         object.__setattr__(state, "speed_optims", tuple(k for k, v in speed_applied.items() if v))
         object.__setattr__(
