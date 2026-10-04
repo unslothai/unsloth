@@ -51,6 +51,7 @@ export const en = {
     title: "Browser",
     tabs: "Browser tabs",
     newTab: "New tab",
+    newTabFullView: "New tab in full view",
     closeTab: "Close tab",
     close: "Close browser",
     show: "Show browser",
@@ -340,6 +341,11 @@ export const en = {
     queueingOffHint: "New messages interrupt and run next.",
     queueingOnHint: "New messages wait their turn.",
     queueingHintShared: "The queue is kept.",
+  },
+  // The chat header's "…" menu.
+  chatMenu: {
+    more: "Chat options",
+    copy: "Copy",
   },
   picker: {
     onDevice: "On Device",
@@ -798,6 +804,10 @@ export const en = {
         findInPage: {
           label: "Find in page",
           description: "Search the text on this page",
+        },
+        newBrowserTab: {
+          label: "New browser tab",
+          description: "Open a new tab in the browser beside the chat",
         },
         toggleBrowserFullView: {
           label: "Toggle browser full view",

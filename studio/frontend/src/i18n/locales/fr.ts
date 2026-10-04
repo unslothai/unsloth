@@ -54,6 +54,7 @@ export const fr = {
     title: "Navigateur",
     tabs: "Onglets du navigateur",
     newTab: "Nouvel onglet",
+    newTabFullView: "Nouvel onglet en plein écran",
     closeTab: "Fermer l’onglet",
     close: "Fermer le navigateur",
     show: "Afficher le navigateur",
@@ -298,6 +299,11 @@ export const fr = {
     queueingOffHint: "Les nouveaux messages interrompent et passent ensuite.",
     queueingOnHint: "Les nouveaux messages attendent leur tour.",
     queueingHintShared: "La file d’attente est conservée.",
+  },
+  // The chat header's "…" menu.
+  chatMenu: {
+    more: "Options de la discussion",
+    copy: "Copier",
   },
   picker: {
     onDevice: "Sur l'appareil",
@@ -756,6 +762,10 @@ export const fr = {
         findInPage: {
           label: "Rechercher dans la page",
           description: "Rechercher le texte de cette page",
+        },
+        newBrowserTab: {
+          label: "Nouvel onglet du navigateur",
+          description: "Ouvrir un nouvel onglet dans le navigateur à côté de la discussion",
         },
         toggleBrowserFullView: {
           label: "Basculer le plein écran du navigateur",

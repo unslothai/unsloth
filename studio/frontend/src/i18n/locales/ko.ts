@@ -54,6 +54,7 @@ export const ko = {
     title: "브라우저",
     tabs: "브라우저 탭",
     newTab: "새 탭",
+    newTabFullView: "전체 보기로 새 탭",
     closeTab: "탭 닫기",
     close: "브라우저 닫기",
     show: "브라우저 표시",
@@ -298,6 +299,11 @@ export const ko = {
     queueingOffHint: "새 메시지가 끼어들어 먼저 실행됩니다.",
     queueingOnHint: "새 메시지는 순서를 기다립니다.",
     queueingHintShared: "대기열은 유지됩니다.",
+  },
+  // The chat header's "…" menu.
+  chatMenu: {
+    more: "채팅 옵션",
+    copy: "복사",
   },
   picker: {
     onDevice: "기기",
@@ -752,6 +758,10 @@ export const ko = {
         findInPage: {
           label: "페이지에서 찾기",
           description: "이 페이지의 텍스트를 검색합니다",
+        },
+        newBrowserTab: {
+          label: "새 브라우저 탭",
+          description: "채팅 옆 브라우저에서 새 탭 열기",
         },
         toggleBrowserFullView: {
           label: "브라우저 전체 보기 전환",

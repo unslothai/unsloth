@@ -54,6 +54,7 @@ export const hi = {
     title: "ब्राउज़र",
     tabs: "ब्राउज़र टैब",
     newTab: "नया टैब",
+    newTabFullView: "पूरे व्यू में नया टैब",
     closeTab: "टैब बंद करें",
     close: "ब्राउज़र बंद करें",
     show: "ब्राउज़र दिखाएँ",
@@ -298,6 +299,11 @@ export const hi = {
     queueingOffHint: "नए संदेश बीच में आकर अगले चलते हैं।",
     queueingOnHint: "नए संदेश अपनी बारी का इंतज़ार करते हैं।",
     queueingHintShared: "कतार बनी रहती है।",
+  },
+  // The chat header's "…" menu.
+  chatMenu: {
+    more: "चैट विकल्प",
+    copy: "कॉपी करें",
   },
   picker: {
     onDevice: "डिवाइस पर",
@@ -755,6 +761,10 @@ export const hi = {
         findInPage: {
           label: "पेज में खोजें",
           description: "इस पेज के टेक्स्ट में खोजें",
+        },
+        newBrowserTab: {
+          label: "नया ब्राउज़र टैब",
+          description: "चैट के बगल में ब्राउज़र में नया टैब खोलें",
         },
         toggleBrowserFullView: {
           label: "ब्राउज़र पूर्ण दृश्य टॉगल करें",

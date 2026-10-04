@@ -40,6 +40,7 @@ export type ShortcutId =
   | "switchToAudio"
   | "switchToExport"
   | "findInPage"
+  | "newBrowserTab"
   | "toggleBrowserFullView"
   | "toggleApiMonitor"
   | "toggleSidebar"
@@ -193,6 +194,9 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   // counts the sidebar and composer as page, and does not exist on the desktop build. Cancellable
   // in every engine this ships on, so the handler wins it; Settings still flags it.
   def("findInPage", "Mod+KeyF"),
+  // ChatGPT's chord for its browser's new tab. Chrome and Firefox take it for bookmarks, but
+  // cancellably, and a chat has no bookmarks to show.
+  def("newBrowserTab", "Mod+Shift+KeyB"),
   // ChatGPT's chord for its browser's full view; no browser claims ⇧⌘F.
   def("toggleBrowserFullView", "Mod+Shift+KeyF"),
   // ⌥⌘U is view source on macOS, so U keeps its mnemonic on ⌃⇧ there instead. Off macOS it gives

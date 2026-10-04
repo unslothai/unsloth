@@ -1,0 +1,393 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuShortcut,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { useChatFavoritesStore } from "@/features/library/chats/favorites-store";
+import { useShortcutLabel } from "@/features/settings";
+import type { ShortcutId } from "@/features/settings";
+import { useT } from "@/i18n";
+import { StarPointedIcon } from "@/lib/hugeicons-derived";
+import { isDownloadCancelled } from "@/lib/native-files";
+import { toast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
+import {
+  Archive03Icon,
+  BubbleChatTemporaryIcon,
+  Cancel01Icon,
+  Copy01Icon,
+  Delete02Icon,
+  Download01Icon,
+  Edit03Icon,
+  Folder02Icon,
+  FolderExportIcon,
+  FolderOpenIcon,
+  LayerIcon,
+  MoreHorizontalIcon,
+  PinIcon,
+  PinOffIcon,
+  PlusSignIcon,
+  ViewIcon,
+  ViewOffSlashIcon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
+import { GitBranchIcon } from "lucide-react";
+import type { ReactNode } from "react";
+import {
+  type ActiveChatMenu,
+  useActiveChatMenuStore,
+} from "../stores/active-chat-menu-store";
+import {
+  type ConversationExportFormat,
+  chatExportOptions,
+  exportConversationByFormat,
+  getSidebarItemThreadIds,
+} from "./chat-row-menu";
+import { OpenChatFolderItem } from "./open-chat-folder-item";
+
+// The Library's menu surface, so the chat's menu reads the same wherever it is opened.
+const MENU = "library-actions-menu";
+const ICON = "size-icon";
+const LABEL = "px-3 pb-1 pt-2 font-normal text-muted-foreground";
+/** The header's "…" buttons, saved chat's and temporary chat's alike. */
+export const CHAT_MENU_TRIGGER =
+  "flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring data-[state=open]:bg-nav-surface-hover data-[state=open]:text-black dark:hover:text-white dark:data-[state=open]:text-white";
+export const CHAT_MENU = MENU;
+const MOVE_TO_LIST =
+  "no-scrollbar -my-0.5 max-h-[calc(260px*var(--ui-space-scale,1))] overflow-y-auto overscroll-contain";
+
+function Shortcut({ id }: { id: ShortcutId }) {
+  const label = useShortcutLabel(id);
+  return label ? <DropdownMenuShortcut>{label}</DropdownMenuShortcut> : null;
+}
+
+function Item({
+  icon,
+  glyph,
+  children,
+  onSelect,
+  shortcut,
+  destructive,
+  disabled,
+}: {
+  icon?: IconSvgElement;
+  /** An icon drawn some other way, in place of `icon`. */
+  glyph?: ReactNode;
+  children: ReactNode;
+  onSelect: () => void;
+  shortcut?: ShortcutId;
+  destructive?: boolean;
+  disabled?: boolean;
+}) {
+  return (
+    <DropdownMenuItem
+      onSelect={onSelect}
+      disabled={disabled}
+      variant={destructive ? "destructive" : "default"}
+    >
+      {icon ? (
+        <HugeiconsIcon icon={icon} strokeWidth={1.75} className={ICON} />
+      ) : (
+        glyph
+      )}
+      <span className="truncate">{children}</span>
+      {shortcut ? <Shortcut id={shortcut} /> : null}
+    </DropdownMenuItem>
+  );
+}
+
+/** The temporary chat toggle, where a new or temporary chat has nothing saved for a menu to act on. */
+function TemporaryChatButton({
+  temporary,
+  onToggle,
+}: {
+  temporary: boolean;
+  onToggle: () => void;
+}) {
+  const label = temporary
+    ? "Turn off temporary chat"
+    : "Turn on temporary chat";
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild={true}>
+        <button
+          type="button"
+          onClick={onToggle}
+          className={cn(
+            "flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+            temporary
+              ? "bg-primary/10 text-primary hover:bg-primary/15"
+              : "text-nav-fg hover:bg-nav-surface-hover hover:text-black dark:hover:text-white",
+          )}
+          aria-label={label}
+          aria-pressed={temporary}
+        >
+          <HugeiconsIcon
+            icon={BubbleChatTemporaryIcon}
+            strokeWidth={1.75}
+            className="size-icon"
+          />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" sideOffset={6} className="tooltip-compact">
+        {label}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+/** What a temporary chat can do from the shared rows: its messages are on screen, not saved. */
+export interface LiveChatActions {
+  /** Null while there is nothing to copy. */
+  copyMarkdown: (() => void) | null;
+  /** Discards the chat; null while there is nothing to discard. */
+  remove: (() => void) | null;
+}
+
+/** The rows of a chat's "…" menu. With no saved chat (`menu` null), only what `live` provides is
+ *  on; the rest stay in sight, greyed, so the menu reads the same as a saved chat's. */
+export function ChatMenuItems({
+  menu,
+  live,
+}: {
+  menu: ActiveChatMenu | null;
+  live?: LiveChatActions;
+}) {
+  const t = useT();
+  const favorite = useChatFavoritesStore((state) =>
+    menu ? state.chatIds.includes(menu.item.id) : false,
+  );
+  const off = !menu;
+  const noop = () => {};
+  const copyMarkdown = menu?.copyMarkdown ?? live?.copyMarkdown ?? null;
+  const remove = menu?.remove ?? live?.remove ?? null;
+  // As the Library exports one: each thread behind the chat, a comparison's two included.
+  const exportAs = async (format: ConversationExportFormat) => {
+    if (!menu) {
+      return;
+    }
+    try {
+      for (const id of getSidebarItemThreadIds(menu.item)) {
+        await exportConversationByFormat(id, format);
+      }
+    } catch (error) {
+      if (!isDownloadCancelled(error)) {
+        toast.error(t("settings.data.exportFailed"));
+      }
+    }
+  };
+  return (
+    <>
+      <Item icon={Edit03Icon} onSelect={menu?.rename ?? noop} disabled={off} shortcut="renameChat">
+        {t("common.rename")}
+      </Item>
+      <Item
+        icon={menu?.pinned ? PinOffIcon : PinIcon}
+        onSelect={menu?.togglePin ?? noop}
+        disabled={off}
+        shortcut="togglePinChat"
+      >
+        {t(menu?.pinned ? "settings.data.library.unpin" : "settings.data.library.pin")}
+      </Item>
+      <Item
+        glyph={
+          <HugeiconsIcon
+            icon={StarPointedIcon}
+            strokeWidth={1.75}
+            className={cn(ICON, favorite && "[&_path]:fill-current")}
+          />
+        }
+        onSelect={() =>
+          menu && useChatFavoritesStore.getState().setChats([menu.item.id], !favorite)
+        }
+        disabled={off}
+      >
+        {t(favorite ? "library.menu.removeFromFavorites" : "library.menu.addToFavorites")}
+      </Item>
+      <Item
+        icon={menu?.unread ? ViewIcon : ViewOffSlashIcon}
+        onSelect={menu?.toggleUnread ?? noop}
+        disabled={off}
+        shortcut="markChatUnread"
+      >
+        {t(menu?.unread ? "shell.selection.markRead" : "shell.selection.markUnread")}
+      </Item>
+      <DropdownMenuSeparator className="mx-3" />
+      <Item
+        glyph={<GitBranchIcon strokeWidth={1.75} className={ICON} />}
+        onSelect={menu?.fork ?? noop}
+        disabled={!menu?.canFork}
+        shortcut="forkChat"
+      >
+        {t("library.chats.menu.fork")}
+      </Item>
+      <DropdownMenuSub>
+        <DropdownMenuSubTrigger className="gap-2.5" disabled={off}>
+          <HugeiconsIcon icon={FolderExportIcon} strokeWidth={1.75} className={ICON} />
+          {t("shell.sections.moveTo")}
+        </DropdownMenuSubTrigger>
+        {menu ? (
+          <DropdownMenuSubContent
+            className={cn(
+              MENU,
+              "max-h-[var(--radix-dropdown-menu-content-available-height)] w-56 overflow-y-auto",
+            )}
+          >
+            <DropdownMenuLabel className={LABEL}>{t("shell.navigation.projects")}</DropdownMenuLabel>
+            <Item icon={PlusSignIcon} onSelect={menu.newProject}>
+              {t("library.chats.toolbar.newProject")}
+            </Item>
+            {menu.projects.length > 0 && (
+              <div className={MOVE_TO_LIST}>
+                {menu.projects.map((entry) => (
+                  <Item
+                    key={entry.id}
+                    icon={Folder02Icon}
+                    onSelect={() => menu.moveToProject(entry.id)}
+                  >
+                    {entry.name}
+                  </Item>
+                ))}
+              </div>
+            )}
+            {menu.project && (
+              <Item icon={Cancel01Icon} onSelect={() => menu.moveToProject(null)}>
+                {menu.project.name
+                  ? t("shell.sections.removeFrom", { name: menu.project.name })
+                  : t("shell.sections.removeFromProject")}
+              </Item>
+            )}
+            <DropdownMenuSeparator className="mx-3" />
+            <DropdownMenuLabel className={LABEL}>
+              {t("shell.sections.sectionsHeading")}
+            </DropdownMenuLabel>
+            <Item icon={PlusSignIcon} onSelect={menu.newSection}>
+              {t("shell.sections.newSection")}
+            </Item>
+            {menu.sections.length > 0 && (
+              <div className={MOVE_TO_LIST}>
+                {menu.sections.map((entry) => (
+                  <Item
+                    key={entry.id}
+                    icon={LayerIcon}
+                    onSelect={() => menu.moveToSection(entry.id)}
+                  >
+                    {entry.name}
+                  </Item>
+                ))}
+              </div>
+            )}
+            {menu.section && (
+              <Item icon={Cancel01Icon} onSelect={() => menu.moveToSection(null)}>
+                {t("shell.sections.removeFrom", { name: menu.section.name })}
+              </Item>
+            )}
+          </DropdownMenuSubContent>
+        ) : null}
+      </DropdownMenuSub>
+      <DropdownMenuSub>
+        <DropdownMenuSubTrigger className="gap-2.5" disabled={!copyMarkdown}>
+          <HugeiconsIcon icon={Copy01Icon} strokeWidth={1.75} className={ICON} />
+          {t("chatMenu.copy")}
+        </DropdownMenuSubTrigger>
+        <DropdownMenuSubContent className={cn(MENU, "w-56")}>
+          <DropdownMenuItem onSelect={copyMarkdown ?? noop} disabled={!copyMarkdown}>
+            {t("settings.keyboardShortcuts.actions.copyChatAsMarkdown.label")}
+            <Shortcut id="copyChatAsMarkdown" />
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={menu?.copySessionId ?? noop} disabled={off}>
+            {t("settings.keyboardShortcuts.actions.copySessionId.label")}
+            <Shortcut id="copySessionId" />
+          </DropdownMenuItem>
+        </DropdownMenuSubContent>
+      </DropdownMenuSub>
+      <DropdownMenuSub>
+        <DropdownMenuSubTrigger className="gap-2.5" disabled={off}>
+          <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className={ICON} />
+          {t("common.export")}
+        </DropdownMenuSubTrigger>
+        {menu ? (
+          <DropdownMenuSubContent className={cn(MENU, "w-48")}>
+            {chatExportOptions().map(({ label: name, format }) => (
+              <DropdownMenuItem key={format} onSelect={() => void exportAs(format)}>
+                {name}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuSubContent>
+        ) : null}
+      </DropdownMenuSub>
+      {menu ? (
+        <OpenChatFolderItem item={menu.item} />
+      ) : (
+        <Item icon={FolderOpenIcon} onSelect={noop} disabled={true}>
+          {t("library.chats.folder.openChat")}
+        </Item>
+      )}
+      <DropdownMenuSeparator className="mx-3" />
+      <Item
+        icon={Archive03Icon}
+        onSelect={menu?.archive ?? noop}
+        disabled={off}
+        shortcut="archiveChat"
+      >
+        {t("settings.data.library.archive")}
+      </Item>
+      <Item icon={Delete02Icon} onSelect={remove ?? noop} disabled={!remove} destructive={true}>
+        {t("common.delete")}
+      </Item>
+    </>
+  );
+}
+
+/** The chat header's control beside the browser's: on a saved chat, a "…" menu with what the
+ *  Library and the sidebar offer for that chat; on a new or temporary chat, the temporary chat
+ *  toggle (a temporary chat's own "…" menu sits left of it). Turning a saved chat temporary is not
+ *  offered: it would quietly stop saving a chat the user kept, and a new one is a click away. */
+export function ChatHeaderMenu({
+  temporary,
+  onToggleTemporary,
+}: {
+  temporary: boolean;
+  onToggleTemporary: () => void;
+}) {
+  const t = useT();
+  const menu = useActiveChatMenuStore((state) => state.menu);
+  const label = t("chatMenu.more");
+  if (temporary || !menu) {
+    return <TemporaryChatButton temporary={temporary} onToggle={onToggleTemporary} />;
+  }
+  return (
+    <DropdownMenu>
+      <Tooltip>
+        <TooltipTrigger asChild={true}>
+          <DropdownMenuTrigger asChild={true}>
+            <button type="button" aria-label={label} className={CHAT_MENU_TRIGGER}>
+              <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-icon" />
+            </button>
+          </DropdownMenuTrigger>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" sideOffset={6} className="tooltip-compact">
+          {label}
+        </TooltipContent>
+      </Tooltip>
+      <DropdownMenuContent align="end" sideOffset={6} className={cn(MENU, "w-64")}>
+        <ChatMenuItems menu={menu} />
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}

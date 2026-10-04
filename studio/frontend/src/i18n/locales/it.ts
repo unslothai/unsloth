@@ -53,6 +53,7 @@ export const it = {
     title: "Browser",
     tabs: "Schede del browser",
     newTab: "Nuova scheda",
+    newTabFullView: "Nuova scheda a schermo intero",
     closeTab: "Chiudi scheda",
     close: "Chiudi browser",
     show: "Mostra browser",
@@ -717,6 +718,10 @@ export const it = {
         findInPage: {
           label: "Trova nella pagina",
           description: "Cerca il testo di questa pagina",
+        },
+        newBrowserTab: {
+          label: "Nuova scheda del browser",
+          description: "Apri una nuova scheda nel browser accanto alla chat",
         },
         toggleBrowserFullView: {
           label: "Attiva/disattiva vista completa del browser",
@@ -2640,6 +2645,11 @@ export const it = {
         docsWindows: "Windows",
       },
     },
+  },
+  // The chat header's "…" menu.
+  chatMenu: {
+    more: "Opzioni chat",
+    copy: "Copia",
   },
   picker: {
     onDevice: "Sul dispositivo",

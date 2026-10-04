@@ -54,6 +54,7 @@ export const zhCN = {
     title: "浏览器",
     tabs: "浏览器标签页",
     newTab: "新标签页",
+    newTabFullView: "在全屏视图中新建标签页",
     closeTab: "关闭标签页",
     close: "关闭浏览器",
     show: "显示浏览器",
@@ -298,6 +299,11 @@ export const zhCN = {
     queueingOffHint: "新消息会打断当前回复并优先执行。",
     queueingOnHint: "新消息会排队并按顺序执行。",
     queueingHintShared: "队列会保留。",
+  },
+  // The chat header's "…" menu.
+  chatMenu: {
+    more: "聊天选项",
+    copy: "复制",
   },
   picker: {
     onDevice: "本机",
@@ -750,6 +756,10 @@ export const zhCN = {
         findInPage: {
           label: "在页面中查找",
           description: "搜索此页面上的文本",
+        },
+        newBrowserTab: {
+          label: "新建浏览器标签页",
+          description: "在聊天旁的浏览器中打开新标签页",
         },
         toggleBrowserFullView: {
           label: "切换浏览器全屏视图",

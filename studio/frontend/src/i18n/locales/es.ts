@@ -54,6 +54,7 @@ export const es = {
     title: "Navegador",
     tabs: "Pestañas del navegador",
     newTab: "Nueva pestaña",
+    newTabFullView: "Nueva pestaña en vista completa",
     closeTab: "Cerrar pestaña",
     close: "Cerrar navegador",
     show: "Mostrar navegador",
@@ -298,6 +299,11 @@ export const es = {
     queueingOffHint: "Los mensajes nuevos interrumpen y se ejecutan a continuación.",
     queueingOnHint: "Los mensajes nuevos esperan su turno.",
     queueingHintShared: "La cola se conserva.",
+  },
+  // The chat header's "…" menu.
+  chatMenu: {
+    more: "Opciones del chat",
+    copy: "Copiar",
   },
   picker: {
     onDevice: "En el dispositivo",
@@ -755,6 +761,10 @@ export const es = {
         findInPage: {
           label: "Buscar en la página",
           description: "Buscar el texto de esta página",
+        },
+        newBrowserTab: {
+          label: "Nueva pestaña del navegador",
+          description: "Abrir una pestaña nueva en el navegador junto al chat",
         },
         toggleBrowserFullView: {
           label: "Alternar vista completa del navegador",

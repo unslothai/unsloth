@@ -54,6 +54,7 @@ export const ptBR = {
     title: "Navegador",
     tabs: "Abas do navegador",
     newTab: "Nova aba",
+    newTabFullView: "Nova aba em tela cheia",
     closeTab: "Fechar aba",
     close: "Fechar navegador",
     show: "Mostrar navegador",
@@ -298,6 +299,11 @@ export const ptBR = {
     queueingOffHint: "Mensagens novas interrompem e são executadas em seguida.",
     queueingOnHint: "Mensagens novas esperam a vez.",
     queueingHintShared: "A fila é mantida.",
+  },
+  // The chat header's "…" menu.
+  chatMenu: {
+    more: "Opções do chat",
+    copy: "Copiar",
   },
   picker: {
     onDevice: "No dispositivo",
@@ -754,6 +760,10 @@ export const ptBR = {
         findInPage: {
           label: "Localizar na página",
           description: "Pesquisar o texto desta página",
+        },
+        newBrowserTab: {
+          label: "Nova aba do navegador",
+          description: "Abrir uma nova aba no navegador ao lado do chat",
         },
         toggleBrowserFullView: {
           label: "Alternar visualização completa do navegador",

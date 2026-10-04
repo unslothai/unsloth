@@ -83,8 +83,8 @@ test("the save covers the whole branch tree, not only the visible path", () => {
   assert.match(persistBody(), /parentId: parentId \?\? null,/);
 });
 
-test("the button shows only in a temporary single chat and waits for a finished reply", () => {
-  assert.match(page, /view\.mode === "single" && incognito \? \(\s*<SaveTemporaryChatButton/);
+test("the save menu shows only in a temporary single chat and waits for a finished reply", () => {
+  assert.match(page, /view\.mode === "single" && incognito \? \(\s*<SaveTemporaryChatMenu/);
   assert.match(button, /\? "Nothing to save yet"\s*: target\.running\s*\? "Wait for the response to finish"/);
 });
 

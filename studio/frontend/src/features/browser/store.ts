@@ -200,8 +200,6 @@ type BrowserState = {
   fullView: boolean;
   chatDock: ChatDock;
   chatSide: ChatSide;
-  /** Whether the chat beside the panel has messages; the header toggle hides in a new chat. */
-  chatHasMessages: boolean;
   /** Stages a prompt in the chat's composer; set by the chat while it is shown. */
   requestEdits: RequestEdits | null;
   /** Sends a file's annotations to the chat; set by the chat while it is shown. */
@@ -322,7 +320,6 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     fullView: false,
     chatDock: "composer",
     chatSide: "left",
-    chatHasMessages: false,
     requestEdits: null,
     sendAnnotations: null,
     openInCanvas: null,

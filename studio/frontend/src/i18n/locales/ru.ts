@@ -54,6 +54,7 @@ export const ru = {
     title: "Браузер",
     tabs: "Вкладки браузера",
     newTab: "Новая вкладка",
+    newTabFullView: "Новая вкладка во весь экран",
     closeTab: "Закрыть вкладку",
     close: "Закрыть браузер",
     show: "Показать браузер",
@@ -298,6 +299,11 @@ export const ru = {
     queueingOffHint: "Новые сообщения прерывают ответ и выполняются следующими.",
     queueingOnHint: "Новые сообщения ждут своей очереди.",
     queueingHintShared: "Очередь сохраняется.",
+  },
+  // The chat header's "…" menu.
+  chatMenu: {
+    more: "Параметры чата",
+    copy: "Копировать",
   },
   picker: {
     onDevice: "На устройстве",
@@ -754,6 +760,10 @@ export const ru = {
         findInPage: {
           label: "Поиск на странице",
           description: "Искать текст на этой странице",
+        },
+        newBrowserTab: {
+          label: "Новая вкладка браузера",
+          description: "Открыть новую вкладку в браузере рядом с чатом",
         },
         toggleBrowserFullView: {
           label: "Переключить полноэкранный режим браузера",

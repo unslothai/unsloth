@@ -262,6 +262,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.keyboardShortcuts.actions.switchToAudio.label",
     "settings.keyboardShortcuts.actions.switchToExport.label",
     "settings.keyboardShortcuts.actions.findInPage.label",
+    "settings.keyboardShortcuts.actions.newBrowserTab.label",
     "settings.keyboardShortcuts.actions.toggleBrowserFullView.label",
     "settings.keyboardShortcuts.actions.toggleApiMonitor.label",
     "settings.keyboardShortcuts.actions.toggleSidebar.label",

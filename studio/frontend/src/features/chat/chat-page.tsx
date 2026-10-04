@@ -68,6 +68,8 @@ import {
   useDeviceInventorySources,
 } from "@/features/hub/inventory";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
+import { ChatHeaderMenu } from "./components/chat-header-menu";
+import { useActiveChatMenuStore } from "./stores/active-chat-menu-store";
 import { DeleteChatFilesSwitch } from "./components/delete-chat-files-switch";
 import { chatLocalModelOptions } from "./local-model-options";
 import {
@@ -101,7 +103,6 @@ import {
 } from "./utils/conversation-markdown";
 import {
   Archive03Icon,
-  BubbleChatTemporaryIcon,
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
@@ -121,7 +122,7 @@ import { useAui, useAuiState } from "@assistant-ui/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import {
-  SaveTemporaryChatButton,
+  SaveTemporaryChatMenu,
   TemporaryChatSaveBridge,
 } from "./components/temporary-chat-save";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
@@ -472,10 +473,6 @@ const SingleContent = memo(function SingleContent({
       useBrowserStore.setState({ requestEdits: null, sendAnnotations: null, openInCanvas: null });
     };
   }, [chatActive, isMobile, aui]);
-  const threadHasMessages = useAuiState(({ thread }) => thread.messages.length > 0);
-  useEffect(() => {
-    if (chatActive) useBrowserStore.setState({ chatHasMessages: threadHasMessages });
-  }, [chatActive, threadHasMessages]);
   useEffect(() => {
     if (!pendingFixPrompt || !chatActive) return;
     useChatArtifactsStore.getState().clearFixPrompt();
@@ -2569,9 +2566,8 @@ export function ChatPage({
   const setSettingsOpen = useChatRuntimeStore((s) => s.setSettingsPanelOpen);
   const incognito = useChatRuntimeStore((s) => s.incognito);
   const setIncognito = useChatRuntimeStore((s) => s.setIncognito);
-  const incognitoLabel = incognito
-    ? "Turn off temporary chat"
-    : "Turn on temporary chat";
+  // A saved chat is open: its header gets the "…" menu, and a line before the right panel's button.
+  const savedChatOpen = useActiveChatMenuStore((s) => s.menu !== null);
   const toggleIncognito = useCallback(() => {
     const store = useChatRuntimeStore.getState();
     const wasIncognito = store.incognito;
@@ -4675,38 +4671,13 @@ export function ChatPage({
               />
             ) : null}
             {view.mode === "single" && incognito ? (
-              <SaveTemporaryChatButton className="mr-[calc(6px*var(--ui-space-scale,1))] flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:text-white" />
+              <SaveTemporaryChatMenu
+                className="mr-[calc(6px*var(--ui-space-scale,1))]"
+                onDiscard={toggleIncognito}
+              />
             ) : null}
             {view.mode === "single" && (
-              <Tooltip>
-                <TooltipPrimitive.Trigger asChild={true}>
-                  <button
-                    type="button"
-                    onClick={toggleIncognito}
-                    className={cn(
-                      "flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                      incognito
-                        ? "bg-primary/10 text-primary hover:bg-primary/15"
-                        : "text-nav-fg hover:bg-nav-surface-hover hover:text-black dark:hover:text-white",
-                    )}
-                    aria-label={incognitoLabel}
-                    aria-pressed={incognito}
-                  >
-                    <HugeiconsIcon
-                      icon={BubbleChatTemporaryIcon}
-                      strokeWidth={1.75}
-                      className="size-icon"
-                    />
-                  </button>
-                </TooltipPrimitive.Trigger>
-                <TooltipContent
-                  side="bottom"
-                  sideOffset={6}
-                  className="tooltip-compact"
-                >
-                  {incognitoLabel}
-                </TooltipContent>
-              </Tooltip>
+              <ChatHeaderMenu temporary={incognito} onToggleTemporary={toggleIncognito} />
             )}
             {view.mode === "single" && !isMobile ? <BrowserToggleButton /> : null}
             {view.mode === "single" &&
@@ -4743,6 +4714,12 @@ export function ChatPage({
                   Research activity
                 </TooltipContent>
               </Tooltip>
+            ) : null}
+            {!settingsOpen && view.mode === "single" && savedChatOpen && !incognito ? (
+              <span
+                aria-hidden={true}
+                className="mx-[calc(4px*var(--ui-space-scale,1))] h-5 w-px bg-border"
+              />
             ) : null}
             {!settingsOpen && (
               <Tooltip>

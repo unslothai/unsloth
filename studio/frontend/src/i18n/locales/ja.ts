@@ -55,6 +55,7 @@ export const ja = {
     title: "ブラウザ",
     tabs: "ブラウザのタブ",
     newTab: "新しいタブ",
+    newTabFullView: "全画面表示で新しいタブ",
     closeTab: "タブを閉じる",
     close: "ブラウザを閉じる",
     show: "ブラウザを表示",
@@ -299,6 +300,11 @@ export const ja = {
     queueingOffHint: "新しいメッセージが割り込んで実行されます。",
     queueingOnHint: "新しいメッセージは順番待ちになります。",
     queueingHintShared: "キューは保持されます。",
+  },
+  // The chat header's "…" menu.
+  chatMenu: {
+    more: "チャットのオプション",
+    copy: "コピー",
   },
   picker: {
     onDevice: "デバイス上",
@@ -754,6 +760,10 @@ export const ja = {
         findInPage: {
           label: "ページ内検索",
           description: "このページ内のテキストを検索します",
+        },
+        newBrowserTab: {
+          label: "新しいブラウザタブ",
+          description: "チャットの横のブラウザで新しいタブを開く",
         },
         toggleBrowserFullView: {
           label: "ブラウザの全画面表示を切り替え",

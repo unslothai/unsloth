@@ -284,6 +284,7 @@ import {
 } from "@/features/chat";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
 import { buildChatItemMarkdown } from "@/features/chat/prompt-storage/prompt-storage-dialog";
+import { useActiveChatMenuStore } from "@/features/chat/stores/active-chat-menu-store";
 import { translate, useT, type TranslationKey } from "@/i18n";
 
 const RECENT_SLOT_NUMBERS = [1, 2, 3, 4, 5, 6] as const;
@@ -3432,6 +3433,69 @@ export function AppSidebar() {
     if (sidebarCovered()) return;
     withActiveChat((item) => void copyChatSessionId(item));
   });
+
+  // The chat header's menu acts on the open chat through the same handlers as its row's menu and
+  // the chords above. Every render, so the handlers it calls are never stale.
+  useEffect(() => {
+    const item = activeChatItem;
+    if (!item) {
+      useActiveChatMenuStore.setState({ menu: null });
+      return;
+    }
+    const threadIds = getSidebarItemThreadIds(item);
+    const pinned = pinnedIdSet.has(item.id);
+    const unread = threadIds.some((threadId) => unreadThreadIds.has(threadId));
+    const generating = threadIds.some((threadId) => Boolean(runningByThreadId[threadId]));
+    const project = item.projectId ? projects.find((entry) => entry.id === item.projectId) : undefined;
+    // A pinned row is drawn under Pinned, so it has no section to leave, as in the row's menu.
+    const sectionId = pinned ? null : (sectionByChatId[item.id] ?? null);
+    const section = sectionId ? customSections.find((entry) => entry.id === sectionId) : undefined;
+    useActiveChatMenuStore.setState({
+      menu: {
+        item,
+        pinned,
+        unread,
+        canFork: canForkChatRow(item) && !generating && !forkInFlight,
+        projects: recentProjects
+          .filter((entry) => entry.id !== item.projectId)
+          .slice(0, MOVE_TO_MAX)
+          .map(({ id, name }) => ({ id, name })),
+        sections: recentSections
+          .filter((entry) => entry.id !== sectionId)
+          .slice(0, MOVE_TO_MAX)
+          .map(({ id, name }) => ({ id, name })),
+        project: item.projectId
+          ? { id: item.projectId, name: project?.name ?? "" }
+          : null,
+        section: section ? { id: section.id, name: section.name } : null,
+        rename: () => openRenameChat(item, false),
+        togglePin: () => togglePinnedChat(item.id),
+        toggleUnread: () =>
+          unread
+            ? clearThreadsUnread(threadIds)
+            : markThreadsUnread(threadIds, rowIdByThreadId),
+        fork: () => void forkChatFromRow(item),
+        moveToProject: (projectId) =>
+          projectId === null
+            ? void moveChatToProject(item, null)
+            : void moveChatToProjectFromMenu(item, projectId),
+        newProject: () => {
+          setProjectCreateMoveTarget(item);
+          setCreatingProject(true);
+        },
+        moveToSection: (id) => fileSectionTarget({ chatIds: [item.id] }, id),
+        newSection: () => setSectionDialog({ mode: "create", chatIds: [item.id] }),
+        copyMarkdown: () => void copyChatItemAsMarkdown(item),
+        copySessionId: () => void copyChatSessionId(item),
+        archive: () => void handleArchiveThread(item),
+        remove: () =>
+          confirmDeleteChats
+            ? openDeleteDialog({ kind: "chat", item })
+            : void deleteChatWithCleanup(item, { deleteFiles: alwaysDeleteChatFiles }),
+      },
+    });
+  });
+  useEffect(() => () => useActiveChatMenuStore.setState({ menu: null }), []);
 
   // These four walk the list, so holding them steps through it, the way an
   // arrow key does. The rest are one-shot and ignore auto-repeat.

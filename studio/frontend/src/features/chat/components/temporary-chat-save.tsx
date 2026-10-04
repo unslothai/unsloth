@@ -11,11 +11,20 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useAui, useAuiState } from "@assistant-ui/react";
-import { Bookmark02Icon } from "@hugeicons/core-free-icons";
+import { Bookmark02Icon, MoreHorizontalIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { useEffect, useId, useState } from "react";
@@ -24,6 +33,12 @@ import { persistTemporaryThread } from "../runtime-provider";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { usePromptQueueUI } from "../stores/prompt-queue-ui-store";
 import { isThreadIncognito } from "../utils/chat-history-storage";
+import {
+  buildConversationMarkdown,
+  contentBlocksToMarkdownBlocks,
+  renderConversationBlocks,
+} from "../utils/conversation-markdown";
+import { CHAT_MENU, CHAT_MENU_TRIGGER, ChatMenuItems } from "./chat-header-menu";
 
 /** Skip the confirmation once the user said so. Per browser. */
 export const SKIP_SAVE_TEMPORARY_CONFIRM_KEY = "unsloth_chat_skip_save_temporary_confirm";
@@ -49,6 +64,8 @@ type SaveTarget = {
   running: boolean;
   queued: boolean;
   save: () => Promise<void>;
+  /** The messages on screen as markdown: nothing of a temporary chat is stored to read back. */
+  markdown: () => string;
 };
 
 /** The open temporary chat, published from inside its runtime for the header, which sits outside. */
@@ -84,6 +101,16 @@ export function TemporaryChatSaveBridge() {
           useChatRuntimeStore.getState().setIncognito(false);
           aui.threadListItem().generateTitle();
         },
+        markdown: () =>
+          buildConversationMarkdown(
+            aui
+              .thread()
+              .getState()
+              .messages.map((message) => ({
+                role: message.role,
+                content: renderConversationBlocks(contentBlocksToMarkdownBlocks(message.content)),
+              })),
+          ),
       },
     });
     return () => useSaveTarget.setState({ target: null });
@@ -92,8 +119,25 @@ export function TemporaryChatSaveBridge() {
   return null;
 }
 
-/** Header button left of the temporary toggle, shown only in a temporary chat. */
-export function SaveTemporaryChatButton({ className }: { className?: string }) {
+async function copyMarkdown(markdown: string): Promise<void> {
+  if (!markdown) {
+    toast.info("No exportable content.");
+    return;
+  }
+  if (await copyToClipboard(markdown)) toast.success("Chat copied as Markdown");
+  else toast.error("Could not copy this chat.");
+}
+
+/** The header's "…" menu left of the temporary toggle, shown only in a temporary chat: saving it to
+ *  history first, then a saved chat's rows, on where they work from the messages on screen. */
+export function SaveTemporaryChatMenu({
+  className,
+  onDiscard,
+}: {
+  className?: string;
+  /** Leaves the temporary chat for a new one, which discards it. */
+  onDiscard: () => void;
+}) {
   const target = useSaveTarget((s) => s.target);
   const [open, setOpen] = useState(false);
   const [dontShowAgain, setDontShowAgain] = useState(false);
@@ -108,7 +152,7 @@ export function SaveTemporaryChatButton({ className }: { className?: string }) {
       : target.queued
         ? "Wait for queued prompts to finish"
         : null;
-  const label = disabledReason ?? "Save chat to history";
+  const label = "Save chat to history";
 
   const save = async () => {
     setSaving(true);
@@ -128,26 +172,50 @@ export function SaveTemporaryChatButton({ className }: { className?: string }) {
 
   return (
     <>
-      <Tooltip>
-        <TooltipPrimitive.Trigger asChild={true}>
-          <button
-            type="button"
-            onClick={() => {
-              if (disabledReason || saving) return;
+      <DropdownMenu>
+        <Tooltip>
+          <TooltipPrimitive.Trigger asChild={true}>
+            <DropdownMenuTrigger asChild={true}>
+              <button type="button" className={cn(CHAT_MENU_TRIGGER, className)} aria-label="Chat options">
+                <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-icon" />
+              </button>
+            </DropdownMenuTrigger>
+          </TooltipPrimitive.Trigger>
+          <TooltipContent side="bottom" sideOffset={6} className="tooltip-compact">
+            Chat options
+          </TooltipContent>
+        </Tooltip>
+        <DropdownMenuContent align="end" sideOffset={6} className={cn(CHAT_MENU, "w-64")}>
+          <DropdownMenuItem
+            disabled={Boolean(disabledReason) || saving}
+            onSelect={() => {
               if (skipConfirm()) void save();
               else setOpen(true);
             }}
-            aria-disabled={Boolean(disabledReason) || saving}
-            className={cn(className, (disabledReason || saving) && "cursor-default opacity-50")}
-            aria-label={label}
+            className="items-start"
           >
-            <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={1.75} className="size-icon" />
-          </button>
-        </TooltipPrimitive.Trigger>
-        <TooltipContent side="bottom" sideOffset={6} className="tooltip-compact">
-          {label}
-        </TooltipContent>
-      </Tooltip>
+            <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={1.75} className="mt-0.5 size-icon" />
+            <span className="flex min-w-0 flex-col">
+              <span className="truncate">{label}</span>
+              {/* Why it is off, where the button said so in its tooltip. */}
+              {disabledReason ? (
+                <span className="text-xs text-muted-foreground">{disabledReason}</span>
+              ) : null}
+            </span>
+          </DropdownMenuItem>
+          <DropdownMenuSeparator className="mx-3" />
+          <ChatMenuItems
+            menu={null}
+            live={{
+              copyMarkdown: target.hasMessages ? () => void copyMarkdown(target.markdown()) : null,
+              remove: target.hasMessages ? onDiscard : null,
+            }}
+          />
+          <DropdownMenuLabel className="px-3 pt-2 pb-1 text-xs font-normal text-muted-foreground">
+            Save the chat to history to rename, pin, move or export it.
+          </DropdownMenuLabel>
+        </DropdownMenuContent>
+      </DropdownMenu>
       <Dialog
         open={open}
         onOpenChange={(next) => {

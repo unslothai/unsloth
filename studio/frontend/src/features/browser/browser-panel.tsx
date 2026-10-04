@@ -753,11 +753,11 @@ function AnnotatePageButton({ tab }: { tab: BrowserTab | undefined }) {
           "border-transparent bg-primary/12 text-primary hover:bg-primary/18 hover:text-primary dark:bg-primary/20 dark:hover:bg-primary/25",
       )}
     >
-      {/* Its cursor weighs down the bottom right; nudged so it reads as centred. */}
+      {/* Its dashed frame reads as the icon; nudged so that frame sits centred. */}
       <HugeiconsIcon
         icon={CursorRectangleSelection02Icon}
         strokeWidth={1.75}
-        className="size-4.5 -translate-x-0.25 -translate-y-0.25"
+        className="size-4.5 translate-x-0.25 translate-y-0.25"
       />
     </IconButton>
   );

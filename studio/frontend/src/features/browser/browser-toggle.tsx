@@ -1,36 +1,142 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuShortcut,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { useShortcut, useShortcutLabel } from "@/features/settings";
 import { useT } from "@/i18n";
-import { InternetIcon } from "@hugeicons/core-free-icons";
+import { Add01Icon, AddSquareIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { useEffect, useRef, useState } from "react";
+import { EnterFullViewIcon } from "./icons";
 import { useBrowserStore } from "./store";
 
-/** The chat header's button for opening the browser panel. Hidden in a new chat, and while the panel
- *  is open, since the panel closes itself. */
+// Long enough that passing over the button on the way elsewhere doesn't open the menu, and that
+// crossing the gap to the menu doesn't close it.
+const HOVER_OPEN_MS = 150;
+const HOVER_CLOSE_MS = 200;
+
+function openNewTab(fullView = false) {
+  const state = useBrowserStore.getState();
+  state.newTab();
+  if (fullView) state.setFullView(true);
+}
+
+/** The chat header's new browser tab button, as ChatGPT has it: a click opens a tab beside the
+ *  chat, and hovering offers a tab in full view too. Hidden while the panel is open, which has its
+ *  own; its shortcuts still work then. */
 export function BrowserToggleButton() {
   const t = useT();
   const open = useBrowserStore((state) => state.open);
-  const chatHasMessages = useBrowserStore((state) => state.chatHasMessages);
-  const openPanel = useBrowserStore((state) => state.openPanel);
-  if (open || !chatHasMessages) return null;
-  const label = t("browser.show");
+  const newTabShortcut = useShortcutLabel("newBrowserTab");
+  const fullViewShortcut = useShortcutLabel("toggleBrowserFullView");
+  const [menuOpen, setMenuOpen] = useState(false);
+  const timer = useRef<number | null>(null);
+  // What had focus when hovering opened the menu, given back when it closes without opening a tab
+  // (which focuses its address bar).
+  const restore = useRef<HTMLElement | null>(null);
+  const openTab = (fullView = false) => {
+    clearTimer();
+    restore.current = null;
+    setMenuOpen(false);
+    openNewTab(fullView);
+  };
+  useShortcut("newBrowserTab", (event) => {
+    event.preventDefault();
+    openTab();
+  });
+  // The open panel toggles full view itself.
+  useShortcut(
+    "toggleBrowserFullView",
+    (event) => {
+      event.preventDefault();
+      openTab(true);
+    },
+    { enabled: !open },
+  );
+  const clearTimer = () => {
+    if (timer.current !== null) window.clearTimeout(timer.current);
+    timer.current = null;
+  };
+  const hoverTo = (next: boolean) => {
+    clearTimer();
+    timer.current = window.setTimeout(() => {
+      if (next && !menuOpen && document.activeElement instanceof HTMLElement) {
+        restore.current = document.activeElement;
+      }
+      setMenuOpen(next);
+    }, next ? HOVER_OPEN_MS : HOVER_CLOSE_MS);
+  };
+  // Inline rather than clearTimer, which is remade each render.
+  useEffect(
+    () => () => {
+      if (timer.current !== null) window.clearTimeout(timer.current);
+    },
+    [],
+  );
+  useEffect(() => {
+    if (!open) return;
+    if (timer.current !== null) window.clearTimeout(timer.current);
+    timer.current = null;
+    setMenuOpen(false);
+  }, [open]);
+  if (open) return null;
+  const label = t("browser.newTab");
+  const onMouse = (handler: () => void) => (event: { pointerType: string }) => {
+    if (event.pointerType === "mouse") handler();
+  };
   return (
-    <Tooltip>
-      <TooltipTrigger asChild={true}>
+    <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen} modal={false}>
+      <DropdownMenuTrigger asChild={true}>
         <button
           type="button"
-          onClick={openPanel}
           aria-label={label}
-          className="flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring dark:hover:text-white"
+          onPointerEnter={onMouse(() => hoverTo(true))}
+          onPointerLeave={onMouse(() => hoverTo(false))}
+          // A press opens a tab rather than the menu; hovering, or the arrow keys, open the menu.
+          onPointerDown={(event) => event.preventDefault()}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter" && event.key !== " ") return;
+            event.preventDefault();
+            openTab();
+          }}
+          onClick={() => openTab()}
+          className="flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring data-[state=open]:bg-nav-surface-hover data-[state=open]:text-black dark:hover:text-white dark:data-[state=open]:text-white"
         >
-          <HugeiconsIcon icon={InternetIcon} strokeWidth={1.75} className="size-icon" />
+          <HugeiconsIcon icon={AddSquareIcon} strokeWidth={1.75} className="size-icon" />
         </button>
-      </TooltipTrigger>
-      <TooltipContent side="bottom" sideOffset={6} className="tooltip-compact">
-        {label}
-      </TooltipContent>
-    </Tooltip>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="end"
+        sideOffset={6}
+        onPointerEnter={onMouse(clearTimer)}
+        onPointerLeave={onMouse(() => hoverTo(false))}
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          restore.current?.focus({ preventScroll: true });
+          restore.current = null;
+        }}
+        // The chat's other menus' surface and rows.
+        className="library-actions-menu w-56"
+      >
+        <DropdownMenuItem onSelect={() => openTab()}>
+          <HugeiconsIcon icon={Add01Icon} strokeWidth={1.75} className="size-icon" />
+          {label}
+          {newTabShortcut ? <DropdownMenuShortcut>{newTabShortcut}</DropdownMenuShortcut> : null}
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => openTab(true)}>
+          <HugeiconsIcon icon={EnterFullViewIcon} strokeWidth={1.75} className="size-icon" />
+          {t("browser.newTabFullView")}
+          {fullViewShortcut ? (
+            <DropdownMenuShortcut>{fullViewShortcut}</DropdownMenuShortcut>
+          ) : null}
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

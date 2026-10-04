@@ -54,6 +54,7 @@ export const ar = {
     title: "المتصفح",
     tabs: "علامات تبويب المتصفح",
     newTab: "علامة تبويب جديدة",
+    newTabFullView: "علامة تبويب جديدة في العرض الكامل",
     closeTab: "إغلاق علامة التبويب",
     close: "إغلاق المتصفح",
     show: "إظهار المتصفح",
@@ -298,6 +299,11 @@ export const ar = {
     queueingOffHint: "الرسائل الجديدة تقاطع الرد وتُنفَّذ بعده.",
     queueingOnHint: "الرسائل الجديدة تنتظر دورها.",
     queueingHintShared: "يبقى الطابور كما هو.",
+  },
+  // The chat header's "…" menu.
+  chatMenu: {
+    more: "خيارات المحادثة",
+    copy: "نسخ",
   },
   picker: {
     onDevice: "على الجهاز",
@@ -752,6 +758,10 @@ export const ar = {
         findInPage: {
           label: "البحث في الصفحة",
           description: "البحث في نص هذه الصفحة",
+        },
+        newBrowserTab: {
+          label: "علامة تبويب جديدة في المتصفح",
+          description: "فتح علامة تبويب جديدة في المتصفح بجانب المحادثة",
         },
         toggleBrowserFullView: {
           label: "تبديل العرض الكامل للمتصفح",
