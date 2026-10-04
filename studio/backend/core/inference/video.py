@@ -42,7 +42,7 @@ import time
 import types
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from hub.utils.hf_errors import modelscope_missing
 from loggers import get_logger
@@ -55,6 +55,7 @@ from .diffusion_attention import (
     sdpa_math_only,
     select_attention_backend,
 )
+from .diffusion_flow_shift import apply_comfy_flow_shift
 from .diffusion_cache import (
     FBCACHE_MIN_STEPS,
     TC_AUTO,
@@ -110,6 +111,7 @@ from .diffusion_memory import (
     finish_background_pins,
     release_pinned_host_memory,
     request_background_pins,
+    request_fast_pins,
     safetensors_prefix_mib,
     settled_snapshot_device_memory,
     start_background_pins,
@@ -118,6 +120,7 @@ from .diffusion_memory import (
 from .diffusion_torchao_patches import install_torchao_int_mm_patch
 from .media_decode_phase import decode_phase as _decode_phase
 from . import diffusion_render_thread as render_thread
+from .diffusion_fp16_guard import fp16_promotes_to_fp32
 from .diffusion_speed import (
     SPEED_DEFAULT,
     SPEED_EAGER,
@@ -220,6 +223,7 @@ from .video_minimax_h3_te import (
     h3_te_quant_scheme,
     h3_te_resident_gb,
 )
+from .video_encode import encode_x264
 from .video_nvenc import encode_nvenc, nvenc_gpu
 from utils.hardware import clear_gpu_cache
 
@@ -964,6 +968,21 @@ def _ensure_mp4_encoder_available() -> None:
         ) from exc
 
 
+def _video_denoiser_hooked(pipe: Any) -> bool:
+    """Whether an offload hook moves one of ``pipe``'s denoisers."""
+    for name in ("transformer", "transformer_2"):
+        module = getattr(pipe, name, None)
+        if module is None:
+            continue
+        if getattr(module, "_hf_hook", None) is not None:
+            return True
+        registry = getattr(module, "_diffusers_hook", None)
+        hooks = getattr(registry, "hooks", None) or {}
+        if any("offload" in str(key) for key in hooks):
+            return True
+    return False
+
+
 @dataclass(frozen = True)
 class _VideoLoadState:
     """Everything about the currently-loaded video pipeline, swapped as one unit."""
@@ -1025,6 +1044,7 @@ class _VideoLoadState:
     # MiniMax-H3: video_minimax_h3_residency.H3Residency of a streamed denoiser, re-fitted per request.
     h3_residency: Any = None
     resolved: Optional[dict] = None
+    bg_compile: Any = None
 
 
 @dataclass(frozen = True)
@@ -1272,10 +1292,13 @@ def _h3_free_device_bytes(device: str) -> Optional[int]:
         return None
 
 
-def _h3_card_free_bytes(device: Optional[str], ordinal: Optional[int]) -> Optional[int]:
-    """Live free VRAM via nvidia-smi / amd-smi (no CUDA context here), or None. No pin = sd.cpp's ordinal 0."""
+def _h3_card_memory_bytes(
+    device: Optional[str], ordinal: Optional[int]
+) -> tuple[Optional[int], Optional[int]]:
+    """(free, total) VRAM of the H3 render card via nvidia-smi / amd-smi (no CUDA context), or (None, None). No pin =
+    ordinal 0."""
     if device != "cuda":
-        return None
+        return None, None
     try:
         from utils.hardware import get_visible_gpu_utilization, gpu_query
 
@@ -1288,11 +1311,44 @@ def _h3_card_free_bytes(device: Optional[str], ordinal: Optional[int]) -> Option
             total = entry.get("vram_total_gb")
             used = entry.get("vram_used_gb")
             if total is None or used is None:
-                return None
-            return max(0, int((float(total) - float(used)) * 1024**3))
+                return None, None
+            total_bytes = int(float(total) * 1024**3)
+            return max(0, int((float(total) - float(used)) * 1024**3)), total_bytes
     except Exception:  # noqa: BLE001 -- an unreadable card decides nothing
-        return None
-    return None
+        return None, None
+    return None, None
+
+
+def _h3_card_free_bytes(device: Optional[str], ordinal: Optional[int]) -> Optional[int]:
+    """Free VRAM of the H3 render card, or None (keeps the committed offload flags)."""
+    return _h3_card_memory_bytes(device, ordinal)[0]
+
+
+def _h3_native_server_pressure(device: Optional[str], ordinal: Optional[int]) -> Optional[str]:
+    """Why the resident H3 sd-server should not outlive a render (``h3_native_server_pressure``), or None."""
+    from .diffusion_memory import (
+        _available_system_memory_mib,
+        _cgroup_memory_limit_mib,
+        _system_memory_mib,
+    )
+    from .video_minimax_h3 import h3_native_server_pressure
+
+    vram_free, vram_total = _h3_card_memory_bytes(device, ordinal)
+    try:
+        host_total_mib = _system_memory_mib()[0]
+        # Available RAM is cgroup-capped, so the reserve must be a share of the same limit.
+        cgroup_limit_mib = _cgroup_memory_limit_mib()
+        if cgroup_limit_mib and (host_total_mib is None or cgroup_limit_mib < host_total_mib):
+            host_total_mib = cgroup_limit_mib
+        host_avail_mib = _available_system_memory_mib()
+    except Exception:  # noqa: BLE001 -- unknown host memory decides nothing
+        host_total_mib = host_avail_mib = None
+    return h3_native_server_pressure(
+        vram_free = vram_free,
+        vram_total = vram_total,
+        host_available = None if host_avail_mib is None else int(host_avail_mib) << 20,
+        host_total = None if host_total_mib is None else int(host_total_mib) << 20,
+    )
 
 
 def _h3_device_capacity_bytes(device: str) -> Optional[int]:
@@ -2335,6 +2391,42 @@ def _video_family_capabilities() -> tuple[tuple[str, ...], tuple[str, ...]]:
     )
 
 
+def _return_direct_loaded_modules(
+    pipe: Any,
+    plan: Any,
+    logger: Any = None,
+) -> None:
+    """Move what the LTX-2.3 direct load put on the card back to the host when a refined ``plan`` offloads it."""
+    try:
+        import torch
+        if not plan_keeps_transformer_resident(plan):
+            moved = ["pipeline"]
+            pipe.to("cpu")
+        elif getattr(plan, "offload_policy", OFFLOAD_NONE) != OFFLOAD_NONE and bool(
+            getattr(plan, "stream_text_encoders", False)
+        ):
+            moved = []
+            for name, comp in getattr(pipe, "components", {}).items():
+                if not name.startswith("text_encoder") or not isinstance(comp, torch.nn.Module):
+                    continue
+                if any(p.device.type != "cpu" for p in comp.parameters()):
+                    comp.to("cpu")
+                    moved.append(name)
+        else:
+            return
+        if moved and logger is not None:
+            logger.info(
+                "video.ltx23_direct_load: plan %s offloads %s; moved back to the host",
+                _video_plan_label(plan),
+                ", ".join(moved),
+            )
+    except Exception as exc:  # noqa: BLE001 - placement below still applies the plan
+        if logger is not None:
+            logger.warning(
+                "video.ltx23_direct_load: could not return modules to the host (%s)", exc
+            )
+
+
 class VideoBackend:
     """One loaded video pipeline; loads swap it atomically (same model as images)."""
 
@@ -2753,6 +2845,12 @@ class VideoBackend:
         # reaches the Hub just as a weight pull does. READ, not popped: load_pipeline takes it too (it is in this
         # thread's kwargs by contract).
         local_files_only = bool(kwargs.get("local_files_only"))
+        # Before any download: unsloth_zoo enters the dynamo cycle from the inductor side, racing the warm.
+        try:
+            from utils.torch_warmup import gate_torch_stack_import
+            gate_torch_stack_import("video load", logger)
+        except Exception as exc:  # noqa: BLE001 - a safety net, never a new failure
+            logger.debug("dynamo import gate skipped: %r", exc)
         try:
             fam = _detect_load_family(
                 kwargs["repo_id"],
@@ -3431,6 +3529,14 @@ class VideoBackend:
                 native_device_name = sd_cpp_device_named(
                     binary, selected_name, position = selected_position
                 )
+            # Same number the fork's dispatch reads, off the re-check's listing (no extra subprocess).
+            from .sd_cpp_backend import sd_cpp_cuda_compute_capability
+
+            native_cuda_cc = (
+                sd_cpp_cuda_compute_capability(binary, native_device_name, probe = False)
+                if native_device != "cpu" and listed_accelerator is not None
+                else None
+            )
         requested_mode = normalize_memory_mode(memory_mode) or "auto"
         policy = {
             "auto": "none" if native_device == "cpu" else "group",
@@ -3466,29 +3572,78 @@ class VideoBackend:
         native_env: tuple[tuple[str, str], ...] = ()
         if h3_sage:
             native_offload += ("--sage-attn",)
-            # Same opt-in takes the fork's BF16 cuBLAS path; a user-exported value (0 included) wins.
-            from .video_minimax_h3 import H3_QUANT_CUBLAS_ENV, H3_QUANT_CUBLAS_MIN_BATCH
-            if H3_QUANT_CUBLAS_ENV not in os.environ:
-                native_env += ((H3_QUANT_CUBLAS_ENV, H3_QUANT_CUBLAS_MIN_BATCH),)
+        if native_device != "cpu":
+            from .video_minimax_h3 import h3_quant_cublas_env
+            native_env += h3_quant_cublas_env(native_cuda_cc, sage = h3_sage)
+        from .sd_cpp_cudnn import CudnnAttention, plan_cudnn_attention
+
+        try:
+            native_cudnn = (
+                plan_cudnn_attention(
+                    binary,
+                    native_cuda_cc,
+                    allow_install = allow_install,
+                    cancel_event = cancel_event,
+                )
+                if native_device != "cpu"
+                else CudnnAttention()
+            )
+        except Exception as exc:  # noqa: BLE001 - an optional speedup never fails a load
+            logger.warning("video.h3_cudnn_plan_failed (ggml kernels): %s", exc)
+            native_cudnn = CudnnAttention()
+        native_env += native_cudnn.env
+        if cancel_event.is_set():
+            raise RuntimeError(VIDEO_CANCELLED_MSG)
+        from .video_minimax_h3 import H3_QUANT_CUBLAS_ENV, H3_QUANT_CUBLAS_MIN_CC
+
+        # The fork ignores the env below sm80, so a user value there is not the route.
+        h3_quant_cublas = (
+            native_device != "cpu"
+            and (native_cuda_cc is None or tuple(native_cuda_cc) >= H3_QUANT_CUBLAS_MIN_CC)
+            and dict(native_env)
+            .get(H3_QUANT_CUBLAS_ENV, os.environ.get(H3_QUANT_CUBLAS_ENV, ""))
+            .strip()
+            not in ("", "0")
+        )
         # After the policy, so the pin can see which modules it left on the CPU; without it sd.cpp uses ordinal 0
         # whatever was selected.
         native_offload += tuple(device_backend_flags(native_device_name, list(native_offload)))
-        from .video_minimax_h3 import MiniMaxH3NativeRuntime
+        from .video_minimax_h3 import (
+            H3NativeServerSlot,
+            MiniMaxH3NativeRuntime,
+            h3_sibling_server_binary,
+        )
 
+        native_files = SdCppModelFiles(
+            diffusion_model = str(resolved[0]),
+            llm = str(resolved[1]),
+            vae = str(resolved[2]),
+            audio_vae = str(resolved[3]),
+        )
+        # Nothing spawns here: the slot starts the server on the first render; no sibling sd-server keeps one-shot.
+        server_binary = h3_sibling_server_binary(getattr(engine, "binary", None))
         runtime = MiniMaxH3NativeRuntime(
             engine = engine,
             # Pinned under the reader claim above, where this exact file answered --help with the H3 options. Taking it
             # at generation time instead would compare a replacement against itself.
             binary_identity = binary_identity,
             selected_card = selected_card,
-            files = SdCppModelFiles(
-                diffusion_model = str(resolved[0]),
-                llm = str(resolved[1]),
-                vae = str(resolved[2]),
-                audio_vae = str(resolved[3]),
-            ),
+            files = native_files,
             offload_flags = native_offload,
             env = native_env,
+            cudnn = native_cudnn,
+            server_slot = (
+                H3NativeServerSlot(
+                    server_binary,
+                    native_files,
+                    native_offload,
+                    pressure_probe = functools.partial(
+                        _h3_native_server_pressure, native_device, native_ordinal
+                    ),
+                )
+                if server_binary
+                else None
+            ),
         )
 
         with self._lock:
@@ -3531,9 +3686,12 @@ class VideoBackend:
                                 "speed_mode": (
                                     speed_mode,
                                     SPEED_MAX if h3_sage else SPEED_OFF,
-                                    "sd.cpp SageAttention + BF16 cuBLAS"
-                                    if h3_sage
-                                    else "sd.cpp exact kernels",
+                                    {
+                                        (True, True): "sd.cpp SageAttention + BF16 cuBLAS",
+                                        (True, False): "sd.cpp SageAttention",
+                                        (False, True): "sd.cpp BF16 cuBLAS matmuls",
+                                        (False, False): "sd.cpp exact kernels",
+                                    }[(bool(h3_sage), bool(h3_quant_cublas))],
                                 ),
                                 "attention_backend": (
                                     None,
@@ -3583,8 +3741,10 @@ class VideoBackend:
         self._precommit_globals = None
         restore_backend_flags(flags)
         from . import diffusion_gguf_compile
+        from . import video_wan_fused
 
         diffusion_gguf_compile.uninstall_all()
+        video_wan_fused.uninstall()
 
     # LTX-2.3 gets DiT/connectors/VAEs/vocoder from the checkpoint + extras, so only the 2.0 base scheduler / text
     # encoder / tokenizer are pulled.
@@ -3860,7 +4020,7 @@ class VideoBackend:
                     else resolve_diffusion_device_target(ordinal = gpu_ordinal)
                 )
                 dtype = target.dtype
-                if getattr(fam, "fp16_incompatible", False) and dtype is torch.float16:
+                if dtype is torch.float16 and fp16_promotes_to_fp32(fam):
                     dtype = torch.float32
                 return _h3_auto_denoiser_scheme(
                     fam,
@@ -3901,7 +4061,7 @@ class VideoBackend:
                     if gpu_ordinal is None
                     else resolve_diffusion_device_target(ordinal = gpu_ordinal)
                 )
-                if getattr(fam, "fp16_incompatible", False) and target.dtype is torch.float16:
+                if target.dtype is torch.float16 and fp16_promotes_to_fp32(fam):
                     # The loader promotes fp16 to float32 here, so read the dtype the load will.
                     return None
                 scheme = _video_auto_denoiser_scheme(
@@ -5334,10 +5494,17 @@ class VideoBackend:
         )
         # Bound only at the commit past the token check: a superseded load may return from the install late.
         _nvfp4_install_outcome: Optional[tuple[bool, str]] = None
-        # Video DiTs are bf16-native; fp16 overflows, so a resolved fp16 promotes to float32.
+        # Video DiTs are bf16-native: fp16 promotes to float32 unless the family declares an fp16_guard.
         dtype = target.dtype
-        if fam.fp16_incompatible and dtype is torch.float16:
+        if dtype is torch.float16 and fp16_promotes_to_fp32(fam):
             dtype = torch.float32
+            logger.warning(
+                "video.dtype_promoted: family=%s float16 -> float32 (fp16-incompatible)", fam.name
+            )
+        elif fam.fp16_incompatible and dtype is torch.float16:
+            logger.info(
+                "video.fp16_guard: family=%s recipe=%s (float16 kept)", fam.name, fam.fp16_guard
+            )
         # Size tables below are bf16 (2-byte), so scale dense estimates when the promotion lands fp32 on an accelerator
         dtype_scale = 2.0 if device != "cpu" and dtype is torch.float32 else 1.0
 
@@ -5692,6 +5859,7 @@ class VideoBackend:
             _nvfp4_install_wanted, denoiser_seed_scheme, device, local_files_only = local_files_only
         )
         denoiser_injected: dict[str, Any] = {}
+        ltx23_direct_loaded = False
         if denoiser_seed_scheme is not None:
             from .video_denoiser_prequant import denoiser_prequant_pipe_kwargs
 
@@ -5767,7 +5935,7 @@ class VideoBackend:
                 sf_kwargs["quantization_config"] = diffusers.GGUFQuantizationConfig(
                     compute_dtype = dtype
                 )
-            from .video_ltx2 import is_ltx23_checkpoint, load_ltx23_pipeline
+            from .video_ltx2 import direct_load_device, is_ltx23_checkpoint, load_ltx23_pipeline
 
             if fam.name == "ltx-2" and is_ltx23_checkpoint(checkpoint_path):
                 # Explicit fp8 takes the hosted DiT, resident only: offload hooks' Module.to() rejects torchao tensors.
@@ -5821,6 +5989,20 @@ class VideoBackend:
                     raise_on_unified_memory_shortfall(
                         plan, family = getattr(fam, "name", None), logger = logger
                     )
+                # Judged on the bf16 plan too: a single-file load never engages the runtime quant.
+                ltx23_device = None
+                ltx23_te_device = None
+                if kind != "gguf" and all(
+                    plan_keeps_transformer_resident(p) for p in (plan, bf16_plan) if p is not None
+                ):
+                    ltx23_device = direct_load_device(target.torch_device)
+                    if all(
+                        getattr(p, "offload_policy", None) == OFFLOAD_NONE
+                        for p in (plan, bf16_plan)
+                        if p is not None
+                    ):
+                        ltx23_te_device = ltx23_device
+                ltx23_direct_loaded = ltx23_device is not None
                 # 2.3 checkpoints need the full assembly: new config flags, key renames the stock converter lacks, and
                 # the 2.3 connectors/VAEs/vocoder.
                 pipe = load_ltx23_pipeline(
@@ -5837,6 +6019,8 @@ class VideoBackend:
                     # _base_local_dir is None for 2.3 by design -- so every component below resolves the hub id.
                     local_files_only = local_files_only,
                     transformer_override = ltx23_override,
+                    device = ltx23_device,
+                    text_encoder_device = ltx23_te_device,
                 )
             else:
                 transformer = transformer_cls.from_single_file(str(checkpoint_path), **sf_kwargs)
@@ -6112,6 +6296,16 @@ class VideoBackend:
                 "(quantized transformer must be compiled; eager is ~30x slower)"
             )
             effective_speed = SPEED_DEFAULT
+        # Before the step cache and apply_memory_plan: their hooks capture the block forward when they attach.
+        from . import video_wan_fused
+
+        wan_fused_engaged = False
+        if effective_speed != SPEED_OFF:
+            wan_fused_engaged = video_wan_fused.install_for_pipe(
+                pipe, dtype, getattr(target, "device", "cuda"), logger = logger
+            )
+        else:
+            video_wan_fused.uninstall()
         # "off"/"fbcache" pinned; unset/"auto" only on max, by FBCACHE_MIN_STEPS. Run per expert.
         cache_request = normalize_transformer_cache(transformer_cache)
         cache_auto = transformer_cache is None or cache_request == TC_AUTO
@@ -6242,8 +6436,7 @@ class VideoBackend:
             if fam.name == "ltx-2" and applied.get("compiled"):
                 from .video_ltx2 import install_stg_compile_adapter
                 install_stg_compile_adapter(getattr(view, fam.denoiser_attr, None))
-            if fam.name == "ltx-2" and applied.get("cudnn_benchmark"):
-                # cudnn.benchmark: no steady gain on LTX's VAE / vocoder convs, but a per-shape re-tune (first render 26 s vs 10 s).
+            if not getattr(fam, "cudnn_benchmark", True) and applied.get("cudnn_benchmark"):
                 from .video_ltx2 import disable_cudnn_benchmark
                 if disable_cudnn_benchmark():
                     applied = {**applied, "cudnn_benchmark": False}
@@ -6254,6 +6447,8 @@ class VideoBackend:
                     speed_optims += ("hunyuan_attn_trim",)
                 if hv15_mask_engaged:
                     speed_optims += ("hv15_vae_vector_mask",)
+                if wan_fused_engaged:
+                    speed_optims += ("wan_fused_adaln",)
         with self._generate_lock:
             # A cancelled/superseded load must not place weights on a GPU the arbiter may have reassigned; recheck
             # before placement.
@@ -6279,8 +6474,11 @@ class VideoBackend:
                     del pipe
                     clear_gpu_cache()
                     raise RuntimeError(shortfall)
+            if ltx23_direct_loaded:
+                _return_direct_loaded_modules(pipe, plan, logger)
             # the streamed modules pin after the load returns, overlapping the first encode and compile
             request_background_pins(pipe)
+            request_fast_pins(pipe)
             offload_policy, vae_tiling = apply_memory_plan(
                 pipe,
                 plan,
@@ -6320,6 +6518,15 @@ class VideoBackend:
                     vae_tiling = True
                 except Exception as exc:  # noqa: BLE001 -- tiling is an optimisation only
                     logger.warning("video.vae_tiling_failed: %s", exc)
+            # Resident: decode untiled when it fits, tiled as fallback. Not on SPEED_OFF, which must stay bit-identical.
+            if (
+                offload_policy == "none"
+                and target.device == "cuda"
+                and effective_speed != SPEED_OFF
+            ):
+                from .video_vae_untiled import install_untiled_decode
+                if install_untiled_decode(pipe, fam.name, logger = logger):
+                    speed_optims += ("vae_untiled_when_fits",)
             # Wan's decode also grows within a single tile, which tiling alone cannot bound.
             install_decoder_sync(pipe, target, logger = logger)
 
@@ -6390,6 +6597,7 @@ class VideoBackend:
                 }
             )
 
+            apply_comfy_flow_shift(pipe, getattr(fam, "comfy_flow_shift", None), logger)
             from . import diffusion_prompt_cache
 
             diffusion_prompt_cache.install(
@@ -6403,8 +6611,32 @@ class VideoBackend:
                 },
                 logger = logger,
             )
+            # Opt-in (UNSLOTH_DIFFUSION_BG_COMPILE=1): off by default so the same seed twice repeats.
+            from . import diffusion_bg_compile as bg_compile
+
+            bg_module = (
+                None
+                if not bg_compile.load_time_enabled()
+                else bg_compile.select_module(
+                    pipe,
+                    speed_optims = speed_optims,
+                    default_tier = effective_speed == SPEED_DEFAULT,
+                    quantized = transformer_quant_engaged is not None,
+                    gguf = kind == "gguf",
+                    step_cache = bool(cache_engaged) or bool(cache_may_toggle),
+                    device = getattr(target, "device", device),
+                    backend = getattr(target, "backend", None),
+                    denoiser_hooked = offload_policy != "none" and _video_denoiser_hooked(pipe),
+                )
+            )
+            load_bg_compile = (
+                bg_compile.arm(bg_module, logger = logger) if bg_module is not None else None
+            )
             with self._lock:
                 if _load_token is not None and _load_token != self._load_token:
+                    if load_bg_compile is not None:
+                        load_bg_compile.close()
+                        load_bg_compile = None
                     del pipe
                     clear_gpu_cache()
                     raise RuntimeError("Video load was cancelled or superseded.")
@@ -6452,6 +6684,7 @@ class VideoBackend:
                         phase = "decode",
                     ),
                     resolved = resolved,
+                    bg_compile = load_bg_compile,
                 )
                 self._precommit_globals = None
         logger.info(
@@ -7194,16 +7427,53 @@ class VideoBackend:
             )
         except Exception:  # noqa: BLE001 -- optimisation only, never fail a load
             pass
+        h3_attn_levers: tuple = ()
         try:
+            from .video_minimax_h3_attn import (
+                fuse_h3_qkv_,
+                h3_attention_backend,
+                install_strided_attention,
+            )
+            h3_denoiser = getattr(pipe, denoiser_component, None)
+            # Resident only: a streamed denoiser's offload hooks are keyed to the three projections.
+            if (
+                effective_speed != SPEED_OFF
+                and denoiser_pinned
+                and not denoiser_streamed
+                and transformer_quant_engaged == "int8"
+                and h3_denoiser is not None
+                and fuse_h3_qkv_(h3_denoiser, logger = logger)
+            ):
+                h3_attn_levers += ("h3_fused_qkv",)
+        except Exception as exc:  # noqa: BLE001 -- optimisation only, the stock projections stay
+            logger.warning("video.h3_attn: QKV fusion skipped: %s", exc)
+        try:
+            h3_attn_backend = select_attention_backend(
+                umem_target, attention_backend, speed_active = effective_speed != SPEED_OFF
+            )
+            try:
+                h3_attn_backend = h3_attention_backend(h3_attn_backend, requested = attention_backend)
+            except Exception:  # noqa: BLE001 -- keep the generic pick
+                pass
             attention_engaged = apply_attention_backend(
                 speed_view,
-                select_attention_backend(
-                    umem_target, attention_backend, speed_active = effective_speed != SPEED_OFF
-                ),
+                h3_attn_backend,
                 logger = logger,
                 # The probe behind this must see the dtype the pipeline actually RUNS in.
                 target = types.SimpleNamespace(device = device, dtype = dtype),
             )
+            # speed off stays bit-identical: the fused q/k norm + RoPE only matches stock within a rounding step
+            if effective_speed != SPEED_OFF and attention_engaged in (
+                "_native_cudnn",
+                "_native_flash",
+            ):
+                try:
+                    if install_strided_attention(
+                        getattr(pipe, denoiser_component, None), logger = logger
+                    ):
+                        h3_attn_levers += ("h3_strided_attn",)
+                except Exception as exc:  # noqa: BLE001 -- stock processor stays
+                    logger.warning("video.h3_attn: strided attention skipped: %s", exc)
             applied = apply_speed_optims(
                 speed_view,
                 types.SimpleNamespace(
@@ -7222,11 +7492,22 @@ class VideoBackend:
                 # The conditioner and the VAEs stay in the rotation even when the denoiser is pinned, so the onload
                 # hooks are live and fullgraph has to drop.
                 offload_active = offload_policy != "none",
+                # a denoiser pinned under the others' offload rotation never moves, so the fused int8 GEMM can engage
+                denoiser_offloaded = bool(denoiser_streamed) or not denoiser_pinned,
                 cuda_graph_default = False,
                 logger = logger,
             )
-            speed_optims = tuple(k for k, v in applied.items() if v)
+            speed_optims = tuple(k for k, v in applied.items() if v) + h3_attn_levers
             if denoiser_streamed and "compiled" in speed_optims:
+                # before the first forward traces the blocks below their hooks
+                try:
+                    from .diffusion_int8_gemm import install as install_int8_gemm
+                    if install_int8_gemm(
+                        getattr(pipe, denoiser_component, None), logger, device = device
+                    ):
+                        speed_optims += ("int8_gemm",)
+                except Exception as exc:  # noqa: BLE001 -- optimisation only, the stock GEMM stays
+                    logger.warning("video.h3_int8_gemm: streamed install skipped: %s", exc)
                 from .video_minimax_h3_residency import compile_blocks_below_offload_hooks
                 compile_blocks_below_offload_hooks(
                     getattr(pipe, denoiser_component, None), logger = logger
@@ -7332,6 +7613,7 @@ class VideoBackend:
                 ),
             }
         )
+        apply_comfy_flow_shift(pipe, getattr(fam, "comfy_flow_shift", None), logger)
         from . import diffusion_prompt_cache
 
         diffusion_prompt_cache.install(
@@ -7907,6 +8189,14 @@ class VideoBackend:
         # begin_generate passes its already-registered event; a direct call makes its own.
         cancel = cancel_event if cancel_event is not None else threading.Event()
         with self._generate_lock:
+            # Never render beside a background compile; wait outside the state lock so status polls keep answering.
+            pending_bg = getattr(self._state, "bg_compile", None)
+            if pending_bg is not None and pending_bg.compiling():
+                logger.info("video.bg_compile: render waits for the background compile to finish")
+                waited = pending_bg.wait(cancel)
+                logger.info(
+                    "video.bg_compile: render waited %.1f s for the background compile", waited
+                )
             with self._lock:
                 # A teardown is waiting for this lock and Python locks are not FIFO, so refuse rather than denoise
                 # against a pipeline that is already being torn down.
@@ -7921,6 +8211,12 @@ class VideoBackend:
             # Bound below, once the request is resolved. None means the failure beat the resolution, and there is
             # nothing truthful to report.
             request_shape: Optional[dict[str, Any]] = None
+            # Compile still pending: this render runs eager and records the denoiser inputs for it.
+            from . import diffusion_bg_compile as bg_compile
+
+            bg = getattr(state, "bg_compile", None)
+            bg_eager = bg is not None and bg.pending()
+            bg_token = bg_compile._FORCE_EAGER.set(True) if bg_eager else None
             try:
                 # FIRST, before any device object exists. begin_generate runs this on a fresh daemon thread, so until it
                 # is pinned the un-indexed state.device below -- the H3 memory probe and every torch.Generator --
@@ -8489,6 +8785,9 @@ class VideoBackend:
                         raise RuntimeError(VIDEO_CANCELLED_MSG)
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
+                if bg_eager:
+                    bg.note_eager_generation()
+                    bg.kick()
                 reclaim_offload_host_memory(state.offload_policy, logger = logger)
                 return {
                     "mp4_bytes": mp4_bytes,
@@ -8536,6 +8835,8 @@ class VideoBackend:
                 _log_failed_generation(request_shape, exc)
                 raise
             finally:
+                if bg_token is not None:
+                    bg_compile._FORCE_EAGER.reset(bg_token)
                 with self._lock:
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
@@ -8704,6 +9005,97 @@ class VideoBackend:
             audios = decoded_audios,
         )
 
+    def _h3_native_server_render(
+        self,
+        runtime: Any,
+        params: Any,
+        *,
+        output_path: Path,
+        on_log: Callable[[str], None],
+        cancel: threading.Event,
+        flags: Optional[list[str]] = None,
+        env: Optional[dict[str, str]] = None,
+    ) -> Optional[Path]:
+        """Render one MiniMax-H3 clip on the runtime's resident sd-server, spawned with this render's sd-cli ``flags`` /
+        ``env``.
+
+        Returns the written container, or None for the one-shot sd-cli: no slot, kill switch, reference video / audio,
+        or a server that cannot start, lacks vid_gen, or died (the runtime then stays one-shot). Every fallback first
+        stops the server so the two never hold the model at once. A job the live server fails is raised after stopping
+        it. Called inside the generation's managed-tree reader claim."""
+        import base64
+
+        from .sd_cpp_args import build_vid_gen_request, h3_server_eligible
+        from .sd_cpp_engine import SdCppCancelled
+        from .sd_cpp_server import SdCppServerUnsupported
+        from .video_minimax_h3 import h3_native_server_enabled
+
+        slot = getattr(runtime, "server_slot", None)
+        if slot is None or slot.disabled_reason is not None:
+            return None
+        if not h3_native_server_enabled():
+            slot.stop("UNSLOTH_H3_NATIVE_SERVER=0")
+            return None
+        if not h3_server_eligible(params):
+            # The sd-cli loads the whole model again; a resident copy beside it may not fit.
+            slot.release("reference video / audio render runs on sd-cli")
+            return None
+
+        def b64_file(path: Optional[str]) -> Optional[str]:
+            if not path:
+                return None
+            return base64.b64encode(Path(path).read_bytes()).decode("ascii")
+
+        payload = build_vid_gen_request(
+            params,
+            images_b64 = {
+                "init_image": b64_file(params.init_img),
+                "end_image": b64_file(params.end_img),
+            },
+            ref_images_b64 = [b64_file(p) for p in params.ref_images] or None,
+        )
+        render_flags = list(runtime.offload_flags) if flags is None else list(flags)
+        render_env = dict(runtime.env) if env is None else dict(env)
+        slot.begin_render()
+        try:
+            try:
+                server = slot.get(render_flags, render_env, cancel_event = cancel)
+            except SdCppCancelled:
+                raise
+            except Exception as exc:  # noqa: BLE001 - any start failure leaves the one-shot path
+                if cancel.is_set():
+                    raise SdCppCancelled("sd-server start was cancelled.") from exc
+                logger.warning("video.h3_native_server_start_failed (using sd-cli): %s", exc)
+                slot.disable(f"start failed: {exc}")
+                return None
+            try:
+                data = server.vid_gen(payload, on_step = on_log, cancel_event = cancel)
+            except SdCppServerUnsupported as exc:
+                logger.warning("video.h3_native_server_unsupported (using sd-cli): %s", exc)
+                slot.disable(str(exc))
+                return None
+            except SdCppCancelled:
+                raise
+            except RuntimeError as exc:
+                if cancel.is_set():
+                    raise SdCppCancelled("sd-server generation was cancelled.") from exc
+                if not server.is_alive():
+                    logger.warning(
+                        "video.h3_native_server_died (retrying once on sd-cli, staying one-shot): %s",
+                        exc,
+                    )
+                    slot.disable(f"server died: {exc}")
+                    return None
+                slot.stop("render failed")
+                raise
+            Path(output_path).write_bytes(data)
+            return Path(output_path)
+        finally:
+            try:
+                slot.end_render()
+            except Exception as exc:  # noqa: BLE001 - the render's own outcome wins
+                logger.warning("video.h3_native_server_release_failed: %s", exc)
+
     def _generate_h3_native(
         self,
         *,
@@ -8751,10 +9143,30 @@ class VideoBackend:
                 need = h3_native_resident_bytes(file_bytes, width, height, frames)
             except Exception:  # noqa: BLE001 -- unknown size keeps the committed offload
                 need = None
+            free = None
+            if need:
+                # A live resident server's weights count as free; a larger clip's activations must still fit the rest.
+                slot = getattr(runtime, "server_slot", None)
+                live = slot.alive_signature() if slot is not None else None
+                resident_flags, _ = h3_native_render_flags(
+                    runtime.offload_flags,
+                    memory_mode = state.memory_mode,
+                    free_bytes = need,
+                    need_bytes = need,
+                )
+                if (
+                    live is not None
+                    and live[2] == tuple(resident_flags)
+                    and "--offload-to-cpu" not in live[2]
+                ):
+                    card_free = _h3_card_free_bytes(state.device, state.gpu_ordinal)
+                    free = None if card_free is None else card_free + file_bytes
+                else:
+                    free = _h3_card_free_bytes(state.device, state.gpu_ordinal)
             render_flags, render_resident = h3_native_render_flags(
                 runtime.offload_flags,
                 memory_mode = state.memory_mode,
-                free_bytes = _h3_card_free_bytes(state.device, state.gpu_ordinal) if need else None,
+                free_bytes = free,
                 need_bytes = need,
             )
         if seed is None:
@@ -8775,9 +9187,14 @@ class VideoBackend:
         denoise_close = re.compile(r"sampling completed", re.IGNORECASE)
         step_bar = re.compile(r"\|\s*(\d+)\s*/\s*(\d+)\s*-\s*[\d.]+\s*(?:it/s|s/it)")
         denoising = False
+        cudnn = getattr(runtime, "cudnn", None)
+        if cudnn is not None:
+            cudnn.begin_render()
 
         def on_log(line: str) -> None:
             nonlocal denoising
+            if cudnn is not None:
+                cudnn.feed(line)
             if denoise_open.search(line):
                 denoising = True
                 return
@@ -8847,31 +9264,42 @@ class VideoBackend:
                                 "replaced by an install, so it is no longer the build this model "
                                 "was checked against. Reload the model and try again."
                             )
-                        generated = runtime.engine.generate_video(
-                            runtime.files,
-                            SdCppVideoGenParams(
-                                prompt = prompt,
-                                width = width,
-                                height = height,
-                                num_frames = frames,
-                                fps = fps,
-                                steps = steps,
-                                cfg_scale = 1.0,
-                                seed = int(seed),
-                                init_img = init_img,
-                                end_img = end_img,
-                                ref_images = staged.images,
-                                ref_videos = staged.videos,
-                                ref_video_audios = staged.video_audios,
-                                ref_audios = staged.audios,
-                                flow_shift = flow_shift,
-                            ),
-                            output_path = str(output_path),
-                            offload = render_flags,
-                            env = dict(runtime.env) or None,
-                            on_log = on_log,
-                            cancel_event = cancel,
+                        video_params = SdCppVideoGenParams(
+                            prompt = prompt,
+                            width = width,
+                            height = height,
+                            num_frames = frames,
+                            fps = fps,
+                            steps = steps,
+                            cfg_scale = 1.0,
+                            seed = int(seed),
+                            init_img = init_img,
+                            end_img = end_img,
+                            ref_images = staged.images,
+                            ref_videos = staged.videos,
+                            ref_video_audios = staged.video_audios,
+                            ref_audios = staged.audios,
+                            flow_shift = flow_shift,
                         )
+                        generated = self._h3_native_server_render(
+                            runtime,
+                            video_params,
+                            output_path = output_path,
+                            on_log = on_log,
+                            cancel = cancel,
+                            flags = render_flags,
+                            env = dict(runtime.env),
+                        )
+                        if generated is None:
+                            generated = runtime.engine.generate_video(
+                                runtime.files,
+                                video_params,
+                                output_path = str(output_path),
+                                offload = render_flags,
+                                env = dict(runtime.env) or None,
+                                on_log = on_log,
+                                cancel_event = cancel,
+                            )
                 except SdCppCancelled:
                     raise RuntimeError(VIDEO_CANCELLED_MSG) from None
                 except RuntimeError as exc:
@@ -8883,6 +9311,8 @@ class VideoBackend:
                     raise
                 if cancel.is_set():
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
+                if cudnn is not None:
+                    cudnn.end_render()
                 self._gen.update(phase = "export", eta_seconds = None)
                 actual_width, actual_height, actual_frames, has_audio = inspect_video(generated)
                 mp4_bytes = transcode_video_to_mp4(generated, fps = fps)
@@ -8957,7 +9387,14 @@ class VideoBackend:
                 encode_kwargs.get("audio"),
                 encode_kwargs.get("audio_sample_rate"),
             ):
-                encode_video(video_frames, fps, tmp.name, **encode_kwargs)
+                if not encode_x264(
+                    video_frames,
+                    fps,
+                    tmp.name,
+                    encode_kwargs.get("audio"),
+                    encode_kwargs.get("audio_sample_rate"),
+                ):
+                    encode_video(video_frames, fps, tmp.name, **encode_kwargs)
             return Path(tmp.name).read_bytes()
         finally:
             try:
@@ -9033,13 +9470,28 @@ class VideoBackend:
         cannot observe a half-torn-down backend."""
         state, self._state = self._state, None
         if state is not None:
+            server_slot = getattr(getattr(state, "pipe", None), "server_slot", None)
+            if server_slot is not None:
+                try:
+                    server_slot.stop("unload")
+                except Exception as exc:  # noqa: BLE001 - teardown is best effort
+                    logger.warning("video.h3_native_server_stop_failed: %s", exc)
+            # An in-flight background compile still runs the denoiser the teardown frees.
+            if getattr(state, "bg_compile", None) is not None:
+                try:
+                    state.bg_compile.close()
+                except Exception:  # noqa: BLE001 -- teardown is best effort
+                    pass
             restore_backend_flags(state.backend_flags)
             # A GGUF load may have installed the compiled GGUF dequantizer; restore the stock kernels so a later
             # speed=off load is bit-identical.
             from . import diffusion_gguf_compile
             from . import diffusion_cuda_graph
+            from . import video_wan_fused
 
             diffusion_gguf_compile.uninstall_all()
+            # The fused Wan block forward is class-level: a later bf16 / speed=off load gets the stock one back.
+            video_wan_fused.uninstall()
             from . import diffusion_prompt_cache
 
             diffusion_prompt_cache.release(getattr(state, "pipe", None))
@@ -9122,6 +9574,8 @@ class VideoBackend:
                 "speed_mode": None,
                 "speed_optims": [],
                 "attention_backend": None,
+                "sd_cpp_cudnn_attention": None,
+                "sd_cpp_cudnn_reason": None,
                 "transformer_cache": None,
                 "transformer_cache_stats": None,
                 "transformer_quant": None,
@@ -9176,7 +9630,11 @@ class VideoBackend:
             "memory_mode": state.memory_mode,
             "speed_mode": state.speed_mode,
             "speed_optims": speed_optims,
+            "bg_compile": state.bg_compile.describe()
+            if getattr(state, "bg_compile", None) is not None
+            else None,
             "attention_backend": state.attention_backend,
+            **_sd_cpp_cudnn_status(state),
             "transformer_cache": state.transformer_cache,
             "transformer_cache_stats": (
                 static_skip_stats(state.pipe) if state.transformer_cache == TC_STATIC else None
@@ -9211,6 +9669,14 @@ class VideoBackend:
             },
             "resolved": resolved,
         }
+
+
+def _sd_cpp_cudnn_status(state: Any) -> dict[str, Any]:
+    """Whether the native runtime's sd.cpp children run attention on cuDNN; nulls for every other runtime."""
+    cudnn = getattr(getattr(state, "pipe", None), "cudnn", None)
+    if cudnn is None or state.engine != "sd_cpp":
+        return {"sd_cpp_cudnn_attention": None, "sd_cpp_cudnn_reason": None}
+    return cudnn.status_fields()
 
 
 _backend: Optional[VideoBackend] = None

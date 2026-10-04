@@ -29,6 +29,7 @@ caller falls back to dense-quantise (then GGUF). Inert with nothing configured.
 
 from __future__ import annotations
 
+import re as _re
 import threading as _threading
 from dataclasses import dataclass
 from collections.abc import Sequence
@@ -338,13 +339,47 @@ def _load_prequant_checkpoint(path: str, **kwargs: Any) -> Any:
 
     Dispatched on the file extension rather than on content sniffing: the extension is what the
     resolver asked the Hub for, so a repo hosting both containers cannot serve one and be parsed as
-    the other. ``kwargs`` are the pickle path's (``map_location``, ``mmap``); safetensors has no
-    equivalent knobs and reads to CPU, which is where the pickle path maps too."""
+    the other. ``kwargs`` are the pickle path's (``map_location``, ``mmap``); safetensors reads to
+    CPU, which is where the pickle path maps too, and honours ``mmap`` the same way."""
     from .prequant_safetensors import is_safetensors_checkpoint, load_prequant_safetensors
 
     if is_safetensors_checkpoint(path):
-        return load_prequant_safetensors(path)
+        return load_prequant_safetensors(path, mmap = bool(kwargs.get("mmap")))
     return _torch_load_prequant(path, **kwargs)
+
+
+# 0 reads a pickle checkpoint headed for an accelerator into host memory instead of mapping it.
+_PREQUANT_MMAP_ENV = "UNSLOTH_DIFFUSION_PREQUANT_MMAP"
+
+
+def prequant_mmap_enabled(destination: Any) -> bool:
+    """Map only for a non-CPU destination: a host-placed module would keep the file open (Windows then cannot delete it)."""
+    import os
+
+    raw = (os.environ.get(_PREQUANT_MMAP_ENV) or "").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return False
+    dest = str(destination or "").strip().lower()
+    return bool(dest) and not dest.startswith("cpu") and dest != "meta"
+
+
+def _read_prequant_for(
+    path: str,
+    destination: Any,
+    logger: Any = None,
+) -> Any:
+    """``_load_prequant_checkpoint`` mapped when enabled; anything the mapping cannot open is re-read in full."""
+    if prequant_mmap_enabled(destination):
+        try:
+            return _load_prequant_checkpoint(path, map_location = "cpu", mmap = True)
+        except Exception as exc:  # noqa: BLE001 - retried unmapped; the real error resurfaces there
+            if logger is not None:
+                logger.info(
+                    "diffusion.prequant: mapped read failed (%s: %s); reading the checkpoint into memory",
+                    type(exc).__name__,
+                    str(exc).splitlines()[0][:200] if str(exc) else "",
+                )
+    return _load_prequant_checkpoint(path, map_location = "cpu")
 
 
 _PREQUANT_TOGGLE_TOKENS = {"1", "true", "yes", "on", "0", "false", "no", "off"}
@@ -396,6 +431,65 @@ def local_prequant_path_ready(path: str) -> bool:
     if not _local_prequant_path_allowed(path):
         return False
     return os.path.isfile(os.path.expanduser(path))
+
+
+# Operator-side mirror checked BEFORE the Hub: ``<root>/<owner>/<repo>/<filename>``, roots split by ``os.pathsep``.
+# Names come from the family tables, never a request; anything leaving the root is ignored.
+PREQUANT_MIRROR_ENV = "UNSLOTH_DIFFUSION_PREQUANT_MIRROR"
+
+
+def prequant_mirror_path(
+    repo_id: Optional[str],
+    name: Optional[str],
+    readable: Any = None,
+) -> Optional[str]:
+    """``<mirror>/<repo_id>/<name>`` when a configured mirror holds that file, else None. Never raises.
+
+    A converted safetensors copy of a requested pickle wins over the pickle itself (same weights, no
+    constructor allowlist), but only when ``readable(<sibling name>)`` says this install can open it:
+    otherwise a host without torchao's flatten helpers would be handed a file it then refuses, after
+    planning had already counted it as cached. ``readable`` defaults to "yes"."""
+    import os
+
+    raw = (os.environ.get(PREQUANT_MIRROR_ENV) or "").strip()
+    if not raw or not repo_id or not name:
+        return None
+    parts = [*str(repo_id).split("/"), *str(name).split("/")]
+    if any(p in ("", ".", "..") or "\\" in p for p in parts):
+        return None
+    wanted = [parts]
+    for suffix in (".pt", ".pth"):
+        if parts[-1].endswith(suffix):
+            sibling = parts[-1][: -len(suffix)] + ".safetensors"
+            try:
+                ok = readable is None or bool(readable(sibling))
+            except Exception:  # noqa: BLE001 - an unanswerable question is a no
+                ok = False
+            if ok:
+                wanted.insert(0, [*parts[:-1], sibling])
+            break
+    for root in raw.split(os.pathsep):
+        root = root.strip()
+        if not root:
+            continue
+        for rel in wanted:
+            try:
+                base = os.path.realpath(os.path.expanduser(root))
+                candidate = os.path.realpath(os.path.join(base, *rel))
+            except Exception:  # noqa: BLE001 - a bad root is simply not a mirror
+                break
+            if candidate.startswith(base.rstrip(os.sep) + os.sep) and os.path.isfile(candidate):
+                return candidate
+    return None
+
+
+def _first_mirrored(repo_id: Optional[str], names: Sequence[str], readable: Any) -> Optional[str]:
+    """The mirror's copy of the first of ``names`` it holds, checked for ALL names before any Hub call."""
+    for name in names:
+        hit = prequant_mirror_path(repo_id, name, readable)
+        if hit is not None:
+            return hit
+    return None
 
 
 @dataclass(frozen = True)
@@ -1015,15 +1109,23 @@ def cached_checkpoint_path(
     ``hf_hub_download`` falls back to huggingface_hub's import-time constant. Never raises."""
     roots = (cache_dir, None) if cache_dir else (None,)
     wanted = set(names) if names is not None else None
-    for name in candidate_filenames_of(source):
-        if wanted is not None and name not in wanted:
-            continue
+
+    def _readable(name: str) -> bool:
         try:
-            readable = restricted_prequant_load_supported(None, name)
+            return bool(restricted_prequant_load_supported(None, name))
         except Exception:  # noqa: BLE001 - a pure lookup that never raises, as documented above
-            readable = True
-        if not readable:
-            continue
+            return True
+
+    candidates = [
+        n
+        for n in candidate_filenames_of(source)
+        if (wanted is None or n in wanted) and _readable(n)
+    ]
+    if getattr(source, "kind", None) == "repo":
+        mirrored = _first_mirrored(getattr(source, "location", None), candidates, _readable)
+        if mirrored is not None:
+            return mirrored
+    for name in candidates:
         for root in roots:
             hit = _cached_in_root(source, root, name)
             if hit is not None:
@@ -1157,7 +1259,7 @@ def load_prequantized_transformer(
         # mutable, fetched over the network, and reached by loads that never asked for one (auto resolves an unset
         # precision to a hosted checkpoint), so a mutated file must fail to load rather than run. Both containers
         # hand back the same dict, so every check below applies to them equally.
-        ckpt = _load_prequant_checkpoint(path, map_location = "cpu")
+        ckpt = _read_prequant_for(path, placement_device or device, logger)
         if not _validate_checkpoint(
             ckpt,
             scheme,
@@ -1172,6 +1274,7 @@ def load_prequantized_transformer(
         # The only check reading what the artifact HOLDS: corruption after build passes the rest.
         if not _verify_packed_fingerprint(state_dict, ckpt.get("metadata") or {}, logger = logger):
             return None
+        _repair_legacy_checkpoint(ckpt, scheme, logger)
         _pin_kernel_preference(state_dict, logger)
 
         # Read from the root that actually supplied the checkpoint: after a mid-session cache change the pinned root
@@ -1231,7 +1334,10 @@ def load_prequantized_transformer(
         del state_dict
         del ckpt
 
-        transformer = transformer.to(placement_device or device)
+        from .diffusion_fast_load import fast_upload
+
+        with fast_upload([transformer], placement_device or device, logger = logger):
+            transformer = transformer.to(placement_device or device)
         if declares_rotation(metadata):
             try:
                 import torch
@@ -1399,6 +1505,12 @@ def _resolve_checkpoint_path(
             names = readable or names
         if not names:
             return None
+        # Mirror first for EVERY name: else a Hub copy of an earlier name is downloaded and the mirror never used.
+        mirrored = _first_mirrored(
+            source.location, names, lambda n: restricted_prequant_load_supported(scheme, n)
+        )
+        if mirrored is not None:
+            return mirrored
         for index, name in enumerate(names):
             last = index == len(names) - 1
             try:
@@ -1492,7 +1604,12 @@ def _load_transformer_config(
 _FLOAT8_TENSOR_CLASS = "Float8Tensor"
 
 
-def _fp8_activation_floor_present(state_dict: Any, logger: Any) -> bool:
+def _fp8_activation_floor_present(
+    state_dict: Any,
+    logger: Any,
+    *,
+    warn: bool = True,
+) -> bool:
     """True unless the first Float8Tensor has no activation lower bound (by class: NVFP4Tensor lacks one too)."""
     from .diffusion_transformer_quant import TQ_FP8
 
@@ -1506,6 +1623,8 @@ def _fp8_activation_floor_present(state_dict: Any, logger: Any) -> bool:
                 continue
             if getattr(kwargs, "hp_value_lb", None):
                 return True
+            if not warn:
+                return False
             _warn(
                 logger,
                 TQ_FP8,
@@ -1519,6 +1638,77 @@ def _fp8_activation_floor_present(state_dict: Any, logger: Any) -> bool:
     except Exception:  # noqa: BLE001 -- an unreadable state dict is the other checks' problem
         return True
     return True
+
+
+def _fp8_kwargs_missing_floor(tensor: Any) -> Optional[Any]:
+    if type(tensor).__name__ != _FLOAT8_TENSOR_CLASS:
+        return None
+    kwargs = getattr(tensor, "act_quant_kwargs", None)
+    if kwargs is None or getattr(kwargs, "hp_value_lb", None):
+        return None
+    return kwargs
+
+
+def _fp8_activation_floor_restorable(state_dict: Any) -> bool:
+    """Whether every unfloored Float8Tensor differs from the runtime config in the floor alone.
+
+    torchao's fp8 weight quantiser never reads ``hp_value_lb``, so the weight bytes of an artifact built before
+    ``activation_value_lb`` equal what ``_make_quant_config`` builds today."""
+    try:
+        items = state_dict.items() if hasattr(state_dict, "items") else ()
+        for _name, tensor in items:
+            kwargs = _fp8_kwargs_missing_floor(tensor)
+            if kwargs is None:
+                continue
+            if (
+                not hasattr(kwargs, "hp_value_lb")
+                or getattr(kwargs, "hp_value_ub", None) is not None
+            ):
+                return False
+    except Exception:  # noqa: BLE001 -- cannot prove it: keep refusing
+        return False
+    return True
+
+
+def _restore_fp8_activation_floor(state_dict: Any, logger: Any = None) -> int:
+    """Write the runtime activation floor into every unfloored Float8Tensor; returns how many.
+    Fresh kwargs per tensor: a pickle may share one instance between tensors."""
+    import copy
+    import dataclasses
+
+    from .diffusion_transformer_quant import FP8_ACTIVATION_VALUE_LB
+
+    restored = 0
+    for _name, tensor in list(state_dict.items()):
+        kwargs = _fp8_kwargs_missing_floor(tensor)
+        if kwargs is None:
+            continue
+        if dataclasses.is_dataclass(kwargs) and not isinstance(kwargs, type):
+            fixed = dataclasses.replace(kwargs, hp_value_lb = FP8_ACTIVATION_VALUE_LB)
+        else:
+            fixed = copy.copy(kwargs)
+            fixed.hp_value_lb = FP8_ACTIVATION_VALUE_LB
+        tensor.act_quant_kwargs = fixed
+        restored += 1
+    if restored and logger is not None:
+        logger.info(
+            "diffusion.prequant: restored the fp8 activation scale floor (%g) on %d weights built "
+            "before activation_value_lb",
+            FP8_ACTIVATION_VALUE_LB,
+            restored,
+        )
+    return restored
+
+
+def _repair_legacy_checkpoint(
+    ckpt: Any,
+    scheme: str,
+    logger: Any = None,
+) -> None:
+    from .diffusion_nvfp4_policy import declares_policy
+    from .diffusion_transformer_quant import TQ_FP8
+    if scheme == TQ_FP8 or declares_policy(ckpt.get("metadata") or {}):
+        _restore_fp8_activation_floor(ckpt["state_dict"], logger)
 
 
 def _validate_activation_rotation(ckpt_format: Any, meta: Any, scheme: str, logger: Any) -> bool:
@@ -1700,8 +1890,16 @@ def _validate_checkpoint(
     # act_quant_kwargs.hp_value_lb, so an artifact built before the fix stays broken however it is loaded, and it
     # predates any metadata field we could stamp -- and "absent is accepted for back-compat", the convention every
     # check above follows, is exactly wrong here. Reading the tensors is fail-closed and needs no format bump.
-    if holds_fp8 and not _fp8_activation_floor_present(ckpt.get("state_dict"), logger):
-        return False
+    # Unless the floor is the only difference: it is not weight data, so ``_repair_legacy_checkpoint`` writes it in.
+    if holds_fp8 and not _fp8_activation_floor_present(ckpt.get("state_dict"), logger, warn = False):
+        if not _fp8_activation_floor_restorable(ckpt.get("state_dict")):
+            _fp8_activation_floor_present(ckpt.get("state_dict"), logger)
+            return False
+        if logger is not None:
+            logger.info(
+                "diffusion.prequant: fp8 checkpoint predates activation_value_lb; the runtime "
+                "floor will be written into its weights"
+            )
     ckpt_base = meta.get("base_model_id")
     if base:
         # Keys matching a different base can load strict=True and generate from the wrong weights. Our builder always
@@ -2017,6 +2215,7 @@ def stream_prequantized_module(
         _remove_group_offload_hooks,
         _streamed_pin_plan,
         install_group_offload_buffer_restore,
+        install_group_offload_hooks_eager,
     )
 
     onload = torch.device(device)
@@ -2027,6 +2226,7 @@ def stream_prequantized_module(
         # each weight's AccumulateGrad, and swap_tensors on onload hits Int8Tensor's missing aten.view.
         module.requires_grad_(False)
         install_group_offload_buffer_restore()
+        install_group_offload_hooks_eager()
         use_stream = onload.type == "cuda" and _weights_pinnable(module)
         if onload.type == "cuda" and not use_stream:
             # Sync copies measured 16.4 s/step vs 0.8 s resident (B200): rebuild v1 int8 as pinnable Int8Tensor.
@@ -2106,10 +2306,15 @@ def _has_meta_tensors(module: Any) -> bool:
 
 
 _LAST_FAILURE = _threading.local()
+# An absolute POSIX or Windows path; the status keeps only its last component (the server's layout is not the
+# client's business). Not after a word, ':' or '/', so URLs and repo ids are left alone.
+_ABS_PATH = _re.compile(
+    r"(?<![\w:/.])(?:[A-Za-z]:[\\/]|/)(?:[^\s'\"<>|:;,()\[\]\\/]+[\\/])+(?=[^\s\\/])"
+)
 
 
 def _warn(logger: Any, what: str, exc: Exception) -> None:
-    _LAST_FAILURE.text = f"{type(exc).__name__}: {exc}"[:300]
+    _LAST_FAILURE.text = _ABS_PATH.sub("", f"{type(exc).__name__}: {exc}")[:300]
     if logger is not None:
         logger.warning("diffusion.prequant: %s failed: %s", what, exc)
 

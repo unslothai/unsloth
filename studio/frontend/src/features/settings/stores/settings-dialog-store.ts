@@ -35,6 +35,7 @@ export type SettingsScrollTarget =
   | "chat-composer"
   | "chat-canvas-network"
   | "general-hub"
+  | "general-permissions"
   | "library-storage"
   | "resources-caches";
 
@@ -137,6 +138,7 @@ const SCROLL_TARGET_TAB: Record<SettingsScrollTarget, SettingsTab> = {
   "appearance-sidebar-nav": "appearance",
   "chat-canvas-network": "chat",
   "general-hub": "general",
+  "general-permissions": "general",
   "library-storage": "library",
   "resources-caches": "resources",
 };

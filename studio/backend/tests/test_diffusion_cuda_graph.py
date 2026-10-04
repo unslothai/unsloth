@@ -1134,3 +1134,20 @@ def test_real_cuda_compiled_module_capture_matches_the_compiled_call():
     finally:
         cg.uninstall_all(handles)
     assert unet._compiled_call_impl is compiled
+
+
+@pytest.mark.parametrize("backend", ["sage", "sage_hub"])
+def test_graph_eligible_declines_a_sage_denoiser(stub_torch, monkeypatch, backend):
+    """SageAttention under a replayed graph renders noise (FLUX.1-schnell, A100), so a Sage load stays ungraphed; the
+    kernels-hub build (sage_hub) is the same kernel."""
+    dit = _FakeDiT()
+    dit._unsloth_attention_backend = backend
+    ok, reason = _eligible(monkeypatch, pipe = types.SimpleNamespace(transformer = dit))
+    assert (ok, reason) == (False, "SageAttention is not CUDA-graph safe")
+
+
+@pytest.mark.parametrize("backend", [None, "_native_cudnn", "flash", "native"])
+def test_graph_eligible_keeps_other_backends(stub_torch, monkeypatch, backend):
+    dit = _FakeDiT()
+    dit._unsloth_attention_backend = backend
+    assert _eligible(monkeypatch, pipe = types.SimpleNamespace(transformer = dit)) == (True, "eligible")
