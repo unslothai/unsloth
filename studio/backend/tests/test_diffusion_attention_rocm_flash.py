@@ -19,7 +19,9 @@ from core.inference.diffusion_attention import select_attention_backend
 @pytest.fixture(autouse = True)
 def _clean(monkeypatch):
     monkeypatch.setattr(att, "_ROCM_FLASH_PROBE_CACHE", {}, raising = False)
-    monkeypatch.setattr(att, "_indexed_cuda_device", lambda d: "cuda:0" if d == "cuda" else d, raising = False)
+    monkeypatch.setattr(
+        att, "_indexed_cuda_device", lambda d: "cuda:0" if d == "cuda" else d, raising = False
+    )
     monkeypatch.setattr(att, "_cuda_capability", lambda: (9, 0))
     monkeypatch.setattr(att, "_INSTALL_ATTEMPTED", set())
 
@@ -28,9 +30,16 @@ def _target(device = "cuda", dtype = "torch.bfloat16"):
     return types.SimpleNamespace(device = device, dtype = dtype)
 
 
-def _rocm(monkeypatch, *, flash_attn = True, probe = True):
+def _rocm(
+    monkeypatch,
+    *,
+    flash_attn = True,
+    probe = True,
+):
     monkeypatch.setattr(att, "_is_cuda_nvidia", lambda target: False)
-    monkeypatch.setitem(sys.modules, "flash_attn", types.ModuleType("flash_attn") if flash_attn else None)
+    monkeypatch.setitem(
+        sys.modules, "flash_attn", types.ModuleType("flash_attn") if flash_attn else None
+    )
     calls = []
 
     def fake_probe(device, dtype):
@@ -53,7 +62,11 @@ def test_rocm_flash_check_cached_per_device_and_dtype(monkeypatch):
     calls = _rocm(monkeypatch)
     select_attention_backend(_target(), "flash", speed_active = True)
     select_attention_backend(_target("cuda", "torch.float16"), "flash", speed_active = True)
-    select_attention_backend(types.SimpleNamespace(device = "cuda", torch_device = "cuda:1", dtype = "torch.float16"), "flash", speed_active = True)
+    select_attention_backend(
+        types.SimpleNamespace(device = "cuda", torch_device = "cuda:1", dtype = "torch.float16"),
+        "flash",
+        speed_active = True,
+    )
     assert calls == [
         ("cuda:0", "torch.bfloat16"),
         ("cuda:0", "torch.float16"),
@@ -174,9 +187,13 @@ def test_probe_compares_against_reference(monkeypatch, dtype_name, good):
 
     def flash_attn_func(q, k, v):
         assert q.dtype in (torch.float16, torch.bfloat16)
-        out = torch.nn.functional.scaled_dot_product_attention(
-            *(t.float().transpose(1, 2) for t in (q, k, v))
-        ).transpose(1, 2).to(q.dtype)
+        out = (
+            torch.nn.functional.scaled_dot_product_attention(
+                *(t.float().transpose(1, 2) for t in (q, k, v))
+            )
+            .transpose(1, 2)
+            .to(q.dtype)
+        )
         return out if good else out + 0.1
 
     fa.flash_attn_func = flash_attn_func

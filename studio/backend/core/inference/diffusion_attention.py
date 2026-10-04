@@ -307,11 +307,9 @@ _ROCM_FLASH_HINT = (
 def _module_logger() -> Any:
     try:
         from loggers import get_logger
-
         return get_logger(__name__)
     except Exception:  # noqa: BLE001
         import logging
-
         return logging.getLogger(__name__)
 
 
