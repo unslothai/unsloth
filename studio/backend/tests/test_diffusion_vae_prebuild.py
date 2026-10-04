@@ -105,6 +105,27 @@ def test_a_quit_during_the_load_never_starts_the_child(monkeypatch):
     assert started == []
 
 
+def test_unload_kills_a_child_that_is_still_building():
+    class _Proc:
+        pid = None
+        alive = True
+
+        def is_alive(self):
+            return self.alive
+
+        def kill(self):
+            self.alive = False
+
+        def join(self, timeout = None):
+            pass
+
+    proc = _Proc()
+    prebuild._LIVE.add(proc)
+    assert prebuild.cancel_all() == 1
+    assert proc.alive is False and proc not in prebuild._LIVE
+    assert prebuild.cancel_all() == 0
+
+
 _SCRIPT = textwrap.dedent(
     r"""
     import os, sys, json

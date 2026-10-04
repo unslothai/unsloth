@@ -23,6 +23,9 @@ _LATENT_SIDE = 64
 # Free VRAM needed after the load before a second CUDA context opens.
 _MIN_FREE_BYTES = 6 * 1024**3
 _CHILD_TIMEOUT_S = 180.0
+# Live children, so an unload can stop one before the next load measures free VRAM.
+_LIVE: set = set()
+_LIVE_LOCK = threading.Lock()
 
 
 def enabled() -> bool:
@@ -111,7 +114,7 @@ def _spawn(job: dict, logger: Any) -> bool:
         native_path_secret_removed_for_child_start,
         run_without_native_path_secret,
     )
-    from utils.process_lifetime import adopt_pid, forget_pid, is_process_shutting_down
+    from utils.process_lifetime import adopt_pid, is_process_shutting_down
 
     # A quit during the load: the sweep may already have run, so a child started now would outlive the server.
     if is_process_shutting_down():
@@ -124,28 +127,20 @@ def _spawn(job: dict, logger: Any) -> bool:
             daemon = True,
         )
         proc.start()
+    with _LIVE_LOCK:
+        _LIVE.add(proc)
     try:
         adopt_pid(proc.pid)
     except Exception:  # noqa: BLE001
         pass
     # Recheck once the pid is recorded: the latch can be set between the gate above and the adoption.
     if is_process_shutting_down():
-        proc.kill()
-        proc.join(5.0)
-        if not proc.is_alive():
-            forget_pid(proc.pid)
+        _stop(proc)
         return False
 
     def reap() -> None:
         proc.join(_CHILD_TIMEOUT_S)
-        if proc.is_alive():
-            proc.kill()
-            proc.join(5.0)
-        try:
-            if not proc.is_alive():
-                forget_pid(proc.pid)
-        except Exception:  # noqa: BLE001
-            pass
+        _stop(proc)
         if logger is not None:
             logger.info("diffusion.vae_prebuild: child exited (%s)", proc.exitcode)
 
@@ -157,6 +152,32 @@ def _spawn(job: dict, logger: Any) -> bool:
             proc.pid,
         )
     return True
+
+
+def _stop(proc: Any) -> None:
+    with _LIVE_LOCK:
+        _LIVE.discard(proc)
+    if proc.is_alive():
+        proc.kill()
+        proc.join(5.0)
+    try:
+        from utils.process_lifetime import forget_pid
+        if not proc.is_alive():
+            forget_pid(proc.pid)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def cancel_all() -> int:
+    """Kill every live prebuild child (unload: its CUDA context and VAE must not shadow the next load). Never raises."""
+    with _LIVE_LOCK:
+        procs = list(_LIVE)
+    for proc in procs:
+        try:
+            _stop(proc)
+        except Exception:  # noqa: BLE001
+            pass
+    return len(procs)
 
 
 def _child_entry(job: dict) -> None:
