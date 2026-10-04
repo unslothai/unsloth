@@ -320,9 +320,15 @@ class _Shared:
 
 
 def _static_like(t: Any) -> Any:
+    """A buffer the compiled block cannot tell from ``t``: same shape, stride, dtype, inference mode AND storage
+    offset (a view such as Qwen-Image-2.1's ``full[:, prefix_len:]`` is guarded on its offset; a fresh tensor at
+    offset 0 recompiles the block)."""
     torch = _torch()
+    shape, stride, offset = tuple(t.shape), tuple(t.stride()), int(t.storage_offset())
+    extent = 0 if t.numel() == 0 else 1 + sum((n - 1) * st for n, st in zip(shape, stride) if n > 0)
     with torch.inference_mode(bool(t.is_inference())):
-        return torch.empty_strided(tuple(t.shape), tuple(t.stride()), dtype = t.dtype, device = t.device)
+        base = torch.empty(offset + extent, dtype = t.dtype, device = t.device)
+        return base.as_strided(shape, stride, offset)
 
 
 def _nbytes(t: Any) -> int:
@@ -393,7 +399,13 @@ class BlockGraph:
         return self
 
     def reset(self) -> "BlockGraph":
+        """Drop every recording (the weights changed: a LoRA load or scale, an unload) and re-read which tensors the
+        block owns, since an adapter adds parameters the placement key must cover."""
         self.cache.clear()
+        try:
+            self.weights = _WeightView(self.block)
+        except Exception:  # noqa: BLE001 - keep the old view; a stale one only misses new tensors
+            pass
         self.seen = None
         self.seen_meta = None
         self.unreplayed_placements = 0
@@ -486,17 +498,17 @@ class BlockGraph:
             for dst, src in zip(entry.static_in, live):
                 dst.copy_(src)
             static_args, static_kwargs = _unwalk(key, iter(entry.static_in))
+            if slot not in self.shared.warmed:
+                # Once per block class and layout, on the compute stream (its cached blocks stay reusable): any guard
+                # the static buffers trip recompiles here, never inside the recording.
+                self.compute(*static_args, **static_kwargs)
+                self.shared.warmed.add(slot)
+                self.stats["warmups"] += 1
             current = torch.cuda.current_stream()
             stream = self.shared.capture_stream()
             stream.wait_stream(current)
             graph = torch.cuda.CUDAGraph()
             with torch.cuda.stream(stream):
-                if slot not in self.shared.warmed:
-                    # Once per block class and layout: lazy per-stream state (cuBLAS workspaces, a guard the static
-                    # buffers trip) must not be created inside the recording.
-                    self.compute(*static_args, **static_kwargs)
-                    self.shared.warmed.add(slot)
-                    self.stats["warmups"] += 1
                 before = torch.cuda.memory_reserved()
                 with _capturing():
                     graph.capture_begin(pool = self.shared.graph_pool(), capture_error_mode = "thread_local")
@@ -703,6 +715,31 @@ class BlockGraphSet:
             else {"type": str(self.capture_error.get("type")), "msg": str(self.capture_error.get("msg"))},
         }
 
+    def why_off(self) -> Optional[str]:
+        """Why no block has replayed, once a render has run; None while any replays or before the first call."""
+        s = self.stats
+        if s.get("replays") or not (s.get("eager_calls") or s.get("captures")):
+            return None
+        churned = sum(1 for g in self.graphs if g.churned)
+        poisoned = sum(1 for g in self.graphs if g.poisoned)
+        parts = []
+        if churned:
+            parts.append(f"{churned} block(s) find their weights at a new address every call")
+        if poisoned:
+            err = self.capture_error or {}
+            parts.append(f"{poisoned} block(s) failed to record ({err.get('type') or 'error'})")
+        for field, label in (
+            ("refused_host_weight", "weights not on the GPU"),
+            ("refused_kv_write", "prefix K/V prefill steps"),
+            ("refused_float", "a float argument"),
+            ("refused_object", "a non-tensor argument"),
+            ("refused_output", "an output the graph cannot hand back"),
+        ):
+            if s.get(field):
+                parts.append(f"{s[field]} call(s) with {label}")
+        detail = "; ".join(parts) or "every call so far was a first sighting"
+        return f"armed per block, but all {s.get('eager_calls', 0)} block call(s) ran their compute ({detail})"
+
     def held_bytes(self) -> int:
         """Device memory this layer holds that the caching allocator cannot hand to anything else."""
         return int(self.shared.pool_bytes + self.shared.static_bytes + (self.slots_mib << 20))
@@ -749,10 +786,8 @@ def install_block_graphs(
     torch = _torch()
     shared = _Shared(_device_index(transformer, device), logger)
     handle = BlockGraphSet(transformer, shared, logger)
-    kwargs = getattr(transformer, "_unsloth_regional_compile_kwargs", None)
-    guard = getattr(transformer, "_unsloth_compile_guard", None)
+    compile_below_offload_hooks(transformer, logger)
     refused: dict = {}
-    compiled_by_class: dict = {}
     for block in blocks:
         why = _inner_hook_reason(block)
         if why:
@@ -771,21 +806,13 @@ def install_block_graphs(
                 if target is None:
                     refused["a stacked hook chain"] = refused.get("a stacked hook chain", 0) + 1
                     continue
-                original = target.forward
-                compute = original
-                if compiled is not None and isinstance(kwargs, dict):
-                    compute = _compiled_forward(original, kwargs, compiled_by_class, guard, transformer)
+                compute = target.forward  # the compiled forward when compile_below_offload_hooks moved it there
                 graph = BlockGraph(block, compute, shared)
                 target.forward = graph
-                saved_compiled = compiled
 
-                def restore(ref: Any = target, fn: Any = original, m: Any = block, c: Any = saved_compiled) -> None:
-                    ref.forward = fn
-                    if c is not None:
-                        m._compiled_call_impl = c
-
-                if compiled is not None:
-                    block._compiled_call_impl = None
+                def restore(ref: Any = target, fn: Any = compute) -> None:
+                    if ref.forward is not fn:
+                        ref.forward = fn
             elif compiled is not None:
                 graph = BlockGraph(block, compiled, shared)
                 block._compiled_call_impl = graph
@@ -834,16 +861,68 @@ def install_block_graphs(
     return handle, "armed"
 
 
-def _compiled_forward(
-    original: Callable,
-    kwargs: dict,
-    cache: dict,
-    guard: Any,
-    transformer: Any,
-) -> Callable:
-    """``torch.compile`` of the block's own forward (as MiniMax-H3 streams it), with the load's compile guard."""
+COMPILE_BELOW_HOOKS_ENV = "UNSLOTH_DIFFUSION_COMPILE_BELOW_HOOKS"
+
+
+def compile_below_offload_hooks(transformer: Any, logger: Any = None) -> int:
+    """Compile each offload-hooked repeated block's own ``forward`` instead of ``_call_impl`` (as MiniMax-H3's streamed
+    denoiser does), so the group-offload hooks stay eager Python outside the compiled region.
+
+    Traced through, the hooks graph-break the block (two to six breaks a load) and put residency state into the
+    guards: the 12 GB tier's release and re-pin around each prompt encode then recompiles the blocks on the next
+    prompt. Below the hooks the block compiles whole, and a CUDA graph can record exactly that compute.
+    ``UNSLOTH_DIFFUSION_COMPILE_BELOW_HOOKS=0`` keeps the old placement. Idempotent; returns the blocks moved."""
+    if (os.environ.get(COMPILE_BELOW_HOOKS_ENV) or "").strip().lower() in _OFF:
+        return 0
+    kwargs = getattr(transformer, "_unsloth_regional_compile_kwargs", None)
+    if not isinstance(kwargs, dict):
+        return 0
     torch = _torch()
-    compiled = torch.compile(original, **dict(kwargs))
-    if guard is not None and callable(getattr(guard, "wrap", None)):
-        return guard.wrap(compiled, original, transformer)
-    return compiled
+    guard = getattr(transformer, "_unsloth_compile_guard", None)
+    moved = 0
+    for block in repeated_blocks(transformer):
+        compiled = getattr(block, "_compiled_call_impl", None)
+        if compiled is None or _group_offload_hook(block) is None:
+            continue
+        registry = getattr(block, "_diffusers_hook", None)
+        target = next(
+            (
+                r
+                for r in list(getattr(registry, "_fn_refs", None) or ())
+                if _is_original_forward(getattr(r, "forward", None), block)
+            ),
+            None,
+        )
+        if target is None:
+            continue
+        original = target.forward
+        fn = torch.compile(original, **dict(kwargs))
+        if guard is not None and callable(getattr(guard, "wrap", None)):
+            fn = guard.wrap(fn, original, transformer)
+            guard.restores.append(lambda ref = target, f = original: setattr(ref, "forward", f))
+        target.forward = fn
+        block._compiled_call_impl = None
+        moved += 1
+    if moved and logger is not None:
+        logger.info(
+            "diffusion.speed: %d offloaded %s blocks compile below their offload hooks",
+            moved,
+            type(transformer).__name__,
+        )
+    return moved
+
+
+def compile_pipe_below_offload_hooks(pipe: Any, logger: Any = None) -> int:
+    """``compile_below_offload_hooks`` for every denoiser DiT of ``pipe``; a failure leaves that DiT as it was."""
+    try:
+        from .diffusion_speed import _denoiser_dits
+    except Exception:  # noqa: BLE001
+        return 0
+    moved = 0
+    for transformer in _denoiser_dits(pipe):
+        try:
+            moved += compile_below_offload_hooks(transformer, logger)
+        except Exception as exc:  # noqa: BLE001 - the traced-hook compile still works
+            if logger is not None:
+                logger.warning("diffusion.speed: compile below offload hooks failed (%s)", exc)
+    return moved

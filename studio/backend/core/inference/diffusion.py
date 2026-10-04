@@ -202,6 +202,7 @@ from . import diffusion_prompt_cache as prompt_cache
 from . import diffusion_gguf_compile as gguf_compile
 from . import diffusion_bg_compile as bg_compile
 from . import diffusion_cuda_graph as cuda_graph
+from .diffusion_block_graph import compile_pipe_below_offload_hooks
 from . import diffusion_render_thread as render_thread
 from .diffusion_batched import (
     chunk_jobs,
@@ -7183,6 +7184,8 @@ class DiffusionBackend:
                     # Placement decides the graph layer: a whole-forward recording holds only while no hook moves the
                     # denoiser; otherwise (and for a forward that is not capture-safe) its blocks are recorded instead.
                     if not speed_deferred:
+                        if _denoiser_hooked(pipe):
+                            compile_pipe_below_offload_hooks(pipe, logger)
                         cuda_graph.arm_block_graphs(
                             pipe,
                             speed_applied,
@@ -9061,6 +9064,8 @@ class DiffusionBackend:
         )
         if denoisers_pinned_resident(state.pipe):
             engage_pinned_denoisers(state.pipe, speed_applied, logger)
+        if _denoiser_hooked(state.pipe):
+            compile_pipe_below_offload_hooks(state.pipe, logger)
         cuda_graph.arm_block_graphs(
             state.pipe,
             speed_applied,

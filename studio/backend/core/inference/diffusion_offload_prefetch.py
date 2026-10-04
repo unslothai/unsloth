@@ -158,16 +158,61 @@ def _inner(t: Any) -> list:
     return []
 
 
-def _tensor_signature(t: Any) -> tuple:
+_SLOT_ALIGN = 512
+
+
+def _plain_leaves(t: Any) -> list:
+    """The plain tensors holding ``t``'s data, depth first (a wrapper subclass's inner tensors)."""
     inner = _inner(t)
-    if inner:
-        return (type(t).__name__, tuple(t.shape), tuple((n, _tensor_signature(x)) for n, x in inner))
-    return (tuple(t.shape), tuple(t.stride()), str(t.dtype))
+    if not inner:
+        return [t]
+    out: list = []
+    for _, x in inner:
+        out.extend(_plain_leaves(x))
+    return out
 
 
-def _group_signature(group: Any) -> tuple:
-    cpu = getattr(group, "cpu_param_dict", None) or {}
-    return tuple(_tensor_signature(cpu.get(t, t)) for t in _group_tensors(group))
+def _packed_bytes(sources: list) -> Optional[int]:
+    """Bytes a group's tensors take packed into one slot (each leaf aligned); None if a leaf cannot be viewed in."""
+    total = 0
+    for src in sources:
+        for leaf in _plain_leaves(src):
+            if not leaf.is_contiguous():
+                return None
+            total = (total + _SLOT_ALIGN - 1) // _SLOT_ALIGN * _SLOT_ALIGN
+            total += leaf.numel() * leaf.element_size()
+    return total
+
+
+def _carve(raw: Any, offset: int, like: Any) -> tuple:
+    """A view of ``raw`` (uint8) shaped like ``like`` at the next aligned offset; returns (view, end offset)."""
+    offset = (offset + _SLOT_ALIGN - 1) // _SLOT_ALIGN * _SLOT_ALIGN
+    n = like.numel() * like.element_size()
+    view = raw[offset : offset + n].view(like.dtype).view(like.shape)
+    return view, offset + n
+
+
+def _slot_views(raw: Any, sources: list, device: Any) -> list:
+    """Device tensors laid out in ``raw`` mirroring ``sources`` (plain views, or wrapper subclasses whose inner
+    tensors are views), so a fill is an in-place copy and every fill of this group lands at the same addresses."""
+    offset = 0
+    views: list = []
+
+    def build(src: Any) -> Any:
+        nonlocal offset
+        inner = _inner(src)
+        if not inner:
+            view, offset = _carve(raw, offset, src)
+            return view
+        # a device wrapper with the source's metadata, its inner tensors then re-pointed into the slot
+        wrapper = _to_device(src, device)
+        for name, x in inner:
+            setattr(wrapper, name, build(x))
+        return wrapper
+
+    for src in sources:
+        views.append(build(src))
+    return views
 
 
 def _copy_into(dst: Any, src: Any) -> None:
@@ -208,7 +253,7 @@ def _detach_from_slot(group: Any, buffers: list) -> None:
     """Point a group that aliases slot ``buffers`` at private device copies."""
     ptrs = set()
     for b in buffers:
-        for _, x in (_inner(b) or [("", b)]):
+        for x in _plain_leaves(b):
             ptrs.add(x.data_ptr())
     go = _go()
     is_torchao = getattr(go, "_is_torchao_tensor", lambda t: False)
@@ -266,11 +311,13 @@ class GroupPrefetcher:
         self.stream = streams[0] if streams else None
         self.fence_first = False
         self.stats = {"forwards": 0, "copies": 0, "prefetched": 0, "missed": 0, "dropped": 0}
-        # Slot ring (``enable_slots``): group id -> (layout, slot index); a streamed group's copy lands in place in
-        # that slot's buffers, so the blocks a CUDA graph recorded read the same addresses every step.
+        # Slot ring (``enable_slots``): group id -> slot index; a streamed group's copy lands in place in that slot,
+        # always at the same offsets, so the blocks a CUDA graph recorded read the same addresses every step.
         self.slot_of: dict = {}
-        self.slot_buffers: dict = {}
+        self.slot_buffers: dict = {}  # group id -> its views into its slot
+        self.slot_raw: dict = {}  # slot index -> uint8 device buffer
         self.slot_owner: dict = {}
+        self.slot_size = 0
         self.slot_bytes = 0
         self.slot_bytes_planned = 0
 
@@ -319,9 +366,10 @@ class GroupPrefetcher:
         cpu = group.cpu_param_dict
         stream = group.stream
         where = self.slot_of.get(id(group)) if slot else None
-        buffers = self.slot_buffers.get(where) if where is not None else None
-        made: list = []
         with torch.cuda.stream(stream):
+            # made on the copy stream: a block the compute stream freed but has not finished reading is never handed
+            # to these copies (the allocator orders reuse per stream)
+            buffers = self._views_for(group, where) if where is not None else None
             for i, t in enumerate(_group_tensors(group)):
                 src = cpu[t]
                 if not src.is_pinned():
@@ -333,17 +381,11 @@ class GroupPrefetcher:
                     _point_at(t, buffers[i], is_torchao(t), swap)
                     continue
                 moved = _to_device(src, self.device)
-                if where is not None:
-                    made.append(moved)
-                    _point_at(t, moved, is_torchao(t), swap)
-                elif is_torchao(t) and swap is not None:
+                if is_torchao(t) and swap is not None:
                     swap(t, moved)
                 else:
                     t.data = moved
-        if where is not None:
-            if buffers is None:
-                self.slot_buffers[where] = made
-                self.slot_bytes += self.nbytes.get(id(group), 0)
+        if buffers is not None:
             self.slot_owner[where] = id(group)
             self.stats["slot_fills"] = self.stats.get("slot_fills", 0) + 1
         ready = torch.cuda.Event()
@@ -426,7 +468,7 @@ class GroupPrefetcher:
                 # made resident while it sat in a slot: give it its own copy before the slot is refilled
                 compute = compute or self._compute()
                 with torch.cuda.stream(compute):
-                    _detach_from_slot(group, self.slot_buffers[self.slot_of[gid]])
+                    _detach_from_slot(group, self.slot_buffers[gid])
                 self.slot_owner.pop(self.slot_of[gid], None)
 
     def _fill(self) -> None:
@@ -456,36 +498,59 @@ class GroupPrefetcher:
         return where is not None and self.slot_owner.get(where) == id(group)
 
     def enable_slots(self, logger: Any = None) -> int:
-        """Give every streamed block group a slot: groups of one tensor layout share ``min(depth + 1, count)`` buffer
-        sets, assigned round-robin in block order, filled in place. Returns the MiB the ring holds once every slot
-        has been filled (they are made on first use). The top-level group keeps fresh copies: no graph reads it."""
+        """Give every streamed block group one of ``depth + 1`` byte slots, round-robin in block order (the prefetch
+        never holds more groups than that), each slot as large as the largest packed group: the ring is the prefetch
+        window. A group's copies always land at the same offsets of its slot. Returns the ring's MiB (allocated on
+        first use). The top-level group keeps fresh copies: no graph reads it."""
         if self.slot_of:
             return self.slot_bytes_planned >> 20
-        classes: dict = {}
+        members: list = []
+        size = 0
         for group in self.groups:
             if getattr(group, "offload_leader", None) is self.module:
                 continue
+            cpu = getattr(group, "cpu_param_dict", None) or {}
             try:
-                sig = _group_signature(group)
+                need = _packed_bytes([cpu.get(t, t) for t in _group_tensors(group)])
             except Exception:  # noqa: BLE001 - a layout we cannot read keeps fresh copies
+                need = None
+            if need is None:
                 continue
-            classes.setdefault(sig, []).append(group)
-        planned = 0
-        for sig, members in classes.items():
-            count = min(self.depth + 1, len(members))
-            for i, group in enumerate(members):
-                self.slot_of[id(group)] = (sig, i % count)
-            planned += count * max(self.nbytes.get(id(g), 0) for g in members)
-        self.slot_bytes_planned = planned
-        if logger is not None and self.slot_of:
+            members.append(group)
+            size = max(size, need)
+        if not members:
+            return 0
+        count = min(self.depth + 1, len(members))
+        for i, group in enumerate(members):
+            self.slot_of[id(group)] = i % count
+        self.slot_size = size
+        self.slot_bytes_planned = count * size
+        if logger is not None:
             logger.info(
-                "diffusion.memory: %s streams %d block groups through a %d MiB slot ring (%d layouts)",
+                "diffusion.memory: %s streams %d block groups through %d slots of %d MiB (the prefetch window)",
                 type(self.module).__name__,
-                len(self.slot_of),
-                planned >> 20,
-                len(classes),
+                len(members),
+                count,
+                size >> 20,
             )
-        return planned >> 20
+        return self.slot_bytes_planned >> 20
+
+    def _views_for(self, group: Any, where: int) -> list:
+        gid = id(group)
+        views = self.slot_buffers.get(gid)
+        if views is not None:
+            return views
+        import torch
+
+        raw = self.slot_raw.get(where)
+        if raw is None:
+            raw = torch.empty(self.slot_size, dtype = torch.uint8, device = self.device)
+            self.slot_raw[where] = raw
+            self.slot_bytes += self.slot_size
+        cpu = group.cpu_param_dict
+        views = _slot_views(raw, [cpu[t] for t in _group_tensors(group)], self.device)
+        self.slot_buffers[gid] = views
+        return views
 
     def disable_slots(self) -> None:
         """Drop the ring. Only between forwards: every streamed group is back on the host by then."""
@@ -493,11 +558,13 @@ class GroupPrefetcher:
 
         if self.active:
             return
-        if self.slot_buffers:
+        if self.slot_raw:
             torch.cuda.synchronize(self.device)
         self.slot_of = {}
         self.slot_buffers = {}
+        self.slot_raw = {}
         self.slot_owner = {}
+        self.slot_size = 0
         self.slot_bytes = 0
         self.slot_bytes_planned = 0
 

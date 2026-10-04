@@ -185,6 +185,35 @@ def test_install_sits_below_the_group_offload_hook_and_free_restores_it():
         assert torch.equal(net(x), got)
 
 
+def test_compile_moves_below_the_offload_hook_and_the_kill_switch_keeps_it_traced(monkeypatch):
+    net = _hooked_net(blocks = 2)
+    net._unsloth_regional_compile_kwargs = {"fullgraph": False, "dynamic": True}
+    marker = lambda *a, **k: None  # noqa: E731
+    for b in net.blocks:
+        b._compiled_call_impl = marker
+    monkeypatch.setenv(bg.COMPILE_BELOW_HOOKS_ENV, "0")
+    assert bg.compile_below_offload_hooks(net) == 0
+    assert all(b._compiled_call_impl is marker for b in net.blocks)
+    monkeypatch.delenv(bg.COMPILE_BELOW_HOOKS_ENV)
+    assert bg.compile_below_offload_hooks(net) == 2
+    for b in net.blocks:
+        assert b._compiled_call_impl is None
+        refs = b._diffusers_hook._fn_refs
+        assert not any(bg._is_original_forward(r.forward, b) for r in refs)
+    # idempotent, and the block still computes the same thing through its hooks
+    assert bg.compile_below_offload_hooks(net) == 0
+
+
+def test_static_buffers_keep_the_storage_offset_of_a_view():
+    full = torch.arange(24.0).view(2, 12)
+    view = full[:, 4:]
+    static = bg._static_like(view)
+    assert static.shape == view.shape and static.stride() == view.stride()
+    assert static.storage_offset() == view.storage_offset() == 4
+    static.copy_(view)
+    assert torch.equal(static, view)
+
+
 def test_install_on_an_unhooked_compiled_block_takes_the_compiled_call_slot():
     net = Net(blocks = 2)
     marker = lambda *a, **k: "compiled"  # noqa: E731
@@ -299,6 +328,21 @@ def test_the_master_switch_turns_block_graphs_off_with_its_name(monkeypatch):
     assert handles == () and cg.CUDA_GRAPHS_ENV in cg.status_reason(pipe, False)
 
 
+def test_status_says_why_armed_blocks_never_replayed():
+    net = Net(blocks = 2)
+    handle, _ = bg.install_block_graphs(net, slots = False)
+    assert cg.never_engaged((handle,)) is None  # nothing ran yet
+    with torch.no_grad():
+        net(torch.randn(2, 16))
+    why = cg.never_engaged((handle,))
+    assert why is not None and "weights not on the GPU" in why
+    resolved, optims = cg.live_status({"cuda_graph": {"value": "on"}}, ["cuda_graph"], (handle,))
+    assert resolved["cuda_graph"]["value"] == "off" and "cuda_graph" not in optims
+    handle.graphs[0].churned = True
+    assert "new address every call" in handle.why_off()
+    handle.free()
+
+
 # --- slot ring -------------------------------------------------------------------------------------------------
 
 
@@ -323,21 +367,33 @@ def _slot_prefetcher(shapes, depth = 2):
     pf.ready = {}
     pf.active = False
     pf.stats = {"dropped": 0}
-    pf.slot_of, pf.slot_buffers, pf.slot_owner, pf.slot_bytes, pf.slot_bytes_planned = {}, {}, {}, 0, 0
+    pf.slot_of, pf.slot_buffers, pf.slot_raw, pf.slot_owner = {}, {}, {}, {}
+    pf.slot_size, pf.slot_bytes, pf.slot_bytes_planned = 0, 0, 0
     released = []
     pf._release = lambda g, e, counted = True: released.append(g.name)
     return pf, groups, released
 
 
-def test_slots_are_shared_round_robin_per_tensor_layout():
+def test_slots_are_shared_round_robin_and_sized_like_the_prefetch_window():
     pf, groups, _ = _slot_prefetcher([(4, 4)] * 5 + [(8, 4)] * 2, depth = 2)
-    mib = pf.enable_slots()
-    assert mib == 0  # 10-byte groups
-    slots = [pf.slot_of[id(g)] for g in groups]
-    assert [s[1] for s in slots[:5]] == [0, 1, 2, 0, 1]
-    assert [s[1] for s in slots[5:]] == [0, 1]
-    assert slots[0][0] != slots[5][0]
-    assert pf.slot_bytes_planned == 3 * 10 + 2 * 10
+    pf.enable_slots()
+    # every layout shares the same depth + 1 slots, in block order
+    assert [pf.slot_of[id(g)] for g in groups] == [0, 1, 2, 0, 1, 2, 0]
+    # each slot holds the largest packed group (an (8, 4) float32 = 128 bytes): the ring is the prefetch window
+    assert pf.slot_size == 128 and pf.slot_bytes_planned == 3 * 128
+
+
+def test_slot_views_pack_leaves_aligned_and_mirror_the_sources():
+    raw = torch.zeros(4096, dtype = torch.uint8)
+    srcs = [torch.arange(6, dtype = torch.float32).view(2, 3), torch.ones(5, dtype = torch.bfloat16)]
+    assert op._packed_bytes(srcs) == op._SLOT_ALIGN + 10
+    views = op._slot_views(raw, srcs, torch.device("cpu"))
+    assert [v.shape for v in views] == [torch.Size([2, 3]), torch.Size([5])]
+    assert views[1].data_ptr() - views[0].data_ptr() == op._SLOT_ALIGN
+    for v, src in zip(views, srcs):
+        op._copy_into(v, src)
+        assert torch.equal(v, src)
+    assert op._packed_bytes([torch.zeros(4, 4).t()]) is None  # a strided leaf cannot be viewed in
 
 
 def test_a_slot_held_by_a_group_on_the_device_is_never_refilled_ahead():
@@ -448,6 +504,36 @@ def test_streamed_blocks_replay_from_the_slot_ring_bit_identically(resident_mib)
     handle.free()
     with torch.no_grad():
         assert torch.equal(net(x, temb = temb), want)
+
+
+class SlowBlock(Block):
+    def forward(self, x, temb = None, layer_cache = None, kv_cache_mode = None):
+        torch.cuda._sleep(200_000)  # a slow GPU: the host queues later copies long before this block reads
+        return super().forward(x, temb = temb)
+
+
+def test_a_slow_gpu_never_reads_a_slot_the_copy_stream_is_refilling(monkeypatch):
+    _cuda()
+    monkeypatch.setenv(op.PREFETCH_DEPTH_ENV, "3")
+    torch.manual_seed(0)
+    net = Net(width = 512, blocks = 10)
+    net.blocks = torch.nn.ModuleList(SlowBlock(512) for _ in range(10))
+    Net._repeated_blocks = ["Block", "SlowBlock"]
+    try:
+        ref = copy.deepcopy(net).cuda()
+        _streamed(net)
+        handle, _ = bg.install_block_graphs(net, device = "cuda")
+        x = torch.randn(4, 16, device = "cuda")
+        with torch.no_grad():
+            want = ref(x)
+            for _ in range(5):
+                got = net(x)
+            torch.cuda.synchronize()
+            assert torch.equal(got, want)
+        assert handle.stats["replays"] > 0
+        handle.free()
+    finally:
+        Net._repeated_blocks = ["Block"]
 
 
 def test_a_block_whose_weights_moved_records_again_at_the_new_addresses():

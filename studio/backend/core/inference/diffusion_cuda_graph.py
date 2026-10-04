@@ -816,6 +816,9 @@ def never_engaged(handles: Any) -> Optional[str]:
     """Why the armed graphs never replayed a step; None before the first call or once any engaged."""
     if not handles:
         return None
+    reasons = [h.why_off() for h in handles if callable(getattr(h, "why_off", None))]
+    if reasons and len(reasons) == len(handles):
+        return None if any(r is None for r in reasons) else "; ".join(reasons)
     s = stats(handles)
     if all(getattr(h, "poisoned", False) for h in handles):
         error = s["capture_error"] or {}
@@ -901,15 +904,12 @@ def arm_block_graphs(
     sit. Updates ``applied["cuda_graph"]`` and the pipe's reason / handles; returns the handles now armed."""
     handles = tuple(getattr(pipe, "_unsloth_cuda_graphs", ()) or ())
     whole = [h for h in handles if isinstance(h, GraphedForward)]
-    if whole and not hooked:
-        return handles
     prior = str(getattr(pipe, "_unsloth_cuda_graph_reason", None) or "")
+    if not hooked and (whole or "not capture-safe" not in prior):
+        # Nothing moves the denoiser: the speed layer's decision stands, except a forward that is not capture-safe,
+        # whose blocks still record.
+        return handles
     why = _block_basics(target, family, cache_engaged, speed_mode, family_default)
-    if why is None and not hooked and not whole:
-        # Unhooked and no whole-forward recording: only a capture-safety refusal is worth recording per block.
-        capture_refusal = "capture-safe" in prior or "not capture-safe" in prior
-        if not capture_refusal:
-            return handles
     if whole:
         uninstall_all(whole, logger = logger)
     pipe._unsloth_cuda_graph_mode = None
