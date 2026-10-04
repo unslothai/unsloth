@@ -293,7 +293,7 @@ def test_install_skipped_when_module_present(monkeypatch):
     monkeypatch.setattr(
         importlib.util, "find_spec", lambda name: object() if name == "sageattention" else None
     )
-    # A SageAttention 2 the user installed serves "sage": nothing (not even the kernels-hub fallback) is installed.
+    # A pip SageAttention 2 serves "sage": nothing is installed.
     monkeypatch.setattr(att, "_pip_sage2_installed", lambda: True)
     run = _Recorder()
     _stub_subprocess(monkeypatch, run)
@@ -317,8 +317,7 @@ def test_install_runs_wheel_only_for_missing_kernel(monkeypatch):
 
 
 def test_sage_install_never_asks_pypi_for_sageattention(monkeypatch):
-    # PyPI's newest sageattention is 1.0.6 (SageAttention 1), so no requirement on it can install a usable kernel: a
-    # floor resolves nothing and no floor writes SageAttention 1. "sage" installs the kernels package for the hub build.
+    # PyPI has only SageAttention 1, so "sage" installs the kernels package for the hub build.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
     import importlib.util
 
@@ -712,7 +711,6 @@ def test_kernels_install_allowed_on_supported_hub(monkeypatch):
 
 
 def test_kernels_gate_also_covers_sage(monkeypatch):
-    # "sage" installs the kernels package now, so the huggingface_hub gate protects it too; flash-attn is not kernels.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
     import importlib.util
 

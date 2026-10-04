@@ -778,19 +778,15 @@ def _sage_usable(
     return True
 
 
-# SageAttention 2 is not on PyPI: its newest ``sageattention`` there is 1.0.6, the SageAttention 1 Triton kernel that
-# diffusers refuses (and that is 4.7 to 6x slower than cuDNN attention on a B200). So an explicit ``sage`` request without
-# a SageAttention 2 the user built or installed runs the kernels-community build from the Hugging Face kernels hub
-# (Apache-2.0; prebuilt for Ampere / Ada / Hopper, so other cards fail the probe and keep the default backend) through
-# diffusers' ``sage_hub`` backend. diffusers 0.40 asks the hub for its version 1 builds, which stop at torch 2.10, so the
-# version 2 builds (torch 2.9 to 2.12) are fetched first and handed to diffusers' registry.
+# PyPI has no SageAttention 2 (only 1.0.6, which diffusers refuses), so ``sage`` without a pip SageAttention 2 runs the
+# kernels-hub build (sm80 / 89 / 90) via diffusers' ``sage_hub``. diffusers 0.40 asks for version 1 builds, which stop
+# at torch 2.10, so version 2 (torch 2.9 to 2.12) is fetched first.
 SAGE_HUB_BACKEND = "sage_hub"
 _SAGE_HUB_REPO = "kernels-community/sage-attention"
 _SAGE_HUB_VERSIONS = (2, 1)
 _SAGE_HUB_PROBE_CACHE: dict[tuple[str, str, int], str] = {}
 _SAGE_HUB_LOCK = threading.Lock()
-# Why no hub build loaded in this process, so the in-lock apply does not repeat a failed fetch the loader's pre-install
-# step (outside the lock) already made. Cleared only by a restart, like _INSTALL_ATTEMPTED.
+# A failed fetch, remembered so the in-lock apply does not repeat it. Cleared by a restart, like _INSTALL_ATTEMPTED.
 _SAGE_HUB_FAILED: list[str] = []
 SAGE_SOURCE_HINT = (
     "SageAttention 2 is not published on PyPI (pip only has SageAttention 1.0.6), so on this platform it needs a "
@@ -799,7 +795,7 @@ SAGE_SOURCE_HINT = (
 
 
 def _pip_sage2_installed() -> bool:
-    """Whether a pip ``sageattention`` at diffusers' SageAttention 2 floor or newer is installed (not imported)."""
+    """Whether a pip ``sageattention`` at diffusers' floor or newer is installed."""
     try:
         from importlib.metadata import PackageNotFoundError, version
         try:
@@ -812,9 +808,7 @@ def _pip_sage2_installed() -> bool:
 
 
 def _load_sage_hub_kernel() -> tuple[Any, str]:
-    """``(sageattn, "")`` from the kernels-hub build registered in diffusers' ``sage_hub`` slot, or ``(None, why)``.
-
-    Never raises. Fetches over the network on first use (the HF cache afterwards); offline with no cached build fails."""
+    """``(sageattn, "")`` from the hub build, set in diffusers' ``sage_hub`` slot, or ``(None, why)``. Never raises."""
     with _SAGE_HUB_LOCK:
         try:
             from diffusers.models.attention_dispatch import (
@@ -822,7 +816,7 @@ def _load_sage_hub_kernel() -> tuple[Any, str]:
                 AttentionBackendName,
             )
             config = _HUB_KERNELS_REGISTRY[AttentionBackendName(SAGE_HUB_BACKEND)]
-        except Exception as exc:  # noqa: BLE001 - an older diffusers without sage_hub
+        except Exception as exc:  # noqa: BLE001
             return None, f"this diffusers build has no sage_hub backend ({type(exc).__name__})"
         if callable(getattr(config, "kernel_fn", None)):
             return config.kernel_fn, ""
@@ -840,7 +834,7 @@ def _load_sage_hub_kernel() -> tuple[Any, str]:
         for ver in versions:
             try:
                 fn = getattr(get_kernel(_SAGE_HUB_REPO, version = ver), "sageattn", None)
-            except Exception as exc:  # noqa: BLE001 - no build for this torch / CUDA / OS, or no network
+            except Exception as exc:  # noqa: BLE001
                 errors.append(f"version {ver}: {type(exc).__name__}: {str(exc)[:200]}")
                 continue
             if callable(fn):
@@ -856,8 +850,7 @@ def _sage_hub_kernel_runs(
     sageattn: Any,
     head_dims: Any = None,
 ) -> tuple[Optional[bool], str]:
-    """``(True, "")`` when the hub ``sageattn`` passed its self-check at every head dim it would serve, ``(False, why)``
-    when it raised or was wrong, ``(None, "")`` when unaskable (not a CUDA target, OOM)."""
+    """``(True, "")`` when the hub ``sageattn`` passed at every head dim, ``(False, why)``, or ``(None, "")`` unaskable."""
     device = str(getattr(target, "torch_device", None) or getattr(target, "device", None) or "")
     if not device.startswith("cuda"):
         return None, ""
@@ -878,7 +871,7 @@ def _sage_hub_kernel_runs(
 
 
 def _install_sage_hub_dispatch_guard() -> bool:
-    """The same per-call guard as ``sage`` (mask, head_dim > 128, dtype), on diffusers' ``sage_hub`` backend."""
+    """The ``sage`` per-call guard on diffusers' ``sage_hub`` backend."""
     return _install_dispatch_guard(
         SAGE_HUB_BACKEND,
         lambda *a: _sage_reroute_reason(*a),
@@ -892,8 +885,7 @@ def _sage_hub_backend(
     target: Any,
     logger: Any = None,
 ) -> Optional[str]:
-    """``sage_hub`` when an explicit ``sage`` request can run on the kernels-hub SageAttention 2 build here, else None
-    with the reason logged. The kernel is fetched and self-checked BEFORE any DiT is switched to it."""
+    """``sage_hub`` when the hub build passes its self-check here (before any DiT is switched), else None, logged."""
 
     def _decline(why: str) -> None:
         if logger is not None:
@@ -946,10 +938,9 @@ def _sage_hub_backend(
     return SAGE_HUB_BACKEND
 
 
-# FlashAttention 4 from the kernels hub imports nvidia-cutlass-dsl, apache-tvm-ffi and einops, which neither the kernels
-# package nor Studio's base install provides. Only cutlass-dsl 4.4.x / 4.5.x load the published build: 4.6.0 removed
-# cute.core.ThrMma (4.6.3 to 4.8.0 fail the same way) and 4.3.x lacks PipelineClcFetchAsync. FlashInfer 0.6.6 (Studio's
-# NVFP4 pin) needs >= 4.3.4, so the same range serves both. diffusers' flash_4_hub needs kernels >= 0.12.3.
+# The hub FA4 build imports nvidia-cutlass-dsl, apache-tvm-ffi and einops. Only cutlass-dsl 4.4 / 4.5 load it (4.6+ has
+# no cute.core.ThrMma, 4.3 no PipelineClcFetchAsync); FlashInfer 0.6.6 takes the same range. diffusers needs kernels
+# >= 0.12.3.
 FA4_CUTLASS_DSL_MIN = (4, 4)
 FA4_CUTLASS_DSL_MAX_EXCL = (4, 6)
 FA4_CUTLASS_DSL_SPEC = "nvidia-cutlass-dsl>=4.4,<4.6"
@@ -970,13 +961,13 @@ def _dist_version(name: str) -> Optional[str]:
 
 
 def fa4_cutlass_dsl_ok(installed: Optional[str]) -> bool:
-    """Whether an installed nvidia-cutlass-dsl version is one the hub FlashAttention 4 build loads with."""
+    """Whether the hub FA4 build loads with this nvidia-cutlass-dsl version."""
     have = _version_tuple(installed or "")[:2]
     return bool(have) and FA4_CUTLASS_DSL_MIN <= have < FA4_CUTLASS_DSL_MAX_EXCL
 
 
 def _cutlass_dsl_dependents() -> list[str]:
-    """Installed distributions that declare a dependency on nvidia-cutlass-dsl (name + specifier), for messages."""
+    """Installed distributions requiring nvidia-cutlass-dsl, for messages."""
     found = []
     try:
         from importlib.metadata import distributions
@@ -996,10 +987,8 @@ def _cutlass_dsl_dependents() -> list[str]:
 
 
 def _fa4_python_deps_plan() -> tuple[list[str], Optional[str]]:
-    """``(requirements to install, refusal)`` for the hub FlashAttention 4 build's Python dependencies.
-
-    An nvidia-cutlass-dsl already installed outside the working range is NOT replaced: something else (a user's quack,
-    a newer FlashInfer) may need it, so the request is refused with the reason instead."""
+    """``(requirements, refusal)`` for the hub FA4 build. An out-of-range cutlass-dsl is never replaced (a user's quack
+    or a newer FlashInfer may need it): the request is refused instead."""
     reqs: list[str] = []
     kernels = _dist_version("kernels")
     if (
@@ -1007,7 +996,7 @@ def _fa4_python_deps_plan() -> tuple[list[str], Optional[str]]:
         and _version_tuple(kernels)
         and _version_tuple(kernels) < FA4_KERNELS_MIN
     ):
-        # 0.12.3 declares the same dependencies as 0.12.1 (huggingface_hub >= 0.26), so --no-deps stays safe.
+        # Same dependencies as 0.12.1, so --no-deps is safe.
         reqs.append(FA4_KERNELS_SPEC)
     cutlass = _dist_version("nvidia-cutlass-dsl")
     if cutlass is None:
@@ -1028,7 +1017,7 @@ def _fa4_python_deps_plan() -> tuple[list[str], Optional[str]]:
 
 
 def _pinned_constraints_file() -> Optional[str]:
-    """Every installed distribution at its exact version, so a dependency install cannot move torch or anything else."""
+    """Every installed distribution pinned, so a dependency install cannot move anything."""
     try:
         from .diffusion_nvfp4_install import _write_constraints, installed_distributions
         return _write_constraints(installed_distributions())
@@ -1037,9 +1026,8 @@ def _pinned_constraints_file() -> Optional[str]:
 
 
 def _refresh_diffusers_kernels_version(logger: Any = None) -> None:
-    """Tell diffusers about a kernels upgrade made in this process. diffusers reads the kernels version once, at import,
-    and gates flash_4_hub on it, so without this the first load after the upgrade still falls back. Only while the
-    kernels module itself is not imported yet: an imported 0.12.1 stays the code that runs until a restart."""
+    """diffusers reads the kernels version once at import and gates flash_4_hub on it: refresh it after an upgrade, only
+    while ``kernels`` is not imported yet (an imported old version runs until a restart)."""
     import sys
 
     if "kernels" in sys.modules:
@@ -1056,18 +1044,16 @@ def _refresh_diffusers_kernels_version(logger: Any = None) -> None:
         if installed and getattr(import_utils, "_kernels_version", None) not in (None, installed):
             import_utils._kernels_version = installed
             import_utils._kernels_available = True
-    except Exception:  # noqa: BLE001 - an older or newer diffusers layout: the next process reads it fresh
+    except Exception:  # noqa: BLE001
         pass
 
 
-# Distributions whose import path comes from a .pth file: cutlass-dsl puts ``cutlass`` on sys.path that way, from
-# nvidia-cutlass-dsl-libs-base in 4.4 / 4.5 and from nvidia-cutlass-dsl itself in 4.6+.
+# cutlass-dsl reaches sys.path through a .pth file (libs-base in 4.4 / 4.5, the main dist in 4.6+).
 _PTH_DISTRIBUTIONS = ("nvidia-cutlass-dsl-libs-base", "nvidia-cutlass-dsl")
 
 
 def _activate_installed_pth_files(names: tuple[str, ...] = _PTH_DISTRIBUTIONS) -> None:
-    """Run the .pth files of ``names`` in this process. The interpreter reads .pth files only at startup, so without
-    this a cutlass-dsl installed mid-process stays unimportable (kernels then reports it missing) until a restart."""
+    """Run the .pth files of ``names`` now: the interpreter reads them only at startup."""
     try:
         import site
         import sys
@@ -1087,13 +1073,12 @@ def _activate_installed_pth_files(names: tuple[str, ...] = _PTH_DISTRIBUTIONS) -
             try:
                 path = os.fspath(dist.locate_file(entry))
                 site.addpackage(os.path.dirname(path), os.path.basename(path), set(sys.path))
-            except Exception:  # noqa: BLE001 - the next process reads it at startup
+            except Exception:  # noqa: BLE001
                 continue
 
 
 def _ensure_fa4_python_deps(logger: Any = None) -> Optional[str]:
-    """Install what the hub FlashAttention 4 build imports, pinned to versions it loads with. Returns the refusal
-    reason, or None (installed, already present, or a failed attempt that leaves the default backend)."""
+    """Install the hub FA4 build's imports at versions it loads with. Returns the refusal reason, or None."""
     import importlib
     import subprocess
     import sys
@@ -1133,13 +1118,12 @@ def _ensure_fa4_python_deps(logger: Any = None) -> Optional[str]:
             )
             _refresh_diffusers_kernels_version(logger)
         if deps:
-            # Resolved, not --no-deps: cutlass-dsl needs its libs and cuda-python. The constraints file holds every
-            # installed distribution at its version, so only new packages are added.
+            # Resolved (cutlass-dsl needs its libs and cuda-python); the constraints add only new packages.
             cmd = base + (["-c", constraints] if constraints else []) + deps
             subprocess.run(cmd, capture_output = True, timeout = 600, check = True)
         importlib.invalidate_caches()
         _activate_installed_pth_files()
-    except Exception as exc:  # noqa: BLE001 - no wheel / no network -> FlashAttention 4 falls back at set time
+    except Exception as exc:  # noqa: BLE001 - FA4 then falls back at set time
         if logger is not None:
             stderr = getattr(exc, "stderr", None)
             if isinstance(stderr, bytes):
@@ -1161,7 +1145,7 @@ def _ensure_fa4_python_deps(logger: Any = None) -> Optional[str]:
 # Optional kernels installable on demand: dispatcher name -> (probe module, pip package). Wheels only
 # (--only-binary=:all:), since a source build needs a CUDA toolchain the host may lack.
 _INSTALLABLE_BACKENDS: dict[str, tuple[str, str]] = {
-    # Never ``sageattention`` from PyPI (only SageAttention 1 is there): the kernels-hub build is the installable one.
+    # Never ``sageattention`` from PyPI (only SageAttention 1 there): the hub build is the installable one.
     "sage": ("kernels", "kernels"),
     "flash": ("flash_attn", "flash-attn"),
     "_flash_3_hub": ("kernels", "kernels"),  # FA3/FA4 from the HF kernels hub
@@ -1297,11 +1281,9 @@ def _kernels_hub_compatible() -> bool:
 
 
 def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Optional[str]:
-    """Best-effort wheel-only install of what ``backend`` needs, when allowed: its package, then for ``flash_4_hub`` the
-    Python dependencies the hub FlashAttention 4 build imports (pinned to the cutlass-dsl range it loads with). Returns
+    """Best-effort install of ``backend``'s package, plus the hub FA4 build's dependencies for ``flash_4_hub``. Returns
     the refusal reason, or None; see ``_ensure_backend_package``."""
     if backend == "sage" and _pip_sage2_installed():
-        # A SageAttention 2 the user installed serves the request; the kernels-hub fallback needs nothing.
         return None
     reason = _ensure_backend_package(backend, logger)
     if reason is not None or backend not in ("flash_4_hub", "sage"):
@@ -1320,7 +1302,7 @@ def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Opt
     except Exception:  # noqa: BLE001
         return None
     if backend == "sage":
-        # Fetch the hub build here: the loader calls this outside its locks, apply then finds it in diffusers' registry.
+        # Fetched here, outside the loader's locks; apply finds it in diffusers' registry.
         _load_sage_hub_kernel()
         return None
     return _ensure_fa4_python_deps(logger)
@@ -1624,8 +1606,6 @@ def apply_attention_backend(
                 if not _sage_usable(pipe, target, logger):
                     backend = None
             else:
-                # No SageAttention 2 from pip (PyPI has none; a 1.x there is the Triton SageAttention 1): the kernels-hub
-                # build, self-checked on this card, or the default backend with the reason logged.
                 too_old = _sage_version_too_old()
                 if too_old and logger is not None:
                     logger.info("diffusion.attention: ignoring %s", too_old)

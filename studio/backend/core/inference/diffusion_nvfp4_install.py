@@ -659,9 +659,8 @@ def _pinnable(dists: dict[str, str]) -> dict[str, str]:
     return pins
 
 
-# FlashInfer 0.6.6 takes nvidia-cutlass-dsl >= 4.3.4, and an unconstrained resolve lands the newest (4.8.0), which the
-# kernels-hub FlashAttention 4 build cannot load (4.6+ removed cute.core.ThrMma). When cutlass-dsl is not yet installed,
-# hold it to the range both load with, so an NVFP4 install never breaks a later flash4 request.
+# An unconstrained FlashInfer resolve lands cutlass-dsl 4.8, which the hub FA4 build cannot load: hold a fresh install to
+# the range both load with.
 _CUTLASS_DSL_CONSTRAINT = "nvidia-cutlass-dsl>=4.4,<4.6"
 
 

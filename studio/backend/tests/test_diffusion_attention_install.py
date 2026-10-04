@@ -98,9 +98,6 @@ def _engage(monkeypatch, probe_error = ""):
     return engaged, t, log
 
 
-# --- sage without a pip SageAttention 2 -> the kernels-hub build -------------------------------------------------
-
-
 @needs_sage_hub
 def test_sage_without_sageattention2_engages_the_kernels_hub_build(monkeypatch):
     engaged, t, log = _engage(monkeypatch)
@@ -218,9 +215,6 @@ def test_a_pip_sageattention2_keeps_the_pip_path(monkeypatch):
         apply_attention_backend(types.SimpleNamespace(transformer = t), "sage", target = _target())
         == "sage"
     )
-
-
-# --- installs ----------------------------------------------------------------------------------------------------
 
 
 class _Run:
@@ -370,8 +364,7 @@ def test_studio_pins_a_kernels_release_diffusers_accepts_for_flash4():
 
 
 def test_a_kernels_upgrade_is_visible_to_diffusers_in_the_same_process(monkeypatch):
-    # diffusers reads the kernels version once at import and gates flash_4_hub on >= 0.12.3: without the refresh the
-    # first load after the on-demand upgrade still fell back (measured on a fresh venv, torch 2.11 and 2.12).
+    # Without the refresh the first load after the upgrade still fell back (fresh venv, torch 2.11 / 2.12).
     from diffusers.utils import import_utils
 
     monkeypatch.setattr(import_utils, "_kernels_version", "0.12.1")
@@ -395,8 +388,7 @@ def test_an_imported_old_kernels_is_not_papered_over(monkeypatch):
 
 
 def test_a_pth_installed_mid_process_is_activated(monkeypatch, tmp_path):
-    # nvidia-cutlass-dsl puts `cutlass` on sys.path through a .pth file, which the interpreter only reads at startup:
-    # without running it the first load after the install reported cutlass-dsl missing (fresh venv, B200).
+    # Without running the .pth the first load after the install reported cutlass-dsl missing (fresh venv, B200).
     import importlib.metadata as md
 
     pkg_dir = tmp_path / "dsl_packages"

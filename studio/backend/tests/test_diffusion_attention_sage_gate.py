@@ -51,7 +51,7 @@ def _isolated(monkeypatch):
     monkeypatch.setattr(att, "warn_if_sdpa_math_only", lambda *a, **k: False)
     monkeypatch.setattr(att, "_indexed_cuda_device", lambda device: device)
     monkeypatch.setattr(att, "_sage_version_too_old", lambda: None, raising = False)
-    # These exercise the pip SageAttention 2 path; the kernels-hub path is tested in test_diffusion_attention_install.py.
+    # The pip SageAttention 2 path; the hub path is in test_diffusion_attention_install.py.
     monkeypatch.setattr(att, "_pip_sage2_installed", lambda: True, raising = False)
     backends = dispatch._AttentionBackendRegistry._backends
     saved = backends[dispatch.AttentionBackendName.SAGE]
@@ -451,8 +451,7 @@ def test_sage_version_floor(monkeypatch, installed, refused):
 
 
 def test_old_sageattention_is_ignored_for_the_hub_build(monkeypatch):
-    # PyPI's sageattention 1.0.6 is SageAttention 1: never probed or engaged; the request goes to the kernels-hub build,
-    # and with no build that loads the load keeps the default backend and says why.
+    # sageattention 1.0.6 is never probed; with no hub build the load keeps the default backend and says why.
     seen: list = []
     monkeypatch.setattr(att, "_run_sage_probe", lambda d, dt, hd = 128, **k: seen.append(hd) or "")
     monkeypatch.setattr(att, "_pip_sage2_installed", lambda: False)
