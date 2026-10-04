@@ -8,11 +8,12 @@ built from source", which is silent, correct, slow, and reports the same
 `__version__` as the wheel. Only the module's `__file__` and the install log
 tell them apart, so a version check here would pass while proving nothing.
 
-**Read AFTER the model load, not before.** Measured on kernel
-`unsloth-probe-vision-recon-c76ea3`: `fla` is not importable before
-`from_pretrained` and IS importable after, because unsloth reaches for it lazily
-when it sees the model. A probe that read provenance only up front reported it
-absent, which is the opposite of the truth.
+**Read AFTER the model load, not before.** `fla` now comes from unsloth_zoo's
+vendored copy, injected at `import unsloth`, so it is importable from that point
+on and the answer is the vendored path rather than a pip install; the other
+kernels still resolve late. Measured on kernel
+`unsloth-probe-vision-recon-c76ea3`: a probe that read provenance only up front
+reported them absent, which is the opposite of the truth.
 
 Nothing here raises. A payload that dies collecting a diagnostic reports nothing
 at all, which is the one outcome worse than a missing field.

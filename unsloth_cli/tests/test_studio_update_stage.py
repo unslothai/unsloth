@@ -94,207 +94,50 @@ def test_make_relocatable_rewrites_shell_wrapper_for_path_with_spaces(tmp_path):
     assert text.endswith("print('pip')\n")
 
 
-def test_clone_tree_copies_symlinks_as_symlinks(tmp_path):
-    source = tmp_path / "src"
-    (source / "bin").mkdir(parents = True)
-    (source / "bin" / "real").write_text("x", encoding = "utf-8")
-    os.symlink("real", source / "bin" / "link")
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX shebangs")
+def test_make_relocatable_never_shrinks_a_script_below_its_recorded_size(tmp_path):
+    """RECORD keeps the size the installer wrote and anything smaller is damage, so an 82-byte shebang would shrink every console script."""
+    long_root = tmp_path / ("d" * 60) / ("e" * 60)
+    long_root.mkdir(parents = True)
+    venv = _make_venv(long_root)
+    originals = {
+        name: (venv / "bin" / name).stat().st_size
+        for name in ("unsloth", "pip", "activate", "env-script", "native")
+    }
+    assert len(str(venv)) > 68
 
-    _studio_stage.clone_tree(source, tmp_path / "dst")
+    assert _studio_stage.make_relocatable(venv) == 2
 
-    assert (tmp_path / "dst" / "bin" / "link").is_symlink()
-    assert (tmp_path / "dst" / "bin" / "link").read_text(encoding = "utf-8") == "x"
-
-
-def test_managed_helper_root_matches_default_and_custom_layout(monkeypatch, tmp_path):
-    monkeypatch.setattr(_studio_stage.Path, "home", lambda: tmp_path)
-
-    assert _studio_stage.managed_helper_root(tmp_path / ".unsloth" / "studio") == (
-        tmp_path / ".unsloth"
-    )
-    assert _studio_stage.managed_helper_root(tmp_path / "custom") == tmp_path / "custom"
-
-
-def test_stage_builds_a_ready_marker_from_a_successful_update(monkeypatch, tmp_path):
-    home = tmp_path / "studio"
-    _make_venv(home)
-    for name in _studio_stage.HELPER_NAMES:
-        (home / name).mkdir()
-        (home / name / "tag").write_text("live", encoding = "utf-8")
-    monkeypatch.setenv(_studio_stage.SHELL_VERSION_ENV, "0.1.900-beta")
-    seen: dict = {}
-
-    def fake_update(root: Path, args: list[str]) -> int:
-        seen["root"] = root
-        seen["args"] = args
-        return 0
-
-    monkeypatch.setattr(_studio_stage, "installed_version", lambda venv, env: "2026.9.1")
-    monkeypatch.setattr(_studio_stage, "probe_cli", lambda venv, env: None)
-    monkeypatch.setattr(_studio_stage, "probe_console_script", lambda venv, env: None)
-    echoed: list[str] = []
-
-    result = _studio_stage.stage(
-        home, update_args = ["--package", "unsloth"], echo = echoed.append, run_update = fake_update
-    )
-
-    root = home / _studio_stage.STAGE_DIR_NAME
-    assert seen == {"root": root, "args": ["--package", "unsloth"]}
-    assert result == {"backend_version": "2026.9.1", "root": str(root)}
-    marker = json.loads((root / _studio_stage.READY_MARKER).read_text(encoding = "utf-8"))
-    assert marker["backend_version"] == "2026.9.1"
-    assert marker["shell_version"] == "0.1.900-beta"
-    assert (root / _studio_stage.VENV_NAME / "pyvenv.cfg").is_file()
-    for name in _studio_stage.HELPER_NAMES:
-        assert (root / name / "tag").read_text(encoding = "utf-8") == "live"
-    assert (
-        (home / _studio_stage.VENV_NAME / "bin" / "unsloth")
-        .read_text(encoding = "utf-8")
-        .startswith(f"#!{home / _studio_stage.VENV_NAME}/bin/python")
-    )
-    assert echoed == ["[TAURI:STEP] clone", "[TAURI:STEP] update", "[TAURI:STEP] verify"]
+    for name, original in originals.items():
+        assert (venv / "bin" / name).stat().st_size >= original, name
+    # Padded, not truncated: the script still ends in what the installer wrote.
+    text = (venv / "bin" / "unsloth").read_text(encoding = "utf-8")
+    assert text.startswith(_studio_stage.RELOCATABLE_SHEBANG)
+    assert text.endswith("print('cli')\n")
+    assert text.splitlines()[3].startswith("# ")
 
 
-def test_an_accepted_stage_publishes_the_uv_cache_it_used(monkeypatch, tmp_path):
-    """The staged child cannot write the live marker: STUDIO_HOME names the install it is
-    replacing, and the stage may never activate. It parks the choice, and acceptance is
-    what publishes it, or a desktop-only install never records one at all."""
-    home = tmp_path / "studio"
-    _make_venv(home)
-    monkeypatch.delenv(_studio_stage.SHELL_VERSION_ENV, raising = False)
+@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX shebangs")
+def test_a_finalised_stage_under_a_long_path_passes_the_record_size_check(tmp_path):
+    """End-to-end shape of the regression: the size comparison install_manifest runs after a finalised
+    stage decides whether every later update repeats the whole dependency pass."""
+    stage_root = tmp_path / ("l" * 70) / "studio" / _studio_stage.STAGE_DIR_NAME
+    stage_root.mkdir(parents = True)
+    venv = _make_venv(stage_root)
+    python = venv / "bin" / "python"
+    python.write_text("#!/bin/sh\nexit 0\n", encoding = "utf-8")
+    python.chmod(0o755)
+    (venv / "bin" / "unsloth").chmod(0o755)
+    # What RECORD holds for the console scripts, as sizes rather than a real wheel.
+    recorded = {name: (venv / "bin" / name).stat().st_size for name in ("unsloth", "pip")}
+    assert len(str(venv)) > 68
 
-    def fake_update(root: Path, args: list[str]) -> int:
-        (root / _studio_stage.UV_CACHE_MARKER).write_text("/warm/uv\n", encoding = "utf-8")
-        return 0
+    _studio_stage.finalize_for_activation(stage_root)
 
-    monkeypatch.setattr(_studio_stage, "installed_version", lambda venv, env: "2026.9.1")
-    monkeypatch.setattr(_studio_stage, "probe_cli", lambda venv, env: None)
-    monkeypatch.setattr(_studio_stage, "probe_console_script", lambda venv, env: None)
-
-    _studio_stage.stage(home, update_args = [], echo = lambda _: None, run_update = fake_update)
-
-    live = home / "cache" / _studio_stage.UV_CACHE_MARKER
-    assert live.read_text(encoding = "utf-8").strip() == "/warm/uv"
-
-
-def test_a_rejected_stage_publishes_nothing(monkeypatch, tmp_path):
-    """Verification is the acceptance point, so a stage that parks a choice and then fails
-    its probes must leave the live install pointing where it already pointed."""
-    home = tmp_path / "studio"
-    _make_venv(home)
-    (home / "cache").mkdir(parents = True)
-    (home / "cache" / _studio_stage.UV_CACHE_MARKER).write_text("/live/uv\n", encoding = "utf-8")
-    monkeypatch.delenv(_studio_stage.SHELL_VERSION_ENV, raising = False)
-
-    def fake_update(root: Path, args: list[str]) -> int:
-        (root / _studio_stage.UV_CACHE_MARKER).write_text("/staged/uv\n", encoding = "utf-8")
-        return 0
-
-    def refuse(venv, env):
-        raise _studio_stage.StageError("staged environment failed to start")
-
-    monkeypatch.setattr(_studio_stage, "probe_cli", refuse)
-
-    with pytest.raises(_studio_stage.StageError):
-        _studio_stage.stage(home, update_args = [], echo = lambda _: None, run_update = fake_update)
-
-    live = home / "cache" / _studio_stage.UV_CACHE_MARKER
-    assert live.read_text(encoding = "utf-8").strip() == "/live/uv"
-
-
-def test_a_stage_that_parks_nothing_leaves_the_live_marker_alone(monkeypatch, tmp_path):
-    """Nothing to promote is the normal case for a caller-pinned UV_CACHE_DIR, and it must
-    not blank the marker an installer wrote."""
-    home = tmp_path / "studio"
-    _make_venv(home)
-    (home / "cache").mkdir(parents = True)
-    (home / "cache" / _studio_stage.UV_CACHE_MARKER).write_text("/live/uv\n", encoding = "utf-8")
-    monkeypatch.delenv(_studio_stage.SHELL_VERSION_ENV, raising = False)
-    monkeypatch.setattr(_studio_stage, "installed_version", lambda venv, env: "2026.9.1")
-    monkeypatch.setattr(_studio_stage, "probe_cli", lambda venv, env: None)
-    monkeypatch.setattr(_studio_stage, "probe_console_script", lambda venv, env: None)
-
-    _studio_stage.stage(home, update_args = [], echo = lambda _: None, run_update = lambda root, args: 0)
-
-    live = home / "cache" / _studio_stage.UV_CACHE_MARKER
-    assert live.read_text(encoding = "utf-8").strip() == "/live/uv"
-
-
-def test_stage_discards_the_tree_when_the_update_fails(monkeypatch, tmp_path):
-    home = tmp_path / "studio"
-    _make_venv(home)
-    monkeypatch.delenv(_studio_stage.SHELL_VERSION_ENV, raising = False)
-
-    with pytest.raises(_studio_stage.StageError, match = "staged update failed"):
-        _studio_stage.stage(
-            home, update_args = [], echo = lambda _: None, run_update = lambda root, args: 1
-        )
-
-    assert not (home / _studio_stage.STAGE_DIR_NAME).exists()
-    assert (home / _studio_stage.VENV_NAME / "pyvenv.cfg").is_file()
-
-
-def test_stage_discards_the_tree_when_verification_fails(monkeypatch, tmp_path):
-    home = tmp_path / "studio"
-    _make_venv(home)
-
-    def broken(venv: Path, env: dict) -> str:
-        raise _studio_stage.StageError("no unsloth")
-
-    monkeypatch.setattr(_studio_stage, "finalize_for_activation", lambda root: None)
-    monkeypatch.setattr(_studio_stage, "installed_version", broken)
-
-    with pytest.raises(_studio_stage.StageError, match = "no unsloth"):
-        _studio_stage.stage(
-            home, update_args = [], echo = lambda _: None, run_update = lambda root, args: 0
-        )
-
-    assert not (home / _studio_stage.STAGE_DIR_NAME).exists()
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX console scripts")
-def test_same_version_stage_preserves_the_launcher_until_update_verification(monkeypatch, tmp_path):
-    home = tmp_path / "studio"
-    live_venv = _make_venv(home)
-    live_launcher = (live_venv / "bin" / "unsloth").read_bytes()
-
-    def same_version_update(root: Path, args: list[str]) -> int:
-        staged_launcher = root / _studio_stage.VENV_NAME / "bin" / "unsloth"
-        assert staged_launcher.read_bytes() == live_launcher
-        return 0
-
-    monkeypatch.setattr(_studio_stage, "installed_version", lambda venv, env: "2026.8.22")
-    monkeypatch.setattr(_studio_stage, "probe_cli", lambda venv, env: None)
-    monkeypatch.setattr(_studio_stage, "probe_console_script", lambda venv, env: None)
-
-    _studio_stage.stage(home, update_args = [], echo = lambda _: None, run_update = same_version_update)
-
-    staged_launcher = (
-        home / _studio_stage.STAGE_DIR_NAME / _studio_stage.VENV_NAME / "bin" / "unsloth"
-    )
-    assert staged_launcher.read_text(encoding = "utf-8").startswith(_studio_stage.RELOCATABLE_SHEBANG)
-
-
-def test_stage_refuses_without_a_managed_environment(tmp_path):
-    with pytest.raises(_studio_stage.StageError, match = "no managed environment"):
-        _studio_stage.stage(
-            tmp_path, update_args = [], echo = lambda _: None, run_update = lambda root, args: 0
-        )
-
-
-def test_stage_refuses_when_the_previous_stage_could_not_be_cleared(monkeypatch, tmp_path):
-    _make_venv(tmp_path)
-    stale = _studio_stage.stage_root(tmp_path)
-    (stale / "leftover").mkdir(parents = True)
-    # discard() swallows its errors, so a locked or undeletable tree would otherwise be staged into and
-    # shipped as if it were a fresh clone.
-    monkeypatch.setattr(_studio_stage, "discard", lambda root: None)
-
-    with pytest.raises(_studio_stage.StageError, match = "could not clear"):
-        _studio_stage.stage(
-            tmp_path, update_args = [], echo = lambda _: None, run_update = lambda root, args: 0
-        )
-    assert (stale / "leftover").is_dir()
+    damaged = [
+        name for name, size in recorded.items() if (venv / "bin" / name).stat().st_size < size
+    ]
+    assert damaged == []
 
 
 def test_child_environment_points_the_staged_cli_at_the_stage_root(monkeypatch, tmp_path):
@@ -321,125 +164,12 @@ def test_staged_python_commands_use_isolated_mode(monkeypatch, tmp_path):
 
     def fake_run(command, *, cwd, env):
         commands.append(command)
-        return type("Result", (), {"returncode": 0, "stdout": "2026.9.1\n", "stderr": ""})()
+        return type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     monkeypatch.setattr(_studio_stage, "_run", fake_run)
-    _studio_stage.installed_version(venv, {})
     _studio_stage.probe_cli(venv, {})
 
     assert all(command[1] == "-I" for command in commands)
-
-
-def test_nested_update_uses_isolated_mode(monkeypatch, tmp_path):
-    _make_venv(tmp_path)
-    captured: dict = {}
-
-    def fake_call(command, *, cwd, env):
-        captured.update(command = command, cwd = cwd, env = env)
-        return 0
-
-    monkeypatch.setenv("PYTHONPATH", "/foreign/checkout")
-    monkeypatch.setattr(_studio_stage.subprocess, "call", fake_call)
-
-    assert _studio_stage.run_staged_update(tmp_path, ["--verbose"]) == 0
-    assert captured["command"][1:3] == ["-I", "-X"]
-    assert "PYTHONPATH" not in captured["env"]
-
-
-def test_update_stage_flag_refuses_local(monkeypatch):
-    from typer.testing import CliRunner
-    from unsloth_cli.commands import studio as studio_mod
-
-    monkeypatch.delenv(_studio_stage.STAGE_ROOT_ENV, raising = False)
-    result = CliRunner().invoke(studio_mod.studio_app, ["update", "--stage", "--local"])
-
-    assert result.exit_code == 2
-    assert "--stage cannot be combined with --local" in result.output
-
-
-def test_update_stage_reports_a_structured_error(monkeypatch):
-    from typer.testing import CliRunner
-    from unsloth_cli.commands import studio as studio_mod
-
-    monkeypatch.delenv(_studio_stage.STAGE_ROOT_ENV, raising = False)
-
-    def failing_stage(home, *, update_args, echo):
-        raise _studio_stage.StageError("clone failed")
-
-    monkeypatch.setattr(_studio_stage, "stage", failing_stage)
-    result = CliRunner().invoke(studio_mod.studio_app, ["update", "--stage"])
-
-    assert result.exit_code == 1
-    assert "[TAURI:ERROR] clone failed" in result.output
-
-
-def test_update_stage_passes_the_update_options_through(monkeypatch):
-    from typer.testing import CliRunner
-    from unsloth_cli.commands import studio as studio_mod
-
-    monkeypatch.delenv(_studio_stage.STAGE_ROOT_ENV, raising = False)
-    captured: dict = {}
-
-    def fake_stage(home, *, update_args, echo):
-        captured["home"] = home
-        captured["args"] = update_args
-        return {"backend_version": "2026.9.1", "root": "/stage"}
-
-    monkeypatch.setattr(_studio_stage, "stage", fake_stage)
-    result = CliRunner().invoke(
-        studio_mod.studio_app,
-        ["update", "--stage", "--verbose", "--no-verify", "--package", "unsloth"],
-    )
-
-    assert result.exit_code == 0, result.output
-    assert captured["home"] == studio_mod.STUDIO_HOME
-    assert captured["args"] == ["--package", "unsloth", "--verbose", "--no-verify"]
-    assert "Staged Unsloth Studio 2026.9.1" in result.output
-
-
-def test_update_stage_reports_an_unexpected_failure_as_a_tauri_error(monkeypatch):
-    from typer.testing import CliRunner
-    from unsloth_cli.commands import studio as studio_mod
-
-    monkeypatch.delenv(_studio_stage.STAGE_ROOT_ENV, raising = False)
-
-    def failing_stage(home, *, update_args, echo):
-        # model an unlabeled full-disk staging failure.
-        raise OSError(28, "No space left on device")
-
-    monkeypatch.setattr(_studio_stage, "stage", failing_stage)
-    result = CliRunner().invoke(studio_mod.studio_app, ["update", "--stage"])
-
-    assert result.exit_code == 1
-    assert "[TAURI:ERROR] OSError:" in result.output
-    assert "No space left on device" in result.output
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason = "POSIX console scripts")
-def test_stage_relocates_the_launcher_the_update_rewrote(monkeypatch, tmp_path):
-    home = tmp_path / "studio"
-    _make_venv(home)
-    stage_venv = home / _studio_stage.STAGE_DIR_NAME / _studio_stage.VENV_NAME
-
-    def reinstalling_update(root: Path, args: list[str]) -> int:
-        # What pip/uv do on every upgrade: rewrite the console script with the interpreter named by
-        # absolute path, inside the stage.
-        (root / _studio_stage.VENV_NAME / "bin" / "unsloth").write_text(
-            f"#!{root / _studio_stage.VENV_NAME}/bin/python\nprint('cli')\n", encoding = "utf-8"
-        )
-        return 0
-
-    monkeypatch.setattr(_studio_stage, "installed_version", lambda venv, env: "2026.9.1")
-    monkeypatch.setattr(_studio_stage, "probe_cli", lambda venv, env: None)
-    monkeypatch.setattr(_studio_stage, "probe_console_script", lambda venv, env: None)
-
-    _studio_stage.stage(home, update_args = [], echo = lambda _: None, run_update = reinstalling_update)
-
-    launcher = (stage_venv / "bin" / "unsloth").read_text(encoding = "utf-8")
-    # Activation moves the venv out of .update-stage, so an absolute shebang into it would leave the
-    # activated backend unable to start at all.
-    assert launcher.startswith(_studio_stage.RELOCATABLE_SHEBANG)
-    assert str(_studio_stage.STAGE_DIR_NAME) not in launcher.splitlines()[1]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "POSIX console scripts")
@@ -479,3 +209,103 @@ def test_activation_finalizer_repairs_a_launcher_written_by_an_old_outer_stage(t
 
     result = subprocess.run([str(live / "bin" / "unsloth"), "-h"], check = False)
     assert result.returncode == 0
+
+
+def _invoke_stage(monkeypatch, home: Path):
+    from typer.testing import CliRunner
+    from unsloth_cli.commands import studio as studio_mod
+
+    monkeypatch.delenv(_studio_stage.STAGE_ROOT_ENV, raising = False)
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", home)
+    return CliRunner().invoke(studio_mod.studio_app, ["update", "--stage"])
+
+
+def test_stage_is_refused_and_records_what_the_old_shell_asked_for(monkeypatch, tmp_path):
+    """An 805-807 shell still spawns `--stage`: it has to fail and leave the marker, or the shell asks again."""
+    home = tmp_path / "studio"
+    monkeypatch.setenv(_studio_stage.SHELL_VERSION_ENV, "0.1.807-beta")
+
+    result = _invoke_stage(monkeypatch, home)
+
+    assert result.exit_code == 1, result.output
+    assert "[TAURI:ERROR] background staging is no longer supported" in result.output
+    marker = json.loads((home / ".update-failed.json").read_text(encoding = "utf-8"))
+    # StagedVersions types this one as a plain String; null would fail the whole parse.
+    assert isinstance(marker["backend_version"], str) and marker["backend_version"]
+    assert marker["shell_version"] == "0.1.807-beta"
+    assert not (home / _studio_stage.STAGE_DIR_NAME).exists()
+
+
+def test_a_refusal_clears_a_stage_an_earlier_shell_left_behind(monkeypatch, tmp_path):
+    """805-807 map any stage directory back to `stage`, so an orphan has the shell asking at every recheck."""
+    home = tmp_path / "studio"
+    stage = home / _studio_stage.STAGE_DIR_NAME
+    (stage / _studio_stage.VENV_NAME / "bin").mkdir(parents = True)
+    (stage / _studio_stage.VENV_NAME / "bin" / "python").write_text("x", encoding = "utf-8")
+    monkeypatch.setenv(_studio_stage.SHELL_VERSION_ENV, "0.1.805-beta")
+
+    result = _invoke_stage(monkeypatch, home)
+
+    assert result.exit_code == 1, result.output
+    assert not stage.exists()
+    assert [p.name for p in home.iterdir() if p.name.startswith(".update-")] == [
+        ".update-failed.json"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("environment", "expected"),
+    [
+        (None, None),
+        ("", None),
+        ("   ", None),
+        ("  0.1.806-beta  ", "0.1.806-beta"),
+    ],
+)
+def test_a_refusal_records_the_shell_version_or_nothing(
+    monkeypatch, tmp_path, environment, expected
+):
+    """`shell_version` is an `Option<String>`, so null parses; a placeholder would fail their equality check as null does."""
+    home = tmp_path / "studio"
+    if environment is None:
+        monkeypatch.delenv(_studio_stage.SHELL_VERSION_ENV, raising = False)
+    else:
+        monkeypatch.setenv(_studio_stage.SHELL_VERSION_ENV, environment)
+
+    result = _invoke_stage(monkeypatch, home)
+
+    assert result.exit_code == 1, result.output
+    marker = json.loads((home / ".update-failed.json").read_text(encoding = "utf-8"))
+    assert marker["shell_version"] == expected
+    assert isinstance(marker["backend_version"], str)
+
+
+def test_a_refusal_that_cannot_write_the_marker_still_reports_the_error(monkeypatch, tmp_path):
+    # An unwritable home is the one case where the refusal matters more than the marker.
+    blocker = tmp_path / "studio"
+    blocker.parent.mkdir(parents = True, exist_ok = True)
+    blocker.write_text("not a directory", encoding = "utf-8")
+
+    result = _invoke_stage(monkeypatch, blocker)
+
+    assert result.exit_code == 1, result.output
+    assert "[TAURI:ERROR] background staging is no longer supported" in result.output
+
+
+def test_the_activation_finalizer_imports_under_isolated_python():
+    """The 805-807 activation path imports finalize_for_activation under `python -I` inside the staged venv."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            "import sys; sys.path.insert(0, sys.argv[1]); "
+            "from unsloth_cli._studio_stage import finalize_for_activation",
+            str(_REPO_ROOT),
+        ],
+        capture_output = True,
+        text = True,
+        check = False,
+    )
+
+    assert result.returncode == 0, result.stderr

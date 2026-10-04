@@ -36,6 +36,8 @@ def client(monkeypatch):
     app = FastAPI()
     app.include_router(settings.router)
     app.dependency_overrides[settings.get_current_subject] = lambda: "admin"
+    # Classified by caller now, so the app must be able to say which caller this is.
+    app.dependency_overrides[settings.allow_ambient_hf_token] = lambda: True
     return TestClient(app, raise_server_exceptions = False)
 
 
@@ -431,9 +433,9 @@ def test_sentence_transformers_size_matches_the_full_snapshot_download(monkeypat
         lambda repo, files_metadata, token: _types.SimpleNamespace(siblings = siblings),
     )
 
-    # The full-snapshot worker keeps configs/tokenizers and both transformer
-    # weight formats, while applying its normal GGUF/consolidated exclusions.
-    assert settings._hf_snapshot_size("acme/embedder", None) == 270
+    # The full-snapshot worker keeps configs/tokenizers and the safetensors copy, while
+    # applying its normal GGUF/consolidated/duplicate-format exclusions.
+    assert settings._hf_snapshot_size("acme/embedder", None) == 160
 
 
 def test_explicit_llama_policy_does_not_offer_safetensors(client, monkeypatch):

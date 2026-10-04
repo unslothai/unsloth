@@ -11,6 +11,8 @@ import {
   markdownBlockFallback,
 } from "../src/components/assistant-ui/markdown-block-fallback.ts";
 
+import { readSrc } from "./helpers/kit.ts";
+
 /**
  * Streamdown loads the syntax highlighted code body and the Mermaid renderer
  * through `React.lazy`, and it fetches them the first time a reply contains
@@ -439,13 +441,7 @@ test("the whole-block boundary is still the catch-all above them", () => {
 });
 
 test("the boundary does not retry the import it caught", () => {
-  const boundary = readFileSync(
-    new URL(
-      "../src/components/assistant-ui/markdown-block-boundary.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
+  const boundary = readSrc("components/assistant-ui/markdown-block-boundary.tsx");
 
   // React and the browser's module map both cache a rejected dynamic import
   // (whatwg/html#6768), so a boundary that resets on new props rethrows on every

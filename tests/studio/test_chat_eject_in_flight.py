@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Chat eject must show a toast on the first click and refuse a second (#10339).
-
-The in-flight flag is module-scoped because three ``useChatModelRuntime``
-instances share one llama-server. The fixture store mirrors the real gate:
-``modelLoading`` is true while a lease is held.
-"""
+"""Chat eject must show a toast on the first click and refuse a second (#10339)."""
 
 from __future__ import annotations
 
@@ -33,14 +28,16 @@ export const world: any = {
   beginCalls: 0,
 };
 
-let chatEjectInFlight = false;
-let leaseHeld = false;
+let leasePhase: string | null = null;
+const chatModelLifecycleGate = {
+  currentPhase() { return leasePhase; },
+};
 const params = { checkpoint: "org/model" };
 function setModelsError(_message: string | null): void {}
 function clearCheckpoint(): void {}
 async function refresh(): Promise<void> {}
 function isExternalModelId(_id: string): boolean { return false; }
-function cancelPreStreamRunReservations(_tokens: unknown): void {}
+function stopQueuedRuns(_decision: unknown, _scoped: boolean): void {}
 function requestLocalPromptQueueStop(_ids?: unknown): void {}
 async function unloadModel(_payload: unknown): Promise<void> {
   world.unloads += 1;
@@ -62,6 +59,7 @@ export function releaseHungConfirm(): void {
 async function confirmStopRunningChatsIfNeeded(
   _action: string,
   _effect: string,
+  _model?: string,
 ): Promise<any> {
   if (confirmGate) await confirmGate;
   return {
@@ -91,22 +89,23 @@ const toast = {
 const useChatRuntimeStore = {
   getState() {
     return {
-      get modelLoading() { return leaseHeld; },
+      get modelLoading() { return leasePhase !== null; },
       loadingModelPick: null,
-      beginModelLoading() {
+      loadedModels: [{ checkpoint: "org/model" }],
+      beginModelLoading(phase: string) {
         world.beginCalls += 1;
-        if (leaseHeld) return null;
-        leaseHeld = true;
-        return { id: "lease-1" };
+        if (leasePhase !== null) return null;
+        leasePhase = phase;
+        return 1;
       },
       endModelLoading(_lease: unknown) {
-        leaseHeld = false;
+        leasePhase = null;
       },
     };
   },
 };
 
-async function ejectModel(): Promise<boolean> {
+async function ejectModel(confirmed?: any): Promise<boolean> {
 __EJECT_BODY__
 }
 
@@ -134,7 +133,7 @@ function disposableTimeoutSignal(ms: number) {
   };
 }
 
-async function getActiveGenerations(signal?: AbortSignal) {
+async function getActiveGenerations(_model?: string, signal?: AbortSignal) {
   world.hadSignal = signal instanceof AbortSignal;
   return { count: 0, thread_ids: [], active: [] };
 }
@@ -195,7 +194,6 @@ def _run_confirm(script: str) -> dict:
 
 
 def test_the_first_eject_click_shows_a_loading_toast_before_confirm():
-    """#10339: the first red-circle click had no UI until /active-generations answered."""
     out = _run_eject(
         textwrap.dedent(
             """
@@ -230,9 +228,8 @@ def test_the_first_eject_click_shows_a_loading_toast_before_confirm():
 
 
 def test_the_active_generations_snapshot_passes_a_timeout_signal():
-    """A wedged /active-generations used to hold the eject lease with no toast."""
     assert "ACTIVE_GENERATIONS_TIMEOUT_MS = 8_000" in read(CONFIRM)
-    assert "getActiveGenerations(timeout.signal)" in read(CONFIRM)
+    assert "getActiveGenerations(model, timeout.signal)" in read(CONFIRM)
     out = _run_confirm(
         textwrap.dedent(
             """

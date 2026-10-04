@@ -27,9 +27,9 @@ _PLAIN = "unsloth/Llama-3.2-1B-Instruct"
 @pytest.fixture
 def detector_spy(monkeypatch):
     """Record how detect_audio_type is called, without touching the network."""
-    calls = []
-
     import utils.models.model_config as model_config
+
+    calls = []
 
     def fake_detect(
         model_name,

@@ -2,18 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+
+import { readSrc } from "./helpers/kit.ts";
 
 // Asserted against the source like the other chat-adapter tests: importing the
 // module would drag in the stores and the toast layer for one catch block.
-const source = readFileSync(
-  fileURLToPath(
-    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-  ),
-  "utf8",
-);
+const source = readSrc("features/chat/api/chat-adapter.ts");
 
 // Hoisted: biome's useTopLevelRegex flags a literal recompiled per call.
 const TOAST_BRANCH =
@@ -28,6 +23,9 @@ const CAP_REMEDY = /Increase Max Tokens or disable thinking/;
 const WINDOW_REMEDY = /cannot create room the window does not have/;
 const NO_UNLIMITED_CLAIM = /already unlimited/;
 const WINDOW_SETTING = /Length in Model settings/;
+const HIDDEN_WINDOW_REMEDY =
+  /Start a new chat, or shorten this one, then retry/;
+const BOTH_REMEDIES = /Max Tokens or its context window before answering/;
 
 test("the toast repeats the advice the error chose, not the Max Tokens advice", () => {
   // GenerationLengthError already decides between the Max Tokens and the Context
@@ -43,16 +41,14 @@ test("the toast repeats the advice the error chose, not the Max Tokens advice", 
 test("the two remedies really are different text, so passing it through matters", () => {
   // Read rather than imported, as tests/padded-response.test.ts reads it: importing
   // chat-api pulls in the asset graph for two string literals.
-  const chatApi = readFileSync(
-    fileURLToPath(
-      new URL("../src/features/chat/api/chat-api.ts", import.meta.url),
-    ),
-    "utf8",
-  );
+  const chatApi = readSrc("features/chat/api/chat-api.ts");
 
   assert.match(chatApi, THE_ERROR_CLASS);
   assert.match(chatApi, CAP_REMEDY);
   assert.match(chatApi, WINDOW_REMEDY);
   assert.match(chatApi, WINDOW_SETTING);
   assert.doesNotMatch(chatApi, NO_UNLIMITED_CLAIM);
+  // External windows need different advice.
+  assert.match(chatApi, HIDDEN_WINDOW_REMEDY);
+  assert.match(chatApi, BOTH_REMEDIES);
 });

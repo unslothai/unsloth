@@ -56,9 +56,8 @@ export function projectSourceFileName(title: string): string {
   )
     // Windows drops a trailing period or space, so never send one.
     .replace(/[\s.]+$/, "");
-  // The backend collapses everything outside [A-Za-z0-9._-] to "_", so a title
-  // with no ASCII word character at all would be listed as "_.md". A generic
-  // name at least reads as one.
+  // The backend collapses everything outside [A-Za-z0-9._-] to "_", so a title with no ASCII word
+  // character at all would be listed as "_.md". A generic name at least reads as one.
   if (!/[A-Za-z0-9]/.test(stem)) return "chat.md";
   // A device name stays reserved through any extension, and Windows reads it as
   // the part before the *first* dot, so break the name there.
@@ -114,9 +113,8 @@ export async function saveMarkdownAsProjectSource(
 ): Promise<boolean> {
   const filename = projectSourceFileName(title);
   const file = new File([markdown], filename, { type: "text/markdown" });
-  // Invalidate the sources probe before the upload as well as after it (the
-  // announce below): a chat sent mid-upload must not cache "no sources" for the
-  // probe's TTL.
+  // Invalidate the sources probe before the upload as well as after it (the announce below): a chat
+  // sent mid-upload must not cache "no sources" for the probe's TTL.
   invalidateProjectSources(projectId);
   try {
     const result = await uploadProjectDocument(projectId, file);

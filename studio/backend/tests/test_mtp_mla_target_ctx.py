@@ -109,6 +109,9 @@ def _make_mla_backend(
     b._kv_value_length_swa = None
     b._draft_backend_cache = None
     b._vocab_size = vocab
+    # The speculative compute buffers ride on this reserve too; test_compute_buffer
+    # prices them, and these cases pin the cache terms.
+    b._mtp_draft_compute_bytes = lambda *args, **kwargs: 0
     return b
 
 

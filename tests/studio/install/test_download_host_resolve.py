@@ -71,7 +71,6 @@ def test_fast_path_yields_pinned_tag_without_api(monkeypatch):
 
 
 def test_fast_path_disabled_by_caller_uses_api(monkeypatch):
-    # macOS passes allow_download_host_fast_path = False to keep the walk-back.
     monkeypatch.delenv("UNSLOTH_LLAMA_DISABLE_DOWNLOAD_HOST_RESOLVE", raising = False)
     monkeypatch.setattr(ILP, "_download_host_resolved_release", _fast_path_raises)
     monkeypatch.setattr(ILP, "iter_published_release_bundles", _empty_api)
@@ -113,7 +112,8 @@ def test_fast_path_none_falls_back_to_api(monkeypatch):
 def test_fast_path_rejected_checksum_falls_back_to_api(monkeypatch):
     monkeypatch.delenv("UNSLOTH_LLAMA_DISABLE_DOWNLOAD_HOST_RESOLVE", raising = False)
 
-    def _reject(_repo):
+    # Two args: a one-arg stub's TypeError hits the same broad except, so the branch never runs.
+    def _reject(_repo, _tag = ""):
         raise PrebuiltFallback("checksum mismatch")
 
     monkeypatch.setattr(ILP, "_download_host_resolved_release", _reject)

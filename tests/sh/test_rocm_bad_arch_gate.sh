@@ -10,21 +10,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/_harness.sh"
 INSTALL_SH="$SCRIPT_DIR/../../install.sh"
-PASS=0
-FAIL=0
-
-assert_eq() {
-    _label="$1"; _expected="$2"; _actual="$3"
-    if [ "$_actual" = "$_expected" ]; then
-        echo "  PASS: $_label"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected '$_expected', got '$_actual')"
-        FAIL=$((FAIL + 1))
-    fi
-}
-
 # The gate is inline in get_torch_index_url on purpose: harnesses that extract the function
 # alone would turn a missed helper into an undefined command sending every ROCm case to cpu.
 # So exercise the real case block, lifted from the function.
@@ -159,7 +146,8 @@ trap 'rm -rf "$_FN_FILE" "$_GATE_FILE" "$_REROUTE_FILE" "$_E2E_DIR" "$_FAKE_SMI_
 # ROCm branch answer cpu and these pass for the wrong reason. The ROCm assertion below guards it.
 {
     for _fn in _run_bounded _cvd_hides_nvidia _has_amd_rocm_gpu _has_usable_nvidia_gpu \
-               _ensure_rocm_probe_env _probe_amd_gfx_arch _amd_gfx_select_ordinals \
+               _ensure_rocm_probe_env _rocm_torch_explicitly_requested \
+               _probe_amd_gfx_arch _amd_gfx_select_ordinals \
                _amd_gpu_present_via_pci \
                _infer_amd_gfx_arch_from_gpu_name _infer_linux_amd_gfx_arch \
                _amd_arch_index_family_for_gfx _trim_index_path_slashes \

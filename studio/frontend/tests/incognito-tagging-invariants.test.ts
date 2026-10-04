@@ -11,13 +11,11 @@
 // loaded under stubs, so what is pinned here is the shape of the decision.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const provider = readFileSync(
-  new URL("../src/features/chat/runtime-provider.tsx", import.meta.url),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const provider = readSrc("features/chat/runtime-provider.tsx");
 
 /** ensureThreadRecord's body, code only. */
 function ensureThreadRecordBody(): string {

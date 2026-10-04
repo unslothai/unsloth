@@ -23,9 +23,9 @@ import {
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toastError, toastSuccess } from "@/shared/toast";
 import type { RecipeExecutionRecord } from "../../execution-types";
-import { copyTextToClipboard } from "../../executions/execution-helpers";
 
 type PublishExecutionDialogProps = {
   open: boolean;
@@ -47,7 +47,7 @@ function getExecutionRecordCount(execution: RecipeExecutionRecord | null): numbe
   if (typeof execution.analysis?.num_records === "number") {
     return execution.analysis.num_records;
   }
-  if (execution.datasetTotal > 0) {
+  if (typeof execution.datasetTotal === "number" && execution.datasetTotal > 0) {
     return execution.datasetTotal;
   }
   if (execution.rows > 0) {
@@ -119,7 +119,7 @@ export function PublishExecutionDialog({
     if (!publishedUrl) {
       return;
     }
-    const ok = await copyTextToClipboard(publishedUrl);
+    const ok = await copyToClipboard(publishedUrl);
     if (ok) {
       toastSuccess("Dataset link copied");
       return;

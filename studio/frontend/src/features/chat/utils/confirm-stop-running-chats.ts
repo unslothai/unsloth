@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { getActiveGenerations } from "../api/chat-api";
-import { disposableTimeoutSignal } from "@/features/hub/lib/abort-signals";
+import { disposableTimeoutSignal } from "../../hub/lib/abort-signals";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { usePromptQueueUI } from "../stores/prompt-queue-ui-store";
 import {
@@ -12,8 +12,7 @@ import {
 import { listStoredChatThreads } from "./chat-history-storage";
 import { listLocalPreStreamRunReservations } from "./pre-stream-run-reservation";
 
-// Pre-dialog snapshot of other tabs' runs. Unbounded, a wedged backend leaves the
-// eject click with no toast and the load lease held until refresh.
+// Unbounded, a wedged backend held the eject lease with no feedback (#10339).
 const ACTIVE_GENERATIONS_TIMEOUT_MS = 8_000;
 
 export interface StopRunningChatsDecision {
@@ -45,15 +44,19 @@ export function getLocalPromptQueueThreadIds(): string[] {
 export async function confirmStopRunningChatsIfNeeded(
   action = "Loading a different model",
   effect: StopRunningChatsEffect = "reload",
+  /** Only this model's chats, from the backend: a tab cannot tell which model a local run is on. */
+  model?: string,
 ): Promise<StopRunningChatsDecision> {
   // Local runs only: an external-provider chat is not stopped by the swap, so counting it would
   // block a safe load behind a dialog. The backend excludes them for the same reason.
   const { runningByThreadId, localRunByThreadId } =
     useChatRuntimeStore.getState();
-  let running = Object.entries(runningByThreadId)
-    .filter(([threadId, on]) => on && localRunByThreadId[threadId])
-    .map(([threadId]) => threadId);
-  const preStreamRuns = listLocalPreStreamRunReservations();
+  let running = model
+    ? []
+    : Object.entries(runningByThreadId)
+        .filter(([threadId, on]) => on && localRunByThreadId[threadId])
+        .map(([threadId]) => threadId);
+  const preStreamRuns = model ? [] : listLocalPreStreamRunReservations();
   const preStreamRunTokens = preStreamRuns.map(({ token }) => token);
   let unnamedPreStreamRuns = 0;
   const runningIds = new Set(running);
@@ -70,12 +73,13 @@ export async function confirmStopRunningChatsIfNeeded(
       unnamedPreStreamRuns += 1;
     }
   }
-  const promptQueueThreadIds = getLocalPromptQueueThreadIds();
+  let promptQueueThreadIds = model ? [] : getLocalPromptQueueThreadIds();
   const promptQueuesByThreadId = usePromptQueueUI.getState().byThreadId;
   const aliasesByQueuedRun = new Map<string, string[]>();
   for (const threadId of promptQueueThreadIds) {
     const entry = promptQueuesByThreadId[threadId];
-    if (!entry) {
+    // A paused queue is not a running chat: its entry outlives Stop.
+    if (!entry || entry.paused) {
       continue;
     }
     const aliases = aliasesByQueuedRun.get(entry.runId) ?? [];
@@ -101,7 +105,7 @@ export async function confirmStopRunningChatsIfNeeded(
     const timeout = disposableTimeoutSignal(ACTIVE_GENERATIONS_TIMEOUT_MS);
     let active;
     try {
-      active = await getActiveGenerations(timeout.signal);
+      active = await getActiveGenerations(model, timeout.signal);
     } finally {
       timeout.dispose();
     }
@@ -111,6 +115,9 @@ export async function confirmStopRunningChatsIfNeeded(
       merged.add(threadId);
     }
     running = [...merged];
+    if (model) {
+      promptQueueThreadIds = running;
+    }
     // Count conversations, not handles: one chat holds several at once while a tool continuation
     // registers its next leg before the previous unwinds, and active.count counts those
     // separately. A first turn started before its id was persisted has no id to merge, so add

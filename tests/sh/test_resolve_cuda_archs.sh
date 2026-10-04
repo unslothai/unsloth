@@ -5,24 +5,11 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/_harness.sh"
 SETUP_SH="$SCRIPT_DIR/../../studio/setup.sh"
-PASS=0
-FAIL=0
-
 # Extract just the helper function (same sed range as the other function tests).
 _FUNC_FILE=$(mktemp)
 sed -n '/^_resolve_cuda_archs()/,/^}/p' "$SETUP_SH" > "$_FUNC_FILE"
-
-assert_eq() {
-    _label="$1"; _expected="$2"; _actual="$3"
-    if [ "$_actual" = "$_expected" ]; then
-        echo "  PASS: $_label"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected '$_expected', got '$_actual')"
-        FAIL=$((FAIL + 1))
-    fi
-}
 
 # $1 = raw compute_cap text, $2 = override
 run_resolve() {
@@ -63,6 +50,4 @@ assert_eq "future 10.0" "100" "$(run_resolve "10.0" "")"
 
 rm -f "$_FUNC_FILE"
 
-echo ""
-echo "Results: $PASS passed, $FAIL failed"
-[ "$FAIL" -eq 0 ] || exit 1
+summary

@@ -48,10 +48,11 @@ test("first-token recovery ignores role and control chunks", () => {
     [
       { choices: [{ delta: { role: "assistant" } }] },
       { context_truncated: { checkpoint: true } },
+      { choices: [], quote_cut: true },
       { choices: [], usage: { completion_tokens: 1 } },
       { choices: [{ delta: { content: "token" } }] },
     ].map(generationChunkCountsTowardTiming),
-    [true, false, false, true],
+    [true, false, false, false, true],
   );
   assert.equal(
     generationChunkHasSubstantiveDelta({
@@ -141,6 +142,29 @@ test("active runs are read before messages so a concurrent create is visible", a
       (message) => message.id === snapshot.activeRuns[0]?.assistantMessageId,
     ),
     true,
+  );
+});
+
+test("terminal recovery reads cache writes from either provider's usage shape", () => {
+  const writesFor = (usage: Record<string, unknown>) =>
+    (
+      recoveredGenerationFinalMetadata({
+        current: {},
+        run: {
+          id: "run-1",
+          requestPayload: { model: "m" },
+          createdAt: 100,
+          startedAt: 120,
+          completedAt: 1120,
+        },
+        usage: { prompt_tokens: 8, completion_tokens: 2, total_tokens: 10, ...usage },
+        totalChunks: 1,
+      }).contextUsage as { cacheWriteTokens: number }
+    ).cacheWriteTokens;
+  assert.equal(writesFor({ prompt_tokens_details: { cache_write_tokens: 5 } }), 5);
+  assert.equal(
+    writesFor({ cache_creation_input_tokens: 7, prompt_tokens_details: { cache_write_tokens: 5 } }),
+    7,
   );
 });
 
@@ -238,6 +262,21 @@ test("reload, wake, and stale-tab recovery stays monotonic and truthful", () => 
       [false, { reason: "cancelled" }],
     ],
   );
+
+  // Recovery must match the producer's reason, with length taking precedence.
+  const recovered = (lengthLimited: boolean, quoteCut: boolean) =>
+    generationRecoveryMetadata({
+      current: { generationRunId: "run-1" },
+      runId: "run-1",
+      status: "completed",
+      cursor: 4,
+      lastEventSeq: 4,
+      lengthLimited,
+      quoteCut,
+    }).incomplete;
+  assert.deepEqual(recovered(false, true), { reason: "quote_cut" });
+  assert.deepEqual(recovered(true, true), { reason: "length" });
+  assert.equal(recovered(false, false), undefined);
 
   const windowTarget = new EventTarget();
   const documentTarget = Object.assign(new EventTarget(), {
