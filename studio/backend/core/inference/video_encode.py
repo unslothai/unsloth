@@ -44,7 +44,7 @@ def encode_x264(
     except Exception:  # noqa: BLE001 - no PyAV or an older diffusers: the stock exporter decides
         return False
     try:
-        with av.open(path, mode = "w") as container:
+        with av.open(path, mode = "w", format = "mp4") as container:
             stream = container.add_stream("libx264", rate = int(fps))
             stream.width = int(frames.shape[2])
             stream.height = int(frames.shape[1])
