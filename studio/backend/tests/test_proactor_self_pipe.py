@@ -1,0 +1,124 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import asyncio
+from pathlib import Path
+import socket
+import sys
+import threading
+import types as _types
+
+import pytest
+
+
+_BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
+if _BACKEND_DIR not in sys.path:
+    sys.path.insert(0, _BACKEND_DIR)
+
+_loggers_stub = _types.ModuleType("loggers")
+_loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
+sys.modules.setdefault("loggers", _loggers_stub)
+
+from utils import proactor_self_pipe as psp
+
+windows_only = pytest.mark.skipif(
+    sys.platform != "win32", reason = "ProactorEventLoop is Windows-only"
+)
+
+
+@pytest.fixture
+def reads(monkeypatch):
+    """Count self-pipe read callbacks, restoring the class patch afterwards."""
+    from asyncio import proactor_events
+
+    base = proactor_events.BaseProactorEventLoop
+    original = base._loop_self_reading
+    counter = {"n": 0}
+
+    def counting(self, f = None):
+        counter["n"] += 1
+        return original(self, f)
+
+    monkeypatch.setattr(base, "_loop_self_reading", counting)
+    monkeypatch.setattr(psp, "_installed", False)
+    yield counter
+    # monkeypatch restores both the class attribute and the module flag
+
+
+def _run_after_peer_eof(close_every_new_pair = False):
+    """Half-close the self-pipe peer, idle for a while, then prove a cross-thread wakeup still lands."""
+
+    async def main():
+        loop = asyncio.get_running_loop()
+        await asyncio.sleep(0.1)
+        loop._csock.shutdown(socket.SHUT_WR)
+        if close_every_new_pair:
+            make = loop._make_self_pipe
+
+            def make_then_close():
+                make()
+                loop._csock.shutdown(socket.SHUT_WR)
+
+            loop._make_self_pipe = make_then_close
+        await asyncio.sleep(1.5)
+        woke = loop.create_future()
+        threading.Timer(0.05, lambda: loop.call_soon_threadsafe(woke.set_result, True)).start()
+        return await asyncio.wait_for(woke, 3)
+
+    loop = asyncio.ProactorEventLoop()
+    try:
+        return loop.run_until_complete(main())
+    finally:
+        loop.close()
+
+
+@windows_only
+def test_unguarded_loop_spins_on_self_pipe_eof(reads):
+    # Pins the CPython behaviour the guard exists for: without it, every read completes instantly with b"".
+    assert _run_after_peer_eof() is True
+    assert reads["n"] > 1000
+
+
+@windows_only
+def test_guard_rebuilds_self_pipe_after_eof(reads):
+    assert psp.install_proactor_self_pipe_guard() is True
+    assert _run_after_peer_eof() is True
+    assert reads["n"] < 50
+
+
+@windows_only
+def test_guard_backs_off_when_every_new_pair_is_closed(reads):
+    assert psp.install_proactor_self_pipe_guard() is True
+    # The wakeup may wait out the backoff, but the loop must not churn sockets or spin.
+    assert _run_after_peer_eof(close_every_new_pair = True) is True
+    assert reads["n"] < 50
+
+
+@windows_only
+def test_guard_leaves_normal_wakeups_alone(reads):
+    assert psp.install_proactor_self_pipe_guard() is True
+
+    async def main():
+        loop = asyncio.get_running_loop()
+        pipe = loop._ssock
+        for _ in range(20):
+            woke = loop.create_future()
+            threading.Thread(
+                target = lambda: loop.call_soon_threadsafe(woke.set_result, None)
+            ).start()
+            await asyncio.wait_for(woke, 2)
+        return pipe is loop._ssock
+
+    loop = asyncio.ProactorEventLoop()
+    try:
+        assert loop.run_until_complete(main()) is True
+    finally:
+        loop.close()
+
+
+def test_install_is_idempotent_and_skips_other_platforms(monkeypatch):
+    monkeypatch.setattr(psp, "_installed", False)
+    monkeypatch.setattr(psp.sys, "platform", "linux")
+    assert psp.install_proactor_self_pipe_guard() is False
+    monkeypatch.setattr(psp, "_installed", True)
+    assert psp.install_proactor_self_pipe_guard() is True
