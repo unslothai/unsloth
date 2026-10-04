@@ -5,6 +5,10 @@
 
 
 import {
+  AttachmentBrowserOpenProvider,
+  AttachmentFileContextMenu,
+} from "@/components/assistant-ui/attachment-browser-open";
+import {
   AttachmentDocumentDialog,
   AttachmentViewer,
 } from "@/components/assistant-ui/attachment-document-dialog";
@@ -43,6 +47,7 @@ import {
   type FC,
   type PropsWithChildren,
   type ReactNode,
+  isValidElement,
   useEffect,
   useMemo,
   useState,
@@ -417,7 +422,25 @@ export const AttachmentPreviewDialog: FC<
   PropsWithChildren<{ redactFromReload?: boolean }>
 > = ({ children, redactFromReload = false }) => {
   const source = useAttachmentSource();
+  // Documents open in the chat's browser panel when available.
+  return (
+    <AttachmentBrowserOpenProvider source={source}>
+      <AttachmentPreviewBody source={source} redactFromReload={redactFromReload}>
+        {isValidElement(children) ? (
+          <AttachmentFileContextMenu source={source}>{children}</AttachmentFileContextMenu>
+        ) : (
+          children
+        )}
+      </AttachmentPreviewBody>
+    </AttachmentBrowserOpenProvider>
+  );
+};
 
+const AttachmentPreviewBody: FC<PropsWithChildren<{ source: AttachmentSource; redactFromReload: boolean }>> = ({
+  children,
+  source,
+  redactFromReload,
+}) => {
   if (source.kind === "image") {
     return source.src ? (
       <AttachmentImageDialog source={source} src={source.src} redactFromReload={redactFromReload}>

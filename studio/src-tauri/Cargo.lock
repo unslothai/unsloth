@@ -5703,6 +5703,7 @@ version = "2026.4.8"
 dependencies = [
  "arboard",
  "base64 0.23.1",
+ "block2",
  "dirs 6.0.0",
  "elevated-command",
  "fix-path-env",
@@ -5717,6 +5718,7 @@ dependencies = [
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
+ "objc2-web-kit",
  "open",
  "process-wrap",
  "rand 0.10.2",
@@ -5743,6 +5745,7 @@ dependencies = [
  "tempfile",
  "time",
  "tokio",
+ "url",
  "webkit2gtk",
  "webkit2gtk-sys",
  "webview2-com",

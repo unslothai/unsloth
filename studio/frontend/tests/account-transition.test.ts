@@ -172,6 +172,24 @@ test("switch removes every content prefix and preserves only listed chrome and u
   assert.deepEqual(b.replaced, ["/change-password"]);
 });
 
+test("only a switch clears the desktop browser's site data, before the new session", async () => {
+  const events: string[] = [];
+  const clear = async () => {
+    events.push("clear");
+  };
+  const b = browserWith({ [BROWSER_ACCOUNT_KEY]: "alice" });
+  await transitionBrowserAccount("alice", "/chat", () => events.push("same"), b.browser, clear);
+  await transitionBrowserAccount("bob", "/chat", () => events.push("bob"), b.browser, clear);
+  assert.deepEqual(events, ["same", "clear", "bob"]);
+  const failing = browserWith({ [BROWSER_ACCOUNT_KEY]: "bob" });
+  await assert.rejects(
+    transitionBrowserAccount("carol", "/chat", () => events.push("carol"), failing.browser, () =>
+      Promise.reject(new Error("clear failed")),
+    ),
+  );
+  assert.equal(events.includes("carol"), false);
+});
+
 test("a switch keeps the machine's llama.cpp runtime repair record", async () => {
   const b = browserWith({ [RUNTIME_REPAIR_KEY]: "repaired", unsloth_auth_token: "owner" });
   assert.equal(await transitionBrowserAccount("alice", "/chat", () => {}, b.browser), true);

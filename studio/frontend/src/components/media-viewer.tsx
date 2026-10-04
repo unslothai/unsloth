@@ -66,11 +66,13 @@ export function ScaleMenu({
   scales,
   fitScale,
   onChange,
+  className,
 }: {
   value: MediaZoom;
   scales: readonly number[];
   fitScale?: number;
   onChange: (value: MediaZoom) => void;
+  className?: string;
 }) {
   const t = useT();
   const locale = useLocale();
@@ -80,7 +82,10 @@ export function ScaleMenu({
         <button
           type="button"
           aria-label={t("library.viewer.scale")}
-          className="mr-1 flex h-9 shrink-0 items-center gap-1 rounded-full bg-muted px-3.5 text-sm tabular-nums outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
+          className={cn(
+            "mr-1 flex h-9 shrink-0 items-center gap-1 rounded-full bg-muted px-3.5 text-sm tabular-nums outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring",
+            className,
+          )}
         >
           {percent(value === "fit" ? (fitScale ?? 1) : value, locale)}
           <HugeiconsIcon icon={ChevronDownStandardIcon} strokeWidth={1.75} className="size-4" />

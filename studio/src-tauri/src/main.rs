@@ -2,6 +2,8 @@
 
 mod app_layout;
 mod app_menu;
+mod browser_proxy;
+mod browser_webview;
 mod commands;
 #[cfg(target_os = "linux")]
 mod debian_update;
@@ -1328,7 +1330,8 @@ fn show_main_window(app: &tauri::AppHandle) {
     // Hidden login starts run as an accessory app (no Dock icon); restore the regular policy.
     #[cfg(target_os = "macos")]
     let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
-    if let Some(window) = app.get_webview_window("main") {
+    // Not get_webview_window: that is None while browser views are children of the window.
+    if let Some(window) = app.get_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
@@ -1599,7 +1602,7 @@ where
                             // CTRL_BREAK budgets in series.
                             cfg!(target_os = "windows"),
                             || {
-                                app.get_webview_window("main")
+                                app.get_window("main")
                                     .map(|window| window.is_visible().map_err(|e| e.to_string()))
                             },
                         )
@@ -2195,8 +2198,17 @@ fn main() {
         .manage(desktop_updater::new_desktop_update_state())
         .manage(new_close_to_tray_state())
         .manage(native_file_dialogs::ChatImportRegistry::default())
+        .manage(browser_webview::new_browser_views())
         .invoke_handler(tauri::generate_handler![
             app_menu::set_app_menu_actions,
+            browser_webview::browser_view_supported,
+            browser_webview::browser_view_show,
+            browser_webview::browser_view_navigate,
+            browser_webview::browser_view_action,
+            browser_webview::browser_view_zoom,
+            browser_webview::browser_view_find,
+            browser_webview::browser_view_close,
+            browser_webview::browser_view_clear_data,
             set_training_active,
             set_renderer_activity,
             app_layout::has_initialized_app_window_layout,

@@ -1,0 +1,169 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"use client";
+
+import type { AttachmentSource } from "@/components/assistant-ui/use-attachment-source";
+import { authFetch } from "@/features/auth";
+import { attachmentBodyText, fetchChatAttachmentBlob, parseAttachmentText } from "@/features/chat";
+import { openFileInBrowser } from "@/features/browser";
+import { toast } from "@/lib/toast";
+import { useAuiState } from "@assistant-ui/react";
+import { Slot } from "radix-ui";
+import {
+  type ComponentProps,
+  type FC,
+  type PropsWithChildren,
+  type ReactElement,
+  useCallback,
+  useContext,
+  useLayoutEffect,
+  useRef,
+} from "react";
+import { AttachmentBrowserOpenContext } from "./attachment-browser-open-context";
+import { FileContextMenu } from "./link-context-menu";
+
+type Opened = { blob: Blob; plainText?: boolean };
+
+// Documents and text open as tabs; media keeps the lightbox.
+const OPENS_IN_BROWSER: ReadonlySet<AttachmentSource["kind"]> = new Set(["document", "text"]);
+
+// What the attachment holds locally; null when only the stored original can be opened.
+function localLoader(source: AttachmentSource): (() => Promise<Opened>) | null {
+  const { file, text } = source;
+  // Copied: the tab can outlive the composer's File.
+  if (file) return () => file.arrayBuffer().then((data) => ({ blob: new Blob([data], { type: file.type }) }));
+  switch (source.kind) {
+    case "document":
+      // Text pulled out of a document that was sent without its original.
+      return !source.hasOriginal && text !== undefined
+        ? () => Promise.resolve({ blob: new Blob([attachmentBodyText(text)], { type: "text/plain" }), plainText: true })
+        : null;
+    default: {
+      if (text === undefined) return null;
+      return () => {
+        const parsed = parseAttachmentText(text);
+        return Promise.resolve({
+          blob: new Blob([parsed.text], { type: parsed.label ? "text/plain" : source.contentType || "text/plain" }),
+          plainText: Boolean(parsed.label),
+        });
+      };
+    }
+  }
+}
+
+function opener(source: AttachmentSource, attachmentId: string, load: () => Promise<Opened>) {
+  return () =>
+    void load()
+      .then(({ blob, plainText }) =>
+        openFileInBrowser({
+          blob,
+          name: source.name || "attachment",
+          contentType: source.contentType || blob.type,
+          plainText,
+          key: `${attachmentId}:${source.name}`,
+        }),
+      )
+      .catch(() => toast.error(`Could not open ${source.name || "attachment"}`));
+}
+
+/** Provides `open` under a stable identity, so the attachment's consumers don't re-render with it. */
+const OpenerProvider: FC<PropsWithChildren<{ open: () => void }>> = ({ open, children }) => {
+  const openRef = useRef(open);
+  useLayoutEffect(() => {
+    openRef.current = open;
+  });
+  const stable = useCallback(() => openRef.current(), []);
+  return <AttachmentBrowserOpenContext.Provider value={stable}>{children}</AttachmentBrowserOpenContext.Provider>;
+};
+
+const SentOriginalProvider: FC<PropsWithChildren<{ source: AttachmentSource; attachmentId: string }>> = ({
+  source,
+  attachmentId,
+  children,
+}) => {
+  const messageId = useAuiState(({ message }) => message.id);
+  const open = opener(source, attachmentId, () =>
+    fetchChatAttachmentBlob(messageId, attachmentId).then((blob) => ({ blob })),
+  );
+  return <OpenerProvider open={open}>{children}</OpenerProvider>;
+};
+
+export const AttachmentBrowserOpenProvider: FC<PropsWithChildren<{ source: AttachmentSource }>> = ({
+  source,
+  children,
+}) => {
+  const attachmentId = useAuiState(({ attachment }) => attachment.id);
+  if (!OPENS_IN_BROWSER.has(source.kind)) return children;
+  const load = localLoader(source);
+  if (load) {
+    return <OpenerProvider open={opener(source, attachmentId, load)}>{children}</OpenerProvider>;
+  }
+  // Only sent documents have a stored original to fetch.
+  if (source.kind === "document") {
+    return (
+      <SentOriginalProvider source={source} attachmentId={attachmentId}>
+        {children}
+      </SentOriginalProvider>
+    );
+  }
+  return children;
+};
+
+// The attachment's bytes as held here: the File, text, or its own image/media URL.
+function blobLoader(source: AttachmentSource): (() => Promise<Blob>) | null {
+  const { file, src } = source;
+  if (file) return () => Promise.resolve(file);
+  const local = localLoader(source);
+  if (local) return () => local().then(({ blob }) => blob);
+  if (src) {
+    return () =>
+      (/^(blob|data):/i.test(src) ? fetch(src) : authFetch(src)).then((response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.blob();
+      });
+  }
+  return null;
+}
+
+type MenuProps = { source: AttachmentSource; children: ReactElement } & Omit<ComponentProps<"button">, "children">;
+
+const AttachmentMenu: FC<MenuProps & { load: () => Promise<Blob> }> = ({ source, load, children, ...rest }) => {
+  // Opening does what a click does where the attachment opens in the browser.
+  const open = useContext(AttachmentBrowserOpenContext) ?? undefined;
+  return (
+    <FileContextMenu
+      file={{ name: source.name || "attachment", contentType: source.contentType, load, open }}
+      {...rest}
+    >
+      {children}
+    </FileContextMenu>
+  );
+};
+
+const SentOriginalMenu: FC<MenuProps> = (props) => {
+  const messageId = useAuiState(({ message }) => message.id);
+  const attachmentId = useAuiState(({ attachment }) => attachment.id);
+  return <AttachmentMenu {...props} load={() => fetchChatAttachmentBlob(messageId, attachmentId)} />;
+};
+
+/** Right-click menu for an attachment chip; the chip's own click (a dialog trigger) passes through. */
+export const AttachmentFileContextMenu: FC<MenuProps> = ({ source, children, ...rest }) => {
+  const load = blobLoader(source);
+  if (load) {
+    return (
+      <AttachmentMenu source={source} load={load} {...rest}>
+        {children}
+      </AttachmentMenu>
+    );
+  }
+  // Only sent documents have a stored original to fetch.
+  if (source.kind === "document" && source.hasOriginal) {
+    return (
+      <SentOriginalMenu source={source} {...rest}>
+        {children}
+      </SentOriginalMenu>
+    );
+  }
+  return <Slot.Root {...rest}>{children}</Slot.Root>;
+};

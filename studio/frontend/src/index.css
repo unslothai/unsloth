@@ -4041,10 +4041,12 @@ html[data-chat-font] .aui-root {
 		will-change: opacity, transform;
 	}
 
+	/* No stacking context once shown, or the desktop titlebar's drag strip eats header clicks. */
 	.chat-artifact-pop-surface[data-artifact-surface-visible="true"] {
 		pointer-events: auto;
 		opacity: 1;
-		transform: scale(1) translateY(0);
+		transform: none;
+		will-change: auto;
 	}
 
 	@media (prefers-reduced-motion: reduce) {
@@ -5707,4 +5709,132 @@ html:has([data-blocking-screen]) .interface-zoom-position {
 	[data-slot="tooltip-content"] {
 		max-width: calc(100vw - 1rem);
 	}
+}
+
+/* Browser full view: chat floats bottom right. Unlayered, so it beats the panel's utilities. */
+.chat-artifact-split[data-browser-full-view] > #chat-thread {
+	position: absolute;
+	right: calc(1rem * var(--ui-space-scale, 1));
+	bottom: calc(1rem * var(--ui-space-scale, 1));
+	z-index: 40;
+	/* Over the panel library's inline width. */
+	width: min(calc(36rem * var(--ui-space-scale, 1)), calc(100% - 2rem)) !important;
+	height: auto;
+}
+
+/* Minimized to its button, it must not cover the page beside it. */
+.chat-artifact-split[data-browser-full-view][data-chat-dock="minimized"] > #chat-thread {
+	width: auto !important;
+}
+
+.chat-full-view-dock {
+	--dock-surface: #ffffff;
+	/* No header or notice above this thread. */
+	--studio-content-top-inset: 0px;
+	--studio-chat-header-height: 0px;
+	--studio-chat-notice-height: 0px;
+	--thread-scrollbar-gutter: 0px;
+	height: auto;
+	border-radius: 28px;
+	background-color: var(--dock-surface);
+	box-shadow:
+		0 0 0 1px color-mix(in oklab, var(--foreground) 8%, transparent),
+		0 12px 32px -8px rgb(0 0 0 / 0.22);
+}
+
+.dark .chat-full-view-dock {
+	--dock-surface: var(--card);
+	box-shadow:
+		0 0 0 1px color-mix(in oklab, var(--foreground) 10%, transparent),
+		0 16px 40px -8px rgb(0 0 0 / 0.55);
+}
+
+.chat-full-view-dock[data-expanded="true"] {
+	height: min(calc(40rem * var(--ui-space-scale, 1)), calc(100dvh - 7rem));
+}
+
+/* The dock is the composer's surface, so the composer inside it drops its own. */
+.chat-full-view-dock .unsloth-composer-surface {
+	background-color: var(--dock-surface);
+	box-shadow: none;
+}
+
+.chat-full-view-dock :is(.thread-bottom-fade, .composer-footer-note) {
+	display: none;
+}
+
+.chat-full-view-dock .unsloth-composer-dock-inner {
+	padding: 0;
+}
+
+.chat-full-view-dock .aui-thread-composer-dock {
+	background-color: var(--dock-surface);
+	border-bottom-left-radius: 28px;
+	border-bottom-right-radius: 28px;
+}
+
+.chat-full-view-dock .aui-thread-viewport {
+	padding-top: calc(0.75rem * var(--ui-space-scale, 1));
+	padding-left: calc(1rem * var(--ui-space-scale, 1));
+	padding-right: calc(1rem * var(--ui-space-scale, 1));
+}
+
+/* Composer only: the conversation is hidden and the dock takes the composer's height. */
+.chat-full-view-dock[data-expanded="false"] :is(.chat-thread-pane, .aui-thread-root) {
+	flex: none;
+}
+
+.chat-full-view-dock[data-expanded="false"] .aui-thread-viewport {
+	display: none;
+}
+
+.chat-full-view-dock[data-expanded="false"] .aui-thread-composer-dock {
+	position: relative;
+}
+
+.chat-full-view-dock-minimized {
+	align-items: flex-end;
+	height: auto;
+	background: transparent;
+}
+
+.chat-full-view-dock-button {
+	background-color: #ffffff;
+	box-shadow:
+		0 0 0 1px color-mix(in oklab, var(--foreground) 8%, transparent),
+		0 8px 24px -6px rgb(0 0 0 / 0.25);
+}
+
+.dark .chat-full-view-dock-button {
+	background-color: var(--card);
+	box-shadow:
+		0 0 0 1px color-mix(in oklab, var(--foreground) 10%, transparent),
+		0 8px 24px -6px rgb(0 0 0 / 0.55);
+}
+
+/* File controls float over the page, so its scroller starts below them (spreadsheets lower, for the sticky header). */
+.browser-file-page {
+	--browser-file-toolbar-inset: calc(3.25rem * var(--ui-space-scale, 1));
+}
+
+.browser-file-page .overflow-auto:not(.overflow-auto .overflow-auto):not(:has(> table)) {
+	padding-top: calc(var(--browser-file-toolbar-inset) + 0.5rem) !important;
+}
+
+.browser-file-page:has(.overflow-auto > table) {
+	padding-top: var(--browser-file-toolbar-inset);
+}
+
+.browser-file-toolbar > :not([aria-hidden]) {
+	box-shadow: 0 1px 3px rgb(0 0 0 / 0.08);
+}
+
+.dark .browser-file-toolbar > :not([aria-hidden]) {
+	box-shadow: 0 2px 8px rgb(0 0 0 / 0.35);
+}
+
+/* Request edits: the comment bubble is the pointer over the document; its own controls keep theirs. */
+.browser-annotating,
+.browser-annotating *:not([data-annotate-ui], [data-annotate-ui] *) {
+  cursor: none !important;
 }

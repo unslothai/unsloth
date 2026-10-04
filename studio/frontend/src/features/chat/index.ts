@@ -381,6 +381,14 @@ export {
   shouldAttachPastedText,
 } from "./utils/pasted-text";
 export {
+  type DocumentAnnotation,
+  type DocumentAnnotations,
+  annotationsOfFile,
+  createAnnotationsFile,
+  isAnnotationsContent,
+  parseAnnotationsContent,
+} from "./utils/document-annotations";
+export {
   deleteStoredChatThreads,
   ensureStoredChatThread,
   getStoredChatThread,

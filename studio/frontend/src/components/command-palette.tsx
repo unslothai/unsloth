@@ -154,6 +154,7 @@ const SETTINGS_TAB_LABELS: Record<SettingsTab, TranslationKey> = {
   "remote-lan": "settings.tabs.remoteLan",
   agents: "settings.tabs.agents",
   "keyboard-shortcuts": "settings.tabs.keyboardShortcuts",
+  browser: "browser.settingsTitle",
   debugging: "settings.tabs.debugging",
   about: "settings.tabs.about",
 };

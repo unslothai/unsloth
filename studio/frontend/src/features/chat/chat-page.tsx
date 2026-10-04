@@ -87,6 +87,14 @@ import { hasKnownContextWindow } from "./lib/context-window-known";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { setInAppLinkHandler } from "@/lib/open-link";
+import {
+  BrowserToggleButton,
+  openUrlInBrowser,
+  pinBrowserPage,
+  setBrowserPanelAvailable,
+  useBrowserStore,
+} from "@/features/browser";
 import {
   CONVERSATION_MARKDOWN_FORMAT,
   CONVERSATION_MARKDOWN_LABEL,
@@ -109,7 +117,7 @@ import {
   PencilEdit02Icon,
   Telescope02Icon,
 } from "@hugeicons/core-free-icons";
-import { useAui } from "@assistant-ui/react";
+import { useAui, useAuiState } from "@assistant-ui/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import {
@@ -131,7 +139,10 @@ import {
   useSyncExternalStore,
 } from "react";
 import type { PanelImperativeHandle } from "react-resizable-panels";
-import { notifyChatHistoryUpdated } from "./api/chat-api";
+import {
+  CHAT_HISTORY_UPDATED_EVENT,
+  notifyChatHistoryUpdated,
+} from "./api/chat-api";
 import { codeToolCanRun } from "./api/code-tool-placement";
 import { ArtifactSurface } from "./artifacts/artifact-surface";
 import {
@@ -140,6 +151,7 @@ import {
   useSelectedChatArtifact,
 } from "./artifacts/store";
 import { isKnownTextOnlySelection } from "./utils/model-vision-capability";
+import { createChatArtifact } from "./artifacts/types";
 import type { ChatArtifact, ChatArtifactSurface } from "./artifacts/types";
 import { McpServersDialogMount } from "./mcp-composer-button";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
@@ -263,7 +275,12 @@ import {
   listStoredChatMessages,
   listStoredChatThreads,
 } from "./utils/chat-history-storage";
+import { isCoalescedHistoryEvent } from "./utils/chat-history-revision";
 import { attachmentsSample } from "./utils/pasted-text";
+import {
+  type DocumentAnnotations,
+  createAnnotationsFile,
+} from "./utils/document-annotations";
 import { requestTemporaryPromptQueueStop } from "./utils/prompt-queue-boundary";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
 import {
@@ -279,6 +296,22 @@ import {
   exportConversationShareGPT,
   saveChatItemAsProjectSource,
 } from "./prompt-storage/prompt-storage-dialog";
+
+const BrowserPanel = lazy(() =>
+  import("@/features/browser/browser-panel").then((module) => ({
+    default: module.BrowserPanel,
+  })),
+);
+const FullViewChatBar = lazy(() =>
+  import("@/features/browser/full-view-chat").then((module) => ({
+    default: module.FullViewChatBar,
+  })),
+);
+const FullViewChatButton = lazy(() =>
+  import("@/features/browser/full-view-chat").then((module) => ({
+    default: module.FullViewChatButton,
+  })),
+);
 
 const ProjectSourcesPanel = lazy(() =>
   import("@/features/rag/components/project-sources-panel").then((module) => ({
@@ -314,7 +347,79 @@ function messageHasImage(message: MessageRecord): boolean {
   return false;
 }
 
+/** Send browser annotations as their own message via the composer's form (same checks as a typed
+ *  send); a refused send or an existing draft leaves them staged. */
+function sendDocumentAnnotations(
+  aui: ReturnType<typeof useAui>,
+  annotations: DocumentAnnotations,
+): void {
+  const composer = aui.composer();
+  const hasDraft = composer.getState().text.trim().length > 0;
+  void composer
+    .addAttachment(createAnnotationsFile(annotations))
+    .then(() => {
+      const form = [
+        ...document.querySelectorAll<HTMLFormElement>("form.aui-composer-root"),
+      ].find(
+        (element) =>
+          element.offsetParent !== null &&
+          !element.closest('[aria-hidden="true"], [inert]'),
+      );
+      if (hasDraft || !form) {
+        document
+          .querySelector<HTMLTextAreaElement>(COMPOSER_INPUT_SELECTOR)
+          ?.focus();
+        return;
+      }
+      // Two frames, so the composer has rendered the attachment it now sends. Text typed
+      // meanwhile is the next message: leave the annotations staged with it.
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => {
+          if (composer.getState().text.trim()) return;
+          form.requestSubmit();
+        }),
+      );
+    })
+    .catch(() => undefined);
+}
+
+/** A stored chat's title, kept current as chats are renamed. Undefined for a chat not saved yet. */
+function useStoredChatTitle(threadId: string | null): string | undefined {
+  const [title, setTitle] = useState<{ id: string; title: string } | null>(
+    null,
+  );
+  useEffect(() => {
+    if (!threadId) return;
+    let live = true;
+    const load = () => {
+      getStoredChatThread(threadId)
+        .then((thread) => {
+          if (!live || !thread) return;
+          // Same object back when nothing changed, so the chat doesn't re-render.
+          setTitle((current) =>
+            current?.id === threadId && current.title === thread.title
+              ? current
+              : { id: threadId, title: thread.title },
+          );
+        })
+        .catch(() => undefined);
+    };
+    // Streaming saves fire this per chunk and never rename the chat.
+    const onHistoryUpdated = (event: Event) => {
+      if (!isCoalescedHistoryEvent(event)) load();
+    };
+    load();
+    window.addEventListener(CHAT_HISTORY_UPDATED_EVENT, onHistoryUpdated);
+    return () => {
+      live = false;
+      window.removeEventListener(CHAT_HISTORY_UPDATED_EVENT, onHistoryUpdated);
+    };
+  }, [threadId]);
+  return title && title.id === threadId ? title.title : undefined;
+}
+
 const ARTIFACT_PANEL_DEFAULT_SIZE = "38%";
+const BROWSER_PANEL_DEFAULT_SIZE = "50%";
 const ARTIFACT_PANEL_TRANSITION_MS = 260;
 const ARTIFACT_SURFACE_POP_DELAY_MS = 150;
 
@@ -338,6 +443,39 @@ const SingleContent = memo(function SingleContent({
   const pendingFixPrompt = useChatArtifactsStore(
     (state) => state.pendingFixPrompt,
   );
+  const browserOpen = useBrowserStore((state) => state.open);
+  const browserOpenSequence = useBrowserStore((state) => state.openSequence);
+  const closeBrowser = useBrowserStore((state) => state.closePanel);
+  // Route links and files to the browser panel while it can be shown.
+  useEffect(() => {
+    if (!chatActive || isMobile) return;
+    setBrowserPanelAvailable(true);
+    setInAppLinkHandler(openUrlInBrowser);
+    useBrowserStore.setState({
+      requestEdits: (prompt) => useChatArtifactsStore.getState().stageFixPrompt(prompt),
+      sendAnnotations: (annotations) => sendDocumentAnnotations(aui, annotations),
+      // The canvas and the browser share the side panel, so the file leaves the browser for it.
+      openInCanvas: ({ title, code }) => {
+        const artifact = createChatArtifact({
+          title,
+          code,
+          source: "fence",
+          threadId: useChatRuntimeStore.getState().activeThreadId,
+        });
+        useBrowserStore.getState().closePanel();
+        useChatArtifactsStore.getState().openArtifact(artifact, { surface: "panel" });
+      },
+    });
+    return () => {
+      setBrowserPanelAvailable(false);
+      setInAppLinkHandler(null);
+      useBrowserStore.setState({ requestEdits: null, sendAnnotations: null, openInCanvas: null });
+    };
+  }, [chatActive, isMobile, aui]);
+  const threadHasMessages = useAuiState(({ thread }) => thread.messages.length > 0);
+  useEffect(() => {
+    if (chatActive) useBrowserStore.setState({ chatHasMessages: threadHasMessages });
+  }, [chatActive, threadHasMessages]);
   useEffect(() => {
     if (!pendingFixPrompt || !chatActive) return;
     useChatArtifactsStore.getState().clearFixPrompt();
@@ -377,11 +515,12 @@ const SingleContent = memo(function SingleContent({
     if (size == null) return;
     // A drag shut is a close; a zero-width panel still holding the artifact would make the next card click hide it.
     if (size <= 5) {
-      onCloseArtifact();
+      if (useBrowserStore.getState().open) closeBrowser();
+      else onCloseArtifact();
       return;
     }
     artifactPanelWidthRef.current = `${size}%`;
-  }, [onCloseArtifact]);
+  }, [onCloseArtifact, closeBrowser]);
   const hasInitializedArtifactPanelRef = useRef(false);
   const [isArtifactLayoutAnimating, setIsArtifactLayoutAnimating] =
     useState(false);
@@ -394,15 +533,31 @@ const SingleContent = memo(function SingleContent({
       openResearchThreadId === (threadId ?? activeThreadId),
   );
   const showResearchPanel = researchMatchesThread && !isMobile;
+  const showBrowserPanel = !showResearchPanel && !isMobile && browserOpen;
+  const browserFullView =
+    useBrowserStore((state) => state.fullView) && showBrowserPanel;
+  const chatDock = useBrowserStore((state) => state.chatDock);
+  const chatOnRight =
+    useBrowserStore((state) => state.chatSide === "right") &&
+    showBrowserPanel &&
+    !browserFullView;
+  // A ref, so switching panels doesn't re-run the open effects.
+  const defaultPanelSizeRef = useRef(ARTIFACT_PANEL_DEFAULT_SIZE);
+  useEffect(() => {
+    defaultPanelSizeRef.current = showBrowserPanel
+      ? BROWSER_PANEL_DEFAULT_SIZE
+      : ARTIFACT_PANEL_DEFAULT_SIZE;
+  });
   // Without a URL threadId the artifact must belong to the active thread.
-  const showArtifactPanel = !showResearchPanel && Boolean(
+  const showArtifactPanel = !showResearchPanel && !showBrowserPanel && Boolean(
     artifact &&
       artifactSurface === "panel" &&
       (threadId
         ? !artifact.threadId || artifact.threadId === threadId
         : Boolean(artifact.threadId && artifact.threadId === activeThreadId)),
   );
-  const showContextPanel = showResearchPanel || showArtifactPanel;
+  const showContextPanel =
+    showResearchPanel || showArtifactPanel || showBrowserPanel;
 
   const artifactLayoutActive = showContextPanel || isArtifactPanelLayoutActive;
   const artifactPanelSettledOpen =
@@ -419,15 +574,26 @@ const SingleContent = memo(function SingleContent({
   const artifactOpenSequence = useChatArtifactsStore(
     (state) => state.openSequence,
   );
+  const seenArtifactOpenSequenceRef = useRef(artifactOpenSequence);
   useEffect(() => {
-    if (!showContextPanel || artifactOpenSequence === 0) return;
+    if (seenArtifactOpenSequenceRef.current === artifactOpenSequence) return;
+    seenArtifactOpenSequenceRef.current = artifactOpenSequence;
+    closeBrowser();
+  }, [artifactOpenSequence, closeBrowser]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the open sequences are the re-expand triggers
+  useEffect(() => {
+    if (
+      !showContextPanel ||
+      (artifactOpenSequence === 0 && browserOpenSequence === 0)
+    )
+      return;
     const panel = artifactPanelRef.current;
     if (!panel) return;
     if (!panel.isCollapsed() && panel.getSize().asPercentage > 5) return;
     // expand() alone restores the pre-collapse width, which is zero after a drag shut.
     panel.expand();
-    panel.resize(artifactPanelWidthRef.current ?? ARTIFACT_PANEL_DEFAULT_SIZE);
-  }, [artifactOpenSequence, showContextPanel]);
+    panel.resize(artifactPanelWidthRef.current ?? defaultPanelSizeRef.current);
+  }, [artifactOpenSequence, browserOpenSequence, showContextPanel]);
 
   useEffect(() => {
     const panel = artifactPanelRef.current;
@@ -450,7 +616,7 @@ const SingleContent = memo(function SingleContent({
       resizeFrameId = window.requestAnimationFrame(() => {
         panel.resize(
           showContextPanel
-            ? (artifactPanelWidthRef.current ?? ARTIFACT_PANEL_DEFAULT_SIZE)
+            ? (artifactPanelWidthRef.current ?? defaultPanelSizeRef.current)
             : "0%",
         );
       });
@@ -481,12 +647,113 @@ const SingleContent = memo(function SingleContent({
   useEffect(() => {
     if (!researchMatchesThread) return;
     onCloseArtifact();
+    closeBrowser();
     useChatRuntimeStore.getState().setSettingsPanelOpen(false);
-  }, [researchMatchesThread, onCloseArtifact]);
+  }, [researchMatchesThread, onCloseArtifact, closeBrowser]);
 
+  // Close the browser on leaving the chat; the runtime thread id survives a new chat's first save.
+  const shownThreadId = useAuiState(({ threads }) => threads.mainThreadId);
+  const shownThreadIdRef = useRef(shownThreadId);
+  useEffect(() => {
+    if (shownThreadIdRef.current === shownThreadId) return;
+    shownThreadIdRef.current = shownThreadId;
+    closeBrowser();
+  }, [shownThreadId, closeBrowser]);
+  useEffect(() => {
+    if (!chatActive) closeBrowser();
+  }, [chatActive, closeBrowser]);
+
+  // Width on header/notice only: on the root it would restyle the whole thread per resize.
+  const contextSurfaceRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const surface = contextSurfaceRef.current;
+    const root = surface?.closest<HTMLElement>("[data-chat-content-root]");
+    if (!surface || !root || !showBrowserPanel) return;
+    let width = "";
+    const insets = () =>
+      root.querySelectorAll<HTMLElement>(":scope > [data-side-panel-inset]");
+    // With the chat on the right they start at the panel's edge instead.
+    const apply = () => {
+      for (const element of insets()) {
+        element.style.setProperty(
+          "--studio-side-panel-width",
+          chatOnRight ? "0px" : width,
+        );
+        element.style.setProperty(
+          "--studio-side-panel-left",
+          chatOnRight ? width : "0px",
+        );
+      }
+    };
+    const resizeObserver = new ResizeObserver(() => {
+      const next = `${Math.round(surface.getBoundingClientRect().width)}px`;
+      if (next === width) return;
+      width = next;
+      apply();
+    });
+    resizeObserver.observe(surface);
+    // The model notice can mount while the panel is open.
+    const childObserver = new MutationObserver(apply);
+    childObserver.observe(root, { childList: true });
+    return () => {
+      resizeObserver.disconnect();
+      childObserver.disconnect();
+      for (const element of insets()) {
+        element.style.removeProperty("--studio-side-panel-width");
+        element.style.removeProperty("--studio-side-panel-left");
+      }
+    };
+  }, [showBrowserPanel, chatOnRight]);
+
+  // Moving the chat re-sorts panels to default sizes; restore the browser's width (full view fills).
+  const browserLayout = `${browserFullView}:${chatOnRight}`;
+  const seenBrowserLayoutRef = useRef(browserLayout);
+  useEffect(() => {
+    if (seenBrowserLayoutRef.current === browserLayout) return;
+    seenBrowserLayoutRef.current = browserLayout;
+    const panel = artifactPanelRef.current;
+    if (!panel || !showBrowserPanel) return;
+    // A frame later, once the panels have registered their new order.
+    const frameId = window.requestAnimationFrame(() => {
+      panel.resize(
+        artifactPanelWidthRef.current ?? defaultPanelSizeRef.current,
+      );
+    });
+    return () => window.cancelAnimationFrame(frameId);
+  }, [browserLayout, showBrowserPanel]);
+
+  // With no chat beside it, the chat header would sit over the browser's tabs.
+  useEffect(() => {
+    const root = contextSurfaceRef.current?.closest<HTMLElement>(
+      "[data-chat-content-root]",
+    );
+    if (!root || !browserFullView) return;
+    const insets = root.querySelectorAll<HTMLElement>(
+      ":scope > [data-side-panel-inset]",
+    );
+    for (const element of insets) element.style.visibility = "hidden";
+    return () => {
+      for (const element of insets) element.style.removeProperty("visibility");
+    };
+  }, [browserFullView]);
+
+  const fullViewChatTitle = useStoredChatTitle(
+    browserFullView ? artifactPanelThread : null,
+  );
+
+  // Kept at one place in the tree in every layout, so switching layouts never remounts the thread.
   const threadPane = (
-    <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
-      <Thread hideWelcome={Boolean(threadId)} targetThreadId={threadId} />
+    <div
+      className={cn(
+        "chat-thread-pane flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden",
+        browserFullView && chatDock === "minimized" && "hidden",
+      )}
+    >
+      {/* A floating chat has no welcome screen, so its composer shows in a new chat too. */}
+      <Thread
+        hideWelcome={Boolean(threadId) || browserFullView}
+        targetThreadId={threadId}
+      />
     </div>
   );
 
@@ -497,15 +764,51 @@ const SingleContent = memo(function SingleContent({
         data-artifact-layout-animating={
           isArtifactLayoutAnimating ? "true" : "false"
         }
-        className="chat-artifact-split min-h-0 min-w-0 flex-1 basis-0 overflow-hidden"
+        className={cn(
+          "chat-artifact-split relative min-h-0 min-w-0 flex-1 basis-0 overflow-hidden",
+          // The panels place themselves by position, so CSS order is enough to swap sides.
+          chatOnRight &&
+            "[&>#chat-artifact]:order-1 [&>[data-slot=resizable-handle]]:order-2 [&>#chat-thread]:order-3",
+        )}
+        data-browser-full-view={browserFullView ? "true" : undefined}
+        // Not :has(), which re-walks the thread per token (thread-ancestor-has-scope.test.ts).
+        data-chat-dock={browserFullView ? chatDock : undefined}
       >
         <ResizablePanel
           id="chat-thread"
           defaultSize="100%"
-          minSize={artifactLayoutActive ? "42%" : "100%"}
+          // Distinct per layout: re-registering re-sorts panels so resizing follows the chat.
+          minSize={
+            browserFullView
+              ? "0%"
+              : chatOnRight
+                ? "34%"
+                : artifactLayoutActive
+                  ? "42%"
+                  : "100%"
+          }
           className="h-full min-h-0 min-w-0 overflow-hidden"
+          // Unclipped, so the floating chat's shadow shows.
+          style={browserFullView ? { overflow: "visible" } : undefined}
         >
-          <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
+          <div
+            data-expanded={chatDock === "expanded" ? "true" : "false"}
+            className={cn(
+              "flex h-full min-h-0 min-w-0 flex-col overflow-hidden",
+              browserFullView &&
+                (chatDock === "minimized"
+                  ? "chat-full-view-dock-minimized"
+                  : "chat-full-view-dock group/dock"),
+            )}
+          >
+            <Suspense fallback={null}>
+              {browserFullView && chatDock !== "minimized" ? (
+                <FullViewChatBar title={fullViewChatTitle} />
+              ) : null}
+              {browserFullView && chatDock === "minimized" ? (
+                <FullViewChatButton />
+              ) : null}
+            </Suspense>
             {threadPane}
           </div>
         </ResizablePanel>
@@ -513,15 +816,24 @@ const SingleContent = memo(function SingleContent({
           withHandle={false}
           // The library's double-click reset would shut the panel without closing the artifact.
           disableDoubleClick
-          onPointerDown={() => {
-            window.addEventListener("pointerup", rememberArtifactPanelWidth, {
-              once: true,
-            });
+          onPointerDown={(event) => {
+            if (event.button !== 0) return;
+            const unpin = pinBrowserPage(event.currentTarget);
+            const release = () => {
+              window.removeEventListener("pointerup", release);
+              window.removeEventListener("pointercancel", release);
+              unpin();
+              rememberArtifactPanelWidth();
+            };
+            window.addEventListener("pointerup", release);
+            window.addEventListener("pointercancel", release);
           }}
           onKeyUp={rememberArtifactPanelWidth}
           className={cn(
-            "relative z-30 -ml-1 -mr-4 w-5 bg-transparent transition-[width,margin] duration-[260ms] ease-[var(--ease-out-cubic)] hover:bg-transparent hover:shadow-none active:bg-transparent active:shadow-none focus-visible:bg-transparent focus-visible:shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 focus-visible:outline-none",
-            !artifactLayoutActive &&
+            "relative z-30 w-5 bg-transparent transition-[width,margin] duration-[260ms] ease-[var(--ease-out-cubic)] hover:bg-transparent hover:shadow-none active:bg-transparent active:shadow-none focus-visible:bg-transparent focus-visible:shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 focus-visible:outline-none",
+            // Its hit area overlaps the side panel more than the chat.
+            chatOnRight ? "-ml-4 -mr-1" : "-ml-1 -mr-4",
+            (!artifactLayoutActive || browserFullView) &&
               "pointer-events-none -ml-0 -mr-0 w-0",
           )}
         />
@@ -537,13 +849,15 @@ const SingleContent = memo(function SingleContent({
                 : "0%"
           }
           maxSize={
-            showResearchPanel
+            chatOnRight
+              ? "66%"
+              : showResearchPanel
               ? "58%"
               : artifactLayoutActive
                 ? "58%"
                 : "0%"
           }
-          collapsible={showArtifactPanel}
+          collapsible={showArtifactPanel || showBrowserPanel}
           collapsedSize="0%"
           className={cn(
             "h-full min-h-0 min-w-0 overflow-visible",
@@ -551,13 +865,17 @@ const SingleContent = memo(function SingleContent({
           )}
         >
           <div
+            ref={contextSurfaceRef}
             data-artifact-surface-visible={
               isArtifactSurfaceVisible ? "true" : "false"
             }
             className={cn(
               "chat-artifact-pop-surface flex h-full min-h-0 min-w-0 flex-col overflow-visible",
-              showResearchPanel && "border-l border-border/70",
+              (showResearchPanel || showBrowserPanel) &&
+                (chatOnRight ? "border-r" : "border-l"),
+              (showResearchPanel || showBrowserPanel) && "border-border/70",
             )}
+            style={showBrowserPanel ? { transform: "none" } : undefined}
           >
              {showResearchPanel && openResearchRunId ? (
                <ResearchActivityPanel
@@ -565,7 +883,11 @@ const SingleContent = memo(function SingleContent({
                  runId={openResearchRunId}
                  onClose={closeResearchPanel}
                />
-             ) : showArtifactPanel && artifact ? (
+             ) : showBrowserPanel ? (
+              <Suspense fallback={null}>
+                <BrowserPanel />
+              </Suspense>
+            ) : showArtifactPanel && artifact ? (
               <ArtifactSurface
                 artifact={artifact}
                 variant="panel"
@@ -4174,18 +4496,23 @@ export function ChatPage({
           subtree, which walks the whole thread on every mutation - 17.5 ms per append on a 357k-
           element thread, against 0.10 ms without this rule (Chromium). ChatModelNotice renders a
           direct child, which tests/thread-ancestor-has-scope.test.ts asserts. */}
-      <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden has-[>[data-chat-model-notice]]:[--studio-chat-notice-height:2.25rem]">
+      <div
+        data-chat-content-root=""
+        className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden has-[>[data-chat-model-notice]]:[--studio-chat-notice-height:2.25rem]"
+      >
         <NativeModelDropOverlay state={nativeModelDropState} />
         {/* Fade under the top bar so messages dissolve as they scroll beneath it, instead of a hard cut. */}
         {view.mode !== "compare" && (
           <div
             aria-hidden
-            className="chat-header-fade pointer-events-none absolute left-0 right-[var(--thread-scrollbar-gutter,10px)] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px)+var(--studio-chat-notice-height,0px))] z-20 h-6 bg-gradient-to-b from-background to-transparent"
+            data-side-panel-inset=""
+            className="chat-header-fade pointer-events-none absolute left-[var(--studio-side-panel-left,0px)] right-[calc(var(--thread-scrollbar-gutter,10px)+var(--studio-side-panel-width,0px))] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px)+var(--studio-chat-notice-height,0px))] z-20 h-6 bg-gradient-to-b from-background to-transparent"
           />
         )}
         <div
+          data-side-panel-inset=""
           className={cn(
-            "pointer-events-none absolute top-[var(--studio-content-top-inset,0px)] left-0 right-[var(--thread-scrollbar-gutter,10px)] z-40 flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)] pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
+            "pointer-events-none absolute top-[var(--studio-content-top-inset,0px)] left-[var(--studio-side-panel-left,0px)] right-[calc(var(--thread-scrollbar-gutter,10px)+var(--studio-side-panel-width,0px))] z-40 flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)] pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
             isMobile
               ? "pl-12"
               : pinned
@@ -4381,6 +4708,7 @@ export function ChatPage({
                 </TooltipContent>
               </Tooltip>
             )}
+            {view.mode === "single" && !isMobile ? <BrowserToggleButton /> : null}
             {view.mode === "single" &&
             latestResearchRunId &&
             latestResearchRunStatus ? (

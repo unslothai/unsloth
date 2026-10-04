@@ -32676,14 +32676,84 @@ async def list_sandbox_files(
     return {"path": sandbox_dir, "files": files}
 
 
+def _sandbox_regular_file(session_id: str, filename: str) -> tuple[str, str]:
+    """(sandbox_dir, contained path) of a regular (not linked) file in the sandbox, or a 404."""
+    import stat as _stat
+
+    sandbox_dir, path = _contained_sandbox_path(session_id, filename)
+    try:
+        entry = os.lstat(path)
+    except OSError:
+        raise HTTPException(status_code = 404, detail = "Not found") from None
+    if not _stat.S_ISREG(entry.st_mode):
+        raise HTTPException(status_code = 404, detail = "Not found")
+    return sandbox_dir, path
+
+
+def _unmoved_sandbox_file(root: str, path: str) -> str:
+    """``path`` resolved, if it still names the same file under ``root``; a link swapped in since
+    the check is refused, since a reveal hands the file manager a name."""
+    try:
+        real = os.path.realpath(path)
+        expected = os.path.relpath(os.path.abspath(path), os.path.abspath(root))
+        actual = os.path.relpath(real, os.path.realpath(root))
+    except ValueError:
+        raise FileNotFoundError(path) from None
+    if expected != actual or actual.startswith(os.pardir) or not os.path.isfile(real):
+        raise FileNotFoundError(path)
+    return real
+
+
+@router.post("/sandbox/{session_id}/open")
+async def open_sandbox_file(
+    session_id: str,
+    request: Request,
+    file: str,
+    token: Optional[str] = None,
+    session: Optional[str] = None,
+):
+    """Open one of this chat's sandbox files with the OS default app.
+
+    Like reveal, this is the backend host's desktop, so it only means anything in
+    the desktop app. Only document and media types open: the files are
+    model-written, and a script or app would run rather than be viewed.
+    """
+    await _authenticate_header_or_query(request, token)
+    # It launches an app on the host's desktop, like the library and model reveals.
+    account_access.require_installation_owner()
+
+    from pathlib import Path
+
+    from starlette.concurrency import run_in_threadpool
+
+    from utils.paths.path_utils import open_in_default_app
+
+    root, path = await run_in_threadpool(_sandbox_regular_file, session or session_id, file)
+    try:
+        await run_in_threadpool(open_in_default_app, Path(path), Path(root))
+    except PermissionError:
+        raise HTTPException(
+            status_code = 415, detail = "This kind of file does not open outside Studio"
+        ) from None
+    except FileNotFoundError:
+        raise HTTPException(status_code = 404, detail = "Not found") from None
+    except Exception:
+        logger.error(f"Failed to open sandbox file {path}", exc_info = True)
+        raise HTTPException(status_code = 500, detail = "Failed to open the file") from None
+    return {"status": "ok"}
+
+
 @router.post("/sandbox/{session_id}/reveal")
 async def reveal_sandbox_dir(
     session_id: str,
     request: Request,
     token: Optional[str] = None,
     session: Optional[str] = None,
+    file: Optional[str] = None,
 ):
     """Open this chat's sandbox directory in the OS file manager.
+
+    With ``file``, that file is selected in its folder instead.
 
     The file manager is the backend host's, so this only means anything when the
     backend runs on the user's own machine, which is the desktop app.
@@ -32691,6 +32761,22 @@ async def reveal_sandbox_dir(
     await _authenticate_header_or_query(request, token)
 
     from starlette.concurrency import run_in_threadpool
+
+    if file:
+        from pathlib import Path
+
+        from utils.paths.path_utils import reveal_in_file_manager
+
+        root, path = await run_in_threadpool(_sandbox_regular_file, session or session_id, file)
+        try:
+            real = await run_in_threadpool(_unmoved_sandbox_file, root, path)
+            await run_in_threadpool(reveal_in_file_manager, Path(real))
+        except FileNotFoundError:
+            raise HTTPException(status_code = 404, detail = "Not found") from None
+        except Exception:
+            logger.error(f"Failed to reveal sandbox file {path}", exc_info = True)
+            raise HTTPException(status_code = 500, detail = "Failed to open file manager") from None
+        return {"status": "ok", "path": path}
 
     def _resolve_existing() -> "str | None":
         sandbox_dir = _sandbox_dir_for(session or session_id, create = False)
