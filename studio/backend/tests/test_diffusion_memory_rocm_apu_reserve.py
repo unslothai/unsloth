@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Linux ROCm APU (Strix Halo): the unified OS reserve is not taken twice.
-
-The numbers are the gfx1151 runner's at the refusal: a 64 GiB GTT pool with 31 GiB free, 86 GiB of host RAM
-available, Z-Image-Turbo at about 21 GB of weights. ComfyUI rendered the same model there at a 29 GiB peak."""
+"""Linux ROCm APU (Strix Halo): the unified OS reserve is not taken twice. Numbers are the gfx1151 runner's at the
+refusal."""
 
 from __future__ import annotations
 
@@ -13,7 +11,11 @@ import types
 import pytest
 
 import core.inference.diffusion_memory as dm
-from core.inference.diffusion_memory import DeviceMemory, plan_diffusion_memory, unified_memory_shortfall_message
+from core.inference.diffusion_memory import (
+    DeviceMemory,
+    plan_diffusion_memory,
+    unified_memory_shortfall_message,
+)
 
 POOL_TOTAL = 64 * 1024
 POOL_FREE = 31 * 1024
@@ -22,11 +24,15 @@ ZIMAGE_WEIGHTS = 20 * 1024  # + the 1 GiB default base overhead = the "about 21 
 
 
 def _rocm_torch():
-    return types.SimpleNamespace(__version__ = "2.11.0+rocm7.13.0", version = types.SimpleNamespace(hip = "7.13"))
+    return types.SimpleNamespace(
+        __version__ = "2.11.0+rocm7.13.0", version = types.SimpleNamespace(hip = "7.13")
+    )
 
 
 def _cuda_torch():
-    return types.SimpleNamespace(__version__ = "2.11.0+cu130", version = types.SimpleNamespace(hip = None))
+    return types.SimpleNamespace(
+        __version__ = "2.11.0+cu130", version = types.SimpleNamespace(hip = None)
+    )
 
 
 @pytest.fixture
@@ -44,9 +50,15 @@ def host(monkeypatch):
     return state
 
 
-def _plan(free = POOL_FREE, total = POOL_TOTAL, kind = "unified_memory"):
+def _plan(
+    free = POOL_FREE,
+    total = POOL_TOTAL,
+    kind = "unified_memory",
+):
     return plan_diffusion_memory(
-        target = types.SimpleNamespace(device = "cuda", backend = "cuda", supports_model_cpu_offload = True),
+        target = types.SimpleNamespace(
+            device = "cuda", backend = "cuda", supports_model_cpu_offload = True
+        ),
         device_memory = DeviceMemory("cuda", "cuda:0", kind, free, total),
         model_dense_mib = ZIMAGE_WEIGHTS,
         runtime_headroom_mib = 3072,
@@ -66,7 +78,9 @@ def test_still_refuses_what_cannot_fit_the_pool(host):
 
 
 def test_host_ram_too_tight_keeps_the_unified_reserve(host):
-    host["available"] = POOL_FREE + 4 * 1024  # 4 GiB outside the pool: the OS reserve is not covered
+    host["available"] = (
+        POOL_FREE + 4 * 1024
+    )  # 4 GiB outside the pool: the OS reserve is not covered
     host["apply"]()
     plan = _plan()
     assert plan.estimates["safe_device_budget_mib"] == POOL_FREE - int(POOL_TOTAL * 0.20)
@@ -93,7 +107,9 @@ def test_nvidia_unified_memory_unchanged(host):
 
 
 def test_discrete_vram_unchanged(host):
-    assert _plan(kind = "discrete_vram").estimates["safe_device_budget_mib"] == POOL_FREE - int(POOL_TOTAL * 0.10)
+    assert _plan(kind = "discrete_vram").estimates["safe_device_budget_mib"] == POOL_FREE - int(
+        POOL_TOTAL * 0.10
+    )
 
 
 def test_fast_budget_follows_the_same_reserve(host):

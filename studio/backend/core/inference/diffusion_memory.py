@@ -1073,14 +1073,14 @@ def _reserve_mib(memory_kind: str, base: int) -> int:
 
 
 def _rocm_linux_apu_os_room_outside_pool(memory: DeviceMemory) -> bool:
-    """A Linux ROCm APU whose host RAM outside the GPU pool's free part already holds the unified OS reserve.
-
-    There the pool HIP reports is the amdgpu GTT cap, which sits below physical RAM, and the OS lives in host RAM
-    outside it. Taking the 20% unified reserve out of the pool as well reserves twice: on a gfx1151 runner with
-    31 GB of a 64 GB pool free and 86 GB of host RAM available, Z-Image-Turbo (21 GB) was refused at "19 GB
-    usable" while ComfyUI rendered it at a 29 GB peak. Linux ROCm only: Windows HIP over-reports free memory
-    (#7072), and Apple / NVIDIA unified memory keep today's reserve. Unknown readings answer False."""
-    if memory.memory_kind != "unified_memory" or not sys.platform.startswith("linux") or memory.free_mib is None:
+    """Linux ROCm APU whose host RAM outside the pool's free part already covers the unified OS reserve: the pool is
+    the amdgpu GTT cap, below physical RAM, so reserving 20% of it too reserves twice. Not Windows (HIP over-reports
+    free, #7072); unknown readings answer False."""
+    if (
+        memory.memory_kind != "unified_memory"
+        or not sys.platform.startswith("linux")
+        or memory.free_mib is None
+    ):
         return False
     torch = sys.modules.get("torch")
     if torch is None or not _torch_is_rocm(torch):
@@ -1093,7 +1093,6 @@ def _rocm_linux_apu_os_room_outside_pool(memory: DeviceMemory) -> bool:
 
 
 def _budget_reserve_kind(memory: DeviceMemory) -> str:
-    # The pool still needs fragmentation / tenant headroom, the discrete margin; the OS share is already outside it.
     return "discrete_vram" if _rocm_linux_apu_os_room_outside_pool(memory) else memory.memory_kind
 
 
