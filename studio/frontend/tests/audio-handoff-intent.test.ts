@@ -163,3 +163,14 @@ test("a model deep link without a workflow opens the page its task names before 
     "music",
   );
 });
+
+test("a chat pick of an uncatalogued clone-only family opens Clone", () => {
+  assert.equal(
+    audioWorkflowForPick({ id: "x/MioTTS-GGUF", task: "text-to-speech" }),
+    "clone",
+  );
+  assert.equal(
+    audioWorkflowForPick({ id: "x/Kokoro-82M-GGUF", task: "text-to-speech" }),
+    "speak",
+  );
+});
