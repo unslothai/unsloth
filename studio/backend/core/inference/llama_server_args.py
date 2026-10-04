@@ -590,6 +590,8 @@ _FIT_FLAGS: frozenset[str] = frozenset({"-fit", "--fit"})
 # The fitter's per-device margin. Never stripped (llama.cpp is last-wins), so a pass-through value is what the child
 # really keeps free; see fit_target_margin_in.
 _FIT_TARGET_FLAGS: frozenset[str] = frozenset({"-fitt", "--fit-target"})
+# The fitter's context floor, also never stripped; see fit_ctx_in.
+_FIT_CTX_FLAGS: frozenset[str] = frozenset({"-fitc", "--fit-ctx"})
 _LAYER_OFFLOAD_FLAGS: frozenset[str] = _GPU_LAYER_FLAGS | _FIT_FLAGS
 _MOE_OFFLOAD_FLAGS: frozenset[str] = frozenset({"-ncmoe", "--n-cpu-moe", "-cmoe", "--cpu-moe"})
 _OFFLOAD_SHADOWING_FLAGS: frozenset[str] = _LAYER_OFFLOAD_FLAGS | _MOE_OFFLOAD_FLAGS
@@ -1072,6 +1074,25 @@ def fit_is_effectively_on(
     if raw_value is None:
         return True
     return str(raw_value).strip().lower() not in _ENV_FALSE_VALUES
+
+
+def fit_ctx_in(
+    args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> Optional[int]:
+    """Return the last --fit-ctx, falling back to the supplied environment.
+
+    Unset or invalid values return None. Preserve negatives: llama.cpp stores them
+    unsigned, disabling context reduction.
+    """
+    raw_value = _last_flag_value(args, _FIT_CTX_FLAGS)
+    if raw_value is None and env:
+        raw_value = env.get("LLAMA_ARG_FIT_CTX")
+    if raw_value is None:
+        return None
+    try:
+        return int(str(raw_value).strip())
+    except ValueError:
+        return None
 
 
 def fit_target_margin_in(

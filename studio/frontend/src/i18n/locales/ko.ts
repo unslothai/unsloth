@@ -1247,9 +1247,22 @@ export const ko = {
       },
       permissions: {
         sectionTitle: "권한",
-        bypassLabel: "도구 권한",
-        bypassDescription:
-          "채팅의 도구 호출(터미널, python, 웹, MCP)을 실행하기 전에 Unsloth가 승인하는 방식입니다. “Full access”를 선택하면 승인과 코드 샌드박스가 꺼집니다.",
+        names: {
+          ask: "승인 요청",
+          auto: "대신 승인",
+          off: "자동 실행",
+          full: "전체 액세스",
+        },
+        details: {
+          ask:
+            "터미널 및 Python 코드, 웹 검색, 파일 편집, MCP 도구를 포함해 모든 도구 호출 전에 묻습니다. 외부 제공업체가 실행하는 도구는 멈추지 않습니다. 각 단계를 직접 확인하고 싶을 때 적합합니다.",
+          auto:
+            "일반적인 도구 호출은 알아서 실행하고, 자격 증명 읽기, 권한 상승, 파괴적인 명령 실행처럼 위험해 보이는 작업일 때만 묻습니다.",
+          off:
+            "모든 도구 호출을 묻지 않고 실행합니다. Python과 터미널 코드는 여전히 샌드박스 안에서 실행되어 컴퓨터에서 접근할 수 있는 파일이 제한됩니다.",
+          full:
+            "모든 도구 호출을 묻지 않고 실행하며 코드 샌드박스를 꺼서, Python과 터미널 코드가 계정이 접근할 수 있는 모든 파일을 읽고 변경할 수 있습니다. 샌드박스 밖에서 작업해야 하는 신뢰할 수 있는 작업에 적합합니다.",
+        },
       },
     },
     profile: {
@@ -1599,6 +1612,9 @@ export const ko = {
         noRamReserve: "모델을 위해 시스템 RAM을 예약하지 않음",
         noRamReserveDescription: "모델 가중치가 차지하는 RAM을 줄입니다.",
         noRamReserveHint: "모델이 GPU에 완전히 오프로드된 경우 지원되는 Windows 빌드에서 메모리 매핑 로딩을 건너뛰어 파일 페이지가 상주하지 않도록 합니다. 그렇지 않으면 메모리 매핑 로딩을 유지합니다. 필요한 CPU 버퍼는 여전히 RAM을 사용할 수 있습니다. --no-mmap과 --mlock을 제거합니다.",
+        multiModel: "여러 모델을 로드된 상태로 유지",
+        multiModelDescription: "모델을 로드해도 다른 모델이 메모리에 남아 있습니다.",
+        multiModelHint: "로드된 각 모델은 해당 모델을 지정한 요청에 응답합니다. GPU가 여러 개이면 여유가 있을 때 새 모델은 다른 모델이 사용하지 않는 GPU에 배치됩니다. 다른 모델과 함께 들어가지 않으면 사용하지 않는 모델을 먼저 언로드하고, 그래도 부족하면 활성 모델을 대체합니다. 학습은 활성 모델보다 추가 모델을 먼저 언로드합니다.",
         mlockVetoed: "--mlock은 꺼진 상태로 유지됩니다. 모델을 고정하면 모델 전체 크기만큼 RAM을 예약하게 됩니다. 유휴 시 자동 언로드는 계속 비활성화됩니다.",
         mlockNotApplicable: "모두 GPU에 있어 시스템 RAM에 고정할 것이 없습니다. 유휴 시 자동 언로드는 계속 꺼져 있습니다.",
         memlockCapped: "이 시스템은 잠금 메모리를 {limit}로 제한합니다. 더 큰 모델은 완전히 고정되지 않습니다. ulimit -l로 한도를 늘리세요.",
@@ -2435,6 +2451,7 @@ export const ko = {
       context: "컨텍스트",
       lr: "LR",
       hardware: "하드웨어",
+      vram: "VRAM",
       noGpu: "GPU가 감지되지 않았습니다",
       hfToken: "HF 토큰",
       saved: "저장됨",
@@ -3145,6 +3162,7 @@ export const ko = {
     discardDescription: "{name}의 저장되지 않은 변경 사항이 사라집니다.",
     discard: "버리기",
     mentions: "스킬",
+    manage: "스킬 관리",
   },
   library: {
     tabs: {
