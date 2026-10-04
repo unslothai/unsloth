@@ -13,7 +13,6 @@ landing in a reused block.
 from __future__ import annotations
 
 import copy
-import time
 import types
 import warnings
 
@@ -198,6 +197,10 @@ def test_depth_env(monkeypatch):
 
 
 def test_resident_onload_skips_the_copy_stream_wait_when_fenced(monkeypatch):
+    pytest.importorskip(
+        "diffusers.hooks"
+    )  # _keep_groups_resident imports it and leaves the groups alone without it
+
     class Stream:
         waits = 0
 
@@ -405,15 +408,13 @@ def test_slow_gpu_keeps_memory_in_the_window_and_reads_the_right_weights(monkeyp
         torch.cuda.empty_cache()
         base = torch.cuda.memory_reserved()
         torch.cuda.reset_peak_memory_stats()
-        t0 = time.perf_counter()
         got = net(x)
-        host_s = time.perf_counter() - t0
+        host_ahead = not torch.cuda.current_stream().query()
         torch.cuda.synchronize()
-        gpu_s = time.perf_counter() - t0
         # reserved, not allocated: a block freed under record_stream leaves the allocated count but stays reserved
         peak = torch.cuda.max_memory_reserved() - base
     assert torch.equal(got, want)
-    assert host_s < gpu_s / 4  # the host really ran ahead
+    assert host_ahead  # the forward returned while the GPU was still running its blocks
     block_bytes = 2048 * 2048 * 4 + 2048 * 4
     # the window (2 groups) plus activations and the top-level group; diffusers' record_stream prefetch reserved about
     # one block per block the host ran ahead (204 vs 44 MiB here)
