@@ -1096,6 +1096,49 @@ export function ChatMcpServersDialog({
               </div>
             )}
 
+            {form.transport !== "unknown" &&
+              !addressIsCommand &&
+              form.useOauth && (
+                <div className="grid gap-3 rounded-md border p-3">
+                  <div className="grid gap-2">
+                    <Label htmlFor="mcp-oauth-client-id">OAuth client ID</Label>
+                    <Input
+                      id="mcp-oauth-client-id"
+                      value={form.oauthClientId}
+                      onChange={(e) =>
+                        setForm((prev) => ({
+                          ...prev,
+                          oauthClientId: e.target.value,
+                        }))
+                      }
+                      placeholder="Optional pre-registered client ID"
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="mcp-oauth-client-secret">
+                      OAuth client secret
+                    </Label>
+                    <Input
+                      id="mcp-oauth-client-secret"
+                      type="password"
+                      value={form.oauthClientSecret}
+                      onChange={(e) =>
+                        setForm((prev) => ({
+                          ...prev,
+                          oauthClientSecret: e.target.value,
+                        }))
+                      }
+                      placeholder={mcpOAuthSecretPlaceholder(
+                        form.storedSecretOwner,
+                        form.url,
+                        form.oauthClientId,
+                      )}
+                      autoComplete="new-password"
+                    />
+                  </div>
+                </div>
+              )}
+
             <McpImageMappings
               key={view.kind === "edit" ? view.id : "new"}
               serverId={view.kind === "edit" ? view.id : undefined}
@@ -1112,49 +1155,6 @@ export function ChatMcpServersDialog({
 
             {form.transport !== "unknown" && (
               <>
-                {!addressIsCommand && form.useOauth && (
-                  <div className="grid gap-3 rounded-md border p-3">
-                    <div className="grid gap-2">
-                      <Label htmlFor="mcp-oauth-client-id">
-                        OAuth client ID
-                      </Label>
-                      <Input
-                        id="mcp-oauth-client-id"
-                        value={form.oauthClientId}
-                        onChange={(e) =>
-                          setForm((prev) => ({
-                            ...prev,
-                            oauthClientId: e.target.value,
-                          }))
-                        }
-                        placeholder="Optional pre-registered client ID"
-                      />
-                    </div>
-                    <div className="grid gap-2">
-                      <Label htmlFor="mcp-oauth-client-secret">
-                        OAuth client secret
-                      </Label>
-                      <Input
-                        id="mcp-oauth-client-secret"
-                        type="password"
-                        value={form.oauthClientSecret}
-                        onChange={(e) =>
-                          setForm((prev) => ({
-                            ...prev,
-                            oauthClientSecret: e.target.value,
-                          }))
-                        }
-                        placeholder={mcpOAuthSecretPlaceholder(
-                          form.storedSecretOwner,
-                          form.url,
-                          form.oauthClientId,
-                        )}
-                        autoComplete="new-password"
-                      />
-                    </div>
-                  </div>
-                )}
-
                 <HeadersEditor
                   rows={form.headers}
                   onChange={(headers) =>
