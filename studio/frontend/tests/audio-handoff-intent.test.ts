@@ -160,4 +160,9 @@ test("a model deep link without a workflow opens the page its task names before 
     "music",
   );
   assert.equal(audioWorkflowForPick({ id: "some/model" }), null);
+  // Without a task, a music audio type still names Music.
+  assert.equal(
+    audioWorkflowForPick({ id: "some/model", audioType: "minimax_music3" }),
+    "music",
+  );
 });
