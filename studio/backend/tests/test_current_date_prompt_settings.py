@@ -479,7 +479,6 @@ class TestDateStaysInTheSystemTurn:
 
     def test_a_template_default_that_dates_itself_is_left_to_the_template(self, monkeypatch):
         from utils.current_date_prompt_settings import TEMPLATE_DATE_PROBE
-
         monkeypatch.setattr(
             self.inference,
             "_local_template_default_system_prompt",

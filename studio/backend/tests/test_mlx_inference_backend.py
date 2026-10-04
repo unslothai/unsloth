@@ -5436,9 +5436,9 @@ def test_an_mlx_count_prices_the_current_date_the_completion_prepends(monkeypatc
 
     line = current_date_prompt_line(request = interactive)
     assert line, "the harness must actually produce a date line"
-    assert backend.system == line, (
-        f"the count dropped the date the completion adds: {backend.system!r}"
-    )
+    assert (
+        backend.system == line
+    ), f"the count dropped the date the completion adds: {backend.system!r}"
     assert backend.messages == [{"role": "user", "content": "hi"}]
 
 
