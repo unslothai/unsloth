@@ -65,7 +65,6 @@ _INDUCTOR_FLAGS = (
 )
 _INDUCTOR_TRITON_FLAGS = (("unique_kernel_names", "inductor_triton_unique_kernel_names"),)
 _DYNAMO_MODULE = "torch._dynamo.config"
-# torch.compile ``options`` key of inductor's reduction-config filter (see pin_reduction_configs).
 REDUCTION_FILTER_OPTION = "test_configs.force_filter_reduction_configs"
 _INDUCTOR_MODULE = "torch._inductor.config"
 _INDUCTOR_TRITON_MODULE = "torch._inductor.config.triton"
@@ -1053,14 +1052,10 @@ def _compile_repeated_blocks(
 
 
 def pin_reduction_configs(kwargs: dict[str, Any], logger: Any = None) -> bool:
-    """Per-compile reduction-config filter for a family that opts in (``filter_reduction_configs``).
-
-    The reduction heuristic can give one reduction several R0_BLOCK configs, benchmarked on first use in every process
-    with a cold inductor cache and summing in different orders. LTX-2's block RMSNorm (hidden 4096) gets 4096 and 2048,
-    a dead heat on a B200, so half the servers rendered another clip. Inductor's filter keeps one config at codegen.
-    Passed as this compile's ``options`` (``mode`` folded in, torch.compile takes one or the other), never as the
-    process-global knob: other families keep inductor's pick (HunyuanVideo-1.5 measured ~2% slower per step with it).
-    The public config.deterministic is reset by dynamo after the first traced frame. Returns True when engaged."""
+    """Keep one config per multi-config reduction instead of a per-process benchmark whose pick changes the sum order
+    (LTX-2 block RMSNorm: R0_BLOCK 4096 vs 2048 tie on B200, half the servers rendered another clip). Per-compile
+    ``options`` (``mode`` folded in), never the global knob: HunyuanVideo-1.5 is ~2% slower per step with it.
+    config.deterministic is unusable: dynamo resets it after the first frame. Returns True when engaged."""
     if not compile_config.reduction_config_filter_available():
         return False
     try:
