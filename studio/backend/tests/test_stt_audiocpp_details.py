@@ -315,6 +315,53 @@ def test_the_aligner_preflight_carries_the_request_cancel(fake, side, source, hu
     assert seen == [cancel]
 
 
+def test_stop_mid_file_returns_before_the_download_finishes(monkeypatch):
+    """The aligner is one 1.1 GB file, so a check between files never fires while it streams. The
+    download runs on its own thread and the caller returns on Stop while the file is still coming."""
+    import threading
+    from types import SimpleNamespace
+
+    from core.inference.audio_cpp_backend import AudioCppRequestCancelledError
+    from core.inference.audio_cpp_backend import AudioCppBackend as backend_cls
+
+    entered, release = threading.Event(), threading.Event()
+
+    def streaming(*_args, **_kwargs):
+        entered.set()
+        release.wait(10)
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", streaming)
+    monkeypatch.setattr(
+        audio_cpp_backend.audio_cpp_files, "missing_files", lambda model: [("aligner.gguf", 1)]
+    )
+    cancel = threading.Event()
+    threading.Timer(0.3, cancel.set).start()
+    with pytest.raises(AudioCppRequestCancelledError):
+        backend_cls._download_missing(SimpleNamespace(repo_id = "org/aligner"), None, cancel)
+    # Stop returned while the file was still streaming, not after it finished.
+    assert entered.is_set() and not release.is_set()
+    release.set()
+
+
+def test_a_download_error_still_reaches_the_caller_with_a_cancel_event(monkeypatch):
+    import threading
+    from types import SimpleNamespace
+
+    from core.inference.audio_cpp_backend import AudioCppBackend as backend_cls
+
+    def failing(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", failing)
+    monkeypatch.setattr(
+        audio_cpp_backend.audio_cpp_files, "missing_files", lambda model: [("aligner.gguf", 1)]
+    )
+    with pytest.raises(OSError, match = "disk full"):
+        backend_cls._download_missing(
+            SimpleNamespace(repo_id = "org/aligner"), None, threading.Event()
+        )
+
+
 def test_an_aligner_download_failure_says_how_to_go_on(fake, side, source, monkeypatch):
     def offline(*_args, **_kwargs):
         raise RuntimeError(
