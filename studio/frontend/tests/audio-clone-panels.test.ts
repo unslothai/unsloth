@@ -85,6 +85,14 @@ test("the saved-voice choice shows on Speak only for models that also clone", ()
   assert.equal(
     panelApplies(
       speakVoiceLogic,
+      "speak",
+      ctx({ audioWorkflows: ["speak", "clone"], referenceTextMode: "required" }),
+    ),
+    false,
+  );
+  assert.equal(
+    panelApplies(
+      speakVoiceLogic,
       "clone",
       ctx({ audioWorkflows: ["speak", "clone"] }),
     ),

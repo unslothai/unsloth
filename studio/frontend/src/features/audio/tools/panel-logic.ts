@@ -225,10 +225,12 @@ export const speakVoiceLogic: AudioToolPanelLogic<SpeakVoiceValue> = {
   workflows: ["speak"],
   title: "Voice",
   claims: [],
+  // Speak sends no transcript, so a model that needs one (Fish Audio) clones only on Clone.
   appliesTo: (ctx) =>
     Boolean(
       ctx.audioWorkflows?.includes("speak") &&
-        ctx.audioWorkflows.includes("clone"),
+        ctx.audioWorkflows.includes("clone") &&
+        ctx.referenceTextMode !== "required",
     ),
   initial: () => ({ source: "builtin", voiceId: null }),
   toRequest: (value) =>
