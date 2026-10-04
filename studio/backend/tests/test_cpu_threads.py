@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for Studio's early CPU thread-pool configuration."""
+"""Tests for Unsloth's early CPU thread-pool configuration."""
 
 import ast
 import os
@@ -30,7 +30,7 @@ def test_cpu_thread_cap_seeds_native_pool_limits():
     }
 
 
-# Explicit per-library values win over the Studio knob via setdefault.
+# Explicit per-library values win over the Unsloth knob via setdefault.
 def test_cpu_thread_cap_preserves_runtime_specific_override():
     env = {"UNSLOTH_CPU_THREADS": "4", "OMP_NUM_THREADS": "2"}
 
@@ -50,16 +50,31 @@ def test_cpu_thread_cap_normalises_valid_inputs(raw):
     assert env["OMP_NUM_THREADS"] == str(int(raw.strip()))
 
 
-# Unset / empty / whitespace -> no env mutation (pure opt-in).
 @pytest.mark.parametrize("raw", [None, "", "   ", "\t"])
-def test_cpu_thread_cap_is_opt_in(raw):
+def test_cpu_thread_cap_unset_limits_only_openblas(raw):
     env = {} if raw is None else {"UNSLOTH_CPU_THREADS": raw}
     snapshot = dict(env)
 
     configure_cpu_threads(env)
 
-    assert env == snapshot
-    assert all(variable not in env for variable in _THREAD_POOL_ENV_VARS)
+    assert env == {**snapshot, "OPENBLAS_NUM_THREADS": "1"}
+
+
+def test_openblas_default_keeps_user_value():
+    env = {"OPENBLAS_NUM_THREADS": "8"}
+
+    configure_cpu_threads(env)
+
+    assert env == {"OPENBLAS_NUM_THREADS": "8"}
+
+
+@pytest.mark.parametrize("raw", ["", "  "])
+def test_openblas_default_replaces_blank_value(raw):
+    env = {"OPENBLAS_NUM_THREADS": raw}
+
+    configure_cpu_threads(env)
+
+    assert env == {"OPENBLAS_NUM_THREADS": "1"}
 
 
 # Anything that is not a positive integer raises a clear ValueError.
@@ -120,7 +135,7 @@ def _ast_line_of_platform_compat_import(source: str) -> int:
 # run.py and main.py. Robust to formatting / line shifts.
 @pytest.mark.parametrize("entry_point", [_RUN_PY, _MAIN_PY])
 def test_cpu_thread_configuration_runs_before_backend_imports(entry_point):
-    source = entry_point.read_text()
+    source = entry_point.read_text(encoding = "utf-8")
     call_line = _ast_line_of_configure_call(source)
     compat_line = _ast_line_of_platform_compat_import(source)
     assert call_line < compat_line, (

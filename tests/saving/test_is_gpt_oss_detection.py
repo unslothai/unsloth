@@ -4,9 +4,7 @@ from pathlib import Path
 
 
 def _load_is_gpt_oss():
-    # Extract just the helper from save.py so the test runs without importing
-    # unsloth (which requires unsloth_zoo / a GPU), matching the pattern used by
-    # test_qwen3_5_vlm_full_finetune_key_remap.py.
+    # Extract _is_gpt_oss without importing unsloth (needs unsloth_zoo / a GPU).
     source = Path(__file__).parents[2] / "unsloth" / "save.py"
     tree = ast.parse(source.read_text(encoding = "utf-8"))
     helpers = [
@@ -31,9 +29,7 @@ def _model(architectures = None, model_type = None):
 
 
 def test_detects_gpt_oss_by_architecture():
-    # config.architectures is a list, so detection must use membership, not ==.
-    # A model that declares GptOssForCausalLM but has no matching model_type must
-    # still be routed to the mxfp4 save path.
+    # architectures is a list, so detection must use membership, not ==.
     is_gpt_oss = _load_is_gpt_oss()
     assert is_gpt_oss(_model(architectures = ["GptOssForCausalLM"])) is True
     assert is_gpt_oss(_model(architectures = ["GptOssForCausalLM"], model_type = "gpt_oss")) is True

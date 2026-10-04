@@ -440,6 +440,9 @@ export function buildRecipePayload(
             unstructured_file_names: firstSeed.unstructured_file_names,
             unstructured_file_sizes: firstSeed.unstructured_file_sizes,
           }),
+        ...(firstSeed?.unstructured_upload_uid?.trim() && {
+          unstructured_upload_uid: firstSeed.unstructured_upload_uid,
+        }),
         ...(firstSeed &&
           firstSeed.unstructured_chunk_size !== undefined && {
             unstructured_chunk_size: firstSeed.unstructured_chunk_size,

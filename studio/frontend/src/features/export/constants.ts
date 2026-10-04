@@ -39,9 +39,16 @@ export const QUANT_OPTIONS: {
   value: string;
   label: string;
   recommended?: boolean;
+  imatrix?: boolean; // IQ quants require an importance matrix (the imatrix toggle below)
 }[] = [
+  { value: "iq2_xxs", label: "IQ2_XXS", imatrix: true },
+  { value: "iq2_m", label: "IQ2_M", imatrix: true },
+  { value: "iq3_xxs", label: "IQ3_XXS", imatrix: true },
+  { value: "iq4_xs", label: "IQ4_XS", imatrix: true },
   { value: "q2_k_l", label: "Q2_K_L" },
   { value: "q3_k_m", label: "Q3_K_M" },
+  { value: "q4_0", label: "Q4_0" },
+  { value: "q4_1", label: "Q4_1" },
   { value: "q4_k_m", label: "Q4_K_M", recommended: true },
   { value: "q5_k_m", label: "Q5_K_M" },
   { value: "q6_k", label: "Q6_K" },
@@ -51,13 +58,188 @@ export const QUANT_OPTIONS: {
 ];
 
 /**
+ * Merged-export precision formats, sorted by bit width. Three backends:
+ *   - "plain":      standard save (16-bit); `formatType` is the backend `format_type`.
+ *   - "compressed": llm-compressor compressed-tensors (vLLM), NVIDIA-only; `value` is the alias.
+ *   - "torchao":    portable FP8/INT8, no NVIDIA GPU needed; `value` is the alias.
+ * `common` entries are quick pills, the rest the "More formats" dropdown; `needsNvidia` entries
+ * are hidden on non-NVIDIA hardware.
+ */
+export type MergedBackend = "plain" | "compressed" | "torchao";
+
+export type MergedFormatOption = {
+  value: string;
+  label: string;
+  bits: number;
+  backend: MergedBackend;
+  group: string;
+  common: boolean;
+  needsNvidia: boolean;
+  needsCalibration?: boolean;
+  hint: string;
+  /** Backend `format_type` for a "plain" save (unused for compressed/torchao). */
+  formatType?: string;
+};
+
+/** Kept as a string alias for back-compat with callers that typed the old union. */
+export type MergedFormat = string;
+
+export const MERGED_FORMATS: MergedFormatOption[] = [
+  // 16-bit
+  {
+    value: "16-bit",
+    label: "16-bit",
+    bits: 16,
+    backend: "plain",
+    group: "16-bit",
+    common: true,
+    needsNvidia: false,
+    hint: "Full precision, runs anywhere.",
+    formatType: "16-bit (FP16)",
+  },
+  // 8-bit
+  {
+    value: "fp8",
+    label: "FP8",
+    bits: 8,
+    backend: "compressed",
+    group: "FP8",
+    common: true,
+    needsNvidia: true,
+    hint: "Dynamic per-token FP8 (W8A8) for vLLM. Data-free.",
+  },
+  {
+    value: "torchao_fp8",
+    label: "FP8 (portable)",
+    bits: 8,
+    backend: "torchao",
+    group: "Portable",
+    common: true,
+    needsNvidia: false,
+    hint: "Device-agnostic FP8 (torchao). Produces on any hardware; loads in vLLM.",
+  },
+  {
+    value: "w8a8",
+    label: "INT8 (W8A8)",
+    bits: 8,
+    backend: "compressed",
+    group: "INT",
+    common: true,
+    needsNvidia: true,
+    hint: "8-bit weights and 8-bit activations for vLLM. Data-free.",
+  },
+  {
+    value: "torchao_int8",
+    label: "INT8 (portable)",
+    bits: 8,
+    backend: "torchao",
+    group: "Portable",
+    common: true,
+    needsNvidia: false,
+    hint: "Device-agnostic INT8 (torchao). Produces on any hardware; loads in vLLM.",
+  },
+  {
+    value: "fp8_static",
+    label: "FP8 Static",
+    bits: 8,
+    backend: "compressed",
+    group: "FP8",
+    common: false,
+    needsNvidia: true,
+    needsCalibration: true,
+    hint: "Static per-tensor FP8. Calibrates on data.",
+  },
+  {
+    value: "w8a16",
+    label: "INT8 (W8A16)",
+    bits: 8,
+    backend: "compressed",
+    group: "INT",
+    common: false,
+    needsNvidia: true,
+    hint: "8-bit weight-only. Data-free.",
+  },
+  {
+    value: "mxfp8",
+    label: "MXFP8",
+    bits: 8,
+    backend: "compressed",
+    group: "MXFP",
+    common: false,
+    needsNvidia: true,
+    hint: "Microscaling FP8. Needs a newer compressed-tensors stack.",
+  },
+  // 4-bit
+  {
+    value: "w4a16",
+    label: "INT4 (W4A16)",
+    bits: 4,
+    backend: "compressed",
+    group: "INT",
+    common: true,
+    needsNvidia: true,
+    hint: "4-bit weight-only (GPTQ-style) for vLLM. Data-free.",
+  },
+  {
+    value: "mxfp4",
+    label: "MXFP4",
+    bits: 4,
+    backend: "compressed",
+    group: "MXFP",
+    common: true,
+    needsNvidia: true,
+    hint: "Microscaling FP4 (W4A4) for vLLM. Data-free.",
+  },
+  {
+    value: "nvfp4",
+    label: "NVFP4",
+    bits: 4,
+    backend: "compressed",
+    group: "FP4",
+    common: true,
+    needsNvidia: true,
+    needsCalibration: true,
+    hint: "NVIDIA FP4 (W4A4) for vLLM. Calibrates on data.",
+  },
+];
+
+/** Look up a merged format option by its stable value. */
+export function findMergedFormat(value: string): MergedFormatOption | undefined {
+  return MERGED_FORMATS.find((f) => f.value === value);
+}
+
+/** Backend payload for one merged format: plain -> formatType, compressed/torchao -> the alias. */
+export function mergedFormatPayload(value: string): {
+  formatType: string;
+  compressedMethod: string | null;
+} {
+  const opt = findMergedFormat(value);
+  if (!opt || opt.backend === "plain") {
+    return {
+      formatType: opt?.formatType ?? "16-bit (FP16)",
+      compressedMethod: null,
+    };
+  }
+  return { formatType: "16-bit (FP16)", compressedMethod: opt.value };
+}
+
+/** GGUF quants FastFlowLM's Q4NX converter packs directly for the AMD Ryzen AI NPU. */
+export const Q4NX_SOURCE_QUANTS = ["q4_0", "q4_1", "q4_k_m"];
+
+/**
  * llama.cpp effective bits-per-weight per quant; GGUF size ~= fp16_bytes * bpw / 16.
  * K-quant values are published average bit-rates (Q2_K_L = Unsloth Q2_K + Q8_0
  * embeddings). Approximate ("~"), not exact file sizes.
  */
 export const GGUF_BPW: Record<string, number> = {
+  iq2_xxs: 2.06,
+  iq2_m: 2.7,
+  iq3_xxs: 3.06,
+  iq4_xs: 4.25,
   q2_k_l: 3.35,
   q3_k_m: 3.91,
+  q4_0: 4.5,
+  q4_1: 5.0,
   q4_k_m: 4.83,
   q5_k_m: 5.67,
   q6_k: 6.56,
@@ -168,3 +350,62 @@ export const GUIDE_STEPS = [
   "Click Export and choose your destination",
   "Test your model and compare outputs in Chat",
 ];
+
+
+/** A null value means unverified (e.g. full_state without a weight probe). */
+export interface AdapterFeatures {
+  dora?: boolean | null;
+  full_state?: boolean | null;
+  moe_target_parameters?: boolean | null;
+  non_uniform?: boolean | null;
+}
+
+export type AdapterFormat = "mlx" | "peft";
+
+/** The vLLM claim needs VERIFIED plain LoRA: vLLM rejects DoRA / modules_to_save and ignores per-module rank/alpha. */
+export function adapterCompatibilityTip(
+  format: AdapterFormat,
+  features: AdapterFeatures | null | undefined,
+): string {
+  if (format === "mlx") {
+    const base =
+      "MLX (default): the native format for mlx-lm and Apple-silicon " +
+      "workflows — the format training checkpoints are saved in.";
+    return features?.non_uniform
+      ? base +
+          " Adapters with per-module ranks/alphas exported as MLX require " +
+          "Unsloth to load them; stock mlx-lm supports uniform adapters " +
+          "only — choose PEFT for maximum compatibility."
+      : base;
+  }
+  const base = "PEFT: the standard Hugging Face adapter format — ";
+  if (features == null) {
+    return base + "loads in transformers and PEFT.";
+  }
+  if (features.dora || features.full_state) {
+    return base + "loads in transformers/PEFT; not supported by vLLM.";
+  }
+  if (features.moe_target_parameters) {
+    return base + "vLLM support varies and is not guaranteed.";
+  }
+  if (features.non_uniform) {
+    return (
+      base +
+      "loads in transformers and PEFT. vLLM applies a single global " +
+      "rank/alpha — per-module patterned adapters are not supported by vLLM."
+    );
+  }
+  const verifiedPlain =
+    features.dora === false &&
+    features.full_state === false &&
+    features.moe_target_parameters === false &&
+    features.non_uniform === false;
+  if (!verifiedPlain) {
+    return base + "loads in transformers and PEFT.";
+  }
+  return (
+    base +
+    "loads in transformers, vLLM, and Unsloth on GPU machines, and " +
+    "is required for GGUF adapter export."
+  );
+}

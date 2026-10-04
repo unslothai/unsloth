@@ -7,13 +7,21 @@ Inference submodule - backend for model loading and generation.
 The default get_inference_backend() returns an InferenceOrchestrator that
 delegates to a subprocess. The original InferenceBackend runs inside the
 subprocess and can be imported directly from .inference when needed.
+
+Public names are resolved lazily (PEP 562): importing this package -- or a
+dependency-light leaf like ``core.inference.chat_eos`` -- must NOT eagerly pull
+the orchestrator / llama_cpp import chain (httpx, subprocess plumbing, the ML
+backend and its Unsloth dependencies). Those load only when a public name is
+actually accessed, so standalone helpers stay unit-testable without the full
+inference stack.
 """
 
-from .orchestrator import InferenceOrchestrator, get_inference_backend
-from .llama_cpp import LlamaCppBackend
+import os
+from typing import TYPE_CHECKING
 
-# Expose InferenceOrchestrator as InferenceBackend for backward compat.
-InferenceBackend = InferenceOrchestrator
+# Same ROCm AOTriton opt-in as main.py, for entry points that skip main.py: without it gfx1151 refuses fused
+# SDPA and runs MATH. torch reads it at the first SDPA dispatch; `setdefault` keeps an explicit "0".
+os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
 
 __all__ = [
     "InferenceBackend",
@@ -21,3 +29,33 @@ __all__ = [
     "get_inference_backend",
     "LlamaCppBackend",
 ]
+
+# name -> (submodule, attribute); InferenceBackend aliases InferenceOrchestrator.
+_LAZY_ATTRS = {
+    "InferenceOrchestrator": ("orchestrator", "InferenceOrchestrator"),
+    "InferenceBackend": ("orchestrator", "InferenceOrchestrator"),
+    "get_inference_backend": ("orchestrator", "get_inference_backend"),
+    "LlamaCppBackend": ("llama_cpp", "LlamaCppBackend"),
+}
+
+
+def __getattr__(name):
+    try:
+        submodule, attr = _LAZY_ATTRS[name]
+    except KeyError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+    from importlib import import_module
+
+    value = getattr(import_module(f"{__name__}.{submodule}"), attr)
+    globals()[name] = value
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(__all__))
+
+
+if TYPE_CHECKING:
+    from .llama_cpp import LlamaCppBackend
+    from .orchestrator import InferenceOrchestrator, get_inference_backend
+    InferenceBackend = InferenceOrchestrator

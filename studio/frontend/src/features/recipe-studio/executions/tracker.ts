@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { bumpInventoryVersion } from "@/features/hub";
 import { toastError, toastSuccess } from "@/shared/toast";
 import {
   getRecipeJobAnalysis,
@@ -103,6 +104,7 @@ export async function trackRecipeExecution({
   let lastStatus: RecipeExecutionStatus = initialExecution.status;
   let completedEventPayload: Record<string, unknown> | null = null;
   let latestExecution: RecipeExecutionRecord = initialExecution;
+  let lastDatasetPollAt = 0;
 
   const eventsAbortController = new AbortController();
   void streamRecipeJobEvents({
@@ -219,6 +221,35 @@ export async function trackRecipeExecution({
       onUpsert(latestExecution);
 
       done = isTerminalStatus(mappedStatus);
+      if (!done && Date.now() - lastDatasetPollAt >= 2500) {
+        lastDatasetPollAt = Date.now();
+        try {
+          const datasetPage = Math.max(1, latestExecution.datasetPage ?? 1);
+          const datasetPageSize =
+            latestExecution.datasetPageSize ?? DATASET_PAGE_SIZE;
+          const datasetResponse = await getRecipeJobDataset(jobId, {
+            limit: datasetPageSize,
+            offset: (datasetPage - 1) * datasetPageSize,
+          });
+          const dataset = normalizeDatasetRows(datasetResponse.dataset);
+          const datasetTotal =
+            typeof datasetResponse.total === "number"
+              ? datasetResponse.total
+              : dataset.length;
+          if (dataset.length > 0 || datasetTotal > 0) {
+            latestExecution = {
+              ...latestExecution,
+              dataset,
+              datasetTotal,
+              datasetPage,
+              datasetPageSize,
+            };
+            onUpsert(latestExecution);
+          }
+        } catch {
+          // 404 until the first batch lands.
+        }
+      }
       if (!done) {
         await delay(1200);
       }
@@ -269,6 +300,7 @@ export async function trackRecipeExecution({
       completedPayload.processor_artifacts !== null
         ? (completedPayload.processor_artifacts as Record<string, unknown>)
         : null;
+    const eventDatasetRows = Array.isArray(eventDataset) ? eventDataset : [];
     const shouldFetchPreviewDataset =
       kind === "preview" && !Array.isArray(eventDataset);
     const shouldFetchAnalysis =
@@ -283,7 +315,11 @@ export async function trackRecipeExecution({
         : Promise.resolve(eventAnalysis),
       shouldFetchPreviewDataset || kind === "full"
         ? getRecipeJobDataset(jobId, { limit: DATASET_PAGE_SIZE, offset: 0 })
-        : Promise.resolve({ dataset: eventDataset ?? [], total: rows }),
+        : // The event carries every record produced, which is not always the number asked for.
+          Promise.resolve({
+            dataset: eventDatasetRows,
+            total: eventDatasetRows.length,
+          }),
     ]);
 
     const analysis =
@@ -320,6 +356,9 @@ export async function trackRecipeExecution({
       finishedAt: latestExecution.finishedAt ?? Date.now(),
     };
     onUpsert(latestExecution);
+    if (kind === "full") {
+      bumpInventoryVersion();
+    }
 
     if (notify) {
       if (kind === "preview") {

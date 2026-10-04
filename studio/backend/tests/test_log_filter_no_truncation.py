@@ -21,7 +21,7 @@ class TestNoTruncation:
         # Mirrors the f-string at studio/backend/core/inference/llama_cpp.py:2117
         event = (
             "GGUF size: 232.9 GB, est. KV cache: 87.0 GB, context: 259072, "
-            "GPUs free: [(0, 80000), (1, 80000)], selected: [0, 1], fit: False"
+            "GPUs free: [(0, 80000), (1, 80000)], selected: [0, 1], --fit: off"
         )
         out = _run({"event": event})
         assert out["event"] == event

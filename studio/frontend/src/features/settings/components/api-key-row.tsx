@@ -8,45 +8,44 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { type Locale, formatRelativeTime, useLocale, useT } from "@/i18n";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { toast } from "@/lib/toast";
 import {
-  Delete02Icon,
   Copy01Icon,
+  Delete02Icon,
   MoreHorizontalIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useT } from "@/i18n";
-import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import type { ApiKey } from "../api/api-keys";
 
 type SettingsT = ReturnType<typeof useT>;
 
-function relative(iso: string | null, t: SettingsT): string {
+function relative(iso: string | null, t: SettingsT, locale: Locale): string {
   if (!iso) return t("settings.apiKeys.relativeNever");
   const diff = Date.now() - new Date(iso).getTime();
   const days = Math.floor(diff / 86400000);
   if (days < 1) {
     const hours = Math.floor(diff / 3600000);
     if (hours < 1) return t("settings.apiKeys.relativeJustNow");
-    return t("settings.apiKeys.relativeHoursAgo", { count: hours });
+    return formatRelativeTime(locale, -hours, "hour");
   }
-  if (days < 30) return t("settings.apiKeys.relativeDaysAgo", { count: days });
+  if (days < 30) return formatRelativeTime(locale, -days, "day");
   if (days < 365) {
-    return t("settings.apiKeys.relativeMonthsAgo", {
-      count: Math.floor(days / 30),
-    });
+    const months = Math.floor(days / 30);
+    return formatRelativeTime(locale, -months, "month");
   }
-  return t("settings.apiKeys.relativeYearsAgo", {
-    count: Math.floor(days / 365),
-  });
+  const years = Math.floor(days / 365);
+  return formatRelativeTime(locale, -years, "year");
 }
 
-function expiresText(iso: string | null, t: SettingsT): string {
+function expiresText(iso: string | null, t: SettingsT, locale: Locale): string {
   if (!iso) return t("settings.apiKeys.relativeNever");
   const diff = new Date(iso).getTime() - Date.now();
   if (diff < 0) return t("settings.apiKeys.expired");
   const days = Math.floor(diff / 86400000);
   if (days < 1) return t("settings.apiKeys.today");
-  return t("settings.apiKeys.inDays", { count: days });
+  return formatRelativeTime(locale, days, "day");
 }
 
 export function ApiKeyRow({
@@ -57,7 +56,9 @@ export function ApiKeyRow({
   onRevoke: (key: ApiKey) => void;
 }) {
   const t = useT();
-  const prefix = `sk-unsloth-${apiKey.key_prefix}…`;
+  const locale = useLocale();
+  // The ellipsis is display only; a copied prefix must not carry it.
+  const prefix = `sk-unsloth-${apiKey.key_prefix}`;
   return (
     <div className="group flex items-center gap-3 border-b border-border/60 px-1 py-3 last:border-b-0 transition-colors hover:bg-accent/40">
       <span
@@ -69,26 +70,26 @@ export function ApiKeyRow({
           <span className="truncate text-sm font-medium text-foreground" title={apiKey.name}>
             {apiKey.name}
           </span>
-          <code className="shrink-0 font-mono text-[11px] text-muted-foreground">
-            {prefix}
+          <code className="shrink-0 font-mono text-ui-11 text-muted-foreground">
+            {prefix}…
           </code>
         </div>
-        <div className="flex flex-wrap gap-x-1.5 text-[11px] text-muted-foreground">
+        <div className="flex flex-wrap gap-x-1.5 text-ui-11 text-muted-foreground">
           <span>
             {t("settings.apiKeys.created", {
-              value: relative(apiKey.created_at, t),
+              value: relative(apiKey.created_at, t, locale),
             })}
           </span>
           <span>·</span>
           <span>
             {t("settings.apiKeys.used", {
-              value: relative(apiKey.last_used_at, t),
+              value: relative(apiKey.last_used_at, t, locale),
             })}
           </span>
           <span>·</span>
           <span>
             {t("settings.apiKeys.expires", {
-              value: expiresText(apiKey.expires_at, t),
+              value: expiresText(apiKey.expires_at, t, locale),
             })}
           </span>
         </div>
@@ -105,7 +106,15 @@ export function ApiKeyRow({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          <DropdownMenuItem onClick={async () => { await copyToClipboard(prefix); }}>
+          <DropdownMenuItem
+            onClick={async () => {
+              if (await copyToClipboard(prefix)) {
+                toast.success(t("settings.apiKeys.copied"));
+              } else {
+                toast.error(t("settings.apiKeys.copyFailed"));
+              }
+            }}
+          >
             <HugeiconsIcon icon={Copy01Icon} className="size-3.5 mr-2" />
             {t("settings.apiKeys.copyPrefix")}
           </DropdownMenuItem>
