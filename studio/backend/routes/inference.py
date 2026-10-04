@@ -11516,8 +11516,7 @@ def release_chat_gpu_claim() -> bool:
             return False
         # The voice slot holds VRAM under the same claim; releasing it would let Images/Video
         # allocate beside the voice server.
-        voice = get_voice_llama_backend()
-        if voice.is_active or voice_load_active():
+        if _voice_slot_live():
             return False
         backend = _peek_inference_backend()
         # A managed engine whose stop failed keeps its VRAM with no model name left.
@@ -11530,14 +11529,26 @@ def release_chat_gpu_claim() -> bool:
     return model_slots.in_slot(None, lambda: release_if(CHAT, chat_idle))
 
 
-def _release_chat_for_zero_vram_primary() -> None:
-    """A primary that holds no VRAM drops CHAT, unless a model kept alongside still holds it."""
-    from core.inference.gpu_arbiter import CHAT, release, release_if
+def _voice_slot_live() -> bool:
+    """The voice llama-server holds VRAM under the CHAT claim, resident or still loading."""
+    from core.inference.llama_cpp import voice_load_active
 
-    if not model_slots.slots and not model_slots.stuck and model_slots.loading is None:
-        release(CHAT)
-        return
-    release_if(CHAT, lambda: not model_slots.holds_vram())
+    voice = get_voice_llama_backend()
+    return bool(getattr(voice, "is_active", False)) or voice_load_active()
+
+
+def _release_chat_for_zero_vram_primary() -> None:
+    """A primary that holds no VRAM drops CHAT, unless a model kept alongside or the voice slot still holds it."""
+    from core.inference.gpu_arbiter import CHAT, release_if
+
+    release_if(
+        CHAT,
+        lambda: not _voice_slot_live()
+        and (
+            (not model_slots.slots and not model_slots.stuck and model_slots.loading is None)
+            or not model_slots.holds_vram()
+        ),
+    )
 
 
 def release_chat_after_kept_models() -> bool:
@@ -11555,6 +11566,7 @@ def release_chat_after_kept_models() -> bool:
             and llama.is_loaded
             and llama.holds_no_vram
             and not chat_load_active()
+            and not _voice_slot_live()
         )
 
     return model_slots.in_slot(None, lambda: release_if(CHAT, zero_vram_primary_only))
@@ -21068,7 +21080,7 @@ async def voice_load_model(
     # in-flight marker is set under the arbiter lock, so an Images/Video acquire that lands
     # between the claim and the spawn finds a voice load to cancel instead of an idle slot.
     # ``alongside``: the claim stays with the account that loaded the chat model.
-    from core.inference.gpu_arbiter import CHAT as _CHAT, acquire_for_request
+    from core.inference.gpu_arbiter import CHAT as _CHAT, acquire_for_request, current_owner
     from core.inference.llama_cpp import voice_load_in_flight
 
     in_flight = voice_load_in_flight()
@@ -21082,6 +21094,21 @@ async def voice_load_model(
         raise HTTPException(status_code = 500, detail = f"Failed to load voice model: {e}")
     finally:
         in_flight.__exit__(None, None, None)
+
+    # load_model clears the cancel event an Images/Video eviction set between the claim and the
+    # spawn, so that cancellation is lost. Ownership survives it: same recheck as /load.
+    if current_owner() != _CHAT:
+        try:
+            await asyncio.to_thread(voice_backend.unload_model)
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code = 409,
+            detail = (
+                "An image or video model took the GPU while the voice model was loading, "
+                "so the load was cancelled. Unload that model, then try again."
+            ),
+        )
 
     if not ok:
         # load_model returned False (e.g. the server became healthy but audio

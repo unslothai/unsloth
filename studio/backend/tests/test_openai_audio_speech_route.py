@@ -1254,6 +1254,41 @@ def test_release_chat_gpu_claim_keeps_chat_while_the_voice_slot_is_live(monkeypa
     assert arb.current_owner() is None
 
 
+def test_a_zero_vram_primary_keeps_the_chat_claim_while_the_voice_slot_is_live(monkeypatch):
+    """Replacing the primary with a CPU-only chat model released CHAT straight away with no extra
+    slot kept, so a live voice llama-server was left beside the next Images/Video load."""
+    import core.inference.gpu_arbiter as arb
+    from core.inference import model_slots
+
+    monkeypatch.setattr(arb, "_owner", None)
+    monkeypatch.setattr(arb, "_owner_account", None)
+    monkeypatch.setattr(model_slots, "slots", [])
+    monkeypatch.setattr(model_slots, "stuck", [])
+    monkeypatch.setattr(model_slots, "loading", None)
+    live = {"active": True}
+    voice = type("Voice", (), {"is_active": property(lambda self: live["active"])})()
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice)
+    arb.acquire_for(arb.CHAT)
+    routes_module._release_chat_for_zero_vram_primary()
+    assert arb.current_owner() == arb.CHAT
+    live["active"] = False
+    routes_module._release_chat_for_zero_vram_primary()
+    assert arb.current_owner() is None
+
+
+def test_voice_load_undoes_itself_when_the_gpu_changed_hands_during_the_spawn():
+    """load_model clears the cancel event an eviction set between the claim and the spawn, so
+    the loader rechecks the owner after the load, like /load, instead of trusting the event."""
+    import inspect
+
+    source = inspect.getsource(routes_module.voice_load_model)
+    spawn = source.index("await asyncio.to_thread(voice_backend.load_model, intent)")
+    recheck = source.index("if current_owner() != _CHAT:")
+    assert recheck > spawn
+    assert "await asyncio.to_thread(voice_backend.unload_model)" in source[recheck:]
+    assert "status_code = 409" in source[recheck:]
+
+
 def test_voice_load_rejects_a_context_above_the_requestable_ceiling():
     """/voice/load models its load as a chat LoadRequest for the training-coexistence
     guard, and that model caps max_seq_length at MAX_REQUESTABLE_CONTEXT. Without the
