@@ -266,7 +266,7 @@ test("picking a new source clears an earlier error", () => {
   const hook = readSrc("features/audio/hooks/use-audio-source.ts");
   assert.match(
     hook,
-    /seenKey\.current = valueKey;\s*if \(valueKey && phase === "error"\) dispatch\(\{ type: "reset" \}\);/,
+    /seenKey\.current = valueKey;\s*if \(valueKey && \(phase === "error" \|\| phase === "expired"\)\) \{\s*dispatch\(\{ type: "reset" \}\);\s*\}/,
   );
 });
 
