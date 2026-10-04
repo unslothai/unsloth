@@ -124,9 +124,8 @@ TAIL_MS = int(os.environ.get("SMOKE_FLICKER_TAIL_MS", "2500"))
 MUST_FLICKER = {"streamdown", "released"}
 MUST_NOT_FLICKER = {"tree", "legacy"}
 
-# The positive control is what makes a clean run mean anything: without a variant REQUIRED to
-# flicker, "no collapses anywhere" is equally consistent with a detector that measured nothing.
-# The verdict loop only judges variants it ran, so a filtered set with no control is refused here.
+# The positive control is what makes a clean run mean anything: without a variant REQUIRED to flicker, "no collapses
+# anywhere" is equally consistent with a detector that measured nothing.
 if not MUST_FLICKER & set(VARIANTS):
     raise SystemExit(
         "SMOKE_FLICKER_VARIANTS="
@@ -137,10 +136,10 @@ if not MUST_FLICKER & set(VARIANTS):
     )
 
 # What each variant must have computed to on a settled block, checked before anything is measured.
-# Without this guard: the tree's override lives in `@layer utilities`, and for IMPORTANT
-# declarations the cascade REVERSES layer order, so an unlayered `!important` variant silently
-# loses to it. All four then computed `visible`/`none`, all reported zero collapses, and the run
-# read as "nothing flickers anywhere" having measured one stylesheet four times.
+# Without this guard: the tree's override lives in `@layer utilities`, and for IMPORTANT declarations the cascade
+# REVERSES layer order, so an unlayered `!important` variant silently loses to it. All four then
+# computed `visible`/`none`, reported zero collapses, and the run read as "nothing flickers
+# anywhere" having measured one stylesheet four times.
 EXPECTED_COMPUTED = {
     "streamdown": {"contentVisibility": "auto"},
     "released": {"contentVisibility": "auto"},

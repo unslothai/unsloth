@@ -28,12 +28,12 @@ from typing import Any, Iterable
 
 from ..analysis import CellFailure
 
-# 4096 bytes between samples. Small enough to resolve a per-sibling allocation
-# at a few hundred siblings, large enough not to perturb the allocation path.
+# 4096 bytes between samples. Small enough to resolve a per-sibling allocation at a few hundred
+# siblings, large enough not to perturb the allocation path.
 DEFAULT_SAMPLING_INTERVAL = 4096
 
-# `includeObjectsCollectedByMajorGC` / `MinorGC` landed in V8 10.8, which
-# shipped in Chrome 108. Below that the parameter is accepted and ignored.
+# `includeObjectsCollectedByMajorGC` / `MinorGC` landed in V8 10.8, which shipped in Chrome 108.
+# Below that the parameter is accepted and ignored.
 MIN_CHROME_FOR_GC_FLAGS = 108
 
 
@@ -253,18 +253,13 @@ def survival_ratio(
     }
 
 
-# ═══════════════════════════════════════════════════════════════════════════
 # Harness adapter (INTERFACES.md section 3)
-# ═══════════════════════════════════════════════════════════════════════════
-#
-# Level 3. One sampling session per window, started with
-# `includeObjectsCollectedByMajorGC` so that transient garbage is visible; the
-# hypothesis is per-render churn, and a survivors-only profile of that is empty.
-#
-# The survivors arm is NOT taken here. It needs a second run of the identical
-# workload with the flag off, which is an ablation arm and belongs to Layer 3.
-# What this instrument emits is the allocation side plus the site breakdown, so
-# `analysis.heap.survival_ratio` can be applied across two arms afterwards.
+# Level 3. One sampling session per window, started with `includeObjectsCollectedByMajorGC` so
+# transient garbage is visible: the hypothesis is per-render churn, and a survivors-only profile
+# of that is empty.
+# The survivors arm is NOT taken here. It needs a second run of the identical workload with the
+# flag off, which is an ablation arm belonging to Layer 3. This emits the allocation side plus the
+# site breakdown, so `analysis.heap.survival_ratio` can be applied across two arms afterwards.
 
 import time  # noqa: E402
 
@@ -311,9 +306,8 @@ class HeapInstrument:
         try:
             self.profiler.start()
         except CellFailure as exc:
-            # The version gate. Refusing is correct: an older browser ignores
-            # the flag silently and hands back survivors only, which for a
-            # transient-allocation hypothesis reads as "no allocation here".
+            # The version gate. Refusing is correct: an older browser ignores the flag silently and hands back
+            # survivors only, which for a transient-allocation hypothesis reads as "no allocation here".
             self._reason = f"{exc.gate}: {exc.detail}"
             self.profiler = None
         except Exception as exc:  # noqa: BLE001
@@ -360,9 +354,8 @@ class HeapInstrument:
         return payload
 
     def end_cell(self, cell: Any) -> dict | None:
-        # A prose key is OMITTED when there is nothing to say, never set to
-        # None. `None` is reserved for a QUANTITY that could not be measured,
-        # and overloading it for "no comment" would make the two indistinguishable.
+        # A prose key is OMITTED when there is nothing to say, never set to None. `None` is reserved for a
+        # QUANTITY that could not be measured.
         out = merge(
             measured("overhead_ms", round(self._overhead_ms, 3)),
             measured("windows_sampled", self._windows),

@@ -1,187 +1,189 @@
 {
-  "corpus_version": 1,
+  "corpus_version": 2,
   "seed": 20260819,
   "prose_chars": 1250,
   "fence_chars": 1800,
   "preamble_fraction": 0.25,
+  "math_block_prob": 0.16,
+  "inline_math_prob": 0.22,
   "max_unit_chars": 320000,
   "shipped_units": 10,
-  "shipped_chars": 519859,
+  "shipped_chars": 516495,
   "units": [
     {
       "index": 0,
       "kind": "reasoning",
-      "chars": 14330,
-      "sha256": "34b38c7ba1d699be6720d5109d8c6733872b3de825a2fe698bcdbe27f3f70a1a"
+      "chars": 15405,
+      "sha256": "5264594b3f79d2aefc5af16e99728f6f60de1b873be277b94a0654d355bd551a"
     },
     {
       "index": 1,
       "kind": "code",
-      "chars": 12764,
-      "sha256": "43fc94336bcbb4cfc08ecb5aee51b5b0ce38a260133dc1c5d53ba94eb6232b88"
+      "chars": 11374,
+      "sha256": "313788cef27b40fd7871506691d49e9fff7e75426ae6905a01f7505e24c6f988"
     },
     {
       "index": 2,
       "kind": "reasoning",
-      "chars": 17023,
-      "sha256": "9bdc426b3119b8a6c895b1d003dd7fc5f59d416879376b7c2fea44e65947e613"
+      "chars": 16568,
+      "sha256": "2436a280717749140af45427a8429cf517c01daae30eb0908c4fee6dd094c375"
     },
     {
       "index": 3,
       "kind": "code",
-      "chars": 13360,
-      "sha256": "a3871d6c4f07d5f4bdcb8e6a2f6723f5410d4c26bf183fd217f3e8be2282835d"
+      "chars": 12663,
+      "sha256": "ef16f91cdffea74d02281572316928c2c0e59c48cff80a4a65005a59e63c5132"
     },
     {
       "index": 4,
       "kind": "reasoning",
-      "chars": 37342,
-      "sha256": "ba3163bb88e62d0771b7a4279e856d6ed9454852a3e85ba6f34cf48cfe24bc5c"
+      "chars": 36215,
+      "sha256": "8a541322dffbfce047cda7ce10527f2b34b8375ea3bb3d586f6966f3193e6a29"
     },
     {
       "index": 5,
       "kind": "code",
-      "chars": 38493,
-      "sha256": "02f5aecb56006e344b48378f0798f78f8ee99edcb7c7e9c12dd82a23170e8ad7"
+      "chars": 38628,
+      "sha256": "bf1664ad4dae25f85c66749020af6a065575f567e2ca2dd9d72aefe3f94ef81f"
     },
     {
       "index": 6,
       "kind": "reasoning",
-      "chars": 60234,
-      "sha256": "7886a0579e049655c0b62bfcf14fa1aaeb8dcf4bc67bc3349e631a4c31308762"
+      "chars": 59801,
+      "sha256": "dd6977828ef29152201632c8edf9026b0853dbfc897eb5d0dd1069fb632578bf"
     },
     {
       "index": 7,
       "kind": "code",
-      "chars": 72699,
-      "sha256": "5b50618cefbaec3c272966181fff3e020371b13e0d73789abbdb83048f58b4b6"
+      "chars": 73773,
+      "sha256": "8fce0546958b288c293fa4efc3aaec887fe492bb81c3e063616e6eaffb273a6e"
     },
     {
       "index": 8,
       "kind": "reasoning",
-      "chars": 134652,
-      "sha256": "c4a673b33a53412589a1b0e07ad2f6accdee8b1cd1dda664498f7bd0c313f752"
+      "chars": 133113,
+      "sha256": "241ab46a8d6a7d0f3ee7fb569a19689d0a66c732c4a64ffca8a43a0c423c3bcb"
     },
     {
       "index": 9,
       "kind": "code",
-      "chars": 118962,
-      "sha256": "02c8f74850a8a084346b302fecd84311c6ed9497ae67df6c895372fbef2321ee"
+      "chars": 118955,
+      "sha256": "a8645c52578f032eb628753fae697b93f259874428f2dcd17af265ba992b53b9"
     },
     {
       "index": 10,
       "kind": "reasoning",
-      "chars": 322573,
-      "sha256": "3fcb5742b92126db74ac6164c9c562e78ecfc5bdccd13351a0f90b8218a1e365"
+      "chars": 322980,
+      "sha256": "3f2aee76600775007b4526fca6bff1202b0f20f68531008ef3efd2551bdd7715"
     },
     {
       "index": 11,
       "kind": "code",
-      "chars": 321517,
-      "sha256": "81d705a0bff4fd797afe162d0f6808197ef68a4adc6afb3635ca473c48691573"
+      "chars": 322357,
+      "sha256": "2512286eefa8c7498b1c30a4aa303d8b740cf07c7ed5b255a216dd3b04fc3c3c"
     },
     {
       "index": 12,
       "kind": "reasoning",
-      "chars": 293631,
-      "sha256": "6773835c83f01881e541d998180f9655ae58e17bc06dad3a7290d3e78e585a11"
+      "chars": 291898,
+      "sha256": "30177e32f0a31987249589bd9cf138394fcab04960c7f024af40a309a09f06af"
     },
     {
       "index": 13,
       "kind": "code",
-      "chars": 322362,
-      "sha256": "3ab482461e43d4cb7c5e6e5f7d3af0413818e81938ac9453c9b753c1c5bae0ca"
+      "chars": 321569,
+      "sha256": "6e58d0b4d3e585e0bcda84155c5be742a99163008c6a6a93b74e7996ad34aa5b"
     },
     {
       "index": 14,
       "kind": "reasoning",
-      "chars": 306095,
-      "sha256": "d76e971b0f1a860065a03747062d747138770dc6eb6e688f9f6bfeb555bdd8a8"
+      "chars": 306669,
+      "sha256": "dcd719aef5abc8b6d6e0eab3f32867aeee98b9579893b6320528ad08c8b585ae"
     },
     {
       "index": 15,
       "kind": "code",
-      "chars": 322406,
-      "sha256": "538d8c1684d1bb0a1be1f9c51928f87aac2cd93076e90d3d74f1a0424637d7ed"
+      "chars": 321924,
+      "sha256": "8064a72801dfc8ef334e5b6c22ae7a03ed91bd4fdc71faa172d606525e0abef8"
     },
     {
       "index": 16,
       "kind": "reasoning",
-      "chars": 323391,
-      "sha256": "9ee00ce6b25d83bc4708324ea1d4321d8117bee427fce95c46f448b000e127fd"
+      "chars": 322897,
+      "sha256": "31e8587bb0a3627f6a676149703f47c246e60f0400a354191317d129dcb3fc25"
     },
     {
       "index": 17,
       "kind": "code",
-      "chars": 323723,
-      "sha256": "9195348cac52c7e05f6536f0f071e9a168741a46fdd764986135b12c981007ce"
+      "chars": 321849,
+      "sha256": "bada16daae3d61e09505320b3567b3e5336cc93059554969a0bad7847ee0cc92"
     },
     {
       "index": 18,
       "kind": "reasoning",
-      "chars": 320267,
-      "sha256": "be616f584a8db1312c43d49dfa0e89d6f2531152e3983f50a8b8bac3bdb569a1"
+      "chars": 320607,
+      "sha256": "0ee112d4668ae317a57a6881ab4782d591be8fea06170afdc2978553946a764c"
     },
     {
       "index": 19,
       "kind": "code",
-      "chars": 227799,
-      "sha256": "c5d79309798ec55a05395507aecce555494cebbc9a5b57aca034583a47af1b40"
+      "chars": 226268,
+      "sha256": "a16ea90ce4e7b25afc2acc08350539d5e986b06150f158f6fb464fe2602ccb13"
     },
     {
       "index": 20,
       "kind": "reasoning",
-      "chars": 270483,
-      "sha256": "d416b6e21baf071f46fae218a1d2f126328141e1d9293147c0c90d0b33e66017"
+      "chars": 270108,
+      "sha256": "4d640c3c2b9fe6189907da00203853f9ce559bdc55e545136d633d6db5d4bf18"
     },
     {
       "index": 21,
       "kind": "code",
-      "chars": 290042,
-      "sha256": "20605b0d0e97ff5aefd41963af88faa0903281a751f0682a686695555b146fa3"
+      "chars": 290984,
+      "sha256": "7655e788d2c355f2d9ccf571e47a1eac3fb34150b5265125555458713726c45f"
     },
     {
       "index": 22,
       "kind": "reasoning",
-      "chars": 289413,
-      "sha256": "679ae8f15635c53c2de3a30636546375cd6b4464ae5b359363712eb913f11b89"
+      "chars": 289431,
+      "sha256": "76d5f66d3c511a962df310d5a0eed0d9827ba8603132a2b7b96517f0c322cef1"
     },
     {
       "index": 23,
       "kind": "code",
-      "chars": 322184,
-      "sha256": "e42ef467115d5972b7f2310b5d1651f875043c9d1759bcd8e6b9e3c88a523654"
+      "chars": 321842,
+      "sha256": "976f5641cff82368c512da916cc83270fa288fb331b96e7938b3d2a6afae6a0a"
     },
     {
       "index": 24,
       "kind": "reasoning",
-      "chars": 218542,
-      "sha256": "f38d83c9d840b49df0573778225660a0c45f68445473630b07a3076e2bd37fd0"
+      "chars": 217349,
+      "sha256": "f1bf889d3e49befd9e0010896d5388e3deb267f1136554913c55ebab430277e3"
     },
     {
       "index": 25,
       "kind": "code",
-      "chars": 322478,
-      "sha256": "bd58539f6f385f245bc0be5b6d2ffed9c0732539397e371071ba151ea61f6969"
+      "chars": 321278,
+      "sha256": "0c606e663295d28df4003b45de26b3051332a6af4617c9390b5d37e555dce5fa"
     },
     {
       "index": 26,
       "kind": "reasoning",
-      "chars": 322945,
-      "sha256": "4a0edddc9cd772f3b7c1579b582cd5dff2688ae748ae5ce86839aace99a26219"
+      "chars": 322586,
+      "sha256": "7190c240820eb162ead8aca71475d92a941838b1a0a9e60a057a5c2802fceab9"
     },
     {
       "index": 27,
       "kind": "code",
-      "chars": 260895,
-      "sha256": "baa70154489b59159d522248929395f15debe8536ba512f1624005bbca1107c4"
+      "chars": 260180,
+      "sha256": "2be1b8ad3036fbdf6d27230521612a2b96a357480696bda15e14918349d3cf06"
     },
     {
       "index": 28,
       "kind": "reasoning",
-      "chars": 320546,
-      "sha256": "6643ec93ef522cc17948e351340665ed5fe07ce18d4a37faa3b6d2d34a936037"
+      "chars": 323227,
+      "sha256": "5d311d80080c3209d7835265f17e60595b319d718f226c94dcaa2320538c4f8d"
     }
   ],
-  "corpus_hash": "ac9d5d8e37be2a3844deed559fde6070247ad2322377295fb383b60b5eec5a0c"
+  "corpus_hash": "23cd24646603bc54d277d11f9f1276920dc01f0587b4244bdd94071783877c70"
 }

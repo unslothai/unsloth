@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Run two Studio builds against each other INSIDE ONE SESSION.
+"""Run two Unsloth builds against each other INSIDE ONE SESSION.
 
 WHY THIS CANNOT BE TWO RUNS. Cross-session drift on this app measured 8%, which is larger than
 most of the wins anybody argues about. `scoring.ab.assert_comparable` refuses two different
@@ -24,7 +24,8 @@ printing. That check is the whole reason this file interleaves at all.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Optional, Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any, Callable, Optional
 
 from ..fixture.corpus import Corpus, RungPlan
 from .types import Cell
@@ -32,7 +33,7 @@ from .types import Cell
 
 @dataclass
 class Target:
-    """One side of the comparison: a Studio to drive and everything needed to drive it."""
+    """One side of the comparison: an Unsloth to drive and everything needed to drive it."""
 
     label: str  # "base" or "treatment"
     ref: str  # the git ref, for the report
@@ -43,19 +44,69 @@ class Target:
     owns_studio: bool = False
 
 
+#: The port a scheme does not spell out. `window.location.origin` omits it, so an attach URL that
+#: writes it is the same origin under a different name.
+DEFAULT_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443}
+
+
+def browser_origin(url: str) -> str:
+    """The ORIGIN a browser computes for `url`, spelled the way `window.location.origin` spells it.
+
+    THE ONLY THING THAT DISCRIMINATES THE TWO ARMS. Both are driven by one browser context and one
+    page, so `origin_scoped`'s `window.location.origin !== <url>` is the whole of the gate, and the
+    right-hand side of that comparison has to be what the browser will actually produce rather than
+    what the caller typed. Measured in chromium against real documents:
+    `http://studio:80` and `HTTP://STUDIO` and `http://studio/app` all report an origin of
+    `http://studio`, so every one of those spellings gates a script onto a document that does not
+    exist. The failure is silent in both directions -- the base's seed then runs on the treatment's
+    documents as well, and the treatment's injection runs on neither -- and it reaches
+    `evaluate_stream_cost_recovery_gate` as a recovery of zero blamed on the accumulator.
+
+    WHAT IS NOT FOLDED TOGETHER: `localhost` and `127.0.0.1`. A browser treats those as two
+    origins, chromium reports them as two (`http://localhost:8000` stays `http://localhost:8000`),
+    and a check that called them one would refuse a perfectly good pair of arms. Only the four
+    canonicalisations the URL standard itself performs are applied: the scheme and host are
+    lower-cased, a port the scheme implies is dropped, and the path, query, fragment and any
+    userinfo are discarded.
+
+    A string this cannot parse as an absolute URL is returned trailing-slash-stripped, which is
+    what the acquisition loop does with `--attach` anyway: an unparseable URL is the caller's
+    problem to see at `wait_for_healthz`, not a reason for this to guess.
+    """
+    from urllib.parse import urlsplit
+
+    try:
+        split = urlsplit(url.strip())
+        host, port = split.hostname, split.port
+    except ValueError:
+        return url.rstrip("/")
+    scheme = split.scheme.lower()
+    if not scheme or not host:
+        return url.rstrip("/")
+    host = host.lower()
+    if ":" in host:  # IPv6, which serialises with its brackets
+        host = f"[{host}]"
+    if port is None or port == DEFAULT_PORTS.get(scheme):
+        return f"{scheme}://{host}"
+    return f"{scheme}://{host}:{port}"
+
+
 def origin_scoped(base_url: str, script: str) -> str:
-    """Run `script` only on its own Studio's origin.
+    """Run `script` only on its own Unsloth's origin.
 
     `add_init_script` fires on every document in the context, and localStorage is per-origin under
     the SAME KEY NAMES on both builds. Seeding both unconditionally means whichever script runs
     last writes the other build's auth token into this build's storage, and the failure shows up
     much later as a logged-out SPA or a provider that renders as "No longer offered" -- neither of
     which points back here.
+
+    Gated on the CANONICAL origin rather than on the URL as typed: see `browser_origin` for the
+    spellings that otherwise gate a script onto a document no browser will ever produce.
     """
     import json as _json
     return (
         "(() => { if (window.location.origin !== "
-        + _json.dumps(base_url.rstrip("/"))
+        + _json.dumps(browser_origin(base_url))
         + ") return; "
         + script
         + " })();"
@@ -146,10 +197,117 @@ def order_is_balanced(plan: list[tuple[Target, Cell, RungPlan]]) -> bool:
             continue
         seen.add(key)
         first_counts[target.label] += 1
-    # Every label is seeded at zero first. Counting only the labels that DID run first reports a
-    # single-rep plan -- where one side always goes first and nothing cancels -- as balanced,
-    # which is the one answer this function exists to prevent.
+    # Every label is seeded at zero first. Counting only the labels that DID run reports a single-rep
+    # plan, where one side always goes first and nothing cancels, as balanced, which is the one
+    # answer this function exists to prevent.
     return len(labels) > 1 and len(set(first_counts.values())) == 1
+
+
+#: The per-cell gates whose failure means the cell's TIMINGS ARE NOT A READING OF THE BUILD, and
+#: therefore the only ones that may take the whole cell out of the ratios.
+#: NAMED RATHER THAN 'ANY FAILED GATE', because a per-cell gate is not automatically fatal.
+#: `timer_clamp` fails whenever idle calibration cannot establish a floor, and `session.py` is
+#: explicit that this is 'NOT fatal, and NOT silently zero': `busy_pct` is null with the reason
+#: attached AND EVERY OTHER COLUMN STANDS. Excluding the cell would delete keystroke latency,
+#: frame and census readings that were measured correctly, most often on the machines least able
+#: to spare a repetition.
+#: The two below are different in kind: both say the FILM ITSELF was wrong. A thread that lost
+#: messages and a reply that stopped being rendered produce a cheaper cell, not a suspect column,
+#: and no metric in it can be trusted afterwards.
+INVALIDATING_CELL_GATES: frozenset[str] = frozenset({"thread_complete", "follows_the_stream"})
+
+
+def gate_detail_is_unmeasured(detail: Mapping[str, Any]) -> bool:
+    """Did this failed gate row report a MISSING READING rather than a FAILING BUILD?
+
+    ONE DEFINITION FOR BOTH ADMISSION LISTS. `INVALIDATING_CELL_GATES` above was centralised so
+    the scorers could not drift into disagreeing about what invalidates a cell; the predicate that
+    waives a row is the same decision one level down, and `sweep/ui_parity.py` applies it to the
+    same rows for the DOM side. Two copies of it drift the same way the gate names would have, and
+    the drift is invisible because each copy looks locally correct.
+
+    THREE PRODUCERS, all meaning "the instrument did not answer", none meaning "the arm lost
+    something":
+
+    `follow_attempted: False` is `_read_follow` reporting that the page-side sampler is not
+    installed, and `probe_attempted: False` is `probe_thread_completeness` reporting the same for
+    `window.__sb.dom`. `pinned`/`coverage` are then None and the row says `passed: False`. That is
+    an absent INSTRUMENT, not a film that went wrong -- the same thing `timer_clamp` is kept off
+    the list above for -- and reading it as fatal would mark every cell of every run unusable
+    wherever the harness is not loaded, a far larger blast radius than the defect being closed.
+
+    `stream_coverage_unmeasured: True` is the third and the one that was standing open.
+    `attached_fraction_of_stream` is fixed by the scene schedule rather than by the build, so it
+    is identical on both arms by construction and cancels in every comparison drawn from these
+    cells; see the block in `session.py` that writes it for the measurements. Left fatal it voided
+    the entire A/B table -- VERDICT: NO READING -- for a reason that has nothing to do with the two
+    builds being compared, and did so on the null control as readily as on a real pair. The cell's
+    timings still stand: both arms rendered the same share of the same film.
+
+    NARROWED TO THE INSTRUMENT, because `probe_attempted: False` has two producers and only one of
+    them is an absent instrument. `window.__sb.dom is not installed` is the harness not being
+    loaded and is waived. `no thread viewport` is the ARM missing the surface the film measures,
+    which is a defect about the build, and waiving it let a real failure ride the instrument
+    allowance.
+
+    This does NOT relax the `unmeasured` COVERAGE VERDICT of the completeness probe, which is a
+    different value and stays fatal: `record_completeness_gate` refuses to score a cell whose probe
+    RAN and could not answer, because "we could not tell" must not be recorded as "it was fine".
+    The case waived here is the probe never having run at all.
+    """
+
+    unmeasured = (
+        detail.get("follow_attempted") is False
+        or detail.get("probe_attempted") is False
+        or detail.get("stream_coverage_unmeasured") is True
+    )
+    return unmeasured and "viewport" not in str(detail.get("reason") or "").lower()
+
+
+def failed_invalidating_gates(records: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    """`{cell_id: why}` for every cell carrying a FAILED INVALIDATING per-cell gate row.
+
+    Shared with `report/build.py` and `sweep/floor_table.py`, which are the other two scorers that
+    admit a cell, so the three cannot drift into disagreeing about what invalidates one.
+
+    RUN-LEVEL GATES ARE NOT IN HERE. `production_build` and `reportable_tier` are emitted without a
+    `cell_id`, and they are properties of the whole run: reading them as per-cell would empty both
+    arms and turn a fast-tier A/B into an empty table rather than the table it asked for. Only a
+    gate that named a cell can disqualify that cell.
+
+    ATTEMPTS ARE SCOPED BY HAND because `latest_attempt_rows` cannot do it: `ATTEMPT_ROW_TYPES` is
+    `{cell, action, window}`, so a gate row survives the filter that drops the rest of a superseded
+    attempt. `--resume` reuses the cell id, so without this a cell that failed its gate, was re-run
+    and PASSED would stay disqualified by the dead attempt's row -- the retry silently unable to
+    count, which is the mirror of the defect this function is fixing. The winning attempt is the
+    session the surviving cell row carries; a row without a session id predates the stamp and is
+    kept, as `latest_attempt_rows` keeps it.
+    """
+    winning: dict[str, Any] = {}
+    for row in records:
+        if row.get("row_type") == "cell" and row.get("cell_id") is not None:
+            winning[str(row.get("cell_id"))] = row.get("session_id")
+
+    failed: dict[str, str] = {}
+    for row in records:
+        if row.get("row_type") != "gate" or row.get("passed") is not False:
+            continue
+        name = str(row.get("name"))
+        if name not in INVALIDATING_CELL_GATES or row.get("cell_id") is None:
+            continue
+        cell_id = str(row.get("cell_id"))
+        keep = winning.get(cell_id)
+        if keep is not None and row.get("session_id") not in (None, keep):
+            continue
+        detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+        # NOT MEASURED IS NOT FAILED. See `gate_detail_is_unmeasured`, shared with `sweep/ui_parity.py` so
+        # the two admission lists cannot drift. Readiness now refuses a cell with no thread viewport
+        # outright, so that narrowing is the second of two doors on the same hole.
+        if gate_detail_is_unmeasured(detail):
+            continue
+        why = detail.get("reason") or detail.get("coverage_reason") or "the cell's own self-check"
+        failed.setdefault(cell_id, f"gate {name}: {why}")
+    return failed
 
 
 def unmeasured_planned_cells(
@@ -176,11 +334,21 @@ def unmeasured_planned_cells(
     """
     from ..scoring.from_payload import latest_attempt_rows
 
+    # THE SAME TWO FILTERS `readings_by_arm` APPLIES, because this function exists to notice the holes
+    # that one punches: it drops a cell for `completed is not True` AND for a failed invalidating
+    # gate, and reading only the first left the second kind invisible. A cell that completed but lost
+    # its thread's middle is removed from the ratios and takes its healthy partner with it through
+    # the arm intersection, while this said the plan was whole, so `ab.md` published a verdict over
+    # the surviving rungs instead of the VOID that is the point of the guard.
+    # The intersection is `compare_arms`.
+    failed = failed_invalidating_gates(records)
     complete: set = set()
     for row in latest_attempt_rows(records):
         if row.get("row_type") != "cell" or row.get("completed") is not True:
             continue
         if session_id is not None and row.get("session_id") not in (None, session_id):
+            continue
+        if str(row.get("cell_id")) in failed:
             continue
         complete.add(str(row.get("cell_id")))
     return [str(cell_id) for cell_id in planned if str(cell_id) not in complete]
@@ -199,6 +367,22 @@ def readings_by_arm(
     completed 100 ms base cell, reports IMPROVED. The crash is still in the payload, in the
     summary and in `excluded_cells`; it is only kept out of the ratios.
 
+    A CELL THAT FAILED A PER-CELL GATE IS NOT ONE EITHER, for the same reason and by a shorter
+    route. `thread_complete` and `follows_the_stream` are advisory at the point they are emitted:
+    `record_completeness_gate`'s verdict is discarded by its caller and the film runs on, so the
+    cell reaches this function with `completed=True` and a full set of timings. Those timings are
+    CHEAPER THAN A CORRECT CELL'S, and cheaper in the direction that flatters the arm -- a thread
+    that lost its middle renders fewer rows, and a streamed reply that left the viewport and was
+    unmounted stops costing anything to paint. Pairing one against a complete cell on the other
+    side reports the defect as an improvement, which is the crash-into-a-win failure again with a
+    gate row instead of a missing one.
+
+    `excluded_from_rows` does not cover this path. It reads the same failed gate rows into
+    `excluded_cells`, but that block is derived, rendered and schema-checked and nothing filters
+    on it: stripping the failing gate rows out of a payload and re-scoring produces byte-identical
+    metric lines. `ab.md` is scored here, from `readings_by_arm` and `measures_by_cell`, and
+    neither consulted a gate row before this.
+
     `session_id`, when given, keeps the comparison inside ONE session. `--resume` appends to the
     payload a previous run wrote, so an interrupted A/B resumed into the same directory otherwise
     hands `compare_arms` cells from two browser sessions -- the 8% cross-session drift term that
@@ -210,16 +394,19 @@ def readings_by_arm(
     """
     from ..scoring.from_payload import latest_attempt_rows, measures_by_cell
 
-    # The session filter below scopes the CELL rows, but `action` and `window` rows are collected
-    # by `cell_id` alone, and a resumed retry reuses the cell id of the attempt that died. Without
+    # The session filter below scopes the CELL rows, but `action` and `window` rows are collected by
+    # `cell_id` alone and a resumed retry reuses the cell id of the attempt that died, so without
     # this the completed-cell filter admitted the dead attempt's windows into the retry's reading.
     records = list(latest_attempt_rows(records))
+    failed_gates = failed_invalidating_gates(records)
 
     arms: dict[str, list[dict]] = {}
     cell_ids: dict[str, set[str]] = {}
     for row in records:
         if row.get("row_type") == "cell":
             if row.get("completed") is not True:
+                continue
+            if str(row.get("cell_id")) in failed_gates:
                 continue
             if session_id is not None and row.get("session_id") not in (None, session_id):
                 continue
@@ -267,10 +454,9 @@ def compare_arms(
         weights_id = weights_id() if callable(weights_id) else str(weights_id),
         session_id = session_id,
     )
-    # Paired PER REPETITION, matching (rung, rep) on both sides. Repetition r of the base and
-    # repetition r of the treatment ran adjacent in time, so pairing them is what makes the
-    # comparison paired at all; pooling reps into one reading per rung throws away every
-    # observation but the first and leaves the bootstrap with nothing to resample.
+    # Paired PER REPETITION, matching (rung, rep) on both sides: repetition r of each arm ran adjacent
+    # in time, which is what makes the comparison paired at all. Pooling reps into one reading per
+    # rung throws away every observation but the first and leaves the bootstrap nothing to resample.
     pairs = []
     for key in sorted(set(base) & set(treatment)):
         rung, _rep = key
@@ -319,10 +505,12 @@ def make_target(
     cadence: str,
     image_path,
     session,
+    parity_raw: bool = False,
+    parity_shots = None,
     username: str,
     password: str,
 ) -> Target:
-    """Authenticate against one Studio, register the shared pacer on it, and bind a runner.
+    """Authenticate against one Unsloth, register the shared pacer on it, and bind a runner.
 
     Both sides talk to the SAME pacer, so the bytes on the wire are identical by construction
     rather than by two configurations that are meant to match.
@@ -350,6 +538,9 @@ def make_target(
         log = log,
         cadence = cadence,
         image_path = image_path,
+        parity_raw = parity_raw,
+        parity_shots = parity_shots,
+        arm_label = label,
     )
     target = Target(label = label, ref = ref, base_url = base_url, seeder = seeder, runner = runner)
     target.auth = auth  # type: ignore[attr-defined]

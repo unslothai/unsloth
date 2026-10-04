@@ -26,7 +26,10 @@ export function RunValidateFloatingControls({
 }: RunValidateFloatingControlsProps): ReactElement {
   return (
     <div className="pointer-events-none absolute inset-x-0 bottom-3 z-20 flex justify-center">
-      <div className="pointer-events-auto flex items-center gap-2">
+      <div
+        data-tour="recipe-run"
+        className="pointer-events-auto flex items-center gap-2"
+      >
         <Button
           type="button"
           className="corner-squircle h-11 px-5"

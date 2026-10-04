@@ -83,8 +83,8 @@ def test_fast_sentence_transformer_matches_stock_st():
     texts = _probe_texts()
     max_seq_length = 256
 
-    # Control FIRST, before importing unsloth, so its global import patches never
-    # touch the stock reference (mirrors the issue's "restart runtime" repro).
+    # Control FIRST, before importing unsloth, so its global import patches never touch the stock reference (mirrors the
+    # issue's "restart runtime" repro).
     ctrl = SentenceTransformer(model_id, device = device, model_kwargs = {"torch_dtype": dtype})
     ctrl.max_seq_length = max_seq_length
     ctrl_ids = ctrl.tokenize([texts[0]])["input_ids"][0].tolist()

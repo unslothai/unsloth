@@ -26,8 +26,8 @@ _HTTP_REMOTE_TYPES = ("http", "streamableHttp")
 @dataclass
 class ParsedMcpEntry:
     display_name: str
-    url: str  # joined command (stdio) or http(s) url (remote)
-    headers: Optional[dict[str, str]]  # env vars (stdio) or http headers (remote)
+    url: str
+    headers: Optional[dict[str, str]]
     is_stdio: bool
     is_enabled: bool = True
     use_oauth: bool = False
@@ -97,7 +97,7 @@ def _parse_entry(name: str, spec: object) -> tuple[Optional[ParsedMcpEntry], Opt
             return None, f"{label}: import cannot preserve {', '.join(unsupported)}."
         if spec.get("oauth") is not None:
             return None, f"{label}: 'oauth' is only supported for remote servers."
-        args = spec.get("args") or []
+        args = spec["args"] if "args" in spec else []
         if not isinstance(args, list) or not all(isinstance(a, _SCALAR) for a in args):
             return None, f"{label}: 'args' must be a list of strings."
         env = spec.get("env")

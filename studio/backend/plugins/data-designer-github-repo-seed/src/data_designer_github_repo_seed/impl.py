@@ -16,10 +16,8 @@ from .config import GitHubRepoSeedSource
 from .scraper import ScrapeConfig, materialize_to_jsonl
 
 
-# In-process cache: config signature -> JSONL path. A recipe job reads the seed
-# multiple times (validation, preview, sampling); memoize to avoid re-scraping
-# GitHub on each call. Key uses a short SHA-256 of the token (never the raw value)
-# so token never hits memory twice and rotation invalidates cleanly.
+# Memoize seed materialization so a recipe job does not re-scrape GitHub on every call; the key
+# uses a short SHA-256 of the token, so the raw value never hits memory twice.
 _SCRAPE_CACHE: dict[tuple, str] = {}
 _SCRAPE_CACHE_LOCK = threading.Lock()
 

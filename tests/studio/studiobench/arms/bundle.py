@@ -239,7 +239,7 @@ def discover_armpack(
     """Find an armpack whose target digest matches this install, or refuse.
 
     Matching is on the DIST DIGEST, not on a version string. Two installs claiming the same
-    Studio version can ship different dists (a local build, a patched install, a different
+    Unsloth version can ship different dists (a local build, a patched install, a different
     Node version producing a different chunk split), and an armpack built against one of them
     measures the build difference when run against the other.
     """

@@ -4,7 +4,7 @@
 """Tests for llama-server multimodal-projector startup recovery.
 
 A GGUF vision model launches with ``--mmproj <projector>``. When GPU memory
-cannot hold the projector, Studio first retries with ``--no-mmproj-offload``
+cannot hold the projector, Unsloth first retries with ``--no-mmproj-offload``
 so image input remains available. Incompatible projectors, or startup crashes
 that also fail that CPU-projector retry, keep the existing text-only fallback.
 These tests pin the diagnostics, argv rewrites, fallback ordering, and runtime
@@ -363,7 +363,7 @@ _drop_env_v = LlamaCppBackend._drop_env_quantized_v_cache
 class TestFlashAttnOffQuantizedKvCache:
     """Only the V cache requires flash attention in llama.cpp (init aborts with
     "V cache quantization requires flash_attn"); a quantized K cache runs fine
-    without FA. Studio launches FA on, so a quantized --cache-type-v is legal at
+    without FA. Unsloth launches FA on, so a quantized --cache-type-v is legal at
     launch but would make the FA-off crash-recovery retry crash on init. The
     fallback must reset a quantized V cache (main and draft) to f16 while leaving
     the K cache and non-quantized (f16/bf16/f32) types unchanged -- resetting K
@@ -511,7 +511,7 @@ class TestFlashAttnOffQuantizedKvCache:
 
 class TestDropEnvQuantizedVCache:
     """The argv rewrite can't reach a cache type set purely through the
-    environment (Studio deliberately lets an env-only type reach the child), so
+    environment (Unsloth deliberately lets an env-only type reach the child), so
     the FA-off retry separately drops a quantized V-cache env var. Only V is
     dropped: a quantized K cache is FA-independent and must survive."""
 
@@ -636,7 +636,7 @@ class TestRetryContract:
 
     def test_signal_crash_tries_non_destructive_rungs_before_dropping_vision(self):
         # Ladder order: FA-off first, then projector-on-CPU. Only if both fail
-        # does Studio remove --mmproj and become text-only.
+        # does Unsloth remove --mmproj and become text-only.
         assert _signal_crash(-11) is True
         fa_retry = _flash_off(_VISION_CMD)
         assert fa_retry is not None

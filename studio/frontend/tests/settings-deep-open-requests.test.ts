@@ -19,6 +19,7 @@ function reset(): void {
     activeTab: "general",
     scrollTarget: null,
     opener: null,
+    openerFallback: null,
     archivedRequested: null,
   });
 }
@@ -67,6 +68,14 @@ test("reopening on Data does not drop a deep-open still in flight", () => {
   assert.equal(store.getState().archivedRequested, "images");
   store.getState().openDialog("data");
   assert.equal(store.getState().archivedRequested, "images");
+});
+
+test("the audio shelf deep-opens like the other media shelves", () => {
+  reset();
+  store.getState().openArchivedMedia("audio");
+  assert.equal(store.getState().open, true);
+  assert.equal(store.getState().activeTab, "data");
+  assert.equal(store.getState().archivedRequested, "audio");
 });
 
 test("consuming it clears it, so a later visit to Data is an ordinary one", () => {
@@ -122,4 +131,48 @@ test("consuming a scroll target clears it", () => {
   store.getState().openDialog("about", { scrollTarget: "about-updates" });
   store.getState().consumeScrollTarget("about-updates");
   assert.equal(store.getState().scrollTarget, null);
+});
+
+test("canvas network and Library storage land on their tab and stay until it reads them", () => {
+  for (const [tab, target, from] of [
+    ["chat", "chat-canvas-network", null],
+    ["library", "library-storage", "data"],
+    ["general", "general-hub", "data"],
+  ] as const) {
+    reset();
+    if (from) store.getState().openDialog(from);
+    store.getState().openDialog(tab, { scrollTarget: target });
+    assert.equal(store.getState().activeTab, tab);
+    assert.equal(store.getState().scrollTarget, target);
+    store.getState().setActiveTab(from ?? "about");
+    assert.equal(store.getState().scrollTarget, null);
+  }
+});
+
+test("a deep link can provide a stable focus fallback", () => {
+  reset();
+  const fallback = {} as HTMLElement;
+  store.getState().openDialog("chat", {
+    scrollTarget: "chat-canvas-network",
+    focusFallback: fallback,
+  });
+  assert.equal(store.getState().openerFallback, fallback);
+});
+
+test("repeated opens preserve the external focus targets", () => {
+  reset();
+  const opener = {} as HTMLElement;
+  const fallback = {} as HTMLElement;
+  store.setState({ open: true, opener, openerFallback: fallback });
+
+  const repeatOpens = [
+    () => store.getState().openDialog("keyboard-shortcuts"),
+    () => store.getState().openArchivedChats(),
+    () => store.getState().openArchivedMedia("images"),
+  ];
+  for (const repeatOpen of repeatOpens) {
+    repeatOpen();
+    assert.equal(store.getState().opener, opener);
+    assert.equal(store.getState().openerFallback, fallback);
+  }
 });

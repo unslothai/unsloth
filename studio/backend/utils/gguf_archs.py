@@ -18,12 +18,9 @@ from __future__ import annotations
 
 from typing import Optional
 
-# ``general.architecture`` values naming a speech or neural-codec checkpoint that no Studio
-# runtime can decode: llama.cpp has no CSM decoder (still an unmerged upstream PR) and no
-# media backend reads one either. Published CSM GGUFs do not agree on a spelling, so all four
-# on the Hub today are listed: ggml-org "llama-csm", cartesia "csm", cstr "csm-tts", and a
-# bundle's Mimi vocoder half "mimi". Named once so the chat gate, the listing classifier and
-# the media preflight cannot drift apart.
+# ``general.architecture`` values no Unsloth runtime can decode (llama.cpp has no CSM decoder).
+# Published CSM GGUFs disagree on spelling, so all four on the Hub are listed. Named once so the
+# chat gate, the listing classifier and the media preflight cannot drift apart.
 SPEECH_GGUF_ARCHS = frozenset({"llama-csm", "csm", "csm-tts", "mimi"})
 
 # The Mimi vocoder in ggml-org/sesame-csm-1b-GGUF puts a whole SENTENCE in general.architecture
@@ -43,3 +40,13 @@ def is_speech_gguf_architecture(architecture: Optional[str]) -> bool:
     if normalized in SPEECH_GGUF_ARCHS:
         return True
     return any(marker in normalized for marker in _VOCODER_MARKERS)
+
+
+# ``general.architecture`` of every GGUF audio.cpp writes. Only audiocpp_server reads these (speech,
+# music, transcription); llama.cpp has no such architecture.
+AUDIO_CPP_GGUF_ARCHITECTURE = "audiocpp"
+
+
+def is_audio_cpp_gguf_architecture(architecture: Optional[str]) -> bool:
+    """Whether ``general.architecture`` names a GGUF only audio.cpp runs. Case- and space-insensitive."""
+    return bool(architecture) and architecture.strip().lower() == AUDIO_CPP_GGUF_ARCHITECTURE

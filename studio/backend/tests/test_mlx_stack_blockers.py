@@ -290,9 +290,9 @@ def test_a_malformed_installed_version_is_bounded_too(monkeypatch):
 # it can name a package the install has since put there.
 def _fake_hardware(monkeypatch, calls: list[str]):
     """Stand the real hardware module's re-detection down, keeping the module identity."""
-    from contextlib import nullcontext
-
     from utils.hardware import hardware as hw
+
+    from contextlib import nullcontext
 
     monkeypatch.setattr(hw, "detect_hardware", lambda: calls.append("detect"))
     monkeypatch.setattr(hw, "owning_detection_epoch", lambda epoch: nullcontext())
@@ -382,3 +382,10 @@ def test_uv_missing_never_marks_the_environment(monkeypatch):
     monkeypatch.setattr(mr, "_transformers_constraint_args", lambda: ([], None))
     assert mr.attempt_mlx_repair() is False
     assert mr._environment_mutated is False
+
+
+def test_a_missing_grammar_engine_names_the_package_instead_of_ignoring_the_schema(monkeypatch):
+    from core.inference import grammar_constraint as gc
+    monkeypatch.setattr(gc, "LLGUIDANCE_AVAILABLE", False)
+    with pytest.raises(gc.ResponseFormatError, match = "llguidance"):
+        gc.constraint_spec_from_response_format({"type": "json_object"})

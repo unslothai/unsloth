@@ -16,7 +16,7 @@ import { markdownBlockFallback } from "./markdown-block-fallback";
  * the app happens to have at that moment. A rejected lazy import rethrows during
  * render, and until this boundary existed the nearest catcher was TanStack
  * Router's `CatchBoundaryImpl`: one chunk that would not load replaced the whole
- * of Studio with "Something went wrong!", unmounted the assistant-ui runtime
+ * of Unsloth with "Something went wrong!", unmounted the assistant-ui runtime
  * with it, and left the reply's own stream with nothing consuming it. The reply
  * that was already on screen went too.
  *
@@ -127,7 +127,7 @@ export function MarkdownBlockFallbackView({ content }: { content: string }) {
   const fallback = markdownBlockFallback(content);
   if (fallback.fenced) {
     return (
-      <div className="my-4 w-full overflow-x-auto rounded-xl border border-border bg-sidebar p-2">
+      <div className="my-4 w-full overflow-x-auto scroll-rounded rounded-xl border border-border bg-sidebar p-2">
         {fallback.language && (
           <div className="flex h-8 items-center text-muted-foreground text-xs">
             <span className="ml-1 font-mono lowercase">
@@ -135,7 +135,7 @@ export function MarkdownBlockFallbackView({ content }: { content: string }) {
             </span>
           </div>
         )}
-        <pre className="overflow-x-auto rounded-md border border-border bg-background p-4 text-sm">
+        <pre className="overflow-x-auto scroll-rounded rounded-md border border-border bg-background p-4 text-sm">
           <code>{fallback.text}</code>
         </pre>
       </div>
