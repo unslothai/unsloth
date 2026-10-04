@@ -60,7 +60,6 @@ async function copyWithToast(copy: Promise<boolean>, done: string, failed: strin
   else toast.error(failed);
 }
 
-/** Whether the backend runs on this machine, so its file manager and apps are the user's. */
 function backendIsLocal(): boolean {
   if (isTauri) return true;
   try {

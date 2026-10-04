@@ -35,8 +35,7 @@ type LoadState =
   | { status: "error"; message: string; botCheck: boolean; resubmit?: boolean }
   | { status: "ready"; page: BrowserPage };
 
-// Form submissions sent once, and those the user chose to send again: going back to a form's
-// result whose response is gone asks rather than repeating what it did.
+// Posted entries: going back to one whose response is gone asks rather than resubmitting.
 const sentPosts = new WeakSet<BrowserEntry>();
 const resubmits = new WeakSet<BrowserEntry>();
 
@@ -48,7 +47,6 @@ function sameOrigin(url: string, origin: string): boolean {
   }
 }
 
-/** The page's favicon, unless it points at Studio. */
 function safeFavicon(url: string | null): string | null {
   if (!url) return null;
   if (/^data:image\//i.test(url)) return url;
@@ -61,7 +59,6 @@ function safeFavicon(url: string | null): string | null {
   }
 }
 
-/** Messages from a tab's page. `origin` is the site the page was loaded from, null until loaded. */
 function useFrameMessages(tabId: string, origin: string | null) {
   const t = useT();
   return useCallback(
@@ -91,7 +88,6 @@ function useFrameMessages(tabId: string, origin: string | null) {
           if (favicon && entry) {
             void proxiedFavicon(favicon).then((icon) => {
               const now = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId);
-              // Skip if the tab has moved on to another page.
               if (icon && now && currentEntry(now) === entry) useBrowserStore.getState().updateTab(tabId, { favicon: icon });
             });
           }
@@ -149,9 +145,7 @@ function PageError({
 }: {
   url: string;
   message: string;
-  /** The site refused a non-browser; a retry won't help. */
   botCheck?: boolean;
-  /** A form's result: a retry sends the form again. */
   resubmit?: boolean;
   onRetry: () => void;
 }) {
@@ -185,7 +179,6 @@ function PageError({
       {message ? (
         <p className="break-all rounded-lg bg-muted/60 px-3 py-2 font-mono text-xs text-muted-foreground">{message}</p>
       ) : null}
-      {/* A bot check needs a real browser; a retry rarely helps. */}
       <div className="mt-1 flex gap-2">
         <Button type="button" variant={botCheck ? "ghost" : "outline"} size="sm" onClick={onRetry}>
           {t("browser.error.retry")}
@@ -207,7 +200,6 @@ function WebPage({
 }) {
   const { url, method, body } = entry;
   const { reloadKey } = tab;
-  // Keyed per load; starts from the cache on back and forward.
   const [state, setState] = useState<LoadState>(() => {
     const page = cachedPage(entry);
     if (page) return { status: "ready", page };

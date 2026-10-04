@@ -51,7 +51,6 @@ function addDays(day: number, days: number): number {
   return date.getTime();
 }
 
-/** Items grouped under Today, Yesterday or their date, newest first. */
 function useDayGroups<Item>(items: Item[], timeOf: (item: Item) => number) {
   const t = useT();
   const locale = useLocale();
@@ -237,7 +236,6 @@ function rangeBounds(range: HistoryRange, dates: DateRange | undefined): { since
   return { since: 0, until: Infinity };
 }
 
-/** The site's favicon through the guarded proxy, fetched once the row is on screen. */
 function HistoryIcon({ url }: { url: string }) {
   const ref = useRef<HTMLSpanElement>(null);
   const [icon, setIcon] = useState<string | null>(null);
@@ -408,7 +406,6 @@ function HistoryPage({ tabId }: { tabId: string }) {
   const [selection, setSelection] = useState<ReadonlySet<string>>(() => new Set());
   const [clearOpen, setClearOpen] = useState(false);
   const needle = query.trim().toLowerCase();
-  // A page of rows at a time; history holds 1000.
   const [limit, setLimit] = useState(HISTORY_PAGE_ROWS);
   const { groups, more } = useMemo(() => {
     const { since, until } = rangeBounds(range, dates);
@@ -436,12 +433,10 @@ function HistoryPage({ tabId }: { tabId: string }) {
   const filterOption = (label: string, checked: boolean, onSelect: () => void) => (
     <DropdownMenuItem key={label} role="menuitemradio" aria-checked={checked} onSelect={onSelect}>
       <span className="flex-1">{label}</span>
-      {/* Always rendered so the menu width does not change when ticked. */}
       <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className={cn("ml-2 size-4", !checked && "invisible")} />
     </DropdownMenuItem>
   );
   const timeFormat = useMemo(() => new Intl.DateTimeFormat(locale, { timeStyle: "short" }), [locale]);
-  // Drop selected rows that are gone, e.g. removed from their own menu.
   const selected = useMemo(() => {
     const ids = new Set(history.map((item) => item.id));
     return new Set([...selection].filter((id) => ids.has(id)));

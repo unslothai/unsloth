@@ -85,7 +85,6 @@ function suggestedSites(history: HistoryItem[], hidden: readonly string[]): Site
     .slice(0, SUGGESTED_COUNT);
 }
 
-/** The latest visit to each page, newest first. */
 function recentPages(history: HistoryItem[]): HistoryItem[] {
   const seen = new Set<string>();
   return history.filter((item) => !seen.has(item.url) && seen.add(item.url));
@@ -130,7 +129,6 @@ function SiteIcon({ site }: { site: Site }) {
 
 const MENU_ICON = "size-icon";
 
-/** A suggested site: opens on click, with its other ways to open and a way off the list. */
 function SuggestedSite({ site, tabId }: { site: Site; tabId: string }) {
   const t = useT();
   const { navigate, openUrl } = useBrowserStore.getState();
@@ -253,7 +251,6 @@ function PageButton({
   );
 }
 
-/** A new tab: tools, suggested sites and recent pages. */
 export function NewTabPage({ tabId }: { tabId: string }) {
   const t = useT();
   const locale = useLocale();

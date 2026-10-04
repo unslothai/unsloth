@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/** A part of a document the user marked in the browser, and what they asked for there. */
 export type DocumentAnnotation = { quote: string; request: string };
 
 /** A file's annotations, or a web page's: `file` is then the page's title and `url` its address. */
@@ -58,7 +57,6 @@ export function isAnnotationsContent(text: string | undefined): boolean {
   return text?.startsWith(`<${TAG} file="`) === true;
 }
 
-/** A stored message's annotations, or null when the text is not one. */
 export function parseAnnotationsContent(
   text: string | undefined,
 ): DocumentAnnotations | null {

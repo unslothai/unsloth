@@ -19,7 +19,6 @@ const ADDRESS_TIMEOUT: Duration = Duration::from_secs(10);
 
 static ADDRESS: OnceLock<Result<SocketAddr, String>> = OnceLock::new();
 
-/// The proxy's address, started on first use.
 pub fn address() -> Result<SocketAddr, String> {
     ADDRESS
         .get_or_init(|| {
@@ -50,7 +49,6 @@ pub fn address() -> Result<SocketAddr, String> {
 struct Request {
     host: String,
     port: u16,
-    /// The request to send upstream (plain http); None for a CONNECT tunnel.
     forward: Option<String>,
 }
 
@@ -60,7 +58,6 @@ enum Refusal {
     Unreachable,
 }
 
-/// Parse a proxy request head: `CONNECT host:port` or an absolute-form `http://` request.
 fn parse(head: &str) -> Option<Request> {
     let mut lines = head.split("\r\n");
     let mut parts = lines.next()?.split_ascii_whitespace();
@@ -141,7 +138,6 @@ async fn connect_within(host: &str, port: u16) -> Result<TcpStream, Refusal> {
     Err(Refusal::Unreachable)
 }
 
-/// The request head (through the blank line) and any bytes read past it.
 async fn read_head(client: &mut TcpStream) -> Option<(String, Vec<u8>)> {
     let mut buffer = Vec::new();
     let mut chunk = [0u8; 4096];

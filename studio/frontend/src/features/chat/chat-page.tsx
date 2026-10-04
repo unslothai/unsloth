@@ -347,8 +347,7 @@ function messageHasImage(message: MessageRecord): boolean {
   return false;
 }
 
-/** Send browser annotations as their own message via the composer's form (same checks as a typed
- *  send); a refused send or an existing draft leaves them staged. */
+/** Send browser annotations as their own message via the composer (same checks); a refused send or a draft leaves them staged. */
 function sendDocumentAnnotations(
   aui: ReturnType<typeof useAui>,
   annotations: DocumentAnnotations,
@@ -377,8 +376,7 @@ function sendDocumentAnnotations(
           ?.focus();
         return true;
       }
-      // Two frames, so the composer has rendered the attachment it now sends. Text or files
-      // added meanwhile are the next message: leave the annotations staged with them.
+      // Two frames, so the composer has rendered the attachment it now sends.
       requestAnimationFrame(() =>
         requestAnimationFrame(() => {
           const now = drafted();
@@ -391,7 +389,6 @@ function sendDocumentAnnotations(
     .catch(() => false);
 }
 
-/** A stored chat's title, kept current as chats are renamed. Undefined for a chat not saved yet. */
 function useStoredChatTitle(threadId: string | null): string | undefined {
   const [title, setTitle] = useState<{ id: string; title: string } | null>(
     null,
@@ -403,7 +400,6 @@ function useStoredChatTitle(threadId: string | null): string | undefined {
       getStoredChatThread(threadId)
         .then((thread) => {
           if (!live || !thread) return;
-          // Same object back when nothing changed, so the chat doesn't re-render.
           setTitle((current) =>
             current?.id === threadId && current.title === thread.title
               ? current
@@ -454,7 +450,6 @@ const SingleContent = memo(function SingleContent({
   const browserOpen = useBrowserStore((state) => state.open);
   const browserOpenSequence = useBrowserStore((state) => state.openSequence);
   const closeBrowser = useBrowserStore((state) => state.closePanel);
-  // Route links and files to the browser panel while it can be shown.
   useEffect(() => {
     if (!chatActive || isMobile) return;
     setBrowserPanelAvailable(true);
@@ -545,7 +540,6 @@ const SingleContent = memo(function SingleContent({
     useBrowserStore((state) => state.chatSide === "right") &&
     showBrowserPanel &&
     !browserFullView;
-  // A ref, so switching panels doesn't re-run the open effects.
   const defaultPanelSizeRef = useRef(ARTIFACT_PANEL_DEFAULT_SIZE);
   useEffect(() => {
     defaultPanelSizeRef.current = showBrowserPanel
@@ -676,7 +670,6 @@ const SingleContent = memo(function SingleContent({
     let width = "";
     const insets = () =>
       root.querySelectorAll<HTMLElement>(":scope > [data-side-panel-inset]");
-    // With the chat on the right they start at the panel's edge instead.
     const apply = () => {
       for (const element of insets()) {
         element.style.setProperty(
@@ -696,7 +689,6 @@ const SingleContent = memo(function SingleContent({
       apply();
     });
     resizeObserver.observe(surface);
-    // The model notice can mount while the panel is open.
     const childObserver = new MutationObserver(apply);
     childObserver.observe(root, { childList: true });
     return () => {
@@ -717,7 +709,6 @@ const SingleContent = memo(function SingleContent({
     seenBrowserLayoutRef.current = browserLayout;
     const panel = artifactPanelRef.current;
     if (!panel || !showBrowserPanel) return;
-    // A frame later, once the panels have registered their new order.
     const frameId = window.requestAnimationFrame(() => {
       panel.resize(
         artifactPanelWidthRef.current ?? defaultPanelSizeRef.current,
@@ -770,7 +761,6 @@ const SingleContent = memo(function SingleContent({
         }
         className={cn(
           "chat-artifact-split relative min-h-0 min-w-0 flex-1 basis-0 overflow-hidden",
-          // The panels place themselves by position, so CSS order is enough to swap sides.
           chatOnRight &&
             "[&>#chat-artifact]:order-1 [&>[data-slot=resizable-handle]]:order-2 [&>#chat-thread]:order-3",
         )}
@@ -792,7 +782,6 @@ const SingleContent = memo(function SingleContent({
                   : "100%"
           }
           className="h-full min-h-0 min-w-0 overflow-hidden"
-          // Unclipped, so the floating chat's shadow shows.
           style={browserFullView ? { overflow: "visible" } : undefined}
         >
           <div
@@ -835,7 +824,6 @@ const SingleContent = memo(function SingleContent({
           onKeyUp={rememberArtifactPanelWidth}
           className={cn(
             "relative z-30 w-5 bg-transparent transition-[width,margin] duration-[260ms] ease-[var(--ease-out-cubic)] hover:bg-transparent hover:shadow-none active:bg-transparent active:shadow-none focus-visible:bg-transparent focus-visible:shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 focus-visible:outline-none",
-            // Its hit area overlaps the side panel more than the chat.
             chatOnRight ? "-ml-4 -mr-1" : "-ml-1 -mr-4",
             (!artifactLayoutActive || browserFullView) &&
               "pointer-events-none -ml-0 -mr-0 w-0",

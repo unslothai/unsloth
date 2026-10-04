@@ -9,7 +9,6 @@ export type { FrameMessage };
 
 let loadCounter = 0;
 
-// The page frame showing each tab, for commands from the panel (find, zoom).
 const frames = new Map<string, HTMLIFrameElement>();
 
 export type FrameCommand =
@@ -19,7 +18,6 @@ export type FrameCommand =
   | { command: "annotateForget"; id: number }
   | { command: "annotateNumbers"; numbers: Array<[number, number]> };
 
-// Who hears a tab's annotate reports: the panel's annotate layer, while it is on.
 const annotateListeners = new Map<string, (event: AnnotateEvent) => void>();
 
 export function onFrameAnnotate(tabId: string, listener: (event: AnnotateEvent) => void): () => void {
@@ -29,12 +27,10 @@ export function onFrameAnnotate(tabId: string, listener: (event: AnnotateEvent) 
   };
 }
 
-/** Where a tab's page sits on screen, for drawing over it; null if the tab shows no page. */
 export function frameRect(tabId: string): DOMRect | null {
   return frames.get(tabId)?.getBoundingClientRect() ?? null;
 }
 
-/** Send a command to a tab's page; false if the tab shows no page. */
 export function sendFrameCommand(tabId: string, command: FrameCommand): boolean {
   const target = frames.get(tabId)?.contentWindow;
   if (!target) return false;
@@ -85,7 +81,6 @@ export function PageFrame({
     onMessageRef.current = onMessage;
     tabIdRef.current = tabId;
   });
-  // One shell per page.
   const [loadId] = useState(() => String(++loadCounter));
   const postedRef = useRef(false);
 
@@ -151,7 +146,6 @@ export function PageFrame({
       referrerPolicy="no-referrer"
       className="size-full border-0 bg-white"
       onLoad={() => {
-        // Post once.
         if (postedRef.current) return;
         postedRef.current = true;
         frameRef.current?.contentWindow?.postMessage(

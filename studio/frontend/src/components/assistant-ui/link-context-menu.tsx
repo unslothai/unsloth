@@ -20,7 +20,6 @@ import {
 } from "react";
 import { sandboxFilePath } from "./sandbox-files";
 
-// The items load with the first right-click.
 const WebLinkMenuContent = lazy(() =>
   import("./link-menu-content").then((module) => ({ default: module.WebLinkMenuContent })),
 );
@@ -53,7 +52,6 @@ function LazyContextMenu({
     const point = replayRef.current;
     if (!live || !point) return;
     replayRef.current = null;
-    // A frame later, once React has committed the menu.
     const frame = requestAnimationFrame(() =>
       triggerRef.current?.dispatchEvent(
         new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, clientX: point.x, clientY: point.y }),
@@ -88,7 +86,6 @@ function LazyContextMenu({
   );
 }
 
-/** Right-click menu for a web link: open it here or outside, copy it, or save what it points at. */
 export function WebLinkContextMenu({
   href,
   children,
@@ -106,18 +103,15 @@ export function WebLinkContextMenu({
   );
 }
 
-/** A file a chat shows: an attachment, or one a tool wrote to the chat's folder. */
 export type ContextFile = {
   name: string;
   contentType?: string;
   load: () => Promise<Blob>;
   /** What a click on it does; opening it in the browser otherwise. */
   open?: () => void;
-  /** Set for a file in the chat's folder, which has a path on disk. */
   sandbox?: { sessionId: string; file: string };
 };
 
-/** Fetch a file from the chat's folder. */
 export function loadSandboxFile(sessionId: string, file: string): Promise<Blob> {
   return authFetch(sandboxFilePath(sessionId, file)).then((response) => {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -125,7 +119,6 @@ export function loadSandboxFile(sessionId: string, file: string): Promise<Blob> 
   });
 }
 
-/** Right-click menu for a file link, as a desktop file manager has it. */
 export function FileContextMenu({
   file,
   children,

@@ -59,12 +59,10 @@ import {
 } from "./chat-row-menu";
 import { OpenChatFolderItem } from "./open-chat-folder-item";
 
-// The Library's menu surface, so the chat's menu reads the same wherever it is opened.
 const MENU = "library-actions-menu";
 const ICON = "size-icon";
 const LABEL = "px-3 pb-1 pt-2 font-normal text-muted-foreground";
-/** The header's "…" buttons, saved chat's and temporary chat's alike. Open reads from
- *  aria-expanded: the tooltip around the trigger writes its own data-state over the menu's. */
+/** The header's "…" buttons. Open reads aria-expanded: the trigger's tooltip overwrites data-state. */
 export const CHAT_MENU_TRIGGER =
   "flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring aria-expanded:bg-nav-surface-hover aria-expanded:text-black dark:hover:text-white dark:aria-expanded:text-white";
 export const CHAT_MENU = MENU;
@@ -86,7 +84,6 @@ function Item({
   disabled,
 }: {
   icon?: IconSvgElement;
-  /** An icon drawn some other way, in place of `icon`. */
   glyph?: ReactNode;
   children: ReactNode;
   onSelect: () => void;
@@ -111,7 +108,6 @@ function Item({
   );
 }
 
-/** The temporary chat toggle, where a new or temporary chat has nothing saved for a menu to act on. */
 function TemporaryChatButton({
   temporary,
   onToggle,
@@ -151,7 +147,6 @@ function TemporaryChatButton({
   );
 }
 
-/** The rows of a saved chat's "…" menu. */
 function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
   const t = useT();
   const favorite = useChatFavoritesStore((state) =>
@@ -343,10 +338,7 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
   );
 }
 
-/** The chat header's control beside the browser's: on a saved chat, a "…" menu with what the
- *  Library and the sidebar offer for that chat; on a new or temporary chat, the temporary chat
- *  toggle (a temporary chat's own "…" menu sits left of it). Turning a saved chat temporary is not
- *  offered: it would quietly stop saving a chat the user kept, and a new one is a click away. */
+/** A saved chat's "…" menu, or the temporary toggle on a new chat. Turning a saved chat temporary is not offered: it would quietly stop saving a chat the user kept. */
 export function ChatHeaderMenu({
   temporary,
   onToggleTemporary,

@@ -157,7 +157,6 @@ function stepZoom(zoom: number, direction: 1 | -1): number {
 const PILL =
   "border border-border/80 bg-card dark:border-transparent dark:bg-accent";
 
-// A web page's toolbar buttons: dark while they do something, faded while they can't.
 const TOOLBAR_BUTTON =
   "size-8 text-foreground disabled:hover:text-foreground disabled:opacity-30";
 
@@ -244,7 +243,6 @@ function KindIcon({
   name: string;
   contentType?: string;
   className?: string;
-  /** In the text's own colour, as the file's toolbar shows it; only its tab is coloured. */
   mono?: boolean;
 }) {
   const kind = attachmentFileKind(name, contentType);
@@ -437,7 +435,6 @@ function TabStrip({
   );
 }
 
-// The last focusAddress request an address bar acted on.
 let handledFocusSequence = 0;
 
 function AddressBar({ tab }: { tab: BrowserTab | undefined }) {
@@ -569,7 +566,6 @@ function WebActions({ tab }: { tab: BrowserTab | undefined }) {
   );
 }
 
-/** Whether the tab shows a web page (not a document) that page commands reach. */
 function showsWebPage(tab: BrowserTab | undefined): boolean {
   return Boolean(
     tab &&
@@ -735,13 +731,11 @@ function PanelMenu({ tab }: { tab: BrowserTab | undefined }) {
   );
 }
 
-/** Whether the tab shows a native view, whose own history Back and Forward use first. */
 function nativePage(tab: BrowserTab | undefined): boolean {
   return Boolean(tab && currentEntry(tab).kind === "web" && hasNativeView(tab.id));
 }
 
-/** Ask about the page: mark parts of it and comment, as with a file's Request edits. Pages in a
- *  native view (the desktop app) can't be drawn over, so they go without. */
+/** Ask about the page, as with a file's Request edits. Native views can't be drawn over. */
 function AnnotatePageButton({ tab }: { tab: BrowserTab | undefined }) {
   const t = useT();
   const canAnnotate = useBrowserStore((state) => state.sendAnnotations !== null);
@@ -759,7 +753,6 @@ function AnnotatePageButton({ tab }: { tab: BrowserTab | undefined }) {
           "border-transparent bg-primary/12 text-primary hover:bg-primary/18 hover:text-primary dark:bg-primary/20 dark:hover:bg-primary/25",
       )}
     >
-      {/* Its dashed frame reads as the icon; nudged so that frame sits centred. */}
       <HugeiconsIcon
         icon={CursorRectangleSelection02Icon}
         strokeWidth={1.75}
@@ -849,7 +842,6 @@ function FileToolbar({
   const download = tabDownload(tab);
   const blob = download?.blob;
   const kind = textFileKind(entry.name, entry.contentType, entry.plainText);
-  // HTML and Markdown render, so they switch to their source as the canvas does.
   const hasSource = kind === "html" || kind === "markdown";
   const showsSource = kind === "code" || kind === "text" || (hasSource && view.mode === "source");
   const htmlPreview = kind === "html" && view.mode === "preview";
@@ -1116,7 +1108,6 @@ function FileToolbar({
           <CircleButton
             label={t("browser.file.runAgain")}
             onClick={runAgain}
-            // In a narrow pane these fold into the file menu, keeping the file's name in view.
             className="hidden size-9 @[40rem]:flex"
           >
             <RefreshGlyph strokeWidth={1.75} className="size-4" />
@@ -1323,8 +1314,7 @@ function liveTabIds(mounted: readonly string[], tabs: BrowserTab[], activeTabId:
   return live;
 }
 
-/** The chat's in-app browser: tabs of web pages and opened files. Memoized so chat renders skip it. */
-/** `active`: whether the chat holding it is shown; it stays mounted on other pages. */
+/** The chat's in-app browser, memoized so chat renders skip it. `active`: its chat is shown. */
 export const BrowserPanel = memo(function BrowserPanel({ active = true }: { active?: boolean }) {
   const t = useT();
   const tabs = useBrowserStore((state) => state.tabs);
@@ -1374,7 +1364,6 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
         <div
           className={cn(
             "browser-chrome flex shrink-0 items-center gap-2 px-2.5 py-2",
-            // A file's controls float over it with nothing behind them, so the page scrolls under.
             fileTab &&
               "browser-file-toolbar @container pointer-events-none absolute inset-x-0 top-0 z-20 *:pointer-events-auto",
           )}

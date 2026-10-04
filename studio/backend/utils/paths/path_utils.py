@@ -460,7 +460,6 @@ DEFAULT_APP_OPEN_EXTENSIONS = frozenset(
 )
 
 
-# How long staged "Open in default app" copies live.
 _OPEN_STAGING_MAX_AGE_S = 24 * 60 * 60
 
 

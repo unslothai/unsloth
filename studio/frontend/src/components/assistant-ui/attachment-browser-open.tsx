@@ -28,14 +28,12 @@ type Opened = { blob: Blob; plainText?: boolean };
 // Documents and text open as tabs; media keeps the lightbox.
 const OPENS_IN_BROWSER: ReadonlySet<AttachmentSource["kind"]> = new Set(["document", "text"]);
 
-// What the attachment holds locally; null when only the stored original can be opened.
 function localLoader(source: AttachmentSource): (() => Promise<Opened>) | null {
   const { file, text } = source;
   // Copied: the tab can outlive the composer's File.
   if (file) return () => file.arrayBuffer().then((data) => ({ blob: new Blob([data], { type: file.type }) }));
   switch (source.kind) {
     case "document":
-      // Text pulled out of a document that was sent without its original.
       return !source.hasOriginal && text !== undefined
         ? () => Promise.resolve({ blob: new Blob([attachmentBodyText(text)], { type: "text/plain" }), plainText: true })
         : null;
@@ -102,7 +100,6 @@ export const AttachmentBrowserOpenProvider: FC<PropsWithChildren<{ source: Attac
   if (load) {
     return <OpenerProvider open={opener(source, attachmentId, load)}>{children}</OpenerProvider>;
   }
-  // Only sent documents have a stored original to fetch.
   if (source.kind === "document") {
     return (
       <SentOriginalProvider source={source} attachmentId={attachmentId}>
@@ -113,7 +110,6 @@ export const AttachmentBrowserOpenProvider: FC<PropsWithChildren<{ source: Attac
   return children;
 };
 
-// The attachment's bytes as held here: the File, text, or its own image/media URL.
 function blobLoader(source: AttachmentSource): (() => Promise<Blob>) | null {
   const { file, src } = source;
   if (file) return () => Promise.resolve(file);
@@ -144,8 +140,7 @@ const AttachmentMenu: FC<MenuProps & { load: () => Promise<Blob> }> = ({
   onContextMenu,
   ...rest
 }) => {
-  // Open does what clicking the chip does, so the open-in-browser setting and a missing panel
-  // apply; the menu's own browser item stays the explicit choice.
+  // Open clicks the chip, so the open-in-browser setting and a missing panel apply.
   const chip = useRef<HTMLElement | null>(null);
   return (
     <FileContextMenu
@@ -167,7 +162,6 @@ const SentOriginalMenu: FC<MenuProps> = (props) => {
   return <AttachmentMenu {...props} load={() => fetchChatAttachmentBlob(messageId, attachmentId)} />;
 };
 
-/** Right-click menu for an attachment chip; the chip's own click (a dialog trigger) passes through. */
 export const AttachmentFileContextMenu: FC<MenuProps> = ({ source, children, ...rest }) => {
   const load = blobLoader(source);
   if (load) {
@@ -177,7 +171,6 @@ export const AttachmentFileContextMenu: FC<MenuProps> = ({ source, children, ...
       </AttachmentMenu>
     );
   }
-  // Only sent documents have a stored original to fetch.
   if (source.kind === "document" && source.hasOriginal) {
     return (
       <SentOriginalMenu source={source} {...rest}>

@@ -15,7 +15,6 @@ export { pinBrowserPage } from "./resize-pin";
 export { useBrowserPrefsStore } from "./prefs-store";
 export { type OpenFileInput, useBrowserStore } from "./store";
 
-// Set by the chat page while the panel can be shown (not on mobile).
 let panelAvailable = false;
 
 export function setBrowserPanelAvailable(available: boolean): void {
@@ -40,7 +39,6 @@ export function openUrlInBrowserPanel(url: string): boolean {
   return true;
 }
 
-/** Whether opened files go to the browser panel instead of the preview dialog. */
 export function filesOpenInBrowser(): boolean {
   return panelAvailable && useBrowserPrefsStore.getState().openFilesInBrowser;
 }

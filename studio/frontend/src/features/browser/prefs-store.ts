@@ -6,12 +6,9 @@ import { persist } from "zustand/middleware";
 import type { SearchEngineId } from "./address";
 
 interface BrowserPrefsState {
-  /** Open chat links in the browser panel instead of the default browser. */
   openLinksInBrowser: boolean;
-  /** Open attached documents in the browser panel instead of the preview dialog. */
   openFilesInBrowser: boolean;
   searchEngine: SearchEngineId;
-  /** Show the query and fragment in the address bar, not just the site and path. */
   showFullUrl: boolean;
   /** Sites taken off the new tab's Suggested, by host. */
   hiddenSuggestions: string[];

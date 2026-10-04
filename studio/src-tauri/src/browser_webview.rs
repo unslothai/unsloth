@@ -23,7 +23,6 @@ const LABEL_PREFIX: &str = "unsloth-browser-";
 const EVENT: &str = "unsloth-browser";
 /// The app's own webview, the only caller these commands answer.
 const MAIN_WEBVIEW: &str = "main";
-/// How often the shown tab's address is polled, for pushState.
 const URL_POLL: Duration = Duration::from_millis(800);
 /// macOS 14+ data store for pages (fixed, so it persists).
 #[cfg(target_os = "macos")]
@@ -53,7 +52,6 @@ struct ViewsState {
     urls: HashMap<String, String>,
     /// Download paths by URL, oldest first (macOS doesn't report it back; one URL can download twice).
     downloads: HashMap<String, Vec<PathBuf>>,
-    /// When each tab's recent downloads started, for `download_allowed`.
     download_starts: HashMap<String, VecDeque<Instant>>,
     polling: bool,
 }
@@ -87,7 +85,6 @@ enum BrowserEvent {
         tab_id: String,
         can_go_back: bool,
         can_go_forward: bool,
-        /// The page's icon URL; the panel fetches it through the backend.
         icon: Option<String>,
     },
     NewTab {
@@ -198,8 +195,7 @@ fn ipv6_is_private(ip: Ipv6Addr) -> bool {
         || (first & 0xfff0) == 0x3ff0
 }
 
-/// Longest page address sent to the panel, as the proxied frame caps its messages. A page can
-/// pushState a far longer one, and each would cross IPC and land in the tab.
+/// Cap on page addresses sent to the panel, as the proxied frame caps its messages.
 const MAX_URL_CHARS: usize = 8192;
 
 fn reportable(url: &str) -> bool {
@@ -207,7 +203,6 @@ fn reportable(url: &str) -> bool {
 }
 
 fn is_external_handoff(url: &Url) -> bool {
-    // What the opener capability allows.
     url.scheme() == "mailto"
 }
 
@@ -399,7 +394,6 @@ fn refresh_history<R: Runtime>(webview: &Webview<R>) {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     let page = webview.clone();
     let _ = webview.eval_with_callback(STATE_SCRIPT, move |result| {
-        // The script's value as JSON: a string holding our JSON.
         let Ok(inner) = serde_json::from_str::<String>(&result) else {
             return;
         };
@@ -413,8 +407,7 @@ fn refresh_history<R: Runtime>(webview: &Webview<R>) {
             .filter(|icon| matches!(icon.scheme(), "http" | "https") && navigation_allowed(icon))
             .filter(|icon| icon.as_str().len() <= 2048)
             .map(String::from);
-        // WebKit before Safari 26.2 and WebKitGTK have no Navigation API, so Forward would never
-        // enable: ask the engine instead.
+        // WebKit before Safari 26.2 and WebKitGTK lack the Navigation API: ask the engine.
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         {
             let (app, tab_id) = (app.clone(), tab_id.clone());
@@ -468,8 +461,7 @@ fn bounded_title(title: String) -> String {
     }
 }
 
-// Pages can start downloads without a click: a few at once and a few a minute, so one can't fill
-// the disk in the background.
+// Pages can download without a click: cap concurrent and per-minute starts to protect the disk.
 const MAX_DOWNLOADS_IN_FLIGHT: usize = 3;
 const DOWNLOADS_PER_WINDOW: usize = 5;
 const DOWNLOAD_WINDOW: Duration = Duration::from_secs(60);
@@ -696,7 +688,6 @@ fn create_view<R: Runtime>(
     let download_tab = tab.clone();
     let downloads_dir = app.path().download_dir().ok();
 
-    // On macOS the first page waits for the content rules (see `content_rules`).
     #[cfg(target_os = "macos")]
     let (initial, deferred) = (Url::parse("about:blank").unwrap(), Some(url));
     #[cfg(not(target_os = "macos"))]
@@ -720,7 +711,6 @@ fn create_view<R: Runtime>(
         })
         .on_page_load(move |webview, payload| {
             let app = webview.app_handle();
-            // The blank page a view starts on before its first address.
             if payload.url().scheme() == "about" || !reportable(payload.url().as_str()) {
                 return;
             }
@@ -913,7 +903,6 @@ fn create_view<R: Runtime>(
     Ok(webview)
 }
 
-/// Load `url` once the page is proxied and private hosts are blocked.
 #[cfg(target_os = "macos")]
 fn load_when_protected<R: Runtime>(webview: &Webview<R>, url: Url) {
     // Off main thread: `protect` can finish inside `with_webview`, holding `navigate`'s lock.
@@ -997,7 +986,6 @@ fn load_when_protected<R: Runtime>(webview: &Webview<R>, url: Url) {
     let _ = webview.navigate(url);
 }
 
-/// The panel's rect in logical pixels: CSS pixels times the main webview's zoom.
 fn logical_rect<R: Runtime>(
     caller: &Webview<R>,
     bounds: &ViewBounds,
@@ -1225,7 +1213,6 @@ pub async fn browser_view_clear_data<R: Runtime>(
     let hidden = live.is_none();
     let page = match live {
         Some(page) => page,
-        // No page to clear through: a hidden one.
         None => {
             let builder = with_page_profile(
                 WebviewBuilder::new(
@@ -1275,7 +1262,6 @@ async fn clear_profile<R: Runtime>(page: &Webview<R>) -> Result<(), String> {
             _ => Err("Clearing browsing data didn't finish".into()),
         }
     }
-    // No native pages on Linux; this only clears the hidden one's profile.
     #[cfg(not(any(target_os = "macos", windows)))]
     {
         page.clear_all_browsing_data()

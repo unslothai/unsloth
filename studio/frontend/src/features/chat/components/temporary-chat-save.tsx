@@ -134,14 +134,12 @@ async function copyMarkdown(markdown: string): Promise<void> {
   else toast.error("Could not copy this chat.");
 }
 
-/** The header's "…" menu left of the temporary toggle, shown only in a temporary chat with messages:
- *  what can be done with one now. The rest of a saved chat's menu needs it saved, so it is left out. */
+/** The header's "…" menu in a temporary chat with messages: only what works without saving it. */
 export function SaveTemporaryChatMenu({
   className,
   onDiscard,
 }: {
   className?: string;
-  /** Leaves the temporary chat for a new one, which discards it. */
   onDiscard: () => void;
 }) {
   const target = useSaveTarget((s) => s.target);
@@ -151,8 +149,7 @@ export function SaveTemporaryChatMenu({
   const checkboxId = useId();
 
   if (!target) return null;
-  // Only what can be done now is offered. Saving waits for a finished reply, and for queued
-  // prompts, whose temporary tag would still discard them.
+  // Saving waits for a finished reply and for queued prompts, whose temporary tag would discard them.
   const canSave =
     target.hasMessages && !target.running && !target.queued && !saving;
   const label = "Save chat to history";
@@ -175,7 +172,6 @@ export function SaveTemporaryChatMenu({
 
   return (
     <>
-      {/* Nothing to offer until the chat has a message. */}
       {target.hasMessages ? (
         <DropdownMenu>
           <Tooltip>

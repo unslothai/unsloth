@@ -53,7 +53,6 @@ export interface MediaViewerActions {
   copy?: { label: string; onClick: () => void };
 }
 
-/** Moving through the pictures around this one, e.g. the other images in a message. */
 export interface MediaViewerGallery {
   onPrevious?: () => void;
   onNext?: () => void;
@@ -74,7 +73,6 @@ function percent(scale: number, locale: string): string {
   );
 }
 
-// The lightbox's controls float over the blurred page, raised a little off it, as ChatGPT has them.
 const FLOATING =
   "bg-card shadow-[0_2px_10px_-2px_rgba(0,0,0,0.14)] hover:bg-[color-mix(in_oklab,var(--card),var(--foreground)_5%)] aria-expanded:bg-[color-mix(in_oklab,var(--card),var(--foreground)_5%)] dark:bg-[color-mix(in_oklab,var(--card),var(--foreground)_6%)] dark:shadow-none dark:hover:bg-[color-mix(in_oklab,var(--card),var(--foreground)_12%)] dark:aria-expanded:bg-[color-mix(in_oklab,var(--card),var(--foreground)_12%)]";
 
@@ -134,7 +132,6 @@ export function ScaleMenu({
   );
 }
 
-/** The lightbox keeps its picture clear of the controls at fit; zoomed in, it may pass under them. */
 function lightboxInset(): MediaInset {
   if (typeof window === "undefined") return { top: 0, right: 0, bottom: 0, left: 0 };
   const root = getComputedStyle(document.documentElement);
@@ -203,7 +200,6 @@ export function MediaViewer({
   /** "lightbox": the picture alone over the blurred page, its controls floating above it. */
   variant?: "card" | "lightbox";
   gallery?: MediaViewerGallery;
-  /** Changes when the gallery shows another picture, which then opens at its fit. */
   itemKey?: string;
   children: ReactNode;
 }) {
@@ -410,7 +406,6 @@ export function MediaViewer({
             </div>
             {gallery && (gallery.onPrevious || gallery.onNext) ? (
               <>
-                {/* Only toward a picture: the end of the gallery has no arrow. */}
                 {gallery.onPrevious ? (
                   <GalleryArrow
                     label={t("imageViewer.previous")}

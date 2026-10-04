@@ -91,7 +91,6 @@ const Zoomed: FC<{ scale: number; children: ReactNode }> = ({ scale, children })
 
 type ImageActions = Omit<MediaViewerActions, "primary" | "onDownload">;
 
-/** An image in the same message or composer as the one opened, which the viewer can move to. */
 type GalleryImage = {
   id: string;
   name: string;
@@ -160,10 +159,7 @@ const copyImage = (image: GalleryImage, t: ReturnType<typeof useT>): void => {
     );
 };
 
-/**
- * The full-window viewer for an image attachment, with arrows to the other images beside it.
- * Opened from one tile, it keeps that tile's dialog and shows whichever image is current.
- */
+ /** The full-window viewer for an image attachment, with arrows to the images beside it. */
 const ImageGalleryDialog: FC<
   PropsWithChildren<{
     owner: GalleryImage;
@@ -228,7 +224,6 @@ const ImageGalleryDialog: FC<
   );
 };
 
-/** Opened on its own tile's image, each time. */
 const useGalleryState = (ownerId: string) => {
   const [open, setOpen] = useState(false);
   const [shownId, setShownId] = useState(ownerId);
@@ -239,14 +234,12 @@ const useGalleryState = (ownerId: string) => {
   return { open, onOpenChange, shownId, onShow: setShownId };
 };
 
-/** The neighbour to show once `id` leaves the gallery, or undefined when it was the only one. */
 const neighbourOf = (images: GalleryImage[], id: string): GalleryImage | undefined => {
   const index = images.findIndex((image) => image.id === id);
   return images[index + 1] ?? images[index - 1];
 };
 
-// A composer image saved to the Library to star it or add it to a project, kept so a second
-// action reuses that copy rather than uploading another.
+// Composer images saved to the Library, so a second star or project action reuses that copy.
 const savedComposerImages = new WeakMap<File, Promise<string>>();
 
 const saveComposerImage = (image: GalleryImage): Promise<string> => {
@@ -264,7 +257,6 @@ const saveComposerImage = (image: GalleryImage): Promise<string> => {
   return saved;
 };
 
-/** An unsent image: the Library's star and projects save a copy there; delete takes it out of the message. */
 const ComposerImageDialog: FC<PropsWithChildren<{ source: AttachmentSource; src: string }>> = ({
   children,
   source,
@@ -287,7 +279,6 @@ const ComposerImageDialog: FC<PropsWithChildren<{ source: AttachmentSource; src:
   );
   const gallery = useGalleryState(attachmentId);
   const shown = images.find((image) => image.id === gallery.shownId) ?? owner;
-  // Re-read on change, so the star shows once a first save lands.
   const [savedIds, setSavedIds] = useState<ReadonlyMap<File, string>>(new Map());
   const savedId = shown.file ? (savedIds.get(shown.file) ?? null) : null;
   const { favorite } = useLibraryFavorite(savedId, gallery.open);
@@ -341,7 +332,6 @@ const attachmentItemId = (messageId: string, attachmentId: string): string =>
     (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
   )}:${attachmentId}`;
 
-/** A sent image is a Library item too, so its viewer has the Library's star, projects and delete. */
 const SentImageDialog: FC<PropsWithChildren<{ source: AttachmentSource; src: string }>> = ({
   children,
   source,
@@ -399,8 +389,7 @@ const SentImageDialog: FC<PropsWithChildren<{ source: AttachmentSource; src: str
           const neighbour = neighbourOf(images, image.id);
           if (image.id === attachmentId || !neighbour) gallery.onOpenChange(false);
           else gallery.onShow(neighbour.id);
-          // Removing it from the Library also takes it out of this message. The store loads
-          // lazily, as the chat's other uses of it do.
+          // Removing it from the Library also takes it out of this message.
           import("@/features/library/store")
             .then(({ removeLibraryItem }) => removeLibraryItem(attachmentItemId(messageId, image.id)))
             .catch((error: unknown) =>
@@ -727,7 +716,6 @@ export const AttachmentPreviewDialog: FC<
   PropsWithChildren<{ redactFromReload?: boolean }>
 > = ({ children, redactFromReload = false }) => {
   const source = useAttachmentSource();
-  // Documents open in the chat's browser panel when available.
   return (
     <AttachmentBrowserOpenProvider source={source}>
       <AttachmentPreviewBody source={source} redactFromReload={redactFromReload}>

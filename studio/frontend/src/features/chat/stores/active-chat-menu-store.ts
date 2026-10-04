@@ -6,16 +6,13 @@ import type { SidebarItem } from "../hooks/use-chat-sidebar-items";
 
 type Place = { id: string; name: string };
 
-/** The open chat and what its menu can do to it. The sidebar holds the handlers (its dialogs,
- *  its router, the shortcuts that already act on the open chat), so it publishes them here for
- *  the chat header's menu rather than the header carrying a second copy of each. */
+/** The open chat and its menu's handlers, published by the sidebar so the header's menu shares them. */
 export interface ActiveChatMenu {
   item: SidebarItem;
   pinned: boolean;
   unread: boolean;
   /** Off for a comparison, while generating, or while another fork runs. */
   canFork: boolean;
-  /** Projects and sections to move to, leaving out the one the chat is in. */
   projects: Place[];
   sections: Place[];
   /** Where the chat is now, offered as "Remove from"; null when it is in none. */

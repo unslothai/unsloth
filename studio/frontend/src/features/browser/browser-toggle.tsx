@@ -16,8 +16,7 @@ import { useEffect, useRef, useState } from "react";
 import { EnterFullViewIcon } from "./icons";
 import { useBrowserStore } from "./store";
 
-// Long enough that passing over the button on the way elsewhere doesn't open the menu, and that
-// crossing the gap to the menu doesn't close it.
+// Long enough that passing over the button, or crossing the gap to the menu, doesn't toggle it.
 const HOVER_OPEN_MS = 150;
 const HOVER_CLOSE_MS = 200;
 
@@ -27,9 +26,7 @@ function openNewTab(fullView = false) {
   if (fullView) state.setFullView(true);
 }
 
-/** The chat header's new browser tab button, as ChatGPT has it: a click opens a tab beside the
- *  chat, and hovering offers a tab in full view too. Hidden while the panel is open, which has its
- *  own; its shortcuts still work then. */
+/** The chat header's new tab button: a click opens a tab beside the chat, hovering offers full view. Hidden while the panel is open; its shortcuts still work. */
 export function BrowserToggleButton({ active = true }: { active?: boolean }) {
   const t = useT();
   const open = useBrowserStore((state) => state.open);
@@ -37,8 +34,7 @@ export function BrowserToggleButton({ active = true }: { active?: boolean }) {
   const fullViewShortcut = useShortcutLabel("toggleBrowserFullView");
   const [menuOpen, setMenuOpen] = useState(false);
   const timer = useRef<number | null>(null);
-  // What had focus when hovering opened the menu, given back when it closes without opening a tab
-  // (which focuses its address bar).
+  // Focus given back when the hover menu closes without opening a tab.
   const restore = useRef<HTMLElement | null>(null);
   const openTab = (fullView = false) => {
     clearTimer();
@@ -77,7 +73,6 @@ export function BrowserToggleButton({ active = true }: { active?: boolean }) {
       setMenuOpen(next);
     }, next ? HOVER_OPEN_MS : HOVER_CLOSE_MS);
   };
-  // Inline rather than clearTimer, which is remade each render.
   useEffect(
     () => () => {
       if (timer.current !== null) window.clearTimeout(timer.current);
@@ -126,7 +121,6 @@ export function BrowserToggleButton({ active = true }: { active?: boolean }) {
           restore.current?.focus({ preventScroll: true });
           restore.current = null;
         }}
-        // The chat's other menus' surface and rows.
         className="library-actions-menu w-56"
       >
         <DropdownMenuItem onSelect={() => openTab()}>

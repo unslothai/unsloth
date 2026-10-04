@@ -44,7 +44,6 @@ _MAX_BROWSER_FETCH_BYTES = 50 * 1024 * 1024
 _MAX_BROWSER_HTML_BYTES = 10 * 1024 * 1024
 _FETCH_TIMEOUT_S = 25
 _MAX_REFRESH_DELAY_S = 10
-# Fixed UA so a site's layout doesn't change between requests.
 _BROWSER_UA = _USER_AGENTS[1]
 _HTML_TYPES = frozenset({"text/html", "application/xhtml+xml"})
 # Own pool, so slow sites can't starve chat inference's default executor.

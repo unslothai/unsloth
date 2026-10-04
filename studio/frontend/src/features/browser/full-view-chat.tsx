@@ -30,8 +30,7 @@ import { useBrowserStore } from "./store";
 const WASH =
   "hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] data-[state=open]:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)]";
 
-/** Full-view chat bar: minimize, title (toggles the conversation), split menu; hover-reveals when
- *  only the composer shows. */
+/** Full-view chat bar: minimize, title (toggles the conversation), split menu. */
 export function FullViewChatBar({ title }: { title: string | undefined }) {
   const t = useT();
   const dock = useBrowserStore((state) => state.chatDock);
@@ -41,7 +40,6 @@ export function FullViewChatBar({ title }: { title: string | undefined }) {
   const barRef = useRef<HTMLDivElement | null>(null);
   const expanded = dock === "expanded";
 
-  // The conversation opens on its latest message.
   useEffect(() => {
     if (!expanded) return;
     const viewport = barRef.current
@@ -165,7 +163,6 @@ export function FullViewChatBar({ title }: { title: string | undefined }) {
   );
 }
 
-/** The minimized chat: a round button that brings the composer back. */
 export function FullViewChatButton() {
   const t = useT();
   const label = t("browser.fullView.showChat");

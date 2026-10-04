@@ -11,13 +11,11 @@ export function nativeClearing(): boolean {
   return clearing;
 }
 
-/** Called once a clear has closed every native page. */
 export function onNativeViewsClosed(listener: () => void): void {
   closedListeners.add(listener);
 }
 
-/** Clear the desktop browser pages' cookies, storage and cache, closing them for the clear. The
- *  browser's Clear data and an account switch both come here, so neither can race a page reopening. */
+/** Clear native pages' cookies, storage and cache. Clear data and account switches both come here, so neither races a page reopening. */
 export async function clearNativeBrowsingData(): Promise<void> {
   if (!isTauri) return;
   const { invoke } = await import("@tauri-apps/api/core");

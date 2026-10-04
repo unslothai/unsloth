@@ -2,9 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Desktop app web pages: a real browser view per tab (src-tauri/src/browser_webview.rs) laid over
- * the tab's placeholder, so bot checks and web apps work. It sits above the DOM, so it hides while
- * a menu or dialog covers it.
+ * Desktop app web pages: a native view per tab (src-tauri/src/browser_webview.rs) over its placeholder,
+ * so bot checks work. It sits above the DOM, so it hides while a menu or dialog covers it.
  */
 
 import { getLocale, translate } from "@/i18n";
@@ -22,7 +21,6 @@ export { clearNativeBrowsingData, useNativeBrowser } from "./native-support";
 
 const EVENT = "unsloth-browser";
 const MAX_VIEWS = 4;
-// Gap between a full-view page and the chat floating over it.
 const DOCK_GAP = 8;
 // Catches moves that resize nothing.
 const RECHECK_MS = 300;
@@ -74,8 +72,7 @@ function error(value: unknown): string {
   return value instanceof Error ? value.message : String(value);
 }
 
-// The view's own history closes with it: keep the page it reached as a tab entry, so Back still
-// leads to where the tab was.
+// The view's history closes with it: keep the page it reached as a tab entry, for Back.
 function keepReachedPage(tabId: string): void {
   const store = useBrowserStore.getState();
   const tab = store.tabs.find((candidate) => candidate.id === tabId);
@@ -159,7 +156,6 @@ function onNativeEvent(event: NativeEvent): void {
       break;
     }
     case "external":
-      // Pages can ask without a click, so the user decides.
       prompt(t("browser.native.externalPrompt", { host: hostOf(shownUrl(tab)), url: event.url }), {
         label: t("browser.native.open"),
         onClick: () => openExternalLink(event.url),
@@ -197,7 +193,6 @@ function remember(tabId: string, url: string): void {
   if (entry !== undefined && /^https?:/i.test(url)) resume.set(tabId, { entry, url });
 }
 
-/** The page the native view shows, which links and redirects move past the tab's entry. */
 function shownUrl(tab: BrowserTab): string {
   return tab.displayUrl ?? currentEntryUrl(tab);
 }
@@ -218,7 +213,6 @@ export function nativeAction(tabId: string, action: "back" | "forward" | "reload
   void call("browser_view_action", { tabId, action }).catch(() => undefined);
 }
 
-/** Back from a refused address to the page still shown, without a reload. */
 export function returnToNativePage(tabId: string): boolean {
   const shown = pages.get(tabId);
   const store = useBrowserStore.getState();
@@ -259,7 +253,6 @@ function covered(rect: DOMRect): boolean {
   return false;
 }
 
-/** The page's rect, short of the chat floating over a full-view browser. */
 function visibleRect(element: HTMLElement): DOMRect | null {
   let rect = element.getBoundingClientRect();
   // A native view isn't clipped by the DOM: trim it to the page area (overflowed while pinned).
@@ -306,7 +299,6 @@ function desiredView(): Desired {
   };
 }
 
-/** Close views of closed or non-web tabs, and the least recent past the cap. */
 function pruneViews(shown: string | null): void {
   const tabs = new Map(useBrowserStore.getState().tabs.map((tab) => [tab.id, tab]));
   for (const tabId of [...views.keys()]) {
@@ -333,7 +325,6 @@ async function applyView(desired: Desired): Promise<void> {
   const loaded = views.get(tabId);
   const resumed = resume.get(tabId);
   const started = generation;
-  // The panel unmounted meanwhile: close what this call showed and leave the state alone.
   const stale = () => {
     if (started === generation) return false;
     void call("browser_view_close", { tabId }).catch(() => undefined);
@@ -429,7 +420,6 @@ export function startNativeViews(): () => void {
   };
 
   const unsubscribe = useBrowserStore.subscribe(schedule);
-  // Menus and dialogs mount in portals on <body>.
   const overlays = new MutationObserver(schedule);
   overlays.observe(document.body, { childList: true });
   window.addEventListener("resize", schedule);

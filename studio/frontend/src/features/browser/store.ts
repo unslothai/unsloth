@@ -26,7 +26,6 @@ export type DeviceMode = "off" | "mobile" | "tablet";
 
 export type ChatSide = "left" | "right";
 
-/** The chat floating over a full-view browser: hidden to a button, its composer, or the whole conversation. */
 export type ChatDock = "minimized" | "composer" | "expanded";
 
 export type RequestEdits = (prompt: string) => void;
@@ -36,13 +35,11 @@ export type SendAnnotations = (annotations: DocumentAnnotations) => Promise<bool
 
 export type OpenInCanvas = (file: { title: string; code: string }) => void;
 
-/** How a text file tab shows its file, like the canvas: the rendered page or its source. */
 export type FileViewMode = "preview" | "source";
 
 export type FileViewState = {
   mode: FileViewMode;
   consoleOpen: boolean;
-  /** Errors the HTML page reported, for the console button's badge. */
   errorCount: number;
   wrap: boolean;
 };
@@ -55,7 +52,6 @@ export type BrowserTab = {
   index: number;
   title: string;
   favicon: string | null;
-  /** Content type of a document the web tab shows (a PDF link), for its icon. */
   documentType: string | null;
   /** Address from pushState, shown instead of the loaded URL. */
   displayUrl: string | null;
@@ -64,9 +60,7 @@ export type BrowserTab = {
   /** What the tab was opened for; opening it again focuses the tab. */
   openKey: string | null;
   zoom: number;
-  /** A native page's own history, used before the tab's. */
   nativeHistory: { back: boolean; forward: boolean } | null;
-  /** Why a native page couldn't open, shown in its place. */
   nativeError: string | null;
 };
 
@@ -75,7 +69,6 @@ export type OpenFileInput = {
   name: string;
   contentType?: string;
   plainText?: boolean;
-  /** Stable identity; reopening it focuses the existing tab. */
   key?: string;
 };
 
@@ -87,7 +80,6 @@ export function browserFile(fileId: string): Blob | undefined {
 }
 
 type PageDownload = { blob: Blob; name: string; contentType: string };
-// Document shown by a web tab (e.g. a PDF link), for Download.
 const pageDownloads = new Map<string, PageDownload>();
 
 export function setPageDownload(tabId: string, download: PageDownload | null): void {
@@ -101,14 +93,12 @@ export function pageDownload(tabId: string): PageDownload | undefined {
 
 const isWeb = (url: string) => /^https?:\/\//i.test(url.trim());
 
-// Set in the desktop app, where web pages are native views with their own history.
 let nativeWebHistory = false;
 
 export function setNativeWebHistory(native: boolean): void {
   nativeWebHistory = native;
 }
 
-// Caps history for pages that keep redirecting.
 const MAX_HISTORY = 50;
 
 // Loaded pages by history entry, so back and forward skip the fetch. Reload drops only its own entry.
@@ -178,7 +168,6 @@ async function sameBytes(a: Blob | undefined, b: Blob): Promise<boolean> {
   return x.every((byte, index) => byte === y[index]);
 }
 
-/** Drop blobs no remaining history entry points at or queued refresh holds. */
 function releaseFiles(tabs: BrowserTab[]): void {
   const live = new Set<string>(queuedFiles);
   for (const tab of tabs) {
@@ -193,7 +182,6 @@ type BrowserState = {
   activeTabId: string | null;
   /** Bumped on open, so the panel re-expands after a drag shut. */
   openSequence: number;
-  /** Bumped to ask the address bar for focus (Cmd+L, a new tab). */
   focusAddressSequence: number;
   findOpen: boolean;
   findMiss: boolean;
@@ -203,13 +191,10 @@ type BrowserState = {
   chatSide: ChatSide;
   /** Stages a prompt in the chat's composer; set by the chat while it is shown. */
   requestEdits: RequestEdits | null;
-  /** Sends a file's annotations to the chat; set by the chat while it is shown. */
   sendAnnotations: SendAnnotations | null;
-  /** Opens an HTML file in the chat's canvas; set by the chat while it is shown. */
   openInCanvas: OpenInCanvas | null;
   annotateTabId: string | null;
   setAnnotating: (tabId: string | null) => void;
-  /** Per file tab; absent means DEFAULT_FILE_VIEW. */
   fileViews: Record<string, FileViewState>;
   setFileView: (tabId: string, patch: Partial<FileViewState>) => void;
   openPanel: () => void;
@@ -287,7 +272,6 @@ function moveTo(tab: BrowserTab, index: number): BrowserTab {
 }
 
 function showPanel(): void {
-  // One context panel at a time.
   useChatArtifactsStore.getState().closeArtifactSurface();
 }
 
@@ -350,7 +334,6 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     },
     openUrl: (url, options) => {
       if (!isWeb(url)) return;
-      // A form posted to a new tab (target=_blank) keeps its body.
       if (options?.method === "POST") {
         openTab(createTab(webEntry(url, "POST", options.body ?? "")), options.background);
         return;
@@ -381,8 +364,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       const existing = openKey ? get().tabs.find((tab) => tab.openKey === openKey) : undefined;
       if (openKey && existing) {
         focusExisting(openKey);
-        // The file may have been rewritten since it opened: if so, show the new bytes. In order
-        // per tab, each against what the tab shows by then, so the last reopen wins.
+        // The file may have changed since it opened: refresh in order per tab, so the last reopen wins.
         const previous = refreshes.get(existing.id) ?? Promise.resolve();
         queuedFiles.add(fileId);
         const next = previous.then(async () => {
@@ -418,7 +400,6 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
           pushEntry(
             tab,
             webEntry(request.url, request.method, request.body),
-            // A native page keeps its own history.
             options?.replace ?? (nativeWebHistory && currentEntry(tab).kind === "web"),
           ),
         ),
@@ -453,7 +434,6 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       const { [tabId]: _closed, ...fileViews } = get().fileViews;
       const annotateTabId = get().annotateTabId === tabId ? null : get().annotateTabId;
       if (remaining.length === 0) {
-        // Closing the last tab closes the panel, as closePanel does.
         set({ tabs: [], activeTabId: null, open: false, fullView: false, annotateTabId: null, fileViews });
         return;
       }

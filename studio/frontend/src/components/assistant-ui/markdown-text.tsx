@@ -321,10 +321,7 @@ const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) 
 const LINK_CLASS =
   "text-primary underline underline-offset-2 decoration-primary/40 hover:decoration-primary transition-colors cursor-pointer";
 
-/**
- * A link in an answer. Web links and files the chat's tools wrote (`[report](outputs/report.csv)`) get a
- * right-click menu; a file link opens the file rather than navigating the app to a path it doesn't have.
- */
+ /** A link in an answer; a file the chat's tools wrote opens the file rather than routing the app to its path. */
 function MarkdownLink({ href, children, ...props }: ComponentProps<"a">) {
   const { node: _node, ...dom } = props as ComponentProps<"a"> & { node?: unknown };
   const file = href ? sandboxFileForHref(href) : null;
@@ -411,7 +408,6 @@ function SandboxFileLink({
       </FileContextMenu>
     );
   }
-  // No chat to resolve it against yet: a plain link, as before.
   return (
     <a
       href={href}

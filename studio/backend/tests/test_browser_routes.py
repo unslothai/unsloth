@@ -59,8 +59,7 @@ def test_the_shell_guards():
     )
     assert "document.write(" not in shell
     assert "observe(document.documentElement" not in shell
-    # Links and forms go through the proxy only when the page's own handlers leave them alone, and
-    # requestSubmit() keeps its native validation.
+    # Links and forms go through the proxy only when the page's own handlers leave them alone.
     assert shell.count("unlessCancelled(event, ") == 2
     assert "requestSubmit = " not in shell
 
@@ -93,7 +92,6 @@ def test_a_failed_fetch_of_an_unparseable_address_still_answers_502():
     with pytest.raises(HTTPException) as caught:
         browser_mod._build_response("http://[bad", "Invalid host", b"", "", {})
     assert caught.value.status_code == 502
-    # Quoted "<" and ">" stay inside the tag.
     quoted = '<meta http-equiv="Content-Security-Policy" content="a<b>c"><p>x</p>'
     assert browser_mod._prepare_page(quoted, "https://example.com/")[0] == "<p>x</p>"
 

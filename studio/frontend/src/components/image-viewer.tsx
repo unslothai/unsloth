@@ -28,7 +28,6 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { create } from "zustand";
 
 export type ViewerImage = {
-  /** Stable identity within the gallery. */
   key: string;
   title: string;
   /** File name for Download, with its extension; a function gets the loaded image's type. */
@@ -36,7 +35,6 @@ export type ViewerImage = {
   load: () => Promise<Blob>;
   /** Shown as is when `load` fails, e.g. a remote image whose host doesn't allow CORS reads. */
   fallbackUrl?: string;
-  /** The page the image came from, opened by "Open source". */
   source?: string;
 };
 
@@ -49,7 +47,6 @@ type ImageViewerState = {
   step: (delta: 1 | -1) => void;
 };
 
-/** The full-window image viewer: an image with its gallery, zoom and download, as ChatGPT has it. */
 export const useImageViewerStore = create<ImageViewerState>((set, get) => ({
   images: [],
   index: 0,
@@ -85,7 +82,6 @@ const ZOOM_STEPS = [
   0.1, 0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1, 1.25, 1.5, 2, 3, 4, 5,
 ];
 
-// Solid, not washes: these sit over the picture at a contrast of their own.
 const ROUND =
   "flex cursor-pointer items-center justify-center rounded-full bg-neutral-800 text-white shadow-lg transition-colors hover:bg-neutral-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70 disabled:cursor-default disabled:opacity-40 disabled:hover:bg-neutral-800";
 
@@ -184,7 +180,6 @@ function ViewerBody() {
   const [zoom, setZoom] = useState<{ key: string; value: number } | null>(null);
   const size = natural && image && natural.key === image.key ? natural : null;
 
-  // Opens at the size that fits, never larger than the image itself.
   const fitZoom = () => {
     const stage = stageRef.current;
     if (!stage || !size) return 1;
@@ -248,7 +243,6 @@ function ViewerBody() {
       <DialogPrimitive.Description className="sr-only">
         {t("imageViewer.description")}
       </DialogPrimitive.Description>
-      {/* Clicking the backdrop around the picture closes, as it does in ChatGPT. */}
       <div
         ref={stageRef}
         className="absolute inset-x-[calc(6rem*var(--ui-space-scale,1))] top-[calc(5.5rem*var(--ui-space-scale,1))] bottom-[calc(6rem*var(--ui-space-scale,1))] flex overflow-auto"
@@ -360,7 +354,6 @@ function ViewerBody() {
   );
 }
 
-/** Mounted once at the app root; opened with openImageViewer. */
 export function ImageViewer() {
   const open = useImageViewerStore((state) => state.open);
   return (

@@ -28,11 +28,9 @@ import { useBrowserStore } from "./store";
 // The blocks a click marks whole. Anything else marks the nearest element that holds text itself.
 const BLOCK =
   "p, li, h1, h2, h3, h4, h5, h6, pre, blockquote, td, th, dt, dd, figcaption, caption, img";
-// A list item marks its own line, not the lists nested under it.
 const NESTED_BLOCK = "ul, ol, table, pre, blockquote, div";
 const MAX_QUOTE_CHARS = 280;
 const PAD = 5;
-// A press that moves further than this draws an area instead of marking the block under it.
 const DRAG_THRESHOLD = 4;
 const BUBBLE = 28;
 
@@ -90,7 +88,6 @@ function blockRange(block: Element): Range {
   return range;
 }
 
-/** What a click at `target` marks: its block, a list item's own line, or a PDF's text line. */
 function blockAt(target: Element, root: Element): Range[] | null {
   if (target.closest(".textLayer")) {
     const line = pdfLine(target);
@@ -116,7 +113,6 @@ const overlaps = (a: DOMRect, b: DOMRect) =>
   a.top < b.bottom &&
   a.bottom > b.top;
 
-/** Everything a dragged area touches, block by block (a PDF by its text runs), in page order. */
 function blocksIn(root: Element, area: DOMRect): Range[] {
   const candidates = [
     ...root.querySelectorAll(BLOCK),
@@ -127,7 +123,6 @@ function blocksIn(root: Element, area: DOMRect): Range[] {
       (element.closest(".textLayer")
         ? !element.querySelector("span") && element.textContent?.trim()
         : true) &&
-      // Cheap first: most of a long document is nowhere near the area.
       overlaps(element.getBoundingClientRect(), area),
   );
   const found = candidates.flatMap((element) => {
@@ -197,8 +192,7 @@ const sameRanges = (a: Range[] | null, b: Range[] | null) =>
       range.endOffset === b[index]?.endOffset,
   );
 
-/** Request edits on a file: click marks a block, drag marks an area, each takes a comment; Send
- *  posts all as one chat message. */
+/** Request edits on a file: click marks a block, drag marks an area; Send posts all as one message. */
 export function AnnotateLayer({
   page,
   fileName,
@@ -220,7 +214,6 @@ export function AnnotateLayer({
 
   const exit = () => setAnnotating(null);
 
-  /** The annotations with the open comment applied; an emptied comment removes its mark. */
   const committed = (): Annotation[] => {
     if (!pending) return items;
     const request = draft.trim();
@@ -258,7 +251,6 @@ export function AnnotateLayer({
     let frame = 0;
     let settle = 0;
     const redraw = () => {
-      // Outlines glide between blocks, but track a scrolling page exactly.
       layerRef.current?.setAttribute("data-scrolling", "");
       window.clearTimeout(settle);
       settle = window.setTimeout(
@@ -284,7 +276,6 @@ export function AnnotateLayer({
     const ownUi = (target: EventTarget | null) =>
       target instanceof Element && target.closest("[data-annotate-ui]");
     let press: { x: number; y: number; dragging: boolean } | null = null;
-    // The bubble is the pointer: moved directly, so it never waits on a render.
     const moveBubble = (event: PointerEvent | null) => {
       const bubble = cursorRef.current;
       const layer = layerRef.current;
@@ -319,7 +310,6 @@ export function AnnotateLayer({
     };
     const onDown = (event: PointerEvent) => {
       if (event.button !== 0 || ownUi(event.target)) return;
-      // No text selection or native drag: a press here marks.
       event.preventDefault();
       press = { x: event.clientX, y: event.clientY, dragging: false };
     };
@@ -374,7 +364,6 @@ export function AnnotateLayer({
       const rect = areaFrom(event);
       press = null;
       setArea(null);
-      // An unsaved comment is kept when moving on.
       saveRef.current();
       if (dragging && rect) mark(blocksIn(page, rect));
       else if (event.target instanceof Element && !ownUi(event.target))
@@ -426,14 +415,12 @@ export function AnnotateLayer({
 
   const origin = layerRef.current?.getBoundingClientRect() ?? new DOMRect();
   const hoverBox = hover ? boxOf(hover, origin) : null;
-  // Kept after the pointer leaves, so the outline fades where it was rather than jumping away.
   if (hoverBox) lastHoverBox.current = hoverBox;
   const shownHover = hoverBox ?? lastHoverBox.current;
   const pendingBox = pending ? boxOf(pending.ranges, origin) : null;
   const count = items.length;
   // A first comment still being typed can go too: Send commits it.
   const canSend = count > 0 || (pending?.id === null && draft.trim() !== "");
-  // Counted with it too, so the bar (and its Send) shows for a first comment.
   const shown = count + (pending?.id === null && draft.trim() !== "" ? 1 : 0);
 
   return (
@@ -531,22 +518,18 @@ function Mark({
   );
 }
 
-// The pointer while annotating: a comment bubble, its tail at the point.
 const CURSOR =
   "absolute top-0 left-0 size-7 rounded-full rounded-bl-[4px] bg-primary shadow-md ring-2 ring-background transition-[opacity,scale] duration-100 data-[shown=false]:scale-50 data-[shown=false]:opacity-0 motion-reduce:transition-none";
 
-/** A mark's number: its place among the saved ones, or the next one for a new mark. */
 function markNumber<Item extends { id: number }>(items: Item[], id: number | null): number {
   const index = id === null ? -1 : items.findIndex((item) => item.id === id);
   return index === -1 ? items.length + 1 : index + 1;
 }
 
-// Light in light mode, dark in dark mode, raised off the page either way.
 const SURFACE =
   "border border-border bg-background text-foreground shadow-[0_8px_28px_-6px_rgba(0,0,0,0.18)] dark:border-transparent dark:bg-neutral-800 dark:text-white dark:shadow-xl";
 
-/** Voice typing into a comment, as the composer's microphone does: the words land after what the
- *  comment held when it started, the ones still being heard shown as they come. */
+/** Voice typing into a comment, as the composer's microphone does. */
 function useCommentDictation(draft: string, onDraft: (value: string) => void) {
   const t = useT();
   const session = useRef<ReturnType<StudioDictationAdapter["listen"]> | null>(null);
@@ -589,8 +572,6 @@ function useCommentDictation(draft: string, onDraft: (value: string) => void) {
   return { listening, toggle: () => (listening ? stop() : start()) };
 }
 
-/** The comment field for a mark: below it, or above when there is no room under it. Enter saves;
- *  the microphone dictates into it. */
 function CommentForm({
   inputRef,
   box,
@@ -617,8 +598,7 @@ function CommentForm({
       : box.top + box.height + 8;
   const left = Math.min(Math.max(12, box.left + box.width - width), layer.width - width - 12);
   const micLabel = t(dictation.listening ? "browser.annotate.stopDictating" : "browser.annotate.dictate");
-  // Once there is something to save, the microphone gives way to a tick, unless it is still
-  // listening, so dictation can always be stopped.
+  // The tick replaces the microphone unless it is listening, so dictation can always be stopped.
   const canSave = Boolean(draft.trim()) && !dictation.listening;
   return (
     <form
@@ -673,7 +653,6 @@ function CommentForm({
   );
 }
 
-/** The bar along the bottom: how many marks, Cancel, Send. Drag its handle to move it. */
 function AnnotateBar({
   count,
   canSend,
@@ -691,8 +670,7 @@ function AnnotateBar({
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const barRef = useRef<HTMLDivElement | null>(null);
   const drag = useRef<{ x: number; y: number; id: number } | null>(null);
-  // Captured, so the drag keeps going over a web page's frame, which would otherwise take the
-  // pointer's moves for itself; kept inside the panel.
+  // Captured, so the drag keeps going over a web page's frame.
   const startDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -706,7 +684,6 @@ function AnnotateBar({
     const bounds = layer.getBoundingClientRect();
     const width = bar.offsetWidth;
     const height = bar.offsetHeight;
-    // The bar sits centred, 20px off the bottom, before its offset.
     const maxX = Math.max(0, (bounds.width - width) / 2 - 8);
     const minY = -(bounds.height - height - 20 - 8);
     setOffset({
@@ -768,7 +745,6 @@ function AnnotateBar({
 type WebMark = { id: number; quote: string; request: string };
 type WebPending = { id: number; quote: string; saved: boolean };
 
-/** The theme's accent as rgb(), which the page can put in a style and an SVG as is. */
 function accentColor(): string {
   const probe = document.createElement("span");
   probe.style.color = "var(--primary)";
@@ -784,12 +760,7 @@ function accentColor(): string {
   return `rgb(${r}, ${g}, ${b})`;
 }
 
-/**
- * Ask about a web page: the same marks and comments as a file's. The page is another origin, so
- * its own script finds what is under the pointer and draws the outlines and marks, with no round
- * trip per move (see `annotation` in routes/browser.py). This layer holds the comments and the bar,
- * placing each comment by the box the page reports for its mark.
- */
+/** Ask about a web page: the page's own script tracks the pointer and draws marks (`annotation` in routes/browser.py); this layer holds the comments and the bar. */
 export function WebAnnotateLayer({
   tabId,
   title,
@@ -811,7 +782,6 @@ export function WebAnnotateLayer({
   const start = () =>
     sendFrameCommand(tabId, { command: "annotate", on: true, color: accentColor() });
 
-  /** The marks with the open comment applied; an emptied comment removes its mark. */
   const committed = (): WebMark[] => {
     if (!pending) return items;
     const request = draft.trim();
@@ -880,8 +850,7 @@ export function WebAnnotateLayer({
             : event.area
               ? t("browser.annotate.areaQuote")
               : "");
-        // The page can post marks itself: past the cap, new ones are dropped. Both counts, since
-        // the page can also empty its rects report while committed marks pile up.
+        // The page can post marks itself: cap both counts, as it can also empty its rects report.
         const full = !rects.has(event.id) && (rects.size >= MAX_MARKS || items.length >= MAX_MARKS);
         if (!quote || full) {
           forget(event.id);
@@ -933,7 +902,6 @@ export function WebAnnotateLayer({
     if (pending) inputRef.current?.focus();
   }, [pending]);
 
-  // The page draws the pins; it numbers them as the chat will read them.
   useEffect(() => {
     const numbers: Array<[number, number]> = items.map((item, index) => [item.id, index + 1]);
     if (pending && !pending.saved) numbers.push([pending.id, items.length + 1]);
@@ -953,7 +921,6 @@ export function WebAnnotateLayer({
     : null;
   const count = items.length;
   const canSend = count > 0 || (pending?.saved === false && draft.trim() !== "");
-  // A first comment still being typed counts, so the bar (and its Send) shows for it.
   const shown = count + (pending?.saved === false && draft.trim() !== "" ? 1 : 0);
 
   return (

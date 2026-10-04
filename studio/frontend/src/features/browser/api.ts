@@ -23,7 +23,6 @@ export type BrowserRequest = {
 };
 
 export class BrowserFetchError extends Error {
-  /** The site's bot check refused the proxy. */
   readonly botCheck: boolean;
 
   constructor(message: string, botCheck: boolean) {
@@ -74,7 +73,6 @@ export async function fetchBrowserPage(request: BrowserRequest, signal: AbortSig
   };
 }
 
-/** Sandbox shell URL, unique per load. */
 export function browserFrameUrl(loadId: string): string {
   return apiUrl(`/api/browser/frame?v=${encodeURIComponent(loadId)}`);
 }

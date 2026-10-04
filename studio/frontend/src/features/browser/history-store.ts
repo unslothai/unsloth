@@ -9,7 +9,6 @@ export type HistoryItem = { id: string; url: string; title: string; visitedAt: n
 export type DownloadItem = {
   id: string;
   name: string;
-  /** Where it came from; null for a chat attachment. */
   url: string | null;
   size: number;
   contentType: string;
@@ -67,7 +66,6 @@ interface BrowserHistoryState {
   clearDownloads: () => void;
 }
 
-/** Pages visited and files downloaded in the browser panel, newest first. Kept in this browser only. */
 export const useBrowserHistoryStore = create<BrowserHistoryState>()(
   persist(
     (set) => ({

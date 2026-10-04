@@ -13,8 +13,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { HTML_NAME, TEXT_NAME, TEXT_TYPE, mediaKind, textFileKind } from "./file-kind";
 import { DEFAULT_FILE_VIEW, useBrowserStore } from "./store";
 
-// The preview shows at most 200,000 characters (4 bytes each at most): a 50 MB response is never
-// decoded whole for it.
+// The preview shows at most 200,000 chars (4 bytes each at most): a 50 MB body is never decoded whole.
 const MAX_TEXT_BYTES = 1024 * 1024;
 
 function useObjectUrl(blob: Blob, enabled: boolean, svg: boolean): string | null {
@@ -44,7 +43,6 @@ function Unavailable({ message }: { message: string }) {
   return <p className="m-auto max-w-sm px-6 text-center text-sm text-muted-foreground">{message}</p>;
 }
 
-// Streamdown's highlighted source and the plain fallback both use <pre>; wrapping is a class away.
 const WRAP_CLASS = "[&_pre]:whitespace-pre-wrap! [&_pre]:break-words [&_code]:whitespace-pre-wrap! [&_.min-w-max]:min-w-0!";
 
 function TextFile({
@@ -143,7 +141,6 @@ function TextFile({
   return sourceView;
 }
 
-/** A document, image, media file or text, using the attachment viewers. */
 export function FileView({
   blob,
   name,
@@ -158,7 +155,6 @@ export function FileView({
   contentType: string;
   plainText?: boolean;
   scale?: number;
-  /** The tab showing it, whose Preview/Source, console and wrap settings apply. */
   tabId?: string;
   reloadNonce?: number;
 }) {

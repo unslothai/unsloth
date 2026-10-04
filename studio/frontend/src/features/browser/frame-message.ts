@@ -22,11 +22,9 @@ export type FrameMessage =
   | { type: "shortcut"; key: string; shift: boolean }
   | { type: "annotate"; event: AnnotateEvent };
 
-/** A box in the page's viewport. */
 export type AnnotateRect = { left: number; top: number; width: number; height: number };
 
-/** What the page reports while annotating: see `annotation` in the frame shell (routes/browser.py).
- *  The page draws its own outlines; the panel only needs where the marks are, for their comments. */
+/** What the page reports while annotating (`annotation` in routes/browser.py); it draws its own outlines. */
 export type AnnotateEvent =
   | { kind: "ready" }
   | { kind: "up" }
@@ -39,7 +37,6 @@ export type AnnotateEvent =
       quote: string;
       image: boolean;
       alt: string;
-      /** A part of the page with nothing in it, marked as a place. */
       area: boolean;
     }
   | { kind: "rects"; rects: Array<[number, AnnotateRect | null]> };
@@ -50,7 +47,6 @@ const MAX_BODY_CHARS = 1024 * 1024;
 const MAX_TITLE_CHARS = 1024;
 const SHORTCUT_KEYS = new Set(["l", "t", "w", "r", "f"]);
 const MAX_QUOTE_CHARS = 300;
-/** Marks a page may hold, in one report or one at a time. */
 export const MAX_MARKS = 500;
 // Far past any screen, so a page can't make the panel draw something huge.
 const MAX_COORD = 1_000_000;

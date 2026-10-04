@@ -3,10 +3,7 @@
 
 let release: (() => void) | null = null;
 
-/**
- * Hold the panel's page at its size and place while the split is dragged, so a page, PDF or native
- * view lays out once on release rather than every frame. Returns the release.
- */
+/** Hold the page at its size while the split is dragged, so it lays out once on release, not every frame. */
 export function pinBrowserPage(handle: Element): () => void {
   const page = document.querySelector<HTMLElement>("[data-browser-page]");
   if (release || !page?.parentElement) return () => undefined;
