@@ -143,7 +143,7 @@ export function PromptFormatSection(): ReactElement {
               max={1000}
               step={10}
               aria-label={t("rl.prompt.warmupSteps")}
-              className="h-8 w-[calc(90px*var(--ui-space-scale,1))] shrink-0 text-right text-xs"
+              className="h-8 w-[calc(110px*var(--ui-space-scale,1))] shrink-0 self-center text-right text-xs"
               value={s.warmupSteps}
               onChange={(e) => {
                 const n = Number.parseInt(e.target.value, 10);
