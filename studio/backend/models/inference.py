@@ -5149,7 +5149,8 @@ class AudioGalleryItem(BaseModel):
     pinned: bool = Field(False, description = "Pinned to the top of history")
     archived: bool = Field(False, description = "Moved to the archived shelf, hidden from history")
     workflow: Optional[str] = Field(
-        None, description = "Audio page workflow that made the clip: speak, clone, edit or music"
+        None,
+        description = "Audio page workflow that made the clip: speak, clone, edit, music or separate",
     )
     order_at: Optional[float] = Field(
         None,
@@ -5204,9 +5205,9 @@ class AudioRunInputs(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
     reference: Optional[AudioSourceRef] = None
+    source: Optional[AudioSourceRef] = None
     reference_text: Optional[str] = Field(None, max_length = 4000)
     emotion: Optional[AudioSourceRef] = None
-    source: Optional[AudioSourceRef] = None
 
 
 class AudioRunEdit(BaseModel):
@@ -5251,8 +5252,9 @@ class AudioRunRequest(BaseModel):
 
     model_config = ConfigDict(extra = "forbid")
 
-    workflow: Literal["clone", "speak", "edit", "music"]
-    text: str
+    workflow: Literal["clone", "speak", "edit", "music", "separate"]
+    # Required except for a separation (the route answers a separation given text with a 400).
+    text: Optional[str] = None
     language: Optional[str] = Field(None, max_length = 64)
     instructions: Optional[str] = Field(None, max_length = 4000)
     inputs: AudioRunInputs = Field(default_factory = AudioRunInputs)
@@ -5299,9 +5301,10 @@ class AudioRunRequest(BaseModel):
         if self.workflow == "music":
             if self.mode is None:
                 raise ValueError("Pick a music mode: song, sfx or edit.")
-        else:
-            if not self.text:
-                raise ValueError("text must not be empty.")
+            if self.text is None:
+                raise ValueError("text is required for music.")
+        elif self.workflow != "separate" and not self.text:
+            raise ValueError("text must not be empty.")
         return self
 
 
@@ -5322,6 +5325,7 @@ class AudioRunAudio(BaseModel):
 
 class AudioRunResponse(BaseModel):
     clips: List[AudioRunClip] = Field(default_factory = list)
+    # One separation's stems share it; None for a single clip.
     group_id: Optional[str] = None
     model: str
     audio: Optional[AudioRunAudio] = Field(

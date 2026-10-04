@@ -107,12 +107,15 @@ export interface AudioGalleryClip {
   order_at?: number | null;
   /** The Audio workflow that made the clip. Older servers omit it; read it through clipWorkflow. */
   workflow?: string | null;
-  /** Clips one run made together share a group. */
-  group_id?: string | null;
   reference_name?: string | null;
-  /** An edit's run part ("output" or "source") and the original it edited. */
+  /** Clips one run made together share it (a separation's stems, music takes); null for one clip. */
+  group_id?: string | null;
+  /** A stem's name (vocals, drums, ...) or an edit's run part ("output" or "source"). */
   role?: string | null;
+  /** The original an edit changed. */
   source_clip_id?: string | null;
+  /** The run's settings, e.g. a separation's stem list. */
+  settings?: Record<string, unknown> | null;
 }
 
 export interface AudioGalleryListResponse {
@@ -217,7 +220,7 @@ export async function deleteAudioClip(id: string): Promise<void> {
 }
 
 export async function clearAudioGallery(
-  workflow?: "speak" | "clone" | "edit" | "music",
+  workflow?: "speak" | "clone" | "edit" | "music" | "separate",
 ): Promise<number> {
   const query = workflow ? `?workflow=${workflow}` : "";
   const response = await authFetch(`/api/inference/audio/gallery${query}`, {
@@ -425,6 +428,8 @@ export interface AudioRunResponse {
     duration_s: number;
     workflow: string;
   }[];
+  /** One separation's stems share it; null for a single clip. */
+  group_id: string | null;
   model: string;
   audio: GeneratedAudio | null;
 }

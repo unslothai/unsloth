@@ -324,7 +324,7 @@ export function useEditGeneration({
       updateGenerationPhase("finishing");
       await showRunResult({
         response,
-        text: run.text,
+        text: run.text ?? "",
         workflow: "edit",
         refreshGallery,
         selectClip,
