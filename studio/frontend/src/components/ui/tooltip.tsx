@@ -18,6 +18,7 @@ import {
   subscribeModalLayer,
 } from "@/components/ui/tooltip-modal-layer";
 import { resolveTooltipOpen } from "@/components/ui/tooltip-open-state";
+import { isTouchClick } from "@/components/ui/touch-click";
 import { cn } from "@/lib/utils";
 
 type ToggleFn = () => void;
@@ -85,21 +86,7 @@ function getServerModalBlock(): boolean {
   return false;
 }
 
-/** Tap-to-pin is for touch, which has no hover. The click's own pointerType is the only thing
-* that answers for the pointer actually used: the media query reports the primary device, so on
-* a hybrid it mislabels every event. Keyboard activation reports "", which correctly does not pin. */
-function isTouchClick(event: React.MouseEvent): boolean {
-  const pointerType = (event.nativeEvent as Partial<PointerEvent>).pointerType;
-  if (typeof pointerType === "string") return pointerType === "touch";
-  // No PointerEvent (older WebViews): fall back to the device class.
-  return (
-    typeof window !== "undefined" &&
-    typeof window.matchMedia === "function" &&
-    window.matchMedia("(pointer: coarse)").matches
-  );
-}
-
-// Default to instant open (no hover delay): icon labels, nav labels and the token calculators
+// Default to instant open (no hover delay): icon labels and the token calculators
 // should feel snappy. Consumers that want a delay pass an explicit `delayDuration`.
 function TooltipProvider({
   delayDuration = 0,
@@ -174,10 +161,9 @@ function Tooltip({
     if (!clickOpen) return;
     const release = (event: Event) => {
       const target = event.target as Node | null;
-      // The trigger is matched by element, not by data-slot: an `asChild` child
-      // can drop the attribute (a component that does not spread props), and
-      // then a press on this very trigger read as outside, cleared the pin, and
-      // the click handler toggled it straight back on.
+      // The trigger is matched by element, not by data-slot: an `asChild` child can drop the
+      // attribute (a component that does not spread props), and then a press on this very trigger
+      // read as outside, cleared the pin, and the click handler toggled it straight back on.
       if (target && modalBlockStore.getTriggerElement()?.contains(target)) {
         return;
       }
@@ -275,24 +261,23 @@ function TooltipTrigger({
 
 type TooltipVariant = "default" | "rich" | "none";
 
-// `default` applies the compact black-pill styling shared with the
-// sidebar/chat icon labels. `rich` opts into the larger multi-row
-// popover surface used for timing/context breakdowns. `none` is an
+// `default` applies the compact black-pill styling shared with the sidebar/chat icon labels. `rich`
+// opts into the larger multi-row popover surface used for timing/context breakdowns. `none` is an
 // escape hatch for tooltips that need to bring their own surface.
 function TooltipContent({
   variant = "default",
   className,
   sideOffset = 0,
+  collisionPadding = 8,
   children,
   ref,
   ...props
 }: React.ComponentProps<typeof TooltipPrimitive.Content> & {
   variant?: TooltipVariant;
 }) {
-  // Single-line compact tooltips render as a full pill; wrapped ones keep
-  // the squarer corners so tall pills do not look like capsules. A ref
-  // callback measures on mount: Radix mounts the portal content without
-  // re-rendering this wrapper, so an effect here would never see the node.
+  // Single-line compact tooltips render as a full pill; wrapped ones keep the squarer corners so
+  // tall pills do not look like capsules. A ref callback measures on mount: Radix mounts the portal
+  // content without re-rendering this wrapper, so an effect here would never see the node.
   const contentRef = useCallback(
     (el: React.ComponentRef<typeof TooltipPrimitive.Content> | null) => {
       assignRef(ref, el);
@@ -313,8 +298,9 @@ function TooltipContent({
         ref={contentRef}
         data-slot="tooltip-content"
         sideOffset={sideOffset}
+        collisionPadding={collisionPadding}
         className={cn(
-          "z-[999999] w-fit max-w-xs",
+          "z-[999999] w-fit max-w-xs origin-(--radix-tooltip-content-transform-origin) data-[state=delayed-open]:animate-in data-[state=delayed-open]:fade-in-0 data-[state=delayed-open]:zoom-in-95 data-[state=delayed-open]:ease-out",
           variant === "default" && "tooltip-compact",
           variant === "rich" && "tooltip-rich",
           className,

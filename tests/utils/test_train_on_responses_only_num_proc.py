@@ -65,18 +65,14 @@ SMALL = dnp.ZOO_MIN_ROWS_FOR_MULTIPROC - 1
 def _reset(monkeypatch):
     dnp.reset_warning_state()
     monkeypatch.delenv(dnp.NUM_PROC_ENV_VAR, raising = False)
-    # Pin CPUs, memory and both start methods so the assertions are about the
-    # wrapper, not this machine. Auto is min(max(cpus // 2, AUTO_NUM_PROC_CAP)),
-    # so reaching the cap needs >= 2 * AUTO_NUM_PROC_CAP usable CPUs -- and
-    # "usable" is the smallest of the host, the affinity mask and any cgroup
-    # quota, so patching psutil alone would still read a 4-vCPU runner as 4.
+    # Pin CPUs, memory and both start methods so the assertions are about the wrapper, not this machine.
+    # Auto is min(max(cpus // 2, AUTO_NUM_PROC_CAP)), so reaching the cap needs >= 2 * AUTO_NUM_PROC_CAP usable CPUs
     pytest.importorskip("psutil")
     monkeypatch.setattr(dnp, "_usable_cpus", lambda: 64)
     monkeypatch.setattr(dnp, "_affordable_workers", lambda: 1000)
     monkeypatch.setattr(dnp, "multiprocessing_start_method", lambda: "fork")
-    # The zoo's own auto path reads stdlib multiprocessing; agreeing here keeps
-    # these cases about the row thresholds. The disagreement is covered in
-    # test_dataset_num_proc.py.
+    # The zoo's own auto path reads stdlib multiprocessing;
+    # The disagreement is covered in test_dataset_num_proc.py.
     monkeypatch.setattr(dnp, "_zoo_auto_sizer_forks", lambda: True)
     yield
     dnp.reset_warning_state()
@@ -236,21 +232,18 @@ def test_env_override_wins_on_the_split_size_shortcut(monkeypatch, trainer):
     assert dnp.resolve_responses_only_num_proc(trainer, None) == 3
 
 
-# ── Serial is encoded for the zoo, which reads None as "auto" ──
-
-
 @pytest.fixture
 def _spawn(monkeypatch):
-    # Both modules on spawn, the ordinary Windows host. The interesting case is
-    # when they disagree, which is what _split below covers.
+    # Both modules on spawn, the ordinary Windows host. The interesting case is when they
+    # disagree, which is what _split below covers.
     monkeypatch.setattr(dnp, "multiprocessing_start_method", lambda: "spawn")
     monkeypatch.setattr(dnp, "_zoo_auto_sizer_forks", lambda: False)
 
 
 @pytest.fixture
 def _split(monkeypatch):
-    # multiprocess on spawn, stdlib still on fork: a None here is "size it for
-    # me" to the zoo, and datasets then builds that pool on the spawn context.
+    # multiprocess on spawn, stdlib still on fork: a None here is "size it for me" to the zoo,
+    # and datasets then builds that pool on the spawn context.
     monkeypatch.setattr(dnp, "multiprocessing_start_method", lambda: "spawn")
     monkeypatch.setattr(dnp, "_zoo_auto_sizer_forks", lambda: True)
 

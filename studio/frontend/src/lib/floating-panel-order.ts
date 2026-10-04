@@ -13,7 +13,7 @@
  * thing deciding whether the panel underneath can be reached is z-index.
  *
  * So they share one layer and the one the user touched last comes forward,
- * which is what every window manager does and what the rest of Studio's
+ * which is what every window manager does and what the rest of Unsloth's
  * corner overlays already imply -- the notification stack yields to whichever
  * panel is published under it rather than fighting for a number.
  *
