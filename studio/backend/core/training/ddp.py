@@ -17,7 +17,6 @@ from typing import Any
 
 def _nvidia_smi_child_env() -> dict[str, str]:
     from utils.native_path_leases import child_env_without_native_path_secret
-
     return child_env_without_native_path_secret()
 
 
@@ -85,7 +84,7 @@ def _common_cuda_dtype(gpu_ids: list[int]) -> str:
             return "fp16"
         return "bf16" if all(capabilities[gpu_id] >= (8, 0) for gpu_id in gpu_ids) else "fp16"
     except (OSError, subprocess.SubprocessError, ValueError, RuntimeError) as exc:
-        print(f"DDP GPU capability probe failed; using common fp16: {exc}", flush=True)
+        print(f"DDP GPU capability probe failed; using common fp16: {exc}", flush = True)
         return "fp16"
 
 
@@ -164,14 +163,13 @@ def _rank_entry(
 
     rank_events = _RankEvents(rank, event_queue, failures)
     run_training_process(
-        event_queue=rank_events,
-        stop_queue=_SharedStopQueue(stop_event, save_value),
-        config=rank_config,
+        event_queue = rank_events,
+        stop_queue = _SharedStopQueue(stop_event, save_value),
+        config = rank_config,
     )
     if rank_events.error is not None:
         raise RuntimeError(
-            f"DDP rank {rank} failed: "
-            f"{rank_events.error.get('error') or 'Training failed'}"
+            f"DDP rank {rank} failed: " f"{rank_events.error.get('error') or 'Training failed'}"
         )
 
 
@@ -193,7 +191,7 @@ def run_ddp_training_process(*, event_queue: Any, stop_queue: Any, config: dict[
     def relay_events() -> None:
         while not done.is_set() or not rank_events.empty():
             try:
-                event = rank_events.get(timeout=0.2)
+                event = rank_events.get(timeout = 0.2)
             except queue.Empty:
                 if done.is_set():
                     return
@@ -205,7 +203,7 @@ def run_ddp_training_process(*, event_queue: Any, stop_queue: Any, config: dict[
     def relay_stop() -> None:
         while not done.is_set():
             try:
-                message = stop_queue.get(timeout=0.2)
+                message = stop_queue.get(timeout = 0.2)
             except queue.Empty:
                 continue
             if isinstance(message, dict) and message.get("type") == "stop":
@@ -213,16 +211,15 @@ def run_ddp_training_process(*, event_queue: Any, stop_queue: Any, config: dict[
                 stop_event.set()
                 return
 
-    event_thread = threading.Thread(target=relay_events, daemon=True)
-    stop_thread = threading.Thread(target=relay_stop, daemon=True)
+    event_thread = threading.Thread(target = relay_events, daemon = True)
+    stop_thread = threading.Thread(target = relay_stop, daemon = True)
     event_thread.start()
     stop_thread.start()
     try:
         import torch.multiprocessing as torch_mp
-
         torch_mp.spawn(
             _rank_entry,
-            args=(
+            args = (
                 config,
                 rank_events,
                 stop_event,
@@ -230,8 +227,8 @@ def run_ddp_training_process(*, event_queue: Any, stop_queue: Any, config: dict[
                 _free_loopback_port(),
                 failures,
             ),
-            nprocs=len(gpu_ids),
-            join=True,
+            nprocs = len(gpu_ids),
+            join = True,
         )
     except BaseException as exc:
         if failures:
@@ -251,12 +248,12 @@ def run_ddp_training_process(*, event_queue: Any, stop_queue: Any, config: dict[
                 {
                     "type": "error",
                     "error": f"DDP worker group failed: {exc}",
-                    "stack": traceback.format_exc(limit=20),
+                    "stack": traceback.format_exc(limit = 20),
                     "ts": time.time(),
                 }
             )
     finally:
         done.set()
-        event_thread.join(timeout=2.0)
-        stop_thread.join(timeout=1.0)
+        event_thread.join(timeout = 2.0)
+        stop_thread.join(timeout = 1.0)
         manager.shutdown()

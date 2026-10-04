@@ -46,7 +46,8 @@ def test_dense_llama_ddp_checkpointing_disables_unused_parameter_discovery(
     source = Path(__file__).parents[1] / "core" / "training" / "trainer.py"
     tree = ast.parse(source.read_text())
     blocks = [
-        node for node in ast.walk(tree)
+        node
+        for node in ast.walk(tree)
         if isinstance(node, ast.If)
         and any(
             isinstance(child, ast.Assign)
@@ -65,11 +66,15 @@ def test_dense_llama_ddp_checkpointing_disables_unused_parameter_discovery(
     monkeypatch.setenv("WORLD_SIZE", str(world_size))
     config = {"gradient_checkpointing": checkpointing}
     backend = SimpleNamespace(
-        is_audio=audio, is_vlm=False, is_audio_vlm=False,
-        model=SimpleNamespace(config=SimpleNamespace(model_type=family)),
+        is_audio = audio,
+        is_vlm = False,
+        is_audio_vlm = False,
+        model = SimpleNamespace(config = SimpleNamespace(model_type = family)),
     )
-    exec(compile(ast.Module(body=blocks, type_ignores=[]), str(source), "exec"),
-         {"os": os, "self": backend, "config_args": config})
+    exec(
+        compile(ast.Module(body = blocks, type_ignores = []), str(source), "exec"),
+        {"os": os, "self": backend, "config_args": config},
+    )
     assert config.get("ddp_find_unused_parameters") is expected
 
 
@@ -98,7 +103,7 @@ def test_launcher_relays_one_terminal_error_with_original_rank_and_cause(monkeyp
             return threading.Event()
 
         def Value(self, _kind, value):
-            return SimpleNamespace(value=value)
+            return SimpleNamespace(value = value)
 
         def dict(self):
             return self.failures
@@ -130,9 +135,9 @@ def test_launcher_relays_one_terminal_error_with_original_rank_and_cause(monkeyp
     events = _Events()
 
     ddp.run_ddp_training_process(
-        event_queue=events,
-        stop_queue=queue.Queue(),
-        config={"resolved_gpu_ids": [0, 1, 2]},
+        event_queue = events,
+        stop_queue = queue.Queue(),
+        config = {"resolved_gpu_ids": [0, 1, 2]},
     )
 
     assert events.items == [
@@ -200,7 +205,15 @@ def test_rank_config_carries_full_ddp_world_size(monkeypatch):
     worker_module.run_training_process = lambda **kwargs: captured.append(kwargs["config"])
     monkeypatch.setitem(sys.modules, "core.training.worker", worker_module)
 
-    ddp._rank_entry(1, {"resolved_gpu_ids": [2, 4, 7], "_ddp_common_dtype": "bf16"}, _Events(), threading.Event(), SimpleNamespace(value=True), 12345, {})
+    ddp._rank_entry(
+        1,
+        {"resolved_gpu_ids": [2, 4, 7], "_ddp_common_dtype": "bf16"},
+        _Events(),
+        threading.Event(),
+        SimpleNamespace(value = True),
+        12345,
+        {},
+    )
 
     assert captured[0]["_ddp_world_size"] == 3
     assert captured[0]["resolved_gpu_ids"] == [4]
@@ -224,7 +237,7 @@ def test_common_cuda_dtype_requires_native_bf16_on_every_selected_gpu(
     monkeypatch.setattr(
         gpu_query,
         "run_nvidia_smi",
-        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=output),
+        lambda *args, **kwargs: SimpleNamespace(returncode = 0, stdout = output),
     )
     monkeypatch.setattr(ddp, "_nvidia_smi_child_env", lambda: {})
     assert ddp._common_cuda_dtype(gpu_ids) == expected
@@ -275,20 +288,20 @@ def test_progress_callback_preserves_aggregated_eval_loss_for_ddp(monkeypatch):
     monkeypatch.setenv("WORLD_SIZE", "4")
     events = _Events()
     progress = SimpleNamespace(
-        step=5,
-        loss=0.4,
-        learning_rate=0.001,
-        grad_norm=1.0,
-        num_tokens=100,
-        epoch=0.5,
-        eval_loss=0.8,
-        total_steps=20,
-        is_run_summary=False,
-        elapsed_seconds=2.0,
-        eta_seconds=10.0,
-        session_start_step=0,
-        status_message=None,
-        warnings=[],
+        step = 5,
+        loss = 0.4,
+        learning_rate = 0.001,
+        grad_norm = 1.0,
+        num_tokens = 100,
+        epoch = 0.5,
+        eval_loss = 0.8,
+        total_steps = 20,
+        is_run_summary = False,
+        elapsed_seconds = 2.0,
+        eta_seconds = 10.0,
+        session_start_step = 0,
+        status_message = None,
+        warnings = [],
     )
 
     _create_trainer_progress_callback(events)(progress)
@@ -300,20 +313,20 @@ def test_progress_callback_preserves_aggregated_eval_loss_for_ddp(monkeypatch):
 def test_progress_callback_leaves_single_gpu_eval_loss_unchanged():
     events = _Events()
     progress = SimpleNamespace(
-        step=5,
-        loss=0.4,
-        learning_rate=0.001,
-        grad_norm=1.0,
-        num_tokens=100,
-        epoch=0.5,
-        eval_loss=0.8,
-        total_steps=20,
-        is_run_summary=False,
-        elapsed_seconds=2.0,
-        eta_seconds=10.0,
-        session_start_step=0,
-        status_message=None,
-        warnings=[],
+        step = 5,
+        loss = 0.4,
+        learning_rate = 0.001,
+        grad_norm = 1.0,
+        num_tokens = 100,
+        epoch = 0.5,
+        eval_loss = 0.8,
+        total_steps = 20,
+        is_run_summary = False,
+        elapsed_seconds = 2.0,
+        eta_seconds = 10.0,
+        session_start_step = 0,
+        status_message = None,
+        warnings = [],
     )
 
     _create_trainer_progress_callback(events)(progress)

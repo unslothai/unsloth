@@ -19,14 +19,22 @@ from utils.hardware import hardware
 def _trainer_method(name):
     path = Path(__file__).resolve().parents[1] / "core" / "training" / "trainer.py"
     tree = ast.parse(path.read_text(encoding = "utf-8"))
-    trainer = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "UnslothTrainer")
-    method = next(node for node in trainer.body if isinstance(node, ast.FunctionDef) and node.name == name)
+    trainer = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "UnslothTrainer"
+    )
+    method = next(
+        node for node in trainer.body if isinstance(node, ast.FunctionDef) and node.name == name
+    )
     namespace = {"math": math, "world_size_from_env": world_size_from_env, "logger": MagicMock()}
     exec(compile(ast.Module([method], []), str(path), "exec"), namespace)
     return namespace[name]
 
 
-@pytest.mark.parametrize("world_size, samples, expected", [(1, 100, 39), (4, 100, 12), (4, 101, 12)])
+@pytest.mark.parametrize(
+    "world_size, samples, expected", [(1, 100, 39), (4, 100, 12), (4, 101, 12)]
+)
 def test_epoch_steps_account_for_distributed_sampler(monkeypatch, world_size, samples, expected):
     monkeypatch.setattr("core.training.dataset_bounds.os.environ", {"WORLD_SIZE": str(world_size)})
     assert _trainer_method("_calculate_total_steps")(None, samples, 2, 4, 3, 0) == expected
@@ -39,7 +47,9 @@ def test_explicit_max_steps_is_not_divided(monkeypatch):
 
 @pytest.mark.parametrize("should_save", [True, False])
 @pytest.mark.parametrize("should_stop, save_on_stop", [(False, True), (True, True), (True, False)])
-def test_finalization_only_writing_rank_mutates_auxiliary_files(should_save, should_stop, save_on_stop):
+def test_finalization_only_writing_rank_mutates_auxiliary_files(
+    should_save, should_stop, save_on_stop
+):
     trainer = MagicMock()
     trainer.args = SimpleNamespace(should_save = should_save)
     owner = SimpleNamespace(
@@ -58,7 +68,14 @@ def test_finalization_only_writing_rank_mutates_auxiliary_files(should_save, sho
     assert trainer._save_checkpoint.call_count == int(should_stop and save_on_stop)
 
 
-@pytest.mark.parametrize("device, rocm", [(hardware.DeviceType.CPU, False), (hardware.DeviceType.XPU, False), (hardware.DeviceType.CUDA, True)])
+@pytest.mark.parametrize(
+    "device, rocm",
+    [
+        (hardware.DeviceType.CPU, False),
+        (hardware.DeviceType.XPU, False),
+        (hardware.DeviceType.CUDA, True),
+    ],
+)
 def test_unsupported_ddp_rejected_before_vram_hook(monkeypatch, device, rocm):
     monkeypatch.setattr(hardware, "DEVICE", device)
     monkeypatch.setattr(hardware, "IS_ROCM", rocm)
