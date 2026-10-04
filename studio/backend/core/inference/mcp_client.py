@@ -2151,12 +2151,12 @@ def call_tool_sync(
     args: dict,
     timeout: Optional[float] = 300.0,
     use_oauth: bool = False,
-    oauth_client_id: Optional[str] = None,
-    oauth_client_secret: Optional[str] = None,
     cancel_event = None,
     scope: Optional[str] = None,
     config_check = None,
     ui_resource_uri: Optional[str] = None,
+    oauth_client_id: Optional[str] = None,
+    oauth_client_secret: Optional[str] = None,
 ) -> str:
     """Call one MCP tool and return its flattened text/image result. Never raises: every failure comes
     back as an "Error: ..." string for the model.
@@ -2258,11 +2258,11 @@ def _ui_request_sync(
     *,
     timeout,
     use_oauth = False,
-    oauth_client_id = None,
-    oauth_client_secret = None,
     cancel_event = None,
     scope = None,
     config_check = None,
+    oauth_client_id = None,
+    oauth_client_secret = None,
 ) -> Any:
     """``dispatch(client)`` on the transport call_tool_sync would pick for this scope."""
 

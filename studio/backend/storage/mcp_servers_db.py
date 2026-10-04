@@ -81,11 +81,11 @@ def create_server(
     headers_json: Optional[str] = None,
     is_enabled: bool = True,
     use_oauth: bool = False,
-    oauth_client_id: Optional[str] = None,
-    oauth_client_secret: Optional[str] = None,
     builtin_id: Optional[str] = None,
     builtin_config_json: Optional[str] = None,
     image_input_mappings_json: Optional[str] = None,
+    oauth_client_id: Optional[str] = None,
+    oauth_client_secret: Optional[str] = None,
 ) -> None:
     from core.inference.mcp_client import validate_mcp_address
 
