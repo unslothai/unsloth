@@ -38,8 +38,7 @@ if not TRACE_LORA_FUNCTIONS:
 
 
 def _has_activation_fake_quantizer(proj):
-    # Fused LoRA skips per-layer activation fake quantizers (base and LoRA A/B), so QAT uses PEFT's forward.
-    # Explicit children + _modules: proj.modules() and getattr misses cost ~40 us per MLP call for every user.
+    # Fused LoRA skips per-layer activation fake quantizers; explicit children, as proj.modules() is slow per call.
     for module in (getattr(proj, "base_layer", proj), *proj.lora_A.values(), *proj.lora_B.values()):
         if module._modules.get("activation_fake_quantizer") is not None:
             return True
