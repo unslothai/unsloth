@@ -182,6 +182,22 @@ def test_jsonl_audio_references_are_rewritten_to_local_paths(monkeypatch, tmp_pa
     assert rows[0]["text"] == "one"
 
 
+def test_json_lines_in_a_json_manifest_are_rewritten(monkeypatch, tmp_path):
+    manifest = "".join(
+        json.dumps({"audio": name, "text": "hi"}) + "\n" for name in ("a.wav", "b.wav")
+    )
+    _install(
+        monkeypatch,
+        ["datasets/train.json", "datasets/a.wav", "datasets/b.wav"],
+        contents = {"datasets/train.json": manifest},
+    )
+    files = s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
+    assert [row["audio"] for row in _rows(files[0])] == [
+        str(tmp_path / "a.wav"),
+        str(tmp_path / "b.wav"),
+    ]
+
+
 def test_manifest_relative_references_resolve_against_the_manifest_dir(monkeypatch, tmp_path):
     # The manifest lives in a subdirectory and references a sibling by name.
     _install(

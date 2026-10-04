@@ -265,17 +265,20 @@ def _rewrite_row(row, resolve) -> None:
 
 
 def _rewrite_json_manifest(manifest_path: str, resolve) -> None:
-    if manifest_path.lower().endswith(".jsonl"):
-        with open(manifest_path, encoding = "utf-8") as f:
-            rows = [json.loads(line) for line in f if line.strip()]
+    with open(manifest_path, encoding = "utf-8") as f:
+        text = f.read()
+    try:
+        data = None if manifest_path.lower().endswith(".jsonl") else json.loads(text)
+    except json.JSONDecodeError:
+        data = None  # JSON Lines in a .json file, which the datasets json loader also accepts
+    if data is None:
+        rows = [json.loads(line) for line in text.splitlines() if line.strip()]
         for row in rows:
             _rewrite_row(row, resolve)
         with open(manifest_path, "w", encoding = "utf-8") as f:
             for row in rows:
                 f.write(json.dumps(row, ensure_ascii = False) + "\n")
         return
-    with open(manifest_path, encoding = "utf-8") as f:
-        data = json.load(f)
     if not isinstance(data, list):
         return  # column-oriented JSON: leave it alone rather than guess
     for row in data:
