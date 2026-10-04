@@ -21162,9 +21162,12 @@ async def voice_load_model(
 async def voice_unload_model(current_subject: str = Depends(get_current_subject)):
     """Unload whatever model is in the voice slot."""
     from core.inference.gpu_arbiter import require_no_foreign_generations
+    from core.inference.llama_cpp import voice_load_active
 
     voice_backend = get_voice_llama_backend()
-    if not voice_backend.is_active:
+    # A load still resolving or downloading has no process yet; unload_model sets the cancel
+    # event that download loop polls, so the explicit unload is not lost on it.
+    if not voice_backend.is_active and not voice_load_active():
         return {"status": "not_loaded"}
     # One slot for every account: another account mid-generation keeps its voice, as /unload does.
     scope = account_access.account_scope()

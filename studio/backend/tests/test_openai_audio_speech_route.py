@@ -1289,6 +1289,30 @@ def test_voice_load_undoes_itself_when_the_gpu_changed_hands_during_the_spawn():
     assert "status_code = 409" in source[recheck:]
 
 
+def test_voice_unload_cancels_a_load_that_has_not_spawned_yet(monkeypatch):
+    """/voice/unload during the GGUF download answered not_loaded (no process yet) and left the
+    in-flight load to finish onto the GPU after an explicit unload."""
+    from core.inference.llama_cpp import voice_load_in_flight
+
+    calls = []
+    voice = type(
+        "Voice",
+        (),
+        {
+            "is_active": False,
+            "model_identifier": "voice.gguf",
+            "unload_model": lambda self: calls.append("unload") or True,
+        },
+    )()
+    monkeypatch.setattr(routes_module, "get_voice_llama_backend", lambda: voice)
+    monkeypatch.setattr(routes_module.account_access, "account_scope", lambda: None)
+    assert asyncio.run(routes_module.voice_unload_model("s")) == {"status": "not_loaded"}
+    assert calls == []
+    with voice_load_in_flight():
+        assert asyncio.run(routes_module.voice_unload_model("s"))["status"] == "unloaded"
+    assert calls == ["unload"]
+
+
 def test_voice_load_rejects_a_context_above_the_requestable_ceiling():
     """/voice/load models its load as a chat LoadRequest for the training-coexistence
     guard, and that model caps max_seq_length at MAX_REQUESTABLE_CONTEXT. Without the
