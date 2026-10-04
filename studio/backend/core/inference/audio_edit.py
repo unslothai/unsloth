@@ -125,8 +125,14 @@ def check_instructions(
             return MISMATCH
         if not all(_collapse(n) and _collapse(n) in after for n in news):
             return MISMATCH
+        # Against the running bag, not the transcript: a second "Delete 'one'." with one "one"
+        # left, or an anchor an earlier instruction removed, has nothing for the runtime to do.
+        if not all(words[token] > 0 for o in olds for token in o.split()):
+            return MISMATCH
         for phrase in removed:
             words.subtract(phrase.split())
+        if any(count < 0 for count in words.values()):
+            return MISMATCH
         for phrase in news:
             words.update(phrase.split())
     if +words != Counter(after.split()):

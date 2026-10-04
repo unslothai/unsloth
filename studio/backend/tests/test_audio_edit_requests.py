@@ -288,6 +288,10 @@ def test_check_instructions():
         (["Replace 'human' with 'robot'."], EDITED, mismatch),
         (["Delete 'Okay,'."], ORIGINAL.replace("Okay, I'm", "I'm Okay,"), mismatch),
         (["Replace 'human' with 'robot'."], ORIGINAL.replace("human", "robot"), None),
+        # A removal the running bag cannot pay for: the second delete has nothing left to delete,
+        # and the insert's anchor was deleted by the instruction before it.
+        (["Delete 'human'.", "Delete 'human'."], ORIGINAL.replace("a human voice", "a voice"), mismatch),
+        (["Delete 'human'.", "Insert 'robot' before 'human'."], ORIGINAL.replace("human", "robot"), mismatch),
     ):
         check = audio_edit.check_instructions(instructions, ORIGINAL, edited, 5, "FireRedAudio")
         assert check == problem, instructions
