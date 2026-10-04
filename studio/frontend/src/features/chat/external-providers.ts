@@ -2,6 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type {
+  ConnectionApiType,
+  ProviderApiType,
   ProviderAuthKind,
   ProviderAuthStatus,
 } from "./api/providers-api";
@@ -15,6 +17,8 @@ export interface ExternalProviderConfig {
   name: string;
   /** Provider base URL (default from registry or backend-saved override). */
   baseUrl: string;
+  apiType?: ProviderApiType;
+  decisionsOnly?: boolean;
   /** Model ids user enabled from `/api/providers/models`. */
   models: string[];
   /** Cached available model ids from the provider's /models response. */
@@ -40,6 +44,8 @@ export interface ExternalProviderConfig {
   promptCacheTtl?: "5m" | "1h";
   /** User-pinned: the loaded vLLM model supports `enable_thinking`. */
   isReasoningModel?: boolean;
+  /** llama.cpp only, this browser only: reload models on connect and reconnect. */
+  autoReloadModels?: boolean;
   /** Default idle-timeout (minutes) for new OpenAI shell containers. Pre-fills the create dialog
    *  and is the TTL the auto-create-per-thread path POSTs. OpenAI's hard default is 20. */
   openaiContainerTtlMinutes?: number;
@@ -47,12 +53,13 @@ export interface ExternalProviderConfig {
   updatedAt: number;
 }
 
-// Gemini supports prompt caching, but the wire flow needs a separate POST to
+// Providers whose caching setting is kept and sent; `promptCachingAppliesToModel` decides where
+// the switch shows. Gemini supports prompt caching, but the wire flow needs a separate POST to
 // /v1beta/cachedContents before generateContent can reference the cache. Until that two-step
-// flow ships, keep the picker off so the toggle does not silently no-op for Gemini. See
+// flow ships, keep it out so the toggle does not silently no-op for Gemini. See
 // https://ai.google.dev/gemini-api/docs/caching.
 // The enable_prompt_caching boolean alone is not enough.
-const PROMPT_CACHING_PROVIDER_TYPES = new Set(["openai", "anthropic"]);
+const PROMPT_CACHING_PROVIDER_TYPES = new Set(["openai", "anthropic", "openrouter"]);
 
 export function supportsProviderPromptCaching(
   providerType: string | null | undefined,
@@ -61,15 +68,43 @@ export function supportsProviderPromptCaching(
 }
 
 /** Whether the provider lets the user choose between a short and long prompt-cache pool.
- *  Anthropic exposes 5m and 1h ephemeral pools via `cache_control.ttl`; OpenAI's automatic
- *  cache has no equivalent knob. */
-const PROMPT_CACHE_TTL_PROVIDER_TYPES = new Set(["anthropic"]);
+ *  Anthropic exposes 5m and 1h ephemeral pools via `cache_control.ttl` (OpenRouter forwards it
+ *  for Claude models); OpenAI's automatic cache has no equivalent knob. */
+const PROMPT_CACHE_TTL_PROVIDER_TYPES = new Set(["anthropic", "openrouter"]);
 
 export function supportsProviderPromptCacheTtl(
   providerType: string | null | undefined,
 ): boolean {
   return (
     providerType != null && PROMPT_CACHE_TTL_PROVIDER_TYPES.has(providerType)
+  );
+}
+
+// OpenRouter acts on the cache settings only for Claude; its other models cache automatically.
+function cacheSettingsApplyToModel(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): boolean {
+  return providerType !== "openrouter" || /^~?anthropic\//i.test(modelId ?? "");
+}
+
+export function promptCachingAppliesToModel(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): boolean {
+  return (
+    supportsProviderPromptCaching(providerType) &&
+    cacheSettingsApplyToModel(providerType, modelId)
+  );
+}
+
+export function promptCacheTtlAppliesToModel(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): boolean {
+  return (
+    supportsProviderPromptCacheTtl(providerType) &&
+    cacheSettingsApplyToModel(providerType, modelId)
   );
 }
 
@@ -89,6 +124,26 @@ export function supportsProviderReasoningToggle(
   return (
     providerType != null && REASONING_TOGGLE_PROVIDER_TYPES.has(providerType)
   );
+}
+
+const DECISION_PROVIDER_TYPES = new Set(["typesafe", "liquid"]);
+
+export function isDecisionConnection(
+  provider: Pick<ExternalProviderConfig, "providerType" | "decisionsOnly">,
+): boolean {
+  return (
+    provider.decisionsOnly === true ||
+    DECISION_PROVIDER_TYPES.has(provider.providerType)
+  );
+}
+
+export function connectionApiFields(
+  apiType: ConnectionApiType | undefined,
+): Pick<ExternalProviderConfig, "apiType" | "decisionsOnly"> {
+  return {
+    apiType: apiType === "responses" ? "responses" : "chat_completions",
+    decisionsOnly: apiType === "systemone",
+  };
 }
 
 // Known text-only providers on their main chat endpoint.
@@ -518,6 +573,7 @@ function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig 
     providerType,
     name: raw.name.trim(),
     baseUrl: raw.baseUrl.trim(),
+    apiType: raw.apiType === "responses" ? "responses" : "chat_completions",
     models: raw.models
       .map((model) => model.trim())
       .filter((model) => model.length > 0),
@@ -542,6 +598,8 @@ function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig 
     isReasoningModel: supportsProviderReasoningToggle(providerType)
       ? raw.isReasoningModel === true
       : undefined,
+    autoReloadModels:
+      providerType === "llama_cpp" ? raw.autoReloadModels === true : undefined,
     openaiContainerTtlMinutes:
       providerType === "openai" &&
       typeof raw.openaiContainerTtlMinutes === "number" &&

@@ -25,9 +25,15 @@ request land in the SAME group. Neither is the whole invariant:
 
 So this file asks the remaining question, of every pull-request-triggered workflow rather
 than of the main-push ones: on a pull request ref, does ``cancel-in-progress`` evaluate
-true? ``cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}`` is the repo's usual
-form and it is an expression, not a literal, so it is rendered rather than grepped -- the
-reversed form is the same substrings in the same order and means the opposite.
+true? ``cancel-in-progress: ${{ github.event_name == 'pull_request' }}`` is the repo's
+usual form and it is an expression, not a literal, so it is rendered rather than grepped --
+the reversed form is the same substrings in the same order and means the opposite.
+
+It also asks the converse: every run that is NOT a superseded pull request push must finish.
+Pushes to main, schedules, and manual or repository dispatches share their group with the
+next run of the same kind, and a truthy ``cancel-in-progress`` there lets a second dispatch
+on a branch, or a dispatch on main, kill a run somebody started on purpose. Keying the
+setting on the event rather than on the ref is what keeps those runs alive on every ref.
 
 Three workflows are exempt and each says why at its own ``concurrency:`` block. They are
 listed below with the reason restated, because an exemption whose justification lives only
@@ -102,19 +108,24 @@ def _condition(text: str, context: dict[str, str]) -> bool:
     return left == right if match.group(2) == "==" else left != right
 
 
-def _context(ref: str) -> dict[str, str]:
+def _context(ref: str, event_name: str = "pull_request") -> dict[str, str]:
     return {
         "github.workflow": "a-workflow",
         "github.ref": ref,
         "github.sha": "a" * 40,
-        "github.event_name": "pull_request",
+        "github.event_name": event_name,
         "github.repository": "unslothai/unsloth",
         "github.ref_name": ref.rsplit("/", 1)[-1],
     }
 
 
-def _cancels(value, *, ref: str) -> bool:
-    """Whether ``cancel-in-progress: <value>`` is truthy for a run on ``ref``.
+def _cancels(
+    value,
+    *,
+    ref: str,
+    event_name: str = "pull_request",
+) -> bool:
+    """Whether ``cancel-in-progress: <value>`` is truthy for a ``event_name`` run on ``ref``.
 
     A literal ``true`` is a bool once YAML has read it. Everything else in this repo is an
     expression, and an expression is the case worth evaluating: the whole of
@@ -129,7 +140,7 @@ def _cancels(value, *, ref: str) -> bool:
     if not match:
         raise Unparsed(text)
     body = match.group(1).strip()
-    context = _context(ref)
+    context = _context(ref, event_name)
     ternary = _TERNARY.fullmatch(body)
     if ternary:
         taken = ternary.group(2) if _condition(ternary.group(1), context) else ternary.group(3)
@@ -201,7 +212,7 @@ def test_every_pull_request_workflow_cancels_the_superseded_run():
     assert not offenders, (
         f"{offenders} do not cancel in progress on a pull request ref, so a push that "
         f"supersedes a RUNNING job leaves it holding its runners to completion. Either set "
-        f"cancel-in-progress: ${{{{ github.ref != 'refs/heads/main' }}}}, or add the file to "
+        f"cancel-in-progress: ${{{{ github.event_name == 'pull_request' }}}}, or add the file to "
         f"EXEMPT in {Path(__file__).name} with the reason it must not be cancelled."
     )
 
@@ -221,13 +232,64 @@ def test_cancelling_is_still_gated_off_main():
         if not (isinstance(push, dict) and "main" in (push.get("branches") or [])):
             continue
         try:
-            if _cancels(_cancel_setting(document), ref = MAIN):
+            if _cancels(_cancel_setting(document), ref = MAIN, event_name = "push"):
                 offenders[name] = _cancel_setting(document)
         except Unparsed:
             continue
     assert not offenders, (
         f"{offenders} also run on pushes to main and cancel in progress there, so a merge "
-        f"burst kills the main run mid-flight. Gate it on github.ref != 'refs/heads/main'."
+        f"burst kills the main run mid-flight. Gate it on github.event_name == 'pull_request'."
+    )
+
+
+# Where each non-pull-request trigger can run. schedule and repository_dispatch always run on
+# the default branch. workflow_dispatch runs on whatever ref the person picked, a tag included.
+# push is taken from the workflow's own branch filter.
+_DISPATCH_REFS = ("refs/heads/main", "refs/heads/a-feature-branch", "refs/tags/v2026.9.1")
+_DEFAULT_BRANCH_ONLY = ("schedule", "repository_dispatch")
+
+
+def _non_pull_request_runs(triggers: dict):
+    for event in _DEFAULT_BRANCH_ONLY:
+        if event in triggers:
+            yield event, MAIN
+    if "workflow_dispatch" in triggers:
+        for ref in _DISPATCH_REFS:
+            yield "workflow_dispatch", ref
+    push = triggers.get("push")
+    if "push" in triggers:
+        branches = (push or {}).get("branches") if isinstance(push, dict) else None
+        tags = (push or {}).get("tags") if isinstance(push, dict) else None
+        for branch in branches or ["main", "a-feature-branch"]:
+            yield "push", f"refs/heads/{branch}"
+        for tag in tags or []:
+            yield "push", f"refs/tags/{tag}"
+
+
+def test_only_a_superseded_pull_request_run_is_cancelled():
+    """The converse of the rule above: nothing a person or a clock started is killed.
+
+    A push to main, a nightly, and a manual dispatch are each the only run of their kind that
+    somebody is waiting on. ``github.ref != 'refs/heads/main'`` kept main pushes alive but was
+    still truthy for a dispatch on a branch or a tag, and a literal ``true`` also cancelled a
+    running nightly when someone dispatched the same workflow on main. Rendered per trigger and
+    per ref the trigger can actually run on.
+    """
+    offenders = {}
+    for name, document in _scanned().items():
+        triggers = document.get(True) or document.get("on") or {}
+        if not isinstance(triggers, dict):
+            continue
+        try:
+            for event, ref in _non_pull_request_runs(triggers):
+                if _cancels(_cancel_setting(document), ref = ref, event_name = event):
+                    offenders.setdefault(name, []).append(f"{event}@{ref}")
+        except Unparsed:
+            continue  # Reported by test_every_cancel_expression_is_understood.
+    assert not offenders, (
+        f"{offenders} cancel a running job that is not a superseded pull request push. Use "
+        f"cancel-in-progress: ${{{{ github.event_name == 'pull_request' }}}} so pushes to main, "
+        f"schedules and dispatches always run to completion."
     )
 
 
@@ -265,6 +327,16 @@ def test_the_evaluator_reads_the_direction_of_the_comparison():
     assert _cancels(True, ref = A_PULL_REQUEST)
     assert not _cancels(False, ref = A_PULL_REQUEST)
     assert not _cancels(None, ref = A_PULL_REQUEST), "absent means false, which is the default"
+
+    # Keyed on the event: true for a pull request on any ref, false for everything else,
+    # main included.
+    by_event = "${{ github.event_name == 'pull_request' }}"
+    assert _cancels(by_event, ref = A_PULL_REQUEST)
+    assert not _cancels(by_event, ref = MAIN, event_name = "push")
+    assert not _cancels(by_event, ref = "refs/heads/a-feature-branch", event_name = "workflow_dispatch")
+    assert not _cancels(by_event, ref = MAIN, event_name = "schedule")
+    # ... which the ref-keyed form gets wrong for a dispatch off main.
+    assert _cancels(gated, ref = "refs/heads/a-feature-branch", event_name = "workflow_dispatch")
 
     # The ternary form, which renders to a string rather than to a bool.
     ternary = "${{ github.ref == 'refs/heads/main' && 'false' || 'true' }}"

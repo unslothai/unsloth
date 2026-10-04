@@ -35,7 +35,11 @@ export interface ProviderRegistryEntry {
   model_ids_editable?: boolean;
 }
 
+export type ProviderApiType = "chat_completions" | "responses";
+export type ConnectionApiType = ProviderApiType | "systemone";
+
 export interface ProviderConfig {
+  api_type?: ConnectionApiType;
   id: string;
   provider_type: string;
   display_name: string;
@@ -202,6 +206,7 @@ export async function createProviderConfig(payload: {
   providerType: string;
   displayName: string;
   baseUrl?: string | null;
+  apiType?: ConnectionApiType;
   models?: string[];
   availableModels?: string[];
   maxOutputTokens?: number | null;
@@ -215,6 +220,7 @@ export async function createProviderConfig(payload: {
         provider_type: payload.providerType,
         display_name: payload.displayName,
         base_url: payload.baseUrl ?? null,
+        ...(payload.apiType === undefined ? {} : { api_type: payload.apiType }),
         models: payload.models ?? [],
         available_models: payload.availableModels ?? [],
         ...(payload.maxOutputTokens === undefined
@@ -247,6 +253,7 @@ export async function updateProviderConfig(
   payload: {
     displayName?: string;
     baseUrl?: string | null;
+    apiType?: ConnectionApiType;
     isEnabled?: boolean;
     models?: string[];
     availableModels?: string[];
@@ -262,6 +269,7 @@ export async function updateProviderConfig(
       body: JSON.stringify({
         ...(payload.displayName === undefined ? {} : { display_name: payload.displayName }),
         ...(payload.baseUrl === undefined ? {} : { base_url: payload.baseUrl }),
+        ...(payload.apiType === undefined ? {} : { api_type: payload.apiType }),
         ...(payload.isEnabled === undefined ? {} : { is_enabled: payload.isEnabled }),
         ...(payload.models === undefined ? {} : { models: payload.models }),
         ...(payload.availableModels === undefined
@@ -320,6 +328,7 @@ export async function testProviderConnection(payload: {
   providerId?: string | null;
   apiKey: string;
   baseUrl?: string | null;
+  apiType?: ConnectionApiType;
   modelId?: string | null;
 }): Promise<ProviderTestResult> {
   return withApiKeyEncryptionRetry(payload.apiKey, async (encryptedApiKey) => {
@@ -332,6 +341,7 @@ export async function testProviderConnection(payload: {
         provider_id: payload.providerId ?? null,
         encrypted_api_key: encryptedApiKey,
         base_url: payload.baseUrl ?? null,
+        ...(payload.apiType === undefined ? {} : { api_type: payload.apiType }),
         model_id: payload.modelId ?? null,
       }),
     });
@@ -345,6 +355,7 @@ export async function listProviderModels(payload: {
   providerId?: string | null;
   apiKey: string;
   baseUrl?: string | null;
+  apiType?: ConnectionApiType;
 }): Promise<ProviderModelInfo[]> {
   return withApiKeyEncryptionRetry(payload.apiKey, async (encryptedApiKey) => {
     const response = await authFetch("/api/providers/models", {
@@ -356,6 +367,7 @@ export async function listProviderModels(payload: {
         provider_id: payload.providerId ?? null,
         encrypted_api_key: encryptedApiKey,
         base_url: payload.baseUrl ?? null,
+        ...(payload.apiType === undefined ? {} : { api_type: payload.apiType }),
       }),
     });
     return parseJsonOrThrow<ProviderModelInfo[]>(response);
@@ -372,6 +384,7 @@ export async function listProviderModelCapabilities(payload: {
   providerId?: string | null;
   apiKey: string;
   baseUrl?: string | null;
+  apiType?: ProviderApiType;
 }): Promise<ProviderModelCapabilityInfo[]> {
   return withApiKeyEncryptionRetry(payload.apiKey, async (encryptedApiKey) => {
     const response = await authFetch("/api/providers/model-capabilities", {
@@ -382,6 +395,7 @@ export async function listProviderModelCapabilities(payload: {
         provider_id: payload.providerId ?? null,
         encrypted_api_key: encryptedApiKey,
         base_url: payload.baseUrl ?? null,
+        ...(payload.apiType === undefined ? {} : { api_type: payload.apiType }),
       }),
     });
     return parseJsonOrThrow<ProviderModelCapabilityInfo[]>(response);

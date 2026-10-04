@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import ts from "typescript";
 import { readSrc } from "./helpers/kit.ts";
-import { composerSubmitIntent } from "../src/features/chat/utils/composer-preferences.ts";
+import {
+  composerKeyEventForImeSubmit,
+  composerSubmitIntent,
+  imeKeydownBlocksComposerSubmit,
+} from "../src/features/chat/utils/composer-preferences.ts";
 
 const text = readSrc("components/assistant-ui/thread.tsx");
 const source = ts.createSourceFile(
@@ -43,6 +47,12 @@ const releaseCallback = lift(
       .getText(source)
       .includes("const behavior = pendingFollowUpBehaviorRef.current;"),
 );
+const reservedSendCallback = lift(
+  (n) =>
+    ts.isArrowFunction(n) &&
+    n.getText(source).startsWith("(...alsoGuard: string[]) =>") &&
+    n.getText(source).includes("reservePreStreamRun"),
+);
 function createCallback(
   code: string,
   deps: Record<string, unknown>,
@@ -54,13 +64,18 @@ test("the shipped main composer key handler protects IME and mention selection",
   let submits = 0;
   let prevented = 0;
   const composingRef = { current: false };
+  const imeSessionOpenRef = { current: false };
   const skipEnterRef = { current: false };
   const deps = {
     composerSubmitIntent,
+    composerKeyEventForImeSubmit,
+    imeKeydownBlocksComposerSubmit,
     sendShortcut: "mod-enter",
     submitOnEnter: true,
     skipEnterRef,
     composingRef,
+    imeSessionOpenRef,
+    compositionEndedAtRef: { current: -Infinity },
     justSentRef: undefined,
     refreshStuckTimer: () => undefined,
     setCompositionState: (value: boolean) => {
@@ -98,6 +113,60 @@ test("the shipped main composer key handler protects IME and mention selection",
   onKey(event);
   assert.equal(submits, 1);
   assert.ok(prevented > 0);
+});
+
+test("idle IME Enter sends, the WebKit candidate-confirming Enter does not (#12137)", () => {
+  let submits = 0;
+  const composingRef = { current: false };
+  const imeSessionOpenRef = { current: false };
+  const compositionEndedAtRef = { current: -Infinity };
+  const deps = {
+    composerSubmitIntent,
+    composerKeyEventForImeSubmit,
+    imeKeydownBlocksComposerSubmit,
+    sendShortcut: "enter",
+    submitOnEnter: true,
+    skipEnterRef: { current: false },
+    composingRef,
+    imeSessionOpenRef,
+    compositionEndedAtRef,
+    justSentRef: undefined,
+    refreshStuckTimer: () => undefined,
+    setCompositionState: (value: boolean) => {
+      composingRef.current = value;
+    },
+    onSubmitKey: () => {
+      submits += 1;
+    },
+  };
+  const onKey = createCallback(keyCallback, deps) as unknown as (
+    event: Record<string, unknown>,
+  ) => void;
+  const imeEnter = (timeStamp: number) => ({
+    key: "Enter",
+    metaKey: false,
+    ctrlKey: false,
+    shiftKey: false,
+    altKey: false,
+    keyCode: 229,
+    timeStamp,
+    nativeEvent: { isComposing: false },
+    preventDefault: () => undefined,
+  });
+  // Chromium: keydown inside the session.
+  imeSessionOpenRef.current = true;
+  onKey({ ...imeEnter(1000), nativeEvent: { isComposing: true } });
+  assert.equal(submits, 0);
+  // WebKit: compositionend, then the committing keydown.
+  imeSessionOpenRef.current = false;
+  composingRef.current = false;
+  compositionEndedAtRef.current = 1995;
+  onKey(imeEnter(2000));
+  assert.equal(submits, 0);
+  assert.equal(composingRef.current, true);
+  onKey(imeEnter(2100));
+  assert.equal(submits, 1);
+  assert.equal(composingRef.current, false);
 });
 
 for (const active of ["runtime", "pre-stream", "queue", "idle"]) {
@@ -145,17 +214,64 @@ for (const active of ["runtime", "pre-stream", "queue", "idle"]) {
     release(); // An old render cannot release a cancelled/consumed send twice.
     assert.deepEqual(
       calls,
-      active === "idle" ? ["clear", "send"] : [[active !== "queue", "steer"]],
+      active === "idle"
+        ? ["clear", "send"]
+        : [[active !== "queue", "steer"]],
     );
     assert.equal(pendingSendRef.current, false);
   });
 }
 
+test("main cancels an audio upload only after a normal send reservation succeeds", () => {
+  const run = (reservationToken: symbol | null) => {
+    const calls: string[] = [];
+    const deps = {
+      aui: {
+        threads: () => ({ __internal_getAssistantRuntime: () => undefined }),
+        composer: () => ({
+          getState: () => ({ text: "Draft" }),
+          send: () => calls.push("send"),
+        }),
+      },
+      reservePreStreamRun: () => reservationToken,
+      preStreamThreadIds: ["chat"],
+      parseExternalModelId: () => null,
+      useChatRuntimeStore: {
+        getState: () => ({
+          params: { checkpoint: "local/model" },
+          incognito: false,
+          activeGgufVariant: null,
+        }),
+      },
+      preStreamRunReservationRef: { current: null },
+      toast: { error: () => calls.push("refused") },
+      cancelAudioUpload: () => calls.push("cancel-upload"),
+      claimThreadCreation: () => calls.push("claim"),
+      projectScope: null,
+      armJustSent: () => calls.push("arm"),
+      releasePreStreamRunReservation: () => true,
+      notifyPromptQueueRunFailed: () => undefined,
+      referenceThreadId: "chat",
+    };
+    const send = createCallback(reservedSendCallback, deps);
+    send();
+    return calls;
+  };
+
+  assert.deepEqual(run(null), ["refused"]);
+  assert.deepEqual(run(Symbol("reservation")), [
+    "cancel-upload",
+    "claim",
+    "send",
+    "arm",
+  ]);
+});
+
 test("main, edit and comparison composers use the setting and expose settings access", () => {
   assert.match(text, /submitMode="none"/);
   assert.match(
     text,
-    /submitMode=\{sendShortcut === "mod-enter" \? "ctrlEnter" : "enter"\}/,
+    /effectiveSendShortcut\(sendShortcut, editMultiline \? "\\n" : ""\) === "mod-enter"\s*\? "ctrlEnter"\s*: "enter"/,
   );
   assert.match(
     text,
@@ -163,7 +279,10 @@ test("main, edit and comparison composers use the setting and expose settings ac
   );
   assert.match(text, /scrollTarget: "chat-composer"/);
   const compare = readSrc("features/chat/shared-composer.tsx");
-  assert.match(compare, /composerSubmitIntent\(e, sendShortcut\)/);
+  assert.match(
+    compare,
+    /composerSubmitIntent\(\s*imeKey \? composerKeyEventForImeSubmit\(e\) : e,\s*sendShortcut,\s*text,?\s*\)/,
+  );
   assert.match(compare, /scrollTarget: "chat-composer"/);
   const page = readSrc("features/chat/chat-page.tsx");
   assert.match(page, /showContextWindowUsage &&\s*view.mode === "single"/);

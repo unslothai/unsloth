@@ -3,6 +3,7 @@
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { openLink } from "@/lib/open-link";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -189,7 +190,7 @@ export function OpenAICodexConnect({
             type="button"
             size="sm"
             variant="outline"
-            onClick={() => void navigator.clipboard.writeText(flow.user_code || "")}
+            onClick={() => void copyToClipboard(flow.user_code || "")}
           >
             Copy code
           </Button>

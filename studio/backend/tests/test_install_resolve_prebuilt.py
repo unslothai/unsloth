@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextlib
 import ctypes
 import dataclasses
+import hashlib
 import importlib
 import json
 import ntpath
@@ -394,11 +395,21 @@ def test_sm103_host_drops_cuda128_windows_build():
     assert [a.name for a in kept_b200] == [cuda128.name, cuda129.name]
 
 
+def _fixture_digest(name: str) -> str:
+    """Stand-in for the digest GitHub publishes; a fixture without one selects nothing."""
+    return hashlib.sha256(name.encode()).hexdigest()
+
+
 def _upstream_release(tag, asset_names):
     return {
         "tag_name": tag,
         "assets": [
-            {"name": n, "browser_download_url": f"https://example/{n}"} for n in asset_names
+            {
+                "name": n,
+                "browser_download_url": f"https://example/{n}",
+                "digest": f"sha256:{_fixture_digest(n)}",
+            }
+            for n in asset_names
         ],
     }
 
@@ -1355,6 +1366,26 @@ def test_route_to_vulkan_prebuilt_auto_fallback_when_no_amd_gpu_reaches_floor():
     assert repo == FORK
     assert persist == "auto"
     assert routed.has_rocm is False
+
+
+def test_a_lone_rdna1_card_takes_the_vulkan_route(monkeypatch):
+    # RDNA 1 has ROCm torch (#11614) but no HIP llama.cpp prebuilt: route to Vulkan.
+    for var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(var, raising = False)
+    host = _windows_amd_host(rocm_gfx_target = "gfx1010", rocm_gfx_targets = ["gfx1010"])
+    assert ilp._should_auto_vulkan_for_amd_windows(host, FORK) is True
+    routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
+    assert repo == FORK
+    assert persist == "auto"
+    assert routed.has_rocm is False
+
+
+def test_rdna1_beside_a_hip_capable_card_keeps_the_hip_bundle(monkeypatch):
+    # Mixed host keeps the HIP prebuilt: Vulkan would enumerate both cards.
+    for var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(var, raising = False)
+    host = _windows_amd_host(rocm_gfx_target = "gfx1010", rocm_gfx_targets = ["gfx1010", "gfx1034"])
+    assert ilp._should_auto_vulkan_for_amd_windows(host, FORK) is False
 
 
 @pytest.mark.parametrize(

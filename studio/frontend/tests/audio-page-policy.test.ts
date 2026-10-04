@@ -141,9 +141,10 @@ test("native audio instruction fields match the runtime payload contract", () =>
 test("Audio sends model-specific duration and instruction payloads", () => {
   assert.match(
     audioPageSource,
-    /musicGeneration\s*\? minimaxMusicFramesForSeconds\(minimaxMaxSeconds\)/,
+    /musicGeneration\s*\? minimaxMusicFramesForSeconds\(musicSeconds\)/,
   );
-  assert.match(audioPageSource, /max=\{MINIMAX_MUSIC_MAX_SECONDS\}/);
+  // The range is per model: MiniMax Music 3 up to 360 s, audio.cpp up to its backend clamp.
+  assert.match(audioPageSource, /max=\{musicRange\.max\}/);
   assert.match(
     audioPageSource,
     /instructionsKind !== null && instructions[\s\S]*audio_instructions: instructions/,
@@ -376,8 +377,30 @@ test("gallery refresh preserves fallback selection and pagination identity", () 
   );
   assert.match(
     audioPageSource,
-    /listAudioGallery\([\s\S]*galleryCache\.nextCursor[\s\S]*galleryCache\.nextCursor =[\s\S]*page\.next_before_mtime[\s\S]*new Set\(galleryCache\.clips\.map[\s\S]*filter\(\(clip\) => !known\.has\(clip\.id\)\)/,
+    /listAudioGallery\([\s\S]*galleryCache\.nextCursor[\s\S]*galleryCache\.nextCursor = audioGalleryCursor\(page\)[\s\S]*new Set\(galleryCache\.clips\.map[\s\S]*filter\(\(clip\) => !known\.has\(clip\.id\)\)/,
   );
+});
+
+test("a refresh that overlaps a pin or move is dropped and rerun after it", () => {
+  assert.match(
+    audioPageSource,
+    /const writeEpoch = orderWrites\.current\.epoch;[\s\S]*listAudioGallery\(\s*0,[\s\S]*orderWrites\.current\.inFlight > 0 \|\| orderWrites\.current\.epoch !== writeEpoch[\s\S]*orderWrites\.current\.deferred = true;\s*return page\.audio;/,
+  );
+  assert.match(
+    audioPageSource,
+    /writes\.inFlight === 0 && writes\.deferred\) \{\s*writes\.deferred = false;\s*void refreshGallery\(/,
+  );
+  // A successful unpin with more pages unloaded resyncs the window.
+  assert.match(
+    audioPageSource,
+    /setAudioClipFlags\(id, \{ pinned \}\)\);\s*\/\/[^\n]*\n\s*if \(!pinned && galleryCache\.hasMore\) orderWrites\.current\.deferred = true;/,
+  );
+  for (const call of ["setAudioClipFlags(id, { pinned })", "moveAudioClip(id, afterId)"]) {
+    const at = audioPageSource.indexOf(call);
+    const before = audioPageSource.lastIndexOf("beginOrderWrite();", at);
+    const after = audioPageSource.indexOf("endOrderWrite();", at);
+    assert.ok(before > 0 && at - before < 400 && after > at, call);
+  }
 });
 
 test("Audio transcription uses backend language auto-detection", () => {

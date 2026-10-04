@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -94,7 +95,6 @@ def _env(home: Path, **overrides: str) -> dict[str, str]:
     return env
 
 
-@NEEDS_POSIX_BASH
 def _master_root_answer(tmp_path: Path, environment: str) -> str:
     """What uninstall.ps1's own _MasterRoot answers, with *environment* run before it.
 
@@ -123,6 +123,7 @@ foreach ($n in @("_ExpandTilde", "_MasterRoot")) {{
     return out
 
 
+@NEEDS_POSIX_BASH
 def test_a_master_root_puts_the_runtimes_beside_studio(tmp_path):
     root = tmp_path / "portable"
     (root / "studio").mkdir(parents = True)
@@ -749,14 +750,24 @@ def test_the_windows_inductor_cache_agrees_with_the_resolver():
     applies on Windows and the containment this branch is for does not happen there. It has to
     name the directory the resolver would have chosen. Two things still outrank that, and both
     are recorded here so a later edit cannot quietly drop them: long paths off keeps the short
-    drive-root directory for MAX_PATH headroom, and a path containing a space is refused for the
-    same reason storage_roots does, since the C++ builders paste it in unquoted.
+    drive-root directory for MAX_PATH headroom, and a path holding whitespace or an apostrophe is
+    refused for the same reason storage_roots.toolchain_path_unparseable refuses one, since the
+    C++ builders paste it in unquoted and reparse it with shlex in POSIX mode.
     """
     ps = SETUP_PS1.read_text(encoding = "utf-8")
     block = _slice(ps, "$TorchCacheDir = $null", "$env:TORCHINDUCTOR_CACHE_DIR = $TorchCacheDir")
     assert 'Join-Path (Join-Path $StudioHome "cache") "torchinductor"' in block
     assert "$LongPathsEnabled" in block
-    assert "'\\s'" in block or '"\\s"' in block, "the whitespace refusal is gone"
+    refusal = re.search(r"-notmatch\s+'(\[[^']*(?:''[^']*)*\])'", block)
+    assert refusal, "the unparseable-path refusal is gone"
+    assert "\\s" in refusal.group(1), "the whitespace refusal is gone"
+    assert "''" in refusal.group(1), "the apostrophe refusal is gone"
+    # The two refusals do NOT share a destination. A spaced path keeps the drive-root directory
+    # it has always used; an apostrophe-only path publishes nothing, because C:\tc is shared and
+    # predictable and _setup_cache_env honours an inherited value without applying its own
+    # per-account rule to it.
+    assert "$TorchCacheUnparseable" in block, "the apostrophe case lost its separate route"
+    assert "-not $TorchCacheUnparseable" in block
     assert '"C:\\tc"' in block
 
     roots = (REPO_ROOT / "studio" / "backend" / "utils" / "paths" / "storage_roots.py").read_text(
@@ -1053,6 +1064,59 @@ def test_the_windows_setup_records_the_master_root_for_the_uninstaller():
     assert "$noteTmp" in block and "Move-Item" in block
     # The 3-argument overwrite overload is .NET Core only, and setup.ps1 runs under 5.1.
     assert "[System.IO.File]::Move(" not in block
+
+
+def test_the_refused_windows_cache_path_is_taken_away_on_upgrade():
+    """Declining to write a value is not enough: the old one is already persisted.
+
+    Every setup before the refusal existed wrote an apostrophe-named account's contained path to
+    the USER environment, so on an upgrade it is already there for exactly the account the
+    refusal exists for, and every other process on that account still inherits it. The backend
+    refuses such a value for its own process; clearing it here is what stops it reaching the
+    rest. Only a value the builders cannot read is cleared, and only one this installer wrote.
+
+    And it has to clear on EVERY launch. The refusal itself lives inside
+    `if (-not $SkipPythonDeps)`, which a current core package and a verified UV_OFFLINE tree
+    both skip, so a cleanup nested in there would never reach that account. The clear needs
+    nothing that block computes, so it is hoisted out of it.
+    """
+    ps = SETUP_PS1.read_text(encoding = "utf-8")
+    body = _slice(
+        ps, "function Clear-UnparseableTorchCacheEnv {", "\nClear-UnparseableTorchCacheEnv"
+    )
+    code = "\n".join(line for line in body.splitlines() if not line.lstrip().startswith("#"))
+    assert "GetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', 'User')" in code, code
+    assert "[NullString]::Value, 'User'" in code, code
+    assert "Remove-Item -LiteralPath Env:TORCHINDUCTOR_CACHE_DIR" in code, code
+    # Both clears go through the one predicate, so shape and provenance cannot drift apart.
+    assert code.count("Test-UnparseableManagedTorchCache") == 2, code
+    predicate = _slice(
+        ps, "function Test-UnparseableManagedTorchCache", "\nfunction Clear-Unparseable"
+    )
+    rule = "\n".join(l for l in predicate.splitlines() if not l.lstrip().startswith("#"))
+    # Shape: a path the builders can read belongs to whoever set it.
+    assert "-notmatch '[\\s'']'" in rule, rule
+    # Provenance: and so does an unparseable path this installer never wrote. Comparing against
+    # the contained path this run computes is the only evidence available, since nothing records
+    # who set the variable.
+    assert "$Managed" in rule and "-ieq" in rule, rule
+    assert '$managedTorchCache = Join-Path (Join-Path $StudioHome "cache") "torchinductor"' in code
+    # A staged run never writes the real account's environment, as the persist below does not.
+    assert "-not $StageRoot" in code, code
+
+    # The call is outside the dependency block, measured by brace depth rather than by reading.
+    lines = ps.splitlines()
+    gate = lines.index("if (-not $SkipPythonDeps) {")
+    depth = 0
+    for close, line in enumerate(lines[gate:], start = gate):
+        depth += line.count("{") - line.count("}")
+        if depth == 0:
+            break
+    calls = [i for i, line in enumerate(lines) if line.strip() == "Clear-UnparseableTorchCacheEnv"]
+    assert calls, "nothing calls the cleanup"
+    assert any(
+        i < gate for i in calls
+    ), "the cleanup only runs on a dependency pass, which the fast paths skip"
 
 
 def test_the_windows_uninstaller_clears_the_inductor_path_it_persisted():

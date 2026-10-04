@@ -69,6 +69,7 @@ function SheetOverlay({
   return (
     <SheetPrimitive.Overlay
       data-slot="sheet-overlay"
+      data-viewport-backdrop={position === "fixed" ? true : undefined}
       className={cn(
         "data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 bg-black/30 duration-100 data-ending-style:opacity-0 data-starting-style:opacity-0 supports-backdrop-filter:backdrop-blur-[2px] inset-0 z-50",
         position === "fixed" ? "fixed" : "absolute",
@@ -88,6 +89,7 @@ function SheetContent({
   position = "fixed",
   overlayClassName,
   overlayPosition,
+  onInteractOutside,
   ...props
 }: React.ComponentProps<typeof SheetPrimitive.Content> & {
   side?: "top" | "right" | "bottom" | "left";
@@ -114,6 +116,12 @@ function SheetContent({
           position === "fixed" ? VIEWPORT_TOP_EDGE : CONTAINED_TOP_EDGE,
           className,
         )}
+        onInteractOutside={(event) => {
+          onInteractOutside?.(event);
+          if ((event.target as Element | null)?.closest?.("[data-sonner-toaster]")) {
+            event.preventDefault();
+          }
+        }}
         {...props}
       >
         <DialogPortalContainerContext.Provider value={contentEl}>

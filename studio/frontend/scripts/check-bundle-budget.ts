@@ -32,14 +32,13 @@ const DIST = resolve(HERE, "..", "dist");
  * machine.
  */
 export const BUDGET = {
-  // Measured, one machine and one build per side, so the pair is comparable to itself rather
-  // than to a runner's: 5,384.0 KB raw / 1,610.2 KB transfer at the merge base, leaving
-  // 211.7 KB and 64.6 KB spare. Both halves are re-measured TOGETHER, or each drags main red
-  // on its own; the previous four raises each bought a few kilobytes and were spent within
-  // days, charging the next PR for drift it did not cause. The eager set has not gained a
-  // member across any of it, so what runs out is headroom, not laziness.
-  transferBytes: 1_715_000,
-  rawBytes: 5_730_000,
+  // Re-measured together on one machine and build: 6,023.4 KB raw / 1,802.1 KB transfer at 5b78bafd04,
+  // plus the margin the previous raises chose (210.8 KB raw, 65.1 KB transfer). The growth since is
+  // the vLLM / SGLang engine options inside the model config page and Resources tab (#11491), which
+  // live inline in the chat and settings chunks: lazy-loading the separable inference-engines
+  // module recovers only 0.6 KB transfer, so what ran out is headroom, not laziness.
+  transferBytes: 1_912_000,
+  rawBytes: 6_384_000,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
@@ -461,7 +460,9 @@ function main(): number {
       "Something is now imported statically that the first screen does not need. " +
         "Either load it on use (React.lazy, lazyRouteComponent, or a dynamic import " +
         "at the point of use), or raise BUDGET in this file in the same PR, with the " +
-        "measurement that justifies it.",
+        "measurement that justifies it. If the chunk count above went up, check the " +
+        "opposite first: a dynamic import of a module the startup set already carries " +
+        "loads nothing later, and splits that module's graph into extra startup chunks.",
     );
     return 1;
   }

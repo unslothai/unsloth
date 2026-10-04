@@ -21,6 +21,7 @@ from core.inference.memory_contract import (
     project_kv_cache_estimate,
 )
 from core.inference.model_ids import display_model_name
+from hub.schemas.inventory import LocalArtifactKind
 from hub.services.models import account_access
 from hub.services.models import catalog_classification as _catalog_classification
 from utils import gguf_archs as _gguf_archs
@@ -32,6 +33,7 @@ from hub.services.models.catalog_classification import (
     _repo_has_pipeline_index,
     _repo_is_diffusers,
 )
+from hub.services.models.common import _diffusers_pipeline_artifact_kind
 
 # Compatibility aliases: these moved to catalog_classification, but callers and tests still resolve them
 # from routes.models. Assigned through the module rather than re-imported, since an import this module never
@@ -96,6 +98,7 @@ class CachedModelRepo(BaseModel):
     load_id: Optional[str] = None
     # "adapter" for a cached LoRA/PEFT repo; pickers that offer whole models filter on it.
     model_format: Optional[str] = None
+    artifact_kind: Optional[LocalArtifactKind] = None
     # False for an encoder-only repo (embedding/CLIP/ViT); undeclared, response_model drops it.
     can_chat: Optional[bool] = None
     # True for an image/video diffusion repo. Not the same question as task, which says only whether this
@@ -179,7 +182,11 @@ backend_path = Path(__file__).parent.parent.parent
 if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
-from auth.authentication import allow_ambient_hf_token, get_current_subject
+from auth.authentication import (
+    allow_ambient_hf_token,
+    authenticated_via_api_key,
+    get_current_subject,
+)
 from hub.dependencies import get_hf_token, get_request_hf_token
 from hub.utils.hf_tokens import (
     HfTokenArg,
@@ -189,10 +196,26 @@ from hub.utils.hf_tokens import (
     is_anonymous,
     normalize_token,
 )
+from hub.utils.host_paths import (
+    redact_host_paths,
+    redact_inventory_host_paths,
+    resolve_host_path_reference,
+    scrub_paths,
+)
 from utils.utils import anonymous_and_offline
 
 
-_UNAUTHORIZED_OFFLINE = "This request cannot be authorized without network access."
+# Says both halves, or operators go looking for a credential problem that is not there.
+_UNAUTHORIZED_OFFLINE = (
+    "This request cannot be authorized without network access, and this repository is not in "
+    "the local cache."
+)
+
+# "unauthorized" alone reads as a broken credential, which a repo refusing this caller is not.
+_UNAUTHORIZED_CACHED_MODEL = (
+    "This model is cached on this host, but this repository does not authorize this caller to "
+    "read it."
+)
 
 
 def _resolve_hub_token(header_token: HfTokenArg, query_token: Optional[str]) -> HfTokenArg:
@@ -820,6 +843,7 @@ def collect_local_models(
     """
     from storage.studio_db import list_scan_folders
     from hub.utils import gguf as gguf_utils
+    from hub.utils import inventory_scan as hf_cache_scan
     from utils.models.model_config import detect_gguf_model
 
     sources = sources or _compat_local_inventory_sources()
@@ -856,7 +880,11 @@ def collect_local_models(
 
     state_repositories = []
     state_cache_dirs = [cache_dir for cache_dir, _active_cache in hf_sources]
-    state_cache_dirs.extend(Path(folder["path"]) for folder in custom_folders)
+    state_cache_dirs.extend(
+        cache_dir
+        for folder in custom_folders
+        for cache_dir in hf_cache_scan.scan_folder_hf_caches(Path(folder["path"]))
+    )
     for cache_dir in dict.fromkeys(state_cache_dirs):
         try:
             for repo_dir in cache_dir.glob("models--*"):
@@ -908,11 +936,15 @@ def collect_local_models(
                 m
                 for m in (
                     _scan_models_dir(folder_path, limit = _MAX_MODELS_PER_FOLDER)
-                    + _scan_hf_cache(
-                        folder_path,
-                        active_cache = False,
-                        variant_states = variant_states,
-                    )
+                    + [
+                        row
+                        for cache_dir in hf_cache_scan.scan_folder_hf_caches(folder_path)
+                        for row in _scan_hf_cache(
+                            cache_dir,
+                            active_cache = False,
+                            variant_states = variant_states,
+                        )
+                    ]
                     + _scan_lmstudio_dir(folder_path)
                 )
                 if not any(p in (".studio_links", "ollama_links") for p in Path(m.path).parts)
@@ -1141,8 +1173,13 @@ async def list_local_models(
         default = "./models", description = "Directory to scan for local model folders"
     ),
     current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    """List local model candidates from the models dir, HF caches, LM Studio, Hermes, Ollama."""
+    """List local model candidates from the models dir, HF caches, LM Studio, Hermes, Ollama.
+
+    Redacted as ``/api/hub/local`` is: this router mirrors it over the same scan roots, so
+    leaving it alone recovers the layout that route hides.
+    """
     # Resolve all scan directories up front.
     sources = _compat_local_inventory_sources()
     hf_cache_dir = sources.hf_cache_dir
@@ -1180,12 +1217,15 @@ async def list_local_models(
         models = await _shared_compat_local_inventory_scan(models_root, sources)
         if account_access.managed_account():
             models = await asyncio.to_thread(account_access.filter_model_rows, models)
-        return LocalModelListResponse(
-            models_dir = str(models_root),
-            hf_cache_dir = str(hf_cache_dir),
-            lmstudio_dirs = [str(d) for d in lm_dirs],
-            hermes_dirs = [str(d) for d in sources.hermes_dirs],
-            models = models,
+        return redact_inventory_host_paths(
+            LocalModelListResponse(
+                models_dir = str(models_root),
+                hf_cache_dir = str(hf_cache_dir),
+                lmstudio_dirs = [str(d) for d in lm_dirs],
+                hermes_dirs = [str(d) for d in sources.hermes_dirs],
+                models = models,
+            ),
+            via_api_key = via_api_key,
         )
     except Exception as e:
         raise log_and_http_error(
@@ -1198,21 +1238,32 @@ async def list_local_models(
 
 
 @router.get("/scan-folders")
-async def get_scan_folders(current_subject: str = Depends(get_current_subject)):
-    """List all registered custom model scan folders."""
+async def get_scan_folders(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    """List all registered custom model scan folders. Redacted like ``/api/hub/scan-folders``."""
     from storage.studio_db import list_scan_folders
 
     folders = list_scan_folders()
     # Opening the dialog is how a fixed folder clears, so recheck the bad ones.
     await asyncio.to_thread(refresh_failed_scan_folders, folders)
-    return {"folders": annotate_scan_folders(folders)}
+    return redact_inventory_host_paths(
+        {"folders": annotate_scan_folders(folders)}, via_api_key = via_api_key
+    )
 
 
 @router.post("/scan-folders", response_model = ScanFolderInfo, status_code = 201)
 async def add_scan_folder_endpoint(
-    body: AddScanFolderRequest, current_subject: str = Depends(get_current_subject)
+    body: AddScanFolderRequest,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    """Register a new directory to scan for local models."""
+    """Register a new directory to scan for local models. Redacted like the GET above.
+
+    The listings hide the normalized absolute path; submitting ``.`` here and reading the answer
+    recovered the server's working directory.
+    """
     if account_access.managed_account():
         body = body.model_copy(update = {"path": account_access.private_directory(body.path, "")})
     from storage.studio_db import add_scan_folder_with_status
@@ -1228,7 +1279,7 @@ async def add_scan_folder_endpoint(
         from core.inference.local_model_resolver import invalidate_index, warm_index_soon
         await asyncio.to_thread(invalidate_index)
         warm_index_soon()
-    return folder
+    return redact_inventory_host_paths(folder, via_api_key = via_api_key)
 
 
 @router.delete("/scan-folders/{folder_id}")
@@ -1502,7 +1553,7 @@ def _build_browse_allowlist(
     _add(Path.home())
     if media_roots is None:
         media_roots = [
-            *external_media.linux_run_media_mount_roots(),
+            *external_media.linux_external_mount_roots(),
             *external_media.macos_volume_roots(),
         ]
     if drive_roots is None:
@@ -1788,7 +1839,7 @@ def browse_folders(
         []
         if managed
         else [
-            *external_media.linux_run_media_mount_roots(),
+            *external_media.linux_external_mount_roots(),
             *external_media.macos_volume_roots(),
         ]
     )
@@ -1964,39 +2015,34 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
                 if await asyncio.to_thread(account_access.model_visible, m)
             ]
 
-        loaded_models = []
-        hide_resident = account_access.resident_hidden(
-            "chat", getattr(inference_backend, "active_model_name", None)
-        )
-        for model_name, model_data in inference_backend.models.items():
-            if hide_resident:
-                continue
-            _is_vision = model_data.get("is_vision", False)
-            _audio_type = model_data.get("audio_type")
-            model_info = ModelDetails(
-                id = model_name,
-                name = display_model_name(model_name),
-                is_vision = _is_vision,
-                is_lora = model_data.get("is_lora", False),
-                is_mlx = model_data.get("is_mlx", False),
-                is_audio = model_data.get("is_audio", False),
-                audio_type = _audio_type,
-                has_audio_input = model_data.get("has_audio_input", False),
-                model_type = derive_model_type(_is_vision, _audio_type),
-            )
-            loaded_models.append(model_info)
-
-        # Active GGUF model (llama-server), labelled from the display id /api/inference/status publishes; the
-        # id stays raw for agents-tab's path filter.
+        from core.inference import model_slots
         from routes.inference import _llama_status_model_ids, get_llama_cpp_backend
 
-        llama_backend = get_llama_cpp_backend()
-        hide_resident = hide_resident or account_access.resident_hidden(
-            "chat", getattr(llama_backend, "model_identifier", None)
-        )
-        if not hide_resident and llama_backend.is_loaded and llama_backend.model_identifier:
+        def _orchestrator_models(orchestrator) -> list[ModelDetails]:
+            entries = []
+            for model_name, model_data in orchestrator.models.items():
+                _is_vision = model_data.get("is_vision", False)
+                _audio_type = model_data.get("audio_type")
+                entries.append(
+                    ModelDetails(
+                        id = model_name,
+                        name = display_model_name(model_name),
+                        is_vision = _is_vision,
+                        is_lora = model_data.get("is_lora", False),
+                        is_mlx = model_data.get("is_mlx", False),
+                        is_audio = model_data.get("is_audio", False),
+                        audio_type = _audio_type,
+                        has_audio_input = model_data.get("has_audio_input", False),
+                        model_type = derive_model_type(_is_vision, _audio_type),
+                    )
+                )
+            return entries
+
+        def _gguf_model(llama_backend) -> list[ModelDetails]:
+            if not (llama_backend.is_loaded and llama_backend.model_identifier):
+                return []
             display_id, _reported_identifier = _llama_status_model_ids(llama_backend)
-            loaded_models.append(
+            return [
                 ModelDetails(
                     id = llama_backend.model_identifier,
                     name = display_model_name(display_id or llama_backend.model_identifier),
@@ -2005,7 +2051,25 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
                     is_audio = getattr(llama_backend, "_is_audio", False),
                     audio_type = getattr(llama_backend, "_audio_type", None),
                 )
-            )
+            ]
+
+        loaded_models = []
+        hide_resident = account_access.resident_hidden(
+            "chat", getattr(inference_backend, "active_model_name", None)
+        )
+        if not hide_resident:
+            loaded_models += _orchestrator_models(inference_backend)
+
+        llama_backend = get_llama_cpp_backend()
+        hide_resident = hide_resident or account_access.resident_hidden(
+            "chat", getattr(llama_backend, "model_identifier", None)
+        )
+        if not hide_resident:
+            loaded_models += _gguf_model(llama_backend)
+
+        for slot in model_slots.visible():
+            loaded_models += _orchestrator_models(slot.orchestrator)
+            loaded_models += model_slots.in_slot(slot, lambda: _gguf_model(slot.llama))
 
         all_models = []
         seen_ids = set()
@@ -2204,8 +2268,19 @@ async def get_model_config(
     header_hf_token: Optional[str] = Depends(get_hf_token),
     allow_ambient_token: bool = Depends(allow_ambient_hf_token),
     current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """Get configuration for a specific model (wraps load_model_defaults)."""
+    # An API-key caller is shown a filesystem-backed row under an opaque `ref:` handle and hands
+    # it back here, where it would otherwise read as a Hugging Face id.
+    from core.inference.npu_backend import is_npu_model_path
+    from models.inference import resolve_inventory_handle
+
+    model_name = resolve_inventory_handle(model_name)
+    if is_npu_model_path(model_name):
+        return ModelDetails(id = model_name, model_name = model_name, model_type = "text")
+    if local_path:
+        local_path = resolve_inventory_handle(local_path)
     if local_path:
         if account_access.managed_account():
             await asyncio.to_thread(account_access.require_model_access, local_path)
@@ -2233,7 +2308,9 @@ async def get_model_config(
         ):
             # Inside the context, not before: the guard forces offline itself when the hub
             # is unreachable, and every probe below then resolves from disk.
-            if anonymous_and_offline(hf_token) and not is_local_path(model_name):
+            if not is_local_path(model_name) and anonymous_and_offline(
+                hf_token, repo_id = canonical_model_repo_id(model_name)
+            ):
                 raise HTTPException(status_code = 404, detail = _UNAUTHORIZED_OFFLINE)
             if not is_local_path(model_name):
                 resolved = resolve_cached_repo_id_case(model_name)
@@ -2334,7 +2411,15 @@ async def get_model_config(
 
     try:
         # Off the loop: the guard blocks on DNS + HEAD + TCP, stalling every other request.
-        return await asyncio.to_thread(_resolve, model_name)
+        # Restore puts back the handle the CALLER sent; redaction covers a second path they
+        # never named (a LoRA's `base_model_name_or_path`). Referencing `echo`, the caller's own
+        # identifier, would make this route an oracle confirming their other references.
+        from hub.utils.host_paths import redact_host_paths, restore_inventory_handles
+        return redact_host_paths(
+            restore_inventory_handles(await asyncio.to_thread(_resolve, model_name)),
+            via_api_key = via_api_key,
+            echo = (model_name,),
+        )
 
     except HTTPException:
         raise
@@ -2381,6 +2466,17 @@ async def scan_model_remote_code(
     POST (not GET) so the ``hf_token`` for gated repos travels in the body and
     never lands in a URL, browser history, or access log.
     """
+    # Before the access checks, so they run on the resolved path.
+    from models.inference import resolve_inventory_handle
+
+    model_name = resolve_inventory_handle(model_name)
+    model_local_path = resolve_inventory_handle(model_local_path) if model_local_path else None
+    model_snapshot_path = (
+        resolve_inventory_handle(model_snapshot_path) if model_snapshot_path else None
+    )
+    model_snapshot_repo_id = (
+        resolve_inventory_handle(model_snapshot_repo_id) if model_snapshot_repo_id else None
+    )
     if account_access.managed_account():
         for ref in (model_name, model_local_path, model_snapshot_path, model_snapshot_repo_id):
             if isinstance(ref, str) and ref:
@@ -2391,7 +2487,9 @@ async def scan_model_remote_code(
     hf_token = hf_token_arg(hf_token, allow_ambient_token = allow_ambient_token)
     # Offline the scanner's hf_hub_download calls resolve config.json and the repo's
     # Python out of the cache, and the response carries source snippets.
-    if anonymous_and_offline(hf_token) and not is_local_path(model_name):
+    if not is_local_path(model_name) and anonymous_and_offline(
+        hf_token, repo_id = canonical_model_repo_id(model_name)
+    ):
         raise HTTPException(status_code = 404, detail = _UNAUTHORIZED_OFFLINE)
     try:
         from utils.security import (
@@ -2443,7 +2541,7 @@ async def scan_model_remote_code(
         ):
             raise HTTPException(
                 status_code = 404,
-                detail = "This model is not available to an unauthorized caller.",
+                detail = _UNAUTHORIZED_CACHED_MODEL,
             )
         scan_target = model_name
         exact_snapshot_path = (
@@ -2533,7 +2631,7 @@ async def scan_model_remote_code(
             ):
                 raise HTTPException(
                     status_code = 404,
-                    detail = "This model is not available to an unauthorized caller.",
+                    detail = _UNAUTHORIZED_CACHED_MODEL,
                 )
             if _target not in consent_load_subdirs:
                 security_targets.append(_target)
@@ -2585,7 +2683,7 @@ async def scan_model_remote_code(
                 ):
                     raise HTTPException(
                         status_code = 404,
-                        detail = "This model is not available to an unauthorized caller.",
+                        detail = _UNAUTHORIZED_CACHED_MODEL,
                     )
                 external_refs.append(_ext)
                 _mark_scan_created(_ext)
@@ -2633,7 +2731,10 @@ async def scan_model_remote_code(
             payload["approvable"] = False
             payload["requires_trust_remote_code"] = True
             payload["error_kind"] = "malware_blocked"
-        return payload
+        # The findings quote paths inside the model directory.
+        from hub.utils.host_paths import restore_inventory_handles
+
+        return restore_inventory_handles(payload)
     except HTTPException:
         raise
     except Exception as e:
@@ -2667,21 +2768,29 @@ async def discard_remote_code_download(
 
     try:
         from hub.services.models.deletion import _loaded_id_matches_repo
+        from core.inference import model_slots
         from routes.inference import get_llama_cpp_backend
 
-        llama_backend = get_llama_cpp_backend()
-        if llama_backend.is_loaded and llama_backend.model_identifier:
-            if _loaded_id_matches_repo(llama_backend.model_identifier, model_name):
-                return {"deleted": False, "reason": "loaded"}
+        for llama_backend in (
+            get_llama_cpp_backend(),
+            *(slot.llama for slot in model_slots.resident()),
+        ):
+            if llama_backend.is_loaded and llama_backend.model_identifier:
+                if _loaded_id_matches_repo(llama_backend.model_identifier, model_name):
+                    return {"deleted": False, "reason": "loaded"}
     except Exception:
         pass
     try:
         # Peek, not construct: no orchestrator means no active model, and building one hits get_device().
         from core.inference.orchestrator import peek_inference_backend
-        inference_backend = peek_inference_backend()
-        if inference_backend is not None and inference_backend.active_model_name:
-            if _loaded_id_matches_repo(inference_backend.active_model_name, model_name):
-                return {"deleted": False, "reason": "loaded"}
+        from core.inference import model_slots
+        for inference_backend in (
+            peek_inference_backend(),
+            *(slot.orchestrator for slot in model_slots.resident()),
+        ):
+            if inference_backend is not None and inference_backend.active_model_name:
+                if _loaded_id_matches_repo(inference_backend.active_model_name, model_name):
+                    return {"deleted": False, "reason": "loaded"}
     except Exception:
         pass
 
@@ -2809,9 +2918,31 @@ async def scan_loras(
         )
 
 
+def _disk_bytes(model_path: str, export_type: Optional[str]) -> Optional[int]:
+    """Bytes a fine-tune takes on disk. A GGUF export counts its whole folder."""
+    path = Path(model_path)
+    if export_type == "gguf" and path.is_file():
+        path = path.parent
+    try:
+        if path.is_file():
+            return path.stat().st_size
+        total = 0
+        for root, _dirs, files in os.walk(path):
+            for name in files:
+                try:
+                    total += os.lstat(os.path.join(root, name)).st_size
+                except OSError:
+                    continue
+        return total
+    except OSError:
+        return None
+
+
 def _scan_loras_sync(
     resolved_outputs_dir: str, resolved_exports_dir: str, hf_token: Optional[str]
 ) -> List[LoRAInfo]:
+    from utils.models.checkpoints import parse_adapter_features
+
     lora_list: List[LoRAInfo] = []
 
     trained_models = scan_trained_models(outputs_dir = resolved_outputs_dir)
@@ -2824,7 +2955,9 @@ def _scan_loras_sync(
                 base_model = base_model,
                 source = "training",
                 export_type = model_type,
+                size_bytes = _disk_bytes(model_path, model_type),
                 audio_type = _audio_type_of_checkpoint(model_path, base_model, hf_token),
+                adapter_features = parse_adapter_features(model_path),
             )
         )
 
@@ -2837,7 +2970,9 @@ def _scan_loras_sync(
                 base_model = base_model,
                 source = "exported",
                 export_type = export_type,
+                size_bytes = _disk_bytes(model_path, export_type),
                 audio_type = _audio_type_of_checkpoint(model_path, base_model, hf_token),
+                adapter_features = parse_adapter_features(model_path),
             )
         )
 
@@ -2974,6 +3109,22 @@ def _active_video_backend():
     except Exception as e:
         logger.debug(f"Video backend unavailable during delete guard: {e}")
         return None
+
+
+def _forget_gone_library_entries(source: str, folder: Path) -> None:
+    """Drop the Library's name, folder and star for models that were in `folder` and are gone now,
+    so they never land on a new model saved to the same path. A GGUF export is listed by one of
+    its files, so deleting that variant ends its entry. The files are gone already, so a failure
+    here only logs."""
+    try:
+        from storage import library_db
+        prefix = f"model:{source}:"
+        for item_id in library_db.list_entries():
+            path = item_id[len(prefix) :] if item_id.startswith(prefix) else ""
+            if path and not os.path.lexists(path) and _is_path_under(Path(path), folder):
+                library_db.delete_entry(item_id)
+    except Exception as e:
+        logger.warning("Could not clear the Library entries under %s: %s", folder, e)
 
 
 def _prune_empty_parents(start: Path, stop_at: Path) -> None:
@@ -3168,60 +3319,46 @@ async def delete_finetuned_model(
             ) from e
 
     try:
+        from core.inference import model_slots
         from routes.inference import get_llama_cpp_backend
 
-        llama_backend = get_llama_cpp_backend()
-        if (
-            llama_backend.is_active
-            and not llama_backend.is_loaded
-            and llama_backend.model_identifier
-            and _loaded_model_matches_deleted_path(
-                llama_backend.model_identifier,
-                target_path,
-            )
-            and (
-                not gguf_variant
-                or not llama_backend.hf_variant
-                # Alias-aware: the delete below accepts a bare quant for a qualified key, so a
-                # literal comparison here would wave through the very spelling it then deletes.
-                or _variant_names_same_checkpoint(llama_backend.hf_variant, gguf_variant)
-            )
-        ):
+        kept = model_slots.resident()
+        filling = model_slots.filling_model()
+        if filling and _loaded_model_matches_deleted_path(filling, target_path):
             raise HTTPException(
                 status_code = 409,
                 detail = "Cannot delete a model while it is loading",
             )
-        if (
-            llama_backend.is_loaded
-            and llama_backend.model_identifier
-            and _loaded_model_matches_deleted_path(
-                llama_backend.model_identifier,
-                target_path,
-            )
-            and (
-                not gguf_variant
-                or not llama_backend.hf_variant
-                or _variant_names_same_checkpoint(llama_backend.hf_variant, gguf_variant)
-            )
-        ):
-            raise HTTPException(
-                status_code = 400,
-                detail = "Unload the model before deleting",
-            )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.warning("Could not check llama.cpp loaded model before delete: %s", e)
-        raise HTTPException(
-            status_code = 503,
-            detail = "Could not verify model load status before deleting",
-        ) from e
-
-    try:
+        for llama_backend in (get_llama_cpp_backend(), *(slot.llama for slot in kept)):
+            if (
+                (llama_backend.is_active or llama_backend.is_loaded)
+                and llama_backend.model_identifier
+                and _loaded_model_matches_deleted_path(
+                    llama_backend.model_identifier,
+                    target_path,
+                )
+                and (
+                    not gguf_variant
+                    or not llama_backend.hf_variant
+                    # Alias-aware: a literal compare would pass the bare-quant spelling the delete accepts.
+                    or _variant_names_same_checkpoint(llama_backend.hf_variant, gguf_variant)
+                )
+            ):
+                if llama_backend.is_loaded:
+                    raise HTTPException(
+                        status_code = 400,
+                        detail = "Unload the model before deleting",
+                    )
+                raise HTTPException(
+                    status_code = 409,
+                    detail = "Cannot delete a model while it is loading",
+                )
         # Peek: building an orchestrator to learn there is none reaches get_device() (a torch import).
         from core.inference.orchestrator import peek_inference_backend
-        inference_backend = peek_inference_backend()
-        if inference_backend is not None:
+
+        for inference_backend in (peek_inference_backend(), *(slot.orchestrator for slot in kept)):
+            if inference_backend is None:
+                continue
             loading_models = getattr(inference_backend, "loading_models", set())
             if any(
                 _loading_model_matches_deleted_path(loading_model, target_path)
@@ -3231,19 +3368,18 @@ async def delete_finetuned_model(
                     status_code = 409,
                     detail = "Cannot delete a model while it is loading",
                 )
-            if inference_backend.active_model_name:
-                if _loaded_model_matches_deleted_path(
-                    inference_backend.active_model_name,
-                    target_path,
-                ):
-                    raise HTTPException(
-                        status_code = 400,
-                        detail = "Unload the model before deleting",
-                    )
+            if inference_backend.active_model_name and _loaded_model_matches_deleted_path(
+                inference_backend.active_model_name,
+                target_path,
+            ):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Unload the model before deleting",
+                )
     except HTTPException:
         raise
     except Exception as e:
-        logger.warning("Could not check inference backend loaded model before delete: %s", e)
+        logger.warning("Could not check the loaded models before delete: %s", e)
         raise HTTPException(
             status_code = 503,
             detail = "Could not verify model load status before deleting",
@@ -3310,6 +3446,7 @@ async def delete_finetuned_model(
                     _prune_empty_parents(target_path, allowed_root)
             except OSError:
                 pass
+            _forget_gone_library_entries(source, target_path)
             await _invalidate_local_scans()
             logger.info(
                 "Deleted %s GGUF file(s) for exported model at %s variant %s (%0.1f MB freed)",
@@ -3336,6 +3473,7 @@ async def delete_finetuned_model(
             )
 
         _prune_empty_parents(target_path, allowed_root)
+        _forget_gone_library_entries(source, target_path)
 
         await _invalidate_local_scans()
         logger.info("Deleted fine-tuned model at %s", target_path)
@@ -3556,11 +3694,16 @@ async def _read_native_context_length_bounded(model: str, is_local: bool) -> Opt
 
 
 def _read_native_context_length(repo_id: str, is_local: bool) -> Optional[int]:
-    """Native max context from a downloaded GGUF for this repo, or None. The value is identical across
-    quants, so one non-mmproj shard's header is enough. Never raises. Bounded by
-    ``_NATIVE_CONTEXT_READ_TIMEOUT_SECONDS``: this only pre-fills a context field on an already
-    selectable row, so a dragging walk reports None rather than holding the variant listing open.
-    Checked between files, and files already read stay cached, so a later request resumes."""
+    """Native max context from a downloaded GGUF for this repo, or None.
+
+    A file path reads that exact quant; a directory reads one non-mmproj shard.
+    Only resolves once a file is on disk. Never raises.
+
+    Bounded by ``_NATIVE_CONTEXT_READ_TIMEOUT_SECONDS``: this only pre-fills a
+    context field on an already selectable row, so a dragging walk reports None
+    rather than holding the variant listing open. Checked between files, and
+    files already read stay cached, so a later request resumes.
+    """
     try:
         from utils.models.gguf_metadata import read_gguf_context_length
         from utils.paths.path_utils import file_contents_available_locally
@@ -3579,7 +3722,8 @@ def _read_native_context_length(repo_id: str, is_local: bool) -> Optional[int]:
             if time.monotonic() >= deadline:
                 logger.debug("native context read for '%s' out of budget", repo_id)
                 return None
-            for f in _iter_gguf_paths(root, deadline):
+            paths = [root] if is_local and root.is_file() else _iter_gguf_paths(root, deadline)
+            for f in paths:
                 if time.monotonic() >= deadline:
                     logger.debug("native context read for '%s' out of budget", repo_id)
                     return None
@@ -3616,6 +3760,11 @@ def _resolve_quant_gguf(repo_id: str, quant: str, is_local: bool) -> tuple[Optio
 
             if not _is_valid_repo_id(repo_id):
                 return None, 0
+            from hub.utils.gguf_sources import cached_gguf_sources
+
+            source = cached_gguf_sources(repo_id).get((quant or "").strip().lower())
+            if source is not None:
+                return _resolve_quant_gguf(str(source.snapshot), quant, True)
             roots = []
             for entry in iter_repo_cache_dirs("model", repo_id):
                 snaps = entry / "snapshots"
@@ -4013,7 +4162,11 @@ async def get_kv_cache_estimate(
                 _cc_caps,
                 None,
                 ctx_checkpoints,
-                per_checkpoint_bytes = getattr(be, "_rollback_state_bytes", lambda _n: 0)(1),
+                per_checkpoint_bytes = getattr(be, "_ctx_checkpoint_bytes", lambda *_a, **_k: 0)(
+                    _effective_cache_type,
+                    swa_full = _plan_kwargs.get("swa_full", False),
+                    flash_attn = _plan_kwargs.get("flash_attn", True),
+                ),
                 n_parallel = n_parallel,
                 total_host_bytes = (_total_ram_mib * 1024 * 1024) if _total_ram_mib else None,
             )
@@ -4398,10 +4551,16 @@ async def get_gguf_variants(
     offline: bool = False,
     local_path: Optional[str] = None,
     hf_token: Optional[str] = Query(None, description = "HuggingFace token for private repos"),
+    include_cache_locations: bool = False,
     hf_token_header: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """List GGUF quantization variants for a HF repo or local directory."""
+    # Resolved before the access check, not after: a handle matches no allowlist entry, and
+    # it is the only name an API-key caller has for a local GGUF (see the /hub twin).
+    repo_id = resolve_host_path_reference(repo_id) or repo_id
+    local_path = resolve_host_path_reference(local_path) or local_path
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_model_access, repo_id)
     try:
@@ -4413,6 +4572,7 @@ async def get_gguf_variants(
             prefer_local_cache = prefer_local_cache,
             offline = offline,
             local_path = local_path,
+            include_cache_locations = include_cache_locations,
             hf_token = hf_token,
         )
         response = answer.response
@@ -4427,44 +4587,62 @@ async def get_gguf_variants(
         # not suppress from inside.
         if not answer.cache_authorized and not is_local_path(context_model):
             context_model = None
-        local = context_model is not None and is_local_path(context_model)
+        variant_sources = getattr(answer, "variant_context_sources", None) or {}
 
-        return GgufVariantsResponse(
-            repo_id = response.repo_id,
-            variants = [
-                GgufVariantDetail(
-                    filename = v.filename,
-                    quant = v.quant,
-                    # A path-qualified key is not a label a picker can show; without this
-                    # the row reads as its whole relative path.
-                    display_label = getattr(v, "display_label", None),
-                    size_bytes = v.size_bytes,
-                    shard_count = int(getattr(v, "shard_count", 0) or 0),
-                    download_size_bytes = int(
-                        getattr(v, "download_size_bytes", v.size_bytes) or v.size_bytes
-                    ),
-                    pending_drafter_filename = getattr(v, "pending_drafter_filename", None),
-                    pending_drafter_size_bytes = int(
-                        getattr(v, "pending_drafter_size_bytes", 0) or 0
-                    ),
-                    downloaded = bool(v.downloaded),
-                    update_available = bool(getattr(v, "update_available", False)),
-                    partial = bool(getattr(v, "partial", False)),
-                    cleanable = bool(getattr(v, "cleanable", False)),
-                )
-                for v in response.variants
-            ],
-            has_vision = response.has_vision,
-            default_variant = response.default_variant,
-            context_length = (
-                await _read_native_context_length_bounded(context_model, local)
-                if context_model is not None
-                else None
+        # One read per copy the listing answered from, so each quant is priced off its own
+        # source. A None context_model (unauthorized caller) contributes no read at all.
+        read_models = [
+            model for model in dict.fromkeys([context_model, *variant_sources.values()]) if model
+        ]
+        # Share the existing hard deadline and concurrency guard across all source reads.
+        context_values = await asyncio.gather(
+            *(
+                _read_native_context_length_bounded(model, is_local_path(model))
+                for model in read_models
+            )
+        )
+        context_lengths = dict(zip(read_models, context_values))
+
+        # See the /hub twin: the identifier is resolved on the way in, so it has to be
+        # referenced again on the way out.
+        return redact_host_paths(
+            GgufVariantsResponse(
+                repo_id = response.repo_id,
+                variants = [
+                    GgufVariantDetail(
+                        filename = v.filename,
+                        quant = v.quant,
+                        cache_path = getattr(v, "cache_path", None),
+                        context_length = context_lengths.get(
+                            variant_sources.get(v.quant.lower(), context_model)
+                        ),
+                        # A path-qualified key is not a label a picker can show; without this
+                        # the row reads as its whole relative path.
+                        display_label = getattr(v, "display_label", None),
+                        size_bytes = v.size_bytes,
+                        download_size_bytes = int(
+                            getattr(v, "download_size_bytes", v.size_bytes) or v.size_bytes
+                        ),
+                        pending_drafter_filename = getattr(v, "pending_drafter_filename", None),
+                        pending_drafter_size_bytes = int(
+                            getattr(v, "pending_drafter_size_bytes", 0) or 0
+                        ),
+                        downloaded = bool(v.downloaded),
+                        update_available = bool(getattr(v, "update_available", False)),
+                        partial = bool(getattr(v, "partial", False)),
+                        cleanable = bool(getattr(v, "cleanable", False)),
+                    )
+                    for v in response.variants
+                ],
+                has_vision = response.has_vision,
+                default_variant = response.default_variant,
+                context_length = context_lengths.get(context_model),
+                resolved_locally = bool(getattr(response, "resolved_locally", False)),
+                dependencies_resolved = bool(getattr(response, "dependencies_resolved", False)),
+                loadable_variants = getattr(response, "loadable_variants", None),
+                loadable = getattr(response, "loadable", None),
             ),
-            resolved_locally = bool(getattr(response, "resolved_locally", False)),
-            dependencies_resolved = bool(getattr(response, "dependencies_resolved", False)),
-            loadable_variants = getattr(response, "loadable_variants", None),
-            loadable = getattr(response, "loadable", None),
+            via_api_key = via_api_key,
         )
     except HTTPException:
         raise
@@ -4483,14 +4661,18 @@ async def get_gguf_download_progress(
     expected_bytes: int = Query(0, description = "Expected total download size in bytes"),
     hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """Compatibility route backed by the shared multi-cache progress service."""
     from hub.services.models import downloads
-    return await downloads.get_gguf_download_progress_response(
-        repo_id,
-        variant = variant,
-        expected_bytes = expected_bytes,
-        hf_token = hf_token,
+    return redact_host_paths(
+        await downloads.get_gguf_download_progress_response(
+            repo_id,
+            variant = variant,
+            expected_bytes = expected_bytes,
+            hf_token = hf_token,
+        ),
+        via_api_key = via_api_key,
     )
 
 
@@ -4505,12 +4687,20 @@ def _resolve_hf_cache_realpath(repo_dir: Path) -> Optional[str]:
 @router.get("/download-progress")
 async def get_download_progress(
     repo_id: str = Query(..., description = "HuggingFace repo ID"),
+    mlx_load: bool = Query(False),
     hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
-    """Compatibility route backed by the shared multi-cache progress service."""
+    """Compatibility route backed by the shared multi-cache progress service. The payload names
+    the cache directory it measured, so it takes the caller class like its ``/api/hub`` twin."""
     from hub.services.models import downloads
-    return await downloads.get_download_progress_response(repo_id, hf_token = hf_token)
+    return redact_host_paths(
+        await downloads.get_download_progress_response(
+            repo_id, hf_token = hf_token, mlx_load = mlx_load
+        ),
+        via_api_key = via_api_key,
+    )
 
 
 def _repo_in_any_hf_cache(model_name: str) -> bool:
@@ -4643,16 +4833,14 @@ def _main_variant_gguf_label(rel_path: str) -> Optional[str]:
 
 
 def _one_shard_family_of(entries: list) -> list:
-    """*entries* narrowed to the single shard family the loader would open, as ``(rel, path, size)`` triples.
-    Same rule as ``hub.utils.gguf.group_gguf_variant_files``: every shard of one split GGUF shares a family,
-    two files that do not are two checkpoints, and the family kept is the one holding the first file."""
+    """``(rel, path, size)`` *entries* narrowed to the one shard set the loader opens, as ``hub.utils.gguf.group_gguf_variant_files``."""
     if len(entries) < 2:
         return list(entries)
-    from hub.utils.gguf import gguf_variant_family
+    from hub.utils.gguf import gguf_shard_set
 
-    families: dict[str, list] = {}
+    families: dict[tuple[str, int], list] = {}
     for entry in entries:
-        families.setdefault(gguf_variant_family(entry[0]), []).append(entry)
+        families.setdefault(gguf_shard_set(entry[0]), []).append(entry)
     if len(families) < 2:
         return list(entries)
     return min(families.values(), key = lambda group: min(e[0] for e in group))
@@ -4750,12 +4938,8 @@ def _repo_gguf_size_bytes(repo_info) -> int:
             # Snapshot-relative: only the directory tells an MTP/ drafter from a primary quant.
             name = _cached_repo_file_name(f)
             if _is_main_gguf_filename(name):
-                blob_path = getattr(f, "blob_path", None)
-                size = f.size_on_disk or 0
-                if blob_path:
-                    unique_blobs[str(blob_path)] = size
-                else:
-                    unique_blobs[f"{rev_id}:{name}"] = size
+                from hub.services.models.cache_inventory import _blob_key
+                unique_blobs[_blob_key(f, f"{rev_id}:{name}")] = f.size_on_disk or 0
     return sum(unique_blobs.values())
 
 
@@ -4856,13 +5040,18 @@ def _preferred_gguf_copy(
 
 
 @router.get("/cached-gguf")
-async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
+async def list_cached_gguf(
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
     """List GGUF repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
         # Off the loop: the filter can probe the Hub per ungranted repo.
-        return {"cached": await asyncio.to_thread(cached_gguf_rows)}
+        return redact_host_paths(
+            {"cached": await asyncio.to_thread(cached_gguf_rows)}, via_api_key = via_api_key
+        )
     except Exception as e:
-        logger.error(f"Error listing cached GGUF repos: {e}", exc_info = True)
+        logger.error("Error listing cached GGUF repos: %s", scrub_paths(e), exc_info = True)
         return {"cached": []}
 
 
@@ -4963,13 +5152,16 @@ def _cached_repo_partial(
 async def list_cached_models(
     current_subject: str = Depends(get_current_subject),
     hf_token: HfTokenArg = Depends(get_request_hf_token),
+    via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     """List non-GGUF model repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
         # Off the loop: the filter can probe the Hub per ungranted repo.
-        return {"cached": await asyncio.to_thread(cached_model_rows)}
+        return redact_host_paths(
+            {"cached": await asyncio.to_thread(cached_model_rows)}, via_api_key = via_api_key
+        )
     except Exception as e:
-        logger.error(f"Error listing cached models: {e}", exc_info = True)
+        logger.error("Error listing cached models: %s", scrub_paths(e), exc_info = True)
         return {"cached": []}
 
 
@@ -5141,9 +5333,9 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                         and _snapshot_can_serve_a_load(selected)
                     ):
                         continue
-                total_size = sum(
-                    (f.size_on_disk or 0) for rev in repo_info.revisions for f in rev.files
-                )
+                from hub.services.models.cache_inventory import repo_unique_size_bytes
+
+                total_size = repo_unique_size_bytes(repo_info)
                 if total_size == 0:
                     continue
                 weight_files = [
@@ -5174,8 +5366,13 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                         "size_bytes": total_size,
                         "task": row_task,
                     }
+                    pipeline_artifact_kind = _diffusers_pipeline_artifact_kind(selected)
+                    if pipeline_artifact_kind is not None:
+                        row["artifact_kind"] = pipeline_artifact_kind
                     # Pin a copy its bare id cannot reach, so the pick loads the found snapshot.
-                    if model_load_id:
+                    if row_task is None and pipeline_artifact_kind is not None:
+                        row["load_id"] = str(selected)
+                    elif model_load_id:
                         row["load_id"] = model_load_id
                     model_format = _repo_model_format(repo_info, selected)
                     if model_format:
@@ -5237,7 +5434,11 @@ async def delete_cached_model(
     account_access.require_installation_owner()
     from hub.services.models import deletion
 
-    return await deletion.delete_cached_model_response(repo_id, variant, hf_token, cache_path)
+    # The reference is the only identifier an API-key caller has for one copy; omitting it acts
+    # on the active root instead.
+    return await deletion.delete_cached_model_response(
+        repo_id, variant, hf_token, resolve_host_path_reference(cache_path) or cache_path
+    )
 
 
 def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
@@ -5258,6 +5459,13 @@ def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
         raise HTTPException(status_code = 404, detail = "Model not found in cache")
 
     if variant:
+        from hub.utils.gguf_sources import cached_gguf_sources
+
+        source = cached_gguf_sources(repo_id).get(variant.strip().lower())
+        if source is not None:
+            path = source.snapshot / source.variant.filename
+            if path.is_file():
+                return path
         want = (variant or "").strip()
         candidate_revisions = sorted(
             (rev for repo_info in matching_repos for rev in repo_info.revisions),
@@ -5402,6 +5610,7 @@ async def list_checkpoints(
                 peft_type = metadata.get("peft_type"),
                 lora_rank = metadata.get("lora_rank"),
                 is_quantized = metadata.get("is_quantized", False),
+                adapter_features = metadata.get("adapter_features"),
             )
             for model_name, checkpoints, metadata in raw_models
         ]

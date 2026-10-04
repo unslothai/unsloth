@@ -274,6 +274,7 @@ interface BackendInferenceDefaults {
   top_k?: number;
   min_p?: number;
   presence_penalty?: number;
+  repetition_penalty?: number;
   trust_remote_code?: boolean;
 }
 
@@ -330,6 +331,9 @@ export function mergeBackendRecommendedInference({
     presencePenalty:
       toFiniteNumber(inference?.presence_penalty) ??
       defaultInferenceParams.presencePenalty,
+    // Only a custom llama.cpp config reports one; otherwise the slider keeps its value.
+    repetitionPenalty:
+      toFiniteNumber(inference?.repetition_penalty) ?? next.repetitionPenalty,
   };
 }
 
@@ -528,6 +532,14 @@ export function resolveFitMaxSeqLength(
 ): number {
   if (!isGguf || gpuMemoryMode !== "manual" || gpuLayers >= 0) return fallback;
   return customContextLength && customContextLength > 0 ? customContextLength : 0;
+}
+
+export function isReplayedLoadContext(
+  isGguf: boolean | null | undefined,
+  customContextLength: number | null,
+  maxSeqLength: number,
+): boolean {
+  return isGguf === true && customContextLength == null && maxSeqLength > 0;
 }
 
 /** The context pin a completed load leaves behind: the Context Length the user EXPLICITLY set, or
