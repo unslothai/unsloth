@@ -455,6 +455,9 @@ def prepared_path(
             os.utime(dst)
         return dst
     transcode(source.path, dst, rate = rate, mono = True, max_seconds = max_seconds, cut = True)
+    if source.kind != "input":
+        # Cloning from history or a saved voice may never upload, so expired copies go here too.
+        sweep()
     return dst
 
 
