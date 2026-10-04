@@ -118,3 +118,30 @@ def test_fast_budget_follows_the_same_reserve(host):
     host["torch"] = _cuda_torch()
     host["apply"]()
     assert dm._fast_device_budget_mib(memory) == POOL_FREE - max(2048, int(POOL_TOTAL * 0.20) // 2)
+
+
+def test_total_capacity_gates_follow_the_same_reserve(host):
+    # 47 GiB resident fits 0.85 * (64 - 6.4) but not 0.85 * (64 - 12.8): the dense prefetch gate must agree with
+    # the free budget, else it declines the shards of a candidate the planner admits and the load falls to GGUF.
+    memory = DeviceMemory("cuda", "cuda:0", "unified_memory", POOL_FREE, POOL_TOTAL)
+    plan = types.SimpleNamespace(
+        estimates = {"resident_required_mib": 47 * 1024}, device_memory = memory
+    )
+    assert dm.total_capacity_budget_mib(memory) == int((POOL_TOTAL - int(POOL_TOTAL * 0.10)) * 0.85)
+    assert dm.plan_fits_total_capacity(plan)
+    host["torch"] = _cuda_torch()
+    host["apply"]()
+    assert dm.total_capacity_budget_mib(memory) == int((POOL_TOTAL - int(POOL_TOTAL * 0.20)) * 0.85)
+    assert not dm.plan_fits_total_capacity(plan)
+
+
+def test_dense_prefetch_gate_uses_the_shared_capacity_budget():
+    import ast
+    import inspect
+
+    import core.inference.diffusion as diffusion
+
+    src = inspect.getsource(diffusion)
+    assert "total_capacity_budget_mib(snapshot_device_memory(target))" in src
+    names = {n.id for n in ast.walk(ast.parse(src)) if isinstance(n, ast.Name)}
+    assert "_reserve_mib" not in names

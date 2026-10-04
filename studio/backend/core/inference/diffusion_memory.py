@@ -1566,14 +1566,21 @@ def plan_fits_total_capacity(plan: Any) -> bool:
     input (unknown sizes keep today's behaviour)."""
     try:
         required = plan.estimates.get("resident_required_mib")
-        memory = plan.device_memory
-        total = memory.total_mib
-        kind = memory.memory_kind
+        budget = total_capacity_budget_mib(plan.device_memory)
     except Exception:  # noqa: BLE001 - malformed plan: no retry
         return False
-    if required is None or total is None:
+    if required is None or budget is None:
         return False
-    return int(required) <= int((int(total) - _reserve_mib(kind, int(total))) * 0.85)
+    return int(required) <= budget
+
+
+def total_capacity_budget_mib(memory: DeviceMemory) -> Optional[int]:
+    """TOTAL capacity minus the same reserve the free budget takes, times the 0.85 resident margin. None when the
+    total is unknown. Shared with the dense prefetch gate so the two cannot disagree."""
+    total = memory.total_mib
+    if total is None:
+        return None
+    return int((int(total) - _reserve_mib(_budget_reserve_kind(memory), int(total))) * 0.85)
 
 
 # Opt-in escape hatch for the unified-memory refusal below: the shortfall check is an estimate, so an operator who
