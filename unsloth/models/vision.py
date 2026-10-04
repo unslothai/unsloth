@@ -3099,7 +3099,6 @@ class FastBaseModel:
             )
         _embedding_needed = None
         if _block_swap_layers == "auto":
-            # How many decoder layers must live in host RAM so the rest plus a training step fit.
             _block_swap_layers, device_map, _embedding_needed = resolve_auto_block_swap(
                 requested_device_map(device_map),
                 model_name,

@@ -3025,7 +3025,6 @@ class FastLlamaModel:
                 block_swap_layers, "does not support fast_inference or classification heads."
             )
         if block_swap_layers == "auto":
-            # Sized like the device map planner: how many trailing layers must stay in host RAM.
             block_swap_layers, device_map, _embedding_needed = resolve_auto_block_swap(
                 requested_device_map(device_map),
                 model_name,

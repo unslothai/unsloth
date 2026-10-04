@@ -643,7 +643,6 @@ def resolve_unsloth_device_map(
     return plan.device_map
 
 
-# plan_block_swap options a caller can pass through device_map_planner_kwargs.
 _BLOCK_SWAP_PLANNER_KEYS = (
     "batch_size",
     "lora_rank",
