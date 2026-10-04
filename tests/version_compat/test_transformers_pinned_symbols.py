@@ -399,7 +399,7 @@ MODELING_CONTRACTS: tuple[ModelingContract, ...] = (
         path = "src/transformers/models/llama/modeling_llama.py",
         classes = ("LlamaAttention", "LlamaDecoderLayer", "LlamaModel", "LlamaForCausalLM"),
         rope_name = "LlamaRotaryEmbedding",
-        # LlamaLinearScalingRotaryEmbedding is an Unsloth-side additive shim, not an upstream rebind.
+        # LlamaLinearScalingRotaryEmbedding is Unsloth's own shim, not an upstream rebind.
         patch_site = "unsloth/models/llama.py:FastLlamaModel.pre_patch",
     ),
     ModelingContract(
@@ -500,7 +500,7 @@ MODELING_CONTRACTS: tuple[ModelingContract, ...] = (
         extra_bindings = ("FalconH1RMSNorm",),
         patch_site = "unsloth/models/falcon_h1.py:FastFalconH1Model.pre_patch",
     ),
-    # glm4_moe: omitted — upstream renamed Glm4MoeLiteNaiveMoe -> Glm4MoeLiteExperts on main; add with the Unsloth-side fix.
+    # glm4_moe omitted: upstream renamed Glm4MoeLiteNaiveMoe -> Glm4MoeLiteExperts; add with the Unsloth-side fix.
 )
 
 
@@ -512,14 +512,14 @@ def test_modeling_contract(tag: str, contract: ModelingContract):
     for cls in contract.classes:
         assert has_def(
             src, cls, "class"
-        ), f"{tag}/{contract.name}: class {cls} missing — {contract.patch_site}"
+        ), f"{tag}/{contract.name}: class {cls} missing: {contract.patch_site}"
     if contract.rope_name is not None:
         assert is_bound(src, contract.rope_name), (
             f"{tag}/{contract.name}: {contract.rope_name} missing; "
             f"{contract.patch_site} RoPE rebind silently no-ops"
         )
     for n in contract.extra_bindings:
-        assert is_bound(src, n), f"{tag}/{contract.name}: {n} missing — {contract.patch_site}"
+        assert is_bound(src, n), f"{tag}/{contract.name}: {n} missing: {contract.patch_site}"
 
 
 # auto_factory: unsloth#5155 _LazyAutoMapping private API.

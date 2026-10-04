@@ -172,7 +172,6 @@ def test_st_util_helpers(tag: str):
     _path, src = hit
     for fn in ("import_from_string", "load_dir_path"):
         if not is_bound(src, fn):
-            # Modular-layout subfiles.
             subpaths = [
                 "sentence_transformers/util/import_utils.py",
                 "sentence_transformers/util/file_utils.py",
