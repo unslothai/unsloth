@@ -128,13 +128,18 @@ def test_scope_off_is_refused_by_the_security_dependency_not_only_the_predicate(
     with pytest.raises(HTTPException) as caught:
         resolve(request_for())
     assert caught.value.status_code in (401, 403)
-    # ...and the dummy bearers must not resurrect it either.
-    for dummy in ("not-needed", "lm-studio", "ollama"):
+    # ...and neither the dummy bearers nor an empty one may resurrect it.
+    for header in (
+        "Bearer not-needed",
+        "Bearer lm-studio",
+        "Bearer ollama",
+        "Bearer no-key-required",
+        "Bearer",
+        "Bearer ",
+    ):
         with pytest.raises(HTTPException):
             asyncio.run(
-                get_current_subject(
-                    resolve(request_for(headers = {"Authorization": f"Bearer {dummy}"}))
-                )
+                get_current_subject(resolve(request_for(headers = {"Authorization": header})))
             )
 
 
@@ -400,9 +405,18 @@ def test_the_asgi_twin_agrees_with_the_dependency_on_header_shapes():
         ({"Authorization": "Bearer not-needed"}, True),
         ({"Authorization": "Bearer lm-studio"}, True),
         ({"Authorization": "Bearer ollama"}, True),
+        # What hermes-agent sends with no key: the SDK refuses an empty one, so it
+        # substitutes this literal rather than the blank header above.
+        ({"Authorization": "Bearer no-key-required"}, True),
+        # Still a credential we do not know, so still refused.
+        ({"Authorization": "Bearer sk-no-key-required"}, False),
         ({"Authorization": "Bearer sk-unsloth-nope"}, False),
-        ({"Authorization": "Bearer"}, False),
+        # What a harness that always sends the header emits with no key: the missing header.
+        ({"Authorization": "Bearer"}, True),
+        ({"Authorization": "Bearer "}, True),
+        ({"Authorization": "bearer   "}, True),
         ({"Authorization": "Basic bm90LW5lZWRlZA=="}, False),
+        ({"Authorization": "Basic"}, False),
         # A doubled space after the scheme. This is the shape the two implementations
         # used to disagree on: the dependency collapsed it and admitted the dummy while
         # the twin did not, so the request was keyless to every route but not-keyless to

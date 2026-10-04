@@ -46,12 +46,32 @@ export interface SystemGpuInfo {
 export { aggregateGpuMemoryTotalGb } from "./gpu-vram";
 
 export interface SystemInfoResponse {
+  /** The server bypassed its GPU cache for this snapshot. */
+  memory_refreshed?: boolean;
   /** Client-side, not sent by the backend. Readers rendering a host verdict -- "no GPU",
    * "CPU only" -- must check it, or they state the placeholder below as fact. */
   status: SystemInfoStatus;
   platform: string;
   python_version: string;
   device_backend: "cuda" | "rocm" | "cpu" | "mlx" | "xpu";
+  /** Backend-reported dense quant capability. Absent on older backends. */
+  dense_quant_supported?: boolean;
+  /** The dense quant schemes this host can run, best first. Absent on older backends, where readers
+   * default to [] and name no precision. */
+  dense_quant_schemes?: string[];
+  /** Absent on older backends, where readers treat it as off. */
+  nvfp4_diffusion?: boolean;
+  /** Whether group offload can stream torchao weights. Absent on older backends. */
+  quantised_streaming?: boolean;
+  /** Extra Diffusers offload fit tiers per lower-cased repo id, GiB VRAM / GiB available RAM. Absent on older backends. */
+  diffusers_offload_tiers?: Record<
+    string,
+    Array<{
+      gpu_gb: number;
+      system_ram_gb: number;
+      requires_quantised_streaming?: boolean;
+    }>
+  >;
   uptime_seconds: number | null;
   cpu: {
     logical_count: number;
@@ -131,9 +151,8 @@ function scheduleVulkanRetry(): void {
       vulkanRetrySubscribers,
     )
   ) {
-    // A cold subscription schedules before its first request settles. Cancel
-    // that pending retry as soon as discovery succeeds with a usable inventory
-    // or a non-Vulkan backend.
+    // A cold subscription schedules before its first request settles. Cancel that pending retry as
+    // soon as discovery succeeds with a usable inventory or a non-Vulkan backend.
     if (vulkanRetryId !== null) {
       window.clearTimeout(vulkanRetryId);
       vulkanRetryId = null;
@@ -151,13 +170,21 @@ function scheduleVulkanRetry(): void {
 
 export async function fetchSystemInfo({
   force = false,
-}: { force?: boolean } = {}): Promise<SystemInfoResponse | null> {
-  if (systemFetchPromise) return systemFetchPromise;
-  if (!force && cachedSystem) return cachedSystem;
+  refreshMemory = false,
+}: { force?: boolean; refreshMemory?: boolean } = {}): Promise<SystemInfoResponse | null> {
+  if (systemFetchPromise) {
+    if (!refreshMemory) return systemFetchPromise;
+    // An in-flight snapshot may predate the resident model.
+    await systemFetchPromise;
+    return fetchSystemInfo({ force, refreshMemory });
+  }
+  if (!force && !refreshMemory && cachedSystem) return cachedSystem;
 
   systemFetchPromise = (async () => {
     try {
-      const res = await authFetch("/api/system");
+      const res = await authFetch(
+        refreshMemory ? "/api/system?refresh_memory=true" : "/api/system",
+      );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
 

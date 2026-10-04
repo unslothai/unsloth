@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from typing import Any
 
-# a paste-only turn carries no `content` text: the composer wraps long pastes in this tag
 # The composer sends a long paste as a text attachment wrapped in this tag, so a paste-only turn carries no `content`
 # text at all.
 _PASTED_TEXT_OPEN = "<pasted_text name="
@@ -42,6 +41,13 @@ def content_to_text(content: Any) -> str:
                     parts.append(text)
         return "\n".join(parts)
     return str(content)
+
+
+def named_turn(turn: dict, source: Any) -> dict:
+    """Carry the participant ``name`` of the message a backend rebuilt *turn* from."""
+    if isinstance(source, dict) and source.get("name"):
+        turn["name"] = source["name"]
+    return turn
 
 
 def pasted_text_body(text: str) -> str:

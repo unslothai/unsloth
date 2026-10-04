@@ -3,7 +3,7 @@
 
 """Disk-backed persistence for generated videos.
 
-Each video is a pair under ``studio_root()/videos``: ``{id}.mp4`` holds the bytes, ``{id}.json``
+Each video is a pair under ``workspace_root()/videos``: ``{id}.mp4`` holds the bytes, ``{id}.json``
 holds the recipe (an MP4 has no portable text-chunk like a PNG). The pair travels together; a lone
 file is not a valid record. Dumb storage: the route owns the schema; this only reads/writes/sorts.
 """
@@ -17,11 +17,14 @@ import threading
 import uuid
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, BinaryIO, Optional, Union
 
 from core.inference import gallery_flags
 from loggers import get_logger
-from utils.paths import ensure_dir, studio_root
+from utils.account_context import is_owner_context
+from utils.paths import ensure_account_dir, ensure_dir, studio_root
+from utils.paths.relocations import location_dir
+from utils.paths.storage_roots import account_path
 
 logger = get_logger(__name__)
 
@@ -33,7 +36,9 @@ _THUMBNAIL_WIDTH = 192
 
 
 def gallery_dir() -> Path:
-    return ensure_dir(studio_root() / "videos")
+    if is_owner_context():
+        return location_dir("videos", studio_root() / "videos")
+    return ensure_account_dir(account_path("videos"))
 
 
 def _job_dir() -> Path:
@@ -163,12 +168,16 @@ def _record(
     flags: Optional[dict[str, dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     # flags are library state, not recipe: they come from the .flags.json store, never the sidecar
+    if flags is None:
+        flags = gallery_flags.read(gallery_dir())
     return {
         **meta,
         "id": video_id,
         "url": f"/api/inference/video/gallery/{video_id}/file",
-        **gallery_flags.flags_for(
-            flags if flags is not None else gallery_flags.read(gallery_dir()), video_id
+        **gallery_flags.flags_for(flags, video_id),
+        # The server's own sort key, so a client re-sort agrees with it (created_at can differ).
+        "order_at": gallery_flags.order_rank(
+            flags, video_id, _mtime(path) if (path := video_path(video_id)) else 0.0
         ),
     }
 
@@ -190,26 +199,50 @@ def thumbnail(video_id: str) -> Optional[bytes]:
     path = owned_video_path(video_id)
     if path is None:
         return None
-    return _thumbnail_webp(path)
+    return first_frame_webp(path)
 
 
-def _thumbnail_webp(path: Path) -> bytes:
+def first_frame_webp(
+    source: Union[Path, BinaryIO],
+    width: int = _THUMBNAIL_WIDTH,
+    *,
+    container: Optional[str] = None,
+    max_pixels: Optional[int] = None,
+    max_height: Optional[int] = None,
+) -> bytes:
+    """The first frame of a clip (a file or an open binary stream), at most `width` wide and
+    `max_height` tall (four widths unless given), as WebP.
+
+    ``container`` forces the demuxer instead of probing for one, and then nothing but the stream
+    itself is read: a probed HLS or concat playlist names other files to open. ``max_pixels``
+    refuses a frame larger than that before it is decoded."""
     import io
+
     try:
         import av
         from PIL import Image
     except Exception as exc:  # noqa: BLE001 -- a missing decoder dependency makes thumbnails unavailable
         raise RuntimeError("Thumbnail generation needs the 'av' and 'Pillow' packages.") from exc
+    if isinstance(source, Path):
+        target, protocols = str(source), "file"
+    else:
+        target, protocols = source, "none"
+    options = {"protocol_whitelist": protocols} if container else {}
     try:
-        with av.open(str(path)) as src:
+        with av.open(target, format = container, options = options) as src:
             if not src.streams.video:
                 raise RuntimeError("Thumbnail generation failed: the clip has no video stream.")
-            frame = next(src.decode(src.streams.video[0]), None)
+            stream = src.streams.video[0]
+            if max_pixels is not None:
+                if stream.width * stream.height > max_pixels:
+                    raise RuntimeError(f"{stream.width}x{stream.height} is too large to thumbnail.")
+                stream.codec_context.options = {"max_pixels": str(max_pixels)}
+            frame = next(src.decode(stream), None)
             if frame is None:
                 raise RuntimeError("Thumbnail generation failed: the clip has no decodable frames.")
             image = frame.to_image()
-            if image.width > _THUMBNAIL_WIDTH:
-                scale = _THUMBNAIL_WIDTH / image.width
+            scale = min(1, width / image.width, (max_height or width * 4) / image.height)
+            if scale < 1:
                 image = image.resize(
                     (max(1, round(image.width * scale)), max(1, round(image.height * scale))),
                     Image.LANCZOS,
@@ -284,7 +317,6 @@ def _transcode_webm(path: Path, dest: Path) -> None:
             out_v.width = in_v.codec_context.width
             out_v.height = in_v.codec_context.height
             out_v.pix_fmt = "yuv420p"
-            # VP9's default "good" profile is slow; cpu-used 8 + row-mt is much faster at a small quality cost
             # Realtime settings: VP9's default "good" profile is slow; cpu-used 8 + row-mt is much faster at a small
             # quality cost.
             out_v.options = {"deadline": "realtime", "cpu-used": "8", "row-mt": "1"}
@@ -343,7 +375,6 @@ def _transcode_webm(path: Path, dest: Path) -> None:
         raise RuntimeError(f"WebM export failed (libvpx-vp9 unavailable?): {exc}") from exc
 
 
-# a GIF export holds every kept frame in memory
 # Ceilings for a GIF export, which must hold every kept frame in memory before encoding. 720 px and 300 frames (25s at
 # the 12 fps target) bound that at roughly 150 MB for the widest clip a generate request allows.
 _GIF_MAX_EDGE = 720
@@ -410,9 +441,8 @@ def _sidecar_path(video_id: str) -> Path:
     return gallery_dir() / f"{video_id}.json"
 
 
-# key-presence only: delete()/clear() own a pair only when its sidecar has all of these
-# Sidecar keys every genuine Unsloth record carries. delete()/clear() own a pair only when its sidecar has all of these,
-# so a hand-dropped MP4 with a partial sidecar is neither counted as ours nor destroyed. Key-presence only.
+# Sidecar keys every genuine Unsloth record carries. delete()/clear() own a pair only when its sidecar has all of
+# these, so a hand-dropped MP4 with a partial sidecar is neither counted as ours nor destroyed. Key-presence only.
 _REQUIRED_META = (
     "prompt",
     "width",
@@ -436,7 +466,6 @@ def _read_meta(sidecar: Path) -> Optional[dict[str, Any]]:
         meta = json.loads(raw)
     except (ValueError, TypeError):
         return None
-    # a parseable dict is not enough: delete()/clear() must never destroy a clip the gallery never surfaced
     # A parseable dict is not enough: a foreign ("{}") or different-schema sidecar lacks these keys, and
     # delete()/clear() must never destroy a clip the gallery never surfaced.
     if not isinstance(meta, dict) or any(k not in meta for k in _REQUIRED_META):
@@ -479,7 +508,7 @@ def list_videos(
     archived: bool = False,
 ) -> list[dict[str, Any]]:
     """A window of videos for infinite scroll: pinned first (most recently pinned leading), then
-    newest-first by MP4 mtime.
+    newest-first by MP4 mtime (or the manual key once dragged).
 
     mtime is a cheap stat ~= generation order; only the window's sidecars are read. limit=None
     returns everything from ``offset`` on. A file without its pair is skipped.
@@ -496,13 +525,16 @@ def list_videos(
     except OSError:
         return []
     flags = gallery_flags.read(gallery_dir())
-    # both run on file stems BEFORE any sidecar is read
-    # Shelf split and pin sort run on file stems, BEFORE any sidecar is read, so they cost one dict lookup per file and
-    # leave the early break below intact.
+    # Shelf split and pin sort run on file stems, BEFORE any sidecar is read, so they cost one dict lookup per file
+    # and leave the early break below intact.
     paths = [p for p in paths if gallery_flags.is_archived(flags, p.stem) == archived]
-    paths.sort(key = lambda p: (gallery_flags.pin_rank(flags, p.stem), _mtime(p)), reverse = True)
-    # page over READABLE records: filtering an orphan MP4 out of an already-sliced window would drop valid videos and
-    # make has_more wrong
+    paths.sort(
+        key = lambda p: (
+            gallery_flags.pin_rank(flags, p.stem),
+            gallery_flags.order_rank(flags, p.stem, _mtime(p)),
+        ),
+        reverse = True,
+    )
     # Page over READABLE records, not raw files: filtering an orphan MP4 out of an already-sliced window would drop
     # valid videos and make has_more wrong.
     want = None if limit is None else offset + limit
@@ -541,14 +573,47 @@ def set_flags(
     return _record(video_id, meta)
 
 
+def move(video_id: str, after_id: Optional[str]) -> Optional[dict[str, Any]]:
+    """Move an active video to just after ``after_id`` (None = front) and return its record.
+
+    None if the id is not an owned, active video. Raises KeyError if ``after_id`` is not on the shelf."""
+    with gallery_flags.exclusive(gallery_dir()):
+        if owned_video_path(video_id) is None:
+            return None
+        flags = gallery_flags.read(gallery_dir())
+        if gallery_flags.is_archived(flags, video_id):
+            return None
+        # Full shelf in listing order, so neighbours past the client's loaded window are known.
+        try:
+            paths = [
+                p
+                for p in gallery_dir().glob("*.mp4")
+                if not gallery_flags.is_archived(flags, p.stem)
+            ]
+        except OSError:
+            paths = []
+        keyed = [(p.stem, _mtime(p)) for p in paths]
+        keyed.sort(
+            key = lambda pair: (
+                gallery_flags.pin_rank(flags, pair[0]),
+                gallery_flags.order_rank(flags, pair[0], pair[1]),
+            ),
+            reverse = True,
+        )
+        gallery_flags.place_locked(gallery_dir(), video_id, keyed, after_id = after_id)
+        meta = _read_meta(_sidecar_path(video_id))
+    if meta is None:  # raced a delete between the guard and the read
+        return None
+    return _record(video_id, meta)
+
+
 def delete(video_id: str) -> bool:
     """Remove both files of an owned pair; True if the MP4 existed and was ours."""
     path = video_path(video_id)
     if path is None:
         return False
-    # a foreign/orphan MP4 is invisible to list_videos, so a guessed id must not destroy it
-    # Only delete a pair we own (a readable sidecar); a foreign/orphan MP4 is invisible to list_videos, so a guessed id
-    # must not destroy it.
+    # Only delete a pair we own (a readable sidecar); a foreign/orphan MP4 is invisible to list_videos, so a guessed
+    # id must not destroy it.
     if _read_meta(_sidecar_path(video_id)) is None:
         return False
     # delete the MP4 FIRST: sidecar-first plus a failed unlink leaves a clip that vanished from the gallery with no
@@ -606,7 +671,6 @@ def clear(include_archived: bool = False, *, return_ids: bool = False) -> int | 
                 _sidecar_path(path.stem).unlink()
             except OSError:
                 pass
-        # once every clip we own is gone an unreadable store protects nothing
         # Nothing left for an unreadable store to protect once every clip we own is gone, so this is where the escape
         # hatch escapes: replace it, or every later default clear still refuses.
         if include_archived and not gallery_flags.is_trusted(directory):

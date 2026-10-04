@@ -3,13 +3,7 @@
 
 """Probe torch allocation in a child so driver crashes do not kill the backend.
 
-Only a child that ran cleanly to the end marks an accelerator usable. A crash, a hang, a
-kill and a probe that could not run or be read all leave it unusable, since the allocation
-this stands in front of ends the process rather than raising. Ordinary Python errors are
-the exception: the child ran and reported, so the in-process loader raises the same error
-and describes it better. CPU takes the opposite default, because it cannot fault a driver
-and condemning it would change the embedding backend. Set
-``UNSLOTH_STUDIO_DISABLE_DEVICE_PROBE=1`` to skip the probe.
+Only a child that ran cleanly to the end marks an accelerator usable: a crash, a hang, a kill and a probe that could not run or be read all leave it unusable, since the allocation this stands in front of ends the process rather than raising. Ordinary Python errors are the exception, because the child ran and reported, so the in-process loader raises the same error and describes it better. CPU takes the opposite default, since it cannot fault a driver and condemning it would change the embedding backend. Set ``UNSLOTH_STUDIO_DISABLE_DEVICE_PROBE=1`` to skip the probe.
 """
 
 from __future__ import annotations
@@ -36,22 +30,15 @@ PROBE_TIMEOUT_SECONDS = 120.0
 _CHILD_SELF_LIMIT_SECONDS = 300.0
 _TERMINATE_GRACE_SECONDS = 5.0
 _STDERR_TAIL_CHARS = 600
-# SIGILL, SIGABRT, SIGBUS, SIGFPE, SIGSEGV. Deliberately not SIGKILL or SIGTERM, which
-# say something killed the probe, not that the device cannot be used.
+# SIGILL, SIGABRT, SIGBUS, SIGFPE, SIGSEGV. Deliberately not SIGKILL or SIGTERM, which say something killed the probe, not that the device cannot be used.
 _FATAL_SIGNALS = frozenset({4, 6, 7, 8, 11})
-# How a child reports that it stopped itself for running too long: the reserved exit status
-# it uses on Windows, and SIGALRM from the kernel-enforced deadline everywhere else.
+# How a child reports that it stopped itself for running too long: the reserved exit status it uses on Windows, and SIGALRM from the kernel-enforced deadline everywhere else.
 _WATCHDOG_EXIT_STATUS = 70
 _SIGALRM_NUMBER = 14
-# What the MSVC CRT abort() leaves behind on Windows. It is a plain exit status rather than
-# an NTSTATUS, so nothing else here would recognise it. Same value LlamaCppBackend
-# ._is_abort_exit already matches for GGML_ASSERT deaths.
+# What the MSVC CRT abort() leaves behind on Windows. It is a plain exit status rather than an NTSTATUS, so nothing else here would recognise it. Same value LlamaCppBackend._is_abort_exit already matches for GGML_ASSERT deaths.
 _WINDOWS_ABORT_EXIT_STATUS = 3
 
-# Anything that changes which physical device a device string names, or which kernels the runtime emits for it. A change
-# invalidates a cached verdict: a stale pass could skip the probe on an untested device, and a stale failure could pin a
-# working one to CPU. The XPU selectors matter because _TORCH_DEVICE maps DeviceType.XPU to "xpu", so this probe runs
-# there too.
+# Anything that changes which physical device a device string names, or which kernels the runtime emits for it: a change invalidates a cached verdict, since a stale pass could skip the probe on an untested device and a stale failure could pin a working one to CPU. The XPU selectors matter because _TORCH_DEVICE maps DeviceType.XPU to "xpu", so this probe runs there too.
 _DEVICE_IDENTITY_ENV_VARS = (
     "CUDA_VISIBLE_DEVICES",
     "HIP_VISIBLE_DEVICES",
@@ -62,9 +49,7 @@ _DEVICE_IDENTITY_ENV_VARS = (
     "ONEAPI_DEVICE_SELECTOR",
 )
 
-# The matmul tests allocation and vendor BLAS initialization.
-# item() synchronizes the result so an asynchronous driver fault cannot escape after the child exits, and Windows DLL
-# directories must be registered before importing torch, since those registrations are process-local.
+# The matmul tests allocation and vendor BLAS initialization. item() synchronizes the result so an asynchronous driver fault cannot escape after the child exits, and Windows DLL directories must be registered before importing torch, since those registrations are process-local.
 _PROBE_SCRIPT = """
 import os
 import signal
@@ -145,17 +130,11 @@ def _rocm_dll_directories() -> list[str]:
 
 
 def _died_by_signal(returncode: int) -> bool:
-    """Return whether the code represents a hard fault, not any death by signal.
+    """Whether the code represents a hard fault, not any death by signal.
 
-    SIGKILL and SIGTERM are excluded: the OOM killer, a container stop and an operator
-    all produce them, and they are not evidence the device faulted. Matches the hard-fault
-    set ``LlamaCppBackend._is_signal_crash`` already uses for the same reason. They are not
-    read as a pass either: the caller sends them to ``_unknown_verdict`` instead.
+    SIGKILL and SIGTERM are excluded: the OOM killer, a container stop and an operator all produce them, and they are not evidence the device faulted. Matches the hard-fault set ``LlamaCppBackend._is_signal_crash`` already uses. They are not read as a pass either: the caller sends them to ``_unknown_verdict`` instead.
 
-    On Windows a native abort() takes both shapes: an NTSTATUS for an access violation,
-    and the CRT's plain exit status 3 when torch or a ROCm library calls abort() itself.
-    The second reads as an ordinary non-zero exit, so without it a crashing device was
-    reported as usable and the parent went on to repeat the crash in its own process.
+    On Windows a native abort() takes both shapes, an NTSTATUS for an access violation and the CRT's plain exit status 3 when torch or a ROCm library calls abort() itself. The second reads as an ordinary non-zero exit, so without it a crashing device was reported as usable and the parent went on to repeat the crash in its own process.
     """
     if returncode < 0:
         return -returncode in _FATAL_SIGNALS
@@ -167,15 +146,7 @@ def _died_by_signal(returncode: int) -> bool:
 
 
 def _hit_its_own_deadline(returncode: int) -> bool:
-    """Whether the child stopped itself for running too long.
-
-    A child that reached its own deadline hung, and a hang is a device failure, so this
-    has to be read as one. Neither form is otherwise recognised: SIGALRM is not a hard
-    fault and would fall through ``_died_by_signal``, and the Windows status is an ordinary
-    non-zero exit. Both were being reported as a healthy device, which then let the parent
-    make the very allocation the probe stands in front of. It only comes up when the parent
-    did not enforce its own shorter timeout first, such as a suspended backend.
-    """
+    """Whether the child stopped itself for running too long. A child that reached its own deadline hung, and a hang is a device failure, so this has to be read as one. Neither form is otherwise recognised: SIGALRM is not a hard fault and would fall through ``_died_by_signal``, and the Windows status is an ordinary non-zero exit. Both were being reported as a healthy device, which then let the parent make the very allocation the probe stands in front of. It only comes up when the parent did not enforce its own shorter timeout first, such as a suspended backend."""
     if returncode == _WATCHDOG_EXIT_STATUS:
         return True
     return os.name != "nt" and returncode == -_SIGALRM_NUMBER
@@ -187,16 +158,7 @@ def _unknown_verdict(
     *,
     exc_info: bool = True,
 ) -> bool:
-    """What to answer when the probe produced no verdict at all.
-
-    Unusable for an accelerator: no evidence it is fine, and the two ways of being wrong
-    are not symmetric, since the allocation this stands in front of ends the process.
-
-    Usable for CPU, which is the opposite trade. A CPU load cannot fault a GPU driver, so
-    a probe that never ran says nothing against it, and condemning it here would send the
-    caller past its CPU fallback to the GGUF backend, changing the embedding space and
-    forcing a reindex over what may be a passing failure to fork.
-    """
+    """What to answer when the probe produced no verdict at all. Unusable for an accelerator: there is no evidence it is fine, and the two ways of being wrong are not symmetric, since the allocation this stands in front of ends the process. Usable for CPU, the opposite trade: a CPU load cannot fault a GPU driver, so a probe that never ran says nothing against it, and condemning it here would send the caller past its CPU fallback to the GGUF backend, changing the embedding space and forcing a reindex over what may be a passing failure to fork."""
     usable = device == "cpu"
     logger.warning(
         "torch allocation probe on %s %s; treating the device as %s",
@@ -215,15 +177,9 @@ def _identity_key() -> tuple[str | None, ...]:
 def device_can_allocate(device: str) -> bool:
     """Return false unless the device is known to be usable.
 
-    False when the child crashes or times out, and also when it could not be spawned or
-    its result could not be read. Those last two are not evidence the device is fine, only
-    that we do not know, and the two outcomes are not symmetric: guessing wrong towards
-    CPU costs embedding speed, guessing wrong towards the accelerator costs the backend,
-    since the allocation this stands in front of terminates the process rather than raising.
+    False when the child crashes or times out, and also when it could not be spawned or its result could not be read: those last two are not evidence the device is fine, only that we do not know, and the outcomes are not symmetric, since guessing wrong towards CPU costs embedding speed while guessing wrong towards the accelerator costs the backend.
 
-    An ordinary exception from a child that RAN and reported still returns true. The
-    in-process loader will raise the same error and report it better than a silent
-    downgrade to CPU does. Results are cached per device and device-identity environment.
+    An ordinary exception from a child that RAN and reported still returns true, because the in-process loader raises the same error and reports it better than a silent downgrade to CPU. Results are cached per device and device-identity environment.
     """
     return _device_can_allocate_cached(device, _identity_key())
 
@@ -247,8 +203,7 @@ def _device_can_allocate_cached(device: str, _identity: tuple[str | None, ...]) 
             encoding = "utf-8",
             errors = "replace",
             env = utf8_child_env(env),
-            # No child_popen_kwargs() here. Its Linux preexec_fn can deadlock when this multithreaded backend forks and
-            # executes Python before exec.
+            # No child_popen_kwargs() here. Its Linux preexec_fn can deadlock when this multithreaded backend forks and executes Python before exec.
             **windows_hidden_subprocess_kwargs(),
         )
     except Exception:  # noqa: BLE001 - no child ran, so nothing was proven
@@ -295,8 +250,7 @@ def _device_can_allocate_cached(device: str, _identity: tuple[str | None, ...]) 
             return False
 
         if process.returncode < 0:
-            # An OOM kill or container stop is not evidence against the device but is not a clean run either, and
-            # reading it as a pass would send _load_device() into the death the probe prevents.
+            # An OOM kill or container stop is not evidence against the device but is not a clean run either, and reading it as a pass would send _load_device() into the death the probe prevents.
             return _unknown_verdict(
                 device,
                 f"was killed by signal {-process.returncode} without faulting",
@@ -310,15 +264,7 @@ def _device_can_allocate_cached(device: str, _identity: tuple[str | None, ...]) 
 
 
 def _terminate_and_drain(process: subprocess.Popen) -> str:
-    """Bound cleanup after timeout and retain an unkillable child for reaping.
-
-    Escalates in one loop rather than nesting, so a single pair of handlers covers every
-    attempt. Nested, the post-kill read sat inside the timeout branch, where the trailing
-    ``except OSError`` was a sibling and could not see it: a pipe failure there escaped
-    ``device_can_allocate``, so a device that genuinely timed out raised instead of
-    returning False, the child never reached the reaper, and since ``lru_cache`` does not
-    cache exceptions the next call re-ran the whole probe.
-    """
+    """Bound cleanup after timeout and retain an unkillable child for reaping. Escalates in one loop rather than nesting, so one pair of handlers covers every attempt. Nested, the post-kill read sat inside the timeout branch where the trailing ``except OSError`` was a sibling and could not see it: a pipe failure there escaped ``device_can_allocate``, so a device that genuinely timed out raised instead of returning False, the child never reached the reaper, and since ``lru_cache`` does not cache exceptions the next call re-ran the whole probe."""
     stderr = ""
     for signal_child in (process.terminate, process.kill):
         try:

@@ -120,7 +120,7 @@ def test_every_redirect_target_is_prefetched_under_its_EXACT_name():
 
     `models--unsloth--qwen3-0.6b-unsloth-bnb-4bit` and
     `models--unsloth--Qwen3-0.6B-unsloth-bnb-4bit` are different directories, so
-    prefetching the pretty spelling of a repo the loader asks for in lower case
+    prefetching a spelling other than the one the loader asks for
     warms a cache nobody reads and the session downloads it twice -- at full
     cost, with no error and nothing red. Two hardware reports give the exact
     strings; this asserts the lists agree with them character for character.
@@ -142,10 +142,12 @@ def test_every_redirect_target_is_prefetched_under_its_EXACT_name():
         )
 
 
-def test_the_lower_case_qwen3_redirect_is_not_tidied_away():
-    """It looks like a typo and it is a measurement. Written down so the next
-    reader corrects the capitals in the report, not in this file."""
-    assert legs.LOAD_REDIRECTS["unsloth/Qwen3-0.6B"] == "unsloth/qwen3-0.6b-unsloth-bnb-4bit"
+def test_the_qwen3_redirect_matches_the_measured_case():
+    """A measurement, not a style choice. Before #8058 the loader reported this repo in
+    lower case; since #8058 it keeps the canonical capitals, and the kernel report cited in
+    legs.py shows exactly this string. If the loader's spelling moves again, correct it here
+    from a report, not by hand."""
+    assert legs.LOAD_REDIRECTS["unsloth/Qwen3-0.6B"] == "unsloth/Qwen3-0.6B-unsloth-bnb-4bit"
 
 
 def test_a_blob_is_counted_once_not_once_per_symlink(tmp_path, monkeypatch):

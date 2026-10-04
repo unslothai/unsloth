@@ -12,14 +12,11 @@
 // delete is linear in thread length again.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-function source(path: string): string {
-  return readFileSync(new URL(`../src/${path}`, import.meta.url), "utf8");
-}
+import { readSrc } from "./helpers/kit.ts";
 
-const thread = source("components/assistant-ui/thread.tsx");
+const thread = readSrc("components/assistant-ui/thread.tsx");
 
 function block(start: string): string {
   const [, rest] = thread.split(start, 2);
@@ -54,10 +51,13 @@ test("the render prop is built once, at module scope", () => {
 test("ThreadMessage sends each kind to the component that names it", () => {
   const body = block("const ThreadMessage: FC = () => {");
   assert.match(body, /threadMessageKind\(role, isEditing\)/);
-  assert.match(body, /case "edit":\s*return <EditComposer \/>;/);
-  assert.match(body, /case "user":\s*return <UserMessage \/>;/);
-  assert.match(body, /case "assistant":\s*return <AssistantMessage \/>;/);
+  // The kind picks the component; the row renders it below, followed by the fork divider.
+  assert.match(body, /case "edit":\s*body = <EditComposer \/>;/);
+  assert.match(body, /case "user":\s*body = <UserMessage \/>;/);
+  assert.match(body, /case "assistant":\s*body = <AssistantMessage \/>;/);
+  // An unknown kind renders nothing at all, divider included.
   assert.match(body, /default:\s*return null;/);
+  assert.match(body, /\{body\}\s*<ForkContinuationRule \/>/);
 });
 
 test("research-reply ownership is selected as an answer, not as the message list", () => {

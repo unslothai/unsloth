@@ -80,21 +80,19 @@ export function flushVramBudgetSave(): Promise<VramBudgetSettings> | null {
  * that request replaces. The chain swallows rejections the debounced save reported.
  */
 export function settleVramBudgetSave(): Promise<unknown> | null {
-  // The newest write, not the chain: the chain swallows rejections so one failed
-  // save cannot strand those behind it, and a caller waiting on it would be told
-  // the save succeeded. Only the newest can have re-staged a retry, and writes
-  // settle in order, so it still covers every open write.
+  // The newest write, not the chain: the chain swallows rejections so one failed save cannot strand
+  // those behind it, and a caller waiting on it would be told the save succeeded. Only the newest
+  // can have re-staged a retry, and writes settle in order, so it still covers every open write.
   return (
     flushVramBudgetSave() ??
     (vramBudgetWritesOpen > 0 ? vramBudgetNewestWrite : null)
   );
 }
 
-// A load waits on the budget it is about to launch against, so an edit made in
-// that window is flushed by the teardown alongside the load request and either
-// fraction could size the child. Settling in a loop only shrinks that window;
-// closing the control closes it. Held here because the row unmounts and the load
-// does not.
+// A load waits on the budget it is about to launch against, so an edit made in that window is
+// flushed by the teardown alongside the load request and either fraction could size the child.
+// Settling in a loop only shrinks that window; closing the control closes it. Held here because the
+// row unmounts and the load does not.
 let vramBudgetLocked = false;
 
 export function setVramBudgetLocked(locked: boolean) {
@@ -165,10 +163,9 @@ async function fetchVramBudgetSettings(): Promise<VramBudgetSettings> {
 export async function loadVramBudgetSettings(
   options: { force?: boolean; rethrow?: boolean } = {},
 ): Promise<VramBudgetSettings | null> {
-  // Read behind any open write: a row remounting right after a flushed drag can
-  // otherwise GET the old fraction before the PUT commits and answer after it,
-  // repainting the control with the value the server just replaced. The
-  // subscription cannot untangle that, since only the order is wrong.
+  // Read behind any open write: a row remounting right after a flushed drag can otherwise GET the
+  // old fraction before the PUT commits and answer after it, repainting the control with the value
+  // the server just replaced. The subscription cannot untangle that, since only the order is wrong.
   const pendingWrites =
     vramBudgetWritesOpen > 0 ? vramBudgetWriteChain : Promise.resolve();
   // Waiting behind the writes open now says nothing about a save issued while the

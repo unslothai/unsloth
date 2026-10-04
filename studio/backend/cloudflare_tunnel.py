@@ -3,16 +3,15 @@
 
 """Free Cloudflare quick tunnel for Unsloth's 0.0.0.0 launches.
 
-The raw http://<ip>:<port> is often unreachable (https-vs-http, blocked ports,
-closed security groups); a cloudflared quick tunnel gives a free
-https://*.trycloudflare.com URL that works anywhere, with no account or domain.
-
-Best-effort throughout: any failure collapses to "no URL" and Unsloth keeps
-running. Stdlib only (back-end imports are lazy) so it is safe to import early.
+The raw http://<ip>:<port> is often unreachable (https-vs-http, blocked ports, closed security groups); a
+cloudflared quick tunnel gives a free https://*.trycloudflare.com URL that works anywhere, with no account or
+domain. Best-effort throughout: any failure collapses to "no URL" and Unsloth keeps running. Stdlib only
+(back-end imports are lazy) so it is safe to import early.
 """
 
 from __future__ import annotations
 
+import logging
 import os
 import platform
 import re
@@ -21,6 +20,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Callable, Optional, Tuple
 
@@ -33,6 +33,11 @@ _REGISTERED_MARKER = "Registered tunnel connection"
 _RELEASE_BASE = "https://github.com/cloudflare/cloudflared/releases/latest/download"
 
 _READY_TIMEOUT = 15.0
+# No URL means the trycloudflare.com request failed; cloudflared exits at once or on its own 15s timeout.
+_NO_URL_RETRY_DELAYS = (2.0, 5.0)
+# run.py starts the tunnel before the CLI banner, so no-URL retries only start if they end within this.
+_NO_URL_RETRY_BUDGET = 30.0
+_OUTPUT_TAIL_LINES = 8
 _DOWNLOAD_TIMEOUT = 60
 
 # A registered edge connection does not mean the hostname resolves yet, so the URL is fetched once before it is
@@ -156,41 +161,110 @@ def find_cloudflared() -> Optional[str]:
     return None
 
 
-def _download(url: str, dest: Path) -> bool:
-    """Download url to dest via urllib (temp file + atomic rename). Best-effort -> bool."""
+_DOWNLOAD_ATTEMPTS = 3
+_COPY_CHUNK = 1 << 16
+
+
+def _download(
+    url: str,
+    dest: Path,
+    *,
+    attempts: int = _DOWNLOAD_ATTEMPTS,
+    timeout: float = _DOWNLOAD_TIMEOUT,
+) -> bool:
+    """Download url to dest via urllib (temp file + atomic rename), retried. Best-effort -> bool.
+
+    Attempts share one budget rather than each getting `timeout`, so a failing download
+    costs about what the single attempt before it did, and the terminal cases below skip the
+    pauses: run.py starts the launch tunnel inline, where one of them delays the banner.
+    """
+    import socket
+    import ssl
     import tempfile
+    import urllib.error
     import urllib.request
 
-    tmp_path: Optional[Path] = None
-    try:
-        dest.parent.mkdir(parents = True, exist_ok = True)
-        with tempfile.NamedTemporaryFile(
-            prefix = dest.name + ".tmp-", dir = dest.parent, delete = False
-        ) as handle:
-            tmp_path = Path(handle.name)
-            # GitHub's CDN 403s the default Python-urllib User-Agent.
-            req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio"})
-            with urllib.request.urlopen(req, timeout = _DOWNLOAD_TIMEOUT) as response:
-                shutil.copyfileobj(response, handle)
-        if tmp_path.stat().st_size == 0:
-            raise RuntimeError("empty download")
-        os.replace(tmp_path, dest)
-        return True
-    except Exception:
-        if tmp_path is not None:
-            try:
-                tmp_path.unlink(missing_ok = True)
-            except Exception:
-                pass
-        return False
+    deadline = time.monotonic() + timeout
+    last_error: Optional[BaseException] = None
+    for attempt in range(1, attempts + 1):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        tmp_path: Optional[Path] = None
+        # Set where the failure is known to be the transfer, because nothing else separates
+        # it from the local filesystem: ENOSPC from a full disk and ENETUNREACH from a dropped
+        # link both arrive as a bare OSError. Identity, so a close mid-unwind stays local.
+        transfer_exc: Optional[BaseException] = None
+        try:
+            dest.parent.mkdir(parents = True, exist_ok = True)
+            with tempfile.NamedTemporaryFile(
+                prefix = dest.name + ".tmp-", dir = dest.parent, delete = False
+            ) as handle:
+                tmp_path = Path(handle.name)
+                # GitHub's CDN 403s the default Python-urllib User-Agent.
+                req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio"})
+                try:
+                    response = urllib.request.urlopen(req, timeout = remaining)
+                except Exception as exc:
+                    transfer_exc = exc
+                    raise
+                with response:
+                    while True:
+                        try:
+                            chunk = response.read(_COPY_CHUNK)
+                        except Exception as exc:
+                            transfer_exc = exc
+                            raise
+                        if not chunk:
+                            break
+                        handle.write(chunk)
+            if tmp_path.stat().st_size == 0:
+                transfer_exc = RuntimeError("empty download")
+                raise transfer_exc
+            os.replace(tmp_path, dest)
+            return True
+        except Exception as exc:
+            last_error = exc
+            if tmp_path is not None:
+                try:
+                    tmp_path.unlink(missing_ok = True)
+                except Exception:
+                    pass
+            reason = getattr(exc, "reason", None)
+            resolver = exc if isinstance(exc, socket.gaierror) else reason
+            terminal = (
+                exc is not transfer_exc
+                or isinstance(exc, TimeoutError)
+                or isinstance(reason, TimeoutError)
+                # A verdict on the peer; its SSLError siblings are transfers that failed.
+                or isinstance(exc, ssl.SSLCertVerificationError)
+                or isinstance(reason, ssl.SSLCertVerificationError)
+                # EAI_AGAIN is the resolver asking to be tried again; the rest are answers.
+                or (isinstance(resolver, socket.gaierror) and resolver.errno != socket.EAI_AGAIN)
+                or (
+                    isinstance(exc, urllib.error.HTTPError)
+                    and 400 <= exc.code < 500
+                    and exc.code not in (408, 429)
+                )
+            )
+            if terminal or attempt >= attempts:
+                break
+            pause = 1.5 * attempt
+            if time.monotonic() + pause >= deadline:
+                break
+            time.sleep(pause)
+    logging.getLogger(__name__).warning(
+        "could not download cloudflared from %s (%s); install cloudflared on PATH "
+        "to use a public tunnel",
+        url,
+        last_error,
+    )
+    return False
 
 
 def _extract_tgz_member(tgz_path: Path, dest: Path) -> bool:
-    """Extract just the `cloudflared` member from a darwin .tgz to dest.
-
-    Rejects absolute paths and `..` traversal so a hostile archive cannot write
-    outside dest. Best-effort -> bool.
-    """
+    """Extract just the `cloudflared` member from a darwin .tgz to dest. Rejects absolute paths and
+    `..` traversal so a hostile archive cannot write outside dest. Best-effort -> bool."""
     import tarfile
     try:
         with tarfile.open(tgz_path, "r:gz") as tar:
@@ -323,11 +397,9 @@ def _probe_edge(
 
 
 def _verify_through_edge(host: str, deadline: float) -> bool:
-    """Verify at the edge, which selects the tunnel by SNI rather than by address.
-
-    Error 1033 and an intercepting proxy's own page are both answers and are not
-    told apart here, so only the marker ends the wait. Nothing answering at all
-    is this path being blocked, which the hostname may still get through.
+    """Verify at the edge, which selects the tunnel by SNI rather than by address. Error 1033 and an intercepting
+    proxy's own page are both answers and are not told apart here, so only the marker ends the wait. Nothing
+    answering at all is this path being blocked, which the hostname may still get through.
     """
     addresses = _edge_addresses()
     if not addresses:
@@ -391,17 +463,13 @@ def _process_exited(proc: subprocess.Popen) -> bool:
 
 
 def _origin_url(host: str, port: int) -> str:
-    url_host = host.replace("%", "%25")
-    if ":" in url_host and not url_host.startswith("["):
-        url_host = f"[{url_host}]"
-    return f"http://{url_host}:{port}"
+    from utils.host_policy import published_url_host
+    return f"http://{published_url_host(host)}:{port}"
 
 
 class CloudflareTunnel:
-    """A cloudflared quick tunnel to a local Studio endpoint. Best-effort throughout.
-
-    Use a loopback address for wildcard binds so cloudflared's upstream stays
-    local-only while matching Studio's active address family.
+    """A cloudflared quick tunnel to a local Studio endpoint. Best-effort throughout. Use a loopback address for
+    wildcard binds so cloudflared's upstream stays local-only while matching Studio's active address family.
     """
 
     def __init__(
@@ -427,6 +495,10 @@ class CloudflareTunnel:
         self.on_exit: Optional[Callable[["CloudflareTunnel"], None]] = None
         self._reader_exited = False
         self._runtime_active = False
+        self._tail: deque = deque(maxlen = _OUTPUT_TAIL_LINES)
+
+    def output_tail(self) -> str:
+        return "\n".join(self._tail)
 
     def start(self) -> None:
         cmd = [
@@ -475,6 +547,7 @@ class CloudflareTunnel:
         try:
             if proc.stdout is not None:
                 for line in proc.stdout:
+                    self._tail.append(line.rstrip())
                     # stdout closed -> cloudflared has exited. Record why, and unblock any waiters at once
                     # instead of letting them wait out the full timeout.
                     if self.url is None:
@@ -505,11 +578,9 @@ class CloudflareTunnel:
                 callback(self)
 
     def wait_for_ready(self, timeout: float = _READY_TIMEOUT) -> Optional[str]:
-        """Block until the tunnel is actually serving -- the URL has been minted
-        *and* at least one edge connection has registered -- or until timeout.
-
-        Returns the URL only when ready, so callers never advertise a URL that
-        would return Cloudflare error 1033 (HTTP 530)."""
+        """Block until the tunnel is actually serving -- the URL has been minted *and* at least one edge connection
+        has registered -- or until timeout. Returns the URL only when ready, so callers never advertise a URL
+        that would return Cloudflare error 1033 (HTTP 530)."""
         self._ready_event.wait(timeout)
         return self.url if self.ready else None
 
@@ -585,6 +656,8 @@ _active_lock = threading.Lock()
 _start_lock = threading.Lock()
 # Latched by stop_studio_tunnel so a shutdown landing between retries cannot start a tunnel nobody will stop.
 _shutdown_requested = False
+# Set alongside it so a pending retry delay, which holds _start_lock, ends at once.
+_cancel_retry = threading.Event()
 _tunnel_generation = 0
 _tunnel_lifecycle = 0
 _accepting_starts = True
@@ -749,6 +822,11 @@ def _set_online_locked(url: str) -> None:
     _tunnel_error = None
 
 
+def _wait_before_retry(delay: float) -> bool:
+    """True if a stop cancelled the delay."""
+    return _cancel_retry.wait(delay)
+
+
 def start_studio_tunnel(
     port: int,
     timeout: float = _READY_TIMEOUT,
@@ -757,16 +835,12 @@ def start_studio_tunnel(
     admission: Optional[Tuple[int, int]] = None,
     origin_host: str = "localhost",
 ) -> Optional[str]:
-    """Start a quick tunnel and return its public URL once it is actually
-    serving, or None (best-effort).
-
-    Waits for cloudflared to both mint the URL and register an edge connection,
-    then fetches /api/health over the public URL, so the caller never advertises
-    a link that yields Cloudflare error 1033 (HTTP 530) or an unresolvable host.
-    If a URL is minted but no connection registers within the window (e.g. quic
-    is blocked on this network), retries once forcing the http2 protocol. On any
-    failure the tunnel is stopped and None is returned.
-    """
+    """Start a quick tunnel and return its public URL once it is actually serving, or None
+    (best-effort). Waits for cloudflared to both mint the URL and register an edge connection, then
+    fetches /api/health over the public URL, so the caller never advertises a link that yields
+    Cloudflare error 1033 (HTTP 530) or an unresolvable host. If a URL is minted but no connection
+    registers within the window (e.g. quic is blocked on this network), retries once forcing the
+    http2 protocol. On any failure the tunnel is stopped and None is returned."""
     global _active_tunnel, _shutdown_requested, _tunnel_generation
     global _tunnel_state, _tunnel_owner, _tunnel_url, _tunnel_error, _tunnel_port
     if managed_by not in _TUNNEL_OWNERS:
@@ -796,6 +870,7 @@ def start_studio_tunnel(
             ):
                 return None
             _shutdown_requested = False
+            _cancel_retry.clear()
             _tunnel_generation += 1
             generation = _tunnel_generation
             prior_at_start, _active_tunnel = _active_tunnel, None
@@ -817,7 +892,11 @@ def start_studio_tunnel(
             _set_failed(generation, managed_by, port, "cloudflared is unavailable")
             return None
 
-        for protocol in (None, "http2"):
+        protocols = [None, "http2"]
+        no_url_delays = list(_NO_URL_RETRY_DELAYS)
+        no_url_started = time.monotonic()
+        while protocols:
+            protocol = protocols[0]
             with _active_lock:
                 if _shutdown_requested or generation != _tunnel_generation:
                     _active_tunnel = None
@@ -885,6 +964,15 @@ def start_studio_tunnel(
                     return None
                 return url
             saw_url = tunnel.url is not None
+            retry_no_url = not saw_url and bool(no_url_delays)
+            tail = tunnel.output_tail() if hasattr(tunnel, "output_tail") else ""
+            logging.getLogger(__name__).warning(
+                "cloudflared attempt failed (protocol=%s, url=%s, registered=%s)%s",
+                protocol or "auto",
+                saw_url,
+                registered,
+                f":\n{tail}" if tail else "",
+            )
             with _active_lock:
                 was_active = _active_tunnel is tunnel
                 if was_active:
@@ -905,9 +993,9 @@ def start_studio_tunnel(
                 elif generation == _tunnel_generation and _active_tunnel is tunnel:
                     if stopped:
                         _active_tunnel = None
-                        # Reset from "stopping" before the http2 retry, or stop_studio_tunnel() early-returns and stops
+                        # Reset from "stopping" before a retry, or stop_studio_tunnel() early-returns and stops
                         # nothing.
-                        if _tunnel_state == "stopping" and protocol is None:
+                        if _tunnel_state == "stopping" and (protocol is None or retry_no_url):
                             _tunnel_state = "starting"
                     else:
                         _active_tunnel = tunnel
@@ -917,12 +1005,19 @@ def start_studio_tunnel(
                 return None
             if not stopped:
                 return None
+            if retry_no_url:
+                spent = time.monotonic() - no_url_started
+                if spent + no_url_delays[0] + timeout <= _NO_URL_RETRY_BUDGET:
+                    if _wait_before_retry(no_url_delays.pop(0)):
+                        return None
+                    continue
             if not saw_url:
                 _set_failed(generation, managed_by, port, "cloudflared did not produce a URL")
                 return None
             if registered:
                 _set_failed(generation, managed_by, port, "Cloudflare URL was not reachable")
                 return None
+            protocols.pop(0)
         _set_failed(generation, managed_by, port, "cloudflared did not register a connection")
         return None
 
@@ -938,9 +1033,11 @@ def stop_studio_tunnel(*, admission: Optional[Tuple[int, int]] = None) -> None:
             # Latch so an in-flight start_studio_tunnel won't start a fresh tunnel (e.g. its http2 retry) after
             # we have already torn down.
             _shutdown_requested = True
+            _cancel_retry.set()
             _tunnel_generation += 1
             return
         _shutdown_requested = True
+        _cancel_retry.set()
         _tunnel_generation += 1
         stop_generation = _tunnel_generation
         tunnel = _active_tunnel

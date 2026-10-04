@@ -231,7 +231,7 @@ export function KnowledgeBaseDialog({
                 disabled={ragUnavailable}
                 title={ragUnavailableHint}
               >
-                <HugeiconsIcon icon={PlusSignIcon} size={14} />
+                <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
                 New knowledge base
               </Button>
             </div>
@@ -249,7 +249,7 @@ export function KnowledgeBaseDialog({
                 No knowledge bases yet.
               </div>
             ) : (
-              <ul className="flex max-h-[60dvh] flex-col divide-y overflow-y-auto rounded-md border">
+              <ul className="flex max-h-[60dvh] flex-col divide-y overflow-y-auto scroll-rounded rounded-md border">
                 {kbs.map((kb) => (
                   <li
                     key={kb.id}
@@ -275,7 +275,7 @@ export function KnowledgeBaseDialog({
                         onClick={() => startEdit(kb)}
                         aria-label="Rename knowledge base"
                       >
-                        <HugeiconsIcon icon={Edit03Icon} size={14} />
+                        <HugeiconsIcon icon={Edit03Icon} className="size-3.5" />
                       </Button>
                       <Button
                         type="button"
@@ -284,7 +284,7 @@ export function KnowledgeBaseDialog({
                         onClick={() => setConfirmingDelete(kb)}
                         aria-label="Delete knowledge base"
                       >
-                        <HugeiconsIcon icon={Delete02Icon} size={14} />
+                        <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
                       </Button>
                     </div>
                   </li>
@@ -401,7 +401,7 @@ function KnowledgeBaseDocuments({
       ) : (
         <div
           className={cn(
-            "flex max-h-[55dvh] flex-wrap gap-1.5 overflow-y-auto rounded-md pr-0.5 transition-colors",
+            "flex max-h-[55dvh] flex-wrap gap-1.5 overflow-y-auto scroll-rounded rounded-md pr-0.5 transition-colors",
             dragging && "bg-primary/5 ring-1 ring-primary/60",
           )}
         >
@@ -411,6 +411,7 @@ function KnowledgeBaseDocuments({
               filename={doc.filename}
               status={doc.status}
               progress={doc.progress}
+              stage={doc.stage}
               error={doc.error}
               onRemove={
                 doc.id.startsWith("pending_") || isLinkedFolderManaged(doc)

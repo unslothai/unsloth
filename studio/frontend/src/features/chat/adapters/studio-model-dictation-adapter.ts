@@ -2,11 +2,16 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { withModelLoadNotice } from "@/lib/model-lifecycle-events";
+import {
+  type AudioCppRuntimeStatus,
+  isAudioCppFolderId,
+} from "../../audio/audio-cpp-catalog";
 import { authFetch } from "@/features/auth";
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { requestSttDownload } from "@/features/settings/stores/stt-download-prompt-store";
 import {
+  AUDIO_CPP_STT_MODELS,
   MTMD_STT_MODELS,
   type SttDevice,
   applyDictationDictionary,
@@ -17,6 +22,7 @@ import {
 } from "@/features/settings/stores/voice-settings-store";
 import type { DictationAdapter } from "@assistant-ui/react";
 import { toast } from "sonner";
+import { withAbort } from "../../hub/lib/abort-signals";
 import { encryptProviderApiKey } from "../api/providers-api";
 import { getExternalProviderApiKey } from "../external-providers";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
@@ -70,10 +76,18 @@ const stopStream = (stream: MediaStream | null) => {
 };
 
 /** Backend STT engine, decided by the model: Whisper ids run GGML through whisper.cpp, mtmd
- *  ids run through llama.cpp, and a custom HF repo is safetensors on Transformers. */
-export type SttEngine = "transformers" | "gguf" | "mtmd";
+ *  ids run through llama.cpp, the GGUF audio runtime's ids (saved keys, package folders and
+ *  other GGUF repos) run through audiocpp, and a custom HF repo is safetensors on Transformers. */
+export type SttEngine = "transformers" | "gguf" | "mtmd" | "audiocpp";
 
 export function sttEngineFor(model: string): SttEngine {
+  const id = model.trim();
+  if (
+    AUDIO_CPP_STT_MODELS.has(id) ||
+    isAudioCppFolderId(id) ||
+    (!isCuratedSttModel(id) && /-GGUF\/?$/i.test(id))
+  )
+    return "audiocpp";
   // whisper.cpp is Whisper-only, so the newer ASR models go to llama.cpp.
   if (MTMD_STT_MODELS.has(model.trim())) return "mtmd";
   return isCuratedSttModel(model) ? "gguf" : "transformers";
@@ -115,6 +129,7 @@ export async function transcribeAudioBlob(
     model?: string;
     language?: string;
     engine?: SttEngine;
+    device?: SttDevice;
     providerId?: string;
     signal?: AbortSignal;
   } = {},
@@ -180,7 +195,7 @@ export async function transcribeAudioBlob(
   const engine = options.engine ?? sttEngineFor(model);
   const params = new URLSearchParams({ model, fast: "true", engine });
   if (language) params.set("language", language);
-  params.set("device", settings.sttDevice);
+  params.set("device", options.device ?? settings.sttDevice);
   const response = await authFetch(
     `/api/inference/audio/transcribe/raw?${params.toString()}`,
     {
@@ -240,6 +255,9 @@ export interface SttStatus {
   transformers?: SttEngineStatus;
   gguf?: SttEngineStatus;
   mtmd?: SttEngineStatus;
+  audiocpp?: SttEngineStatus;
+  /** What the audio.cpp runtime can run; absent on servers predating it. */
+  audio_cpp_runtime?: AudioCppRuntimeStatus;
 }
 
 // Keep load/unload requests ordered so a new recording cannot race an unload still finishing for the previous one.
@@ -256,21 +274,24 @@ function queueSttLifecycle(operation: () => Promise<void>): Promise<void> {
 export async function fetchSttStatus(
   refreshKey?: number,
   model?: string,
+  signal?: AbortSignal,
 ): Promise<SttStatus> {
   const params = new URLSearchParams();
   if (refreshKey !== undefined) params.set("refresh", String(refreshKey));
   if (model) params.set("model", model);
   const query = params.toString();
-  const response = await authFetch(
+  const request = authFetch(
     `/api/inference/audio/stt/status${query ? `?${query}` : ""}`,
+    { signal },
   );
+  const response = await withAbort(request, signal);
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return (await response.json()) as SttStatus;
 }
 
 /** The engine block that owns `model`. A curated Whisper prefers whisper.cpp, but without
  *  whisper-server the backend serves it through Transformers, so that is the fallback.
- *  mtmd models run nowhere else. */
+ *  mtmd and audiocpp models run nowhere else. */
 export function sttEngineStatusFor(
   status: SttStatus,
   model: string,
@@ -278,6 +299,7 @@ export function sttEngineStatusFor(
 ): SttEngineStatus | undefined {
   const engine = engineOverride ?? sttEngineFor(model);
   if (engine === "mtmd") return status.mtmd;
+  if (engine === "audiocpp") return status.audiocpp;
   if (engine === "gguf" && status.gguf?.available) return status.gguf;
   return status.transformers;
 }
@@ -303,12 +325,25 @@ export async function validateSttModel(
   }
 }
 
+/** The quant an audiocpp pick names, as the request field; every other engine takes none. A saved
+ *  dictation key already implies its package, so callers pass nothing for one. */
+function sttVariantBody(
+  engine: SttEngine,
+  ggufVariant: string | null | undefined,
+): { gguf_variant?: string } {
+  return engine === "audiocpp" && ggufVariant
+    ? // biome-ignore lint/style/useNamingConvention: API schema
+      { gguf_variant: ggufVariant }
+    : {};
+}
+
 /** Load a selected model that is already downloaded. */
 export function loadSttModel(
   model: string,
   engine?: SttEngine,
   signal?: AbortSignal,
   device?: SttDevice,
+  ggufVariant?: string | null,
 ): Promise<void> {
   const resolvedEngine = engine ?? sttEngineFor(model);
   const resolvedDevice = device ?? useVoiceSettingsStore.getState().sttDevice;
@@ -322,6 +357,7 @@ export function loadSttModel(
         model,
         engine: resolvedEngine,
         device: resolvedDevice,
+        ...sttVariantBody(resolvedEngine, ggufVariant),
       }),
       signal,
     });
@@ -341,14 +377,20 @@ export async function startSttDownload(
   model: string,
   hfToken?: string,
   engine?: SttEngine,
+  ggufVariant?: string | null,
 ): Promise<void> {
+  const resolvedEngine = engine ?? sttEngineFor(model);
   const response = await authFetch("/api/inference/audio/stt/download", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       ...hubTokenHeader(hfToken),
     },
-    body: JSON.stringify({ model, engine: engine ?? sttEngineFor(model) }),
+    body: JSON.stringify({
+      model,
+      engine: resolvedEngine,
+      ...sttVariantBody(resolvedEngine, ggufVariant),
+    }),
   });
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as {

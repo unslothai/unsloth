@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useIsAccountOwner } from "@/features/auth";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -20,6 +21,7 @@ import type {
 } from "../api/keyless-api-access";
 import { ApiKeyRow } from "../components/api-key-row";
 import { CreateKeyForm } from "../components/create-key-form";
+import { DecisionApiSection } from "../components/decision-api-section";
 import { KeyRevealCard } from "../components/key-reveal-card";
 import { KeylessApiAccessSection } from "../components/keyless-api-access-section";
 import { LanAccessSection } from "../components/lan-access-section";
@@ -30,6 +32,7 @@ import { UsageExamples } from "../components/usage-examples";
 
 export function ApiKeysTab() {
   const t = useT();
+  const isOwner = useIsAccountOwner();
   const [keys, setKeys] = useState<ApiKey[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -98,7 +101,7 @@ export function ApiKeysTab() {
   };
 
   return (
-    <div className="flex min-w-0 max-w-full flex-col gap-6">
+    <div className="settings-page">
       <header className="flex min-w-0 flex-col gap-1">
         <h1 className="text-xl font-semibold font-heading">
           {t("settings.apiKeys.title")}
@@ -148,7 +151,7 @@ export function ApiKeysTab() {
       </AnimatePresence>
 
       <section className="flex min-w-0 flex-col">
-        <h2 className="mb-2 text-sm font-semibold text-foreground">
+        <h2 className="settings-heading mb-2 text-sm font-semibold">
           {t("settings.apiKeys.accessTokens")}
         </h2>
         {error ? (
@@ -181,14 +184,19 @@ export function ApiKeysTab() {
 
       <MonitorLink />
 
-      <KeylessApiAccessSection onSettingsChange={setKeyless} />
+      {/* Installation-wide controls: owner-only routes. */}
+      {isOwner ? (
+        <>
+          <KeylessApiAccessSection onSettingsChange={setKeyless} />
 
-      {/* Also on the Remote & LAN tab. One panel mounts at a time, so only one polls. */}
-      <RemoteAccessSection />
+          {/* Also on the Remote & LAN tab. One panel mounts at a time, so only one polls. */}
+          <RemoteAccessSection />
 
-      <LanAccessSection />
+          <LanAccessSection />
 
-      <ModelAutoSwitchSection />
+          <ModelAutoSwitchSection />
+        </>
+      ) : null}
 
       <UsageExamples
         apiKey={revealed}
@@ -196,6 +204,8 @@ export function ApiKeysTab() {
         keylessTools={keyless.tools}
         keylessExposure={keyless.exposure}
       />
+
+      {isOwner ? <DecisionApiSection /> : null}
 
       <Dialog
         open={revokeTarget !== null}

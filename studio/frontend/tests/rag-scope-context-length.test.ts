@@ -4,16 +4,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-
 import { ragScopeContextLength } from "../src/features/chat/api/rag-context-length.ts";
+
+import { readText } from "./helpers/kit.ts";
 
 const UNGUARDED_WINDOW = /context_length:\s*\n?\s*runtime\./;
 const GUARDED_WINDOW = /context_length: ragScopeContextLength\(\{/g;
-
-const read = (path: string) =>
-  readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf8");
 
 test("a resident GGUF's window is not reported on a hosted turn", () => {
   assert.equal(
@@ -57,7 +53,7 @@ test("a local load with no GGUF window falls back to maxSeqLength", () => {
 });
 
 test("every rag_scope window goes through the guard", () => {
-  const adapter = read("../src/features/chat/api/chat-adapter.ts");
+  const adapter = readText("../src/features/chat/api/chat-adapter.ts");
   assert.doesNotMatch(adapter, UNGUARDED_WINDOW);
   assert.equal((adapter.match(GUARDED_WINDOW) ?? []).length, 2);
 });
@@ -66,12 +62,12 @@ test("every rag_scope window goes through the guard", () => {
 // the reduced window is what `loadedContextLength` carries. A budget sized off the pin
 // would inject a document the served window cannot hold.
 test("the served window is budgeted, never the n_ctx the load asked for", () => {
-  const helper = read("../src/features/chat/api/rag-context-length.ts");
+  const helper = readText("../src/features/chat/api/rag-context-length.ts");
   assert.doesNotMatch(
     helper.slice(helper.indexOf("export function")),
     /loadedCustomContextLength/,
   );
-  const adapter = read("../src/features/chat/api/chat-adapter.ts");
+  const adapter = readText("../src/features/chat/api/chat-adapter.ts");
   for (const call of adapter.match(/ragScopeContextLength\(\{[^}]*\}\)/g) ?? []) {
     assert.doesNotMatch(call, /loadedCustomContextLength/);
   }
@@ -83,12 +79,12 @@ test("the served window is budgeted, never the n_ctx the load asked for", () => 
 test("every runtime field the budget reads survives a queued run", () => {
   const queuedKeys = new Set(
     (
-      read("../src/features/chat/utils/queued-chat-run-settings.ts")
+      readText("../src/features/chat/utils/queued-chat-run-settings.ts")
         .match(/const QUEUED_SETTING_KEYS = \[([\s\S]*?)\] as const;/)?.[1] ?? ""
     ).match(/"([^"]+)"/g)?.map((quoted) => quoted.slice(1, -1)) ?? [],
   );
   assert.ok(queuedKeys.size > 0);
-  const adapter = read("../src/features/chat/api/chat-adapter.ts");
+  const adapter = readText("../src/features/chat/api/chat-adapter.ts");
   const calls = adapter.match(/ragScopeContextLength\(\{[^}]*\}\)/g) ?? [];
   assert.equal(calls.length, 2);
   for (const call of calls) {

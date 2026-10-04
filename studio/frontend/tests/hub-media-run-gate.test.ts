@@ -4,37 +4,98 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { routableToMediaPage } from "../src/features/hub/lib/local-path.ts";
+import type { SelectedModelView } from "../src/features/hub/types.ts";
 import { studioPageForTask } from "../src/features/hub/lib/unsloth-support.ts";
+import { registerBundlerResolver } from "./helpers/kit.ts";
 
-// What the inspector must decide before enabling Run, and what runSelectedModel requires
-// before navigating. They have to agree: the handler falls through to the chat loader for a
-// row it cannot route, and that unloads the resident model for a load that can only fail.
-const runsOnMediaPage = (
-  task: string | null | undefined,
+registerBundlerResolver();
+
+const { isHubModelRunEligible } = await import(
+  "../src/features/hub/lib/model-run-selection.ts"
+);
+const { taskForMediaPick } = await import(
+  "../src/features/model-picker/components/model-selector/audio-picker-policy.ts"
+);
+
+function mediaModel(
+  task: SelectedModelView["pipelineTag"],
   kind: "discover" | "cache" | "local",
-  localSource?: string | null,
-) => studioPageForTask(task) !== undefined && routableToMediaPage(kind, localSource);
+  localSource?: SelectedModelView["localSource"],
+): SelectedModelView {
+  const loadId = "/cache/models--Org--Model/snapshots/revision";
+  return {
+    id: kind === "local" ? loadId : "Org/Model",
+    loadId,
+    kind,
+    displayId: "Org/Model",
+    hubRepoId: "Org/Model",
+    owner: "Org",
+    title: "Model",
+    summary: "Model",
+    sourceLabel: "Hub cache",
+    path: loadId,
+    localSource,
+    isLocal: kind === "local",
+    isGguf: false,
+    modelFormat: "safetensors",
+    isDownloaded: true,
+    runtimeCanChat: false,
+    capabilities: [],
+    license: null,
+    pipelineTag: task,
+  };
+}
+
+function mediaRunEligible(model: SelectedModelView): boolean {
+  const task = taskForMediaPick(model.pipelineTag, model.task);
+  return isHubModelRunEligible({
+    model,
+    isDataset: false,
+    mediaRuntime: studioPageForTask(task ?? undefined) !== undefined,
+    nonGgufRuntimeAvailable: false,
+  });
+}
 
 // The backend tags a local non-GGUF diffusers checkpoint text-to-image (_local_model_task),
 // and it does that for every local row whatever its source, so these rows are real.
 test("a filesystem diffusion row never counts as running on a media page", () => {
-  assert.equal(runsOnMediaPage("text-to-image", "local", "models_dir"), false);
-  assert.equal(runsOnMediaPage("text-to-image", "local", "lmstudio"), false);
-  assert.equal(runsOnMediaPage("text-to-image", "local", "ollama"), false);
-  assert.equal(runsOnMediaPage("text-to-video", "local", "custom"), false);
-  assert.equal(runsOnMediaPage("text-to-image", "local", undefined), false);
+  assert.equal(
+    mediaRunEligible(mediaModel("text-to-image", "local", "models_dir")),
+    false,
+  );
+  assert.equal(
+    mediaRunEligible(mediaModel("text-to-image", "local", "lmstudio")),
+    false,
+  );
+  assert.equal(
+    mediaRunEligible(mediaModel("text-to-image", "local", "ollama")),
+    false,
+  );
+  assert.equal(
+    mediaRunEligible(mediaModel("text-to-video", "local", "custom")),
+    false,
+  );
+  assert.equal(mediaRunEligible(mediaModel("text-to-image", "local")), false);
 });
 
-test("hub-backed diffusion rows stay runnable on their page", () => {
+test("complete Hub-backed diffusion rows stay runnable on their page", () => {
   // An hf_cache row is a complete Hub snapshot, so it routes like a cached repo.
-  assert.equal(runsOnMediaPage("text-to-image", "local", "hf_cache"), true);
-  assert.equal(runsOnMediaPage("text-to-image", "cache"), true);
-  assert.equal(runsOnMediaPage("image-text-to-video", "discover"), true);
+  assert.equal(
+    mediaRunEligible(mediaModel("text-to-image", "local", "hf_cache")),
+    true,
+  );
+  assert.equal(mediaRunEligible(mediaModel("text-to-image", "cache")), true);
+  assert.equal(
+    mediaRunEligible(mediaModel("image-text-to-video", "discover")),
+    true,
+  );
 });
 
-test("a chat task is unaffected by the media gate", () => {
-  assert.equal(runsOnMediaPage("text-generation", "cache"), false);
-  assert.equal(runsOnMediaPage(null, "discover"), false);
-  assert.equal(runsOnMediaPage("text-generation", "local", "hf_cache"), false);
+test("chat tasks are not eligible through the media route", () => {
+  assert.equal(mediaRunEligible(mediaModel("text-generation", "cache")), false);
+  assert.equal(mediaRunEligible(mediaModel(undefined, "discover")), false);
+  assert.equal(
+    mediaRunEligible(mediaModel("text-generation", "local", "hf_cache")),
+    false,
+  );
 });

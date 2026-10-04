@@ -1,15 +1,12 @@
 # Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
-#
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Lesser General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
-#
 # This program is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
-#
 # You should have received a copy of the GNU Lesser General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
@@ -29,6 +26,7 @@ from ..models._utils import *
 from ..utils.packing import (
     build_sdpa_packed_attention_mask,
     build_xformers_block_causal_mask,
+    cover_padded_cu_seqlens,
     move_xformers_attention_bias,
 )
 
@@ -101,7 +99,6 @@ XFORMERS_BLOCK_DIAG_CLS = xformers.attn_bias.BlockDiagonalCausalMask if HAS_XFOR
 # dq_accum = zeros(total_q + 128 * n_seqs, n_heads, round_up(head_dim, 32)) and indexes it with
 # int32, so at 2**31 elements the kernel faults with an illegal memory access and poisons the CUDA
 # context. Forward-only never allocates dq_accum, so the guard requires a backward to be possible.
-# ---- flash-attn 2 varlen backward int32 overflow guard -------------------------------------
 _INT32_ELEMENTS = 2**31
 _VARLEN_INT32_GUARD_DISABLED = os.environ.get(
     "UNSLOTH_DISABLE_VARLEN_INT32_GUARD", "0"
@@ -204,6 +201,7 @@ class AttentionContext:
     # PrefixGrouper: non-None routes Q/K/V through the FlexAttention shared-prefix kernel; None leaves
     # every existing construction and behavior unchanged.
     prefix_seg_info: Optional[Any] = None
+    is_causal: bool = True
 
 
 def select_attention_backend(use_varlen: bool = False) -> str:
@@ -318,7 +316,7 @@ def run_attention(
         backend = SDPA
 
     # Both varlen-capable backends land in the same flash-attn 2 backward kernel, so guard both before
-    # the int32 overflow aborts the process. Integer arithmetic only, no device sync.
+    # the int32 overflow aborts the process. Integer arithmetic plus one cached sync per step.
     if backend in (FLASH_VARLEN, XFORMERS) and not _VARLEN_INT32_GUARD_DISABLED:
         # Both terms are needed. Q/K/V: a frozen hidden state feeding trainable LoRA q/k/v still yields a
         # Q that requires grad. context.requires_grad: gradient checkpointing runs its FIRST forward under
@@ -329,9 +327,13 @@ def run_attention(
         )
         if will_backward:
             seq_info = context.seq_info
-            # seq_info[0] is the per-document length tensor; .numel() needs no D2H copy.
-            n_seqs = seq_info[0].numel() if seq_info is not None else context.bsz
             total_q = context.bsz * context.q_len
+            # Includes the collator's trailing pad segment.
+            n_seqs = (
+                cover_padded_cu_seqlens(seq_info, total_q)[0].numel() - 1
+                if seq_info is not None
+                else context.bsz
+            )
             if _varlen_backward_overflows_int32(n_seqs, total_q, context.n_heads, context.head_dim):
                 # SDPA cannot apply logit softcapping, so rerouting a softcapped model (Gemma 2) would keep it
                 # training on wrong logits and gradients, worse than the fault this guard avoids.
@@ -363,6 +365,12 @@ def run_attention(
     flash_varlen_kwargs = config.flash_varlen_kwargs or {}
     sdpa_kwargs = config.sdpa_kwargs or {}
     xformers_kwargs = config.xformers_kwargs or {}
+    # Mask builders only see is_causal when False, so causal callers and their patches are unchanged.
+    direction = {}
+    if not context.is_causal:
+        flash_dense_kwargs = {**flash_dense_kwargs, "causal": False}
+        flash_varlen_kwargs = {**flash_varlen_kwargs, "causal": False}
+        direction = {"is_causal": False}
 
     bsz = context.bsz
     n_heads = context.n_heads
@@ -404,7 +412,7 @@ def run_attention(
         Q_f = Q.transpose(1, 2).reshape(bsz * q_len, n_heads, head_dim)
         K_f = K.transpose(1, 2).reshape(bsz * q_len, config.n_kv_heads, head_dim)
         V_f = V.transpose(1, 2).reshape(bsz * q_len, config.n_kv_heads, head_dim)
-        _, cu_seqlens, max_seqlen = context.seq_info
+        cu_seqlens, max_seqlen = cover_padded_cu_seqlens(context.seq_info, bsz * q_len)
         return flash_attn_varlen_func(
             Q_f,
             K_f,
@@ -423,10 +431,22 @@ def run_attention(
             bsz, q_len, n_heads, head_dim
         )
     elif backend == XFORMERS:
+        base_mask = context.causal_mask
+        # Only CausalLM_fast_forward supplies the mask; a direct decoder call (Liger, TRL's get_decoder paths) would attend bidirectionally.
+        if (
+            base_mask is None
+            and context.is_causal
+            and xformers is not None
+            and context.seq_info is None
+            and q_len == kv_seq_len
+        ):
+            base_mask = xformers.attn_bias.LowerTriangularMask()
         attn_bias = build_xformers_block_causal_mask(
             context.seq_info,
             sliding_window = sliding_window,
-            base_mask = context.causal_mask,
+            base_mask = base_mask,
+            total_tokens = K.shape[-2],
+            **direction,
         )
         attn_bias = move_xformers_attention_bias(attn_bias, Q.device)
 
@@ -491,11 +511,12 @@ def run_attention(
                 dtype = Q.dtype,
                 device = Q.device,
                 sliding_window = sliding_window,
+                total_tokens = K.shape[-2],
+                **direction,
             )
         else:
             q_len_local = Q.shape[-2]
             k_len_local = K.shape[-2]
-            # ---- SDPA mask normalization for left padding / 2D masks ----
             if local_mask is not None and isinstance(local_mask, torch.Tensor):
                 local_mask = local_mask.to(device = Q.device)
 
@@ -512,7 +533,13 @@ def run_attention(
                     q_pos = torch.arange(past_len, past_len + q_len_local, device = Q.device)
                     k_pos = torch.arange(k_len_local, device = Q.device)
 
-                    causal_keep = k_pos[None, :] <= q_pos[:, None]  # True = allowed (SDPA)
+                    causal_keep = (
+                        k_pos[None, :] <= q_pos[:, None]
+                        if context.is_causal
+                        else torch.ones(
+                            (q_len_local, k_len_local), dtype = torch.bool, device = Q.device
+                        )
+                    )  # True = allowed (SDPA)
                     if sliding_window is not None:
                         causal_keep &= k_pos[None, :] >= (q_pos[:, None] - (sliding_window - 1))
 
@@ -542,7 +569,9 @@ def run_attention(
                     q_len_local, k_len_local, sliding_window, Q.device
                 )
 
-            is_causal_local = local_mask is None and q_len_local == k_len_local
+            is_causal_local = (
+                context.is_causal and local_mask is None and q_len_local == k_len_local
+            )
 
         kwargs = dict(sdpa_kwargs)
         kwargs.setdefault("attn_mask", local_mask)
