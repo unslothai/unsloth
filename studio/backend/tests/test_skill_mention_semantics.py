@@ -63,7 +63,7 @@ def test_duplicates_and_multiple_skills_are_complete(mention_client):
     assert other.read_text() in messages[0]["content"]
 
 
-@pytest.mark.parametrize("failure", ["disabled", "unknown", "symlink", "invalid"])
+@pytest.mark.parametrize("failure", ["disabled", "symlink", "invalid"])
 def test_secure_discovery_failures_are_not_success(mention_client, failure):
     _, _, path = mention_client
     if failure == "disabled":
@@ -76,7 +76,7 @@ def test_secure_discovery_failures_are_not_success(mention_client, failure):
         path.symlink_to(target)
     elif failure == "invalid":
         path.write_text("no frontmatter")
-    messages, events = _load("@unknown" if failure == "unknown" else "@skill-creator")
+    messages, events = _load("@skill-creator")
     assert events[-1]["status"] == "unavailable"
     assert "not loaded" in events[-1]["detail"]
     assert not any(e["status"] == "loaded" for e in events)
@@ -150,9 +150,28 @@ def test_deduplicated_native_result_is_protected_through_context_fitting(mention
     assert any(manifest in message.get("content", "") for message in fitted)
 
 
+def test_mentions_that_are_not_skills_are_silent(mention_client, monkeypatch):
+    monkeypatch.setattr(mentions, "begin_tool_decision", lambda *a: pytest.fail("no approval"))
+    text = "ask @john and @everyone about it"
+    messages, events = _load(text, permission_mode = "ask", confirm_tool_calls = True)
+    assert events == []
+    assert messages == [{"role": "user", "content": text}]
+
+
+def test_disabled_skill_reports_unavailable_without_asking_approval(mention_client, monkeypatch):
+    skills.set_skill_enabled("skill-creator", False)
+    monkeypatch.setattr(mentions, "begin_tool_decision", lambda *a: pytest.fail("no approval"))
+    _, events = _load(permission_mode = "ask", confirm_tool_calls = True)
+    assert events[-1]["status"] == "unavailable"
+
+
 def test_read_error_preserves_a_single_system_message_and_original_history(mention_client):
+    _, _, path = mention_client
+    path.write_text("no frontmatter")
     system = {"role": "system", "content": "Standing instructions."}
-    messages, events = _load("@unknown", messages = [system, {"role": "user", "content": "@unknown"}])
+    messages, events = _load(
+        "@skill-creator", messages = [system, {"role": "user", "content": "@skill-creator"}]
+    )
     assert events[-1]["status"] == "unavailable"
     assert [m["role"] for m in messages] == ["system", "user"]
     assert system["content"] == "Standing instructions."

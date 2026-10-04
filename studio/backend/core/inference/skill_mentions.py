@@ -14,7 +14,7 @@ import hashlib
 import re
 import uuid
 
-from core.inference.skills import SkillError, read_skill_instructions
+from core.inference.skills import SkillError, list_skills, read_skill_instructions
 from state.tool_approvals import (
     abort_tool_decision,
     begin_tool_decision,
@@ -103,6 +103,16 @@ def load_mentioned_skills(
     if not messages or messages[-1].get("role") != "user":
         return
     names = mentioned_skill_names(_text(messages[-1]))
+    if not names:
+        return
+    # @john / @everyone are people, not skills: no card, approval prompt or notice.
+    # Known but unusable skills still report unavailable, without asking approval first.
+    try:
+        known = list_skills()
+    except (SkillError, OSError):
+        known = []
+    loadable = {s["name"] for s in known if s["valid"] and not s["shadowed"] and s["enabled"]}
+    names = [name for name in names if name in {s["name"] for s in known}]
     mode, bypass = normalize_tool_permissions(permission_mode, bypass_permissions)
     budget = (
         min(_MAX_LOAD_BYTES, max(0, int(context_length) * 2)) if context_length else _MAX_LOAD_BYTES
@@ -117,7 +127,7 @@ def load_mentioned_skills(
             "name": name,
             "resource": "SKILL.md",
         }
-        if confirm_tool_calls and not bypass and mode not in ("auto", "off"):
+        if name in loadable and confirm_tool_calls and not bypass and mode not in ("auto", "off"):
             approval_id = new_approval_id()
             slot = begin_tool_decision(session_id, approval_id)
             try:
