@@ -249,3 +249,10 @@ test("the clone-only name hint follows the backend's speaks=False families", asy
     assert.equal(isCloneOnlyFamilyId(id), false, id);
   }
 });
+
+test("a Fish Audio Hub row lists on both Speak and Clone before download", () => {
+  const row = { id: "fishaudio/fish-speech-1.5-GGUF", task: "text-to-speech" };
+  assert.equal(audioRowMatchesWorkflow(row, "speak"), true);
+  assert.equal(audioRowMatchesWorkflow(row, "clone"), true);
+  assert.equal(audioRowMatchesWorkflow(row, "music"), false);
+});

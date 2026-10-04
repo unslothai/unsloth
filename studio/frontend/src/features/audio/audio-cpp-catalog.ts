@@ -82,6 +82,13 @@ export function isCloneOnlyFamilyId(id: string | null | undefined): boolean {
   return CLONE_ONLY_FAMILY_HINT.test(id ?? "");
 }
 
+// Families that both speak and clone (fish_audio), likewise by repo name.
+const SPEAK_AND_CLONE_FAMILY_HINT = /fish-?(audio|speech)|openaudio/i;
+
+export function isSpeakAndCloneFamilyId(id: string | null | undefined): boolean {
+  return SPEAK_AND_CLONE_FAMILY_HINT.test(id ?? "");
+}
+
 /** Legacy Settings > Voice keys; the backend still maps each to its folder id (and variant). */
 export interface AudioCppDictationModel {
   key: string;
